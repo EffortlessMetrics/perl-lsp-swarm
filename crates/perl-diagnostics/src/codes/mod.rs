@@ -18,6 +18,10 @@
 //! | PL700-PL799 | Import                    |
 //! | PL800-PL899 | Heredoc anti-patterns     |
 //! | PL900-PL999 | Version compatibility     |
+//! | PL1000-PL1099 | Regex analysis          |
+//!
+//! The regex-analysis block is the first four-digit range. Codes are opaque
+//! stable tokens, not a fixed-width field: nothing parses them by digit count.
 
 use std::{fmt, str::FromStr};
 
@@ -228,6 +232,34 @@ define_diagnostic_codes! {
     // Version compatibility (PL900-PL999)
     /// Use of a Perl feature not available in the declared version
     VersionIncompatFeature => "PL900",
+
+    // Regex analysis (PL1000-PL1099)
+    //
+    // Projections of the parser-retained canonical regex analysis (#7018) into
+    // stable client-facing identities (#7024). Embedded executable code keeps its
+    // established security identity (`SecurityEmbeddedRegexCode`, PL609) rather
+    // than being renumbered here.
+    /// A repeated group already contains a backtracking quantifier, so the
+    /// pattern can backtrack super-linearly on non-matching input
+    RegexBacktrackingRisk => "PL1000",
+    /// Static regex analysis stopped at a configured policy limit, so the
+    /// remainder of the pattern is uninspected rather than proven clean
+    RegexAnalysisLimit => "PL1001",
+    /// A regex modifier is unknown, repeated, conflicting, or not accepted for
+    /// this operator family
+    RegexModifierInvalid => "PL1002",
+    /// A regex modifier is accepted here but has no effect
+    RegexModifierNoEffect => "PL1003",
+    /// A regex modifier form requires a newer Perl version or a feature that is
+    /// not enabled for the analyzed source
+    RegexModifierUnavailable => "PL1004",
+    /// A capture name is invalid in the analyzed subset
+    RegexCaptureInvalid => "PL1005",
+    /// A capture form requires a newer Perl version or source UTF-8 semantics
+    RegexCaptureUnavailable => "PL1006",
+    /// Static regex analysis could not complete for this pattern, so its
+    /// findings are partial rather than exhaustive
+    RegexAnalysisIncomplete => "PL1007",
 }
 
 /// Error returned when text is not a registered built-in diagnostic code.

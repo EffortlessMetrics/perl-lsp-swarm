@@ -2,7 +2,8 @@ use chrono::{NaiveDate, Utc};
 use color_eyre::eyre::{Context, Result, bail};
 use serde::Serialize;
 use serde_yaml_ng::{Mapping, Value};
-use std::collections::HashSet;
+use sha2::{Digest, Sha256};
+use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -43,6 +44,15 @@ const PR_CONTROLLED_TRIGGERS: &[&str] = &[
 /// can be targeted by a custom label alone, without the implicit `self-hosted`
 /// label ever appearing in the workflow file.
 const GITHUB_HOSTED_LABEL_PREFIXES: &[&str] = &["ubuntu-", "windows-", "macos-"];
+
+/// Files every `cargo xtask <subcommand>` invocation routes through.
+///
+/// `xtask/src/main.rs` is the clap dispatch and `xtask/src/tasks/mod.rs` is the
+/// module registration it reaches subcommands through. `mod tasks;` is declared
+/// in `main.rs`, not `lib.rs`, so both compile into the default `xtask` binary
+/// and into no other target. A paths-filtered gate that runs a subcommand but
+/// omits them cannot observe a change to its own dispatch (#14293).
+const XTASK_CLI_WIRING_FILES: &[&str] = &["xtask/src/main.rs", "xtask/src/tasks/mod.rs"];
 
 const ALLOWLIST_PR_CONTENTS_WRITE: &[&str] = &["ci.yml", "ci-nightly.yml", "droid-review.yml"];
 const POLICY_WARN_UNPINNED_ACTIONS: bool = true;
@@ -98,6 +108,7 @@ const ALLOWLIST_WORKFLOW_LANE_MISSING: &[&str] = &[
 
 #[derive(Debug, Clone)]
 pub struct WorkflowPolicyLintConfig {
+    pub root: Option<PathBuf>,
     pub receipt: Option<PathBuf>,
     pub fixture: Option<PathBuf>,
     /// Run the per-workflow lane-whitelist check against
@@ -122,41 +133,119 @@ struct WorkflowPolicyReceipt {
     error_count: usize,
     warning_count: usize,
     issues: Vec<LintIssue>,
+    subject: WorkflowPolicySubject,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct WorkflowPolicySubject {
+    mode: &'static str,
+    selection: &'static str,
+    path_identity_sha256: Option<String>,
+    workflow_file_count: usize,
+    scan_completed: bool,
+    lane_whitelist_requested: bool,
+    isolation_registry_requested: bool,
+}
+
+fn subject_path_identity(path: &Path) -> String {
+    Sha256::digest(path.as_os_str().as_encoded_bytes())
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+fn lint_selected_subject(
+    config: &WorkflowPolicyLintConfig,
+    default_root: impl FnOnce() -> Result<PathBuf>,
+    subject: &mut WorkflowPolicySubject,
+    issues: &mut Vec<LintIssue>,
+) -> Result<()> {
+    if let Some(fixture) = &config.fixture {
+        if config.root.is_some() || config.check_lane_whitelist {
+            bail!("fixture mode cannot select a repository root or lane-whitelist check");
+        }
+        let canonical_fixture =
+            fixture.canonicalize().wrap_err("resolving workflow-policy fixture")?;
+        subject.path_identity_sha256 = Some(subject_path_identity(&canonical_fixture));
+        lint_workflow_file(fixture, true, issues)?;
+        subject.workflow_file_count = 1;
+    } else {
+        let root = match &config.root {
+            Some(root) => root.clone(),
+            None => default_root()?,
+        };
+        let root = root.canonicalize().wrap_err("resolving selected workflow-policy root")?;
+        if !root.is_dir() {
+            bail!("selected workflow-policy root is not a directory");
+        }
+        subject.path_identity_sha256 = Some(subject_path_identity(&root));
+        let workflows_dir = root.join(".github").join("workflows");
+        let mut workflows = Vec::new();
+        for entry in fs::read_dir(&workflows_dir)
+            .wrap_err("reading .github/workflows under selected workflow-policy root")?
+        {
+            let path = entry.wrap_err("reading workflow inventory entry")?.path();
+            if matches!(path.extension().and_then(|value| value.to_str()), Some("yml" | "yaml")) {
+                workflows.push(path);
+            }
+        }
+        if workflows.is_empty() {
+            bail!("selected workflow-policy root has no .yml or .yaml workflows");
+        }
+        workflows.sort();
+        // Load the repository `justfile` once per scan so `just <recipe>`
+        // invocations inside workflow `run:` steps resolve to their recipes
+        // before the xtask-CLI wiring check fires. A missing `justfile` is
+        // not an error — it preserves the previous lint behavior for repos
+        // that do not use `just`.
+        let just_recipes = load_project_justfile(&root)?.unwrap_or_default();
+        for path in workflows {
+            lint_workflow_file_with_just(&path, false, issues, &just_recipes)?;
+            subject.workflow_file_count += 1;
+        }
+        if config.check_lane_whitelist {
+            check_lane_whitelist(&root, issues)?;
+        }
+        check_self_hosted_isolation(&root, Utc::now().date_naive(), issues)?;
+    }
+    subject.scan_completed = true;
+    Ok(())
 }
 
 pub fn run(config: WorkflowPolicyLintConfig) -> Result<()> {
-    let root = project_root()?;
+    run_with_default_root(config, project_root)
+}
+
+fn run_with_default_root(
+    config: WorkflowPolicyLintConfig,
+    default_root: impl FnOnce() -> Result<PathBuf>,
+) -> Result<()> {
+    let mut subject = WorkflowPolicySubject {
+        mode: if config.fixture.is_some() { "fixture" } else { "repository" },
+        selection: if config.fixture.is_some() {
+            "fixture"
+        } else if config.root.is_some() {
+            "explicit_root"
+        } else {
+            "compiled_root"
+        },
+        path_identity_sha256: None,
+        workflow_file_count: 0,
+        scan_completed: false,
+        lane_whitelist_requested: config.check_lane_whitelist,
+        isolation_registry_requested: config.fixture.is_none(),
+    };
     let mut issues = Vec::new();
-
-    if let Some(fixture) = config.fixture {
-        lint_workflow_file(&fixture, true, &mut issues)?;
-    } else {
-        let workflows_dir = root.join(".github").join("workflows");
-        if workflows_dir.exists() {
-            for entry in fs::read_dir(&workflows_dir)
-                .with_context(|| format!("reading {}", workflows_dir.display()))?
-            {
-                let path = entry.context("reading workflow entry")?.path();
-                let Some(ext) = path.extension().and_then(|value| value.to_str()) else {
-                    continue;
-                };
-                if ext != "yml" && ext != "yaml" {
-                    continue;
-                }
-                lint_workflow_file(&path, false, &mut issues)?;
-            }
-        }
-
-        if config.check_lane_whitelist {
-            check_lane_whitelist(&root, &mut issues)?;
-        }
-
-        // Unconditional: routing pull-request-controlled code onto self-hosted
-        // capacity is a trust-boundary question, not a lane-economics one, so it
-        // is not gated behind `--check-lane-whitelist` (#15070, under #7414).
-        check_self_hosted_isolation(&root, Utc::now().date_naive(), &mut issues)?;
+    let scan_result = lint_selected_subject(&config, default_root, &mut subject, &mut issues);
+    if scan_result.is_err() {
+        issues.push(LintIssue {
+            level: "error",
+            code: "WORKFLOW_POLICY_INPUT_UNAVAILABLE",
+            workflow: "<subject>".to_string(),
+            message: "selected inputs could not be evaluated; see the command diagnostic"
+                .to_string(),
+        });
     }
-
     issues.sort_by(|left, right| {
         (&left.level, &left.workflow, &left.code, &left.message).cmp(&(
             &right.level,
@@ -183,6 +272,7 @@ pub fn run(config: WorkflowPolicyLintConfig) -> Result<()> {
             error_count,
             warning_count,
             issues,
+            subject,
         };
         if let Some(parent) = receipt_path.parent() {
             fs::create_dir_all(parent)
@@ -194,6 +284,7 @@ pub fn run(config: WorkflowPolicyLintConfig) -> Result<()> {
         println!("Workflow policy lint receipt written: {}", receipt_path.display());
     }
 
+    scan_result.wrap_err("workflow policy lint instrument failure")?;
     if !passed {
         bail!(
             "workflow policy lint failed with {} error(s) and {} warning(s)",
@@ -210,6 +301,19 @@ pub fn run(config: WorkflowPolicyLintConfig) -> Result<()> {
 }
 
 fn lint_workflow_file(path: &Path, is_fixture: bool, issues: &mut Vec<LintIssue>) -> Result<()> {
+    lint_workflow_file_with_just(path, is_fixture, issues, &NoJustRecipes)
+}
+
+/// Like [`lint_workflow_file`], but lets the caller supply a parsed `justfile`
+/// so that `just <recipe>` invocations inside `run:` steps can be expanded into
+/// the recipe body before the xtask-CLI check runs. A fixture without an
+/// associated justfile calls the simpler wrapper instead.
+fn lint_workflow_file_with_just(
+    path: &Path,
+    is_fixture: bool,
+    issues: &mut Vec<LintIssue>,
+    recipes: &dyn JustRecipeLookup,
+) -> Result<()> {
     let raw = fs::read_to_string(path)
         .with_context(|| format!("reading workflow file {}", path.display()))?;
     let workflow: Value = serde_yaml_ng::from_str(&raw)
@@ -334,7 +438,684 @@ fn lint_workflow_file(path: &Path, is_fixture: bool, issues: &mut Vec<LintIssue>
         }
     }
 
+    match workflow_invokes_xtask_cli(&workflow, recipes) {
+        Ok(true) => {
+            for (trigger, paths) in triggers_with_paths_filters(&workflow) {
+                let missing = XTASK_CLI_WIRING_FILES
+                    .iter()
+                    .filter(|wiring| !paths_filter_covers(&paths, wiring))
+                    .copied()
+                    .collect::<Vec<_>>();
+                if missing.is_empty() {
+                    continue;
+                }
+                issues.push(LintIssue {
+                    level: "error",
+                    code: "XTASK_CLI_WIRING_PATHS",
+                    workflow: workflow_name.clone(),
+                    message: format!(
+                        "trigger '{trigger}' runs an xtask CLI subcommand but its paths filter omits {}; a change to the CLI wiring would skip this gate",
+                        missing.join(", ")
+                    ),
+                });
+            }
+        }
+        Ok(false) => {}
+        Err(JustResolutionError::MissingRecipe(recipe)) => {
+            issues.push(LintIssue {
+                level: "error",
+                code: "JUST_RECIPE_UNRESOLVED",
+                workflow: workflow_name.clone(),
+                message: format!(
+                    "run: invokes `just {recipe}` but no recipe of that name is defined in justfile; \
+                     a renamed or removed recipe would silently lose xtask-CLI wiring coverage"
+                ),
+            });
+        }
+        Err(JustResolutionError::RecursionDepthExceeded { recipe, depth }) => {
+            issues.push(LintIssue {
+                level: "error",
+                code: "JUST_RECIPE_CYCLIC",
+                workflow: workflow_name.clone(),
+                message: format!(
+                    "`just {recipe}` exceeds the {depth}-level recipe indirection bound; \
+                     a cyclic recipe would otherwise lock the workflow policy lint"
+                ),
+            });
+        }
+    }
+
     Ok(())
+}
+
+/// Words that may precede `cargo` while still executing it.
+const COMMAND_WRAPPERS: &[&str] = &["sudo", "env", "time", "exec", "nice", "command"];
+
+/// Whether a `run:` script invokes the default `xtask` binary's CLI.
+///
+/// Detection is on the command in command position, not on substrings, so
+/// prose that merely names the command — a `#` comment line inside a block
+/// scalar, or `echo 'run cargo xtask foo locally'` — is not an invocation. The
+/// finding this feeds is error-level, so a false positive would block an
+/// otherwise valid workflow change.
+///
+/// What counts as the CLI is decided by what links `main.rs`:
+///
+/// - `cargo xtask <sub>` and `cargo run {-p,--package} xtask ... -- <sub>` do;
+/// - so does `--bin xtask`, because `xtask/src/main.rs` *is* the `xtask` bin —
+///   only another `--bin <name>` or an `--example` selects a different target;
+/// - `cargo test -p xtask` compiles test targets rather than the dispatch.
+///
+/// Known limitation: an invocation reached indirectly, through a `just` recipe
+/// or another script, is not visible here. See #14293 for the residual claim.
+/// (Partially addressed for `just` recipes by [`command_invokes_xtask_cli_with_just`];
+/// scripts other than `just` remain un-tracked.)
+fn command_invokes_xtask_cli(script: &str) -> bool {
+    // Without a recipe table there is nothing to resolve through. Indirection
+    // is silently untracked for that callers — same residual as before #15509.
+    command_invokes_xtask_cli_with_just(script, &NoJustRecipes).unwrap_or(false)
+}
+
+/// Maximum `just` recipe expansion depth, including the initial recipe call.
+///
+/// `just` recipes routinely chain two or three levels (`ci-full` → `_timed`
+/// → underlying lint/test recipe). Eight is well above anything the repository
+/// actually uses, and a hard cap stops a cyclic recipe from locking the lint.
+const JUST_RESOLUTION_MAX_DEPTH: usize = 8;
+
+/// Map of `recipe name → body lines`, with each body line pre-stripped of the
+/// leading `@` echo-suppression marker and surrounding whitespace.
+type JustRecipes = BTreeMap<String, Vec<String>>;
+
+/// A parser-time marker that says "no `just` indirection can be resolved",
+/// without forcing every caller to thread an `Option` they will never use.
+struct NoJustRecipes;
+
+impl JustRecipeLookup for NoJustRecipes {
+    fn recipes(&self) -> &JustRecipes {
+        static EMPTY: JustRecipes = BTreeMap::new();
+        &EMPTY
+    }
+}
+
+/// Recipe lookup the resolver can read from.
+///
+/// `NoJustRecipes` and the real `justfile`-derived `JustRecipes` both implement
+/// this so the lint and the legacy single-argument wrapper share one path.
+trait JustRecipeLookup {
+    fn recipes(&self) -> &JustRecipes;
+}
+
+impl JustRecipeLookup for JustRecipes {
+    fn recipes(&self) -> &JustRecipes {
+        self
+    }
+}
+
+/// Outcome of failing to expand a `just <recipe>` call inside a `run:` script.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum JustResolutionError {
+    /// The recipe is named but does not exist in the parsed `justfile`. A
+    /// silent pass here would let a typo'd recipe hide an xtask invocation;
+    /// the lint surfaces it as an unresolved-resolution finding instead.
+    MissingRecipe(String),
+    /// Recursion hit `JUST_RESOLUTION_MAX_DEPTH`. A cyclic recipe would
+    /// otherwise loop the lint; bound the depth so the lint terminates.
+    RecursionDepthExceeded { recipe: String, depth: usize },
+}
+
+impl std::fmt::Display for JustResolutionError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::MissingRecipe(recipe) => {
+                write!(formatter, "just recipe `{recipe}` is not defined in justfile")
+            }
+            Self::RecursionDepthExceeded { recipe, depth } => write!(
+                formatter,
+                "just recipe `{recipe}` exceeds the {depth}-level indirection bound"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for JustResolutionError {}
+
+/// Whether a `run:` script invokes the default `xtask` binary's CLI, looking
+/// through `just <recipe>` indirection when a recipe table is supplied.
+///
+/// The recipe table is consulted for every segment whose first token is `just`
+/// (or a wrapper around `just`, after the existing assignment/wrapper skip).
+/// Resolution is bounded by [`JUST_RESOLUTION_MAX_DEPTH`] and returns a
+/// [`JustResolutionError`] when the named recipe is absent — both to keep the
+/// verdict falsifiable and so that a future recipe-table drift cannot quietly
+/// re-introduce the false-negative the gate exists to prevent.
+fn command_invokes_xtask_cli_with_just(
+    script: &str,
+    recipes: &dyn JustRecipeLookup,
+) -> Result<bool, JustResolutionError> {
+    for command in shell_commands(script) {
+        let expanded = expand_just_in_command(&command, recipes, 0)?;
+        for inner in expanded {
+            if command_tokens_invoke_xtask_cli(&inner) {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
+}
+
+/// Expand every `just <recipe>` invocation reachable from `command` into the
+/// recipe's body lines. Wrapper assignments (`RUST_LOG=…`) and command
+/// wrappers (`env`, `sudo`, …) are not followed: they do not change which
+/// command runs in command position. A `just` invocation that runs inside a
+/// body line is itself recursively expanded up to the depth bound.
+///
+/// The recursion is shallow on purpose — `just` recipe bodies are flat lists
+/// of shell commands. Recursion is only needed when one body line re-runs a
+/// `just` recipe, which happens for `_timed` and other dispatcher recipes.
+fn expand_just_in_command(
+    command: &[String],
+    recipes: &dyn JustRecipeLookup,
+    depth: usize,
+) -> Result<Vec<Vec<String>>, JustResolutionError> {
+    if depth > JUST_RESOLUTION_MAX_DEPTH {
+        if let Some(recipe) = just_recipe_invoked(command) {
+            return Err(JustResolutionError::RecursionDepthExceeded {
+                recipe,
+                depth: JUST_RESOLUTION_MAX_DEPTH,
+            });
+        }
+        return Ok(Vec::new());
+    }
+    let Some(recipe) = just_recipe_invoked(command) else {
+        return Ok(vec![command.to_vec()]);
+    };
+    let body = recipes
+        .recipes()
+        .get(&recipe)
+        .ok_or_else(|| JustResolutionError::MissingRecipe(recipe.clone()))?;
+    let mut expanded = Vec::new();
+    for body_line in body {
+        let tokens: Vec<String> = body_line.split_whitespace().map(str::to_string).collect();
+        if tokens.is_empty() {
+            continue;
+        }
+        if just_recipe_invoked(&tokens).is_some() {
+            for nested in expand_just_in_command(&tokens, recipes, depth + 1)? {
+                expanded.push(nested);
+            }
+        } else {
+            expanded.push(tokens);
+        }
+    }
+    Ok(expanded)
+}
+
+/// Return the recipe name invoked by a `just <recipe>` token sequence, if any.
+///
+/// Accepts a leading assignment (`RUST_LOG=debug just ci-fast`) and a single
+/// wrapper (`env`, `sudo`, `time`, `exec`, `nice`, `command`) because the
+/// existing `command_tokens_invoke_xtask_cli` recognises those as not changing
+/// what runs. The wrapper set is identical to [`COMMAND_WRAPPERS`] so the two
+/// paths agree on what counts as "the same `just"".
+fn just_recipe_invoked(tokens: &[String]) -> Option<String> {
+    let mut rest = tokens;
+    loop {
+        let Some(first) = rest.first().map(String::as_str) else {
+            return None;
+        };
+        if is_env_assignment(first) {
+            rest = &rest[1..];
+            continue;
+        }
+        if COMMAND_WRAPPERS.contains(&first) {
+            rest = &rest[1..];
+            while let Some(next) = rest.first().map(String::as_str) {
+                if next.starts_with('-') || is_env_assignment(next) {
+                    rest = &rest[1..];
+                } else {
+                    break;
+                }
+            }
+            continue;
+        }
+        break;
+    }
+    let (command, args) = rest.split_first()?;
+    if command != "just" {
+        return None;
+    }
+    // `just` always takes one of:
+    //   - a recipe name (`just ci-fast`)
+    //   - one of its flags (`just --list`, `just --evaluate`)
+    //   - `--justfile <path> <recipe>` to point at a different file
+    // A flag-only invocation has no recipe and is not an xtask claim by itself.
+    let recipe = args.first()?;
+    if recipe.starts_with('-') {
+        return None;
+    }
+    if recipe == "--justfile" {
+        // recipe sits after the path, i.e. `args[2]`
+        return args.get(2).cloned();
+    }
+    Some(recipe.clone())
+}
+
+/// Parse a `justfile` body into a recipe map.
+///
+/// Format (https://just.systems/man/en/), in summary:
+///
+/// - lines starting with `#` are comments;
+/// - top-level `name := value` / `name = value` lines are settings or
+///   exported variables, not recipes;
+/// - a recipe header is `name [params]: [deps]` — params and deps are not
+///   modeled here, only the recipe name;
+/// - the body is the run of indented lines after the header; each body line
+///   has its leading `@` echo-suppression marker removed, since `just`
+///   strips that before exec.
+///
+/// The parser is intentionally narrow: it accepts the shape the repository's
+/// own `justfile` uses, and returns an empty map for any line it cannot
+/// classify. The lint then runs `just <recipe>` against that map; a recipe
+/// the parser cannot see cannot be expanded, and the call site gets a typed
+/// `MissingRecipe` finding.
+fn parse_justfile(content: &str) -> JustRecipes {
+    let lines: Vec<&str> = content.lines().collect();
+    let mut recipes: JustRecipes = BTreeMap::new();
+    let mut index = 0;
+    while index < lines.len() {
+        let raw = lines[index];
+        let leading_ws =
+            raw.chars().take_while(|character| matches!(character, ' ' | '\t')).count();
+        let stripped = raw[leading_ws..].trim_start();
+        if leading_ws > 0 || stripped.is_empty() || stripped.starts_with('#') {
+            index += 1;
+            continue;
+        }
+        // A non-indented line is either an assignment (`cargo_safe := ...` /
+        // `name = value`) or a recipe header (`name:` / `name params:` /
+        // `name: dep1 dep2`). The discriminator is whether the next non-blank
+        // line is indented: recipes always have a body, assignments never do.
+        let Some(name) = recipe_header_name(stripped) else {
+            index += 1;
+            continue;
+        };
+        if !next_non_blank_is_indented(&lines, index) {
+            // Treat as a setting or export. Skip.
+            index += 1;
+            continue;
+        }
+        index += 1;
+        let mut body = Vec::new();
+        while index < lines.len() {
+            let inner = lines[index];
+            let inner_ws =
+                inner.chars().take_while(|character| matches!(character, ' ' | '\t')).count();
+            if inner_ws == 0 {
+                break;
+            }
+            let inner_stripped = inner[inner_ws..].trim_start();
+            if inner_stripped.is_empty() || inner_stripped.starts_with('#') {
+                index += 1;
+                continue;
+            }
+            // `just` itself strips the leading `@` (and `@-`) before exec, so
+            // removing it here keeps the existing token splitter honest.
+            let body_line = inner_stripped.strip_prefix('@').unwrap_or(inner_stripped);
+            body.push(body_line.to_string());
+            index += 1;
+        }
+        // A recipe with an empty body cannot be reached by any `run:` step,
+        // but record it so a misspelled recipe name produces a typed
+        // `MissingRecipe` rather than a silent miss.
+        recipes.insert(name.to_string(), body);
+    }
+    recipes
+}
+
+/// Extract the recipe name from a possible recipe header line.
+///
+/// `just` recipe headers are `name`, optionally followed by parameters and
+/// `:` (with optional deps). The name itself never contains whitespace or
+/// `:`. The trailing `:` is the strongest signal: assignments use `=` /
+/// `:=`, recipes use a single `:`. We accept only headers that have a `:`;
+/// assignments without `:` (e.g. `export RUST_LOG`) are not modeled.
+fn recipe_header_name(line: &str) -> Option<&str> {
+    let colon = line.find(':')?;
+    // A `:=` assignment is not a recipe header.
+    if line.as_bytes().get(colon + 1) == Some(&b'=') {
+        return None;
+    }
+    // Parameters follow the recipe name (`name param:`); only the first
+    // whitespace-separated word is the recipe identifier.
+    let name = line[..colon].trim().split_whitespace().next()?;
+    // A `[settings]` or `export` line would also contain `:`, but those
+    // names start with a non-identifier character; gate on a valid recipe
+    // identifier so we never confuse the two.
+    if !name
+        .chars()
+        .all(|character| character.is_ascii_alphanumeric() || character == '_' || character == '-')
+    {
+        return None;
+    }
+    Some(name)
+}
+
+/// Whether the next non-blank line after `lines[index]` is indented.
+fn next_non_blank_is_indented(lines: &[&str], index: usize) -> bool {
+    lines
+        .iter()
+        .skip(index + 1)
+        .find(|line| !line.trim().is_empty())
+        .is_some_and(|line| line.starts_with(' ') || line.starts_with('\t'))
+}
+
+/// Split a `run:` script into candidate commands.
+///
+/// Backslash continuations are joined so one logical command may span lines,
+/// `&&`, `||`, `|` and `;` begin a new command, and comment lines are dropped.
+fn shell_commands(script: &str) -> Vec<Vec<String>> {
+    let mut joined = String::new();
+    for line in script.lines() {
+        let line = line.trim();
+        if line.starts_with('#') {
+            continue;
+        }
+        match line.strip_suffix('\\') {
+            Some(continued) => {
+                joined.push_str(continued);
+                joined.push(' ');
+            }
+            None => {
+                joined.push_str(line);
+                joined.push('\n');
+            }
+        }
+    }
+    let mut segments = Vec::new();
+    let mut segment = String::new();
+    let mut quote = None;
+    let mut escaped = false;
+    let mut characters = joined.chars().peekable();
+    while let Some(character) = characters.next() {
+        if escaped {
+            segment.push(character);
+            escaped = false;
+            continue;
+        }
+        if character == '\\' && quote != Some('\'') {
+            segment.push(character);
+            escaped = true;
+            continue;
+        }
+        if let Some(delimiter) = quote {
+            segment.push(character);
+            if character == delimiter {
+                quote = None;
+            }
+            continue;
+        }
+        if character == '\'' || character == '"' {
+            quote = Some(character);
+            segment.push(character);
+        } else if matches!(character, '\n' | ';' | '|')
+            || (character == '&' && characters.peek() == Some(&'&'))
+        {
+            if character == '&' {
+                characters.next();
+            }
+            segments.push(std::mem::take(&mut segment));
+        } else {
+            segment.push(character);
+        }
+    }
+    segments.push(segment);
+    segments
+        .iter()
+        .map(|segment| segment.split_whitespace().map(str::to_string).collect::<Vec<String>>())
+        .filter(|tokens| !tokens.is_empty())
+        .collect()
+}
+
+/// Whether a token is a shell variable assignment such as `RUST_LOG=debug`.
+fn is_env_assignment(token: &str) -> bool {
+    match token.split_once('=') {
+        Some((name, _)) => {
+            !name.is_empty() && name.chars().all(|byte| byte.is_ascii_alphanumeric() || byte == '_')
+        }
+        None => false,
+    }
+}
+
+/// Whether these tokens run the `xtask` CLI, ignoring anything in front of the
+/// command that does not change what runs.
+///
+/// A leading assignment (`RUST_LOG=debug cargo …`) and a wrapper together with
+/// its own options and their arguments (`env A=1`, `sudo -E`, `nice -n 10`) are
+/// consumed first. Skipping only the wrapper's name would leave a non-`cargo`
+/// token in command position and silently miss the invocation.
+fn command_tokens_invoke_xtask_cli(tokens: &[String]) -> bool {
+    let mut rest = tokens;
+    loop {
+        let Some(first) = rest.first().map(String::as_str) else {
+            return false;
+        };
+        if is_env_assignment(first) {
+            rest = &rest[1..];
+            continue;
+        }
+        if COMMAND_WRAPPERS.contains(&first) {
+            rest = &rest[1..];
+            // The wrapper's own options, their values, and any assignments it
+            // carries sit between it and the real command.
+            while let Some(next) = rest.first().map(String::as_str) {
+                let is_option_or_value = next.starts_with('-')
+                    || is_env_assignment(next)
+                    || next.chars().all(|byte| byte.is_ascii_digit());
+                if is_option_or_value {
+                    rest = &rest[1..];
+                } else {
+                    break;
+                }
+            }
+            continue;
+        }
+        break;
+    }
+    let Some((command, args)) = rest.split_first() else {
+        return false;
+    };
+    if command != "cargo" {
+        return false;
+    }
+    // `cargo +stable xtask …` pins a toolchain; it does not change what runs.
+    let args = match args.split_first() {
+        Some((first, tail)) if first.starts_with('+') => tail,
+        _ => args,
+    };
+    // Cargo's own options may precede the subcommand without changing it.
+    let args = skip_cargo_global_options(args);
+    if selects_another_target(args) {
+        return false;
+    }
+    match args.first().map(String::as_str) {
+        // `cargo xtask [<sub>]` — the alias form.
+        Some("xtask") => true,
+        // `cargo run {-p,--package} xtask [flags] -- <sub>`, or the same
+        // selected by manifest path.
+        Some("run") => {
+            let names_package = args
+                .windows(2)
+                .any(|pair| (pair[0] == "-p" || pair[0] == "--package") && pair[1] == "xtask")
+                || args.iter().any(|arg| {
+                    arg == "-pxtask"
+                        || arg == "--package=xtask"
+                        || arg.ends_with("xtask/Cargo.toml")
+                });
+            names_package && args.iter().any(|arg| arg == "--")
+        }
+        _ => false,
+    }
+}
+
+/// Cargo options accepted before the subcommand that consume a separate value.
+const CARGO_GLOBAL_OPTIONS_WITH_VALUE: &[&str] = &["--color", "--config", "--explain", "-Z", "-C"];
+
+/// Skip cargo's own options, which sit between `cargo` and its subcommand
+/// without changing which subcommand runs — `cargo --offline xtask …`,
+/// `cargo -q run -p xtask -- …`, `cargo --color always xtask …`.
+///
+/// Stops at the first argument that is not an option, which is the subcommand.
+/// A subcommand's own `--bin`/`--example` therefore stays visible to
+/// [`selects_another_target`].
+fn skip_cargo_global_options(mut args: &[String]) -> &[String] {
+    while let Some(first) = args.first().map(String::as_str) {
+        if !first.starts_with('-') {
+            break;
+        }
+        let takes_value = CARGO_GLOBAL_OPTIONS_WITH_VALUE.contains(&first);
+        args = &args[1..];
+        if takes_value && !args.is_empty() {
+            args = &args[1..];
+        }
+    }
+    args
+}
+
+/// Whether the arguments select a build target other than the default `xtask`
+/// binary. `--bin xtask` names `xtask/src/main.rs` itself, so it is not another
+/// target.
+fn selects_another_target(args: &[String]) -> bool {
+    for (index, arg) in args.iter().enumerate() {
+        if arg == "--example" || arg.starts_with("--example=") {
+            return true;
+        }
+        if let Some(name) = arg.strip_prefix("--bin=") {
+            return name != "xtask";
+        }
+        if arg == "--bin" {
+            return args.get(index + 1).map(String::as_str) != Some("xtask");
+        }
+    }
+    false
+}
+
+/// Whether any step in any job of this workflow runs the `xtask` CLI, looking
+/// through `just <recipe>` indirection when a recipe table is supplied.
+///
+/// A missing `just` recipe name produces a [`JustResolutionError::MissingRecipe`]
+/// rather than a silent false-negative. The caller is expected to surface that
+/// as a lint issue, so a recipe rename in `justfile` cannot quietly make the
+/// gate lose visibility of a step.
+fn workflow_invokes_xtask_cli(
+    workflow: &Value,
+    recipes: &dyn JustRecipeLookup,
+) -> Result<bool, JustResolutionError> {
+    let Some(jobs) = workflow.get("jobs").and_then(Value::as_mapping) else {
+        return Ok(false);
+    };
+    for job in jobs.values() {
+        let Some(steps) = job.get("steps").and_then(Value::as_sequence) else {
+            continue;
+        };
+        for step in steps {
+            if let Some(run) = step.get("run").and_then(Value::as_str)
+                && command_invokes_xtask_cli_with_just(run, recipes)?
+            {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
+}
+
+/// Load the `justfile` for a repository root, returning `Ok(None)` when the
+/// file is absent. The lint treats a missing `justfile` as "no `just` recipes
+/// to resolve through", which is the same verdict the gate had before #15509.
+fn load_project_justfile(root: &Path) -> Result<Option<JustRecipes>> {
+    // The `just` tool accepts both spellings; without the fallback a project
+    // using only `Justfile` would silently resolve zero recipes.
+    for name in ["justfile", "Justfile"] {
+        let path = root.join(name);
+        match fs::read_to_string(&path) {
+            Ok(content) => return Ok(Some(parse_justfile(&content))),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                return Err(error).with_context(|| format!("reading {name} {}", path.display()));
+            }
+        }
+    }
+    Ok(None)
+}
+
+/// Filter-pattern syntax GitHub defines differently from shell globbing.
+///
+/// GitHub reads `?` and `+` as quantifiers on the *preceding* character and
+/// restricts `[...]` to simple ranges, whereas the `glob` crate reads `?` as
+/// any single character, `+` as a literal, and `[...]` as a POSIX class. A
+/// pattern using these cannot be evaluated faithfully here.
+const GITHUB_SPECIFIC_PATTERN_SYNTAX: &[char] = &['?', '+', '['];
+
+/// Whether a `paths:` allowlist selects `target`.
+///
+/// Entries are filter patterns, not literals: `xtask/**` already covers both
+/// wiring files, so requiring them to be spelled out would be a false positive.
+/// Later entries win, which is how a `!` exclusion takes a file back out of an
+/// earlier glob.
+///
+/// Only the `*`/`**`/`!` forms shared with shell globbing are evaluated, which
+/// is every form this repository's filters use. A pattern that does not parse,
+/// or that uses the GitHub-specific syntax above, cannot be shown to cover
+/// anything and so is not treated as coverage — the rule then asks for the
+/// wiring file explicitly rather than returning a verdict it cannot justify.
+fn paths_filter_covers(paths: &[String], target: &str) -> bool {
+    let options = glob::MatchOptions {
+        case_sensitive: true,
+        require_literal_separator: true,
+        require_literal_leading_dot: false,
+    };
+    let mut covered = false;
+    for entry in paths {
+        let (negated, raw) = match entry.strip_prefix('!') {
+            Some(rest) => (true, rest),
+            None => (false, entry.as_str()),
+        };
+        if raw.contains(GITHUB_SPECIFIC_PATTERN_SYNTAX) {
+            covered &= !negated;
+            continue;
+        }
+        let Ok(pattern) = glob::Pattern::new(raw) else {
+            covered &= !negated;
+            continue;
+        };
+        if pattern.matches_with(target, options) {
+            covered = !negated;
+        }
+    }
+    covered
+}
+
+/// Every trigger carrying a `paths:` allowlist, with its entries.
+///
+/// `paths-ignore:` is deliberately out of scope: it is a denylist, so omitting
+/// a file from it cannot cause the gate to be skipped.
+fn triggers_with_paths_filters(workflow: &Value) -> Vec<(String, Vec<String>)> {
+    let Some(on) = workflow_on(workflow).and_then(Value::as_mapping) else {
+        return Vec::new();
+    };
+    let mut found = Vec::new();
+    for (trigger, config) in on {
+        let Some(name) = trigger.as_str() else {
+            continue;
+        };
+        let Some(paths) = config.get("paths").and_then(Value::as_sequence) else {
+            continue;
+        };
+        let entries =
+            paths.iter().filter_map(Value::as_str).map(str::to_string).collect::<Vec<_>>();
+        found.push((name.to_string(), entries));
+    }
+    found
 }
 
 fn is_contents_write_allowlisted(workflow_name: &str) -> bool {
@@ -395,7 +1176,7 @@ fn default_write_scopes(workflow: &Value) -> Vec<String> {
     }
 }
 
-fn workflow_on(workflow: &Value) -> Option<&Value> {
+pub(crate) fn workflow_on(workflow: &Value) -> Option<&Value> {
     workflow.as_mapping()?.iter().find_map(|(key, value)| match key {
         Value::String(key) if key == "on" => Some(value),
         Value::Bool(true) => Some(value),
@@ -403,7 +1184,7 @@ fn workflow_on(workflow: &Value) -> Option<&Value> {
     })
 }
 
-fn triggers(workflow: &Value) -> Vec<String> {
+pub(crate) fn triggers(workflow: &Value) -> Vec<String> {
     let Some(on) = workflow_on(workflow) else {
         return Vec::new();
     };
@@ -419,11 +1200,11 @@ fn triggers(workflow: &Value) -> Vec<String> {
     }
 }
 
-fn is_pull_request(triggers: &[String]) -> bool {
+pub(crate) fn is_pull_request(triggers: &[String]) -> bool {
     triggers.iter().any(|trigger| trigger == "pull_request")
 }
 
-fn is_pull_request_target(triggers: &[String]) -> bool {
+pub(crate) fn is_pull_request_target(triggers: &[String]) -> bool {
     triggers.iter().any(|trigger| trigger == "pull_request_target")
 }
 
@@ -480,7 +1261,7 @@ fn job_has_contents_write_permission(job: &Mapping) -> bool {
         .is_some_and(|value| value == "write")
 }
 
-fn job_is_statically_excluded_from_pr(job: &Mapping) -> bool {
+pub(crate) fn job_is_statically_excluded_from_pr(job: &Mapping) -> bool {
     let Some(condition) = job.get(Value::String("if".to_string())).and_then(Value::as_str) else {
         return false;
     };
@@ -494,7 +1275,7 @@ fn job_is_statically_excluded_from_pr(job: &Mapping) -> bool {
     condition_excludes_pull_request(condition)
 }
 
-fn condition_excludes_pull_request(condition: &str) -> bool {
+pub(crate) fn condition_excludes_pull_request(condition: &str) -> bool {
     let Some(condition) = strip_outer_parentheses(condition) else {
         return false;
     };
@@ -554,7 +1335,7 @@ fn term_is_trusted_event_equality(term: &str) -> bool {
     )
 }
 
-fn split_top_level<'a>(condition: &'a str, operator: &str) -> Option<Vec<&'a str>> {
+pub(crate) fn split_top_level<'a>(condition: &'a str, operator: &str) -> Option<Vec<&'a str>> {
     let mut parts = Vec::new();
     let mut start = 0;
     let mut index = 0;
@@ -608,7 +1389,7 @@ fn split_top_level<'a>(condition: &'a str, operator: &str) -> Option<Vec<&'a str
     Some(parts)
 }
 
-fn strip_outer_parentheses(mut expression: &str) -> Option<&str> {
+pub(crate) fn strip_outer_parentheses(mut expression: &str) -> Option<&str> {
     loop {
         expression = expression.trim();
         if expression.is_empty() {
@@ -891,11 +1672,6 @@ pub(crate) fn is_sha_pinned(uses: &str) -> bool {
 /// happens only after a calibration window.
 fn check_lane_whitelist(root: &Path, issues: &mut Vec<LintIssue>) -> Result<()> {
     let whitelist_path = root.join("policy").join("ci-lane-whitelist.toml");
-    if !whitelist_path.exists() {
-        // Whitelist not present in this repo; silently skip rather than failing.
-        return Ok(());
-    }
-
     let whitelist_text = fs::read_to_string(&whitelist_path)
         .with_context(|| format!("reading {}", whitelist_path.display()))?;
     let whitelist: toml::Value = toml::from_str(&whitelist_text)
@@ -1694,10 +2470,584 @@ fn check_self_hosted_isolation(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use color_eyre::eyre::ensure;
+
+    const CLEAN_SUBJECT_WORKFLOW: &str = "on: push\npermissions: read-all\njobs:\n  check:\n    runs-on: ubuntu-24.04\n    steps:\n      - run: echo checked\n";
+
+    fn subject_config(root: Option<PathBuf>, receipt: &Path) -> WorkflowPolicyLintConfig {
+        WorkflowPolicyLintConfig {
+            root,
+            receipt: Some(receipt.to_path_buf()),
+            fixture: None,
+            check_lane_whitelist: false,
+        }
+    }
+
+    fn subject_receipt(path: &Path) -> Result<serde_json::Value> {
+        Ok(serde_json::from_slice(&fs::read(path)?)?)
+    }
+
+    fn write_subject_workflow(root: &Path, content: impl AsRef<[u8]>) -> Result<()> {
+        let workflows = root.join(".github/workflows");
+        fs::create_dir_all(&workflows)?;
+        fs::write(workflows.join("subject.yml"), content)?;
+        Ok(())
+    }
+
+    #[test]
+    fn workflow_policy_unavailable_subject_replaces_stale_success() -> Result<()> {
+        let temporary = tempfile::tempdir()?;
+        let parent = temporary.path();
+        fs::write(parent.join("file-root"), "not a directory")?;
+        fs::create_dir(parent.join("missing-workflows"))?;
+        fs::create_dir_all(parent.join("empty/.github/workflows"))?;
+        fs::write(parent.join("empty/.github/workflows/README.md"), "not a workflow")?;
+        fs::create_dir_all(parent.join("directory-yaml/.github/workflows/subject.yml"))?;
+        write_subject_workflow(&parent.join("unreadable-yaml"), [0xff])?;
+        for name in [
+            "missing",
+            "file-root",
+            "missing-workflows",
+            "empty",
+            "directory-yaml",
+            "unreadable-yaml",
+        ] {
+            let receipt = parent.join("receipt.json");
+            fs::write(&receipt, r#"{"passed":true}"#)?;
+            let result =
+                run_with_default_root(subject_config(Some(parent.join(name)), &receipt), || {
+                    bail!("explicit root unexpectedly consulted the default")
+                });
+            ensure!(result.is_err(), "unavailable subject {name} passed");
+            let evidence = subject_receipt(&receipt)?;
+            ensure!(evidence["passed"] == false, "stale success survived for {name}");
+            ensure!(
+                evidence["subject"]["scan_completed"] == false,
+                "incomplete scan claimed completion"
+            );
+            ensure!(
+                evidence["subject"]["workflow_file_count"] == 0,
+                "unreadable workflow counted as evaluated"
+            );
+            ensure!(evidence["schema_version"] == "1.0.0", "receipt version changed");
+            ensure!(
+                evidence["issues"].as_array().is_some_and(|issues| issues
+                    .iter()
+                    .any(|issue| issue["code"] == "WORKFLOW_POLICY_INPUT_UNAVAILABLE")),
+                "instrument failure absent from receipt"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn workflow_policy_explicit_root_overrides_unavailable_default() -> Result<()> {
+        let temporary = tempfile::tempdir()?;
+        let root = temporary.path().join("selected");
+        let receipt = temporary.path().join("receipt.json");
+        write_subject_workflow(&root, CLEAN_SUBJECT_WORKFLOW)?;
+        run_with_default_root(subject_config(Some(root.clone()), &receipt), || {
+            bail!("explicit root unexpectedly consulted the default")
+        })?;
+        let evidence = subject_receipt(&receipt)?;
+        ensure!(evidence["passed"] == true, "clean explicit root failed");
+        ensure!(evidence["subject"]["selection"] == "explicit_root", "wrong root selection");
+        ensure!(evidence["subject"]["workflow_file_count"] == 1, "workflow denominator missing");
+        ensure!(
+            evidence["subject"]["path_identity_sha256"]
+                .as_str()
+                .is_some_and(|value| value.len() == 64),
+            "root identity missing"
+        );
+        let missing = temporary.path().join("removed-build-root");
+        ensure!(
+            run_with_default_root(subject_config(None, &receipt), || Ok(missing)).is_err(),
+            "unavailable compiled root passed"
+        );
+        ensure!(
+            subject_receipt(&receipt)?["passed"] == false,
+            "default root failure retained success"
+        );
+        run_with_default_root(subject_config(None, &receipt), || Ok(root.clone()))?;
+        write_subject_workflow(&root, CLEAN_SUBJECT_WORKFLOW.replace("read-all", "write-all"))?;
+        ensure!(
+            run_with_default_root(subject_config(Some(root), &receipt), || bail!(
+                "default consulted"
+            ))
+            .is_err(),
+            "selected workflow violation passed"
+        );
+        let evidence = subject_receipt(&receipt)?;
+        ensure!(
+            evidence["subject"]["scan_completed"] == true,
+            "policy failure misclassified as instrument failure"
+        );
+        ensure!(
+            evidence["issues"].as_array().is_some_and(|issues| issues
+                .iter()
+                .any(|issue| issue["code"] == "WRITE_ALL_PERMISSIONS")),
+            "wrong root or missing policy finding"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn workflow_policy_fixture_has_no_repository_authority() -> Result<()> {
+        let temporary = tempfile::tempdir()?;
+        let fixture = temporary.path().join("fixture.yml");
+        let receipt = temporary.path().join("receipt.json");
+        fs::write(&fixture, CLEAN_SUBJECT_WORKFLOW)?;
+        let mut config = subject_config(None, &receipt);
+        config.fixture = Some(fixture);
+        run_with_default_root(config.clone(), || {
+            bail!("fixture consulted unavailable default root")
+        })?;
+        let evidence = subject_receipt(&receipt)?;
+        ensure!(evidence["passed"] == true, "clean fixture failed");
+        ensure!(evidence["subject"]["mode"] == "fixture", "fixture claims repository authority");
+        ensure!(evidence["subject"]["workflow_file_count"] == 1, "fixture count differs");
+        ensure!(
+            evidence["subject"]["isolation_registry_requested"] == false,
+            "fixture claims isolation coverage"
+        );
+        config.root = Some(temporary.path().to_path_buf());
+        ensure!(
+            run_with_default_root(config.clone(), || bail!("default consulted")).is_err(),
+            "ambiguous fixture root accepted"
+        );
+        config.root = None;
+        config.check_lane_whitelist = true;
+        ensure!(
+            run_with_default_root(config, || bail!("default consulted")).is_err(),
+            "fixture silently ignores requested policy"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn workflow_policy_required_lane_input_preserves_advisory_and_isolation_rules() -> Result<()> {
+        let temporary = tempfile::tempdir()?;
+        let root = temporary.path().join("selected");
+        let receipt = temporary.path().join("receipt.json");
+        write_subject_workflow(&root, CLEAN_SUBJECT_WORKFLOW)?;
+        let mut config = subject_config(Some(root.clone()), &receipt);
+        config.check_lane_whitelist = true;
+        ensure!(
+            run_with_default_root(config.clone(), || bail!("default consulted")).is_err(),
+            "missing requested policy passed"
+        );
+        fs::create_dir(root.join("policy"))?;
+        fs::write(root.join("policy/ci-lane-whitelist.toml"), "[malformed")?;
+        ensure!(
+            run_with_default_root(config.clone(), || bail!("default consulted")).is_err(),
+            "malformed requested policy passed"
+        );
+        fs::write(root.join("policy/ci-lane-whitelist.toml"), "lane = []\n")?;
+        run_with_default_root(config.clone(), || bail!("default consulted"))?;
+        let evidence = subject_receipt(&receipt)?;
+        ensure!(evidence["passed"] == true, "advisory findings became errors");
+        ensure!(
+            evidence["issues"].as_array().is_some_and(|issues| issues
+                .iter()
+                .any(|issue| issue["code"] == "LANE_WHITELIST_MISSING")),
+            "advisory coverage silently skipped"
+        );
+        write_subject_workflow(
+            &root,
+            CLEAN_SUBJECT_WORKFLOW
+                .replace("on: push", "on: pull_request")
+                .replace("ubuntu-24.04", "self-hosted"),
+        )?;
+        config.check_lane_whitelist = false;
+        ensure!(
+            run_with_default_root(config, || bail!("default consulted")).is_err(),
+            "missing isolation registry cleared self-hosted PR job"
+        );
+        let evidence = subject_receipt(&receipt)?;
+        ensure!(
+            evidence["subject"]["scan_completed"] == true,
+            "absent isolation registry became an input error"
+        );
+        ensure!(
+            evidence["issues"].as_array().is_some_and(|issues| issues
+                .iter()
+                .any(|issue| issue["code"] == "SELF_HOSTED_ISOLATION_UNDECLARED")),
+            "missing isolation profile was not denied"
+        );
+        Ok(())
+    }
 
     fn fixture_path(name: &str) -> Result<PathBuf> {
         let root = project_root()?;
         Ok(root.join("xtask/tests/fixtures/workflow-policy").join(name))
+    }
+
+    fn wiring_issues(name: &str) -> Result<Vec<LintIssue>> {
+        let path = fixture_path(name)?;
+        let mut issues = Vec::new();
+        lint_workflow_file(&path, true, &mut issues)?;
+        Ok(issues.into_iter().filter(|issue| issue.code == "XTASK_CLI_WIRING_PATHS").collect())
+    }
+
+    #[test]
+    fn xtask_cli_paths_missing_wiring_is_reported() -> Result<()> {
+        let issues = wiring_issues("xtask_cli_paths_missing_wiring.yml")?;
+        assert_eq!(issues.len(), 1, "one finding for the one paths-filtered trigger: {issues:?}");
+        let message = &issues[0].message;
+        assert_eq!(issues[0].level, "error");
+        assert!(message.contains("pull_request"), "names the trigger: {message}");
+        assert!(message.contains("xtask/src/main.rs"), "names the missing file: {message}");
+        assert!(message.contains("xtask/src/tasks/mod.rs"), "names the missing file: {message}");
+        Ok(())
+    }
+
+    #[test]
+    fn xtask_cli_paths_complete_wiring_passes() -> Result<()> {
+        assert!(
+            wiring_issues("xtask_cli_paths_complete_wiring.yml")?.is_empty(),
+            "an enumerated filter is accepted, including the `cargo run -p xtask --` spelling"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn xtask_cli_partial_wiring_reports_only_the_missing_file() -> Result<()> {
+        let issues = wiring_issues("xtask_cli_paths_partial_wiring.yml")?;
+        assert_eq!(issues.len(), 1, "{issues:?}");
+        let message = &issues[0].message;
+        assert!(message.contains("xtask/src/tasks/mod.rs"), "names what is missing: {message}");
+        assert!(
+            !message.contains("xtask/src/main.rs"),
+            "does not name the file that is already listed: {message}"
+        );
+        Ok(())
+    }
+
+    /// `--bin` selects a standalone target. `mod tasks;` is declared in
+    /// `xtask/src/main.rs`, so neither wiring file is compiled into that
+    /// binary and requiring them would be a false positive.
+    #[test]
+    fn xtask_bin_invocation_is_not_a_cli_claim() -> Result<()> {
+        assert!(wiring_issues("xtask_bin_paths_missing_wiring.yml")?.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn xtask_test_invocation_is_not_a_cli_claim() -> Result<()> {
+        assert!(wiring_issues("xtask_test_paths_missing_wiring.yml")?.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn xtask_cli_without_paths_filter_is_not_reported() -> Result<()> {
+        assert!(
+            wiring_issues("xtask_cli_no_paths_filter.yml")?.is_empty(),
+            "an unfiltered trigger always runs; there is no filter to omit from"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn xtask_cli_wiring_obligation_is_per_trigger() -> Result<()> {
+        let issues = wiring_issues("xtask_cli_push_paths_missing_wiring.yml")?;
+        assert_eq!(issues.len(), 1, "only the incomplete trigger is reported: {issues:?}");
+        let message = &issues[0].message;
+        assert!(message.contains("push"), "names the incomplete trigger: {message}");
+        assert!(
+            !message.contains("pull_request"),
+            "does not report the complete trigger: {message}"
+        );
+        Ok(())
+    }
+
+    /// Spelling must not decide the verdict. A missed invocation leaves a gate
+    /// silently unenumerated, which is the failure this rule exists to prevent.
+    #[test]
+    fn xtask_cli_is_detected_through_tabs_and_bare_invocation() -> Result<()> {
+        let issues = wiring_issues("xtask_cli_paths_tab_and_bare.yml")?;
+        assert_eq!(issues.len(), 1, "one finding for the one paths-filtered trigger: {issues:?}");
+        Ok(())
+    }
+
+    #[test]
+    fn commented_out_invocation_is_not_a_cli_claim() -> Result<()> {
+        assert!(
+            wiring_issues("xtask_cli_commented_invocation.yml")?.is_empty(),
+            "a documented command in a comment is prose, not a dependency"
+        );
+        Ok(())
+    }
+
+    /// Assignments and wrapper options do not change what runs, so each of
+    /// these is still a CLI claim.
+    #[test]
+    fn wrapped_invocations_are_cli_claims() -> Result<()> {
+        let issues = wiring_issues("xtask_cli_wrapped_invocation.yml")?;
+        assert_eq!(issues.len(), 1, "one finding for the one paths-filtered trigger: {issues:?}");
+        Ok(())
+    }
+
+    /// The standing inventory of invocation spellings.
+    ///
+    /// Every defect found in this detector so far has been the same shape: a
+    /// spelling nobody enumerated. The shipped-tree ratchet cannot catch that,
+    /// because it asks the detector itself what counts as an invocation. This
+    /// table is the independent half — it fixes what each spelling *means*
+    /// against Cargo's documented behaviour, so extending the detector means
+    /// adding a row here rather than rediscovering the class.
+    ///
+    /// Each case is asserted on its own. A fixture with several jobs passes on
+    /// any one of them, which would hide a missed form.
+    #[test]
+    fn cli_invocation_spellings_are_classified_by_what_they_run() {
+        // Reaches `xtask/src/main.rs`, so the wiring files are a dependency.
+        let runs_the_cli = [
+            "cargo xtask example-contract check",
+            "cargo xtask",
+            "cargo xtask\texample-contract check",
+            "cargo run -p xtask --locked -- example-contract check",
+            "cargo run --package xtask --locked -- example-contract check",
+            "cargo run -p xtask --bin xtask -- example-contract check",
+            "cargo run --manifest-path xtask/Cargo.toml -- example-contract check",
+            "cargo +stable xtask example-contract check",
+            "cargo +nightly run -p xtask -- example-contract check",
+            "cargo --offline xtask example-contract check",
+            "cargo -q run -p xtask -- example-contract check",
+            "cargo --color always xtask example-contract check",
+            "cargo +stable --locked xtask example-contract check",
+            "RUST_LOG=debug cargo xtask example-contract check",
+            "env RUST_LOG=debug cargo xtask example-contract check",
+            "sudo -E cargo xtask example-contract check",
+            "nice -n 10 cargo xtask example-contract check",
+            "make build && cargo xtask example-contract check",
+        ];
+        // Reaches a different target, or is not a command at all.
+        let does_not_run_the_cli = [
+            "cargo run -p xtask --bin generated-status-contract -- --check",
+            "cargo run -p xtask --example public_beta_experience -- --check",
+            "cargo test -p xtask --locked --test example_contract",
+            "cargo build -p xtask",
+            "cargo +stable test -p xtask",
+            "cargo --offline test -p xtask",
+            "cargo -q build -p xtask",
+            "cargo --color always run -p xtask --bin other -- check",
+            "echo 'run cargo xtask example-contract check locally'",
+            "echo -n 10 cargo xtask example-contract check",
+            "# cargo xtask example-contract check",
+            "just ci-metrics-ratchet",
+        ];
+
+        for script in runs_the_cli {
+            assert!(command_invokes_xtask_cli(script), "should be a CLI claim: {script}");
+        }
+        for script in does_not_run_the_cli {
+            assert!(!command_invokes_xtask_cli(script), "should not be a CLI claim: {script}");
+        }
+    }
+
+    #[test]
+    fn echoed_invocation_is_not_a_cli_claim() -> Result<()> {
+        assert!(
+            wiring_issues("xtask_cli_echoed_invocation.yml")?.is_empty(),
+            "printing the command as advice is not running it"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn quoted_separators_do_not_invent_cli_invocations() -> Result<()> {
+        for separator in [";", "&&", "||", "|"] {
+            for quote in ['\'', '"'] {
+                let advice = format!(
+                    "echo {quote}Run local checks{separator} cargo xtask workflows check before pushing{quote}"
+                );
+                if command_invokes_xtask_cli(&advice) {
+                    bail!("quoted advice was classified as an invocation: {advice}");
+                }
+                let invocation =
+                    format!("echo {quote}ready{quote}{separator} cargo xtask workflows check");
+                if !command_invokes_xtask_cli(&invocation) {
+                    bail!("an unquoted separator hid the invocation: {invocation}");
+                }
+            }
+        }
+        for advice in [
+            r#"echo "Say \"ready; cargo xtask workflows check\" locally""#,
+            r"echo ready\; cargo xtask workflows check",
+        ] {
+            if command_invokes_xtask_cli(advice) {
+                bail!("escaped advice was classified as an invocation: {advice}");
+            }
+        }
+        Ok(())
+    }
+
+    /// `xtask/src/main.rs` is the `xtask` bin, `--package` is the long `-p`,
+    /// and a command may span backslash continuations. Each still reaches the
+    /// dispatch this rule guards.
+    #[test]
+    fn default_bin_long_package_and_continuations_are_cli_claims() -> Result<()> {
+        let issues = wiring_issues("xtask_cli_default_bin_and_long_package.yml")?;
+        assert_eq!(issues.len(), 1, "one finding for the one paths-filtered trigger: {issues:?}");
+        Ok(())
+    }
+
+    /// Kills the mutant that drops `require_literal_separator`: with it off,
+    /// `xtask/*` would wrongly appear to reach `xtask/src/main.rs`.
+    #[test]
+    fn single_star_does_not_cross_a_path_separator() -> Result<()> {
+        let issues = wiring_issues("xtask_cli_paths_single_star.yml")?;
+        assert_eq!(issues.len(), 1, "{issues:?}");
+        let message = &issues[0].message;
+        for wiring in ["xtask/src/main.rs", "xtask/src/tasks/mod.rs"] {
+            assert!(message.contains(wiring), "`xtask/*` reaches neither file: {message}");
+        }
+        Ok(())
+    }
+
+    /// GitHub's `?`/`+` are quantifiers on the preceding character; the glob
+    /// crate disagrees. An unevaluable pattern must not be read as coverage.
+    #[test]
+    fn github_specific_pattern_syntax_is_not_counted_as_coverage() -> Result<()> {
+        let issues = wiring_issues("xtask_cli_paths_github_syntax.yml")?;
+        assert_eq!(issues.len(), 1, "{issues:?}");
+        let message = &issues[0].message;
+        assert!(message.contains("xtask/src/main.rs"), "the unevaluable pattern: {message}");
+        assert!(
+            !message.contains("xtask/src/tasks/mod.rs"),
+            "the plain literal beside it still covers: {message}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn unsupported_exclusions_invalidate_coverage_in_order() -> Result<()> {
+        for target in XTASK_CLI_WIRING_FILES {
+            for exclusion in ["!xtask/**/[a-z]*.rs", "!xtask/**/m?*.rs", "!xtask/**/m+*.rs"] {
+                let mut paths = vec!["xtask/**".to_string(), exclusion.to_string()];
+                if paths_filter_covers(&paths, target) {
+                    bail!("unsupported exclusion {exclusion} retained coverage for {target}");
+                }
+                paths.push(target.to_string());
+                if !paths_filter_covers(&paths, target) {
+                    bail!("explicit later inclusion did not restore coverage for {target}");
+                }
+                paths.push(exclusion.to_string());
+                if paths_filter_covers(&paths, target) {
+                    bail!("repeated exclusion {exclusion} retained coverage for {target}");
+                }
+            }
+            let paths = vec![target.to_string(), "xtask/**/[a-z]*.rs".to_string()];
+            if !paths_filter_covers(&paths, target) {
+                bail!("unsupported positive erased proven coverage for {target}");
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn unsupported_exclusion_is_reported_by_workflow_lint() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("unsupported-exclusion.yml");
+        for restore_main in [false, true] {
+            let mut paths = vec![
+                "xtask/**".to_string(),
+                "!xtask/src/[a-z]*.rs".to_string(),
+                "xtask/src/tasks/mod.rs".to_string(),
+            ];
+            if restore_main {
+                paths.push("xtask/src/main.rs".to_string());
+            }
+            let workflow = serde_json::json!({
+                "name": "unsupported-exclusion",
+                "on": {"pull_request": {"paths": paths}},
+                "permissions": {"contents": "read"},
+                "jobs": {"contract": {
+                    "runs-on": "ubuntu-latest",
+                    "steps": [{"run": "cargo xtask example-contract check"}]
+                }}
+            });
+            fs::write(&path, serde_yaml_ng::to_string(&workflow)?)?;
+            let mut issues = Vec::new();
+            lint_workflow_file(&path, true, &mut issues)?;
+            let wiring: Vec<_> =
+                issues.iter().filter(|issue| issue.code == "XTASK_CLI_WIRING_PATHS").collect();
+            if restore_main {
+                if !wiring.is_empty() {
+                    bail!("explicit re-inclusion still reported missing wiring: {wiring:?}");
+                }
+            } else {
+                let finding = wiring.first().ok_or_else(|| {
+                    color_eyre::eyre::eyre!("unsupported exclusion produced no wiring finding")
+                })?;
+                if wiring.len() != 1
+                    || finding.level != "error"
+                    || !finding.message.contains("xtask/src/main.rs")
+                    || finding.message.contains("xtask/src/tasks/mod.rs")
+                {
+                    bail!("expected only the excluded main.rs wiring finding: {wiring:?}");
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn xtask_cli_wiring_may_be_covered_by_a_glob() -> Result<()> {
+        assert!(
+            wiring_issues("xtask_cli_paths_glob_wiring.yml")?.is_empty(),
+            "`xtask/**` already selects both wiring files"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn xtask_cli_wiring_glob_must_actually_reach_the_file() -> Result<()> {
+        let issues = wiring_issues("xtask_cli_paths_narrow_glob.yml")?;
+        assert_eq!(issues.len(), 1, "{issues:?}");
+        let message = &issues[0].message;
+        assert!(
+            message.contains("xtask/src/main.rs"),
+            "`xtask/src/tasks/**` does not reach main.rs: {message}"
+        );
+        assert!(
+            !message.contains("xtask/src/tasks/mod.rs"),
+            "but it does reach tasks/mod.rs: {message}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn xtask_cli_wiring_excluded_by_negation_is_reported() -> Result<()> {
+        let issues = wiring_issues("xtask_cli_paths_negated_wiring.yml")?;
+        assert_eq!(issues.len(), 1, "{issues:?}");
+        let message = &issues[0].message;
+        assert!(message.contains("xtask/src/main.rs"), "the excluded file: {message}");
+        assert!(!message.contains("xtask/src/tasks/mod.rs"), "still covered: {message}");
+        Ok(())
+    }
+
+    /// The claim #14293 actually makes, asserted against the shipped
+    /// workflows rather than fixtures: no paths-filtered gate that routes
+    /// through the xtask CLI may omit the wiring files it depends on.
+    #[test]
+    fn shipped_workflows_enumerate_xtask_cli_wiring() -> Result<()> {
+        let workflows_dir = project_root()?.join(".github").join("workflows");
+        let mut issues = Vec::new();
+        for entry in fs::read_dir(&workflows_dir)? {
+            let path = entry?.path();
+            let Some(ext) = path.extension().and_then(|value| value.to_str()) else {
+                continue;
+            };
+            if ext != "yml" && ext != "yaml" {
+                continue;
+            }
+            lint_workflow_file(&path, false, &mut issues)?;
+        }
+        let wiring: Vec<_> =
+            issues.iter().filter(|issue| issue.code == "XTASK_CLI_WIRING_PATHS").collect();
+        assert!(wiring.is_empty(), "workflows with an unenumerated CLI dependency: {wiring:#?}");
+        Ok(())
     }
 
     #[test]
@@ -3127,6 +4477,313 @@ review_after = "2099-01-01"
         let stale: Vec<_> =
             issues.iter().filter(|issue| issue.code == "SELF_HOSTED_ISOLATION_STALE").collect();
         assert!(stale.is_empty(), "shipped isolation profiles have lapsed: {stale:?}");
+        Ok(())
+    }
+
+    /// The minimal justfile shape the lint accepts: recipe headers at column
+    /// zero, indented bodies, `@` echo-suppression stripped, comments skipped,
+    /// settings (`name := value`) and `[private]` attributes ignored.
+    #[test]
+    fn parse_justfile_accepts_minimal_recipe_shape() {
+        let justfile = "\
+# Settings first; never treated as a recipe.
+cargo_safe := \"./scripts/cargo-safe\"
+
+[private]
+_check-tools:
+    @echo tools
+
+# A recipe that runs xtask through the lint's detection rule.
+ci-fast:
+    cargo run -p xtask -- ci-fast-check
+
+# A recipe that does not, and stays unclaimed.
+devplane-init:
+    ./scripts/devplane-init
+";
+        let recipes = parse_justfile(justfile);
+        assert_eq!(
+            recipes.get("ci-fast").map(Vec::as_slice),
+            Some(["cargo run -p xtask -- ci-fast-check".to_string()].as_slice()),
+            "recipe bodies must carry the post-strip shell line"
+        );
+        assert_eq!(
+            recipes.get("devplane-init").map(Vec::as_slice),
+            Some(["./scripts/devplane-init".to_string()].as_slice()),
+            "plain-shell recipes must round-trip"
+        );
+        assert!(
+            !recipes.contains_key("cargo_safe"),
+            "settings (`name := value`) must not register as a recipe"
+        );
+        // `[private]` attributes must not steal the recipe body of the line
+        // that follows them. `_check-tools` keeps its body.
+        assert!(
+            recipes.contains_key("_check-tools"),
+            "[private] attributes must not bind a recipe body to the [private] line"
+        );
+        assert_eq!(
+            recipes["_check-tools"],
+            vec!["echo tools".to_string()],
+            "@ echo-suppression prefix must be stripped from the body line"
+        );
+    }
+
+    /// Parameterized recipes (`name param:`) must resolve under their bare
+    /// name, and `:=` assignments must never register as recipes — the
+    /// repo's own justfile parameterizes heavily (`_timed name cmd:`).
+    #[test]
+    fn recipe_header_name_ignores_parameters_and_assignments() {
+        assert_eq!(recipe_header_name("ci-fast:"), Some("ci-fast"));
+        assert_eq!(recipe_header_name("pre-merge-check NUMBER:"), Some("pre-merge-check"));
+        assert_eq!(recipe_header_name("_timed name cmd:"), Some("_timed"));
+        assert_eq!(recipe_header_name("cargo_safe := \"./scripts/cargo-safe\""), None);
+        assert_eq!(recipe_header_name("[private]"), None);
+        assert_eq!(recipe_header_name("no colon here"), None);
+    }
+
+    /// `load_project_justfile` reads `justfile` first and falls back to
+    /// `Justfile` so a capital-J project does not silently resolve zero
+    /// recipes; absence of both still yields `None`.
+    #[test]
+    fn load_project_justfile_prefers_justfile_falls_back_to_justfile() -> Result<()> {
+        let temporary = tempfile::tempdir()?;
+        let root = temporary.path();
+
+        assert!(load_project_justfile(root)?.is_none(), "empty dir resolves no recipes");
+
+        fs::write(root.join("Justfile"), "caps-only:\n    echo caps\n")?;
+        let recipes = load_project_justfile(root)?
+            .ok_or_else(|| color_eyre::eyre::eyre!("capital-J Justfile must resolve recipes"))?;
+        assert!(recipes.contains_key("caps-only"), "Justfile recipes must load");
+
+        fs::write(root.join("justfile"), "lower-wins:\n    echo lower\n")?;
+        let recipes = load_project_justfile(root)?
+            .ok_or_else(|| color_eyre::eyre::eyre!("lowercase justfile must resolve recipes"))?;
+        assert!(recipes.contains_key("lower-wins"), "justfile takes precedence");
+        Ok(())
+    }
+
+    /// The acceptance ladder for #15509:
+    ///
+    /// 1. a `just <recipe>` whose body invokes the xtask CLI is a CLI claim;
+    /// 2. a recipe that runs `cargo test -p xtask` (a test target, not the
+    ///    dispatch) is not;
+    /// 3. a recipe that runs another binary through `--bin <other>` is not;
+    /// 4. a recipe name that does not exist in the justfile is a typed
+    ///    `MissingRecipe` finding rather than a false negative.
+    #[test]
+    fn just_recipe_invocation_classification_matches_acceptance_ladder() -> Result<()> {
+        let justfile = "\
+ci-fast:
+    cargo run -p xtask -- ci-fast-check
+
+# Compiles the test target, not the dispatch. The existing
+# `selects_another_target` rule already excludes this, so this is a regression
+# guard rather than a new exclusion.
+ci-test:
+    cargo test -p xtask --locked --test ci_test
+
+# Same exclusion path: a different `--bin` reaches a different binary.
+ci-other-bin:
+    cargo run -p xtask --bin other-bin -- check
+";
+        let recipes = parse_justfile(justfile);
+
+        // (1) positive — a recipe that reaches the CLI.
+        assert!(
+            command_invokes_xtask_cli_with_just("just ci-fast", &recipes)?,
+            "ci-fast reaches xtask/src/main.rs and must count as a CLI claim"
+        );
+
+        // (2) negative — test target, not dispatch.
+        assert!(
+            !command_invokes_xtask_cli_with_just("just ci-test", &recipes)?,
+            "ci-test compiles a test target and must not count as a CLI claim"
+        );
+
+        // (3) negative — another --bin target.
+        assert!(
+            !command_invokes_xtask_cli_with_just("just ci-other-bin", &recipes)?,
+            "ci-other-bin reaches a different --bin and must not count"
+        );
+
+        // (4) typed missing recipe.
+        let result = command_invokes_xtask_cli_with_just("just nonexistent-recipe", &recipes);
+        assert!(
+            matches!(result, Err(JustResolutionError::MissingRecipe(ref name)) if name == "nonexistent-recipe"),
+            "missing recipe must surface as typed MissingRecipe: {result:?}"
+        );
+
+        Ok(())
+    }
+
+    /// The depth bound holds. A two-recipe cycle (`a -> b -> a`) must surface
+    /// as a typed `RecursionDepthExceeded` finding rather than lock the lint
+    /// or silently miss the indirection.
+    #[test]
+    fn just_recipe_recursion_is_bounded_and_typed() {
+        let justfile = "\
+recipe-a:
+    just recipe-b
+
+recipe-b:
+    just recipe-a
+";
+        let recipes = parse_justfile(justfile);
+        let result = command_invokes_xtask_cli_with_just("just recipe-a", &recipes);
+        assert!(
+            matches!(result, Err(JustResolutionError::RecursionDepthExceeded { .. })),
+            "a cyclic recipe must surface as RecursionDepthExceeded, not silently pass: {result:?}"
+        );
+    }
+
+    /// `just` indirection survives the same wrapper-skip rules that already
+    /// apply to `cargo`. `env`, `RUST_LOG=`, and a leading wrapper option
+    /// must not make `just ci-fast` lose its xtask claim.
+    #[test]
+    fn just_invocation_survives_assignment_and_wrapper_skip() -> Result<()> {
+        let recipes = parse_justfile("ci-fast:\n    cargo run -p xtask -- ci-fast-check\n");
+        for invocation in [
+            "just ci-fast",
+            "RUST_LOG=debug just ci-fast",
+            "env RUST_LOG=debug just ci-fast",
+            "sudo -E just ci-fast",
+        ] {
+            assert!(
+                command_invokes_xtask_cli_with_just(invocation, &recipes)?,
+                "wrapping must not change the verdict: {invocation}"
+            );
+        }
+        Ok(())
+    }
+
+    /// End-to-end: a workflow whose `run:` invokes `just <recipe>`, plus a
+    /// parsed justfile, surfaces the same `XTASK_CLI_WIRING_PATHS` finding the
+    /// detector would produce for a direct `cargo xtask …` line. Without the
+    /// justfile, the same workflow would pass silently — which is exactly
+    /// the #15509 false-negative.
+    #[test]
+    fn workflow_just_invocation_is_a_cli_claim_when_justfile_resolves_it() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let workflow_path = directory.path().join("ci-fast.yml");
+        let workflow_yaml = "\
+name: just-fixture
+on:
+  pull_request:
+    paths:
+      - 'xtask/src/tasks/example_contract.rs'
+permissions:
+  contents: read
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - run: just ci-fast
+";
+        fs::write(&workflow_path, workflow_yaml)?;
+        let justfile = parse_justfile("ci-fast:\n    cargo run -p xtask -- ci-fast-check\n");
+
+        let mut issues = Vec::new();
+        lint_workflow_file_with_just(&workflow_path, true, &mut issues, &justfile)?;
+        let wiring: Vec<_> =
+            issues.iter().filter(|issue| issue.code == "XTASK_CLI_WIRING_PATHS").collect();
+        assert_eq!(
+            wiring.len(),
+            1,
+            "a just-routed CLI claim must fire the wiring finding; got: {issues:?}"
+        );
+
+        // Same workflow, but the justfile does not resolve `ci-fast`. The
+        // wiring finding must be absent — same residual the gate had before
+        // #15509 — and no typed `JUST_RECIPE_UNRESOLVED` either, because the
+        // expanded verdict was simply "no xtask here".
+        let mut issues = Vec::new();
+        lint_workflow_file_with_just(&workflow_path, true, &mut issues, &NoJustRecipes)?;
+        let wiring: Vec<_> =
+            issues.iter().filter(|issue| issue.code == "XTASK_CLI_WIRING_PATHS").collect();
+        assert!(
+            wiring.is_empty(),
+            "without a recipe resolution, the old residual behavior holds: {issues:?}"
+        );
+        Ok(())
+    }
+
+    /// A `run: just <recipe>` invocation that does not appear in the justfile
+    /// surfaces as `JUST_RECIPE_UNRESOLVED` rather than silently passing. This
+    /// is the AC-3 typed-unresolved-state requirement.
+    #[test]
+    fn workflow_with_undefined_just_recipe_reports_typed_finding() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let workflow_path = directory.path().join("orphan.yml");
+        let workflow_yaml = "\
+name: just-orphan
+on:
+  pull_request:
+    paths:
+      - 'xtask/src/tasks/example_contract.rs'
+permissions:
+  contents: read
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - run: just recipe-renamed-without-replacement
+";
+        fs::write(&workflow_path, workflow_yaml)?;
+        let justfile = parse_justfile("ci-fast:\n    cargo run -p xtask -- ci-fast-check\n");
+
+        let mut issues = Vec::new();
+        lint_workflow_file_with_just(&workflow_path, true, &mut issues, &justfile)?;
+        let unresolved: Vec<_> =
+            issues.iter().filter(|issue| issue.code == "JUST_RECIPE_UNRESOLVED").collect();
+        assert_eq!(
+            unresolved.len(),
+            1,
+            "undefined recipe must surface as JUST_RECIPE_UNRESOLVED; got: {issues:?}"
+        );
+        Ok(())
+    }
+
+    /// A cyclic just recipe (`a -> b -> a`) surfaces as `JUST_RECIPE_CYCLIC`
+    /// with a depth-bounded expansion. The lint does not lock.
+    #[test]
+    fn workflow_with_cyclic_just_recipe_reports_typed_finding() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let workflow_path = directory.path().join("cyclic.yml");
+        let workflow_yaml = "\
+name: just-cyclic
+on:
+  pull_request:
+    paths:
+      - 'xtask/src/tasks/example_contract.rs'
+permissions:
+  contents: read
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - run: just recipe-a
+";
+        fs::write(&workflow_path, workflow_yaml)?;
+        let justfile =
+            parse_justfile("recipe-a:\n    just recipe-b\n\nrecipe-b:\n    just recipe-a\n");
+
+        let mut issues = Vec::new();
+        lint_workflow_file_with_just(&workflow_path, true, &mut issues, &justfile)?;
+        let cyclic: Vec<_> =
+            issues.iter().filter(|issue| issue.code == "JUST_RECIPE_CYCLIC").collect();
+        assert_eq!(
+            cyclic.len(),
+            1,
+            "a cyclic recipe must surface as JUST_RECIPE_CYCLIC; got: {issues:?}"
+        );
         Ok(())
     }
 }

@@ -44,8 +44,15 @@ fn diagnostic_code_registry_round_trips() -> Result<(), Box<dyn std::error::Erro
 
         assert_eq!(DiagnosticCode::parse_code(code_string), Some(*code));
         assert_eq!(code_string.parse::<DiagnosticCode>()?, *code);
-        assert_eq!(code_string.len(), 5);
         assert!(code_string.starts_with("PL"));
+        // Codes are opaque stable tokens, not a fixed-width field: the
+        // regex-analysis block (PL1000-PL1099) is the first six-character
+        // range, so only the PL-plus-digits shape is load-bearing here.
+        assert!(
+            !code_string[2..].is_empty()
+                && code_string[2..].bytes().all(|byte| byte.is_ascii_digit()),
+            "{code_string} must be `PL` followed by ASCII digits"
+        );
 
         let meta = diagnostic_meta(*code);
         assert_eq!(meta.code, serde_json::json!(code_string));
@@ -96,7 +103,9 @@ fn diagnostic_tags_are_lsp_safe_and_deterministic() -> Result<(), Box<dyn std::e
 #[test]
 fn unknown_formatted_code_strings_do_not_parse() -> Result<(), Box<dyn std::error::Error>> {
     for prefix in ["PL", "PC", "PX"] {
-        for number in 0_u16..1000 {
+        // Upper bound covers the four-digit regex-analysis block so its
+        // unregistered neighbors are probed too.
+        for number in 0_u16..1100 {
             let code_string = format!("{prefix}{number:03}");
 
             if known_code_string(&code_string) {
