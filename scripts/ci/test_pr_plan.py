@@ -112,11 +112,13 @@ class PrPlanTests(unittest.TestCase):
             policy_root = Path(__file__).resolve().parents[2] / "policy"
 
             old_argv = sys.argv
-            old_changed_files = pr_plan.changed_files
+            old_discover = pr_plan.discover_changed_files
             try:
-                pr_plan.changed_files = lambda _base, _head: [
-                    "crates/perl-parser/src/parser.rs"
-                ]
+                pr_plan.discover_changed_files = lambda _base, _head: {
+                    "status": "known",
+                    "files": ["crates/perl-parser/src/parser.rs"],
+                    "digest": "test-digest-nonempty",
+                }
                 sys.argv = [
                     "pr_plan.py",
                     "--base",
@@ -143,7 +145,7 @@ class PrPlanTests(unittest.TestCase):
                     status = pr_plan.main()
             finally:
                 sys.argv = old_argv
-                pr_plan.changed_files = old_changed_files
+                pr_plan.discover_changed_files = old_discover
 
             plan = json.loads(output.read_text(encoding="utf-8"))
 
@@ -258,9 +260,13 @@ required_checks = ["docs"]
             summary = root / "summary.md"
 
             old_argv = sys.argv
-            old_changed_files = pr_plan.changed_files
+            old_discover = pr_plan.discover_changed_files
             try:
-                pr_plan.changed_files = lambda _base, _head: ["scripts/ci/pr_plan.py"]
+                pr_plan.discover_changed_files = lambda _base, _head: {
+                    "status": "known",
+                    "files": ["scripts/ci/pr_plan.py"],
+                    "digest": "test-digest-pr-plan-helper",
+                }
                 sys.argv = [
                     "pr_plan.py",
                     "--base",
@@ -287,7 +293,7 @@ required_checks = ["docs"]
                     status = pr_plan.main()
             finally:
                 sys.argv = old_argv
-                pr_plan.changed_files = old_changed_files
+                pr_plan.discover_changed_files = old_discover
 
             plan = json.loads(output.read_text(encoding="utf-8"))
             printed = json.loads(stdout.getvalue())
@@ -302,6 +308,237 @@ required_checks = ["docs"]
         self.assertIn("## Trust lane (advisory)", summary_text)
         self.assertIn("`docs_status_only`", summary_text)
         self.assertIn("`ripr_advisory` | paths-filter-no-match", summary_text)
+
+    def test_discover_changed_files_keeps_failure_and_empty_opposite(self) -> None:
+        """A failed diff and a genuine empty diff are opposite facts (#15347)."""
+
+        class Failure:
+            returncode = 128
+            stdout = ""
+            stderr = "fatal: bad revision 'origin/main...HEAD'"
+
+        class OkFiles:
+            returncode = 0
+            stdout = "b.rs\na.rs\n"
+            stderr = ""
+
+        class OkEmpty:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        commands: list[list[str]] = []
+        outcomes = iter([Failure(), OkFiles(), OkEmpty()])
+
+        def fake_run(command, **_kwargs):
+            commands.append(command)
+            return next(outcomes)
+
+        old_run = pr_plan.subprocess.run
+        try:
+            pr_plan.subprocess.run = fake_run
+            failed = pr_plan.discover_changed_files("origin/main", "HEAD")
+            known = pr_plan.discover_changed_files("origin/main", "HEAD")
+            empty = pr_plan.discover_changed_files("origin/main", "HEAD")
+        finally:
+            pr_plan.subprocess.run = old_run
+
+        self.assertEqual("unavailable", failed["status"])
+        self.assertEqual("git-diff-exit-128", failed["code"])
+        self.assertIn("bad revision", failed["detail"])
+        self.assertEqual(
+            ["git", "diff", "--name-only", "origin/main...HEAD"], failed["command"]
+        )
+        self.assertNotIn("files", failed)
+
+        self.assertEqual("known", known["status"])
+        self.assertEqual(["b.rs", "a.rs"], known["files"])
+        self.assertEqual(64, len(known["digest"]))
+
+        self.assertEqual("known_empty", empty["status"])
+        self.assertEqual([], empty["files"])
+        self.assertEqual(64, len(empty["digest"]))
+        self.assertEqual(3, len(commands))
+        reproduce = ["git", "diff", "--name-only", "origin/main...HEAD"]
+        self.assertTrue(all(command == reproduce for command in commands))
+
+    def test_discover_changed_files_reports_unspawnable_git_as_unavailable(self) -> None:
+        def raising_run(_command, **_kwargs):
+            raise OSError("git: executable not found")
+
+        old_run = pr_plan.subprocess.run
+        try:
+            pr_plan.subprocess.run = raising_run
+            changeset = pr_plan.discover_changed_files("origin/main", "HEAD")
+        finally:
+            pr_plan.subprocess.run = old_run
+
+        self.assertEqual("unavailable", changeset["status"])
+        self.assertEqual("git-unspawnable", changeset["code"])
+        self.assertIn("not found", changeset["detail"])
+        self.assertEqual(["git", "diff", "--name-only", "origin/main...HEAD"], changeset["command"])
+
+    def test_main_writes_not_proven_receipt_and_fails_when_discovery_fails(self) -> None:
+        """Negative control: a Rust change behind a failed diff cannot route
+        as a zero-impact plan; the receipt must be refuseable without prose."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            output = root / "ci-plan.json"
+            summary = root / "summary.md"
+            policy_root = Path(__file__).resolve().parents[2] / "policy"
+
+            old_argv = sys.argv
+            old_discover = pr_plan.discover_changed_files
+            try:
+                pr_plan.discover_changed_files = lambda _base, _head: {
+                    "status": "unavailable",
+                    "code": "git-diff-exit-128",
+                    "detail": "fatal: bad revision 'origin/main...HEAD'",
+                    "command": [
+                        "git",
+                        "diff",
+                        "--name-only",
+                        "origin/main...HEAD",
+                    ],
+                }
+                sys.argv = [
+                    "pr_plan.py",
+                    "--base",
+                    "origin/main",
+                    "--head",
+                    "HEAD",
+                    "--labels-json",
+                    "[]",
+                    "--budget",
+                    str(policy_root / "ci-budget.toml"),
+                    "--lanes",
+                    str(policy_root / "ci-lanes.toml"),
+                    "--risk-packs",
+                    str(policy_root / "ci-risk-packs.toml"),
+                    "--trust-lanes",
+                    str(policy_root / "trust-lanes.toml"),
+                    "--history",
+                    str(root / "missing-history.json"),
+                    "--json-out",
+                    str(output),
+                    "--summary",
+                    str(summary),
+                ]
+                stdout = io.StringIO()
+                with redirect_stdout(stdout):
+                    status = pr_plan.main()
+            finally:
+                sys.argv = old_argv
+                pr_plan.discover_changed_files = old_discover
+
+            plan = json.loads(output.read_text(encoding="utf-8"))
+            summary_text = summary.read_text(encoding="utf-8")
+
+        self.assertEqual(3, status)
+        self.assertEqual("NOT_PROVEN", plan["posture"])
+        self.assertNotIn("changed", plan)
+        self.assertEqual("unavailable", plan["changed_set"]["status"])
+        self.assertEqual(
+            "changed_file_discovery_unavailable", plan["refusal"]["reason"]
+        )
+        self.assertEqual("git-diff-exit-128", plan["refusal"]["code"])
+        self.assertIn("bad revision", plan["refusal"]["detail"])
+        self.assertEqual(
+            "git diff --name-only origin/main...HEAD", plan["refusal"]["reproduce"]
+        )
+        self.assertTrue(plan["selection"]["refused"])
+        self.assertEqual([], plan["selection"]["lanes"])
+        self.assertEqual([], plan["selection"]["risk_packs"])
+        self.assertEqual([], plan["selection"]["skipped_lanes"])
+        self.assertTrue(plan["guard"]["failed"])
+        self.assertIn("NOT_PROVEN", stdout.getvalue())
+        self.assertIn("git-diff-exit-128", summary_text)
+        self.assertIn("NOT_PROVEN", summary_text)
+
+    def test_main_keeps_genuinely_empty_diff_a_valid_plan(self) -> None:
+        """An exit-0 empty diff is a valid zero-change plan, not a failure."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            budget = root / "ci-budget.toml"
+            budget.write_text(
+                """
+[budget]
+default_limit_lem = 35
+elevated_limit_lem = 75
+hard_limit_lem = 125
+linux_minute_rate_usd = 0.008
+""",
+                encoding="utf-8",
+            )
+            lanes = root / "ci-lanes.toml"
+            lanes.write_text(
+                """
+[lane.rust_small]
+default_pr = true
+base_lem = 10
+blocking = true
+""",
+                encoding="utf-8",
+            )
+            risk_packs = root / "ci-risk-packs.toml"
+            risk_packs.write_text("", encoding="utf-8")
+            trust_lanes = root / "trust-lanes.toml"
+            trust_lanes.write_text(
+                """
+schema_version = 1
+policy = "trust-lanes"
+status = "advisory"
+""",
+                encoding="utf-8",
+            )
+            output = root / "ci-plan.json"
+
+            old_argv = sys.argv
+            old_discover = pr_plan.discover_changed_files
+            try:
+                pr_plan.discover_changed_files = lambda _base, _head: {
+                    "status": "known_empty",
+                    "files": [],
+                    "digest": "0" * 64,
+                }
+                sys.argv = [
+                    "pr_plan.py",
+                    "--base",
+                    "origin/main",
+                    "--head",
+                    "HEAD",
+                    "--labels-json",
+                    "[]",
+                    "--budget",
+                    str(budget),
+                    "--lanes",
+                    str(lanes),
+                    "--risk-packs",
+                    str(risk_packs),
+                    "--trust-lanes",
+                    str(trust_lanes),
+                    "--json-out",
+                    str(output),
+                ]
+                stdout = io.StringIO()
+                with redirect_stdout(stdout):
+                    status = pr_plan.main()
+            finally:
+                sys.argv = old_argv
+                pr_plan.discover_changed_files = old_discover
+
+            plan = json.loads(output.read_text(encoding="utf-8"))
+            printed = json.loads(stdout.getvalue())
+
+        self.assertEqual(0, status)
+        self.assertEqual("rust", plan["posture"])
+        self.assertEqual("known_empty", plan["changed_set"]["status"])
+        self.assertEqual([], plan["changed"]["files"])
+        self.assertEqual([], plan["selection"]["risk_packs"])
+        self.assertFalse(plan["guard"]["failed"])
+        self.assertEqual(
+            {"estimated_lem": 10.0, "band": "default", "lanes": 1}, printed
+        )
 
 
 if __name__ == "__main__":
