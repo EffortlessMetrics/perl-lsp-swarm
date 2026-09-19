@@ -867,7 +867,7 @@ fn scan_trusted_workflow_shape(text: &str) -> Result<()> {
 /// one above the trusted workflow on `main`, or the reviewed upgrade path is
 /// unreachable; `preapproved_contract_version_is_the_next_increment` fails
 /// closed when `main` moves without retargeting this constant.
-pub(crate) const PREAPPROVED_SUBJECT_CONTRACT_VERSION: u64 = 7;
+pub(crate) const PREAPPROVED_SUBJECT_CONTRACT_VERSION: u64 = 10;
 
 /// Canonical `with:` mapping of the preapproved checkout step.
 const PREAPPROVED_CHECKOUT_WITH: &str =
@@ -1088,6 +1088,10 @@ fn validate_preapproved_subject_workflow(text: &str) -> Result<()> {
             .and_then(|map| map.get(key("if")))
             .and_then(serde_yaml_ng::Value::as_str)
             .is_none_or(|condition| condition.trim() != "always()")
+        || upload
+            .as_mapping()
+            .and_then(|map| map.get(key("continue-on-error")))
+            .is_some_and(|value| value != &serde_yaml_ng::Value::Bool(false))
     {
         bail!("v4 must always upload receipts");
     }
@@ -6034,7 +6038,7 @@ review_after = "2026-06-01"
         Ok((temp, base))
     }
 
-    const PREAPPROVED_FIXTURE: &str = r#"# contract-version: 7
+    const PREAPPROVED_FIXTURE: &str = r#"# contract-version: 10
 name: Non-Rust policy
 on:
   pull_request_target:
@@ -6152,6 +6156,13 @@ jobs:
                     "        continue-on-error: true\n        run: 'cargo run --locked -p xtask -- non-rust exact-tree",
                     "        continue-on-error: false\n        run: 'cargo run --locked -p xtask -- non-rust exact-tree",
                     1,
+                ),
+            ),
+            (
+                "upload continue-on-error suppresses receipt failure",
+                workflow.replace(
+                    "      - name: Upload exact-tree receipt\n        if: always()\n",
+                    "      - name: Upload exact-tree receipt\n        if: always()\n        continue-on-error: true\n",
                 ),
             ),
             (

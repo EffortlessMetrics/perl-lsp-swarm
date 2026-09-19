@@ -243,11 +243,11 @@ fn deterministic_git_command(root: &Path) -> Command {
 }
 
 fn synthetic_commit(root: &Path, input: &SubjectInput, tree: &str) -> Result<String> {
-    let mut command = Command::new("git");
+    let mut command = deterministic_git_command(root);
     let output = run_git_bounded(
         command
+            .args(["-c", "i18n.commitEncoding=UTF-8"])
             .args(["commit-tree", tree, "-p", &input.base_sha, "-p", &input.head_sha, "-F", "-"])
-            .current_dir(root)
             .env("GIT_AUTHOR_NAME", "perl-lsp trusted subject")
             .env("GIT_AUTHOR_EMAIL", "ci-subject@invalid")
             .env("GIT_COMMITTER_NAME", "perl-lsp trusted subject")
@@ -512,6 +512,36 @@ mod tests {
         git(temp.path(), &["config", "merge.renormalize", "false"])?;
         let second = merge_tree(temp.path(), &input)?;
         ensure!(first == second, "merge tree changed with repository configuration");
+        Ok(())
+    }
+
+    #[test]
+    fn synthetic_commit_is_stable_when_commit_encoding_configuration_changes() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        git(temp.path(), &["init", "--quiet"])?;
+        git(temp.path(), &["config", "user.name", "test"])?;
+        git(temp.path(), &["config", "user.email", "test@example.invalid"])?;
+        fs::write(temp.path().join("tracked.txt"), "base\n")?;
+        git(temp.path(), &["add", "tracked.txt"])?;
+        git(temp.path(), &["commit", "--quiet", "-m", "base"])?;
+        let base = git(temp.path(), &["rev-parse", "HEAD"])?;
+        fs::write(temp.path().join("tracked.txt"), "head\n")?;
+        git(temp.path(), &["add", "tracked.txt"])?;
+        git(temp.path(), &["commit", "--quiet", "-m", "head"])?;
+        let head = git(temp.path(), &["rev-parse", "HEAD"])?;
+        let tree = git(temp.path(), &["rev-parse", "HEAD^{tree}"])?;
+        let input = SubjectInput {
+            repository: "owner/repo".to_string(),
+            event_kind: CiEventKind::Push,
+            resolution_source: SubjectResolutionSource::ExplicitInput,
+            diff_mode: SubjectDiffMode::Direct,
+            base_sha: base.clone(),
+            head_sha: head.clone(),
+        };
+        let first = synthetic_commit(temp.path(), &input, &tree)?;
+        git(temp.path(), &["config", "i18n.commitEncoding", "ISO-8859-1"])?;
+        let second = synthetic_commit(temp.path(), &input, &tree)?;
+        ensure!(first == second, "subject SHA changed with commit encoding configuration");
         Ok(())
     }
 
