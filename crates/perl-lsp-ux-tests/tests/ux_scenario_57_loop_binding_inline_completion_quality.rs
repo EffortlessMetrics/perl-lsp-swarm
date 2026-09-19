@@ -156,10 +156,34 @@ fn scenario_57_loop_binding_inline_completion_quality_stdio() -> Result<()> {
     harness.open_file(STATUS_LOOP_PATH, STATUS_LOOP_SOURCE)?;
     // Same readiness race as #15870: synchronize on the server's own
     // analysis-readiness signal instead of a fixed sleep.
-    let _ = harness.wait_for_diagnostics(ARRAY_LOOP_PATH, Duration::from_secs(30));
-    let _ = harness.wait_for_diagnostics(HASH_LOOP_PATH, Duration::from_secs(30));
-    let _ = harness.wait_for_diagnostics(ARRAY_PREFERENCE_PATH, Duration::from_secs(30));
-    let _ = harness.wait_for_diagnostics(STATUS_LOOP_PATH, Duration::from_secs(30));
+    let readiness = harness.wait_for_diagnostics(ARRAY_LOOP_PATH, Duration::from_secs(30));
+    if readiness.is_empty() {
+        return Err(anyhow::anyhow!(
+            "analysis readiness: no publishDiagnostics; completion probes would poll blind (#15899)"
+        )
+        .into());
+    }
+    let readiness = harness.wait_for_diagnostics(HASH_LOOP_PATH, Duration::from_secs(30));
+    if readiness.is_empty() {
+        return Err(anyhow::anyhow!(
+            "analysis readiness: no publishDiagnostics; completion probes would poll blind (#15899)"
+        )
+        .into());
+    }
+    let readiness = harness.wait_for_diagnostics(ARRAY_PREFERENCE_PATH, Duration::from_secs(30));
+    if readiness.is_empty() {
+        return Err(anyhow::anyhow!(
+            "analysis readiness: no publishDiagnostics; completion probes would poll blind (#15899)"
+        )
+        .into());
+    }
+    let readiness = harness.wait_for_diagnostics(STATUS_LOOP_PATH, Duration::from_secs(30));
+    if readiness.is_empty() {
+        return Err(anyhow::anyhow!(
+            "analysis readiness: no publishDiagnostics; completion probes would poll blind (#15899)"
+        )
+        .into());
+    }
 
     assert!(
         wait_for_inline_registration(&harness),

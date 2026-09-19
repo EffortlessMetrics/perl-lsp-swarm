@@ -317,7 +317,9 @@ pub struct LaunchRequestArguments {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AttachRequestArguments {
-    /// Process ID to attach to
+    /// Legacy process ID input retained for serialized configuration
+    /// compatibility. The runtime preserves this field for deterministic
+    /// #8109 refusal; TCP host/port attachment is the only supported mode.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub process_id: Option<u32>,
     /// Host to connect to (for TCP attachment)

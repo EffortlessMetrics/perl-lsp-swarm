@@ -99,6 +99,8 @@ fn walk(node: &Node, out: &mut Vec<SymbolRef>) {
                 walk(target, out);
             }
         }
+        // Honest targetless goto has no coderef or label to surface.
+        NodeKind::TargetlessGoto { .. } => {}
 
         NodeKind::Unary { op, operand } if op == "\\" => {
             if !push_coderef_target(operand, (node.location.start, node.location.end), out) {

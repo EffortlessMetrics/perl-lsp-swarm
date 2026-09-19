@@ -1,0 +1,41 @@
+{
+  "schema": "lsp-client-execution-receipt.v1",
+  "client_id": "vim",
+  "evidence_kind": "actual_client",
+  "recorded_at_utc": "2026-08-29T09:16:09Z",
+  "source_revision": "5410b54d43148f2920e873830ff34c172e8a662c",
+  "client_executable": "C:/Program Files/Git/usr/bin/vim.exe",
+  "client_version": "Vim 9.2 patches 1-357 with pinned vim-lsp e10d186452743beb7b43d2b3427020832f930c2b (tree dd24cb8e10096c82766143c9fd058105637d72dc)",
+  "server_command": [
+    "perllsp",
+    "--stdio"
+  ],
+  "transcript_path": "docs/receipts/lsp-clients/actual/vim-host-lifecycle-transcript.jsonl",
+  "transcript_sha256": "7242bc56b0de65bb1946171808280c32f773d4bb165c87b07421465b9e4523c7",
+  "transport": "stdio",
+  "exit_code": 0,
+  "stdout_sha256": "53189370073226473e8fbba1b9f9086b306b27c6357a206cbcdb813b794cfcd3",
+  "stderr_sha256": "21a9af270f5f034e1b8c84e9348e6acbb27d4aaff094a8248939bb197807150d",
+  "assertions": [
+    {
+      "name": "initialize",
+      "passed": true,
+      "evidence": "docs/receipts/lsp-clients/actual/vim-host-lifecycle-transcript.jsonl#initialize"
+    },
+    {
+      "name": "request_response",
+      "passed": true,
+      "evidence": "docs/receipts/lsp-clients/actual/vim-host-lifecycle-transcript.jsonl#request_response"
+    },
+    {
+      "name": "clean_shutdown",
+      "passed": true,
+      "evidence": "docs/receipts/lsp-clients/actual/vim-host-lifecycle-transcript.jsonl#clean_shutdown"
+    }
+  ],
+  "artifact": {
+    "path": "docs/receipts/lsp-clients/actual/vim-host-initialize-capability-snapshot.json",
+    "sha256": "8c2fd329ac5aaabe184abb457b15192df14cf45425a087cbe954e50eac150ab2",
+    "size_bytes": 2635
+  }
+}
