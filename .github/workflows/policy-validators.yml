@@ -283,6 +283,14 @@ jobs:
           python3 scripts/ci/test_validate_cargo_lock_conflict_policy.py
           python3 scripts/ci/validate_cargo_lock_conflict_policy.py --repo-root .
 
+      # #8409: every governed Cargo feature carries one classified role and its
+      # discovered consumer evidence. Adding a feature to any workspace manifest
+      # without classifying it fails here.
+      - name: Validate Cargo feature roles
+        run: |
+          python3 scripts/ci/test_validate_cargo_feature_roles.py
+          python3 scripts/ci/validate_cargo_feature_roles.py --repo-root .
+
       - name: Validate Dependabot source contract
         run: |
           python3 scripts/ci/test_validate_dependabot_contract.py
