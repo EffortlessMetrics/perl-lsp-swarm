@@ -176,6 +176,31 @@ fn test_regex_heredoc_pattern_static_matches_both_openers() {
 }
 
 #[test]
+fn test_detector_state_helpers_call_observation() {
+    // #14390 repair: the detector-state helpers `unavailable`, `limited`, and
+    // `required_state` are otherwise reached only transitively through detector
+    // dispatch, which static analysis cannot follow; observe each helper by direct
+    // call and pin its state mapping.
+    let unavailable = super::unavailable(&["regex_heredoc"]);
+    assert!(matches!(unavailable, DetectorState::Unavailable { .. }));
+
+    let limited = super::limited(&["regex_heredoc"]);
+    assert!(matches!(limited, DetectorState::Limited { .. }));
+
+    assert!(matches!(
+        super::required_state(&[("regex_heredoc", true)]),
+        DetectorState::Complete
+    ));
+
+    match super::required_state(&[("regex_heredoc", false)]) {
+        DetectorState::Unavailable {
+            reason: DetectorFailureReason::PatternUnavailable { pattern_ids },
+        } => assert_eq!(pattern_ids, vec!["regex_heredoc"]),
+        _ => panic!("required_state must report Unavailable for missing patterns"),
+    }
+}
+
+#[test]
 fn test_eval_heredoc_detection() {
     let detector = AntiPatternDetector::new();
     // Single-line case: eval and << on the same line — detected by the bounded pattern.
