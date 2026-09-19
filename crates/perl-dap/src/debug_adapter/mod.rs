@@ -13,6 +13,7 @@ mod operation_broker;
 mod output;
 mod patterns;
 mod process;
+mod reload_route;
 mod variables;
 
 #[cfg(test)]
@@ -42,11 +43,11 @@ use crate::feature_catalog::has_feature as catalog_has_feature;
 use crate::inline_values::{collect_inline_values_with_runtime, extract_variable_names};
 use crate::protocol::{
     BreakpointLocation, BreakpointLocationsArguments, BreakpointLocationsResponseBody,
-    CompletionItem, CompletionsArguments, CompletionsResponseBody, ContinueResponseBody,
-    DataBreakpointInfoArguments, DataBreakpointInfoResponseBody, DisconnectArguments,
-    EvaluateArguments, EvaluateResponseBody, ExceptionDetails, ExceptionInfoArguments,
-    ExceptionInfoResponseBody, GotoArguments, GotoTarget, GotoTargetsArguments,
-    GotoTargetsResponseBody, InlineValuesArguments, InlineValuesResponseBody,
+    CancelArguments, CompletionItem, CompletionsArguments, CompletionsResponseBody,
+    ContinueResponseBody, DataBreakpointInfoArguments, DataBreakpointInfoResponseBody,
+    DisconnectArguments, EvaluateArguments, EvaluateResponseBody, ExceptionDetails,
+    ExceptionInfoArguments, ExceptionInfoResponseBody, GotoArguments, GotoTarget,
+    GotoTargetsArguments, GotoTargetsResponseBody, InlineValuesArguments, InlineValuesResponseBody,
     LoadedSourcesResponseBody, Module, ModulesArguments, ModulesResponseBody, RestartArguments,
     Scope, ScopesArguments, ScopesResponseBody, SetDataBreakpointsArguments,
     SetDataBreakpointsResponseBody, SetExceptionBreakpointsArguments, SetExpressionArguments,
@@ -81,6 +82,8 @@ use crate::debug_adapter::variable_cache::CachedVariable;
 #[cfg(any(test, feature = "test-helpers"))]
 use crate::debug_adapter::variable_cache::VariableCache;
 use crate::debug_adapter::variable_cache::{VariableCacheKind, slice_variables};
+#[cfg(any(test, feature = "test-helpers"))]
+use crate::reload::RuntimeModuleGenerationClock;
 use crate::security;
 use patterns::{
     DEBUG_SESSION_TERMINATE_WAIT_MS, DEBUGGER_QUERY_WAIT_MS, EVENT_QUEUE_CAPACITY,
@@ -90,12 +93,14 @@ use patterns::{
     prompt_re, regex_mutation_re, stack_frame_re, warning_re,
 };
 use safe_eval::validate_safe_expression;
+pub use sync_utils::{DapMessageWithEpoch, DrainEpoch};
 use sync_utils::{EventSender, lock_or_recover};
 
 #[derive(Debug, Default)]
 struct TerminationState {
     generation: u64,
     emitted: bool,
+    terminal_committed: bool,
 }
 
 /// Check if the match is an escape sequence (preceded by backslash)
@@ -127,6 +132,9 @@ pub(super) fn parse_dap_arguments<T: serde::de::DeserializeOwned>(
 
 /// DAP server that handles debug sessions
 pub struct DebugAdapter {
+    /// Whether this adapter is serving the proven native stdio transport.
+    /// Direct/in-process and peer frontends remain fail-closed for cancellation.
+    native_stdio_transport: bool,
     /// Sequence number for messages
     seq: Arc<Mutex<i64>>,
     /// Active debug session (process-based)
@@ -165,8 +173,6 @@ pub struct DebugAdapter {
     debugger_output_marker: Arc<AtomicU64>,
     /// Test-observable count of framed debugger query writes.
     debugger_query_count: Arc<AtomicU64>,
-    /// Cancellation flag for in-progress requests.
-    cancel_requested: Arc<AtomicBool>,
     /// Data breakpoints (watchpoints) stored with REPLACE semantics
     /// Legacy retained slot: the #9091 fail-closed request path neither reads
     /// nor writes it; lifecycle cleanup retires it at its own boundary.
@@ -186,10 +192,22 @@ pub struct DebugAdapter {
     next_goto_target_id: Arc<Mutex<i64>>,
     /// Workspace root for path validation (set during launch)
     workspace_root: Arc<Mutex<Option<PathBuf>>>,
-    /// Transport broken flag: set by event handler on persistent write failure
+    /// Transport broken flag: set by the event handler on the first write or flush failure
     transport_broken: Arc<AtomicBool>,
+    /// Events enqueued but not yet written by the transport's event
+    /// consumer; the request loop waits on it (bounded) before each
+    /// response so handler-emitted events precede the response on the wire.
+    event_drain: sync_utils::EventDrainLatch,
+    /// Test-only fault injection for exercising retained cleanup ownership.
+    #[cfg(test)]
+    cleanup_failure_for_test: Arc<AtomicBool>,
     /// Tracks whether initialize request has been received (state machine validation)
     initialized: Arc<AtomicBool>,
+    /// Reload-family route state (R03, #10102): the exact preview/test
+    /// profile gate, session epoch, negotiated family wiring, and
+    /// subject bindings. Absent behavior (the default) leaves the family
+    /// request unavailable.
+    reload_route: Arc<Mutex<reload_route::ReloadRouteState>>,
     /// Typed, generation-aware broker for framed debugger operations (#8564).
     /// Wraps the begin/end-marker query primitive; direct writes elsewhere
     /// remain registered migration debt.
@@ -249,7 +267,6 @@ impl Default for DebugAdapter {
 
 impl Drop for DebugAdapter {
     fn drop(&mut self) {
-        self.cancel_requested.store(true, Ordering::Release);
         // Adapter drop settles every pending broker operation (#8564): the
         // correlation surface is going away with the adapter.
         self.operation_broker.settle_all("adapter_dropped");
@@ -261,6 +278,7 @@ impl DebugAdapter {
     /// Create a new debug adapter
     pub fn new() -> Self {
         Self {
+            native_stdio_transport: false,
             seq: Arc::new(Mutex::new(0)),
             session: Arc::new(Mutex::new(None)),
             rejected_child: Arc::new(Mutex::new(None)),
@@ -277,7 +295,6 @@ impl DebugAdapter {
             exception_break_on_warn: Arc::new(Mutex::new(false)),
             debugger_output_marker: Arc::new(AtomicU64::new(1)),
             debugger_query_count: Arc::new(AtomicU64::new(0)),
-            cancel_requested: Arc::new(AtomicBool::new(false)),
             data_breakpoints: Arc::new(Mutex::new(Vec::new())),
             last_exception_message: Arc::new(Mutex::new(None)),
             last_launch_args: Arc::new(Mutex::new(None)),
@@ -286,7 +303,11 @@ impl DebugAdapter {
             next_goto_target_id: Arc::new(Mutex::new(1)),
             workspace_root: Arc::new(Mutex::new(None)),
             transport_broken: Arc::new(AtomicBool::new(false)),
+            event_drain: sync_utils::EventDrainLatch::default(),
+            #[cfg(test)]
+            cleanup_failure_for_test: Arc::new(AtomicBool::new(false)),
             initialized: Arc::new(AtomicBool::new(false)),
+            reload_route: Arc::new(Mutex::new(reload_route::ReloadRouteState::default())),
             operation_broker: Arc::new(operation_broker::OperationBroker::new()),
         }
     }
@@ -297,7 +318,7 @@ impl DebugAdapter {
     /// sender will fail to compile since `SyncSender` and `Sender` are distinct
     /// types.  Use `sync_channel(EVENT_QUEUE_CAPACITY)` or any capacity large
     /// enough for the test's event volume.
-    pub fn set_event_sender(&mut self, sender: SyncSender<DapMessage>) {
+    pub fn set_event_sender(&mut self, sender: SyncSender<DapMessageWithEpoch>) {
         self.event_sender = Some(EventSender::new(sender));
     }
 
@@ -382,6 +403,21 @@ impl DebugAdapter {
     /// reset it (`clear_active_session_state` does not touch the gate).
     pub(super) fn close_terminal_session_generation(&self, reason: &'static str) {
         self.begin_session_generation_with_reason(reason);
+    }
+
+    pub(super) fn retire_pending_terminal_before_request(&self, command: &str) {
+        if !matches!(command, "disconnect" | "terminate") {
+            return;
+        }
+        let mut state = lock_or_recover(&self.termination_state, "terminal_request");
+        state.generation = state.generation.saturating_add(1);
+        if !state.terminal_committed {
+            state.emitted = false;
+        }
+    }
+
+    fn admit_terminal_lifecycle(&self) {
+        lock_or_recover(&self.termination_state, "terminal_lifecycle").terminal_committed = false;
     }
 
     /// Return the current session generation for event-handler threads.
@@ -653,14 +689,32 @@ impl DebugAdapter {
     /// when the queue is full); all other events apply backpressure.
     fn send_event(&self, event: &str, body: Option<Value>) {
         if let Some(ref sender) = self.event_sender {
-            let _ = sender.send_event(&self.seq, event, body);
+            // Reserve the latch count before publishing: the transport's request
+            // loop waits on this latch before writing a response so accepted
+            // events are observed first (bounded, fail-open on timeout).
+            // Reserving first closes the race where a fast consumer drains
+            // and completes before the increment lands, which left phantom
+            // residue that pushed every later response through the full
+            // timeout; a refused or dropped dispatch rolls its reservation
+            // back below.
+            //
+            // Reservation is per-epoch (#15725): when the calling thread is
+            // the worker thread inside a request handler invocation, the
+            // thread-local `DRAIN_EPOCH` is set and the reservation lands on
+            // the request-scoped latch. Outside that context — background
+            // readers, the forwarder, tests — the cell is unset and we fall
+            // back to `DrainEpoch::Global`, which is preserved for backward
+            // compatibility but not waited on by the per-request response
+            // barrier.
+            let drain_epoch = crate::debug_adapter::sync_utils::current_drain_epoch();
+            self.event_drain.enqueue_at(drain_epoch, 1);
+            if !matches!(
+                sender.send_event(&self.seq, event, body),
+                crate::debug_adapter::sync_utils::EventDispatchResult::Sent
+            ) {
+                self.event_drain.complete_at(drain_epoch, 1);
+            }
         }
-    }
-
-    /// Snapshot debugger output history for parsing without holding locks.
-    fn snapshot_recent_output_lines(&self) -> Vec<String> {
-        let output = lock_or_recover(&self.recent_output, "debug_adapter.recent_output");
-        output.lines.iter().map(|line| line.raw.clone()).collect()
     }
 
     fn append_recent_output_line_locked(output: &mut RecentOutputBuffer, line: &str) {
@@ -672,7 +726,6 @@ impl DebugAdapter {
         output.next_line_id = output.next_line_id.saturating_add(1);
         output.lines.push_back(RecentOutputLine {
             id,
-            raw: line.to_string(),
             normalized: Self::normalize_debugger_output_line(line),
         });
     }
@@ -717,23 +770,74 @@ impl DebugAdapter {
         suspension_generation: Option<u64>,
         expected_session_generation: Option<operation_broker::SessionGeneration>,
     ) -> Result<(operation_broker::BrokerOperation, String, String), String> {
+        self.send_framed_debugger_query_bound_with_token(
+            stdin,
+            commands,
+            timeout_ms,
+            suspension_generation,
+            expected_session_generation,
+            None,
+            None,
+        )
+    }
+
+    fn send_framed_debugger_query_bound_for_request(
+        &self,
+        stdin: &mut impl Write,
+        commands: &[String],
+        timeout_ms: u64,
+        suspension_generation: Option<u64>,
+        expected_session_generation: Option<operation_broker::SessionGeneration>,
+        request_seq: i64,
+    ) -> Result<(operation_broker::BrokerOperation, String, String), String> {
+        self.send_framed_debugger_query_bound_with_token(
+            stdin,
+            commands,
+            timeout_ms,
+            suspension_generation,
+            expected_session_generation,
+            Some(request_seq),
+            None,
+        )
+    }
+
+    fn send_framed_debugger_query_bound_with_token(
+        &self,
+        stdin: &mut impl Write,
+        commands: &[String],
+        timeout_ms: u64,
+        suspension_generation: Option<u64>,
+        expected_session_generation: Option<operation_broker::SessionGeneration>,
+        request_seq: Option<i64>,
+        cancellation: Option<operation_broker::CancellationToken>,
+    ) -> Result<(operation_broker::BrokerOperation, String, String), String> {
         self.debugger_query_count.fetch_add(1, Ordering::Relaxed);
+        let cancellation = cancellation
+            .or_else(|| request_seq.map(|_| operation_broker::CancellationToken::new()));
         let marker_id = self.next_debugger_marker_id();
         let begin_marker = format!("DAP_BEGIN_{marker_id}");
         let end_marker = format!("DAP_END_{marker_id}");
         let spec = operation_broker::BrokerOperationSpec {
+            request_seq,
             class: operation_broker::OperationClass::Query,
             session_generation: expected_session_generation
                 .unwrap_or_else(|| self.operation_broker.current_session_generation()),
             suspension_generation: suspension_generation
                 .map(operation_broker::SuspensionGeneration::from_u64),
             timeout: Duration::from_millis(Self::debugger_timeout_budget_ms(timeout_ms)),
-            cancellation: None,
+            cancellation,
         };
         let operation = self
             .operation_broker
             .submit(spec)
             .map_err(|terminal| format!("framed query not submitted: {}", terminal.as_str()))?;
+
+        if let Err(error) =
+            self.operation_broker.register_reader_frame(&operation, &begin_marker, &end_marker)
+        {
+            self.operation_broker.retire_after_write_failure(operation.id);
+            return Err(error);
+        }
 
         if let Err(error) =
             self.write_framed_debugger_commands(stdin, commands, &begin_marker, &end_marker)
@@ -782,6 +886,7 @@ impl DebugAdapter {
         timeout_ms: u64,
     ) -> Option<Vec<String>> {
         let spec = operation_broker::BrokerOperationSpec {
+            request_seq: None,
             class: operation_broker::OperationClass::Query,
             session_generation: self.operation_broker.current_session_generation(),
             suspension_generation: None,
@@ -817,7 +922,6 @@ impl DebugAdapter {
             begin_marker,
             end_marker,
             &self.recent_output,
-            &self.cancel_requested,
         );
         if matches!(terminal, operation_broker::BrokerTerminal::Completed(_))
             && (self.operation_broker.current_session_generation() != operation.session_generation
@@ -850,15 +954,6 @@ impl DebugAdapter {
                 None
             }
         }
-    }
-
-    /// Wait briefly for debugger command responses to arrive in the output buffer.
-    fn debugger_output_window_ms(timeout_ms: u32) -> u64 {
-        u64::from(timeout_ms).max(DEBUGGER_QUERY_WAIT_MS)
-    }
-
-    fn wait_for_debugger_output_window(timeout_ms: u32) {
-        thread::sleep(Duration::from_millis(Self::debugger_output_window_ms(timeout_ms)));
     }
 
     /// Expand debugger query budgets in heavily instrumented environments.
@@ -943,8 +1038,10 @@ impl DebugAdapter {
                 thread_id: 1,
                 debuggee_cwd: std::path::PathBuf::from("."),
                 last_resume_mode: ResumeMode::Continue,
+                entry_stop_pending: false,
                 initial_stop_pending: false,
                 stopped_generation: 0,
+                module_generation: RuntimeModuleGenerationClock::new(),
             });
         }
     }
@@ -977,8 +1074,10 @@ impl DebugAdapter {
             thread_id: 1,
             debuggee_cwd: std::path::PathBuf::from("."),
             last_resume_mode: ResumeMode::Unknown,
+            entry_stop_pending: false,
             initial_stop_pending: false,
             stopped_generation: 0,
+            module_generation: RuntimeModuleGenerationClock::new(),
         });
         Ok(())
     }
@@ -1084,8 +1183,10 @@ impl DebugAdapter {
             thread_id: 1,
             debuggee_cwd: std::path::PathBuf::from("."),
             last_resume_mode: ResumeMode::Unknown,
+            entry_stop_pending: false,
             initial_stop_pending: false,
             stopped_generation: 0,
+            module_generation: RuntimeModuleGenerationClock::new(),
         });
     }
 
@@ -1300,20 +1401,6 @@ print "result: $final\n";
     // `policy/ripr-suppressions.toml`).
 
     #[test]
-    fn test_drop_sets_cancel_requested_before_clearing_session_state() {
-        let adapter = DebugAdapter::new();
-        let cancel_flag = Arc::clone(&adapter.cancel_requested);
-        assert!(!cancel_flag.load(Ordering::Acquire), "cancel flag should start false");
-
-        drop(adapter);
-
-        assert!(
-            cancel_flag.load(Ordering::Acquire),
-            "Drop must set cancel_requested so any in-flight output-reader thread observes it"
-        );
-    }
-
-    #[test]
     fn test_drop_clears_attached_pid_session_state() {
         let adapter = DebugAdapter::new();
         let attached_pid = Arc::clone(&adapter.attached_pid);
@@ -1335,16 +1422,6 @@ print "result: $final\n";
         assert_eq!(adapter.next_seq(), 1);
         assert_eq!(adapter.next_seq(), 2);
         assert_eq!(adapter.next_seq(), 3);
-    }
-
-    #[test]
-    fn test_debugger_output_window_ms_enforces_minimum_budget() {
-        assert_eq!(DebugAdapter::debugger_output_window_ms(1), DEBUGGER_QUERY_WAIT_MS);
-    }
-
-    #[test]
-    fn test_debugger_output_window_ms_honors_extended_budget() {
-        assert_eq!(DebugAdapter::debugger_output_window_ms(600), 600);
     }
 
     #[test]
@@ -2880,6 +2957,16 @@ print "result: $final\n";
     }
 
     #[test]
+    fn test_context_re_windows_drive_path_with_spaces() -> Result<(), String> {
+        let result = apply_context_re(r"main::(C:\Program Files\Perl\file.pl:7):");
+        let expected = Some((r"C:\Program Files\Perl\file.pl".to_string(), "7".to_string()));
+        if result != expected {
+            return Err(format!("Windows spaced path parsed as {result:?}; expected {expected:?}"));
+        }
+        Ok(())
+    }
+
+    #[test]
     fn test_context_re_unc_path() {
         // UNC path (Windows network share).
         let result = apply_context_re(r"main::(\\server\share\file.pl:5):");
@@ -2913,10 +3000,94 @@ print "result: $final\n";
     }
 
     #[test]
-    fn test_context_re_no_match_path_with_spaces() {
-        // Paths with spaces do not match — the character class excludes \s.
+    fn test_context_re_path_with_spaces() -> Result<(), String> {
+        // Spaces are valid in Unix and Windows paths and must remain part of the
+        // source location rather than preventing the initial frame from forming.
         let result = apply_context_re("main::(/path with spaces/file.pl:5):");
-        assert!(result.is_none(), "paths with spaces should not match");
+        let expected = Some(("/path with spaces/file.pl".to_string(), "5".to_string()));
+        if result != expected {
+            return Err(format!("spaced path parsed as {result:?}; expected {expected:?}"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_context_re_path_with_spaces_and_parentheses() -> Result<(), String> {
+        let result = apply_context_re("main::(/path with spaces (ctx)/file (name).pl:5):");
+        let expected =
+            Some(("/path with spaces (ctx)/file (name).pl".to_string(), "5".to_string()));
+        if result != expected {
+            return Err(format!("parenthesized path parsed as {result:?}; expected {expected:?}"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_context_re_accepts_perl_source_statement_suffix() -> Result<(), String> {
+        let result = apply_context_re("main::(/tmp/script.pl:4):\tif ($x =~ /:99)/) {")
+            .ok_or("perl source statement suffix was not accepted")?;
+        let expected = ("/tmp/script.pl".to_string(), "4".to_string());
+        if result != expected {
+            return Err(format!("source suffix parsed as {result:?}; expected {expected:?}"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_context_re_path_with_earlier_digit_colon_parenthesis() -> Result<(), String> {
+        let result = apply_context_re("main::(/tmp/a:12)/file.pl:3):");
+        let expected = Some(("/tmp/a:12)/file.pl".to_string(), "3".to_string()));
+        if result != expected {
+            return Err(format!("digit-colon path parsed as {result:?}; expected {expected:?}"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_context_re_source_suffix_uses_last_delimiter() -> Result<(), String> {
+        let result = apply_context_re("main::(/tmp/a:12): b.pl:3):\tmy $entry = 1;")
+            .ok_or("context with source suffix did not match")?;
+        let expected = ("/tmp/a:12): b.pl".to_string(), "3".to_string());
+        if result != expected {
+            return Err(format!("source suffix parsed as {result:?}; expected {expected:?}"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_context_re_rejects_unmarked_prompt_text() -> Result<(), String> {
+        let result = apply_context_re("main::(/tmp/file.pl:3): text :99) text");
+        if result.is_some() {
+            return Err(format!("unmarked prompt text was accepted as {result:?}"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_context_re_preserves_legacy_main_fallback_shapes() -> Result<(), String> {
+        let cases = [
+            ("main::(/tmp/file.pl):3:", "/tmp/file.pl"),
+            ("main::/tmp/file.pl:3:", "/tmp/file.pl"),
+        ];
+        for (input, expected_file) in cases {
+            let result = apply_context_re(input);
+            let expected = Some((expected_file.to_string(), "3".to_string()));
+            if result != expected {
+                return Err(format!(
+                    "legacy context {input:?} parsed as {result:?}; expected {expected:?}"
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_context_re_rejects_malformed_line_delimiter() -> Result<(), String> {
+        let result = apply_context_re("main::(/tmp/file.pl:3x):");
+        if result.is_some() {
+            return Err(format!("malformed line delimiter was accepted as {result:?}"));
+        }
+        Ok(())
     }
 
     #[test]

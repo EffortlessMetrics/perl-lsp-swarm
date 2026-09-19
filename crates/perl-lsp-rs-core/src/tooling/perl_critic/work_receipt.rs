@@ -34,6 +34,14 @@ pub struct NativeCriticWorkReceipt {
     /// discriminator that evaluation reached the producer barrier. This is
     /// not a per-rule attempted/completed/skipped/reused count (#9082).
     pub producer_evaluation_entered: usize,
+    /// Raw native findings before normalization.
+    pub native_findings_collected: usize,
+    /// Declared overlap observations admitted as candidates.
+    pub observation_candidates_collected: usize,
+    /// Producer findings rejected for an undeclared emission identity.
+    pub unresolved_producer_identities: usize,
+    /// Logical findings retained after normalization and policy.
+    pub findings_after_policy: usize,
 }
 
 impl NativeCriticWorkReceipt {
@@ -43,7 +51,14 @@ impl NativeCriticWorkReceipt {
     /// they cannot report registered work.
     #[must_use]
     pub const fn skipped() -> Self {
-        Self { rules_registered: 0, producer_evaluation_entered: 0 }
+        Self {
+            rules_registered: 0,
+            producer_evaluation_entered: 0,
+            native_findings_collected: 0,
+            observation_candidates_collected: 0,
+            unresolved_producer_identities: 0,
+            findings_after_policy: 0,
+        }
     }
 
     /// Planned registration for an accepted enabled profile, before producer
@@ -53,10 +68,7 @@ impl NativeCriticWorkReceipt {
     /// [`NativeCriticRegistry::len`] and not a findings length.
     #[must_use]
     pub fn planned(registry: &NativeCriticRegistry, config: &CriticConfig) -> Self {
-        Self {
-            rules_registered: registry.enabled_rule_count(config),
-            producer_evaluation_entered: 0,
-        }
+        Self { rules_registered: registry.enabled_rule_count(config), ..Self::skipped() }
     }
 
     /// Record that producer evaluation was entered for this run.
