@@ -6,11 +6,11 @@
 //! gone. An unavailable or unparseable probe is `not_proven`, never `pass`.
 
 use super::{
-    DriverEvent, DriverEventKind, EmacsHostRunPlan, HermeticLayout, MAX_CAPTURE_BYTES,
     bytes_sha256, file_sha256, lifecycle_rank, parse_driver_event_prefix, parse_driver_events,
-    validate_safe_identity,
+    validate_safe_identity, DriverEvent, DriverEventKind, EmacsHostRunPlan, HermeticLayout,
+    MAX_CAPTURE_BYTES,
 };
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use regex::Regex;
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
@@ -143,7 +143,11 @@ fn candidate_needle(plan: &EmacsHostRunPlan) -> String {
 }
 
 fn parse_probe(text: &str) -> Result<Vec<ProcessProbeLine>> {
-    if cfg!(windows) { parse_windows_process_snapshot(text) } else { parse_process_snapshot(text) }
+    if cfg!(windows) {
+        parse_windows_process_snapshot(text)
+    } else {
+        parse_process_snapshot(text)
+    }
 }
 
 /// Execute one owned host process under a parent-owned deadline. Cleanup
@@ -251,30 +255,27 @@ pub fn run_owned_process(
                         // after-probe alone cannot observe the leak. The host-exit
                         // observation (`leaked_descendant_at_exit`) checked the fake
                         // host's ready-marker against the kernel while the descendant
-                        // could still be alive; promote that recorded PID so cleanup
-                        // fails and the ledger names the leak. The same per-PID
-                        // primitive backs `descendant_still_running`, so the
-                        // classification stays consistent with the test assertion.
-                        // A timed-out/force-killed host never promotes the marker
+                        // could still be alive; union that recorded PID into the
+                        // ledger on every pass — not only when the bulk set is empty —
+                        // so a bulk-visible sibling cannot keep the marked-but-missed
+                        // descendant out of remediation. The same per-PID primitive
+                        // backs `descendant_still_running`, so the classification
+                        // stays consistent with the test assertion. A
+                        // timed-out/force-killed host never promotes the marker
                         // descendant: it was already stopped at observation time,
                         // before the after-probe, so the post-reap ledger stays
                         // empty and the killed-host rule classifies the run.
-                        if survivors.is_empty()
-                            && !timed_out
-                            && !kill_requested
-                            && let Some(descendant_pid) = leaked_descendant_at_exit
-                        {
-                            survivors.push(ProcessProbeLine {
-                                pid: descendant_pid,
-                                args: plan
-                                    .paths
-                                    .candidate_executable
-                                    .file_name()
-                                    .and_then(OsStr::to_str)
-                                    .unwrap_or("perllsp")
-                                    .to_string(),
-                            });
-                        }
+                        union_leaked_descendant(
+                            &mut survivors,
+                            timed_out,
+                            kill_requested,
+                            leaked_descendant_at_exit,
+                            plan.paths
+                                .candidate_executable
+                                .file_name()
+                                .and_then(OsStr::to_str)
+                                .unwrap_or("perllsp"),
+                        );
                         if survivors.is_empty() {
                             (
                                 CleanupResult::Pass,
@@ -335,9 +336,11 @@ pub fn run_owned_process(
         // probe may briefly skip a process whose exec name now spans a
         // newline boundary, or the line may be reordered under load, leaving
         // a leak that the test then observes as still running. The recorded
-        // PID list is the source of truth. Do not flip `cleanup` to Pass on
-        // a clean re-probe: remediation is not Pass.
-        reap_recorded_survivors(&survivors);
+        // PID list is the source of truth for who is owed a kill; each entry
+        // still gets a same-process identity re-probe before the kill so a
+        // recycled PID cannot turn remediation into collateral. Do not flip
+        // `cleanup` to Pass on a clean re-probe: remediation is not Pass.
+        reap_recorded_survivors(&survivors, &needle);
     }
     if (timed_out || kill_requested || status.code() != Some(0)) && cleanup == CleanupResult::Pass {
         cleanup = CleanupResult::NotProven;
@@ -797,7 +800,11 @@ fn redact_resident_private_paths(text: &mut String) {
 }
 
 fn bound_capture(bytes: &[u8]) -> &[u8] {
-    if bytes.len() <= MAX_CAPTURE_BYTES { bytes } else { &bytes[..MAX_CAPTURE_BYTES] }
+    if bytes.len() <= MAX_CAPTURE_BYTES {
+        bytes
+    } else {
+        &bytes[..MAX_CAPTURE_BYTES]
+    }
 }
 
 pub fn parse_process_snapshot(text: &str) -> Result<Vec<ProcessProbeLine>> {
@@ -976,9 +983,86 @@ fn persist_text(path: &Path, text: &str) -> Result<()> {
 /// run's leak. Timeout/force callers use [`reap_this_run_survivors`]
 /// (probe-driven) instead, since no after-probe yet exists at that
 /// point.
-fn reap_recorded_survivors(survivors: &[ProcessProbeLine]) {
+fn reap_recorded_survivors(survivors: &[ProcessProbeLine], needle: &str) {
     for survivor in survivors {
-        stop_owned_pid(survivor.pid);
+        match probe_owned_pid_identity(survivor.pid) {
+            Some(identity) if matches_needle(&identity, needle) => stop_owned_pid(survivor.pid),
+            _ => {}
+        }
+    }
+}
+
+/// Union the marker-recorded leaked descendant into the observed survivors
+/// ledger (see `leaked_marker_descendant_alive`). The bulk `tasklist`
+/// snapshot can miss a detached candidate descendant, so a bulk-visible
+/// sibling must not keep the marked PID out of the ledger — union it on
+/// every pass, deduplicated by PID so a bulk-observed entry is not
+/// recorded twice. A timed-out or force-killed host never promotes the
+/// marker descendant: it was already stopped at observation time and the
+/// killed-host rule owns that classification.
+fn union_leaked_descendant(
+    survivors: &mut Vec<ProcessProbeLine>,
+    timed_out: bool,
+    kill_requested: bool,
+    leaked_descendant_at_exit: Option<u32>,
+    candidate_name: &str,
+) {
+    if timed_out || kill_requested {
+        return;
+    }
+    let Some(descendant_pid) = leaked_descendant_at_exit else {
+        return;
+    };
+    if survivors.iter().any(|line| line.pid == descendant_pid) {
+        return;
+    }
+    survivors.push(ProcessProbeLine { pid: descendant_pid, args: candidate_name.to_string() });
+}
+
+/// Per-PID identity probe for remediation-time verification. Windows
+/// returns the `tasklist` row's image name; Unix returns the live `ps`
+/// command line. `None` means the process is gone or the probe failed — in
+/// both cases the recorded PID must not be killed: a dead PID needs no
+/// reap, and an unverifiable one may have been recycled to an unrelated
+/// process.
+fn probe_owned_pid_identity(pid: u32) -> Option<String> {
+    if cfg!(windows) {
+        let output = Command::new("tasklist")
+            .args(["/FI", &format!("PID eq {pid}"), "/NH", "/FO", "CSV"])
+            .stdin(Stdio::null())
+            .stderr(Stdio::null())
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        if stdout.contains("No tasks are running") {
+            return None;
+        }
+        let line = stdout.lines().next()?;
+        let image = line.trim_start_matches('"').split('"').next()?;
+        if image.is_empty() {
+            None
+        } else {
+            Some(image.to_string())
+        }
+    } else {
+        let output = Command::new("ps")
+            .args(["-o", "args=", "-p", &pid.to_string()])
+            .stdin(Stdio::null())
+            .stderr(Stdio::null())
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        let args = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if args.is_empty() {
+            None
+        } else {
+            Some(args)
+        }
     }
 }
 
@@ -1360,5 +1444,72 @@ mod process_tests {
             "a malformed marker must not silently pass as a recorded descendant PID"
         );
         Ok(())
+    }
+
+    #[test]
+    fn leaked_descendant_unions_when_bulk_snapshot_missed_it() {
+        // The #15424 failure mode: the bulk snapshot missed the marked
+        // descendant during both observation and cleanup. The recorded PID
+        // must still enter the ledger so classification fails and
+        // remediation reaps exactly that PID.
+        let mut survivors = Vec::new();
+        union_leaked_descendant(&mut survivors, false, false, Some(98765), "perllsp");
+        assert_eq!(
+            survivors,
+            vec![ProcessProbeLine { pid: 98765, args: "perllsp".to_string() }],
+            "a bulk-missed marked descendant must be promoted into the survivors ledger"
+        );
+    }
+
+    #[test]
+    fn leaked_descendant_unions_alongside_a_bulk_visible_sibling() {
+        // A bulk-visible sibling must not keep the marked-but-missed
+        // descendant out of the ledger: gating promotion on
+        // `survivors.is_empty()` left that descendant alive and unrecorded.
+        let mut survivors =
+            vec![ProcessProbeLine { pid: 111, args: "perllsp --stdio".to_string() }];
+        union_leaked_descendant(&mut survivors, false, false, Some(222), "perllsp");
+        assert_eq!(
+            survivors.iter().map(|line| line.pid).collect::<Vec<_>>(),
+            vec![111, 222],
+            "the marked descendant must union into the ledger on every pass"
+        );
+    }
+
+    #[test]
+    fn leaked_descendant_union_deduplicates_a_bulk_recorded_pid() {
+        let mut survivors = vec![ProcessProbeLine { pid: 222, args: "perllsp.exe".to_string() }];
+        union_leaked_descendant(&mut survivors, false, false, Some(222), "perllsp.exe");
+        assert_eq!(survivors.len(), 1, "a bulk-recorded PID must not be recorded twice");
+    }
+
+    #[test]
+    fn leaked_descendant_is_never_promoted_after_timeout_or_force_kill() {
+        for (timed_out, kill_requested) in [(true, false), (false, true), (true, true)] {
+            let mut survivors = Vec::new();
+            union_leaked_descendant(
+                &mut survivors,
+                timed_out,
+                kill_requested,
+                Some(98765),
+                "perllsp",
+            );
+            assert!(
+                survivors.is_empty(),
+                "timed_out={timed_out} kill_requested={kill_requested}: the killed-host \
+                 rule owns the classification and the ledger must stay empty"
+            );
+        }
+    }
+
+    #[test]
+    fn owned_pid_identity_resolves_a_live_process_and_misses_a_dead_one() {
+        // The current test process is guaranteed live: the probe must
+        // return a non-empty identity on both platforms (tasklist image
+        // name on Windows, `ps` args on Unix).
+        let own = probe_owned_pid_identity(std::process::id());
+        assert!(own.as_deref().is_some_and(|identity| !identity.is_empty()));
+        // u32::MAX cannot be a live PID on either platform.
+        assert!(probe_owned_pid_identity(u32::MAX).is_none());
     }
 }
