@@ -1059,7 +1059,7 @@ jobs:
             # The cheapest control remains first for fast diagnosis, but the
             # shard runner now records every independent member before it
             # returns the aggregate failure verdict.
-            gates: docs_agents_contract_workflows msrv_authority_sync compiler_concept_ledger compiler_proof_policy compiler_concept_proof compiler_performance_receipt_contract kubernetes_dap_profiles postfix_capability_closure release_trust_invariants docs_build adr_link_check non_rust_inventory_check must_context_check lint_policy v2_bundle_sync nested_lock_check version_sync
+            gates: docs_agents_contract_workflows msrv_authority_sync compiler_concept_ledger compiler_proof_policy compiler_concept_proof compiler_performance_receipt_contract kubernetes_dap_profiles postfix_capability_closure release_trust_invariants docs_build adr_link_check non_rust_inventory_check must_context_check lint_policy v2_bundle_sync nested_lock_check version_sync agent_ledgers_validate
     permissions:
       contents: read
     # Run on every PR push and on push to main/master
@@ -1789,6 +1789,12 @@ jobs:
       # to the four contracts above on the same required merge surface.
       - name: Gate-policy budget witness contract (required merge surface)
         run: cargo test -p xtask --test issue_4657_ci_workflow_contract --locked -- --nocapture
+
+      # #7611: keep the JSON-RPC dependency-boundary probe on a required
+      # merge surface so a restored Perl taxonomy dependency cannot merge
+      # behind the advisory PR Smoke lane.
+      - name: LSP JSON-RPC dependency probe (required merge surface)
+        run: cargo test -p xtask --test lsp_jsonrpc_dependency_probe --locked -- --nocapture
 
       # #14585: nothing executed `xtask/tests/file_policy.rs`. No workflow named
       # `--test file_policy`, the merge gate runs `cargo test --workspace --lib`
