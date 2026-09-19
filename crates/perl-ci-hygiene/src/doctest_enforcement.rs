@@ -302,7 +302,17 @@ pub fn is_compile_fail_fence(line: &str) -> bool {
 /// Whether the text after a doc-comment marker opens a `compile_fail` fence.
 ///
 /// A fence delimiter is a run of at least three backticks or at least three
-/// tildes; the info string runs to the end of the line and splits on commas.
+/// tildes; the info string runs to the end of the line and splits on commas
+/// *and* whitespace.
+///
+/// Whitespace is not cosmetic here. Rustdoc separates info-string attribute
+/// terms on commas, spaces, and tabs alike, so ```` ```rust compile_fail ````
+/// is a live `compile_fail` contract. Measured against rustdoc 1.95.0: a
+/// three-fence probe whose terms were separated by a space, a tab, and a
+/// comma reported `- compile fail` for all three. A comma-only split would
+/// read `rust compile_fail` as one unknown term, miss the contract, and let a
+/// fence that rustdoc really executes sit outside the enforced route — the
+/// fail-open this ratchet exists to prevent.
 fn is_compile_fail_fence_body(text: &str) -> bool {
     let text = text.trim_start();
     let attributes = if let Some(rest) = text.strip_prefix('`') {
@@ -317,7 +327,9 @@ fn is_compile_fail_fence_body(text: &str) -> bool {
         None
     };
     attributes.is_some_and(|attributes| {
-        attributes.split(',').any(|attribute| attribute.trim() == "compile_fail")
+        attributes
+            .split(|character: char| character == ',' || character.is_whitespace())
+            .any(|attribute| attribute == "compile_fail")
     })
 }
 
@@ -887,6 +899,29 @@ mod tests {
         assert!(is_compile_fail_fence("/// ~~~compile_fail"), "three tildes");
         assert!(is_compile_fail_fence("//! ~~~~rust,compile_fail"), "four tildes");
         assert!(is_compile_fail_fence("/// `````compile_fail"), "five backticks");
+
+        // Rustdoc separates info-string terms on commas, spaces, and tabs
+        // alike. Measured against rustdoc 1.95.0, a probe crate whose three
+        // fences used a space, a tab, and a comma reported `- compile fail`
+        // for all three. A comma-only split would read `rust compile_fail` as
+        // one unknown term, under-report the denominator, and let a fence
+        // rustdoc really executes sit outside the enforced route.
+        assert!(is_compile_fail_fence("/// ```rust compile_fail"), "space separator");
+        assert!(is_compile_fail_fence("/// ```rust\tcompile_fail"), "tab separator");
+        assert!(is_compile_fail_fence("/// ```rust, compile_fail"), "comma then space");
+        assert!(is_compile_fail_fence("//! ~~~rust edition2024 compile_fail"), "trailing term");
+        assert!(is_compile_fail_fence("/// ```compile_fail "), "trailing whitespace");
+
+        // Splitting on whitespace must not turn a non-matching term into a
+        // match: the term still has to equal `compile_fail` exactly.
+        assert!(
+            !is_compile_fail_fence("/// ```rust should_panic"),
+            "another whitespace-separated attribute is not this contract"
+        );
+        assert!(
+            !is_compile_fail_fence("/// ```text not compile_failure here"),
+            "a near-miss term stays a near miss when terms are whitespace-separated"
+        );
 
         // A `compile_fail` mention that is not a doc-comment fence is not a
         // contract: `xtask` carries the string as ordinary data, and counting

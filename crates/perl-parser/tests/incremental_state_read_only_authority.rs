@@ -70,6 +70,20 @@ fn legacy_field_reads_agree_with_read_only_accessors() -> TestResult {
 /// Field access on a shadowing inherent field would bind to different storage
 /// than `Deref::deref(&state).source`, so comparing the two addresses
 /// distinguishes them.
+///
+/// The control covers *every* field of the read view, not a sample.
+/// Shadowing is per field: an inherent `pub lex_checkpoints` would leave a
+/// control that checked only `source` and `tokens` perfectly green while
+/// `state.lex_checkpoints` bound to independently mutable storage. Checking
+/// two of seven fields would prove two of seven fields.
+///
+/// Limitation, stated rather than papered over: the list below is
+/// enumerated, not compiler-enforced. Exhaustive destructuring would make a
+/// newly added field a compile error here, but it has to name the view type,
+/// and `IncrementalStateReadView` is deliberately not re-exported from
+/// `incremental` — only `IncrementalState` is. Widening that public surface
+/// to buy a test property is a larger decision than this contract, so a field
+/// added to the view must be added here by hand.
 #[test]
 fn legacy_field_reads_resolve_through_the_read_view() -> TestResult {
     let state = IncrementalState::new("my $x = 1;".to_string());
@@ -80,15 +94,24 @@ fn legacy_field_reads_resolve_through_the_read_view() -> TestResult {
 
     let view = std::ops::Deref::deref(&state);
 
-    if !same_storage(&state.source, &view.source) {
-        return Err("`state.source` no longer resolves through the read-only view; an inherent \
-                    field is shadowing it"
+    let checks: [(&str, bool); 7] = [
+        ("source", same_storage(&state.source, &view.source)),
+        ("rope", same_storage(&state.rope, &view.rope)),
+        ("line_index", same_storage(&state.line_index, &view.line_index)),
+        ("lex_checkpoints", same_storage(&state.lex_checkpoints, &view.lex_checkpoints)),
+        ("parse_checkpoints", same_storage(&state.parse_checkpoints, &view.parse_checkpoints)),
+        ("snapshot", same_storage(&state.snapshot, &view.snapshot)),
+        ("tokens", same_storage(&state.tokens, &view.tokens)),
+    ];
+
+    for (field, resolves_through_view) in checks {
+        if !resolves_through_view {
+            return Err(format!(
+                "`state.{field}` no longer resolves through the read-only view; an inherent \
+                 field is shadowing it"
+            )
             .into());
-    }
-    if !same_storage(&state.tokens, &view.tokens) {
-        return Err("`state.tokens` no longer resolves through the read-only view; an inherent \
-                    field is shadowing it"
-            .into());
+        }
     }
 
     Ok(())
