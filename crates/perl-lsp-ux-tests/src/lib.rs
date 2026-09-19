@@ -54,11 +54,18 @@ pub mod env;
 pub mod observation;
 pub mod project_fixture;
 pub mod recorder;
+pub mod reverse_request_fixture;
 pub mod scorecard;
+pub mod server_request_fixture;
 pub mod taxonomy;
 pub mod workspace;
 
-pub use client::{LspEvent, UxClient};
+pub use client::{
+    CapabilityViolation, LspEvent, UxClient,
+    server_request_script::{
+        ObservedServerRequest, ScriptedServerRequest, ScriptedServerResponse, ServerRequestDelivery,
+    },
+};
 pub use diagnostics::DiagnosticsTracker;
 pub use env::{PathGuard, RestrictedPath};
 pub use observation::{Inbox, InboxSnapshot, ObservationId, StreamEnd, WaitEnd};
