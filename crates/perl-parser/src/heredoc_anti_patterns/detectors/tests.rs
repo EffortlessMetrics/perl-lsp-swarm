@@ -128,6 +128,76 @@ fn test_regex_heredoc_detection() {
 }
 
 #[test]
+fn test_regex_postponed_heredoc_detection() {
+    // #14390: `(??{ ... })` is the postponed (subpattern-evaluating) form of the regex
+    // code block and carries the same heredoc parsing hazard as `(?{ ... })`. The detector
+    // must report a PL804 diagnostic for it as well.
+    let detector = AntiPatternDetector::new();
+
+    let single_line = "m/a(??{b<<'X'})c/";
+    let diagnostics = detector.detect_all(single_line);
+    assert_eq!(
+        diagnostics.len(),
+        1,
+        "expected one RegexCodeBlockHeredoc diagnostic for `(??{{b<<'X'}})`, got {diagnostics:?}"
+    );
+    assert!(matches!(diagnostics[0].pattern, AntiPattern::RegexCodeBlockHeredoc { .. }));
+}
+
+#[test]
+fn test_regex_heredoc_does_not_overmatch_triple_question() {
+    // Regression guard: the bounded `?{1,2}` opener must not match `(???{`. The
+    // literal `{` must appear immediately after the 1-2 `?` characters; a third `?`
+    // is a literal `?` and breaks the pattern. `[^}\n]*` then never reaches the `<<`.
+    let detector = AntiPatternDetector::new();
+    let code = "m/a(???{b<<'X'})c/";
+    let diagnostics = detector.detect_all(code);
+    let regex_code_block_count = diagnostics
+        .iter()
+        .filter(|diag| matches!(diag.pattern, AntiPattern::RegexCodeBlockHeredoc { .. }))
+        .count();
+    assert_eq!(
+        regex_code_block_count, 0,
+        "expected no RegexCodeBlockHeredoc diagnostic for `(???{{b<<'X'}})` (not a valid Perl opener), got {diagnostics:?}"
+    );
+}
+
+#[test]
+fn test_regex_heredoc_pattern_static_matches_both_openers() {
+    // #14390: observe the production REGEX_HEREDOC_PATTERN static directly. The
+    // detector-level tests above reach it only transitively through trait-object
+    // dispatch, which static analysis cannot follow; this direct observation pins
+    // the changed `?{1,2}` opener to its falsifying inputs.
+    let pattern =
+        super::compiled(&super::REGEX_HEREDOC_PATTERN).expect("production regex compiles");
+    assert!(pattern.is_match("m/a(?{b<<'X'})c/"));
+    assert!(pattern.is_match("m/a(??{b<<'X'})c/"));
+    assert!(!pattern.is_match("m/a(???{b<<'X'})c/"));
+}
+
+#[test]
+fn test_detector_state_helpers_call_observation() {
+    // #14390 repair: the detector-state helpers `unavailable`, `limited`, and
+    // `required_state` are otherwise reached only transitively through detector
+    // dispatch, which static analysis cannot follow; observe each helper by direct
+    // call and pin its state mapping.
+    let unavailable = super::unavailable(&["regex_heredoc"]);
+    assert!(matches!(unavailable, DetectorState::Unavailable { .. }));
+
+    let limited = super::limited(&["regex_heredoc"]);
+    assert!(matches!(limited, DetectorState::Limited { .. }));
+
+    assert!(matches!(super::required_state(&[("regex_heredoc", true)]), DetectorState::Complete));
+
+    match super::required_state(&[("regex_heredoc", false)]) {
+        DetectorState::Unavailable {
+            reason: DetectorFailureReason::PatternUnavailable { pattern_ids },
+        } => assert_eq!(pattern_ids, vec!["regex_heredoc"]),
+        _ => panic!("required_state must report Unavailable for missing patterns"),
+    }
+}
+
+#[test]
 fn test_eval_heredoc_detection() {
     let detector = AntiPatternDetector::new();
     // Single-line case: eval and << on the same line — detected by the bounded pattern.

@@ -1,0 +1,1078 @@
+{
+  "schema": 2,
+  "release": "0.18",
+  "baseline_tag": "v0.17.0",
+  "baseline_commit": "ffee2824938f415e54923112c7b79e3f22040699",
+  "head_sha": "13054e4d9c1be10e61e614194a203875f53986b3",
+  "head_tree": "afd3c0da30706f08175af499e19b01c8a721d128",
+  "tool": "cargo-semver-checks",
+  "tool_version": "cargo-semver-checks 0.47.0",
+  "ratchet_list": ".ci/public-api-baselines/ratchet-crates.txt",
+  "totals": {
+    "crates": 12,
+    "crates_with_breaks": 7,
+    "crates_passing": 4,
+    "crates_not_applicable": 1,
+    "crates_with_tool_errors": 0,
+    "major_level_breaks_absorbed": 60
+  },
+  "crates": [
+    {
+      "name": "perl-lsp-rs",
+      "exit_code": 1,
+      "status": "fail",
+      "checks": {
+        "pass": 185,
+        "fail": 11,
+        "warn": 0,
+        "skip": 56
+      },
+      "major_level_breaks": [
+        {
+          "rule": "auto_trait_impl_removed",
+          "description": "auto trait no longer implemented",
+          "locations": [
+            "type FileWatcherDebouncer is no longer UnwindSafe, @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs\\src\\runtime\\file_watcher_debounce.rs:378",
+            "type FileWatcherDebouncer is no longer RefUnwindSafe, @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs\\src\\runtime\\file_watcher_debounce.rs:378",
+            "type CodeFormatter is no longer UnwindSafe, @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs\\src\\features\\formatting.rs:20",
+            "type CodeFormatter is no longer RefUnwindSafe, @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs\\src\\features\\formatting.rs:20"
+          ]
+        },
+        {
+          "rule": "constructible_struct_adds_field",
+          "description": "externally-constructible struct adds field",
+          "locations": [
+            "field PullDiagnosticsContext.project_version @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs\\src\\features\\diagnostics\\pull.rs:125",
+            "field PullDiagnosticsContext.configuration_generation @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs\\src\\features\\diagnostics\\pull.rs:129",
+            "field PullDiagnosticsContext.identity_root_key @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs\\src\\features\\diagnostics\\pull.rs:139",
+            "field PullDiagnosticsContext.identity_root_path @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs\\src\\features\\diagnostics\\pull.rs:153",
+            "field PullDiagnosticsContext.facts_generation @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs\\src\\features\\diagnostics\\pull.rs:157",
+            "field PullDiagnosticsContext.accepted_critic_snapshot @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs\\src\\features\\diagnostics\\pull.rs:163",
+            "field PullDiagnosticsContext.accepted_state_currentness @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs\\src\\features\\diagnostics\\pull.rs:169",
+            "field PullDiagnosticsContext.projection @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs\\src\\features\\diagnostics\\pull.rs:171",
+            "field PullDiagnosticsContext.project_version @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs\\src\\features\\diagnostics\\pull.rs:125",
+            "field PullDiagnosticsContext.configuration_generation @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs\\src\\features\\diagnostics\\pull.rs:129",
+            "field PullDiagnosticsContext.identity_root_key @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs\\src\\features\\diagnostics\\pull.rs:139",
+            "field PullDiagnosticsContext.identity_root_path @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs\\src\\features\\diagnostics\\pull.rs:153",
+            "field PullDiagnosticsContext.facts_generation @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs\\src\\features\\diagnostics\\pull.rs:157",
+            "field PullDiagnosticsContext.accepted_critic_snapshot @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs\\src\\features\\diagnostics\\pull.rs:163",
+            "field PullDiagnosticsContext.accepted_state_currentness @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs\\src\\features\\diagnostics\\pull.rs:169",
+            "field PullDiagnosticsContext.projection @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs\\src\\features\\diagnostics\\pull.rs:171",
+            "field RuntimePressureSnapshot.file_watcher_active_subjects @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs\\src\\runtime\\mod.rs:586",
+            "field ClientCapabilities.code_action_disabled_support @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs\\src\\state\\document.rs:1567",
+            "field ClientCapabilities.position_encoding @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs\\src\\state\\document.rs:1627",
+            "field ClientCapabilities.prepare_support_default_behavior @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs\\src\\state\\document.rs:1634",
+            "field ClientCapabilities.markdown_support @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs\\src\\state\\document.rs:1639",
+            "field DocumentState.text_arc @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs\\src\\state\\document.rs:531",
+            "field DocumentState.incarnation @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs\\src\\state\\document.rs:570"
+          ]
+        },
+        {
+          "rule": "constructible_struct_adds_private_field",
+          "description": "struct no longer constructible due to new private field",
+          "locations": [
+            "field DocumentState.parsed @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs\\src\\state\\document.rs:543"
+          ]
+        },
+        {
+          "rule": "enum_missing",
+          "description": "pub enum removed or renamed",
+          "locations": [
+            "enum perl_lsp::features::semantic_tokens_provider::SemanticTokenModifier, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-lsp-rs\\src\\features\\semantic_tokens_provider.rs:86",
+            "enum perl_lsp::features::semantic_tokens_provider::SemanticTokenType, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-lsp-rs\\src\\features\\semantic_tokens_provider.rs:11"
+          ]
+        },
+        {
+          "rule": "feature_missing",
+          "description": "package feature removed or renamed",
+          "locations": []
+        },
+        {
+          "rule": "function_missing",
+          "description": "pub fn removed or renamed",
+          "locations": [
+            "function perl_lsp::features::lsp_on_type_formatting::format_on_type, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-lsp-rs\\src\\features\\lsp_on_type_formatting.rs:100",
+            "function perl_lsp::features::semantic_tokens_provider::encode_semantic_tokens, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-lsp-rs\\src\\features\\semantic_tokens_provider.rs:499"
+          ]
+        },
+        {
+          "rule": "inherent_method_missing",
+          "description": "pub method removed or renamed",
+          "locations": [
+            "LspServer::test_install_mock_critic_runtime, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-lsp-rs\\src\\runtime\\test_api.rs:487",
+            "LspServer::test_bypass_perlcritic_command_check, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-lsp-rs\\src\\runtime\\test_api.rs:502",
+            "LspServer::test_install_mock_critic_runtime, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-lsp-rs\\src\\runtime\\test_api.rs:487",
+            "LspServer::test_bypass_perlcritic_command_check, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-lsp-rs\\src\\runtime\\test_api.rs:502",
+            "LspServer::test_install_mock_critic_runtime, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-lsp-rs\\src\\runtime\\test_api.rs:487",
+            "LspServer::test_bypass_perlcritic_command_check, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-lsp-rs\\src\\runtime\\test_api.rs:502",
+            "FileWatcherDebouncer::schedule, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-lsp-rs\\src\\runtime\\file_watcher_debounce.rs:66"
+          ]
+        },
+        {
+          "rule": "method_requires_different_generic_type_params",
+          "description": "method now requires a different number of generic type parameters",
+          "locations": [
+            "perl_lsp::features::diagnostics::pull::PullDiagnosticsProvider::get_workspace_diagnostics_with_context takes 1 generic types instead of 0, @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs\\src\\features\\diagnostics\\pull.rs:399",
+            "perl_lsp::features::diagnostics::pull::PullDiagnosticsProvider::get_workspace_diagnostics_partial_with_context takes 1 generic types instead of 0, @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs\\src\\features\\diagnostics\\pull.rs:470",
+            "perl_lsp::features::diagnostics::PullDiagnosticsProvider::get_workspace_diagnostics_with_context takes 1 generic types instead of 0, @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs\\src\\features\\diagnostics\\pull.rs:399",
+            "perl_lsp::features::diagnostics::PullDiagnosticsProvider::get_workspace_diagnostics_partial_with_context takes 1 generic types instead of 0, @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs\\src\\features\\diagnostics\\pull.rs:470"
+          ]
+        },
+        {
+          "rule": "module_missing",
+          "description": "pub module removed or renamed",
+          "locations": [
+            "mod perl_lsp::ripr_facts_emitter, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-lsp-rs\\src\\ripr_facts_emitter.rs:1",
+            "mod perl_lsp::features::lsp_on_type_formatting, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-lsp-rs\\src\\features\\lsp_on_type_formatting.rs:1",
+            "mod perl_lsp::features::on_type_formatting, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-lsp-rs\\src\\features\\on_type_formatting.rs:1",
+            "mod perl_lsp::features::semantic_tokens_provider, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-lsp-rs\\src\\features\\semantic_tokens_provider.rs:1"
+          ]
+        },
+        {
+          "rule": "struct_missing",
+          "description": "pub struct removed or renamed",
+          "locations": [
+            "struct perl_lsp::features::semantic_tokens_provider::SemanticToken, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-lsp-rs\\src\\features\\semantic_tokens_provider.rs:141",
+            "struct perl_lsp::features::semantic_tokens_provider::SemanticTokensProvider, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-lsp-rs\\src\\features\\semantic_tokens_provider.rs:155"
+          ]
+        },
+        {
+          "rule": "struct_pub_field_missing",
+          "description": "pub struct's pub field removed or renamed",
+          "locations": [
+            "field semantic_analyzer_cache of struct MemoryStateSnapshot, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-lsp-rs\\src\\runtime\\mod.rs:353",
+            "field ast of struct DocumentState, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-lsp-rs\\src\\state\\document.rs:110",
+            "field parse_errors of struct DocumentState, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-lsp-rs\\src\\state\\document.rs:113",
+            "field parent_map of struct DocumentState, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-lsp-rs\\src\\state\\document.rs:119",
+            "field degradation_tier of struct DocumentState, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-lsp-rs\\src\\state\\document.rs:134"
+          ]
+        }
+      ],
+      "raw_report_sha256": "50e28b4565362711b3c73850240602bc1a3cd0d6672942922ec9da0c2f27bf9d"
+    },
+    {
+      "name": "perllsp",
+      "exit_code": 0,
+      "status": "pass",
+      "checks": {
+        "pass": 196,
+        "fail": 0,
+        "warn": 0,
+        "skip": 56
+      },
+      "major_level_breaks": [],
+      "raw_report_sha256": "a3fdf4e5bca811ec5eb040756d35c5f2223c58fa67847d8d246e492a2cdfb3f5"
+    },
+    {
+      "name": "perl-parser",
+      "exit_code": 1,
+      "status": "fail",
+      "checks": {
+        "pass": 193,
+        "fail": 3,
+        "warn": 0,
+        "skip": 56
+      },
+      "major_level_breaks": [
+        {
+          "rule": "constructible_struct_adds_field",
+          "description": "externally-constructible struct adds field",
+          "locations": [
+            "field IncrementalDocument.last_strategy @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-parser\\src\\incremental\\incremental_document.rs:89",
+            "field IncrementalDocument.last_strategy @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-parser\\src\\incremental\\incremental_document.rs:89",
+            "field IncrementalDocument.last_strategy @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-parser\\src\\incremental\\incremental_document.rs:89"
+          ]
+        },
+        {
+          "rule": "struct_marked_non_exhaustive",
+          "description": "struct marked #[non_exhaustive]",
+          "locations": [
+            "struct IncrementalState @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-parser\\src\\incremental\\state.rs:80",
+            "struct IncrementalState @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-parser\\src\\incremental\\state.rs:80",
+            "struct IncrementalState @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-parser\\src\\incremental\\state.rs:80"
+          ]
+        },
+        {
+          "rule": "struct_pub_field_missing",
+          "description": "pub struct's pub field removed or renamed",
+          "locations": [
+            "field rope of struct IncrementalState, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-parser\\src\\incremental\\state.rs:11",
+            "field line_index of struct IncrementalState, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-parser\\src\\incremental\\state.rs:12",
+            "field lex_checkpoints of struct IncrementalState, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-parser\\src\\incremental\\state.rs:13",
+            "field parse_checkpoints of struct IncrementalState, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-parser\\src\\incremental\\state.rs:14",
+            "field ast of struct IncrementalState, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-parser\\src\\incremental\\state.rs:15",
+            "field tokens of struct IncrementalState, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-parser\\src\\incremental\\state.rs:16",
+            "field source of struct IncrementalState, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-parser\\src\\incremental\\state.rs:17",
+            "field rope of struct IncrementalState, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-parser\\src\\incremental\\state.rs:11",
+            "field line_index of struct IncrementalState, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-parser\\src\\incremental\\state.rs:12",
+            "field lex_checkpoints of struct IncrementalState, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-parser\\src\\incremental\\state.rs:13",
+            "field parse_checkpoints of struct IncrementalState, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-parser\\src\\incremental\\state.rs:14",
+            "field ast of struct IncrementalState, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-parser\\src\\incremental\\state.rs:15",
+            "field tokens of struct IncrementalState, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-parser\\src\\incremental\\state.rs:16",
+            "field source of struct IncrementalState, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-parser\\src\\incremental\\state.rs:17",
+            "field rope of struct IncrementalState, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-parser\\src\\incremental\\state.rs:11",
+            "field line_index of struct IncrementalState, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-parser\\src\\incremental\\state.rs:12",
+            "field lex_checkpoints of struct IncrementalState, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-parser\\src\\incremental\\state.rs:13",
+            "field parse_checkpoints of struct IncrementalState, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-parser\\src\\incremental\\state.rs:14",
+            "field ast of struct IncrementalState, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-parser\\src\\incremental\\state.rs:15",
+            "field tokens of struct IncrementalState, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-parser\\src\\incremental\\state.rs:16",
+            "field source of struct IncrementalState, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-parser\\src\\incremental\\state.rs:17"
+          ]
+        }
+      ],
+      "raw_report_sha256": "fa22eca3fb94dad79e890cceb852b8155389aaa3af12cd4dcc3d2f57781f0b59"
+    },
+    {
+      "name": "perl-dap",
+      "exit_code": 1,
+      "status": "fail",
+      "checks": {
+        "pass": 188,
+        "fail": 8,
+        "warn": 0,
+        "skip": 56
+      },
+      "major_level_breaks": [
+        {
+          "rule": "constructible_struct_adds_field",
+          "description": "externally-constructible struct adds field",
+          "locations": [
+            "field EvaluateArguments.format @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-dap\\src\\protocol.rs:421",
+            "field EvaluateArguments.format @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-dap\\src\\protocol.rs:421",
+            "field ProtocolVariable.evaluate_name @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-dap\\src\\protocol.rs:632",
+            "field ProtocolVariable.evaluate_name @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-dap\\src\\protocol.rs:632",
+            "field SetVariableArguments.format @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-dap\\src\\protocol.rs:486",
+            "field SetVariableArguments.format @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-dap\\src\\protocol.rs:486",
+            "field RenderedVariable.evaluate_name @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-dap\\src\\variables\\renderer.rs:49",
+            "field RenderedVariable.evaluate_name @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-dap\\src\\variables\\renderer.rs:49",
+            "field SetExpressionArguments.format @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-dap\\src\\protocol.rs:941",
+            "field SetExpressionArguments.format @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-dap\\src\\protocol.rs:941",
+            "field Variable.evaluate_name @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-dap\\src\\types\\mod.rs:110",
+            "field Variable.evaluate_name @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-dap\\src\\types\\mod.rs:110",
+            "field TcpAttachConfig.resolved_addrs @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-dap\\src\\tcp_attach\\config.rs:26",
+            "field StackFrame.arguments @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-dap\\src\\stack\\mod.rs:87",
+            "field VariablesArguments.format @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-dap\\src\\protocol.rs:399",
+            "field VariablesArguments.format @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-dap\\src\\protocol.rs:399"
+          ]
+        },
+        {
+          "rule": "enum_variant_added",
+          "description": "enum variant added on exhaustive enum",
+          "locations": [
+            "variant ScopeKind:Arguments @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-dap\\src\\debug_adapter\\var_ref.rs:99",
+            "variant ScopeKind:Arguments @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-dap\\src\\debug_adapter\\var_ref.rs:99",
+            "variant ScopeKind:Arguments @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-dap\\src\\debug_adapter\\var_ref.rs:99"
+          ]
+        },
+        {
+          "rule": "enum_variant_missing",
+          "description": "pub enum variant removed or renamed",
+          "locations": [
+            "variant DapMode::Bridge, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-dap\\src\\server\\mode.rs:11",
+            "variant DapMode::Bridge, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-dap\\src\\server\\mode.rs:11"
+          ]
+        },
+        {
+          "rule": "feature_missing",
+          "description": "package feature removed or renamed",
+          "locations": []
+        },
+        {
+          "rule": "inherent_method_missing",
+          "description": "pub method removed or renamed",
+          "locations": [
+            "DapServer::run_socket, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-dap\\src\\server\\lifecycle.rs:63",
+            "DapServer::run_socket, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-dap\\src\\server\\lifecycle.rs:63"
+          ]
+        },
+        {
+          "rule": "method_receiver_ref_became_mut",
+          "description": "method receiver changed from immutable to mutable reference",
+          "locations": [
+            "perl_dap::tcp_attach::TcpAttachConfig::validate now takes &mut Self, not &Self, @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-dap\\src\\tcp_attach\\config.rs:50"
+          ]
+        },
+        {
+          "rule": "module_missing",
+          "description": "pub module removed or renamed",
+          "locations": [
+            "mod perl_dap::bridge_adapter, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-dap\\src\\bridge_adapter.rs:1"
+          ]
+        },
+        {
+          "rule": "struct_missing",
+          "description": "pub struct removed or renamed",
+          "locations": [
+            "struct perl_dap::bridge_adapter::DapBridgeEnvConfig, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-dap\\src\\bridge_adapter.rs:52",
+            "struct perl_dap::DapBridgeEnvConfig, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-dap\\src\\bridge_adapter.rs:52",
+            "struct perl_dap::bridge_adapter::BridgeAdapter, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-dap\\src\\bridge_adapter.rs:70",
+            "struct perl_dap::BridgeAdapter, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-dap\\src\\bridge_adapter.rs:70"
+          ]
+        }
+      ],
+      "raw_report_sha256": "1e8419e59a198cdf2519f83fc8c931614e8ec022a3cecc3ac33d5451b46f7961"
+    },
+    {
+      "name": "perl-uri",
+      "exit_code": 0,
+      "status": "pass",
+      "checks": {
+        "pass": 196,
+        "fail": 0,
+        "warn": 0,
+        "skip": 56
+      },
+      "major_level_breaks": [],
+      "raw_report_sha256": "8b796021181b217a489cfb7157edc1fba0c2f575220e5c51afd6dde1d33c4290"
+    },
+    {
+      "name": "perl-lexer",
+      "exit_code": 1,
+      "status": "fail",
+      "checks": {
+        "pass": 189,
+        "fail": 7,
+        "warn": 0,
+        "skip": 56
+      },
+      "major_level_breaks": [
+        {
+          "rule": "constructible_struct_adds_private_field",
+          "description": "struct no longer constructible due to new private field",
+          "locations": [
+            "field LexerCheckpoint.identity @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lexer\\src\\checkpoint\\core.rs:97",
+            "field LexerCheckpoint.replay @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lexer\\src\\checkpoint\\core.rs:98",
+            "field LexerCheckpoint.invalidated @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lexer\\src\\checkpoint\\core.rs:99",
+            "field LexerCheckpoint.live_boundary @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lexer\\src\\checkpoint\\core.rs:100",
+            "field LexerCheckpoint.identity @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lexer\\src\\checkpoint\\core.rs:97",
+            "field LexerCheckpoint.replay @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lexer\\src\\checkpoint\\core.rs:98",
+            "field LexerCheckpoint.invalidated @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lexer\\src\\checkpoint\\core.rs:99",
+            "field LexerCheckpoint.live_boundary @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lexer\\src\\checkpoint\\core.rs:100"
+          ]
+        },
+        {
+          "rule": "enum_marked_non_exhaustive",
+          "description": "enum marked #[non_exhaustive]",
+          "locations": [
+            "enum CheckpointContext @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lexer\\src\\checkpoint\\core.rs:36"
+          ]
+        },
+        {
+          "rule": "enum_unit_variant_changed_kind",
+          "description": "An enum unit variant changed kind",
+          "locations": [
+            "variant TokenType::QuoteDouble @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lexer\\src\\token.rs:50",
+            "variant TokenType::QuoteDouble @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lexer\\src\\token.rs:50"
+          ]
+        },
+        {
+          "rule": "enum_variant_added",
+          "description": "enum variant added on exhaustive enum",
+          "locations": [
+            "variant TokenType:InterpolatedHeredocBody @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lexer\\src\\token.rs:76",
+            "variant TokenType:InterpolatedHeredocBody @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lexer\\src\\token.rs:76"
+          ]
+        },
+        {
+          "rule": "struct_pub_field_missing",
+          "description": "pub struct's pub field removed or renamed",
+          "locations": [
+            "field position of struct LexerCheckpoint, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-lexer\\src\\checkpoint\\core.rs:8",
+            "field mode of struct LexerCheckpoint, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-lexer\\src\\checkpoint\\core.rs:10",
+            "field delimiter_stack of struct LexerCheckpoint, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-lexer\\src\\checkpoint\\core.rs:12",
+            "field in_prototype of struct LexerCheckpoint, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-lexer\\src\\checkpoint\\core.rs:14",
+            "field prototype_depth of struct LexerCheckpoint, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-lexer\\src\\checkpoint\\core.rs:16",
+            "field after_sub of struct LexerCheckpoint, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-lexer\\src\\checkpoint\\core.rs:18",
+            "field after_arrow of struct LexerCheckpoint, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-lexer\\src\\checkpoint\\core.rs:20",
+            "field hash_brace_depth of struct LexerCheckpoint, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-lexer\\src\\checkpoint\\core.rs:23",
+            "field after_var_subscript of struct LexerCheckpoint, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-lexer\\src\\checkpoint\\core.rs:26",
+            "field paren_depth of struct LexerCheckpoint, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-lexer\\src\\checkpoint\\core.rs:28",
+            "field current_pos of struct LexerCheckpoint, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-lexer\\src\\checkpoint\\core.rs:30",
+            "field eof_emitted of struct LexerCheckpoint, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-lexer\\src\\checkpoint\\core.rs:32",
+            "field context of struct LexerCheckpoint, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-lexer\\src\\checkpoint\\core.rs:34",
+            "field position of struct LexerCheckpoint, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-lexer\\src\\checkpoint\\core.rs:8",
+            "field mode of struct LexerCheckpoint, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-lexer\\src\\checkpoint\\core.rs:10",
+            "field delimiter_stack of struct LexerCheckpoint, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-lexer\\src\\checkpoint\\core.rs:12",
+            "field in_prototype of struct LexerCheckpoint, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-lexer\\src\\checkpoint\\core.rs:14",
+            "field prototype_depth of struct LexerCheckpoint, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-lexer\\src\\checkpoint\\core.rs:16",
+            "field after_sub of struct LexerCheckpoint, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-lexer\\src\\checkpoint\\core.rs:18",
+            "field after_arrow of struct LexerCheckpoint, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-lexer\\src\\checkpoint\\core.rs:20",
+            "field hash_brace_depth of struct LexerCheckpoint, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-lexer\\src\\checkpoint\\core.rs:23",
+            "field after_var_subscript of struct LexerCheckpoint, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-lexer\\src\\checkpoint\\core.rs:26",
+            "field paren_depth of struct LexerCheckpoint, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-lexer\\src\\checkpoint\\core.rs:28",
+            "field current_pos of struct LexerCheckpoint, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-lexer\\src\\checkpoint\\core.rs:30",
+            "field eof_emitted of struct LexerCheckpoint, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-lexer\\src\\checkpoint\\core.rs:32",
+            "field context of struct LexerCheckpoint, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-lexer\\src\\checkpoint\\core.rs:34"
+          ]
+        },
+        {
+          "rule": "trait_method_added",
+          "description": "pub trait method added",
+          "locations": [
+            "trait method perl_lexer::checkpoint::Checkpointable::validate_restore @ file E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lexer\\src\\checkpoint\\core.rs:590",
+            "trait method perl_lexer::Checkpointable::validate_restore @ file E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lexer\\src\\checkpoint\\core.rs:590"
+          ]
+        },
+        {
+          "rule": "trait_method_return_value_added",
+          "description": "pub trait method return value added",
+          "locations": [
+            "perl_lexer::checkpoint::Checkpointable::restore @ file E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lexer\\src\\checkpoint\\core.rs:587",
+            "perl_lexer::Checkpointable::restore @ file E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lexer\\src\\checkpoint\\core.rs:587"
+          ]
+        }
+      ],
+      "raw_report_sha256": "619032f80784d012e36aa71008dce78a778b888170e6755f0198a91632323b15"
+    },
+    {
+      "name": "perl-parser-core",
+      "exit_code": 1,
+      "status": "fail",
+      "checks": {
+        "pass": 184,
+        "fail": 12,
+        "warn": 0,
+        "skip": 56
+      },
+      "major_level_breaks": [
+        {
+          "rule": "constructible_struct_adds_field",
+          "description": "externally-constructible struct adds field",
+          "locations": [
+            "field HirVariable.binding @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-parser-core\\src\\hir\\body.rs:326",
+            "field PendingHeredoc.body_start @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-parser-core\\src\\syntax\\heredoc.rs:40",
+            "field PendingHeredoc.body_start @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-parser-core\\src\\syntax\\heredoc.rs:40",
+            "field PendingHeredoc.body_start @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-parser-core\\src\\syntax\\heredoc.rs:40"
+          ]
+        },
+        {
+          "rule": "enum_marked_non_exhaustive",
+          "description": "enum marked #[non_exhaustive]",
+          "locations": [
+            "enum RecoveryKind @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-parser-core\\src\\syntax\\error\\mod.rs:81",
+            "enum RecoveryKind @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-parser-core\\src\\syntax\\error\\mod.rs:81",
+            "enum RecoveryKind @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-parser-core\\src\\syntax\\error\\mod.rs:81",
+            "enum RecoverySite @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-parser-core\\src\\syntax\\error\\mod.rs:58",
+            "enum RecoverySite @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-parser-core\\src\\syntax\\error\\mod.rs:58",
+            "enum RecoverySite @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-parser-core\\src\\syntax\\error\\mod.rs:58",
+            "enum RecoverySalvageClass @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-parser-core\\src\\syntax\\error\\mod.rs:906",
+            "enum RecoverySalvageClass @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-parser-core\\src\\syntax\\error\\mod.rs:906",
+            "enum RecoverySalvageClass @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-parser-core\\src\\syntax\\error\\mod.rs:906",
+            "enum RecoverySalvageClass @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-parser-core\\src\\syntax\\error\\mod.rs:906",
+            "enum ParseError @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-parser-core\\src\\syntax\\error\\mod.rs:401",
+            "enum ParseError @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-parser-core\\src\\syntax\\error\\mod.rs:401",
+            "enum ParseError @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-parser-core\\src\\syntax\\error\\mod.rs:401",
+            "enum ParseError @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-parser-core\\src\\syntax\\error\\mod.rs:401",
+            "enum HirExpr @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-parser-core\\src\\hir\\body.rs:470"
+          ]
+        },
+        {
+          "rule": "enum_no_repr_variant_discriminant_changed",
+          "description": "enum variant had its discriminant change value",
+          "locations": [
+            "variant PirDynamicBoundaryKind::Unknown 10 -> 11 @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-parser-core\\src\\pir\\model.rs:341",
+            "variant StashDynamicBoundaryKind::Autoload 2 -> 3 @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-parser-core\\src\\hir\\model.rs:1476",
+            "variant PirOperation::Call 7 -> 8 @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-parser-core\\src\\pir\\model.rs:599",
+            "variant PirOperation::MethodCall 8 -> 9 @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-parser-core\\src\\pir\\model.rs:606",
+            "variant PirOperation::Branch 9 -> 11 @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-parser-core\\src\\pir\\model.rs:623",
+            "variant PirOperation::Loop 10 -> 12 @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-parser-core\\src\\pir\\model.rs:628",
+            "variant PirOperation::Return 11 -> 13 @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-parser-core\\src\\pir\\model.rs:633",
+            "variant PirOperation::DynamicBoundary 12 -> 14 @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-parser-core\\src\\pir\\model.rs:635",
+            "variant PirContext::Unknown 4 -> 3 @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-parser-core\\src\\pir\\model.rs:153",
+            "variant ParseError::LexerError 3 -> 5 @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-parser-core\\src\\syntax\\error\\mod.rs:462",
+            "variant ParseError::RecursionLimit 4 -> 6 @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-parser-core\\src\\syntax\\error\\mod.rs:472",
+            "variant ParseError::InvalidNumber 5 -> 8 @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-parser-core\\src\\syntax\\error\\mod.rs:495",
+            "variant ParseError::InvalidString 6 -> 9 @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-parser-core\\src\\syntax\\error\\mod.rs:505",
+            "variant ParseError::UnclosedDelimiter 7 -> 10 @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-parser-core\\src\\syntax\\error\\mod.rs:512",
+            "variant ParseError::InvalidRegex 8 -> 11 @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-parser-core\\src\\syntax\\error\\mod.rs:522",
+            "variant ParseError::NestingTooDeep 9 -> 13 @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-parser-core\\src\\syntax\\error\\mod.rs:549",
+            "variant ParseError::Cancelled 10 -> 14 @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-parser-core\\src\\syntax\\error\\mod.rs:558",
+            "variant ParseError::Recovered 11 -> 15 @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-parser-core\\src\\syntax\\error\\mod.rs:566",
+            "variant ParseError::LexerError 3 -> 5 @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-parser-core\\src\\syntax\\error\\mod.rs:462",
+            "variant ParseError::RecursionLimit 4 -> 6 @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-parser-core\\src\\syntax\\error\\mod.rs:472",
+            "variant ParseError::InvalidNumber 5 -> 8 @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-parser-core\\src\\syntax\\error\\mod.rs:495",
+            "variant ParseError::InvalidString 6 -> 9 @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-parser-core\\src\\syntax\\error\\mod.rs:505",
+            "variant ParseError::UnclosedDelimiter 7 -> 10 @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-parser-core\\src\\syntax\\error\\mod.rs:512",
+            "variant ParseError::InvalidRegex 8 -> 11 @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-parser-core\\src\\syntax\\error\\mod.rs:522",
+            "variant ParseError::NestingTooDeep 9 -> 13 @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-parser-core\\src\\syntax\\error\\mod.rs:549",
+            "variant ParseError::Cancelled 10 -> 14 @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-parser-core\\src\\syntax\\error\\mod.rs:558",
+            "variant ParseError::Recovered 11 -> 15 @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-parser-core\\src\\syntax\\error\\mod.rs:566",
+            "variant ParseError::LexerError 3 -> 5 @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-parser-core\\src\\syntax\\error\\mod.rs:462",
+            "variant ParseError::RecursionLimit 4 -> 6 @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-parser-core\\src\\syntax\\error\\mod.rs:472",
+            "variant ParseError::InvalidNumber 5 -> 8 @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-parser-core\\src\\syntax\\error\\mod.rs:495",
+            "variant ParseError::InvalidString 6 -> 9 @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-parser-core\\src\\syntax\\error\\mod.rs:505",
+            "variant ParseError::UnclosedDelimiter 7 -> 10 @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-parser-core\\src\\syntax\\error\\mod.rs:512",
+            "variant ParseError::InvalidRegex 8 -> 11 @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-parser-core\\src\\syntax\\error\\mod.rs:522",
+            "variant ParseError::NestingTooDeep 9 -> 13 @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-parser-core\\src\\syntax\\error\\mod.rs:549",
+            "variant ParseError::Cancelled 10 -> 14 @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-parser-core\\src\\syntax\\error\\mod.rs:558",
+            "variant ParseError::Recovered 11 -> 15 @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-parser-core\\src\\syntax\\error\\mod.rs:566",
+            "variant ParseError::LexerError 3 -> 5 @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-parser-core\\src\\syntax\\error\\mod.rs:462",
+            "variant ParseError::RecursionLimit 4 -> 6 @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-parser-core\\src\\syntax\\error\\mod.rs:472",
+            "variant ParseError::InvalidNumber 5 -> 8 @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-parser-core\\src\\syntax\\error\\mod.rs:495",
+            "variant ParseError::InvalidString 6 -> 9 @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-parser-core\\src\\syntax\\error\\mod.rs:505",
+            "variant ParseError::UnclosedDelimiter 7 -> 10 @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-parser-core\\src\\syntax\\error\\mod.rs:512",
+            "variant ParseError::InvalidRegex 8 -> 11 @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-parser-core\\src\\syntax\\error\\mod.rs:522",
+            "variant ParseError::NestingTooDeep 9 -> 13 @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-parser-core\\src\\syntax\\error\\mod.rs:549",
+            "variant ParseError::Cancelled 10 -> 14 @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-parser-core\\src\\syntax\\error\\mod.rs:558",
+            "variant ParseError::Recovered 11 -> 15 @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-parser-core\\src\\syntax\\error\\mod.rs:566",
+            "variant InheritanceSource::UseParent 1 -> 2 @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-parser-core\\src\\hir\\model.rs:1404",
+            "variant InheritanceSource::UseBase 2 -> 3 @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-parser-core\\src\\hir\\model.rs:1406"
+          ]
+        },
+        {
+          "rule": "enum_struct_variant_field_added",
+          "description": "pub enum struct variant field added",
+          "locations": [
+            "field binding_range of variant HirStmt::Let @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-parser-core\\src\\hir\\body.rs:1007",
+            "field binding of variant HirStmt::Let @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-parser-core\\src\\hir\\body.rs:1017",
+            "field callee_span of variant HirExpr::Call @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-parser-core\\src\\hir\\body.rs:612"
+          ]
+        },
+        {
+          "rule": "enum_variant_added",
+          "description": "enum variant added on exhaustive enum",
+          "locations": [
+            "variant DeclStorageClass:Unknown @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-parser-core\\src\\hir\\body.rs:964",
+            "variant HirStmt:LoopControl @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-parser-core\\src\\hir\\body.rs:1021",
+            "variant HirStmt:Block @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-parser-core\\src\\hir\\body.rs:1057",
+            "variant HirStmt:PostfixCondition @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-parser-core\\src\\hir\\body.rs:1060",
+            "variant SubstitutionError:InvalidDelimiter @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-parser-core\\src\\syntax\\quote.rs:62",
+            "variant SubstitutionError:InvalidDelimiter @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-parser-core\\src\\syntax\\quote.rs:62",
+            "variant SubstitutionError:InvalidDelimiter @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-parser-core\\src\\syntax\\quote.rs:62"
+          ]
+        },
+        {
+          "rule": "enum_variant_missing",
+          "description": "pub enum variant removed or renamed",
+          "locations": [
+            "variant PirContext::Lvalue, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-parser-core\\src\\pir\\model.rs:153"
+          ]
+        },
+        {
+          "rule": "function_missing",
+          "description": "pub fn removed or renamed",
+          "locations": [
+            "function perl_parser_core::syntax::percentile::nearest_rank_percentile, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-parser-core\\src\\syntax\\percentile.rs:22",
+            "function perl_parser_core::percentile::nearest_rank_percentile, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-parser-core\\src\\syntax\\percentile.rs:22"
+          ]
+        },
+        {
+          "rule": "module_missing",
+          "description": "pub module removed or renamed",
+          "locations": [
+            "mod perl_parser_core::syntax::percentile, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-parser-core\\src\\syntax\\percentile.rs:1",
+            "mod perl_parser_core::percentile, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-parser-core\\src\\syntax\\percentile.rs:1"
+          ]
+        },
+        {
+          "rule": "struct_marked_non_exhaustive",
+          "description": "struct marked #[non_exhaustive]",
+          "locations": [
+            "struct ParseOutput @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-parser-core\\src\\syntax\\error\\mod.rs:819",
+            "struct ParseOutput @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-parser-core\\src\\syntax\\error\\mod.rs:819",
+            "struct ParseOutput @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-parser-core\\src\\syntax\\error\\mod.rs:819",
+            "struct ParseOutput @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-parser-core\\src\\syntax\\error\\mod.rs:819",
+            "struct BudgetTracker @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-parser-core\\src\\syntax\\error\\mod.rs:202",
+            "struct BudgetTracker @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-parser-core\\src\\syntax\\error\\mod.rs:202",
+            "struct BudgetTracker @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-parser-core\\src\\syntax\\error\\mod.rs:202",
+            "struct BudgetTracker @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-parser-core\\src\\syntax\\error\\mod.rs:202",
+            "struct ErrorContext @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-parser-core\\src\\syntax\\error\\mod.rs:28",
+            "struct ErrorContext @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-parser-core\\src\\syntax\\error\\mod.rs:28",
+            "struct ErrorContext @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-parser-core\\src\\syntax\\error\\mod.rs:28",
+            "struct ParseBudget @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-parser-core\\src\\syntax\\error\\mod.rs:120",
+            "struct ParseBudget @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-parser-core\\src\\syntax\\error\\mod.rs:120",
+            "struct ParseBudget @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-parser-core\\src\\syntax\\error\\mod.rs:120",
+            "struct ParseBudget @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-parser-core\\src\\syntax\\error\\mod.rs:120"
+          ]
+        },
+        {
+          "rule": "struct_missing",
+          "description": "pub struct removed or renamed",
+          "locations": [
+            "struct perl_parser_core::tokens::trivia::TriviaPreservingParser, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-parser-core\\src\\tokens\\trivia.rs:268",
+            "struct perl_parser_core::trivia::TriviaPreservingParser, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-parser-core\\src\\tokens\\trivia.rs:268",
+            "struct perl_parser_core::tokens::trivia_parser::TriviaParserContext, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-parser-core\\src\\tokens\\trivia_parser.rs:24",
+            "struct perl_parser_core::trivia_parser::TriviaParserContext, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-parser-core\\src\\tokens\\trivia_parser.rs:24"
+          ]
+        },
+        {
+          "rule": "struct_pub_field_missing",
+          "description": "pub struct's pub field removed or renamed",
+          "locations": [
+            "field terminated_early of struct ParseOutput, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-parser-core\\src\\syntax\\error\\mod.rs:535",
+            "field terminated_early of struct ParseOutput, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-parser-core\\src\\syntax\\error\\mod.rs:535",
+            "field terminated_early of struct ParseOutput, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-parser-core\\src\\syntax\\error\\mod.rs:535",
+            "field terminated_early of struct ParseOutput, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-parser-core\\src\\syntax\\error\\mod.rs:535"
+          ]
+        },
+        {
+          "rule": "type_mismatched_generic_lifetimes",
+          "description": "type now takes a different number of generic lifetimes",
+          "locations": [
+            "Struct TriviaLexer (0 -> 1 lifetime params) @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-parser-core\\src\\tokens\\trivia.rs:97",
+            "Struct TriviaLexer (0 -> 1 lifetime params) @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-parser-core\\src\\tokens\\trivia.rs:97"
+          ]
+        }
+      ],
+      "raw_report_sha256": "c83fce390328a09daa77fc133bc788f6419e289a75a6d8cf9eef58972c487423"
+    },
+    {
+      "name": "perl-module",
+      "exit_code": 1,
+      "status": "fail",
+      "checks": {
+        "pass": 192,
+        "fail": 4,
+        "warn": 0,
+        "skip": 56
+      },
+      "major_level_breaks": [
+        {
+          "rule": "enum_missing",
+          "description": "pub enum removed or renamed",
+          "locations": [
+            "enum perl_module::import::LoadTiming, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-module\\src\\import\\mod.rs:12",
+            "enum perl_module::import::ModuleImportKind, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-module\\src\\import\\mod.rs:76",
+            "enum perl_module::resolution::uri::ModuleUriResolution, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-module\\src\\resolution\\uri.rs:121",
+            "enum perl_module::resolution::ModuleUriResolution, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-module\\src\\resolution\\uri.rs:121",
+            "enum perl_module::import::ImportBehavior, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-module\\src\\import\\mod.rs:21",
+            "enum perl_module::import::ImportListForm, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-module\\src\\import\\mod.rs:56",
+            "enum perl_module::resolution::uri::IncRootKind, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-module\\src\\resolution\\uri.rs:15",
+            "enum perl_module::resolution::IncRootKind, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-module\\src\\resolution\\uri.rs:15",
+            "enum perl_module::import::RequireForm, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-module\\src\\import\\mod.rs:67",
+            "enum perl_module::reference::ModuleReferenceKind, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-module\\src\\reference\\mod.rs:12",
+            "enum perl_module::resolution::use_lib::UseLibAction, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-module\\src\\resolution\\use_lib.rs:27"
+          ]
+        },
+        {
+          "rule": "function_missing",
+          "description": "pub fn removed or renamed",
+          "locations": [
+            "function perl_module::import::parse_module_import_head, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-module\\src\\import\\mod.rs:173",
+            "function perl_module::import::resolve_known_export_tag, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-module\\src\\import\\mod.rs:129",
+            "function perl_module::resolution::uri::resolve_module_uri_with_effective_inc, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-module\\src\\resolution\\uri.rs:201",
+            "function perl_module::resolution::resolve_module_uri_with_effective_inc, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-module\\src\\resolution\\uri.rs:201",
+            "function perl_module::name::legacy_package_separator, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-module\\src\\name\\mod.rs:20",
+            "function perl_module::resolution::uri::resolve_module_uri, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-module\\src\\resolution\\uri.rs:137",
+            "function perl_module::resolution::resolve_module_uri, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-module\\src\\resolution\\uri.rs:137",
+            "function perl_module::name::normalize_package_separator, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-module\\src\\name\\mod.rs:10",
+            "function perl_module::boundary::find_standalone_module_token_ranges, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-module\\src\\boundary\\mod.rs:57",
+            "function perl_module::import_match::line_references_module_import, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-module\\src\\import_match\\mod.rs:16",
+            "function perl_module::rename::line_references_qualified_call, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-module\\src\\rename\\detection.rs:33",
+            "function perl_module::import::parse_qw_arg_list, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-module\\src\\import\\mod.rs:660",
+            "function perl_module::resolution::use_lib::resolve_use_lib_paths_from_source_at_offset, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-module\\src\\resolution\\use_lib.rs:100",
+            "function perl_module::token_core::is_module_token_char, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-module\\src\\token_core\\mod.rs:49",
+            "function perl_module::resolution::use_lib::extract_use_lib_operations, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-module\\src\\resolution\\use_lib.rs:61",
+            "function perl_module::token_core::parse_module_token, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-module\\src\\token_core\\mod.rs:17",
+            "function perl_module::token_parser::parse_module_token, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-module\\src\\token_core\\mod.rs:17",
+            "function perl_module::rename::apply_module_rename_edits, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-module\\src\\rename\\mod.rs:123",
+            "function perl_module::reference::extract_module_reference, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-module\\src\\reference\\mod.rs:81",
+            "function perl_module::reference::find_module_reference, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-module\\src\\reference\\mod.rs:42",
+            "function perl_module::path::module_path_to_name, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-module\\src\\path\\mod.rs:25",
+            "function perl_module::token::contains_module_token, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-module\\src\\token\\mod.rs:17",
+            "function perl_module::path::normalize_package_separator, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-module\\src\\path\\mod.rs:10",
+            "function perl_module::name::module_variant_pairs, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-module\\src\\name\\mod.rs:33",
+            "function perl_module::token::module_variant_pairs, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-module\\src\\name\\mod.rs:33",
+            "function perl_module::rename::replace_module_name_prefix, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-module\\src\\rename\\rewriting.rs:3",
+            "function perl_module::boundary::contains_standalone_module_token, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-module\\src\\boundary\\mod.rs:66",
+            "function perl_module::rename::line_references_package_declaration, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-module\\src\\rename\\detection.rs:86",
+            "function perl_module::resolution::use_lib::no_lib_cancelled_paths_at_offset, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-module\\src\\resolution\\use_lib.rs:142",
+            "function perl_module::rename::line_references_isa_assignment, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-module\\src\\rename\\detection.rs:20",
+            "function perl_module::token_core::is_module_identifier_char, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-module\\src\\token_core\\mod.rs:55",
+            "function perl_module::resolution::use_lib::resolve_use_lib_paths, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-module\\src\\resolution\\use_lib\\resolve.rs:12",
+            "function perl_module::resolution::use_lib::resolve_use_lib_paths_from_source, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-module\\src\\resolution\\use_lib.rs:89",
+            "function perl_module::token_core::has_standalone_module_token_boundaries, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-module\\src\\token_core\\mod.rs:40",
+            "function perl_module::import::extract_require_import_symbols, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-module\\src\\import\\mod.rs:359",
+            "function perl_module::resolution::use_lib::extract_use_lib_paths, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-module\\src\\resolution\\use_lib.rs:46",
+            "function perl_module::resolution::path::resolve_module_path, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-module\\src\\resolution\\path.rs:19",
+            "function perl_module::resolution::resolve_module_path, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-module\\src\\resolution\\path.rs:19",
+            "function perl_module::resolution::uri::build_effective_inc_roots, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-module\\src\\resolution\\uri.rs:54",
+            "function perl_module::resolution::build_effective_inc_roots, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-module\\src\\resolution\\uri.rs:54",
+            "function perl_module::rename::plan_module_rename_edits, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-module\\src\\rename\\mod.rs:32",
+            "function perl_module::reference::extract_module_reference_extended, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-module\\src\\reference\\mod.rs:88",
+            "function perl_module::reference::find_module_reference_extended, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-module\\src\\reference\\mod.rs:60",
+            "function perl_module::path::file_path_to_module_name, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-module\\src\\path\\mod.rs:38",
+            "function perl_module::token::replace_module_token, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-module\\src\\token\\mod.rs:25",
+            "function perl_module::path::module_name_to_path, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-module\\src\\path\\mod.rs:16"
+          ]
+        },
+        {
+          "rule": "module_missing",
+          "description": "pub module removed or renamed",
+          "locations": [
+            "mod perl_module::resolution::uri, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-module\\src\\resolution\\uri.rs:1",
+            "mod perl_module::name, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-module\\src\\name\\mod.rs:1",
+            "mod perl_module::rename, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-module\\src\\rename\\mod.rs:1",
+            "mod perl_module::resolution::path, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-module\\src\\resolution\\path.rs:1",
+            "mod perl_module::token, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-module\\src\\token\\mod.rs:1",
+            "mod perl_module::resolution, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-module\\src\\resolution\\mod.rs:1",
+            "mod perl_module::token_core, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-module\\src\\token_core\\mod.rs:1",
+            "mod perl_module::import_match, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-module\\src\\import_match\\mod.rs:1",
+            "mod perl_module::import, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-module\\src\\import\\mod.rs:1",
+            "mod perl_module::reference, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-module\\src\\reference\\mod.rs:1",
+            "mod perl_module::resolution::use_lib, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-module\\src\\resolution\\use_lib.rs:1",
+            "mod perl_module::token_parser, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-module\\src\\token_parser\\mod.rs:1",
+            "mod perl_module::boundary, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-module\\src\\boundary\\mod.rs:1",
+            "mod perl_module::path, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-module\\src\\path\\mod.rs:1"
+          ]
+        },
+        {
+          "rule": "struct_missing",
+          "description": "pub struct removed or renamed",
+          "locations": [
+            "struct perl_module::reference::ModuleReference, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-module\\src\\reference\\mod.rs:21",
+            "struct perl_module::resolution::use_lib::UseLibPath, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-module\\src\\resolution\\use_lib.rs:18",
+            "struct perl_module::import::DispatchSemantics, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-module\\src\\import\\mod.rs:30",
+            "struct perl_module::import::ModuleImportHead, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-module\\src\\import\\mod.rs:108",
+            "struct perl_module::boundary::ModuleTokenRangeIter, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-module\\src\\boundary\\mod.rs:20",
+            "struct perl_module::import::RequireImportEntry, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-module\\src\\import\\mod.rs:323",
+            "struct perl_module::resolution::uri::IncRoot, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-module\\src\\resolution\\uri.rs:36",
+            "struct perl_module::resolution::IncRoot, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-module\\src\\resolution\\uri.rs:36",
+            "struct perl_module::token_core::ModuleTokenSpan, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-module\\src\\token_core\\mod.rs:5",
+            "struct perl_module::token_parser::ModuleTokenSpan, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-module\\src\\token_core\\mod.rs:5",
+            "struct perl_module::rename::ModuleLineEdit, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-module\\src\\rename\\mod.rs:19",
+            "struct perl_module::boundary::ModuleTokenRange, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-module\\src\\boundary\\mod.rs:11"
+          ]
+        }
+      ],
+      "raw_report_sha256": "89df0149d94e97f0b0e5b8ba4cc505943acfdc2e8c6faa25f66761ef016ec470"
+    },
+    {
+      "name": "perl-semantic-facts",
+      "exit_code": 0,
+      "status": "pass",
+      "checks": {
+        "pass": 196,
+        "fail": 0,
+        "warn": 0,
+        "skip": 56
+      },
+      "major_level_breaks": [],
+      "raw_report_sha256": "e5b463edb95dbfb9c43efa2eb87e82043f465f349bf6d1beed5a812479352ac1"
+    },
+    {
+      "name": "perl-source-identity",
+      "exit_code": 0,
+      "status": "not_applicable",
+      "checks": {
+        "pass": 0,
+        "fail": 0,
+        "warn": 0,
+        "skip": 0
+      },
+      "major_level_breaks": [],
+      "raw_report_sha256": "",
+      "disposition": {
+        "basis": "baseline_absent",
+        "evidence": "crates/perl-source-identity/Cargo.toml does not exist at baseline commit ffee2824938f415e54923112c7b79e3f22040699 (v0.17.0); the crate first publishes after the baseline, so it carries no absorbed-break obligation for this release"
+      }
+    },
+    {
+      "name": "perl-symbol",
+      "exit_code": 0,
+      "status": "pass",
+      "checks": {
+        "pass": 196,
+        "fail": 0,
+        "warn": 0,
+        "skip": 56
+      },
+      "major_level_breaks": [],
+      "raw_report_sha256": "8600a98c1684c2f822edcfe93b01ad1e0e6a8345cdadd7e2f6c6b68dadb3dc3c"
+    },
+    {
+      "name": "perl-lsp-rs-core",
+      "exit_code": 1,
+      "status": "fail",
+      "checks": {
+        "pass": 180,
+        "fail": 15,
+        "warn": 1,
+        "skip": 56
+      },
+      "major_level_breaks": [
+        {
+          "rule": "constructible_struct_adds_field",
+          "description": "externally-constructible struct adds field",
+          "locations": [
+            "field PreparedInlineCompletionContext.suffix @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\providers\\inline_completion\\mod.rs:61",
+            "field PreparedInlineCompletionContext.preceding_lines @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\providers\\inline_completion\\mod.rs:65",
+            "field PreparedInlineCompletionContext.following_lines @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\providers\\inline_completion\\mod.rs:69",
+            "field PreparedInlineCompletionContext.request @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\providers\\inline_completion\\mod.rs:74",
+            "field PreparedInlineCompletionContext.truncation @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\providers\\inline_completion\\mod.rs:78",
+            "field PreparedInlineCompletionContext.suffix @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\providers\\inline_completion\\mod.rs:61",
+            "field PreparedInlineCompletionContext.preceding_lines @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\providers\\inline_completion\\mod.rs:65",
+            "field PreparedInlineCompletionContext.following_lines @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\providers\\inline_completion\\mod.rs:69",
+            "field PreparedInlineCompletionContext.request @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\providers\\inline_completion\\mod.rs:74",
+            "field PreparedInlineCompletionContext.truncation @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\providers\\inline_completion\\mod.rs:78",
+            "field ProjectPerlConfig.discovery_extensions @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\config\\mod.rs:2382",
+            "field ProjectPerlConfig.discovery_skipped_dirs @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\config\\mod.rs:2384",
+            "field LspArgs.external_tools @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\runtime\\launcher\\mod.rs:303",
+            "field LspArgs.critic_compatibility @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\runtime\\launcher\\mod.rs:311",
+            "field LspArgs.json @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\runtime\\launcher\\mod.rs:315",
+            "field LspArgs.external_tools @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\runtime\\launcher\\mod.rs:303",
+            "field LspArgs.critic_compatibility @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\runtime\\launcher\\mod.rs:311",
+            "field LspArgs.json @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\runtime\\launcher\\mod.rs:315",
+            "field AiStreamingConfig.user_enabled @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\config\\mod.rs:344",
+            "field OpenAiConfig.local_model_mode @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\providers\\ai\\openai.rs:59",
+            "field OpenAiConfig.max_inflight @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\providers\\ai\\openai.rs:65",
+            "field OpenAiConfig.local_model_mode @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\providers\\ai\\openai.rs:59",
+            "field OpenAiConfig.max_inflight @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\providers\\ai\\openai.rs:65",
+            "field OpenAiConfig.local_model_mode @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\providers\\ai\\openai.rs:59",
+            "field OpenAiConfig.max_inflight @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\providers\\ai\\openai.rs:65",
+            "field OpenAiConfig.local_model_mode @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\providers\\ai\\openai.rs:59",
+            "field OpenAiConfig.max_inflight @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\providers\\ai\\openai.rs:65",
+            "field NativeBuildHints.libs_flags @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\config\\native_build_hints.rs:39",
+            "field NativeBuildHints.libs_alternatives @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\config\\native_build_hints.rs:42",
+            "field NativeBuildHints.define_flags @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\config\\native_build_hints.rs:45",
+            "field NativeBuildHints.object_files @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\config\\native_build_hints.rs:47",
+            "field NativeBuildHints.myextlib_files @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\config\\native_build_hints.rs:50",
+            "field NativeBuildHints.diagnostics @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\config\\native_build_hints.rs:53",
+            "field AiCompletionConfig.activation_authority @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\config\\mod.rs:253",
+            "field AiCompletionConfig.user_enabled @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\config\\mod.rs:259",
+            "field AiCompletionConfig.project_opt_out @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\config\\mod.rs:262",
+            "field AiCompletionConfig.local_model_mode @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\config\\mod.rs:288",
+            "field ServerConfig.format_on_save @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\config\\mod.rs:141",
+            "field Catalog.evidence_policy @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\feature_catalog.rs:190",
+            "field Catalog.evidence_classes @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\feature_catalog.rs:194",
+            "field CriticFinding.observed_shape @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\tooling\\perl_critic\\native\\native_contract.rs:91",
+            "field Feature.policy_class @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\feature_catalog.rs:126",
+            "field Feature.direction @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\feature_catalog.rs:135",
+            "field Feature.capability_gate @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\feature_catalog.rs:139",
+            "field Feature.registration @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\feature_catalog.rs:144",
+            "field Feature.implementation_owner @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\feature_catalog.rs:148",
+            "field Feature.state_owner @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\feature_catalog.rs:152",
+            "field Feature.evidence @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\feature_catalog.rs:160",
+            "field Feature.limitations @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\feature_catalog.rs:163",
+            "field Feature.claim_boundary @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\feature_catalog.rs:166",
+            "field ProjectFormattingConfig.format_on_save @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\config\\mod.rs:2475",
+            "field CompletionItem.insert_text_format @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\providers\\completion_item\\mod.rs:80",
+            "field CompletionItem.insert_text_format @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\providers\\completion_item\\mod.rs:80",
+            "field CompletionItem.insert_text_format @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\providers\\completion_item\\mod.rs:80",
+            "field CriticContext.scope_issues @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\tooling\\perl_critic\\native\\native_contract.rs:132",
+            "field CriticContext.pragma_map @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\tooling\\perl_critic\\native\\native_contract.rs:134",
+            "field AdvertisedFeatures.on_type_formatting @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\features\\flags.rs:47",
+            "field AdvertisedFeatures.on_type_formatting @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\features\\flags.rs:47",
+            "field AreaStats.proven @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\feature_catalog.rs:440",
+            "field AreaStats.not_proven @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\feature_catalog.rs:444",
+            "field AreaStats.unsupported @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\feature_catalog.rs:448",
+            "field Diagnostic.fixable @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\providers\\diagnostics\\internal_types.rs:37",
+            "field Diagnostic.critic_observation @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\providers\\diagnostics\\internal_types.rs:45",
+            "field Diagnostic.fixable @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\providers\\diagnostics\\internal_types.rs:37",
+            "field Diagnostic.critic_observation @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\providers\\diagnostics\\internal_types.rs:45"
+          ]
+        },
+        {
+          "rule": "constructible_struct_adds_private_field",
+          "description": "struct no longer constructible due to new private field",
+          "locations": [
+            "field PerlOracleEnv.ambient_env @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\config\\perl_oracle_env.rs:165",
+            "field PerlOracleEnv.ambient_env @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\config\\perl_oracle_env.rs:165"
+          ]
+        },
+        {
+          "rule": "enum_discriminants_undefined_non_unit_variant",
+          "description": "enum's variants no longer have defined discriminants due to non-unit variant",
+          "locations": [
+            "enum CriticSuppressionScope @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\tooling\\perl_critic\\native\\native_suppressions.rs:29"
+          ]
+        },
+        {
+          "rule": "enum_marked_non_exhaustive",
+          "description": "enum marked #[non_exhaustive]",
+          "locations": [
+            "enum FeatureProfileKind @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\features\\contracts.rs:30",
+            "enum FeatureProfileKind @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\features\\contracts.rs:30",
+            "enum FeatureProfileKind @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\features\\contracts.rs:30",
+            "enum JsonRpcId @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\protocol\\jsonrpc.rs:12",
+            "enum ErrorCode @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\protocol\\errors.rs:14"
+          ]
+        },
+        {
+          "rule": "enum_no_repr_variant_discriminant_changed",
+          "description": "enum variant had its discriminant change value",
+          "locations": [
+            "variant PirShadowRefusalReason::ShadowObserved 5 -> 6 @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\providers\\navigation\\references_pir_shadow.rs:120",
+            "variant PirShadowRefusalReason::ShadowObserved 5 -> 6 @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\providers\\navigation\\references_pir_shadow.rs:120",
+            "variant LaunchParseError::MissingValue 1 -> 3 @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\runtime\\launcher\\mod.rs:588",
+            "variant LaunchParseError::InvalidFeatureProfile 2 -> 4 @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\runtime\\launcher\\mod.rs:593",
+            "variant LaunchParseError::InvalidPort 3 -> 5 @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\runtime\\launcher\\mod.rs:598",
+            "variant LaunchParseError::InvalidShell 4 -> 6 @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\runtime\\launcher\\mod.rs:605",
+            "variant LaunchParseError::InvalidRuntimeMode 5 -> 7 @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\runtime\\launcher\\mod.rs:610",
+            "variant LaunchParseError::InvalidDiagnosticMode 6 -> 8 @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\runtime\\launcher\\mod.rs:615",
+            "variant LaunchParseError::MissingValue 1 -> 3 @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\runtime\\launcher\\mod.rs:588",
+            "variant LaunchParseError::InvalidFeatureProfile 2 -> 4 @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\runtime\\launcher\\mod.rs:593",
+            "variant LaunchParseError::InvalidPort 3 -> 5 @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\runtime\\launcher\\mod.rs:598",
+            "variant LaunchParseError::InvalidShell 4 -> 6 @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\runtime\\launcher\\mod.rs:605",
+            "variant LaunchParseError::InvalidRuntimeMode 5 -> 7 @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\runtime\\launcher\\mod.rs:610",
+            "variant LaunchParseError::InvalidDiagnosticMode 6 -> 8 @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\runtime\\launcher\\mod.rs:615",
+            "variant Maturity::Planned 3 -> 2 @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\feature_catalog.rs:54",
+            "variant CodeActionKind::SourceFixAll 7 -> 6 @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\providers\\code_actions\\types.rs:75",
+            "variant CodeActionKind::SourceModernize 8 -> 7 @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\providers\\code_actions\\types.rs:77",
+            "variant CodeActionKind::SourceFixAll 7 -> 6 @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\providers\\code_actions\\types.rs:75",
+            "variant CodeActionKind::SourceModernize 8 -> 7 @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\providers\\code_actions\\types.rs:77",
+            "variant LaunchAction::Completion 6 -> 8 @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\runtime\\launcher\\mod.rs:476",
+            "variant LaunchAction::Version 7 -> 9 @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\runtime\\launcher\\mod.rs:481",
+            "variant LaunchAction::FeaturesJson 8 -> 10 @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\runtime\\launcher\\mod.rs:483",
+            "variant LaunchAction::PerltidyCompatReport 9 -> 11 @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\runtime\\launcher\\mod.rs:485",
+            "variant LaunchAction::PerlcriticCompatReport 10 -> 12 @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\runtime\\launcher\\mod.rs:490",
+            "variant LaunchAction::RiprFacts 11 -> 13 @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\runtime\\launcher\\mod.rs:499",
+            "variant LaunchAction::Help 12 -> 14 @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\runtime\\launcher\\mod.rs:514",
+            "variant LaunchAction::Completion 6 -> 8 @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\runtime\\launcher\\mod.rs:476",
+            "variant LaunchAction::Version 7 -> 9 @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\runtime\\launcher\\mod.rs:481",
+            "variant LaunchAction::FeaturesJson 8 -> 10 @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\runtime\\launcher\\mod.rs:483",
+            "variant LaunchAction::PerltidyCompatReport 9 -> 11 @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\runtime\\launcher\\mod.rs:485",
+            "variant LaunchAction::PerlcriticCompatReport 10 -> 12 @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\runtime\\launcher\\mod.rs:490",
+            "variant LaunchAction::RiprFacts 11 -> 13 @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\runtime\\launcher\\mod.rs:499",
+            "variant LaunchAction::Help 12 -> 14 @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\runtime\\launcher\\mod.rs:514"
+          ]
+        },
+        {
+          "rule": "enum_struct_variant_field_added",
+          "description": "pub enum struct variant field added",
+          "locations": [
+            "field json of variant LaunchAction::Doctor @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\runtime\\launcher\\mod.rs:463",
+            "field json of variant LaunchAction::Doctor @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\runtime\\launcher\\mod.rs:463",
+            "field suggestion of variant LaunchParseError::UnknownOption @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\runtime\\launcher\\mod.rs:572",
+            "field suggestion of variant LaunchParseError::UnknownOption @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\runtime\\launcher\\mod.rs:572"
+          ]
+        },
+        {
+          "rule": "enum_variant_added",
+          "description": "enum variant added on exhaustive enum",
+          "locations": [
+            "variant LaunchAction:DoctorExternalTools @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\runtime\\launcher\\mod.rs:466",
+            "variant LaunchAction:DoctorCriticCompatibility @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\runtime\\launcher\\mod.rs:471",
+            "variant LaunchAction:DoctorExternalTools @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\runtime\\launcher\\mod.rs:466",
+            "variant LaunchAction:DoctorCriticCompatibility @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\runtime\\launcher\\mod.rs:471",
+            "variant LaunchParseError:McpAliasRejected @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\runtime\\launcher\\mod.rs:575",
+            "variant LaunchParseError:ParserDiagnostic @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\runtime\\launcher\\mod.rs:583",
+            "variant LaunchParseError:McpAliasRejected @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\runtime\\launcher\\mod.rs:575",
+            "variant LaunchParseError:ParserDiagnostic @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\runtime\\launcher\\mod.rs:583",
+            "variant Maturity:Proven @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\feature_catalog.rs:48",
+            "variant Maturity:Unsupported @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\feature_catalog.rs:57",
+            "variant Maturity:NotProven @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\feature_catalog.rs:61",
+            "variant CatalogError:MissingOverride @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\feature_catalog.rs:484",
+            "variant BackendError:Saturated @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\providers\\inline_completion\\mod.rs:384",
+            "variant BackendError:BudgetExceeded @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\providers\\inline_completion\\mod.rs:391",
+            "variant BackendError:Saturated @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\providers\\inline_completion\\mod.rs:384",
+            "variant BackendError:BudgetExceeded @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\providers\\inline_completion\\mod.rs:391",
+            "variant CriticSuppressionScope:ToEndOfFile @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\tooling\\perl_critic\\native\\native_suppressions.rs:32",
+            "variant CriticSuppressionScope:UntilLine @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\tooling\\perl_critic\\native\\native_suppressions.rs:38",
+            "variant FormattingError:InvalidOutputEncoding @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\providers\\formatting\\formatting.rs:49",
+            "variant FormattingError:NativeNotProven @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\providers\\formatting\\formatting.rs:57",
+            "variant FormattingError:InvalidOutputEncoding @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\providers\\formatting\\formatting.rs:49",
+            "variant FormattingError:NativeNotProven @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\providers\\formatting\\formatting.rs:57"
+          ]
+        },
+        {
+          "rule": "enum_variant_missing",
+          "description": "pub enum variant removed or renamed",
+          "locations": [
+            "variant CriticSuppressionScope::File, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-lsp-rs-core\\src\\tooling\\perl_critic\\native\\native_suppressions.rs:11",
+            "variant Maturity::Experimental, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-lsp-rs-core\\src\\feature_catalog.rs:36",
+            "variant Maturity::Ga, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-lsp-rs-core\\src\\feature_catalog.rs:40",
+            "variant Maturity::Production, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-lsp-rs-core\\src\\feature_catalog.rs:44",
+            "variant CodeActionKind::SourceOrganizeImports, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-lsp-rs-core\\src\\providers\\code_actions\\types.rs:60",
+            "variant CodeActionKind::SourceOrganizeImports, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-lsp-rs-core\\src\\providers\\code_actions\\types.rs:60"
+          ]
+        },
+        {
+          "rule": "function_missing",
+          "description": "pub fn removed or renamed",
+          "locations": [
+            "function perl_lsp_rs_core::transport::framing::read_message, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-lsp-rs-core\\src\\transport\\framing.rs:390",
+            "function perl_lsp_rs_core::providers::import_management::guess_module_for_function, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-lsp-rs-core\\src\\providers\\import_management\\mod.rs:9",
+            "function perl_lsp_rs_core::providers::guess_module_for_function, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-lsp-rs-core\\src\\providers\\import_management\\mod.rs:9",
+            "function perl_lsp_rs_core::providers::symbol_query::compare_names_by_query, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-lsp-rs-core\\src\\providers\\symbol_query\\mod.rs:52",
+            "function perl_lsp_rs_core::providers::compare_names_by_query, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-lsp-rs-core\\src\\providers\\symbol_query\\mod.rs:52",
+            "function perl_lsp_rs_core::runtime::launcher::compliance_percent_for_profile, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-lsp-rs-core\\src\\features\\grid.rs:59",
+            "function perl_lsp_rs_core::runtime::compliance_percent_for_profile, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-lsp-rs-core\\src\\features\\grid.rs:59",
+            "function perl_lsp_rs_core::feature_catalog::render_lsp_fallback_module, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-lsp-rs-core\\src\\feature_catalog.rs:497",
+            "function perl_lsp_rs_core::runtime::input_validation::validate_lsp_request, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-lsp-rs-core\\src\\runtime\\input_validation\\lsp_validation.rs:10",
+            "function perl_lsp_rs_core::runtime::validate_lsp_request, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-lsp-rs-core\\src\\runtime\\input_validation\\lsp_validation.rs:10",
+            "function perl_lsp_rs_core::providers::rename::is_in_string, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-lsp-rs-core\\src\\providers\\rename\\apply.rs:91",
+            "function perl_lsp_rs_core::providers::is_in_string, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-lsp-rs-core\\src\\providers\\rename\\apply.rs:91",
+            "function perl_lsp_rs_core::providers::rename::is_in_comment, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-lsp-rs-core\\src\\providers\\rename\\apply.rs:77",
+            "function perl_lsp_rs_core::providers::is_in_comment, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-lsp-rs-core\\src\\providers\\rename\\apply.rs:77",
+            "function perl_lsp_rs_core::features::contracts::catalog::compliance_percent, previously @ file C:/cargo-targets/pr-15858\\debug\\build\\perl-lsp-rs-core-2c3ceeffd52ceb35\\out/feature_contracts.rs:1408",
+            "function perl_lsp_rs_core::features::grid::catalog::compliance_percent, previously @ file C:/cargo-targets/pr-15858\\debug\\build\\perl-lsp-rs-core-2c3ceeffd52ceb35\\out/feature_contracts.rs:1408",
+            "function perl_lsp_rs_core::governance::catalog::compliance_percent, previously @ file C:/cargo-targets/pr-15858\\debug\\build\\perl-lsp-rs-core-2c3ceeffd52ceb35\\out/feature_contracts.rs:1408"
+          ]
+        },
+        {
+          "rule": "function_parameter_count_changed",
+          "description": "pub fn parameter count changed",
+          "locations": [
+            "perl_lsp_rs_core::runtime::launcher::format_info_output now takes 6 parameters instead of 5, @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\runtime\\launcher\\mod.rs:1304",
+            "perl_lsp_rs_core::runtime::format_info_output now takes 6 parameters instead of 5, @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\runtime\\launcher\\mod.rs:1304",
+            "perl_lsp_rs_core::providers::diagnostics::role_conflicts::check_role_conflicts now takes 4 parameters instead of 3, @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\providers\\diagnostics\\lints\\role_conflicts.rs:45",
+            "perl_lsp_rs_core::providers::role_conflicts::check_role_conflicts now takes 4 parameters instead of 3, @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\providers\\diagnostics\\lints\\role_conflicts.rs:45",
+            "perl_lsp_rs_core::providers::diagnostics::version_compat::check_version_compat now takes 3 parameters instead of 2, @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\providers\\diagnostics\\lints\\version_compat.rs:141",
+            "perl_lsp_rs_core::providers::version_compat::check_version_compat now takes 3 parameters instead of 2, @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\providers\\diagnostics\\lints\\version_compat.rs:141"
+          ]
+        },
+        {
+          "rule": "inherent_method_missing",
+          "description": "pub method removed or renamed",
+          "locations": [
+            "Maturity::is_advertised, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-lsp-rs-core\\src\\feature_catalog.rs:49"
+          ]
+        },
+        {
+          "rule": "method_parameter_count_changed",
+          "description": "pub method parameter count changed",
+          "locations": [
+            "perl_lsp_rs_core::config::ProjectConfig::apply_to_workspace_config takes 1 parameters @ C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-lsp-rs-core\\src\\config\\mod.rs:1353, but now takes 2 parameters in E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\config\\mod.rs:2856",
+            "perl_lsp_rs_core::providers::diagnostics::DiagnosticsProvider::new takes 2 parameters @ C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-lsp-rs-core\\src\\providers\\diagnostics\\diagnostics.rs:129, but now takes 0 parameters in E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\providers\\diagnostics\\diagnostics.rs:147",
+            "perl_lsp_rs_core::providers::DiagnosticsProvider::new takes 2 parameters @ C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-lsp-rs-core\\src\\providers\\diagnostics\\diagnostics.rs:129, but now takes 0 parameters in E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\providers\\diagnostics\\diagnostics.rs:147",
+            "perl_lsp_rs_core::tooling::perl_critic::CriticAnalyzer::analyze_file_with_hash takes 2 parameters @ C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-lsp-rs-core\\src\\tooling\\perl_critic\\analyzer.rs:82, but now takes 3 parameters in E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\tooling\\perl_critic\\analyzer.rs:82"
+          ]
+        },
+        {
+          "rule": "pub_module_level_const_missing",
+          "description": "pub module-level const is missing",
+          "locations": [
+            "COMPLIANCE_PERCENT @ file C:/cargo-targets/pr-15858\\debug\\build\\perl-lsp-rs-core-2c3ceeffd52ceb35\\out/feature_contracts.rs:9",
+            "COMPLIANCE_PERCENT @ file C:/cargo-targets/pr-15858\\debug\\build\\perl-lsp-rs-core-2c3ceeffd52ceb35\\out/feature_contracts.rs:9",
+            "COMPLIANCE_PERCENT @ file C:/cargo-targets/pr-15858\\debug\\build\\perl-lsp-rs-core-2c3ceeffd52ceb35\\out/feature_contracts.rs:9"
+          ]
+        },
+        {
+          "rule": "struct_missing",
+          "description": "pub struct removed or renamed",
+          "locations": [
+            "struct perl_lsp_rs_core::config::NextEditConfig, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-lsp-rs-core\\src\\config\\mod.rs:169",
+            "struct perl_lsp_rs_core::transport::framing::ContentLengthMessageReader, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-lsp-rs-core\\src\\transport\\framing.rs:333",
+            "struct perl_lsp_rs_core::performance::IncrementalParser, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-lsp-rs-core\\src\\performance\\mod.rs:102",
+            "struct perl_lsp_rs_core::tooling::performance::IncrementalParser, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-lsp-rs-core\\src\\performance\\mod.rs:102"
+          ]
+        },
+        {
+          "rule": "struct_pub_field_missing",
+          "description": "pub struct's pub field removed or renamed",
+          "locations": [
+            "field test_runner_enabled of struct ServerConfig, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-lsp-rs-core\\src\\config\\mod.rs:56",
+            "field test_runner_command of struct ServerConfig, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-lsp-rs-core\\src\\config\\mod.rs:58",
+            "field test_runner_args of struct ServerConfig, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-lsp-rs-core\\src\\config\\mod.rs:60",
+            "field test_runner_timeout of struct ServerConfig, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-lsp-rs-core\\src\\config\\mod.rs:62",
+            "field next_edit of struct ServerConfig, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-lsp-rs-core\\src\\config\\mod.rs:157",
+            "field experimental of struct AreaStats, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-lsp-rs-core\\src\\feature_catalog.rs:243",
+            "field ga of struct AreaStats, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-lsp-rs-core\\src\\feature_catalog.rs:247",
+            "field production of struct AreaStats, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-lsp-rs-core\\src\\feature_catalog.rs:249",
+            "field provider of struct ProjectAiCompletionConfig, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-lsp-rs-core\\src\\config\\mod.rs:1017",
+            "field endpoint of struct ProjectAiCompletionConfig, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-lsp-rs-core\\src\\config\\mod.rs:1019",
+            "field model of struct ProjectAiCompletionConfig, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-lsp-rs-core\\src\\config\\mod.rs:1021",
+            "field api_key_env of struct ProjectAiCompletionConfig, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-lsp-rs-core\\src\\config\\mod.rs:1023",
+            "field api_key_header of struct ProjectAiCompletionConfig, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-lsp-rs-core\\src\\config\\mod.rs:1025",
+            "field api_key_prefix of struct ProjectAiCompletionConfig, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-lsp-rs-core\\src\\config\\mod.rs:1027",
+            "field source_organize_imports of struct BuildFlags, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-lsp-rs-core\\src\\features\\flags.rs:134",
+            "field source_organize_imports of struct BuildFlags, previously @ file C:\\cargo-targets\\pr-15858\\semver-checks\\git-ffee2824938f415e54923112c7b79e3f22040699\\27e14ed3d0c076980528d0c2ec93880b9f79c73c\\crates\\perl-lsp-rs-core\\src\\features\\flags.rs:134",
+            "Maturity::Planned moved from position 4 to 3, @ E:\\Code\\zcode\\Rust\\perl-lsp-swarm-worktrees\\pr-15858\\crates\\perl-lsp-rs-core\\src\\feature_catalog.rs:54"
+          ]
+        }
+      ],
+      "raw_report_sha256": "ef6ef0965c67a44b8fbced7a9e7ce2c7f6f51f3b618506a4788f92f766b6ac81"
+    }
+  ]
+}

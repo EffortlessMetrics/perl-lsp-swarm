@@ -1,0 +1,164 @@
+{
+  "schema_version": 1,
+  "programme": "perl_regex_modifier_conformance",
+  "family": "modifiers.misc",
+  "owner_issue": 7036,
+  "rows": [
+    {
+      "id": "modifiers.misc.g-global",
+      "family": "modifiers.misc",
+      "authority": "perlop(1) 'Modifiers': /g applies the match globally",
+      "operator": "match",
+      "profile": { "perl_minor": 26, "enhanced_xx": "disabled" },
+      "modifier_sequence": "g",
+      "positive_source": null,
+      "negative_source": null,
+      "expected": {
+        "global": true,
+        "diagnostic_codes": []
+      },
+      "completeness": "proven",
+      "owner_issue": 7036,
+      "oracle_disposition": "not_applicable"
+    },
+    {
+      "id": "modifiers.misc.c-with-g",
+      "family": "modifiers.misc",
+      "authority": "perlop(1) 'Modifiers': /c preserves the current match position on m//gc failure",
+      "operator": "match",
+      "profile": { "perl_minor": 26, "enhanced_xx": "disabled" },
+      "modifier_sequence": "gc",
+      "positive_source": null,
+      "negative_source": null,
+      "expected": {
+        "global": true,
+        "diagnostic_codes": []
+      },
+      "completeness": "proven",
+      "owner_issue": 7036,
+      "oracle_disposition": "not_applicable"
+    },
+    {
+      "id": "modifiers.misc.c-without-g-inert",
+      "family": "modifiers.misc",
+      "authority": "perlop(1): /c without /g is accepted by Perl but has no effect; should emit a diagnostic",
+      "operator": "match",
+      "profile": { "perl_minor": 26, "enhanced_xx": "disabled" },
+      "modifier_sequence": "c",
+      "positive_source": null,
+      "negative_source": null,
+      "expected": {
+        "global": false,
+        "diagnostic_codes": ["modifier_has_no_effect"]
+      },
+      "completeness": "proven",
+      "owner_issue": 7036,
+      "oracle_disposition": "not_applicable"
+    },
+    {
+      "id": "modifiers.misc.i-case-insensitive",
+      "family": "modifiers.misc",
+      "authority": "perlop(1) 'Modifiers': /i makes the match case-insensitive",
+      "operator": "match",
+      "profile": { "perl_minor": 26, "enhanced_xx": "disabled" },
+      "modifier_sequence": "i",
+      "positive_source": null,
+      "negative_source": null,
+      "expected": {
+        "case_insensitive": true,
+        "diagnostic_codes": []
+      },
+      "completeness": "proven",
+      "owner_issue": 7036,
+      "oracle_disposition": "not_applicable"
+    },
+    {
+      "id": "modifiers.misc.m-multiline",
+      "family": "modifiers.misc",
+      "authority": "perlop(1) 'Modifiers': /m makes ^ and $ match at line boundaries",
+      "operator": "match",
+      "profile": { "perl_minor": 26, "enhanced_xx": "disabled" },
+      "modifier_sequence": "m",
+      "positive_source": null,
+      "negative_source": null,
+      "expected": {
+        "multiline": true,
+        "diagnostic_codes": []
+      },
+      "completeness": "proven",
+      "owner_issue": 7036,
+      "oracle_disposition": "not_applicable"
+    },
+    {
+      "id": "modifiers.misc.s-single-line",
+      "family": "modifiers.misc",
+      "authority": "perlop(1) 'Modifiers': /s makes . match newline",
+      "operator": "match",
+      "profile": { "perl_minor": 26, "enhanced_xx": "disabled" },
+      "modifier_sequence": "s",
+      "positive_source": null,
+      "negative_source": null,
+      "expected": {
+        "single_line": true,
+        "diagnostic_codes": []
+      },
+      "completeness": "proven",
+      "owner_issue": 7036,
+      "oracle_disposition": "not_applicable"
+    },
+    {
+      "id": "modifiers.misc.qr-rejects-g-c-e-r",
+      "family": "modifiers.misc",
+      "authority": "perlop(1): qr// does not accept /g /c /e /r (match-process or substitution modifiers)",
+      "operator": "quote_regex",
+      "profile": { "perl_minor": 26, "enhanced_xx": "disabled" },
+      "modifier_sequence": "gcer",
+      "positive_source": null,
+      "negative_source": null,
+      "expected": {
+        "diagnostic_codes": [
+          "modifier_not_allowed_for_operator",
+          "modifier_not_allowed_for_operator",
+          "modifier_not_allowed_for_operator",
+          "modifier_not_allowed_for_operator"
+        ]
+      },
+      "completeness": "proven",
+      "owner_issue": 7036,
+      "oracle_disposition": "not_applicable"
+    },
+    {
+      "id": "modifiers.misc.substitution-c-inert",
+      "family": "modifiers.misc",
+      "authority": "perlop(1): s///gc is accepted by Perl but /c has no effect in substitutions",
+      "operator": "substitution",
+      "profile": { "perl_minor": 26, "enhanced_xx": "disabled" },
+      "modifier_sequence": "gc",
+      "positive_source": null,
+      "negative_source": null,
+      "expected": {
+        "global": true,
+        "diagnostic_codes": ["modifier_has_no_effect"]
+      },
+      "completeness": "proven",
+      "owner_issue": 7036,
+      "oracle_disposition": "not_applicable"
+    },
+    {
+      "id": "modifiers.misc.unknown-modifier",
+      "family": "modifiers.misc",
+      "authority": "perl-regex policy: an unrecognised modifier character receives an UnknownModifier diagnostic",
+      "operator": "match",
+      "profile": { "perl_minor": 26, "enhanced_xx": "disabled" },
+      "modifier_sequence": "z",
+      "positive_source": null,
+      "negative_source": null,
+      "expected": {
+        "diagnostic_codes": ["unknown_modifier"]
+      },
+      "completeness": "proven",
+      "owner_issue": 7036,
+      "oracle_disposition": "not_applicable"
+    }
+  ]
+}

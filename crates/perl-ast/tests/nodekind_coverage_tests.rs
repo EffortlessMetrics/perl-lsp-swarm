@@ -435,6 +435,7 @@ fn build_cases() -> Vec<(Node, &'static str, usize)> {
             "Goto",
             1,
         ),
+        (Node::new(NodeKind::TargetlessGoto {}, loc()), "TargetlessGoto", 0),
         (
             Node::new(
                 NodeKind::MethodCall {
