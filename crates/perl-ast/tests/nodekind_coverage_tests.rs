@@ -155,7 +155,11 @@ fn build_cases() -> Vec<(Node, &'static str, usize)> {
             0,
         ),
         (Node::new(NodeKind::Glob { pattern: "*.pl".to_string() }, loc()), "Glob", 0),
-        (Node::new(NodeKind::Typeglob { name: "main::foo".to_string() }, loc()), "Typeglob", 0),
+        (
+            Node::new(NodeKind::Typeglob { name: "main::foo".to_string(), body: None }, loc()),
+            "Typeglob",
+            0,
+        ),
         (Node::new(NodeKind::Number { value: "42".to_string() }, loc()), "Number", 0),
         (
             Node::new(NodeKind::String { value: "value".to_string(), interpolated: true }, loc()),
@@ -431,6 +435,7 @@ fn build_cases() -> Vec<(Node, &'static str, usize)> {
             "Goto",
             1,
         ),
+        (Node::new(NodeKind::TargetlessGoto {}, loc()), "TargetlessGoto", 0),
         (
             Node::new(
                 NodeKind::MethodCall {
@@ -579,7 +584,9 @@ fn build_cases() -> Vec<(Node, &'static str, usize)> {
             Node::new(
                 NodeKind::DataSection {
                     marker: "__DATA__".to_string(),
+                    marker_span: Some(loc()),
                     body: Some("payload".to_string()),
+                    body_span: Some(loc()),
                 },
                 loc(),
             ),

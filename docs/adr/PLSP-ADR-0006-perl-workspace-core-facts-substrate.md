@@ -64,9 +64,9 @@ perl-dap consumes the substrate but keeps its own runtime surface.
 ```
 
 \* A substrate-consuming CPAN-`Kwalitee` *distribution* scorer is an intended
-consumer (below). The existing `perl-kwalitee` crate is a **separate**
-repo-release-readiness evaluator that does not consume this substrate; see the
-rollout note on PR 6.
+consumer (below). The existing `perl-release-readiness` crate (formerly
+`perl-kwalitee`) is a **separate** repo-release-readiness evaluator that does
+not consume this substrate; see the rollout note on PR 6.
 
 ### What `perl-workspace-core` owns
 

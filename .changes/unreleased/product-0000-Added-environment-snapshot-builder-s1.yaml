@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Added
+body: "perl-workspace-core gains a deterministic population compiler for ProjectEnvironmentSnapshot (#4833 residue, #2981 plan slice S1). WorkspaceEnvironmentDeclaration hand-feeds the environment sources that already exist on main (configured and admitted include roots, PERL5LIB activation policy, system @INC probe outcomes, explicit interpreter selection, bounded build-metadata facts, denied ambient observations) into the landed precedence model, and compiles to a fingerprinted snapshot with selected-and-rejected receipts: EnvironmentSnapshotReceipts classifies every input as selected or rejected with a typed reason, rejected_include_entries projects ineffective include candidates, and EnvironmentSnapshotSlot provides the generation-tagged refresh-consumer seam for later slices. The compiler is pure (no filesystem or process access, proven by an embedded self-source conduct check), slot feed order never changes the compiled snapshot (all-permutation proof), and the full pairwise precedence_rank contract table is enforced."
+time: 2026-08-29T00:00:00Z
+custom:
+  PR: "0000"
+  Slug: environment-snapshot-builder-s1-4833
+  Breaking: "no"

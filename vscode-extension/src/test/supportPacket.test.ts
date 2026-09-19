@@ -83,7 +83,7 @@ function packet(): SupportPacketV1 {
       formatter_mode: supportAtom('native'),
       critic_mode: supportAtom('native'),
       migration: {
-        registry: supportKnown(supportAtom('vscode_configuration_migration.v1')),
+        registry: supportKnown(supportAtom('vscode_configuration_migration.v2')),
         encountered: [supportAtom('v017_mcp_servers_removed')],
         status: 'inert',
       },

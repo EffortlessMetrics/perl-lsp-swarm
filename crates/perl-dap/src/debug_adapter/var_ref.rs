@@ -53,7 +53,7 @@
 //! saturate rather than panic or overflow.
 
 #[cfg(test)]
-use perl_tdd_support::must_some;
+use perl_tdd_support::{must_some, must_some_with};
 use std::fmt;
 
 /// Error type for `TryFrom<i32>` on `ScopeKind`.
@@ -170,8 +170,8 @@ pub enum VariableReference {
 /// EvalResult: [EVAL_BASE, EVAL_MAX]               = [1_000_000, 1_999_999_999]
 /// Child:      [CHILD_BASE, i32::MAX]              = [2_000_000_000, 2_147_483_647]
 const SCOPE_MIN: i32 = 1;
-const SCOPE_MAX: i32 = 999_999; // 99_999 * 10 + 3 = 999_993 < 999_999; max Scope wire
-const SCOPE_FRAME_ID_MAX: i32 = 99_999; // frame_id bound: 99_999 * 10 + 3 = 999_993 ≤ SCOPE_MAX
+const SCOPE_MAX: i32 = 999_999; // 99_999 * 10 + 4 = 999_994 < 999_999; max Scope wire
+const SCOPE_FRAME_ID_MAX: i32 = 99_999; // frame_id bound: 99_999 * 10 + 4 = 999_994 ≤ SCOPE_MAX
 const EVAL_BASE: i32 = 1_000_000;
 const EVAL_MAX: i32 = 1_999_999_999;
 const CHILD_BASE: i32 = 2_000_000_000;
@@ -190,14 +190,14 @@ impl VariableReference {
     pub fn encode(&self) -> Option<i32> {
         match self {
             VariableReference::Scope { frame_id, kind } => {
-                // Scope wire = frame_id * 10 + kind_disc (1-3).
+                // Scope wire = frame_id * 10 + kind_disc (1-4).
                 // frame_id must be in [0, SCOPE_FRAME_ID_MAX] to stay within the Scope band.
                 if *frame_id < 0 || *frame_id > SCOPE_FRAME_ID_MAX {
                     return None;
                 }
                 let kind_disc = *kind as i32;
-                // frame_id in [0, 99_999] and kind_disc in [1, 3]:
-                // max wire = 99_999 * 10 + 3 = 999_993 ≤ SCOPE_MAX ✓
+                // frame_id in [0, 99_999] and kind_disc in [1, 4]:
+                // max wire = 99_999 * 10 + 4 = 999_994 ≤ SCOPE_MAX ✓
                 Some(frame_id * 10 + kind_disc)
             }
             VariableReference::EvalResult { counter } => {
@@ -238,7 +238,7 @@ impl VariableReference {
     ///
     /// - `raw in [2_000_000_000, i32::MAX]` → `Child`
     /// - `raw in [1_000_000, 1_999_999_999]` → `EvalResult{counter: raw - 1_000_000}`
-    /// - `raw in [1, 999_999]` → `Scope` if `raw % 10 ∈ {1,2,3}`, else `None`
+    /// - `raw in [1, 999_999]` → `Scope` if `raw % 10 ∈ {1,2,3,4}`, else `None`
     /// - All others (0, negative, gaps) → `None`
     ///
     /// Because the bands are pairwise disjoint, no value can match more than one case.
@@ -278,10 +278,6 @@ impl VariableReference {
 
 #[cfg(test)]
 mod codec_unit_tests {
-    #![expect(
-        clippy::unwrap_used,
-        reason = "tracked conversion debt: https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3021"
-    )]
     use super::*;
 
     #[test]
@@ -311,26 +307,26 @@ mod codec_unit_tests {
     fn evalresult_encode_decode_roundtrip() {
         // counter=0: wire 1_000_000 (EvalResult band)
         let e0 = VariableReference::EvalResult { counter: 0 };
-        let w0 = e0.encode().unwrap();
+        let w0 = must_some_with(e0.encode(), "counter=0 EvalResult must encode");
         assert_eq!(w0, 1_000_000);
         assert_eq!(VariableReference::decode(w0), Some(e0));
 
         // counter=1: wire 1_000_001 — previously misclassified as Scope
         let e1 = VariableReference::EvalResult { counter: 1 };
-        let w1 = e1.encode().unwrap();
+        let w1 = must_some_with(e1.encode(), "counter=1 EvalResult must encode");
         assert_eq!(w1, 1_000_001);
         assert_eq!(VariableReference::decode(w1), Some(e1), "counter=1 must decode as EvalResult");
 
         // counter=3: wire 1_000_003 — kind_disc=3 is Globals under old logic
         let e3 = VariableReference::EvalResult { counter: 3 };
-        let w3 = e3.encode().unwrap();
+        let w3 = must_some_with(e3.encode(), "counter=3 EvalResult must encode");
         assert_eq!(w3, 1_000_003);
         assert_eq!(VariableReference::decode(w3), Some(e3), "counter=3 must decode as EvalResult");
     }
 
     #[test]
     fn scope_frame_id_max_boundary() {
-        // frame_id=99_999 is valid; wire = 999_993 (Locals)
+        // frame_id=99_999 is valid; wire = 99_999 * 10 + 1 = 999_991 (Locals)
         let s_max = VariableReference::Scope { frame_id: 99_999, kind: ScopeKind::Locals };
         let wire = must_some(s_max.encode());
         assert_eq!(wire, 999_991);
@@ -351,7 +347,7 @@ mod codec_unit_tests {
     #[test]
     fn child_encode_decode_base() {
         let c = VariableReference::Child { parent: 0, index: 0 };
-        let wire = c.encode().unwrap();
+        let wire = must_some_with(c.encode(), "base Child reference must encode");
         assert_eq!(wire, 2_000_000_000);
         assert_eq!(VariableReference::decode(2_000_000_000), Some(c));
     }
@@ -376,11 +372,37 @@ mod codec_unit_tests {
     #[test]
     fn bands_are_disjoint_no_scope_wire_in_eval_range() {
         // No valid Scope encoding can fall in [1_000_000, 1_999_999_999].
-        // Max Scope wire = 99_999 * 10 + 3 = 999_993 < 1_000_000.
-        let max_scope_wire = SCOPE_FRAME_ID_MAX * 10 + 3;
+        // The maximum is the largest frame_id paired with the largest discriminator.
+        // Derive the discriminator from the typed enum so adding a variant above
+        // Arguments cannot leave this oracle asserting a stale maximum.
+        let max_scope =
+            VariableReference::Scope { frame_id: SCOPE_FRAME_ID_MAX, kind: ScopeKind::Arguments };
+        let max_scope_wire = must_some_with(max_scope.encode(), "max Scope reference must encode");
+
+        // 99_999 * 10 + 4 = 999_994. Asserting the exact value (not merely "some high
+        // valid wire") is what makes this discriminating: a band regression affecting
+        // only Arguments would previously have left this test green.
+        assert_eq!(
+            max_scope_wire,
+            999_994,
+            "max Scope wire must use Arguments = {}, the largest discriminator",
+            ScopeKind::Arguments as i32
+        );
         assert!(
             max_scope_wire < EVAL_BASE,
             "Scope max wire {max_scope_wire} must be < EvalResult base {EVAL_BASE}"
+        );
+        assert_eq!(
+            VariableReference::decode(max_scope_wire),
+            Some(max_scope),
+            "the maximum Scope wire must round-trip to the Arguments scope at the max frame"
+        );
+
+        // The adjacent wire uses discriminator 5, which is not a ScopeKind.
+        assert_eq!(
+            VariableReference::decode(max_scope_wire + 1),
+            None,
+            "discriminator 5 at the max frame must stay rejected"
         );
     }
 
