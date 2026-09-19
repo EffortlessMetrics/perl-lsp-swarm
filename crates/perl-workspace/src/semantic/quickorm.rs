@@ -33,6 +33,32 @@ enum QuickOrmImportShape {
     Dynamic,
 }
 
+/// Source-spelling form of a recognized literal at the start of a slice.
+///
+/// Deliberately distinct from the parser's quote-operator awareness: this
+/// set covers only what the bounded QuickORM pilot reads as a static
+/// literal. Execution boundaries (`qx{...}`, `` `...` ``) and heredocs are
+/// not represented here and must be rejected at the call site so they do
+/// not silently promote to a source-backed fact.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum QuoteLikeForm {
+    /// `'literal'`
+    SingleQuoted,
+    /// `"interpolated"`
+    DoubleQuoted,
+    /// `q{literal}` / `q/literal/` / `q!literal!` (non-interpolating)
+    QLiteral,
+    /// `qq{interpolated}` (interpolating)
+    QqInterpolating,
+}
+
+impl QuoteLikeForm {
+    /// Whether this form interpolates Perl expressions in its body.
+    const fn interpolates(self) -> bool {
+        matches!(self, Self::DoubleQuoted | Self::QqInterpolating)
+    }
+}
+
 /// Rewrite generic import facts where QuickORM arguments are importer
 /// configuration rather than an Exporter-style symbol list.
 pub(super) fn normalize_import_specs(ast: &Node, specs: &mut [ImportSpec]) {
@@ -110,7 +136,7 @@ fn extract_generated_member_facts_from_source(
         NodeKind::Program { statements } => {
             walk_direct_statements(statements, file_id, &mut context, &mut facts, source);
         }
-        _ => walk_direct_statement(ast, file_id, &mut context, &mut facts, source),
+        _ => walk_direct_statement(ast, file_id, &mut context, &mut facts, source, None),
     }
 
     facts
@@ -130,8 +156,9 @@ fn walk_direct_statements(
     facts: &mut Vec<GeneratedMemberFact>,
     source: Option<&str>,
 ) {
-    for statement in statements {
-        walk_direct_statement(statement, file_id, context, facts, source);
+    for (index, statement) in statements.iter().enumerate() {
+        let previous = index.checked_sub(1).and_then(|prior| statements.get(prior));
+        walk_direct_statement(statement, file_id, context, facts, source, previous);
     }
 }
 
@@ -141,6 +168,7 @@ fn walk_direct_statement(
     context: &mut WalkContext,
     facts: &mut Vec<GeneratedMemberFact>,
     source: Option<&str>,
+    previous: Option<&Node>,
 ) {
     match &node.kind {
         NodeKind::Program { statements } => {
@@ -213,6 +241,26 @@ fn walk_direct_statement(
             context.table_package_authority.remove(&package);
         }
         NodeKind::ExpressionStatement { expression } => {
+            // The parser cannot disambiguate `table q(NAME) => BODY` from a
+            // bare hash literal because the table-name argument begins with a
+            // quote-like operator the parser does not parse as a literal.
+            // Recover the builder shape when the immediately previous direct
+            // statement was a bareword `table`/`view` identifier and this
+            // statement is a single-pair `HashLiteral`.
+            if let NodeKind::HashLiteral { pairs } = &expression.kind
+                && let Some(builder_keyword) = previous_table_or_view_identifier(previous)
+            {
+                handle_hash_literal_builder_call(
+                    pairs,
+                    &builder_keyword,
+                    file_id,
+                    context,
+                    facts,
+                    source,
+                );
+                return;
+            }
+
             let package = current_package(context).to_string();
             if !context.table_package_authority.contains(&package)
                 || context.shadowed_builders.contains(&package)
@@ -531,20 +579,103 @@ fn static_table_name_anchor<'a>(node: &'a Node, source: Option<&str>) -> Option<
             let raw = source
                 .and_then(|text| text.get(node.location.start..node.location.end))
                 .unwrap_or(value);
-            let Some((literal, delimiter)) = string_literal_inner_text(raw) else {
-                return is_static_identifier(raw).then_some(node);
-            };
-            if literal.trim().is_empty()
-                || (delimiter == b'"' && contains_unescaped_interpolation(raw))
-            {
-                return None;
+            // Quote-like operator path: `q{}/q()/q//q!!`, `qq{}/qq()/qq//qq!!`,
+            // and the plain `'`/`"` delimiters. Backticks and `qx{}/qx()` are
+            // execution boundaries and never reach this gate; their forms are
+            // intentionally absent from `QuoteLikeForm`.
+            if let Some((body, form, _remainder)) = parse_quote_like_literal(raw) {
+                if body.trim().is_empty() {
+                    return None;
+                }
+                if form.interpolates() && contains_unescaped_interpolation(body) {
+                    return None;
+                }
+                return Some(node);
             }
-            Some(node)
+            // Parser-supplied fallback for `'...'` / `"..."` when the source
+            // slice is unavailable (older workspace_index path). The body
+            // shape has already been validated by `string_literal_inner_text`.
+            if let Some((literal, delimiter)) = string_literal_inner_text(raw) {
+                if literal.trim().is_empty()
+                    || (delimiter == b'"' && contains_unescaped_interpolation(raw))
+                {
+                    return None;
+                }
+                return Some(node);
+            }
+            is_static_identifier(raw).then_some(node)
         }
         NodeKind::Identifier { name } if is_static_identifier(name) => Some(node),
         NodeKind::Binary { op, left, .. } if op == "=>" => static_table_name_anchor(left, source),
         _ => None,
     }
+}
+
+/// Recover the bareword builder keyword (`table` or `view`) from the
+/// immediately previous direct statement when it was an isolated
+/// `ExpressionStatement(Identifier("table"))` or `Identifier("view")`.
+///
+/// The parser emits this two-statement shape for `table q(NAME) => BODY`
+/// because it cannot disambiguate the quote-like operator from a hash
+/// literal context.
+fn previous_table_or_view_identifier(previous: Option<&Node>) -> Option<String> {
+    let previous = previous?;
+    let NodeKind::ExpressionStatement { expression } = &previous.kind else {
+        return None;
+    };
+    let NodeKind::Identifier { name } = &expression.kind else {
+        return None;
+    };
+    matches!(name.as_str(), "table" | "view").then(|| name.clone())
+}
+
+/// Apply the QuickORM table-package fact rules to a `HashLiteral` recovered
+/// from the `table KEY => BODY` parser shape. Mirrors the FunctionCall arm
+/// in `walk_direct_statement`: authority is consumed first, then a static
+/// table-name anchor emits the fact and a non-static body invalidates any
+/// prior installed fact. The `builder_keyword` parameter is accepted for
+/// symmetry and possible future routing; today only its `table`/`view`
+/// validity determines admission.
+fn handle_hash_literal_builder_call(
+    pairs: &[(Node, Node)],
+    _builder_keyword: &str,
+    file_id: FileId,
+    context: &mut WalkContext,
+    facts: &mut Vec<GeneratedMemberFact>,
+    source: Option<&str>,
+) {
+    let package = current_package(context).to_string();
+
+    if !context.table_package_authority.contains(&package)
+        || context.shadowed_builders.contains(&package)
+    {
+        return;
+    }
+
+    let Some((key_node, value_node)) = pairs.first() else {
+        return;
+    };
+    if pairs.len() > 1 {
+        // A multi-pair hash literal cannot be a QuickORM builder call.
+        return;
+    }
+    if !is_direct_builder_argument(value_node) {
+        // The body is not a direct `sub {}` / `{}` / `HashLiteral` shape; if
+        // a fact was previously installed it must be invalidated because
+        // QuickORM consumes authority on every builder attempt.
+        context.table_package_authority.remove(&package);
+        invalidate_qorm_table_fact(&package, facts);
+        return;
+    }
+
+    // Authority consumed regardless of the anchor outcome.
+    context.table_package_authority.remove(&package);
+
+    let Some(anchor) = static_table_name_anchor(key_node, source) else {
+        invalidate_qorm_table_fact(&package, facts);
+        return;
+    };
+    push_qorm_table_fact(&package, anchor, file_id, facts);
 }
 
 fn string_literal_inner_text(value: &str) -> Option<(&str, u8)> {
@@ -556,6 +687,93 @@ fn string_literal_inner_text(value: &str) -> Option<(&str, u8)> {
             Some((&value[1..value.len() - 1], *quote))
         }
         _ => None,
+    }
+}
+
+/// Parse a quote-like literal at the start of `source`.
+///
+/// Recognises `'...'`, `"..."`, the non-interpolating `q{}` family, and the
+/// interpolating `qq{}` family. Rejects `` `...` `` and the `qx{}` family
+/// (execution boundaries) and any unterminated or unbalanced form. The
+/// returned `&str` is the body strictly between the opening and closing
+/// delimiters; the third element is the remainder of `source` after the
+/// closing delimiter.
+///
+/// The body is taken verbatim — no escape processing, no interpolation
+/// resolution. The caller is responsible for deciding whether the form's
+/// interpolation behavior admits the body as a static literal.
+fn parse_quote_like_literal(source: &str) -> Option<(&str, QuoteLikeForm, &str)> {
+    let bytes = source.as_bytes();
+    let first = *bytes.first()?;
+
+    let (operator_len, form) = match first {
+        b'\'' => (1usize, QuoteLikeForm::SingleQuoted),
+        b'"' => (1usize, QuoteLikeForm::DoubleQuoted),
+        b'`' => return None,
+        b'q' => {
+            let next = *bytes.get(1)?;
+            match next {
+                b'q' => (2, QuoteLikeForm::QqInterpolating),
+                b'x' => return None,
+                _ if next.is_ascii_alphabetic() => return None,
+                _ => (1, QuoteLikeForm::QLiteral),
+            }
+        }
+        _ => return None,
+    };
+
+    let after_operator = source.get(operator_len..)?;
+    let opening = *after_operator.as_bytes().first()?;
+    if opening.is_ascii_whitespace() {
+        return None;
+    }
+
+    let paired = matches!(opening, b'(' | b'[' | b'{' | b'<');
+    let closing = if paired {
+        match opening {
+            b'(' => b')',
+            b'[' => b']',
+            b'{' => b'}',
+            b'<' => b'>',
+            _ => unreachable!(),
+        }
+    } else {
+        opening
+    };
+
+    let after_open = after_operator.get(1..)?;
+    let after_open_bytes = after_open.as_bytes();
+
+    if paired {
+        // Balance nesting so `q((foo))` reads `(foo)` as the body. The walk
+        // is single-byte because all four paired delimiters are ASCII; the
+        // outer bytes of a non-paired form are likewise ASCII.
+        let mut depth = 1usize;
+        let mut index = 0usize;
+        while index < after_open_bytes.len() {
+            let byte = after_open_bytes[index];
+            if byte == opening {
+                depth += 1;
+            } else if byte == closing {
+                depth -= 1;
+                if depth == 0 {
+                    let body = &after_open[..index];
+                    let remainder = &after_open[index + 1..];
+                    return Some((body, form, remainder));
+                }
+            }
+            index += 1;
+        }
+        None
+    } else {
+        // Non-paired delimiter: stop at the first occurrence. Backslash
+        // escapes inside the body are not interpreted here because the
+        // bounded pilot does not require them; admitting them would only
+        // matter if the body could legitimately contain the delimiter.
+        let end = after_open_bytes.iter().position(|&b| b == closing)?;
+        let body = &after_open[..end];
+        let remainder = &after_open[end + 1..];
+        Some((body, form, remainder))
     }
 }
 
@@ -826,6 +1044,19 @@ fn parse_source_quoted_or_identifier(source: &str) -> Option<(&str, &str)> {
         }
         return Some((value, &source[end + 1..]));
     }
+    // Quote-like operators on the import side: `q{key}`, `qq{value}`, etc.
+    // The classifier only needs the body and remainder; interpolation and
+    // emptiness checks live in `quoted_import_value` so the static-key path
+    // stays symmetric for `'key'` and `q{key}`.
+    if let Some((body, form, remainder)) = parse_quote_like_literal(source) {
+        if matches!(form, QuoteLikeForm::SingleQuoted | QuoteLikeForm::DoubleQuoted) {
+            // Plain quote forms were caught by the branch above; reaching
+            // here means the closing delimiter is missing from the slice.
+            // Fall through to bareword handling rather than silently accept.
+        } else {
+            return Some((body, remainder));
+        }
+    }
     let end = source
         .char_indices()
         .find(|(_, character)| character.is_ascii_whitespace() || matches!(character, ';' | '='))
@@ -843,10 +1074,26 @@ fn static_import_key(raw: &str) -> Option<String> {
 
 fn quoted_import_value(raw: &str) -> Option<String> {
     let value = raw.trim();
-    if value.len() < 2 {
+    if value.is_empty() {
         return None;
     }
 
+    // Quote-like operator path: `q(value)`, `qq(value)`, etc. Rejects `qx`
+    // and backticks because `parse_quote_like_literal` returns `None` for
+    // those forms, leaving the plain-delimiter branches to fail closed.
+    if let Some((body, form, _remainder)) = parse_quote_like_literal(value) {
+        if body.is_empty() {
+            return None;
+        }
+        if form.interpolates() && contains_unescaped_interpolation(body) {
+            return None;
+        }
+        return Some(body.to_string());
+    }
+
+    if value.len() < 2 {
+        return None;
+    }
     let first = value.as_bytes().first().copied()?;
     let last = value.as_bytes().last().copied()?;
     if !((first == b'\'' && last == b'\'') || (first == b'"' && last == b'"')) {
