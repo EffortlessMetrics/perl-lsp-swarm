@@ -40,11 +40,22 @@ struct WalkCtx {
     dbix_class_active: bool,
 }
 
+/// Shared candidate-name vocabulary authority for source-backed extraction.
+///
+/// This is the single owner of the candidate name/span vocabulary, symbol
+/// normalization, and stable FNV identifiers (issue #13354). The sibling
+/// `dbix_quickorm_candidate` pilot consumes these items instead of carrying a
+/// private copy; new extractors in this crate must reuse this surface rather
+/// than redefining it.
+///
+/// The contract is `pub(crate)`, so it binds `perl-workspace` only: an extractor
+/// added in another crate is reached by neither this visibility nor the
+/// `owned_candidate_vocabulary_is_not_redefined_by_sibling_extractors` ratchet.
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct NameCandidate {
-    name: String,
-    span_start: usize,
-    span_end: usize,
+pub(crate) struct NameCandidate {
+    pub(crate) name: String,
+    pub(crate) span_start: usize,
+    pub(crate) span_end: usize,
 }
 
 /// Extract generated member facts from package-level framework declarations.
@@ -484,7 +495,8 @@ fn option_method_name(
     Some(value.clone())
 }
 
-fn normalize_symbol_name(raw: &str) -> Option<String> {
+/// Shared authority: trim quote decorations from one candidate symbol.
+pub(crate) fn normalize_symbol_name(raw: &str) -> Option<String> {
     let trimmed = raw.trim().trim_matches('\'').trim_matches('"').trim();
     if trimmed.is_empty() { None } else { Some(trimmed.to_string()) }
 }
@@ -660,7 +672,14 @@ fn is_class_tiny_module(module: &str) -> bool {
     matches!(module, "Class::Tiny" | "Class::Tiny::RW")
 }
 
-fn stable_id(label: &str, file_id: FileId, anchor_start: usize, package: &str, name: &str) -> u64 {
+/// Shared authority: stable FNV-1a identifier for synthesized facts.
+pub(crate) fn stable_id(
+    label: &str,
+    file_id: FileId,
+    anchor_start: usize,
+    package: &str,
+    name: &str,
+) -> u64 {
     const FNV_OFFSET: u64 = 14_695_981_039_346_656_037;
     const FNV_PRIME: u64 = 1_099_511_628_211;
 
@@ -683,6 +702,84 @@ fn stable_id(label: &str, file_id: FileId, anchor_start: usize, package: &str, n
 mod tests {
     use super::*;
     use crate::Parser;
+
+    /// Vocabulary owned by this module; no sibling extractor may define its own.
+    const OWNED_CANDIDATE_VOCABULARY: &[&str] =
+        &["NameCandidate", "normalize_symbol_name", "expand_symbol_list", "stable_id"];
+
+    /// Report whether `source` defines `name` as an item introduced by `keyword`,
+    /// tolerating arbitrary whitespace and a generic parameter list.
+    fn defines_item(source: &str, keyword: &str, name: &str) -> bool {
+        source.match_indices(name).any(|(offset, _)| {
+            let before = source[..offset].trim_end();
+            if !before.ends_with(keyword) || before.len() == offset {
+                return false;
+            }
+            let keyword_start = before.len() - keyword.len();
+            if source[..keyword_start].ends_with(|c: char| c.is_alphanumeric() || c == '_') {
+                return false;
+            }
+            let after = &source[offset + name.len()..];
+            if after.starts_with(|c: char| c.is_alphanumeric() || c == '_') {
+                return false;
+            }
+            matches!(after.trim_start().chars().next(), Some('(' | '<' | '{' | ';'))
+        })
+    }
+
+    /// Architecture ratchet (issue #13354): every sibling
+    /// `generated_member_extractor_*` module must consume this module's candidate
+    /// vocabulary, so a private redefinition in any of them fails the suite.
+    ///
+    /// The scan is textual: it catches ordinary `fn`/`struct` items under any
+    /// spacing or generic list, but not a definition produced by a macro or
+    /// interrupted by a comment.
+    #[test]
+    fn owned_candidate_vocabulary_is_not_redefined_by_sibling_extractors() {
+        let semantic_dir =
+            std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/src/semantic"));
+        let entries = std::fs::read_dir(semantic_dir)
+            .expect("semantic module directory should be readable from the crate root");
+
+        let mut scanned: Vec<String> = Vec::new();
+        for entry in entries {
+            let path = entry.expect("semantic directory entry should be readable").path();
+            let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+                continue;
+            };
+            if !file_name.starts_with("generated_member_extractor_") || !file_name.ends_with(".rs")
+            {
+                continue;
+            }
+
+            let source = std::fs::read_to_string(&path)
+                .expect("sibling extractor source should be readable");
+            for owned in OWNED_CANDIDATE_VOCABULARY {
+                for keyword in ["struct", "fn"] {
+                    assert!(
+                        !defines_item(&source, keyword, owned),
+                        "{file_name} redefines shared candidate vocabulary: {keyword} {owned}"
+                    );
+                }
+            }
+            scanned.push(file_name.to_owned());
+        }
+
+        assert!(
+            scanned.iter().any(|name| name == "generated_member_extractor_quickorm.rs"),
+            "the QuickORM pilot must stay inside the ratchet's scan set; scanned {scanned:?}"
+        );
+    }
+
+    #[test]
+    fn ratchet_matcher_detects_definition_shapes_and_ignores_uses() {
+        assert!(defines_item("pub(crate) struct  NameCandidate<T> {", "struct", "NameCandidate"));
+        assert!(defines_item("struct\n    NameCandidate;", "struct", "NameCandidate"));
+        assert!(defines_item("async fn stable_id (a: u8)", "fn", "stable_id"));
+        assert!(!defines_item("let id = stable_id(1);", "fn", "stable_id"));
+        assert!(!defines_item("use super::x::{NameCandidate};", "struct", "NameCandidate"));
+        assert!(!defines_item("fn stable_identity() {}", "fn", "stable_id"));
+    }
 
     fn extract_from_source(source: &str) -> Vec<GeneratedMemberFact> {
         let mut parser = Parser::new(source);

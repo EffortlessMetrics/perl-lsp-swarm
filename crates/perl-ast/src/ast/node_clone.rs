@@ -245,6 +245,7 @@ where
         | NodeKind::Return { .. }
         | NodeKind::LoopControl { .. }
         | NodeKind::Goto { .. }
+        | NodeKind::TargetlessGoto { .. }
         | NodeKind::MethodCall { .. }
         | NodeKind::FunctionCall { .. }
         | NodeKind::AmperCall { .. }

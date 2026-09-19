@@ -743,6 +743,8 @@ impl<'a> DeclarationProvider<'a> {
 
         match &parent.kind {
             NodeKind::Goto { target, .. } => std::ptr::eq(target.as_ref(), node),
+            // `TargetlessGoto` has no child to be the parent of, so this
+            // helper never identifies it as a goto target.
             _ => false,
         }
     }

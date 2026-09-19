@@ -862,6 +862,7 @@ pub fn observe_geometry_fields(kind: &NodeKind) -> Vec<ObservedGeometryField> {
         NodeKind::Return { value: _ } => NONE,
         NodeKind::LoopControl { op: _, label: _ } => NONE,
         NodeKind::Goto { target: _, form: _ } => NONE,
+        NodeKind::TargetlessGoto {} => NONE,
         NodeKind::MethodCall { object: _, method: _, args: _ } => NONE,
         NodeKind::FunctionCall { name: _, args: _ } => NONE,
         NodeKind::AmperCall { name: _, args: _ } => NONE,

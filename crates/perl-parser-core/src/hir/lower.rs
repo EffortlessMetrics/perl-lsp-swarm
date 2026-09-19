@@ -1273,6 +1273,23 @@ impl Lowerer {
                 );
                 self.visit(target, confidence);
             }
+            NodeKind::TargetlessGoto {} => {
+                // Honest targetless goto: no label, no executable child,
+                // no fabricated reference. Surface the control transfer so
+                // downstream reachability analysis still observes a goto.
+                self.push_item(
+                    node,
+                    None,
+                    confidence,
+                    HirKind::ControlTransfer(ControlTransfer {
+                        kind: ControlTransferKind::Goto,
+                        label: None,
+                        has_value: false,
+                    }),
+                    self.package_context.clone(),
+                    Some(self.current_scope()),
+                );
+            }
             NodeKind::StatementModifier { modifier, condition, .. } => {
                 let modifier_kind = match modifier.as_str() {
                     "if" => StatementModifierKind::If,
@@ -5445,6 +5462,18 @@ impl<'a> BodyBuilder2<'a> {
                     range,
                 )
             }
+
+            // Targetless goto (#15742): no executable child to lower; emit
+            // an opaque call expression with no args so consumers that
+            // expect a Goto HirExpr shape still observe a node.
+            NodeKind::TargetlessGoto {} => self.alloc_expr(
+                HirExpr::Call {
+                    args: vec![],
+                    ast_kind: "TargetlessGoto".to_string(),
+                    callee_span: None,
+                },
+                range,
+            ),
 
             // VString (#5043): version string literal (v5.38.0). No child
             // expressions to lower, but tag as Opaque for consistency.

@@ -452,6 +452,7 @@ fn payload_summary(kind: &NodeKind) -> PayloadSummary {
         | NodeKind::OptionalParameter { .. }
         | NodeKind::SlurpyParameter { .. }
         | NodeKind::Return { .. }
+        | NodeKind::TargetlessGoto { .. }
         | NodeKind::MissingExpression
         | NodeKind::MissingStatement
         | NodeKind::MissingIdentifier

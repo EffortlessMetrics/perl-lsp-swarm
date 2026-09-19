@@ -237,6 +237,7 @@ pub fn perl_lsp_rs_core::config::DeclaredDependency::new(module: impl core::conv
 pub fn perl_lsp_rs_core::config::DeclaredDependency::clone(&self) -> perl_lsp_rs_core::config::DeclaredDependency
 pub fn perl_lsp_rs_core::config::DeclaredDependency::eq(&self, other: &perl_lsp_rs_core::config::DeclaredDependency) -> bool
 pub fn perl_lsp_rs_core::config::DeclaredDependency::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_lsp_rs_core::config::DeclaredDependency::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
 pub struct perl_lsp_rs_core::config::EffectiveNativeCriticConfig
 pub perl_lsp_rs_core::config::EffectiveNativeCriticConfig::exclude: alloc::vec::Vec<alloc::string::String>
 pub perl_lsp_rs_core::config::EffectiveNativeCriticConfig::include: alloc::vec::Vec<alloc::string::String>
@@ -9559,6 +9560,8 @@ pub perl_lsp_rs_core::runtime::launcher::LaunchAction::Doctor::dir: alloc::strin
 pub perl_lsp_rs_core::runtime::launcher::LaunchAction::Doctor::json: bool
 pub perl_lsp_rs_core::runtime::launcher::LaunchAction::DoctorCriticCompatibility
 pub perl_lsp_rs_core::runtime::launcher::LaunchAction::DoctorCriticCompatibility::json: bool
+pub perl_lsp_rs_core::runtime::launcher::LaunchAction::DoctorDevEnvironment
+pub perl_lsp_rs_core::runtime::launcher::LaunchAction::DoctorDevEnvironment::json: bool
 pub perl_lsp_rs_core::runtime::launcher::LaunchAction::DoctorExternalTools
 pub perl_lsp_rs_core::runtime::launcher::LaunchAction::DoctorExternalTools::json: bool
 pub perl_lsp_rs_core::runtime::launcher::LaunchAction::FeaturesJson
@@ -9636,6 +9639,7 @@ pub perl_lsp_rs_core::runtime::launcher::LspArgs::check: bool
 pub perl_lsp_rs_core::runtime::launcher::LspArgs::check_project: core::option::Option<core::option::Option<alloc::string::String>>
 pub perl_lsp_rs_core::runtime::launcher::LspArgs::completion: core::option::Option<alloc::string::String>
 pub perl_lsp_rs_core::runtime::launcher::LspArgs::critic_compatibility: bool
+pub perl_lsp_rs_core::runtime::launcher::LspArgs::dev_environment: bool
 pub perl_lsp_rs_core::runtime::launcher::LspArgs::diagnostic_debounce_ms: core::option::Option<u64>
 pub perl_lsp_rs_core::runtime::launcher::LspArgs::diagnostic_mode: core::option::Option<alloc::string::String>
 pub perl_lsp_rs_core::runtime::launcher::LspArgs::doctor: core::option::Option<core::option::Option<alloc::string::String>>
@@ -9908,6 +9912,8 @@ pub perl_lsp_rs_core::runtime::LaunchAction::Doctor::dir: alloc::string::String
 pub perl_lsp_rs_core::runtime::LaunchAction::Doctor::json: bool
 pub perl_lsp_rs_core::runtime::LaunchAction::DoctorCriticCompatibility
 pub perl_lsp_rs_core::runtime::LaunchAction::DoctorCriticCompatibility::json: bool
+pub perl_lsp_rs_core::runtime::LaunchAction::DoctorDevEnvironment
+pub perl_lsp_rs_core::runtime::LaunchAction::DoctorDevEnvironment::json: bool
 pub perl_lsp_rs_core::runtime::LaunchAction::DoctorExternalTools
 pub perl_lsp_rs_core::runtime::LaunchAction::DoctorExternalTools::json: bool
 pub perl_lsp_rs_core::runtime::LaunchAction::FeaturesJson
@@ -10026,6 +10032,7 @@ pub perl_lsp_rs_core::runtime::LspArgs::check: bool
 pub perl_lsp_rs_core::runtime::LspArgs::check_project: core::option::Option<core::option::Option<alloc::string::String>>
 pub perl_lsp_rs_core::runtime::LspArgs::completion: core::option::Option<alloc::string::String>
 pub perl_lsp_rs_core::runtime::LspArgs::critic_compatibility: bool
+pub perl_lsp_rs_core::runtime::LspArgs::dev_environment: bool
 pub perl_lsp_rs_core::runtime::LspArgs::diagnostic_debounce_ms: core::option::Option<u64>
 pub perl_lsp_rs_core::runtime::LspArgs::diagnostic_mode: core::option::Option<alloc::string::String>
 pub perl_lsp_rs_core::runtime::LspArgs::doctor: core::option::Option<core::option::Option<alloc::string::String>>

@@ -391,5 +391,6 @@ pub fn all_nodekind_instances() -> Vec<Node> {
             NodeKind::Goto { target: Box::new(var("$", "sub_ref")), form: GotoTargetForm::Label },
             loc(),
         ),
+        Node::new(NodeKind::TargetlessGoto {}, loc()),
     ]
 }

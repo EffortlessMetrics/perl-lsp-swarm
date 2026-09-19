@@ -135,6 +135,7 @@ fn api_regression_crate_root_exposes_exactly_eleven_reexported_items() -> Result
         &[perl_symbol::SymbolRef],
         perl_semantic_facts::FileId,
         &std::collections::BTreeMap<String, perl_semantic_facts::EntityId>,
+        &std::collections::BTreeMap<String, perl_semantic_facts::EntityId>,
     ) -> perl_symbol::SymbolRefSemanticFacts = perl_symbol::symbol_refs_to_semantic_facts;
     Ok(())
 }
