@@ -14,7 +14,7 @@
 //! # Example
 //!
 //! ```rust
-//! use perl_dap_eval::{SafeEvaluator, ValidationResult};
+//! use perl_dap::eval::SafeEvaluator;
 //!
 //! let evaluator = SafeEvaluator::new();
 //!

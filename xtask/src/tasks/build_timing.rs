@@ -19,6 +19,50 @@ const TIMING_BASELINE_FILE: &str = "build-timing-baseline.json";
 const LSP_PROVIDERS_LIB: &str = "crates/perl-lsp-providers/src/lib.rs";
 const PARSER_LIB: &str = "crates/perl-parser/src/lib.rs";
 
+/// Improvement values with magnitude below this threshold (in percentage
+/// points) are treated as exact ties rather than improvements or regressions.
+///
+/// Build timing measurements are wall-clock durations recorded at `f64`
+/// precision by `Instant::elapsed().as_secs_f64()`. Two measurements of the
+/// same command typically differ by tens of microseconds, which after the
+/// percentage transform `(base - curr) / base * 100.0` produces a residual
+/// in the `1e-9 .. 1e-3` range. Branching on raw `> 0.0` / `< 0.0` against
+/// such residuals classifies float-rounding noise as an improvement or
+/// regression.
+///
+/// This constant is a named, single source of truth for the comparison
+/// gate. Keep it aligned with `parser_corpus_sweep::ratchet::RATCHET_EPS`
+/// (1e-9) for ratios, or with the corpus_audit epsilon pattern when the
+/// metric is a percentage rather than a ratio.
+const IMPROVEMENT_EPS: f64 = 1e-3;
+
+/// Result of classifying a single per-row improvement value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ImprovementClass {
+    /// Improvement or regression magnitude is at or below `IMPROVEMENT_EPS`;
+    /// counts as neither.
+    Tie,
+    /// `improvement > IMPROVEMENT_EPS`.
+    Improvement,
+    /// `improvement < -IMPROVEMENT_EPS`.
+    Regression,
+}
+
+/// Classify a per-row improvement percentage using an epsilon guard so that
+/// exact-tie / float-rounding residuals are not recorded as verdicts.
+///
+/// Extracted from `run_compare` so the branch logic can be unit-tested
+/// without constructing `BuildTimingReceipt` values on disk.
+fn classify_improvement(improvement: f64) -> ImprovementClass {
+    if improvement.abs() <= IMPROVEMENT_EPS {
+        ImprovementClass::Tie
+    } else if improvement > 0.0 {
+        ImprovementClass::Improvement
+    } else {
+        ImprovementClass::Regression
+    }
+}
+
 #[derive(Serialize)]
 struct BuildTimingReceipt {
     timestamp: String,
@@ -211,12 +255,16 @@ pub fn run_compare(baseline: PathBuf, current: PathBuf) -> Result<()> {
                 };
 
                 let mut improvement_label = format!("{improvement:.1}%");
-                if improvement > 0.0 {
-                    improvements += 1;
-                    improvement_label = format!("🟢 {improvement_label}");
-                } else if improvement < 0.0 {
-                    regressions += 1;
-                    improvement_label = format!("🔴 {improvement_label}");
+                match classify_improvement(improvement) {
+                    ImprovementClass::Improvement => {
+                        improvements += 1;
+                        improvement_label = format!("🟢 {improvement_label}");
+                    }
+                    ImprovementClass::Regression => {
+                        regressions += 1;
+                        improvement_label = format!("🔴 {improvement_label}");
+                    }
+                    ImprovementClass::Tie => {}
                 }
 
                 println!(
@@ -466,4 +514,58 @@ fn run_command_silently(root: &Path, command: &[&str]) -> f64 {
 
 fn command_to_string(command: &[&str]) -> String {
     command.join(" ")
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+mod tests {
+    use super::*;
+
+    /// A float-rounding residual on a 100ns timing difference (one second
+    /// baseline) is `~1e-5`. The defect (raw `> 0.0` branching) classifies
+    /// that as an improvement.
+    #[test]
+    fn classify_improvement_treats_float_rounding_residual_as_tie() {
+        let improvement: f64 = (1.0 - 1.0000001) / 1.0 * 100.0;
+        assert!(improvement.abs() > 0.0);
+        assert!(improvement.abs() < IMPROVEMENT_EPS);
+        assert_eq!(classify_improvement(improvement), ImprovementClass::Tie);
+        assert_eq!(classify_improvement(-improvement), ImprovementClass::Tie);
+    }
+
+    /// Exactly-zero improvement is always a tie, regardless of epsilon.
+    #[test]
+    fn classify_improvement_treats_exact_zero_as_tie() {
+        assert_eq!(classify_improvement(0.0), ImprovementClass::Tie);
+    }
+
+    /// Values strictly larger than `IMPROVEMENT_EPS` are improvements,
+    /// regardless of how close they are to the boundary.
+    #[test]
+    fn classify_improvement_above_eps_is_improvement() {
+        assert_eq!(classify_improvement(IMPROVEMENT_EPS * 2.0), ImprovementClass::Improvement);
+        assert_eq!(classify_improvement(5.0), ImprovementClass::Improvement);
+        assert_eq!(classify_improvement(100.0), ImprovementClass::Improvement);
+    }
+
+    /// Values strictly below `-IMPROVEMENT_EPS` are regressions.
+    #[test]
+    fn classify_improvement_below_neg_eps_is_regression() {
+        assert_eq!(classify_improvement(-IMPROVEMENT_EPS * 2.0), ImprovementClass::Regression);
+        assert_eq!(classify_improvement(-5.0), ImprovementClass::Regression);
+    }
+
+    /// The boundary values themselves are ties (closed interval).
+    #[test]
+    fn classify_improvement_at_boundary_is_tie() {
+        assert_eq!(classify_improvement(IMPROVEMENT_EPS), ImprovementClass::Tie);
+        assert_eq!(classify_improvement(-IMPROVEMENT_EPS), ImprovementClass::Tie);
+    }
+
+    /// A regression whose magnitude equals `IMPROVEMENT_EPS` is a tie, not a
+    /// regression — symmetric with the positive case above.
+    #[test]
+    fn classify_improvement_negative_at_eps_is_tie() {
+        assert_eq!(classify_improvement(-1e-3), ImprovementClass::Tie);
+    }
 }

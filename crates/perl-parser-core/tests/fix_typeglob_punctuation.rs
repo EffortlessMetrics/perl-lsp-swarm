@@ -11,7 +11,7 @@ use perl_parser_core::Parser;
 use perl_tdd_support::must;
 
 fn collect_typeglob_names(node: &Node, names: &mut Vec<String>) {
-    if let NodeKind::Typeglob { name } = &node.kind {
+    if let NodeKind::Typeglob { name, .. } = &node.kind {
         names.push(name.clone());
     }
 

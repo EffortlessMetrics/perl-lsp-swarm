@@ -194,8 +194,8 @@ Debug Adapter Protocol configuration is *not* part of this `perl.*` namespace â€
         },
         "engine": {
           "type": "string",
-          "description": "Formatter engine for generic LSP client settings: native, compat, or off",
-          "enum": ["native", "compat", "off"],
+          "description": "Formatter engine for generic LSP client settings: native or off",
+          "enum": ["native", "off"],
           "default": "native"
         },
         "perltidy_maximum_line_length": {

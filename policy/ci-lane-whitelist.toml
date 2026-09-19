@@ -714,7 +714,7 @@ tier = "on-demand"
 kind = "automation"
 blocking = false
 default_pr = false
-runner = "self_hosted_droid_review"
+runner = "ubuntu_24_04"
 base_lem = 2
 owner = "ci"
 intent = "Manual @droid review triggered by trusted contributors."
@@ -865,7 +865,7 @@ tier = "frontdoor"
 kind = "automation"
 blocking = false
 default_pr = false
-runner = "self_hosted_droid_review"
+runner = "ubuntu_24_04"
 base_lem = 4
 owner = "ci"
 intent = "Manual / dispatch Droid command (separate from droid_auto_review)."
@@ -1070,6 +1070,48 @@ expensive = false
 duplicate_of = []
 review_after = "2026-06-07"
 expires = "2026-11-07"
+
+[[lane]]
+id = "policy_validators_hosted"
+workflow = ".github/workflows/policy-validators.yml"
+job = "validate-hosted"
+tier = "frontdoor"
+kind = "hygiene"
+blocking = false
+default_pr = false
+runner = "ubuntu_24_04"
+base_lem = 2
+owner = "ci"
+intent = "Run the portable stdlib-only policy validators on GitHub-hosted capacity when the trusted nano runner is unavailable."
+failure_mode = "Runner outages leave portable policy validation without a proof path."
+proof_obligation = "Run the identical validator step list as the self-hosted validate job on ubuntu-24.04 system python3."
+evidence = ["job logs"]
+allowed_triggers = ["pull_request", "workflow_dispatch"]
+expensive = false
+duplicate_of = []
+review_after = "2026-09-18"
+expires = "2027-02-18"
+
+[[lane]]
+id = "policy_validators_result"
+workflow = ".github/workflows/policy-validators.yml"
+job = "validate-result"
+tier = "frontdoor"
+kind = "control"
+blocking = true
+default_pr = false
+runner = "ubuntu_latest"
+base_lem = 1
+owner = "ci"
+intent = "Normalize conditional self-hosted/hosted implementation jobs into the single stable Validate CI policy ledgers status."
+failure_mode = "Branch protection accidentally requires skipped implementation jobs instead of a stable result check, or a validator failure masks as a routing skip."
+proof_obligation = "Run both lanes; aggregate passes on agreement or on a fallback success when the trusted lane never completes, and fails on trusted failure or divergence; run the fallback contract test."
+evidence = ["job output", "step-summary"]
+allowed_triggers = ["pull_request", "workflow_dispatch"]
+expensive = false
+duplicate_of = []
+review_after = "2026-09-18"
+expires = "2027-02-18"
 
 [[lane]]
 id = "commit_checks"
