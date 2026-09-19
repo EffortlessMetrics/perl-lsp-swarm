@@ -49,6 +49,13 @@ fn ignored_test_issue_reference_gate_is_required_on_prs() {
         smoke.contains("\"$CARGO_TARGET_DIR/debug/xtask\" gates --tier pr-fast"),
         "PR Smoke must invoke the warmed xtask from its selected cargo target"
     );
+    let summary_step = must_some(workflow_step(smoke, "Summarize PR-fast gate failures"));
+    assert!(
+        summary_step.contains("GITHUB_STEP_SUMMARY")
+            && summary_step.contains("Non-success gates")
+            && summary_step.contains("exit_code"),
+        "PR Smoke must publish failing gate names and exit codes in the job summary"
+    );
 }
 
 #[test]
