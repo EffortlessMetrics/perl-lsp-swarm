@@ -1,0 +1,204 @@
+{
+  "schema_version": "publication_sync_manifest.v1",
+  "release": "0.18.0",
+  "track": "public-beta",
+  "prepared_swarm_sha": "1111111111111111111111111111111111111111",
+  "release_base_sha": "2222222222222222222222222222222222222222",
+  "publication_repository": "EffortlessMetrics/perl-lsp",
+  "planned_at": "2026-09-02",
+  "default_action": "take_swarm",
+  "inputs": [
+    {
+      "id": "reconciliation",
+      "path": "docs/swarm/source-syncs/0.18.0-reconciliation-receipt.json",
+      "digest": "sha256:288dc1556e3b11bd941cea6c6f51ec8ff7c3f9a0356823a671fbb90e28a9863e"
+    },
+    {
+      "id": "prepared_topology",
+      "path": "docs/release/0.18.0/prepared_topology.json",
+      "digest": "sha256:4ffe5258e85c7db52206a3bc3bf32379aca54133bc603545261a7d7f367d8b2a"
+    },
+    {
+      "id": "release_note_catalog",
+      "path": "docs/release/0.18.0/release_notes.json",
+      "digest": "sha256:bfb19e868bb1f767df25f8822b372122bbf20ea2b1c4ed820767865f4446ae0e"
+    },
+    {
+      "id": "published_api_audit",
+      "path": "docs/release/0.18.0/api_audit.json",
+      "digest": "sha256:aa51e161fb7e0ac4f59d6df9cdd4839007465b37333d5183906ec5d9a6b64eb6"
+    },
+    {
+      "id": "public_claims",
+      "path": "docs/release/0.18.0/public_claims.json",
+      "digest": "sha256:09f135a223d9755678a760ea189e7d7f21f51719c72bf8732a703d8ec11c39a7"
+    },
+    {
+      "id": "release_integrity",
+      "path": "docs/release/0.18.0/release_integrity.json",
+      "digest": "sha256:be492842e01cb3ad05cbff3d0cc58dcf590c8b967724db3aeb013665bafb27bc"
+    }
+  ],
+  "paths": [
+    {
+      "path": "README.md",
+      "action": "translate",
+      "class": "repository_context",
+      "source_digest": "sha256:1000000000000000000000000000000000000000000000000000000000000001",
+      "release_base_digest": "sha256:1000000000000000000000000000000000000000000000000000000000000002",
+      "expected_public_digest": "sha256:1000000000000000000000000000000000000000000000000000000000000003",
+      "reason": "Swarm repository and branch context must read as the publication repository.",
+      "authority_ref": "#6356",
+      "invalidation": "Any change to the swarm README repository or branch references."
+    },
+    {
+      "path": ".claude/settings.json",
+      "action": "drop_swarm_only",
+      "class": "governance",
+      "source_digest": "sha256:2000000000000000000000000000000000000000000000000000000000000001",
+      "release_base_digest": null,
+      "expected_public_digest": null,
+      "reason": "Swarm-only agent control-plane configuration does not ship to the publication repository.",
+      "authority_ref": "docs/swarm/sync-protocol.md",
+      "invalidation": "The control plane becomes a supported published surface."
+    },
+    {
+      "path": "RELEASE_HISTORY.md",
+      "action": "preserve_release",
+      "class": "release_lineage",
+      "source_digest": "sha256:3000000000000000000000000000000000000000000000000000000000000001",
+      "release_base_digest": "sha256:3000000000000000000000000000000000000000000000000000000000000002",
+      "expected_public_digest": "sha256:3000000000000000000000000000000000000000000000000000000000000002",
+      "reason": "Publication-repository release lineage is owned by the publication repository.",
+      "authority_ref": "release_note_catalog",
+      "invalidation": "The swarm becomes the lineage owner for published releases."
+    },
+    {
+      "path": "docs/policy/NON_RUST_INVENTORY.md",
+      "action": "regenerate",
+      "class": "generated",
+      "source_digest": "sha256:4000000000000000000000000000000000000000000000000000000000000001",
+      "release_base_digest": null,
+      "expected_public_digest": "sha256:4000000000000000000000000000000000000000000000000000000000000002",
+      "reason": "The generated inventory is regenerated against the projected tree, not copied.",
+      "authority_ref": "#6356",
+      "invalidation": "The generator or its allowlist input changes."
+    }
+  ],
+  "invariants": [
+    {
+      "id": "artifact_reachability",
+      "sources": [
+        "prepared_topology",
+        "release_integrity"
+      ],
+      "result": "pass",
+      "evidence": [
+        {
+          "kind": "repository_source",
+          "reference": "docs/release/0.18.0/prepared_topology.json",
+          "digest": null
+        }
+      ]
+    },
+    {
+      "id": "effective_version_identity",
+      "sources": [
+        "prepared_topology",
+        "release_note_catalog"
+      ],
+      "result": "pass",
+      "evidence": [
+        {
+          "kind": "repository_source",
+          "reference": "docs/release/0.18.0/prepared_topology.json",
+          "digest": null
+        }
+      ]
+    },
+    {
+      "id": "public_claim_strength",
+      "sources": [
+        "public_claims"
+      ],
+      "result": "pass",
+      "evidence": [
+        {
+          "kind": "review_ruling",
+          "reference": "#6355",
+          "digest": null
+        }
+      ]
+    },
+    {
+      "id": "governance_time_state",
+      "sources": [
+        "release_integrity"
+      ],
+      "result": "pass",
+      "evidence": [
+        {
+          "kind": "review_ruling",
+          "reference": "#6216",
+          "digest": null
+        }
+      ]
+    },
+    {
+      "id": "release_lineage_completeness",
+      "sources": [
+        "reconciliation"
+      ],
+      "result": "pass",
+      "evidence": [
+        {
+          "kind": "repository_source",
+          "reference": "docs/swarm/source-syncs/0.18.0-reconciliation-receipt.json",
+          "digest": null
+        }
+      ]
+    }
+  ],
+  "live_controls": {
+    "branch_rules": {
+      "result": "proven",
+      "max_observation_age_days": 14,
+      "evidence": [
+        {
+          "kind": "live_receipt",
+          "reference": "docs/release/0.18.0/live/branch_rules_receipt.json",
+          "digest": "sha256:57af52318177ac5553cbc431557cc7fb7e410adbf401d3ae109e63208058d635"
+        }
+      ]
+    },
+    "environments": {
+      "result": "proven",
+      "max_observation_age_days": 14,
+      "evidence": [
+        {
+          "kind": "live_receipt",
+          "reference": "docs/release/0.18.0/live/environments_receipt.json",
+          "digest": "sha256:b049fa2d68a0f18e6284d5f78ecbe85e6d4aa47d4e09cfda19dc838b4687bc46"
+        }
+      ]
+    },
+    "quality_exceptions": {
+      "result": "proven",
+      "max_observation_age_days": 14,
+      "evidence": [
+        {
+          "kind": "live_receipt",
+          "reference": "docs/release/0.18.0/live/quality_exceptions_receipt.json",
+          "digest": "sha256:735608a4a4aefbfab6685927b68155a804e0b67ac57cbd4c566bbf10a753d32e"
+        },
+        {
+          "kind": "review_ruling",
+          "reference": "#6216",
+          "digest": null
+        }
+      ]
+    }
+  },
+  "expected_projected_tree": "4444444444444444444444444444444444444444",
+  "blockers": []
+}

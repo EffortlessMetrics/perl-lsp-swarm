@@ -1,0 +1,463 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/EffortlessMetrics/perl-lsp-swarm/schemas/publication_sync_manifest.v1.schema.json",
+  "title": "publication_sync_manifest.v1",
+  "description": "Deterministic publication projection manifest (#7972, controller #6356). Binds the exact prepared swarm commit S, the exact release base R, the digest-bound release inputs, every declared projection row, the required invariants, the live-control dispositions, and the expected projected tree. The default projection basis is the complete tree of S; every intended difference requires exactly one row. This contract describes the manifest only; projection and join mechanics are owned by #7973.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "release",
+    "track",
+    "prepared_swarm_sha",
+    "release_base_sha",
+    "publication_repository",
+    "planned_at",
+    "default_action",
+    "inputs",
+    "paths",
+    "invariants",
+    "live_controls",
+    "expected_projected_tree",
+    "blockers"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "publication_sync_manifest.v1"
+    },
+    "release": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Release identity this manifest projects, for example \"0.18.0\"."
+    },
+    "track": {
+      "description": "Closed publication track vocabulary; an unknown token fails closed.",
+      "enum": [
+        "public-beta",
+        "release-candidate",
+        "stable"
+      ]
+    },
+    "prepared_swarm_sha": {
+      "$ref": "#/$defs/commit_sha",
+      "description": "Exact prepared swarm commit S."
+    },
+    "release_base_sha": {
+      "$ref": "#/$defs/commit_sha",
+      "description": "Exact publication-repository release base R."
+    },
+    "default_action": {
+      "const": "take_swarm",
+      "description": "The projection basis is always the complete prepared swarm tree."
+    },
+    "inputs": {
+      "type": "array",
+      "minItems": 6,
+      "description": "Digest-bound release inputs. Every required id must appear exactly once.",
+      "items": {
+        "$ref": "#/$defs/input"
+      }
+    },
+    "paths": {
+      "type": "array",
+      "description": "One row per intended difference between the projected tree and S.",
+      "items": {
+        "$ref": "#/$defs/path_row"
+      }
+    },
+    "invariants": {
+      "type": "array",
+      "minItems": 5,
+      "items": {
+        "$ref": "#/$defs/invariant"
+      },
+      "description": "Every invariant in the closed vocabulary must appear exactly once."
+    },
+    "live_controls": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "branch_rules",
+        "environments",
+        "quality_exceptions"
+      ],
+      "description": "Live repository-control dispositions. A checked-in source file is never live proof.",
+      "properties": {
+        "branch_rules": {
+          "$ref": "#/$defs/live_control"
+        },
+        "environments": {
+          "$ref": "#/$defs/live_control"
+        },
+        "quality_exceptions": {
+          "$ref": "#/$defs/live_control"
+        }
+      }
+    },
+    "expected_projected_tree": {
+      "$ref": "#/$defs/tree_sha",
+      "description": "Expected projected publication tree P."
+    },
+    "blockers": {
+      "type": "array",
+      "description": "Declared blockers. A non-empty list blocks the plan.",
+      "items": {
+        "$ref": "#/$defs/blocker"
+      }
+    },
+    "publication_repository": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$",
+      "description": "The publication repository this projection targets. Live-control receipts must name the same repository, so an observation of another repository cannot prove this release's controls."
+    },
+    "planned_at": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$",
+      "description": "UTC date this plan is evaluated against (YYYY-MM-DD). Live-control freshness is judged against this, never against wall-clock now, so two runs over identical inputs reach identical verdicts."
+    }
+  },
+  "$defs": {
+    "commit_sha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "tree_sha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "repository_path": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^([^/\\\\.]|[^/\\\\.][^/\\\\]|\\.[^/\\\\.]|[^/\\\\]{3,})(/([^/\\\\.]|[^/\\\\.][^/\\\\]|\\.[^/\\\\.]|[^/\\\\]{3,}))*$",
+      "description": "Repository-relative POSIX path. Every segment is non-empty and is neither `.` nor `..`, so absolute, backslash, empty-segment, trailing-slash and traversal forms are all rejected by the pattern itself, not only by the planner."
+    },
+    "input": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "path",
+        "digest"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/input_id"
+        },
+        "path": {
+          "$ref": "#/$defs/repository_path"
+        },
+        "digest": {
+          "$ref": "#/$defs/digest"
+        }
+      }
+    },
+    "path_row": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "action",
+        "class",
+        "source_digest",
+        "release_base_digest",
+        "expected_public_digest",
+        "reason",
+        "authority_ref",
+        "invalidation"
+      ],
+      "properties": {
+        "path": {
+          "$ref": "#/$defs/repository_path"
+        },
+        "action": {
+          "description": "Closed projection-operation vocabulary; an unknown token fails closed.",
+          "enum": [
+            "translate",
+            "preserve_release",
+            "drop_swarm_only",
+            "regenerate"
+          ]
+        },
+        "class": {
+          "description": "Closed semantic-class vocabulary; an unknown token fails closed.",
+          "enum": [
+            "repository_context",
+            "branch_context",
+            "issue_reference",
+            "public_claim",
+            "release_lineage",
+            "governance",
+            "generated"
+          ]
+        },
+        "source_digest": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/digest"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Digest of the path in S, or null when the path is absent from S."
+        },
+        "release_base_digest": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/digest"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Digest of the path in R, or null when the path is absent from R."
+        },
+        "expected_public_digest": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/digest"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Digest of the path in the projected tree; null only for drop_swarm_only."
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1
+        },
+        "authority_ref": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Declared input id, #NNNN issue reference, or repository-relative document path."
+        },
+        "invalidation": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The condition under which this row stops being current."
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "action": {
+                "const": "drop_swarm_only"
+              }
+            },
+            "required": [
+              "action"
+            ]
+          },
+          "then": {
+            "properties": {
+              "expected_public_digest": {
+                "type": "null"
+              },
+              "source_digest": {
+                "$ref": "#/$defs/digest"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "action": {
+                "const": "preserve_release"
+              }
+            },
+            "required": [
+              "action"
+            ]
+          },
+          "then": {
+            "properties": {
+              "expected_public_digest": {
+                "$ref": "#/$defs/digest"
+              },
+              "release_base_digest": {
+                "$ref": "#/$defs/digest"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "action": {
+                "enum": [
+                  "translate",
+                  "regenerate"
+                ]
+              }
+            },
+            "required": [
+              "action"
+            ]
+          },
+          "then": {
+            "properties": {
+              "expected_public_digest": {
+                "$ref": "#/$defs/digest"
+              },
+              "source_digest": {
+                "$ref": "#/$defs/digest"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "invariant": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "sources",
+        "result",
+        "evidence"
+      ],
+      "properties": {
+        "id": {
+          "description": "Closed cross-file invariant vocabulary (#6356). Every id must be settled exactly once; an invented id cannot stand in for a required one.",
+          "enum": [
+            "artifact_reachability",
+            "effective_version_identity",
+            "public_claim_strength",
+            "governance_time_state",
+            "release_lineage_completeness"
+          ]
+        },
+        "sources": {
+          "type": "array",
+          "minItems": 1,
+          "description": "Declared release inputs this invariant was settled against.",
+          "items": {
+            "$ref": "#/$defs/input_id"
+          }
+        },
+        "result": {
+          "$ref": "#/$defs/result"
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/evidence"
+          }
+        }
+      }
+    },
+    "live_control": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "result",
+        "max_observation_age_days",
+        "evidence"
+      ],
+      "properties": {
+        "result": {
+          "description": "Closed live-control disposition vocabulary; an unknown token fails closed.",
+          "enum": [
+            "proven",
+            "blocked",
+            "not_proven"
+          ]
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/evidence"
+          }
+        },
+        "max_observation_age_days": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 365,
+          "description": "How old a live observation may be, relative to planned_at, and still prove this control."
+        }
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "reference",
+        "digest"
+      ],
+      "properties": {
+        "kind": {
+          "description": "Closed evidence-role vocabulary. Only live_receipt can prove a live control.",
+          "enum": [
+            "live_receipt",
+            "repository_source",
+            "review_ruling"
+          ]
+        },
+        "reference": {
+          "type": "string",
+          "minLength": 1
+        },
+        "digest": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/digest"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Required for live_receipt, which the planner resolves and hashes; null for repository_source and review_ruling, whose references are documents and rulings rather than observed artifacts."
+        }
+      }
+    },
+    "result": {
+      "enum": [
+        "pass",
+        "blocked",
+        "not_proven"
+      ]
+    },
+    "blocker": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "code",
+        "message",
+        "owner"
+      ],
+      "properties": {
+        "code": {
+          "type": "string",
+          "minLength": 1
+        },
+        "message": {
+          "type": "string",
+          "minLength": 1
+        },
+        "owner": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "input_id": {
+      "description": "Closed release-input vocabulary; an unknown token fails closed.",
+      "enum": [
+        "reconciliation",
+        "prepared_topology",
+        "release_note_catalog",
+        "published_api_audit",
+        "public_claims",
+        "release_integrity"
+      ]
+    }
+  }
+}
