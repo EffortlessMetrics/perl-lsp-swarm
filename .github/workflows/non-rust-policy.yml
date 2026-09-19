@@ -1,4 +1,4 @@
-# contract-version: 8
+# contract-version: 9
 name: Non-Rust policy
 
 on:
@@ -65,21 +65,31 @@ jobs:
             exit 1
           }
 
-          PR_REF="refs/remotes/origin/non-rust-policy-pr-head"
           if [ -n "$PR_HEAD_SHA" ]; then
-            git fetch --no-tags origin "+refs/pull/$PR_NUMBER/head:$PR_REF" \
+            git fetch --no-tags origin "+refs/pull/$PR_NUMBER/head:refs/remotes/origin/non-rust-policy-pr-head" \
               || fail_bind "pr-ref-fetch" "fetch refs/pull/$PR_NUMBER/head failed for PR head=$PR_HEAD_SHA"
-            [ "$(git rev-parse "$PR_REF^{commit}")" = "$PR_HEAD_SHA" ] \
-              || fail_bind "event-head-mismatch" "fetched $PR_REF disagrees with event PR head=$PR_HEAD_SHA"
+            test "$(git rev-parse refs/remotes/origin/non-rust-policy-pr-head^{commit})" = "$PR_HEAD_SHA" \
+              || fail_bind "event-head-mismatch" "fetched refs/remotes/origin/non-rust-policy-pr-head disagrees with event PR head=$PR_HEAD_SHA"
 
-            if ! merge_tree="$(git merge-tree --write-tree "$BASE_SHA" "$PR_HEAD_SHA" 2>&1)"; then
+            # --write-tree prints the result tree even when the merge itself
+            # conflicts (exit 1 with the tree OID on stdout line 1), so a
+            # failed merge-tree that still yields a valid tree is a content
+            # conflict, not a construction error. Anything else is a
+            # construction failure.
+            set +e
+            merge_tree_raw="$(git merge-tree --write-tree "$BASE_SHA" "$PR_HEAD_SHA" 2>/dev/null)"
+            merge_status=$?
+            set -e
+            merge_tree="$(printf '%s\n' "$merge_tree_raw" | head -n 1)"
+            if [ "$merge_status" -ne 0 ]; then
+              if [ -n "$merge_tree" ] \
+                && git rev-parse --verify --quiet "$merge_tree^{tree}" >/dev/null; then
+                fail_bind "subject-merge-conflict" "exact subject base=$BASE_SHA and head=$PR_HEAD_SHA conflict"
+              fi
               fail_bind "merge-tree-construction" "git merge-tree --write-tree failed for base=$BASE_SHA head=$PR_HEAD_SHA"
             fi
             [ "$(git rev-parse "$merge_tree^{tree}")" = "$merge_tree" ] \
               || fail_bind "merge-tree-tree-parse" "merge-tree OID=$merge_tree did not resolve to a tree"
-            if unmerged="$(git ls-files --unmerged 2>/dev/null || true)" && [ -n "$unmerged" ]; then
-              fail_bind "subject-merge-conflict" "exact subject base=$BASE_SHA and head=$PR_HEAD_SHA conflict on paths: $(echo "$unmerged" | tr '\n' ' ')"
-            fi
 
             SUBJECT_SHA="$(
               GIT_AUTHOR_NAME=non-rust-policy \
@@ -113,11 +123,9 @@ jobs:
             [ "$(git rev-parse "$SUBJECT_SHA^{tree}")" = "$merge_tree" ] \
               || fail_bind "tree-verification" "subject tree != merge_tree=$merge_tree"
           fi
-          {
-            echo "subject_sha=$SUBJECT_SHA"
-            echo "bind_failure_stage="
-            echo "artifact_id=$SUBJECT_SHA"
-          } >> "$GITHUB_OUTPUT"
+          echo "subject_sha=$SUBJECT_SHA" >> "$GITHUB_OUTPUT"
+          echo "bind_failure_stage=" >> "$GITHUB_OUTPUT"
+          echo "artifact_id=$SUBJECT_SHA" >> "$GITHUB_OUTPUT"
           echo "SUBJECT_SHA=$SUBJECT_SHA" >> "$GITHUB_ENV"
 
       - name: Verify trusted workflow contract

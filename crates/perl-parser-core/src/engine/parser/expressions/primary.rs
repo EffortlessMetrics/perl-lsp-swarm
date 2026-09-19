@@ -248,7 +248,38 @@ impl<'a> Parser<'a> {
 
             TokenKind::Regex => {
                 let token = self.tokens.next()?;
-                let (pattern, body, modifiers) = quote_parser::extract_regex_parts(&token.text);
+                // Strict validation that rejects unknown modifier letters (#14980),
+                // matching the contract `s///` and `tr///` already expose via
+                // `extract_substitution_parts_strict` / `extract_transliteration_parts_strict`.
+                let (pattern, body, modifiers) =
+                    quote_parser::extract_regex_parts_strict(&token.text).map_err(|e| {
+                        let message = match e {
+                            quote_parser::MatchError::InvalidModifier(c) => {
+                                // `qr//` compiles a pattern without running a
+                                // match loop, so Perl rejects the match-loop
+                                // letters `g` and `c` there while `m//` and
+                                // the bare `/.../` form accept them.
+                                let valid = if token.text.starts_with("qr") {
+                                    "m, s, i, x, p, o, d, u, a, l, n, xx, aa (g and c apply to m// only)"
+                                } else {
+                                    "m, s, i, x, p, o, d, u, a, l, n, g, c, xx, aa"
+                                };
+                                format!("Invalid match modifier '{c}'. Valid modifiers are: {valid}")
+                            }
+                            quote_parser::MatchError::InvalidDelimiter(c) => {
+                                format!(
+                                    "Invalid match delimiter '{c}'. Delimiter must be a non-alphanumeric, non-whitespace character"
+                                )
+                            }
+                            quote_parser::MatchError::MissingDelimiter => {
+                                "Missing delimiter after match operator".to_string()
+                            }
+                        };
+                        ParseError::SyntaxError {
+                            message,
+                            location: token.start(),
+                        }
+                    })?;
 
                 let has_embedded_code = self.analyze_regex_body_for_ast(&body, token.start())?;
 

@@ -300,6 +300,20 @@ struct Shared {
     /// Coordinates intake (batch produced / outbox space freed) with the
     /// dispatcher. Both condvars wait on the same state mutex.
     handoff_cv: Condvar,
+    /// Generation bumped on every `handoff_cv` notification while the state
+    /// lock is held. Test waiters record it before their lock-free predicate
+    /// check and re-verify after acquiring the lock, so a notification that
+    /// lands in between cannot be missed.
+    handoff_gen: AtomicU64,
+    /// Test-only progress broadcast. Test harness waiters park here instead
+    /// of on [`Self::handoff_cv`] so a production `notify_one` (batch
+    /// produced) can never be stolen from its intended production waiter,
+    /// the dispatcher: a stolen wakeup leaves a produced batch undispatched
+    /// until the next unrelated notification. Every `handoff_gen` bump under
+    /// the state lock also broadcasts here. Compiled out of production
+    /// builds.
+    #[cfg(test)]
+    test_progress_cv: Condvar,
     /// Set when the callback closure panicked mid-dispatch. Admissions then
     /// report [`WatcherAdmission::Unavailable`] instead of pretending work is
     /// still queueable behind a dead dispatcher.
@@ -746,7 +760,7 @@ impl FileWatcherDebouncer {
         guard.heap.clear();
         shared.stats.pending_subjects.store(0, Ordering::SeqCst);
         shared.intake_cv.notify_all();
-        shared.handoff_cv.notify_all();
+        shared.notify_handoff_all();
     }
 }
 
@@ -773,6 +787,9 @@ fn make_shared(
         }),
         intake_cv: Condvar::new(),
         handoff_cv: Condvar::new(),
+        handoff_gen: AtomicU64::new(0),
+        #[cfg(test)]
+        test_progress_cv: Condvar::new(),
         sink_panic: AtomicBool::new(false),
         clock,
         interval_ms,
@@ -814,6 +831,31 @@ fn join_worker(handle: JoinHandle<()>) {
     let _ = handle.join();
 }
 
+impl Shared {
+    /// Wake all handoff waiters and record the wakeup. Callers must hold
+    /// `state`: the generation bump only pairs with its notification when
+    /// both happen under the lock. Every `handoff_cv` notification must route
+    /// through here (or [`Shared::notify_handoff_one`]) so test waiters can
+    /// detect wakeups that land between their predicate check and wait.
+    fn notify_handoff_all(&self) {
+        self.handoff_gen.fetch_add(1, Ordering::SeqCst);
+        self.handoff_cv.notify_all();
+        #[cfg(test)]
+        self.test_progress_cv.notify_all();
+    }
+
+    /// Wake one handoff waiter and record the wakeup. Same lock contract as
+    /// [`Shared::notify_handoff_all`]. The single wakeup is reserved for
+    /// production waiters; test waiters observe progress via the separate
+    /// `test_progress_cv` broadcast instead of competing for it.
+    fn notify_handoff_one(&self) {
+        self.handoff_gen.fetch_add(1, Ordering::SeqCst);
+        self.handoff_cv.notify_one();
+        #[cfg(test)]
+        self.test_progress_cv.notify_all();
+    }
+}
+
 fn halt_workers(
     shared: &Shared,
     intake: Option<JoinHandle<()>>,
@@ -823,7 +865,7 @@ fn halt_workers(
         let mut guard = shared.state.lock();
         guard.shutting_down = true;
         shared.intake_cv.notify_all();
-        shared.handoff_cv.notify_all();
+        shared.notify_handoff_all();
     }
     if let Some(handle) = intake {
         join_worker(handle);
@@ -864,7 +906,7 @@ fn intake_loop(shared: Arc<Shared>) {
                     shared.stats.active_subjects.fetch_add(due.len(), Ordering::SeqCst);
                     guard.outbox.push_back(due);
                     shared.stats.pending_subjects.store(guard.subjects.len(), Ordering::SeqCst);
-                    shared.handoff_cv.notify_one();
+                    shared.notify_handoff_one();
                 }
                 continue;
             }
@@ -883,6 +925,15 @@ where
     loop {
         match guard.outbox.pop_front() {
             Some(batch) => {
+                // The outbox drain is a state transition that pressure
+                // observers wait on (`outboxed_batches` drops here), so it
+                // must record a wakeup exactly like the intake handoff and
+                // the post-delivery release. A waiter parked between the
+                // push notification and this pop would otherwise hold a
+                // stale outbox length with no future notification left to
+                // wake it, because the callback below can block
+                // indefinitely.
+                shared.notify_handoff_all();
                 // Active was already counted at handoff (intake side); popping
                 // changes no accounting. Decrement happens after the sink
                 // completes, success or failure.
@@ -926,12 +977,12 @@ where
                     }
                     {
                         let _relock = shared.state.lock();
-                        shared.handoff_cv.notify_all();
+                        shared.notify_handoff_all();
                     }
                     return;
                 }
                 guard = shared.state.lock();
-                shared.handoff_cv.notify_all();
+                shared.notify_handoff_all();
             }
             None => {
                 if guard.shutting_down {
@@ -983,14 +1034,50 @@ mod tests {
             let _state = self.shared.state.lock();
             self.clock.advance_millis(millis);
             self.shared.intake_cv.notify_all();
-            self.shared.handoff_cv.notify_all();
+            self.shared.notify_handoff_all();
         }
 
         fn wait_for(&self, predicate: impl Fn() -> bool, label: &str) {
+            // Deterministic synchronization seam: the production code already
+            // notifies `handoff_cv` (under the state lock) on every batch
+            // produced, every outbox space freed, and on shutdown. Waiting on
+            // that seam replaces the wall-clock poll with a bounded
+            // event-driven wait that survives heavily preempted runners
+            // without depending on scheduler luck for poll cadence.
+            //
+            // Test waiters park on `test_progress_cv`, never on `handoff_cv`
+            // itself: intake's batch-produced wakeup is `notify_one` reserved
+            // for the dispatcher, and a test waiter parked on `handoff_cv`
+            // could steal it, leaving the produced batch undispatched until
+            // the next unrelated notification (the exact nondeterminism this
+            // harness exists to remove). Every generation bump broadcasts on
+            // `test_progress_cv` under the same lock, so the wakeup topology
+            // stays complete without touching production wakeups.
             let deadline = Instant::now() + Duration::from_secs(10);
-            while !predicate() {
-                assert!(Instant::now() < deadline, "timed out waiting for {label}");
-                std::thread::sleep(Duration::from_millis(2));
+            loop {
+                // Predicates read pressure(), which takes the state lock, so
+                // the check cannot run under it (parking_lot mutexes are not
+                // reentrant). The generation recorded here closes the
+                // check-then-wait window instead: any notification in between
+                // bumped the counter under that same lock.
+                let seen = self.shared.handoff_gen.load(Ordering::SeqCst);
+                if predicate() {
+                    return;
+                }
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    assert!(predicate(), "timed out waiting for {label}");
+                    return;
+                }
+                let mut guard = self.shared.state.lock();
+                if self.shared.handoff_gen.load(Ordering::SeqCst) != seen {
+                    // A handoff landed between the predicate check and the
+                    // lock: state moved, so re-evaluate instead of waiting.
+                    drop(guard);
+                    continue;
+                }
+                let _timed_out = self.shared.test_progress_cv.wait_for(&mut guard, remaining);
+                drop(guard);
             }
         }
 
@@ -1016,6 +1103,32 @@ mod tests {
         let sink_delivered = Arc::clone(&delivered);
         let sink = move |uris: Vec<String>| sink_delivered.lock().push(uris);
         (delivered, sink)
+    }
+
+    #[test]
+    fn handoff_generation_records_every_notification() {
+        let harness = Harness::with_sink(|_| {});
+        assert_eq!(
+            harness.shared.handoff_gen.load(Ordering::SeqCst),
+            0,
+            "fresh harness starts at generation zero"
+        );
+        for i in 0..10u32 {
+            assert_eq!(
+                harness.debouncer.try_schedule(&format!("file:///gen/{i}.pl")),
+                WatcherAdmission::Accepted
+            );
+        }
+        harness.advance(101);
+        harness.wait_for(|| harness.debouncer.pressure().pending_subjects == 0, "generation drain");
+        // shutdown_now joins both workers, so every worker notification has
+        // landed by the time it returns; the final load is race-free.
+        harness.debouncer.shutdown_now();
+        let recorded = harness.shared.handoff_gen.load(Ordering::SeqCst);
+        assert!(
+            recorded >= 3,
+            "advance, worker batch production, and shutdown must each record a wakeup, got {recorded}"
+        );
     }
 
     #[test]
@@ -1531,9 +1644,10 @@ mod tests {
     fn file_watcher_debouncer_heap_cap_bounds_reschedule_storm_under_stall() {
         let gate: Arc<Mutex<bool>> = Arc::new(Mutex::new(false));
         let gate_open = Arc::clone(&gate);
-        // pending cap 40 → heap cap 80; batch 2 + outbox 8 ⇒ 16 subjects
-        // drain into a saturated outbox and the remaining 24 stay pending
-        // while intake parks at the backpressure gate.
+        // pending cap 40 → heap cap 80; batch 2 + outbox 8 + 1 in-callback
+        // batch ⇒ 18 subjects held outside the pending map. The dispatcher's
+        // pop notifies the backpressure gate, so intake refills the freed
+        // slot and the remaining 22 stay pending while intake parks.
         let harness = Harness::with_caps(
             move |_uris: Vec<String>| {
                 // Bounded block: even if the test fails before opening the
@@ -1555,14 +1669,16 @@ mod tests {
             );
         }
         harness.advance(101);
-        // Dispatcher pops batch #1 immediately (in-callback, blocked on the
-        // gate), so queued batches plateau at 7 — count the stall by the
-        // pending map instead, which excludes both in-flight and queued work.
+        // Dispatcher pops batch #1 into the gate-blocked callback; the pop
+        // itself frees an outbox slot and wakes intake, so queued batches
+        // refill to the full 8. Count the stall by the pending map, which
+        // excludes both in-flight and queued work and only settles once the
+        // backpressure gate re-saturates.
         harness.wait_for(
-            || harness.debouncer.pressure().pending_subjects == 24,
+            || harness.debouncer.pressure().pending_subjects == 22,
             "remainder parks at backpressure",
         );
-        // Dispatcher holds batch #1 in-callback; up to 8 more fill the
+        // Dispatcher holds batch #1 in-callback; 8 more batches fill the
         // outbox; the remaining dues stay parked pending.
         let parked: Vec<String> = {
             let state = harness.shared.state.lock();
@@ -1570,7 +1686,7 @@ mod tests {
             keys.sort();
             keys
         };
-        assert_eq!(parked.len(), 24, "40 subjects − 16 outboxed − 2 in-flight must park");
+        assert_eq!(parked.len(), 22, "40 subjects − 16 queued − 2 in-flight must park");
 
         // Storm: repeated schedules for still-pending URIs. Each supersedes a
         // previous heap entry; the retained-entry cap plus lazy purge must

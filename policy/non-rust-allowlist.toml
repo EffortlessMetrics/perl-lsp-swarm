@@ -1008,6 +1008,22 @@ review_after = "2026-11-16"
 # =============================================================================
 
 [[allow]]
+id = "non-rust-candidate-meta-self-tests"
+path = "scripts/ci/test_candidate_meta_self_tests.py"
+kind = "ci_tooling"
+language = "python"
+surface = "ci"
+classification = "test"
+owner = "release/ci"
+reason = "Python contract tests exercise the candidate meta self-test workflow's stale-head and fail-closed behavior."
+covered_by = [
+  "python3 -m unittest scripts/ci/test_candidate_meta_self_tests.py",
+  "cargo xtask check-file-policy",
+]
+created = "2026-08-27"
+review_after = "2026-09-27"
+
+[[allow]]
 id = "non-rust-ci-scripts-tree"
 glob = "scripts/**"
 kind = "ci_tooling"
@@ -1025,6 +1041,38 @@ covered_by = [
 broad_glob_reason = "scripts/ contains legacy and compatibility helpers being progressively migrated to xtask. The executable, process, and file-policy companion checks constrain risky behavior."
 created = "2026-05-07"
 review_after = "2026-12-07"
+
+[[allow]]
+id = "non-rust-tools-semver-inventory"
+path = "tools/parse_semver_checks.py"
+kind = "ci_tooling"
+language = "python"
+surface = "tooling"
+classification = "tooling"
+owner = "release/ci"
+reason = "Per-crate `cargo semver-checks` driver for the v0.18 waived-break release ledger (#15269); regenerates `docs/releases/semver-v0.17.0-vs-main.{json,md}` from `.ci/public-api-baselines/ratchet-crates.txt` and writes per-crate raw output to `target/semver-reports/per-crate/` (gitignored). Standard library only (no third-party dependencies), runs the existing `cargo semver-checks` binary that `just _semver-check-install` already pins."
+covered_by = [
+  "python3 tools/test_parse_semver_checks.py",
+  "python3 tools/parse_semver_checks.py --dry-run",
+  "python3 tools/parse_semver_checks.py --crate perl-parser --out-dir target/semver-ledger-draft",
+]
+created = "2026-09-18"
+review_after = "2027-03-18"
+
+[[allow]]
+id = "non-rust-tools-semver-inventory-tests"
+path = "tools/test_parse_semver_checks.py"
+kind = "ci_tooling"
+language = "python"
+surface = "tooling"
+classification = "test"
+owner = "release/ci"
+reason = "Focused falsifiers for `tools/parse_semver_checks.py` (#15269): unrecognized zero-exit tool output fails closed instead of parsing as a clean 0/0/0/0 pass, filtered `--crate` runs refuse the canonical ledger directory, baseline-absent crates record a terminal `not_applicable`, and publication exits non-zero while any ratcheted crate lacks a terminal verdict. Standard library `unittest` only, mirrors the adjacent-test convention (`scripts/ci/test_aggregate_lane_history.py`)."
+covered_by = [
+  "python3 tools/test_parse_semver_checks.py",
+]
+created = "2026-09-18"
+review_after = "2027-03-18"
 
 [[allow]]
 id = "non-rust-install-shell"
@@ -3808,6 +3856,22 @@ covered_by = [
 broad_glob_reason = "The `**` spans the deliberately nested case layout under one owned fixture directory (offline/live/consumer shapes, controls, goldens, and invalid documents in sibling folders). Breadth is bounded by that directory; `cargo xtask check-agent-implementation-packet` fail-closed validates every document."
 created = "2026-08-24"
 review_after = "2026-11-24"
+
+[[allow]]
+id = "non-rust-emacs-train-packet-live-observation-fixture"
+path = "fixtures/emacs_train_packet/observed_no_candidate.v1.json"
+kind = "test_fixture"
+language = "json"
+surface = "fixtures"
+classification = "test"
+owner = "tooling/agent-packet"
+reason = "The caller-supplied live candidate observation the E06 packet CI lane passes to the denominator, determinism and render steps (#11719). A coding packet admits a repository writer, so it refuses without an observation; this fixture states an explicit observed no-candidate sweep rather than letting CI assume vacancy."
+covered_by = [
+  "cargo xtask integration emacs train packets --check --live-observation fixtures/emacs_train_packet/observed_no_candidate.v1.json",
+  "cargo test -p xtask --bin xtask emacs_train_packet --locked",
+]
+created = "2026-09-05"
+review_after = "2026-12-05"
 
 [[allow]]
 id = "non-rust-agent-implementation-packet-golden-markdown"
