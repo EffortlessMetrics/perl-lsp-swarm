@@ -3633,10 +3633,7 @@ group: em-ci-small
 labels: [self-hosted, linux, x64, em-ci, rust-standard, trusted-pr]
 "#;
         let v: Value = serde_yaml_ng::from_str(yaml)?;
-        assert_eq!(
-            normalize_runs_on(&v),
-            Some("self_hosted_rust_standard".to_string())
-        );
+        assert_eq!(normalize_runs_on(&v), Some("self_hosted_rust_standard".to_string()));
         Ok(())
     }
 
