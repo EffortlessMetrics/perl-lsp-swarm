@@ -26,14 +26,12 @@ impl DapServer {
     /// Construction retains a result boundary for configuration and runtime
     /// initialization failures.
     pub fn new(config: DapConfig) -> anyhow::Result<Self> {
-        let adapter = DebugAdapter::new();
-        // Wire the configured workspace boundary (if any) into the adapter so
-        // launch requests are validated against it. See
-        // `DebugAdapter::set_workspace_root` and `handle_launch` for the
-        // narrowing-only override rule applied to launch-args `workspaceRoot`.
-        if let Some(root) = config.workspace_root.clone() {
-            adapter.set_workspace_root(root);
-        }
+        // The adapter is constructed with the configured authority rather than
+        // having a root pushed into it afterwards, so the trust boundary exists
+        // before the adapter can serve a single request and cannot be replaced
+        // later. See `handle_launch` for the narrowing-only rule applied to a
+        // launch-args `workspaceRoot`.
+        let adapter = DebugAdapter::with_workspace_authority(config.workspace_authority.clone());
         Ok(Self { config, adapter })
     }
 

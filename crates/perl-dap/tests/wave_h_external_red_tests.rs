@@ -181,7 +181,7 @@ fn test_dap_server_construction() -> Result<()> {
     let config = DapConfig {
         log_level: "debug".into(),
         mode: DapMode::Native,
-        workspace_root: Some(std::path::PathBuf::from("/tmp")),
+        workspace_authority: perl_dap::security::WorkspaceAuthority::unconfigured(),
     };
 
     let server = DapServer::new(config);
