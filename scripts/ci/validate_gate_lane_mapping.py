@@ -109,6 +109,9 @@ GATE_TO_LANE_MAP: dict[str, dict[str, Any]] = {
     # The agent-ledger validator (#15380) runs in the required merge-gate
     # policy shard, so it shares that shard's economics.
     "agent_ledgers_validate": {"lanes": ["merge_gate_shards"]},
+    # The code-action generation ledger ratchet runs in the required merge-gate
+    # policy shard (#15764), so its economics live on this lane.
+    "code_action_generation_ledger": {"lanes": ["merge_gate_shards"]},
     "compile_all_targets": {"lanes": ["check_all_targets"]},
     "lsp_smoke": {"lanes": ["ux_tests"]},
 
