@@ -595,7 +595,6 @@ pub(super) fn scan_emission(
     // ── Pass one: parse and collect ──────────────────────────────────────
     let mut files: Vec<(String, Vec<FnFacts>)> = Vec::new();
     for path in paths {
-        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or_default();
         // Whole-file test modules carry no production emission. Membership is
         // resolved from the `#[cfg(test)] mod name;` that declares the file,
         // not guessed from the filename: a `_tests.rs` suffix skipped files
