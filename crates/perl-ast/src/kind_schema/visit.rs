@@ -235,6 +235,7 @@ macro_rules! visit_kind_children {
                 }
             }
             NodeKind::Goto { target, .. } => $emit!(FieldId::TARGET, target),
+            NodeKind::TargetlessGoto {} => {}
             NodeKind::Signature { parameters } => {
                 for param in parameters {
                     $emit!(FieldId::PARAMETERS, param);

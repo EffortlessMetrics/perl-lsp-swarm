@@ -1936,6 +1936,7 @@ dependencies = [
  "perl-parser-core",
  "perl-position-tracking",
  "perl-pragma",
+ "perl-regex",
  "perl-semantic-analyzer",
  "perl-semantic-facts",
  "perl-source-identity",
@@ -1990,6 +1991,14 @@ dependencies = [
  "tempfile",
  "unicode-ident",
  "url",
+]
+
+[[package]]
+name = "perl-operation-trace"
+version = "0.17.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -2127,6 +2136,8 @@ version = "0.17.0"
 dependencies = [
  "perl-test-must",
  "proptest",
+ "serde",
+ "serde_json",
  "thiserror",
 ]
 

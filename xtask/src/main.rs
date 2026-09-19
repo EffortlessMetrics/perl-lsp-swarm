@@ -44,13 +44,14 @@ use tasks::{
     ci_scope, clean, clippy_cost_measure, code_action_generation_ledger, command_evidence, compare,
     compat_inventory, compiler_lexical_cutline, compiler_performance_receipt,
     compiler_upstream_status, completion_candidates, corpus_audit, count_ratchet, cpan_corpus,
-    critic_rule_proof, dead_code, debt_report, dependency_hygiene, dev, devex_docs, devex_doctor,
-    devex_plan, doc, doc_claims, e2e_validate, edge_cases, emacs_train_context, emacs_train_specs,
-    features, finalize_check, fix_forward, fmt, forbid_fatal_constructs, forensics, gate_receipts,
-    gates, generated_files, github, github_preflight, github_review, goals, hardening, hook_checks,
-    ignored_tests, incremental_proof, inject_sha_assets, inline_completion_quality,
-    inline_completion_smoke, install_surface_check, integration_proof, intent_diff_gate,
-    issue_controllers, issue_plan, layer_check, lsp_318_claims, lsp_318_matrix, lsp_ux_smoke,
+    critic_rule_proof, dead_code, dead_code_api_ledger, debt_report, dependency_hygiene, dev,
+    devex_docs, devex_doctor, devex_plan, doc, doc_claims, e2e_validate, edge_cases,
+    emacs_train_context, emacs_train_packet, emacs_train_specs, features, finalize_check,
+    fix_forward, fmt, forbid_fatal_constructs, forensics, gate_receipts, gates, generated_files,
+    github, github_preflight, github_review, goals, hardening, hook_checks, ignored_tests,
+    incremental_proof, inject_sha_assets, inline_completion_quality, inline_completion_smoke,
+    install_surface_check, integration_proof, intent_diff_gate, issue_controllers, issue_plan,
+    kwalitee_namespace_inventory, layer_check, lsp_318_claims, lsp_318_matrix, lsp_ux_smoke,
     memory_trends, merge_ready, methodology_gate, metrics, module_train, module_train_live,
     native_critic, native_format, native_neovim_train, native_product_surface, native_tooling,
     oneliner_capability_matrix, oracle_fixture_manifest, oracle_receipt_schema, oracle_runner,
@@ -156,6 +157,15 @@ enum Commands {
     /// Validate the code-action provider-generation disposition ledger and its
     /// parity corpus against current source (#9188).
     CheckCodeActionGenerationLedger,
+
+    /// Validate the `perl_parser::dead_code` API disposition ledger against
+    /// current module source, the public-API baseline, its compatibility
+    /// corpus, the consumer inventory and the generated projection (#9777).
+    CheckDeadCodeApiLedger {
+        /// Regenerate the Markdown projection from the ledger before checking.
+        #[arg(long)]
+        write: bool,
+    },
 
     /// Validate declared differential real-Perl oracle fixtures.
     CheckOracleFixtureManifest,
@@ -399,6 +409,22 @@ enum Commands {
         /// Validate only, and require the checked-in projection to be current.
         #[arg(long)]
         check: bool,
+    },
+
+    /// Reconcile `policy/kwalitee-namespace-inventory.toml` against every live
+    /// `perl-kwalitee` / `perl_kwalitee` reference and report unresolved active
+    /// counts by migration target (#8752).
+    #[command(name = "kwalitee-inventory")]
+    KwaliteeInventory {
+        /// Reconcile references and add a confirmation line on success.
+        #[arg(long)]
+        check: bool,
+        /// Print entry skeletons with current line hashes instead of checking.
+        #[arg(long, conflicts_with = "check")]
+        scaffold: bool,
+        /// Evaluate a different repository tree (for hermetic tests).
+        #[arg(long)]
+        root: Option<PathBuf>,
     },
 
     /// Reconcile `policy/completion-candidate-producers.toml` against the live
@@ -1297,8 +1323,11 @@ enum Commands {
 
     /// Measure CI baseline from recent workflow runs.
     CiBaseline {
-        /// Branch to analyze.
-        #[arg(short, long, default_value = "master")]
+        /// Branch to analyze. When empty, the repository's default branch is
+        /// derived from `gh repo view --json defaultBranchRef` instead of
+        /// assuming a hard-coded name (which silently returned zero rows on
+        /// the `main` branch).
+        #[arg(short, long, default_value = "")]
         branch: String,
 
         /// Number of days to analyze.
@@ -4813,6 +4842,10 @@ enum EmacsTrainSubcommand {
         #[command(subcommand)]
         command: EmacsTrainSpecsCommand,
     },
+    /// E06 actor-packet adapter (#11719): project the joined train state
+    /// into the shared #10872/#10881 packets. Fail-closed and offline.
+    #[command(flatten)]
+    Packet(emacs_train_packet::EmacsTrainPacketCommand),
 }
 
 #[derive(Subcommand)]
@@ -5279,6 +5312,26 @@ enum UxScorecardOutputFormat {
 
 fn main() -> Result<()> {
     color_eyre::install()?;
+    // The 236-variant `Commands` derive makes clap's parse matcher overflow the
+    // 1 MB Windows main-thread stack in debug builds (STATUS_STACK_OVERFLOW,
+    // #15918); Linux's 8 MB default hides it. Run the CLI on a worker thread
+    // with an explicit 64 MiB stack — cross-platform, no CLI surface change.
+    const CLI_STACK_SIZE: usize = 64 * 1024 * 1024;
+    let worker = std::thread::Builder::new()
+        .name("xtask-cli".to_owned())
+        .stack_size(CLI_STACK_SIZE)
+        .spawn(run_cli_main);
+    match worker {
+        Ok(handle) => match handle.join() {
+            Ok(result) => result,
+            // Propagate a panic from the CLI thread with its original payload.
+            Err(payload) => std::panic::resume_unwind(payload),
+        },
+        Err(error) => Err(eyre!("failed to spawn xtask CLI thread: {error}")),
+    }
+}
+
+fn run_cli_main() -> Result<()> {
     run_cli(Cli::parse())
 }
 
@@ -5322,6 +5375,7 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::CheckActiveGoalManifest => active_goal_manifest::run(),
         Commands::CheckProviderPromotionLedger => provider_promotion_ledger::run(),
         Commands::CheckCodeActionGenerationLedger => code_action_generation_ledger::run(),
+        Commands::CheckDeadCodeApiLedger { write } => dead_code_api_ledger::run(write),
         Commands::CheckOracleFixtureManifest => oracle_fixture_manifest::run(),
         Commands::Activation { command } => activation::run(command),
         Commands::CompilerLexicalCutline { command } => compiler_lexical_cutline::run(command),
@@ -5775,6 +5829,9 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::OnelinerCapabilityMatrix { check } => oneliner_capability_matrix::run(check),
         Commands::RepoTopology { check } => repository_topology::run(check),
         Commands::CompatInventory { check } => compat_inventory::run(check),
+        Commands::KwaliteeInventory { check, scaffold, root } => {
+            kwalitee_namespace_inventory::run(check, scaffold, root)
+        }
         Commands::CompletionCandidates { command } => completion_candidates::run(command),
         Commands::GenerateProtocolTypeSubstrateMatrix { check } => {
             protocol_type_substrate_matrix::run(check)
@@ -6278,6 +6335,7 @@ fn run_cli(cli: Cli) -> Result<()> {
             IntegrationCommand::Emacs { command } => match command {
                 EmacsIntegrationCommand::Train { command } => match command {
                     EmacsTrainSubcommand::Context(inner) => emacs_train_context::run(inner),
+                    EmacsTrainSubcommand::Packet(inner) => emacs_train_packet::run(inner),
                     EmacsTrainSubcommand::Specs { command } => match command {
                         EmacsTrainSpecsCommand::Plan { manifest, ledger, format } => {
                             emacs_train_specs::plan(manifest, ledger, format)

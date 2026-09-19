@@ -8,7 +8,11 @@ import {
   isAndroidEnvironment,
   isTermuxEnvironment,
 } from './downloader';
-import { isPerlLanguageId } from './languageIdentity';
+import {
+  CANONICAL_PERL_LANGUAGE_ID,
+  PERL_ALIAS_LANGUAGE_ID,
+  isPerlLanguageId,
+} from './languageIdentity';
 
 const SERVER_DEBUG_TEST_COMMAND = 'perl.debugTest';
 export const VSCODE_DEBUG_TEST_COMMAND = 'perl-lsp.debugTest';
@@ -861,6 +865,15 @@ export class PerlDebugConfigurationProvider implements vscode.DebugConfiguration
     config: vscode.DebugConfiguration,
     _token?: vscode.CancellationToken,
   ): vscode.ProviderResult<vscode.DebugConfiguration> {
+    // Alias debug contract (#7699): a `type: perl5` launch configuration
+    // resolves onto the one contributed `perl` debugger. Only `perl` is a
+    // contributed debugger, and only its contributor may register its
+    // descriptor factory — registering one for `perl5` throws at
+    // activation — so the alias is rewritten here, before VS Code looks
+    // the debugger up for the resolved configuration.
+    if (config.type === PERL_ALIAS_LANGUAGE_ID) {
+      config.type = CANONICAL_PERL_LANGUAGE_ID;
+    }
     // If launch.json is missing or empty
     if (!config.type && !config.request && !config.name) {
       const editor = vscode.window.activeTextEditor;
@@ -873,8 +886,14 @@ export class PerlDebugConfigurationProvider implements vscode.DebugConfiguration
     }
 
     if (config.request === 'attach') {
-      // Attach supports either processId or host/port. External-peer fields are
-      // validated separately by the descriptor factory.
+      // TCP host/port is the only supported attach mode: the adapter refuses
+      // processId attach fail-closed (#8109), so no template, snippet, or
+      // schema here advertises it. External-peer fields are validated
+      // separately by the descriptor factory.
+      // Preserve an explicit legacy processId unchanged when forwarding an
+      // existing configuration for adapter diagnostics; never default it into
+      // the TCP host/port path. The adapter owns the deterministic #8109
+      // refusal for that compatibility input.
       if (config.processId === undefined || config.processId === null) {
         if (!config.host) {
           config.host = 'localhost';
@@ -927,12 +946,6 @@ export class PerlDebugConfigurationProvider implements vscode.DebugConfiguration
         port: 13603,
         timeout: 5000,
       },
-      {
-        type: 'perl',
-        request: 'attach',
-        name: 'Attach by Process ID',
-        processId: 12345,
-      },
     ];
   }
 }
@@ -945,12 +958,15 @@ export function activateDebugger(context: vscode.ExtensionContext) {
   const factory = new PerlDebugAdapterDescriptorFactory(context);
   context.subscriptions.push(vscode.debug.registerDebugAdapterDescriptorFactory('perl', factory));
 
-  // Alias debug contract (#7699): a `type: perl5` launch configuration
-  // resolves through the same provider and factory as `type: perl`, so the
-  // onDebugResolve:perl5 activation event has an owner. The alias maps onto
-  // the one canonical debug pipeline; there is no second anything.
-  context.subscriptions.push(vscode.debug.registerDebugConfigurationProvider('perl5', provider));
-  context.subscriptions.push(vscode.debug.registerDebugAdapterDescriptorFactory('perl5', factory));
+  // Alias debug contract (#7699): a `type: perl5` launch configuration is
+  // owned by this provider for resolution (so onDebugResolve:perl5 has an
+  // owner) and rewritten to the contributed `perl` type there, which routes
+  // it to the one canonical factory below. Registering a descriptor factory
+  // for `perl5` is forbidden — only the contributor of a debugger may
+  // register its factory, and this package contributes exactly one debugger.
+  context.subscriptions.push(
+    vscode.debug.registerDebugConfigurationProvider(PERL_ALIAS_LANGUAGE_ID, provider),
+  );
 
   // Register debug commands
   context.subscriptions.push(

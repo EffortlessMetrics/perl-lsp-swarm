@@ -122,6 +122,24 @@ describe('PerlDebugConfigurationProvider', () => {
       vscode.window.activeTextEditor = undefined;
     });
 
+    test('rewrites an explicit perl5 alias type onto the contributed perl debugger (#7699)', () => {
+      // Only `perl` is a contributed debugger, and only its contributor may
+      // register its descriptor factory: a `type: perl5` configuration must
+      // resolve to `perl` here, before VS Code looks the debugger up.
+      const config = asDebugConfiguration({
+        type: 'perl5',
+        request: 'launch',
+        name: 'Alias Debug',
+        program: '/my/script.pl',
+      });
+      provider.resolveDebugConfiguration(undefined, config);
+
+      expect(config.type).toBe('perl');
+      expect(config.request).toBe('launch');
+      expect(config.name).toBe('Alias Debug');
+      expect(config.program).toBe('/my/script.pl');
+    });
+
     test('does not modify config with existing type/request/name', () => {
       const config = asDebugConfiguration({
         type: 'perl',
@@ -195,7 +213,7 @@ describe('PerlDebugConfigurationProvider', () => {
       expect((configs as vscode.DebugConfiguration[]).length).toBeGreaterThanOrEqual(3);
     });
 
-    test('includes launch, attach by TCP, and attach by PID templates', () => {
+    test('includes launch and attach-by-TCP templates, and no PID template (#8109)', () => {
       const configs = provider.provideDebugConfigurations(undefined) as vscode.DebugConfiguration[];
 
       const hasLaunch = configs.some((c) => c.request === 'launch');
@@ -204,7 +222,9 @@ describe('PerlDebugConfigurationProvider', () => {
 
       expect(hasLaunch).toBe(true);
       expect(hasTCPAttach).toBe(true);
-      expect(hasPIDAttach).toBe(true);
+      // #8109: the adapter refuses processId attach fail-closed, so no
+      // template may advertise it.
+      expect(hasPIDAttach).toBe(false);
     });
 
     test('all configurations have type "perl"', () => {

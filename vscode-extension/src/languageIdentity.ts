@@ -108,17 +108,68 @@ export function loadPerlAliasLanguageConfiguration(
  * Parse raw language-configuration JSON into the shape
  * `vscode.languages.setLanguageConfiguration` accepts. Pure for unit tests:
  * file reading stays with the caller.
+ *
+ * JSON carries no RegExp, but `setLanguageConfiguration` requires real
+ * `RegExp` objects (`wordPattern`, the `indentationRules` patterns):
+ * passing the raw strings crashes activation with
+ * `TypeError: r.exec is not a function`. Revive those fields here so every
+ * value leaving this parser is already in API shape. Absent fields stay
+ * absent; a present-but-unrevivable pattern fails the whole parse closed
+ * (undefined) rather than shipping a half-shaped configuration.
  */
 export function parsePerlAliasLanguageConfiguration(
   raw: string,
 ): Record<string, unknown> | undefined {
   try {
     const parsed: unknown = JSON.parse(raw);
-    if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
-      return parsed as Record<string, unknown>;
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return undefined;
     }
-    return undefined;
+    const config = parsed as Record<string, unknown>;
+    if (!reviveLanguageConfigurationPatterns(config)) {
+      return undefined;
+    }
+    return config;
   } catch {
     return undefined;
   }
+}
+
+/** Revive the JSON string patterns `setLanguageConfiguration` needs as RegExp. */
+function reviveLanguageConfigurationPatterns(config: Record<string, unknown>): boolean {
+  if (!revivePatternField(config, 'wordPattern')) {
+    return false;
+  }
+  const rules = config.indentationRules;
+  if (rules === undefined) {
+    return true;
+  }
+  if (rules === null || typeof rules !== 'object' || Array.isArray(rules)) {
+    return false;
+  }
+  const ruleRecord = rules as Record<string, unknown>;
+  return (
+    revivePatternField(ruleRecord, 'increaseIndentPattern') &&
+    revivePatternField(ruleRecord, 'decreaseIndentPattern')
+  );
+}
+
+/**
+ * Revive one optional pattern field in place. Missing stays missing; a
+ * string becomes a RegExp; anything else (or an invalid pattern) fails.
+ */
+function revivePatternField(record: Record<string, unknown>, field: string): boolean {
+  const value = record[field];
+  if (value === undefined) {
+    return true;
+  }
+  if (typeof value !== 'string') {
+    return false;
+  }
+  try {
+    record[field] = new RegExp(value);
+  } catch {
+    return false;
+  }
+  return true;
 }
