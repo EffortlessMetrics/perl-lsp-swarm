@@ -1318,21 +1318,67 @@ pub struct FileModeAxesResult {
     pub bucket: Option<String>,
 }
 
+/// Deserialization shape for [`RunAxesReport`], validated before it becomes one.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RunAxesReportRepr {
+    schema_version: String,
+    origin: EvidenceOrigin,
+    completion: MeasurementCompletion,
+    subject: ResultSubjectIdentity,
+    axes: ResultAxes,
+    parse: ParseRailSummary,
+    admission: AdmissionSummary,
+    correctness_rails: BTreeMap<String, CorrectnessRailSummary>,
+    current_versus_accepted: CurrentVersusAccepted,
+    files: Vec<FileModeAxesResult>,
+    invocations: Vec<InvocationAxesResult>,
+    claim_boundary: String,
+    limitations: Vec<String>,
+}
+
+impl TryFrom<RunAxesReportRepr> for RunAxesReport {
+    type Error = ResultReportViolation;
+
+    fn try_from(repr: RunAxesReportRepr) -> Result<Self, Self::Error> {
+        let report = RunAxesReport {
+            schema_version: repr.schema_version,
+            origin: repr.origin,
+            completion: repr.completion,
+            subject: repr.subject,
+            axes: repr.axes,
+            parse: repr.parse,
+            admission: repr.admission,
+            correctness_rails: repr.correctness_rails,
+            current_versus_accepted: repr.current_versus_accepted,
+            files: repr.files,
+            invocations: repr.invocations,
+            claim_boundary: repr.claim_boundary,
+            limitations: repr.limitations,
+        };
+        report.validate()?;
+        Ok(report)
+    }
+}
+
 /// A complete v2 result report for one measured series.
 ///
-/// Unlike [`ResultAxes`], this envelope deserializes without running
-/// [`RunAxesReport::validate`]. That is deliberate: a malformed historical
-/// report must stay readable so it can be inspected and diagnosed, and
-/// validation is the gate applied when a report is *admitted* rather than when
-/// it is read. Anything trusting report-level invariants must call `validate`
-/// or [`RunAxesReport::admissible_as_current_authority`] first.
+/// Like [`ResultAxes`], this envelope goes through an invariant check before it
+/// exists: deserialization is generated from [`RunAxesReportRepr`] and the
+/// converted value must pass [`RunAxesReport::validate`], so a report that
+/// fails a report-level rule cannot be obtained by parsing. A payload that only
+/// needed to stay readable for diagnosis is rejected at the boundary instead of
+/// being trusted because it parsed.
 ///
 /// `files` and `invocations` are samples, not necessarily complete coverage of
 /// the denominator: a report may carry every file record or only the
 /// interesting ones. They must be individually unique and consistent with the
 /// aggregate, but their count is not required to equal `subject.denominator`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
+// Unknown-field rejection lives on `RunAxesReportRepr`: with `try_from`,
+// deserialization is generated from the repr, so a `deny_unknown_fields` here
+// would be inert.
+#[serde(try_from = "RunAxesReportRepr")]
 pub struct RunAxesReport {
     /// Schema version; always [`RESULT_AXES_SCHEMA_VERSION`] for current records.
     pub schema_version: String,
@@ -2512,9 +2558,17 @@ mod tests {
             ObservedOutcome::FailuresObserved,
             CompatibilityAdmission::Implemented,
             SemanticSupport::Partial,
-            CorrectnessMechanism::FixtureReplay,
+            // The default report carries only an `eir` rail, so the claim's
+            // mechanism must be one that rail backs; deserialization now
+            // validates, so the round trip needs an honest report.
+            CorrectnessMechanism::EirExecution,
         )?;
         let mut candidate = report(observed, no_change());
+        // A `partial` rollup may not sit over a wholly general distribution
+        // (the levels partition), so the candidate carries the mixed
+        // distribution its axes actually claim. Deserialization validates, so
+        // the round trip needs an honest report, not just a parseable one.
+        candidate.admission.by_support = distribution(&[("partial", 1), ("general", 3)]);
         candidate.files.push(FileModeAxesResult {
             path: "base/ok.t".to_string(),
             mode: HarnessMode::Compile,
@@ -2530,6 +2584,47 @@ mod tests {
         let encoded = serde_json::to_string(&candidate)?;
         let decoded: RunAxesReport = serde_json::from_str(&encoded)?;
         assert_eq!(decoded, candidate);
+        Ok(())
+    }
+
+    #[test]
+    fn report_deserialization_rejects_invariant_violating_payloads()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let clean = axes(
+            EvidenceValidity::Valid,
+            ObservedOutcome::Clean,
+            CompatibilityAdmission::Implemented,
+            SemanticSupport::General,
+            CorrectnessMechanism::EirExecution,
+        )?;
+
+        // Rule: a clean parse rail cannot have observed failures. Forged on the
+        // wire, this must be refused at the boundary instead of being trusted
+        // because it parsed.
+        let mut wire = serde_json::to_value(report(clean, no_change()))?;
+        wire["parse"]["files_passed"] = serde_json::json!(3);
+        assert!(
+            serde_json::from_value::<RunAxesReport>(wire).is_err(),
+            "a clean parse rollup over observed failures deserialized; the report \
+             boundary trusts the wire where ResultAxes does not"
+        );
+
+        // Rule: a positive aggregate support claim names a supported subset, so
+        // the distribution must record at least one supported subject.
+        let mut wire = serde_json::to_value(report(clean, no_change()))?;
+        wire["admission"]["by_support"] = serde_json::json!({"blocked": 4});
+        assert!(
+            serde_json::from_value::<RunAxesReport>(wire).is_err(),
+            "a general rollup over no supported subject deserialized"
+        );
+
+        // An unknown field is likewise rejected by the repr.
+        let mut wire = serde_json::to_value(report(clean, no_change()))?;
+        wire["fabricated"] = serde_json::json!(true);
+        assert!(
+            serde_json::from_value::<RunAxesReport>(wire).is_err(),
+            "a report with an unknown field deserialized"
+        );
         Ok(())
     }
 
@@ -3276,8 +3371,9 @@ mod tests {
     {
         let validator = schema()?;
         for (name, fixture, rust_should_accept, agreement) in report_fixtures()? {
-            let decoded: RunAxesReport = serde_json::from_value(fixture.clone())?;
-            let rust_accepts = decoded.validate().is_ok();
+            // `try_from` validation makes deserialization itself the report
+            // gate, so Rust acceptance is decided by whether the payload parses.
+            let rust_accepts = serde_json::from_value::<RunAxesReport>(fixture.clone()).is_ok();
             assert_eq!(
                 rust_accepts, rust_should_accept,
                 "'{name}': Rust validator acceptance was {rust_accepts}, expected \
