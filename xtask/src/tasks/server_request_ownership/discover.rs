@@ -99,6 +99,27 @@ fn lexically_normal(path: &Path) -> PathBuf {
     normal
 }
 
+/// The path relative to the scan root, spelled with `/`.
+///
+/// Every `path#symbol` citation the matrix joins against uses the repository
+/// convention, so the discovered side must render the same spelling on every
+/// host: `Path::display` renders the host separator, which on Windows produced
+/// `src\runtime\outbound.rs#OutboundSink` and failed the exact-set join against
+/// `src/runtime/outbound.rs#OutboundSink` while both named the same file. Joined
+/// per component rather than with `to_slash` so a `..` component survives as
+/// text instead of being resolved against the host filesystem.
+fn slash_relative(repo_root: &Path, path: &Path) -> String {
+    let relative = path.strip_prefix(repo_root).unwrap_or(path);
+    let mut rendered = String::new();
+    for (index, component) in relative.components().enumerate() {
+        if index > 0 {
+            rendered.push('/');
+        }
+        rendered.push_str(&component.as_os_str().to_string_lossy());
+    }
+    rendered
+}
+
 fn declared_path(parent: &Path, attrs: &[syn::Attribute]) -> PathAttr {
     let attr = attrs.iter().find(|attr| attr.path().is_ident("path"))?;
     let syn::Meta::NameValue(meta) = &attr.meta else { return Some(Err(())) };
@@ -558,9 +579,7 @@ pub(super) fn scan_emission(
     // A `#[path]` the reader cannot evaluate hides which file a test module
     // occupies, so any send in it would read as production. Report it instead.
     for path in &unresolvable {
-        let relative = path
-            .strip_prefix(repo_root)
-            .map_or_else(|_| path.display().to_string(), |p| p.display().to_string());
+        let relative = slash_relative(repo_root, path);
         violations.push(Violation::new(
             "emission-module-path-unresolvable",
             relative.clone(),
@@ -584,9 +603,7 @@ pub(super) fn scan_emission(
         if test_gated.contains(&path) {
             continue;
         }
-        let relative = path
-            .strip_prefix(repo_root)
-            .map_or_else(|_| path.display().to_string(), |p| p.display().to_string());
+        let relative = slash_relative(repo_root, &path);
         let source = std::fs::read_to_string(&path)
             .wrap_err_with(|| format!("reading emission source {relative}"))?;
 
