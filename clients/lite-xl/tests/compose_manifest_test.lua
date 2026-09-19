@@ -83,9 +83,7 @@ end
 -- implementation).
 -- ---------------------------------------------------------------------------
 
-local scratch = os.getenv("TEMP") or "."
-scratch = scratch .. "/compose_manifest_test_scratch"
-os.execute('mkdir "' .. scratch .. '" 2>nul')
+-- This suite only reads manifest data and Git history; no scratch is needed.
 
 local function git_exit(args)
   local okk, kind, code = os.execute("git -C \"" .. repo_root .. "\" " .. args)

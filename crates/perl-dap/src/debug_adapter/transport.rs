@@ -1,8 +1,8 @@
 //! Transport layer: run (stdin/stdout) and run_with_io.
 
-use super::sync_utils::EventSender;
 #[cfg(test)]
 use super::sync_utils::dispatch_event;
+use super::sync_utils::{DapMessageWithEpoch, DrainEpoch, EventSender, set_drain_epoch};
 use super::{
     Arc, AtomicBool, ContentLengthFramer, DapMessage, DebugAdapter, EVENT_QUEUE_CAPACITY, Mutex,
     Read, Write, io, lock_or_recover, sync_channel, thread,
@@ -135,6 +135,14 @@ where
 }
 
 const EVENT_WRITE_BATCH_MAX: usize = 64;
+
+/// Upper bound on how long a response waits for handler-emitted events to
+/// drain before it is written anyway. Generous enough for the consumer to
+/// drain a full queue to a healthy wire (including slow CI schedulers);
+/// small enough that a genuinely stalled consumer cannot stall the
+/// session. Commands that emit no events never wait at all.
+const EVENT_DRAIN_MAX_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
+
 fn next_transport_seq(seq: &Mutex<i64>) -> i64 {
     let mut value = lock_or_recover(seq, "transport.seq");
     *value += 1;
@@ -213,16 +221,36 @@ impl DebugAdapter {
         R: BoundedRead,
         W: Write + Send + 'static,
     {
+        self.native_stdio_transport = true;
+        let result = self.run_with_io_inner(input, output);
+        self.native_stdio_transport = false;
+        result
+    }
+
+    fn run_with_io_inner<R, W>(&mut self, input: R, output: W) -> io::Result<()>
+    where
+        R: BoundedRead,
+        W: Write + Send + 'static,
+    {
+        // The shipped native server reaches this transport only through stdio.
+        // Set the profile before initialize is dispatched so capability
+        // advertisement and request-floor admission use the same authority.
         // Create a shared writer to prevent interleaving between the main loop
         // and the event handler thread.
         let shared_writer: Arc<Mutex<W>> = Arc::new(Mutex::new(output));
         let event_writer = Arc::clone(&shared_writer);
 
         // Create bounded channel for asynchronous events.
-        let (tx, rx) = sync_channel::<DapMessage>(EVENT_QUEUE_CAPACITY);
+        let (tx, rx) = sync_channel::<DapMessageWithEpoch>(EVENT_QUEUE_CAPACITY);
         let event_sender = EventSender::new(tx);
         self.event_sender = Some(event_sender.clone());
         let (writer_done_tx, writer_done_rx) = sync_channel::<bool>(1);
+
+        // A new transport run starts with a clean drain latch: any residue
+        // from a previous run whose consumer died mid-batch must not make
+        // this run's responses wait for a drain that can never complete.
+        self.event_drain.reset();
+        let event_drain = self.event_drain.clone();
 
         // Clone transport_broken flag to pass to the event handler thread.
         let transport_broken = Arc::clone(&self.transport_broken);
@@ -254,14 +282,23 @@ impl DebugAdapter {
                         }
                     }
                 }
+                // Per-message epoch tagging is essential: every event reserved
+                // a per-epoch slot in the request-scoped latch when it was
+                // accepted, and every consumed message must debit the
+                // matching slot on the consumer side. Coalescing into a
+                // single global `complete(drained)` (the pre-#15725 shape)
+                // would leave the per-request latch with phantom residue that
+                // pushed every later response through the full drain timeout.
 
                 let mut writer = lock_or_recover(&event_writer, "event_writer");
                 let mut wire_seq = lock_or_recover(&event_wire_seq, "transport.wire_seq");
                 let mut payloads = Vec::with_capacity(batch.len());
-                for mut msg in batch {
+                for (mut msg, drain_epoch) in batch {
                     assign_wire_seq_locked(&mut msg, &mut wire_seq);
                     match serde_json::to_vec(&msg) {
-                        Ok(payload) => payloads.push(payload),
+                        Ok(payload) => {
+                            payloads.push((payload, drain_epoch));
+                        }
                         Err(e) => {
                             event_delivery_failed = true;
                             tracing::error!(
@@ -269,24 +306,47 @@ impl DebugAdapter {
                                 message = ?msg,
                                 "Failed to serialize DAP message"
                             );
+                            // Unserializable message is never observable to
+                            // the client; release its per-epoch reservation
+                            // immediately so the request-scoped wait cannot
+                            // stall on it (#15725).
+                            event_drain.complete_at(drain_epoch, 1);
                         }
                     }
                 }
 
-                if payloads.is_empty() {
+                let drained = payloads.len();
+                if drained == 0 {
                     if disconnected {
                         break;
                     }
                     continue;
                 }
 
+                // Release the worker's drain barrier for this batch: every
+                // message removed from the channel above releases its
+                // per-epoch reservation — written, unserializable (never
+                // observable, so nothing to wait for), or failed-open on a
+                // broken transport. Per-epoch debits are required so the
+                // request-scoped wait drains only this request's events
+                // (#15725).
                 let mut event_flushed = false;
-                if write_event_payloads(
+                let mut owned_payloads: Vec<Vec<u8>> = Vec::with_capacity(payloads.len());
+                let mut epoch_refs: Vec<DrainEpoch> = Vec::with_capacity(payloads.len());
+                for (payload, drain_epoch) in payloads {
+                    owned_payloads.push(payload);
+                    epoch_refs.push(drain_epoch);
+                }
+                let write_failed = write_event_payloads(
                     &mut *writer,
-                    &payloads,
+                    &owned_payloads,
                     &event_transport_broken,
                     &mut event_flushed,
-                ) {
+                );
+                for drain_epoch in epoch_refs {
+                    event_drain.complete_at(drain_epoch, 1);
+                }
+                if write_failed {
                     event_delivery_failed = true;
                     tracing::error!(
                         "Event handler detected a write failure; marking transport broken"
@@ -332,6 +392,7 @@ impl DebugAdapter {
         let worker_event_sender = event_sender.clone();
         let transport_seq = Arc::clone(&self.seq);
         let worker_seq = Arc::clone(&self.seq);
+        let native_stdio_transport = self.native_stdio_transport;
         let worker_transport_broken = Arc::clone(&transport_broken);
         let worker_request_rx = request_rx;
         let operation_broker = Arc::clone(&self.operation_broker);
@@ -340,6 +401,13 @@ impl DebugAdapter {
         let shutdown_reason = Arc::new(Mutex::new(None::<&'static str>));
         let worker_shutdown_reason = Arc::clone(&shutdown_reason);
         let (disconnect_done_tx, disconnect_done_rx) = sync_channel::<bool>(1);
+        // Per-worker request-id generator for the request-scoped drain
+        // barrier (#15725): increments at the start of every request handler
+        // invocation on the worker thread, used as the [`DrainEpoch`] tag for
+        // events emitted by that handler and as the wait key for the response
+        // barrier. Starts at 1 so the unset thread-local (`None`) and a real
+        // epoch of `0` are unambiguous.
+        let next_request_id = Arc::new(std::sync::atomic::AtomicU64::new(1));
         let mut reader = input;
         let mut framer = ContentLengthFramer::new();
         let mut read_buf = [0u8; 8 * 1024];
@@ -351,6 +419,15 @@ impl DebugAdapter {
                         worker_queued_count.fetch_sub(1, Ordering::AcqRel);
                     }
                     let is_disconnect = request.command == "disconnect";
+                    // Bind the request epoch (#15725): every event emitted by
+                    // the handler below tags itself with `current_request_id` via
+                    // the thread-local `DRAIN_EPOCH`, and the response wait at
+                    // the end of this loop drains only that epoch so unrelated
+                    // asynchronous `send_event` traffic on other epochs does
+                    // not push this response through the full
+                    // `EVENT_DRAIN_MAX_WAIT` cap.
+                    let current_request_id = next_request_id.fetch_add(1, Ordering::AcqRel);
+                    set_drain_epoch(Some(current_request_id));
                     // This load is the worker's claim point. Disconnect refuses
                     // requests that have not started; a request already claimed
                     // may finish or settle through the broker. Clean EOF does
@@ -372,7 +449,22 @@ impl DebugAdapter {
                                 "Request was accepted before {reason} and then cancelled"
                             )),
                         }
+                    } else if request.command == crate::reload_family::LOADED_MODULE_RELOAD_REQUEST
+                        && self.loaded_module_reload_route_enabled()
+                    {
+                        // R03 reload-family route (#10102), mirrored from
+                        // `handle_request`: the worker's table-owned
+                        // `dispatch_request` bypasses that seam (like the
+                        // #9581 floor at intake), so the profiled family
+                        // route is repeated here; otherwise the family stays
+                        // unavailable on the wire without advertisement.
+                        self.handle_loaded_module_reload(
+                            self.next_seq(),
+                            request.request_seq,
+                            request.arguments,
+                        )
                     } else {
+                        self.retire_pending_terminal_before_request(&request.command);
                         self.dispatch_request(
                             request.request_seq,
                             &request.command,
@@ -383,6 +475,28 @@ impl DebugAdapter {
                         && DebugAdapter::response_succeeded_for_command(&response, "initialize");
                     let disconnect_succeeded = is_disconnect
                         && matches!(&response, DapMessage::Response { success: true, .. });
+                    // Clear the epoch before the wait so any code that runs
+                    // after this point (the wait itself, the write below) does
+                    // not tag fresh events against the just-finished request's
+                    // epoch (#15725).
+                    set_drain_epoch(None);
+                    // Handler-emitted events must reach the client before the
+                    // terminal response that can imply their effect: queueing
+                    // alone does not order the wire because the event consumer
+                    // is asynchronous. Wait (bounded, fail-open) for the
+                    // request-scoped drain; on timeout the response proceeds
+                    // without the ordering guarantee rather than stalling the
+                    // session.
+                    if !self.event_drain.wait_for_epoch(
+                        DrainEpoch::Request(current_request_id),
+                        EVENT_DRAIN_MAX_WAIT,
+                    ) {
+                        tracing::warn!(
+                            wait_ms = EVENT_DRAIN_MAX_WAIT.as_millis() as u64,
+                            request_id = current_request_id,
+                            "event drain barrier timed out; writing response without event ordering"
+                        );
+                    }
                     if let Err(error) = write_message_then_notify_initialized(
                         &worker_writer,
                         response,
@@ -496,22 +610,58 @@ impl DebugAdapter {
                         }
                     };
 
+                    // Cancellation is the one control request that must be
+                    // dispatched by intake while the FIFO worker may be
+                    // blocked in an ordinary debugger operation.  Routing it
+                    // through that worker would leave the broker token
+                    // unreachable until the operation returned.
+                    if native_stdio_transport && command == "cancel" {
+                        if let Some(request) = arguments
+                            .as_ref()
+                            .and_then(|value| value.get("requestId"))
+                            .and_then(serde_json::Value::as_i64)
+                        {
+                            operation_broker.cancel_request(request);
+                        }
+                        let response = DapMessage::Response {
+                            seq: next_transport_seq(&transport_seq),
+                            request_seq: seq,
+                            success: true,
+                            command,
+                            body: None,
+                            message: None,
+                        };
+                        if let Err(error) = write_message_then_notify_initialized(
+                            &shared_writer,
+                            response,
+                            false,
+                            Some(&event_sender),
+                            &transport_seq,
+                            &wire_seq,
+                        ) {
+                            break 'transport Err(error);
+                        }
+                        continue;
+                    }
+
                     // #9581 secondary-capability floor, ahead of the table-owned
                     // dispatch: a floored wire request is refused before any
                     // handler can run. The `initialized` notification below still
                     // keys off the (never-floored) initialize response.
-                    let response = crate::backend::capabilities::capability_floor_message(
-                        &command,
-                        arguments.as_ref(),
-                    )
-                    .map(|message| DapMessage::Response {
-                        seq: next_transport_seq(&transport_seq),
-                        request_seq: seq,
-                        success: false,
-                        command: command.clone(),
-                        body: None,
-                        message: Some(message),
-                    });
+                    let response =
+                        crate::backend::capabilities::capability_floor_message_for_native_stdio(
+                            &command,
+                            arguments.as_ref(),
+                            native_stdio_transport,
+                        )
+                        .map(|message| DapMessage::Response {
+                            seq: next_transport_seq(&transport_seq),
+                            request_seq: seq,
+                            success: false,
+                            command: command.clone(),
+                            body: None,
+                            message: Some(message),
+                        });
                     if let Some(response) = response {
                         if let Err(error) = write_message_then_notify_initialized(
                             &shared_writer,
@@ -1134,11 +1284,15 @@ while (my $line = <STDIN>) {
                     thread::sleep(Duration::from_millis(5));
                 }
             }
-            let mut control = framed_request_with_arguments(
-                2,
-                if disconnect { "disconnect" } else { "cancel" },
-                serde_json::json!({"requestId": 1}),
-            )?;
+            let mut control = if matches!(scenario, TransportScenario::Released) {
+                Vec::new()
+            } else {
+                framed_request_with_arguments(
+                    2,
+                    if disconnect { "disconnect" } else { "cancel" },
+                    serde_json::json!({"requestId": 1}),
+                )?
+            };
             if disconnect {
                 control.extend(framed_request_with_arguments(
                     999,
@@ -1165,10 +1319,13 @@ while (my $line = <STDIN>) {
                 while Instant::now() < deadline {
                     let messages = transport_messages(&output_view)?;
                     if messages.iter().any(|message| {
-                        matches!(message, DapMessage::Response { request_seq: 1, .. })
+                        matches!(
+                            message,
+                            DapMessage::Response { request_seq: 1, success: true, .. }
+                        )
                     }) {
                         return Err(format!(
-                            "evaluate completed before peer release: {messages:?}"
+                            "evaluate succeeded before peer release: {messages:?}"
                         )
                         .into());
                     }
@@ -1365,14 +1522,32 @@ while (my $line = <STDIN>) {
                 DapMessage::Response { request_seq, .. } if *request_seq == request)
                 })
                 .collect();
-            if matching.len() != 1
-                || !matches!(matching.first(),
-                Some(DapMessage::Response { command: actual, success: true, body: Some(_), .. }) if actual == command)
-            {
+            let evaluate_cancelled = request == 1
+                && matches!(
+                    scenario,
+                    TransportScenario::Cancel | TransportScenario::FullQueueCancel
+                );
+            let valid_response = if evaluate_cancelled {
+                matches!(matching.first(), Some(DapMessage::Response {
+                    command: actual_command,
+                    success: false,
+                    message: Some(message),
+                    ..
+                }) if actual_command == command && message.contains("cancelled"))
+            } else {
+                matches!(matching.first(), Some(DapMessage::Response {
+                    command: actual,
+                    success: true,
+                    body: Some(_),
+                    ..
+                }) if actual == command)
+            };
+            if matching.len() != 1 || !valid_response {
                 return Err(format!("expected one successful {command}: {matching:?}").into());
             }
         }
         if !disconnect
+            && !matches!(scenario, TransportScenario::Cancel | TransportScenario::FullQueueCancel)
             && !messages.iter().any(|message| {
                 matches!(message,
             DapMessage::Response { request_seq: 1, body: Some(body), .. }
@@ -1381,28 +1556,28 @@ while (my $line = <STDIN>) {
         {
             return Err(format!("evaluate did not return peer value: {messages:?}").into());
         }
-        let refusal = "`cancel` is unsupported: `supportsCancelRequest` is false for this adapter \
-            (#9581 secondary-capability floor; exact semantics unproven, \
-            re-enable gate: #9074 + #8712 + #7568). The request was rejected before any debugger \
-            interaction, so no state was read or changed.";
         let cancel: Vec<_> = messages
             .iter()
             .filter(|message| matches!(message, DapMessage::Response { request_seq: 2, .. }))
             .collect();
         if !disconnect
+            && require_early_cancel
+            && !matches!(
+                scenario,
+                TransportScenario::CancelWriteFailure | TransportScenario::IntakeFailure
+            )
             && (cancel.len() != 1
                 || !matches!(cancel.first(),
-            Some(DapMessage::Response { command, success: false, body: None, message: Some(message), .. })
-            if command == "cancel" && message == refusal))
+            Some(DapMessage::Response { command, success, body: None, .. })
+            if command == "cancel" && *success))
         {
-            return Err(format!("public cancel refusal changed: {cancel:?}").into());
+            return Err(format!("public cancel acknowledgement changed: {cancel:?}").into());
         }
         if require_early_cancel && !early {
-            return Err("cancel refusal arrived only after releasing blocked evaluate; recovery controls passed".into());
+            return Err("cancel acknowledgement arrived only after releasing blocked evaluate; recovery controls passed".into());
         }
         if require_early_cancel {
-            let mut expected = 1;
-            for message in &messages {
+            for (expected, message) in (1..).zip(messages.iter()) {
                 let actual = match message {
                     DapMessage::Request { seq, .. }
                     | DapMessage::Response { seq, .. }
@@ -1414,7 +1589,6 @@ while (my $line = <STDIN>) {
                     )
                     .into());
                 }
-                expected += 1;
             }
         }
         Ok(())
@@ -1699,7 +1873,7 @@ while (my $line = <STDIN>) {
     fn write_message_then_notify_initialized_does_not_deadlock_on_full_queue() -> Result<(), String>
     {
         let shared_writer: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
-        let (tx, rx) = sync_channel::<DapMessage>(1);
+        let (tx, rx) = sync_channel::<DapMessageWithEpoch>(1);
         let seq = Arc::new(Mutex::new(0i64));
         let wire_seq = Arc::new(Mutex::new(0i64));
         let (consumer_ready_tx, consumer_ready_rx) = sync_channel(1);
@@ -1724,7 +1898,7 @@ while (my $line = <STDIN>) {
             drop(lock_or_recover(&consumer_writer, "test.event_writer"));
             rx.recv().map_err(|error| error.to_string())?;
             match rx.recv().map_err(|error| error.to_string())? {
-                DapMessage::Event { event, .. } if event == "initialized" => Ok(()),
+                (DapMessage::Event { event, .. }, _) if event == "initialized" => Ok(()),
                 other => Err(format!("expected initialized event, got {other:?}")),
             }
         });
@@ -1912,7 +2086,7 @@ while (my $line = <STDIN>) {
     /// The `transport_broken` flag starts as `false` on a fresh adapter and is
     /// not set by a successful run (clean EOF on the input side).
     #[test]
-    fn test_transport_broken_flag_clear_on_clean_run() {
+    fn test_transport_broken_flag_clear_on_clean_run() -> Result<(), Box<dyn std::error::Error>> {
         let mut adapter = DebugAdapter::new();
         // Empty input → immediate EOF → clean Ok(()) return.
         let input = Cursor::new(vec![]);
@@ -1924,6 +2098,17 @@ while (my $line = <STDIN>) {
             !adapter.transport_broken.load(AOrdering::Acquire),
             "transport_broken must remain false after a clean run"
         );
+        assert!(!adapter.native_stdio_transport, "native stdio mode must not stick after run");
+        let body = match adapter.handle_request(1, "initialize", None) {
+            DapMessage::Response { body: Some(body), .. } => body,
+            response => return Err(format!("direct initialize returned {response:?}").into()),
+        };
+        assert_eq!(
+            body.get("supportsCancelRequest").and_then(serde_json::Value::as_bool),
+            Some(false),
+            "direct adapter reuse must not inherit native stdio cancellation"
+        );
+        Ok(())
     }
 
     #[test]
@@ -2019,6 +2204,7 @@ while (my $line = <STDIN>) {
             matches!(result, Err(ref error) if error.kind() == io::ErrorKind::BrokenPipe),
             "pre-marked broken transport must return BrokenPipe"
         );
+        assert!(!adapter.native_stdio_transport, "native stdio mode must reset after an error");
     }
 }
 
@@ -2037,6 +2223,7 @@ mod framing_tests {
     //! internal framing error types.
 
     use super::*;
+    use perl_test_must::must_some_with;
     use serde_json::json;
     use std::io::Cursor;
 
@@ -2459,5 +2646,240 @@ mod framing_tests {
         let mut adapter = DebugAdapter::new();
         adapter.run_with_io(Cursor::new(Vec::<u8>::new()), SharedBuf::new())?;
         Ok(())
+    }
+
+    // ── event-before-response ordering (drain barrier) ─────────────────────────
+
+    /// Writer that forwards to [`SharedBuf`] but delays event payload writes,
+    /// simulating a slow wire. With the drain barrier the response waits for
+    /// the delayed event write; without it the response would win the race
+    /// deterministically, making this test a real falsifier of the ordering
+    /// claim.
+    struct SlowEventWriter {
+        inner: SharedBuf,
+    }
+
+    impl SlowEventWriter {
+        fn new(inner: SharedBuf) -> Self {
+            Self { inner }
+        }
+    }
+
+    impl io::Write for SlowEventWriter {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            if buf.windows(b"\"event\":\"".len()).any(|w| w == b"\"event\":\"") {
+                std::thread::sleep(std::time::Duration::from_millis(60));
+            }
+            self.inner.write(buf)
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            self.inner.flush()
+        }
+    }
+
+    /// A child whose only job is to own a piped stdin so the `continue`
+    /// handler can observe a debuggee process. It exits immediately; the
+    /// handler ignores stdin write failures.
+    fn exited_child() -> io::Result<std::process::Child> {
+        #[cfg(windows)]
+        let program = "cmd";
+        #[cfg(not(windows))]
+        let program = "true";
+        #[cfg(windows)]
+        let args: &[&str] = &["/c", "exit", "0"];
+        #[cfg(not(windows))]
+        let args: &[&str] = &[];
+        std::process::Command::new(program)
+            .args(args)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+    }
+
+    #[test]
+    fn multi_event_batch_releases_the_full_drain_count() -> io::Result<()> {
+        use crate::debug_adapter::session::{DebugSession, DebugState, ResumeMode};
+        use crate::debug_adapter::variable_cache::VariableCache;
+        use crate::protocol::{SetBreakpointsArguments, Source, SourceBreakpoint};
+        use crate::reload::{LoadedModuleReloadOutcome, RuntimeModuleGenerationClock};
+        use crate::reload_family::{LOADED_MODULE_RELOAD_FAMILY, LOADED_MODULE_RELOAD_REQUEST};
+        use std::collections::HashMap;
+
+        // FC-DRAIN-PHANTOM-BATCH: one request that emits a multi-event batch
+        // must release every per-epoch reservation it reserved; a consumer
+        // that completed only one count per batch would leave phantom
+        // residue and push the request's response through the full drain
+        // timeout. #8109 retired the PID-attach producer this test
+        // originally used; the surviving same-epoch multi-event producer is
+        // the loadedModuleReload route, which emits `invalidated` plus one
+        // `breakpoint` changed event per affected record inside the
+        // request's epoch. The `initialize` request's trailing
+        // `initialized` event keeps the consumer writing while the reload
+        // handler enqueues its pair, so both land in a single batch.
+        let dir = tempfile::tempdir()?;
+        let source_file = dir.path().join("reloaded_module.pl");
+        let body: String = (0..8).map(|index| format!("my $v{index} = {index};\n")).collect();
+        std::fs::write(&source_file, body)?;
+        let source_path = source_file.to_string_lossy().into_owned();
+
+        let mut adapter = DebugAdapter::new();
+        adapter.enable_loaded_module_reload_preview_profile(true);
+        adapter.declare_loaded_module_reload_client_for_test(&[1]).map_err(io::Error::other)?;
+        adapter.seed_loaded_module_reload_subject_for_test(
+            "opaque-module-token-drain-batch",
+            &source_path,
+            "sha256:0f12e4d6a9b8c7d5e3f1a0b9c8d7e6f5a4b3c2d1e0f9a8b7c6d5e4f3a2b1c0d",
+            "perl-lsp-subject:epoch=1;observation=3",
+            3,
+        );
+        adapter.seed_loaded_module_reload_outcome_for_test(LoadedModuleReloadOutcome::Reloaded);
+        {
+            let mut guard = lock_or_recover(&adapter.session, "transport.test.drain.session");
+            *guard = Some(DebugSession {
+                process: exited_child()?,
+                state: DebugState::Stopped,
+                stack_frames: Vec::new(),
+                stack_frame_arguments: HashMap::new(),
+                variable_cache: VariableCache::default(),
+                thread_id: 1,
+                debuggee_cwd: std::path::PathBuf::from("."),
+                last_resume_mode: ResumeMode::Unknown,
+                initial_stop_pending: false,
+                entry_stop_pending: false,
+                stopped_generation: 3,
+                module_generation: RuntimeModuleGenerationClock::new(),
+            });
+        }
+        let breakpoints = adapter.breakpoints.set_breakpoints(&SetBreakpointsArguments {
+            source: Source { name: None, path: Some(source_path) },
+            breakpoints: Some(vec![SourceBreakpoint {
+                line: 2,
+                column: None,
+                condition: None,
+                hit_condition: None,
+                log_message: None,
+            }]),
+            source_modified: None,
+        });
+        assert!(
+            breakpoints.first().is_some_and(|breakpoint| breakpoint.verified),
+            "the seeded breakpoint must verify against real Perl source"
+        );
+
+        let mut input = framed_request(1, "initialize", None);
+        input.extend(framed_request(
+            2,
+            LOADED_MODULE_RELOAD_REQUEST,
+            Some(json!({
+                "family": LOADED_MODULE_RELOAD_FAMILY,
+                "familyVersion": 1,
+                "sessionEpoch": 1,
+                "operationId": 1,
+                "subject": {
+                    "moduleIdentity": "opaque-module-token-drain-batch",
+                    "savedSourceDigest":
+                        "sha256:0f12e4d6a9b8c7d5e3f1a0b9c8d7e6f5a4b3c2d1e0f9a8b7c6d5e4f3a2b1c0d",
+                    "logicalSourceUri": "perl-lsp-subject:epoch=1;observation=3",
+                    "observationGeneration": 3
+                },
+                "deadlineMs": 5000
+            })),
+        ));
+        input.extend(framed_request(3, "threads", None));
+        let output = SharedBuf::new();
+        let started = std::time::Instant::now();
+        adapter.run_with_io(Cursor::new(input), SlowEventWriter::new(output.clone()))?;
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed < std::time::Duration::from_millis(950),
+            "the reload response must not wait out the drain timeout: took {elapsed:?}"
+        );
+
+        let snapshot = output.bytes_snapshot();
+        let Some(response_offset) =
+            windows_find(&snapshot, b"\"command\":\"perl-lsp/loadedModuleReload\"")
+        else {
+            return Err(io::Error::other("reload response must be written"));
+        };
+        for event_name in ["invalidated", "breakpoint"] {
+            let needle = format!("\"event\":\"{event_name}\"").into_bytes();
+            let count = snapshot[..response_offset]
+                .windows(needle.len())
+                .filter(|w| *w == needle.as_slice())
+                .count();
+            assert_eq!(
+                count, 1,
+                "exactly one {event_name} event must precede the reload response on the wire"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn run_with_io_writes_handler_events_before_the_response() -> io::Result<()> {
+        use crate::debug_adapter::session::{DebugSession, DebugState, ResumeMode};
+        use crate::debug_adapter::variable_cache::VariableCache;
+        use crate::reload::RuntimeModuleGenerationClock;
+        use crate::types::StackFrame;
+        use std::collections::HashMap;
+
+        let mut adapter = DebugAdapter::new();
+        {
+            let mut guard = lock_or_recover(&adapter.session, "transport.test.drain.session");
+            *guard = Some(DebugSession {
+                process: exited_child()?,
+                state: DebugState::Stopped,
+                stack_frames: Vec::<StackFrame>::new(),
+                stack_frame_arguments: HashMap::new(),
+                variable_cache: VariableCache::default(),
+                thread_id: 1,
+                debuggee_cwd: std::path::PathBuf::from("."),
+                last_resume_mode: ResumeMode::Unknown,
+                initial_stop_pending: false,
+                entry_stop_pending: false,
+                stopped_generation: 1,
+                module_generation: RuntimeModuleGenerationClock::new(),
+            });
+        }
+        let input = framed_request(1, "continue", Some(json!({"threadId": 1})));
+        let output = SharedBuf::new();
+        adapter.run_with_io(Cursor::new(input), SlowEventWriter::new(output.clone()))?;
+
+        // The consumer thread is not joined by run_with_io; poll until the
+        // response frame exists (the barrier guarantees the event precedes
+        // it, so once the response is on the wire the event must be too).
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let snapshot = loop {
+            let snap = output.bytes_snapshot();
+            if windows_find(&snap, b"\"command\":\"continue\"").is_some() {
+                break snap;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "continue response was never written to the transport"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        };
+
+        let event_offset = must_some_with(
+            windows_find(&snapshot, b"\"event\":\"continued\""),
+            "continue handler must emit the continued event",
+        );
+        let response_offset = must_some_with(
+            windows_find(&snapshot, b"\"command\":\"continue\""),
+            "continue response must be written",
+        );
+        assert!(
+            event_offset < response_offset,
+            "handler-emitted events must precede the terminal response on the wire              (event at {event_offset}, response at {response_offset})"
+        );
+        Ok(())
+    }
+
+    /// Byte-subsequence search returning the match offset.
+    fn windows_find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+        haystack.windows(needle.len()).position(|w| w == needle)
     }
 }

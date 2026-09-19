@@ -182,7 +182,10 @@ pub struct FieldId(&'static str);
 macro_rules! define_field_ids {
     ($(($constant:ident, $name:literal)),+ $(,)?) => {
         impl FieldId {
-            $(pub const $constant: Self = Self($name);)+
+            $(
+                #[doc = concat!("Field identifier for the canonical name `", $name, "`")]
+                pub const $constant: Self = Self($name);
+            )+
 
 /// All field identifiers named by the structural registry.
             ///
@@ -835,6 +838,11 @@ pub enum NodeKind {
     Typeglob {
         /// Name of the symbol (including package qualification)
         name: String,
+        /// Computed `*{EXPR}` assignment body, present exactly when `name`
+        /// keeps the braced dynamic marker (`*{$x . $y} = ...`). A braced
+        /// bareword (`*{name}`) strips to its static name and carries no body
+        /// (#15731).
+        body: Option<Box<Node>>,
     },
 
     /// Numeric literal in Perl code (integer, float, hex, octal, binary)
@@ -1179,6 +1187,21 @@ pub enum NodeKind {
         form: GotoTargetForm,
     },
 
+    /// Targetless goto statement: `goto;`, `foo and goto;`, `goto if $x;`.
+    ///
+    /// Perl accepts a `goto` with no target expression; executing it without a
+    /// label still fails at runtime, but compile-time acceptance is established
+    /// by the versioned compiler oracle. This variant expresses the omission
+    /// honestly without inventing a fabricated `Box<Node>` operand, label, or
+    /// empty list to satisfy the previously mandatory `Goto.target` field.
+    ///
+    /// `NodeKind` is non-exhaustive, so adding this childless sibling variant
+    /// preserves the existing `Goto { target, form }` public Rust API. New
+    /// consumers should treat `TargetlessGoto` like `LoopControl`: emit one
+    /// `KeywordControl` token, record no symbol reference, and refuse to
+    /// synthesize a label, coderef, or value operand.
+    TargetlessGoto {},
+
     /// Method call: `$obj->method(@args)` or `$obj->method`
     MethodCall {
         /// Object or class expression
@@ -1496,6 +1519,7 @@ impl NodeKind {
             NodeKind::Return { .. } => "Return",
             NodeKind::LoopControl { .. } => "LoopControl",
             NodeKind::Goto { .. } => "Goto",
+            NodeKind::TargetlessGoto { .. } => "TargetlessGoto",
             NodeKind::MethodCall { .. } => "MethodCall",
             NodeKind::FunctionCall { .. } => "FunctionCall",
             NodeKind::AmperCall { .. } => "AmperCall",
@@ -1588,6 +1612,7 @@ impl NodeKind {
             NodeKind::Method { .. } => Some("method_declaration_statement"),
             NodeKind::Return { .. } => Some("return"),
             NodeKind::Goto { .. } => Some("goto"),
+            NodeKind::TargetlessGoto { .. } => Some("goto_targetless"),
             NodeKind::MethodCall { .. } => Some("method_call"),
             NodeKind::IndirectCall { .. } => Some("indirect_call"),
             NodeKind::Regex { .. } => Some("regex"),
@@ -1711,6 +1736,7 @@ impl NodeKind {
             | NodeKind::Method { .. }
             | NodeKind::Return { .. }
             | NodeKind::Goto { .. }
+            | NodeKind::TargetlessGoto { .. }
             | NodeKind::MethodCall { .. }
             | NodeKind::IndirectCall { .. }
             | NodeKind::Regex { .. }
@@ -2031,7 +2057,7 @@ mod tests {
             NodeKind::Undef,
             NodeKind::Readline { filehandle: None },
             NodeKind::Glob { pattern: String::new() },
-            NodeKind::Typeglob { name: String::new() },
+            NodeKind::Typeglob { name: String::new(), body: None },
             NodeKind::Number { value: String::new() },
             NodeKind::String { value: String::new(), interpolated: false },
             NodeKind::VString { value: String::new() },
@@ -2129,6 +2155,7 @@ mod tests {
             NodeKind::Return { value: None },
             NodeKind::LoopControl { op: String::new(), label: None },
             NodeKind::Goto { target: Box::new(dummy_node()), form: GotoTargetForm::Label },
+            NodeKind::TargetlessGoto {},
             NodeKind::MethodCall {
                 object: Box::new(dummy_node()),
                 method: String::new(),

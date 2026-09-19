@@ -7,18 +7,25 @@ on:
       - "scripts/test/vim-host-driver.vim"
       - "scripts/test/vim-host-diagnostics-driver.vim"
       - "scripts/test/vim-host-freshness-driver.vim"
+      - "scripts/test/vim-host-lifecycle-driver.vim"
+      - "scripts/test/vim-host-recovery-driver.vim"
       - "scripts/test/vim-host-save-format-driver.vim"
       - "scripts/test/vim-clients/**"
       - ".ci/editor-clients/vim-vim-lsp-*.json"
-      - "crates/perl-lsp-rs-core/**"
-      - "crates/perl-lsp-perltidy/**"
-      - "crates/perl-lsp-rs/**"
-      - "crates/perl-diagnostics/**"
-      - "crates/perl-module/**"
-      - "crates/perllsp/**"
+      # Every workspace crate, not the six that were once named. `perllsp`'s
+      # transitive graph is 31 workspace crates; enumerating a subset let a
+      # change to `perl-parser-core`, `perl-lexer`, or `perl-workspace` reach
+      # main without ever re-running the promoted actual-client proof. An
+      # enumeration also goes stale silently the next time a crate is added,
+      # which is the same defect one list longer. This over-triggers on the
+      # crates outside the graph; that is the safe direction of error for a
+      # lane that guards a promoted support claim.
+      - "crates/**"
       - "Cargo.toml"
       - "Cargo.lock"
       - ".github/workflows/vim-hermetic-host.yml"
+      - "policy/lsp-client-support.toml"
+      - "docs/receipts/lsp-clients/**"
   workflow_dispatch:
 
 permissions:
@@ -32,7 +39,7 @@ jobs:
   hermetic-host-run:
     name: actual Vim + vim-lsp + perllsp / Linux x64
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 150
     env:
       # The pinned subject commit is read from the governed #11369 manifest
       # inside the job; this env var only names the manifest, never a second
@@ -97,6 +104,86 @@ jobs:
           [ "${cleanup}" = "pass" ]
           [ -s "${GITHUB_WORKSPACE}/${PERLLSP_VIM_HOST_RUN_OUT}/run/hermetic/raw/vim-lsp-client.log" ]
           [ -s "${GITHUB_WORKSPACE}/${PERLLSP_VIM_HOST_RUN_OUT}/run/hermetic/raw/initialize.json" ]
+
+      - name: Bind the live run to the promoted committed evidence
+        run: |
+          set -euo pipefail
+          # Without this step the lane proves only that *a* Vim journey passes
+          # today, not that the committed receipt describes *this* journey.
+          # Triggering on docs/receipts/** would then be theatre: a
+          # self-consistent replacement of the receipt plus its snapshot
+          # satisfies the Rust registry validator (internal consistency) and
+          # this lane (an independent passing run) without the two ever being
+          # compared. That is the gap this step closes.
+          # The receipt path is DERIVED from the policy row, never hard-coded.
+          # `lsp_client_support_registry` validates whichever `actual_client`
+          # evidence entry the Vim row names, so a hard-coded path here would
+          # decouple the two gates again: repointing that entry at a new
+          # self-consistent receipt would have the registry validate the
+          # replacement while this lane kept reproducing the old file. Reading
+          # the same selector both gates read keeps them on one subject;
+          # missing or duplicate entries fail closed rather than picking one.
+          receipt="$(python3 - <<'SELECT'
+          import sys, tomllib
+
+          with open("policy/lsp-client-support.toml", "rb") as handle:
+              registry = tomllib.load(handle)
+
+          rows = [row for row in registry.get("client", []) if row.get("id") == "vim"]
+          if len(rows) != 1:
+              sys.exit(f"expected exactly one vim client row, found {len(rows)}")
+
+          paths = [
+              entry["path"]
+              for entry in rows[0].get("evidence", [])
+              if entry.get("kind") == "actual_client"
+          ]
+          if len(paths) != 1:
+              sys.exit(
+                  f"expected exactly one vim actual_client evidence entry, found {len(paths)}: {paths}"
+              )
+
+          print(paths[0])
+          SELECT
+          )"
+          echo "policy-selected receipt: ${receipt}"
+          [ -f "${receipt}" ] || {
+            echo "::error::policy names a vim actual_client receipt that does not exist: ${receipt}"
+            exit 1
+          }
+          generated="${GITHUB_WORKSPACE}/${PERLLSP_VIM_HOST_RUN_OUT}/run/hermetic/raw/initialize.json"
+
+          # 1. The promoted artifact triad must describe the bytes this run produced.
+          want_path="$(jq -r '.artifact.path' "${receipt}")"
+          want_sha="$(jq -r '.artifact.sha256' "${receipt}")"
+          want_size="$(jq -r '.artifact.size_bytes' "${receipt}")"
+          got_sha="$(sha256sum "${generated}" | cut -d' ' -f1)"
+          got_size="$(wc -c < "${generated}" | tr -d ' ')"
+          echo "receipt artifact: ${want_path} sha256=${want_sha} size=${want_size}"
+          echo "this run:         sha256=${got_sha} size=${got_size}"
+          if [ "${got_sha}" != "${want_sha}" ] || [ "${got_size}" != "${want_size}" ]; then
+            echo "::error::The committed capability snapshot no longer matches what a live" \
+                 "Vim + vim-lsp host run produces. The promoted real_generic_client_proven" \
+                 "claim for Vim is stale. Refresh it by copying this run's" \
+                 "hermetic/raw/initialize.json over ${want_path} and updating" \
+                 "artifact.sha256/artifact.size_bytes in ${receipt} — do not relax this check."
+            diff <(jq -S . "${want_path}") <(jq -S . "${generated}") || true
+            exit 1
+          fi
+
+          # 2. The committed bytes must still hash to what the receipt asserts,
+          #    so a snapshot edited without its digest cannot ride along.
+          committed_sha="$(sha256sum "${want_path}" | cut -d' ' -f1)"
+          [ "${committed_sha}" = "${want_sha}" ]
+
+          # 3. The receipt's pinned vim-lsp identity must be the subject this
+          #    lane actually checked out, not a different upstream revision.
+          pinned="$(jq -r '.upstream.selected_commit' "${VIM_LSP_SUBJECT_MANIFEST}")"
+          checked_out="$(git -C "${GITHUB_WORKSPACE}/target/vim-lsp-subject" rev-parse HEAD)"
+          echo "pinned vim-lsp: ${pinned}; checked out: ${checked_out}"
+          [ "${checked_out}" = "${pinned}" ]
+          jq -e --arg pin "${pinned}" '.client_version | contains($pin)' "${receipt}" > /dev/null \
+            || { echo "::error::${receipt} client_version does not name the pinned vim-lsp commit ${pinned}"; exit 1; }
 
       - name: Run the #10946 bootstrap/diagnostics journey (canonical)
         run: >-
@@ -284,6 +371,163 @@ jobs:
             exit 1
           fi
 
+      - name: Run the #11398 recovery-generations journey (canonical)
+        run: >-
+          cargo run --quiet --locked -p xtask --
+          editor-compat vim run
+          --subject pinned_vim_lsp_upstream
+          --journey recovery-generations
+          --fixture-variant canonical
+          --vim "$(command -v vim)"
+          --vim-lsp-dir "${GITHUB_WORKSPACE}/target/vim-lsp-subject"
+          --candidate "${GITHUB_WORKSPACE}/target/debug/perllsp"
+          --out "${GITHUB_WORKSPACE}/${PERLLSP_VIM_HOST_RUN_OUT}/recovery-canonical"
+          --timeout-ms 600000
+
+      - name: Bind the eight recovery cells (fail closed on anything but the honest dispositions)
+        run: |
+          set -euo pipefail
+          receipt="${GITHUB_WORKSPACE}/${PERLLSP_VIM_HOST_RUN_OUT}/recovery-canonical/receipt.json"
+          result="$(jq -r '.result' "${receipt}")"
+          cleanup="$(jq -r '.process_cleanup' "${receipt}")"
+          echo "recovery-generations result: ${result} (cleanup: ${cleanup})"
+          # The honest top-line is partial: the adverse-exit cell never
+          # passes (#11386 family law); a forced pass is an oracle violation.
+          [ "${result}" = "partial" ]
+          [ "${cleanup}" = "pass" ]
+          for cell in             vim.vim_lsp.recovery.explicit_restart             vim.vim_lsp.recovery.initialized_new_generation             vim.vim_lsp.recovery.document_replay             vim.vim_lsp.recovery.current_result             vim.vim_lsp.recovery.old_generation_rejected             vim.vim_lsp.recovery.retry_or_manual_disposition             vim.vim_lsp.recovery.shutdown_cleanup; do
+            observed="$(jq -r --arg id "${cell}" '.journey[] | select(.id == $id) | .result' "${receipt}")"
+            echo "cell ${cell}: ${observed}"
+            [ "${observed}" = "pass" ]
+          done
+          adverse="$(jq -r --arg id "vim.vim_lsp.recovery.unexpected_exit" '.journey[] | select(.id == $id) | .result' "${receipt}")"
+          echo "cell vim.vim_lsp.recovery.unexpected_exit: ${adverse} (manual_restart_required, never pass)"
+          [ "${adverse}" = "partial" ]
+          [ -s "${GITHUB_WORKSPACE}/${PERLLSP_VIM_HOST_RUN_OUT}/recovery-canonical/hermetic/raw/vim-lsp-client.log" ]
+
+      - name: Recovery negative control â€” wrong/outer root must fail typed
+        run: |
+          set -euo pipefail
+          # Same law as the earlier controls: exit 0 means the typed
+          # root_mismatch failure was observed and validated.
+          cargo run --quiet --locked -p xtask --             editor-compat vim run             --subject pinned_vim_lsp_upstream             --journey recovery-generations             --fixture-variant wrong_root_decoy             --vim "$(command -v vim)"             --vim-lsp-dir "${GITHUB_WORKSPACE}/target/vim-lsp-subject"             --candidate "${GITHUB_WORKSPACE}/target/debug/perllsp"             --out "${GITHUB_WORKSPACE}/${PERLLSP_VIM_HOST_RUN_OUT}/recovery-wrong-root"             --timeout-ms 420000
+          receipt="${GITHUB_WORKSPACE}/${PERLLSP_VIM_HOST_RUN_OUT}/recovery-wrong-root/receipt.json"
+          result="$(jq -r '.result' "${receipt}")"
+          echo "wrong_root_decoy control result: ${result}"
+          [ "${result}" = "fail" ]
+
+      - name: Recovery negative control â€” claimed automatic recovery must fail typed
+        run: |
+          set -euo pipefail
+          # The pinned client has no automatic recovery: claiming it fails
+          # with the typed reason (a manual restart is never relabeled
+          # automatic recovery).
+          cargo run --quiet --locked -p xtask --             editor-compat vim run             --subject pinned_vim_lsp_upstream             --journey recovery-generations             --fixture-variant auto_recovery_claimed             --vim "$(command -v vim)"             --vim-lsp-dir "${GITHUB_WORKSPACE}/target/vim-lsp-subject"             --candidate "${GITHUB_WORKSPACE}/target/debug/perllsp"             --out "${GITHUB_WORKSPACE}/${PERLLSP_VIM_HOST_RUN_OUT}/recovery-auto-claimed"             --timeout-ms 420000
+          receipt="${GITHUB_WORKSPACE}/${PERLLSP_VIM_HOST_RUN_OUT}/recovery-auto-claimed/receipt.json"
+          result="$(jq -r '.result' "${receipt}")"
+          echo "auto_recovery_claimed control result: ${result}"
+          [ "${result}" = "fail" ]
+
+      - name: Recovery negative control â€” replay-skipped replacement must fail typed
+        run: |
+          set -euo pipefail
+          # A replacement without the governed document's replay never
+          # completes the recovery chain: the typed document_replay_absent
+          # failure is the honest outcome.
+          cargo run --quiet --locked -p xtask --             editor-compat vim run             --subject pinned_vim_lsp_upstream             --journey recovery-generations             --fixture-variant replay_skipped_claimed             --vim "$(command -v vim)"             --vim-lsp-dir "${GITHUB_WORKSPACE}/target/vim-lsp-subject"             --candidate "${GITHUB_WORKSPACE}/target/debug/perllsp"             --out "${GITHUB_WORKSPACE}/${PERLLSP_VIM_HOST_RUN_OUT}/recovery-replay-skipped"             --timeout-ms 420000
+          receipt="${GITHUB_WORKSPACE}/${PERLLSP_VIM_HOST_RUN_OUT}/recovery-replay-skipped/receipt.json"
+          result="$(jq -r '.result' "${receipt}")"
+          echo "replay_skipped_claimed control result: ${result}"
+          [ "${result}" = "fail" ]
+
+      - name: Prove no candidate process survives the recovery journeys
+        run: |
+          if pgrep -f '[p]erllsp([[:space:]]|$)' >/dev/null; then
+            echo "a perllsp process survived the recovery host runs" >&2
+            pgrep -af '[p]erllsp([[:space:]]|$)' >&2 || true
+            exit 1
+          fi
+
+      # ------------------------------------------------------------------
+      # #11401 host-reopen lifecycle journey: buffer close/reopen, full Vim
+      # exit and replacement launch, workspace not-exposed disposition,
+      # identity-bound cancellation, late-result rejection, finite repeated
+      # sessions, normal terminal cleanup, and forced-failure cleanup over
+      # one shared governed fixture (#11387 cells only).
+      # ------------------------------------------------------------------
+      - name: Run the #11401 host-reopen lifecycle journey (canonical)
+        run: >-
+          cargo run --quiet --locked -p xtask --
+          editor-compat vim run
+          --subject pinned_vim_lsp_upstream
+          --journey host-reopen-lifecycle
+          --fixture-variant canonical
+          --vim "$(command -v vim)"
+          --vim-lsp-dir "${GITHUB_WORKSPACE}/target/vim-lsp-subject"
+          --candidate "${GITHUB_WORKSPACE}/target/debug/perllsp"
+          --out "${GITHUB_WORKSPACE}/${PERLLSP_VIM_HOST_RUN_OUT}/lifecycle-canonical"
+          --timeout-ms 420000
+
+      - name: Bind the eight lifecycle cells (fail closed on any non-pass)
+        run: |
+          set -euo pipefail
+          receipt="${GITHUB_WORKSPACE}/${PERLLSP_VIM_HOST_RUN_OUT}/lifecycle-canonical/receipt.json"
+          result="$(jq -r '.result' "${receipt}")"
+          cleanup="$(jq -r '.process_cleanup' "${receipt}")"
+          echo "host-reopen-lifecycle result: ${result} (cleanup: ${cleanup})"
+          [ "${result}" = "pass" ]
+          [ "${cleanup}" = "pass" ]
+          # Seven actionable cells must pass; the workspace/session cell stays
+          # truthfully `unsupported` (`client_not_exposed`) for this subject
+          # and must never be relabeled into a pass.
+          for cell in \
+            vim.vim_lsp.lifecycle.buffer_reopen \
+            vim.vim_lsp.lifecycle.host_reopen \
+            vim.vim_lsp.lifecycle.cancellation \
+            vim.vim_lsp.lifecycle.late_result_rejected \
+            vim.vim_lsp.lifecycle.repeated_sessions \
+            vim.vim_lsp.lifecycle.normal_cleanup \
+            vim.vim_lsp.lifecycle.failure_cleanup; do
+            observed="$(jq -r --arg id "${cell}" '.journey[] | select(.id == $id) | .result' "${receipt}")"
+            echo "cell ${cell}: ${observed}"
+            [ "${observed}" = "pass" ]
+          done
+          workspace_observed="$(jq -r --arg id "vim.vim_lsp.lifecycle.workspace_or_session_reopen" '.journey[] | select(.id == $id) | .result' "${receipt}")"
+          echo "cell vim.vim_lsp.lifecycle.workspace_or_session_reopen: ${workspace_observed}"
+          [ "${workspace_observed}" = "unsupported" ]
+          [ -s "${GITHUB_WORKSPACE}/${PERLLSP_VIM_HOST_RUN_OUT}/lifecycle-canonical/host-1/hermetic/raw/vim-lsp-client.log" ]
+
+      - name: Lifecycle negative control â€” server restart must fail typed
+        run: |
+          set -euo pipefail
+          # The required false subject: satisfying host replacement through a
+          # server restart inside one host must fail with the typed reason
+          # `host_replacement_absent`. The xtask entry enforces the exact
+          # typed reason itself (a wrong-reason failure exits nonzero), so a
+          # successful cargo run plus receipt result=fail binds the law.
+          cargo run --quiet --locked -p xtask -- \
+            editor-compat vim run \
+            --subject pinned_vim_lsp_upstream \
+            --journey host-reopen-lifecycle \
+            --fixture-variant server_restart_relabel \
+            --vim "$(command -v vim)" \
+            --vim-lsp-dir "${GITHUB_WORKSPACE}/target/vim-lsp-subject" \
+            --candidate "${GITHUB_WORKSPACE}/target/debug/perllsp" \
+            --out "${GITHUB_WORKSPACE}/${PERLLSP_VIM_HOST_RUN_OUT}/lifecycle-server-restart-relabel" \
+            --timeout-ms 420000
+          receipt="${GITHUB_WORKSPACE}/${PERLLSP_VIM_HOST_RUN_OUT}/lifecycle-server-restart-relabel/receipt.json"
+          result="$(jq -r '.result' "${receipt}")"
+          echo "server_restart_relabel control result: ${result}"
+          [ "${result}" = "fail" ]
+
+      - name: Prove no candidate process survives the lifecycle journeys
+        run: |
+          if pgrep -f '[p]erllsp([[:space:]]|$)' >/dev/null; then
+            echo "a perllsp process survived the lifecycle host runs" >&2
+            pgrep -af '[p]erllsp([[:space:]]|$)' >&2 || true
+            exit 1
+          fi
+
       - name: Run the #11396 save-format journey (canonical)
         run: >-
           cargo run --quiet --locked -p xtask --
@@ -419,6 +663,14 @@ jobs:
             target/vim-host-runs/ci/freshness-live-reload-claimed/hermetic/artifacts/
             target/vim-host-runs/ci/freshness-ambient-path/receipt.json
             target/vim-host-runs/ci/freshness-ambient-path/hermetic/artifacts/
+            target/vim-host-runs/ci/recovery-canonical/receipt.json
+            target/vim-host-runs/ci/recovery-canonical/hermetic/artifacts/
+            target/vim-host-runs/ci/recovery-wrong-root/receipt.json
+            target/vim-host-runs/ci/recovery-wrong-root/hermetic/artifacts/
+            target/vim-host-runs/ci/recovery-auto-claimed/receipt.json
+            target/vim-host-runs/ci/recovery-auto-claimed/hermetic/artifacts/
+            target/vim-host-runs/ci/recovery-replay-skipped/receipt.json
+            target/vim-host-runs/ci/recovery-replay-skipped/hermetic/artifacts/
             target/vim-host-runs/ci/save-canonical/receipt.json
             target/vim-host-runs/ci/save-canonical/hermetic/artifacts/
             target/vim-host-runs/ci/save-manual-comparator/receipt.json
@@ -427,4 +679,11 @@ jobs:
             target/vim-host-runs/ci/save-duplicate-owner/hermetic/artifacts/
             target/vim-host-runs/ci/save-wrong-root/receipt.json
             target/vim-host-runs/ci/save-wrong-root/hermetic/artifacts/
+            target/vim-host-runs/ci/lifecycle-canonical/receipt.json
+            target/vim-host-runs/ci/lifecycle-canonical/host-1/hermetic/artifacts/
+            target/vim-host-runs/ci/lifecycle-canonical/host-2/hermetic/artifacts/
+            target/vim-host-runs/ci/lifecycle-canonical/host-3/hermetic/artifacts/
+            target/vim-host-runs/ci/lifecycle-canonical/host-4/hermetic/artifacts/
+            target/vim-host-runs/ci/lifecycle-server-restart-relabel/receipt.json
+            target/vim-host-runs/ci/lifecycle-server-restart-relabel/host-1/hermetic/artifacts/
           if-no-files-found: warn

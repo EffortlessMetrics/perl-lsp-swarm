@@ -1,0 +1,9 @@
+project: product
+component: Developer experience
+kind: Changed
+body: Parser-accuracy scorecard metrics are now governed by a canonical registry that derives each row's direction and confidence and fails the artifact build closed on an unregistered, out-of-range, under-sampled, or over-confident row.
+time: 2026-09-02T01:45:00Z
+custom:
+  PR: "14554"
+  Slug: parser-accuracy-metric-registry
+  Breaking: "no"

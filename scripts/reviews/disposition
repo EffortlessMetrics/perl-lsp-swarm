@@ -167,6 +167,11 @@ if ! THREAD_RESPONSE="$(gh api graphql -f threadId="$THREAD" -f query='
     exit 2
 fi
 
+# Marker collection: collect every `<!-- disposition:v[0-9]+ ... -->` envelope
+# (any version); the parsed JSON's `v` field then gates recognized (v=1) vs
+# malformed (v!=1 / missing) markers. Previously the prefix was hard-coded to
+# v1, which silently dropped v2 markers and let the script re-post duplicate
+# replies on threads that already carried an authoritative v2 disposition.
 MARKER_STATE=""
 if ! MARKER_STATE="$(jq -ce --arg class "$CLASS" --argjson evidence "$EVIDENCE" '
     (.data.node // empty) as $node
@@ -176,16 +181,19 @@ if ! MARKER_STATE="$(jq -ce --arg class "$CLASS" --argjson evidence "$EVIDENCE" 
         [
           $node.comments.nodes[]?.body // ""
           | split("\n")[]
-          | select(startswith("<!-- disposition:v1 ") and endswith(" -->"))
-          | ltrimstr("<!-- disposition:v1 ")
-          | rtrimstr(" -->")
+          | select(test("^<!-- disposition:v[0-9]+ ") and endswith(" -->"))
+          | sub("^<!-- disposition:v[0-9]+ "; "")
+          | sub(" -->$"; "")
         ] as $raw
         | [$raw[] | try fromjson catch null] as $parsed
         | {
-            invalid: ([$parsed[] | select(. == null)] | length),
+            invalid: ([
+              $parsed[]
+              | select(. == null or ((.v // null) != 1))
+            ] | length),
             matching: ([
               $parsed[]
-              | select(. != null and .class == $class and .evidence == $evidence)
+              | select(. != null and ((.v // null) == 1) and .class == $class and .evidence == $evidence)
             ] | length),
             is_resolved: ($node.isResolved == true)
           }

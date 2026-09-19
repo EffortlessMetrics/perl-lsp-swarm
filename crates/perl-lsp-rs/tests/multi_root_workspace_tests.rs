@@ -1142,7 +1142,7 @@ fn test_workspace_symbol_includes_folder_uri_for_disambiguation() -> TestResult 
     // Build a standalone index with two workspace folders, each containing a `sub run`.
     // This tests the wire format: after the Gap 3 fix, `workspaceFolderUri` must be
     // included in `LspWorkspaceSymbol` so clients can distinguish same-named symbols.
-    use perl_parser::workspace_index::WorkspaceIndex;
+    use perl_workspace::workspace_index::WorkspaceIndex;
     let index = WorkspaceIndex::new();
     index.set_workspace_folders(vec![
         "file:///disambiguation_test/svc-a/".to_string(),
@@ -1173,7 +1173,7 @@ fn test_workspace_symbol_includes_folder_uri_for_disambiguation() -> TestResult 
     }
 
     // Convert to LspWorkspaceSymbol (the wire format) and verify the field survives.
-    use perl_parser::workspace_index::LspWorkspaceSymbol;
+    use perl_workspace::workspace_index::LspWorkspaceSymbol;
     let lsp_symbols: Vec<LspWorkspaceSymbol> = symbols.iter().map(|s| s.into()).collect();
 
     for lsp_sym in &lsp_symbols {

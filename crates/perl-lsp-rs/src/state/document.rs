@@ -3,8 +3,8 @@
 //! Manages document content with Rope-based storage for efficient
 //! incremental updates and UTF-16 position mapping.
 
-use perl_parser::declaration::ParentMap;
 use perl_parser::position::LineStartsCache;
+use perl_semantic_analyzer::analysis::declaration::ParentMap;
 use std::borrow::Cow;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, OnceLock};
@@ -18,6 +18,19 @@ use std::sync::{Arc, OnceLock};
 /// edits advance monotonically from it. Handlers consume this constant; the
 /// document-generation authority owns its value.
 pub const FIRST_ACCEPTED_DOCUMENT_GENERATION: std::num::NonZeroU32 = std::num::NonZeroU32::MIN;
+
+/// Process-global sequence backing [`DocumentState::incarnation`] (#14672).
+///
+/// Starts at 1 so zero is never a live incarnation, and is only ever
+/// incremented, so no two constructed document instances in one process share
+/// a value even when a URI is closed and reopened with identical text.
+static NEXT_DOCUMENT_INCARNATION: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(1);
+
+/// Reserve the next process-unique document incarnation.
+fn next_document_incarnation() -> u64 {
+    NEXT_DOCUMENT_INCARNATION.fetch_add(1, Ordering::Relaxed)
+}
 
 /// Degradation tier for a document, indicating what level of LSP functionality
 /// is available based on parse success.
@@ -177,6 +190,13 @@ pub struct ParsedSnapshot {
     parent_map: Arc<ParentMap>,
     /// Degradation tier computed from `ast` and `parse_errors`.
     degradation_tier: DegradationTier,
+    /// Canonical regex analysis retained during this exact parse (#7018/#7024).
+    ///
+    /// `None` when the parse ran outside a retention session (compatibility
+    /// callers and tests). It is retained rather than derived on demand because
+    /// deriving it later would mean a second parse, and a second parse is a
+    /// second regex authority.
+    regex_analysis: Option<Arc<perl_parser_core::RegexAnalysisTable>>,
     /// Lazily-built, generation-owned single-file semantic analyzer. Empty
     /// until first requested via [`Self::semantic_analyzer`]; never populated
     /// for a `Minimal` (AST-less) snapshot.
@@ -270,6 +290,7 @@ impl ParsedSnapshot {
             parse_errors: Arc::from(parse_errors),
             parent_map: Arc::new(parent_map),
             degradation_tier,
+            regex_analysis: None,
             semantic_analyzer: OnceLock::new(),
             type_environment: OnceLock::new(),
             source_region_index: OnceLock::new(),
@@ -280,6 +301,24 @@ impl ParsedSnapshot {
             #[cfg(test)]
             source_region_index_build_count: std::cell::Cell::new(0),
         }
+    }
+
+    /// Attach the canonical regex analysis retained during this snapshot's parse.
+    ///
+    /// The table must come from the [`perl_parser_core::RetainedRegexSession`] that
+    /// wrapped the parse this snapshot was built from, so it is bound to the same
+    /// source. Consumers re-check that binding before trusting it.
+    pub(crate) fn with_regex_analysis(
+        mut self,
+        regex_analysis: Arc<perl_parser_core::RegexAnalysisTable>,
+    ) -> Self {
+        self.regex_analysis = Some(regex_analysis);
+        self
+    }
+
+    /// Canonical regex analysis retained for this snapshot's source, if any.
+    pub fn regex_analysis(&self) -> Option<&Arc<perl_parser_core::RegexAnalysisTable>> {
+        self.regex_analysis.as_ref()
     }
 
     /// The document generation this snapshot was parsed from.
@@ -512,6 +551,24 @@ pub struct DocumentState {
     /// Generation counter for race condition prevention in concurrent access
     pub generation: Arc<AtomicU32>,
 
+    /// Process-unique identity of this open document instance (#14672).
+    ///
+    /// `generation` distinguishes edits *within* one open instance, but it is
+    /// reset to [`FIRST_ACCEPTED_DOCUMENT_GENERATION`] every time a URI is
+    /// opened, so a `didClose` + `didOpen` cycle on unchanged text reproduces
+    /// both the same generation number and the same content hash. Any consumer
+    /// comparing only those values walks into that ABA hole —
+    /// [`crate::runtime::text_sync::document_generation_still_current`] avoids
+    /// it with `Arc::ptr_eq` on `generation`, which works for an in-process
+    /// handle but cannot be carried across a wire round trip.
+    ///
+    /// This counter is the serializable equivalent: allocated once per
+    /// constructed instance from a process-global sequence, never reset and
+    /// never reused, so a value recorded in a client-round-tripped payload
+    /// still identifies one exact open instance. `Clone` preserves it, because
+    /// a cloned snapshot describes the same instance.
+    pub incarnation: u64,
+
     /// Incremental document state for the (dormant) keystroke fast-path.
     ///
     /// Off by default (#3396): the committed AST that every provider reads is
@@ -559,6 +616,7 @@ impl DocumentState {
             parsed: None,
             line_starts,
             generation: Arc::new(AtomicU32::new(0)),
+            incarnation: next_document_incarnation(),
             #[cfg(feature = "incremental")]
             incremental_doc: None,
             #[cfg(feature = "incremental")]
@@ -605,6 +663,7 @@ impl DocumentState {
             parsed: None,
             line_starts,
             generation,
+            incarnation: next_document_incarnation(),
             #[cfg(feature = "incremental")]
             incremental_doc: None,
             #[cfg(feature = "incremental")]
