@@ -100,7 +100,32 @@ fn validate_clippy_all_targets_partition(
     let residual = residual_package_map()?;
     let workspace = workspace_package_names(root)?;
 
-    validate_package_partition(workspace, strict, residual)
+    let partition = validate_package_partition(workspace, strict, residual)?;
+    // The human-facing denominator must be rendered from the same derived
+    // partition, so a package moving between cohorts cannot silently leave a
+    // stale prose count behind (the 37/47 drift this check exists for).
+    validate_clippy_description_counts(
+        &gate.description,
+        partition.strict.len(),
+        partition.workspace.len(),
+    )?;
+    Ok(partition)
+}
+
+fn validate_clippy_description_counts(
+    description: &str,
+    strict_count: usize,
+    workspace_count: usize,
+) -> Result<()> {
+    let expected = format!("({strict_count}/{workspace_count} crates)");
+    if !description.contains(&expected) {
+        bail!(
+            "'{CLIPPY_TESTS_KERNEL_GATE}' description must carry the current cohort denominator \
+             '{expected}' derived from the strict cohort plus the cargo-metadata workspace set; \
+             update the counts whenever package membership moves. Found: {description:?}"
+        );
+    }
+    Ok(())
 }
 
 fn validate_clippy_command_contract(command: &str) -> Result<()> {
@@ -507,10 +532,59 @@ mod tests {
         let policy = load_policy_for_inspection(&root.join(".ci/gate-policy.yaml"))?;
         let partition = validate_clippy_all_targets_partition(&root, &policy)?;
 
-        assert_eq!(partition.workspace.len(), 47);
-        assert_eq!(partition.strict.len(), 36);
+        // Exact current-workspace census: any package movement must update
+        // these integers consciously, together with the gate description's
+        // "(strict/workspace crates)" denominator (checked mechanically in
+        // validate_clippy_all_targets_partition).
+        assert_eq!(partition.workspace.len(), 48);
+        assert_eq!(partition.strict.len(), 37);
         assert_eq!(partition.residual.len(), 11);
+        let residual_names: BTreeSet<_> = partition.residual.keys().cloned().collect();
+        assert!(partition.strict.is_disjoint(&residual_names));
+        assert_eq!(partition.strict.len() + residual_names.len(), partition.workspace.len());
         assert_eq!(partition.residual.get("perl-lsp-ux-tests").map(String::as_str), Some("#15613"));
+        Ok(())
+    }
+
+    #[test]
+    fn clippy_description_rejects_stale_denominator() -> Result<()> {
+        let root = project_root()?;
+        let mut policy = load_policy_for_inspection(&root.join(".ci/gate-policy.yaml"))?;
+        let partition = validate_clippy_all_targets_partition(&root, &policy)?;
+
+        let strict = partition.strict.len();
+        let workspace = partition.workspace.len();
+        let current = format!("({strict}/{workspace} crates)");
+        let stale_workspace = workspace - 1;
+        let stale = format!("({strict}/{stale_workspace} crates)");
+        let gate = policy
+            .gates
+            .iter_mut()
+            .find(|gate| gate.name == CLIPPY_TESTS_KERNEL_GATE)
+            .ok_or_else(|| eyre!("'{CLIPPY_TESTS_KERNEL_GATE}' gate missing"))?;
+        gate.description = gate.description.replace(&current, &stale);
+
+        let error = match validate_clippy_all_targets_partition(&root, &policy) {
+            Ok(_) => bail!("stale description denominator must fail"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("cohort denominator"));
+        Ok(())
+    }
+
+    #[test]
+    fn clippy_description_counts_reject_missing_or_mismatched_denominator() -> Result<()> {
+        validate_clippy_description_counts("staged cohort (2/3 crates): rest", 2, 3)?;
+
+        for (description, strict, workspace) in
+            [("staged cohort (3/3 crates)", 2, 3), ("no counts here", 2, 3)]
+        {
+            let error = match validate_clippy_description_counts(description, strict, workspace) {
+                Ok(()) => bail!("description '{description}' must fail"),
+                Err(error) => error,
+            };
+            assert!(error.to_string().contains("cohort denominator"));
+        }
         Ok(())
     }
 
