@@ -524,7 +524,7 @@ impl InertScanner {
     }
 
     /// Record the ATX depth of a heading inside a comment span closed on the
-    /// line being consumed, keeping the deepest finding on that line.
+    /// line being consumed, keeping the shallowest finding on that line.
     ///
     /// A comment that opens and closes on one line never enters the
     /// [`InertRegion::Comment`] state between `content` calls, so the
@@ -534,7 +534,7 @@ impl InertScanner {
     /// hide behind a one-line comment.
     fn record_comment_heading(&mut self, interior: &str) {
         let depth = heading_depth(interior.trim());
-        if depth > 0 && self.comment_heading_depth_on_line.is_none_or(|found| depth > found) {
+        if depth > 0 && self.comment_heading_depth_on_line.is_none_or(|found| depth < found) {
             self.comment_heading_depth_on_line = Some(depth);
         }
     }
@@ -1862,6 +1862,39 @@ Separate example: `-->`
             names.iter().any(|name| name == "hx-get") && names.iter().any(|name| name == "hx-post"),
             "both rows must be read as this section's data: {names:?}"
         );
+    }
+
+    #[test]
+    fn a_same_line_with_two_commented_headings_keeps_the_shallowest_boundary() {
+        // Two comment spans on one line can hold headings at different
+        // depths. Keeping the deeper finding would hide a same-or-shallower
+        // boundary, so the record must keep the shallowest depth regardless of
+        // span order.
+        for line in [
+            "<!-- ### Note --> <!-- ## Following Attribute Reference {#following} -->",
+            "<!-- ## Following Attribute Reference {#following} --> <!-- ### Note -->",
+        ] {
+            let document = format!(
+                "\
+## Core Attribute Reference {{#attributes}}
+
+| Attribute | Description |
+|-----------|-------------|
+| [`hx-get`](@/attributes/hx-get.md) | issues a GET |
+
+{line}
+
+| [`hx-post`](@/attributes/hx-post.md) | belongs to the following section |
+"
+            );
+            let error = section_names(&document, &CORE_ATTRIBUTES).expect_err(
+                "a same-or-shallower commented heading must be refused in either span order",
+            );
+            assert!(
+                error.to_string().contains("cannot be decided from the document"),
+                "the refusal must say why it refused: {error}"
+            );
+        }
     }
 
     #[test]
