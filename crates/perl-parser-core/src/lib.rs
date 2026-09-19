@@ -80,6 +80,9 @@
 
 /// Builtin function signatures and metadata.
 pub use perl_lexer::builtins;
+/// Structured decoding of a Perl interpreter invocation into source fragments
+/// and switch facts.
+pub mod command_line;
 /// Parser engine components and supporting utilities.
 pub mod engine;
 /// Normalized high-level constructs lowered from the parser AST.
@@ -109,7 +112,7 @@ pub use engine::pragma_tracker;
 pub use engine::quote_parser;
 /// Parser entry points that retain source-generation-bound regex analysis.
 pub use engine::regex_retention::{
-    RegexParseOutput, parse_source_with_cancellation_and_regex_analysis,
+    RegexParseOutput, RetainedRegexSession, parse_source_with_cancellation_and_regex_analysis,
     parse_source_with_regex_analysis, parse_tokens_with_regex_analysis,
 };
 /// Legacy module aliases for moved engine components.
@@ -124,8 +127,6 @@ pub use syntax::heredoc as heredoc_collector;
 pub use syntax::path_normalize;
 /// Workspace-bound path validation and traversal prevention.
 pub use syntax::path_security;
-/// Percentile helpers for integer metric samples.
-pub use syntax::percentile;
 /// Perl qualified-name parsing, splitting, and validation helpers.
 pub use syntax::qualified_name;
 /// Canonical qw/q/qq operator content extractor shared across the workspace.

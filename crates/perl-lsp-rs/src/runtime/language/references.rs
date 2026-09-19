@@ -577,6 +577,7 @@ impl LspServer {
     fn record_references_provider_decision_trace(
         &self,
         context: Option<&ReferencesDecisionTraceContext>,
+        request_id: Option<&Value>,
         result: Option<&Value>,
         tier: ReferencesAnsweringTier,
         index_state: &str,
@@ -657,50 +658,65 @@ impl LspServer {
             },
         };
 
-        self.record_provider_decision_trace(
-            "references",
-            &json!({
-                "provider": "references",
-                "provider_action": "textDocument/references",
-                "decision": decision,
-                "reason": reason,
-                "uri": context.uri,
-                "line": context.line,
-                "character": context.character,
-                "include_declaration": context.include_declaration,
-                "result_count": result_count,
-                "index_result_count": index_result_count,
-                "text_result_count": text_result_count,
-                "source_backed_result_count": source_backed_result_count,
-                "fact_source": tier.fact_source(),
-                "confidence": confidence,
-                "freshness": tier.freshness(index_state),
-                "source_backed": tier.is_source_backed(),
-                "source_backed_state": tier.source_backed_state(),
-                "answering_tier": tier.as_str(),
-                "index_state": index_state,
-                "latency_us": latency_us,
-                "fallback_state": fallback_state,
-                "dynamic_boundary": false,
-                "trace_only_no_live_behavior_change": true,
-                "source_backed_attempted": source_backed_attempted,
-                "source_backed_outcome": source_backed_outcome,
-                "source_backed_decline_stage": source_backed_decline_stage,
-                "source_backed_symbol_at_found": source_backed_symbol_at_found,
-                "source_backed_exact_candidate_count": source_backed_exact_candidate_count,
-                "source_backed_cutover_result": source_backed_cutover_result,
-                "scanned_documents": fallback_receipt.scanned_documents,
-                "scanned_bytes": fallback_receipt.scanned_bytes,
-                "scan_budget_documents": fallback_receipt.scan_budget_documents,
-                "scan_budget_bytes": fallback_receipt.scan_budget_bytes,
-                "budget_exhausted": fallback_receipt.budget_exhausted,
-                "deadline_exhausted": fallback_receipt.deadline_exhausted,
-                "cancellation_observed": fallback_receipt.cancellation_observed,
-                "fallback_completeness": fallback_receipt.fallback_completeness,
-                "fallback_reason": fallback_receipt.fallback_reason,
-                "claim_boundary": "records existing references response only; no broader live references cutover"
-            }),
-        );
+        let mut receipt = json!({
+            "provider": "references",
+            "provider_action": "textDocument/references",
+            "decision": decision,
+            "reason": reason,
+            "uri": context.uri,
+            "line": context.line,
+            "character": context.character,
+            "include_declaration": context.include_declaration,
+            "result_count": result_count,
+            "index_result_count": index_result_count,
+            "text_result_count": text_result_count,
+            "source_backed_result_count": source_backed_result_count,
+            "fact_source": tier.fact_source(),
+            "confidence": confidence,
+            "freshness": tier.freshness(index_state),
+            "source_backed": tier.is_source_backed(),
+            "source_backed_state": tier.source_backed_state(),
+            "answering_tier": tier.as_str(),
+            "index_state": index_state,
+            "latency_us": latency_us,
+            "fallback_state": fallback_state,
+            "dynamic_boundary": false,
+            "trace_only_no_live_behavior_change": true,
+            "source_backed_attempted": source_backed_attempted,
+            "source_backed_outcome": source_backed_outcome,
+            "source_backed_decline_stage": source_backed_decline_stage,
+            "source_backed_symbol_at_found": source_backed_symbol_at_found,
+            "source_backed_exact_candidate_count": source_backed_exact_candidate_count,
+            "source_backed_cutover_result": source_backed_cutover_result,
+            "scanned_documents": fallback_receipt.scanned_documents,
+            "scanned_bytes": fallback_receipt.scanned_bytes,
+            "scan_budget_documents": fallback_receipt.scan_budget_documents,
+            "scan_budget_bytes": fallback_receipt.scan_budget_bytes,
+            "budget_exhausted": fallback_receipt.budget_exhausted,
+            "deadline_exhausted": fallback_receipt.deadline_exhausted,
+            "cancellation_observed": fallback_receipt.cancellation_observed,
+            "fallback_completeness": fallback_receipt.fallback_completeness,
+            "fallback_reason": fallback_receipt.fallback_reason,
+            "claim_boundary": "records existing references response only; no broader live references cutover"
+        });
+        if let Some(request_id) = request_id
+            && let Some(object) = receipt.as_object_mut()
+        {
+            object.insert("request_id".to_string(), request_id.clone());
+        }
+        self.record_provider_decision_trace("references", &receipt);
+    }
+
+    fn invalidate_references_trace_for_request(&self, request_id: Option<&Value>) {
+        let Some(request_id) = request_id else {
+            return;
+        };
+        let mut traces = self.provider_decision_traces.lock();
+        let remove =
+            traces.get("references").and_then(|trace| trace.get("request_id")) == Some(request_id);
+        if remove {
+            traces.remove("references");
+        }
     }
 
     /// Handle textDocument/references request with lifecycle-aware dispatch
@@ -725,7 +741,14 @@ impl LspServer {
         request_id: Option<&Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
         let _progress = RequestProgressGuard::new(self, "references", "Finding references");
-        let trace_context = Self::references_decision_trace_context(params.as_ref())?;
+        let trace_context = match Self::references_decision_trace_context(params.as_ref()) {
+            Ok(context) => context,
+            Err(error) => {
+                self.invalidate_references_trace_for_request(request_id);
+                return Err(error);
+            }
+        };
+        let outcome = self.handle_references_inner(params, request_id);
         let (
             result,
             tier,
@@ -735,9 +758,16 @@ impl LspServer {
             latency_us,
             source_backed_attempt,
             fallback_receipt,
-        ) = self.handle_references_inner(params, request_id)?;
+        ) = match outcome {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                self.invalidate_references_trace_for_request(request_id);
+                return Err(error);
+            }
+        };
         self.record_references_provider_decision_trace(
             trace_context.as_ref(),
+            request_id,
             result.as_ref(),
             tier,
             index_state,
@@ -1772,6 +1802,10 @@ impl LspServer {
         // against the same generations.
         let resolve_generation = accepted_generation_basis(workspace_index.as_ref(), uri);
 
+        // Resolve the legacy locations BEFORE entering the callback: the live
+        // cutover path must not re-enter `WorkspaceIndex` while
+        // `with_semantic_queries_for_uri` holds its read guards (#15644).
+        let legacy_locations = workspace_index.find_references(symbol);
         // Resolve the semantic outcome plus the declaration anchor when either
         // the caller wants it included or the P8 lexical slice needs to prove
         // this entity is an initialized lexical declaration.
@@ -1816,10 +1850,7 @@ impl LspServer {
                                         perl_semantic_facts::Provenance::ExactAst
                                             | perl_semantic_facts::Provenance::ImportExportInference
                                             | perl_semantic_facts::Provenance::LiteralRequireImport
-                                    )
-                                    && workspace_index
-                                        .semantic_anchor_wire_location(candidate.anchor_id)
-                                        .is_some()
+                                    ) && queries.anchor_source_span(candidate.anchor_id).is_some()
                             })
                             .collect();
                         match exact_candidates.as_slice() {
@@ -1853,9 +1884,7 @@ impl LspServer {
                             .filter(|c| {
                                 c.confidence == perl_semantic_facts::Confidence::High
                                     && c.entity_id == entity_id
-                                    && workspace_index
-                                        .semantic_anchor_wire_location(c.anchor_id)
-                                        .is_some()
+                                    && queries.anchor_source_span(c.anchor_id).is_some()
                             })
                             .map(|c| c.anchor_id)
                             .next()
@@ -1865,7 +1894,7 @@ impl LspServer {
                 };
 
                 let outcome = find_references_live_source_backed(
-                    workspace_index.as_ref(),
+                    legacy_locations,
                     &queries,
                     symbol,
                     entity_id,
@@ -2045,6 +2074,11 @@ impl LspServer {
                 match route_index_access(self.coordinator()) {
                     IndexAccessMode::Full(coordinator) => {
                         let index = coordinator.index();
+                        // Resolve the legacy locations BEFORE entering the
+                        // callback: the cutover path must not re-enter
+                        // `WorkspaceIndex` while `with_semantic_queries_for_uri`
+                        // holds its read guards (#15644).
+                        let legacy_locations = index.find_references(&symbol);
                         index
                         .with_semantic_queries_for_uri(uri, |file_id, queries| {
                             let ctx = QueryContext::new(file_id, None, Some(byte_offset));
@@ -2058,7 +2092,7 @@ impl LspServer {
                                         .map(|candidate| candidate.entity_id)
                                 })?;
                             let outcome = find_references_live_source_backed(
-                                index.as_ref(),
+                                legacy_locations,
                                 &queries,
                                 &symbol,
                                 entity_id,
@@ -3202,6 +3236,7 @@ mod tests {
 
             server.record_references_provider_decision_trace(
                 trace_context.as_ref(),
+                None,
                 result.as_ref(),
                 tier,
                 index_state,

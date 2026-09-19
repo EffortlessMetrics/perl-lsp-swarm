@@ -886,7 +886,7 @@ git() {
           [ "$5" = "--head" ] && [ "$6" = "HEAD" ] || return 1
           [ "$7" = "--pr-head" ] && [ "$8" = "$FAKE_PR_HEAD_SHA" ] || return 1
           if [ "$#" -eq 10 ]; then
-            [ "$9" = "--timeout-seconds" ] && [ "${10}" = "600" ] || return 1
+            [ "$9" = "--timeout-seconds" ] && [ "${10}" = "3600" ] || return 1
           elif [ "$#" -eq 9 ]; then
             [ "$9" = "--check" ] || return 1
           else
@@ -1283,11 +1283,11 @@ fn ripr_workflow_runs_on_ready_for_review_without_path_filter()
     require_single_canonical_container_installer(&hosted_producer)?;
     assert!(
         hosted_producer.contains("docker run --rm")
-            && hosted_producer.contains("--memory=6g")
-            && hosted_producer.contains("--memory-swap=6g")
+            && hosted_producer.contains("--memory=14g")
+            && hosted_producer.contains("--memory-swap=14g")
             && hosted_producer.contains("timeout --signal=TERM --kill-after=30s 40m")
             && hosted_producer.contains("timeout --signal=TERM --kill-after=30s 25m")
-            && hosted_producer.contains("-e RIPR_MAX_DIFF_INDEX_FILES=1600")
+            && hosted_producer.contains("-e RIPR_MAX_DIFF_INDEX_FILES=2560")
             && hosted_producer.contains("-e RIPR_FRESHNESS_HANDOFF=/freshness")
             && hosted_producer.contains("-v \"$RIPR_FRESHNESS_HANDOFF:/freshness\"")
             && hosted_producer.contains("--name \"$container_name\"")
@@ -1746,7 +1746,7 @@ fn ripr_self_hosted_preflight_falls_back_when_required_image_is_missing() -> Res
     for expected_command in [
         "cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json",
         "cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json --check",
-        "cargo xtask ripr-review-comments --base origin/main --head HEAD --pr-head 0123456789abcdef0123456789abcdef01234567 --timeout-seconds 600",
+        "cargo xtask ripr-review-comments --base origin/main --head HEAD --pr-head 0123456789abcdef0123456789abcdef01234567 --timeout-seconds 3600",
         "cargo xtask ripr-review-comments --base origin/main --head HEAD --pr-head 0123456789abcdef0123456789abcdef01234567 --check",
         "cargo xtask impacted-evidence --labels-csv ci",
         "cargo xtask impacted-evidence --labels-csv ci --check",
@@ -2548,4 +2548,105 @@ fn ripr_draft_result_is_not_proof() -> Result<(), Box<dyn std::error::Error>> {
         "ripr",
         "RIPR_GATE_VERDICT=draft-no-proof",
     )
+}
+
+fn workflow_job_env_value(job_name: &str, env_key: &str) -> Result<String> {
+    let root = project_root()?;
+    let workflow = fs::read_to_string(root.join(".github/workflows/ripr.yml"))?;
+    let yaml: Value = serde_yaml_ng::from_str(&workflow)?;
+    let jobs = yaml
+        .get("jobs")
+        .and_then(Value::as_mapping)
+        .ok_or_else(|| anyhow!("ripr.yml has no jobs mapping"))?;
+    let job = jobs
+        .get(Value::String(job_name.into()))
+        .ok_or_else(|| anyhow!("ripr.yml has no {job_name} job"))?;
+    job.get("env")
+        .and_then(Value::as_mapping)
+        .and_then(|env| env.get(Value::String(env_key.into())))
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .ok_or_else(|| anyhow!("{job_name} env has no {env_key}"))
+}
+
+// #15498: ripr 0.10.0 tightened the built-in diff-index refusal from 1600
+// files (0.9.0) to 800. Every producer lane must therefore pin the
+// admission boundary explicitly and pair it with a container budget measured
+// to hold it (1600-file closures indexed inside 6g => <=3.75 MB/file, so
+// 2560 files needs ~9.6 GB inside a 14g container on the 16 GB runner;
+// CX53/28g and CX43/16g both hold the 2560 pair with headroom).
+#[test]
+fn hosted_ripr_lanes_pin_the_diff_index_boundary_with_a_measured_budget() -> Result<()> {
+    let root = project_root()?;
+    let workflow = fs::read_to_string(root.join(".github/workflows/ripr.yml"))?;
+
+    let hosted_cap = workflow_job_env_value("ripr-fallback", "RIPR_MAX_DIFF_INDEX_FILES")?;
+    ensure!(
+        hosted_cap == "2560",
+        "ripr-fallback must pin RIPR_MAX_DIFF_INDEX_FILES=2560 explicitly; found {hosted_cap:?}.          Without the pin the lane inherits the CLI's built-in default, which ripr 0.10.0          silently tightened from 1600 to 800 (#15498)"
+    );
+    for lane in ["ripr-cx53", "ripr-cx43"] {
+        let cap = workflow_job_env_value(lane, "RIPR_MAX_DIFF_INDEX_FILES")?;
+        ensure!(
+            cap == "2560",
+            "{lane} must pin RIPR_MAX_DIFF_INDEX_FILES=2560 explicitly; found {cap:?}.              Without the pin the capable lane inherits the CLI default (800) as soon as              routing is restored, moving the fail-closed boundary onto self-hosted (#15498)"
+        );
+    }
+
+    let script = workflow_step(&workflow, "Generate PR evidence")
+        .ok_or_else(|| anyhow!("missing Generate PR evidence step"))?;
+    for expected in [
+        "-e RIPR_MAX_DIFF_INDEX_FILES=2560",
+        "--memory=14g",
+        "--memory-swap=14g",
+        "docker_memory=14g",
+    ] {
+        ensure!(
+            script.contains(expected),
+            "ripr-github's hosted producer must carry {expected:?}; the admission boundary and              the container budget are one measured pair (#15498)"
+        );
+    }
+    ensure!(
+        !script.contains("--memory=6g") && !script.contains("RIPR_MAX_DIFF_INDEX_FILES=1600"),
+        "stale 6g/1600 hosted budgets must not survive beside the measured 14g/2560 pair"
+    );
+
+    // #15082/#15028: the review-guidance pass on a new-crate diff no longer
+    // completes in 600s on the hosted lane, so the gate failed closed on an
+    // incomplete receipt while 64-67 mechanical seams went unadjudicated.
+    // Both hosted lanes must carry the raised bound; the self-hosted 210s
+    // lanes are intentionally untouched.
+    for lane in ["ripr-github", "ripr-fallback"] {
+        // Job-scoped on purpose: workflow_step would return the first
+        // matching step in the file, so both iterations would inspect
+        // ripr-github and ripr-fallback could silently miss the bound.
+        let guidance = workflow_run_block(lane, "Generate review guidance")?;
+        // Token-aware on purpose: a substring match would also accept a
+        // longer value, silently unenforcing the bound.
+        let bound = guidance
+            .split_whitespace()
+            .skip_while(|token| *token != "--timeout-seconds")
+            .nth(1)
+            .ok_or_else(|| {
+                anyhow!("{lane}'s review-guidance pass carries no --timeout-seconds value")
+            })?;
+        ensure!(
+            bound == "3600",
+            "{lane}'s review-guidance pass must carry --timeout-seconds 3600; found {bound:?}.              The 600s and 1800s bounds each failed closed on large-closure diffs (#15082, #15028, #14897)"
+        );
+    }
+    let count = workflow
+        .lines()
+        .filter(|line| {
+            line.split_whitespace()
+                .skip_while(|token| *token != "--timeout-seconds")
+                .nth(1)
+                .is_some_and(|value| value == "3600")
+        })
+        .count();
+    ensure!(
+        count == 2,
+        "exactly the two hosted lanes must carry the 3600s guidance bound; found {count}"
+    );
+    Ok(())
 }
