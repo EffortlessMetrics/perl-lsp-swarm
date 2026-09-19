@@ -6,12 +6,12 @@
 //! * `ci-time.json`   — consolidated payload (machine-readable summary).
 //! * `ci-time.md`     — human-readable Markdown summary.
 //!
-//! Each artifact carries an identical `schema_version` and `producer` field so
-//! that consumers and the parallel `.ci/scripts/measure-ci-time.sh` script
-//! cannot silently interleave with this producer. See the `SCHEMA_VERSION` and
-//! `PRODUCER` constants below — they MUST stay byte-identical with the values
-//! declared in `.ci/scripts/measure-ci-time.sh` so a reader can identify which
-//! producer emitted the file.
+//! Each artifact carries a `schema_version` and `producer` field so that
+//! consumers can identify the file shape and which tool wrote it. The
+//! `SCHEMA_VERSION` constant MUST stay byte-identical with the value declared
+//! in the parallel `.ci/scripts/measure-ci-time.sh` fallback; `PRODUCER`
+//! deliberately differs between the two producers so a bash-written file
+//! cannot impersonate this canonical producer.
 //!
 //! The Rust `cargo xtask ci-measure` producer is the canonical authority per
 //! the documented xtask migration (`docs/project/XTASK_MIGRATION.md`); the
@@ -35,8 +35,9 @@ pub const SCHEMA_VERSION: &str = "ci-time.v1";
 
 /// Stable producer identity for `cargo xtask ci-measure`.
 ///
-/// Kept byte-identical with the `PRODUCER` constant in
-/// `.ci/scripts/measure-ci-time.sh`; a test in this module ratchets the two.
+/// The `.ci/scripts/measure-ci-time.sh` fallback MUST declare a different
+/// `PRODUCER` so a consumer can identify which tool wrote the file; a test in
+/// this module ratchets that the two differ while `SCHEMA_VERSION` matches.
 pub const PRODUCER: &str = "cargo-xtask-ci-measure";
 
 const LANE_COMMANDS: &[(&str, &[&str])] = &[
@@ -243,13 +244,14 @@ mod tests {
     }
 
     #[test]
-    fn python_script_emits_identical_schema_version_and_producer() {
+    fn python_script_shares_schema_version_but_identifies_itself() {
         // The Rust producer is the canonical authority; the Python script
         // remains a fallback for manual `bash` invocation. A consumer reading
         // `ci-time.json` MUST be able to identify which producer wrote the
-        // file, so both scripts must publish the same schema_version.
-        // The producer strings may differ (they identify the producer), but
-        // schema_version is the cross-producer discriminator and must match.
+        // file, so both scripts must publish the same schema_version while
+        // producer identifies the writer. Asserting the script's PRODUCER
+        // differs from this producer's keeps a bash-written file from
+        // impersonating the canonical producer.
         let script = include_str!("../../../.ci/scripts/measure-ci-time.sh");
         let script_schema = extract_python_constant(script, "SCHEMA_VERSION");
         let script_producer = extract_python_constant(script, "PRODUCER");
@@ -258,10 +260,10 @@ mod tests {
             Some(SCHEMA_VERSION),
             "Python script's SCHEMA_VERSION constant drifted from the Rust producer"
         );
-        assert_eq!(
-            script_producer.as_deref(),
-            Some(PRODUCER),
-            "Python script's PRODUCER constant drifted from the Rust producer"
+        assert!(
+            script_producer.as_deref().is_some_and(|p| p != PRODUCER),
+            "Python script must declare its own PRODUCER identity (got {script_producer:?}); \
+             a bash-written ci-time file must not claim {PRODUCER}"
         );
     }
 

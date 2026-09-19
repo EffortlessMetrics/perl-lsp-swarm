@@ -9,13 +9,13 @@
 #
 # Schema contract (#15381): this script is the manual `bash` fallback for the
 # canonical `cargo xtask ci-measure` producer. Both producers MUST emit the
-# same `schema_version` so a consumer can identify the file shape, and a
-# distinct `producer` string so a consumer can identify which tool wrote it.
-# The constants below are kept byte-identical with
-# `xtask/src/tasks/ci_measure.rs`'s `SCHEMA_VERSION` and `PRODUCER`; the
-# inline test in that file ratchets the two.
+# same `schema_version` so a consumer can identify the file shape, while
+# `producer` identifies which tool actually wrote the file — this script MUST
+# NOT claim the canonical producer's identity. `SCHEMA_VERSION` below is kept
+# byte-identical with `xtask/src/tasks/ci_measure.rs`'s `SCHEMA_VERSION`; the
+# inline test in that file ratchets it and asserts the producers differ.
 SCHEMA_VERSION="ci-time.v1"
-PRODUCER="cargo-xtask-ci-measure"
+PRODUCER="measure-ci-time-sh"
 
 set -euo pipefail
 
