@@ -43,7 +43,7 @@ struct PlateauSummary {
 struct MemoryPlateauReceipt {
     check: &'static str,
     kind: &'static str,
-    schema_version: u32,
+    schema_version: &'static str,
     event: String,
     verdict: &'static str,
     scenario: String,
@@ -71,7 +71,7 @@ pub fn run(config: MemoryMetricsConfig) -> Result<()> {
     let receipt = MemoryPlateauReceipt {
         check: "memory-plateau",
         kind: "memory_plateau",
-        schema_version: 1,
+        schema_version: "memory_plateau.v1",
         event: config.event,
         verdict: if plateau.passed { "pass" } else { "fail" },
         scenario: config.scenario,
@@ -170,13 +170,18 @@ pub fn infer_scenario(workload_json: &Path) -> Result<String> {
 mod tests {
     use super::*;
 
-    /// The `memory_plateau` receipt must emit `schema_version` as a JSON number
-    /// (`1`) to match the metrics family (`parser_accuracy.rs:1271`,
-    /// `release_health.rs:667`, `lsp_stats.rs`, `ratchet.rs`). Stringified
-    /// versions like `"1"` break string-equality consumers and break the
-    /// peer-alignment test in `quality_ci_wiring_policy.rs`. See #15358.
+    /// The `memory_plateau` receipt is a registered gate receipt, so its
+    /// `schema_version` must stay a string under
+    /// `.ci/receipts/schemas/common-gate-receipt.schema.json`. The #15358
+    /// drift is that it emitted the bare `"1"` — no `.v1` suffix — unlike
+    /// every other repo schema version. The project-wide convention is
+    /// `"<receipt>.v<N>"` (`actual_host_receipt.rs`,
+    /// `compiler_lexical_cutline.rs`, `emacs_eglot_upstream_patch.rs`), so
+    /// the fix is the semantic string `"memory_plateau.v1"`, not the u32
+    /// peer family the metrics producers use outside the gate-receipt
+    /// registry. See #15358.
     #[test]
-    fn memory_plateau_receipt_emits_numeric_schema_version_one() -> Result<()> {
+    fn memory_plateau_receipt_emits_semantic_schema_version() -> Result<()> {
         let temp = tempfile::tempdir().wrap_err_with(|| {
             format!("failed to create tempdir at {}", std::env::temp_dir().display())
         })?;
@@ -213,13 +218,15 @@ mod tests {
 
         assert_eq!(
             value["schema_version"],
-            serde_json::Value::from(1u32),
-            "memory_plateau receipt must emit numeric schema_version == 1 to match metrics family; got {}",
+            serde_json::Value::from("memory_plateau.v1"),
+            "memory_plateau receipt must emit semantic schema_version \"memory_plateau.v1\" \
+             to match the project-wide gate-receipt convention; got {}",
             value["schema_version"]
         );
         assert!(
-            value["schema_version"].is_number(),
-            "memory_plateau receipt schema_version must be a JSON number, not a string"
+            value["schema_version"].is_string(),
+            "memory_plateau receipt schema_version must stay a JSON string: \
+             common-gate-receipt.schema.json declares it `\"type\": \"string\"`"
         );
         assert_eq!(value["kind"], serde_json::Value::from("memory_plateau"));
         Ok(())
