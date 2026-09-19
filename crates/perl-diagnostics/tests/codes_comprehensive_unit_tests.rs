@@ -1234,9 +1234,14 @@ fn information_severity_codes_are_explicitly_tracked() {
         .collect();
     let mut actual = info_codes.iter().map(|c| c.as_str()).collect::<Vec<_>>();
     actual.sort_unstable();
+    // PL1001 (RegexAnalysisLimit) and PL1007 (RegexAnalysisIncomplete) joined
+    // with the regex-analysis block (#7024).
     assert_eq!(
         actual,
-        vec!["PL112", "PL800", "PL801", "PL802", "PL803", "PL804", "PL805", "PL806"]
+        vec![
+            "PL1001", "PL1007", "PL112", "PL800", "PL801", "PL802", "PL803", "PL804", "PL805",
+            "PL806",
+        ]
     );
 }
 
@@ -1283,10 +1288,11 @@ fn every_category_is_represented_by_the_registry() {
         DiagnosticCategory::Import,
         DiagnosticCategory::Heredoc,
         DiagnosticCategory::VersionCompatibility,
+        DiagnosticCategory::RegexAnalysis,
     ] {
         assert!(categories.contains(&expected), "no code carries {expected:?}");
     }
-    assert_eq!(categories.len(), 10, "an unrepresented category was added");
+    assert_eq!(categories.len(), 11, "an unrepresented category was added");
 }
 
 // --- DiagnosticCode: tags exhaustive check ---
