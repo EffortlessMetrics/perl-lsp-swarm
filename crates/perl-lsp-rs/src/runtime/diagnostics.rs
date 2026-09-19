@@ -3589,6 +3589,59 @@ mod tests {
         );
     }
 
+    /// #7024: canonical regex findings must survive retained-analysis projection
+    /// into the push journey. A repeated group with a nested quantifier reaches
+    /// the client as `PL1000` in the `textDocument/publishDiagnostics`
+    /// notification on didOpen, and a didChange to an invalid-modifier pattern
+    /// publishes the parse-time modifier diagnostic — proving the retained table
+    /// is re-derived for the changed snapshot instead of serving stale analysis.
+    ///
+    /// Since #14980 an unknown match modifier is rejected by the strict
+    /// match-family extractor before analysis runs (the `s///` contract, see
+    /// #14762), so the didChange half pins the typed `SyntaxError` rather than
+    /// the analysis-level `PL1002`.
+    #[test]
+    fn push_diagnostics_include_canonical_regex_codes() {
+        let (server, buf) = make_server_with_capture();
+        let uri = "file:///push_canonical_regex_test.pl";
+        server
+            .test_handle_did_open(Some(json!({
+                "textDocument": {
+                    "uri": uri,
+                    "languageId": "perl",
+                    "version": 1,
+                    "text": "my $re = qr/(a+)+b/;\n"
+                }
+            })))
+            .unwrap();
+        server.publish_diagnostics(uri);
+
+        server
+            .test_handle_did_change(Some(json!({
+                "textDocument": {"uri": uri, "version": 2},
+                "contentChanges": [{"text": "if ($s =~ m/foo/zz) { }\n"}]
+            })))
+            .unwrap();
+        server.publish_diagnostics(uri);
+        drop(server);
+        std::thread::sleep(Duration::from_millis(50)); // flush outbound writer
+
+        let bytes = buf.lock().clone();
+        let text = String::from_utf8(bytes).unwrap_or_default();
+        assert!(
+            text.contains("PL1000"),
+            "didOpen push must publish the canonical regex backtracking code PL1000; got: {text:?}"
+        );
+        assert!(
+            text.contains("Invalid match modifier 'z'"),
+            "didChange push must publish the parse-time modifier diagnostic naming the letter; got: {text:?}"
+        );
+        assert!(
+            !text.contains("PL1002"),
+            "the bogus letter is rejected before analysis, so no PL1002 may appear; got: {text:?}"
+        );
+    }
+
     /// #1773: push diagnostics must include enrichment fields (codeDescription,
     /// data) for parity with the pull-based path. A code like PL103 (undefined
     /// variable) should produce both a `codeDescription.href` link and a `data`

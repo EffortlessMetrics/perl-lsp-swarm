@@ -10,11 +10,16 @@ use perl_parser::Parser;
 use perl_parser_core::{RegexAnalysisTable, RetainedRegexSession};
 
 /// One finding of each class the projection can reach from parser-retained analysis:
-/// backtracking risk, embedded execution, an invalid modifier, and a clean
+/// backtracking risk, embedded execution, invalid modifiers, and a clean
 /// substitution that must stay silent.
+///
+/// The modifier line uses charset modifiers the parser accepts but analysis
+/// rejects (`d` repeated, then `d`/`u` conflicting): unknown letters such as
+/// `z` never reach analysis since #14980 diagnoses them at parse time, exactly
+/// like `s///` (see #14762).
 const MIXED: &str = r#"my $re = qr/(a+)+b/;
 my $x = /(?{ print 1 })/;
-if ($s =~ m/foo/zz) { }
+if ($s =~ m/foo/ddu) { }
 my $y = $s =~ s/(x)/y/gr;
 "#;
 
@@ -117,14 +122,16 @@ fn regex_canonical_range_spaces_are_pinned_to_source_text() {
         &MIXED[start..end]
     );
 
-    // Modifier finding: already in original-source coordinates.
+    // Modifier findings: already in original-source coordinates. `ddu` yields
+    // one repeated-modifier finding on the second `d` and one conflicting-set
+    // finding on the `u`, in source order.
     let modifiers = with_code(&diagnostics, "PL1002");
-    assert_eq!(modifiers.len(), 2, "both stray modifier characters are reported");
-    for diagnostic in &modifiers {
+    assert_eq!(modifiers.len(), 2, "both modifier findings are reported");
+    for (diagnostic, expected) in modifiers.iter().zip(["d", "u"]) {
         let (start, end) = diagnostic.range;
         assert_eq!(
             &MIXED[start..end],
-            "z",
+            expected,
             "PL1002 must name the offending modifier character itself"
         );
     }
@@ -392,12 +399,14 @@ fn a_backtracking_risk_moves_off_the_generic_parse_error_code() {
     );
 }
 
-/// An unknown regex modifier reached the client as nothing at all: the legacy
-/// per-operator scan does not inspect modifiers, so `m/foo/zz` published no
-/// diagnostic. Canonical analysis reports each offending character.
+/// An unknown match modifier is a parse-time finding, not an analysis one.
+/// Since #14980 the strict match-family extractor rejects unknown letters with a
+/// typed `SyntaxError` (matching the `s///`/`tr///` contract), so the bogus letter
+/// never reaches retained analysis — the same documented limitation #14762 records
+/// for `s///`, where `PL1002` is likewise unreachable.
 ///
-/// This direction is purely additive — no previously published finding is replaced —
-/// and the negative half is what proves it.
+/// The legacy per-operator scan still inspects no modifiers, so it stays silent;
+/// the canonical path carries the typed diagnostic instead of `PL1002`.
 #[test]
 fn an_unknown_modifier_is_reported_where_nothing_was_reported_before() {
     let source = "my $x = 1;\nif ($s =~ m/foo/zz) { }\n";
@@ -415,10 +424,26 @@ fn an_unknown_modifier_is_reported_where_nothing_was_reported_before() {
     );
 
     let canonical = canonical_diagnostics(source);
+    assert!(
+        with_code(&canonical, "PL1002").is_empty(),
+        "the bogus letter is rejected before analysis, so no PL1002: {canonical:#?}"
+    );
+    let modifier = with_code(&canonical, "PL002");
     assert_eq!(
-        with_code(&canonical, "PL1002").len(),
-        2,
-        "each unknown modifier character is reported: {canonical:#?}"
+        modifier.len(),
+        1,
+        "the typed modifier diagnostic arrives exactly once: {canonical:#?}"
+    );
+    assert!(
+        modifier[0].message.contains("Invalid match modifier 'z'"),
+        "the diagnostic names the offending letter: {:?}",
+        modifier[0].message
+    );
+    let operator = source.find("m/foo/zz").unwrap_or(0);
+    let (start, end) = modifier[0].range;
+    assert!(
+        start >= operator && end <= operator + "m/foo/zz".len(),
+        "the diagnostic is bound to the operator, got {start}..{end}: {source:?}"
     );
 
     // Unrelated diagnostics are untouched in both directions — this change adds a
