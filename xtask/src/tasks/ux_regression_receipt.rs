@@ -209,7 +209,7 @@ fn infer_failure_class(raw: &str) -> UxFailureClass {
         UxFailureClass::MatrixDrift
     } else if lower.contains("baseline") || lower.contains("snapshot") {
         UxFailureClass::BaselineDrift
-    } else if lower.contains("timed out") || lower.contains("timeout") {
+    } else if looks_like_timeout(&lower) {
         UxFailureClass::Timeout
     } else if lower.contains("race") || lower.contains("flaky") {
         UxFailureClass::TestRace
@@ -229,6 +229,13 @@ fn infer_failure_class(raw: &str) -> UxFailureClass {
     } else {
         UxFailureClass::Unknown
     }
+}
+
+fn looks_like_timeout(lower: &str) -> bool {
+    lower.contains("timed out")
+        || lower.contains("timeout")
+        || lower.contains("deadline expired")
+        || lower.contains("deadline exceeded")
 }
 
 fn looks_like_scenario_19_race(lower: &str) -> bool {
@@ -306,6 +313,25 @@ mod tests {
         assert_eq!(receipt.result, "fail");
         assert!(receipt.blocking, "selected test failure must block the receipt");
         assert_eq!(receipt.merge_action, "triage_timeout");
+    }
+
+    #[test]
+    fn classify_deadline_expiry_before_provider_assertion_as_timeout() {
+        let log = "running 1 test\n\
+test scenario_52_test_inline_completion_quality_receipt ... FAILED\n\
+wait_for_diagnostics ended without a match: deadline expired after 30000ms with the stream still live\n\
+assertion failed: expected inline completion\n\
+test result: FAILED. 0 passed; 1 failed";
+        let receipt = classify(log, Some("sha-deadline".to_string()));
+
+        assert!(
+            matches!(receipt.failure_class, UxFailureClass::Timeout),
+            "explicit deadline expiry must not be misclassified as provider regression: {:?}",
+            receipt.failure_class
+        );
+        assert_eq!(receipt.route, UxRoute::TimeoutTriage);
+        assert_eq!(receipt.merge_action, "triage_timeout");
+        assert!(receipt.blocking);
     }
 
     #[test]
