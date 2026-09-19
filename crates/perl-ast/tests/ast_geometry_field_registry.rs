@@ -1320,7 +1320,7 @@ fn the_observer_never_uses_a_rest_pattern() -> Result<(), Box<dyn std::error::Er
 /// A node that carries no geometry reconciles to an empty set, not a default.
 #[test]
 fn geometry_free_variants_are_explicitly_empty() {
-    let loc = SourceLocation { start: 0, end: 1 };
+    let loc = SourceLocation::new(0, 1);
     let number = NodeKind::Number { value: "1".to_string() };
     assert!(
         observe_geometry_fields(&number).is_empty(),
@@ -1716,7 +1716,7 @@ fn a_second_dotted_row_on_the_same_base_is_rejected() -> Result<(), Box<dyn std:
 /// instance simply has no value here".
 #[test]
 fn an_absent_optional_span_is_not_drift() -> Result<(), Box<dyn std::error::Error>> {
-    let loc = SourceLocation { start: 0, end: 4 };
+    let loc = SourceLocation::new(0, 4);
     let without_span = perl_ast::Node::new(
         NodeKind::Subroutine {
             name: Some("f".to_string()),
@@ -1742,7 +1742,7 @@ fn an_absent_optional_span_is_not_drift() -> Result<(), Box<dyn std::error::Erro
 /// preserving mapping rule protects.
 #[test]
 fn a_recovery_token_carries_its_own_validated_width() -> Result<(), Box<dyn std::error::Error>> {
-    let loc = SourceLocation { start: 10, end: 13 };
+    let loc = SourceLocation::new(10, 13);
     let token = Token::new_checked(TokenKind::Unknown, "abc", 10, 13)?;
     assert_eq!(token.text.len(), 3, "token text length is its byte width");
 
@@ -1773,7 +1773,7 @@ fn a_recovery_token_carries_its_own_validated_width() -> Result<(), Box<dyn std:
 #[test]
 fn nested_catch_variable_geometry_counts_actual_elements() -> Result<(), Box<dyn std::error::Error>>
 {
-    let loc = SourceLocation { start: 0, end: 1 };
+    let loc = SourceLocation::new(0, 1);
     let block = || Box::new(perl_ast::Node::new(NodeKind::Block { statements: vec![] }, loc));
 
     let node = perl_ast::Node::new(

@@ -15,8 +15,8 @@ pub fn add_error_checking(node: &Node, source: &str) -> Option<CodeAction> {
             "open" | "close" | "print" | "printf" | "write" | "read" | "seek" | "truncate"
         ) {
             // Check if already has error checking
-            if !has_error_checking_nearby(source, node.location.end) {
-                let expr_text = &source[node.location.start..node.location.end];
+            if !has_error_checking_nearby(source, node.location.end()) {
+                let expr_text = &source[node.location.start()..node.location.end()];
 
                 return Some(CodeAction {
                     title: format!("Add error checking to '{}'", func_name),

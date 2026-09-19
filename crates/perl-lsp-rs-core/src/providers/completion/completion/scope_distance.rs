@@ -156,14 +156,14 @@ pub fn scope_at_position(symbol_table: &SymbolTable, source: &str, position: usi
     let mut containing: Option<(ScopeId, usize, usize)> = None;
 
     for scope in symbol_table.scopes.values() {
-        if scope.location.start <= position && position <= scope.location.end {
+        if scope.location.start() <= position && position <= scope.location.end() {
             let depth = scope_depth(symbol_table, scope.id);
             let is_better_containing = containing.is_none_or(|(_, best_start, best_depth)| {
-                scope.location.start > best_start
-                    || (scope.location.start == best_start && depth > best_depth)
+                scope.location.start() > best_start
+                    || (scope.location.start() == best_start && depth > best_depth)
             });
             if is_better_containing {
-                containing = Some((scope.id, scope.location.start, depth));
+                containing = Some((scope.id, scope.location.start(), depth));
             }
         }
     }
@@ -173,14 +173,14 @@ pub fn scope_at_position(symbol_table: &SymbolTable, source: &str, position: usi
     {
         let mut eof_hint = containing;
         for scope in symbol_table.scopes.values() {
-            if scope.location.start <= brace_pos {
+            if scope.location.start() <= brace_pos {
                 let depth = scope_depth(symbol_table, scope.id);
                 let is_better_hint = eof_hint.is_none_or(|(_, best_start, best_depth)| {
-                    scope.location.start > best_start
-                        || (scope.location.start == best_start && depth > best_depth)
+                    scope.location.start() > best_start
+                        || (scope.location.start() == best_start && depth > best_depth)
                 });
                 if is_better_hint {
-                    eof_hint = Some((scope.id, scope.location.start, depth));
+                    eof_hint = Some((scope.id, scope.location.start(), depth));
                 }
             }
         }
@@ -294,7 +294,7 @@ mod tests {
                 id: 0,
                 parent: None,
                 kind: ScopeKind::Global,
-                location: SourceLocation { start: 0, end: 100 },
+                location: SourceLocation::new(0, 100),
                 symbols: HashSet::new(),
             },
         );
@@ -305,7 +305,7 @@ mod tests {
                 id: 1,
                 parent: Some(0),
                 kind: ScopeKind::Package,
-                location: SourceLocation { start: 5, end: 95 },
+                location: SourceLocation::new(5, 95),
                 symbols: HashSet::new(),
             },
         );
@@ -316,7 +316,7 @@ mod tests {
                 id: 2,
                 parent: Some(1),
                 kind: ScopeKind::Subroutine,
-                location: SourceLocation { start: 10, end: 80 },
+                location: SourceLocation::new(10, 80),
                 symbols: HashSet::new(),
             },
         );
@@ -327,7 +327,7 @@ mod tests {
                 id: 3,
                 parent: Some(2),
                 kind: ScopeKind::Block,
-                location: SourceLocation { start: 20, end: 50 },
+                location: SourceLocation::new(20, 50),
                 symbols: HashSet::new(),
             },
         );
@@ -362,7 +362,7 @@ mod tests {
         // Simulate an incomplete block whose recorded end does not yet reach
         // the live cursor position.
         if let Some(scope) = table.scopes.get_mut(&3) {
-            scope.location.end = 25;
+            scope.location = SourceLocation::new(scope.location.start(), 25);
         }
 
         let source = "sub process {\n    if (1) {\n        $";
@@ -373,7 +373,7 @@ mod tests {
     fn test_scope_at_position_does_not_revive_closed_child_block() {
         let mut table = build_test_table();
         if let Some(scope) = table.scopes.get_mut(&3) {
-            scope.location.end = 25;
+            scope.location = SourceLocation::new(scope.location.start(), 25);
         }
         let source = "sub process {\n    if (1) {\n    }\n    $";
         assert_eq!(scope_at_position(&table, source, source.len()), 2);
@@ -383,7 +383,7 @@ mod tests {
     fn test_scope_at_position_ignores_braces_in_strings_and_comments() {
         let mut table = build_test_table();
         if let Some(scope) = table.scopes.get_mut(&3) {
-            scope.location.end = 25;
+            scope.location = SourceLocation::new(scope.location.start(), 25);
         }
         // A `}` inside a string or comment is not structural syntax: it must
         // not close the unfinished block and bounce the cursor to an ancestor.
@@ -410,7 +410,7 @@ mod tests {
                 id: 0,
                 parent: None,
                 kind: ScopeKind::Global,
-                location: SourceLocation { start: 0, end: 100 },
+                location: SourceLocation::new(0, 100),
                 symbols: HashSet::new(),
             },
         );
@@ -420,7 +420,7 @@ mod tests {
                 id: 1,
                 parent: Some(0),
                 kind: ScopeKind::Block,
-                location: SourceLocation { start: 10, end: 90 },
+                location: SourceLocation::new(10, 90),
                 symbols: HashSet::new(),
             },
         );
@@ -430,7 +430,7 @@ mod tests {
                 id: 2,
                 parent: Some(1),
                 kind: ScopeKind::Block,
-                location: SourceLocation { start: 10, end: 90 },
+                location: SourceLocation::new(10, 90),
                 symbols: HashSet::new(),
             },
         );
@@ -475,7 +475,7 @@ mod tests {
                 id: 4,
                 parent: Some(1),
                 kind: ScopeKind::Subroutine,
-                location: SourceLocation { start: 82, end: 94 },
+                location: SourceLocation::new(82, 94),
                 symbols: HashSet::new(),
             },
         );
@@ -501,7 +501,7 @@ mod tests {
                 id: 4,
                 parent: Some(3),
                 kind: ScopeKind::Block,
-                location: SourceLocation { start: 30, end: 40 },
+                location: SourceLocation::new(30, 40),
                 symbols: HashSet::new(),
             },
         );
@@ -526,7 +526,7 @@ mod tests {
                 id: 0,
                 parent: None,
                 kind: ScopeKind::Global,
-                location: SourceLocation { start: 0, end: 1000 },
+                location: SourceLocation::new(0, 1000),
                 symbols: HashSet::new(),
             },
         );
@@ -537,7 +537,7 @@ mod tests {
                     id: i,
                     parent: Some(i - 1),
                     kind: ScopeKind::Block,
-                    location: SourceLocation { start: i * 10, end: 1000 - i * 10 },
+                    location: SourceLocation::new(i * 10, 1000 - i * 10),
                     symbols: HashSet::new(),
                 },
             );

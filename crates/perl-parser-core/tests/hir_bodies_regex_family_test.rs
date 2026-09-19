@@ -380,8 +380,8 @@ fn an_unbound_regex_anchors_to_its_own_source_range() {
     // `RegexAnalysisTable` is proven in `hir_regex_anchor_resolution_test.rs`.
     let source = "my $r = qr/foo/i;";
     let r = regex_of(source);
-    let start = r.analysis.full_range.start;
-    let end = r.analysis.full_range.end;
+    let start = r.analysis.full_range.start();
+    let end = r.analysis.full_range.end();
     let slice = must_some_with(source.get(start..end), "anchor must be an in-bounds range");
     assert_eq!(slice, "qr/foo/i", "anchor must span the construct");
 }

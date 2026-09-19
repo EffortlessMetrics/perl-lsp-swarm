@@ -93,7 +93,7 @@ fn package_block_keeps_precise_name_span_and_inner_statements() -> Result<(), St
     match &statements[0].kind {
         NodeKind::Package { name, name_span, block } => {
             assert_eq!(name, "Local::Thing");
-            assert_eq!(&source[name_span.start..name_span.end], "Local::Thing");
+            assert_eq!(&source[name_span.start()..name_span.end()], "Local::Thing");
 
             let package_body = block.as_ref().ok_or("missing package block")?;
             let body_statements = block_statements(package_body)?;
@@ -167,7 +167,7 @@ fn phase_defer_and_data_section_cover_compile_time_and_tail_constructs() -> Resu
         NodeKind::PhaseBlock { phase, phase_span, block } => {
             assert_eq!(phase, "BEGIN");
             let span = phase_span.ok_or("missing phase span")?;
-            assert_eq!(&source[span.start..span.end], "BEGIN");
+            assert_eq!(&source[span.start()..span.end()], "BEGIN");
             assert_eq!(block_statements(block)?.len(), 1);
         }
         other => return Err(format!("expected PhaseBlock node, got {other:?}")),

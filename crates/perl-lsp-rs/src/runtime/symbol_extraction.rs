@@ -101,8 +101,8 @@ impl LspServer {
                     NodeKind::Subroutine { name: Some(sub_name), body, .. } => {
                         // Add the subroutine as a symbol if it has a name
                         let (start_line, start_char) =
-                            byte_to_line_col(source, node.location.start);
-                        let (end_line, end_char) = byte_to_line_col(source, node.location.end);
+                            byte_to_line_col(source, node.location.start());
+                        let (end_line, end_char) = byte_to_line_col(source, node.location.end());
 
                         symbols.push(LspWorkspaceSymbol {
                             name: sub_name.clone(),
@@ -133,8 +133,8 @@ impl LspServer {
                     NodeKind::Package { name, block, .. } => {
                         // Add the package as a symbol
                         let (start_line, start_char) =
-                            byte_to_line_col(source, node.location.start);
-                        let (end_line, end_char) = byte_to_line_col(source, node.location.end);
+                            byte_to_line_col(source, node.location.start());
+                        let (end_line, end_char) = byte_to_line_col(source, node.location.end());
 
                         symbols.push(LspWorkspaceSymbol {
                             name: name.clone(),
@@ -167,8 +167,8 @@ impl LspServer {
                     // Perl 5.38+ native class declaration
                     NodeKind::Class { name, body, .. } => {
                         let (start_line, start_char) =
-                            byte_to_line_col(source, node.location.start);
-                        let (end_line, end_char) = byte_to_line_col(source, node.location.end);
+                            byte_to_line_col(source, node.location.start());
+                        let (end_line, end_char) = byte_to_line_col(source, node.location.end());
 
                         symbols.push(LspWorkspaceSymbol {
                             name: name.clone(),
@@ -199,8 +199,8 @@ impl LspServer {
                     // Perl 5.38+ native method declaration
                     NodeKind::Method { name, body, .. } => {
                         let (start_line, start_char) =
-                            byte_to_line_col(source, node.location.start);
-                        let (end_line, end_char) = byte_to_line_col(source, node.location.end);
+                            byte_to_line_col(source, node.location.start());
+                        let (end_line, end_char) = byte_to_line_col(source, node.location.end());
 
                         symbols.push(LspWorkspaceSymbol {
                             name: name.clone(),
@@ -236,8 +236,9 @@ impl LspServer {
                         if let NodeKind::Variable { sigil, name } = &variable.kind {
                             let display_name = format!("{sigil}{name}");
                             let (start_line, start_char) =
-                                byte_to_line_col(source, node.location.start);
-                            let (end_line, end_char) = byte_to_line_col(source, node.location.end);
+                                byte_to_line_col(source, node.location.start());
+                            let (end_line, end_char) =
+                                byte_to_line_col(source, node.location.end());
 
                             symbols.push(LspWorkspaceSymbol {
                                 name: display_name,
@@ -284,8 +285,8 @@ impl LspServer {
                         && !attr.is_empty()
                     {
                         let (start_line, start_char) =
-                            byte_to_line_col(source, node.location.start);
-                        let (end_line, end_char) = byte_to_line_col(source, node.location.end);
+                            byte_to_line_col(source, node.location.start());
+                        let (end_line, end_char) = byte_to_line_col(source, node.location.end());
 
                         symbols.push(LspWorkspaceSymbol {
                             name: attr,
@@ -353,8 +354,8 @@ impl LspServer {
                 if let Some(sub_name) = name {
                     if ascii_contains_ci(sub_name, &query_lower) {
                         let (start_line, start_char) =
-                            byte_to_line_col(source, node.location.start);
-                        let (end_line, end_char) = byte_to_line_col(source, node.location.end);
+                            byte_to_line_col(source, node.location.start());
+                        let (end_line, end_char) = byte_to_line_col(source, node.location.end());
 
                         symbols.push(json!({
                             "name": sub_name,
@@ -375,8 +376,8 @@ impl LspServer {
 
             NodeKind::Package { name, block, .. } => {
                 if ascii_contains_ci(name, &query_lower) {
-                    let (start_line, start_char) = byte_to_line_col(source, node.location.start);
-                    let (end_line, end_char) = byte_to_line_col(source, node.location.end);
+                    let (start_line, start_char) = byte_to_line_col(source, node.location.start());
+                    let (end_line, end_char) = byte_to_line_col(source, node.location.end());
 
                     symbols.push(json!({
                         "name": name,
@@ -399,8 +400,8 @@ impl LspServer {
             // Perl 5.38+ native class declaration
             NodeKind::Class { name, body, .. } => {
                 if ascii_contains_ci(name, &query_lower) {
-                    let (start_line, start_char) = byte_to_line_col(source, node.location.start);
-                    let (end_line, end_char) = byte_to_line_col(source, node.location.end);
+                    let (start_line, start_char) = byte_to_line_col(source, node.location.start());
+                    let (end_line, end_char) = byte_to_line_col(source, node.location.end());
 
                     symbols.push(json!({
                         "name": name,
@@ -421,8 +422,8 @@ impl LspServer {
             // Perl 5.38+ native method declaration
             NodeKind::Method { name, body, .. } => {
                 if ascii_contains_ci(name, &query_lower) {
-                    let (start_line, start_char) = byte_to_line_col(source, node.location.start);
-                    let (end_line, end_char) = byte_to_line_col(source, node.location.end);
+                    let (start_line, start_char) = byte_to_line_col(source, node.location.start());
+                    let (end_line, end_char) = byte_to_line_col(source, node.location.end());
 
                     symbols.push(json!({
                         "name": name,
@@ -625,7 +626,7 @@ mod tests {
     use std::io::Cursor;
 
     fn loc(start: usize, end: usize) -> SourceLocation {
-        SourceLocation { start, end }
+        SourceLocation::new(start, end)
     }
 
     fn call(name: &str, start: usize) -> Node {

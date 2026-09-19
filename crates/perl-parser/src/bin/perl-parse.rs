@@ -343,7 +343,7 @@ fn legacy_parse_summary(ast: &Node) -> LegacyParseSummary {
         schema: LEGACY_SUMMARY_SCHEMA,
         subject: LEGACY_SUMMARY_SUBJECT,
         native_root_kind: ast.kind.kind_name(),
-        root_byte_range: ByteRange { start: ast.location.start, end: ast.location.end },
+        root_byte_range: ByteRange { start: ast.location.start(), end: ast.location.end() },
         node_count: ast.count_nodes(),
         legacy_native_ast_sexp: ast.to_sexp(),
         limitations: LEGACY_SUMMARY_LIMITATIONS,

@@ -291,7 +291,7 @@ fn find_framework_use(node: &Node, best: &mut Option<(usize, &'static str, (usiz
         && best.is_none_or(|(best_index, _, _)| index < best_index)
     {
         let (_, wire) = TEST_FRAMEWORKS[index];
-        *best = Some((index, wire, (node.location.start, node.location.end)));
+        *best = Some((index, wire, (node.location.start(), node.location.end())));
     }
     node.for_each_child(|child| find_framework_use(child, best));
 }

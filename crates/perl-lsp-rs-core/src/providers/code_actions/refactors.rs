@@ -51,17 +51,17 @@ pub fn get_refactoring_actions(source: &str, ast: &Node, range: (usize, usize)) 
 
 /// Extract expression to variable
 fn extract_variable(source: &str, node: &Node, _range: (usize, usize)) -> CodeActionEdit {
-    let expr_text = &source[node.location.start..node.location.end];
+    let expr_text = &source[node.location.start()..node.location.end()];
     let var_name = "$extracted_var";
 
     // Find statement start
-    let stmt_start = find_statement_start(source, node.location.start);
+    let stmt_start = find_statement_start(source, node.location.start());
 
     CodeActionEdit {
         changes: vec![
             // Insert variable declaration
             TextEdit {
-                location: SourceLocation { start: stmt_start, end: stmt_start },
+                location: SourceLocation::new(stmt_start, stmt_start),
                 new_text: format!("my {} = {};\n", var_name, expr_text),
             },
             // Replace expression with variable
@@ -72,7 +72,7 @@ fn extract_variable(source: &str, node: &Node, _range: (usize, usize)) -> CodeAc
 
 /// Extract statements to function
 fn extract_function(source: &str, node: &Node, _range: (usize, usize)) -> CodeActionEdit {
-    let body_text = &source[node.location.start..node.location.end];
+    let body_text = &source[node.location.start()..node.location.end()];
     let func_name = "extracted_function";
 
     // Find a good place to insert the function
@@ -82,7 +82,7 @@ fn extract_function(source: &str, node: &Node, _range: (usize, usize)) -> CodeAc
         changes: vec![
             // Insert function definition
             TextEdit {
-                location: SourceLocation { start: insert_pos, end: insert_pos },
+                location: SourceLocation::new(insert_pos, insert_pos),
                 new_text: format!("\nsub {} {{\n{}\n}}\n", func_name, body_text),
             },
             // Replace statements with function call

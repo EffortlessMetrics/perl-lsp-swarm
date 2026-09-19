@@ -686,7 +686,7 @@ impl ReferenceEditResult {
     /// correct.
     #[must_use]
     pub fn predecessor_len(&self) -> usize {
-        self.mapping.last().map_or(0, |segment| segment.old().end)
+        self.mapping.last().map_or(0, |segment| segment.old().end())
     }
 
     /// Translates a predecessor byte offset into the successor.
@@ -721,15 +721,15 @@ impl ReferenceEditResult {
         }
         self.mapping.iter().find_map(|segment| match *segment {
             ReferenceByteMapSegment::Unchanged { old, new } if old.contains(old_byte) => {
-                Some(new.start + (old_byte - old.start))
+                Some(new.start() + (old_byte - old.start()))
             }
             // An empty predecessor span is a pure insertion; its position is
             // resolved by the following segment so that it lands after the
             // inserted text rather than before it.
             ReferenceByteMapSegment::Replaced { old, new }
-                if !old.is_empty() && old_byte == old.start =>
+                if !old.is_empty() && old_byte == old.start() =>
             {
-                Some(new.start)
+                Some(new.start())
             }
             _ => None,
         })

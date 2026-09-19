@@ -25,7 +25,7 @@
 //! assert_eq!(span.slice(source), "line 2");
 //!
 //! // Convert to line/column for LSP
-//! let (line, col) = cache.offset_to_position(source, span.start);
+//! let (line, col) = cache.offset_to_position(source, span.start());
 //! assert_eq!(line, 1); // 0-indexed
 //! assert_eq!(col, 0);
 //! ```

@@ -282,8 +282,8 @@ fn emit_class_tiny_use_members(
         emitted.insert(attribute_name.clone());
         let candidate = NameCandidate {
             name: attribute_name.clone(),
-            span_start: source.location.start,
-            span_end: source.location.end,
+            span_start: source.location.start(),
+            span_end: source.location.end(),
         };
         push_member(package, &attribute_name, &candidate, file_id, out);
     }
@@ -381,8 +381,8 @@ fn collect_name_candidates(node: &Node) -> Vec<NameCandidate> {
                 .into_iter()
                 .map(|name| NameCandidate {
                     name,
-                    span_start: node.location.start,
-                    span_end: node.location.end,
+                    span_start: node.location.start(),
+                    span_end: node.location.end(),
                 })
                 .collect()
         }

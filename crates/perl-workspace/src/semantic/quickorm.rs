@@ -51,7 +51,7 @@ fn normalize_import_specs_at_node(node: &Node, specs: &mut [ImportSpec], source:
     if let NodeKind::Use { module, args, .. } = &node.kind
         && module == QUICKORM_MODULE
     {
-        let anchor_id = AnchorId(node.location.start as u64);
+        let anchor_id = AnchorId(node.location.start() as u64);
         if let Some(spec) = specs
             .iter_mut()
             .find(|spec| spec.module == QUICKORM_MODULE && spec.anchor_id == Some(anchor_id))
@@ -529,7 +529,7 @@ fn static_table_name_anchor<'a>(node: &'a Node, source: Option<&str>) -> Option<
     match &node.kind {
         NodeKind::String { value, .. } => {
             let raw = source
-                .and_then(|text| text.get(node.location.start..node.location.end))
+                .and_then(|text| text.get(node.location.start()..node.location.end()))
                 .unwrap_or(value);
             let Some((literal, delimiter)) = string_literal_inner_text(raw) else {
                 return is_static_identifier(raw).then_some(node);
@@ -640,8 +640,8 @@ fn push_qorm_table_fact(
     let canonical_name = format!("{package}::{QORM_TABLE_MEMBER}");
     let existing_index = facts.iter().position(|fact| fact.entity.canonical_name == canonical_name);
 
-    let span_start = source.location.start;
-    let span_end = source.location.end;
+    let span_start = source.location.start();
+    let span_end = source.location.end();
     let entity_id = EntityId(stable_id(
         "quickorm-generated-member-entity",
         file_id,
@@ -731,9 +731,9 @@ fn classify_import_shape(args: &[String], source: Option<&str>) -> QuickOrmImpor
 }
 
 fn source_import_segment<'a>(source: &'a str, node: &Node) -> Option<&'a str> {
-    let remainder = source.get(node.location.start..)?;
+    let remainder = source.get(node.location.start()..)?;
     let end = source_statement_end(remainder)
-        .unwrap_or_else(|| node.location.end.saturating_sub(node.location.start));
+        .unwrap_or_else(|| node.location.end().saturating_sub(node.location.start()));
     remainder.get(..end)
 }
 

@@ -50,7 +50,7 @@ fn magic_tokens_remain_nullary_calls_in_value_and_argument_positions() -> Result
         if let NodeKind::FunctionCall { name, args } = &node.kind
             && MAGIC_TOKENS.contains(&name.as_str())
             && args.is_empty()
-            && let Some(text) = source.get(node.location.start..node.location.end)
+            && let Some(text) = source.get(node.location.start()..node.location.end())
         {
             observed.entry(name.clone()).or_default().push(text.to_owned());
         }
@@ -70,7 +70,7 @@ fn magic_tokens_remain_nullary_calls_in_value_and_argument_positions() -> Result
                         return None;
                     }
                     source
-                        .get(argument.location.start..argument.location.end)
+                        .get(argument.location.start()..argument.location.end())
                         .map(|text| (name.clone(), text.to_owned()))
                 })
                 .collect::<Option<Vec<_>>>();
@@ -113,7 +113,7 @@ fn quoted_magic_token_spellings_remain_literals_not_nullary_calls() -> Result<()
             fabricated.push(name.clone());
         }
         NodeKind::String { value, .. } if QUOTED_MAGIC_LITERALS.contains(&value.as_str()) => {
-            if let Some(text) = source.get(node.location.start..node.location.end) {
+            if let Some(text) = source.get(node.location.start()..node.location.end()) {
                 literals.push((text.to_owned(), value.clone()));
             }
         }
@@ -156,9 +156,9 @@ fn magic_tokens_stop_before_comma_fat_arrow_and_closing_delimiters() -> Result<(
                 .map(|(key, value)| {
                     Some((
                         node_shape(key),
-                        source.get(key.location.start..key.location.end)?.to_owned(),
+                        source.get(key.location.start()..key.location.end())?.to_owned(),
                         node_shape(value),
-                        source.get(value.location.start..value.location.end)?.to_owned(),
+                        source.get(value.location.start()..value.location.end())?.to_owned(),
                     ))
                 })
                 .collect::<Option<Vec<_>>>();

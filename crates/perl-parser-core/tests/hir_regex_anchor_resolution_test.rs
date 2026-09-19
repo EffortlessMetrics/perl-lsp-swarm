@@ -65,7 +65,8 @@ fn resolved_operator_text(source: &str, anchor: Anchor) -> String {
         format!("anchor {range:?} ({family:?}) in {source:?} must resolve to a retained record"),
     );
     let span = record.full_range;
-    must_some_with(source.get(span.start..span.end), "record range must be in bounds").to_string()
+    must_some_with(source.get(span.start()..span.end()), "record range must be in bounds")
+        .to_string()
 }
 
 #[test]
@@ -164,7 +165,7 @@ fn a_range_enclosing_no_record_resolves_to_none() {
     // miss means unavailable rather than clean.
     let source = "my $n = 1;";
     let table = table_for(source);
-    let whole = SourceLocation { start: 0, end: source.len() };
+    let whole = SourceLocation::new(0, source.len());
     for family in
         [RegexAnalysisFamily::Regex, RegexAnalysisFamily::Match, RegexAnalysisFamily::Substitution]
     {
@@ -182,10 +183,10 @@ fn resolution_prefers_an_exact_operator_range() {
     let source = "my $r = qr/foo/i;";
     let table = table_for(source);
     let record = must_some_with(
-        table.find_enclosed_by(SourceLocation { start: 8, end: 16 }, RegexAnalysisFamily::Regex),
+        table.find_enclosed_by(SourceLocation::new(8, 16), RegexAnalysisFamily::Regex),
         "exact operator range must resolve",
     );
-    assert_eq!(record.full_range, SourceLocation { start: 8, end: 16 });
+    assert_eq!(record.full_range, SourceLocation::new(8, 16));
 }
 
 // ── Family filter: negative controls ─────────────────────────────────────────
@@ -258,7 +259,7 @@ fn a_stale_table_resolves_an_anchor_and_only_the_digest_catches_it() {
     );
     let span = record.full_range;
     assert_eq!(
-        must_some_with(edited.get(span.start..span.end), "record range must be in bounds"),
+        must_some_with(edited.get(span.start()..span.end()), "record range must be in bounds"),
         "s/a/c/",
         "resolution reports the edited source, not the source the body was lowered from"
     );
@@ -276,7 +277,7 @@ fn an_exact_range_does_not_bypass_the_family_filter_for_a_real_operator() {
     // belongs to another family: there the mismatch is real evidence.
     let source = "my $r = qr/foo/i;";
     let table = table_for(source);
-    let exact = SourceLocation { start: 8, end: 16 };
+    let exact = SourceLocation::new(8, 16);
     assert!(
         table.find_enclosed_by(exact, RegexAnalysisFamily::Regex).is_some(),
         "the record's own family must resolve at its exact range"
@@ -295,7 +296,7 @@ fn regex_and_match_families_accept_the_same_operator_set() {
     // than letting a future change quietly narrow one of them.
     let source = "my $r = qr/foo/i;";
     let table = table_for(source);
-    let range = SourceLocation { start: 8, end: 16 };
+    let range = SourceLocation::new(8, 16);
     assert!(table.find_enclosed_by(range, RegexAnalysisFamily::Regex).is_some());
     assert!(table.find_enclosed_by(range, RegexAnalysisFamily::Match).is_some());
 }

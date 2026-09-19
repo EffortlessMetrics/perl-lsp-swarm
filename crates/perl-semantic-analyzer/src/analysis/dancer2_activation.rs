@@ -73,8 +73,8 @@ fn walk_activation_sites(
             sites.push(Dancer2ActivationSite {
                 package: current_package.clone(),
                 file_id,
-                anchor_id: AnchorId(node.location.start as u64),
-                span_start_byte: node.location.start.min(u32::MAX as usize) as u32,
+                anchor_id: AnchorId(node.location.start() as u64),
+                span_start_byte: node.location.start().min(u32::MAX as usize) as u32,
                 evidence: parse_dancer2_import_args(args),
             });
         }

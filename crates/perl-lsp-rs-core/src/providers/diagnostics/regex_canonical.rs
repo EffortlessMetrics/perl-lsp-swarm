@@ -150,7 +150,7 @@ fn project_structural(
         let Some(span) = record.map_pattern_range(diagnostic.range) else {
             continue;
         };
-        diagnostics.push(build(code, (span.start, span.end), diagnostic.message()));
+        diagnostics.push(build(code, (span.start(), span.end()), diagnostic.message()));
     }
 }
 
@@ -196,7 +196,7 @@ fn project_captures(
         let Some(span) = record.map_pattern_range(diagnostic.range) else {
             continue;
         };
-        diagnostics.push(build(code, (span.start, span.end), message));
+        diagnostics.push(build(code, (span.start(), span.end()), message));
     }
 }
 
@@ -225,7 +225,7 @@ fn project_incompleteness(
     };
     diagnostics.push(build(
         DiagnosticCode::RegexAnalysisIncomplete,
-        (span.start, span.end),
+        (span.start(), span.end()),
         "static analysis of this pattern stopped before the end; findings are partial".to_string(),
     ));
 }
@@ -310,7 +310,7 @@ pub(crate) fn embedded_code_spans(table: &RegexAnalysisTable) -> Vec<(usize, usi
                 continue;
             }
             if let Some(span) = record.map_pattern_range(diagnostic.range) {
-                spans.push((span.start, span.end));
+                spans.push((span.start(), span.end()));
             }
         }
     }

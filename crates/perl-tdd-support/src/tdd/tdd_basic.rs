@@ -331,8 +331,8 @@ impl RefactoringAnalyzer {
     }
 
     fn count_lines(&self, node: &Node, source: &str) -> usize {
-        let start = node.location.start;
-        let end = node.location.end.min(source.len());
+        let start = node.location.start();
+        let end = node.location.end().min(source.len());
 
         if start >= end {
             return 0;
@@ -492,13 +492,13 @@ mod tests {
                         attributes: vec![],
                         body: Box::new(Node::new(
                             NodeKind::Block { statements: vec![] },
-                            SourceLocation { start: 0, end: 0 },
+                            SourceLocation::new(0, 0),
                         )),
                     },
-                    SourceLocation { start: 0, end: 0 },
+                    SourceLocation::new(0, 0),
                 )],
             },
-            SourceLocation { start: 0, end: 0 },
+            SourceLocation::new(0, 0),
         );
 
         let generator = TestGenerator::new("Test::More");
@@ -528,10 +528,10 @@ mod tests {
                                             sigil: "$".to_string(),
                                             name: "a".to_string(),
                                         },
-                                        SourceLocation { start: 0, end: 0 },
+                                        SourceLocation::new(0, 0),
                                     )),
                                 },
-                                SourceLocation { start: 0, end: 0 },
+                                SourceLocation::new(0, 0),
                             ),
                             Node::new(
                                 NodeKind::MandatoryParameter {
@@ -540,10 +540,10 @@ mod tests {
                                             sigil: "$".to_string(),
                                             name: "b".to_string(),
                                         },
-                                        SourceLocation { start: 0, end: 0 },
+                                        SourceLocation::new(0, 0),
                                     )),
                                 },
-                                SourceLocation { start: 0, end: 0 },
+                                SourceLocation::new(0, 0),
                             ),
                             Node::new(
                                 NodeKind::MandatoryParameter {
@@ -552,10 +552,10 @@ mod tests {
                                             sigil: "$".to_string(),
                                             name: "c".to_string(),
                                         },
-                                        SourceLocation { start: 0, end: 0 },
+                                        SourceLocation::new(0, 0),
                                     )),
                                 },
-                                SourceLocation { start: 0, end: 0 },
+                                SourceLocation::new(0, 0),
                             ),
                             Node::new(
                                 NodeKind::MandatoryParameter {
@@ -564,10 +564,10 @@ mod tests {
                                             sigil: "$".to_string(),
                                             name: "d".to_string(),
                                         },
-                                        SourceLocation { start: 0, end: 0 },
+                                        SourceLocation::new(0, 0),
                                     )),
                                 },
-                                SourceLocation { start: 0, end: 0 },
+                                SourceLocation::new(0, 0),
                             ),
                             Node::new(
                                 NodeKind::MandatoryParameter {
@@ -576,10 +576,10 @@ mod tests {
                                             sigil: "$".to_string(),
                                             name: "e".to_string(),
                                         },
-                                        SourceLocation { start: 0, end: 0 },
+                                        SourceLocation::new(0, 0),
                                     )),
                                 },
-                                SourceLocation { start: 0, end: 0 },
+                                SourceLocation::new(0, 0),
                             ),
                             Node::new(
                                 NodeKind::MandatoryParameter {
@@ -588,23 +588,23 @@ mod tests {
                                             sigil: "$".to_string(),
                                             name: "f".to_string(),
                                         },
-                                        SourceLocation { start: 0, end: 0 },
+                                        SourceLocation::new(0, 0),
                                     )),
                                 },
-                                SourceLocation { start: 0, end: 0 },
+                                SourceLocation::new(0, 0),
                             ),
                             // 6 parameters - more than max_params (5)
                         ],
                     },
-                    SourceLocation { start: 0, end: 0 },
+                    SourceLocation::new(0, 0),
                 ))),
                 attributes: vec![],
                 body: Box::new(Node::new(
                     NodeKind::Block { statements: vec![] },
-                    SourceLocation { start: 0, end: 0 },
+                    SourceLocation::new(0, 0),
                 )),
             },
-            SourceLocation { start: 0, end: 0 },
+            SourceLocation::new(0, 0),
         );
 
         let suggestions = analyzer.analyze(&ast, "sub complex($a, $b, $c, $d, $e, $f) { }");

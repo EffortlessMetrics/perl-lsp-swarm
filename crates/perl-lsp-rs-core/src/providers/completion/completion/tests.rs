@@ -9033,7 +9033,7 @@ fn block_form_package_at_scope_end_is_main() {
             .scopes
             .values()
             .filter(|scope| scope.kind == ScopeKind::Package)
-            .map(|scope| scope.location.end)
+            .map(|scope| scope.location.end())
             .max(),
         "block-form package scope",
     );

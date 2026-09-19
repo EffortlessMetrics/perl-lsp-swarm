@@ -3,8 +3,8 @@ use perl_parser_core::SourceLocation;
 #[test]
 fn empty_span_at_position() -> Result<(), Box<dyn std::error::Error>> {
     let loc = SourceLocation::empty(5);
-    assert_eq!(loc.start, 5);
-    assert_eq!(loc.end, 5);
+    assert_eq!(loc.start(), 5);
+    assert_eq!(loc.end(), 5);
     assert_eq!(loc.len(), 0);
     assert!(loc.is_empty());
     Ok(())
@@ -14,8 +14,8 @@ fn empty_span_at_position() -> Result<(), Box<dyn std::error::Error>> {
 fn whole_span_covers_source() -> Result<(), Box<dyn std::error::Error>> {
     let source = "hello world";
     let loc = SourceLocation::whole(source);
-    assert_eq!(loc.start, 0);
-    assert_eq!(loc.end, 11);
+    assert_eq!(loc.start(), 0);
+    assert_eq!(loc.end(), 11);
     assert_eq!(loc.len(), 11);
     assert!(!loc.is_empty());
     Ok(())
@@ -24,8 +24,8 @@ fn whole_span_covers_source() -> Result<(), Box<dyn std::error::Error>> {
 #[test]
 fn whole_span_empty_source() -> Result<(), Box<dyn std::error::Error>> {
     let loc = SourceLocation::whole("");
-    assert_eq!(loc.start, 0);
-    assert_eq!(loc.end, 0);
+    assert_eq!(loc.start(), 0);
+    assert_eq!(loc.end(), 0);
     assert!(loc.is_empty());
     Ok(())
 }
@@ -78,8 +78,8 @@ fn intersection_overlapping() -> Result<(), Box<dyn std::error::Error>> {
     let a = SourceLocation::new(0, 10);
     let b = SourceLocation::new(5, 15);
     if let Some(inter) = a.intersection(b) {
-        assert_eq!(inter.start, 5);
-        assert_eq!(inter.end, 10);
+        assert_eq!(inter.start(), 5);
+        assert_eq!(inter.end(), 10);
     } else {
         return Err("expected intersection".into());
     }
@@ -107,8 +107,8 @@ fn union_covers_both() -> Result<(), Box<dyn std::error::Error>> {
     let a = SourceLocation::new(3, 7);
     let b = SourceLocation::new(10, 20);
     let u = a.union(b);
-    assert_eq!(u.start, 3);
-    assert_eq!(u.end, 20);
+    assert_eq!(u.start(), 3);
+    assert_eq!(u.end(), 20);
     Ok(())
 }
 
@@ -150,16 +150,16 @@ fn display_format() -> Result<(), Box<dyn std::error::Error>> {
 #[test]
 fn from_range_conversion() -> Result<(), Box<dyn std::error::Error>> {
     let loc: SourceLocation = (5..10).into();
-    assert_eq!(loc.start, 5);
-    assert_eq!(loc.end, 10);
+    assert_eq!(loc.start(), 5);
+    assert_eq!(loc.end(), 10);
     Ok(())
 }
 
 #[test]
 fn from_tuple_conversion() -> Result<(), Box<dyn std::error::Error>> {
     let loc: SourceLocation = (3, 7).into();
-    assert_eq!(loc.start, 3);
-    assert_eq!(loc.end, 7);
+    assert_eq!(loc.start(), 3);
+    assert_eq!(loc.end(), 7);
     Ok(())
 }
 
@@ -183,8 +183,8 @@ fn into_range_conversion() -> Result<(), Box<dyn std::error::Error>> {
 #[test]
 fn default_is_zero_span() -> Result<(), Box<dyn std::error::Error>> {
     let loc = SourceLocation::default();
-    assert_eq!(loc.start, 0);
-    assert_eq!(loc.end, 0);
+    assert_eq!(loc.start(), 0);
+    assert_eq!(loc.end(), 0);
     assert!(loc.is_empty());
     Ok(())
 }

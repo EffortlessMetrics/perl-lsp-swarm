@@ -85,7 +85,7 @@ fn find_two_arg_open(source: &str) -> Vec<CodeAction> {
                 diagnostics: Vec::new(),
                 edit: CodeActionEdit {
                     changes: vec![TextEdit {
-                        location: SourceLocation { start: line_start, end: line_end },
+                        location: SourceLocation::new(line_start, line_end),
                         new_text: format!(
                             "{}{}",
                             &line[..line.len() - line.trim_start().len()],
@@ -148,7 +148,7 @@ fn find_deprecated_defined(source: &str) -> Vec<CodeAction> {
                 diagnostics: Vec::new(),
                 edit: CodeActionEdit {
                     changes: vec![TextEdit {
-                        location: SourceLocation { start: abs_pos, end: expr_end },
+                        location: SourceLocation::new(abs_pos, expr_end),
                         new_text: var_name.to_string(),
                     }],
                 },
@@ -194,7 +194,7 @@ fn find_legacy_require_version(source: &str) -> Vec<CodeAction> {
                 diagnostics: Vec::new(),
                 edit: CodeActionEdit {
                     changes: vec![TextEdit {
-                        location: SourceLocation { start: line_start, end: line_end },
+                        location: SourceLocation::new(line_start, line_end),
                         new_text: format!("{}use {};", indent, modern_version),
                     }],
                 },
@@ -269,7 +269,7 @@ fn find_missing_strict_warnings(source: &str, ast: &Node) -> Vec<CodeAction> {
         diagnostics: Vec::new(),
         edit: CodeActionEdit {
             changes: vec![TextEdit {
-                location: SourceLocation { start: insert_pos, end: insert_pos },
+                location: SourceLocation::new(insert_pos, insert_pos),
                 new_text,
             }],
         },
@@ -326,14 +326,14 @@ fn find_die_in_module(source: &str) -> Vec<CodeAction> {
         let die_end = die_start + 3; // len("die")
 
         let mut changes = vec![TextEdit {
-            location: SourceLocation { start: die_start, end: die_end },
+            location: SourceLocation::new(die_start, die_end),
             new_text: "croak".to_string(),
         }];
 
         if !already_uses_carp {
             let insert_pos = find_pragma_insert_pos(source);
             changes.push(TextEdit {
-                location: SourceLocation { start: insert_pos, end: insert_pos },
+                location: SourceLocation::new(insert_pos, insert_pos),
                 new_text: "use Carp qw(croak);\n".to_string(),
             });
         }
@@ -867,10 +867,10 @@ mod tests {
         let edit = action.edit.changes.first().ok_or("missing edit")?;
         let expected_pos = source.find("print 'hello';").ok_or("missing print line")?;
 
-        assert_eq!(edit.location.start, expected_pos);
-        assert_eq!(edit.location.end, expected_pos);
+        assert_eq!(edit.location.start(), expected_pos);
+        assert_eq!(edit.location.end(), expected_pos);
         assert_eq!(
-            &source[edit.location.start - 2..edit.location.start],
+            &source[edit.location.start() - 2..edit.location.start()],
             "\r\n",
             "insert must land after the full CRLF terminator"
         );
@@ -964,10 +964,10 @@ mod tests {
             .ok_or("missing use Carp edit")?;
         let expected_pos = source.find("die \"oops\";").ok_or("missing die line")?;
 
-        assert_eq!(edit.location.start, expected_pos);
-        assert_eq!(edit.location.end, expected_pos);
+        assert_eq!(edit.location.start(), expected_pos);
+        assert_eq!(edit.location.end(), expected_pos);
         assert_eq!(
-            &source[edit.location.start - 2..edit.location.start],
+            &source[edit.location.start() - 2..edit.location.start()],
             "\r\n",
             "insert must land after the package line CRLF terminator"
         );
@@ -1178,11 +1178,12 @@ mod tests {
         let loc = &edit.location;
         // The open() line starts at byte 13 (after "use strict;\r\n" = 13 bytes)
         assert_eq!(
-            loc.start, 13,
+            loc.start(),
+            13,
             "line start offset must account for the CRLF (\\r\\n = 2 bytes, not 1)"
         );
         // The edit must cover exactly the open(...) text (no line terminator)
-        let covered = &source[loc.start..loc.end];
+        let covered = &source[loc.start()..loc.end()];
         assert!(
             covered.starts_with("open("),
             "edit range must start at the open() call, got {:?}",
@@ -1203,8 +1204,8 @@ mod tests {
         let edit = &actions[0].edit.changes[0];
         let loc = &edit.location;
         // "use strict;\r\n" = 13 bytes
-        assert_eq!(loc.start, 13, "require line must start at byte 13 for CRLF input");
-        let covered = &source[loc.start..loc.end];
+        assert_eq!(loc.start(), 13, "require line must start at byte 13 for CRLF input");
+        let covered = &source[loc.start()..loc.end()];
         assert!(covered.starts_with("require "), "edit must cover the require line");
         assert!(!covered.contains('\r') && !covered.contains('\n'), "no terminator in range");
     }

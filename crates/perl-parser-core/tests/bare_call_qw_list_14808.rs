@@ -75,8 +75,8 @@ fn named_call(source: &str, name: &str) -> (String, Vec<Node>) {
 fn call_span(source: &str, name: &str) -> String {
     let node = named_call_node(source, name);
     must_some_with(
-        source.get(node.location.start..node.location.end).map(str::to_string),
-        format!("call span {}..{} inside `{source}`", node.location.start, node.location.end),
+        source.get(node.location.start()..node.location.end()).map(str::to_string),
+        format!("call span {}..{} inside `{source}`", node.location.start(), node.location.end()),
     )
 }
 

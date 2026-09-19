@@ -229,10 +229,8 @@ mod error_recovery_analysis {
         use perl_lsp::state::DegradationTier;
         use perl_parser::ast::{Node, NodeKind, SourceLocation};
 
-        let ast_node = Node::new(
-            NodeKind::Program { statements: vec![] },
-            SourceLocation { start: 0, end: 0 },
-        );
+        let ast_node =
+            Node::new(NodeKind::Program { statements: vec![] }, SourceLocation::new(0, 0));
         let ast_arc = Some(std::sync::Arc::new(ast_node));
 
         let fake_error = perl_parser::error::ParseError::UnexpectedEof;

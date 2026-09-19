@@ -224,14 +224,14 @@ fn walk_statements(
                 state.prefixes.push(Dancer2PrefixDeclaration {
                     package: state.current_package.clone(),
                     file_id,
-                    declaration_start_byte: span_u32(statement.location.start),
-                    declaration_end_byte: span_u32(statements[index + 1].location.end),
+                    declaration_start_byte: span_u32(statement.location.start()),
+                    declaration_end_byte: span_u32(statements[index + 1].location.end()),
                     prefix: RoutePrefixDeclaration {
                         declaration_index: state.next_prefix_index,
                         keyword: "prefix".to_string(),
                         keyword_anchor: anchor(
-                            expression.location.start,
-                            expression.location.end,
+                            expression.location.start(),
+                            expression.location.end(),
                             file_id,
                         ),
                         selection: RoutePrefixSelection::Cleared,
@@ -259,14 +259,14 @@ fn walk_statements(
                 state.routes.push(Dancer2RouteDeclaration {
                     package: state.current_package.clone(),
                     file_id,
-                    declaration_start_byte: span_u32(statement.location.start),
-                    declaration_end_byte: span_u32(statements[index + 1].location.end),
+                    declaration_start_byte: span_u32(statement.location.start()),
+                    declaration_end_byte: span_u32(statements[index + 1].location.end()),
                     route: RouteDeclaration {
                         declaration_index: state.next_route_index,
                         keyword: name.clone(),
                         keyword_anchor: anchor(
-                            expression.location.start,
-                            expression.location.start + name.len(),
+                            expression.location.start(),
+                            expression.location.start() + name.len(),
                             file_id,
                         ),
                         route_name: RouteNameSelection::Absent,
@@ -334,7 +334,7 @@ fn route_from_expression(
         if !DANCER2_ROUTE_KEYWORDS.contains(&name.as_str()) {
             return None;
         }
-        let keyword_start = expression.location.start;
+        let keyword_start = expression.location.start();
         let mut operands: Vec<&Node> = args.iter().collect();
         let methods =
             if name == "any" { bind_any_methods(&mut operands) } else { keyword_methods(name) };
@@ -342,7 +342,7 @@ fn route_from_expression(
             name,
             keyword_start,
             keyword_start + name.len(),
-            expression.location.end,
+            expression.location.end(),
             methods,
             &operands,
             state,
@@ -357,9 +357,9 @@ fn route_from_expression(
     let operands: Vec<&Node> = rest.iter().collect();
     build_from_operands(
         name,
-        keyword_node.location.start,
-        keyword_node.location.end,
-        expression.location.end,
+        keyword_node.location.start(),
+        keyword_node.location.end(),
+        expression.location.end(),
         method_set_from_list(method_list),
         &operands,
         state,
@@ -582,8 +582,8 @@ fn handle_prefix_statement(
         return false;
     }
     let file_id = state.file_id;
-    let keyword_start = expression.location.start;
-    let declaration_end = expression.location.end;
+    let keyword_start = expression.location.start();
+    let declaration_end = expression.location.end();
     let declaration_index = state.next_prefix_index;
     let (selection, scope, composed) = match args.as_slice() {
         [operand] => {
@@ -604,7 +604,7 @@ fn handle_prefix_statement(
         }
         [operand, block] if matches!(block.kind, NodeKind::Subroutine { name: None, .. }) => {
             let selection = prefix_selection_from_operand(operand, file_id);
-            let block_anchor = anchor(block.location.start, block.location.end, file_id);
+            let block_anchor = anchor(block.location.start(), block.location.end(), file_id);
             let enclosing = state.prefix_state();
             let composed = match (&selection, &enclosing) {
                 (
@@ -695,7 +695,7 @@ fn prefix_selection_from_operand(node: &Node, file_id: FileId) -> RoutePrefixSel
                 StaticString::Exact(value) if value == "/" => RoutePrefixSelection::Cleared,
                 StaticString::Exact(value) => RoutePrefixSelection::Literal(RoutePrefixLiteral {
                     value,
-                    anchor: anchor(node.location.start, node.location.end, file_id),
+                    anchor: anchor(node.location.start(), node.location.end(), file_id),
                 }),
                 StaticString::Empty => RoutePrefixSelection::Cleared,
                 // An escaped operand decodes to unknown runtime bytes: the
@@ -703,13 +703,13 @@ fn prefix_selection_from_operand(node: &Node, file_id: FileId) -> RoutePrefixSel
                 // application has no prefix) and never a guessed literal.
                 StaticString::Escaped => RoutePrefixSelection::Dynamic {
                     reason: "escaped prefix operand; escapes are not evaluated".to_string(),
-                    anchor: Some(anchor(node.location.start, node.location.end, file_id)),
+                    anchor: Some(anchor(node.location.start(), node.location.end(), file_id)),
                 },
             }
         }
         _ => RoutePrefixSelection::Dynamic {
             reason: "computed prefix operand is an explicit boundary".to_string(),
-            anchor: Some(anchor(node.location.start, node.location.end, file_id)),
+            anchor: Some(anchor(node.location.start(), node.location.end(), file_id)),
         },
     }
 }
@@ -1008,14 +1008,14 @@ fn pattern_from_node(node: &Node, file_id: FileId) -> RoutePattern {
                 StaticString::Exact(value) => RoutePattern {
                     kind: RoutePatternKind::Literal,
                     value: Some(value),
-                    anchor: anchor(node.location.start, node.location.end, file_id),
+                    anchor: anchor(node.location.start(), node.location.end(), file_id),
                 },
                 // An empty pattern stays a valueless literal: the fact
                 // constructor coerces it to the dynamic boundary.
                 StaticString::Empty => RoutePattern {
                     kind: RoutePatternKind::Literal,
                     value: None,
-                    anchor: anchor(node.location.start, node.location.end, file_id),
+                    anchor: anchor(node.location.start(), node.location.end(), file_id),
                 },
                 // Escapes are not evaluated: the runtime pattern bytes are
                 // unknown here, so the operand is a typed boundary rather
@@ -1024,7 +1024,7 @@ fn pattern_from_node(node: &Node, file_id: FileId) -> RoutePattern {
                 StaticString::Escaped => RoutePattern {
                     kind: RoutePatternKind::Dynamic,
                     value: None,
-                    anchor: anchor(node.location.start, node.location.end, file_id),
+                    anchor: anchor(node.location.start(), node.location.end(), file_id),
                 },
             }
         }
@@ -1034,13 +1034,13 @@ fn pattern_from_node(node: &Node, file_id: FileId) -> RoutePattern {
             RoutePattern {
                 kind: RoutePatternKind::Regex,
                 value: Some(pattern.clone()),
-                anchor: anchor(node.location.start, node.location.end, file_id),
+                anchor: anchor(node.location.start(), node.location.end(), file_id),
             }
         }
         _ => RoutePattern {
             kind: RoutePatternKind::Dynamic,
             value: None,
-            anchor: anchor(node.location.start, node.location.end, file_id),
+            anchor: anchor(node.location.start(), node.location.end(), file_id),
         },
     }
 }
@@ -1053,21 +1053,21 @@ fn name_from_node(node: &Node, file_id: FileId) -> RouteNameSelection {
             match static_string(value) {
                 StaticString::Exact(value) => RouteNameSelection::Literal(RouteName {
                     value,
-                    anchor: anchor(node.location.start, node.location.end, file_id),
+                    anchor: anchor(node.location.start(), node.location.end(), file_id),
                 }),
                 StaticString::Empty => RouteNameSelection::Dynamic {
                     reason: "empty route name operand".to_string(),
-                    anchor: anchor(node.location.start, node.location.end, file_id),
+                    anchor: anchor(node.location.start(), node.location.end(), file_id),
                 },
                 StaticString::Escaped => RouteNameSelection::Dynamic {
                     reason: "escaped route name operand; escapes are not evaluated".to_string(),
-                    anchor: anchor(node.location.start, node.location.end, file_id),
+                    anchor: anchor(node.location.start(), node.location.end(), file_id),
                 },
             }
         }
         _ => RouteNameSelection::Dynamic {
             reason: "computed route name operand".to_string(),
-            anchor: anchor(node.location.start, node.location.end, file_id),
+            anchor: anchor(node.location.start(), node.location.end(), file_id),
         },
     }
 }
@@ -1076,7 +1076,7 @@ fn options_from_node(node: &Node, file_id: FileId) -> RouteOptions {
     let NodeKind::HashLiteral { pairs } = &node.kind else {
         return RouteOptions::Dynamic {
             reason: "computed matching options are an explicit boundary".to_string(),
-            anchor: Some(anchor(node.location.start, node.location.end, file_id)),
+            anchor: Some(anchor(node.location.start(), node.location.end(), file_id)),
         };
     };
     let mut entries = Vec::with_capacity(pairs.len());
@@ -1096,7 +1096,7 @@ fn options_from_node(node: &Node, file_id: FileId) -> RouteOptions {
             return RouteOptions::Dynamic {
                 reason: "computed, empty, or escaped option key is an explicit boundary"
                     .to_string(),
-                anchor: Some(anchor(node.location.start, node.location.end, file_id)),
+                anchor: Some(anchor(node.location.start(), node.location.end(), file_id)),
             };
         };
         let value = match &value_node.kind {
@@ -1120,9 +1120,9 @@ fn options_from_node(node: &Node, file_id: FileId) -> RouteOptions {
         };
         entries.push(RouteOption {
             key,
-            key_anchor: anchor(key_node.location.start, key_node.location.end, file_id),
+            key_anchor: anchor(key_node.location.start(), key_node.location.end(), file_id),
             value,
-            value_anchor: anchor(value_node.location.start, value_node.location.end, file_id),
+            value_anchor: anchor(value_node.location.start(), value_node.location.end(), file_id),
         });
     }
     RouteOptions::Map(entries)

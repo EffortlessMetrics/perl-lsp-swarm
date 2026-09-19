@@ -71,20 +71,20 @@ fn walk_activation_sites(
 ) {
     match &node.kind {
         NodeKind::Use { module, args, .. } => {
-            let source_span = source.get(node.location.start..node.location.end);
+            let source_span = source.get(node.location.start()..node.location.end());
             if let Some((kind, requested_version, import_disposition)) =
                 classify_moose_import(module, args, source_span)
             {
                 sites.push(MooseActivationSite {
                     file_id,
-                    anchor_id: AnchorId(node.location.start as u64),
+                    anchor_id: AnchorId(node.location.start() as u64),
                     kind,
                     requested_version,
                     import_disposition,
                     anchor: MooseSiteAnchor::new(
                         current_package.clone(),
-                        node.location.start.min(u32::MAX as usize) as u32,
-                        node.location.end.min(u32::MAX as usize) as u32,
+                        node.location.start().min(u32::MAX as usize) as u32,
+                        node.location.end().min(u32::MAX as usize) as u32,
                         generation.clone(),
                     ),
                 });

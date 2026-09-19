@@ -128,11 +128,11 @@ mod tests {
 
     fn apply_action(source: &str, action: &CodeAction) -> String {
         let mut edits = action.edit.changes.clone();
-        edits.sort_by_key(|edit| std::cmp::Reverse(edit.location.start));
+        edits.sort_by_key(|edit| std::cmp::Reverse(edit.location.start()));
 
         let mut output = source.to_string();
         for edit in edits {
-            output.replace_range(edit.location.start..edit.location.end, &edit.new_text);
+            output.replace_range(edit.location.start()..edit.location.end(), &edit.new_text);
         }
         output
     }
@@ -235,7 +235,7 @@ mod tests {
         assert!(
             actions.iter().any(|action| action.title == "Remove unreachable code"
                 && action.edit.changes.iter().any(|edit| edit.new_text.is_empty()
-                    && &source[edit.location.start..edit.location.end] == "my $dead = 2;\n")),
+                    && &source[edit.location.start()..edit.location.end()] == "my $dead = 2;\n")),
             "Expected native unreachable-code alias to remove dead line, got: {:?}",
             actions
         );
@@ -615,8 +615,8 @@ mod tests {
 
         let fix =
             must_some(actions.iter().find(|action| action.title.contains("three-argument open()")));
-        assert_eq!(fix.edit.changes[0].location.start, 0);
-        assert_eq!(fix.edit.changes[0].location.end, "open FH, $path".len());
+        assert_eq!(fix.edit.changes[0].location.start(), 0);
+        assert_eq!(fix.edit.changes[0].location.end(), "open FH, $path".len());
         assert_eq!(fix.edit.changes[0].new_text, "open(FH, '<', $path)");
     }
 
@@ -785,8 +785,8 @@ mod tests {
         assert!(actions.iter().any(|action| {
             action.title == "Rename to '_$unused'"
                 && action.edit.changes.iter().any(|edit| {
-                    edit.location.start == start
-                        && edit.location.end == start + "$unused".len()
+                    edit.location.start() == start
+                        && edit.location.end() == start + "$unused".len()
                         && edit.new_text == "_$unused"
                 })
         }));
@@ -816,8 +816,8 @@ mod tests {
         assert!(actions.iter().any(|action| {
             action.title == "Remove duplicate parameter '$arg'"
                 && action.edit.changes.iter().any(|edit| {
-                    edit.location.start == start
-                        && edit.location.end == start + "$arg".len()
+                    edit.location.start() == start
+                        && edit.location.end() == start + "$arg".len()
                         && edit.new_text.is_empty()
                 })
         }));
@@ -851,8 +851,8 @@ mod tests {
         assert!(actions.iter().any(|action| {
             action.title == "Rename parameter to '$p_name'"
                 && action.edit.changes.iter().any(|edit| {
-                    edit.location.start == start
-                        && edit.location.end == start + "$name".len()
+                    edit.location.start() == start
+                        && edit.location.end() == start + "$name".len()
                         && edit.new_text == "$p_name"
                 })
         }));
@@ -888,8 +888,8 @@ mod tests {
             actions.iter().find(|action| action.title == "Remove duplicate 'my' declaration"),
         );
         assert!(action.edit.changes.iter().any(|edit| {
-            edit.location.start == must_some(source.rfind("my $dup"))
-                && edit.location.end == start
+            edit.location.start() == must_some(source.rfind("my $dup"))
+                && edit.location.end() == start
                 && edit.new_text.is_empty()
         }));
     }
@@ -1020,8 +1020,8 @@ mod tests {
             actions.iter().find(|a| a.title.contains("Rename") && a.title.contains("host")),
         );
         assert_eq!(rename.edit.changes[0].new_text, "host_2");
-        assert_eq!(rename.edit.changes[0].location.start, dup_start);
-        assert_eq!(rename.edit.changes[0].location.end, dup_end);
+        assert_eq!(rename.edit.changes[0].location.start(), dup_start);
+        assert_eq!(rename.edit.changes[0].location.end(), dup_end);
     }
 
     #[test]

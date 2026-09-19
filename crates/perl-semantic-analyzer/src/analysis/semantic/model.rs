@@ -141,7 +141,7 @@ impl SemanticModel {
     /// let model = SemanticModel::build(&ast, code);
     /// // Find definition of $x on line 1 (byte position ~11)
     /// if let Some(symbol) = model.definition_at(11) {
-    ///     assert_eq!(symbol.location.start.line, 0);
+    ///     assert_eq!(symbol.location.start().line, 0);
     /// }
     /// # Ok(())
     /// # }

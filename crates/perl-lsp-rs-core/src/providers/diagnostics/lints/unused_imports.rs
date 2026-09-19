@@ -165,7 +165,7 @@ pub fn check_unused_imports(node: &Node, source: &str, diagnostics: &mut Vec<Dia
 
     walk_node(node, &mut |n| {
         if let NodeKind::Use { module, .. } = &n.kind {
-            use_statements.push((module.clone(), n.location.start, n.location.end));
+            use_statements.push((module.clone(), n.location.start(), n.location.end()));
         }
     });
 

@@ -29,9 +29,8 @@ mod tests {
         // AC1: recognize *foo = *bar
         let ast_opt = parse_code("*foo = *bar;");
         assert!(ast_opt.is_some());
-        let ast = ast_opt.unwrap_or_else(|| {
-            Node::new(NodeKind::UnknownRest, SourceLocation { start: 0, end: 0 })
-        });
+        let ast =
+            ast_opt.unwrap_or_else(|| Node::new(NodeKind::UnknownRest, SourceLocation::new(0, 0)));
         if let NodeKind::Program { statements } = &ast.kind {
             let stmt = &statements[0];
             if let NodeKind::ExpressionStatement { expression } = &stmt.kind {
@@ -62,9 +61,8 @@ mod tests {
         // AC2: handle *foo = \&sub
         let ast_opt = parse_code("*foo = \\&sub;");
         assert!(ast_opt.is_some());
-        let ast = ast_opt.unwrap_or_else(|| {
-            Node::new(NodeKind::UnknownRest, SourceLocation { start: 0, end: 0 })
-        });
+        let ast =
+            ast_opt.unwrap_or_else(|| Node::new(NodeKind::UnknownRest, SourceLocation::new(0, 0)));
         if let NodeKind::Program { statements } = &ast.kind {
             let stmt = &statements[0];
             if let NodeKind::Assignment { lhs, rhs, .. } = &stmt.kind {
@@ -84,9 +82,8 @@ mod tests {
         // AC3: dynamic typeglob *{$name} = \&function
         let ast_opt = parse_code("*{$name} = \\&func;");
         assert!(ast_opt.is_some());
-        let ast = ast_opt.unwrap_or_else(|| {
-            Node::new(NodeKind::UnknownRest, SourceLocation { start: 0, end: 0 })
-        });
+        let ast =
+            ast_opt.unwrap_or_else(|| Node::new(NodeKind::UnknownRest, SourceLocation::new(0, 0)));
         if let NodeKind::Program { statements } = &ast.kind {
             let stmt = &statements[0];
             if let NodeKind::Assignment { lhs, .. } = &stmt.kind {
@@ -105,9 +102,8 @@ mod tests {
         // AC5: Parser handles typeglob dereferencing (${*foo}, @{*bar})
         let ast_opt = parse_code("${*foo};");
         assert!(ast_opt.is_some());
-        let ast = ast_opt.unwrap_or_else(|| {
-            Node::new(NodeKind::UnknownRest, SourceLocation { start: 0, end: 0 })
-        });
+        let ast =
+            ast_opt.unwrap_or_else(|| Node::new(NodeKind::UnknownRest, SourceLocation::new(0, 0)));
         if let NodeKind::Program { statements } = &ast.kind {
             let stmt = &statements[0];
             // ${*foo} parses as Variable($) with Name as Typeglob

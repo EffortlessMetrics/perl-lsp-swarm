@@ -568,7 +568,7 @@ impl TypeHierarchyProvider {
         // with the caret just after "o") must still be treated as on-node,
         // matching the convention already established in the document-highlight
         // and references providers for the same half-open-bound class of bug.
-        if offset >= node.location.start && offset <= node.location.end {
+        if offset >= node.location.start() && offset <= node.location.end() {
             // First check children
             if let Some(children) = self.get_children(node) {
                 for child in children {
@@ -641,8 +641,8 @@ impl TypeHierarchyProvider {
 
     /// Convert node to LSP range using PositionMapper for UTF-16 compliance
     fn node_to_range(&self, node: &Node, position_mapper: &PositionMapper) -> WireRange {
-        let start_pos = self.offset_to_position(node.location.start, position_mapper);
-        let end_pos = self.offset_to_position(node.location.end, position_mapper);
+        let start_pos = self.offset_to_position(node.location.start(), position_mapper);
+        let end_pos = self.offset_to_position(node.location.end(), position_mapper);
         WireRange {
             start: WirePosition { line: start_pos.0, character: start_pos.1 },
             end: WirePosition { line: end_pos.0, character: end_pos.1 },
@@ -1149,7 +1149,7 @@ our @ISA = ('B', 'C');
     fn get_children_includes_if_branches_with_keyword_metadata()
     -> Result<(), Box<dyn std::error::Error>> {
         let provider = TypeHierarchyProvider::new();
-        let loc = |start, end| perl_parser_core::ast::SourceLocation { start, end };
+        let loc = |start, end| perl_parser_core::ast::SourceLocation::new(start, end);
         let ident = |name: &str, start| {
             Node::new(
                 NodeKind::Identifier { name: name.to_string() },
@@ -1275,7 +1275,7 @@ our @ISA = ('B', 'C');
                 if let NodeKind::Package { name, .. } = &s.kind
                     && name == want_name
                 {
-                    return Some((s.location.start, s.location.end));
+                    return Some((s.location.start(), s.location.end()));
                 }
             }
         }

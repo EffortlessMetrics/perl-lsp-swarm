@@ -83,13 +83,13 @@ fn collect_operator_facts(
     facts: &mut Vec<OperatorFact>,
 ) -> Result<(), Box<dyn Error>> {
     let span_text = source
-        .get(node.location.start..node.location.end)
+        .get(node.location.start()..node.location.end())
         .ok_or_else(|| {
             format!(
                 "node {} range {}..{} is not a source boundary in {source:?}",
                 node.kind.kind_name(),
-                node.location.start,
-                node.location.end
+                node.location.start(),
+                node.location.end()
             )
         })?
         .to_string();
@@ -212,10 +212,11 @@ fn collect_hir_operator_facts(
             continue;
         };
 
-        let span_text = source.get(item.range.start..item.range.end).ok_or_else(|| {
+        let span_text = source.get(item.range.start()..item.range.end()).ok_or_else(|| {
             format!(
                 "HIR item range {}..{} is not a source boundary in {source:?}",
-                item.range.start, item.range.end
+                item.range.start(),
+                item.range.end()
             )
         })?;
 

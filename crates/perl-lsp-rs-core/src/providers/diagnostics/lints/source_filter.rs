@@ -43,12 +43,12 @@ pub fn check_source_filter_risk(root: &Node, diagnostics: &mut Vec<Diagnostic>) 
         };
 
         diagnostics.push(Diagnostic {
-            range: (node.location.start, node.location.end),
+            range: (node.location.start(), node.location.end()),
             severity: DiagnosticSeverity::Warning,
             code: Some(DiagnosticCode::SourceFilterModule.as_str().to_string()),
             message: format!("'{module}' is a source filter module"),
             related_information: vec![RelatedInformation {
-                location: (node.location.start, node.location.end),
+                location: (node.location.start(), node.location.end()),
                 message: EXPLANATION.to_string(),
             }],
             tags: Vec::new(),

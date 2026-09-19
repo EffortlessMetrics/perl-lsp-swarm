@@ -91,7 +91,7 @@ fn unwrap_expression_statement(node: &Node) -> &Node {
 fn is_forward_declaration_body(body: &Node) -> bool {
     match &body.kind {
         NodeKind::Block { statements } => {
-            statements.is_empty() && body.location.start == body.location.end
+            statements.is_empty() && body.location.start() == body.location.end()
         }
         _ => false,
     }
@@ -197,7 +197,7 @@ mod tests {
     }
 
     fn selected_text<'a>(source: &'a str, node: &Node) -> &'a str {
-        source.get(node.location.start..node.location.end).unwrap_or("")
+        source.get(node.location.start()..node.location.end()).unwrap_or("")
     }
 
     #[test]
@@ -229,7 +229,8 @@ greet("Alice", "Hello");
         );
         let first = first_name_match(&ast, "greet").ok_or("first-match oracle")?;
         assert_ne!(
-            selected.location.start, first.location.start,
+            selected.location.start(),
+            first.location.start(),
             "this fixture must discriminate last-wins from first-name-match"
         );
         Ok(())
@@ -402,7 +403,7 @@ greet("Alice", "Hello");
             "lexical my sub must not win over a later package sub"
         );
         let first = first_name_match(&ast, "greet").ok_or("first-match oracle")?;
-        assert_ne!(selected.location.start, first.location.start);
+        assert_ne!(selected.location.start(), first.location.start());
         Ok(())
     }
 
@@ -478,7 +479,8 @@ greet("Alice", "Hello");
         );
         let first = first_name_match(&ast, "greet").ok_or("first-match oracle")?;
         assert_ne!(
-            selected.location.start, first.location.start,
+            selected.location.start(),
+            first.location.start(),
             "this fixture must discriminate definition-after-forward from first-name-match"
         );
         Ok(())
@@ -500,7 +502,8 @@ greet("Alice", "Hello");
         };
         assert!(statements.is_empty(), "forward body has no statements");
         assert_eq!(
-            body.location.start, body.location.end,
+            body.location.start(),
+            body.location.end(),
             "parser encodes a forward as a zero-width empty Block"
         );
         Ok(())

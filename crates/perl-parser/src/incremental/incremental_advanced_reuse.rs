@@ -19,9 +19,8 @@
 //! - **<500µs processing** for reuse analysis on typical documents
 
 use perl_parser_core::{
-    ast::{NativeDebugSexpLimits, NativeDebugSexpResult, Node, NodeKind},
+    ast::{NativeDebugSexpLimits, NativeDebugSexpResult, Node, NodeKind, SourceLocation},
     edit::EditSet,
-    position::{Position, Range},
 };
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
@@ -227,7 +226,7 @@ impl AdvancedReuseAnalyzer {
 
         // Calculate structural hash
         let structural_hash = self.calculate_structural_hash(node);
-        self.node_hashes.insert(node.location.start, structural_hash);
+        self.node_hashes.insert(node.location.start(), structural_hash);
 
         // Create node info for analysis
         let node_info = NodeAnalysisInfo {
@@ -238,7 +237,7 @@ impl AdvancedReuseAnalyzer {
             content_hash: content_hashes.get(node),
         };
 
-        analysis.add_node_info(node.location.start, node_info);
+        analysis.add_node_info(node.location.start(), node_info);
 
         // Add to position map
         let candidate = NodeCandidate {
@@ -249,7 +248,7 @@ impl AdvancedReuseAnalyzer {
             reuse_type: ReuseType::Direct,
         };
 
-        self.position_map.entry(node.location.start).or_default().push(candidate);
+        self.position_map.entry(node.location.start()).or_default().push(candidate);
 
         // Recurse into children
         match &node.kind {
@@ -318,13 +317,12 @@ impl AdvancedReuseAnalyzer {
 
     /// Mark nodes as affected if they overlap with edit ranges
     fn mark_affected_nodes_in_range(&mut self, node: &Node, start: usize, end: usize) {
-        let node_range = Range::from(node.location);
-        let edit_range = Range::new(Position::new(start, 0, 0), Position::new(end, 0, 0));
-
-        if !node_range.overlaps(&edit_range) {
+        // Byte-span overlap only: a byte-only span must not invent line/column
+        // values (#8740 removed the source-free `Range::from(SourceLocation)`).
+        if !node.location.overlaps(SourceLocation::new(start, end)) {
             return;
         }
-        self.affected_nodes.insert(node.location.start);
+        self.affected_nodes.insert(node.location.start());
 
         // Recurse into children
         match &node.kind {
@@ -1191,7 +1189,7 @@ impl ReuseAnalysisResult {
 mod tests {
     use super::hash_fixtures::content_hash;
     use super::*;
-    use perl_parser_core::{SourceLocation, ast::Node};
+    use perl_parser_core::{SourceLocation, ast::Node, position::Position};
 
     #[test]
     fn test_advanced_reuse_analyzer_creation() {
@@ -1204,15 +1202,11 @@ mod tests {
         let analyzer = AdvancedReuseAnalyzer::new();
 
         // Create sample nodes
-        let node1 = Node::new(
-            NodeKind::Number { value: "42".to_string() },
-            SourceLocation { start: 0, end: 2 },
-        );
+        let node1 =
+            Node::new(NodeKind::Number { value: "42".to_string() }, SourceLocation::new(0, 2));
 
-        let node2 = Node::new(
-            NodeKind::Number { value: "99".to_string() },
-            SourceLocation { start: 0, end: 2 },
-        );
+        let node2 =
+            Node::new(NodeKind::Number { value: "99".to_string() }, SourceLocation::new(0, 2));
 
         let hash1 = analyzer.calculate_structural_hash(&node1);
         let hash2 = analyzer.calculate_structural_hash(&node2);
@@ -1223,15 +1217,11 @@ mod tests {
 
     #[test]
     fn test_content_hash_differs_for_different_values() {
-        let node1 = Node::new(
-            NodeKind::Number { value: "42".to_string() },
-            SourceLocation { start: 0, end: 2 },
-        );
+        let node1 =
+            Node::new(NodeKind::Number { value: "42".to_string() }, SourceLocation::new(0, 2));
 
-        let node2 = Node::new(
-            NodeKind::Number { value: "99".to_string() },
-            SourceLocation { start: 0, end: 2 },
-        );
+        let node2 =
+            Node::new(NodeKind::Number { value: "99".to_string() }, SourceLocation::new(0, 2));
 
         let hash1 = content_hash(&node1);
         let hash2 = content_hash(&node2);
@@ -1243,14 +1233,10 @@ mod tests {
     fn vstring_hashes_preserve_kind_and_value_boundaries() {
         let analyzer = AdvancedReuseAnalyzer::new();
 
-        let node1 = Node::new(
-            NodeKind::VString { value: "v1.2.3".to_string() },
-            SourceLocation { start: 0, end: 6 },
-        );
-        let node2 = Node::new(
-            NodeKind::VString { value: "v2.0.0".to_string() },
-            SourceLocation { start: 0, end: 6 },
-        );
+        let node1 =
+            Node::new(NodeKind::VString { value: "v1.2.3".to_string() }, SourceLocation::new(0, 6));
+        let node2 =
+            Node::new(NodeKind::VString { value: "v2.0.0".to_string() }, SourceLocation::new(0, 6));
 
         let structural_hash1 = analyzer.calculate_structural_hash(&node1);
         let structural_hash2 = analyzer.calculate_structural_hash(&node2);
@@ -1272,10 +1258,8 @@ mod tests {
         let analyzer = AdvancedReuseAnalyzer::new();
 
         // Leaf node
-        let leaf = Node::new(
-            NodeKind::Number { value: "42".to_string() },
-            SourceLocation { start: 0, end: 2 },
-        );
+        let leaf =
+            Node::new(NodeKind::Number { value: "42".to_string() }, SourceLocation::new(0, 2));
         assert_eq!(analyzer.get_children_count(&leaf), 0);
 
         // Binary node
@@ -1285,15 +1269,13 @@ mod tests {
                 left: Box::new(leaf.clone()),
                 right: Box::new(leaf.clone()),
             },
-            SourceLocation { start: 0, end: 5 },
+            SourceLocation::new(0, 5),
         );
         assert_eq!(analyzer.get_children_count(&binary), 2);
 
         // Program node
-        let program = Node::new(
-            NodeKind::Program { statements: vec![binary] },
-            SourceLocation { start: 0, end: 5 },
-        );
+        let program =
+            Node::new(NodeKind::Program { statements: vec![binary] }, SourceLocation::new(0, 5));
         assert_eq!(analyzer.get_children_count(&program), 1);
     }
 
@@ -1311,30 +1293,22 @@ mod tests {
     fn test_node_compatibility_for_content_update() {
         let analyzer = AdvancedReuseAnalyzer::new();
 
-        let num1 = Node::new(
-            NodeKind::Number { value: "42".to_string() },
-            SourceLocation { start: 0, end: 2 },
-        );
+        let num1 =
+            Node::new(NodeKind::Number { value: "42".to_string() }, SourceLocation::new(0, 2));
 
-        let num2 = Node::new(
-            NodeKind::Number { value: "99".to_string() },
-            SourceLocation { start: 0, end: 2 },
-        );
+        let num2 =
+            Node::new(NodeKind::Number { value: "99".to_string() }, SourceLocation::new(0, 2));
 
         let str1 = Node::new(
             NodeKind::String { value: "hello".to_string(), interpolated: false },
-            SourceLocation { start: 0, end: 7 },
+            SourceLocation::new(0, 7),
         );
 
-        let vstring1 = Node::new(
-            NodeKind::VString { value: "v1.2.3".to_string() },
-            SourceLocation { start: 0, end: 6 },
-        );
+        let vstring1 =
+            Node::new(NodeKind::VString { value: "v1.2.3".to_string() }, SourceLocation::new(0, 6));
 
-        let vstring2 = Node::new(
-            NodeKind::VString { value: "v1.2.4".to_string() },
-            SourceLocation { start: 0, end: 6 },
-        );
+        let vstring2 =
+            Node::new(NodeKind::VString { value: "v1.2.4".to_string() }, SourceLocation::new(0, 6));
 
         // Same type nodes should be compatible
         assert!(analyzer.are_compatible_for_content_update(&num1, &num2));
@@ -1348,10 +1322,8 @@ mod tests {
     #[test]
     fn vstring_is_content_stable_leaf_for_position_shift_scoring() {
         let analyzer = AdvancedReuseAnalyzer::new();
-        let vstring = Node::new(
-            NodeKind::VString { value: "v1.2.3".to_string() },
-            SourceLocation { start: 0, end: 6 },
-        );
+        let vstring =
+            Node::new(NodeKind::VString { value: "v1.2.3".to_string() }, SourceLocation::new(0, 6));
 
         assert!(
             analyzer.is_content_stable_leaf(&vstring),
@@ -1367,15 +1339,15 @@ mod tests {
                 statements: vec![
                     Node::new(
                         NodeKind::Number { value: "1".to_string() },
-                        SourceLocation { start: 0, end: 1 },
+                        SourceLocation::new(0, 1),
                     ),
                     Node::new(
                         NodeKind::Number { value: "2".to_string() },
-                        SourceLocation { start: 20, end: 21 },
+                        SourceLocation::new(20, 21),
                     ),
                 ],
             },
-            SourceLocation { start: 0, end: 21 },
+            SourceLocation::new(0, 21),
         );
 
         let mut edits = EditSet::new();
@@ -1510,7 +1482,7 @@ mod tests {
         let node = |start| {
             Node::new(
                 NodeKind::Number { value: "10".to_string() },
-                SourceLocation { start, end: start + 2 },
+                SourceLocation::new(start, start + 2),
             )
         };
 
@@ -1541,30 +1513,30 @@ mod tests {
                 statements: vec![
                     Node::new(
                         NodeKind::Number { value: "10".to_string() },
-                        SourceLocation { start: 10, end: 12 },
+                        SourceLocation::new(10, 12),
                     ),
                     Node::new(
                         NodeKind::Number { value: "10".to_string() },
-                        SourceLocation { start: 20, end: 22 },
+                        SourceLocation::new(20, 22),
                     ),
                 ],
             },
-            SourceLocation { start: 0, end: 22 },
+            SourceLocation::new(0, 22),
         );
         let new_tree = Node::new(
             NodeKind::Program {
                 statements: vec![
                     Node::new(
                         NodeKind::Number { value: "10".to_string() },
-                        SourceLocation { start: 100, end: 102 },
+                        SourceLocation::new(100, 102),
                     ),
                     Node::new(
                         NodeKind::Number { value: "10".to_string() },
-                        SourceLocation { start: 110, end: 112 },
+                        SourceLocation::new(110, 112),
                     ),
                 ],
             },
-            SourceLocation { start: 0, end: 112 },
+            SourceLocation::new(0, 112),
         );
 
         let mut analyzer = AdvancedReuseAnalyzer::new();
@@ -1593,7 +1565,7 @@ mod hash_fixtures {
     }
 
     pub(super) fn loc() -> SourceLocation {
-        SourceLocation { start: 0, end: 1 }
+        SourceLocation::new(0, 1)
     }
 
     pub(super) fn total_nodes(node: &Node) -> usize {
@@ -1856,14 +1828,10 @@ mod content_hash_tests {
 
     #[test]
     fn source_location_alone_does_not_change_the_hash() -> anyhow::Result<()> {
-        let here = Node::new(
-            NodeKind::Number { value: "42".to_string() },
-            SourceLocation { start: 0, end: 2 },
-        );
-        let moved = Node::new(
-            NodeKind::Number { value: "42".to_string() },
-            SourceLocation { start: 900, end: 902 },
-        );
+        let here =
+            Node::new(NodeKind::Number { value: "42".to_string() }, SourceLocation::new(0, 2));
+        let moved =
+            Node::new(NodeKind::Number { value: "42".to_string() }, SourceLocation::new(900, 902));
         anyhow::ensure!(here.to_sexp() == moved.to_sexp(), "guard: the renderer omits spans");
         anyhow::ensure!(
             content_hash(&here) == content_hash(&moved),

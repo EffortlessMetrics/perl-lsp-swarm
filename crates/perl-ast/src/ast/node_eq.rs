@@ -183,7 +183,7 @@ struct CompareFrame<'a> {
 
 #[cfg(test)]
 fn node_summary(node: &Node) -> String {
-    format!("{}@{}..{}", node.kind.kind_name(), node.location.start, node.location.end)
+    format!("{}@{}..{}", node.kind.kind_name(), node.location.start(), node.location.end())
 }
 
 #[cfg(test)]
@@ -293,7 +293,7 @@ mod tests {
     use std::cell::Cell;
 
     fn loc(start: usize, end: usize) -> SourceLocation {
-        SourceLocation { start, end }
+        SourceLocation::new(start, end)
     }
 
     fn numbered(value: &str, start: usize) -> Node {
@@ -302,7 +302,7 @@ mod tests {
 
     fn program(children: Vec<Node>) -> Node {
         let end = match children.last() {
-            Some(child) => child.location.end,
+            Some(child) => child.location.end(),
             None => 0,
         };
         Node::new(NodeKind::Program { statements: children }, loc(0, end))

@@ -15,7 +15,7 @@ fn walk(node: &Node, visit: &mut impl FnMut(&Node)) {
 }
 
 fn source_text(source: &str, node: &Node) -> Option<String> {
-    source.get(node.location.start..node.location.end).map(str::to_owned)
+    source.get(node.location.start()..node.location.end()).map(str::to_owned)
 }
 
 fn is_recovery_node(node: &Node) -> bool {
@@ -122,7 +122,7 @@ fn missing_infix_rhs_emits_local_evidence_and_preserves_following_declaration() 
             recovery_nodes += 1;
         }
         if matches!(&node.kind, NodeKind::MissingExpression) {
-            missing_expression_spans.push((node.location.start, node.location.end));
+            missing_expression_spans.push((node.location.start(), node.location.end()));
         }
     });
 
@@ -173,7 +173,7 @@ fn missing_initializer_emits_local_evidence_and_preserves_following_declaration(
             recovery_nodes += 1;
         }
         if matches!(&node.kind, NodeKind::MissingExpression) {
-            missing_expression_spans.push((node.location.start, node.location.end));
+            missing_expression_spans.push((node.location.start(), node.location.end()));
         }
     });
 

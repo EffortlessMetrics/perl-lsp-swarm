@@ -71,7 +71,13 @@ fn walk(node: &Node, file_id: FileId, out: &mut Vec<(EntityFact, AnchorFact, Occ
     if let NodeKind::Eval { block } = &node.kind {
         // Only literal string evals produce evidence.
         if let NodeKind::String { value, .. } = &block.kind {
-            extract_from_eval_string(value, node.location.start, node.location.end, file_id, out);
+            extract_from_eval_string(
+                value,
+                node.location.start(),
+                node.location.end(),
+                file_id,
+                out,
+            );
         }
         // Recurse into the block for nested evals.
         walk(block, file_id, out);
@@ -378,7 +384,7 @@ fn emit_triple(
     };
 
     // Use the real AST span from the enclosing eval node.
-    // node_end_byte comes from node.location.end, which is the source position
+    // node_end_byte comes from node.location.end(), which is the source position
     // of the end of the entire eval expression (including closing quote/paren).
     let span_end =
         if node_end_byte > node_start_byte { node_end_byte } else { node_start_byte + 1 };

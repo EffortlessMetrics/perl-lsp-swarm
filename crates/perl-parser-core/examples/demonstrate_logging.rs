@@ -33,7 +33,7 @@ fn main() {
         Err(e) => println!("✗ Parse error: {:?}\n", e),
     }
 
-    // Test 3: Try block end position (logs when using body.location.end)
+    // Test 3: Try block end position (logs when using body.location.end())
     println!("Test 3: Try block without catch/finally");
     let code = "try { my $x = 1; }";
     let mut parser = Parser::new(code);

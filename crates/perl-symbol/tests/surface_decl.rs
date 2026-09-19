@@ -11,7 +11,7 @@ use perl_symbol::{SymbolKind, VarKind};
 use perl_tdd_support::must_some;
 
 fn loc(start: usize, end: usize) -> SourceLocation {
-    SourceLocation { start, end }
+    SourceLocation::new(start, end)
 }
 
 // ── Package ──────────────────────────────────────────────────────────────────

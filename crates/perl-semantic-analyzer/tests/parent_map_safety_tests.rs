@@ -36,7 +36,7 @@ use std::sync::Arc;
 // ---------------------------------------------------------------------------
 
 fn loc(start: usize, end: usize) -> SourceLocation {
-    SourceLocation { start, end }
+    SourceLocation::new(start, end)
 }
 
 /// Builds a minimal single-statement AST:

@@ -96,11 +96,11 @@ const MATRIX: &[MatrixCase<'static>] = &[
 ];
 
 fn source_text<'a>(source: &'a str, node: &Node) -> Result<&'a str, String> {
-    source.get(node.location.start..node.location.end).ok_or_else(|| {
+    source.get(node.location.start()..node.location.end()).ok_or_else(|| {
         format!(
             "node span {}..{} is outside source of {} bytes",
-            node.location.start,
-            node.location.end,
+            node.location.start(),
+            node.location.end(),
             source.len()
         )
     })
@@ -238,7 +238,9 @@ fn assert_span(source: &str, node: &Node, case: MatrixCase<'_>) -> TestResult {
         ));
     }
     for child in node.children() {
-        if child.location.start < node.location.start || child.location.end > node.location.end {
+        if child.location.start() < node.location.start()
+            || child.location.end() > node.location.end()
+        {
             return Err(format!(
                 "{} child {:?} escapes row span {:?}\n{}",
                 case.text,
@@ -265,7 +267,7 @@ fn matrix_node<'a>(ast: &'a Node, source: &str, case: MatrixCase<'_>) -> Result<
             matches!(
                 &node.kind,
                 NodeKind::HashSlice { target, .. }
-                    if source.get(target.location.start..target.location.end) == Some(receiver)
+                    if source.get(target.location.start()..target.location.end()) == Some(receiver)
             )
         }),
     }
@@ -433,7 +435,7 @@ fn chained_receiver_and_utf8_selectors_keep_exact_geometry_and_hir_receiver() ->
         matches!(
             &node.kind,
             NodeKind::HashSlice { target, .. }
-                if source.get(target.location.start..target.location.end)
+                if source.get(target.location.start()..target.location.end())
                     == Some("$object->{payload}")
         )
     })?;
@@ -548,14 +550,14 @@ fn collect_postfix_rows(node: &Node, source: &str, found: &mut Vec<String>) -> T
             // this source-geometry check is unavoidable. A production
             // accessor is outside this test-only candidate's claim boundary
             // (#13760).
-            source.get(target.location.end..keys.location.start).map(str::trim) == Some("->@{")
+            source.get(target.location.end()..keys.location.start()).map(str::trim) == Some("->@{")
         }
         NodeKind::KeyValueSlice { target, keys } => {
             // Shared HashSlice/KeyValueSlice nodes carry no postfix marker, so
             // this source-geometry check is unavoidable. A production
             // accessor is outside this test-only candidate's claim boundary
             // (#13760).
-            source.get(target.location.end..keys.location.start).map(str::trim) == Some("->%{")
+            source.get(target.location.end()..keys.location.start()).map(str::trim) == Some("->%{")
         }
         _ => false,
     };
@@ -721,14 +723,10 @@ fn malformed_postfix_dereference_rows_pin_recovery_outcomes() -> TestResult {
         ));
     }
     let _recovered_call = unique_node_where(&next_output.ast, |node| {
-        node.location == (SourceLocation { start: 0, end: 8 })
+        node.location == (SourceLocation::new(0, 8))
             && matches!(&node.kind, NodeKind::MethodCall { .. })
     })?;
-    assert_surviving_declaration(
-        next_source,
-        &next_output.ast,
-        SourceLocation { start: 9, end: 21 },
-    )?;
+    assert_surviving_declaration(next_source, &next_output.ast, SourceLocation::new(9, 21))?;
 
     let empty_source = "$href->@{};\nmy $next = 1;\n";
     let mut empty_parser = Parser::new(empty_source);
@@ -740,11 +738,7 @@ fn malformed_postfix_dereference_rows_pin_recovery_outcomes() -> TestResult {
             empty_output.ast.to_sexp()
         ));
     }
-    assert_surviving_declaration(
-        empty_source,
-        &empty_output.ast,
-        SourceLocation { start: 12, end: 24 },
-    )?;
+    assert_surviving_declaration(empty_source, &empty_output.ast, SourceLocation::new(12, 24))?;
     Ok(())
 }
 
@@ -769,7 +763,7 @@ fn malformed_hash_slice_recovery_contains_its_children_and_following_statement()
     }
     let slice =
         unique_node_where(&output.ast, |node| matches!(&node.kind, NodeKind::HashSlice { .. }))?;
-    if slice.location != (SourceLocation { start: 0, end: 15 }) {
+    if slice.location != (SourceLocation::new(0, 15)) {
         return Err(format!(
             "recovered HashSlice span changed: got {:?}, expected 0..15\n{}",
             slice.location,
@@ -777,8 +771,7 @@ fn malformed_hash_slice_recovery_contains_its_children_and_following_statement()
         ));
     }
     let string = unique_node_where(slice, |node| {
-        matches!(&node.kind, NodeKind::String { .. })
-            && node.location == SourceLocation { start: 8, end: 15 }
+        matches!(&node.kind, NodeKind::String { .. }) && node.location == SourceLocation::new(8, 15)
     })?;
     let direct_children = slice.children();
     if !direct_children.iter().any(|child| std::ptr::eq(*child, string)) {
@@ -787,7 +780,9 @@ fn malformed_hash_slice_recovery_contains_its_children_and_following_statement()
             output.ast.to_sexp()
         ));
     }
-    if slice.location.start > string.location.start || string.location.end > slice.location.end {
+    if slice.location.start() > string.location.start()
+        || string.location.end() > slice.location.end()
+    {
         return Err(format!(
             "recovered slice must contain its selector: slice={:?}, child={:?}\n{}",
             slice.location,
@@ -795,7 +790,7 @@ fn malformed_hash_slice_recovery_contains_its_children_and_following_statement()
             output.ast.to_sexp()
         ));
     }
-    assert_surviving_declaration(source, &output.ast, SourceLocation { start: 17, end: 29 })?;
+    assert_surviving_declaration(source, &output.ast, SourceLocation::new(17, 29))?;
     Ok(())
 }
 
@@ -807,7 +802,7 @@ fn exact_source_ranges_remain_byte_based() -> TestResult {
         unique_node_where(&ast, |candidate| matches!(&candidate.kind, NodeKind::HashSlice { .. }))?;
     let expected_start =
         source.find("$href").ok_or_else(|| "fixture lost $href marker".to_string())?;
-    let expected = SourceLocation { start: expected_start, end: source.len() - 1 };
+    let expected = SourceLocation::new(expected_start, source.len() - 1);
     if node.location != expected {
         return Err(format!(
             "UTF-8 prefix changed byte geometry: got {:?}, expected {expected:?}\n{}",
@@ -815,7 +810,7 @@ fn exact_source_ranges_remain_byte_based() -> TestResult {
             ast.to_sexp()
         ));
     }
-    if node.location != (SourceLocation { start: 6, end: 24 }) {
+    if node.location != (SourceLocation::new(6, 24)) {
         return Err(format!(
             "UTF-8 postfix HashSlice location changed: got {:?}, expected 6..24\n{}",
             node.location,

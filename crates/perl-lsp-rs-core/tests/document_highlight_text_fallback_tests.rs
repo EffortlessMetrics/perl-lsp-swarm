@@ -72,7 +72,7 @@ fn text_fallback_highlights_comment_and_string_occurrences()
     });
     if let Some((start, end)) = comment_hit {
         assert!(
-            highlights.iter().any(|h| h.location.start == start && h.location.end == end),
+            highlights.iter().any(|h| h.location.start() == start && h.location.end() == end),
             "comment occurrence at {start}..{end} must be highlighted, got {highlights:?}"
         );
     }
@@ -86,7 +86,7 @@ fn text_fallback_highlights_comment_and_string_occurrences()
         .ok_or("must locate $count in assignment")?;
     let assign_hit = highlights
         .iter()
-        .find(|h| h.location.start == assign_start)
+        .find(|h| h.location.start() == assign_start)
         .ok_or("assignment occurrence must be among highlights")?;
     assert_ne!(
         assign_hit.kind,
@@ -122,7 +122,7 @@ fn text_fallback_does_not_match_prefix_of_longer_variable_name()
     let count_hits: Vec<_> = highlights
         .iter()
         .filter(|h| {
-            let text = &source[h.location.start..h.location.end];
+            let text = &source[h.location.start()..h.location.end()];
             text == "$count"
         })
         .collect();
@@ -135,7 +135,7 @@ fn text_fallback_does_not_match_prefix_of_longer_variable_name()
     // None of the `$count` hits may overlap with `$counter`.
     let counter_pos = source.find("$counter").ok_or("fixture must contain $counter")?;
     assert!(
-        !highlights.iter().any(|h| h.location.start == counter_pos),
+        !highlights.iter().any(|h| h.location.start() == counter_pos),
         "no highlight may start at `$counter`'s position ({counter_pos}); got {highlights:?}"
     );
     Ok(())
@@ -155,8 +155,10 @@ fn text_fallback_respects_utf8_word_boundary() -> Result<(), Box<dyn std::error:
 
     // `$caf` appears twice (declaration + print). It must NOT match the `$caf`
     // prefix inside `$café`.
-    let caf_hits: Vec<_> =
-        highlights.iter().filter(|h| &source[h.location.start..h.location.end] == "$caf").collect();
+    let caf_hits: Vec<_> = highlights
+        .iter()
+        .filter(|h| &source[h.location.start()..h.location.end()] == "$caf")
+        .collect();
     assert_eq!(
         caf_hits.len(),
         2,

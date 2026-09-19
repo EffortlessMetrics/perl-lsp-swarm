@@ -692,10 +692,9 @@ mod tests {
             CompletionCandidate::semantic(EntityId(9), "default_export", item("run", None, "100"))
                 .with_insertion_plan_id("import:Foo");
         let mut second_item = item("run", None, "100");
-        second_item.additional_edits.push((
-            perl_parser_core::SourceLocation { start: 0, end: 0 },
-            "use Bar;\n".to_string(),
-        ));
+        second_item
+            .additional_edits
+            .push((perl_parser_core::SourceLocation::new(0, 0), "use Bar;\n".to_string()));
         let second = CompletionCandidate::semantic(EntityId(9), "default_export", second_item)
             .with_insertion_plan_id("import:Bar");
 

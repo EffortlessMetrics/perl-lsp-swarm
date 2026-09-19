@@ -43,7 +43,7 @@ fn test_try_block_end_position_logging() {
     let mut parser = Parser::new(code);
     let _result = parser.parse();
 
-    // The parse should succeed and log when using body.location.end as default
+    // The parse should succeed and log when using body.location.end() as default
 }
 
 #[test]

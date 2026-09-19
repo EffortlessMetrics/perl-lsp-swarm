@@ -9,9 +9,8 @@ mod tests {
     }
 
     fn parse_without_error(input: &str) -> perl_ast::ast::Node {
-        let ast = parse_code(input).unwrap_or_else(|| {
-            Node::new(NodeKind::UnknownRest, SourceLocation { start: 0, end: 0 })
-        });
+        let ast = parse_code(input)
+            .unwrap_or_else(|| Node::new(NodeKind::UnknownRest, SourceLocation::new(0, 0)));
         let sexp = ast.to_sexp();
         assert!(!sexp.contains("ERROR"), "unexpected ERROR while parsing `{input}`: {sexp}");
         ast
@@ -23,9 +22,8 @@ mod tests {
         let source = "tie %hash, 'MyPackage', @args;";
         let ast_opt = parse_code(source);
         assert!(ast_opt.is_some());
-        let ast = ast_opt.unwrap_or_else(|| {
-            Node::new(NodeKind::UnknownRest, SourceLocation { start: 0, end: 0 })
-        });
+        let ast =
+            ast_opt.unwrap_or_else(|| Node::new(NodeKind::UnknownRest, SourceLocation::new(0, 0)));
         if let NodeKind::Program { statements } = &ast.kind {
             let stmt = &statements[0];
             if let NodeKind::ExpressionStatement { expression } = &stmt.kind {
@@ -52,9 +50,8 @@ mod tests {
         let source = "tie my %h, 'Pkg';";
         let ast_opt = parse_code(source);
         assert!(ast_opt.is_some());
-        let ast = ast_opt.unwrap_or_else(|| {
-            Node::new(NodeKind::UnknownRest, SourceLocation { start: 0, end: 0 })
-        });
+        let ast =
+            ast_opt.unwrap_or_else(|| Node::new(NodeKind::UnknownRest, SourceLocation::new(0, 0)));
         if let NodeKind::Program { statements } = &ast.kind {
             let stmt = &statements[0];
             if let NodeKind::ExpressionStatement { expression } = &stmt.kind
@@ -74,9 +71,8 @@ mod tests {
         let source = "untie %hash;";
         let ast_opt = parse_code(source);
         assert!(ast_opt.is_some());
-        let ast = ast_opt.unwrap_or_else(|| {
-            Node::new(NodeKind::UnknownRest, SourceLocation { start: 0, end: 0 })
-        });
+        let ast =
+            ast_opt.unwrap_or_else(|| Node::new(NodeKind::UnknownRest, SourceLocation::new(0, 0)));
         if let NodeKind::Program { statements } = &ast.kind {
             let stmt = &statements[0];
             if let NodeKind::ExpressionStatement { expression } = &stmt.kind {
@@ -97,9 +93,8 @@ mod tests {
         let source = "tie my $scalar, 'MyScalar::Tie';";
         let ast_opt = parse_code(source);
         assert!(ast_opt.is_some());
-        let ast = ast_opt.unwrap_or_else(|| {
-            Node::new(NodeKind::UnknownRest, SourceLocation { start: 0, end: 0 })
-        });
+        let ast =
+            ast_opt.unwrap_or_else(|| Node::new(NodeKind::UnknownRest, SourceLocation::new(0, 0)));
         if let NodeKind::Program { statements } = &ast.kind {
             let stmt = &statements[0];
             if let NodeKind::ExpressionStatement { expression } = &stmt.kind {
@@ -125,9 +120,8 @@ mod tests {
         let source = "tie my @array, 'MyArray::Tie', @args;";
         let ast_opt = parse_code(source);
         assert!(ast_opt.is_some());
-        let ast = ast_opt.unwrap_or_else(|| {
-            Node::new(NodeKind::UnknownRest, SourceLocation { start: 0, end: 0 })
-        });
+        let ast =
+            ast_opt.unwrap_or_else(|| Node::new(NodeKind::UnknownRest, SourceLocation::new(0, 0)));
         if let NodeKind::Program { statements } = &ast.kind {
             let stmt = &statements[0];
             if let NodeKind::ExpressionStatement { expression } = &stmt.kind {
@@ -151,9 +145,8 @@ mod tests {
         let source = "tie *FH, 'Tie::Handle';";
         let ast_opt = parse_code(source);
         assert!(ast_opt.is_some());
-        let ast = ast_opt.unwrap_or_else(|| {
-            Node::new(NodeKind::UnknownRest, SourceLocation { start: 0, end: 0 })
-        });
+        let ast =
+            ast_opt.unwrap_or_else(|| Node::new(NodeKind::UnknownRest, SourceLocation::new(0, 0)));
         if let NodeKind::Program { statements } = &ast.kind {
             let stmt = &statements[0];
             if let NodeKind::ExpressionStatement { expression } = &stmt.kind {
@@ -173,9 +166,8 @@ mod tests {
         let source = "tie %hash, 'DB_File', $filename, 0, 0644;";
         let ast_opt = parse_code(source);
         assert!(ast_opt.is_some());
-        let ast = ast_opt.unwrap_or_else(|| {
-            Node::new(NodeKind::UnknownRest, SourceLocation { start: 0, end: 0 })
-        });
+        let ast =
+            ast_opt.unwrap_or_else(|| Node::new(NodeKind::UnknownRest, SourceLocation::new(0, 0)));
         if let NodeKind::Program { statements } = &ast.kind {
             let stmt = &statements[0];
             if let NodeKind::ExpressionStatement { expression } = &stmt.kind {
@@ -200,9 +192,8 @@ mod tests {
         let source = "untie $scalar;";
         let ast_opt = parse_code(source);
         assert!(ast_opt.is_some());
-        let ast = ast_opt.unwrap_or_else(|| {
-            Node::new(NodeKind::UnknownRest, SourceLocation { start: 0, end: 0 })
-        });
+        let ast =
+            ast_opt.unwrap_or_else(|| Node::new(NodeKind::UnknownRest, SourceLocation::new(0, 0)));
         if let NodeKind::Program { statements } = &ast.kind {
             let stmt = &statements[0];
             if let NodeKind::ExpressionStatement { expression } = &stmt.kind {
@@ -223,9 +214,8 @@ mod tests {
         let source = "untie @array;";
         let ast_opt = parse_code(source);
         assert!(ast_opt.is_some());
-        let ast = ast_opt.unwrap_or_else(|| {
-            Node::new(NodeKind::UnknownRest, SourceLocation { start: 0, end: 0 })
-        });
+        let ast =
+            ast_opt.unwrap_or_else(|| Node::new(NodeKind::UnknownRest, SourceLocation::new(0, 0)));
         if let NodeKind::Program { statements } = &ast.kind {
             let stmt = &statements[0];
             if let NodeKind::ExpressionStatement { expression } = &stmt.kind {
@@ -246,9 +236,8 @@ mod tests {
         let source = "untie *FH;";
         let ast_opt = parse_code(source);
         assert!(ast_opt.is_some());
-        let ast = ast_opt.unwrap_or_else(|| {
-            Node::new(NodeKind::UnknownRest, SourceLocation { start: 0, end: 0 })
-        });
+        let ast =
+            ast_opt.unwrap_or_else(|| Node::new(NodeKind::UnknownRest, SourceLocation::new(0, 0)));
         if let NodeKind::Program { statements } = &ast.kind {
             let stmt = &statements[0];
             if let NodeKind::ExpressionStatement { expression } = &stmt.kind {
@@ -267,9 +256,8 @@ mod tests {
         let source = "my $obj = tied %hash;";
         let ast_opt = parse_code(source);
         assert!(ast_opt.is_some());
-        let ast = ast_opt.unwrap_or_else(|| {
-            Node::new(NodeKind::UnknownRest, SourceLocation { start: 0, end: 0 })
-        });
+        let ast =
+            ast_opt.unwrap_or_else(|| Node::new(NodeKind::UnknownRest, SourceLocation::new(0, 0)));
         if let NodeKind::Program { statements } = &ast.kind {
             assert!(!statements.is_empty(), "tied statement should parse");
         }
@@ -280,9 +268,8 @@ mod tests {
         let source = "if (tied @array) { print 1; }";
         let ast_opt = parse_code(source);
         assert!(ast_opt.is_some());
-        let ast = ast_opt.unwrap_or_else(|| {
-            Node::new(NodeKind::UnknownRest, SourceLocation { start: 0, end: 0 })
-        });
+        let ast =
+            ast_opt.unwrap_or_else(|| Node::new(NodeKind::UnknownRest, SourceLocation::new(0, 0)));
         if let NodeKind::Program { statements } = &ast.kind {
             assert!(!statements.is_empty(), "tied in conditional should parse");
         }
@@ -293,9 +280,8 @@ mod tests {
         let source = "tie our %config, 'Config::Tie';";
         let ast_opt = parse_code(source);
         assert!(ast_opt.is_some());
-        let ast = ast_opt.unwrap_or_else(|| {
-            Node::new(NodeKind::UnknownRest, SourceLocation { start: 0, end: 0 })
-        });
+        let ast =
+            ast_opt.unwrap_or_else(|| Node::new(NodeKind::UnknownRest, SourceLocation::new(0, 0)));
         if let NodeKind::Program { statements } = &ast.kind {
             let stmt = &statements[0];
             if let NodeKind::ExpressionStatement { expression } = &stmt.kind
@@ -315,9 +301,8 @@ mod tests {
         let source = "tie local %ENV, 'Tie::EnvHash';";
         let ast_opt = parse_code(source);
         assert!(ast_opt.is_some());
-        let ast = ast_opt.unwrap_or_else(|| {
-            Node::new(NodeKind::UnknownRest, SourceLocation { start: 0, end: 0 })
-        });
+        let ast =
+            ast_opt.unwrap_or_else(|| Node::new(NodeKind::UnknownRest, SourceLocation::new(0, 0)));
         if let NodeKind::Program { statements } = &ast.kind {
             assert!(!statements.is_empty(), "tie with local should parse");
         }

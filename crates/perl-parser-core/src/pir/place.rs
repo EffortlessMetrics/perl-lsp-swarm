@@ -305,7 +305,7 @@ mod tests {
 
     #[test]
     fn dynamic_place_retains_reason_source_and_boundary() {
-        let range = SourceLocation { start: 10, end: 28 };
+        let range = SourceLocation::new(10, 28);
         let place = PirPlace {
             id: PirPlaceId::from_index(1),
             kind: PirPlaceKind::Dynamic { reason: "tied or magical container".to_string() },

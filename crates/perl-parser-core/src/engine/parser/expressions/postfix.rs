@@ -135,8 +135,8 @@ impl<'a> Parser<'a> {
                     let key = self.parse_hash_subscript_key()?;
                     self.expect_closing_delimiter(TokenKind::RightBrace)?;
 
-                    let start = expr.location.start;
-                    let end = self.previous_position().max(key.location.end);
+                    let start = expr.location.start();
+                    let end = self.previous_position().max(key.location.end());
 
                     record_postfix_layer()?;
                     let kind = if is_at_slice {
@@ -144,7 +144,7 @@ impl<'a> Parser<'a> {
                     } else {
                         NodeKind::KeyValueSlice { target: Box::new(expr), keys: Box::new(key) }
                     };
-                    expr = Node::new(kind, SourceLocation { start, end });
+                    expr = Node::new(kind, SourceLocation::new(start, end));
                     continue;
                 }
             }
@@ -160,13 +160,13 @@ impl<'a> Parser<'a> {
                                 || token.text.starts_with('%')
                         });
                 if name == "caller" && next_is_prefix_inc_arg {
-                    let start = expr.location.start;
+                    let start = expr.location.start();
                     let func_name = name.clone();
                     let arg = self.parse_unary()?;
-                    let end = arg.location.end;
+                    let end = arg.location.end();
                     expr = Node::new(
                         NodeKind::FunctionCall { name: func_name, args: vec![arg] },
-                        SourceLocation { start, end },
+                        SourceLocation::new(start, end),
                     );
                     continue;
                 }
@@ -178,13 +178,13 @@ impl<'a> Parser<'a> {
                         && !self.should_parse_incdec_as_block_list_arg(&expr) =>
                 {
                     let op_token = self.consume_token()?;
-                    let start = expr.location.start;
+                    let start = expr.location.start();
                     let end = op_token.end();
 
                     record_postfix_layer()?;
                     expr = Node::new(
                         NodeKind::Unary { op: op_token.text.to_string(), operand: Box::new(expr) },
-                        SourceLocation { start, end },
+                        SourceLocation::new(start, end),
                     );
                 }
 
@@ -207,8 +207,8 @@ impl<'a> Parser<'a> {
                                 let index = self.parse_expression()?;
                                 self.expect_closing_delimiter(TokenKind::RightBracket)?;
 
-                                let start = expr.location.start;
-                                let end = self.previous_position().max(index.location.end);
+                                let start = expr.location.start();
+                                let end = self.previous_position().max(index.location.end());
 
                                 // Represent as a special binary operation for array slice dereference
                                 record_postfix_layer()?;
@@ -218,7 +218,7 @@ impl<'a> Parser<'a> {
                                         left: Box::new(expr),
                                         right: Box::new(index),
                                     },
-                                    SourceLocation { start, end },
+                                    SourceLocation::new(start, end),
                                 );
                             } else if self.peek_kind() == Some(TokenKind::LeftBrace) {
                                 // ->@{...} postfix hash slice
@@ -226,8 +226,8 @@ impl<'a> Parser<'a> {
                                 let keys = self.parse_hash_subscript_key()?;
                                 self.expect_closing_delimiter(TokenKind::RightBrace)?;
 
-                                let start = expr.location.start;
-                                let end = self.previous_position().max(keys.location.end);
+                                let start = expr.location.start();
+                                let end = self.previous_position().max(keys.location.end());
 
                                 record_postfix_layer()?;
                                 expr = Node::new(
@@ -235,7 +235,7 @@ impl<'a> Parser<'a> {
                                         target: Box::new(expr),
                                         keys: Box::new(keys),
                                     },
-                                    SourceLocation { start, end },
+                                    SourceLocation::new(start, end),
                                 );
                             } else {
                                 expr = self.recover_truncated_arrow(expr);
@@ -257,8 +257,8 @@ impl<'a> Parser<'a> {
                                 let key = self.parse_hash_subscript_key()?;
                                 self.expect_closing_delimiter(TokenKind::RightBrace)?;
 
-                                let start = expr.location.start;
-                                let end = self.previous_position().max(key.location.end);
+                                let start = expr.location.start();
+                                let end = self.previous_position().max(key.location.end());
 
                                 // Represent as a special binary operation for hash slice dereference
                                 record_postfix_layer()?;
@@ -268,7 +268,7 @@ impl<'a> Parser<'a> {
                                         left: Box::new(expr),
                                         right: Box::new(key),
                                     },
-                                    SourceLocation { start, end },
+                                    SourceLocation::new(start, end),
                                 );
                             } else {
                                 expr = self.recover_truncated_arrow(expr);
@@ -366,20 +366,20 @@ impl<'a> Parser<'a> {
                                 Vec::new()
                             };
 
-                            let start = expr.location.start;
+                            let start = expr.location.start();
                             let end = self.previous_position();
 
                             record_postfix_layer()?;
                             expr = Node::new(
                                 NodeKind::MethodCall { object: Box::new(expr), method, args },
-                                SourceLocation { start, end },
+                                SourceLocation::new(start, end),
                             );
                         }
 
                         Some(TokenKind::LeftParen) => {
                             // Coderef invocation: $ref->(args)
                             let args = self.parse_args()?;
-                            let start = expr.location.start;
+                            let start = expr.location.start();
                             let end = self.previous_position();
 
                             let mut all_args = vec![expr];
@@ -388,7 +388,7 @@ impl<'a> Parser<'a> {
                             record_postfix_layer()?;
                             expr = Node::new(
                                 NodeKind::FunctionCall { name: "->()".to_string(), args: all_args },
-                                SourceLocation { start, end },
+                                SourceLocation::new(start, end),
                             );
                         }
 
@@ -398,7 +398,7 @@ impl<'a> Parser<'a> {
                             let index = self.parse_expression()?;
                             self.expect_closing_delimiter(TokenKind::RightBracket)?;
 
-                            let start = expr.location.start;
+                            let start = expr.location.start();
                             let end = self.previous_position();
 
                             record_postfix_layer()?;
@@ -408,7 +408,7 @@ impl<'a> Parser<'a> {
                                     left: Box::new(expr),
                                     right: Box::new(index),
                                 },
-                                SourceLocation { start, end },
+                                SourceLocation::new(start, end),
                             );
                         }
 
@@ -418,7 +418,7 @@ impl<'a> Parser<'a> {
                             let key = self.parse_hash_subscript_key()?;
                             self.expect_closing_delimiter(TokenKind::RightBrace)?;
 
-                            let start = expr.location.start;
+                            let start = expr.location.start();
                             let end = self.previous_position();
 
                             record_postfix_layer()?;
@@ -428,7 +428,7 @@ impl<'a> Parser<'a> {
                                     left: Box::new(expr),
                                     right: Box::new(key),
                                 },
-                                SourceLocation { start, end },
+                                SourceLocation::new(start, end),
                             );
                         }
 
@@ -454,7 +454,7 @@ impl<'a> Parser<'a> {
                         && (Self::is_builtin_function(name) || self.looks_like_bare_call(name))
                     {
                         let name = name.clone();
-                        let start = expr.location.start;
+                        let start = expr.location.start();
                         let mut args = vec![self.parse_ternary()?];
                         while matches!(
                             self.peek_kind(),
@@ -466,10 +466,10 @@ impl<'a> Parser<'a> {
                             }
                             args.push(self.parse_ternary()?);
                         }
-                        let end = args.last().map_or(expr.location.end, |a| a.location.end);
+                        let end = args.last().map_or(expr.location.end(), |a| a.location.end());
                         expr = Node::new(
                             NodeKind::FunctionCall { name, args },
-                            SourceLocation { start, end },
+                            SourceLocation::new(start, end),
                         );
                         continue;
                     }
@@ -494,31 +494,31 @@ impl<'a> Parser<'a> {
                     // Create the index node - either single index or array of indices
                     let index = if indices.len() == 1 {
                         indices.into_iter().next().ok_or_else(|| {
-                            ParseError::syntax("Empty indices vector", expr.location.start)
+                            ParseError::syntax("Empty indices vector", expr.location.start())
                         })?
                     } else {
                         // Multiple indices - create an array literal node
                         let start = indices
                             .first()
                             .ok_or_else(|| {
-                                ParseError::syntax("Empty indices vector", expr.location.start)
+                                ParseError::syntax("Empty indices vector", expr.location.start())
                             })?
                             .location
-                            .start;
+                            .start();
                         let end = indices
                             .last()
                             .ok_or_else(|| {
-                                ParseError::syntax("Empty indices vector", expr.location.start)
+                                ParseError::syntax("Empty indices vector", expr.location.start())
                             })?
                             .location
-                            .end;
+                            .end();
                         Node::new(
                             NodeKind::ArrayLiteral { elements: indices },
-                            SourceLocation { start, end },
+                            SourceLocation::new(start, end),
                         )
                     };
 
-                    let start = expr.location.start;
+                    let start = expr.location.start();
                     let end = self.previous_position();
 
                     record_postfix_layer()?;
@@ -528,7 +528,7 @@ impl<'a> Parser<'a> {
                                 target: Box::new(expr),
                                 indices: Box::new(index),
                             },
-                            SourceLocation { start, end },
+                            SourceLocation::new(start, end),
                         );
                     } else {
                         expr = Node::new(
@@ -537,7 +537,7 @@ impl<'a> Parser<'a> {
                                 left: Box::new(expr),
                                 right: Box::new(index),
                             },
-                            SourceLocation { start, end },
+                            SourceLocation::new(start, end),
                         );
                     }
                 }
@@ -685,17 +685,17 @@ impl<'a> Parser<'a> {
                                 }
                             }
 
-                            let start = expr.location.start;
+                            let start = expr.location.start();
 
                             let end = args
                                 .last()
                                 .ok_or_else(|| ParseError::syntax("Empty arguments list", start))?
                                 .location
-                                .end;
+                                .end();
 
                             expr = Node::new(
                                 NodeKind::FunctionCall { name: name.clone(), args },
-                                SourceLocation { start, end },
+                                SourceLocation::new(start, end),
                             );
                             continue; // Continue the loop
                         }
@@ -711,7 +711,7 @@ impl<'a> Parser<'a> {
                     let key = self.parse_hash_subscript_key()?;
                     self.expect_closing_delimiter(TokenKind::RightBrace)?;
 
-                    let start = expr.location.start;
+                    let start = expr.location.start();
                     let end = self.previous_position();
 
                     // Represent as binary subscript operation
@@ -722,7 +722,7 @@ impl<'a> Parser<'a> {
                             left: Box::new(expr),
                             right: Box::new(key),
                         },
-                        SourceLocation { start, end },
+                        SourceLocation::new(start, end),
                     );
                 }
 
@@ -734,12 +734,12 @@ impl<'a> Parser<'a> {
                         // Special handling for qw()
                         if name == "qw" {
                             let words = self.parse_qw_list()?;
-                            let start = expr.location.start;
+                            let start = expr.location.start();
                             let end = self.previous_position();
 
                             expr = Node::new(
                                 NodeKind::ArrayLiteral { elements: words },
-                                SourceLocation { start, end },
+                                SourceLocation::new(start, end),
                             );
                         } else if matches!(name.as_str(), "print" | "say" | "printf" | "send") {
                             // `print( $fh EXPR )` — filehandle-style inside explicit parens.
@@ -749,21 +749,21 @@ impl<'a> Parser<'a> {
                             // Use a specialised parser that detects the indirect-filehandle
                             // pattern: scalar-variable followed by a non-comma expression.
                             let args = self.parse_print_parens_args()?;
-                            let start = expr.location.start;
+                            let start = expr.location.start();
                             let end = self.previous_position();
 
                             expr = Node::new(
                                 NodeKind::FunctionCall { name, args },
-                                SourceLocation { start, end },
+                                SourceLocation::new(start, end),
                             );
                         } else {
                             let args = self.parse_args()?;
-                            let start = expr.location.start;
+                            let start = expr.location.start();
                             let end = self.previous_position();
 
                             expr = Node::new(
                                 NodeKind::FunctionCall { name, args },
-                                SourceLocation { start, end },
+                                SourceLocation::new(start, end),
                             );
                         }
                     }
@@ -780,21 +780,21 @@ impl<'a> Parser<'a> {
                     // Disambiguate: `Undef` → `undef(LIST)` builtin call.
                     // Everything else (subscript / deref Binary) → implicit coderef call.
                     let args = self.parse_args()?;
-                    let start = expr.location.start;
+                    let start = expr.location.start();
                     let end = self.previous_position();
 
                     record_postfix_layer()?;
                     expr = if matches!(&expr.kind, NodeKind::Undef) {
                         Node::new(
                             NodeKind::FunctionCall { name: "undef".to_string(), args },
-                            SourceLocation { start, end },
+                            SourceLocation::new(start, end),
                         )
                     } else {
                         let mut all_args = vec![expr];
                         all_args.extend(args);
                         Node::new(
                             NodeKind::FunctionCall { name: "->()".to_string(), args: all_args },
-                            SourceLocation { start, end },
+                            SourceLocation::new(start, end),
                         )
                     };
                 }
@@ -816,10 +816,10 @@ impl<'a> Parser<'a> {
                         {
                             // A qualified CORE builtin remains executable before a fat comma;
                             // do not let the generic key conversion turn it into a string.
-                            let start = expr.location.start;
+                            let start = expr.location.start();
                             expr = Node::new(
                                 NodeKind::FunctionCall { name: name.clone(), args: vec![] },
-                                SourceLocation { start, end: expr.location.end },
+                                SourceLocation::new(start, expr.location.end()),
                             );
                         } else if Self::is_nullary_builtin(name) {
                             // Nullary builtins (shift, pop, caller, wantarray, etc.) can also
@@ -840,14 +840,14 @@ impl<'a> Parser<'a> {
                             } else {
                                 vec![]
                             };
-                            let start = expr.location.start;
+                            let start = expr.location.start();
                             let end = args
                                 .last()
-                                .map(|arg: &Node| arg.location.end)
-                                .unwrap_or(expr.location.end);
+                                .map(|arg: &Node| arg.location.end())
+                                .unwrap_or(expr.location.end());
                             expr = Node::new(
                                 NodeKind::FunctionCall { name: name.clone(), args },
-                                SourceLocation { start, end },
+                                SourceLocation::new(start, end),
                             );
                         } else if !Self::is_builtin_function(name)
                             && !self.is_at_statement_end()
@@ -881,11 +881,12 @@ impl<'a> Parser<'a> {
                                 args.push(self.parse_assignment_or_declaration()?);
                             }
 
-                            let start = expr.location.start;
-                            let end = args.last().map_or(expr.location.end, |arg| arg.location.end);
+                            let start = expr.location.start();
+                            let end =
+                                args.last().map_or(expr.location.end(), |arg| arg.location.end());
                             expr = Node::new(
                                 NodeKind::FunctionCall { name: name.clone(), args },
-                                SourceLocation { start, end },
+                                SourceLocation::new(start, end),
                             );
                         } else if name.contains("::")
                             && !self.is_at_statement_end()
@@ -925,11 +926,11 @@ impl<'a> Parser<'a> {
                                 }
                                 args.push(self.parse_ternary()?);
                             }
-                            let start = expr.location.start;
+                            let start = expr.location.start();
                             let end = self.previous_position();
                             expr = Node::new(
                                 NodeKind::FunctionCall { name: name.clone(), args },
-                                SourceLocation { start, end },
+                                SourceLocation::new(start, end),
                             );
                         } else if Self::is_builtin_function(name)
                             || Self::core_qualified_builtin_name(name).is_some()
@@ -1241,7 +1242,7 @@ impl<'a> Parser<'a> {
                                         // Keep parenthesized `has(qw(a b))` on parse_args().
                                         let (words, qw_location) =
                                             self.parse_flattened_qw_list_argument()?;
-                                        flattened_qw_end = Some(qw_location.end);
+                                        flattened_qw_end = Some(qw_location.end());
                                         args.extend(words);
                                     } else {
                                         args.push(self.parse_assignment_or_declaration()?);
@@ -1384,11 +1385,11 @@ impl<'a> Parser<'a> {
                                     }
                                 }
 
-                                let start = expr.location.start;
+                                let start = expr.location.start();
 
                                 let end = args
                                     .last()
-                                    .map(|arg| arg.location.end)
+                                    .map(|arg| arg.location.end())
                                     .or(flattened_qw_end)
                                     .unwrap_or_else(|| self.previous_position());
 
@@ -1408,12 +1409,12 @@ impl<'a> Parser<'a> {
                                             object: Box::new(object),
                                             args: message_args,
                                         },
-                                        SourceLocation { start, end },
+                                        SourceLocation::new(start, end),
                                     )
                                 } else {
                                     Node::new(
                                         NodeKind::FunctionCall { name: name.clone(), args },
-                                        SourceLocation { start, end },
+                                        SourceLocation::new(start, end),
                                     )
                                 };
                             }
@@ -1434,14 +1435,14 @@ impl<'a> Parser<'a> {
                             });
                         if next_is_sigil_arg {
                             let arg = self.parse_ternary()?;
-                            let start = expr.location.start;
-                            let end = arg.location.end;
+                            let start = expr.location.start();
+                            let end = arg.location.end();
                             expr = Node::new(
                                 NodeKind::FunctionCall {
                                     name: "undef".to_string(),
                                     args: vec![arg],
                                 },
-                                SourceLocation { start, end },
+                                SourceLocation::new(start, end),
                             );
                         }
                     }
@@ -1463,7 +1464,7 @@ impl<'a> Parser<'a> {
         }
         self.tokens.peek().ok().is_some_and(|token| {
             matches!(token.kind(), TokenKind::Increment | TokenKind::Decrement)
-                && token.start() > expr.location.end
+                && token.start() > expr.location.end()
         })
     }
 
@@ -1543,7 +1544,7 @@ impl<'a> Parser<'a> {
         let token = self.tokens.next()?;
         Ok(Node::new(
             NodeKind::String { value: token.text.to_string(), interpolated: false },
-            SourceLocation { start: token.start(), end: token.end() },
+            SourceLocation::new(token.start(), token.end()),
         ))
     }
 
@@ -1590,7 +1591,7 @@ impl<'a> Parser<'a> {
         }
 
         let first = self.consume_as_bareword_identifier()?;
-        let start = first.location.start;
+        let start = first.location.start();
 
         if self.peek_kind() != Some(TokenKind::Comma) {
             return Ok(Some(first));
@@ -1612,8 +1613,8 @@ impl<'a> Parser<'a> {
             }
         }
 
-        let end = elements.last().map(|n| n.location.end).unwrap_or(start);
-        Ok(Some(Node::new(NodeKind::ArrayLiteral { elements }, SourceLocation { start, end })))
+        let end = elements.last().map(|n| n.location.end()).unwrap_or(start);
+        Ok(Some(Node::new(NodeKind::ArrayLiteral { elements }, SourceLocation::new(start, end))))
     }
 
     fn peek_is_keyword_bareword_key(&mut self, allow_terminal_control_key: bool) -> bool {
@@ -1658,12 +1659,12 @@ impl<'a> Parser<'a> {
         let token = self.tokens.next()?;
         Ok(Node::new(
             NodeKind::Identifier { name: token.text.to_string() },
-            SourceLocation { start: token.start(), end: token.end() },
+            SourceLocation::new(token.start(), token.end()),
         ))
     }
 
     fn recover_truncated_arrow(&mut self, expr: Node) -> Node {
-        let start = expr.location.start;
+        let start = expr.location.start();
         let end = self.previous_position();
         self.errors.push(ParseError::Recovered {
             site: RecoverySite::PostfixChain,
@@ -1677,7 +1678,7 @@ impl<'a> Parser<'a> {
                 found: self.tokens.peek().ok().cloned(),
                 partial: Some(Box::new(expr)),
             },
-            SourceLocation { start, end },
+            SourceLocation::new(start, end),
         )
     }
 
@@ -1698,7 +1699,7 @@ impl<'a> Parser<'a> {
         }
 
         let first = self.consume_as_bareword_string()?;
-        let start = first.location.start;
+        let start = first.location.start();
 
         // Single key (common case): `$h{m}` — `}` immediately follows
         if self.peek_kind() != Some(TokenKind::Comma) {
@@ -1720,8 +1721,8 @@ impl<'a> Parser<'a> {
             }
         }
 
-        let end = elements.last().map(|n| n.location.end).unwrap_or(start);
-        Ok(Some(Node::new(NodeKind::ArrayLiteral { elements }, SourceLocation { start, end })))
+        let end = elements.last().map(|n| n.location.end()).unwrap_or(start);
+        Ok(Some(Node::new(NodeKind::ArrayLiteral { elements }, SourceLocation::new(start, end))))
     }
 
     /// Finish an arrow star-form postfix dereference from the consumed `*` token.
@@ -1731,10 +1732,10 @@ impl<'a> Parser<'a> {
     /// node span on the receiver only (#13891).
     fn consume_arrow_star_deref(&mut self, expr: Node, op: &'static str) -> ParseResult<Node> {
         let star = self.consume_token()?;
-        let start = expr.location.start;
+        let start = expr.location.start();
         Ok(Node::new(
             NodeKind::Unary { op: op.to_string(), operand: Box::new(expr) },
-            SourceLocation { start, end: star.end() },
+            SourceLocation::new(start, star.end()),
         ))
     }
 }
@@ -1753,7 +1754,7 @@ mod do_while_brace_boundary_tests {
     fn variable_node() -> Node {
         Node::new(
             NodeKind::Variable { sigil: "$".to_string(), name: "h".to_string() },
-            SourceLocation { start: 0, end: 2 },
+            SourceLocation::new(0, 2),
         )
     }
 
@@ -1764,15 +1765,15 @@ mod do_while_brace_boundary_tests {
                 left: Box::new(variable_node()),
                 right: Box::new(Node::new(
                     NodeKind::Number { value: "0".to_string() },
-                    SourceLocation { start: 3, end: 4 },
+                    SourceLocation::new(3, 4),
                 )),
             },
-            SourceLocation { start: 0, end: 5 },
+            SourceLocation::new(0, 5),
         )
     }
 
     fn number_node() -> Node {
-        Node::new(NodeKind::Number { value: "0".to_string() }, SourceLocation { start: 0, end: 1 })
+        Node::new(NodeKind::Number { value: "0".to_string() }, SourceLocation::new(0, 1))
     }
 
     fn condition_parser(unparenthesized: bool, depth: usize) -> Parser<'static> {

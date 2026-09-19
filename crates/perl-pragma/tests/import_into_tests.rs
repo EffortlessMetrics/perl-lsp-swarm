@@ -8,16 +8,16 @@ use perl_pragma::{
 fn node(kind: NodeKind, start: usize, end: usize) -> Node {
     Node::new(
         NodeKind::ExpressionStatement {
-            expression: Box::new(Node::new(kind, SourceLocation { start, end })),
+            expression: Box::new(Node::new(kind, SourceLocation::new(start, end))),
         },
-        SourceLocation { start, end },
+        SourceLocation::new(start, end),
     )
 }
 
 fn identifier(name: &str, start: usize) -> Node {
     Node::new(
         NodeKind::Identifier { name: name.into() },
-        SourceLocation { start, end: start + name.len() },
+        SourceLocation::new(start, start + name.len()),
     )
 }
 
@@ -29,15 +29,12 @@ fn recognizes_static_pragma_import_into_and_caller_depth() {
             method: "import::into".into(),
             args: vec![Node::new(
                 NodeKind::Number { value: "1".into() },
-                SourceLocation { start: 20, end: 21 },
+                SourceLocation::new(20, 21),
             )],
         },
-        SourceLocation { start: 0, end: 22 },
+        SourceLocation::new(0, 22),
     );
-    let ast = Node::new(
-        NodeKind::Program { statements: vec![call] },
-        SourceLocation { start: 0, end: 22 },
-    );
+    let ast = Node::new(NodeKind::Program { statements: vec![call] }, SourceLocation::new(0, 22));
 
     assert_eq!(
         find_import_into_calls(&ast),
@@ -60,10 +57,7 @@ fn preserves_dynamic_source_and_target_boundaries() {
         0,
         26,
     );
-    let ast = Node::new(
-        NodeKind::Program { statements: vec![call] },
-        SourceLocation { start: 0, end: 26 },
-    );
+    let ast = Node::new(NodeKind::Program { statements: vec![call] }, SourceLocation::new(0, 26));
     let observed = &find_import_into_calls(&ast)[0];
 
     assert_eq!(observed.source, ImportIntoSource::Dynamic);
@@ -78,15 +72,12 @@ fn recognizes_literal_destination_package() {
             method: "import::into".into(),
             args: vec![Node::new(
                 NodeKind::String { value: "My::Package".into(), interpolated: false },
-                SourceLocation { start: 20, end: 33 },
+                SourceLocation::new(20, 33),
             )],
         },
-        SourceLocation { start: 0, end: 34 },
+        SourceLocation::new(0, 34),
     );
-    let ast = Node::new(
-        NodeKind::Program { statements: vec![call] },
-        SourceLocation { start: 0, end: 34 },
-    );
+    let ast = Node::new(NodeKind::Program { statements: vec![call] }, SourceLocation::new(0, 34));
 
     assert_eq!(
         find_import_into_calls(&ast)[0].target,
@@ -102,15 +93,12 @@ fn production_environment_retains_observations() {
             method: "import::into".into(),
             args: vec![Node::new(
                 NodeKind::Number { value: "1".into() },
-                SourceLocation { start: 20, end: 21 },
+                SourceLocation::new(20, 21),
             )],
         },
-        SourceLocation { start: 0, end: 22 },
+        SourceLocation::new(0, 22),
     );
-    let ast = Node::new(
-        NodeKind::Program { statements: vec![call] },
-        SourceLocation { start: 0, end: 22 },
-    );
+    let ast = Node::new(NodeKind::Program { statements: vec![call] }, SourceLocation::new(0, 22));
     let environment = CompileTimePragmaEnvironment::build(&ast);
 
     assert_eq!(environment.import_into_calls(), &find_import_into_calls(&ast));

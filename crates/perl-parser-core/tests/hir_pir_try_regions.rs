@@ -245,11 +245,11 @@ fn catch_binding_is_a_source_exact_write_place() {
     let range = body.source_map.expr_range(binding).expect("binding must be anchored");
     let expected_start = source.find("$err").expect("probe contains $err");
     assert_eq!(
-        (range.start, range.end),
+        (range.start(), range.end()),
         (expected_start, expected_start + "$err".len()),
         "binding must be anchored at the variable token, not the catch header; \
          got {:?}",
-        &source[range.start..range.end]
+        &source[range.start()..range.end()]
     );
 }
 
@@ -543,11 +543,11 @@ fn catch_binding_shadows_an_outer_lexical_of_the_same_name() {
     let catch_start = source.find("catch ($e)").map(|i| i + 7).expect("probe has catch ($e)");
 
     let binding_at = |start: usize| {
-        graph.bindings.iter().find(|b| b.name == "e" && b.range.start == start).unwrap_or_else(
+        graph.bindings.iter().find(|b| b.name == "e" && b.range.start() == start).unwrap_or_else(
             || {
                 panic!(
                     "no binding for $e at byte {start}; bindings = {:?}",
-                    graph.bindings.iter().map(|b| (&b.name, b.range.start)).collect::<Vec<_>>()
+                    graph.bindings.iter().map(|b| (&b.name, b.range.start())).collect::<Vec<_>>()
                 )
             },
         )
@@ -574,7 +574,7 @@ fn catch_binding_shadows_an_outer_lexical_of_the_same_name() {
     let read = graph
         .references
         .iter()
-        .find(|r| r.name == "e" && r.range.start == read_start)
+        .find(|r| r.name == "e" && r.range.start() == read_start)
         .expect("handler read of $e must be recorded");
     assert_eq!(
         read.resolved_binding,

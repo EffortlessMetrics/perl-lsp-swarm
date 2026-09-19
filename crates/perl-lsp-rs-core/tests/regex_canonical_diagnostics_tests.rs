@@ -42,7 +42,7 @@ fn parse_with_retention(
             (
                 Arc::new(perl_parser_core::Node::new(
                     perl_parser_core::ast::NodeKind::Program { statements: vec![] },
-                    perl_parser_core::ast::SourceLocation { start: 0, end: 0 },
+                    perl_parser_core::ast::SourceLocation::new(0, 0),
                 )),
                 vec![error],
                 Arc::new(table),

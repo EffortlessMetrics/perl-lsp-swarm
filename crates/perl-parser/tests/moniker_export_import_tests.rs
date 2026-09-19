@@ -37,13 +37,13 @@ mod moniker_export_import_tests {
                 args: args.iter().map(|s| s.to_string()).collect(),
                 has_filter_risk: false,
             },
-            SourceLocation { start: 0, end: 0 },
+            SourceLocation::new(0, 0),
         )
     }
 
     /// Create a Program node containing multiple Use statements
     fn create_program_with_uses(uses: Vec<Node>) -> Node {
-        Node::new(NodeKind::Program { statements: uses }, SourceLocation { start: 0, end: 0 })
+        Node::new(NodeKind::Program { statements: uses }, SourceLocation::new(0, 0))
     }
 
     // ========================================================================
@@ -229,14 +229,10 @@ package MyModule;
     fn test_import_source_nested_block() {
         // Tests feature spec: PR #262 - Use statements within nested blocks
         let use_node = create_use_node("warnings", vec![]);
-        let block = Node::new(
-            NodeKind::Block { statements: vec![use_node] },
-            SourceLocation { start: 0, end: 0 },
-        );
-        let program = Node::new(
-            NodeKind::Program { statements: vec![block] },
-            SourceLocation { start: 0, end: 0 },
-        );
+        let block =
+            Node::new(NodeKind::Block { statements: vec![use_node] }, SourceLocation::new(0, 0));
+        let program =
+            Node::new(NodeKind::Program { statements: vec![block] }, SourceLocation::new(0, 0));
 
         // Verify nested structure
         if let NodeKind::Program { statements } = &program.kind {

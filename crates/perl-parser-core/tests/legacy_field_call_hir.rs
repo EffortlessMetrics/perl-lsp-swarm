@@ -117,7 +117,8 @@ fn legacy_field_call_reuses_existing_lexical_target() -> TestResult {
     assert!(
         nodes.iter().any(|node| {
             matches!(node.operation, PirOperation::LexicalWrite { .. })
-                && node.source_anchor.range.map(|range| (range.start, range.end)) == Some((13, 15))
+                && node.source_anchor.range.map(|range| (range.start(), range.end()))
+                    == Some((13, 15))
         }),
         "legacy field call must write the existing lexical at the field argument anchor: {nodes:?}"
     );
@@ -143,7 +144,8 @@ fn bare_field_argument_reuses_existing_lexical_target() -> TestResult {
     assert!(
         nodes.iter().any(|node| {
             matches!(node.operation, PirOperation::LexicalRead { .. })
-                && node.source_anchor.range.map(|range| (range.start, range.end)) == Some((13, 15))
+                && node.source_anchor.range.map(|range| (range.start(), range.end()))
+                    == Some((13, 15))
         }),
         "bare legacy field call must read the existing lexical at the field \
          argument anchor: {nodes:?}"
@@ -170,7 +172,7 @@ fn compound_field_argument_modifies_once_without_an_extra_write() -> TestResult 
     let writes: Vec<_> = nodes
         .iter()
         .filter(|node| matches!(node.operation, PirOperation::LexicalWrite { .. }))
-        .filter_map(|node| node.source_anchor.range.map(|range| (range.start, range.end)))
+        .filter_map(|node| node.source_anchor.range.map(|range| (range.start(), range.end())))
         .collect();
     assert_eq!(
         writes,
@@ -224,7 +226,7 @@ fn nested_same_target_assignment_keeps_both_writes() -> TestResult {
     let writes: Vec<_> = nodes
         .iter()
         .filter(|node| matches!(node.operation, PirOperation::LexicalWrite { .. }))
-        .filter_map(|node| node.source_anchor.range.map(|range| (range.start, range.end)))
+        .filter_map(|node| node.source_anchor.range.map(|range| (range.start(), range.end())))
         .collect();
     assert!(
         writes.contains(&(13, 15)),
@@ -252,7 +254,8 @@ fn nested_same_target_compound_keeps_the_outer_write() -> TestResult {
     assert!(
         nodes.iter().any(|node| {
             matches!(node.operation, PirOperation::LexicalWrite { .. })
-                && node.source_anchor.range.map(|range| (range.start, range.end)) == Some((13, 15))
+                && node.source_anchor.range.map(|range| (range.start(), range.end()))
+                    == Some((13, 15))
         }),
         "the outer write at the field argument must survive: {nodes:?}"
     );

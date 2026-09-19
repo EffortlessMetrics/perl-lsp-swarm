@@ -1259,10 +1259,10 @@ fn lower_statement(builder: &mut BodyBuilder, node: &Node) -> HirStmtId {
                         });
                         let place_id = builder.alloc_expr(place_expr, variable.location);
                         let rhs_id = lower_expr(builder, init_node);
-                        let assign_range = SourceLocation {
-                            start: variable.location.start,
-                            end: init_node.location.end,
-                        };
+                        let assign_range = SourceLocation::new(
+                            variable.location.start(),
+                            init_node.location.end(),
+                        );
                         let assign_expr = HirExpr::Assign {
                             lhs: place_id,
                             rhs: rhs_id,
@@ -1308,8 +1308,8 @@ fn lower_statement(builder: &mut BodyBuilder, node: &Node) -> HirStmtId {
                         ),
                         (Some(init_node), _) => match &init_node.kind {
                             NodeKind::Assignment { lhs, rhs, op }
-                                if lhs.location.start == binding_node.location.start
-                                    && lhs.location.end == binding_node.location.end =>
+                                if lhs.location.start() == binding_node.location.start()
+                                    && lhs.location.end() == binding_node.location.end() =>
                             {
                                 lower_assignment(
                                     builder,
@@ -1328,10 +1328,10 @@ fn lower_statement(builder: &mut BodyBuilder, node: &Node) -> HirStmtId {
                                     AccessMode::Write,
                                 );
                                 let rhs_id = lower_expr(builder, init_node);
-                                let assign_range = SourceLocation {
-                                    start: binding_node.location.start,
-                                    end: init_node.location.end,
-                                };
+                                let assign_range = SourceLocation::new(
+                                    binding_node.location.start(),
+                                    init_node.location.end(),
+                                );
                                 builder.alloc_expr(
                                     HirExpr::Assign {
                                         lhs: place_id,

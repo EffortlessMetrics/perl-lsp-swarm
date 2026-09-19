@@ -103,7 +103,7 @@ impl DocumentHighlightProvider {
     /// Find the byte span [start, end] of the enclosing Subroutine node, if any. (#5069)
     fn find_enclosing_sub_span(&self, ast: &Node, offset: usize) -> Option<(usize, usize)> {
         fn find_in(node: &Node, offset: usize) -> Option<(usize, usize)> {
-            if offset < node.location.start || offset > node.location.end {
+            if offset < node.location.start() || offset > node.location.end() {
                 return None;
             }
             // A cursor on a declaration name is a file-scope symbol lookup,
@@ -112,7 +112,7 @@ impl DocumentHighlightProvider {
             let on_declaration_name = match &node.kind {
                 NodeKind::Subroutine { name_span: Some(span), .. }
                 | NodeKind::Method { name_span: Some(span), .. } => {
-                    offset >= span.start && offset <= span.end
+                    offset >= span.start() && offset <= span.end()
                 }
                 _ => false,
             };
@@ -121,7 +121,7 @@ impl DocumentHighlightProvider {
             }
             // Check if this node is a Subroutine
             if matches!(node.kind, NodeKind::Subroutine { .. } | NodeKind::Method { .. }) {
-                return Some((node.location.start, node.location.end));
+                return Some((node.location.start(), node.location.end()));
             }
             // Recurse into children
             for child in node.children() {
@@ -142,7 +142,7 @@ impl DocumentHighlightProvider {
         let mut by_location: HashMap<(usize, usize), DocumentHighlight> = HashMap::new();
 
         for h in highlights {
-            let key = (h.location.start, h.location.end);
+            let key = (h.location.start(), h.location.end());
             by_location
                 .entry(key)
                 .and_modify(|existing| {
@@ -156,7 +156,7 @@ impl DocumentHighlightProvider {
 
         // Return sorted by position
         let mut result: Vec<_> = by_location.into_values().collect();
-        result.sort_by_key(|h| h.location.start);
+        result.sort_by_key(|h| h.location.start());
         result
     }
 
@@ -167,7 +167,7 @@ impl DocumentHighlightProvider {
         // the word" position produced by double-click-select) is treated as
         // on-token — matching the sibling references provider
         // (navigation/references.rs).
-        if offset < node.location.start || offset > node.location.end {
+        if offset < node.location.start() || offset > node.location.end() {
             return None;
         }
 
@@ -198,7 +198,7 @@ impl DocumentHighlightProvider {
     ) -> Option<SymbolInfo> {
         // Inclusive end (see `find_node_at_offset`): a trailing-edge caret is
         // on-token so the synthetic-symbol fallback also recovers it.
-        if offset < node.location.start || offset > node.location.end {
+        if offset < node.location.start() || offset > node.location.end() {
             return None;
         }
 
@@ -206,8 +206,8 @@ impl DocumentHighlightProvider {
         if let NodeKind::Try { catch_blocks, .. } = &node.kind {
             for (param, _) in catch_blocks {
                 if let Some((var_str, _)) = param {
-                    let node_source = source.get(node.location.start..node.location.end)?;
-                    let relative_offset = offset - node.location.start;
+                    let node_source = source.get(node.location.start()..node.location.end())?;
+                    let relative_offset = offset - node.location.start();
                     // Search for the variable string near the offset. Inclusive
                     // end (see `find_node_at_offset`): a trailing-edge caret on
                     // the catch parameter itself must still match here, since
@@ -232,8 +232,8 @@ impl DocumentHighlightProvider {
 
         // Check for subroutine/method name at cursor position
         if let NodeKind::Subroutine { name: Some(sub_name), name_span: Some(span), .. } = &node.kind
-            && offset >= span.start
-            && offset <= span.end
+            && offset >= span.start()
+            && offset <= span.end()
         {
             return Some(SymbolInfo {
                 name: sub_name.clone(),
@@ -433,7 +433,7 @@ impl DocumentHighlightProvider {
     fn is_symbol_name_at_offset(&self, node: &Node, offset: usize) -> bool {
         match &node.kind {
             NodeKind::Subroutine { name_span, .. } | NodeKind::Method { name_span, .. } => {
-                name_span.is_some_and(|span| offset >= span.start && offset <= span.end)
+                name_span.is_some_and(|span| offset >= span.start() && offset <= span.end())
             }
             _ => true,
         }
@@ -481,7 +481,7 @@ impl DocumentHighlightProvider {
             }),
             _ => {
                 // Try to extract from source text
-                let text = source.get(node.location.start..node.location.end)?;
+                let text = source.get(node.location.start()..node.location.end())?;
                 // Check for sigil prefix and extract safely
                 let first = text.chars().next();
                 match first {
@@ -564,15 +564,15 @@ impl DocumentHighlightProvider {
         // subscripted container (e.g. `$arr` in `$arr[0]`) must still resolve to
         // the `[]`/`{}` parent so the sigil normalization below fires, matching
         // the same offset that `find_node_at_offset` already treats as on-token.
-        if offset < node.location.start || offset > node.location.end {
+        if offset < node.location.start() || offset > node.location.end() {
             return None;
         }
 
         // If this is a Binary subscript and the offset falls inside the left child
         if let NodeKind::Binary { op, left, .. } = &node.kind
             && (op == "[]" || op == "{}")
-            && offset >= left.location.start
-            && offset <= left.location.end
+            && offset >= left.location.start()
+            && offset <= left.location.end()
         {
             // Verify the left child is a Variable with $ sigil
             if let NodeKind::Variable { sigil, .. } = &left.kind
@@ -632,8 +632,8 @@ impl DocumentHighlightProvider {
     ) {
         // Check if this node matches our symbol AND is within the enclosing sub
         if self.node_matches_symbol(node, source, target)
-            && node.location.start >= sub_start
-            && node.location.end <= sub_end
+            && node.location.start() >= sub_start
+            && node.location.end() <= sub_end
         {
             let kind = self.determine_highlight_kind_with_parent(node, parent);
             highlights.push(DocumentHighlight { location: node.location, kind });
@@ -641,12 +641,12 @@ impl DocumentHighlightProvider {
 
         // Also check cross-sigil matches (e.g. $arr[0] ↔ @arr) within scope
         if let NodeKind::Variable { sigil, name } = &node.kind
-            && node.location.start >= sub_start
-            && node.location.end <= sub_end
+            && node.location.start() >= sub_start
+            && node.location.end() <= sub_end
         {
             // Presence of a subscript parent is the gate; the parent node
             // itself is not needed here.
-            if self.find_subscript_parent(node, node.location.start).is_some() {
+            if self.find_subscript_parent(node, node.location.start()).is_some() {
                 let target_sigil_str = target.sigil.as_deref().unwrap_or("");
                 if self.is_cross_sigil_match(sigil, name, target_sigil_str, &target.name, parent) {
                     let kind = self.determine_highlight_kind_with_parent(node, parent);
@@ -738,13 +738,13 @@ impl DocumentHighlightProvider {
             && let Some(target_sigil) = &target.sigil
         {
             let expected = format!("{}{}", target_sigil, target.name);
-            let mut search_from = body.location.end;
+            let mut search_from = body.location.end();
             for (param, catch_body) in catch_blocks {
                 if let Some((var_str, _)) = param
                     && var_str == &expected
                 {
                     // Search between previous body/catch end and catch body start
-                    let search_end = catch_body.location.start;
+                    let search_end = catch_body.location.start();
                     if search_from < search_end
                         && search_end <= source.len()
                         && let Some(search_area) = source.get(search_from..search_end)
@@ -752,15 +752,12 @@ impl DocumentHighlightProvider {
                     {
                         let var_start = search_from + pos;
                         highlights.push(DocumentHighlight {
-                            location: SourceLocation {
-                                start: var_start,
-                                end: var_start + var_str.len(),
-                            },
+                            location: SourceLocation::new(var_start, var_start + var_str.len()),
                             kind: DocumentHighlightKind::Write,
                         });
                     }
                 }
-                search_from = catch_body.location.end;
+                search_from = catch_body.location.end();
             }
         }
 
@@ -769,7 +766,7 @@ impl DocumentHighlightProvider {
             && let Some(target_sigil) = &target.sigil
         {
             let expected = format!("{}{}", target_sigil, target.name);
-            if let Some(node_text) = source.get(node.location.start..node.location.end) {
+            if let Some(node_text) = source.get(node.location.start()..node.location.end()) {
                 for (pos, _) in node_text.match_indices(expected.as_str()) {
                     // Avoid matching prefixes of longer variable names
                     let end_pos = pos + expected.len();
@@ -779,18 +776,15 @@ impl DocumentHighlightProvider {
                             continue;
                         }
                     }
-                    let abs_start = node.location.start + pos;
+                    let abs_start = node.location.start() + pos;
                     // Skip if this is the whole node (already matched by normal traversal)
-                    if abs_start == node.location.start
-                        && node.location.end == abs_start + expected.len()
+                    if abs_start == node.location.start()
+                        && node.location.end() == abs_start + expected.len()
                     {
                         continue;
                     }
                     highlights.push(DocumentHighlight {
-                        location: SourceLocation {
-                            start: abs_start,
-                            end: abs_start + expected.len(),
-                        },
+                        location: SourceLocation::new(abs_start, abs_start + expected.len()),
                         kind: DocumentHighlightKind::Read,
                     });
                 }
@@ -851,7 +845,7 @@ impl DocumentHighlightProvider {
                 continue;
             }
             highlights.push(DocumentHighlight {
-                location: SourceLocation { start: abs_start, end: abs_start + needle_bytes.len() },
+                location: SourceLocation::new(abs_start, abs_start + needle_bytes.len()),
                 kind: DocumentHighlightKind::Text,
             });
         }
@@ -934,7 +928,7 @@ impl DocumentHighlightProvider {
                 if let Some(target_sigil) = &target.sigil {
                     let expected = format!("{}{}", target_sigil, target.name);
                     source
-                        .get(node.location.start..node.location.end)
+                        .get(node.location.start()..node.location.end())
                         .is_some_and(|text| text == expected)
                 } else {
                     false
@@ -1035,7 +1029,7 @@ mod tests {
     use super::*;
 
     fn loc(start: usize, end: usize) -> SourceLocation {
-        SourceLocation { start, end }
+        SourceLocation::new(start, end)
     }
 
     fn ident(name: &str, start: usize) -> Node {

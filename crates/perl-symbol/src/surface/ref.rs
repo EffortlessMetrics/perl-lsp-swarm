@@ -95,7 +95,7 @@ fn walk(node: &Node, out: &mut Vec<SymbolRef>) {
         }
 
         NodeKind::Goto { target, .. } => {
-            if !push_coderef_target(target, (node.location.start, node.location.end), out) {
+            if !push_coderef_target(target, (node.location.start(), node.location.end()), out) {
                 walk(target, out);
             }
         }
@@ -103,7 +103,7 @@ fn walk(node: &Node, out: &mut Vec<SymbolRef>) {
         NodeKind::TargetlessGoto { .. } => {}
 
         NodeKind::Unary { op, operand } if op == "\\" => {
-            if !push_coderef_target(operand, (node.location.start, node.location.end), out) {
+            if !push_coderef_target(operand, (node.location.start(), node.location.end()), out) {
                 walk(operand, out);
             }
         }
@@ -129,8 +129,8 @@ fn walk(node: &Node, out: &mut Vec<SymbolRef>) {
                 qualified_name,
                 sigil: Some("*".to_string()),
                 package_qualifier,
-                full_span: (node.location.start, node.location.end),
-                anchor_span: Some((node.location.start, node.location.end)),
+                full_span: (node.location.start(), node.location.end()),
+                anchor_span: Some((node.location.start(), node.location.end())),
             });
         }
 
@@ -152,8 +152,8 @@ fn walk(node: &Node, out: &mut Vec<SymbolRef>) {
                     qualified_name,
                     sigil: None,
                     package_qualifier,
-                    full_span: (node.location.start, node.location.end),
-                    anchor_span: Some((node.location.start, node.location.end)),
+                    full_span: (node.location.start(), node.location.end()),
+                    anchor_span: Some((node.location.start(), node.location.end())),
                 });
             }
 
@@ -175,7 +175,7 @@ fn walk(node: &Node, out: &mut Vec<SymbolRef>) {
                 qualified_name,
                 sigil: None,
                 package_qualifier,
-                full_span: (node.location.start, node.location.end),
+                full_span: (node.location.start(), node.location.end()),
                 anchor_span: None,
             });
 
@@ -235,8 +235,8 @@ fn push_variable_like_ref(node: &Node, sigil: &str, name: &str, out: &mut Vec<Sy
         qualified_name,
         sigil: Some(sigil.to_string()),
         package_qualifier,
-        full_span: (node.location.start, node.location.end),
-        anchor_span: Some((node.location.start, node.location.end)),
+        full_span: (node.location.start(), node.location.end()),
+        anchor_span: Some((node.location.start(), node.location.end())),
     });
 }
 
@@ -252,7 +252,7 @@ fn push_coderef_target(node: &Node, full_span: (usize, usize), out: &mut Vec<Sym
         sigil: Some("&".to_string()),
         package_qualifier,
         full_span,
-        anchor_span: Some((node.location.start, node.location.end)),
+        anchor_span: Some((node.location.start(), node.location.end())),
     });
     true
 }
@@ -278,7 +278,7 @@ fn coderef_target_name(node: &Node) -> Option<&str> {
 }
 
 fn has_parser_ampersand_span(node: &Node, name: &str) -> bool {
-    node.location.end.saturating_sub(node.location.start) == name.len() + 1
+    node.location.end().saturating_sub(node.location.start()) == name.len() + 1
 }
 
 /// Split a potentially package-qualified name into `(qualifier, bare, full)`.
@@ -321,7 +321,7 @@ mod tests {
     use perl_ast::{Node, NodeKind, SourceLocation};
 
     fn loc(start: usize, end: usize) -> SourceLocation {
-        SourceLocation { start, end }
+        SourceLocation::new(start, end)
     }
 
     /// Regression test: `*{$var}` used to produce a SymbolRef with a literal-

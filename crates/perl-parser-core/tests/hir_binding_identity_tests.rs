@@ -66,8 +66,8 @@ fn occurrences(file: &HirFile) -> Vec<Occurrence> {
                     access: var.access,
                     kind: var.kind,
                     binding: var.binding,
-                    start: range.start,
-                    end: range.end,
+                    start: range.start(),
+                    end: range.end(),
                 });
             }
         }
@@ -86,7 +86,7 @@ fn declarations(file: &HirFile) -> Vec<Declaration> {
                 found.push(Declaration {
                     name: name.clone(),
                     binding: *binding,
-                    start: binding_range.start,
+                    start: binding_range.start(),
                 });
             }
         }
@@ -330,7 +330,7 @@ fn same_scope_redeclarations_get_distinct_declaration_identities() {
     // Each declaration's identity matches the binding recorded at its own span.
     for decl in declarations(&file) {
         let binding =
-            must_some(file.scope_graph.bindings.iter().find(|b| b.range.start == decl.start));
+            must_some(file.scope_graph.bindings.iter().find(|b| b.range.start() == decl.start));
         assert_eq!(
             decl.binding,
             Some(binding.id),

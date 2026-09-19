@@ -521,7 +521,7 @@ impl Node {
     /// ```
     /// use perl_ast::{Node, NodeKind, SourceLocation};
     ///
-    /// let loc = SourceLocation { start: 0, end: 1 };
+    /// let loc = SourceLocation::new(0, 1);
     /// let leaf = Node::new(NodeKind::Number { value: "1".to_string() }, loc);
     /// assert_eq!(leaf.count_nodes(), 1);
     ///
@@ -569,11 +569,11 @@ impl Node {
     ///
     /// let left = Node::new(
     ///     NodeKind::Identifier { name: "left".to_string() },
-    ///     SourceLocation { start: 0, end: 4 },
+    ///     SourceLocation::new(0, 4),
     /// );
     /// let right = Node::new(
     ///     NodeKind::Number { value: "1".to_string() },
-    ///     SourceLocation { start: 7, end: 8 },
+    ///     SourceLocation::new(7, 8),
     /// );
     /// let expr = Node::new(
     ///     NodeKind::Binary {
@@ -581,7 +581,7 @@ impl Node {
     ///         left: Box::new(left),
     ///         right: Box::new(right),
     ///     },
-    ///     SourceLocation { start: 0, end: 8 },
+    ///     SourceLocation::new(0, 8),
     /// );
     ///
     /// assert_eq!(
@@ -626,7 +626,7 @@ mod tests {
     use crate::{NodeKind, SourceLocation};
 
     fn loc() -> SourceLocation {
-        SourceLocation { start: 0, end: 1 }
+        SourceLocation::new(0, 1)
     }
 
     fn independent_count(node: &Node) -> usize {
@@ -747,14 +747,10 @@ mod tests {
         const WIDTH: usize = 4_096;
         let statements: Vec<Node> = (0..WIDTH)
             .map(|i| {
-                Node::new(
-                    NodeKind::Number { value: "1".into() },
-                    SourceLocation { start: i, end: i + 1 },
-                )
+                Node::new(NodeKind::Number { value: "1".into() }, SourceLocation::new(i, i + 1))
             })
             .collect();
-        let program =
-            Node::new(NodeKind::Program { statements }, SourceLocation { start: 0, end: WIDTH });
+        let program = Node::new(NodeKind::Program { statements }, SourceLocation::new(0, WIDTH));
         let expected = WIDTH + 1;
         match program.count_nodes_exact() {
             AstReadExact::Complete { value, work } => {

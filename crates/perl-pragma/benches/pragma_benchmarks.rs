@@ -6,7 +6,7 @@ use perl_pragma::PragmaTracker;
 use std::hint::black_box;
 
 fn loc(start: usize, end: usize) -> SourceLocation {
-    SourceLocation { start, end }
+    SourceLocation::new(start, end)
 }
 
 fn use_node(module: &str, args: &[&str], start: usize, end: usize) -> Node {
@@ -36,7 +36,7 @@ fn block(statements: Vec<Node>, start: usize, end: usize) -> Node {
 }
 
 fn program(statements: Vec<Node>) -> Node {
-    let end = statements.last().map_or(0, |node| node.location.end);
+    let end = statements.last().map_or(0, |node| node.location.end());
     Node::new(NodeKind::Program { statements }, loc(0, end))
 }
 

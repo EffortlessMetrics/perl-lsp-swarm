@@ -25,7 +25,7 @@ fn assert_declaration_spans(source: &str, declarator: &str, expected: &str) -> R
     let declaration = find_declaration(&ast, declarator)
         .ok_or_else(|| format!("expected {declarator} declaration in {source:?}"))?;
     let actual = source
-        .get(declaration.location.start..declaration.location.end)
+        .get(declaration.location.start()..declaration.location.end())
         .ok_or_else(|| format!("invalid range {:?} for {source:?}", declaration.location))?;
     if actual != expected {
         return Err(format!(

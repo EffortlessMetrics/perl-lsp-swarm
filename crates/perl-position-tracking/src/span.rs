@@ -9,6 +9,23 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::ops::Range;
 
+/// Error returned when a byte span cannot represent a valid half-open range.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InvalidByteSpan {
+    /// The rejected starting offset.
+    pub start: usize,
+    /// The rejected ending offset.
+    pub end: usize,
+}
+
+impl fmt::Display for InvalidByteSpan {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "byte span start {} exceeds end {}", self.start, self.end)
+    }
+}
+
+impl std::error::Error for InvalidByteSpan {}
+
 /// A byte-based span representing a range in source text.
 ///
 /// `ByteSpan` uses byte offsets (not character or line positions) for precise
@@ -17,9 +34,21 @@ use std::ops::Range;
 ///
 /// # Invariants
 ///
-/// - `start <= end` (enforced by constructors, but not at type level for Copy)
-/// - Both `start` and `end` are valid byte offsets in the source text
-/// - Spans are half-open intervals: `[start, end)`
+/// - `start <= end` holds for every constructible value: fields are private,
+///   [`ByteSpan::new`] orders its arguments, serialization validates the
+///   ordering, and fallible construction is available through
+///   [`ByteSpan::try_new`];
+/// - Both `start` and `end` are valid byte offsets in the source text;
+/// - Spans are half-open intervals: `[start, end)`. A zero-length span
+///   (`start == end`) anchors at `start` and contains no offsets
+///   ([`ByteSpan::contains`](Self::contains) is always false for it).
+///
+/// # Constructor discipline
+///
+/// [`ByteSpan::new`], [`ByteSpan::empty`], [`ByteSpan::whole`], and the
+/// `From` conversions always produce ordered spans (`new` swaps reversed
+/// arguments). Callers that must detect reversed input use
+/// [`ByteSpan::try_new`]; deserialization rejects it outright.
 ///
 /// # Example
 ///
@@ -35,24 +64,35 @@ use std::ops::Range;
 /// let text = span.slice(source);
 /// assert_eq!(text, "hello worl");
 /// ```
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct ByteSpan {
-    /// Starting byte offset in the source text (inclusive)
-    pub start: usize,
-    /// Ending byte offset in the source text (exclusive)
-    pub end: usize,
+    /// Starting byte offset in the source text (inclusive).
+    start: usize,
+    /// Ending byte offset in the source text (exclusive).
+    end: usize,
 }
 
 impl ByteSpan {
-    /// Creates a new `ByteSpan` with the given start and end offsets.
+    /// Creates a new `ByteSpan` covering the offsets between `start` and
+    /// `end`, in either order.
     ///
-    /// # Panics
-    ///
-    /// Panics in debug mode if `start > end`.
+    /// This constructor is total and ordering-correcting: the returned span
+    /// always satisfies `start <= end`, with the arguments swapped when they
+    /// arrive reversed. Callers that must reject reversed input instead of
+    /// normalizing it use [`ByteSpan::try_new`]; deserialization is strict.
     #[inline]
     pub fn new(start: usize, end: usize) -> Self {
-        debug_assert!(start <= end, "ByteSpan: start ({}) > end ({})", start, end);
-        Self { start, end }
+        if start <= end { Self { start, end } } else { Self { start: end, end: start } }
+    }
+
+    /// Creates a `ByteSpan`, failing if the offsets are reversed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InvalidByteSpan`] when `start > end`.
+    #[inline]
+    pub const fn try_new(start: usize, end: usize) -> Result<Self, InvalidByteSpan> {
+        if start <= end { Ok(Self { start, end }) } else { Err(InvalidByteSpan { start, end }) }
     }
 
     /// Creates an empty span at the given position.
@@ -65,6 +105,18 @@ impl ByteSpan {
     #[inline]
     pub fn whole(source: &str) -> Self {
         Self { start: 0, end: source.len() }
+    }
+
+    /// Returns the starting byte offset (inclusive).
+    #[inline]
+    pub const fn start(&self) -> usize {
+        self.start
+    }
+
+    /// Returns the ending byte offset (exclusive).
+    #[inline]
+    pub const fn end(&self) -> usize {
+        self.end
     }
 
     /// Returns the length of this span in bytes.
@@ -167,6 +219,29 @@ impl From<ByteSpan> for (usize, usize) {
     }
 }
 
+impl Serialize for ByteSpan {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        #[derive(Serialize)]
+        struct Repr {
+            start: usize,
+            end: usize,
+        }
+        Repr { start: self.start, end: self.end }.serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for ByteSpan {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        struct Repr {
+            start: usize,
+            end: usize,
+        }
+        let repr = Repr::deserialize(deserializer)?;
+        ByteSpan::try_new(repr.start, repr.end).map_err(|e| serde::de::Error::custom(e.to_string()))
+    }
+}
+
 /// Type alias for backward compatibility with `SourceLocation`.
 ///
 /// New code should use [`ByteSpan`] directly.
@@ -179,8 +254,8 @@ mod tests {
     #[test]
     fn test_byte_span_basics() {
         let span = ByteSpan::new(5, 10);
-        assert_eq!(span.start, 5);
-        assert_eq!(span.end, 10);
+        assert_eq!(span.start(), 5);
+        assert_eq!(span.end(), 10);
         assert_eq!(span.len(), 5);
         assert!(!span.is_empty());
     }
@@ -188,10 +263,61 @@ mod tests {
     #[test]
     fn test_empty_span() {
         let span = ByteSpan::empty(5);
-        assert_eq!(span.start, 5);
-        assert_eq!(span.end, 5);
+        assert_eq!(span.start(), 5);
+        assert_eq!(span.end(), 5);
         assert_eq!(span.len(), 0);
         assert!(span.is_empty());
+    }
+
+    #[test]
+    fn test_new_normalizes_reversed_offsets() {
+        // #8740: the trusted constructor is order-correcting, so reversed
+        // offsets can never produce a reversed span.
+        assert_eq!(ByteSpan::new(7, 3), ByteSpan::new(3, 7));
+        assert_eq!(ByteSpan::try_new(3, 7), Ok(ByteSpan::new(3, 7)));
+        assert_eq!(ByteSpan::new(7, 3).len(), 4);
+        assert_eq!(ByteSpan::new(7, 3).start(), 3);
+        assert_eq!(ByteSpan::new(7, 3).end(), 7);
+    }
+
+    #[test]
+    fn test_try_new_accepts_ordered_offsets() {
+        assert_eq!(ByteSpan::try_new(3, 9), Ok(ByteSpan::new(3, 9)));
+        assert_eq!(ByteSpan::try_new(5, 5), Ok(ByteSpan::empty(5)));
+    }
+
+    #[test]
+    fn test_try_new_rejects_reversed_offsets() {
+        assert_eq!(ByteSpan::try_new(7, 3), Err(InvalidByteSpan { start: 7, end: 3 }));
+    }
+
+    #[test]
+    fn test_serde_round_trip_preserves_span() -> Result<(), serde_json::Error> {
+        let span = ByteSpan::new(4, 11);
+        let json = serde_json::to_string(&span)?;
+        assert_eq!(json, r#"{"start":4,"end":11}"#);
+        let back: ByteSpan = serde_json::from_str(&json)?;
+        assert_eq!(back, span);
+        Ok(())
+    }
+
+    #[test]
+    fn test_serde_rejects_reversed_span() {
+        let result: Result<ByteSpan, _> = serde_json::from_str(r#"{"start":9,"end":2}"#);
+        assert!(result.is_err(), "deserialization must fail closed on reversed spans");
+    }
+
+    #[test]
+    fn test_serde_rejects_missing_fields() {
+        assert!(serde_json::from_str::<ByteSpan>(r#"{"start":1}"#).is_err());
+        assert!(serde_json::from_str::<ByteSpan>(r#"{}"#).is_err());
+    }
+
+    #[test]
+    fn test_zero_length_anchor_contains_nothing() {
+        let anchor = ByteSpan::empty(7);
+        assert!(!anchor.contains(7), "zero-length span must not contain its anchor");
+        assert!(!anchor.contains(8));
     }
 
     #[test]
@@ -248,6 +374,13 @@ mod tests {
         let source = "hello world";
         let span = ByteSpan::new(0, 5);
         assert_eq!(span.slice(source), "hello");
+    }
+
+    #[test]
+    fn test_try_slice_out_of_bounds_returns_none() {
+        let source = "hello";
+        assert_eq!(ByteSpan::new(0, 12).try_slice(source), None);
+        assert_eq!(ByteSpan::new(0, 5).try_slice(source), Some("hello"));
     }
 
     #[test]

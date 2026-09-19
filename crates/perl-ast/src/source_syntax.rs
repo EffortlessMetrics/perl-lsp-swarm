@@ -615,7 +615,7 @@ fn payload_contradictions(
         return found;
     };
 
-    let mut previous_end = content.start;
+    let mut previous_end = content.start();
     for (index, segment) in segments.iter().enumerate() {
         let range = segment.raw_range;
         if is_malformed(range) {
@@ -624,18 +624,18 @@ fn payload_contradictions(
         if !segment.kind_can_prove_its_fragment() {
             found.push(PayloadContradiction::SegmentKindDisagreesWithCookedFragment { index });
         }
-        if range.start < content.start || range.end > content.end {
+        if range.start() < content.start() || range.end() > content.end() {
             found.push(PayloadContradiction::SegmentOutsideContent { index });
         }
-        if range.start < previous_end {
+        if range.start() < previous_end {
             // Starting before the previous segment ended is either a backwards
             // step or an overlap; report the one that describes it.
-            if index > 0 && range.start < segments[index - 1].raw_range.start {
+            if index > 0 && range.start() < segments[index - 1].raw_range.start() {
                 found.push(PayloadContradiction::SegmentsOutOfOrder { index });
             } else {
                 found.push(PayloadContradiction::SegmentsOverlap { index });
             }
-        } else if range.start > previous_end {
+        } else if range.start() > previous_end {
             // Exact tiles the whole region and Partial is a prefix of it, so a
             // hole inside the recorded run contradicts either name.
             found.push(PayloadContradiction::SegmentGap { index });
@@ -663,10 +663,10 @@ fn payload_contradictions(
                 found.push(PayloadContradiction::InterpolationRangeMismatch { index });
             }
         }
-        previous_end = previous_end.max(range.end);
+        previous_end = previous_end.max(range.end());
     }
 
-    if segmentation.is_exact() && previous_end != content.end {
+    if segmentation.is_exact() && previous_end != content.end() {
         found.push(PayloadContradiction::ExactSegmentationLeavesContentUncovered);
     }
 
@@ -693,7 +693,7 @@ fn payload_contradictions(
 /// `SourceLocation`'s constructors reject this, but its fields are public, so
 /// a struct literal can still produce one.
 const fn is_malformed(range: SourceLocation) -> bool {
-    range.start > range.end
+    range.start() > range.end()
 }
 
 /// Match contiguous known runs in order, letting unknown fragments fill the gaps.
@@ -764,12 +764,12 @@ fn heredoc_geometry_contradictions(heredoc: &HeredocSyntax) -> Vec<PayloadContra
 
     // Declaration, then body, then terminator: no overlap and no going back.
     if let Some(body) = heredoc.raw_body_range
-        && declaration.opener_range.end > body.start
+        && declaration.opener_range.end() > body.start()
     {
         found.push(PayloadContradiction::HeredocRegionsOutOfOrder);
     }
     if let (Some(body), Some(terminator)) = (heredoc.raw_body_range, heredoc.terminator_range)
-        && body.end > terminator.start
+        && body.end() > terminator.start()
     {
         found.push(PayloadContradiction::HeredocRegionsOutOfOrder);
     }
@@ -777,7 +777,7 @@ fn heredoc_geometry_contradictions(heredoc: &HeredocSyntax) -> Vec<PayloadContra
     // be in order; the two checks above both skip that case.
     if heredoc.raw_body_range.is_none()
         && let Some(terminator) = heredoc.terminator_range
-        && declaration.opener_range.end > terminator.start
+        && declaration.opener_range.end() > terminator.start()
     {
         found.push(PayloadContradiction::HeredocRegionsOutOfOrder);
     }
@@ -1028,8 +1028,12 @@ impl StringSyntax {
             && !is_malformed(self.raw_range)
             && let Some(content) = self.content_range
             && !is_malformed(content)
-            && (self.raw_range.start.checked_add(opening).is_none_or(|start| content.start < start)
-                || content.end.checked_add(closing).is_none_or(|end| end > self.raw_range.end))
+            && (self
+                .raw_range
+                .start()
+                .checked_add(opening)
+                .is_none_or(|start| content.start() < start)
+                || content.end().checked_add(closing).is_none_or(|end| end > self.raw_range.end()))
         {
             found.push(PayloadContradiction::TerminatedStringWithoutDelimiterBytes);
         }
@@ -1383,7 +1387,7 @@ mod tests {
     use crate::NodeKind;
 
     fn span(start: usize, end: usize) -> SourceLocation {
-        SourceLocation { start, end }
+        SourceLocation::new(start, end)
     }
 
     fn variable_node(start: usize, end: usize) -> Node {
@@ -1842,7 +1846,7 @@ mod tests {
         assert_eq!(doc.full_region, Some(span(0, 17)));
 
         // The declaration does not overlap the body it introduces.
-        assert!(doc.declaration.opener_range.end <= span(8, 14).start);
+        assert!(doc.declaration.opener_range.end() <= span(8, 14).start());
         assert!(
             doc.full_region.is_some_and(|full| full.contains_span(doc.declaration.opener_range)),
             "the full region must contain the declaration it opens with"
@@ -2096,10 +2100,10 @@ mod tests {
     }
 
     #[test]
-    fn a_malformed_child_range_is_not_blamed_on_its_segment() {
-        // The segment's own range is wellformed; its expression node's is not.
-        // Reporting `MalformedSegmentRange` would send a reader to the wrong
-        // field, so the child gets its own variant.
+    fn a_child_range_cannot_be_malformed_so_blame_stays_wellformed() {
+        // #8740: a child expression node can no longer carry an inverted
+        // range — `new` normalizes it, so the malformed-child variant is an
+        // unreachable safety net and the segment itself stays wellformed.
         let mut string = interpolated_string();
         let mut broken = interpolation_segment(5, 10);
         broken.payload = SourceSegmentPayload::Interpolation {
@@ -2117,12 +2121,11 @@ mod tests {
 
         let found = string.contradictions();
         assert!(
-            found.contains(&PayloadContradiction::MalformedInterpolationExpressionRange {
+            !found.contains(&PayloadContradiction::MalformedInterpolationExpressionRange {
                 index: 3
             })
         );
         assert!(!found.contains(&PayloadContradiction::MalformedSegmentRange { index: 3 }));
-        assert_eq!(string.proven_segments(), None);
     }
 
     #[test]
@@ -2553,31 +2556,35 @@ mod tests {
     // --- checks added after the third review round ------------------------
 
     #[test]
-    fn an_inverted_range_is_caught_before_any_length_is_taken() {
-        // `SourceLocation`'s constructors reject start > end, but its fields
-        // are public, so a struct literal still produces one — and `len()`
+    fn an_inverted_range_cannot_be_minted_and_normalizes_instead() {
+        // #8740: inverted ranges are no longer representable. `new` is
+        // ordering-correcting, `try_new` fails closed, and the struct-literal
+        // bypass is gone because the fields are private — and `len()`
         // panics on it with "attempt to subtract with overflow".
+        let normalized = SourceLocation::new(10, 1);
+        assert_eq!((normalized.start(), normalized.end()), (1, 10));
+        assert!(SourceLocation::try_new(10, 1).is_err());
+
         let mut string = interpolated_string();
-        string.content_range = Some(SourceLocation { start: 10, end: 1 });
-        assert!(string.contradictions().contains(&PayloadContradiction::MalformedRange));
-        assert!(string.proven_segments().is_none());
+        string.content_range = Some(SourceLocation::new(10, 1));
+        assert!(!string.contradictions().contains(&PayloadContradiction::MalformedRange));
+        assert!(string.proven_segments().is_some());
 
         let mut segmented = interpolated_string();
         segmented.segmentation = SourceSegmentation::Exact(vec![SourceSegment {
-            raw_range: SourceLocation { start: 9, end: 2 },
+            raw_range: SourceLocation::new(9, 2),
             cooked_fragment: CookedValue::Proven("x".to_string()),
             payload: SourceSegmentPayload::Literal,
         }]);
         assert!(
-            segmented
+            !segmented
                 .contradictions()
                 .contains(&PayloadContradiction::MalformedSegmentRange { index: 0 })
         );
-        assert!(segmented.proven_segments().is_none());
 
         let mut doc = heredoc(HeredocForm::Bare, PayloadTerminal::Complete);
-        doc.terminator_range = Some(SourceLocation { start: 17, end: 14 });
-        assert!(doc.contradictions().contains(&PayloadContradiction::MalformedRange));
+        doc.terminator_range = Some(SourceLocation::new(17, 14));
+        assert!(!doc.contradictions().contains(&PayloadContradiction::MalformedRange));
     }
 
     #[test]
@@ -2911,9 +2918,10 @@ mod tests {
             string.segmentation = if *exact {
                 SourceSegmentation::Exact(segments)
             } else {
-                string.raw_range.end += 1;
+                string.raw_range =
+                    SourceLocation::new(string.raw_range.start(), string.raw_range.end() + 1);
                 if let Some(content) = &mut string.content_range {
-                    content.end += 1;
+                    *content = SourceLocation::new(content.start(), content.end() + 1);
                 }
                 SourceSegmentation::Partial(segments)
             };

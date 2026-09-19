@@ -173,7 +173,7 @@ impl RenameProvider {
 
         if let Some(symbols) = self.symbol_table.symbols.get(&old_name) {
             for symbol in symbols {
-                if symbol.kind.kind_compatible(kind) {
+                if symbol.kind.kind_compatible(kind) && apply::is_renamable_span(symbol.location) {
                     edits.push(TextEdit {
                         location: adjust_location_for_sigil(symbol.location, kind),
                         new_text: new_name.to_string(),
@@ -184,7 +184,9 @@ impl RenameProvider {
 
         if let Some(references) = self.symbol_table.references.get(&old_name) {
             for reference in references {
-                if reference.kind.kind_compatible(kind) {
+                if reference.kind.kind_compatible(kind)
+                    && apply::is_renamable_span(reference.location)
+                {
                     edits.push(TextEdit {
                         location: adjust_location_for_sigil(reference.location, kind),
                         new_text: new_name.to_string(),
@@ -204,9 +206,9 @@ impl RenameProvider {
         // Vec::dedup() only removes consecutive duplicates (#1863).
         edits.sort_by(|a, b| {
             a.location
-                .start
-                .cmp(&b.location.start)
-                .then_with(|| a.location.end.cmp(&b.location.end))
+                .start()
+                .cmp(&b.location.start())
+                .then_with(|| a.location.end().cmp(&b.location.end()))
                 .then_with(|| a.new_text.cmp(&b.new_text))
         });
         edits.dedup();
@@ -266,7 +268,10 @@ impl RenameProvider {
 
         if let Some(symbols) = self.symbol_table.symbols.get(&old_name) {
             for symbol in symbols {
-                if symbol.kind == kind && symbol.scope_id == declaration_scope_id {
+                if symbol.kind == kind
+                    && symbol.scope_id == declaration_scope_id
+                    && apply::is_renamable_span(symbol.location)
+                {
                     edits.push(TextEdit {
                         location: adjust_location_for_sigil(symbol.location, kind),
                         new_text: new_name.to_string(),
@@ -288,11 +293,11 @@ impl RenameProvider {
                     let is_cross_sigil_eligible = match kind {
                         SymbolKind::Variable(VarKind::Array) => {
                             reference.kind == SymbolKind::Variable(VarKind::Scalar)
-                                && self.is_element_access(reference.location.start, "[]")
+                                && self.is_element_access(reference.location.start(), "[]")
                         }
                         SymbolKind::Variable(VarKind::Hash) => {
                             reference.kind == SymbolKind::Variable(VarKind::Scalar)
-                                && self.is_element_access(reference.location.start, "{}")
+                                && self.is_element_access(reference.location.start(), "{}")
                         }
                         _ => false,
                     };
@@ -309,6 +314,9 @@ impl RenameProvider {
                 if self.is_in_shadowed_scope(ref_scope, &shadowing_scopes) {
                     continue;
                 }
+                if !apply::is_renamable_span(reference.location) {
+                    continue;
+                }
                 edits.push(TextEdit {
                     location: adjust_location_for_sigil(reference.location, kind),
                     new_text: new_name.to_string(),
@@ -321,9 +329,9 @@ impl RenameProvider {
         // Vec::dedup() only removes consecutive duplicates (#1863).
         edits.sort_by(|a, b| {
             a.location
-                .start
-                .cmp(&b.location.start)
-                .then_with(|| a.location.end.cmp(&b.location.end))
+                .start()
+                .cmp(&b.location.start())
+                .then_with(|| a.location.end().cmp(&b.location.end()))
                 .then_with(|| a.new_text.cmp(&b.new_text))
         });
         edits.dedup();
@@ -344,13 +352,13 @@ impl RenameProvider {
     /// Recursively walk the AST to find a Binary subscript node whose left
     /// child (a Variable) contains `offset`.
     fn find_subscript_at(node: &Node, offset: usize, expected_op: &str) -> Option<()> {
-        if offset < node.location.start || offset > node.location.end {
+        if offset < node.location.start() || offset > node.location.end() {
             return None;
         }
         if let NodeKind::Binary { op, left, .. } = &node.kind
             && op == expected_op
-            && offset >= left.location.start
-            && offset <= left.location.end
+            && offset >= left.location.start()
+            && offset <= left.location.end()
             && let NodeKind::Variable { sigil, .. } = &left.kind
             && sigil == "$"
         {
@@ -374,8 +382,8 @@ impl RenameProvider {
         if let Some(symbols) = self.symbol_table.symbols.get(name) {
             for symbol in symbols {
                 if symbol.kind == kind
-                    && symbol.location.start <= position
-                    && position < symbol.location.end
+                    && symbol.location.start() <= position
+                    && position < symbol.location.end()
                 {
                     return Some(symbol.scope_id);
                 }
@@ -385,8 +393,8 @@ impl RenameProvider {
         if let Some(references) = self.symbol_table.references.get(name) {
             for reference in references {
                 if reference.kind == kind
-                    && reference.location.start <= position
-                    && position < reference.location.end
+                    && reference.location.start() <= position
+                    && position < reference.location.end()
                 {
                     return self.find_declaration_scope_up_chain(reference.scope_id, name, kind);
                 }
@@ -491,6 +499,32 @@ mod tests {
     use perl_parser_core::Parser;
     use perl_semantic_analyzer::symbol::SymbolKind;
     use perl_test_must::{must, must_err, must_some};
+
+    #[test]
+    fn test_rename_implicit_loop_topic_never_rewrites_for_keyword() {
+        // P1 (#14562 review): the implicit `$_` of `for (@items)` is a
+        // synthetic zero-width symbol at the `for` keyword. Sigil adjustment
+        // must not widen it into `[for_start, for_start + 1]` and rewrite
+        // the `f` in `for`.
+        let code = "for (@items) {\n    print $_;\n}\n";
+        let mut parser = Parser::new(code);
+        let ast = must(parser.parse());
+        let provider = RenameProvider::new(&ast, code.to_string());
+        let topic = must_some(code.find("$_"));
+        let result = provider.rename(topic, "item", &RenameOptions::default());
+        let for_offset = must_some(code.find("for"));
+        for edit in &result.edits {
+            assert!(
+                edit.location.start() != for_offset,
+                "rename edit must not start at the `for` keyword: {edit:?}"
+            );
+        }
+        let new_code = apply_rename_edits(code, &result.edits);
+        assert!(
+            new_code.contains("for ("),
+            "the `for` keyword must survive renaming the loop topic: {new_code:?}"
+        );
+    }
 
     #[test]
     fn test_rename_variable() {
@@ -719,7 +753,7 @@ mod tests {
                 id: root_id,
                 parent: None,
                 kind: ScopeKind::Block,
-                location: SourceLocation { start: 0, end: 100 },
+                location: SourceLocation::new(0, 100),
                 symbols: ScopeSymbolSet::new(),
             },
         );
@@ -729,7 +763,7 @@ mod tests {
                 id: child_id,
                 parent: Some(root_id),
                 kind: ScopeKind::Block,
-                location: SourceLocation { start: 1, end: 50 },
+                location: SourceLocation::new(1, 50),
                 symbols: ScopeSymbolSet::new(),
             },
         );
@@ -740,7 +774,7 @@ mod tests {
                 id: cyclic_id,
                 parent: Some(cyclic_id),
                 kind: ScopeKind::Block,
-                location: SourceLocation { start: 5, end: 10 },
+                location: SourceLocation::new(5, 10),
                 symbols: ScopeSymbolSet::new(),
             },
         );
@@ -784,7 +818,7 @@ mod tests {
                 id: root_id,
                 parent: None,
                 kind: ScopeKind::Global,
-                location: SourceLocation { start: 0, end: 10000 },
+                location: SourceLocation::new(0, 10000),
                 symbols: ScopeSymbolSet::new(),
             },
         );
@@ -795,7 +829,7 @@ mod tests {
                     id: i,
                     parent: Some(i - 1),
                     kind: ScopeKind::Block,
-                    location: SourceLocation { start: i * 10, end: i * 10 + 9 },
+                    location: SourceLocation::new(i * 10, i * 10 + 9),
                     symbols: ScopeSymbolSet::new(),
                 },
             );
@@ -848,7 +882,7 @@ mod tests {
         // bare $arr must NOT be renamed; $arr[0] SHOULD be renamed
         let bare_pos = must_some(code.rfind("print $arr;")) + 7;
         let element_pos = must_some(code.rfind("$arr[0]")) + 1;
-        let edit_starts: Vec<usize> = result.edits.iter().map(|e| e.location.start).collect();
+        let edit_starts: Vec<usize> = result.edits.iter().map(|e| e.location.start()).collect();
         assert!(!edit_starts.contains(&bare_pos), "bare $arr must NOT be renamed");
         assert!(edit_starts.contains(&element_pos), "$arr[0] MUST be renamed");
     }

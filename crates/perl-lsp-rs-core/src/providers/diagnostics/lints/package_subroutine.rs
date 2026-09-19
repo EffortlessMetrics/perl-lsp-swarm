@@ -101,7 +101,7 @@ pub fn check_duplicate_package(node: &Node, diagnostics: &mut Vec<Diagnostic>) {
             *count += 1;
             if *count > 1 {
                 diagnostics.push(Diagnostic {
-                    range: (name_span.start, name_span.end),
+                    range: (name_span.start(), name_span.end()),
                     severity: DiagnosticSeverity::Warning,
                     code: Some(DiagnosticCode::DuplicatePackage.as_str().to_string()),
                     message: format!("Package '{}' is declared more than once in this file", name),
@@ -148,7 +148,7 @@ pub fn check_duplicate_subroutine(node: &Node, diagnostics: &mut Vec<Diagnostic>
                 } else {
                     format!("{}::{}", current_package, name)
                 };
-                subs.push((qualified, (span.start, span.end)));
+                subs.push((qualified, (span.start(), span.end())));
             }
             _ => {}
         }

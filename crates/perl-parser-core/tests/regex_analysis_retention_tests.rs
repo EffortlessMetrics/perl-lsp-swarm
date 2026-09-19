@@ -50,7 +50,7 @@ fn retains_source_bound_pattern_analysis_with_exact_geometry() -> Result<(), Box
     let geometry = record.geometry.as_ref().ok_or("missing geometry")?;
     assert_eq!(geometry.pattern.text, r"(?<id>a)\k<id>");
     assert_eq!(
-        source.get(geometry.pattern.range.start..geometry.pattern.range.end),
+        source.get(geometry.pattern.range.start()..geometry.pattern.range.end()),
         Some(geometry.pattern.text.as_str())
     );
     let pattern = record.pattern.as_ref().ok_or("missing retained analysis")?;

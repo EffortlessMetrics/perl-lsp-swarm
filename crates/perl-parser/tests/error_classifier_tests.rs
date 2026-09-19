@@ -4,7 +4,7 @@ use perl_parser::{Node, NodeKind, SourceLocation};
 fn error_node_at(start: usize, end: usize) -> Node {
     Node::new(
         NodeKind::Error { message: String::new(), expected: vec![], found: None, partial: None },
-        SourceLocation { start, end },
+        SourceLocation::new(start, end),
     )
 }
 

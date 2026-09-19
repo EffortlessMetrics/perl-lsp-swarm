@@ -992,8 +992,9 @@ fn assignment_in_condition_finding(
     source: &str,
     condition: &Node,
 ) -> CriticFinding {
-    let range = range_for_byte_span(source, condition.location.start, condition.location.end);
-    let fix = assignment_comparison_fix(source, condition.location.start, condition.location.end);
+    let range = range_for_byte_span(source, condition.location.start(), condition.location.end());
+    let fix =
+        assignment_comparison_fix(source, condition.location.start(), condition.location.end());
 
     CriticFinding {
         rule_id: rule.id().to_string(),
@@ -1027,9 +1028,9 @@ fn printf_format_arity_finding(
     specifier_count: usize,
     arg_count: usize,
 ) -> CriticFinding {
-    let range = range_for_byte_span(source, call_node.location.start, call_node.location.end);
+    let range = range_for_byte_span(source, call_node.location.start(), call_node.location.end());
     let format_range =
-        range_for_byte_span(source, format_node.location.start, format_node.location.end);
+        range_for_byte_span(source, format_node.location.start(), format_node.location.end());
 
     CriticFinding {
         rule_id: rule.id().to_string(),
@@ -1073,8 +1074,8 @@ fn deprecated_defined_finding(
     sigil: &str,
     name: &str,
 ) -> CriticFinding {
-    let range = range_for_byte_span(source, call_node.location.start, call_node.location.end);
-    let arg_range = range_for_byte_span(source, arg_node.location.start, arg_node.location.end);
+    let range = range_for_byte_span(source, call_node.location.start(), call_node.location.end());
+    let arg_range = range_for_byte_span(source, arg_node.location.start(), arg_node.location.end());
     let variable_text = format!("{sigil}{name}");
     let type_name = if sigil == "@" { "array" } else { "hash" };
 
@@ -1109,14 +1110,17 @@ fn undef_comparison_finding(
     compared_node: &Node,
     undef_node: &Node,
 ) -> CriticFinding {
-    let range =
-        range_for_byte_span(source, comparison_node.location.start, comparison_node.location.end);
+    let range = range_for_byte_span(
+        source,
+        comparison_node.location.start(),
+        comparison_node.location.end(),
+    );
     let compared_range =
-        range_for_byte_span(source, compared_node.location.start, compared_node.location.end);
+        range_for_byte_span(source, compared_node.location.start(), compared_node.location.end());
     let undef_range =
-        range_for_byte_span(source, undef_node.location.start, undef_node.location.end);
+        range_for_byte_span(source, undef_node.location.start(), undef_node.location.end());
     let compared_text =
-        source[compared_node.location.start..compared_node.location.end].trim().to_string();
+        source[compared_node.location.start()..compared_node.location.end()].trim().to_string();
     let replacement = match op {
         "==" => format!("!defined({compared_text})"),
         "!=" => format!("defined({compared_text})"),
@@ -1157,8 +1161,9 @@ fn stale_dollar_at_finding(
     dollar_at_node: &Node,
 ) -> CriticFinding {
     let range =
-        range_for_byte_span(source, dollar_at_node.location.start, dollar_at_node.location.end);
-    let eval_range = range_for_byte_span(source, eval_node.location.start, eval_node.location.end);
+        range_for_byte_span(source, dollar_at_node.location.start(), dollar_at_node.location.end());
+    let eval_range =
+        range_for_byte_span(source, eval_node.location.start(), eval_node.location.end());
 
     CriticFinding {
         rule_id: rule.id().to_string(),
@@ -1210,7 +1215,7 @@ fn bareword_filehandle_finding(
     handle: &Node,
     handle_name: &str,
 ) -> CriticFinding {
-    let range = range_for_byte_span(source, handle.location.start, handle.location.end);
+    let range = range_for_byte_span(source, handle.location.start(), handle.location.end());
     let lexical_name = bareword_filehandle_lexical_name(handle_name);
 
     CriticFinding {
@@ -1242,7 +1247,7 @@ fn two_arg_open_finding(
     call: &Node,
     open_args: &[Node],
 ) -> CriticFinding {
-    let range = range_for_byte_span(source, call.location.start, call.location.end);
+    let range = range_for_byte_span(source, call.location.start(), call.location.end());
     let fix = two_arg_open_fix_text(source, open_args).map(|new_text| CriticFix {
         title: "Convert to three-argument open() for safety".to_string(),
         safety: FixSafety::Suggested,
@@ -1268,8 +1273,8 @@ fn two_arg_open_fix_text(source: &str, open_args: &[Node]) -> Option<String> {
         return None;
     };
 
-    let handle_text = source.get(handle.location.start..handle.location.end)?.trim();
-    let path_text = source.get(path.location.start..path.location.end)?.trim();
+    let handle_text = source.get(handle.location.start()..handle.location.end())?.trim();
+    let path_text = source.get(path.location.start()..path.location.end())?.trim();
 
     if handle_text.is_empty() || path_text.is_empty() {
         return None;
@@ -1279,7 +1284,7 @@ fn two_arg_open_fix_text(source: &str, open_args: &[Node]) -> Option<String> {
 }
 
 fn pipe_open_finding(rule: &PipeOpenRule, source: &str, open_node: &Node) -> CriticFinding {
-    let range = range_for_byte_span(source, open_node.location.start, open_node.location.end);
+    let range = range_for_byte_span(source, open_node.location.start(), open_node.location.end());
 
     CriticFinding {
         rule_id: rule.id().to_string(),
@@ -1304,7 +1309,7 @@ fn unchecked_open_close_finding(
     call_node: &Node,
     name: &str,
 ) -> CriticFinding {
-    let range = range_for_byte_span(source, call_node.location.start, call_node.location.end);
+    let range = range_for_byte_span(source, call_node.location.start(), call_node.location.end());
     let message = match name {
         "close" => "close() return value should be checked",
         _ => "open() return value should be checked",
@@ -1332,7 +1337,8 @@ fn backtick_exec_finding(
     source: &str,
     string_node: &Node,
 ) -> CriticFinding {
-    let range = range_for_byte_span(source, string_node.location.start, string_node.location.end);
+    let range =
+        range_for_byte_span(source, string_node.location.start(), string_node.location.end());
 
     CriticFinding {
         rule_id: rule.id().to_string(),
@@ -1357,7 +1363,8 @@ fn qx_readpipe_finding(
     command_node: &Node,
     observed_shape: CriticFindingShape,
 ) -> CriticFinding {
-    let range = range_for_byte_span(source, command_node.location.start, command_node.location.end);
+    let range =
+        range_for_byte_span(source, command_node.location.start(), command_node.location.end());
 
     CriticFinding {
         rule_id: rule.id().to_string(),
@@ -1377,7 +1384,7 @@ fn qx_readpipe_finding(
 }
 
 fn string_eval_finding(rule: &StringEvalRule, source: &str, eval_node: &Node) -> CriticFinding {
-    let range = range_for_byte_span(source, eval_node.location.start, eval_node.location.end);
+    let range = range_for_byte_span(source, eval_node.location.start(), eval_node.location.end());
 
     CriticFinding {
         rule_id: rule.id().to_string(),
@@ -1402,7 +1409,7 @@ fn system_exec_finding(
     call_node: &Node,
     name: &str,
 ) -> CriticFinding {
-    let range = range_for_byte_span(source, call_node.location.start, call_node.location.end);
+    let range = range_for_byte_span(source, call_node.location.start(), call_node.location.end());
     let (message, observed_shape) = match name {
         "exec" => (
             "exec() replaces the current process with a shell command",
@@ -1971,7 +1978,7 @@ fn is_open_close_call(name: &str) -> bool {
 }
 
 fn has_trailing_error_check(source: &str, call_node: &Node) -> bool {
-    let Some(call_text) = source.get(call_node.location.start..call_node.location.end) else {
+    let Some(call_text) = source.get(call_node.location.start()..call_node.location.end()) else {
         return false;
     };
     let Some(close_paren) = call_text.trim_end().rfind(')') else {
@@ -2158,8 +2165,8 @@ fn is_assignment_condition(source: &str, condition: &Node) -> bool {
     is_assignment
         && !has_extra_condition_parentheses(
             source,
-            condition.location.start,
-            condition.location.end,
+            condition.location.start(),
+            condition.location.end(),
         )
 }
 
@@ -2539,7 +2546,7 @@ fn leading_zeros_finding(
     node: &Node,
     value: &str,
 ) -> CriticFinding {
-    let range = range_for_byte_span(source, node.location.start, node.location.end);
+    let range = range_for_byte_span(source, node.location.start(), node.location.end());
     let decimal_value = octal_literal_to_decimal(value);
     let decimal_hint = decimal_value.map(|value| format!(" ({value} decimal)")).unwrap_or_default();
     let evaluated_value = decimal_value
@@ -2586,7 +2593,7 @@ fn normalized_octal_digits(value: &str) -> String {
 fn empty_program_node() -> Node {
     use perl_parser_core::{NodeKind, SourceLocation};
 
-    Node::new(NodeKind::Program { statements: Vec::new() }, SourceLocation { start: 0, end: 0 })
+    Node::new(NodeKind::Program { statements: Vec::new() }, SourceLocation::new(0, 0))
 }
 
 #[cfg(test)]

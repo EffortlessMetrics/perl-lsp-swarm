@@ -1,0 +1,9 @@
+project: product
+component: Position tracking
+kind: Changed
+body: "Breaking (`perl-position-tracking`): engine `Position::default()` is now the file origin (byte 0, line 1, column 1) instead of (0, 0, 0), and deserialization rejects zero line/column values. Printers or caches treating `line == 0` as unknown must migrate to an explicit sentinel: persisted (0, 0, 0) positions no longer restore. `ByteSpan` fields are private with order-correcting/fallible constructors, and the `From<SourceLocation> for Range` conversion is removed (#8740)."
+time: 2026-09-16T00:00:00Z
+custom:
+  PR: "14562"
+  Slug: span-valid-by-construction-8740
+  Breaking: "yes"

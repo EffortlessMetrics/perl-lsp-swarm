@@ -24,8 +24,8 @@ impl SemanticAnalyzer {
                             .values()
                             .find(|s| {
                                 s.kind == crate::symbol::ScopeKind::Package
-                                    && s.location.start == sym.location.start
-                                    && s.location.end == sym.location.end
+                                    && s.location.start() == sym.location.start()
+                                    && s.location.end() == sym.location.end()
                             })
                             .map(|s| s.id)
                             .unwrap_or(sym.scope_id);
@@ -66,7 +66,9 @@ impl SemanticAnalyzer {
             // Check if we're on a reference
             for refs in self.symbol_table.references.values() {
                 for reference in refs {
-                    if reference.location.start <= position && reference.location.end >= position {
+                    if reference.location.start() <= position
+                        && reference.location.end() >= position
+                    {
                         // Found a reference, get its definition to get the symbol ID
                         let symbols = self.symbol_table.find_symbol(
                             &reference.name,

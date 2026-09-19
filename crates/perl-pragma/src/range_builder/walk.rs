@@ -11,7 +11,7 @@ pub(crate) fn build_ranges(
     match &node.kind {
         NodeKind::Use { module, args, .. } => {
             apply_use_directive(
-                node.location.start..node.location.end,
+                node.location.start()..node.location.end(),
                 module,
                 args,
                 current_state,
@@ -20,7 +20,7 @@ pub(crate) fn build_ranges(
         }
         NodeKind::No { module, args, .. } => {
             apply_no_directive(
-                node.location.start..node.location.end,
+                node.location.start()..node.location.end(),
                 module,
                 args,
                 current_state,
@@ -28,7 +28,7 @@ pub(crate) fn build_ranges(
             );
         }
         NodeKind::Block { statements } => {
-            build_statement_block(statements, node.location.end, current_state, ranges);
+            build_statement_block(statements, node.location.end(), current_state, ranges);
         }
         NodeKind::Program { statements } => {
             for stmt in statements {
@@ -87,6 +87,7 @@ pub(crate) fn build_ranges(
         NodeKind::Package { block: Some(pkg_block), .. } => {
             build_scoped_body(pkg_block, current_state, ranges);
         }
+
         NodeKind::ExpressionStatement { expression } => {
             build_ranges(expression, current_state, ranges);
         }
@@ -102,7 +103,7 @@ fn build_scoped_body(
     let saved_state = current_state.clone();
     build_ranges(body, current_state, ranges);
     if *current_state != saved_state {
-        ranges.push((body.location.end..body.location.end, saved_state.clone()));
+        ranges.push((body.location.end()..body.location.end(), saved_state.clone()));
     }
     *current_state = saved_state;
 }
@@ -138,7 +139,7 @@ mod tests {
                 args: Vec::new(),
                 has_filter_risk: false,
             },
-            SourceLocation { start: 10, end: 42 },
+            SourceLocation::new(10, 42),
         );
         let mut ranges = Vec::new();
 

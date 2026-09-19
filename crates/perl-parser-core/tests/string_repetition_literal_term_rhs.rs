@@ -109,10 +109,10 @@ fn assert_string_repetition(
     };
     let term_end = term_start + term.len();
     assert!(
-        right.location.start <= term_start && right.location.end >= term_end,
+        right.location.start() <= term_start && right.location.end() >= term_end,
         "RHS span {}..{} must cover term {term:?} at {term_start}..{term_end} for source:\n{source}\n\nsexp:\n{}",
-        right.location.start,
-        right.location.end,
+        right.location.start(),
+        right.location.end(),
         ast.to_sexp(),
     );
 }

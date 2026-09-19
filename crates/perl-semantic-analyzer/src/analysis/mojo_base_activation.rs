@@ -86,12 +86,12 @@ fn walk_activation_sites(
 ) {
     match &node.kind {
         NodeKind::Use { module, args, .. } if is_exact_mojo_base_import(module) => {
-            let span_start = node.location.start.min(u32::MAX as usize) as u32;
-            let span_end = node.location.end.min(u32::MAX as usize) as u32;
+            let span_start = node.location.start().min(u32::MAX as usize) as u32;
+            let span_end = node.location.end().min(u32::MAX as usize) as u32;
             let evidence = parse_mojo_base_import_args(args);
             sites.push(MojoBaseActivationSite {
                 file_id,
-                anchor_id: AnchorId(node.location.start as u64),
+                anchor_id: AnchorId(node.location.start() as u64),
                 anchor: MojoBaseSiteAnchor::new(
                     current_package.clone(),
                     span_start,

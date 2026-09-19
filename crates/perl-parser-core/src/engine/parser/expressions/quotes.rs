@@ -200,14 +200,14 @@ impl<'a> Parser<'a> {
                 // Double-quoted string with interpolation
                 Ok(Node::new(
                     NodeKind::String { value: format!("\"{}\"", content), interpolated: true },
-                    SourceLocation { start, end },
+                    SourceLocation::new(start, end),
                 ))
             }
             "q" => {
                 // Single-quoted string without interpolation
                 Ok(Node::new(
                     NodeKind::String { value: format!("'{}'", content), interpolated: false },
-                    SourceLocation { start, end },
+                    SourceLocation::new(start, end),
                 ))
             }
             "qw" => {
@@ -217,14 +217,14 @@ impl<'a> Parser<'a> {
                     .map(|word| {
                         Node::new(
                             NodeKind::String { value: format!("'{}'", word), interpolated: false },
-                            SourceLocation { start, end },
+                            SourceLocation::new(start, end),
                         )
                     })
                     .collect();
 
                 Ok(Node::new(
                     NodeKind::ArrayLiteral { elements: words },
-                    SourceLocation { start, end },
+                    SourceLocation::new(start, end),
                 ))
             }
             "qr" => {
@@ -238,14 +238,14 @@ impl<'a> Parser<'a> {
                         modifiers,
                         has_embedded_code,
                     },
-                    SourceLocation { start, end },
+                    SourceLocation::new(start, end),
                 ))
             }
             "qx" => {
                 // Backticks/command execution
                 Ok(Node::new(
                     NodeKind::String { value: format!("`{}`", content), interpolated: true },
-                    SourceLocation { start, end },
+                    SourceLocation::new(start, end),
                 ))
             }
             "m" => {
@@ -292,7 +292,7 @@ impl<'a> Parser<'a> {
                         modifiers,
                         has_embedded_code,
                     },
-                    SourceLocation { start, end },
+                    SourceLocation::new(start, end),
                 ))
             }
             "s" => {
@@ -309,7 +309,7 @@ impl<'a> Parser<'a> {
                     NodeKind::Substitution {
                         expr: Box::new(Node::new(
                             NodeKind::Identifier { name: String::from("$_") },
-                            SourceLocation { start, end: start },
+                            SourceLocation::new(start, start),
                         )),
                         pattern: content,
                         replacement,
@@ -317,7 +317,7 @@ impl<'a> Parser<'a> {
                         has_embedded_code,
                         negated: false,
                     },
-                    SourceLocation { start, end },
+                    SourceLocation::new(start, end),
                 ))
             }
             _ => Err(ParseError::syntax(format!("Unknown quote operator: {}", op), start)),
@@ -548,7 +548,7 @@ impl<'a> Parser<'a> {
                         value: format!("'{}'", token.text), // qw produces single-quoted strings
                         interpolated: false,
                     },
-                    SourceLocation { start: token.start(), end: token.end() },
+                    SourceLocation::new(token.start(), token.end()),
                 ));
             } else if self.peek_kind() == Some(TokenKind::String) {
                 // Also allow string tokens in qw lists
@@ -558,7 +558,7 @@ impl<'a> Parser<'a> {
                         value: format!("'{}'", token.text.trim_matches(|c| c == '"' || c == '\'')),
                         interpolated: false,
                     },
-                    SourceLocation { start: token.start(), end: token.end() },
+                    SourceLocation::new(token.start(), token.end()),
                 ));
             } else {
                 // Skip other tokens (might be separators or special chars)

@@ -36,7 +36,7 @@ const GOLDEN_CHAIN3: &str =
     "(expression_statement (expression (expression_statement (expression (number (value 1))))))";
 
 fn loc() -> SourceLocation {
-    SourceLocation { start: 0, end: 1 }
+    SourceLocation::new(0, 1)
 }
 
 fn num(value: &str) -> Node {

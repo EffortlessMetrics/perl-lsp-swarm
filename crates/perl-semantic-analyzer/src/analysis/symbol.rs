@@ -253,7 +253,7 @@ impl SymbolTable {
                 id: 0,
                 parent: None,
                 kind: ScopeKind::Global,
-                location: SourceLocation { start: 0, end: 0 },
+                location: SourceLocation::new(0, 0),
                 symbols: HashSet::new(),
             },
         );
@@ -354,8 +354,8 @@ impl SymbolTable {
     pub fn scope_at_offset(&self, offset: usize) -> ScopeId {
         self.scopes
             .values()
-            .filter(|scope| scope.location.start <= offset && offset < scope.location.end)
-            .max_by_key(|scope| (scope.location.start, scope.id))
+            .filter(|scope| scope.location.start() <= offset && offset < scope.location.end())
+            .max_by_key(|scope| (scope.location.start(), scope.id))
             .map(|scope| scope.id)
             .unwrap_or(0)
     }
@@ -671,7 +671,7 @@ impl SymbolExtractor {
             }
 
             NodeKind::VariableDeclaration { declarator, variable, attributes, initializer } => {
-                let doc = self.extract_leading_comment(node.location.start);
+                let doc = self.extract_leading_comment(node.location.start());
                 self.handle_variable_declaration(
                     declarator,
                     variable,
@@ -690,7 +690,7 @@ impl SymbolExtractor {
                 attributes,
                 initializer,
             } => {
-                let doc = self.extract_leading_comment(node.location.start);
+                let doc = self.extract_leading_comment(node.location.start());
                 for var in variables {
                     self.handle_variable_declaration(
                         declarator,
@@ -737,7 +737,7 @@ impl SymbolExtractor {
                     name.as_ref().map(|n| n.to_string()).unwrap_or_else(|| "<anon>".to_string());
 
                 if name.is_some() {
-                    let documentation = self.extract_leading_comment(node.location.start);
+                    let documentation = self.extract_leading_comment(node.location.start());
                     let mut symbol_attributes = attributes.clone();
                     let documentation = if self.current_package_is_catalyst_controller()
                         && let Some((action_kind, action_details)) =
@@ -1131,7 +1131,7 @@ impl SymbolExtractor {
             }
 
             NodeKind::Class { name, name_span: _, parents, body } => {
-                let documentation = self.extract_leading_comment(node.location.start);
+                let documentation = self.extract_leading_comment(node.location.start());
                 if Self::is_catalyst_controller_package_name(name)
                     || parents.iter().any(|parent| parent == "Catalyst::Controller")
                 {
@@ -1155,7 +1155,7 @@ impl SymbolExtractor {
             }
 
             NodeKind::Method { name, name_span: _, signature, attributes, body } => {
-                let documentation = self.extract_leading_comment(node.location.start);
+                let documentation = self.extract_leading_comment(node.location.start());
                 let mut symbol_attributes = Vec::with_capacity(attributes.len() + 1);
                 symbol_attributes.push("method".to_string());
                 symbol_attributes.extend(attributes.iter().cloned());
@@ -1470,7 +1470,7 @@ impl SymbolExtractor {
 
             if is_has_marker && let NodeKind::ExpressionStatement { expression } = &second.kind {
                 let has_location =
-                    SourceLocation { start: first.location.start, end: second.location.end };
+                    SourceLocation::new(first.location.start(), second.location.end());
 
                 match &expression.kind {
                     NodeKind::HashLiteral { pairs } => {
@@ -1622,8 +1622,7 @@ impl SymbolExtractor {
             return None;
         };
 
-        let modifier_location =
-            SourceLocation { start: first.location.start, end: second.location.end };
+        let modifier_location = SourceLocation::new(first.location.start(), second.location.end());
         let scope_id = self.table.current_scope();
         let package = self.table.current_package.clone();
 
@@ -1724,7 +1723,7 @@ impl SymbolExtractor {
             self.mark_catalyst_controller_package(&package);
         }
 
-        let ref_location = SourceLocation { start: first.location.start, end: second.location.end };
+        let ref_location = SourceLocation::new(first.location.start(), second.location.end());
 
         let ref_kind = if keyword == "extends" { SymbolKind::Class } else { SymbolKind::Role };
 
@@ -1802,7 +1801,7 @@ impl SymbolExtractor {
             return None;
         }
 
-        let location = SourceLocation { start: first.location.start, end: second.location.end };
+        let location = SourceLocation::new(first.location.start(), second.location.end());
         let scope_id = self.table.current_scope();
         let package = self.table.current_package.clone();
 
@@ -1985,7 +1984,7 @@ impl SymbolExtractor {
         // excluded keywords, and forms outside the canonical grammar keep
         // the legacy path with this recorded boundary.
         if web_framework == Some(WebFrameworkKind::Dancer2)
-            && u32::try_from(first.location.start).is_ok_and(|keyword_start| {
+            && u32::try_from(first.location.start()).is_ok_and(|keyword_start| {
                 self.dancer2_canonical_routes
                     .contains(&(self.table.current_package.clone(), keyword_start))
             })
@@ -2098,8 +2097,7 @@ impl SymbolExtractor {
             _ => method_name,
         };
 
-        let route_location =
-            SourceLocation { start: first.location.start, end: second.location.end };
+        let route_location = SourceLocation::new(first.location.start(), second.location.end());
         let scope_id = self.table.current_scope();
 
         self.table.add_symbol(Symbol {
@@ -3015,7 +3013,7 @@ impl SymbolExtractor {
             return call_node.location;
         }
 
-        let search_start = object.location.end.min(self.source.len());
+        let search_start = object.location.end().min(self.source.len());
         let mut search_end = search_start.saturating_add(160).min(self.source.len());
         // Keep both window edges on char boundaries. `search_start` comes from a
         // node span; clamp the window end down when needed so method-token lookup
@@ -3045,12 +3043,12 @@ impl SymbolExtractor {
         let suffix = &window[idx..];
         if suffix.starts_with(method_name) {
             let method_start = search_start + idx;
-            return SourceLocation { start: method_start, end: method_start + method_name.len() };
+            return SourceLocation::new(method_start, method_start + method_name.len());
         }
 
         if let Some(rel_idx) = suffix.find(method_name) {
             let method_start = search_start + idx + rel_idx;
-            return SourceLocation { start: method_start, end: method_start + method_name.len() };
+            return SourceLocation::new(method_start, method_start + method_name.len());
         }
 
         call_node.location
@@ -3117,7 +3115,7 @@ impl SymbolExtractor {
         location: SourceLocation,
     ) -> Option<String> {
         // First try leading comments (cheapest check)
-        let leading = self.extract_leading_comment(location.start);
+        let leading = self.extract_leading_comment(location.start());
         if leading.is_some() {
             return leading;
         }
@@ -3369,12 +3367,10 @@ impl SymbolExtractor {
             return;
         }
 
-        let location = self
-            .find_catch_variable_location(catch_block_location.start, full_name)
-            .unwrap_or(SourceLocation {
-                start: catch_block_location.start,
-                end: catch_block_location.start,
-            });
+        let location =
+            self.find_catch_variable_location(catch_block_location.start(), full_name).unwrap_or(
+                SourceLocation::new(catch_block_location.start(), catch_block_location.start()),
+            );
 
         self.table.add_symbol(Symbol {
             name: name.to_string(),
@@ -3409,7 +3405,7 @@ impl SymbolExtractor {
         let start = window_start + var_offset;
         let end = start + full_name.len();
 
-        Some(SourceLocation { start, end })
+        Some(SourceLocation::new(start, end))
     }
 
     /// Mark a node as a write reference (used in assignments)
@@ -3466,13 +3462,13 @@ impl SymbolExtractor {
 
                 // Calculate the location within the original string
                 // This is approximate - in the actual string location
-                let start_offset = string_location.start + content_offset + m.start();
+                let start_offset = string_location.start() + content_offset + m.start();
                 let end_offset = start_offset + m.len();
 
                 let reference = SymbolReference {
                     name: var_name.to_string(),
                     kind: SymbolKind::scalar(),
-                    location: SourceLocation { start: start_offset, end: end_offset },
+                    location: SourceLocation::new(start_offset, end_offset),
                     scope_id: self.table.current_scope(),
                     is_write: false,
                 };
@@ -3827,7 +3823,7 @@ mod tests {
                 id: 1,
                 parent: Some(0),
                 kind: ScopeKind::Package,
-                location: SourceLocation { start: 0, end: 0 },
+                location: SourceLocation::new(0, 0),
                 symbols: HashSet::new(),
             },
         );
@@ -3837,7 +3833,7 @@ mod tests {
                 id: 2,
                 parent: Some(1),
                 kind: ScopeKind::Block,
-                location: SourceLocation { start: 0, end: 0 },
+                location: SourceLocation::new(0, 0),
                 symbols: HashSet::new(),
             },
         );
@@ -3850,7 +3846,7 @@ mod tests {
             name: "foo".to_string(),
             qualified_name: "main::foo".to_string(),
             kind: SymbolKind::Subroutine,
-            location: SourceLocation { start: 0, end: 0 },
+            location: SourceLocation::new(0, 0),
             scope_id: 1,
             declaration: None,
             documentation: None,
@@ -3865,7 +3861,7 @@ mod tests {
             name: "g".to_string(),
             qualified_name: "main::g".to_string(),
             kind: SymbolKind::scalar(),
-            location: SourceLocation { start: 0, end: 0 },
+            location: SourceLocation::new(0, 0),
             scope_id: 1,
             declaration: Some("our".to_string()),
             documentation: None,
@@ -3906,7 +3902,7 @@ mod tests {
                 id: 1,
                 parent: Some(0),
                 kind: ScopeKind::Subroutine,
-                location: SourceLocation { start: 10, end: 20 },
+                location: SourceLocation::new(10, 20),
                 symbols: HashSet::new(),
             },
         );
@@ -3926,7 +3922,7 @@ mod tests {
                 id: 1,
                 parent: Some(0),
                 kind: ScopeKind::Subroutine,
-                location: SourceLocation { start: 0, end: 100 },
+                location: SourceLocation::new(0, 100),
                 symbols: HashSet::new(),
             },
         );
@@ -3936,7 +3932,7 @@ mod tests {
                 id: 2,
                 parent: Some(1),
                 kind: ScopeKind::Block,
-                location: SourceLocation { start: 10, end: 90 },
+                location: SourceLocation::new(10, 90),
                 symbols: HashSet::new(),
             },
         );
@@ -3957,7 +3953,7 @@ mod tests {
                 id: 1,
                 parent: Some(0),
                 kind: ScopeKind::Block,
-                location: SourceLocation { start: 10, end: 40 },
+                location: SourceLocation::new(10, 40),
                 symbols: HashSet::new(),
             },
         );
@@ -3967,7 +3963,7 @@ mod tests {
                 id: 2,
                 parent: Some(0),
                 kind: ScopeKind::Block,
-                location: SourceLocation { start: 50, end: 90 },
+                location: SourceLocation::new(50, 90),
                 symbols: HashSet::new(),
             },
         );
@@ -3985,7 +3981,7 @@ mod tests {
                 id: 1,
                 parent: Some(0),
                 kind: ScopeKind::Block,
-                location: SourceLocation { start: 10, end: 20 },
+                location: SourceLocation::new(10, 20),
                 symbols: HashSet::new(),
             },
         );
@@ -4006,7 +4002,7 @@ mod tests {
                 id: 1,
                 parent: Some(0),
                 kind: ScopeKind::Block,
-                location: SourceLocation { start: 10, end: 20 },
+                location: SourceLocation::new(10, 20),
                 symbols: HashSet::new(),
             },
         );
@@ -4025,7 +4021,7 @@ mod tests {
     /// deterministically picks the highest-id (innermost) scope every time,
     /// since scope IDs are assigned in strictly increasing, nested push
     /// order (see `push_scope`). Reverting the key back to a bare
-    /// `scope.location.start` makes this test flaky-to-failing, since the
+    /// `scope.location.start()` makes this test flaky-to-failing, since the
     /// tie is then broken by unspecified `HashMap` iteration order instead
     /// of nesting depth.
     #[test]
@@ -4041,7 +4037,7 @@ mod tests {
                     id,
                     parent: Some(0),
                     kind: ScopeKind::Block,
-                    location: SourceLocation { start: 10, end },
+                    location: SourceLocation::new(10, end),
                     symbols: HashSet::new(),
                 },
             );
@@ -4350,7 +4346,7 @@ sub configure ($x, %opts) {
         // `$y` starts at offset 13 in "sub bar ($x, $y = 0)"
         //                                            ^ offset 13
         let y_sym = &table.symbols["y"][0];
-        let span_len = y_sym.location.end - y_sym.location.start;
+        let span_len = y_sym.location.end() - y_sym.location.start();
         // The variable node "$y" is 2 bytes; the full param "$y = 0" is 6 bytes.
         assert_eq!(
             span_len, 2,
@@ -4475,13 +4471,11 @@ sub jump {
         // Synthetic AST the parser never produces (Label form is only assigned to
         // identifier targets): a Label-form goto whose target is a Number literal.
         // Exercises the defensive `else => visit_node` branch of the Label arm.
-        let target = Node::new(
-            NodeKind::Number { value: "1".to_string() },
-            SourceLocation { start: 0, end: 1 },
-        );
+        let target =
+            Node::new(NodeKind::Number { value: "1".to_string() }, SourceLocation::new(0, 1));
         let goto = Node::new(
             NodeKind::Goto { target: Box::new(target), form: GotoTargetForm::Label },
-            SourceLocation { start: 0, end: 1 },
+            SourceLocation::new(0, 1),
         );
         let table = SymbolExtractor::new().extract(&goto);
         assert!(
@@ -4702,14 +4696,14 @@ sub jump {
     #[test]
     fn extract_vars_from_string_multibyte_edges_do_not_panic() {
         let mut extractor = SymbolExtractor::new_with_source("");
-        let loc = SourceLocation { start: 0, end: 0 };
+        let loc = SourceLocation::new(0, 0);
 
         // Start edge mid-char: byte index 1 lands inside U+FFFD (bytes 0..3),
         // the exact shape of the CI panic.
         extractor.extract_vars_from_string("\u{FFFD}$trigger", loc);
         assert_eq!(
             extractor.table.references["trigger"][0].location,
-            SourceLocation { start: 3, end: 11 },
+            SourceLocation::new(3, 11),
             "reference must span `$trigger`, not shift by a stripped quote"
         );
 
@@ -4719,7 +4713,7 @@ sub jump {
         extractor_end.extract_vars_from_string("\"$ok\u{FFFD}", loc);
         assert_eq!(
             extractor_end.table.references["ok"][0].location,
-            SourceLocation { start: 1, end: 4 },
+            SourceLocation::new(1, 4),
             "reference must span `$ok`, not shift from malformed quote stripping"
         );
 
@@ -4729,7 +4723,7 @@ sub jump {
         extractor_quoted.extract_vars_from_string("\"$quoted\"", loc);
         assert_eq!(
             extractor_quoted.table.references["quoted"][0].location,
-            SourceLocation { start: 1, end: 8 },
+            SourceLocation::new(1, 8),
             "reference must span `$quoted`, accounting for the stripped opening quote"
         );
     }
@@ -4754,7 +4748,7 @@ sub jump {
 
         assert_eq!(
             table.references["method"][0].location,
-            SourceLocation { start: 6, end: 12 },
+            SourceLocation::new(6, 12),
             "method reference must span the method token, not the whole call"
         );
     }
