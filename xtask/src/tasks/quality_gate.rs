@@ -769,14 +769,13 @@ pub(crate) fn compute_lifecycle_overlay(raw: &str) -> Result<LifecycleOverlay> {
     let metadata_is_valid = overlay_policy_metadata_is_valid(table);
 
     let due_review = table.get("due_review").and_then(TomlValue::as_str).map(str::to_string);
-    if let Some(due_review) = due_review.as_deref() {
-        if !matches!(due_review, "warn" | "fail") {
-            overlay.validation_error = Some(format!(
-                "quality exception due_review must be warn or fail, found {due_review}"
-            ));
-            overlay.invalid_metadata_status = metadata_is_valid;
-            table.insert("status".to_string(), TomlValue::String("invalid".to_string()));
-        }
+    if let Some(due_review) = due_review.as_deref()
+        && !matches!(due_review, "warn" | "fail")
+    {
+        overlay.validation_error =
+            Some(format!("quality exception due_review must be warn or fail, found {due_review}"));
+        overlay.invalid_metadata_status = metadata_is_valid;
+        table.insert("status".to_string(), TomlValue::String("invalid".to_string()));
     }
     table.insert("due_review".to_string(), TomlValue::String("warn".to_string()));
 
@@ -1030,16 +1029,16 @@ fn read_exception_policy(
         ));
     }
 
-    if let Some(overlay) = overlay {
-        if let Some(error) = overlay.validation_error.as_deref() {
-            actions.push(quality_exception_policy_action(args, "invalid_due_review", error));
-            if overlay.invalid_metadata_status {
-                actions.retain(|action| {
-                    !(action.get("kind").and_then(Value::as_str)
-                        == Some("quality_exception_policy_not_current")
-                        && action.get("reason").and_then(Value::as_str) == Some("invalid_metadata"))
-                });
-            }
+    if let Some(overlay) = overlay
+        && let Some(error) = overlay.validation_error.as_deref()
+    {
+        actions.push(quality_exception_policy_action(args, "invalid_due_review", error));
+        if overlay.invalid_metadata_status {
+            actions.retain(|action| {
+                !(action.get("kind").and_then(Value::as_str)
+                    == Some("quality_exception_policy_not_current")
+                    && action.get("reason").and_then(Value::as_str) == Some("invalid_metadata"))
+            });
         }
     }
 
@@ -1057,16 +1056,14 @@ fn read_exception_policy(
         "active": active,
         "missing_required": missing_required,
     });
-    if let Some(overlay) = overlay {
-        if let Some(object) = receipt.as_object_mut() {
-            object.insert("due_review".to_string(), Value::String("advisory".to_string()));
-            object.insert(
-                "lifecycle_authority".to_string(),
-                Value::String("policy_cadence".to_string()),
-            );
-            if let Some(error) = overlay.validation_error.as_deref() {
-                object.insert("validation_error".to_string(), Value::String(error.to_string()));
-            }
+    if let Some(overlay) = overlay
+        && let Some(object) = receipt.as_object_mut()
+    {
+        object.insert("due_review".to_string(), Value::String("advisory".to_string()));
+        object
+            .insert("lifecycle_authority".to_string(), Value::String("policy_cadence".to_string()));
+        if let Some(error) = overlay.validation_error.as_deref() {
+            object.insert("validation_error".to_string(), Value::String(error.to_string()));
         }
     }
 
