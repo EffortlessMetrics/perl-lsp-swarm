@@ -1,0 +1,133 @@
+name: Emacs Train Packet Contract
+
+on:
+  pull_request:
+    branches: [main, master]
+    paths:
+      - '.spec/10918-emacs-train-graph/**'
+      - '.spec/11770-emacs-train-revisions/**'
+      - '.spec/11717-emacs-train-specs/**'
+      - '.spec/11756-emacs-context-engine/**'
+      - '.spec/11716-emacs-support-architecture/**'
+      - 'xtask/src/tasks/emacs_train_packet.rs'
+      - 'xtask/src/tasks/emacs_train_packet/**'
+      # The lane invokes the CLI route, so a change that removes or misroutes
+      # the command must trigger it too.
+      - 'xtask/src/main.rs'
+      - 'xtask/src/tasks/mod.rs'
+      - 'xtask/src/tasks/emacs_train_context/**'
+      - 'xtask/src/tasks/emacs_train_specs.rs'
+      - 'xtask/src/tasks/agent_implementation_packet.rs'
+      - 'xtask/src/tasks/agent_review_packet.rs'
+      - 'schemas/agent_implementation_packet.v1.schema.json'
+      - 'schemas/agent_review_packet.v1.schema.json'
+      - 'fixtures/agent_implementation_packet/**'
+      - 'fixtures/agent_review_packet/**'
+      # The lane passes this fixture to the CLI and the falsifier suite
+      # asserts its content, so edits to the fixture tree must trigger it.
+      - 'fixtures/emacs_train_packet/**'
+      # The reconcile route validates candidate flags against the closed
+      # CANDIDATE_STATES vocabulary owned by this module.
+      - 'xtask/src/tasks/module_train_live.rs'
+      - '.github/workflows/emacs-train-packet-contract.yml'
+  workflow_dispatch: {}
+
+concurrency:
+  group: emacs-train-packet-contract-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Validate E06 shared-contract packet adapter
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # stable (master)
+        with:
+          toolchain: 1.95.0
+
+      - name: Falsifier suite
+        run: cargo test -p xtask --bin xtask emacs_train_packet --locked
+
+      - name: Denominator assumes no vacancy without a live observation
+        run: |
+          set -euo pipefail
+          cargo run -p xtask --locked -- integration emacs train packets --check | tee /tmp/den-blind.txt
+          # A coding packet admits a writer, so with no observation supplied
+          # no node may render: every node must refuse rather than assume its
+          # claim is free. `rendered=0` is the universal form of that law and
+          # holds no matter which typed refusal fires first (profile,
+          # context, hard dependencies, or the live gate itself). Which code
+          # fires is real-tree train-graph state owned by E01/E02/E04, so the
+          # code-level live-gate assertion lives in the falsifier suite
+          # (synthetic trees pin NO_LIVE_OBSERVATION with negative controls),
+          # not in a real-tree grep.
+          grep -q 'EMU_PACKETS_CHECK=OK rendered=0 ' /tmp/den-blind.txt
+
+      - name: Supplied observation is accepted through the CLI route
+        run: |
+          set -euo pipefail
+          cargo run -p xtask --locked -- integration emacs train packets --check \
+            --live-observation fixtures/emacs_train_packet/observed_no_candidate.v1.json | tee /tmp/den.txt
+          # The falsifier suite composes LiveObservation values through the
+          # library API; this is the proof that the CLI parses the supplied
+          # fixture and the denominator still exits OK with it applied. The
+          # real-tree render and two-render determinism proofs return when a
+          # node's hard dependencies are current (#10923/#10930): until E01
+          # lands, no node renders, and any `status=ok` grep here would be a
+          # permanently red lane asserting E01's landing state, not E06's
+          # adapter contract.
+          grep -q 'EMU_PACKETS_CHECK=OK' /tmp/den.txt
+
+      - name: Offline routes refuse fail-closed with the exact typed code
+        run: |
+          set -uo pipefail
+          # Asserting exit 3 alone would accept any refusal, including a wrong
+          # or accidental one; assert the typed code this adapter owns.
+          assert_refusal() {
+            local expected="$1"; shift
+            local err
+            err="$("$@" 2>&1 >/dev/null)" && { echo "expected a refusal from: $*"; exit 1; }
+            test $? -eq 3 || { echo "expected exit 3 from: $*"; exit 1; }
+            echo "$err" | grep -q "EMU_PACKET_REFUSED .*code=$expected" || {
+              echo "expected code=$expected from: $*"; echo "$err"; exit 1;
+            }
+          }
+          assert_refusal MISSING_CANDIDATE_IDENTITY \
+            cargo run -p xtask --locked -- integration emacs train review-packet CTXENG
+          assert_refusal NO_LIVE_OBSERVATION \
+            cargo run -p xtask --locked -- integration emacs train reconcile-packet CTXENG
+          # The review challenges the exact supplied builder packet (FC1), so
+          # identity plus controls without one must refuse with the
+          # packet-input code. The head must be the observed checkout or
+          # HEAD_TREE_MISMATCH fires first, so resolve it from git; the
+          # controls file only needs to be non-empty because the
+          # builder-packet requirement precedes falsifier coverage.
+          head="$(git rev-parse HEAD)"
+          printf '{"F_lane":{"exists":{"status":"established","evidence":"lane"}}}' > /tmp/controls.json
+          assert_refusal MISSING_BUILDER_PACKET \
+            cargo run -p xtask --locked -- integration emacs train review-packet CTXENG \
+              --base "$head" --head "$head" --diff sha256:lane --controls /tmp/controls.json
+          # The blind packet route must also refuse typed, but which gate
+          # fires first (hard dependencies vs the live gate) is E01/E02
+          # real-tree state, so pin the refusal shape, not the code.
+          err="$(cargo run -p xtask --locked -- integration emacs train packet CTXENG --profile coding_agent_bounded 2>&1 >/dev/null)" && {
+            echo "expected a typed refusal from the blind packet route"; echo "$err"; exit 1;
+          }
+          test $? -eq 3 || { echo "expected exit 3 from the blind packet route"; exit 1; }
+          echo "$err" | grep -q "EMU_PACKET_REFUSED .*code=" || {
+            echo "expected a typed EMU_PACKET_REFUSED code from the blind packet route"
+            echo "$err"; exit 1;
+          }
+
+      - name: Shared contract checks stay green (zero drift)
+        run: |
+          cargo run -p xtask --locked -- check-agent-implementation-packet
+          cargo run -p xtask --locked -- check-agent-review-packet

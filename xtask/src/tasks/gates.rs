@@ -41,6 +41,7 @@ pub mod disposition;
 mod first_failure;
 mod planning_types;
 pub mod route_profile;
+mod routed_result_adapter;
 
 pub use first_failure::{is_cargo_test_command, parse_first_failure};
 
@@ -165,6 +166,14 @@ pub struct GateDefinition {
     pub matrix: Option<serde_yaml_ng::Value>,
     #[serde(default)]
     pub planning: Option<GatePlanningConfig>,
+    /// Policy-typed early exit (#13698): when this required gate ends in a
+    /// blocking status (fail/timeout/error), the runner records every remaining
+    /// planned gate as a typed `skip` row ("saved work") and stops before them.
+    /// The gate itself stays required and blocking, so the run is still red and
+    /// the receipt is still produced. Distinct from the CLI `--fail-fast` flag,
+    /// whose run-wide semantics this field does not touch.
+    #[serde(default)]
+    pub short_circuit: bool,
 }
 
 #[allow(dead_code)]
@@ -259,6 +268,11 @@ pub struct AuditConfig {
 // =============================================================================
 // Receipt Schema (from .ci/receipt.schema.json)
 // =============================================================================
+
+/// Schema version emitted by the `gates` producer. Must match the consumer's
+/// expected value in `ci_explain::SUPPORTED_SCHEMA_VERSION`; a mismatch causes
+/// every freshly-emitted receipt to be rejected at load time (#15337).
+pub const GATES_RECEIPT_SCHEMA_VERSION: &str = "gates.v1";
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Receipt {
@@ -498,6 +512,14 @@ pub struct GateResult {
     /// First failing test details for `cargo test`-class gates that exit non-zero.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub first_failure: Option<FirstFailure>,
+    /// Whether the runner observed this gate's command actually start.
+    /// In-process dispatches always start their closure; the shell path
+    /// knows whether the child spawned before a failure. Consumed by the
+    /// routed adapter (#9156, review thread FC-ADAPTER-ERROR-FLATTEN) so a
+    /// post-start `error` is never published as never-started; it is a
+    /// runner fact, not a receipt contract field, so it is not serialized.
+    #[serde(default, skip_serializing)]
+    pub command_started: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
@@ -655,6 +677,13 @@ pub struct GateRunnerConfig {
     #[allow(dead_code)]
     pub parallel: bool,
     pub verbose: bool,
+    /// Optional published `ci_route_plan.v1` (#10179). When set, the runner
+    /// consumes and validates the canonical plan/row identity before any
+    /// execution and emits one normalized, durably published
+    /// `routed_gate_result.v1` (#9156) per executed planned `run` row under
+    /// `target/receipts/routed-results/`. Unset keeps legacy behavior so
+    /// current workflow topology is unchanged.
+    pub route_plan_path: Option<PathBuf>,
     /// Explicit opt-in that this run inspects the STAGED tree (`git
     /// write-tree`), never the working tree (issue #3786). Required for
     /// `GateTier::Commit` — see `run()`'s early validation — so an agent
@@ -681,6 +710,7 @@ impl Default for GateRunnerConfig {
             fail_fast: false,
             parallel: false,
             verbose: false,
+            route_plan_path: None,
             staged: false,
         }
     }
@@ -1527,6 +1557,116 @@ fn run_gate_plan(
     let log_dir = root.join("target/receipts/logs");
     fs::create_dir_all(&log_dir).context("Failed to create log directory")?;
 
+    // #9156: consume and validate the canonical plan/row identity BEFORE any
+    // gate executes — subject, selection symmetry, and row execution
+    // identity are bound to this invocation here — then emit exactly one
+    // normalized result per planned `run` row. Unset keeps legacy behavior
+    // (topology unchanged).
+    let routed_gate_plan = config
+        .route_plan_path
+        .as_deref()
+        .map(|plan_path| -> Result<(xtask::ci_route_plan::CiRoutePlanV1, PathBuf)> {
+            let compiled = routed_result_adapter::load_compiled_plan(plan_path)?;
+            // A commit-tier run requires --staged with a staged index, which
+            // the route plan's clean-tree binding refuses — the two contracts
+            // cannot both hold, so routed commit runs are refused explicitly
+            // instead of being silently restricted to a trivial empty index
+            // (review thread FC-STAGED-CLEAN-TREE).
+            if matches!(config.tier, GateTier::Commit) {
+                bail!(
+                    "--route-plan does not support --tier commit: commit tier requires --staged \
+                     with a staged index, which the route plan's clean-tree binding refuses; \
+                     run commit tier without --route-plan"
+                );
+            }
+            let actual_head_sha = cmd!("git", "rev-parse", "HEAD")
+                .dir(&root)
+                .read()
+                .map_err(|error| eyre!("resolving HEAD to bind the route plan subject: {error}"))?
+                .trim()
+                .to_string();
+            routed_result_adapter::ensure_plan_subject_matches_invocation(
+                &compiled,
+                &actual_head_sha,
+            )?;
+            let subject_path = config.subject.as_deref().ok_or_else(|| {
+                eyre!(
+                    "--route-plan requires --subject so the complete immutable subject \
+                     digest can be rebound before execution"
+                )
+            })?;
+            routed_result_adapter::ensure_plan_subject_matches_receipt(
+                &compiled,
+                subject_path,
+                &root,
+            )?;
+            let tracked_status =
+                cmd!("git", "status", "--porcelain=v1").dir(&root).read().map_err(|error| {
+                    eyre!("checking the execution tree for route-plan binding: {error}")
+                })?;
+            routed_result_adapter::ensure_execution_tree_is_clean(&tracked_status)?;
+            let selected_gates: Vec<&GateDefinition> =
+                plan.selected.iter().map(|planned| &planned.gate).collect();
+            routed_result_adapter::ensure_plan_covers_selection(
+                &compiled,
+                &selected_gates,
+                config.verbose,
+            )?;
+            // Resolve the runner's actual selection base exactly the way
+            // `plan_gates` resolves it (subject scope, then --base, then the
+            // ambient scope default), and require the plan to match it
+            // unconditionally: skipping the comparison when --base is absent
+            // would let a foreign-base plan publish under selection
+            // authority that did not govern the run (review threads P1
+            // timing / FC-SELECTION-BASE-OPTIONAL-SKIP).
+            let subject_scope_for_base = config
+                .subject
+                .as_deref()
+                .map(|path| ci_scope::scope_from_subject(&root, path))
+                .transpose()?;
+            let selection_base = subject_scope_for_base
+                .as_ref()
+                .map(|scope| scope.base.clone())
+                .or_else(|| config.base_ref.clone())
+                .unwrap_or_else(|| select_scope_base(&root));
+            let resolved_base = cmd!(
+                "git",
+                "rev-parse",
+                "--verify",
+                format!("{selection_base}^{{commit}}")
+            )
+            .dir(&root)
+            .read()
+            .map(|sha| sha.trim().to_string())
+            .map_err(|error| {
+                eyre!(
+                    "resolving the selection base {selection_base} to bind the route plan: {error}"
+                )
+            })?;
+            routed_result_adapter::ensure_plan_authority_matches_invocation(
+                &compiled,
+                &config.tier,
+                &resolved_base,
+                |revision| {
+                    cmd!("git", "rev-parse", "--verify", format!("{revision}^{{commit}}"))
+                        .dir(&root)
+                        .stderr_null()
+                        .read()
+                        .ok()
+                        .map(|sha| sha.trim().to_string())
+                },
+            )?;
+            let output_dir = root.join(routed_result_adapter::ROUTED_RESULTS_DIR);
+            fs::create_dir_all(&output_dir).context("Failed to create routed-results directory")?;
+            Ok((compiled, output_dir))
+        })
+        .transpose()?;
+    let routed_hosted_identity = if routed_gate_plan.is_some() {
+        routed_result_adapter::collect_hosted_identity()?
+    } else {
+        None
+    };
+
     // Run each gate
     let mut results: Vec<GateResult> = Vec::new();
     let mut tier_summaries: HashMap<String, TierSummary> = HashMap::new();
@@ -1546,6 +1686,13 @@ fn run_gate_plan(
 
     for (idx, planned_gate) in plan.selected.iter().enumerate() {
         let gate = &planned_gate.gate;
+        if routed_gate_plan.is_some() {
+            let status =
+                cmd!("git", "status", "--porcelain=v1").dir(&root).read().map_err(|error| {
+                    eyre!("checking the execution tree before the next route-plan gate: {error}")
+                })?;
+            routed_result_adapter::ensure_execution_tree_is_clean(&status)?;
+        }
         emit_gate_begin(gate);
         if let Some(ref pb) = spinner {
             pb.set_position(idx as u64);
@@ -1555,6 +1702,24 @@ fn run_gate_plan(
         let result =
             run_single_gate(gate, policy, &log_dir, config, plan.staged_tree_oid.as_deref())?;
         emit_gate_end(gate, &result);
+
+        // One executed planned `run` row -> one normalized result (#9156).
+        // A quarantined gate is selected but never executes, so it has no
+        // planned run row and no result to attribute.
+        if let Some((compiled, output_dir)) = &routed_gate_plan
+            && !routed_result_adapter::is_quarantine_skipped(gate, config.verbose)
+        {
+            routed_result_adapter::emit_planned_run_row_result(
+                compiled,
+                gate,
+                &result,
+                &root,
+                &root.join("target/receipts"),
+                output_dir,
+                routed_hosted_identity.clone(),
+            )
+            .with_context(|| format!("normalized routed-gate result failed for {}", gate.name))?;
+        }
 
         // Update tier summary
         let tier_summary = tier_summaries.entry(gate.tier.clone()).or_default();
@@ -1590,6 +1755,67 @@ fn run_gate_plan(
                 pb.finish_with_message("Gate failed, stopping (fail-fast mode)");
             }
             results.push(result);
+            break;
+        }
+
+        // Policy-typed short-circuit (#13698): a failed required gate that
+        // declares `short_circuit: true` stops the remaining plan, because no
+        // later gate can change the run's red disposition — the remaining work
+        // is recorded as typed skip rows (saved work) instead of vanishing from
+        // the receipt. Receipts, logs, and the blocking failure are all still
+        // produced; nothing becomes advisory and no timeout moved.
+        //
+        // Scoped to pr_fast plans (#14409 review): merge-gate and nightly
+        // plans inherit the focused pr_fast gates, but their remaining tiers
+        // are the independent backstop evidence for those runs, so a focused
+        // pr_fast failure must let them execute instead of retiring them as
+        // skip rows.
+        if plan.tier == GateTier::PrFast
+            && gate.short_circuit
+            && is_blocking_gate_status(&result.status)
+            && gate.required
+        {
+            // The failing gate keeps its plan-order receipt row first; the
+            // remaining planned gates follow as typed saved-work rows.
+            results.push(result);
+            let saved_count = plan.selected.len() - idx - 1;
+            for remaining in &plan.selected[idx + 1..] {
+                let skip_result = GateResult {
+                    gate_name: remaining.gate.name.clone(),
+                    tier: remaining.gate.tier.clone(),
+                    status: "skip".to_string(),
+                    required: Some(remaining.gate.required),
+                    duration_ms: 0,
+                    command: remaining.gate.command.clone(),
+                    exit_code: None,
+                    output_summary: Some(format!(
+                        "not run: short-circuited by failed required gate '{}'",
+                        gate.name
+                    )),
+                    log_path: None,
+                    metrics: None,
+                    artifacts: None,
+                    first_failure: None,
+                    // The retired gate's command never started (#13698).
+                    command_started: false,
+                };
+                let tier_summary = tier_summaries.entry(skip_result.tier.clone()).or_default();
+                tier_summary.total += 1;
+                tier_summary.skipped += 1;
+                if let Some(ref pb) = spinner {
+                    pb.println(format!(
+                        "[{:>4}] {} (short-circuited)",
+                        "SKIP", skip_result.gate_name
+                    ));
+                }
+                results.push(skip_result);
+            }
+            if let Some(ref pb) = spinner {
+                pb.finish_with_message(format!(
+                    "Gate {} failed; short-circuited {} remaining gate(s)",
+                    gate.name, saved_count
+                ));
+            }
             break;
         }
 
@@ -1631,7 +1857,7 @@ fn run_gate_plan(
     let agent_receipt = Some(build_agent_receipt(&root, &results, plan));
 
     Ok(Receipt {
-        schema_version: "1.0.0".to_string(),
+        schema_version: GATES_RECEIPT_SCHEMA_VERSION.to_string(),
         metadata,
         gates: results,
         summary,
@@ -2040,6 +2266,7 @@ fn run_single_gate(
             metrics: None,
             artifacts: None,
             first_failure: None,
+            command_started: false,
         });
     }
 
@@ -2199,6 +2426,7 @@ fn run_single_gate(
                     Some(gate.artifacts.clone())
                 },
                 first_failure,
+                command_started: true,
             })
         }
         Err(e) => {
@@ -2229,6 +2457,10 @@ fn run_single_gate(
                 metrics,
                 artifacts: None,
                 first_failure: None,
+                // The shell failure carries whether the child spawned before
+                // the failure, so a post-start error is never published as
+                // never-started (review thread FC-ADAPTER-ERROR-FLATTEN).
+                command_started: e.child_started,
             })
         }
     }
@@ -2246,18 +2478,27 @@ pub(crate) struct ShellExecutionResult {
 struct ShellExecutionFailure {
     message: String,
     test_execution_reached_attempts: Vec<TestExecutionAttemptEvidence>,
+    /// Whether the child process spawned before the failure: pre-spawn
+    /// configuration or spawn errors never started the command, while
+    /// post-spawn wait/trailer failures did (review thread
+    /// FC-ADAPTER-ERROR-FLATTEN).
+    child_started: bool,
 }
 
 impl ShellExecutionFailure {
     fn new(
-        error: color_eyre::Report,
+        error: GateShellError,
         test_execution_reached_attempts: Vec<TestExecutionAttemptEvidence>,
     ) -> Self {
-        Self { message: format!("{error:#}"), test_execution_reached_attempts }
+        Self {
+            message: format!("{:#}", error.report),
+            test_execution_reached_attempts,
+            child_started: error.child_started,
+        }
     }
 
     fn message(message: String) -> Self {
-        Self { message, test_execution_reached_attempts: Vec::new() }
+        Self { message, test_execution_reached_attempts: Vec::new(), child_started: false }
     }
 }
 
@@ -2328,8 +2569,12 @@ fn run_shell_command_with_retries(
                 total_attempts,
                 "watchdog timeout",
             )
-            .map_err(|error| {
-                ShellExecutionFailure::new(error, test_execution_reached_attempts.clone())
+            .map_err(|error| ShellExecutionFailure {
+                message: format!("{error:#}"),
+                test_execution_reached_attempts: test_execution_reached_attempts.clone(),
+                // The command executed (it timed out); only its log trailer
+                // write failed (review thread FC-ADAPTER-ERROR-FLATTEN).
+                child_started: true,
             })?;
             execution.stdout.push_str(&trailer);
             if attempt < total_attempts {
@@ -2354,8 +2599,12 @@ fn run_shell_command_with_retries(
             };
             let trailer =
                 append_retry_trailer(log_path, gate_name, attempt, total_attempts, &outcome)
-                    .map_err(|error| {
-                        ShellExecutionFailure::new(error, test_execution_reached_attempts.clone())
+                    .map_err(|error| ShellExecutionFailure {
+                        message: format!("{error:#}"),
+                        test_execution_reached_attempts: test_execution_reached_attempts.clone(),
+                        // The command executed; only its log trailer write
+                        // failed (review thread FC-ADAPTER-ERROR-FLATTEN).
+                        child_started: true,
                     })?;
             execution.stdout.push_str(&trailer);
         }
@@ -2401,11 +2650,34 @@ const MAX_GATE_OUTPUT_BYTES: u64 = 4 * 1024 * 1024;
 /// exact per-child timeout semantics the gate runner enforces (GNU `timeout`
 /// wrapping plus the Rust watchdog backstop) instead of a second, drifting
 /// implementation.
+/// Shell execution failure carrying whether the child process had spawned
+/// when the error occurred: pre-spawn errors (log setup, spawn) never
+/// started the command, post-spawn errors (wait) did. The routed adapter
+/// binds this start state so a post-start `error` is never published as
+/// never-started (review thread FC-ADAPTER-ERROR-FLATTEN).
+#[derive(Debug)]
+pub(crate) struct GateShellError {
+    pub(crate) report: color_eyre::Report,
+    pub(crate) child_started: bool,
+}
+
+impl From<GateShellError> for color_eyre::Report {
+    fn from(error: GateShellError) -> Self {
+        error.report
+    }
+}
+
+impl std::fmt::Display for GateShellError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "{:#}", self.report)
+    }
+}
+
 pub(crate) fn run_shell_command_with_timeout(
     command: &str,
     log_path: &Path,
     timeout_secs: u64,
-) -> Result<ShellExecutionResult> {
+) -> Result<ShellExecutionResult, GateShellError> {
     run_shell_command_with_timeout_in(command, log_path, timeout_secs, None)
 }
 
@@ -2418,12 +2690,17 @@ pub(crate) fn run_shell_command_with_timeout_in(
     log_path: &Path,
     timeout_secs: u64,
     current_dir: Option<&Path>,
-) -> Result<ShellExecutionResult> {
+) -> Result<ShellExecutionResult, GateShellError> {
+    // Everything before a successful spawn is a pre-start error: the command
+    // never ran.
+    let child_started = false;
     let log_file = fs::File::create(log_path)
-        .with_context(|| format!("Failed to create log file: {}", log_path.display()))?;
+        .with_context(|| format!("Failed to create log file: {}", log_path.display()))
+        .map_err(|report| GateShellError { report, child_started })?;
     let log_file_err = log_file
         .try_clone()
-        .with_context(|| format!("Failed to clone log file handle: {}", log_path.display()))?;
+        .with_context(|| format!("Failed to clone log file handle: {}", log_path.display()))
+        .map_err(|report| GateShellError { report, child_started })?;
 
     let mut process = shell_command_process(command, timeout_secs);
     if let Some(dir) = current_dir {
@@ -2433,8 +2710,11 @@ pub(crate) fn run_shell_command_with_timeout_in(
         .stdout(Stdio::from(log_file))
         .stderr(Stdio::from(log_file_err))
         .spawn()
-        .with_context(|| format!("Failed to spawn gate command: {command}"))?;
+        .with_context(|| format!("Failed to spawn gate command: {command}"))
+        .map_err(|report| GateShellError { report, child_started })?;
 
+    // From here on the child exists: any failure is post-start.
+    let child_started = true;
     let start = Instant::now();
     let mut last_heartbeat = start;
     let timeout = shell_command_watchdog_timeout(timeout_secs);
@@ -2444,7 +2724,11 @@ pub(crate) fn run_shell_command_with_timeout_in(
     // wait() a second time (which would be a double-wait and returns an error
     // on Windows). Synthetic exit code 124 follows the GNU timeout(1) convention.
     let (watchdog_timed_out, exit_code) = loop {
-        if let Some(status) = child.try_wait().context("Failed waiting on gate process")? {
+        if let Some(status) = child
+            .try_wait()
+            .context("Failed waiting on gate process")
+            .map_err(|report| GateShellError { report, child_started })?
+        {
             break (false, status.code().unwrap_or(-1));
         }
         if start.elapsed() >= timeout {
@@ -2618,6 +2902,9 @@ fn run_internal_xtask_gate(
         metrics: None,
         artifacts: if gate.artifacts.is_empty() { None } else { Some(gate.artifacts.clone()) },
         first_failure: None,
+        // The in-process closure ran: even a "fail" or "error" outcome here
+        // is post-start activity (review thread FC-ADAPTER-ERROR-FLATTEN).
+        command_started: true,
     })
 }
 
@@ -2678,6 +2965,10 @@ fn run_internal_commit_check(
         metrics: None,
         artifacts: if gate.artifacts.is_empty() { None } else { Some(gate.artifacts.clone()) },
         first_failure: None,
+        // The in-process closure ran: even an "error" outcome here (render
+        // failure, check error) is post-start activity (review thread
+        // FC-ADAPTER-ERROR-FLATTEN).
+        command_started: true,
     })
 }
 
@@ -3438,7 +3729,9 @@ mod tests {
     use perl_tdd_support::{must_err_with, must_some_with, must_with};
     use serde::Serialize;
     use serde::de::DeserializeOwned;
-    use tempfile::tempdir;
+    use tempfile::{TempDir, tempdir};
+
+    use color_eyre::eyre::{Context, Result, bail};
 
     use super::{
         DiffResult, FirstFailure, GateDefinition, GateMetrics, GatePlanningConfig,
@@ -3477,6 +3770,7 @@ mod tests {
             metrics: None,
             artifacts: None,
             first_failure: None,
+            command_started: status != "skip",
         }
     }
 
@@ -3495,6 +3789,7 @@ mod tests {
             artifacts: Vec::new(),
             matrix: None,
             planning: Some(GatePlanningConfig { role, packages: Vec::new() }),
+            short_circuit: false,
         }
     }
 
@@ -4361,6 +4656,76 @@ gates:
         Ok(())
     }
 
+    /// Spin up a throwaway git repo with one commit and a synthetic
+    /// `origin/main` remote-tracking ref. The fixture mirrors the live
+    /// repo shape that `plan_gates` expects (`base_ref: "origin/main"`
+    /// resolves via `change_set::resolve_base_ref`, and the second pass at
+    /// `gates.rs:1619` calls `git rev-parse --verify origin/main^{commit}`)
+    /// without touching the live project index — see issue #15413:
+    /// running `git write-tree` against the real index races against
+    /// parallel tests' transient `git add`/`rm` locks and flakes ~1/8.
+    fn isolated_git_repo_with_origin_main() -> Result<tempfile::TempDir> {
+        let dir = tempfile::tempdir().context("failed to create temp repo dir")?;
+        let root = dir.path();
+        for args in [
+            vec!["init", "--quiet"],
+            vec!["config", "user.email", "test@example.com"],
+            vec!["config", "user.name", "Test"],
+            vec!["config", "core.fileMode", "false"],
+        ] {
+            let status = Command::new("git")
+                .current_dir(root)
+                .args(&args)
+                .status()
+                .with_context(|| format!("failed to run git {args:?}"))?;
+            if !status.success() {
+                bail!("git {args:?} failed in isolated repo setup");
+            }
+        }
+        // Stage one file and commit so `git write-tree` returns a non-empty
+        // tree and `origin/main^{commit}` resolves to a real commit. Without
+        // a commit, `change_set::resolve_base_ref` rejects `origin/main`
+        // (see #3985 Slice 2 review), and the second-pass
+        // `rev-parse --verify origin/main^{commit}` would also fail.
+        std::fs::write(root.join("seed.txt"), "seed\n")
+            .context("failed to write seed file in isolated repo")?;
+        for args in [vec!["add", "seed.txt"], vec!["commit", "--quiet", "-m", "seed"]] {
+            let status = Command::new("git")
+                .current_dir(root)
+                .args(&args)
+                .status()
+                .with_context(|| format!("failed to run git {args:?}"))?;
+            if !status.success() {
+                bail!("git {args:?} failed in isolated repo setup");
+            }
+        }
+        // Synthesize `refs/remotes/origin/main` at HEAD so `git rev-parse
+        // --verify origin/main` succeeds without actually setting up a
+        // remote. The real repository has this because it is a clone of
+        // `origin`; tests must mirror that exact shape because
+        // `change_set::resolve_base_ref` only accepts explicit bases that
+        // exist (issue #3985: no silent substitution).
+        let head = String::from_utf8(
+            Command::new("git")
+                .current_dir(root)
+                .args(["rev-parse", "HEAD"])
+                .output()
+                .context("failed to run git rev-parse HEAD")?
+                .stdout,
+        )
+        .context("git rev-parse HEAD output was not UTF-8")?;
+        let head = head.trim();
+        let status = Command::new("git")
+            .current_dir(root)
+            .args(["update-ref", "refs/remotes/origin/main", head])
+            .status()
+            .context("failed to run git update-ref for origin/main")?;
+        if !status.success() {
+            bail!("git update-ref refs/remotes/origin/main failed");
+        }
+        Ok(dir)
+    }
+
     #[test]
     fn plan_gates_threads_staged_tree_oid_into_non_commit_tiers() -> color_eyre::eyre::Result<()> {
         // Regression for a deep-review P1 on PR #4016: `plan_pr_fast_gates`
@@ -4371,6 +4736,13 @@ gates:
         // `all` keep every gate regardless of tier) runs against the exact
         // staged tree, but the receipt's `staged_tree_oid` silently stays
         // `None`, losing the very identity `--staged` was supposed to prove.
+        //
+        // Runs against an isolated git repo (issue #15413): the prior
+        // implementation called `git write-tree` against the live project
+        // root, which races against transient `git index.lock` files held
+        // by parallel tests and flakes ~1/8 in clean-main runs. Production
+        // `staged_tree_oid` must keep surfacing a persistent lock as a real
+        // error — the fix lives in the test, not in the production path.
         let policy = policy_with_gates(vec![
             pr_gate("fmt", GatePlanningRole::AlwaysOn, "cargo xtask fmt --check"),
             tier_gate(
@@ -4385,14 +4757,81 @@ gates:
             staged: true,
             ..GateRunnerConfig::default()
         };
-        let root = crate::utils::project_root()?;
+        let repo = isolated_git_repo_with_origin_main()?;
+        let root = repo.path();
 
-        let plan = plan_gates(&root, &policy, &config)?;
+        let plan = plan_gates(root, &policy, &config)?;
 
         assert!(
             plan.staged_tree_oid.is_some(),
             "--staged must thread the tree OID into the plan for --tier all, not only \
              --tier commit"
+        );
+        Ok(())
+    }
+
+    /// Confirms the isolated-repo helper resolves the exact refs `plan_gates`
+    /// will probe. Regression guard for #15413: if the helper ever stops
+    /// publishing `origin/main` (or stops committing), the test above will
+    /// flake at `change_set::resolve_base_ref` — this test names that seam so
+    /// the fix is local.
+    #[test]
+    fn isolated_repo_helper_publishes_origin_main_and_seed_commit() -> color_eyre::eyre::Result<()>
+    {
+        let repo = isolated_git_repo_with_origin_main()?;
+        let root = repo.path();
+
+        let head_exists = Command::new("git")
+            .current_dir(root)
+            .args(["rev-parse", "--verify", "HEAD"])
+            .status()
+            .context("failed to run git rev-parse HEAD")?
+            .success();
+        assert!(head_exists, "isolated repo must have a HEAD commit");
+
+        let origin_main_exists = Command::new("git")
+            .current_dir(root)
+            .args(["rev-parse", "--verify", "--quiet", "origin/main"])
+            .status()
+            .context("failed to run git rev-parse origin/main")?
+            .success();
+        assert!(
+            origin_main_exists,
+            "isolated repo must synthesize refs/remotes/origin/main so \
+             change_set::resolve_base_ref accepts the explicit base"
+        );
+
+        let head_oid = String::from_utf8(
+            Command::new("git")
+                .current_dir(root)
+                .args(["rev-parse", "HEAD"])
+                .output()
+                .context("failed to run git rev-parse HEAD for OID")?
+                .stdout,
+        )
+        .context("git rev-parse HEAD output was not UTF-8")?;
+        let origin_main_oid = String::from_utf8(
+            Command::new("git")
+                .current_dir(root)
+                .args(["rev-parse", "--verify", "origin/main"])
+                .output()
+                .context("failed to run git rev-parse origin/main for OID")?
+                .stdout,
+        )
+        .context("git rev-parse origin/main output was not UTF-8")?;
+        assert_eq!(
+            head_oid.trim(),
+            origin_main_oid.trim(),
+            "origin/main must point at the seeded commit"
+        );
+
+        // And the staged-tree OID query itself must succeed against the
+        // isolated repo -- this is the exact call site the original flake
+        // hit via the live project index.
+        let staged_tree = super::super::staged::staged_tree_oid(root)?;
+        assert!(
+            !staged_tree.is_empty(),
+            "staged_tree_oid must return a non-empty OID against the isolated repo"
         );
         Ok(())
     }
@@ -5550,6 +5989,7 @@ gates:
                 role: GatePlanningRole::AlwaysOn,
                 packages: Vec::new(),
             }),
+            short_circuit: false,
         };
         let policy = policy_with_gates(vec![gate.clone()]);
         let tmp = tempdir()?;
@@ -5607,6 +6047,7 @@ gates:
                 role: GatePlanningRole::AlwaysOn,
                 packages: Vec::new(),
             }),
+            short_circuit: false,
         };
         let policy = policy_with_gates(vec![gate.clone()]);
         let tmp = tempdir()?;
@@ -5662,6 +6103,7 @@ gates:
                 role: GatePlanningRole::AlwaysOn,
                 packages: Vec::new(),
             }),
+            short_circuit: false,
         };
         let policy = policy_with_gates(vec![gate.clone()]);
         let tmp = tempdir()?;
@@ -5710,6 +6152,7 @@ gates:
                 role: GatePlanningRole::AlwaysOn,
                 packages: Vec::new(),
             }),
+            short_circuit: false,
         };
         let policy = policy_with_gates(vec![gate.clone()]);
         let tmp = tempdir()?;
@@ -5808,6 +6251,7 @@ gates:
             metrics: None,
             artifacts: None,
             first_failure: None,
+            command_started: status != "skip",
         })
     }
 
@@ -6186,7 +6630,7 @@ gates:
         // still deserialize successfully (backward compat).
         let receipt: Receipt = deserialize_json(
             r#"{
-            "schema_version": "1.0.0",
+            "schema_version": "gates.v1",
             "metadata": {
                 "timestamp": "2026-04-23T00:00:00Z",
                 "git_sha": "abc123",
@@ -6252,7 +6696,7 @@ gates:
         // Confirm backward compatibility: a receipt WITHOUT agent_receipt deserializes to None.
         let old_receipt: Receipt = deserialize_json(
             r#"{
-            "schema_version": "1.0.0",
+            "schema_version": "gates.v1",
             "metadata": {
                 "timestamp": "2026-04-23T00:00:00Z",
                 "git_sha": "abc123",
@@ -6363,6 +6807,7 @@ gates:
             metrics: Some(metrics),
             artifacts: None,
             first_failure: None,
+            command_started: true,
         });
         receipt
     }
@@ -6678,6 +7123,7 @@ error: aborting due to previous error
                 message: Some("assertion failed".to_string()),
                 exit_code: 101,
             }),
+            command_started: true,
         };
         let json = serialize_json(&result, "should serialize");
         let roundtripped: GateResult = deserialize_json(&json, "should deserialize");
@@ -7198,5 +7644,228 @@ error: aborting due to previous error
         let receipt = test_receipt_with_metrics(GateMetrics::default());
         must_with(write_receipt(&receipt, &path), "write receipt for err-assertion falsifier");
         let _ = must_err_with(load_receipt(&path), "missing baseline should be reported");
+    }
+
+    fn short_circuit_pr_gate(name: &str, command: &str) -> GateDefinition {
+        GateDefinition { short_circuit: true, ..pr_gate(name, GatePlanningRole::AlwaysOn, command) }
+    }
+
+    /// (#13698) The focused control-plane owner gates must be declared before
+    /// `unit_routed_full` (declaration order is execution order), must stay
+    /// required with `short_circuit: true`, and the broad cohort must keep its
+    /// exact identity — a focused pass can never remove or weaken the backstop
+    /// (issue falsifier 4), and the backstop itself must never short-circuit.
+    #[test]
+    fn focused_control_plane_gates_precede_unit_routed_full_and_pin_the_backstop()
+    -> color_eyre::eyre::Result<()> {
+        let root = crate::utils::project_root()?;
+        let policy = load_policy_for_inspection(&root.join(".ci/gate-policy.yaml"))?;
+
+        let gate_index = |name: &str| {
+            policy.gates.iter().position(|gate| gate.name == name).ok_or_else(|| {
+                color_eyre::eyre::eyre!("gate '{name}' missing from .ci/gate-policy.yaml")
+            })
+        };
+        let subject = gate_index("ci_subject_digest_oracle")?;
+        let bins = gate_index("unit_control_plane_bins")?;
+        let cohort = gate_index("unit_routed_full")?;
+
+        assert!(
+            subject < cohort && bins < cohort,
+            "focused owner gates (#13698) must be declared before unit_routed_full so a \
+             deterministic control-plane failure surfaces before the broad cohort \
+             (subject={subject}, bins={bins}, cohort={cohort})"
+        );
+
+        for (name, expected_command, expected_packages) in [
+            (
+                "ci_subject_digest_oracle",
+                "cargo test -p xtask --locked --test ci_subject",
+                vec!["xtask"],
+            ),
+            (
+                "unit_control_plane_bins",
+                "cargo test -p xtask --locked --bin xtask -- tasks::gates:: tasks::ci_scope:: \
+                 tasks::workflow_policy_lint:: tasks::workflow_trigger_lint:: \
+                 -- --test-threads=1",
+                vec!["xtask"],
+            ),
+        ] {
+            let gate = &policy.gates[gate_index(name)?];
+            assert_eq!(gate.tier, "pr_fast", "focused gate '{name}' tier drifted");
+            assert_eq!(gate.command, expected_command, "focused gate '{name}' command drifted");
+            // Denominator honesty (#14409 review): the bin-target projection
+            // names only owners that publish bin-target unit tests. The
+            // generated-inventory and badge owners have no `#[test]` functions
+            // in `--bin xtask`; their proof lives in the `xtask/tests/`
+            // integration suites the broad `unit_routed_full` cohort runs.
+            if name == "unit_control_plane_bins" {
+                assert!(
+                    !gate.command.contains("tasks::generated_files::")
+                        && !gate.command.contains("tasks::badges::"),
+                    "focused bin-target gate '{name}' must not claim owners without \
+                     bin-target unit tests"
+                );
+            }
+            assert!(gate.required, "focused gate '{name}' must stay required");
+            assert!(
+                gate.short_circuit,
+                "focused gate '{name}' must declare short_circuit: true (#13698)"
+            );
+            let planning = gate
+                .planning
+                .as_ref()
+                .ok_or_else(|| color_eyre::eyre::eyre!("focused gate '{name}' missing planning"))?;
+            assert_eq!(planning.role, GatePlanningRole::RustPackageScoped);
+            assert_eq!(
+                planning.packages,
+                expected_packages.iter().map(|package| package.to_string()).collect::<Vec<_>>(),
+                "focused gate '{name}' must stay exactly-subject routed to its owner crate"
+            );
+        }
+
+        // Backstop pin: the broad cohort keeps its exact identity and budget
+        // (#13698 acceptance — broad unit proof remains authoritative; no
+        // timeout increase, no required-to-advisory downgrade).
+        let cohort_gate = &policy.gates[cohort];
+        assert_eq!(
+            cohort_gate.command,
+            "cargo build -p perllsp --locked && cargo test --locked --tests {package_args}"
+        );
+        assert_eq!(cohort_gate.timeout_seconds, 1500);
+        assert_eq!(cohort_gate.retry_count, 1);
+        assert!(cohort_gate.required);
+        assert!(!cohort_gate.short_circuit, "the backstop must never short-circuit");
+        Ok(())
+    }
+
+    /// (#13698 falsifier 6) A failed required gate that declares
+    /// `short_circuit: true` stops the remaining plan, but every remaining
+    /// planned gate is still recorded as a typed skip row naming its cause —
+    /// saved work stays visible in the receipt, and the run stays red.
+    #[test]
+    fn short_circuit_failure_stops_the_cohort_and_records_saved_work()
+    -> color_eyre::eyre::Result<()> {
+        let focused_fails = short_circuit_pr_gate("gate_focused_fails", "exit 1");
+        let cohort = pr_gate("gate_cohort_never_runs", GatePlanningRole::AlwaysOn, "exit 0");
+        let policy = policy_with_gates(vec![focused_fails.clone(), cohort.clone()]);
+        let plan = static_gate_plan(
+            GateTier::PrFast,
+            "HEAD".to_string(),
+            vec![focused_fails, cohort],
+            None,
+        );
+        let config = GateRunnerConfig {
+            tier: GateTier::PrFast,
+            output_format: OutputFormat::Summary,
+            fail_fast: false,
+            ..GateRunnerConfig::default()
+        };
+
+        let receipt = run_gate_plan(&plan, &policy, &config)?;
+
+        assert_eq!(receipt.gates.len(), 2, "the failing gate plus its saved-work row");
+        assert_eq!(receipt.gates[0].gate_name, "gate_focused_fails");
+        assert_eq!(receipt.gates[0].status, "fail");
+        assert_eq!(receipt.gates[1].gate_name, "gate_cohort_never_runs");
+        assert_eq!(receipt.gates[1].status, "skip", "the cohort is recorded, not executed");
+        assert_eq!(receipt.gates[1].exit_code, None);
+        assert!(
+            receipt.gates[1]
+                .output_summary
+                .as_deref()
+                .unwrap_or_default()
+                .contains("short-circuited by failed required gate 'gate_focused_fails'"),
+            "the saved-work row must name its cause: {:?}",
+            receipt.gates[1].output_summary
+        );
+        assert_eq!(receipt.summary.failed, 1);
+        assert_eq!(receipt.summary.skipped, 1);
+        assert_eq!(receipt.summary.overall_status, "fail");
+        assert_eq!(
+            receipt.summary.blocking_failures.as_deref(),
+            Some(&["gate_focused_fails".to_string()][..])
+        );
+        Ok(())
+    }
+
+    /// (#13698 falsifier 3) A focused pass never short-circuits anything: the
+    /// broad cohort still runs and both dispositions are independently
+    /// recorded.
+    #[test]
+    fn focused_pass_keeps_the_broad_cohort_running() -> color_eyre::eyre::Result<()> {
+        let focused_passes = short_circuit_pr_gate("gate_focused_passes", "exit 0");
+        let cohort = pr_gate("gate_cohort_runs", GatePlanningRole::AlwaysOn, "exit 0");
+        let policy = policy_with_gates(vec![focused_passes.clone(), cohort.clone()]);
+        let plan = static_gate_plan(
+            GateTier::PrFast,
+            "HEAD".to_string(),
+            vec![focused_passes, cohort],
+            None,
+        );
+        let config = GateRunnerConfig {
+            tier: GateTier::PrFast,
+            output_format: OutputFormat::Summary,
+            fail_fast: false,
+            ..GateRunnerConfig::default()
+        };
+
+        let receipt = run_gate_plan(&plan, &policy, &config)?;
+
+        assert_eq!(receipt.gates.len(), 2);
+        assert_eq!(receipt.gates[0].status, "pass");
+        assert_eq!(
+            receipt.gates[1].status, "pass",
+            "a focused pass must not remove the broad cohort"
+        );
+        assert!(receipt.gates[1].log_path.is_some());
+        assert_eq!(receipt.summary.overall_status, "pass");
+        Ok(())
+    }
+
+    /// (#14409 review — tier scope) `short_circuit` is a pr_fast-only
+    /// behavior. Merge-gate and nightly plans inherit the focused pr_fast
+    /// gates, but their remaining tiers are the independent backstop evidence
+    /// for those runs, so a focused pr_fast failure there must let them
+    /// execute: no skip rows, no early stop, real execution evidence for every
+    /// remaining gate.
+    #[test]
+    fn short_circuit_does_not_fire_outside_pr_fast_plans() -> color_eyre::eyre::Result<()> {
+        for tier in [GateTier::MergeGate, GateTier::Nightly] {
+            let label = tier.to_string();
+            let focused_fails = short_circuit_pr_gate("gate_focused_fails", "exit 1");
+            let backstop =
+                pr_gate("gate_backstop_still_runs", GatePlanningRole::AlwaysOn, "exit 0");
+            let policy = policy_with_gates(vec![focused_fails.clone(), backstop.clone()]);
+            let plan = static_gate_plan(
+                tier.clone(),
+                "HEAD".to_string(),
+                vec![focused_fails, backstop],
+                None,
+            );
+            let config = GateRunnerConfig {
+                tier,
+                output_format: OutputFormat::Summary,
+                fail_fast: false,
+                ..GateRunnerConfig::default()
+            };
+
+            let receipt = run_gate_plan(&plan, &policy, &config)?;
+
+            assert_eq!(receipt.gates.len(), 2, "{label}: both gates must be recorded");
+            assert_eq!(receipt.gates[0].gate_name, "gate_focused_fails");
+            assert_eq!(receipt.gates[0].status, "fail");
+            assert_eq!(
+                receipt.gates[1].status, "pass",
+                "{label}: the backstop must run, not be short-circuited into a skip row"
+            );
+            assert!(
+                receipt.gates[1].log_path.is_some(),
+                "{label}: the backstop needs real execution evidence"
+            );
+            assert_eq!(receipt.summary.failed, 1);
+            assert_eq!(receipt.summary.skipped, 0, "{label}: no saved-work skip rows");
+        }
+        Ok(())
     }
 }
