@@ -43,7 +43,6 @@ crates.io:
 
 Docker Hub:
   - 0.13.3-perl (runtime):     published (multi-arch)
-  - 0.13.3 (builder/slim):     <state>
 
 GHCR:                          <state>
 
@@ -100,10 +99,11 @@ Both must show `num: "0.13.3"` and `yanked: false`.
 
 ```bash
 curl -s "https://hub.docker.com/v2/repositories/effortlessmetrics/perl-lsp/tags/0.13.3-perl" | jq '.name, .tag_status'
-curl -s "https://hub.docker.com/v2/repositories/effortlessmetrics/perl-lsp/tags/0.13.3"      | jq '.name, .tag_status'
 ```
 
-The `-perl` runtime tag is what most users pull. The plain tag (builder image) may lag behind because of arm64 QEMU build time — that's non-blocking, not a failure.
+The `-perl` runtime tag is the only published image and is what users pull.
+The plain tag previously carried the Rust build toolchain, which is retired
+from product publication (#8980); do not expect a new unsuffixed tag.
 
 ### Marketplace + Open VSX
 

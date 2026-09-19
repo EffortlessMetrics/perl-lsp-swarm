@@ -11,9 +11,11 @@ mod model;
 
 pub use body::{
     AccessMode, Arena, AssignMode, BinaryOp, BodyOwner, BodyOwnerKind, BodySourceMap,
-    DeclStorageClass, HirBlock, HirBlockId, HirBody, HirBodyId, HirExpr, HirExprId, HirStmt,
-    HirStmtId, HirSubscript, HirVariable, LoopControlVerb, Sigil, SubscriptKind, UnaryMode,
-    VariableKind, lower_body,
+    DeclStorageClass, HirBlock, HirBlockId, HirBody, HirBodyId, HirCatchHandler, HirExpr,
+    HirExprId, HirLoopLabel, HirLoopRegionId, HirRegex, HirRegexMatch, HirRegexTarget, HirStmt,
+    HirStmtId, HirSubscript, HirSubstitution, HirTransliteration, HirVariable,
+    LoopControlResolution, LoopControlVerb, RegexAnalysisAnchor, ReplacementEvaluation, Sigil,
+    SubscriptKind, UnaryMode, VariableKind, lower_body,
 };
 pub use lower::lower_ast;
 pub use model::{
@@ -40,4 +42,5 @@ pub use model::{
     StashDynamicBoundary, StashDynamicBoundaryKind, StashGraph, StashProvenance,
     StatementModifierKind, StatementModifierShell, StorageClass, SubDecl, SubstitutionExpr,
     TransliterationExpr, TryExpr, UseDecl, VariableBinding, VariableDecl,
+    arguments_outside_configuration_hashes,
 };

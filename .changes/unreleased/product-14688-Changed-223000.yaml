@@ -1,0 +1,14 @@
+project: product
+component: Developer experience
+kind: Changed
+body: >-
+  Freeze docs/policy/NON_RUST_INVENTORY.md as a pointer document that no
+  command writes and main never changes, so it can no longer conflict on
+  merge; the inventory is retained as target/policy evidence and the
+  non-rust-inventory CI artifact, `cargo xtask non-rust inventory --write` is
+  removed, and `--check` refuses a regenerated pointer with a one-command fix.
+time: 2026-09-05T22:30:00Z
+custom:
+  PR: "14688"
+  Slug: freeze-non-rust-inventory-pointer
+  Breaking: "no"

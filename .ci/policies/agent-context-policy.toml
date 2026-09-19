@@ -48,8 +48,8 @@ name = "perl-parser-comparison"
 reason = "C-vs-Rust parser comparison harness; dev tooling, not product."
 
 [[exempt]]
-name = "perl-kwalitee"
-reason = "Crate-quality metrics tooling; internal audit surface, not product."
+name = "perl-release-readiness"
+reason = "Legacy mixed release-readiness evaluator; internal audit surface, not product."
 
 [[exempt]]
 name = "perl-ripr-facts"

@@ -472,7 +472,9 @@ mod tests {
         assert!(!phase_permits_outcome(ReloadTransactionPhase::RuntimeMutationBegins, &malformed));
         assert_eq!(malformed.generation_effect(), GenerationEffect::Advance);
         let mut clock = RuntimeModuleGenerationClock::new();
-        assert!(clock.apply(&malformed).advanced());
+        // Effect only: this asserts what the clock does with a malformed
+        // shape, not how a witness pairs with an outcome on the wire.
+        assert!(clock.apply(&malformed, 1).advanced());
         // The well-formed pre-boundary shape still advances nothing.
         let well_formed = LoadedModuleReloadOutcome::FailedBeforeMutation {
             phase: ReloadTransactionPhase::Prepare,

@@ -85,7 +85,10 @@ fn wait_for_expected_inserts(
     character: u32,
     expected: &[&str],
 ) -> Result<Vec<String>> {
-    let deadline = Instant::now() + Duration::from_secs(5);
+    // The quality budget must tolerate analysis lag on cold CI runners:
+    // post-diagnostics, completion facts can land after the previous 5s
+    // window closed (observed as a one-probe zero on a refreshed-base run).
+    let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         let insert_texts = insert_texts_for(
             &harness.inline_completion_with_trigger_kind(file, line, character, 1)?,
@@ -106,7 +109,24 @@ fn scenario_55_dbi_receiver_inline_completion_quality_stdio() -> Result<()> {
     let harness = create_harness()?;
     harness.open_file(DBI_HANDLE_PATH, DBI_HANDLE_SOURCE)?;
     harness.open_file(DBI_STATEMENT_PATH, DBI_STATEMENT_SOURCE)?;
-    std::thread::sleep(Duration::from_millis(250));
+    // Synchronize on the server's own analysis-readiness signal instead of a
+    // fixed sleep: on a cold CI runner the previous 250ms guess let completion
+    // queries outrun the first analysis of the just-opened document, starving
+    // the DBI semantic context for the whole poll window (#15870).
+    let readiness = harness.wait_for_diagnostics(DBI_HANDLE_PATH, Duration::from_secs(30));
+    if readiness.is_empty() {
+        return Err(anyhow::anyhow!(
+            "analysis readiness: no publishDiagnostics; completion probes would poll blind (#15899)"
+        )
+        .into());
+    }
+    let readiness = harness.wait_for_diagnostics(DBI_STATEMENT_PATH, Duration::from_secs(30));
+    if readiness.is_empty() {
+        return Err(anyhow::anyhow!(
+            "analysis readiness: no publishDiagnostics; completion probes would poll blind (#15899)"
+        )
+        .into());
+    }
 
     let handle_insert_texts = wait_for_expected_inserts(
         &harness,

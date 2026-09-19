@@ -6,6 +6,8 @@ on:
     branches: [main, master]
     paths:
       - 'vscode-extension/**'
+      - 'scripts/tests/windows-owned-suspend.ps1'
+      - 'scripts/tests/test-windows-owned-suspend.ps1'
       - '.github/workflows/vscode-managed-binary-smoke.yml'
   schedule:
     - cron: '0 13 * * 1'
@@ -51,6 +53,19 @@ jobs:
       - name: Verify TypeScript 7 compiler authority
         run: npm run typecheck:authority
 
+      - name: Prove owned Windows suspension and failure cleanup
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          node scripts/governed-tsc.js -p tsconfig.published-smoke.json
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node --test scripts/windows-owned-suspension.test.js scripts/windows-owned-suspension-lifecycle.test.js
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File ../scripts/tests/test-windows-owned-suspend.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -Command '[Console]::InputEncoding = [Text.UTF8Encoding]::new($true); & ../scripts/tests/test-windows-owned-suspend.ps1'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
       - name: Compile extension
         run: npm run bundle
 
@@ -64,7 +79,30 @@ jobs:
         if: runner.os == 'Linux'
         env:
           GITHUB_TOKEN: ${{ github.token }}
+          # The real-client settlement fixture is Linux-only here so the
+          # existing host job gains one focused production-boundary lane
+          # without expanding the OS matrix.
+          PERL_LSP_REAL_CLIENT_SETTLEMENT: '1'
         run: xvfb-run -a npm run test:integration
+
+      - name: Package current extension for Windows published smoke
+        if: runner.os == 'Windows'
+        run: npm run package
+
+      - name: Run current extension Test Explorer smoke (Windows)
+        if: runner.os == 'Windows'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PERL_LSP_PUBLISHED_EXTENSION_SOURCE: vsix
+          PERL_LSP_TEST_EXPLORER_SMOKE: '1'
+        shell: pwsh
+        run: |
+          $vsix = @(Get-ChildItem -LiteralPath . -Filter '*.vsix' -File)
+          if ($vsix.Count -ne 1) {
+            throw "npm run package must produce exactly one VSIX archive; found $($vsix.Count)"
+          }
+          $env:PERL_LSP_PUBLISHED_VSIX_PATH = $vsix[0].FullName
+          npm run test:published
 
       - name: Upload smoke artifacts
         if: always()
@@ -72,5 +110,51 @@ jobs:
         with:
           name: vscode-smoke-source-${{ matrix.os }}
           path: target/receipts/vscode-smoke/**
+          if-no-files-found: warn
+          retention-days: 14
+
+  perl5-alias-smoke:
+    # Real-client alias proof for the perl/perl5 language-ID contract (#7699):
+    # a perl5-classified document must flow activation → client → server with
+    # published diagnostics and a provider result. Runs the focused smoke with
+    # the perl5-alias-language fixture development extension.
+    name: VS Code perl5 alias smoke (ubuntu-latest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    defaults:
+      run:
+        working-directory: vscode-extension
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Perl
+        uses: shogo82148/actions-setup-perl@53e33bb27be492a926eee378e8a5f7ff6618b061  # v1.43.1
+        with:
+          perl-version: '5.40'
+
+      - name: Setup VS Code toolchain
+        uses: ./.github/actions/setup-vscode-toolchain
+
+      - name: Compile extension
+        run: npm run bundle
+
+      - name: Run perl5 alias extension-host smoke under Xvfb
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PERL_LSP_ALIAS_SMOKE: '1'
+          PERL_LSP_SMOKE_SOURCE_LABEL: 'perl5-alias'
+        run: xvfb-run -a npm run test:integration -- --grep "alias extension-host smoke"
+
+      - name: Upload alias smoke artifacts
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: vscode-smoke-perl5-alias-ubuntu
+          path: target/receipts/vscode-smoke/perl5-alias/**
           if-no-files-found: warn
           retention-days: 14

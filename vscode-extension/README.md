@@ -6,7 +6,7 @@
 [![crates.io downloads](https://img.shields.io/crates/d/perl-lsp-rs.svg?label=crates.io%20downloads)](https://crates.io/crates/perl-lsp-rs)
 <!-- perl-lsp:vs-marketplace-installs-badge:start -->
 
-[![VS Marketplace installs](https://img.shields.io/badge/VS%20Marketplace-656%20installs-0078D4)](https://marketplace.visualstudio.com/items?itemName=EffortlessMetrics.perl-lsp-rs)
+[![VS Marketplace Installs (manual)](https://img.shields.io/badge/VS%20Marketplace-707%20installs-0078D4)](https://marketplace.visualstudio.com/items?itemName=EffortlessMetrics.perl-lsp-rs)
 <!-- perl-lsp:vs-marketplace-installs-badge:end -->
 
 [![Open VSX downloads](https://img.shields.io/open-vsx/dt/EffortlessMetrics/perl-lsp-rs?label=Open%20VSX%20downloads)](https://open-vsx.org/extension/EffortlessMetrics/perl-lsp-rs)
@@ -85,7 +85,7 @@ hover, and go-to-definition.
 - **Breakpoints** -- Set breakpoints with conditional support
 - **Step Debugging** -- Step into, over, and out of function calls
 - **Variable Inspection** -- View variables, watch expressions, and call stack
-- **Attach to Process** -- Debug running Perl processes by PID or TCP
+- **TCP Attach** -- Connect to a Perl debugger peer by host and port. Attaching by PID is not supported.
 
 Debugging is optional and powered by the managed `perl-dap` adapter shipped
 alongside the `perl-lsp` release artifacts -- the extension downloads it for you,
@@ -239,6 +239,22 @@ Use `Ctrl+Shift+P` (Command Palette) and search "Perl" to see all available comm
 - Built-in function signatures with parameter documentation
 - XS interface files (`.xs`) and SWIG interface files (`.i`) are associated with Perl for bundled syntax highlighting, including common SWIG directives and embedded C/C++ blocks
 
+### Language IDs
+
+- `perl` is the one language ID this extension contributes. Files classified as
+  `perl` (by extension, shebang, or filename) attach to the language client.
+- `perl5` is a **supported alias**, not a second language. This extension does
+  not contribute or assign `perl5`; the ID only appears when another extension
+  contributes it or you classify a file that way explicitly
+  (`files.associations`, _Change Language Mode_). Such buffers activate the
+  extension, attach to the same single language client, grammar, settings, and
+  server process, and receive the same commands as `perl` buffers: the bundled
+  TextMate grammar (`source.perl`) is declaratively bound to the `perl5`
+  language ID too, and every menu, keybinding, snippet, breakpoint, and
+  debug-resolution gate enumerates both IDs. There is no second server, dialect
+  mode, or configuration namespace for the alias
+  (see `src/languageIdentity.ts` and issue #7699).
+
 ## Commands
 
 Open the command palette (`Ctrl+Shift+P` / `Cmd+Shift+P`) and search for
@@ -260,6 +276,12 @@ Open the command palette (`Ctrl+Shift+P` / `Cmd+Shift+P`) and search for
 | **Perl: Show Status Menu**             | Quick-access menu for all actions                          |
 | **Perl: Show Perl Workspace Status**   | Show the current server, workspace, and diagnostic state   |
 | **Perl: Report Issue**                 | Open a pre-filled issue report                             |
+
+Run Health Check reports binary presence separately from language-server runtime
+health. If the configured executable exists but startup or initialization fails,
+the runtime check remains an error. When cleanup cannot be confirmed, restart is
+blocked and the notification directs you to reload the VS Code window before
+trying again; this avoids launching a second server over an unknown process.
 
 ### Editing and refactoring
 

@@ -120,7 +120,7 @@ impl LspServer {
             .resolve_dancer2_module_at_activation(uri, text, activation_offset)
             .as_deref()
             .and_then(observe_dancer2_module);
-        let activations = file_activations(ast, file_id, module.as_ref(), &generation);
+        let activations = file_activations(ast, text, file_id, module.as_ref(), &generation);
         let facts = canonical_file_facts(ast, file_id, &activations);
         Dancer2RequestContext { activations, facts }
     }
