@@ -1850,7 +1850,8 @@ impl LspServer {
                                         perl_semantic_facts::Provenance::ExactAst
                                             | perl_semantic_facts::Provenance::ImportExportInference
                                             | perl_semantic_facts::Provenance::LiteralRequireImport
-                                    ) && queries.anchor_source_span(candidate.anchor_id).is_some()
+                                    )
+                                    && queries.anchor_source_span(candidate.anchor_id).is_some()
                             })
                             .collect();
                         match exact_candidates.as_slice() {
