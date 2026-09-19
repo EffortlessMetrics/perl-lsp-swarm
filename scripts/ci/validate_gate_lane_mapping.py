@@ -67,6 +67,12 @@ GATE_TO_LANE_MAP: dict[str, dict[str, Any]] = {
     # The gate runs inside the existing pr-fast invocation in advisory
     # `pr-smoke`; it is not a separate workflow or receipt-producing lane.
     "clippy_tests_kernel": {"lanes": ["pr_smoke"]},
+    # Focused control-plane owner proofs (#13698). Declared immediately before
+    # `unit_routed_full` in gate-policy.yaml so a deterministic control-plane
+    # defect surfaces (and short-circuits the cohort) before the broad run;
+    # both roll up under the same advisory pr_smoke lane.
+    "ci_subject_digest_oracle": {"lanes": ["pr_smoke"]},
+    "unit_control_plane_bins": {"lanes": ["pr_smoke"]},
     # Former `inline_completion_contract` (&&-composite, issue #6845) split
     # into four independent gates.  All four remain in the pr_smoke tier lane.
     "inline_completion_registration": {"lanes": ["pr_smoke"]},

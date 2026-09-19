@@ -86,6 +86,15 @@ const OWNERSHIP: &[OwnershipRow] = &[
         "#8386"
     ),
     row!(
+        "initialization_accepted",
+        ClientSession,
+        "AtomicBool",
+        "connection replacement",
+        "client session",
+        false,
+        "#8386"
+    ),
+    row!(
         "initialized",
         ClientSession,
         "AtomicBool",
