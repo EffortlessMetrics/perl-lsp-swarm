@@ -350,6 +350,18 @@ pub struct InlineCompletionList {
 // ── AI backend interface ─────────────────────────────────────────────────────
 
 /// Error type for backend operations.
+///
+/// # The 0.18.0 `Saturated` addition
+///
+/// This enum is not `#[non_exhaustive]`, so a downstream `match` that
+/// enumerates every variant without a wildcard arm stops compiling when a
+/// variant is added. [`BackendError::Saturated`] (`#8300`) is such an addition.
+///
+/// This crate is published and pre-1.0, so the minor component is the
+/// breaking-change vehicle, and the change lands in the 0.18.0 release
+/// (`docs/releases/v0.18-release-topology.md`) rather than a patch. Downstream
+/// matches that already carry a `_` arm — the shape recommended for an error
+/// enum that is expected to grow — need no change.
 #[derive(Debug)]
 pub enum BackendError {
     /// Network or IO error.
@@ -361,9 +373,22 @@ pub enum BackendError {
     /// Request timed out.
     Timeout,
     /// Rate limit exceeded.
+    ///
+    /// Requests-per-second control only. A saturated concurrency ceiling is
+    /// [`Self::Saturated`], not this.
     RateLimited,
+    /// The live concurrency ceiling (`maxInflight`) was already full (`#8300`).
+    ///
+    /// Distinct from [`Self::RateLimited`]: the request was not too frequent,
+    /// it had nowhere to run. Carries no request or response content.
+    Saturated,
     /// Request was cancelled.
     Cancelled,
+    /// The response crossed a compiled resource limit and was refused before
+    /// the offending bytes were accumulated. Carries only limit identity and
+    /// bounded numeric metadata — never response, prompt, or completion
+    /// content.
+    BudgetExceeded(crate::providers::ai::budget::BudgetViolation),
 }
 
 impl std::fmt::Display for BackendError {
@@ -374,7 +399,9 @@ impl std::fmt::Display for BackendError {
             Self::Provider(msg) => write!(f, "provider error: {}", msg),
             Self::Timeout => write!(f, "request timed out"),
             Self::RateLimited => write!(f, "rate limit exceeded"),
+            Self::Saturated => write!(f, "concurrency limit reached"),
             Self::Cancelled => write!(f, "request cancelled"),
+            Self::BudgetExceeded(violation) => write!(f, "{violation}"),
         }
     }
 }
@@ -386,11 +413,17 @@ impl perl_parser_core::ErrorClass for BackendError {
         match self {
             // Network/IO or external service error — infrastructure.
             Self::Transport(_) | Self::Provider(_) => perl_parser_core::ErrorCategory::Infra,
+            // A configured safety limit was exceeded, which is what
+            // `ResourceLimit` names. This is the same class the framing guard
+            // gives `FrameTooLarge`, and it selects `Disposition::Cap` rather
+            // than the infrastructure notification — the honest disposition
+            // for a response the server deliberately refused to grow.
+            Self::BudgetExceeded(_) => perl_parser_core::ErrorCategory::ResourceLimit,
             // Bad key or expired token — user configuration issue.
             Self::Auth(_) => perl_parser_core::ErrorCategory::UserError,
             // All three may succeed on retry after backoff or cancellation
             // resolution.
-            Self::Timeout | Self::RateLimited | Self::Cancelled => {
+            Self::Timeout | Self::RateLimited | Self::Saturated | Self::Cancelled => {
                 perl_parser_core::ErrorCategory::Transient
             }
         }
@@ -4791,6 +4824,62 @@ mod tests {
                 "future DBI assignments must not shape current receiver completions: {insert_texts:?}"
             );
         }
+    }
+
+    /// Regression guard for #15909. Scenario 55's database-handle source
+    /// (verbatim from `ux_scenario_55_dbi_receiver_inline_completion_quality`)
+    /// must yield DBI receiver methods under the cold-start path — that is,
+    /// without any `InlineCompletionEnvironment` populated from the workspace
+    /// index. The provider must detect the `use DBI;` import from source text
+    /// alone, so the response is never zero candidates for a freshly analyzed
+    /// document whose workspace-index module list has not yet been built.
+    #[test]
+    fn dbi_database_handle_receiver_completes_without_workspace_environment() {
+        let provider = InlineCompletionProvider::new();
+        let source =
+            "use strict;\nuse warnings;\nuse DBI;\n\nmy $dbh = DBI->connect($dsn);\n$dbh->";
+        let character = "$dbh->".encode_utf16().count() as u32;
+        let completions = provider.get_inline_completions(source, 5, character);
+        let insert_texts: Vec<&str> =
+            completions.items.iter().map(|item| item.insert_text.as_str()).collect();
+
+        for expected in ["prepare()", "do()", "disconnect()"] {
+            assert!(
+                insert_texts.contains(&expected),
+                "scenario_55 cold-start must surface DBI database-handle method `{expected}`: {insert_texts:?}"
+            );
+        }
+        assert!(
+            !insert_texts.contains(&"new()"),
+            "scenario_55 cold-start must not fall back to a generic constructor guess: {insert_texts:?}"
+        );
+    }
+
+    /// Regression guard for #15909. Scenario 55's statement-handle source
+    /// (verbatim from `ux_scenario_55_dbi_receiver_inline_completion_quality`)
+    /// must yield DBI statement-handle methods under the cold-start path.
+    /// Mirrors the database-handle sibling test: the source-based import and
+    /// assignment detection alone must surface statement methods without
+    /// relying on workspace-index facts.
+    #[test]
+    fn dbi_statement_handle_receiver_completes_without_workspace_environment() {
+        let provider = InlineCompletionProvider::new();
+        let source = "use strict;\nuse warnings;\nuse DBI;\n\nmy $dbh = DBI->connect($dsn);\nmy $sth = $dbh->prepare($sql);\n$sth->";
+        let character = "$sth->".encode_utf16().count() as u32;
+        let completions = provider.get_inline_completions(source, 6, character);
+        let insert_texts: Vec<&str> =
+            completions.items.iter().map(|item| item.insert_text.as_str()).collect();
+
+        for expected in ["fetchrow_hashref()", "fetchrow_array()", "finish()"] {
+            assert!(
+                insert_texts.contains(&expected),
+                "scenario_55 cold-start must surface DBI statement-handle method `{expected}`: {insert_texts:?}"
+            );
+        }
+        assert!(
+            !insert_texts.contains(&"new()"),
+            "scenario_55 cold-start must not fall back to a generic constructor guess: {insert_texts:?}"
+        );
     }
 
     #[test]

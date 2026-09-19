@@ -627,47 +627,6 @@ impl LspServer {
         *self.formatter_runtime_override.lock() = Some(runtime);
     }
 
-    /// Install a mock subprocess runtime for the `CriticAnalyzer`.
-    ///
-    /// When set, the lazy-init path in `collect_external_perlcritic_diagnostics`
-    /// constructs a `CriticAnalyzer` using this runtime instead of the OS runtime.
-    /// This allows tests to exercise the full pipeline — including config-driven
-    /// profile discovery — without spawning a real `perlcritic` process.
-    ///
-    /// Call [`Self::test_bypass_perlcritic_command_check`] alongside this to
-    /// skip the `command_exists` guard.
-    ///
-    /// Resets the cached analyzer to `None` so the next diagnostic cycle
-    /// rebuilds it with the injected runtime.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn test_install_mock_critic_runtime(
-        &self,
-        runtime: std::sync::Arc<dyn perl_subprocess_runtime::SubprocessRuntime>,
-    ) {
-        *self.critic_runtime_override.lock() = Some(runtime);
-        // Reset any cached analyzer so it is rebuilt with the new runtime.
-        *self.critic_analyzer.lock() = None;
-    }
-
-    /// Skip the `command_exists("perlcritic")` guard in
-    /// `collect_external_perlcritic_diagnostics` for the lifetime of this server.
-    ///
-    /// This lets tests exercise the full diagnostic pipeline with a mock runtime
-    /// without needing perlcritic installed on the test machine.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn test_bypass_perlcritic_command_check(&self) {
-        self.skip_perlcritic_command_check.store(true, std::sync::atomic::Ordering::Relaxed);
-    }
-
-    /// Force the perlcritic availability check to report a missing binary.
-    ///
-    /// This keeps unavailable-binary tests deterministic on hosts where
-    /// `perlcritic` is installed, without changing the process `PATH`.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn test_force_perlcritic_command_unavailable(&self) {
-        self.force_perlcritic_command_unavailable.store(true, std::sync::atomic::Ordering::Relaxed);
-    }
-
     /// Set the server root path (used for `.perlcriticrc` walk-up discovery).
     pub fn test_set_root_path(&self, path: std::path::PathBuf) {
         *self.root_path.lock() = Some(path);
@@ -850,6 +809,38 @@ impl LspServer {
         coordinator.index().index_file(url, text.to_string())
     }
 
+    /// Test-only live source commit at an owner-supplied non-zero generation.
+    ///
+    /// Prefer this over `index_file_with_generation` in new fixtures so #8129
+    /// tests do not grow the #11301 compatibility baseline.
+    #[cfg(feature = "workspace")]
+    pub fn test_index_live_file(
+        &self,
+        uri: &str,
+        text: &str,
+        generation: u32,
+    ) -> Result<(), String> {
+        use perl_workspace::workspace_index::{SourceCommit, SourceCommitOutcome};
+        use std::num::NonZeroU32;
+
+        let Some(coordinator) = self.index_coordinator.as_ref() else {
+            return Err("No coordinator available".to_string());
+        };
+        let Some(commit_gen) = NonZeroU32::new(generation) else {
+            return Err("zero generation is not a live commit identity".to_string());
+        };
+        let url = url::Url::parse(uri).map_err(|e| e.to_string())?;
+        match coordinator.index().index_live_file(
+            url,
+            text.to_string(),
+            SourceCommit::new(commit_gen),
+        ) {
+            SourceCommitOutcome::Accepted | SourceCommitOutcome::NoOp => Ok(()),
+            SourceCommitOutcome::RejectedStale => Err("rejected stale live commit".to_string()),
+            SourceCommitOutcome::Failed(msg) => Err(msg),
+        }
+    }
+
     /// Register workspace folder URIs on the server for multi-root workspace tests.
     ///
     /// Used by deterministic regression tests (e.g. #1514) that need workspace
@@ -956,6 +947,18 @@ impl LspServer {
         release: std::sync::mpsc::Receiver<()>,
     ) {
         super::readiness::set_indexing_commit_gate(&self.indexing_commit_gate, started, release);
+    }
+
+    /// Hold a workspace-folder transition after membership/index mutation and
+    /// before matching project configuration is installed.
+    pub fn test_gate_workspace_topology_transition(
+        &self,
+        started: std::sync::mpsc::Sender<()>,
+        release: std::sync::mpsc::Receiver<()>,
+    ) {
+        if let Ok(mut gate) = self.workspace_transition_test_gate.lock() {
+            *gate = Some(super::WorkspaceTopologyTransitionGate { started, release });
+        }
     }
 
     #[cfg(feature = "workspace")]

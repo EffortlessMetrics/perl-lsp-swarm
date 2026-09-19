@@ -26,6 +26,9 @@ fn run(script: &str, draft: bool, route: &str, producer: &str) -> TestResult<(bo
         .env("ROUTER_REASON", "controlled-fixture")
         .env("ROUTER_ERROR", "")
         .env("ROUTER_FALLBACK_ALLOWED", "false")
+        // Legacy workflow contracts (issue #4657's rust-small gate) still read
+        // CX53_RESULT/CX43_RESULT; ripr's gate reads SELFHOSTED_RESULT.
+        .env("SELFHOSTED_RESULT", "skipped")
         .env("CX53_RESULT", "skipped")
         .env("CX43_RESULT", "skipped")
         .env("GITHUB_RESULT", producer)

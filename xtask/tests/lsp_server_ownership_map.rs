@@ -86,6 +86,15 @@ const OWNERSHIP: &[OwnershipRow] = &[
         "#8386"
     ),
     row!(
+        "initialization_accepted",
+        ClientSession,
+        "AtomicBool",
+        "connection replacement",
+        "client session",
+        false,
+        "#8386"
+    ),
+    row!(
         "initialized",
         ClientSession,
         "AtomicBool",
@@ -265,6 +274,18 @@ const OWNERSHIP: &[OwnershipRow] = &[
         false,
         "#8386"
     ),
+    // #15715: tier-3 client settings replayed over merged project config
+    // across folder removals; same server-global config ownership shape
+    // as server_config_baseline.
+    row!(
+        "last_client_settings",
+        WorkspaceServices,
+        "Arc<Mutex<Option>>",
+        "project config reset / server drop",
+        "tier-3 client settings replay generation",
+        false,
+        "#15715"
+    ),
     row!(
         "next_request_id",
         ClientSession,
@@ -436,6 +457,38 @@ const OWNERSHIP: &[OwnershipRow] = &[
         false,
         "#8385"
     ),
+    // #15418 added folder-transition topology tracking alongside the
+    // workspace generation counters; same ownership shape.
+    row!(
+        "workspace_topology_generation",
+        WorkspaceServices,
+        "Arc<AtomicU32>",
+        "server instance drop",
+        "workspace generation",
+        false,
+        "#8385"
+    ),
+    row!(
+        "workspace_topology_stable",
+        WorkspaceServices,
+        "Arc<AtomicBool>",
+        "server instance drop",
+        "workspace generation",
+        false,
+        "#8385"
+    ),
+    // Test-only one-shot barrier fired in the startup scan critical
+    // section for the workspace-transition race proof (#13308); server
+    // work signals it, never blocks on it.
+    row!(
+        "workspace_transition_test_gate",
+        WorkspaceServices,
+        "Arc<Mutex<Option>>",
+        "test gate release / server drop",
+        "workspace transition race proof",
+        false,
+        "#13308"
+    ),
     row!(
         "dependency_facts_generation",
         WorkspaceServices,
@@ -480,6 +533,17 @@ const OWNERSHIP: &[OwnershipRow] = &[
         "single-file document URI + config generation",
         false,
         "#8385"
+    ),
+    // #15715: defaults + tier-1 + tier-3 baseline surviving the per-call
+    // project-config reset; same server-global config ownership shape.
+    row!(
+        "server_config_baseline",
+        WorkspaceServices,
+        "Arc<Mutex<Option>>",
+        "project config reset / server drop",
+        "server-global config baseline generation",
+        false,
+        "#15715"
     ),
     row!(
         "single_file_project_config_generation",
@@ -635,24 +699,6 @@ const OWNERSHIP: &[OwnershipRow] = &[
         "#8386"
     ),
     row!(
-        "critic_analyzer",
-        AnalysisServices,
-        "Mutex<Option>",
-        "critic config transition / analysis shutdown",
-        "configuration + document generation",
-        true,
-        "#7410"
-    ),
-    row!(
-        "critic_runtime_override",
-        ProductComposition,
-        "Mutex<Option<Arc>>",
-        "test/product composition reset",
-        "process/test subject",
-        true,
-        "#8400"
-    ),
-    row!(
         "formatter_runtime_override",
         ProductComposition,
         "Mutex<Option<Arc>>",
@@ -660,24 +706,6 @@ const OWNERSHIP: &[OwnershipRow] = &[
         "process/test subject",
         true,
         "#5001"
-    ),
-    row!(
-        "skip_perlcritic_command_check",
-        ProductComposition,
-        "AtomicBool",
-        "test server drop",
-        "test subject",
-        false,
-        "#8400"
-    ),
-    row!(
-        "force_perlcritic_command_unavailable",
-        ProductComposition,
-        "AtomicBool",
-        "test server drop",
-        "test subject",
-        false,
-        "#8400"
     ),
     row!(
         "session_warning_dedup",

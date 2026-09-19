@@ -604,7 +604,7 @@ def main() -> int:
         }
     )
     receipt = {
-        "schema_version": "ci_route.v1",
+        "schema_version": "ci-route.v1",
         "provider_action": "changed_file_proof_routing",
         "claim_boundary": (
             "Advisory lightweight Codecov coverage-pack route; selected packs "

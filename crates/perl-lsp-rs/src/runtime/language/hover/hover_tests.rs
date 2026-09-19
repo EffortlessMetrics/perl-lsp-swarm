@@ -802,6 +802,59 @@ fn method_modifier_hover_escapes_doc_markdown() {
 }
 
 #[test]
+fn method_modifier_hover_answers_on_quoted_target_in_string_region()
+-> Result<(), Box<dyn std::error::Error>> {
+    // #15425: the modifier's target name is a quoted string, so the
+    // generation-bound region index proves StringLiteral there — never Code
+    // (#4967). The modifier card must still answer: the synthetic modifier
+    // symbol spans the declaration head and its target is precisely this
+    // quoted token. Body strings, comments, POD, and heredocs keep failing
+    // closed.
+    let text = "package Demo::Modifiers;\nuse Moo;\nafter 'save' => sub {\n    my ($self) = @_;\n};\nmy $label = 'save';\n";
+    let server = LspServer::with_io(Box::new(std::io::empty()), Box::new(Vec::<u8>::new()));
+    let uri = "file:///modifier_target_island.pl".to_string();
+    server.did_open(json!({
+        "textDocument": {
+            "uri": uri,
+            "languageId": "perl",
+            "version": 1,
+            "text": text
+        }
+    }))?;
+
+    let save_col =
+        text.lines().nth(2).and_then(|line| line.find("save")).ok_or("no `save` on line 2")?;
+    let hover = must_some(server.handle_hover(Some(json!({
+        "textDocument": { "uri": uri },
+        "position": { "line": 2, "character": save_col }
+    })))?);
+    let value = must_some(hover["contents"]["value"].as_str());
+    assert!(
+        value.contains("Method Modifier") && value.contains("after"),
+        "quoted modifier target must answer the modifier card, got: {value}"
+    );
+
+    // A string literal in a plain assignment is NOT a modifier target: the
+    // modifier-symbol containment claim must stay scoped to the declaration
+    // head of a `modifier=`-attributed symbol.
+    let label_col =
+        text.lines().nth(5).and_then(|line| line.find("save")).ok_or("no `save` on line 5")?;
+    let plain_string_hover = server.handle_hover(Some(json!({
+        "textDocument": { "uri": uri },
+        "position": { "line": 5, "character": label_col }
+    })))?;
+    if let Some(hover) = plain_string_hover
+        && let Some(value) = hover["contents"]["value"].as_str()
+    {
+        assert!(
+            !value.contains("Method Modifier"),
+            "plain string literal must not answer the modifier card, got: {value}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
 fn hover_off_lock_analysis_emits_lock_hold_and_analyze_timing_spans()
 -> Result<(), Box<dyn std::error::Error>> {
     // #3396 Phase 4: `handle_hover` grabs the parsed snapshot + text under a
@@ -1134,6 +1187,63 @@ fn hover_trace_source_region_kind_is_not_shared_across_concurrent_requests() {
     for handle in handles {
         assert!(handle.join().is_ok(), "hover trace worker panicked");
     }
+}
+
+fn ranged_violation(uri: &str, version: i32) -> serde_json::Value {
+    json!({
+        "textDocument": { "uri": uri, "version": version },
+        "contentChanges": [{
+            "range": {
+                "start": { "line": 0, "character": 0 },
+                "end": { "line": 0, "character": 1 }
+            },
+            "text": "x"
+        }]
+    })
+}
+
+#[test]
+fn hover_does_not_publish_in_flight_predecessor_after_violation()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = LspServer::new();
+    let uri = "file:///workspace/inflight_hover.pl";
+    let predecessor = "require PredHoverMod;\n";
+
+    server.test_apply_did_open(uri, predecessor, 1)?;
+    let snapshot = server
+        .snapshot_user_answer_text(uri)
+        .ok_or("open document must have a usable user-answer snapshot")?;
+    let computed = must_some(server.handle_hover(Some(json!({
+        "textDocument": { "uri": uri },
+        "position": { "line": 0, "character": 10 }
+    })))?);
+    let value = must_some(computed["contents"]["value"].as_str());
+    assert!(
+        value.contains("PredHoverMod"),
+        "in-flight hover must see the predecessor module: {value}"
+    );
+
+    server.handle_did_change(Some(ranged_violation(uri, 2)))?;
+    assert!(
+        !server.user_answer_text_is_current(uri, snapshot.generation),
+        "ranged violation must invalidate the captured user-answer generation"
+    );
+    let published =
+        server.publish_user_answer_value(uri, snapshot.generation, computed, json!(null));
+    assert!(
+        published.is_null(),
+        "in-flight predecessor hover must not publish after invalidation: {published}"
+    );
+
+    let live = server.handle_hover(Some(json!({
+        "textDocument": { "uri": uri },
+        "position": { "line": 0, "character": 10 }
+    })))?;
+    assert!(
+        live.as_ref().is_none_or(serde_json::Value::is_null),
+        "live hover after Full-sync violation must fail closed: {live:?}"
+    );
+    Ok(())
 }
 
 /// `$!` interpolated inside a double-quoted string is a live variable

@@ -27,7 +27,7 @@ use crate::SourceLocation;
 use crate::syntax::regex_analysis::RegexAnalysisFamily;
 
 use super::model::{
-    BranchKeyword, ControlTransferKind, LoopKind, ReadlineSource, RegexTargetKind,
+    BranchKeyword, ControlTransferKind, HirBindingId, LoopKind, ReadlineSource, RegexTargetKind,
     StatementModifierKind, glob_pattern_interpolates,
 };
 
@@ -53,6 +53,55 @@ pub struct HirStmtId(pub u32);
 /// Typed index into a [`HirBody`]'s block arena.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct HirBlockId(pub u32);
+
+/// Stable body-local identity for a control region that can receive a Perl
+/// loop-control transfer (`next`, `last`, `redo`).
+///
+/// Consumers such as PIR-A and downstream verifiers must use this ID rather
+/// than reconstructing the target from raw source ranges, flat-HIR shells, or
+/// label strings (see #13249).
+///
+/// The identity is scoped to one [`HirBody`]: two different bodies may allocate
+/// the same numeric value for unrelated regions, so a region ID has meaning
+/// only inside the [`HirBody`] that produced it.
+///
+/// # Allocation contract
+///
+/// Within one body, region IDs are dense from 0, unique, and deterministic —
+/// identical input yields identical IDs. A region is allocated *before* its own
+/// children are lowered, so an enclosing loop always holds a lower ID than a
+/// loop nested inside it.
+///
+/// That is the whole ordering guarantee. IDs follow the lowerer's traversal,
+/// which is **not** a lexical source ordering in general: a C-style `for`
+/// lowers its update expression after its body, so a region in the update gets
+/// a higher ID than one in the body even though it appears earlier in source.
+/// A consumer that needs source ordering must sort by the node's source range
+/// (via [`BodySourceMap`]) rather than by region ID.
+///
+/// Ordinary structured loops ([`HirExpr::Loop`]) always allocate a region.
+/// Postfix modifiers allocate one only in the unlabelled loop form — see
+/// [`HirStmt::PostfixCondition::postfix_loop_region`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct HirLoopRegionId(u32);
+
+impl HirLoopRegionId {
+    /// Construct a region ID from its raw index. Not part of the public
+    /// contract — reserved for the body lowerer.
+    pub(super) fn from_index(index: u32) -> Self {
+        Self(index)
+    }
+
+    /// The raw index as `u32`.
+    pub fn as_u32(self) -> u32 {
+        self.0
+    }
+
+    /// The raw index as `usize`, for indexing external per-region tables.
+    pub fn as_usize(self) -> usize {
+        self.0 as usize
+    }
+}
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Arena
@@ -230,6 +279,14 @@ pub enum VariableKind {
     Lexical,
     /// Package / stash variable.
     Package,
+    /// Per-object `field` of a Perl 5.38+ `class`, in scope at this reference.
+    ///
+    /// A field is neither: its storage is per instance, not a pad slot and not
+    /// a stash slot. Answering `Lexical` would assert downstream that a field
+    /// *is* an ordinary lexical binding, and answering `Package` would send a
+    /// field read to the package stash. Naming it keeps both claims out of the
+    /// fact layer (#13817).
+    Field,
 }
 
 /// A variable reference node.
@@ -243,6 +300,38 @@ pub struct HirVariable {
     pub kind: VariableKind,
     /// How this node uses the variable.
     pub access: AccessMode,
+    /// Canonical [`HirBindingId`] this occurrence resolves to, when a binding is
+    /// visible in the enclosing scope chain (#14166, family #6659).
+    ///
+    /// This is the file's source-backed binding authority from
+    /// [`ScopeGraph`](super::model::ScopeGraph) — not an identity reconstructed
+    /// from `(body, sigil, name)` or a source range. Two same-spelling lexicals
+    /// declared in nested scopes of one body therefore stay distinguishable
+    /// here. Resolution walks the enclosing scope chain by name; it is not yet
+    /// position-sensitive within a scope, so the binding named here is the
+    /// scope-chain resolution, which differs from the binding Perl would see
+    /// in four documented cases (tracked by #14173):
+    ///
+    /// - self-referential initializer: in `my $x = $x` the read resolves to the
+    ///   binding being declared, not the outer one;
+    /// - same-scope redeclaration: a read between `my $x = 1;` and `my $x = 2;`
+    ///   resolves to the later declaration;
+    /// - `foreach my $i` iterator: recorded in the enclosing scope rather than a
+    ///   loop-private one, so a post-loop read of `$i` captures the loop binding;
+    /// - package-scope descent: declarations at `package NAME;` top level are
+    ///   `None` when resolved from the program root.
+    ///
+    /// Declaration occurrences are exempt from the first two cases: each names
+    /// the binding it introduces, matched by declaration span.
+    ///
+    /// `None` means no binding was visible — an unresolved package global such
+    /// as `$Foo::bar`, a variable with no declaration in scope, or the
+    /// package-scope case above. It is never a fabricated stand-in identity.
+    ///
+    /// Only the canonical [`lower_ast`](super::lower_ast) path populates this.
+    /// The test-only [`lower_body`] builder has no scope graph and leaves it
+    /// `None`.
+    pub binding: Option<HirBindingId>,
 }
 
 /// Aggregate flavour of a subscript element access.
@@ -322,6 +411,58 @@ impl BinaryOp {
     }
 }
 
+/// Optional controlling label attached to a loop region.
+///
+/// Perl `LABEL:` syntax attaches an identifier to the immediately-following
+/// loop (or loop-form postfix modifier) so that `next LABEL` / `last LABEL` /
+/// `redo LABEL` can target that specific enclosing loop.
+///
+/// The `range` is the parser's `LabeledStatement` span: it starts at the label
+/// token and extends through the subordinate statement. The trailing colon is
+/// therefore included as part of the enclosing statement span. Consumers that
+/// need the token-only extent should use the label spelling and source text
+/// rather than treating this range as a token range.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HirLoopLabel {
+    /// Label spelling as written in source (e.g. `"OUTER"`).
+    pub name: String,
+    /// Source range of the enclosing labeled statement.
+    pub range: SourceLocation,
+}
+
+/// Explanation of how a [`HirStmt::LoopControl`] was bound to a target region.
+///
+/// A statically-valid transfer resolves to [`LoopControlResolution::Resolved`]
+/// with `resolved_target: Some(_)`. Every other outcome carries a typed
+/// disposition — the body lowerer must never silently fall back to the nearest
+/// loop or drop a label. Downstream verifiers, diagnostics, and PIR consumers
+/// read the disposition rather than reconstructing target identity from
+/// source ranges (see #13249).
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum LoopControlResolution {
+    /// The transfer is bound to a specific loop region — see
+    /// [`HirStmt::LoopControl::resolved_target`] for the region ID.
+    Resolved,
+    /// Unlabelled transfer with no enclosing loop region visible from this
+    /// statement. `next`/`last`/`redo` outside a loop.
+    NoEnclosingLoop,
+    /// Labelled transfer whose label matches an enclosing labelled construct
+    /// that this HIR does not model as a loop region (e.g. a labelled bare
+    /// block, `LABEL: { ... }`). A typed boundary rather than a silent
+    /// misresolve to the nearest loop.
+    NonLoopTarget {
+        /// Label spelling as written on the enclosing non-loop construct.
+        label: String,
+    },
+    /// Labelled transfer whose label does not match any enclosing labelled
+    /// construct visible from this statement.
+    UnresolvedLabel {
+        /// Label spelling as written on the `next`/`last`/`redo`.
+        label: String,
+    },
+}
+
 /// One expression node in the HIR body graph.
 ///
 /// Every variant that has child expressions carries explicit [`HirExprId`]
@@ -389,6 +530,19 @@ pub enum HirExpr {
     Loop {
         /// Loop family.
         kind: LoopKind,
+        /// Stable body-local target identity for `next`/`last`/`redo` (#13249).
+        ///
+        /// Consumers such as PIR-A and downstream verifiers use this ID to
+        /// pair a [`HirStmt::LoopControl`] with its target loop region — they
+        /// must not reconstruct target identity from raw source ranges, flat
+        /// HIR shells, or label strings.
+        region_id: HirLoopRegionId,
+        /// Optional controlling label inherited from an enclosing
+        /// `LABEL:` statement, with its source range (#13249).
+        ///
+        /// Present when this loop was written as `LABEL: while/until/for
+        /// /foreach (...)`. `None` for unlabelled loops.
+        label: Option<HirLoopLabel>,
         /// Optional C-style loop initializer block.
         ///
         /// The block preserves every initializer statement, including
@@ -420,6 +574,34 @@ pub enum HirExpr {
     Return {
         /// Optional returned value.
         value: Option<HirExprId>,
+    },
+
+    /// Structured `try` / `catch` / `finally` exception region (#15567).
+    ///
+    /// Each region is a real block, so statements inside it reach body HIR and
+    /// PIR-A instead of collapsing into one childless argument. Before this
+    /// variant existed `NodeKind::Try` fell into the generic call-like fallback
+    /// and produced `Call { args: [Opaque{Block}, …] }`, which both discarded
+    /// every nested statement and misreported the construct as a call.
+    ///
+    /// # Known representational limit
+    ///
+    /// This variant models the *regions* and the catch *binding*. It does not
+    /// model exceptional control flow: which operations can throw, handler
+    /// selection among several `catch` blocks, or the guarantee that `finally`
+    /// runs on every exit path. A consumer must not read a lowered `Try` as a
+    /// complete exception CFG. The exceptional edge taxonomy is tracked by
+    /// #6661.
+    Try {
+        /// The `try` block.
+        body: HirBlockId,
+        /// `catch` handlers in source order. Perl's core `try`/`catch` admits
+        /// one handler, but the parser accepts several (including
+        /// `Error.pm`-style `catch Class with { … }`), so order is preserved
+        /// rather than collapsed.
+        catch_handlers: Vec<HirCatchHandler>,
+        /// The `finally` block, when present.
+        finally_block: Option<HirBlockId>,
     },
 
     /// Function/method call expression (first-pass model).
@@ -504,6 +686,20 @@ pub enum HirExpr {
         /// The AST node kind name for diagnostics.
         ast_kind: String,
     },
+}
+
+/// One `catch` handler of a [`HirExpr::Try`] region (#15567).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HirCatchHandler {
+    /// Exception binding introduced by `catch ($e)`, lowered as a write place
+    /// exactly like [`HirExpr::Loop`]'s `iterator_binding`, and anchored at the
+    /// variable's own token range rather than the whole `catch (…)` header.
+    ///
+    /// `None` for the bare `catch { … }` form and for `Error.pm`-style
+    /// `catch Class with { … }`, neither of which introduces a binding.
+    pub binding: Option<HirExprId>,
+    /// The handler block.
+    pub block: HirBlockId,
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -817,15 +1013,56 @@ pub enum HirStmt {
         /// initializer — so PIR lowering anchors declarations at the variable,
         /// matching the legacy find-references provider (#2643 range parity).
         binding_range: SourceLocation,
+        /// Canonical [`HirBindingId`] introduced by this declaration, when the
+        /// scope graph recorded one (#14166, family #6659).
+        ///
+        /// Carries the same authority as [`HirVariable::binding`]: nested
+        /// same-spelling declarations in one body keep distinct identities, and
+        /// `my` / `state` / `our` / `local` declarations of one spelling stay
+        /// separable through their bindings' `StorageClass`.
+        ///
+        /// `None` on the test-only [`lower_body`] path, which has no scope graph.
+        binding: Option<HirBindingId>,
     },
 
     /// Loop-control transfer (`next`, `last`, or `redo`).
     LoopControl {
         /// Transfer verb.
         verb: LoopControlVerb,
-        /// Optional target loop label.
-        target_label: Option<String>,
+        /// Label as written on the transfer, if any (e.g. `next OUTER`).
+        ///
+        /// Preserved verbatim from the AST for diagnostics and re-serialisation.
+        /// Downstream consumers must NOT rely on this field for target
+        /// identity; use `resolved_target` and `resolution` instead (#13249).
+        written_label: Option<String>,
+        /// Resolved target loop region when the transfer is statically
+        /// valid — otherwise `None`, in which case `resolution` explains why.
+        ///
+        /// Unlabelled transfers resolve to the innermost enclosing loop
+        /// region. Labelled transfers resolve to the innermost enclosing
+        /// loop region whose controlling label matches by exact string
+        /// equality; two nested loops sharing a spelling both remain
+        /// addressable by their distinct region IDs (#13249).
+        resolved_target: Option<HirLoopRegionId>,
+        /// Explanation of the resolution outcome. Downstream verifiers use
+        /// this to distinguish an unbound-label transfer from an unlabelled
+        /// transfer outside a loop, and to detect labelled transfers into
+        /// non-loop labelled regions (#13249).
+        resolution: LoopControlResolution,
     },
+
+    /// A bare block (`{ ... }`) appearing in statement position.
+    ///
+    /// A statement ID cannot represent a sequence, so the block's children are
+    /// held in the block arena and referenced here. Consumers walk bodies from
+    /// [`HirBody::root_block`] and follow block statement lists, so carrying the
+    /// [`HirBlockId`] is what keeps every child reachable — returning only the
+    /// first child's ID would orphan the rest in the arena (#13249).
+    ///
+    /// The block's own lexical scope is applied while its children are lowered,
+    /// so a declaration inside the block resolves as a lexical rather than
+    /// against the enclosing scope.
+    Block(HirBlockId),
 
     /// Statement followed by a postfix condition (`expr if condition`).
     PostfixCondition {
@@ -835,6 +1072,21 @@ pub enum HirStmt {
         condition: HirExprId,
         /// Postfix modifier verb.
         verb: StatementModifierKind,
+        /// Body-local loop-region identity for an **unlabelled** loop-form
+        /// postfix modifier (`STMT while COND`, `STMT until COND`,
+        /// `STMT for LIST`, `STMT foreach LIST`).
+        ///
+        /// `None` in two cases. Branch-form modifiers (`if`/`unless`) are
+        /// never loop targets. A modifier carrying a label written directly
+        /// on it (`LOOP: $x++ while $c`) is wrapped by a non-loop labelled
+        /// region instead, so `last LOOP` there resolves to `NonLoopTarget` —
+        /// matching Perl, where a statement-modifier loop is not a
+        /// `next`/`last` target. A label on an enclosing construct does not
+        /// suppress the region: only a direct label does (#13249).
+        ///
+        /// The identity is allocation-only. A postfix modifier is not an
+        /// enclosing loop, so transfers inside it keep resolving outward.
+        postfix_loop_region: Option<HirLoopRegionId>,
     },
 }
 
@@ -1009,6 +1261,9 @@ fn lower_statement(builder: &mut BodyBuilder, node: &Node) -> HirStmtId {
                             name: var_name.clone(),
                             kind: VariableKind::Lexical,
                             access: AccessMode::Write,
+                            // This test-only builder has no scope graph, so it
+                            // has no binding authority to project (#14166).
+                            binding: None,
                         });
                         let place_id = builder.alloc_expr(place_expr, variable.location);
                         let rhs_id = lower_expr(builder, init_node);
@@ -1042,6 +1297,8 @@ fn lower_statement(builder: &mut BodyBuilder, node: &Node) -> HirStmtId {
                             storage,
                             init: init_expr_id,
                             binding_range: binding_node.location,
+                            // No scope graph on this test-only path (#14166).
+                            binding: None,
                         },
                         range,
                     )
@@ -1107,6 +1364,8 @@ fn lower_statement(builder: &mut BodyBuilder, node: &Node) -> HirStmtId {
                                 storage: DeclStorageClass::from_str(declarator),
                                 init: Some(effect_id),
                                 binding_range: recovered.location,
+                                // No scope graph on this test-only path (#14166).
+                                binding: None,
                             },
                             range,
                         );
@@ -1128,7 +1387,9 @@ fn named_variable_from_node(node: &Node) -> Option<(&str, String)> {
     match &node.kind {
         NodeKind::Variable { sigil, name } => Some((sigil.as_str(), name.clone())),
         NodeKind::VariableWithAttributes { variable, .. } => named_variable_from_node(variable),
-        NodeKind::Typeglob { name } if is_direct_typeglob_name(name) => Some(("*", name.clone())),
+        NodeKind::Typeglob { name, .. } if is_direct_typeglob_name(name) => {
+            Some(("*", name.clone()))
+        }
         _ => None,
     }
 }
@@ -1161,7 +1422,7 @@ fn is_direct_typeglob_name(name: &str) -> bool {
 fn declared_base_variable(node: &Node) -> Option<(&str, String, &Node)> {
     match &node.kind {
         NodeKind::Variable { sigil, name } => Some((sigil.as_str(), name.clone(), node)),
-        NodeKind::Typeglob { name } if is_direct_typeglob_name(name) => {
+        NodeKind::Typeglob { name, .. } if is_direct_typeglob_name(name) => {
             Some(("*", name.clone(), node))
         }
         NodeKind::VariableWithAttributes { variable, .. } => declared_base_variable(variable),
@@ -1235,8 +1496,14 @@ fn lower_place(
 ) -> HirExprId {
     match &node.kind {
         NodeKind::Variable { sigil, name } => {
-            let var =
-                HirVariable { sigil: Sigil::from_str(sigil), name: name.clone(), kind, access };
+            // The mirror has no scope-graph binding authority to project (#14166).
+            let var = HirVariable {
+                sigil: Sigil::from_str(sigil),
+                name: name.clone(),
+                kind,
+                access,
+                binding: None,
+            };
             builder.alloc_expr(HirExpr::Variable(var), node.location)
         }
         _ => lower_expr(builder, node),
@@ -1273,6 +1540,8 @@ fn lower_expr(builder: &mut BodyBuilder, node: &Node) -> HirExprId {
                 name: name.clone(),
                 kind: VariableKind::Lexical,
                 access: AccessMode::Read,
+                // No scope graph on this test-only path (#14166).
+                binding: None,
             };
             builder.alloc_expr(HirExpr::Variable(var), range)
         }

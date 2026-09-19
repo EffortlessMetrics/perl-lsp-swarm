@@ -24,6 +24,8 @@ on:
       - 'scripts/cargo-package-workspace-dry-run.sh'
       - 'scripts/publish-topo.py'
       - 'xtask/src/tasks/publish_manifest_check.rs'
+      - 'xtask/src/main.rs'
+      - 'xtask/src/tasks/mod.rs'
   workflow_dispatch: {}
 
 concurrency:
