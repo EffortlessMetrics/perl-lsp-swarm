@@ -164,6 +164,7 @@ merge-gate: _check-tools-basic pr-fast
     just _timed "lsp-bdd" "just ci-lsp-bdd" && \
     just _timed "security-audit" "just security-audit" && \
     just _timed "ci-policy" "just ci-policy" && \
+    just _timed "ci-agent-ledgers-validate" "just ci-agent-ledgers-validate" && \
     just _timed "ci-v2-bundle-sync" "just ci-v2-bundle-sync" && \
     just _timed "ci-v2-parity" "just ci-v2-parity" && \
     just _timed "ci-lsp-def" "just ci-lsp-def" && \
@@ -1065,6 +1066,16 @@ ci-format:
     @echo "📝 Checking code formatting..."
     cargo xtask fmt --check
     @echo "✅ Format check passed"
+
+# Agent-ledger contract validator (#15380) — exercises `cargo xtask agent ledgers validate`
+# against the committed docs/agents/ledgers/*.jsonl files. The validator exists and is unit-
+# tested (xtask/src/tasks/agent_ledgers.rs), but only the test module was wired into CI; the
+# CLI was never invoked against committed files. Adding the recipe + merge-gate call closes
+# the gap so a future ledger shape drift fails closed instead of being silently absorbed.
+ci-agent-ledgers-validate:
+    @echo "📒 Validating agent ledger contracts..."
+    cargo xtask agent ledgers validate --format json
+    @echo "✅ Agent ledger contracts valid"
 
 # Clippy lint (catches common issues, allow missing_docs during systematic resolution)
 ci-clippy:
@@ -2351,6 +2362,25 @@ _api-ratchet-crates:
     fi
     printf '%s\n' "$crates"
 
+# Private helper: the one surface filter shared by public-api-check and
+# public-api-update (#15634). cargo-public-api renders an item that carries an
+# attribute with that attribute in front of the visibility keyword
+# (`#[repr(u8)] pub enum ...`), so the old `^pub ` filter silently dropped
+# every attribute-bearing public item — from live diffs and from the
+# committed baselines alike. `#[repr]` and `#[non_exhaustive]` are part of
+# the public contract, so the guarded surface must record them: keep plain
+# `pub ` items plus items fronted by any run of bracketed attributes.
+# Non-item lines stay out.
+#
+# Usage: just _public-api-filter <raw-file> <filtered-file>
+[private]
+_public-api-filter raw out:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # grep exits 1 on no matches; an empty result is classified as
+    # INSTRUMENT-FAIL by the caller, so tolerate the exit code here.
+    grep -E '^(pub |(#\[[^]]*\][[:space:]]*)+pub )' "{{raw}}" > "{{out}}" || true
+
 # Check public API surface of the ratcheted crates against committed baselines
 public-api-check:
     #!/usr/bin/env bash
@@ -2379,9 +2409,9 @@ public-api-check:
             FAILED=1
             continue
         fi
-        # grep exits 1 on no matches; under set -e that would abort before
-        # the named INSTRUMENT-FAIL classification below — tolerate it here.
-        grep "^pub " "/tmp/${crate}-raw.txt" > "/tmp/${crate}-current.txt" || true
+        # The shared filter owns which generated lines are guarded (#15634);
+        # an empty result is classified as INSTRUMENT-FAIL below.
+        just _public-api-filter "/tmp/${crate}-raw.txt" "/tmp/${crate}-current.txt"
         if [ ! -s "/tmp/${crate}-current.txt" ]; then
             echo "INSTRUMENT-FAIL ${crate}: generated API surface is empty (nightly toolchain missing?) — an empty surface is never a diff"
             FAILED=1
@@ -2414,9 +2444,9 @@ public-api-update:
             cat "/tmp/${crate}-err.txt" >&2
             exit 1
         fi
-        # grep exits 1 on no matches; under set -e that would abort before
-        # the named INSTRUMENT-FAIL classification below — tolerate it here.
-        grep "^pub " "/tmp/${crate}-raw.txt" > "/tmp/${crate}-new-baseline.txt" || true
+        # The shared filter owns which generated lines are guarded (#15634);
+        # an empty result is rejected by the INSTRUMENT-FAIL check below.
+        just _public-api-filter "/tmp/${crate}-raw.txt" "/tmp/${crate}-new-baseline.txt"
         if [ ! -s "/tmp/${crate}-new-baseline.txt" ]; then
             echo "INSTRUMENT-FAIL ${crate}: generated API surface is empty; refusing to overwrite the baseline" >&2
             exit 1
