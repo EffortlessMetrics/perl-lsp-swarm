@@ -1478,8 +1478,7 @@ mod tests {
         );
         let report = test_report(1, 0, 0, 0, BTreeMap::new());
         assert_eq!(
-            report.schema_version,
-            SWEEP_REPORT_SCHEMA_VERSION,
+            report.schema_version, SWEEP_REPORT_SCHEMA_VERSION,
             "test_report must stamp the canonical schema_version constant"
         );
     }
