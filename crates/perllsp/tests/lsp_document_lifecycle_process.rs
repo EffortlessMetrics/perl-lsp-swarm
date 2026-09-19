@@ -603,24 +603,38 @@ sub predecessor_symbol { return 1; }
             ]
         }),
     )?;
-    let _after_malformed_tokens =
-        wait_for_current_parse_tokens(&mut client, "tokens-admission-malformed")?;
+    // The v0.18 full-document envelope fails closed on a violating batch:
+    // last-good text is not mutated, but predecessor facts stop being current
+    // answers, and the observed client version is recorded so the recovery
+    // replacement must advance the version timeline.
+    let after_malformed_tokens = request_success(
+        &mut client,
+        "tokens-admission-malformed",
+        "textDocument/semanticTokens/full",
+        json!({
+            "textDocument": { "uri": URI }
+        }),
+    )?;
+    ensure!(
+        after_malformed_tokens.get("resultId").is_none(),
+        "desynchronized semantic tokens must not carry a live resultId: {after_malformed_tokens}"
+    );
+    ensure!(
+        after_malformed_tokens.get("data").and_then(Value::as_array).is_some_and(Vec::is_empty),
+        "desynchronized semantic tokens must fail closed with empty data: {after_malformed_tokens}"
+    );
     let after_malformed_names = document_symbol_names(&mut client, "symbols-admission-malformed")?;
     ensure!(
-        after_malformed_names.iter().any(|name| name.contains("predecessor_symbol")),
-        "malformed change displaced predecessor symbol: {after_malformed_names:?}"
-    );
-    ensure!(
-        !after_malformed_names.iter().any(|name| name.contains("rejected_symbol")),
-        "malformed change published rejected symbol: {after_malformed_names:?}"
+        after_malformed_names.is_empty(),
+        "desynchronized document symbols must fail closed: {after_malformed_names:?}"
     );
 
-    did_change(&mut client, 2, "package Admission;\nsub recovery_symbol { return 3; }\n")?;
+    did_change(&mut client, 3, "package Admission;\nsub recovery_symbol { return 3; }\n")?;
     let _recovery_tokens = wait_for_current_parse_tokens(&mut client, "tokens-admission-recovery")?;
     let recovery_names = document_symbol_names(&mut client, "symbols-admission-recovery")?;
     ensure!(
         recovery_names.iter().any(|name| name.contains("recovery_symbol")),
-        "same-version recovery symbol was not published: {recovery_names:?}"
+        "advanced-version recovery symbol was not published: {recovery_names:?}"
     );
     ensure!(
         !recovery_names.iter().any(|name| name.contains("predecessor_symbol")),
