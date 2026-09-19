@@ -497,6 +497,7 @@ pub struct Dancer2TwoXKeywordView<'a> {
 }
 
 impl<'a> Dancer2TwoXKeywordView<'a> {
+    /// Construct a keyword view over the given 2.x activation facts.
     pub fn new(facts: &'a Dancer2TwoXActivationFacts) -> Self {
         Self { facts }
     }
