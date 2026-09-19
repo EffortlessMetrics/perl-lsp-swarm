@@ -278,7 +278,7 @@ mod tests {
     /// kill (the mutation check's surviving grandchild, for one) still
     /// exits instead of stranding a live process on a runner.
     fn tick_loop(path: PathBuf) -> ! {
-        let deadline = Instant::now() + Duration::from_mins(2);
+        let deadline = Instant::now() + Duration::from_secs(120);
         loop {
             let _ = touch(&path);
             if Instant::now() >= deadline {
@@ -343,8 +343,9 @@ mod tests {
         #[cfg(unix)]
         {
             // Signal 0 probes existence without delivering anything; a
-            // reaped PID reports ESRCH.
-            unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }
+            // reaped PID reports ESRCH. Uses the nix safe wrapper rather
+            // than raw libc so no unsafe block is needed.
+            nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid as i32), None).is_ok()
         }
     }
 
