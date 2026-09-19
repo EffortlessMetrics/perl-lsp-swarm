@@ -1,0 +1,13 @@
+project: product
+component: Parser and lexer
+kind: Fixed
+body: >-
+  Report the exercised invalid same-line residual syntax as a typed recovered
+  parse instead of silently splitting it into additional clean statements,
+  while preserving the selected tested low-precedence and statement
+  continuations.
+time: 2026-08-29T04:32:42Z
+custom:
+  PR: "13505"
+  Slug: same-line-residual-recovery
+  Breaking: "no"

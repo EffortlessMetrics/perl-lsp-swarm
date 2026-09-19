@@ -868,6 +868,8 @@ fn is_reason_token(value: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use perl_test_must::{must_some_with, must_with};
+
     use super::{
         BINARY_IDENTITY_FEATURE_VERSION, BinaryCompatibilityReason, BinaryCompatibilityState,
         BinaryIdentityRequestV1, BinaryIdentityResponseV1, BinaryIdentityTransportStateV1,
@@ -1011,7 +1013,8 @@ mod tests {
         assert!(!response.redacted, "source payload required a redaction");
         assert_eq!(response.server.build.target, None);
         assert!(response.reasons.contains(&BinaryCompatibilityReason::PayloadNotRedacted));
-        let raw = serde_json::to_string(&response).expect("response serialization must succeed");
+        let raw =
+            must_with(serde_json::to_string(&response), "response serialization must succeed");
         assert!(!raw.contains("/home/user"), "response leaked a private path: {raw}");
     }
 
@@ -1028,7 +1031,7 @@ mod tests {
     #[test]
     fn unsupported_dap_packet_schema_is_not_exact() {
         let mut state = state();
-        let dap = state.dap.as_mut().expect("fixture carries a DAP packet");
+        let dap = must_some_with(state.dap.as_mut(), "fixture carries a DAP packet");
         dap.schema_version = "perl_lsp.binary_identity.v2".to_owned();
         let response = state.respond(request());
         assert_eq!(response.compatibility, BinaryCompatibilityState::NotProven);

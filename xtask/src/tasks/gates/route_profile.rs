@@ -68,7 +68,8 @@ fn tier_order(tier: &str) -> (u8, String) {
         "merge_gate" => (2, tier.to_string()),
         "nightly" => (3, tier.to_string()),
         "release" => (4, tier.to_string()),
-        other => (5, other.to_string()),
+        "stack_local" => (5, tier.to_string()),
+        other => (6, other.to_string()),
     }
 }
 
@@ -86,6 +87,9 @@ const EXPANSION_RULES: &[(RequestedProfile, &[&str])] = &[
     (RequestedProfile::PrFast, &["pr_fast"]),
     (RequestedProfile::MergeGate, &["pr_fast", "merge_gate"]),
     (RequestedProfile::Nightly, &["pr_fast", "merge_gate", "nightly"]),
+    // #11229 S1: advisory stack-local increment proof. It shares no gate with
+    // any protected-main profile and is never required for merge readiness.
+    (RequestedProfile::StackLocal, &["stack_local"]),
 ];
 
 // ---------------------------------------------------------------------------
@@ -105,6 +109,11 @@ pub enum RequestedProfile {
     /// resolves typed `Unsupported` — never silently `all`, `merge_gate`, or
     /// tier-string equality.
     Release,
+    /// Advisory stack-local increment proof (#11229 S1). Gates on this tier
+    /// prove one exact parent-head → child-head PR stack only; the expansion
+    /// can never include protected-main tiers and a stack result can never
+    /// satisfy merge readiness.
+    StackLocal,
 }
 
 impl RequestedProfile {
@@ -116,6 +125,7 @@ impl RequestedProfile {
             RequestedProfile::Nightly => "nightly",
             RequestedProfile::All => "all",
             RequestedProfile::Release => "release",
+            RequestedProfile::StackLocal => "stack_local",
         }
     }
 
@@ -130,6 +140,7 @@ impl RequestedProfile {
             "nightly" => Some(RequestedProfile::Nightly),
             "all" => Some(RequestedProfile::All),
             "release" => Some(RequestedProfile::Release),
+            "stack_local" => Some(RequestedProfile::StackLocal),
             _ => None,
         }
     }
