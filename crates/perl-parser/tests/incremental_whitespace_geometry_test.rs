@@ -277,7 +277,7 @@ fn statement_boundary_newline_keeps_mapped_spans_exact_under_advanced_reuse() ->
     };
     let statement_text: Vec<&str> = statements
         .iter()
-        .map(|statement| &source2[statement.location.start..statement.location.end])
+        .map(|statement| &source2[statement.location.start()..statement.location.end()])
         .collect();
 
     assert_eq!(statement_text, vec!["my $x = 1", "my $y = 2"]);

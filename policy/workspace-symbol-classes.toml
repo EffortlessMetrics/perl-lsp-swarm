@@ -49,7 +49,9 @@ fact_provenance = "SourceBackedGenerated"
 live = true
 requires_non_empty_query = true
 requires_ready_index = true
-requires_high_confidence = true
+# The bounded pilot admits only the claim's Medium-confidence facts; High is
+# not inferred or promoted by this shared class.
+requires_high_confidence = false
 requires_source_anchor = true
 requires_generated_label = true
 label = "[generated/framework]"

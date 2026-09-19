@@ -34,6 +34,7 @@ impl LspServer {
             }
 
             self.evict_open_document_session_state(uri);
+            self.clear_formatting_receipt_for_close(uri);
 
             // If the closed document has no backing file on disk it existed only in
             // the editor buffer (e.g. a new unsaved file or a test virtual document).
@@ -58,13 +59,13 @@ impl LspServer {
                 );
                 if !file_on_disk {
                     if let Some(coordinator) = self.coordinator() {
-                        for key in self.uri_key_variants(uri) {
+                        for key in Self::uri_key_variants(uri) {
                             coordinator.index().remove_file(&key);
                         }
                     }
                 } else {
                     if session_diverged && let Some(coordinator) = self.coordinator() {
-                        for key in self.uri_key_variants(uri) {
+                        for key in Self::uri_key_variants(uri) {
                             coordinator.index().remove_file(&key);
                         }
                         if let Some(content) =
@@ -95,7 +96,7 @@ impl LspServer {
                     // (#11305) — is not blocked by the stale high-water mark
                     // from the previous session (#5438).
                     if let Some(coordinator) = self.coordinator() {
-                        for key in self.uri_key_variants(uri) {
+                        for key in Self::uri_key_variants(uri) {
                             coordinator.index().reset_generation_for_close(&key);
                         }
                     }

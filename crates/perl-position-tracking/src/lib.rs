@@ -59,4 +59,6 @@ mod span;
 mod strict;
 
 mod wire;
+#[cfg(feature = "lsp-compat")]
+pub use wire::WireLocationUriError;
 pub use wire::{WireLocation, WirePosition, WireRange};

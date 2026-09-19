@@ -315,7 +315,7 @@ fn for_each_child_leaf_nodes_visit_nothing() -> Result<(), Box<dyn std::error::E
         ),
         Node::new(NodeKind::Readline { filehandle: Some("STDIN".to_string()) }, loc(0, 7)),
         Node::new(NodeKind::Glob { pattern: "*.pl".to_string() }, loc(0, 5)),
-        Node::new(NodeKind::Typeglob { name: "foo".to_string() }, loc(0, 4)),
+        Node::new(NodeKind::Typeglob { name: "foo".to_string(), body: None }, loc(0, 4)),
         Node::new(NodeKind::Diamond, loc(0, 2)),
         Node::new(NodeKind::Ellipsis, loc(0, 3)),
         Node::new(NodeKind::Undef, loc(0, 5)),
@@ -988,7 +988,8 @@ fn sexp_glob_pattern() -> Result<(), Box<dyn std::error::Error>> {
 
 #[test]
 fn sexp_typeglob() -> Result<(), Box<dyn std::error::Error>> {
-    let node = Node::new(NodeKind::Typeglob { name: "main::foo".to_string() }, loc(0, 10));
+    let node =
+        Node::new(NodeKind::Typeglob { name: "main::foo".to_string(), body: None }, loc(0, 10));
     let sexp = node.to_sexp();
     assert_eq!(sexp, "(typeglob (name main::foo))");
     Ok(())

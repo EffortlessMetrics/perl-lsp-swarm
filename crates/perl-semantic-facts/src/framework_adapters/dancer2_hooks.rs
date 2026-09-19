@@ -27,8 +27,7 @@
 
 use crate::framework::AdapterDetectionResult;
 use crate::framework_adapters::dancer2::{
-    DANCER2_ADAPTER_ID, DANCER2_DSL_CONTRACT_VERSION, DANCER2_FRAMEWORK_NAME,
-    Dancer2ActivationFacts, Dancer2KeywordState,
+    DANCER2_ADAPTER_ID, DANCER2_FRAMEWORK_NAME, Dancer2ActivationFacts, Dancer2KeywordState,
 };
 use crate::handler::{FrameworkHandler, FrameworkHandlerBoundary};
 use crate::hook::{
@@ -319,6 +318,7 @@ pub fn dancer2_hook_handler_context_facts(
             application_name,
             framework_version,
             source_generation,
+            activation.dsl_contract_version,
         ));
     }
     facts
@@ -330,6 +330,7 @@ fn mint_hook_handler_context_fact(
     application_name: &str,
     framework_version: &str,
     generation: &SourceGeneration,
+    dsl_contract_version: &str,
 ) -> RouteHandlerContextFact {
     let (fact_id, entity_id) = hook_handler_context_identity(
         declaration.file_id,
@@ -376,7 +377,7 @@ fn mint_hook_handler_context_fact(
         framework_version,
         application_name,
         declaration.hook.declaration_index,
-        DANCER2_DSL_CONTRACT_VERSION,
+        dsl_contract_version,
     )
     .with_handler_kind(HandlerContextKind::Hook)
     .with_request_context(admission)

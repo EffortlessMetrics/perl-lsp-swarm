@@ -354,8 +354,8 @@ impl LspServer {
                 if let Some(sub_name) = name {
                     if ascii_contains_ci(sub_name, &query_lower) {
                         let (start_line, start_char) =
-                            byte_to_line_col(source, node.location.start);
-                        let (end_line, end_char) = byte_to_line_col(source, node.location.end);
+                            byte_to_line_col(source, node.location.start());
+                        let (end_line, end_char) = byte_to_line_col(source, node.location.end());
 
                         symbols.push(json!({
                             "name": sub_name,
@@ -376,8 +376,8 @@ impl LspServer {
 
             NodeKind::Package { name, block, .. } => {
                 if ascii_contains_ci(name, &query_lower) {
-                    let (start_line, start_char) = byte_to_line_col(source, node.location.start);
-                    let (end_line, end_char) = byte_to_line_col(source, node.location.end);
+                    let (start_line, start_char) = byte_to_line_col(source, node.location.start());
+                    let (end_line, end_char) = byte_to_line_col(source, node.location.end());
 
                     symbols.push(json!({
                         "name": name,
@@ -400,8 +400,8 @@ impl LspServer {
             // Perl 5.38+ native class declaration
             NodeKind::Class { name, body, .. } => {
                 if ascii_contains_ci(name, &query_lower) {
-                    let (start_line, start_char) = byte_to_line_col(source, node.location.start);
-                    let (end_line, end_char) = byte_to_line_col(source, node.location.end);
+                    let (start_line, start_char) = byte_to_line_col(source, node.location.start());
+                    let (end_line, end_char) = byte_to_line_col(source, node.location.end());
 
                     symbols.push(json!({
                         "name": name,
@@ -422,8 +422,8 @@ impl LspServer {
             // Perl 5.38+ native method declaration
             NodeKind::Method { name, body, .. } => {
                 if ascii_contains_ci(name, &query_lower) {
-                    let (start_line, start_char) = byte_to_line_col(source, node.location.start);
-                    let (end_line, end_char) = byte_to_line_col(source, node.location.end);
+                    let (start_line, start_char) = byte_to_line_col(source, node.location.start());
+                    let (end_line, end_char) = byte_to_line_col(source, node.location.end());
 
                     symbols.push(json!({
                         "name": name,

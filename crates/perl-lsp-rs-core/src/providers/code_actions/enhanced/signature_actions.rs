@@ -155,7 +155,7 @@ fn is_call_to(call_name: &str, sub_name: &str) -> bool {
 /// Find the byte offset of the closing `)` for a FunctionCall node.
 ///
 /// The FunctionCall node's span ends one character past the `)`, so the
-/// closing paren is at `node.location.end - 1`.  We insert text at that
+/// closing paren is at `node.location.end() - 1`.  We insert text at that
 /// position to place the new argument before the `)`.
 fn find_call_close_paren(call_node: &Node, _args: &[Node]) -> Option<usize> {
     let node_end = call_node.location.end();

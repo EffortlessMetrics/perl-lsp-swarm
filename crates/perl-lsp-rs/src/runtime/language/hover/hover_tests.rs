@@ -1,4 +1,6 @@
 use super::LspServer;
+use super::hover_extracted::HoverExtracted;
+use perl_parser_core::syntax::source_context::SourceRegionIndex;
 use perl_tdd_support::must_some;
 use serde_json::json;
 
@@ -795,6 +797,59 @@ fn method_modifier_hover_escapes_doc_markdown() {
 }
 
 #[test]
+fn method_modifier_hover_answers_on_quoted_target_in_string_region()
+-> Result<(), Box<dyn std::error::Error>> {
+    // #15425: the modifier's target name is a quoted string, so the
+    // generation-bound region index proves StringLiteral there — never Code
+    // (#4967). The modifier card must still answer: the synthetic modifier
+    // symbol spans the declaration head and its target is precisely this
+    // quoted token. Body strings, comments, POD, and heredocs keep failing
+    // closed.
+    let text = "package Demo::Modifiers;\nuse Moo;\nafter 'save' => sub {\n    my ($self) = @_;\n};\nmy $label = 'save';\n";
+    let server = LspServer::with_io(Box::new(std::io::empty()), Box::new(Vec::<u8>::new()));
+    let uri = "file:///modifier_target_island.pl".to_string();
+    server.did_open(json!({
+        "textDocument": {
+            "uri": uri,
+            "languageId": "perl",
+            "version": 1,
+            "text": text
+        }
+    }))?;
+
+    let save_col =
+        text.lines().nth(2).and_then(|line| line.find("save")).ok_or("no `save` on line 2")?;
+    let hover = must_some(server.handle_hover(Some(json!({
+        "textDocument": { "uri": uri },
+        "position": { "line": 2, "character": save_col }
+    })))?);
+    let value = must_some(hover["contents"]["value"].as_str());
+    assert!(
+        value.contains("Method Modifier") && value.contains("after"),
+        "quoted modifier target must answer the modifier card, got: {value}"
+    );
+
+    // A string literal in a plain assignment is NOT a modifier target: the
+    // modifier-symbol containment claim must stay scoped to the declaration
+    // head of a `modifier=`-attributed symbol.
+    let label_col =
+        text.lines().nth(5).and_then(|line| line.find("save")).ok_or("no `save` on line 5")?;
+    let plain_string_hover = server.handle_hover(Some(json!({
+        "textDocument": { "uri": uri },
+        "position": { "line": 5, "character": label_col }
+    })))?;
+    if let Some(hover) = plain_string_hover
+        && let Some(value) = hover["contents"]["value"].as_str()
+    {
+        assert!(
+            !value.contains("Method Modifier"),
+            "plain string literal must not answer the modifier card, got: {value}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
 fn hover_off_lock_analysis_emits_lock_hold_and_analyze_timing_spans()
 -> Result<(), Box<dyn std::error::Error>> {
     // #3396 Phase 4: `handle_hover` grabs the parsed snapshot + text under a
@@ -1127,4 +1182,62 @@ fn hover_trace_source_region_kind_is_not_shared_across_concurrent_requests() {
     for handle in handles {
         assert!(handle.join().is_ok(), "hover trace worker panicked");
     }
+}
+
+/// `$!` interpolated inside a double-quoted string is a live variable
+/// reference and keeps its variable card; the same text single-quoted or
+/// escaped does not interpolate, and a bareword in the string stays
+/// suppressed (#14860, regression from #14160's proven-code gate).
+#[test]
+fn interpolated_string_variable_island_is_bounded() -> Result<(), Box<dyn std::error::Error>> {
+    // (source, needle, cursor byte offset within the needle, expected)
+    let cases: [(&str, &str, usize, bool); 19] = [
+        ("open my $fh, '<', 'x' or die \"Cannot open: $!\";\n", "$!", 0, true),
+        // Cursor on the punctuation, not the sigil.
+        ("open my $fh, '<', 'x' or die \"Cannot open: $!\";\n", "$!", 1, true),
+        ("print \"pid $$\\n\";\n", "$$", 0, true),
+        ("warn \"warnings are $^W\";\n", "$^W", 1, true),
+        ("warn \"warnings are $^W\";\n", "$^W", 2, true),
+        ("print \"last match ended at @+\";\n", "@+", 1, true),
+        ("print \"$!x\";\n", "$!", 2, false),
+        ("print \"@+x\";\n", "@+", 2, false),
+        ("print \"$!_\";\n", "$!", 2, false),
+        ("print \"$!é\";\n", "$!", 2, false),
+        ("print \"$!x\";\n", "$!", 0, true),
+        ("print \"$!x\";\n", "$!", 1, true),
+        ("print \"@+x\";\n", "@+", 1, true),
+        ("print \"@+;\";\n", "@+", 2, true),
+        // `\\$!` is an escaped backslash followed by a live `$!`.
+        ("my $msg = \"escaped slash \\\\$! text\";\n", "$!", 0, true),
+        ("my $msg = 'literal $! text';\n", "$!", 1, false),
+        // `\$!` is an escaped sigil: no interpolation.
+        ("my $msg = \"escaped \\$! text\";\n", "$!", 1, false),
+        ("my $msg = \"hash %! never interpolates\";\n", "%!", 1, false),
+        ("my $msg = \"call sprintf here\";\n", "sprintf", 0, false),
+    ];
+    for (text, needle, delta, expected) in cases {
+        let offset = must_some(text.find(needle)) + delta;
+        let index = SourceRegionIndex::build(text);
+        assert_eq!(
+            LspServer::token_is_interpolated_string_variable(Some(&index), text, offset),
+            expected,
+            "{text:?} at {needle:?}+{delta}"
+        );
+    }
+
+    let text = "open my $fh, '<', 'x' or die \"Cannot open: $!\";\n";
+    let index = SourceRegionIndex::build(text);
+    for delta in [0usize, 1] {
+        let offset = must_some(text.find("$!")) + delta;
+        let hover = LspServer::extract_token_hover("file:///t.pl", text, offset, Some(&index));
+        let HoverExtracted::Complete(card) = hover else {
+            return Err(format!(
+                "expected a complete `$!` card inside the interpolating string at +{delta}"
+            )
+            .into());
+        };
+        let value = must_some(card["contents"]["value"].as_str());
+        assert!(value.contains("errno"), "expected the `$!` card at +{delta}, got: {value}");
+    }
+    Ok(())
 }

@@ -93,15 +93,15 @@ Located in: `crates/perl-dap/tests/fixtures/golden_transcripts/`
 
 All golden transcripts follow DAP 1.x protocol specification with proper seq numbering, request/response/event types.
 
-#### `initialize_sequence.json` (48 lines)
+#### `initialize_sequence.json` (67 lines)
 - **Purpose**: Standard DAP initialization handshake
 - **Message Flow**:
   1. Initialize request (seq 1)
   2. Initialize response (seq 1, request_seq 1)
   3. Initialized event (seq 2)
-- **Capabilities**: ConfigurationDoneRequest, EvaluateForHovers, SetVariable, ConditionalBreakpoints
+- **Capabilities**: handshake excerpt; named fields must match live initialize (`supportsValueFormattingOptions` stays false under #9581)
 - **AC Coverage**: AC13 - Initialize protocol
-- **Usage**: `cargo test -p perl-dap --test dap_golden_transcript_tests -- test_golden_transcript_hello_world`
+- **Usage**: `cargo test -p perl-dap --test dap_golden_transcript_tests -- initialize_sequence_named_fields_match_live_and_keep_value_format_floor`
 
 #### `launch_attach_sequence.json` (51 lines)
 - **Purpose**: Launch configuration and program start

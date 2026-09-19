@@ -306,7 +306,7 @@ fn test_full_span_covers_segments() {
     assert_eq!(content.segments.len(), 3);
 
     // We already asserted segments.len() == 3 above, so indexing is safe here.
-    // full_span.start == first segment start, full_span.end == last segment end.
+    // full_span.start() == first segment start, full_span.end() == last segment end.
     assert_eq!(content.full_span.start(), content.segments[0].start());
     assert_eq!(content.full_span.end(), content.segments[2].end());
 }

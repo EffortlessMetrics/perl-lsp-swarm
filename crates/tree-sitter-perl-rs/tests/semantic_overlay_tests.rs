@@ -379,7 +379,7 @@ fn when_inner_is_called_then_location_start_matches_start_byte() {
     assert_eq!(
         ast_node.location.start(),
         root.start_byte(),
-        "inner().location.start must match Node::start_byte()"
+        "inner().location.start() must match Node::start_byte()"
     );
 }
 
@@ -400,7 +400,7 @@ fn when_inner_is_called_on_child_node_then_kind_matches_native_kind() {
 
 #[test]
 fn when_inner_is_called_then_location_end_matches_end_byte_before_clamp() {
-    // inner().location.end is the raw (possibly unclamped) end byte from the AST.
+    // inner().location.end() is the raw (possibly unclamped) end byte from the AST.
     // Node::end_byte() applies a .min(source.len()) clamp. For normal-length sources
     // these should be equal.
     let source = "my $x = 1;";

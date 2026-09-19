@@ -6,7 +6,7 @@ use std::fs;
 use std::path::Path;
 
 use super::error::ProofError;
-use super::model::{EvidenceClass, RuleProofManifest, STATUS_PATH};
+use super::model::{EvidenceClass, PILOT_RULES, RuleProofManifest, STATUS_PATH};
 
 /// Per-class proof disposition shown in generated status.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -74,9 +74,9 @@ pub fn render_status(manifest: &RuleProofManifest) -> String {
 
     markdown.push_str("\n## Catalog remainder\n\n");
     let catalog_count = NativeCriticRegistry::for_profile(NativeCriticProfile::Strict).len();
-    let ungoverned = catalog_count.saturating_sub(manifest.rules.len());
+    let ungoverned = catalog_count.saturating_sub(PILOT_RULES.len());
     markdown.push_str(&format!(
-        "{ungoverned} catalog native rules are outside this pilot. Their evidence classes remain MISSING; they do not inherit proof from transport coverage, false-positive corpus counts, or recommended/strict rule-count totals.\n",
+        "{ungoverned} catalog native rules are outside this closed PILOT_RULES cohort. Their evidence classes remain MISSING; they do not inherit proof from transport coverage, false-positive corpus counts, or recommended/strict rule-count totals. Extra catalog rows are rejected so missing classes stay missing on purpose.\n",
     ));
     markdown
 }

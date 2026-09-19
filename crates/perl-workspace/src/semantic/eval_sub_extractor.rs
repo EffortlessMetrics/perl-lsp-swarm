@@ -384,7 +384,7 @@ fn emit_triple(
     };
 
     // Use the real AST span from the enclosing eval node.
-    // node_end_byte comes from node.location.end, which is the source position
+    // node_end_byte comes from node.location.end(), which is the source position
     // of the end of the entire eval expression (including closing quote/paren).
     let span_end =
         if node_end_byte > node_start_byte { node_end_byte } else { node_start_byte + 1 };

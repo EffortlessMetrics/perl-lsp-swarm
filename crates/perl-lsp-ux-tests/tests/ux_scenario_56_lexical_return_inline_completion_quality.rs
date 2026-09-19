@@ -76,7 +76,10 @@ fn wait_for_lexical_return_inline_completion(
     source: &str,
 ) -> Result<Vec<String>> {
     let (line, character) = cursor_on_blank_line(source)?;
-    let deadline = Instant::now() + Duration::from_secs(5);
+    // The quality budget must tolerate analysis lag on cold CI runners:
+    // post-diagnostics, completion facts can land after the previous 5s
+    // window closed (observed as a one-probe zero on a refreshed-base run).
+    let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         let items = harness.inline_completion_with_trigger_kind(file, line, character, 1)?;
         for item in &items {
@@ -123,7 +126,10 @@ fn scenario_56_lexical_return_inline_completion_quality_stdio() -> Result<()> {
     let harness = create_harness()?;
     harness.open_file(LEXICAL_RETURN_PATH, LEXICAL_RETURN_SOURCE)?;
     harness.open_file(AFTER_COMMENT_PATH, AFTER_COMMENT_SOURCE)?;
-    std::thread::sleep(Duration::from_millis(250));
+    // Same readiness race as #15870: synchronize on the server's own
+    // analysis-readiness signal instead of a fixed sleep.
+    let _ = harness.wait_for_diagnostics(LEXICAL_RETURN_PATH, Duration::from_secs(30));
+    let _ = harness.wait_for_diagnostics(AFTER_COMMENT_PATH, Duration::from_secs(30));
 
     let blank_line_insert_texts = wait_for_lexical_return_inline_completion(
         &harness,

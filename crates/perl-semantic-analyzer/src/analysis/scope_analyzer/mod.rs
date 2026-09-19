@@ -24,7 +24,7 @@
 //! # Usage Examples
 //!
 //! ```rust,ignore
-//! use perl_parser::scope_analyzer::{ScopeAnalyzer, IssueKind};
+//! use perl_semantic_analyzer::analysis::scope_analyzer::{ScopeAnalyzer, IssueKind};
 //! use perl_parser::{Parser, ast::Node};
 //!
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -177,10 +177,26 @@ fn index_to_sigil(index: usize) -> &'static str {
     }
 }
 
+type VariableMaps = [Option<FxHashMap<String, Rc<Variable>>>; 6];
+/// Per-sigil, per-name ordered history of every lexical declaration in the
+/// scope. `variables` always holds the *latest* entry; `binding_history`
+/// retains earlier declarations so their `is_used` / shadowing metadata is
+/// preserved when a later declaration becomes active (#15056).
+type BindingHistoryMaps = [Option<FxHashMap<String, Vec<Rc<Variable>>>>; 6];
+
 #[derive(Debug)]
 pub(super) struct Scope {
     // Outer key: sigil index, Inner key: name
-    variables: RefCell<[Option<FxHashMap<String, Rc<Variable>>>; 6]>,
+    variables: RefCell<VariableMaps>,
+    /// Every lexical declaration in source order; `variables` always points to
+    /// the latest entry of the matching history vector (#15056).
+    binding_history: RefCell<BindingHistoryMaps>,
+    /// Lexicals declared within the current unfinished statement modifier.
+    pending_variables: RefCell<VariableMaps>,
+    /// Parallel history for pending declarations so the latest-wins contract
+    /// holds while the modifier is still being analyzed.
+    pending_binding_history: RefCell<BindingHistoryMaps>,
+    deferring_declarations: Cell<bool>,
     parent: Option<Rc<Scope>>,
     /// Whether a regex match operation (`=~`, `m//`, `s///`) has been seen in this scope.
     has_regex_match: Cell<bool>,
@@ -189,13 +205,25 @@ pub(super) struct Scope {
 impl Scope {
     fn new() -> Self {
         let vars = std::array::from_fn(|_| None);
-        Self { variables: RefCell::new(vars), parent: None, has_regex_match: Cell::new(false) }
+        Self {
+            variables: RefCell::new(vars),
+            binding_history: RefCell::new(std::array::from_fn(|_| None)),
+            pending_variables: RefCell::new(std::array::from_fn(|_| None)),
+            pending_binding_history: RefCell::new(std::array::from_fn(|_| None)),
+            deferring_declarations: Cell::new(false),
+            parent: None,
+            has_regex_match: Cell::new(false),
+        }
     }
 
     fn with_parent(parent: Rc<Scope>) -> Self {
         let vars = std::array::from_fn(|_| None);
         Self {
             variables: RefCell::new(vars),
+            binding_history: RefCell::new(std::array::from_fn(|_| None)),
+            pending_variables: RefCell::new(std::array::from_fn(|_| None)),
+            pending_binding_history: RefCell::new(std::array::from_fn(|_| None)),
+            deferring_declarations: Cell::new(false),
             parent: Some(parent),
             has_regex_match: Cell::new(false),
         }
@@ -220,14 +248,34 @@ impl Scope {
         let idx = sigil_to_index(sigil);
 
         // First check if already declared in this scope
-        {
+        let already_visible_offset = {
             let vars = self.variables.borrow();
-            if let Some(map) = &vars[idx] {
-                if map.contains_key(name) {
-                    return Some(IssueKind::VariableRedeclaration);
-                }
-            }
-        }
+            vars[idx].as_ref().and_then(|map| map.get(name)).map(|var| var.declaration_offset)
+        };
+
+        // Pending declarations still own declaration metadata and participate
+        // in redeclaration checks, but lookup must not see them yet.
+        let already_pending_offset = self
+            .pending_variables
+            .borrow()
+            .get(idx)
+            .and_then(Option::as_ref)
+            .and_then(|map| map.get(name))
+            .map(|var| var.declaration_offset);
+
+        // (#15056) The "later" binding that survives is the *textually later*
+        // declaration, not necessarily the most recently analyzed one.
+        // Statement modifiers like `my $x if my $x = 2;` analyze the condition
+        // first (so the condition is "first installed") even though the
+        // condition is textually after the statement. The textually later
+        // binding must win so subsequent reads resolve to it.
+        let redeclaration = already_visible_offset.is_some() || already_pending_offset.is_some();
+        let textually_later = match (already_visible_offset, already_pending_offset) {
+            (Some(visible), Some(pending)) => offset > visible.max(pending),
+            (Some(visible), None) => offset > visible,
+            (None, Some(pending)) => offset > pending,
+            (None, None) => false,
+        };
 
         // Check if it shadows a parent scope variable
         let shadows = if let Some(ref parent) = self.parent {
@@ -236,21 +284,79 @@ impl Scope {
             false
         };
 
-        // Now insert the variable
+        let variable = Rc::new(Variable {
+            declaration_offset: offset,
+            is_used: RefCell::new(is_our), // 'our' variables are considered used
+            is_our,
+            is_initialized: RefCell::new(is_initialized),
+        });
+        if self.deferring_declarations.get() && !is_our {
+            if (textually_later || already_pending_offset.is_none())
+                && let Some(slot) = self.pending_variables.borrow_mut().get_mut(idx)
+            {
+                slot.get_or_insert_with(FxHashMap::default)
+                    .insert(name.to_string(), variable.clone());
+            }
+            if let Some(history_slot) = self.pending_binding_history.borrow_mut().get_mut(idx) {
+                history_slot
+                    .get_or_insert_with(FxHashMap::default)
+                    .entry(name.to_string())
+                    .or_default()
+                    .push(variable);
+            }
+        } else {
+            if textually_later || already_visible_offset.is_none() {
+                let mut vars = self.variables.borrow_mut();
+                let inner = vars[idx].get_or_insert_with(FxHashMap::default);
+                inner.insert(name.to_string(), variable.clone());
+                drop(vars);
+            }
+            let mut history = self.binding_history.borrow_mut();
+            history[idx]
+                .get_or_insert_with(FxHashMap::default)
+                .entry(name.to_string())
+                .or_default()
+                .push(variable);
+        }
+
+        if redeclaration {
+            Some(IssueKind::VariableRedeclaration)
+        } else if shadows {
+            Some(IssueKind::VariableShadowing)
+        } else {
+            None
+        }
+    }
+
+    fn finish_deferred_declarations(&self) {
+        self.deferring_declarations.set(false);
         let mut vars = self.variables.borrow_mut();
-        let inner = vars[idx].get_or_insert_with(FxHashMap::default);
+        let mut pending = self.pending_variables.borrow_mut();
+        for (visible, deferred) in vars.iter_mut().zip(pending.iter_mut()) {
+            if let Some(declarations) = deferred.take() {
+                visible.get_or_insert_with(FxHashMap::default).extend(declarations);
+            }
+        }
+        drop(vars);
+        drop(pending);
+        // (#15056) Merge pending history into visible history so the
+        // latest-wins contract survives statement-modifier finalization.
+        let mut visible_history = self.binding_history.borrow_mut();
+        let mut pending_history = self.pending_binding_history.borrow_mut();
+        for (visible_h, pending_h) in visible_history.iter_mut().zip(pending_history.iter_mut()) {
+            if let Some(entries_by_name) = pending_h.take() {
+                let visible_slot = visible_h.get_or_insert_with(FxHashMap::default);
+                for (name, mut entries) in entries_by_name {
+                    visible_slot.entry(name).or_insert_with(Vec::new).append(&mut entries);
+                }
+            }
+        }
+    }
 
-        inner.insert(
-            name.to_string(),
-            Rc::new(Variable {
-                declaration_offset: offset,
-                is_used: RefCell::new(is_our), // 'our' variables are considered used
-                is_our,
-                is_initialized: RefCell::new(is_initialized),
-            }),
-        );
-
-        if shadows { Some(IssueKind::VariableShadowing) } else { None }
+    /// Declaration-target metadata access, never ordinary name visibility.
+    /// Duplicate declarations retain the existing slot just as visible ones do.
+    fn pending_declaration_parts(&self, sigil: &str, name: &str) -> Option<Rc<Variable>> {
+        self.pending_variables.borrow().get(sigil_to_index(sigil))?.as_ref()?.get(name).cloned()
     }
 
     fn has_variable_parts(&self, sigil: &str, name: &str) -> bool {
@@ -260,10 +366,10 @@ impl Scope {
         loop {
             {
                 let vars = current_scope.variables.borrow();
-                if let Some(map) = &vars[idx] {
-                    if map.contains_key(name) {
-                        return true;
-                    }
+                if let Some(map) = &vars[idx]
+                    && map.contains_key(name)
+                {
+                    return true;
                 }
             }
             if let Some(ref parent) = current_scope.parent {
@@ -281,11 +387,16 @@ impl Scope {
         loop {
             {
                 let vars = current_scope.variables.borrow();
-                if let Some(map) = &vars[idx] {
-                    if let Some(var) = map.get(name) {
-                        *var.is_used.borrow_mut() = true;
-                        return (true, *var.is_initialized.borrow());
-                    }
+                if let Some(map) = &vars[idx]
+                    && let Some(var) = map.get(name)
+                {
+                    let initialized = *var.is_initialized.borrow();
+                    // (#15056) Earlier shadowed bindings share the same name;
+                    // a reference to the name counts as a reference to them
+                    // for `is_used` accounting.
+                    Self::mark_history_used(&current_scope.binding_history, idx, name);
+                    *var.is_used.borrow_mut() = true;
+                    return (true, initialized);
                 }
             }
 
@@ -304,11 +415,13 @@ impl Scope {
         loop {
             {
                 let vars = current_scope.variables.borrow();
-                if let Some(map) = &vars[idx] {
-                    if let Some(var) = map.get(name) {
-                        *var.is_initialized.borrow_mut() = true;
-                        return;
-                    }
+                if let Some(map) = &vars[idx]
+                    && let Some(var) = map.get(name)
+                {
+                    // (#15056) Initialize only the latest binding — earlier
+                    // bindings were never given an initializer in source.
+                    *var.is_initialized.borrow_mut() = true;
+                    return;
                 }
             }
 
@@ -329,12 +442,13 @@ impl Scope {
         loop {
             {
                 let vars = current_scope.variables.borrow();
-                if let Some(map) = &vars[idx] {
-                    if let Some(var) = map.get(name) {
-                        *var.is_used.borrow_mut() = true;
-                        *var.is_initialized.borrow_mut() = true;
-                        return true;
-                    }
+                if let Some(map) = &vars[idx]
+                    && let Some(var) = map.get(name)
+                {
+                    Self::mark_history_used(&current_scope.binding_history, idx, name);
+                    *var.is_used.borrow_mut() = true;
+                    *var.is_initialized.borrow_mut() = true;
+                    return true;
                 }
             }
 
@@ -346,8 +460,27 @@ impl Scope {
         }
     }
 
+    /// (#15056) Mark every entry in `history[idx][name]` as used. Used so
+    /// that a reference to the latest binding also credits the earlier
+    /// shadowed bindings it replaced — they share the same name and the
+    /// `is_used` flag is per-binding, not per-name.
+    fn mark_history_used(history: &RefCell<BindingHistoryMaps>, idx: usize, name: &str) {
+        let history_ref = history.borrow();
+        if let Some(slot) = history_ref[idx].as_ref()
+            && let Some(entries) = slot.get(name)
+        {
+            for var in entries {
+                *var.is_used.borrow_mut() = true;
+            }
+        }
+    }
+
     /// Iterate over unused variables that should be reported as diagnostics.
-    /// Filters out underscore-prefixed variables (intentionally unused) before allocation.
+    /// Filters out underscore-prefixed variables (intentionally unused) before
+    /// allocation. `variables` only carries the *latest* lexical binding per
+    /// name (#15056), so an earlier shadowed binding is naturally not
+    /// double-reported here even when it is unused — only the latest is
+    /// considered reportable.
     fn for_each_reportable_unused_variable<F>(&self, mut f: F)
     where
         F: FnMut(String, usize),
@@ -754,8 +887,18 @@ impl ScopeAnalyzer {
                     strict_vars_mode,
                 );
             }
-            NodeKind::Typeglob { name } => {
-                uses::handle_typeglob(self, node, name, scope, issues, context, strict_vars_mode);
+            NodeKind::Typeglob { name, body } => {
+                uses::handle_typeglob(
+                    self,
+                    node,
+                    name,
+                    body.as_deref(),
+                    scope,
+                    ancestors,
+                    issues,
+                    context,
+                    strict_vars_mode,
+                );
             }
             NodeKind::Readline { filehandle: Some(filehandle) } => {
                 uses::handle_readline(
@@ -997,17 +1140,35 @@ impl ScopeAnalyzer {
             }
 
             NodeKind::StatementModifier { statement, condition, .. } => {
-                // Perl hoists a `my` declaration in the modifier condition to the
-                // enclosing block, so the condition must be analyzed BEFORE the
-                // statement.  The default children() order is statement-first,
-                // which causes a false-positive UndeclaredVariable for idioms like
-                //   `print $x if my $x = 1;`
-                // Analyze the condition first so any `my` it introduces is visible
-                // to the statement.
+                // Perl exposes new my/state bindings only after the whole statement,
+                // so neither child can see declarations in the other (#1772).
+                // Deferral belongs to this Scope: a nested block owns independent
+                // declarations; a nested modifier in this same scope cannot flush us.
+                //
+                // Deferral covers lexical *visibility*, which is what makes that rule
+                // symmetric. It does not cover the effects that depend on evaluation order,
+                // and a modifier's condition genuinely runs BEFORE the statement it guards.
+                // So the children are visited in that runtime order, which is what the
+                // existing per-scope machinery already models correctly:
+                //
+                //   capture state   `print $1 if /a(.)/;`  the match sets $1 for the statement
+                //                   `/a(.)/ if $1;`        the condition's $1 has no match yet
+                //   initialization  `my $x; $x = 1 if $x;`  the condition reads $x uninitialized
+                //                   `my $x; print $x if ($x = 1);`  the condition initializes it
+                //
+                // Visiting the statement first inverts all four. Note this is deliberately
+                // *not* symmetric with the declaration rule: `our` is not deferred, so
+                // `our $x = 1 if $x;` still reports its condition as undeclared. That is a
+                // pre-existing source-order alias gap, unchanged by this arm, tracked as
+                // #15048 — it is not worth inverting four runtime facts to paper over.
+                let already_deferred = scope.deferring_declarations.replace(true);
                 ancestors.push(node);
                 self.analyze_node(condition, scope, ancestors, issues, context);
                 self.analyze_node(statement, scope, ancestors, issues, context);
                 ancestors.pop();
+                if !already_deferred {
+                    scope.finish_deferred_declarations();
+                }
             }
 
             _ => {
@@ -1095,13 +1256,12 @@ impl ScopeAnalyzer {
             && let Some(parent) = ancestors.last()
             && let NodeKind::IndirectCall { object, args, .. } = &parent.kind
             && std::ptr::eq(object.as_ref(), node)
+            && let Some(first_arg) = args.first()
         {
-            if let Some(first_arg) = args.first() {
-                match &first_arg.kind {
-                    NodeKind::ArrayLiteral { .. } => return Some(("@", name)),
-                    NodeKind::Block { .. } => return Some(("%", name)),
-                    _ => {}
-                }
+            match &first_arg.kind {
+                NodeKind::ArrayLiteral { .. } => return Some(("@", name)),
+                NodeKind::Block { .. } => return Some(("%", name)),
+                _ => {}
             }
         }
 
@@ -1271,6 +1431,25 @@ impl ScopeAnalyzer {
         context: &AnalysisContext<'_>,
     ) {
         match &node.kind {
+            NodeKind::VariableDeclaration { declarator, variable, .. } => {
+                let extracted = self.extract_variable_name(variable);
+                let (sigil, name) = extracted.parts();
+                if matches!(declarator.as_str(), "my" | "state")
+                    && let Some(declaration) = scope.pending_declaration_parts(sigil, name)
+                {
+                    // Same declaration-identity rule as `mark_builtin_declaration_arg_consumed`:
+                    // initialize the pending slot only when this declaration created it. A
+                    // duplicate name in the same statement modifier was rejected, so the
+                    // retained slot belongs to the other declaration and must keep its state.
+                    if declaration.declaration_offset == variable.location.start() {
+                        *declaration.is_initialized.borrow_mut() = true;
+                    }
+                } else {
+                    for child in node.children() {
+                        self.mark_initialized(child, scope, context);
+                    }
+                }
+            }
             NodeKind::Variable { sigil, name } => {
                 if !name.contains("::") {
                     self.initialize_variable_parts_in_context(scope, sigil, name, context);
@@ -1312,12 +1491,30 @@ impl ScopeAnalyzer {
         context: &AnalysisContext<'_>,
     ) {
         match &node.kind {
-            NodeKind::VariableDeclaration { variable, .. } => {
+            NodeKind::VariableDeclaration { declarator, variable, .. } => {
                 let extracted = self.extract_variable_name(variable);
                 let (sigil, name) = extracted.parts();
                 if !sigil.is_empty() && !name.is_empty() && !name.contains("::") {
-                    let _ = self
-                        .initialize_and_use_variable_parts_in_context(scope, sigil, name, context);
+                    if matches!(declarator.as_str(), "my" | "state")
+                        && let Some(declaration) = scope.pending_declaration_parts(sigil, name)
+                    {
+                        // A pending slot for this name exists, so we are inside a statement
+                        // modifier. Consume it only when it is the slot THIS declaration
+                        // created: a duplicate name in the same statement is rejected by
+                        // `declare_variable_parts`, and the slot that was retained belongs to
+                        // the other declaration. Mutating it there would erase a real warning —
+                        // `open my $fh, '<', $p if my $fh; print $fh;` keeps the condition's
+                        // uninitialized binding, and perl 5.38.2 warns
+                        // `Use of uninitialized value $fh` on that read.
+                        if declaration.declaration_offset == variable.location.start() {
+                            *declaration.is_initialized.borrow_mut() = true;
+                            *declaration.is_used.borrow_mut() = true;
+                        }
+                    } else {
+                        let _ = self.initialize_and_use_variable_parts_in_context(
+                            scope, sigil, name, context,
+                        );
+                    }
                 }
             }
             NodeKind::VariableListDeclaration { variables, .. } => {
@@ -1378,10 +1575,10 @@ impl ScopeAnalyzer {
                 continue;
             }
 
-            if let Some(name) = content.get(start..end) {
-                if !name.contains("::") {
-                    let _ = self.use_variable_parts_in_context(scope, sigil, name, context);
-                }
+            if let Some(name) = content.get(start..end)
+                && !name.contains("::")
+            {
+                let _ = self.use_variable_parts_in_context(scope, sigil, name, context);
             }
 
             index = if requires_closing_brace { end + 1 } else { end };
@@ -1420,10 +1617,10 @@ impl ScopeAnalyzer {
             | NodeKind::NamedParameter { variable, .. } => self.extract_variable_name(variable),
             NodeKind::ArrayLiteral { elements } => {
                 // Handle array reference patterns like @{$ref}
-                if elements.len() == 1 {
-                    if let Some(first) = elements.first() {
-                        return self.extract_variable_name(first);
-                    }
+                if elements.len() == 1
+                    && let Some(first) = elements.first()
+                {
+                    return self.extract_variable_name(first);
                 }
                 ExtractedName::Full(String::new())
             }
@@ -1535,10 +1732,11 @@ impl ScopeAnalyzer {
                 NodeKind::ArrayLiteral { .. } if i > 0 => {
                     // Check grandparent
                     let grandparent = ancestors[i - 1];
-                    if let NodeKind::Binary { op, right, .. } = &grandparent.kind {
-                        if op == "{}" && std::ptr::eq(right.as_ref(), parent) {
-                            return true;
-                        }
+                    if let NodeKind::Binary { op, right, .. } = &grandparent.kind
+                        && op == "{}"
+                        && std::ptr::eq(right.as_ref(), parent)
+                    {
+                        return true;
                     }
                     // ArrayLiteral used as keys in a slice: @hash{@keys} or %hash{@keys}
                     if matches!(&grandparent.kind,
@@ -1554,10 +1752,10 @@ impl ScopeAnalyzer {
                     for arg in args {
                         if std::ptr::eq(arg, current) {
                             // Check if object is a variable that looks like a hash
-                            if let NodeKind::Variable { sigil, .. } = &object.kind {
-                                if sigil == "$" {
-                                    return true;
-                                }
+                            if let NodeKind::Variable { sigil, .. } = &object.kind
+                                && sigil == "$"
+                            {
+                                return true;
                             }
                         }
                     }
@@ -1820,22 +2018,22 @@ fn collect_imported_barewords(ast: &Node) -> HashSet<String> {
                     push_symbol(imported, module, arg);
                 }
             }
-        } else if !in_eval {
-            if let NodeKind::Program { statements } | NodeKind::Block { statements } = &node.kind {
-                let required_modules: HashSet<String> = statements
-                    .iter()
-                    .filter_map(|stmt| require_module_name(inner_node(stmt)))
-                    .collect();
-                let dynamic_require_vars: HashSet<String> = statements
-                    .iter()
-                    .filter_map(|stmt| require_variable_name(inner_node(stmt)))
-                    .collect();
-                if !required_modules.is_empty() || !dynamic_require_vars.is_empty() {
-                    for stmt in statements {
-                        let inner = inner_node(stmt);
-                        maybe_record_manual_imports(inner, &required_modules, imported);
-                        maybe_record_dynamic_manual_imports(inner, &dynamic_require_vars, imported);
-                    }
+        } else if !in_eval
+            && let NodeKind::Program { statements } | NodeKind::Block { statements } = &node.kind
+        {
+            let required_modules: HashSet<String> = statements
+                .iter()
+                .filter_map(|stmt| require_module_name(inner_node(stmt)))
+                .collect();
+            let dynamic_require_vars: HashSet<String> = statements
+                .iter()
+                .filter_map(|stmt| require_variable_name(inner_node(stmt)))
+                .collect();
+            if !required_modules.is_empty() || !dynamic_require_vars.is_empty() {
+                for stmt in statements {
+                    let inner = inner_node(stmt);
+                    maybe_record_manual_imports(inner, &required_modules, imported);
+                    maybe_record_dynamic_manual_imports(inner, &dynamic_require_vars, imported);
                 }
             }
         }
@@ -1932,10 +2130,10 @@ fn collect_defined_packages(ast: &Node) -> HashSet<String> {
         match &node.kind {
             NodeKind::Program { statements } | NodeKind::Block { statements } => {
                 for stmt in statements {
-                    if let NodeKind::Package { name, block: None, .. } = &inner(stmt).kind {
-                        if name != "main" {
-                            packages.insert(name.clone());
-                        }
+                    if let NodeKind::Package { name, block: None, .. } = &inner(stmt).kind
+                        && name != "main"
+                    {
+                        packages.insert(name.clone());
                     }
                     visit(stmt, packages);
                 }
@@ -2063,8 +2261,8 @@ pub(super) fn is_builtin_global(sigil: &str, name: &str) -> bool {
                 } else {
                     name
                 };
-                if let Some(rest) = caret_name.strip_prefix('^') {
-                    if !rest.is_empty()
+                if let Some(rest) = caret_name.strip_prefix('^')
+                    && !rest.is_empty()
                         && rest
                             .as_bytes()
                             .iter()
@@ -2072,7 +2270,6 @@ pub(super) fn is_builtin_global(sigil: &str, name: &str) -> bool {
                     {
                         return true;
                     }
-                }
 
                 // Numbered capture variables ($1, $2, etc.)
                 // Note: $0-$9 are already handled in the match above, but this covers $10+

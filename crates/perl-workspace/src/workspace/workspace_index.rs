@@ -152,7 +152,7 @@ pub use perl_uri::{is_file_uri, is_special_scheme, uri_extension, uri_key};
 /// # Usage
 ///
 /// ```rust,ignore
-/// use perl_parser::workspace_index::{IndexPhase, IndexState};
+/// use perl_workspace::workspace_index::{IndexPhase, IndexState};
 /// use std::time::Instant;
 ///
 /// let state = IndexState::Building {
@@ -262,7 +262,7 @@ impl IndexState {
 /// # Usage
 ///
 /// ```rust,ignore
-/// use perl_parser::workspace_index::{IndexCoordinator, IndexState};
+/// use perl_workspace::workspace_index::{IndexCoordinator, IndexState};
 ///
 /// let coordinator = IndexCoordinator::new();
 /// assert!(matches!(coordinator.state(), IndexState::Building { .. }));
@@ -325,7 +325,7 @@ impl IndexCoordinator {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// use perl_parser::workspace_index::IndexCoordinator;
+    /// use perl_workspace::workspace_index::IndexCoordinator;
     ///
     /// let coordinator = IndexCoordinator::new();
     /// ```
@@ -359,7 +359,7 @@ impl IndexCoordinator {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// use perl_parser::workspace_index::{IndexCoordinator, IndexResourceLimits};
+    /// use perl_workspace::workspace_index::{IndexCoordinator, IndexResourceLimits};
     ///
     /// let limits = IndexResourceLimits::default();
     /// let coordinator = IndexCoordinator::with_limits(limits);
@@ -414,7 +414,7 @@ impl IndexCoordinator {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// use perl_parser::workspace_index::{IndexCoordinator, IndexState};
+    /// use perl_workspace::workspace_index::{IndexCoordinator, IndexState};
     ///
     /// let coordinator = IndexCoordinator::new();
     /// match coordinator.state() {
@@ -445,7 +445,7 @@ impl IndexCoordinator {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// use perl_parser::workspace_index::IndexCoordinator;
+    /// use perl_workspace::workspace_index::IndexCoordinator;
     ///
     /// let coordinator = IndexCoordinator::new();
     /// let _index = coordinator.index();
@@ -494,7 +494,7 @@ impl IndexCoordinator {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// use perl_parser::workspace_index::IndexCoordinator;
+    /// use perl_workspace::workspace_index::IndexCoordinator;
     ///
     /// let coordinator = IndexCoordinator::new();
     /// coordinator.notify_change("file:///example.pl");
@@ -524,7 +524,7 @@ impl IndexCoordinator {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// use perl_parser::workspace_index::IndexCoordinator;
+    /// use perl_workspace::workspace_index::IndexCoordinator;
     ///
     /// let coordinator = IndexCoordinator::new();
     /// coordinator.notify_parse_complete("file:///example.pl");
@@ -577,7 +577,7 @@ impl IndexCoordinator {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// use perl_parser::workspace_index::IndexCoordinator;
+    /// use perl_workspace::workspace_index::IndexCoordinator;
     ///
     /// let coordinator = IndexCoordinator::new();
     /// coordinator.transition_to_ready(100, 5000);
@@ -740,7 +740,7 @@ impl IndexCoordinator {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// use perl_parser::workspace_index::IndexCoordinator;
+    /// use perl_workspace::workspace_index::IndexCoordinator;
     ///
     /// let coordinator = IndexCoordinator::new();
     /// coordinator.transition_to_building(100);
@@ -787,7 +787,7 @@ impl IndexCoordinator {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// use perl_parser::workspace_index::{DegradationReason, IndexCoordinator, ResourceKind};
+    /// use perl_workspace::workspace_index::{DegradationReason, IndexCoordinator, ResourceKind};
     ///
     /// let coordinator = IndexCoordinator::new();
     /// coordinator.transition_to_degraded(DegradationReason::ResourceLimit {
@@ -834,7 +834,7 @@ impl IndexCoordinator {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// use perl_parser::workspace_index::IndexCoordinator;
+    /// use perl_workspace::workspace_index::IndexCoordinator;
     ///
     /// let coordinator = IndexCoordinator::new();
     /// let _reason = coordinator.check_limits();
@@ -876,7 +876,7 @@ impl IndexCoordinator {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// use perl_parser::workspace_index::IndexCoordinator;
+    /// use perl_workspace::workspace_index::IndexCoordinator;
     ///
     /// let coordinator = IndexCoordinator::new();
     /// // ... index some files ...
@@ -928,7 +928,7 @@ impl IndexCoordinator {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// use perl_parser::workspace_index::IndexCoordinator;
+    /// use perl_workspace::workspace_index::IndexCoordinator;
     ///
     /// let coordinator = IndexCoordinator::new();
     /// let locations = coordinator.query(
@@ -998,7 +998,7 @@ pub struct SymbolKey {
 /// # Examples
 ///
 /// ```rust,ignore
-/// use perl_parser::workspace_index::normalize_var;
+/// use perl_workspace::workspace_index::normalize_var;
 ///
 /// assert_eq!(normalize_var("$count"), (Some('$'), "count"));
 /// assert_eq!(normalize_var("process_emails"), (None, "process_emails"));
@@ -1830,7 +1830,7 @@ impl WorkspaceIndex {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// use perl_parser::workspace_index::WorkspaceIndex;
+    /// use perl_workspace::workspace_index::WorkspaceIndex;
     ///
     /// let index = WorkspaceIndex::new();
     /// assert!(!index.has_symbols());
@@ -2140,7 +2140,7 @@ impl WorkspaceIndex {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// use perl_parser::workspace_index::WorkspaceIndex;
+    /// use perl_workspace::workspace_index::WorkspaceIndex;
     /// use url::Url;
     ///
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -2621,7 +2621,7 @@ impl WorkspaceIndex {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// use perl_parser::workspace_index::WorkspaceIndex;
+    /// use perl_workspace::workspace_index::WorkspaceIndex;
     ///
     /// let index = WorkspaceIndex::new();
     /// index.remove_file("file:///example.pl");
@@ -2725,7 +2725,7 @@ impl WorkspaceIndex {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// use perl_parser::workspace_index::WorkspaceIndex;
+    /// use perl_workspace::workspace_index::WorkspaceIndex;
     /// use url::Url;
     ///
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -2752,7 +2752,7 @@ impl WorkspaceIndex {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// use perl_parser::workspace_index::WorkspaceIndex;
+    /// use perl_workspace::workspace_index::WorkspaceIndex;
     ///
     /// let index = WorkspaceIndex::new();
     /// index.clear_file("file:///example.pl");
@@ -2774,7 +2774,7 @@ impl WorkspaceIndex {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// use perl_parser::workspace_index::WorkspaceIndex;
+    /// use perl_workspace::workspace_index::WorkspaceIndex;
     /// use url::Url;
     ///
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -2848,7 +2848,7 @@ impl WorkspaceIndex {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// use perl_parser::workspace_index::WorkspaceIndex;
+    /// use perl_workspace::workspace_index::WorkspaceIndex;
     ///
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// let index = WorkspaceIndex::new();
@@ -3077,7 +3077,7 @@ impl WorkspaceIndex {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// use perl_parser::workspace_index::WorkspaceIndex;
+    /// use perl_workspace::workspace_index::WorkspaceIndex;
     ///
     /// let index = WorkspaceIndex::new();
     /// let _refs = index.find_references("Utils::process_data");
@@ -3425,7 +3425,7 @@ impl WorkspaceIndex {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// use perl_parser::workspace_index::WorkspaceIndex;
+    /// use perl_workspace::workspace_index::WorkspaceIndex;
     ///
     /// let index = WorkspaceIndex::new();
     /// let _symbols = index.all_symbols();
@@ -3546,6 +3546,7 @@ impl WorkspaceIndex {
         uri: &str,
         content_hash: u64,
         ast: &Node,
+        source: &str,
     ) -> FileFactShard {
         let file_id = Self::hash_uri_to_file_id(uri);
 
@@ -3586,8 +3587,8 @@ impl WorkspaceIndex {
         #[cfg(test)]
         let generated_member_start = Instant::now();
         let generated_member_facts =
-            crate::semantic::generated_member_extractor::extract_generated_member_facts(
-                ast, file_id,
+            crate::semantic::generated_member_extractor::extract_generated_member_facts_with_source(
+                ast, file_id, source,
             );
         #[cfg(test)]
         reindex_metrics::record_generated_member(generated_member_start.elapsed());
@@ -3653,6 +3654,7 @@ impl WorkspaceIndex {
         content_hash: u64,
         ast: &Node,
         refs: &[perl_symbol::surface::r#ref::SymbolRef],
+        source: &str,
     ) -> FileFactShard {
         let file_id = Self::hash_uri_to_file_id(uri);
 
@@ -3684,8 +3686,8 @@ impl WorkspaceIndex {
         #[cfg(test)]
         let generated_member_start = Instant::now();
         let generated_member_facts =
-            crate::semantic::generated_member_extractor::extract_generated_member_facts(
-                ast, file_id,
+            crate::semantic::generated_member_extractor::extract_generated_member_facts_with_source(
+                ast, file_id, source,
             );
         #[cfg(test)]
         reindex_metrics::record_generated_member(generated_member_start.elapsed());
@@ -3900,6 +3902,21 @@ impl WorkspaceIndex {
     /// [`WorkspaceSemanticQueries`] facade that borrows from read-locked
     /// semantic indexes. Locks are released when `f` returns.
     ///
+    /// # Re-entrancy contract (#15644)
+    ///
+    /// The callback runs while this method holds read guards on `fact_shards`
+    /// and all three semantic indexes. The callback must NOT re-enter
+    /// `WorkspaceIndex` — not via `find_definition`/`find_references`, not via
+    /// `semantic_anchor_wire_location`, and not via any other shard/symbol
+    /// accessor. `parking_lot`'s `RwLock` is neither reentrant nor
+    /// reader-preferring: once a concurrent `index_*` call queues its write
+    /// locks on those same maps, a nested read inside the callback blocks
+    /// behind the writer while the writer blocks behind the callback's outer
+    /// read — a guaranteed deadlock. Resolve legacy locations before entering
+    /// the callback, and serve anchor lookups from the snapshot the borrowed
+    /// `WorkspaceSemanticQueries` already provides (for example
+    /// `SemanticQueries::anchor_source_span`).
+    ///
     /// Returns `Some(result)` if the URI is indexed and semantic data is
     /// available, `None` if the URI has not been indexed or its fact shard is
     /// absent (the caller should fall back to legacy diagnostics).
@@ -3941,6 +3958,9 @@ impl WorkspaceIndex {
     /// Lock order is identical to [`Self::with_semantic_queries_for_uri`]:
     /// shards → reference_index → import_export_index (no package-graph lock
     /// — the caller owns the graph).
+    ///
+    /// Like [`Self::with_semantic_queries_for_uri`], the callback must not
+    /// re-enter `WorkspaceIndex` while these read guards are held (#15644).
     ///
     /// Returns `Some(result)` if the URI is indexed and semantic data is
     /// available, `None` if the URI has not been indexed or its fact shard is
@@ -4104,7 +4124,7 @@ impl WorkspaceIndex {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// use perl_parser::workspace_index::WorkspaceIndex;
+    /// use perl_workspace::workspace_index::WorkspaceIndex;
     ///
     /// let index = WorkspaceIndex::new();
     /// assert!(!index.has_symbols());
@@ -4135,7 +4155,7 @@ impl WorkspaceIndex {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// use perl_parser::workspace_index::WorkspaceIndex;
+    /// use perl_workspace::workspace_index::WorkspaceIndex;
     ///
     /// let index = WorkspaceIndex::new();
     /// let _results = index.search_symbols("example");
@@ -4181,6 +4201,27 @@ impl WorkspaceIndex {
         cap: Option<usize>,
     ) -> Vec<WorkspaceSymbol> {
         let search_idx = self.search_index.read();
+        Self::search_source_symbols_from_buckets(
+            search_idx.iter().map(|(name_key, symbols)| (name_key.as_str(), symbols)),
+            profile,
+            cap,
+        )
+    }
+
+    /// Applies the source-symbol admission and legacy materialization policy
+    /// to an ordered stream of index buckets.
+    ///
+    /// The iterator boundary keeps the production consumer identical to the
+    /// normal `HashMap` path while allowing tests to exercise a deliberate
+    /// weak-alias-first traversal without depending on hash-map iteration.
+    fn search_source_symbols_from_buckets<'a, I>(
+        buckets: I,
+        profile: &WorkspaceSymbolQueryProfile,
+        cap: Option<usize>,
+    ) -> Vec<WorkspaceSymbol>
+    where
+        I: IntoIterator<Item = (&'a str, &'a Vec<WorkspaceSymbol>)>,
+    {
         let mut seen: HashSet<(String, usize)> = HashSet::new();
         // Collect results with a relevance score for ranking. (#5087)
         // Match priority: exact > substring/prefix > subsequence (fuzzy).
@@ -4189,8 +4230,14 @@ impl WorkspaceIndex {
         // profile admits every key at the prefix slot -- the same set, and the
         // same score, that `contains("")` produced before. That is the desired
         // "list everything" behavior for an empty `workspace/symbol` query.
-        let mut scored: Vec<(u8, WorkspaceSymbol)> = Vec::new();
-        for (name_key, symbols) in search_idx.iter() {
+        // The legacy geometry deduplication below is intentionally retained.
+        // Order the admitted buckets first so a row indexed under several
+        // aliases is represented by the strongest current-profile evidence,
+        // regardless of HashMap iteration order. This does not establish row
+        // identity; canonical source/root/generation identity remains owned by
+        // #8756/#10641.
+        let mut admitted = Vec::new();
+        for (name_key, symbols) in buckets {
             // Admission/tier policy is owned by the compiled query profile;
             // comparison stays case-insensitive here so distinct Perl packages
             // remain separate index buckets that do not cross-match.
@@ -4202,6 +4249,14 @@ impl WorkspaceIndex {
             let Some(evidence) = match_searchable_key(profile, name_key, key_role) else {
                 continue;
             };
+            admitted.push((evidence, name_key, symbols));
+        }
+        admitted.sort_by(|(left, left_key, _), (right, right_key, _)| {
+            left.compare(right).then_with(|| left_key.cmp(right_key))
+        });
+
+        let mut scored: Vec<(u8, WorkspaceSymbol)> = Vec::new();
+        for (evidence, _name_key, symbols) in admitted {
             let score = legacy_index_match_rank(evidence.tier());
             for sym in symbols {
                 let dedup_key = (sym.uri.clone(), sym.range.start.byte);
@@ -4383,7 +4438,7 @@ impl WorkspaceIndex {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// use perl_parser::workspace_index::WorkspaceIndex;
+    /// use perl_workspace::workspace_index::WorkspaceIndex;
     ///
     /// let index = WorkspaceIndex::new();
     /// let _results = index.find_symbols("example");
@@ -4408,7 +4463,7 @@ impl WorkspaceIndex {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// use perl_parser::workspace_index::WorkspaceIndex;
+    /// use perl_workspace::workspace_index::WorkspaceIndex;
     ///
     /// let index = WorkspaceIndex::new();
     /// let symbols = index.search_symbols("example");
@@ -4459,7 +4514,7 @@ impl WorkspaceIndex {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// use perl_parser::workspace_index::WorkspaceIndex;
+    /// use perl_workspace::workspace_index::WorkspaceIndex;
     ///
     /// let index = WorkspaceIndex::new();
     /// let ranked = index.search_symbols_ranked("example", "file:///project1/src/main.pl");
@@ -4529,7 +4584,7 @@ impl WorkspaceIndex {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// use perl_parser::workspace_index::WorkspaceIndex;
+    /// use perl_workspace::workspace_index::WorkspaceIndex;
     ///
     /// let index = WorkspaceIndex::new();
     /// let _symbols = index.file_symbols("file:///example.pl");
@@ -4555,7 +4610,7 @@ impl WorkspaceIndex {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// use perl_parser::workspace_index::WorkspaceIndex;
+    /// use perl_workspace::workspace_index::WorkspaceIndex;
     ///
     /// let index = WorkspaceIndex::new();
     /// let _deps = index.file_dependencies("file:///example.pl");
@@ -4581,7 +4636,7 @@ impl WorkspaceIndex {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// use perl_parser::workspace_index::WorkspaceIndex;
+    /// use perl_workspace::workspace_index::WorkspaceIndex;
     ///
     /// let index = WorkspaceIndex::new();
     /// let _files = index.find_dependents("My::Module");
@@ -4613,7 +4668,7 @@ impl WorkspaceIndex {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// use perl_parser::workspace_index::WorkspaceIndex;
+    /// use perl_workspace::workspace_index::WorkspaceIndex;
     ///
     /// let index = WorkspaceIndex::new();
     /// let _store = index.document_store();
@@ -4641,7 +4696,7 @@ impl WorkspaceIndex {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// use perl_parser::workspace_index::WorkspaceIndex;
+    /// use perl_workspace::workspace_index::WorkspaceIndex;
     ///
     /// let index = WorkspaceIndex::new();
     /// let _unused = index.find_unused_symbols();
@@ -4745,7 +4800,7 @@ impl WorkspaceIndex {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// use perl_parser::workspace_index::WorkspaceIndex;
+    /// use perl_workspace::workspace_index::WorkspaceIndex;
     ///
     /// let index = WorkspaceIndex::new();
     /// let _members = index.get_package_members("My::Package");
@@ -4984,7 +5039,7 @@ impl WorkspaceIndex {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// use perl_parser::workspace_index::{SymKind, SymbolKey, WorkspaceIndex};
+    /// use perl_workspace::workspace_index::{SymKind, SymbolKey, WorkspaceIndex};
     /// use std::sync::Arc;
     ///
     /// let index = WorkspaceIndex::new();
@@ -5147,12 +5202,20 @@ impl FileExtractionBundle {
         let mut visitor = IndexVisitor::new(doc, uri_str.to_string(), folder_uri);
         visitor.visit(ast, &mut file_index);
 
-        let canonical_shard =
-            WorkspaceIndex::build_canonical_fact_shard_for_ast(uri_str, content_hash, ast);
+        let canonical_shard = WorkspaceIndex::build_canonical_fact_shard_for_ast(
+            uri_str,
+            content_hash,
+            ast,
+            doc.text(),
+        );
 
         let file_id = WorkspaceIndex::hash_uri_to_file_id(uri_str);
         let import_specs =
-            crate::semantic::workspace_import_extractor::extract_import_specs(ast, file_id);
+            crate::semantic::workspace_import_extractor::extract_import_specs_with_source(
+                ast,
+                file_id,
+                doc.text(),
+            );
         let use_lib_facts =
             crate::semantic::workspace_import_extractor::extract_use_lib_facts(ast, file_id);
 
@@ -5213,13 +5276,18 @@ impl FileExtractionBundle {
             content_hash,
             ast,
             &symbol_refs,
+            doc.text(),
         );
 
         let file_id = WorkspaceIndex::hash_uri_to_file_id(uri_str);
         #[cfg(test)]
         let import_start = Instant::now();
         let import_specs =
-            crate::semantic::workspace_import_extractor::extract_import_specs(ast, file_id);
+            crate::semantic::workspace_import_extractor::extract_import_specs_with_source(
+                ast,
+                file_id,
+                doc.text(),
+            );
         #[cfg(test)]
         reindex_metrics::record_import_extract(import_start.elapsed());
         #[cfg(test)]
@@ -6648,7 +6716,7 @@ fn canonical_ref_for_node(node: &Node) -> Option<perl_symbol::surface::r#ref::Sy
                 anchor_span: Some((node.location.start(), node.location.end())),
             })
         }
-        NodeKind::Typeglob { name } => {
+        NodeKind::Typeglob { name, .. } => {
             if name.starts_with('{') {
                 return None;
             }
@@ -7167,7 +7235,7 @@ pub mod lsp_adapter {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// use perl_parser::workspace_index::{Location as IxLocation, lsp_adapter::to_lsp_location};
+    /// use perl_workspace::workspace_index::{Location as IxLocation, lsp_adapter::to_lsp_location};
     /// use lsp_types::Range;
     ///
     /// let ix_loc = IxLocation { uri: "file:///path.pl".to_string(), range: Range::default() };
@@ -7197,7 +7265,7 @@ pub mod lsp_adapter {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// use perl_parser::workspace_index::{Location as IxLocation, lsp_adapter::to_lsp_locations};
+    /// use perl_workspace::workspace_index::{Location as IxLocation, lsp_adapter::to_lsp_locations};
     /// use lsp_types::Range;
     ///
     /// let locations = vec![IxLocation { uri: "file:///script1.pl".to_string(), range: Range::default() }];
@@ -12427,6 +12495,71 @@ mod entity_id_file_scoped_tests {
 
     // ── search_index correctness: issue #2994 ──
 
+    #[test]
+    fn source_symbol_pipeline_prefers_exact_and_qualified_aliases()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let make_symbol = |name: &str,
+                           qualified_name: Option<&str>,
+                           uri: &str,
+                           start_byte: usize| WorkspaceSymbol {
+            name: name.to_string(),
+            kind: SymbolKind::Subroutine,
+            uri: uri.to_string(),
+            range: Range {
+                start: Position { byte: start_byte, line: 1, column: 1 },
+                end: Position { byte: start_byte + 3, line: 1, column: 4 },
+            },
+            qualified_name: qualified_name.map(str::to_string),
+            documentation: None,
+            container_name: qualified_name.and_then(|value| {
+                value.rsplit_once("::").map(|(container, _)| container.to_string())
+            }),
+            has_body: true,
+            workspace_folder_uri: None,
+            is_lexical: false,
+        };
+
+        let exact_row = make_symbol("run", Some("Pkg::run"), "file:///pkg.pm", 10);
+        let competing_row = make_symbol("a_run", None, "file:///other.pm", 20);
+        let ordered_buckets = [
+            ("Pkg::run".to_string(), vec![exact_row.clone()]),
+            ("run".to_string(), vec![exact_row.clone()]),
+            ("a_run".to_string(), vec![competing_row]),
+        ];
+        let profile = WorkspaceSymbolQueryProfile::compile("run");
+        let matches = WorkspaceIndex::search_source_symbols_from_buckets(
+            ordered_buckets.iter().map(|(key, symbols)| (key.as_str(), symbols)),
+            &profile,
+            Some(1),
+        );
+        let winner = matches.first().ok_or("bare exact query returned no symbol")?;
+        if winner.uri != "file:///pkg.pm" || winner.name != "run" {
+            return Err(format!("bare exact alias lost to {:?}", winner).into());
+        }
+
+        for qualified_key in ["Pkg::run", "Pkg'run"] {
+            let row = make_symbol("run", Some(qualified_key), "file:///qualified.pm", 30);
+            let buckets =
+                [(qualified_key.to_string(), vec![row.clone()]), ("run".to_string(), vec![row])];
+            let profile = WorkspaceSymbolQueryProfile::compile(qualified_key);
+            let matches = WorkspaceIndex::search_source_symbols_from_buckets(
+                buckets.iter().map(|(key, symbols)| (key.as_str(), symbols)),
+                &profile,
+                Some(1),
+            );
+            let winner = matches.first().ok_or_else(|| {
+                format!("qualified exact query {qualified_key:?} returned no symbol")
+            })?;
+            if winner.uri != "file:///qualified.pm" || winner.name != "run" {
+                return Err(
+                    format!("qualified exact alias {qualified_key:?} was not retained").into()
+                );
+            }
+        }
+
+        Ok(())
+    }
+
     /// Verify that `search_source_symbols` via the indexed path returns the same
     /// symbol set as iterating all files would, across multiple files, for both
     /// bare-name and qualified-name queries.
@@ -13950,11 +14083,16 @@ mod extraction_bundle_shadow_compare {
         let mut visitor = IndexVisitor::new(&mut doc, uri.to_string(), None);
         visitor.visit(ast, &mut file_index);
 
-        let shard = WorkspaceIndex::build_canonical_fact_shard_for_ast(uri, content_hash, ast);
+        let shard =
+            WorkspaceIndex::build_canonical_fact_shard_for_ast(uri, content_hash, ast, doc.text());
 
         let file_id = WorkspaceIndex::hash_uri_to_file_id(uri);
         let import_specs =
-            crate::semantic::workspace_import_extractor::extract_import_specs(ast, file_id);
+            crate::semantic::workspace_import_extractor::extract_import_specs_with_source(
+                ast,
+                file_id,
+                doc.text(),
+            );
         let use_lib_facts =
             crate::semantic::workspace_import_extractor::extract_use_lib_facts(ast, file_id);
 

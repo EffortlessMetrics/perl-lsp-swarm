@@ -1,12 +1,12 @@
 //! Regression tests for document-highlight caret-at-trailing-edge boundary.
 //!
 //! Defect: `find_node_at_offset` (and its `extract_symbol_at_offset` fallback)
-//! used a half-open containment check (`offset >= node.location.end`), so a
+//! used a half-open containment check (`offset >= node.location.end()`), so a
 //! caret resting at the trailing edge of an identifier — the common "caret just
 //! after the word" position produced by double-click-select in VS Code — yielded
 //! zero highlights. The sibling references provider
 //! (`navigation/references.rs`) already treats the trailing edge as on-token
-//! (`offset > node.location.end`); this pins document-highlight to the same
+//! (`offset > node.location.end()`); this pins document-highlight to the same
 //! inclusive-end boundary.
 
 use perl_lsp_rs_core::providers::document_highlight::DocumentHighlightProvider;
@@ -31,7 +31,7 @@ fn highlight_at_trailing_edge_returns_occurrences() -> Result<(), Box<dyn std::e
     let provider = DocumentHighlightProvider::new();
 
     // Byte 9 is immediately after the 'l' of the first `$total` — i.e. exactly
-    // at `node.location.end`. This is the position a double-click-select caret
+    // at `node.location.end()`. This is the position a double-click-select caret
     // lands on. Pre-fix this returned 0 (the half-open `offset >= end` check
     // rejected 9 >= 9); post-fix it must return both occurrences.
     let highlights = provider.find_highlights(&ast, FIXTURE, 9);

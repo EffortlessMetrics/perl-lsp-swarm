@@ -194,8 +194,8 @@ impl IncrementalTree {
 
     /// Find the smallest node whose byte range contains `start..end`.
     ///
-    /// Containment is the predicate `node.location.start <= start &&
-    /// node.location.end >= end` over the half-open query range, so a
+    /// Containment is the predicate `node.location.start() <= start &&
+    /// node.location.end() >= end` over the half-open query range, so a
     /// zero-width query `p..p` matches every node spanning byte `p`,
     /// including zero-width recovery nodes positioned there. A reversed
     /// query (`start > end`) matches nothing.
@@ -496,7 +496,7 @@ impl IncrementalParserV2 {
     ///
     /// INVARIANT: this traversal must mirror
     /// `AdvancedReuseAnalyzer::analyze_node_recursive`. That function keys its
-    /// `TreeAnalysis` entries by `node.location.start`, so when a parent and its
+    /// `TreeAnalysis` entries by `node.location.start()`, so when a parent and its
     /// first child share a start offset the later insertion wins. This lookup
     /// reproduces that by visiting children first, in reverse order, before the
     /// node itself. If either traversal order changes, the two disagree, the
@@ -951,7 +951,7 @@ impl IncrementalParserV2 {
                         TokenType::StringLiteral
                             | TokenType::InterpolatedString(_)
                             | TokenType::QuoteSingle
-                            | TokenType::QuoteDouble
+                            | TokenType::QuoteDouble(_)
                     )
                 }) {
                     return None;

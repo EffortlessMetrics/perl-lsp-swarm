@@ -262,6 +262,7 @@ fn main() {
                 eprintln!("Error reading {}: {}", path_str, e);
                 if args.continue_on_error {
                     had_error = true;
+                    total_stats.add_error(&path_str);
                     continue;
                 } else {
                     std::process::exit(1);
@@ -342,7 +343,7 @@ fn legacy_parse_summary(ast: &Node) -> LegacyParseSummary {
         schema: LEGACY_SUMMARY_SCHEMA,
         subject: LEGACY_SUMMARY_SUBJECT,
         native_root_kind: ast.kind.kind_name(),
-        root_byte_range: ByteRange { start: ast.location.start, end: ast.location.end },
+        root_byte_range: ByteRange { start: ast.location.start(), end: ast.location.end() },
         node_count: ast.count_nodes(),
         legacy_native_ast_sexp: ast.to_sexp(),
         limitations: LEGACY_SUMMARY_LIMITATIONS,

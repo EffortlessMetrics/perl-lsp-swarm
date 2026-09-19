@@ -187,10 +187,7 @@ impl<'a> Parser<'a> {
         let condition = if self.peek_kind() == Some(TokenKind::RightParen) {
             // while () { } — empty condition is the infinite-loop idiom, equivalent to while (1)
             let loc = self.current_position();
-            Node::new(
-                NodeKind::Number { value: "1".to_string() },
-                SourceLocation::new(loc, loc),
-            )
+            Node::new(NodeKind::Number { value: "1".to_string() }, SourceLocation::new(loc, loc))
         } else if matches!(
             self.peek_kind(),
             Some(TokenKind::My)
@@ -593,7 +590,10 @@ impl<'a> Parser<'a> {
             // eval { ... }
             let block = self.parse_block()?;
             let end = block.location.end();
-            Ok(Node::new(NodeKind::Eval { block: Box::new(block) }, SourceLocation::new(start, end)))
+            Ok(Node::new(
+                NodeKind::Eval { block: Box::new(block) },
+                SourceLocation::new(start, end),
+            ))
         } else {
             // eval "string" or eval $expr
             let expr = self.parse_expression()?;
@@ -624,8 +624,19 @@ impl<'a> Parser<'a> {
         let starts_with_ampersand = self.peek_kind() == Some(TokenKind::BitwiseAnd);
 
         // Parse the target as an assignment-level expression (not full comma
-        // expression) to avoid consuming surrounding list separators.
-        let target = self.parse_assignment()?;
+        // expression) to avoid consuming surrounding list separators.  A
+        // targetless `goto` (`goto;`, `foo and goto;`, `goto if $x;`) is
+        // valid Perl: the omission is legal, not a broken operand, so it
+        // yields a `MissingExpression` target with no diagnostic.
+        // Genuinely missing operands elsewhere keep the blocking recovery
+        // via `recover_missing_infix_rhs` (#13489 review).
+        let target = if self.is_infix_rhs_absent() {
+            Node::new(NodeKind::MissingExpression, SourceLocation::new(start, start))
+        } else if let Some(missing) = self.recover_missing_infix_rhs(start) {
+            missing
+        } else {
+            self.parse_assignment()?
+        };
         let end = target.location.end();
 
         // Phase 2: Determine form based on parsed target (and whether it started with &)
@@ -830,12 +841,17 @@ impl<'a> Parser<'a> {
                     }
                     Err(e) => {
                         // Don't recover from these — propagate immediately.
+                        // `DoWhileTrailingBlock` joins them: the trailing block
+                        // after a do-while condition has no recovery that stays
+                        // honest about source that real `perl` refuses to
+                        // compile (#15649).
                         if matches!(
                             e,
                             ParseError::RecursionLimit
                                 | ParseError::RecursionDepthExhausted { .. }
                                 | ParseError::NestingTooDeep { .. }
                                 | ParseError::Cancelled
+                                | ParseError::DoWhileTrailingBlock { .. }
                         ) {
                             return Err(e);
                         }

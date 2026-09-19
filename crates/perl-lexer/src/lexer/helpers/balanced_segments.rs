@@ -59,6 +59,19 @@ impl PerlLexer<'_> {
         close: char,
         terminator: char,
     ) -> Option<usize> {
+        self.consume_balanced_segment_in_string_with_terminator(open, close, Some(terminator))
+    }
+
+    /// Consume a balanced segment while optionally honoring an outer recovery
+    /// boundary. Heredoc interpolation islands have no quote terminator, so
+    /// they pass `None` and may span physical lines.
+    #[inline]
+    pub(crate) fn consume_balanced_segment_in_string_with_terminator(
+        &mut self,
+        open: char,
+        close: char,
+        terminator: Option<char>,
+    ) -> Option<usize> {
         if self.current_char() != Some(open) {
             return None;
         }
@@ -73,12 +86,6 @@ impl PerlLexer<'_> {
                         self.advance();
                     }
                 }
-                c if c == terminator => {
-                    // Local recovery for interpolation tails in quoted strings:
-                    // stop at the closing quote so the outer string parser can
-                    // still terminate this token cleanly.
-                    return None;
-                }
                 c if c == open => {
                     if !self.consume_nested_opener(&mut depth) {
                         return None;
@@ -90,6 +97,15 @@ impl PerlLexer<'_> {
                     if depth == 0 {
                         return Some(self.position);
                     }
+                }
+                c if terminator == Some(c) => {
+                    // Local recovery for interpolation tails in quoted strings:
+                    // stop at the closing quote so the outer string parser can
+                    // still terminate this token cleanly. This check follows
+                    // the segment close so a paired quote delimiter can also
+                    // close an inner interpolation segment (for example the
+                    // `]` in `qq[$a[0]]`).
+                    return None;
                 }
                 _ => self.advance(),
             }

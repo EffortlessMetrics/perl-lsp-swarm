@@ -72,10 +72,11 @@ impl<'a> Parser<'a> {
         // Identifier that starts with a sigil char (e.g. `$name`, `@items`)
         if next == TokenKind::Identifier
             && let Ok(t) = self.tokens.peek_second()
-                && let Some(ch) = t.text.chars().next()
-                    && matches!(ch, '$' | '@' | '%' | '*' | '&') {
-                        return true;
-                    }
+            && let Some(ch) = t.text.chars().next()
+            && matches!(ch, '$' | '@' | '%' | '*' | '&')
+        {
+            return true;
+        }
 
         false
     }
@@ -128,16 +129,34 @@ impl<'a> Parser<'a> {
         self.block_depth = self.block_depth.saturating_sub(1);
     }
 
+    /// Run `f` inside a class grammar frame of `form`.
+    ///
+    /// Closure-based for the same reason as [`Self::with_depth`]: the context
+    /// can be restored without a `Drop` guard that aliases `&mut Parser`. The
+    /// context is restored to the depth observed on entry on success, parse
+    /// error, recovery, truncated input, cancellation, and early return, so no
+    /// caller has to remember a paired reset and no frame can leak into the
+    /// statements that follow the class body.
+    #[inline]
+    fn within_class_grammar<T>(
+        &mut self,
+        form: ClassGrammarForm,
+        f: impl FnOnce(&mut Self) -> ParseResult<T>,
+    ) -> ParseResult<T> {
+        let restore = self.class_grammar.mark();
+        self.class_grammar.enter(form);
+        let result = f(self);
+        self.class_grammar.restore(restore);
+        result
+    }
+
     /// Run `f` under the live production recursion-depth context.
     ///
     /// Closure-based so the tracker can be borrowed without a `Drop` guard
     /// that aliases `&mut Parser`. Depth is unwound on success, parse error,
     /// recovery, cancellation, exhaustion (never entered), and early return.
     #[inline]
-    fn with_depth<T>(
-        &mut self,
-        f: impl FnOnce(&mut Self) -> ParseResult<T>,
-    ) -> ParseResult<T> {
+    fn with_depth<T>(&mut self, f: impl FnOnce(&mut Self) -> ParseResult<T>) -> ParseResult<T> {
         self.enter_production_depth()?;
         let result = f(self);
         self.exit_production_depth();
@@ -418,7 +437,12 @@ impl<'a> Parser<'a> {
             .is_some_and(|token| Self::is_sigil_argument_start(token.kind(), token.text.as_ref()))
     }
 
-    fn assignment_operator_text(kind: TokenKind) -> Option<&'static str> {
+    /// The single symbolic assignment-operator table.
+    ///
+    /// Contextual `x=` is not listed here: it arrives as two tokens and is
+    /// recognized only by `consume_assignment_operator`, which layers that
+    /// case on top of this table.
+    pub(super) fn assignment_operator_text(kind: TokenKind) -> Option<&'static str> {
         match kind {
             TokenKind::Assign => Some("="),
             TokenKind::PlusAssign => Some("+="),
@@ -478,12 +502,11 @@ impl<'a> Parser<'a> {
             return Ok(expr);
         }
 
-        let Some(op) = self.peek_kind().and_then(Self::assignment_operator_text) else {
+        let Some((op, op_start)) = self.consume_assignment_operator()? else {
             return Ok(expr);
         };
 
-        let op_token = self.tokens.next()?;
-        let rhs = if let Some(missing) = self.recover_missing_infix_rhs(op_token.start()) {
+        let rhs = if let Some(missing) = self.recover_missing_infix_rhs(op_start) {
             missing
         } else {
             self.parse_assignment()?
@@ -526,11 +549,12 @@ impl<'a> Parser<'a> {
         }
         // The lexer sometimes emits variables as Identifier("$x") tokens
         if self.peek_kind() == Some(TokenKind::Identifier)
-            && let Ok(tok) = self.peek_token() {
-                return tok.text.starts_with('$')
-                    || tok.text.starts_with('@')
-                    || tok.text.starts_with('%');
-            }
+            && let Ok(tok) = self.peek_token()
+        {
+            return tok.text.starts_with('$')
+                || tok.text.starts_with('@')
+                || tok.text.starts_with('%');
+        }
         false
     }
 
@@ -674,10 +698,9 @@ impl<'a> Parser<'a> {
 
             if self.peek_kind() == Some(TokenKind::FatArrow) {
                 saw_fat_arrow = true;
-                if !was_comma
-                    && let Some(last) = expressions.last_mut() {
-                        Self::auto_quote_bareword_before_fat_comma(last);
-                    }
+                if !was_comma && let Some(last) = expressions.last_mut() {
+                    Self::auto_quote_bareword_before_fat_comma(last);
+                }
                 self.consume_token()?; // consume =>
             }
 
@@ -1198,6 +1221,40 @@ impl<'a> Parser<'a> {
         name.starts_with(|c: char| c.is_ascii_lowercase() || c == '_')
     }
 
+    /// True when this token starts a `qw` list that Perl flattens in list
+    /// context: a single `QuoteWords` token, or a split `qw` identifier waiting
+    /// for its delimiter.
+    fn token_starts_qw_list(kind: TokenKind, text: &str) -> bool {
+        kind == TokenKind::QuoteWords || (kind == TokenKind::Identifier && text == "qw")
+    }
+
+    fn peek_is_qw_list_start(&mut self) -> bool {
+        self.tokens
+            .peek()
+            .ok()
+            .is_some_and(|token| Self::token_starts_qw_list(token.kind(), token.text.as_ref()))
+    }
+
+    /// Parse the next `qw` list as bare-call arguments, flattening the words.
+    ///
+    /// Standalone `qw(a b)` remains an ArrayLiteral. List-operator calls treat the
+    /// same node as the flattened words, matching `func 'a', 'b'`.
+    ///
+    /// The returned location is the consumed qw container. Empty or
+    /// comment-only lists have no element ends, and `QuoteWords` is consumed
+    /// with `tokens.next()`, which leaves `previous_position()` stale.
+    fn parse_flattened_qw_list_argument(&mut self) -> ParseResult<(Vec<Node>, SourceLocation)> {
+        let node = self.parse_assignment_or_declaration()?;
+        Ok(Self::flatten_qw_list_argument(node))
+    }
+
+    fn flatten_qw_list_argument(node: Node) -> (Vec<Node>, SourceLocation) {
+        match node.into_parts() {
+            (NodeKind::ArrayLiteral { elements }, location) => (elements, location),
+            (kind, location) => (vec![Node::new(kind, location)], location),
+        }
+    }
+
     /// We are conservative: the identifier must be lowercase (uppercase bare
     /// identifiers are more likely to be constants or package names) and
     /// must NOT be a string comparison operator (`eq`, `ne`, `lt`, `gt`, etc.)
@@ -1241,6 +1298,12 @@ impl<'a> Parser<'a> {
             Err(_) => return false,
         };
 
+        // `func qw(a b)` is one QuoteWords token; split `qw` plus a delimiter is
+        // the same list in list-operator position (#14808).
+        if Self::token_starts_qw_list(next.kind(), next.text.as_ref()) {
+            return true;
+        }
+
         match next.kind() {
             // Sigiled variables: `func $x`, `func @arr`, `func %hash`
             TokenKind::Identifier
@@ -1281,8 +1344,7 @@ impl<'a> Parser<'a> {
                 if matches!(
                     next_text.as_ref(),
                     "__PACKAGE__" | "__FILE__" | "__LINE__" | "__SUB__" | "__CLASS__"
-                )
-                {
+                ) {
                     return true;
                 }
                 // Allow qualified names (e.g. `File::Spec`, `Scalar::Util`) as arguments.
@@ -1308,10 +1370,11 @@ impl<'a> Parser<'a> {
                 }
                 // Block-list functions (map/grep/sort/etc.) as argument: `uniq map { ... } @list`
                 if Self::is_block_list_func(&next_text)
-                    && let Ok(third) = self.tokens.peek_second() {
-                        return third.kind() == TokenKind::LeftBrace
-                            || third.kind() == TokenKind::LeftParen;
-                    }
+                    && let Ok(third) = self.tokens.peek_second()
+                {
+                    return third.kind() == TokenKind::LeftBrace
+                        || third.kind() == TokenKind::LeftParen;
+                }
                 // Builtin functions as arguments:
                 //
                 // Pattern A (sigil arg): `func values %hash`, `func keys %h`
@@ -1328,21 +1391,23 @@ impl<'a> Parser<'a> {
                 // the fallthrough to the general `(` check at the bottom of this
                 // branch, causing `croak ref($x) . "y"` to drop the argument.
                 if Self::is_builtin_function(&next_text)
-                    && let Ok(third) = self.tokens.peek_second() {
-                        let third_text: &str = &third.text;
-                        if third.kind() == TokenKind::LeftParen {
-                            // builtin(args) — the builtin is called with parens,
-                            // producing a value that is the outer function's argument.
-                            return true;
-                        }
-                        return Self::is_sigil_argument_start(third.kind(), third_text);
+                    && let Ok(third) = self.tokens.peek_second()
+                {
+                    let third_text: &str = &third.text;
+                    if third.kind() == TokenKind::LeftParen {
+                        // builtin(args) — the builtin is called with parens,
+                        // producing a value that is the outer function's argument.
+                        return true;
                     }
+                    return Self::is_sigil_argument_start(third.kind(), third_text);
+                }
                 if next_text.starts_with(|c: char| c.is_ascii_lowercase() || c == '_')
                     && self.tokens.peek_second().ok().is_some_and(|third| {
                         Self::is_sigil_argument_start(third.kind(), third.text.as_ref())
-                    }) {
-                        return true;
-                    }
+                    })
+                {
+                    return true;
+                }
                 // Check if the next-next token is `(` — that signals a function call
                 // or `=>` (fat arrow after bareword) — that signals an auto-quoted arg
                 self.tokens.peek_second().ok().is_some_and(|t| {

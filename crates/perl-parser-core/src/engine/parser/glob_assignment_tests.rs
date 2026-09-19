@@ -10,7 +10,7 @@ mod tests {
     }
 
     fn collect_typeglob_names(node: &Node, names: &mut Vec<String>) {
-        if let NodeKind::Typeglob { name } = &node.kind {
+        if let NodeKind::Typeglob { name, .. } = &node.kind {
             names.push(name.clone());
         }
 
@@ -36,13 +36,13 @@ mod tests {
             if let NodeKind::ExpressionStatement { expression } = &stmt.kind {
                 if let NodeKind::Assignment { lhs, rhs, op } = &expression.kind {
                     assert_eq!(op, "=");
-                    if let NodeKind::Typeglob { name } = &lhs.kind {
+                    if let NodeKind::Typeglob { name, .. } = &lhs.kind {
                         assert_eq!(name, "foo");
                     } else {
                         unreachable!("Expected Typeglob on LHS, got {:?}", lhs.kind);
                     }
 
-                    if let NodeKind::Typeglob { name } = &rhs.kind {
+                    if let NodeKind::Typeglob { name, .. } = &rhs.kind {
                         assert_eq!(name, "bar");
                     } else {
                         unreachable!("Expected Typeglob on RHS, got {:?}", rhs.kind);
@@ -66,7 +66,7 @@ mod tests {
         if let NodeKind::Program { statements } = &ast.kind {
             let stmt = &statements[0];
             if let NodeKind::Assignment { lhs, rhs, .. } = &stmt.kind {
-                if let NodeKind::Typeglob { name } = &lhs.kind {
+                if let NodeKind::Typeglob { name, .. } = &lhs.kind {
                     assert_eq!(name, "foo");
                 }
                 // RHS should be Unary (\) of Unary (&) of Identifier (sub)

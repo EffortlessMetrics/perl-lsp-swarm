@@ -33,7 +33,7 @@ const CHILD_MODE_ENV: &str = "PERL_LSP_COMMAND_EXISTS_CHILD";
 const CHILD_COMMAND_ENV: &str = "PERL_LSP_COMMAND_EXISTS_NAME";
 const CHILD_EXPECTED_ENV: &str = "PERL_LSP_COMMAND_EXISTS_EXPECTED";
 const CHILD_FILTER: &str = "command_exists_contract_child";
-const CHILD_PROBE_TIMEOUT: Duration = Duration::from_secs(120);
+const CHILD_PROBE_TIMEOUT: Duration = Duration::from_mins(2);
 const CHILD_PROBE_POLL: Duration = Duration::from_millis(20);
 
 fn command_candidate_name(command: &str) -> String {
@@ -249,8 +249,10 @@ fn public_command_exists_rejects_cwd_sibling_under_empty_path_entry() -> TestRes
     // A launchable sibling sits in the child's current directory and the only
     // PATH entry is empty. The public lookup must not interpret the empty
     // entry as the working directory (the CWD-first admission seam): it must
-    // reject the candidate. which 8.x filters empty PATH entries outright, so
-    // this row also pins that filtering as load-bearing behavior.
+    // reject the candidate. `which` 8.x filters empty entries only on
+    // Windows (it emulates Unix `which` elsewhere), so the public function
+    // strips them on every platform; this row pins that stripping as
+    // load-bearing behavior.
     run_child_probe(command, Some(path.as_os_str()), platform_path_ext(), root.path(), false)
 }
 

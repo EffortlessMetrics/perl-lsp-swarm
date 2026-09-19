@@ -45,25 +45,24 @@ fn parse_heredoc_delimiter(s: &str) -> (String, bool, bool, bool) {
     // `EOF`, and the body is not interpolated. The lexer accepts this spelling
     // and includes the leading backslash in token text, so normalize it here
     // before the AST node and collector are populated.
-    let (delimiter, interpolated, command) =
-        if let Some(label) = rest.strip_prefix('\\') {
-            (label.to_string(), false, false)
-        } else if rest.starts_with('"') && rest.ends_with('"') && rest.len() >= 2 {
-            // Double-quoted: interpolated body, but the delimiter label itself is
-            // literal (Perl 5.38 keeps escape sequences like \n as two bytes).
-            (rest[1..rest.len() - 1].to_string(), true, false)
-        } else if rest.starts_with('\'') && rest.ends_with('\'') && rest.len() >= 2 {
-            // Single-quoted: not interpolated, no unescape
-            (rest[1..rest.len() - 1].to_string(), false, false)
-        } else if rest.starts_with('`') && rest.ends_with('`') && rest.len() >= 2 {
-            // Backtick: interpolated command body; delimiter label stays literal.
-            (rest[1..rest.len() - 1].to_string(), true, true)
-        } else {
-            // Bare word: interpolated, no unescape (except maybe explicit escapes?)
-            // Bare identifiers don't usually have escapes, but can have weird chars?
-            // "EOF" -> EOF.
-            (rest.to_string(), true, false)
-        };
+    let (delimiter, interpolated, command) = if let Some(label) = rest.strip_prefix('\\') {
+        (label.to_string(), false, false)
+    } else if rest.starts_with('"') && rest.ends_with('"') && rest.len() >= 2 {
+        // Double-quoted: interpolated body, but the delimiter label itself is
+        // literal (Perl 5.38 keeps escape sequences like \n as two bytes).
+        (rest[1..rest.len() - 1].to_string(), true, false)
+    } else if rest.starts_with('\'') && rest.ends_with('\'') && rest.len() >= 2 {
+        // Single-quoted: not interpolated, no unescape
+        (rest[1..rest.len() - 1].to_string(), false, false)
+    } else if rest.starts_with('`') && rest.ends_with('`') && rest.len() >= 2 {
+        // Backtick: interpolated command body; delimiter label stays literal.
+        (rest[1..rest.len() - 1].to_string(), true, true)
+    } else {
+        // Bare word: interpolated, no unescape (except maybe explicit escapes?)
+        // Bare identifiers don't usually have escapes, but can have weird chars?
+        // "EOF" -> EOF.
+        (rest.to_string(), true, false)
+    };
 
     (delimiter, interpolated, indented, command)
 }
@@ -86,7 +85,6 @@ fn map_heredoc_quote_kind(text: &str, _interpolated: bool) -> heredoc_collector:
 }
 
 const MAX_HEREDOC_DEPTH: usize = 100;
-const HEREDOC_TIMEOUT_MS: u64 = 5000;
 
 impl<'a> Parser<'a> {
     /// Enqueue a heredoc declaration for later content collection
@@ -98,16 +96,24 @@ impl<'a> Parser<'a> {
         decl_start: usize,
         decl_end: usize,
     ) {
+        // Once the collection budget is spent, no further declaration can ever be
+        // drained: every later drain refuses at its pre-check. Admitting them anyway
+        // would grow a queue that is never released, and the depth guard below would
+        // then blame the user's source with `Heredoc depth limit exceeded` for what is
+        // really a resource limit — reintroducing, one guard over, exactly the
+        // misclassification this budget was written to remove. The placeholder node is
+        // already in the AST and stays visibly unresolved; the typed terminal recorded
+        // at refusal is what explains it.
+        if self.operation.heredoc_budget_terminal_recorded() {
+            return;
+        }
+
         if self.pending_heredocs.len() >= MAX_HEREDOC_DEPTH {
             self.errors.push(ParseError::syntax(
                 format!("Heredoc depth limit exceeded (max {})", MAX_HEREDOC_DEPTH),
                 decl_start,
             ));
             return;
-        }
-
-        if self.pending_heredocs.is_empty() {
-            self.heredoc_start_time = Some(Instant::now());
         }
 
         self.pending_heredocs.push_back(PendingHeredoc {
@@ -119,6 +125,76 @@ impl<'a> Parser<'a> {
         });
     }
 
+    /// Record the deterministic heredoc-budget terminal for this operation.
+    ///
+    /// Exhaustion is one event per parse, not one per affected declaration: the
+    /// diagnostic is emitted once and anchored at the first refused or
+    /// overrunning declaration. Later declarations in the same parse are still
+    /// refused; they add no further diagnostics, so consumers must treat the
+    /// terminal — not the diagnostic count — as the signal that heredoc content
+    /// is incomplete.
+    ///
+    /// The diagnostic and the terminal are deliberately separate. A diagnostic
+    /// records that the budget was *spent*; the terminal asserts that work was
+    /// *refused*. Only the pre-check refuses work, so only the pre-check records
+    /// the terminal — see `record_heredoc_budget_terminal`.
+    fn report_heredoc_budget_exhausted(&mut self, location: usize) {
+        let (limit, usage) = self.operation.heredoc_scan_state();
+        let already_reported = self
+            .errors
+            .iter()
+            .any(|error| matches!(error, ParseError::HeredocBudgetExhausted { .. }));
+        if !already_reported {
+            self.errors.push(ParseError::HeredocBudgetExhausted { limit, usage, location });
+        }
+    }
+
+    /// Report a refused collection, re-anchoring an earlier overrun diagnostic.
+    ///
+    /// The one-diagnostic policy and the anchor contract collide here. An
+    /// admitted drain that overran already pushed a diagnostic anchored at the
+    /// declaration it was collecting — and that declaration is *fully attached*.
+    /// If a later drain is then refused, plain deduplication keeps the earlier
+    /// anchor, so the diagnostic points at a heredoc that parsed perfectly while
+    /// the one whose body is actually missing carries no source location at all.
+    ///
+    /// Refusal is the more actionable anchor: it names the declaration the user
+    /// has lost content for. So the first refusal re-anchors an existing
+    /// diagnostic in place rather than adding a second one, keeping exactly one
+    /// diagnostic per parse. Later refusals do not re-anchor — exhaustion is one
+    /// event, and the first declaration refused is the one that explains it.
+    fn report_heredoc_budget_refusal(&mut self, location: usize) {
+        if self.operation.heredoc_budget_terminal_recorded() {
+            // A refusal already re-anchored this parse's diagnostic.
+            return;
+        }
+        let (limit, usage) = self.operation.heredoc_scan_state();
+        let refusal = ParseError::HeredocBudgetExhausted { limit, usage, location };
+        match self
+            .errors
+            .iter_mut()
+            .find(|error| matches!(error, ParseError::HeredocBudgetExhausted { .. }))
+        {
+            Some(existing) => *existing = refusal,
+            None => self.errors.push(refusal),
+        }
+    }
+
+    /// Record the typed terminal for a collection this parse actually refused.
+    ///
+    /// `ParseOutput::stop_cause` documents itself as `None` for completed —
+    /// clean or recovered — parses, and `ParseOutput::terminated_early` is
+    /// exactly `stop_cause.is_some()`, so a consumer cannot separate them. A
+    /// drain that overran the limit but finished still attached every body it
+    /// collected and let parsing run to EOF: that parse is complete, and
+    /// asserting a terminal for it would tell consumers a lossless AST was
+    /// truncated. Only refusal — the pre-check declining to begin a collection —
+    /// is early termination, so only the pre-check records the terminal.
+    fn record_heredoc_budget_terminal(&mut self) {
+        let (limit, usage) = self.operation.heredoc_scan_state();
+        self.operation.record_terminal(ParseStopCause::HeredocBudgetExhausted { limit, usage });
+    }
+
     /// Drain heredocs added after `pending_start` and retain any parent statement's queue.
     ///
     /// A compound statement can declare a heredoc in its condition before recursively
@@ -126,24 +202,47 @@ impl<'a> Parser<'a> {
     /// they complete, but cannot consume the parent's placeholder before its AST node
     /// exists. Keeping the prefix also prevents sequential block statements from
     /// accumulating against the global depth cap.
-    #[allow(clippy::print_stderr, reason = "debug-only diagnostic — conditional on debug_assertions, cannot use #[expect]")]
+    #[allow(
+        clippy::print_stderr,
+        reason = "debug-only diagnostic — conditional on debug_assertions, cannot use #[expect]"
+    )]
     fn drain_pending_heredocs_from(&mut self, pending_start: usize, root: &mut Node) {
         if pending_start >= self.pending_heredocs.len() {
             return;
         }
 
-        // Check for timeout
-        if let Some(start) = self.heredoc_start_time
-            && start.elapsed().as_millis() > HEREDOC_TIMEOUT_MS as u128 {
-                self.errors.push(ParseError::syntax(
-                    format!("Heredoc parsing timed out (> {}ms)", HEREDOC_TIMEOUT_MS),
-                    self.byte_cursor,
-                ));
-                // Clear pending to prevent further processing/hanging
-                self.pending_heredocs.clear();
-                self.heredoc_start_time = None;
-                return;
-            }
+        // Deterministic collection bound (#7291).
+        //
+        // Heredoc collection was previously abandoned when more than five
+        // wall-clock seconds had elapsed since the queue became non-empty. That
+        // timer spanned the whole enclosing statement — including nested blocks
+        // containing no heredocs at all — so tracing, sanitizers, a debugger
+        // pause, or a loaded host could drop bodies from source that is
+        // perfectly valid, and report the loss as a syntax error against the
+        // user's code.
+        //
+        // The bound is now charged in source bytes, so identical source and
+        // configuration consume identical budget on every host. Exhaustion is a
+        // typed resource-limit terminal, never a syntax claim, and the queue is
+        // deliberately left intact so a truncated parse cannot be mistaken for
+        // an ordinary complete one.
+        //
+        // Exhaustion is reported at both edges of the work, but only this edge
+        // is early termination. The check here refuses to *begin* another
+        // collection, so it reports the diagnostic and records the terminal;
+        // the check after charging reports a drain that crossed the limit while
+        // running, which is a diagnostic only. Reporting nothing after the work
+        // would let a single oversized collection spend the whole budget
+        // silently whenever no later drain followed it.
+        if self.operation.heredoc_scan_exhausted() {
+            let location = self
+                .pending_heredocs
+                .get(pending_start)
+                .map_or(self.byte_cursor, |decl| decl.decl_span.start());
+            self.report_heredoc_budget_refusal(location);
+            self.record_heredoc_budget_terminal();
+            return;
+        }
 
         // Keep a copy of the suffix declarations so we can match outputs back to inputs.
         // The prefix belongs to an enclosing statement and must remain queued until that
@@ -151,7 +250,40 @@ impl<'a> Parser<'a> {
         let queued = self.pending_heredocs.split_off(pending_start);
         let pending: Vec<_> = queued.iter().cloned().collect();
 
+        // Collection walks forward monotonically from the first queued body, so
+        // the span it advances over is a deterministic upper bound on the
+        // source it traversed. Charging after the work means one drain can
+        // overshoot the limit, bounded by a single monotone pass over the
+        // remaining source; the total stays a pure function of source and
+        // configuration, never of elapsed time.
+        let scan_start = pending.first().map_or(self.byte_cursor, |decl| decl.body_start);
+
         let out = collect_at_declaration_offsets(self.src_bytes, queued);
+
+        self.operation.record_heredoc_scan(out.next_offset.saturating_sub(scan_start));
+
+        // A drain that crossed the limit while running spent budget that no
+        // pre-check refused. Without a report here, an oversized first
+        // collection could consume the whole budget in silence when no later
+        // drain follows. The bodies this drain already collected are still
+        // attached below: work that was actually done is not discarded, it is
+        // only accounted.
+        //
+        // Diagnostic only, deliberately: this drain *finished*. Every body it
+        // collected is attached and parsing continues to EOF, so the parse is
+        // complete and recording a terminal would tell consumers — through
+        // `terminated_early()` — that a lossless AST was truncated. Refusal of
+        // the *next* collection at the pre-check above is what constitutes early
+        // termination, and that is where the terminal is recorded.
+        //
+        // The test is a strict overrun, not the inclusive `heredoc_scan_exhausted`
+        // the pre-check uses. A drain that lands exactly on the limit spent
+        // exactly its budget and truncated nothing, so it has nothing to report
+        // at all.
+        if self.operation.heredoc_scan_overrun() {
+            let location = pending.first().map_or(scan_start, |decl| decl.decl_span.start());
+            self.report_heredoc_budget_exhausted(location);
+        }
 
         // Zip 1:1 in order (collector preserves input order)
         for (decl, body) in pending.into_iter().zip(out.contents) {
@@ -191,12 +323,13 @@ impl<'a> Parser<'a> {
                     None
                 };
                 if let Some(body_location) = body_location
-                    && body_location != decl.decl_span.start() {
-                        self.errors.push(ParseError::SyntaxError {
-                            message: format!("Unterminated heredoc body: {}", label),
-                            location: body_location,
-                        });
-                    }
+                    && body_location != decl.decl_span.start()
+                {
+                    self.errors.push(ParseError::SyntaxError {
+                        message: format!("Unterminated heredoc body: {}", label),
+                        location: body_location,
+                    });
+                }
             }
 
             // Defensive guardrail: warn if heredoc node wasn't found at expected span
@@ -204,7 +337,8 @@ impl<'a> Parser<'a> {
             if !attached {
                 eprintln!(
                     "[WARNING] drain_pending_heredocs: Failed to attach heredoc content at span {}..{} - no matching Heredoc node found in AST",
-                    decl.decl_span.start(), decl.decl_span.end()
+                    decl.decl_span.start(),
+                    decl.decl_span.end()
                 );
             }
         }
@@ -212,9 +346,6 @@ impl<'a> Parser<'a> {
         // attaches an earlier declaration. Never move the cursor backwards when the
         // parent queue is finally drained.
         self.byte_cursor = self.byte_cursor.max(out.next_offset);
-        if self.pending_heredocs.is_empty() {
-            self.heredoc_start_time = None;
-        }
     }
 
     /// Attach collected heredoc content to its declaration node by matching declaration span
@@ -230,7 +361,10 @@ impl<'a> Parser<'a> {
     }
 
     /// Try to attach heredoc content at this node or its children
-    #[allow(clippy::print_stderr, reason = "debug-only diagnostic — conditional on debug_assertions, cannot use #[expect]")]
+    #[allow(
+        clippy::print_stderr,
+        reason = "debug-only diagnostic — conditional on debug_assertions, cannot use #[expect]"
+    )]
     fn try_attach_at_node(
         &self,
         node: &mut Node,
@@ -261,7 +395,7 @@ impl<'a> Parser<'a> {
 
                 // Store body span for breakpoint detection
                 *body_span = if body.full_span.start() < body.full_span.end() {
-                    Some(SourceLocation::new(body.full_span.start(), body.full_span.end(),))
+                    Some(SourceLocation::new(body.full_span.start(), body.full_span.end()))
                 } else {
                     None // Empty heredoc
                 };
@@ -282,7 +416,8 @@ impl<'a> Parser<'a> {
         if !found && node_matches {
             eprintln!(
                 "warn: no Heredoc node found for decl span {}..{} (matched span but not Heredoc kind)",
-                decl_span.start(), decl_span.end()
+                decl_span.start(),
+                decl_span.end()
             );
         }
 
@@ -316,7 +451,7 @@ impl<'a> Parser<'a> {
 
                 *content = text;
                 *body_span = if body.full_span.start() < body.full_span.end() {
-                    Some(SourceLocation::new(body.full_span.start(), body.full_span.end(),))
+                    Some(SourceLocation::new(body.full_span.start(), body.full_span.end()))
                 } else {
                     None
                 };
@@ -332,7 +467,6 @@ impl<'a> Parser<'a> {
         });
         found
     }
-
 }
 
 #[cfg(test)]
@@ -382,22 +516,13 @@ mod heredoc_branch_tests {
     #[test]
     fn parses_empty_and_semicolon_terminated_labels() {
         assert_eq!(parse_heredoc_delimiter("<<"), (String::new(), true, false, false));
-        assert_eq!(
-            parse_heredoc_delimiter("<<;"),
-            (String::new(), true, false, false)
-        );
+        assert_eq!(parse_heredoc_delimiter("<<;"), (String::new(), true, false, false));
     }
 
     #[test]
     fn parses_indented_and_quoted_labels() {
-        assert_eq!(
-            parse_heredoc_delimiter("<<~EOF"),
-            ("EOF".to_string(), true, true, false)
-        );
-        assert_eq!(
-            parse_heredoc_delimiter("<<'EOF'"),
-            ("EOF".to_string(), false, false, false)
-        );
+        assert_eq!(parse_heredoc_delimiter("<<~EOF"), ("EOF".to_string(), true, true, false));
+        assert_eq!(parse_heredoc_delimiter("<<'EOF'"), ("EOF".to_string(), false, false, false));
         // <<"E\nOF" keeps the backslash-n pair literal in the delimiter name;
         // quoting controls body interpolation, not label unescaping.
         assert_eq!(
@@ -408,40 +533,19 @@ mod heredoc_branch_tests {
 
     #[test]
     fn parses_literal_and_command_labels() {
-        assert_eq!(
-            parse_heredoc_delimiter(r"<<\EOF"),
-            ("EOF".to_string(), false, false, false)
-        );
+        assert_eq!(parse_heredoc_delimiter(r"<<\EOF"), ("EOF".to_string(), false, false, false));
         let command = format!("<<{}echo EOF{}", 96 as char, 96 as char);
-        assert_eq!(
-            parse_heredoc_delimiter(&command),
-            ("echo EOF".to_string(), true, false, true)
-        );
+        assert_eq!(parse_heredoc_delimiter(&command), ("echo EOF".to_string(), true, false, true));
     }
 
     #[test]
     fn maps_quote_kinds_for_supported_delimiters() {
-        assert!(matches!(
-            map_heredoc_quote_kind(r"<<\EOF", false),
-            QuoteKind::Single
-        ));
-        assert!(matches!(
-            map_heredoc_quote_kind("<<'EOF'", false),
-            QuoteKind::Single
-        ));
-        assert!(matches!(
-            map_heredoc_quote_kind("<<\"EOF\"", true),
-            QuoteKind::Double
-        ));
+        assert!(matches!(map_heredoc_quote_kind(r"<<\EOF", false), QuoteKind::Single));
+        assert!(matches!(map_heredoc_quote_kind("<<'EOF'", false), QuoteKind::Single));
+        assert!(matches!(map_heredoc_quote_kind("<<\"EOF\"", true), QuoteKind::Double));
         let command = format!("<<{}EOF{}", 96 as char, 96 as char);
-        assert!(matches!(
-            map_heredoc_quote_kind(&command, true),
-            QuoteKind::Backtick
-        ));
-        assert!(matches!(
-            map_heredoc_quote_kind("<<EOF", true),
-            QuoteKind::Unquoted
-        ));
+        assert!(matches!(map_heredoc_quote_kind(&command, true), QuoteKind::Backtick));
+        assert!(matches!(map_heredoc_quote_kind("<<EOF", true), QuoteKind::Unquoted));
     }
 
     #[test]
@@ -464,16 +568,10 @@ mod heredoc_branch_tests {
     #[test]
     fn parses_indented_combined_with_every_quote_style() {
         // <<~'EOF'  — indented + single-quoted → not interpolated, not command
-        assert_eq!(
-            parse_heredoc_delimiter("<<~'EOF'"),
-            ("EOF".to_string(), false, true, false)
-        );
+        assert_eq!(parse_heredoc_delimiter("<<~'EOF'"), ("EOF".to_string(), false, true, false));
 
         // <<~"EOF"  — indented + double-quoted → interpolated, not command
-        assert_eq!(
-            parse_heredoc_delimiter("<<~\"EOF\""),
-            ("EOF".to_string(), true, true, false)
-        );
+        assert_eq!(parse_heredoc_delimiter("<<~\"EOF\""), ("EOF".to_string(), true, true, false));
 
         // <<~`cmd`  — indented + backtick → interpolated, command execution
         let indented_backtick = format!("<<~{}cmd{}", 96u8 as char, 96u8 as char);
@@ -483,10 +581,7 @@ mod heredoc_branch_tests {
         );
 
         // <<~\EOF  — indented + backslash-quoted → not interpolated, not command
-        assert_eq!(
-            parse_heredoc_delimiter("<<~\\EOF"),
-            ("EOF".to_string(), false, true, false)
-        );
+        assert_eq!(parse_heredoc_delimiter("<<~\\EOF"), ("EOF".to_string(), false, true, false));
     }
 
     /// `<<~;` and `<<~` (empty after the tilde) must trigger the early-return
@@ -496,15 +591,9 @@ mod heredoc_branch_tests {
     #[test]
     fn parses_indented_empty_and_semicolon_labels() {
         // <<~   — nothing after the tilde
-        assert_eq!(
-            parse_heredoc_delimiter("<<~"),
-            (String::new(), true, true, false)
-        );
+        assert_eq!(parse_heredoc_delimiter("<<~"), (String::new(), true, true, false));
         // <<~;  — semicolon acts as the statement terminator, not part of the label
-        assert_eq!(
-            parse_heredoc_delimiter("<<~;"),
-            (String::new(), true, true, false)
-        );
+        assert_eq!(parse_heredoc_delimiter("<<~;"), (String::new(), true, true, false));
     }
 
     // --- map_heredoc_quote_kind indented-prefix branch coverage ---
@@ -516,30 +605,15 @@ mod heredoc_branch_tests {
     #[test]
     fn maps_quote_kinds_for_indented_delimiters() {
         // <<~'EOF' → Single (same as <<\EOF and <<'EOF')
-        assert!(matches!(
-            map_heredoc_quote_kind("<<~'EOF'", false),
-            QuoteKind::Single
-        ));
+        assert!(matches!(map_heredoc_quote_kind("<<~'EOF'", false), QuoteKind::Single));
         // <<~"EOF" → Double
-        assert!(matches!(
-            map_heredoc_quote_kind("<<~\"EOF\"", true),
-            QuoteKind::Double
-        ));
+        assert!(matches!(map_heredoc_quote_kind("<<~\"EOF\"", true), QuoteKind::Double));
         // <<~`EOF` → Backtick
         let indented_backtick = format!("<<~{}EOF{}", 96u8 as char, 96u8 as char);
-        assert!(matches!(
-            map_heredoc_quote_kind(&indented_backtick, true),
-            QuoteKind::Backtick
-        ));
+        assert!(matches!(map_heredoc_quote_kind(&indented_backtick, true), QuoteKind::Backtick));
         // <<~EOF   → Unquoted (bare word)
-        assert!(matches!(
-            map_heredoc_quote_kind("<<~EOF", true),
-            QuoteKind::Unquoted
-        ));
+        assert!(matches!(map_heredoc_quote_kind("<<~EOF", true), QuoteKind::Unquoted));
         // <<~\EOF  → Single (backslash-quoted is mapped to Single)
-        assert!(matches!(
-            map_heredoc_quote_kind("<<~\\EOF", false),
-            QuoteKind::Single
-        ));
+        assert!(matches!(map_heredoc_quote_kind("<<~\\EOF", false), QuoteKind::Single));
     }
 }
