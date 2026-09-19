@@ -14,6 +14,8 @@ import tempfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+
+from bash_binary import bash_binary, bash_path
 from typing import Any, Protocol
 
 
@@ -962,7 +964,7 @@ def cleanup(
 
     if args.run_low_level:
         script = repo_root / "scripts" / "cleanup-completed-worktrees.sh"  # defect 4: was REPO_ROOT
-        cmd = ["bash", str(script)]
+        cmd = [bash_binary(), bash_path(script)]
         if args.dry_run:
             cmd.append("--dry-run")
         proc = run(cmd, check=False)
