@@ -4037,6 +4037,7 @@ pub fn perl_parser_core::SourceRegionIndex::build_with_hash_from_arc(source: all
 pub fn perl_parser_core::SourceRegionIndex::classify_offset(&self, offset: usize) -> perl_parser_core::syntax::source_context::OffsetClassification
 pub fn perl_parser_core::SourceRegionIndex::classify_range(&self, start: usize, end: usize) -> perl_parser_core::RangeClassification
 pub fn perl_parser_core::SourceRegionIndex::classify_range_checked(&self, start: usize, end: usize) -> perl_parser_core::SourceRangeClassification
+pub fn perl_parser_core::SourceRegionIndex::completed_heredoc_spans(&self) -> alloc::vec::Vec<perl_parser_core::SourceRegion>
 pub const fn perl_parser_core::SourceRegionIndex::content_hash(&self) -> u64
 pub fn perl_parser_core::SourceRegionIndex::from_regions(source: &str, content_hash: u64, regions: alloc::vec::Vec<perl_parser_core::SourceRegion>) -> Self
 pub fn perl_parser_core::SourceRegionIndex::kind_at_offset(&self, offset: usize) -> perl_parser_core::SourceRegionKind
@@ -4768,6 +4769,7 @@ pub fn perl_parser_core::SourceRegionIndex::build_with_hash_from_arc(source: all
 pub fn perl_parser_core::SourceRegionIndex::classify_offset(&self, offset: usize) -> perl_parser_core::syntax::source_context::OffsetClassification
 pub fn perl_parser_core::SourceRegionIndex::classify_range(&self, start: usize, end: usize) -> perl_parser_core::RangeClassification
 pub fn perl_parser_core::SourceRegionIndex::classify_range_checked(&self, start: usize, end: usize) -> perl_parser_core::SourceRangeClassification
+pub fn perl_parser_core::SourceRegionIndex::completed_heredoc_spans(&self) -> alloc::vec::Vec<perl_parser_core::SourceRegion>
 pub const fn perl_parser_core::SourceRegionIndex::content_hash(&self) -> u64
 pub fn perl_parser_core::SourceRegionIndex::from_regions(source: &str, content_hash: u64, regions: alloc::vec::Vec<perl_parser_core::SourceRegion>) -> Self
 pub fn perl_parser_core::SourceRegionIndex::kind_at_offset(&self, offset: usize) -> perl_parser_core::SourceRegionKind
