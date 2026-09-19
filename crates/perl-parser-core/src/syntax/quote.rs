@@ -40,10 +40,18 @@ pub fn extract_regex_parts(text: &str) -> (String, String, String) {
 /// non-alphabetic character handling as [`validate_substitution_modifiers`].
 /// The `e` and `r` modifiers belong to `s///` only and are rejected here.
 ///
+/// The accepted set is operator-specific, as in Perl: `qr//` compiles a
+/// pattern without running a match loop, so the match-loop letters `g` and
+/// `c` are rejected there ("Unknown regexp modifier"), while `m//` and the
+/// bare `/.../` form accept the full set.
+///
 /// Used by `primary.rs` so the parser diagnoses malformed match-family
 /// modifiers with a typed `SyntaxError` whose location is bound to the
 /// operator, matching the `s///` and `tr///` contract (#14980).
 pub fn extract_regex_parts_strict(text: &str) -> Result<(String, String, String), MatchError> {
+    // Decide the accepted modifier set before a prefix is consumed.
+    let is_qr = text.starts_with("qr");
+
     // Handle different prefixes
     let content = if let Some(stripped) = text.strip_prefix("qr") {
         skip_paired_replacement_gap(stripped)
@@ -69,7 +77,7 @@ pub fn extract_regex_parts_strict(text: &str) -> Result<(String, String, String)
     // Extract body and modifiers
     let (body, modifiers_raw) = extract_delimited_content(content, delimiter, closing);
 
-    let modifiers = validate_match_modifiers(modifiers_raw)?;
+    let modifiers = validate_match_modifiers_for(modifiers_raw, !is_qr)?;
 
     // Include delimiters in the pattern string for compatibility
     let pattern = format!("{}{}{}", delimiter, body, closing);
@@ -979,9 +987,14 @@ pub fn validate_substitution_modifiers(modifiers_str: &str) -> Result<String, ch
     Ok(valid_modifiers)
 }
 
-/// Validate match-family modifier letters: `m s i x p o d u a l n g c`,
-/// plus the doubled `xx` and `aa` forms. The `e` and `r` modifiers belong
-/// to `s///` only and are explicitly rejected (#14980).
+/// Validate match-family modifier letters for `m//` and the bare `/.../` form:
+/// `m s i x p o d u a l n g c`, plus the doubled `xx` and `aa` forms. The `e`
+/// and `r` modifiers belong to `s///` only and are explicitly rejected (#14980).
+///
+/// `qr//` takes a narrower set: it compiles a pattern without running a match
+/// loop, so the match-loop letters `g` and `c` are invalid there, as in Perl
+/// ("Unknown regexp modifier"). [`extract_regex_parts_strict`] selects that
+/// narrower set; this function stays the full-set validator.
 ///
 /// Behaves like [`validate_substitution_modifiers`]: a non-alphabetic
 /// character that is whitespace or a statement terminator (`;`, `\n`,
@@ -990,6 +1003,16 @@ pub fn validate_substitution_modifiers(modifiers_str: &str) -> Result<String, ch
 /// caller can surface a typed `MatchError::InvalidModifier` and bind the
 /// diagnostic to the operator.
 pub fn validate_match_modifiers(modifiers_str: &str) -> Result<String, char> {
+    validate_match_modifiers_for(modifiers_str, true)
+}
+
+/// Operator-aware tail of [`validate_match_modifiers`]: `allow_match_loop`
+/// selects between the `m//`/bare form set (`g`/`c` accepted) and the
+/// `qr//` set (`g`/`c` rejected, #14980).
+fn validate_match_modifiers_for(
+    modifiers_str: &str,
+    allow_match_loop: bool,
+) -> Result<String, char> {
     let mut valid_modifiers = String::new();
     let mut chars = modifiers_str.chars().peekable();
 
@@ -1012,6 +1035,12 @@ pub fn validate_match_modifiers(modifiers_str: &str) -> Result<String, char> {
         }
 
         if is_match_modifier(c) {
+            if !allow_match_loop && matches!(c, 'g' | 'c') {
+                // `g` and `c` only make sense when the operator runs a
+                // match loop; `qr//` does not, and Perl rejects them there
+                // even in a mixed tail such as `aag`.
+                return Err(c);
+            }
             valid_modifiers.push(c);
         } else {
             // `e` and `r` land here: substitution-only modifiers that the

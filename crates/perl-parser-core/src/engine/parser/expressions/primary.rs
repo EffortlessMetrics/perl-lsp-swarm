@@ -255,9 +255,16 @@ impl<'a> Parser<'a> {
                     quote_parser::extract_regex_parts_strict(&token.text).map_err(|e| {
                         let message = match e {
                             quote_parser::MatchError::InvalidModifier(c) => {
-                                format!(
-                                    "Invalid match modifier '{c}'. Valid modifiers are: m, s, i, x, p, o, d, u, a, l, n, g, c, xx, aa"
-                                )
+                                // `qr//` compiles a pattern without running a
+                                // match loop, so Perl rejects the match-loop
+                                // letters `g` and `c` there while `m//` and
+                                // the bare `/.../` form accept them.
+                                let valid = if token.text.starts_with("qr") {
+                                    "m, s, i, x, p, o, d, u, a, l, n, xx, aa (g and c apply to m// only)"
+                                } else {
+                                    "m, s, i, x, p, o, d, u, a, l, n, g, c, xx, aa"
+                                };
+                                format!("Invalid match modifier '{c}'. Valid modifiers are: {valid}")
                             }
                             quote_parser::MatchError::InvalidDelimiter(c) => {
                                 format!(

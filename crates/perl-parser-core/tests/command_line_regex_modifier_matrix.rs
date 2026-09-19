@@ -796,12 +796,35 @@ fn match_modifier_validation_rejects_substitution_only_modifiers() -> TestResult
 }
 
 #[test]
+fn qr_rejects_match_loop_modifiers_g_and_c() -> TestResult {
+    // `qr//` compiles a pattern without running a match loop, so Perl
+    // rejects the match-loop letters `g` and `c` there ("Unknown regexp
+    // modifier") even though `m//` and the bare `/.../` form accept them —
+    // including inside a mixed tail after a doubled form (`aag`). A
+    // validator that shares the full `m//` set across the family silently
+    // accepts source `perl` refuses to compile (#14980).
+    for (source, letter) in [
+        (r#"my $re = qr/needle/g;"#, 'g'),
+        (r#"my $re = qr/needle/c;"#, 'c'),
+        (r#"my $re = qr/needle/aag;"#, 'g'),
+    ] {
+        assert_invalid_modifier_is_diagnosed_within_operator(
+            source,
+            source.trim_start_matches(r#"my $re = "#).trim_end_matches(';'),
+            &format!("Invalid match modifier '{letter}'"),
+        )?;
+    }
+    Ok(())
+}
+
+#[test]
 fn match_and_qr_legal_modifier_set_is_accepted() -> TestResult {
-    // The legal match-family modifiers are `m s i x p o d u a l n g c`
-    // plus the doubled `xx` and `aa` forms. Each one must round-trip
-    // through the parser without a diagnostic. A mutation that drops a
-    // letter, swaps the doubled form for the single, or accepts an `e`
-    // here fails at least one case.
+    // The legal modifiers for `m//` and the bare `/.../` form are
+    // `m s i x p o d u a l n g c` plus the doubled `xx` and `aa` forms;
+    // `qr//` takes the same set minus the match-loop letters `g` and `c`.
+    // Each case must round-trip through the parser without a diagnostic.
+    // A mutation that drops a letter, swaps the doubled form for the
+    // single, or accepts an `e` here fails at least one case.
     for (source, expected_modifiers) in [
         (r#"print if /needle/m;"#, "m"),
         (r#"print if /needle/s;"#, "s"),
@@ -822,6 +845,9 @@ fn match_and_qr_legal_modifier_set_is_accepted() -> TestResult {
         (r#"my $re = qr/needle/aa;"#, "aa"),
         // Combination: `gimsx` is the ordinary author-friendly set.
         (r#"print while /needle/gimsx;"#, "gimsx"),
+        // `qr//` keeps the non-loop combination letters: every letter
+        // here must stay valid without `g`/`c`.
+        (r#"my $re = qr/needle/msixpon;"#, "msixpon"),
     ] {
         assert_operators(
             source,
@@ -852,11 +878,12 @@ fn match_modifier_doubled_form_followed_by_single_is_accepted() -> TestResult {
     // `xx` and `aa` are doubled forms; after them, the ordinary single
     // modifiers must continue to be accepted. A validator that greedily
     // consumed the entire modifier tail after the doubled pair would
-    // either reject these or keep only the doubled letter.
+    // either reject these or keep only the doubled letter. The `qr//`
+    // cases stay within the non-loop set (`g` is invalid there).
     for (source, expected_modifiers) in [
         (r#"print if /needle/xxg;"#, "xxg"),
         (r#"print if /needle/xxig;"#, "xxig"),
-        (r#"my $re = qr/needle/aag;"#, "aag"),
+        (r#"my $re = qr/needle/aan;"#, "aan"),
         (r#"print while /needle/aaimsx;"#, "aaimsx"),
     ] {
         assert_operators(

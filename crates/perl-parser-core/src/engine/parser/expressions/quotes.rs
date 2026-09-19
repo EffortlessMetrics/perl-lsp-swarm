@@ -603,10 +603,25 @@ mod modifier_tests {
     }
 
     #[test]
-    fn qr_with_global_modifier_g() {
-        // /g should be accepted for qr// (and m//).
-        let result = parse("qr/pattern/g");
-        assert!(result.diagnostics.is_empty(), "expected no errors, got: {:?}", result.diagnostics);
+    fn qr_rejects_match_loop_modifier_g_while_m_accepts_it() {
+        // `qr//` compiles a pattern without running a match loop, so Perl
+        // rejects `g` there ("Unknown regexp modifier") while `m//` accepts
+        // it (#14980).
+        let qr_result = parse("qr/pattern/g");
+        let diagnostic_messages: Vec<String> =
+            qr_result.diagnostics.iter().map(|d| d.to_string()).collect();
+        assert!(
+            diagnostic_messages.iter().any(|m| m.contains("Invalid match modifier 'g'")),
+            "expected a typed 'Invalid match modifier' diagnostic for qr//g, got: {:?}",
+            diagnostic_messages
+        );
+
+        let m_result = parse("m/pattern/g");
+        assert!(
+            m_result.diagnostics.is_empty(),
+            "expected /g to stay valid on m//, got: {:?}",
+            m_result.diagnostics
+        );
     }
 
     #[test]
