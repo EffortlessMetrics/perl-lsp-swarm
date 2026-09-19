@@ -15,7 +15,7 @@ static REPO_STATE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[test]
 fn check_passes_over_the_canonical_manifest() -> Result<()> {
-    let _repo_state = REPO_STATE_LOCK.lock().expect("repo state lock poisoned");
+    let _repo_state = REPO_STATE_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     // The summary population is asserted against the manifest's own validated
     // `declared_row_count`, never a hand-copied literal.
     let manifest_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -55,7 +55,7 @@ fn check_passes_over_the_canonical_manifest() -> Result<()> {
 
 #[test]
 fn check_is_idempotent_across_second_run() -> Result<()> {
-    let _repo_state = REPO_STATE_LOCK.lock().expect("repo state lock poisoned");
+    let _repo_state = REPO_STATE_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     for _ in 0..2 {
         let output =
             cargo_bin_cmd!("xtask").args(["check-reachability-fixture-manifest"]).output()?;

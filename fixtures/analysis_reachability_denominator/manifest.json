@@ -195,7 +195,7 @@
       "fixture": {
         "id": "local-flow-terminals",
         "path": "crates/perl-corpus/fixtures/reachability_denominator/local_flow_terminals.pl",
-        "digest_sha256_lf": "0bcdb9b8072370124bb7e5c65bd40d8c2b230418f32b9cfe9813928964e7b8e5",
+        "digest_sha256_lf": "250d356bc10d2bb78a425ca40df15c29773d1a3cf0dc2e46bd740f10f05983cb",
         "role": "positive"
       },
       "subjects": [
@@ -249,7 +249,7 @@
       "fixture": {
         "id": "local-flow-terminals",
         "path": "crates/perl-corpus/fixtures/reachability_denominator/local_flow_terminals.pl",
-        "digest_sha256_lf": "0bcdb9b8072370124bb7e5c65bd40d8c2b230418f32b9cfe9813928964e7b8e5",
+        "digest_sha256_lf": "250d356bc10d2bb78a425ca40df15c29773d1a3cf0dc2e46bd740f10f05983cb",
         "role": "control_opposite"
       },
       "subjects": [
@@ -290,7 +290,7 @@
       "fixture": {
         "id": "local-flow-terminals",
         "path": "crates/perl-corpus/fixtures/reachability_denominator/local_flow_terminals.pl",
-        "digest_sha256_lf": "0bcdb9b8072370124bb7e5c65bd40d8c2b230418f32b9cfe9813928964e7b8e5",
+        "digest_sha256_lf": "250d356bc10d2bb78a425ca40df15c29773d1a3cf0dc2e46bd740f10f05983cb",
         "role": "positive"
       },
       "subjects": [
@@ -341,7 +341,7 @@
       "fixture": {
         "id": "local-flow-terminals",
         "path": "crates/perl-corpus/fixtures/reachability_denominator/local_flow_terminals.pl",
-        "digest_sha256_lf": "0bcdb9b8072370124bb7e5c65bd40d8c2b230418f32b9cfe9813928964e7b8e5",
+        "digest_sha256_lf": "250d356bc10d2bb78a425ca40df15c29773d1a3cf0dc2e46bd740f10f05983cb",
         "role": "control_near_neighbour"
       },
       "subjects": [
@@ -663,7 +663,7 @@
       "fixture": {
         "id": "local-flow-terminals",
         "path": "crates/perl-corpus/fixtures/reachability_denominator/local_flow_terminals.pl",
-        "digest_sha256_lf": "0bcdb9b8072370124bb7e5c65bd40d8c2b230418f32b9cfe9813928964e7b8e5",
+        "digest_sha256_lf": "250d356bc10d2bb78a425ca40df15c29773d1a3cf0dc2e46bd740f10f05983cb",
         "role": "shared_canonical"
       },
       "subjects": [
@@ -716,7 +716,7 @@
       "fixture": {
         "id": "local-flow-terminals",
         "path": "crates/perl-corpus/fixtures/reachability_denominator/local_flow_terminals.pl",
-        "digest_sha256_lf": "0bcdb9b8072370124bb7e5c65bd40d8c2b230418f32b9cfe9813928964e7b8e5",
+        "digest_sha256_lf": "250d356bc10d2bb78a425ca40df15c29773d1a3cf0dc2e46bd740f10f05983cb",
         "role": "positive"
       },
       "subjects": [
@@ -767,7 +767,7 @@
       "fixture": {
         "id": "local-flow-terminals",
         "path": "crates/perl-corpus/fixtures/reachability_denominator/local_flow_terminals.pl",
-        "digest_sha256_lf": "0bcdb9b8072370124bb7e5c65bd40d8c2b230418f32b9cfe9813928964e7b8e5",
+        "digest_sha256_lf": "250d356bc10d2bb78a425ca40df15c29773d1a3cf0dc2e46bd740f10f05983cb",
         "role": "positive"
       },
       "subjects": [
@@ -3957,7 +3957,7 @@
       "fixture": {
         "id": "local-flow-terminals",
         "path": "crates/perl-corpus/fixtures/reachability_denominator/local_flow_terminals.pl",
-        "digest_sha256_lf": "0bcdb9b8072370124bb7e5c65bd40d8c2b230418f32b9cfe9813928964e7b8e5",
+        "digest_sha256_lf": "250d356bc10d2bb78a425ca40df15c29773d1a3cf0dc2e46bd740f10f05983cb",
         "role": "shared_canonical"
       },
       "subjects": [

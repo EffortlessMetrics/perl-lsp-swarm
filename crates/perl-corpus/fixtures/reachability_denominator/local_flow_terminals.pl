@@ -17,7 +17,7 @@ my $result_unknown = 7;
 
 sub after_exit_never_runs {
     # denom-target:after-exit
-    exit 0;
+    CORE::exit(0);
     print "unreachable after exit\n";
 }
 
@@ -78,7 +78,7 @@ sub exact_process_transfer {
     return 0;
 }
 
-exact_process_transfer() unless caller();
+exact_process_transfer($^X, '-e', 'exit 0') unless caller();
 
 LABEL: foreach my $item (1 .. 3) {
     next LABEL if $item == 2;
