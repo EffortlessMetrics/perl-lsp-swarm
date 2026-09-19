@@ -129,6 +129,9 @@ pub mod eval;
 pub mod parse_origin;
 /// Cross-platform utilities for Perl path resolution and environment setup (from perl-dap-platform).
 pub mod platform;
+/// Owned-subprocess-tree termination convention shared by every bounded
+/// owned-subprocess site (#15538).
+mod process_tree;
 /// Security validation and hardening (from perl-dap-security).
 pub mod security;
 /// Shell-specific helpers for Perl DAP process launch (from perl-dap-shell).

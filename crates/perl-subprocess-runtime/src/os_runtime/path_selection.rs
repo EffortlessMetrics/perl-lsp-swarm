@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Priority score for a resolved candidate path: `.exe` beats `.com` beats
 /// `.cmd` beats `.bat` beats any other extension beats no extension.
@@ -7,11 +7,10 @@ use std::path::Path;
 /// exercised on Linux CI without requiring a Windows runner.  The extension
 /// values are Windows-specific, but the comparison logic is pure Rust.
 ///
-/// On non-Windows builds the function is not called from production code
-/// (only from tests) — the `allow(dead_code)` suppresses the resulting lint.
-#[cfg_attr(not(windows), allow(dead_code))]
-pub(crate) fn candidate_priority(candidate: &str) -> u8 {
-    match Path::new(candidate)
+/// The non-Windows availability probe also uses this ordering through the selector.
+pub(crate) fn candidate_priority<T: AsRef<Path>>(candidate: T) -> u8 {
+    match candidate
+        .as_ref()
         .extension()
         .and_then(|ext| ext.to_str())
         .map(|ext| ext.to_ascii_lowercase())
@@ -49,21 +48,23 @@ pub(crate) fn candidate_priority(candidate: &str) -> u8 {
 /// Returns `None` when every candidate is filtered out or when `candidates` is
 /// empty (tool genuinely not on PATH; better than running a planted binary).
 ///
-/// On non-Windows builds the function is not called from production code
-/// (only from tests) — the `allow(dead_code)` suppresses the resulting lint.
-#[cfg_attr(not(windows), allow(dead_code))]
-pub(crate) fn select_path_candidate(candidates: &[&str], cwd: &Path) -> Option<String> {
+/// Native paths are retained so non-UTF-8 PATH directories remain usable on Unix.
+pub(crate) fn select_path_candidate<T: AsRef<Path>>(
+    candidates: &[T],
+    cwd: &Path,
+) -> Option<PathBuf> {
     let cwd_canon = std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
 
     candidates
         .iter()
-        .filter(|&&c| {
+        .filter(|c| {
+            let c = (*c).as_ref();
             // Layer 1: reject any candidate that is not absolute.  A relative
             // path (e.g. produced by an empty `;;` PATH entry via `dir.join`)
             // would silently resolve against the CWD and is indistinguishable
             // from a planted binary.  This is the primary fix for the
             // empty-PATH-entry bypass.
-            if !Path::new(c).is_absolute() {
+            if !c.is_absolute() {
                 return false;
             }
             // Layer 2: reject if the parent directory canonicalizes to the CWD.
@@ -71,11 +72,11 @@ pub(crate) fn select_path_candidate(candidates: &[&str], cwd: &Path) -> Option<S
             // to the raw path for comparison — the candidate will not have passed
             // `.is_file()` in `resolve_windows_program` anyway, so this path is
             // only reachable in unit tests with synthetic candidate lists.
-            let candidate_parent = Path::new(c).parent().unwrap_or(Path::new(""));
+            let candidate_parent = c.parent().unwrap_or(Path::new(""));
             let parent_canon = std::fs::canonicalize(candidate_parent)
                 .unwrap_or_else(|_| candidate_parent.to_path_buf());
             parent_canon != cwd_canon
         })
-        .max_by_key(|&&c| candidate_priority(c))
-        .map(|&s| s.to_string())
+        .max_by_key(|c| candidate_priority((*c).as_ref()))
+        .map(|c| (*c).as_ref().to_path_buf())
 }
