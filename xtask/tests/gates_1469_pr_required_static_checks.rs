@@ -311,13 +311,13 @@ fn ci_workflow_runs_unit_routed_full_in_pr_smoke() -> Result<(), Box<dyn std::er
         "pr-smoke job timeout must leave room for the inner watchdog and always-run receipt steps"
     );
     assert!(
-        pr_smoke_job.contains("PR-fast timeout policy: GitHub job 75m, outer runner watchdog 45m"),
+        pr_smoke_job.contains("PR-fast timeout policy: GitHub job 75m, outer runner watchdog 60m"),
         "pr-smoke log message must document the active watchdog policy"
     );
     // The watchdog invocation is asserted by its durable parts rather than as one
     // literal line: the binary path spelling is incidental (it moved from
     // `./target/debug/xtask` to `"$CARGO_TARGET_DIR/debug/xtask"` in #4912), while the
-    // signal, grace period, 2700s ceiling, tier, base, and --receipt are the contract.
+    // signal, grace period, 3600s ceiling, tier, base, and --receipt are the contract.
     let watchdog_line = pr_smoke_job
         .lines()
         .map(str::trim)
@@ -327,7 +327,7 @@ fn ci_workflow_runs_unit_routed_full_in_pr_smoke() -> Result<(), Box<dyn std::er
     for required in [
         "--signal=TERM",
         "--kill-after=60s",
-        "2700s",
+        "3600s",
         "/debug/xtask",
         "gates --tier pr-fast",
         "--subject target/receipts/ci-subject.json",
