@@ -414,14 +414,6 @@
       "rule": "expression_in_run_source"
     },
     {
-      "evidence": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
-      "fingerprint": "ad7bc12604daef0871524bb5ca0c115ba195af4d8ef1f5751fd8d238716602a9",
-      "line": 30,
-      "message": "write-capable workflow checkout must set persist-credentials: false",
-      "path": ".github/workflows/droid.yml",
-      "rule": "checkout_persists_credentials_on_write_surface"
-    },
-    {
       "evidence": "echo \"::warning::Primary runner (${{ needs.route-rust-small.outputs.target }}) failed preflight \u2014 falling back to GitHub-hosted. Check runner disk and em-ci-rust image before next run.\"",
       "fingerprint": "01d4dd93e7c75e33b2cb7d4d39d013fc5cc63559bbe4a76b2ab90f1214378a05",
       "line": 595,
