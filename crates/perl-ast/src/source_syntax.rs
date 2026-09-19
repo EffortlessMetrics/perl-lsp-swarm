@@ -2100,10 +2100,10 @@ mod tests {
     }
 
     #[test]
-    fn a_malformed_child_range_is_not_blamed_on_its_segment() {
-        // The segment's own range is wellformed; its expression node's is not.
-        // Reporting `MalformedSegmentRange` would send a reader to the wrong
-        // field, so the child gets its own variant.
+    fn a_child_range_cannot_be_malformed_so_blame_stays_wellformed() {
+        // #8740: a child expression node can no longer carry an inverted
+        // range — `new` normalizes it, so the malformed-child variant is an
+        // unreachable safety net and the segment itself stays wellformed.
         let mut string = interpolated_string();
         let mut broken = interpolation_segment(5, 10);
         broken.payload = SourceSegmentPayload::Interpolation {
@@ -2121,12 +2121,11 @@ mod tests {
 
         let found = string.contradictions();
         assert!(
-            found.contains(&PayloadContradiction::MalformedInterpolationExpressionRange {
+            !found.contains(&PayloadContradiction::MalformedInterpolationExpressionRange {
                 index: 3
             })
         );
         assert!(!found.contains(&PayloadContradiction::MalformedSegmentRange { index: 3 }));
-        assert_eq!(string.proven_segments(), None);
     }
 
     #[test]
@@ -2557,14 +2556,19 @@ mod tests {
     // --- checks added after the third review round ------------------------
 
     #[test]
-    fn an_inverted_range_is_caught_before_any_length_is_taken() {
-        // `SourceLocation`'s constructors reject start > end, but its fields
-        // are public, so a struct literal still produces one — and `len()`
+    fn an_inverted_range_cannot_be_minted_and_normalizes_instead() {
+        // #8740: inverted ranges are no longer representable. `new` is
+        // ordering-correcting, `try_new` fails closed, and the struct-literal
+        // bypass is gone because the fields are private — and `len()`
         // panics on it with "attempt to subtract with overflow".
+        let normalized = SourceLocation::new(10, 1);
+        assert_eq!((normalized.start(), normalized.end()), (1, 10));
+        assert!(SourceLocation::try_new(10, 1).is_err());
+
         let mut string = interpolated_string();
         string.content_range = Some(SourceLocation::new(10, 1));
-        assert!(string.contradictions().contains(&PayloadContradiction::MalformedRange));
-        assert!(string.proven_segments().is_none());
+        assert!(!string.contradictions().contains(&PayloadContradiction::MalformedRange));
+        assert!(string.proven_segments().is_some());
 
         let mut segmented = interpolated_string();
         segmented.segmentation = SourceSegmentation::Exact(vec![SourceSegment {
@@ -2573,15 +2577,14 @@ mod tests {
             payload: SourceSegmentPayload::Literal,
         }]);
         assert!(
-            segmented
+            !segmented
                 .contradictions()
                 .contains(&PayloadContradiction::MalformedSegmentRange { index: 0 })
         );
-        assert!(segmented.proven_segments().is_none());
 
         let mut doc = heredoc(HeredocForm::Bare, PayloadTerminal::Complete);
         doc.terminator_range = Some(SourceLocation::new(17, 14));
-        assert!(doc.contradictions().contains(&PayloadContradiction::MalformedRange));
+        assert!(!doc.contradictions().contains(&PayloadContradiction::MalformedRange));
     }
 
     #[test]
