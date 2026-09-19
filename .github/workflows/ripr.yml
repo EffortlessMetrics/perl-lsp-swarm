@@ -218,6 +218,12 @@ jobs:
       preflight_ok: ${{ steps.preflight.outputs.preflight_ok }}
     env:
       RIPR_VERSION: "0.10.0"
+      # #15498: pin the admission boundary explicitly on every producer lane.
+      # CX53 (28g) and CX43 (16g) both hold the measured 2560-file/14g hosted
+      # pair with headroom; without the pin they silently inherit the CLI's
+      # built-in default (800 in ripr 0.10.0), moving the fail-closed boundary
+      # onto the "capable" lane as soon as routing is restored.
+      RIPR_MAX_DIFF_INDEX_FILES: "2560"
       BASE_REF: ${{ github.base_ref || github.event.merge_group.base_ref || github.event.repository.default_branch }}
       PR_HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || '' }}
       PR_LABELS: ${{ github.event_name == 'pull_request' && join(github.event.pull_request.labels.*.name, ',') || '' }}
@@ -317,6 +323,7 @@ jobs:
             --cpus="14" \
             --memory="28g" \
             -e RIPR_VERSION="$RIPR_VERSION" \
+            -e RIPR_MAX_DIFF_INDEX_FILES="$RIPR_MAX_DIFF_INDEX_FILES" \
             -e BASE_REF="$BASE_REF" \
             -e PR_HEAD_SHA="$PR_HEAD_SHA" \
             -e RIPR_FRESHNESS_HANDOFF=/freshness \
@@ -496,6 +503,9 @@ jobs:
       preflight_ok: ${{ steps.preflight.outputs.preflight_ok }}
     env:
       RIPR_VERSION: "0.10.0"
+      # #15498: pin the admission boundary explicitly on every producer lane
+      # (see ripr-cx53 for the measured 2560-file pairing rationale).
+      RIPR_MAX_DIFF_INDEX_FILES: "2560"
       BASE_REF: ${{ github.base_ref || github.event.merge_group.base_ref || github.event.repository.default_branch }}
       PR_HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || '' }}
       PR_LABELS: ${{ github.event_name == 'pull_request' && join(github.event.pull_request.labels.*.name, ',') || '' }}
@@ -599,6 +609,7 @@ jobs:
             --cpus="8" \
             --memory="16g" \
             -e RIPR_VERSION="$RIPR_VERSION" \
+            -e RIPR_MAX_DIFF_INDEX_FILES="$RIPR_MAX_DIFF_INDEX_FILES" \
             -e BASE_REF="$BASE_REF" \
             -e PR_HEAD_SHA="$PR_HEAD_SHA" \
             -e RIPR_FRESHNESS_HANDOFF=/freshness \

@@ -161,65 +161,16 @@ pub(crate) fn load_adapter_engine_inputs(root: &Path) -> Result<EngineInputs> {
 }
 
 pub(crate) fn complete_adapter_inputs(root: &Path, engine: EngineInputs) -> Result<AdapterInputs> {
-    let ledger_path = root.join(SPECS_LEDGER_PATH);
-    let ledger_bytes = std::fs::read(&ledger_path).with_context(|| {
-        format!("reading the E02 checked disposition ledger {}", ledger_path.display())
-    })?;
-    let digest = sha256_hex(&ledger_bytes);
-    let specs: SpecsLedger = serde_json::from_slice(&ledger_bytes).with_context(|| {
-        format!("parsing the E02 checked disposition ledger {}", ledger_path.display())
-    })?;
-    ensure!(
-        specs.schema == crate::tasks::emacs_train_specs::LEDGER_SCHEMA,
-        "E02 ledger {} declares schema {:?}, expected emacs_train_specs.v1",
-        ledger_path.display(),
-        specs.schema
-    );
-    ensure!(
-        specs.schema_version == 1,
-        "E02 ledger {} declares schema_version {}, expected 1",
-        ledger_path.display(),
-        specs.schema_version
-    );
-    // Structural E02 laws the adapter depends on when trusting a record to
-    // select a profile: no duplicate node records, every record matches a
-    // manifest node's issue, and the ledger covers the manifest denominator.
-    // (Full canonical-byte law enforcement stays owned by the E02 checker.)
-    let mut seen: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
-    for record in &specs.records {
-        ensure!(
-            seen.insert(record.node_id.as_str()),
-            "E02 ledger {} carries duplicate records for node {}",
-            ledger_path.display(),
-            record.node_id
-        );
-        let node = engine.manifest.nodes.iter().find(|node| node.node_id == record.node_id);
-        let node = node.ok_or_else(|| {
-            color_eyre::eyre::eyre!(
-                "E02 ledger {} carries a record for node {} which is not in the manifest",
-                ledger_path.display(),
-                record.node_id
-            )
-        })?;
-        ensure!(
-            node.issue == record.issue,
-            "E02 ledger {} record for node {} declares issue {} but the manifest declares {}",
-            ledger_path.display(),
-            record.node_id,
-            record.issue,
-            node.issue
-        );
-    }
-    for node in &engine.manifest.nodes {
-        ensure!(
-            specs.records.iter().any(|record| record.node_id == node.node_id),
-            "E02 ledger {} does not cover manifest node {} (#{}); the denominator is incomplete",
-            ledger_path.display(),
-            node.node_id,
-            node.issue
-        );
-    }
-    Ok(AdapterInputs { engine, specs, specs_digest: digest })
+    // Coding admission flows from ledger dispositions through
+    // `allowed_profiles_for`, so a stale or hand-edited ledger must never be
+    // able to select a profile by passing a structural read. The adapter
+    // therefore consumes the E02 ledger only through the fail-closed
+    // specs-plane entry, which runs every `check_ledger` law (schema,
+    // programme header, denominator, roles, buildability, provenance,
+    // bindings, canonical bytes, record order) against the same tree's
+    // manifest and returns the digest of the exact validated bytes.
+    let (specs, specs_digest) = crate::tasks::emacs_train_specs::load_checked_ledger(root)?;
+    Ok(AdapterInputs { engine, specs, specs_digest })
 }
 
 #[derive(Debug, Subcommand)]
@@ -2215,21 +2166,58 @@ pub(crate) mod test_support {
                 "governing_issue": 11717,
                 "engine_issue": 11751,
                 "method_authority": "#3983",
-                "consumed_manifest": "emacs_train.v1@fixture"
+                "consumed_manifest": ".spec/10918-emacs-train-graph/train.manifest.json"
             },
             "records": records
         })
     }
 
+    /// Parse the fixture ledger JSON into the typed ledger and write it back
+    /// through the E02 canonical serializer, so fixture bytes satisfy the
+    /// L12 canonical-bytes law the adapter gate now enforces.
+    pub(crate) fn write_canonical_specs_ledger(
+        root: &std::path::Path,
+        ledger: &SpecsLedger,
+    ) -> Result<()> {
+        write_text(
+            root,
+            crate::tasks::emacs_train_specs::DEFAULT_LEDGER_PATH,
+            &ledger.to_canonical_bytes()?,
+        )
+    }
+
+    pub(crate) fn parse_specs_ledger(records: &[Value]) -> Result<SpecsLedger> {
+        Ok(serde_json::from_value(specs_ledger(records))?)
+    }
+
     pub(crate) fn disposition_record(node_id: &str, issue: u64, disposition: &str) -> Value {
-        json!({
+        disposition_record_for(node_id, issue, "implementation", disposition, None)
+    }
+
+    /// A ledger record bound to the manifest node's role and authority. The
+    /// full E02 gate (L02 role match, L09 authority uniqueness, L10
+    /// authority/owner currency) requires records to mirror the manifest node
+    /// they adjudicate; fixture nodes embed per-node authorities, so the
+    /// record carries the same per-node value.
+    pub(crate) fn disposition_record_for(
+        node_id: &str,
+        issue: u64,
+        train_role: &str,
+        disposition: &str,
+        reviewed_reason: Option<&str>,
+    ) -> Value {
+        let mut record = json!({
             "node_id": node_id,
             "issue": issue,
-            "train_role": "implementation",
+            "train_role": train_role,
             "disposition": disposition,
             "disposition_provenance": "manifest",
-            "authority_after": "fixture authority",
-            "spec_owner": "#11717"
-        })
+            "authority_after": format!("fixture authority after {node_id}"),
+            "spec_owner": node_id
+        });
+        if let Some(reason) = reviewed_reason {
+            record["reviewed_reason"] = json!(reason);
+        }
+        record
     }
 }

@@ -840,8 +840,13 @@ fn competing_quote_like_method_imports_invalidate_quickorm_authority()
 }
 
 #[test]
-fn dynamic_receiver_method_import_invalidates_quickorm_authority()
+fn dynamic_receiver_method_import_keeps_prior_generated_fact()
 -> Result<(), Box<dyn std::error::Error>> {
+    // An `$dsl->import(qw(table))` through an unknown receiver is a
+    // competing importer for *future* direct calls; it does not by itself
+    // remove the already-installed qorm_table fact. Authority for the
+    // second `table "second" => sub {}` call has been consumed, so no
+    // second fact is emitted — only the first fact remains.
     let source = r#"
 package User;
 use DBIx::QuickORM type => 'table';
@@ -852,10 +857,40 @@ table "second" => sub {};
 1;
 "#;
 
-    assert!(
-        generated_facts_from_source(source)?.is_empty(),
-        "a parser-backed import through an unknown receiver must consume QuickORM authority"
+    assert_eq!(
+        canonical_names(&generated_facts_from_source(source)?),
+        vec!["User::qorm_table"],
+        "an unknown-receiver import must not invalidate the prior installed fact"
     );
+    Ok(())
+}
+
+#[test]
+fn authority_loss_events_do_not_invalidate_prior_generated_fact()
+-> Result<(), Box<dyn std::error::Error>> {
+    // Receipt for #15472: every authority-loss-only event (later bare
+    // import, ORM-mode import, dynamic import, `no DBIx::QuickORM`,
+    // competing module import of the table builder keyword, competing
+    // method-import call, builder keyword shadow) leaves a previously
+    // installed qorm_table fact in place. Only constructs that
+    // legitimately replace or remove the member invalidate it.
+    let sources = [
+        "package User; use DBIx::QuickORM type => 'table'; table users => sub {}; use DBIx::QuickORM;",
+        "package User; use DBIx::QuickORM type => 'table'; table users => sub {}; use DBIx::QuickORM type => 'orm';",
+        "package User; use DBIx::QuickORM type => 'table'; table users => sub {}; use DBIx::QuickORM type => table();",
+        "package User; use DBIx::QuickORM type => 'table'; table users => sub {}; no DBIx::QuickORM;",
+        "package User; use DBIx::QuickORM type => 'table'; table users => sub {}; use Other::DSL qw(table);",
+        "package User; use DBIx::QuickORM type => 'table'; table users => sub {}; Other::DSL->import(qw(table));",
+        "package User; use DBIx::QuickORM type => 'table'; table users => sub {}; sub table { 1 };",
+    ];
+    for source in sources {
+        let facts = generated_facts_from_source(source)?;
+        assert_eq!(
+            canonical_names(&facts),
+            vec!["User::qorm_table"],
+            "authority-loss-only event must keep the prior fact: {source}"
+        );
+    }
     Ok(())
 }
 
@@ -1060,27 +1095,62 @@ fn nested_builder_does_not_promote_outer_table_call() -> Result<(), Box<dyn std:
 }
 
 #[test]
-fn package_builder_redefinition_invalidates_prior_generated_fact()
+fn package_builder_redefinition_keeps_prior_generated_fact()
 -> Result<(), Box<dyn std::error::Error>> {
+    // A package-local `sub table { 1 }` shadows the builder keyword for any
+    // *future* direct calls; it does not by itself remove or redefine the
+    // qorm_table member already installed by a successful build. The
+    // existing fact remains source-backed until something explicitly
+    // overrides qorm_table itself.
     let facts = generated_facts_from_source(
         "package User; use DBIx::QuickORM type => 'table'; table users => sub {}; sub table { 1 };",
+    )?;
+    assert_eq!(canonical_names(&facts), vec!["User::qorm_table"]);
+    Ok(())
+}
+
+#[test]
+fn explicit_qorm_table_redefinition_invalidates_prior_generated_fact()
+-> Result<(), Box<dyn std::error::Error>> {
+    // Unlike a `sub table {}` builder shadow, a literal local `sub
+    // qorm_table {}` replaces the installed generated member and must
+    // invalidate the prior fact.
+    let facts = generated_facts_from_source(
+        "package User; use DBIx::QuickORM type => 'table'; table users => sub {}; sub qorm_table { 1 };",
     )?;
     assert!(facts.is_empty());
     Ok(())
 }
 
 #[test]
-fn dynamic_reconfiguration_invalidates_prior_generated_fact()
+fn dynamic_reconfiguration_keeps_prior_generated_fact() -> Result<(), Box<dyn std::error::Error>> {
+    // A subsequent dynamic reconfiguration (unknown option value) drops
+    // QuickORM's builder authority for any later direct call but does not
+    // by itself remove the qorm_table fact that was already installed by
+    // a successful build. After the second build attempt finds no
+    // authority, only the first fact remains.
+    let source = "package User; use DBIx::QuickORM type => 'table'; table 'first' => sub {}; use DBIx::QuickORM type => table(); table 'second' => sub {};";
+    assert_eq!(
+        canonical_names(&generated_facts_from_source(source)?),
+        vec!["User::qorm_table"],
+        "dynamic QuickORM reconfiguration must leave the already-installed fact alone"
+    );
+    Ok(())
+}
+
+#[test]
+fn second_build_with_non_direct_body_still_invalidates_prior_generated_fact()
 -> Result<(), Box<dyn std::error::Error>> {
-    for source in [
-        "package User; use DBIx::QuickORM type => 'table'; table 'first' => sub {}; use DBIx::QuickORM type => table(); table 'second' => sub {};",
-        "package User; use DBIx::QuickORM type => 'table'; table 'first' => sub {}; use DBIx::QuickORM type => 'table'; table 'second' => make_builder(sub {});",
-    ] {
-        assert!(
-            generated_facts_from_source(source)?.is_empty(),
-            "dynamic QuickORM reconfiguration must not retain a stale qorm_table fact"
-        );
-    }
+    // Companion to dynamic_reconfiguration_keeps_prior_generated_fact:
+    // when authority is re-established and the *next* direct build is
+    // observed but its body is not a direct `sub {}`/`HashLiteral`,
+    // QuickORM's documented second-build semantics still invalidate the
+    // previous fact even though no fresh fact can be emitted.
+    let source = "package User; use DBIx::QuickORM type => 'table'; table 'first' => sub {}; use DBIx::QuickORM type => 'table'; table 'second' => make_builder(sub {});";
+    assert!(
+        generated_facts_from_source(source)?.is_empty(),
+        "a second non-direct build under re-established authority must invalidate the prior fact"
+    );
     Ok(())
 }
 
