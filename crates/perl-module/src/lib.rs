@@ -20,6 +20,7 @@ mod path;
 mod provenance;
 mod reference;
 mod rename;
+mod request;
 mod resolution;
 mod token;
 mod token_core;

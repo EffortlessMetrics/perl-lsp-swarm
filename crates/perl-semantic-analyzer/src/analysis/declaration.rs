@@ -95,7 +95,7 @@ impl<'a> DeclarationProvider<'a> {
     ///
     /// # Examples
     /// ```rust,ignore
-    /// use perl_parser::declaration::DeclarationProvider;
+    /// use perl_semantic_analyzer::analysis::declaration::DeclarationProvider;
     /// use perl_parser::ast::Node;
     /// use std::sync::Arc;
     ///
@@ -136,7 +136,7 @@ impl<'a> DeclarationProvider<'a> {
     ///
     /// # Examples
     /// ```rust,ignore
-    /// use perl_parser::declaration::{DeclarationProvider, ParentMap};
+    /// use perl_semantic_analyzer::analysis::declaration::{DeclarationProvider, ParentMap};
     /// use perl_parser::ast::Node;
     /// use std::sync::Arc;
     ///
@@ -186,7 +186,7 @@ impl<'a> DeclarationProvider<'a> {
     ///
     /// # Examples
     /// ```rust,ignore
-    /// use perl_parser::declaration::DeclarationProvider;
+    /// use perl_semantic_analyzer::analysis::declaration::DeclarationProvider;
     /// use perl_parser::ast::Node;
     /// use std::sync::Arc;
     ///
@@ -272,7 +272,7 @@ impl<'a> DeclarationProvider<'a> {
     ///
     /// # Examples
     /// ```rust,ignore
-    /// use perl_parser::declaration::{DeclarationProvider, ParentMap};
+    /// use perl_semantic_analyzer::analysis::declaration::{DeclarationProvider, ParentMap};
     /// use perl_parser::ast::Node;
     ///
     /// let ast = Node::new_root();
@@ -737,6 +737,8 @@ impl<'a> DeclarationProvider<'a> {
 
         match &parent.kind {
             NodeKind::Goto { target, .. } => std::ptr::eq(target.as_ref(), node),
+            // `TargetlessGoto` has no child to be the parent of, so this
+            // helper never identifies it as a goto target.
             _ => false,
         }
     }
@@ -916,7 +918,7 @@ impl<'a> DeclarationProvider<'a> {
             // Typeglob assignment: `*foo = sub { ... }` creates a callable named `foo`.
             // Strip the package qualifier so `*Pkg::foo` matches bare name `foo`.
             NodeKind::Assignment { lhs, rhs, .. } => {
-                if let NodeKind::Typeglob { name: glob_name } = &lhs.kind {
+                if let NodeKind::Typeglob { name: glob_name, .. } = &lhs.kind {
                     let bare = glob_name.rsplit("::").next().unwrap_or(glob_name.as_str());
                     if bare == sub_name && matches!(rhs.kind, NodeKind::Subroutine { .. }) {
                         subs.push(node);
@@ -1386,7 +1388,7 @@ impl<'a> DeclarationProvider<'a> {
     ///
     /// # Examples
     /// ```rust,ignore
-    /// use perl_parser::declaration::DeclarationProvider;
+    /// use perl_semantic_analyzer::analysis::declaration::DeclarationProvider;
     /// use perl_parser::ast::Node;
     /// use std::sync::Arc;
     ///
@@ -1431,7 +1433,7 @@ impl<'a> DeclarationProvider<'a> {
 ///
 /// # Examples
 /// ```rust,ignore
-/// use perl_parser::declaration::symbol_at_cursor;
+/// use perl_semantic_analyzer::analysis::declaration::symbol_at_cursor;
 /// use perl_parser::ast::Node;
 ///
 /// let ast = Node::new_root();
@@ -2145,7 +2147,7 @@ pub fn symbol_at_cursor(ast: &Node, offset: usize, current_pkg: &str) -> Option<
 ///
 /// # Examples
 /// ```rust,ignore
-/// use perl_parser::declaration::current_package_at;
+/// use perl_semantic_analyzer::analysis::declaration::current_package_at;
 /// use perl_parser::ast::Node;
 ///
 /// let ast = Node::new_root();
@@ -2232,7 +2234,7 @@ pub fn current_package_at(ast: &Node, offset: usize) -> &str {
 ///
 /// # Examples
 /// ```rust,ignore
-/// use perl_parser::declaration::find_node_at_offset;
+/// use perl_semantic_analyzer::analysis::declaration::find_node_at_offset;
 /// use perl_parser::ast::Node;
 ///
 /// let ast = Node::new_root();
@@ -2275,7 +2277,7 @@ pub fn find_node_at_offset(node: &Node, offset: usize) -> Option<&Node> {
 ///
 /// # Examples
 /// ```rust,ignore
-/// use perl_parser::declaration::get_node_children;
+/// use perl_semantic_analyzer::analysis::declaration::get_node_children;
 /// use perl_parser::ast::Node;
 ///
 /// let node = Node::new_root();

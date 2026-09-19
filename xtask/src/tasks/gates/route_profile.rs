@@ -68,7 +68,8 @@ fn tier_order(tier: &str) -> (u8, String) {
         "merge_gate" => (2, tier.to_string()),
         "nightly" => (3, tier.to_string()),
         "release" => (4, tier.to_string()),
-        other => (5, other.to_string()),
+        "stack_local" => (5, tier.to_string()),
+        other => (6, other.to_string()),
     }
 }
 
@@ -86,6 +87,9 @@ const EXPANSION_RULES: &[(RequestedProfile, &[&str])] = &[
     (RequestedProfile::PrFast, &["pr_fast"]),
     (RequestedProfile::MergeGate, &["pr_fast", "merge_gate"]),
     (RequestedProfile::Nightly, &["pr_fast", "merge_gate", "nightly"]),
+    // #11229 S1: advisory stack-local increment proof. It shares no gate with
+    // any protected-main profile and is never required for merge readiness.
+    (RequestedProfile::StackLocal, &["stack_local"]),
 ];
 
 // ---------------------------------------------------------------------------
@@ -105,6 +109,11 @@ pub enum RequestedProfile {
     /// resolves typed `Unsupported` — never silently `all`, `merge_gate`, or
     /// tier-string equality.
     Release,
+    /// Advisory stack-local increment proof (#11229 S1). Gates on this tier
+    /// prove one exact parent-head → child-head PR stack only; the expansion
+    /// can never include protected-main tiers and a stack result can never
+    /// satisfy merge readiness.
+    StackLocal,
 }
 
 impl RequestedProfile {
@@ -116,6 +125,7 @@ impl RequestedProfile {
             RequestedProfile::Nightly => "nightly",
             RequestedProfile::All => "all",
             RequestedProfile::Release => "release",
+            RequestedProfile::StackLocal => "stack_local",
         }
     }
 
@@ -130,6 +140,7 @@ impl RequestedProfile {
             "nightly" => Some(RequestedProfile::Nightly),
             "all" => Some(RequestedProfile::All),
             "release" => Some(RequestedProfile::Release),
+            "stack_local" => Some(RequestedProfile::StackLocal),
             _ => None,
         }
     }
@@ -543,6 +554,9 @@ pub fn expand_from_root(
 
 /// Semantic digest over the canonical policy rows: sorted by gate id, so
 /// source reordering cannot move it, while tier/role/quarantine movement does.
+/// `short_circuit` is hashed too (#14409 review): it changes execution (a
+/// failed required gate retires the remaining pr_fast plan), so two policies
+/// that differ only in it must not publish the same identity.
 fn policy_digest(policy: &GatePolicy) -> String {
     let mut rows: Vec<&super::GateDefinition> = policy.gates.iter().collect();
     rows.sort_by(|left, right| left.name.cmp(&right.name));
@@ -555,6 +569,8 @@ fn policy_digest(policy: &GatePolicy) -> String {
         hasher.update([if gate.required { b'r' } else { b'a' }]);
         hasher.update([0x1f]);
         hasher.update([if gate.quarantine { b'q' } else { b'.' }]);
+        hasher.update([0x1f]);
+        hasher.update([if gate.short_circuit { b's' } else { b'.' }]);
         hasher.update([0x1e]);
     }
     hex(&hasher.finalize())
@@ -664,6 +680,7 @@ mod route_profile_spec {
                 role: GatePlanningRole::Static,
                 packages: Vec::new(),
             }),
+            short_circuit: false,
         }
     }
 
