@@ -90,7 +90,8 @@ required = true
 policy_role = "required"
 applicability = "conditional"
 enforcement = "github-ruleset"
-reason = "Live main ruleset (id 16664791) requires all targets to compile before merge; workflow prerequisites control when the job is selected."
+ruleset_integration_id = 15368
+reason = "Live main ruleset (id 16664791) requires all targets to compile before merge, bound to the GitHub Actions integration (check-run read-back on main PR heads observed app.id 15368 for this context); workflow prerequisites control when the job is selected (#15348)."
 
 [[checks]]
 name = "Conflict marker check"
@@ -103,7 +104,8 @@ required = true
 policy_role = "required"
 applicability = "conditional"
 enforcement = "github-ruleset"
-reason = "Live main ruleset (id 16664791) requires the conflict-marker scan job before merge; workflow prerequisites control when the job is selected."
+ruleset_integration_id = 15368
+reason = "Live main ruleset (id 16664791) requires the conflict-marker scan job before merge, bound to the GitHub Actions integration (check-run read-back on main PR heads observed app.id 15368 for this context); workflow prerequisites control when the job is selected (#15348)."
 
 [[checks]]
 name = "validate-title"
@@ -116,7 +118,8 @@ required = true
 policy_role = "required"
 applicability = "always-or-scoped-noop"
 enforcement = "github-ruleset"
-reason = "Live main ruleset (id 16664791) requires PR title validation before merge."
+ruleset_integration_id = 15368
+reason = "Live main ruleset (id 16664791) requires PR title validation before merge, bound to the GitHub Actions integration (check-run read-back on main PR heads observed app.id 15368 for this context) (#15348)."
 
 [[checks]]
 name = "Rust formatting"
