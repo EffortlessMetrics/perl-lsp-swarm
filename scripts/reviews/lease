@@ -134,7 +134,7 @@ case "$SUBCMD" in
         # cannot strand the lock indefinitely. The 30s wait ceiling below
         # is a belt-and-braces bound on the unusual case of a stuck peer.
         lock_path="$path.lock"
-        exec 9>"$lock_path"
+        exec 9>>"$lock_path"
         if ! flock -w 30 9; then
             die_usage "could not acquire flock on $lock_path within 30s (peer acquire still in flight?)"
         fi
@@ -145,7 +145,7 @@ case "$SUBCMD" in
             cur_exp="$(lease_field '.expires_at_epoch // 0')"
             if [[ "$now" -lt "$cur_exp" && "$cur_owner" != "$OWNER" ]]; then
                 echo "REFUSE lease on '$BRANCH' is held by '$cur_owner' until $(iso_of_epoch "$cur_exp") — not '$OWNER'" >&2
-                flock -u 9 || true
+                exec 9>&-
                 exit 1
             fi
         fi
@@ -162,7 +162,7 @@ case "$SUBCMD" in
               acquired_at:$aiso, expires_at:$eiso, last_heartbeat:$aiso,
               acquired_at_epoch:$aep, expires_at_epoch:$eep}' > "$tmp_path"
         mv -f "$tmp_path" "$path"
-        flock -u 9 || true
+        exec 9>&-
         echo "OK lease acquired on '$BRANCH' by '$OWNER' until $expires_iso"
         exit 0
         ;;
