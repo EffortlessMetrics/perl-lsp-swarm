@@ -312,10 +312,10 @@ fn observe_pin_with_session(
             .map(str::to_owned)
             .ok_or("launch fixture has no filename")?;
         if stopped.source_path == "<unknown>"
-            || !PathBuf::from(&stopped.source_path)
+            || PathBuf::from(&stopped.source_path)
                 .file_name()
                 .and_then(|name| name.to_str())
-                .is_some_and(|name| name == expected_name)
+                .is_none_or(|name| name != expected_name)
             || stopped.line == 0
         {
             return Err(format!(
@@ -476,6 +476,7 @@ fn run_pinned_launch_paths_proof(source_perl: &Path) -> Result<(), Box<dyn Error
 
 #[test]
 #[serial(dap_debuggee_environment)]
+#[allow(clippy::print_stderr)]
 fn stop_on_entry_publishes_one_real_frame() -> Result<(), Box<dyn Error>> {
     let Some(perl) = find_configured_or_path_pipe_perl()? else {
         eprintln!("SKIP stop_on_entry_publishes_one_real_frame: Perl unavailable");
