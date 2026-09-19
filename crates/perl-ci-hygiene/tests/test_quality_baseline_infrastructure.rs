@@ -104,23 +104,24 @@ fn test_todo_test_baseline_file_exists_and_contains_zero() -> TestResult {
     Ok(())
 }
 
-/// Test 3: perl-kwalitee (successor to absorbed perl-lsp-feature-policy) has perl-tdd-support.
+/// Test 3: perl-release-readiness (successor to absorbed perl-lsp-feature-policy) has perl-tdd-support.
 #[test]
-fn test_perl_kwalitee_has_tdd_support_dev_dependency() -> TestResult {
-    assert!(cargo_toml_has_dev_dep("perl-kwalitee", "perl-tdd-support")?);
+fn test_perl_release_readiness_has_tdd_support_dev_dependency() -> TestResult {
+    assert!(cargo_toml_has_dev_dep("perl-release-readiness", "perl-tdd-support")?);
     Ok(())
 }
 
-/// Test 4: perl-kwalitee test module opts out of workspace panic deny.
+/// Test 4: perl-release-readiness test module opts out of workspace panic deny.
 #[test]
-fn test_perl_kwalitee_tests_have_allow_clippy_panic() -> TestResult {
-    let lib_rs = workspace_root().join("crates").join("perl-kwalitee").join("src").join("lib.rs");
+fn test_perl_release_readiness_tests_have_allow_clippy_panic() -> TestResult {
+    let lib_rs =
+        workspace_root().join("crates").join("perl-release-readiness").join("src").join("lib.rs");
     let content = fs::read_to_string(lib_rs)?;
     assert!(
         content.contains("#[cfg(test)]")
             && (content.contains("#![allow(clippy::panic)]")
                 || content.contains("#[allow(clippy::panic)]")),
-        "perl-kwalitee src/lib.rs test module needs allow(clippy::panic)"
+        "perl-release-readiness src/lib.rs test module needs allow(clippy::panic)"
     );
     Ok(())
 }

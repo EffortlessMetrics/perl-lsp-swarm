@@ -37,6 +37,12 @@ pub enum CancellationAcknowledgement {
     AlreadySettled,
     /// The plan declared the run non-cancellable.
     NotCancellable,
+    /// A different cancellation reason was already admitted on this run's
+    /// event stream, so acting on this request would contradict that phase.
+    ///
+    /// The already-emitted reason remains in force. Same-reason `cancel` after
+    /// a matching admitted event is still [`Self::Accepted`].
+    ContradictsEmittedReason,
 }
 
 /// The outcome of feeding or closing a run's stdin channel.

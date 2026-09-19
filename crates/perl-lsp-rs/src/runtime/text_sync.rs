@@ -19,11 +19,9 @@ use super::{
 };
 use crate::protocol::invalid_params;
 use crate::state::{DegradationTier, FIRST_ACCEPTED_DOCUMENT_GENERATION, ParsedSnapshot};
-#[cfg(feature = "workspace")]
-use perl_parser::workspace_index::{IndexPhase, IndexState};
 use perl_parser_core::source_file::is_binary_content;
 #[cfg(feature = "workspace")]
-use perl_workspace::workspace_index::{SourceCommit, SourceCommitOutcome};
+use perl_workspace::workspace_index::{IndexPhase, IndexState, SourceCommit, SourceCommitOutcome};
 
 mod document_state;
 mod lifecycle;
@@ -48,6 +46,78 @@ fn uri_tail(uri: &str) -> String {
 }
 
 impl LspServer {
+    /// Reject malformed batches before accepted document or parser state changes.
+    /// Obsolete editor-output streams still stop when the editor reports a change.
+    pub(super) fn prepare_did_change_admission(
+        &self,
+        params: Option<&Value>,
+    ) -> Result<(), JsonRpcError> {
+        let params = params.ok_or_else(|| invalid_params("Missing didChange parameters"))?;
+        perl_lsp_rs_core::protocol::schema::validate_did_change_content_changes(params).map_err(
+            |error| {
+                let change_index = error
+                    .path
+                    .split_once("contentChanges[")
+                    .and_then(|(_, suffix)| suffix.split_once(']'))
+                    .and_then(|(index, _)| index.parse::<usize>().ok());
+                let raw_uri = params.pointer("/textDocument/uri").and_then(Value::as_str);
+                let valid_uri = raw_uri
+                    .map(|uri| self.normalize_uri_key(uri))
+                    .filter(|uri| crate::security::validate_document_uri(uri).is_ok());
+
+                if valid_uri.is_some()
+                    && let Some(uri) = raw_uri
+                {
+                    self.cancel_document_streams_for_change(
+                        uri,
+                        params.pointer("/textDocument/version").and_then(Value::as_i64),
+                        false,
+                    );
+                }
+
+                match (change_index, valid_uri.as_deref()) {
+                    (Some(change_index), Some(uri)) => tracing::error!(
+                        change_index,
+                        error_category = "invalid_content_change",
+                        uri,
+                        "Rejected malformed didChange content change"
+                    ),
+                    (Some(change_index), None) => tracing::error!(
+                        change_index,
+                        error_category = "invalid_content_change",
+                        "Rejected malformed didChange content change"
+                    ),
+                    (None, Some(uri)) => tracing::error!(
+                        error_category = "invalid_content_change",
+                        uri,
+                        "Rejected malformed didChange content change batch"
+                    ),
+                    (None, None) => tracing::error!(
+                        error_category = "invalid_content_change",
+                        "Rejected malformed didChange content change batch"
+                    ),
+                }
+
+                invalid_params(&format!("Invalid didChange parameters: {error}"))
+            },
+        )
+    }
+
+    fn cancel_document_streams_for_change(
+        &self,
+        uri: &str,
+        version: Option<i64>,
+        allow_same_version: bool,
+    ) {
+        for key in Self::uri_key_variants(uri) {
+            if let Some(version) = version.filter(|_| !allow_same_version) {
+                self.stream_sessions().cancel_for_uri_version(&key, version);
+            } else {
+                self.stream_sessions().cancel_for_uri(&key);
+            }
+        }
+    }
+
     /// Whether the dormant eager-incremental-maintenance fast-path
     /// (`incremental_doc`/`incremental_state`) is opted into for this
     /// server. Always `false` when the `incremental` cargo feature is not
@@ -83,6 +153,27 @@ impl LspServer {
     /// cooperatively interrupt the parse.  Pass `None` for the legacy
     /// (non-cancellable) path.
     pub fn handle_did_open_with_cancellation(
+        &self,
+        params: Option<Value>,
+        cancellation_token: Option<Arc<AtomicBool>>,
+    ) -> Result<(), JsonRpcError> {
+        let metadata_uri = Self::text_document_uri_of(params.as_ref());
+        let result = self.handle_did_open_with_cancellation_inner(params, cancellation_token);
+        if let Some(uri) = metadata_uri.filter(|_| result.is_ok()) {
+            self.refresh_metadata_for_document_uri(&uri);
+        }
+        result
+    }
+
+    /// The `textDocument.uri` of a lifecycle notification, if present.
+    ///
+    /// Read before the params are consumed so the metadata refresh can run
+    /// *after* the change is committed and no document lock is held.
+    fn text_document_uri_of(params: Option<&Value>) -> Option<String> {
+        params?.pointer("/textDocument/uri")?.as_str().map(str::to_string)
+    }
+
+    fn handle_did_open_with_cancellation_inner(
         &self,
         params: Option<Value>,
         cancellation_token: Option<Arc<AtomicBool>>,
@@ -301,23 +392,26 @@ impl LspServer {
             // No AST-only cache lookup: the retired AstCache stored only the
             // AST without parse errors, so a hit synthesised Vec::new() --
             // live semantic corruption for recovery-bearing source (#11215).
-            let (ast, errors) = {
+            // The parse runs inside a `RetainedRegexSession` (#7024) so this exact
+            // source keeps its one canonical regex analysis. See `parse_worker`.
+            let (ast, errors, regex_analysis) = {
                 let code_text = crate::util::code_slice(text);
+                let session = perl_parser_core::RetainedRegexSession::begin(code_text);
                 let mut parser = match cancellation_token {
                     Some(token) => Parser::new_with_cancellation(code_text, token),
                     None => Parser::new(code_text),
                 };
                 match parser.parse() {
-                    Ok(ast) => {
+                    Ok(mut ast) => {
+                        let table = session.finish(Some(&mut ast));
                         let errors = parser.errors().to_vec();
-                        let arc_ast = Arc::new(ast);
-                        (Some((*arc_ast).clone()), errors)
+                        (Some(ast), errors, Arc::new(table))
                     }
                     Err(crate::error::ParseError::Cancelled) => {
                         tracing::debug!("Parse cancelled for {} — newer change pending", uri);
                         return Ok(());
                     }
-                    Err(e) => (None, vec![e]),
+                    Err(e) => (None, vec![e], Arc::new(session.finish(None))),
                 }
             };
 
@@ -397,12 +491,10 @@ impl LspServer {
             // starts pending and can only advance through the acceptance and
             // required-effect stages below.
             self.install_active_document_pending(&normalized_uri, uri, &generation, doc_generation);
-            let snapshot = Arc::new(ParsedSnapshot::from_parse_result(
-                doc_generation,
-                text,
-                ast_arc.clone(),
-                errors,
-            ));
+            let snapshot = Arc::new(
+                ParsedSnapshot::from_parse_result(doc_generation, text, ast_arc.clone(), errors)
+                    .with_regex_analysis(regex_analysis),
+            );
             doc_state.publish_parsed_if_current(doc_generation, Arc::clone(&snapshot));
 
             {
@@ -589,7 +681,12 @@ impl LspServer {
         params: Option<Value>,
         cancellation_token: Option<Arc<AtomicBool>>,
     ) -> Result<(), JsonRpcError> {
-        self.handle_did_change_with_version_policy(params, cancellation_token, false)
+        let metadata_uri = Self::text_document_uri_of(params.as_ref());
+        let result = self.handle_did_change_with_version_policy(params, cancellation_token, false);
+        if let Some(uri) = metadata_uri.filter(|_| result.is_ok()) {
+            self.refresh_metadata_for_document_uri(&uri);
+        }
+        result
     }
 
     /// Reconcile `didSave.text` through the normal full-document lifecycle.
@@ -621,6 +718,9 @@ impl LspServer {
         allow_same_version: bool,
     ) -> Result<(), JsonRpcError> {
         if let Some(params) = params {
+            // Direct callers bypass the JSON-RPC dispatcher, so retain the
+            // same admission guard before accepted-state mutation.
+            self.prepare_did_change_admission(Some(&params))?;
             // Sink-owned admission (#8895): same URI policy as didOpen,
             // enforced where the change is applied and judged on the
             // normalized key. Typed InvalidParams belongs to this method, not
@@ -637,21 +737,36 @@ impl LspServer {
                 params.pointer("/textDocument/version").and_then(|v| v.as_i64());
             let incoming_version = incoming_version_i64.and_then(|v| i32::try_from(v).ok());
 
-            // A save replacement can preserve the client's document version while
-            // still replacing the buffer. In that case every stream for the URI
-            // captured stale text, including same-version sessions, and must be
-            // cancelled. Ordinary versioned changes retain the older-only policy.
-            for key in self.uri_key_variants(uri) {
-                if let Some(version) = incoming_version_i64 {
-                    if allow_same_version {
-                        self.stream_sessions().cancel_for_uri(&key);
-                    } else {
-                        self.stream_sessions().cancel_for_uri_version(&key, version);
-                    }
-                } else {
-                    self.stream_sessions().cancel_for_uri(&key);
-                }
-            }
+            // Deserialize the complete change batch before any document cache,
+            // generation, or readiness side effect. A malformed member
+            // must reject the notification as one unit instead of applying a
+            // valid prefix and leaving the document/version partially advanced.
+            let changes = params
+                .get("contentChanges")
+                .and_then(Value::as_array)
+                .ok_or_else(|| invalid_params("Missing required parameter: contentChanges"))?;
+            let lsp_changes = changes
+                .iter()
+                .enumerate()
+                .map(|(i, change)| {
+                    <lsp_types::TextDocumentContentChangeEvent as serde::Deserialize>::deserialize(
+                        change,
+                    )
+                    .map_err(|_| {
+                        tracing::error!(
+                            change_index = i,
+                            uri = %uri,
+                            error_category = "invalid_content_change",
+                            "Rejected malformed textDocument/didChange content change"
+                        );
+                        invalid_params("Malformed textDocument/didChange content change")
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+
+            // Stop output based on the editor's predecessor even if the later
+            // line bound rejects this buffer. Saves also cancel same-version work.
+            self.cancel_document_streams_for_change(uri, incoming_version_i64, allow_same_version);
 
             if let Some(changes) = params["contentChanges"].as_array() {
                 // Phase-1 latency instrumentation (opt-in via PERL_LSP_TIMING).
@@ -674,20 +789,6 @@ impl LspServer {
                 if existing_doc.is_none() && changes.iter().all(|c| c.get("range").is_some()) {
                     tracing::warn!("Ignoring ranged didChange for unopened document {}", uri);
                     return Ok(());
-                }
-
-                // Invalidate the perlcritic violation cache for this file so that
-                // the next diagnostic cycle re-runs perlcritic on the new content.
-                #[cfg(not(target_arch = "wasm32"))]
-                {
-                    let file_path = url::Url::parse(uri).ok().and_then(|u| u.to_file_path().ok());
-                    if let Some(path) = file_path {
-                        let path_str = path.to_string_lossy().to_string();
-                        if let Some(ref mut analyzer) = *self.critic_analyzer.lock() {
-                            analyzer.invalidate_cache(&path_str);
-                        }
-                        self.pull_diagnostics_orchestrator.invalidate_file_cache(&path);
-                    }
                 }
 
                 let mut doc_state =
@@ -720,45 +821,9 @@ impl LspServer {
                         .unwrap_or(DegradationTier::Minimal)
                         == DegradationTier::Minimal;
 
-                // Increment generation counter for this change
-                let next_gen = doc_state.generation.fetch_add(1, Ordering::SeqCst).wrapping_add(1);
-                let target_version = version;
-
-                // Pending readiness for the exact replacement generation,
-                // installed before any parse work for it begins (#11675).
-                // Supersedes the prior generation's readiness by construction.
-                self.install_active_document_pending(
-                    &normalized_uri,
-                    uri,
-                    &doc_state.generation,
-                    next_gen,
-                );
-
                 // Apply incremental changes with UTF-16 aware mapping
                 use crate::textdoc::{Doc, PosEnc, apply_changes};
-                use lsp_types::TextDocumentContentChangeEvent;
-
                 let mut doc = Doc { rope: doc_state.rope.clone(), version };
-
-                // Convert JSON changes to proper LSP types with error logging
-                // (Silent filter_map failures can mask document state corruption)
-                let mut lsp_changes = Vec::with_capacity(changes.len());
-                for (i, c) in changes.iter().enumerate() {
-                    match serde_json::from_value::<TextDocumentContentChangeEvent>(c.clone()) {
-                        Ok(change) => lsp_changes.push(change),
-                        Err(e) => {
-                            tracing::error!(
-                                "Failed to deserialize change {} for {}: {}",
-                                i,
-                                uri,
-                                e
-                            );
-                            tracing::error!("Change JSON: {:?}", c);
-                            // Continue processing other changes; LSP has no server-initiated
-                            // full sync, so logging is critical for diagnosing state issues.
-                        }
-                    }
-                }
 
                 // Build incremental edits from the OLD source BEFORE mutating the rope.
                 // UTF-16 line/char → byte conversion must use the pre-change line index.
@@ -785,6 +850,25 @@ impl LspServer {
                 if let Err(err) = crate::security::validate_buffer_line_lengths(&text) {
                     return Err(invalid_params(&err.to_string()));
                 }
+
+                // The candidate is private until the line bound passes. Keep the
+                // document lock so validation and these effects use the same
+                // predecessor; rejection must preserve its generation/readiness.
+                // No per-file cache invalidation here: the CriticService is
+                // stateless (freshness is keyed by content/state fingerprint),
+                // and the orchestrator's per-file violation cache was removed
+                // with the old analyzer plumbing (#9062).
+
+                let next_gen = doc_state.generation.fetch_add(1, Ordering::SeqCst).wrapping_add(1);
+                let target_version = version;
+
+                // Publish pending readiness before parsing the accepted generation.
+                self.install_active_document_pending(
+                    &normalized_uri,
+                    uri,
+                    &doc_state.generation,
+                    next_gen,
+                );
 
                 // Keep template documents that were intentionally skipped on didOpen
                 // in no-parse mode across subsequent didChange notifications.
@@ -982,54 +1066,56 @@ impl LspServer {
                         doc_state.incremental_state = None;
                     }
                     let generation_handle = doc_state.generation.clone();
-                    documents.insert(normalized_uri.clone(), doc_state);
-                    drop(documents);
-
-                    if timing_on {
-                        use crate::runtime::timing::{TimingSpan, elapsed_ms, emit};
-                        let tail = uri_tail(uri);
-                        let bytes = text.len();
-                        let edits = changes.len();
-                        let ver = i64::from(version);
-                        let total_ms = elapsed_ms(t_did_change_start);
-                        for (name, ms) in [
-                            ("didChange.total", total_ms),
-                            ("didChange.lock_wait", lock_wait_ms),
-                            ("didChange.apply_changes", apply_changes_ms),
-                            ("didChange.rope_to_string", rope_to_string_ms),
-                        ] {
-                            emit(TimingSpan::document(name, ms, tail.clone(), ver, bytes, edits));
-                        }
-                    }
-
                     // Coordinator notification for a NEW pending-parse
-                    // lifecycle (tracks parse storm) is fired from
-                    // INSIDE `enqueue` itself (`Coordinator::on_activated`,
-                    // wired in `install_default_parse_worker`), not from
-                    // here after `enqueue` returns -- calling it from
-                    // this caller left a window where an unusually fast
-                    // worker could dequeue, process, and settle (its
-                    // decrement) before this call ever ran, permanently
-                    // stranding the pending-parse counter (#3618 settle-
-                    // before-increment race). `enqueue`'s return value
-                    // is no longer needed by this caller.
-                    // Pending readiness for the exact target generation,
-                    // installed before the parse job begins (#11675).
-                    self.install_active_document_pending(
-                        &normalized_uri,
-                        uri,
-                        &generation_handle,
-                        next_gen,
-                    );
-                    worker.enqueue(
+                    // lifecycle (tracks parse storm) is fired from INSIDE
+                    // `enqueue` itself. Admission is checked under the
+                    // coordinator state lock, so shutdown cannot win between
+                    // worker selection and queue insertion. If it already
+                    // won, retain `doc_state` and continue through the
+                    // synchronous fallback below rather than stranding the
+                    // text-only mutation.
+                    let enqueue_result = worker.try_enqueue(
                         uri.to_string(),
-                        normalized_uri,
+                        normalized_uri.clone(),
                         next_gen,
-                        generation_handle,
+                        Arc::clone(&generation_handle),
                         Arc::clone(&text_arc),
                     );
+                    if enqueue_result.is_ok() {
+                        documents.insert(normalized_uri.clone(), doc_state);
+                        drop(documents);
 
-                    return Ok(());
+                        if timing_on {
+                            use crate::runtime::timing::{TimingSpan, elapsed_ms, emit};
+                            let tail = uri_tail(uri);
+                            let bytes = text.len();
+                            let edits = changes.len();
+                            let ver = i64::from(version);
+                            let total_ms = elapsed_ms(t_did_change_start);
+                            for (name, ms) in [
+                                ("didChange.total", total_ms),
+                                ("didChange.lock_wait", lock_wait_ms),
+                                ("didChange.apply_changes", apply_changes_ms),
+                                ("didChange.rope_to_string", rope_to_string_ms),
+                            ] {
+                                emit(TimingSpan::document(
+                                    name,
+                                    ms,
+                                    tail.clone(),
+                                    ver,
+                                    bytes,
+                                    edits,
+                                ));
+                            }
+                        }
+
+                        return Ok(());
+                    }
+
+                    tracing::debug!(
+                        "parse worker stopped during didChange admission for {}; using synchronous fallback",
+                        uri
+                    );
                 }
 
                 // ---- Synchronous fallback path (unchanged behavior) ----
@@ -1052,17 +1138,19 @@ impl LspServer {
                 // -- live semantic corruption for recovery-bearing source
                 // (#11215).
                 let t_parse_start = std::time::Instant::now();
-                let (ast, errors) = {
+                // Retained canonical regex analysis for this generation (#7024).
+                let (ast, errors, regex_analysis) = {
                     let code_text = crate::util::code_slice(&text);
+                    let session = perl_parser_core::RetainedRegexSession::begin(code_text);
                     let mut parser = match cancellation_token {
                         Some(token) => Parser::new_with_cancellation(code_text, token),
                         None => Parser::new(code_text),
                     };
                     match parser.parse() {
-                        Ok(ast) => {
+                        Ok(mut ast) => {
+                            let table = session.finish(Some(&mut ast));
                             let errors = parser.errors().to_vec();
-                            let arc_ast = Arc::new(ast);
-                            (Some((*arc_ast).clone()), errors)
+                            (Some(ast), errors, Arc::new(table))
                         }
                         Err(crate::error::ParseError::Cancelled) => {
                             tracing::debug!("Parse cancelled for {} — newer change pending", uri);
@@ -1079,7 +1167,7 @@ impl LspServer {
                             }
                             return Ok(());
                         }
-                        Err(e) => (None, vec![e]),
+                        Err(e) => (None, vec![e], Arc::new(session.finish(None))),
                     }
                 };
                 let full_parse_ms = crate::runtime::timing::elapsed_ms(t_parse_start);
@@ -1097,12 +1185,10 @@ impl LspServer {
                 // are cheap by comparison. Published later, once `doc_state`
                 // has been rebuilt below.
                 let t_parent_map_start = std::time::Instant::now();
-                let snapshot = Arc::new(ParsedSnapshot::from_parse_result(
-                    next_gen,
-                    &text,
-                    ast_arc.clone(),
-                    errors,
-                ));
+                let snapshot = Arc::new(
+                    ParsedSnapshot::from_parse_result(next_gen, &text, ast_arc.clone(), errors)
+                        .with_regex_analysis(regex_analysis),
+                );
                 let parent_map_ms = crate::runtime::timing::elapsed_ms(t_parent_map_start);
 
                 let t_incremental_start = std::time::Instant::now();

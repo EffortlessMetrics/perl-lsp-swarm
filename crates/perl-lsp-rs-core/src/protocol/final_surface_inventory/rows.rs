@@ -700,6 +700,7 @@ fn mutation_rows() -> Vec<SurfaceRow> {
                 "codeActionProvider.documentation[].kind",
                 "codeActionProvider.documentation[].command.title",
                 "codeActionProvider.documentation[].command.command",
+                "codeActionProvider.documentation[].command.tooltip",
                 "codeActionProvider.documentation[].command.arguments[]",
                 "codeActionProvider.documentation[].command.arguments[].provider",
                 "codeActionProvider.documentation[].command.arguments[].receipt_id",
@@ -780,7 +781,7 @@ fn registration_rows() -> Vec<SurfaceRow> {
             ],
             &["AdvertisedFeatures.workspace_symbol", "config runtime_tuning.file_watchers"],
             Disposition::Dynamic,
-            "features.toml#lsp.did_change_watched_files; lsp_registration_tests.rs; RelativePattern watcher globs are the LSP 3.17 watcher surface (#8897) with string-glob fallback (**/*.pl,*.pm,*.t,*.psgi); document-filter relative patterns stay unsupported",
+            "features.toml#lsp.did_change_watched_files; lsp_registration_tests.rs; single catch-all glob (**/*) on the RelativePattern watcher surface with string-glob fallback, handler-side Perl classification (#13308)",
         ),
         registration(
             "reg.perl-inlineCompletion",
@@ -1281,6 +1282,7 @@ fn command_rows() -> Vec<SurfaceRow> {
 #[cfg(test)]
 mod ripr_seam_proof {
     use super::*;
+    use perl_test_must::must_some_with;
 
     #[test]
     fn capability_rows_are_static_capability_fields() {
@@ -1433,9 +1435,10 @@ mod ripr_seam_proof {
                 "compatibility row {} must be unadvertised",
                 row.surface_id
             );
-            let boundary = row.compatibility.as_ref().unwrap_or_else(|| {
-                panic!("compatibility row {} must carry a boundary", row.surface_id)
-            });
+            let boundary = must_some_with(
+                row.compatibility.as_ref(),
+                format!("compatibility row {} must carry a boundary", row.surface_id),
+            );
             assert!(
                 !boundary.subject.is_empty()
                     && !boundary.reason.is_empty()

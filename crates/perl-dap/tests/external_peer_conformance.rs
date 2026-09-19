@@ -161,6 +161,7 @@ fn ok_resp(body: Option<serde_json::Value>) -> PeerResponse {
         success: true,
         command: String::new(),
         message: None,
+        cause: None,
         body,
     }
 }
@@ -1017,6 +1018,7 @@ fn peer_reported_debuggee_failure_is_not_an_adapter_bug() {
                 success: false,
                 command: String::new(),
                 message: Some(DIE.to_string()),
+                cause: None,
                 body: None,
             },
         )],
@@ -1031,11 +1033,18 @@ fn peer_reported_debuggee_failure_is_not_an_adapter_bug() {
     }));
 
     match &err {
-        BackendError::PeerReported { command, message } => {
+        BackendError::PeerReported { command, message, cause } => {
             assert_eq!(command, command::EVALUATE);
             assert_eq!(message, DIE);
+            // `full_caps()` does not advertise the cause vocabulary and this
+            // reply carries none, so the causeless classification stands (#14582).
+            assert_eq!(*cause, None);
         }
-        other => panic!("expected PeerReported from a peer success:false, got {other:?}"),
+        other => {
+            must(Err::<(), _>(format!(
+                "expected PeerReported from a peer success:false, got {other:?}"
+            )));
+        }
     }
 
     assert_ne!(
@@ -1077,6 +1086,7 @@ fn peer_response_echoing_a_different_command_is_a_protocol_violation() {
                 // Crossed: this reply claims to answer a different command.
                 command: command::STACK_TRACE.to_string(),
                 message: Some("no active suspension".to_string()),
+                cause: None,
                 body: None,
             },
         )],
@@ -1097,7 +1107,11 @@ fn peer_response_echoing_a_different_command_is_a_protocol_violation() {
                 "the protocol error names both the request and the echoed command: {detail}"
             );
         }
-        other => panic!("a crossed command must not be reported as an outcome, got {other:?}"),
+        other => {
+            must(Err::<(), _>(format!(
+                "a crossed command must not be reported as an outcome, got {other:?}"
+            )));
+        }
     }
 
     assert_eq!(err.error_class(), ErrorCategory::Protocol);
@@ -1153,6 +1167,7 @@ fn a_rejected_crossed_reply_leaves_the_session_correctly_correlated() {
                     success: false,
                     command: command::STACK_TRACE.to_string(),
                     message: Some("no active suspension".to_string()),
+                    cause: None,
                     body: None,
                 },
             ),

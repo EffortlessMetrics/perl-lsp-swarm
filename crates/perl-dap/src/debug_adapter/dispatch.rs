@@ -197,7 +197,7 @@ dap_request_table! {
     standard all_frontends StepOut "stepOut" => handle_step_out(arguments),
     standard all_frontends Pause "pause" => handle_pause(arguments),
     standard all_frontends Evaluate "evaluate" => handle_evaluate(arguments),
-    extension native_only InlineValues "inlineValues" => handle_inline_values(arguments),
+    extension all_frontends InlineValues "inlineValues" => handle_inline_values(arguments),
     standard all_frontends BreakpointLocations "breakpointLocations" => handle_breakpoint_locations(arguments),
     standard native_only Source "source" => handle_source(arguments),
     standard native_only LoadedSources "loadedSources" => handle_loaded_sources(arguments),
@@ -223,6 +223,45 @@ pub(crate) fn is_supported_dap_command(command: &str) -> bool {
 }
 
 impl DebugAdapter {
+    /// The #9581 secondary-capability floor, applied at the sanctioned request
+    /// seams ([`Self::handle_request`], [`Self::handle_request_mock`], and the
+    /// stdio transport loop in [`super::transport`]).
+    ///
+    /// The floor's authority — which requests are floored, and the exact
+    /// disposition text — lives solely in `backend/capabilities.rs`; this is
+    /// only its application point. It sits *outside* the generated
+    /// `dispatch_request` body deliberately: that body must stay the fixed,
+    /// table-owned shape the protocol-authority gate pins
+    /// (`scripts/ci/dap_authority_common.py`), with no branch reachable around
+    /// the request table.
+    ///
+    /// Returns `Some(refusal)` when the request is floored. The refusal is
+    /// constructed before any handler runs, so the floored path performs no
+    /// debugger I/O, process action, or session/peer state mutation, and a
+    /// missing session can never masquerade as a successful empty result; the
+    /// only adapter change is response framing (one `seq` allocation).
+    pub(super) fn secondary_capability_floor_response(
+        &mut self,
+        request_seq: i64,
+        command: &str,
+        arguments: Option<&Value>,
+    ) -> Option<DapMessage> {
+        if let Some(message) =
+            crate::backend::capabilities::capability_floor_message(command, arguments)
+        {
+            let seq = self.next_seq();
+            return Some(DapMessage::Response {
+                seq,
+                request_seq,
+                success: false,
+                command: command.to_string(),
+                body: None,
+                message: Some(message),
+            });
+        }
+        None
+    }
+
     /// Dispatch a DAP request and return the response message.
     ///
     /// Emits the `initialized` event automatically when an `initialize` request
@@ -235,7 +274,34 @@ impl DebugAdapter {
     ) -> DapMessage {
         tracing::debug!(command, arguments = ?arguments, "DAP request");
 
-        let response = self.dispatch_request(request_seq, command, arguments);
+        // R03 reload-family route (#10102), ahead of the table-owned
+        // dispatch: under the exact preview/test profile the family
+        // request routes to the typed handler; otherwise it falls through
+        // to the ordinary unknown-command response, so the family stays
+        // unavailable without general advertisement and remains absent
+        // from `SUPPORTED_COMMANDS` (the standard-command authority).
+        // Placed beside the #9581 floor rather than in the table body,
+        // which must stay the fixed table-owned shape the
+        // protocol-authority gate pins.
+        if command == crate::reload_family::LOADED_MODULE_RELOAD_REQUEST
+            && self.loaded_module_reload_route_enabled()
+        {
+            return self.handle_loaded_module_reload(self.next_seq(), request_seq, arguments);
+        }
+
+        // #9581 secondary-capability floor, ahead of the table-owned dispatch:
+        // a floored request is refused before any handler can run.
+        let response = match self.secondary_capability_floor_response(
+            request_seq,
+            command,
+            arguments.as_ref(),
+        ) {
+            Some(floored) => floored,
+            None => {
+                self.retire_pending_terminal_before_request(command);
+                self.dispatch_request(request_seq, command, arguments)
+            }
+        };
 
         // Preserve existing direct-call behavior for tests and in-memory usage.
         if command == "initialize" && Self::response_succeeded_for_command(&response, "initialize")
@@ -255,7 +321,27 @@ impl DebugAdapter {
     ) -> DapMessage {
         tracing::debug!(command, arguments = ?arguments, "DAP request (mock)");
 
-        let response = self.dispatch_request(request_seq, command, arguments);
+        // R03 reload-family route (#10102), mirrored from `handle_request`
+        // so the mock surface routes the profiled family identically.
+        if command == crate::reload_family::LOADED_MODULE_RELOAD_REQUEST
+            && self.loaded_module_reload_route_enabled()
+        {
+            return self.handle_loaded_module_reload(self.next_seq(), request_seq, arguments);
+        }
+
+        // #9581 secondary-capability floor, ahead of the table-owned dispatch:
+        // the mock surface must not route floored requests either.
+        let response = match self.secondary_capability_floor_response(
+            request_seq,
+            command,
+            arguments.as_ref(),
+        ) {
+            Some(floored) => floored,
+            None => {
+                self.retire_pending_terminal_before_request(command);
+                self.dispatch_request(request_seq, command, arguments)
+            }
+        };
         if command == "initialize" && Self::response_succeeded_for_command(&response, "initialize")
         {
             self.send_event("initialized", None);
