@@ -191,11 +191,13 @@ fn is_ci_config_file(file: &str) -> bool {
 /// This is intentionally path-based. `ci-scope` must remain a cheap, stable
 /// planner and does not read arbitrary file contents while classifying a diff.
 /// The selected paths are the repository's known portability seams: shell
-/// hooks/scripts, the `perl-ci-hygiene` process-helper seam, URI and
-/// workspace-index code, and explicitly named Windows implementations. The
-/// Unix-only release-artifact integration target is one deliberate exception:
-/// it is included solely for Windows compile admission, while its Bash/chmod
-/// behavior remains Unix-owned and is not claimed as Windows runtime coverage.
+/// hooks/scripts, the `perl-ci-hygiene` process-helper seam, the
+/// `perl-dap` reload module (which owns the bounded debugger availability
+/// probe reported from Windows in #15099), URI and workspace-index code, and
+/// explicitly named Windows implementations. The Unix-only release-artifact
+/// integration target is one deliberate exception: it is included solely for
+/// Windows compile admission, while its Bash/chmod behavior remains
+/// Unix-owned and is not claimed as Windows runtime coverage.
 pub fn requires_windows_runner(files: &[String]) -> bool {
     files.iter().any(|file| {
         let normalized = file.replace('\\', "/").to_ascii_lowercase();
@@ -204,6 +206,15 @@ pub fn requires_windows_runner(files: &[String]) -> bool {
             || (normalized.starts_with("scripts/") && normalized.ends_with(".sh"))
             || normalized == "crates/perl-ci-hygiene/src/process.rs"
             || normalized.starts_with("crates/perl-ci-hygiene/src/process/")
+            // The `perl-dap` reload module owns `probe_with_deadline`
+            // (`runtime.rs`) and the bounded probe decision
+            // (`Usable` / `Refused` / `TimedOut` / `InstrumentFailed`).
+            // It is the seam that was reported hanging on Windows in
+            // #15099 and was bounded on Linux only (#15529); promoting
+            // it here gives the Windows runner a path to actually
+            // exercise the bound and prove it terminates its probe child.
+            || normalized.starts_with("crates/perl-dap/src/reload/")
+            || normalized == "crates/perl-dap/src/reload.rs"
             || normalized.starts_with("crates/perl-uri/")
             || normalized.contains("workspace-index")
             || normalized.contains("workspace_index")
@@ -489,7 +500,23 @@ fn is_xtask_policy_guarded_input(file: &str) -> bool {
             | ".github/workflows/post-merge-status.yml"
             | ".github/workflows/badge-endpoints.yml"
             | ".github/workflows/ripr.yml"
+            // Four xtask integration suites (vim_host_runner_contract,
+            // vim_host_diagnostics_contract, vim_host_freshness_contract,
+            // vim_host_save_format_contract) read this workflow and assert its
+            // trigger surface and step contract. Without this route a PR
+            // editing only the lane skipped every guard written to catch it —
+            // observed on this branch: a trigger change silently broke
+            // `hermetic_host_ci_triggers_on_the_production_formatter_crate`
+            // and CI stayed green because xtask was never in scope.
+            | ".github/workflows/vim-hermetic-host.yml"
     )
+        // The gate policy is the gate owner's source: its declaration order is
+        // execution order (short-circuit focused gates, #13698/#14409), and the
+        // pinning proof `focused_control_plane_gates_precede_unit_routed_full_
+        // and_pin_the_backstop` lives in xtask's bin target. Without this
+        // routing, a gate-policy-only PR would skip both focused owner gates
+        // and the very proof that pins the policy's shape (#14409 review).
+        || file == ".ci/gate-policy.yaml"
         // Publishable-crate manifests: binstall metadata, publish metadata, and
         // version-sync are all xtask-owned assertions over these files.
         || (file.starts_with("crates/") && file.ends_with("/Cargo.toml"))
@@ -1152,6 +1179,9 @@ mod tests {
             "scripts/check-shell.sh",
             "crates/perl-ci-hygiene/src/process.rs",
             "crates/perl-ci-hygiene/src/process/tests.rs",
+            "crates/perl-dap/src/reload/mod.rs",
+            "crates/perl-dap/src/reload/runtime.rs",
+            "crates/perl-dap/src/reload/measurement.rs",
             "crates/perl-uri/src/fs.rs",
             "crates/perl-workspace/src/workspace-index.rs",
             "crates/perl-workspace/src/platform/windows.rs",
@@ -1170,6 +1200,11 @@ mod tests {
             "docs/windows.md".to_string(),
             "scripts/check-shell.py".to_string(),
             "crates/perl-parser/src/lib.rs".to_string(),
+            // perl-dap siblings outside the reload module should not
+            // select a Windows runner; the bounded-probe Windows
+            // coverage claim is scoped to the reload seam.
+            "crates/perl-dap/src/lib.rs".to_string(),
+            "crates/perl-dap/src/debug_adapter/protocol.rs".to_string(),
         ];
         assert!(!requires_windows_runner(&files));
     }
@@ -1265,6 +1300,18 @@ mod tests {
     // skips the guard that exists to catch it.
 
     #[test]
+    fn hermetic_vim_workflow_change_selects_xtask() -> Result<()> {
+        let files = vec![".github/workflows/vim-hermetic-host.yml".to_string()];
+        let metadata = fake_metadata(&[("xtask", "xtask")]);
+        let crates = crates_from_files(&files, &metadata, "/workspace")?;
+        assert!(
+            crates.contains("xtask"),
+            "changing the hermetic Vim lane must route to the contract tests that assert on it"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn release_workflow_change_selects_xtask() -> Result<()> {
         let files = vec![".github/workflows/release.yml".to_string()];
         let metadata = fake_metadata(&[("xtask", "xtask")]);
@@ -1290,6 +1337,24 @@ mod tests {
                 "changing {workflow} must route to the xtask contract that reads it"
             );
         }
+        Ok(())
+    }
+
+    /// A gate-policy-only diff must select xtask (#14409 review of #13698):
+    /// the focused owner gates are `rust_package_scoped` on xtask, and the
+    /// pinning proof for the policy's declaration order/commands lives in the
+    /// xtask bin target. Without this routing, gate-policy drift would bypass
+    /// both on exactly the PRs that move the policy.
+    #[test]
+    fn gate_policy_change_selects_xtask() -> Result<()> {
+        let files = vec![".ci/gate-policy.yaml".to_string()];
+        let metadata = fake_metadata(&[("xtask", "xtask")]);
+        let crates = crates_from_files(&files, &metadata, "/workspace")?;
+        assert!(
+            crates.contains("xtask"),
+            "changing .ci/gate-policy.yaml must route to the gate owner whose \
+             pinning proof asserts on it"
+        );
         Ok(())
     }
 
