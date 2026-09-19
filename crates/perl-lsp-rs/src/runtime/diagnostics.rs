@@ -189,7 +189,11 @@ impl PullDiagnosticsOrchestrator {
     }
 
     /// Build context from LspServer state.
-    pub fn build_context(&self, server: &LspServer, uri: &str) -> PullDiagnosticsContext {
+    pub fn build_context(
+        &self,
+        server: &LspServer,
+        uri: &str,
+    ) -> Result<PullDiagnosticsContext, crate::protocol::JsonRpcError> {
         let project_version = project_version_for_doc(server, uri);
         // Get workspace root for this document's containing folder (multi-root aware).
         // Falls back to the global root_path when no specific folder matches.
@@ -282,7 +286,7 @@ impl PullDiagnosticsOrchestrator {
 
         // Get client capabilities
         let markup_message_support = server.client_capabilities.lock().markup_message_support;
-        let position_encoding = server.client_capabilities.lock().position_encoding;
+        let position_encoding = server.position_encoding_for_coordinates()?;
 
         // Wait for index build, then sample per-document staleness before wiring
         // workspace semantic queries or dead-code analysis into pull diagnostics
@@ -312,7 +316,7 @@ impl PullDiagnosticsOrchestrator {
         let facts_generation: Option<u64> = None;
 
         // Build context
-        PullDiagnosticsContext {
+        Ok(PullDiagnosticsContext {
             perlcritic_enabled,
             perlcritic_severity: perlcritic_severity.into(),
             perlcritic_profile: profile,
@@ -332,14 +336,20 @@ impl PullDiagnosticsOrchestrator {
             accepted_state_currentness,
             projection: DiagnosticProjectionFragment {
                 position_encoding: match position_encoding {
-                    crate::textdoc::PosEnc::Utf8 => PullPositionEncoding::Utf8,
-                    crate::textdoc::PosEnc::Utf16 => PullPositionEncoding::Utf16,
+                    perl_position_tracking::PositionEncoding::Utf8 => PullPositionEncoding::Utf8,
+                    perl_position_tracking::PositionEncoding::Utf16 => PullPositionEncoding::Utf16,
+                    _ => {
+                        return Err(crate::protocol::JsonRpcError::new(
+                            crate::protocol::INVALID_REQUEST,
+                            "active position encoding is unsupported",
+                        ));
+                    }
                 },
                 markup_messages: markup_message_support,
             },
             #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
             workspace_index,
-        }
+        })
     }
 
     /// No-op stub for WASM targets.
@@ -452,6 +462,10 @@ impl LspServer {
                     Arc::clone(&doc.generation),
                     doc.generation.load(Ordering::SeqCst),
                     self.workspace_identity_generation.load(Ordering::SeqCst),
+                    // Canonical regex analysis retained for this same snapshot
+                    // (#7024). Snapshotted with the AST so the two cannot come
+                    // from different generations.
+                    parsed.regex_analysis().cloned(),
                 ))
             })
             // lock is released here
@@ -467,6 +481,7 @@ impl LspServer {
                 generation,
                 gen_at_snapshot,
                 workspace_gen_at_snapshot,
+                regex_analysis,
             )| {
                 (
                     ast_opt,
@@ -479,6 +494,7 @@ impl LspServer {
                     gen_at_snapshot,
                     workspace_gen_at_snapshot,
                     project_config_generation_for_doc(self, &normalized_uri),
+                    regex_analysis,
                 )
             },
         );
@@ -494,6 +510,7 @@ impl LspServer {
             gen_at_snapshot,
             workspace_gen_at_snapshot,
             config_generation_at_snapshot,
+            regex_analysis,
         )) = snapshot
         else {
             return;
@@ -525,7 +542,10 @@ impl LspServer {
             // `resolve_use_lib_paths_from_source_at_offset` instead of the whole-file
             // scan, ensuring `no lib 'lib'` strips the path before `use GoneModule` is
             // checked.
-            let provider = DiagnosticsProvider::new();
+            let provider = match regex_analysis.clone() {
+                Some(table) => DiagnosticsProvider::new().with_regex_analysis(table),
+                None => DiagnosticsProvider::new(),
+            };
             let resolver = |module: &str, use_site_offset: usize| {
                 self.resolve_module_to_path_with_doc_at_offset(
                     module,
@@ -804,8 +824,12 @@ impl LspServer {
                 })
                 .collect()
         } else {
-            // No AST available (parse failed completely), just report parse errors
-            parse_errors
+            // No AST available (parse failed completely), so the full pipeline cannot
+            // run. Parse errors are not the whole account though: the snapshot still
+            // carries the table `finish(None)` retained, and with the legacy scan
+            // suppressed those are the only regex findings left (#7024). They are
+            // appended after this map.
+            let mut fallback: Vec<Value> = parse_errors
                 .iter()
                 .map(|e| {
                     let base_message = parse_error_base_message(e);
@@ -835,7 +859,14 @@ impl LspServer {
                         json!(message),
                     )
                 })
-                .collect()
+                .collect();
+            fallback.extend(Self::canonical_regex_items(
+                regex_analysis.as_deref(),
+                &text,
+                &line_starts,
+                false,
+            ));
+            fallback
         };
 
         tracing::debug!(
@@ -905,45 +936,130 @@ impl LspServer {
     /// publishing this still produces an empty `publishDiagnostics` payload,
     /// which is how LSP signals "the parse cleared". This is what makes the
     /// `syntax_only_clears_when_parse_errors_clear` acceptance case work.
+    /// Canonical regex findings for the paths that publish `parse_errors` alone (#7024).
+    ///
+    /// Two callers publish `parse_errors` alone: syntax-only mode by design, and the
+    /// push fallback because a fatal parse left no AST to run the full pipeline over.
+    /// For both, that was a complete account of regex findings only while the legacy
+    /// per-operator scan emitted them as parser `Advisory` entries. A
+    /// `RetainedRegexSession` suppresses that scan, so without this projection both
+    /// lose those findings outright — measured, a nested quantifier leaves
+    /// `parse_errors` empty where it previously carried one advisory.
+    ///
+    /// Neither caller pays for anything it was avoiding. The retained table comes from
+    /// the parse each has already performed, not from the semantic, critic,
+    /// module-resolution, or dead-code stack that syntax-only exists to skip and that a
+    /// fatal parse cannot feed.
+    ///
+    /// Freshness is checked exactly as the full provider checks it, against the code
+    /// slice rather than the whole document, because the parser never sees past
+    /// `__DATA__` / `__END__`.
+    fn canonical_regex_items(
+        regex_analysis: Option<&perl_parser_core::RegexAnalysisTable>,
+        text: &str,
+        line_starts: &perl_parser::position::LineStartsCache,
+        markup_message_support: bool,
+    ) -> Vec<Value> {
+        let Some(table) =
+            regex_analysis.filter(|table| table.source_matches(perl_lexer::code_slice(text)))
+        else {
+            return Vec::new();
+        };
+        let pos16 = |offset: usize| line_starts.offset_to_position(text, offset);
+        perl_lsp_rs_core::providers::diagnostics::regex_canonical::project_canonical_regex_diagnostics(
+            table,
+        )
+        .into_iter()
+        .map(|d| {
+            let (start_line, start_char) = pos16(d.range.0);
+            let (end_line, end_char) = pos16(d.range.1);
+            let severity = match d.severity {
+                InternalDiagnosticSeverity::Error => 1,
+                InternalDiagnosticSeverity::Warning => 2,
+                InternalDiagnosticSeverity::Information => 3,
+                InternalDiagnosticSeverity::Hint => 4,
+                // Forward-compatible fallback for future variants (#2898)
+                _ => 1,
+            };
+            let msg_val =
+                Self::diagnostic_message_value(&d.message, None, markup_message_support);
+            let mut diag = diagnostic_json(
+                start_line,
+                start_char,
+                end_line,
+                end_char,
+                severity,
+                d.code.as_deref().unwrap_or_default(),
+                "perl-lsp",
+                msg_val,
+            );
+            // Enrichment parity (#1773). These are catalog-backed codes, so the
+            // catalog can answer both fields here exactly as it does on the full
+            // path; a `PL1000` should not lose its documentation link merely
+            // because the server is running in syntax-only mode.
+            if let Some(code_str) = d.code.as_deref() {
+                if let Some(url) =
+                    DiagnosticCode::parse_code(code_str).and_then(|dc| dc.documentation_url())
+                {
+                    diag["codeDescription"] = json!({ "href": url });
+                }
+                let category = DiagnosticCode::parse_code(code_str)
+                    .map_or_else(|| "Other".to_string(), |dc| format!("{:?}", dc.category()));
+                diag["data"] = diagnostic_data(code_str, &category, d.fixable, &[]);
+            }
+            diag
+        })
+        .collect()
+    }
+
     fn syntax_only_lsp_diagnostics(
         parse_errors: &[perl_parser::error::ParseError],
+        regex_analysis: Option<&perl_parser_core::RegexAnalysisTable>,
         text: &str,
         line_starts: &perl_parser::position::LineStartsCache,
         markup_message_support: bool,
     ) -> Vec<Value> {
         let pos16 = |offset: usize| line_starts.offset_to_position(text, offset);
-        parse_errors
-            .iter()
-            .map(|e| {
-                let base_message = parse_error_base_message(e);
-                let location = resolved_parse_diagnostic_offset(e, text);
-                let message =
-                    match perl_lsp_rs_core::providers::diagnostics::build_parse_error_hint(
-                        e,
-                        &base_message,
-                    ) {
-                        Some(hint) => format!("{base_message}\nSuggestion: {hint}"),
-                        None => base_message,
-                    };
-                let (line, character) = pos16(location);
-                let msg_val = Self::diagnostic_message_value(
-                    &message,
-                    None,
-                    markup_message_support,
-                );
-                diagnostic_json(
-                    line, character, line, character + 1,
-                    if e.blocks_clean_parse() { 1 } else { 2 },
-                    DiagnosticCode::ParseError.as_str(),
-                    "perl-lsp",
-                    // Preserve the negotiated String | MarkupContent union
-                    // (#9131): coercing through `as_str()` dropped the object
-                    // shape and emitted an empty message for markup-capable
-                    // clients.
-                    msg_val,
-                )
-            })
-            .collect()
+        let mut items: Vec<Value> =
+            parse_errors
+                .iter()
+                .map(|e| {
+                    let base_message = parse_error_base_message(e);
+                    let location = resolved_parse_diagnostic_offset(e, text);
+                    let message =
+                        match perl_lsp_rs_core::providers::diagnostics::build_parse_error_hint(
+                            e,
+                            &base_message,
+                        ) {
+                            Some(hint) => format!("{base_message}\nSuggestion: {hint}"),
+                            None => base_message,
+                        };
+                    let (line, character) = pos16(location);
+                    let msg_val =
+                        Self::diagnostic_message_value(&message, None, markup_message_support);
+                    diagnostic_json(
+                        line,
+                        character,
+                        line,
+                        character + 1,
+                        if e.blocks_clean_parse() { 1 } else { 2 },
+                        DiagnosticCode::ParseError.as_str(),
+                        "perl-lsp",
+                        // Preserve the negotiated String | MarkupContent union
+                        // (#9131): coercing through `as_str()` dropped the object
+                        // shape and emitted an empty message for markup-capable
+                        // clients.
+                        msg_val,
+                    )
+                })
+                .collect();
+        items.extend(Self::canonical_regex_items(
+            regex_analysis,
+            text,
+            line_starts,
+            markup_message_support,
+        ));
+        items
     }
 
     /// Push-path publication restricted to parse errors. See
@@ -962,6 +1078,9 @@ impl LspServer {
                 let parsed = doc.current_parsed()?;
                 Some((
                     parsed.parse_errors_arc(),
+                    // Same generation as the parse errors above: both come off the
+                    // one `current_parsed()` snapshot (#7024).
+                    parsed.regex_analysis().cloned(),
                     std::sync::Arc::clone(&doc.text_arc),
                     doc.version,
                     doc.line_starts.clone(),
@@ -971,9 +1090,18 @@ impl LspServer {
             })
         };
         let snapshot = snapshot.map(
-            |(parse_errors, text, version, line_starts, generation, gen_at_snapshot)| {
+            |(
+                parse_errors,
+                regex_analysis,
+                text,
+                version,
+                line_starts,
+                generation,
+                gen_at_snapshot,
+            )| {
                 (
                     parse_errors,
+                    regex_analysis,
                     text,
                     version,
                     line_starts,
@@ -986,6 +1114,7 @@ impl LspServer {
 
         let Some((
             parse_errors,
+            regex_analysis,
             text,
             version,
             line_starts,
@@ -997,8 +1126,13 @@ impl LspServer {
             return;
         };
 
-        let lsp_diagnostics =
-            Self::syntax_only_lsp_diagnostics(&parse_errors, &text, &line_starts, false);
+        let lsp_diagnostics = Self::syntax_only_lsp_diagnostics(
+            &parse_errors,
+            regex_analysis.as_deref(),
+            &text,
+            &line_starts,
+            false,
+        );
 
         // Accepted-ticket sink boundary (#11673): same contract as the full
         // path -- validate instance + generation at the enqueue, not before.
@@ -1294,11 +1428,17 @@ impl LspServer {
             };
             if let Some((doc, generation, gen_at_snapshot)) = doc_snapshot {
                 let markup_message_support = self.client_capabilities.lock().markup_message_support;
-                let parse_errors = doc
-                    .current_parsed()
+                // Both come off the one `current_parsed()` snapshot so the regex
+                // table cannot describe a different generation than the parse
+                // errors beside it (#7024).
+                let parsed = doc.current_parsed();
+                let parse_errors = parsed
+                    .as_ref()
                     .map_or_else(|| Arc::from([]) as Arc<[_]>, |p| p.parse_errors_arc());
+                let regex_analysis = parsed.as_ref().and_then(|p| p.regex_analysis().cloned());
                 let items = Self::syntax_only_lsp_diagnostics(
                     &parse_errors,
+                    regex_analysis.as_deref(),
                     &doc.text,
                     &doc.line_starts,
                     markup_message_support,
@@ -1345,7 +1485,7 @@ impl LspServer {
 
             // Bind the topology before capturing policy and folder configuration.
             let topology_at_context = self.workspace_topology_generation.load(Ordering::SeqCst);
-            let context = self.pull_diagnostics_orchestrator.build_context(self, uri_str);
+            let context = self.pull_diagnostics_orchestrator.build_context(self, uri_str)?;
 
             // Use PullDiagnosticsProvider for clean, testable logic
             let provider = PullDiagnosticsProvider::new();
@@ -1657,7 +1797,10 @@ impl LspServer {
             let Some(parsed) = doc.current_parsed() else { continue };
             if let Some(ast) = parsed.ast() {
                 let parse_errors = parsed.parse_errors();
-                let provider = DiagnosticsProvider::new();
+                let provider = match parsed.regex_analysis().cloned() {
+                    Some(table) => DiagnosticsProvider::new().with_regex_analysis(table),
+                    None => DiagnosticsProvider::new(),
+                };
                 // Position-aware resolver: each `use` statement is checked against only
                 // the @INC roots that are lexically active at its offset, so `no lib`
                 // cancellations that precede the statement are respected.
@@ -1766,7 +1909,7 @@ impl LspServer {
                 // loop any more: hoisting is what let identity describe an older
                 // policy than the rows.
                 let mut identity_context =
-                    PullDiagnosticsOrchestrator::new().build_context(self, uri_str);
+                    PullDiagnosticsOrchestrator::new().build_context(self, uri_str)?;
                 identity_context.project_version = project_version.clone();
                 identity_context.configuration_generation = *config_generation_at_snapshot;
                 let critic_source_identity = critic_source_identity_for(uri_str, *gen_at_snapshot);
@@ -2539,6 +2682,11 @@ mod tests {
         let writer = SharedVecWriter { inner: StdArc::clone(&buf) };
         let server =
             LspServer::with_io(Box::new(std::io::Cursor::new(Vec::<u8>::new())), Box::new(writer));
+        // Diagnostics only ever run inside an initialized session, so give the
+        // fixture the coordinate authority initialize would have published.
+        // Publishing directly rather than calling handle_initialize keeps the
+        // workspace-root and project-config premises of these tests untouched.
+        server.publish_position_encoding_session_context();
         (server, buf)
     }
 
@@ -2564,6 +2712,11 @@ mod tests {
             FeatureProfile::current(),
             runtime_tuning,
         );
+        // Diagnostics only ever run inside an initialized session, so give the
+        // fixture the coordinate authority initialize would have published.
+        // Publishing directly rather than calling handle_initialize keeps the
+        // workspace-root and project-config premises of these tests untouched.
+        server.publish_position_encoding_session_context();
         (server, buf)
     }
 
@@ -2732,7 +2885,9 @@ mod tests {
             "textDocument": {"uri": push_uri, "languageId": "perl", "version": 1, "text": source}
         })))?;
         push_server.load_and_apply_project_config();
-        let context = PullDiagnosticsOrchestrator::new().build_context(&push_server, &push_uri);
+        let context = PullDiagnosticsOrchestrator::new()
+            .build_context(&push_server, &push_uri)
+            .map_err(|e| e.message)?;
         if context.accepted_critic_snapshot != push_server.capture_accepted_critic(&push_uri)
             || !context.accepted_state_currentness.holds()
         {
@@ -3453,6 +3608,59 @@ mod tests {
         assert!(
             text.contains("publishDiagnostics"),
             "stable generation must produce a publishDiagnostics notification; got: {text:?}"
+        );
+    }
+
+    /// #7024: canonical regex findings must survive retained-analysis projection
+    /// into the push journey. A repeated group with a nested quantifier reaches
+    /// the client as `PL1000` in the `textDocument/publishDiagnostics`
+    /// notification on didOpen, and a didChange to an invalid-modifier pattern
+    /// publishes the parse-time modifier diagnostic — proving the retained table
+    /// is re-derived for the changed snapshot instead of serving stale analysis.
+    ///
+    /// Since #14980 an unknown match modifier is rejected by the strict
+    /// match-family extractor before analysis runs (the `s///` contract, see
+    /// #14762), so the didChange half pins the typed `SyntaxError` rather than
+    /// the analysis-level `PL1002`.
+    #[test]
+    fn push_diagnostics_include_canonical_regex_codes() {
+        let (server, buf) = make_server_with_capture();
+        let uri = "file:///push_canonical_regex_test.pl";
+        server
+            .test_handle_did_open(Some(json!({
+                "textDocument": {
+                    "uri": uri,
+                    "languageId": "perl",
+                    "version": 1,
+                    "text": "my $re = qr/(a+)+b/;\n"
+                }
+            })))
+            .unwrap();
+        server.publish_diagnostics(uri);
+
+        server
+            .test_handle_did_change(Some(json!({
+                "textDocument": {"uri": uri, "version": 2},
+                "contentChanges": [{"text": "if ($s =~ m/foo/zz) { }\n"}]
+            })))
+            .unwrap();
+        server.publish_diagnostics(uri);
+        drop(server);
+        std::thread::sleep(Duration::from_millis(50)); // flush outbound writer
+
+        let bytes = buf.lock().clone();
+        let text = String::from_utf8(bytes).unwrap_or_default();
+        assert!(
+            text.contains("PL1000"),
+            "didOpen push must publish the canonical regex backtracking code PL1000; got: {text:?}"
+        );
+        assert!(
+            text.contains("Invalid match modifier 'z'"),
+            "didChange push must publish the parse-time modifier diagnostic naming the letter; got: {text:?}"
+        );
+        assert!(
+            !text.contains("PL1002"),
+            "the bogus letter is rejected before analysis, so no PL1002 may appear; got: {text:?}"
         );
     }
 
@@ -4676,6 +4884,7 @@ system($path);
         let doc_uri = url::Url::from_file_path(&script_b).map_err(|_| "bad uri")?.to_string();
 
         let (server, _buf) = make_server_with_capture();
+        server.handle_initialize(Some(json!({"capabilities": {}})))?;
         // root_path points to folder_a (the "primary" folder)
         *server.root_path.lock() = Some(folder_a.clone());
         {
@@ -4695,7 +4904,7 @@ system($path);
         }
 
         let orchestrator = PullDiagnosticsOrchestrator::new();
-        let context = orchestrator.build_context(&server, &doc_uri);
+        let context = orchestrator.build_context(&server, &doc_uri)?;
 
         assert_eq!(
             context.workspace_root.as_deref(),
@@ -4730,6 +4939,7 @@ system($path);
         let doc_uri = url::Url::from_file_path(&script).map_err(|_| "bad uri")?.to_string();
 
         let (server, _buf) = make_server_with_capture();
+        server.handle_initialize(Some(json!({"capabilities": {}})))?;
         *server.root_path.lock() = Some(workspace.clone());
         {
             let mut folders = server.workspace_folders.lock();
@@ -4744,7 +4954,7 @@ system($path);
         }
 
         let orchestrator = PullDiagnosticsOrchestrator::new();
-        let context = orchestrator.build_context(&server, &doc_uri);
+        let context = orchestrator.build_context(&server, &doc_uri)?;
 
         assert_eq!(
             context.workspace_root.as_deref(),
@@ -4779,7 +4989,9 @@ system($path);
                 .with_path(original_owner),
         );
 
-        let context = PullDiagnosticsOrchestrator::new().build_context(&server, &doc_uri);
+        let context = PullDiagnosticsOrchestrator::new()
+            .build_context(&server, &doc_uri)
+            .map_err(|e| e.message)?;
         if !context.accepted_state_currentness.holds() {
             return Err("newly captured document ownership must initially be current".into());
         }
@@ -4791,6 +5003,26 @@ system($path);
                     .into(),
             );
         }
+        Ok(())
+    }
+
+    #[test]
+    fn build_context_uses_server_owned_encoding_after_initialize()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (server, _buf) = make_server_with_capture();
+        server.handle_initialize(Some(serde_json::json!({
+            "capabilities": {"general": {"positionEncodings": ["utf-8"]}}
+        })))?;
+        server.client_capabilities.lock().position_encoding = crate::textdoc::PosEnc::Utf8;
+
+        let context =
+            PullDiagnosticsOrchestrator::new().build_context(&server, "file:///test.pl")?;
+
+        assert_eq!(
+            context.projection.position_encoding,
+            PullPositionEncoding::Utf16,
+            "diagnostic projection must use the server-owned active encoding"
+        );
         Ok(())
     }
 
@@ -4829,7 +5061,7 @@ system($path);
         );
         drop(folders);
 
-        let context = PullDiagnosticsOrchestrator::new().build_context(&server, &doc_uri);
+        let context = PullDiagnosticsOrchestrator::new().build_context(&server, &doc_uri)?;
         assert_eq!(context.project_version.as_deref(), Some("5.40"));
         Ok(())
     }
@@ -4843,7 +5075,7 @@ system($path);
         let doc_uri = url::Url::from_file_path(&script).map_err(|_| "bad uri")?.to_string();
         let (server, _buf) = make_server_with_capture();
 
-        let context = PullDiagnosticsOrchestrator::new().build_context(&server, &doc_uri);
+        let context = PullDiagnosticsOrchestrator::new().build_context(&server, &doc_uri)?;
         assert!(context.project_version.is_none());
         assert!(context.identity_root_key.is_none());
         Ok(())
@@ -4859,7 +5091,7 @@ system($path);
         let doc_uri = url::Url::from_file_path(&script).map_err(|_| "bad uri")?.to_string();
         let (server, _buf) = make_server_with_capture();
 
-        let context = PullDiagnosticsOrchestrator::new().build_context(&server, &doc_uri);
+        let context = PullDiagnosticsOrchestrator::new().build_context(&server, &doc_uri)?;
 
         assert!(context.project_version.is_none());
         assert!(context.workspace_root.is_none());
@@ -5118,6 +5350,9 @@ print \"unreachable\\n\";\n";
     fn pull_diagnostic_boundary_discriminator_current_gen_ne_gen_at_snapshot()
     -> Result<(), Box<dyn std::error::Error>> {
         let server = StdArc::new(LspServer::new());
+        // Coordinate-bearing diagnostics require the server-owned encoding
+        // authority, which only exists inside an initialized session.
+        server.handle_initialize(Some(json!({"capabilities": {}})))?;
         let uri = "file:///stale_pull_boundary.pl";
         server.test_handle_did_open(Some(json!({
             "textDocument": {
@@ -5802,6 +6037,9 @@ print $x;
     fn pull_diagnostic_skips_stale_workspace_dead_code_tier()
     -> Result<(), Box<dyn std::error::Error>> {
         let server = LspServer::default();
+        // Coordinate-bearing diagnostics require the server-owned encoding
+        // authority, which only exists inside an initialized session.
+        server.handle_initialize(Some(json!({"capabilities": {}})))?;
         let uri = "file:///workspace/stale_dead_code_pull.pl";
         make_document_index_stale_for_diagnostics(
             &server,
@@ -6016,6 +6254,179 @@ print $x;
             .unwrap_or_default();
         assert!(!items.is_empty(), "syntax-only pull must report parse errors; got {items:?}");
         items
+    }
+
+    /// Syntax-only mode must still publish canonical regex findings (#7024).
+    ///
+    /// Before retention a nested quantifier reached this mode as a parser `Advisory`
+    /// inside `parse_errors`, which syntax-only publishes. A `RetainedRegexSession`
+    /// suppresses that legacy scan, so projecting the retained table here is what keeps
+    /// the finding from disappearing for anyone running `--diagnostic-mode syntax-only`.
+    ///
+    /// Measured with the session active and no projection, `parse_errors` for this
+    /// document is empty; without the session it carries exactly one advisory.
+    /// The AST-less path must not invent findings whose truth it cannot know (#7024).
+    ///
+    /// Retaining geometry across a fatal parse leaves no pragma environment, since that
+    /// is built from the tree. Deriving the language profile from a *default*
+    /// environment asserted `utf8` was off, so a valid non-ASCII capture under
+    /// `use utf8;` published `PL1006` — a warning about correct code, caused only by an
+    /// unrelated syntax failure elsewhere in the file. Measured before the fix, this
+    /// document published `["PL001", "PL1006"]`.
+    ///
+    /// The profile now reports `Unknown`, which is what is actually true, and the
+    /// analyzer withholds the profile-dependent findings while keeping the ones that do
+    /// not depend on it.
+    #[test]
+    fn a_fatal_parse_does_not_invent_profile_dependent_findings() {
+        let source = format!("use utf8;\nmy $re = qr/(?<café>x)/;\n{}\n", "if (1) {".repeat(3000));
+        let tuning = perl_lsp_rs_core::runtime::tuning::RuntimeTuning::normal_defaults();
+        let server = message_union_server(tuning, false);
+        let uri = message_union_uri("7024_fatal_parse_utf8.pl");
+        server.test_apply_did_open(&uri, &source, 1).expect("didOpen should succeed");
+        let report = server
+            .test_handle_document_diagnostic(Some(json!({ "textDocument": { "uri": uri } })))
+            .expect("pull should not error");
+        let items = report
+            .and_then(|r| r.get("items").and_then(Value::as_array).cloned())
+            .unwrap_or_default();
+        let codes: Vec<&str> =
+            items.iter().filter_map(|i| i.get("code").and_then(Value::as_str)).collect();
+
+        // Control: the path is live, so absence below is withholding rather than silence.
+        assert!(codes.contains(&"PL001"), "the parse error must still publish: {codes:?}");
+        assert!(
+            !codes.contains(&"PL1006"),
+            "a valid capture under `use utf8` must not warn after a fatal parse: {codes:?}"
+        );
+    }
+
+    /// The AST-less pull path must render remediation exactly as the AST path does.
+    ///
+    /// `to_lsp_diagnostic` appends the catalog `context_hint` *and* the suggestion, and
+    /// the projection initializes that suggestion from the same hint — so routing
+    /// canonical findings through it printed the identical paragraph twice, once behind
+    /// a 💡 and once behind "Suggestion:". The AST paths use the context-aware
+    /// conversion and render it once.
+    #[test]
+    fn a_fatal_parse_renders_remediation_like_the_ast_path() {
+        let backtracking = "my $re = qr/(a+)+b/;\n";
+        let fatal = format!("{backtracking}{}\n", "if (1) {".repeat(3000));
+
+        let message_for = |text: &str, name: &str| -> String {
+            let tuning = perl_lsp_rs_core::runtime::tuning::RuntimeTuning::normal_defaults();
+            let server = message_union_server(tuning, false);
+            let uri = message_union_uri(name);
+            server.test_apply_did_open(&uri, text, 1).expect("didOpen should succeed");
+            let report = server
+                .test_handle_document_diagnostic(Some(json!({ "textDocument": { "uri": uri } })))
+                .expect("pull should not error");
+            report
+                .and_then(|r| r.get("items").and_then(Value::as_array).cloned())
+                .unwrap_or_default()
+                .iter()
+                .find(|item| item.get("code").and_then(Value::as_str) == Some("PL1000"))
+                .and_then(|item| item.get("message").and_then(Value::as_str))
+                .unwrap_or_default()
+                .to_string()
+        };
+
+        let ast_message = message_for(backtracking, "7024_hint_ast.pl");
+        let fatal_message = message_for(&fatal, "7024_hint_fatal.pl");
+
+        // Control: both paths actually produced the finding, so equality below is not
+        // two empty strings matching.
+        assert!(!ast_message.is_empty(), "the AST path must publish PL1000");
+        assert!(!fatal_message.is_empty(), "the fatal path must publish PL1000");
+        assert_eq!(
+            fatal_message, ast_message,
+            "the AST-less path must render the same message as the AST path"
+        );
+    }
+
+    /// A fatal parse must still publish its regex findings (#7024).
+    ///
+    /// Retaining the geometry in `finish(None)` is only half the route: the AST-less
+    /// pull branches reported parse errors and stopped, so the retained table reached
+    /// no client. With the legacy per-operator scan suppressed by the session, that
+    /// finding was lost. Measured before the fix, this document published only
+    /// `["PL001"]`.
+    #[test]
+    fn a_fatal_parse_still_publishes_canonical_regex_findings() {
+        let source = format!("my $re = qr/(a+)+b/;\n{}\n", "if (1) {".repeat(3000));
+        let tuning = perl_lsp_rs_core::runtime::tuning::RuntimeTuning::normal_defaults();
+        let server = message_union_server(tuning, false);
+        let uri = message_union_uri("7024_fatal_parse_regex.pl");
+        server.test_apply_did_open(&uri, &source, 1).expect("didOpen should succeed");
+        let report = server
+            .test_handle_document_diagnostic(Some(json!({ "textDocument": { "uri": uri } })))
+            .expect("pull should not error");
+        let items = report
+            .and_then(|r| r.get("items").and_then(Value::as_array).cloned())
+            .unwrap_or_default();
+        let codes: Vec<&str> =
+            items.iter().filter_map(|i| i.get("code").and_then(Value::as_str)).collect();
+
+        // Control: the fatal parse error must still be reported, so this cannot pass by
+        // having replaced one loss with another.
+        assert!(codes.contains(&"PL001"), "the parse error must survive: {codes:?}");
+        assert!(
+            codes.contains(&"PL1000"),
+            "the backtracking risk must survive a fatal parse: {codes:?}"
+        );
+
+        // The push path and the state-based pull branch carry the same fix, but are
+        // NOT asserted here. Push publication can land asynchronously relative to the
+        // parse in this harness — an assertion on it passed alone and failed in the
+        // full suite — and the state branch was not reachable from any pull this
+        // harness could drive. Both are proven only by symmetry with the text path
+        // above, which is stated in the commit rather than implied by a green test.
+    }
+
+    #[test]
+    fn syntax_only_pull_publishes_canonical_regex_findings() {
+        const BACKTRACKING_DOCUMENT: &str = "my $re = qr/(a+)+b/;\n";
+
+        let mut tuning = perl_lsp_rs_core::runtime::tuning::RuntimeTuning::normal_defaults();
+        tuning.diagnostic_mode = perl_lsp_rs_core::runtime::tuning::DiagnosticMode::SyntaxOnly;
+        let server = message_union_server(tuning, false);
+        let uri = message_union_uri("7024_syntax_only_regex.pl");
+        server.test_apply_did_open(&uri, BACKTRACKING_DOCUMENT, 1).expect("didOpen should succeed");
+        let report = server
+            .test_handle_document_diagnostic(Some(json!({
+                "textDocument": { "uri": uri },
+            })))
+            .expect("syntax-only document pull should not error");
+        let items = report
+            .and_then(|r| r.get("items").and_then(Value::as_array).cloned())
+            .unwrap_or_default();
+
+        // Control: this document parses cleanly, so a passing assertion below cannot
+        // be an artifact of some unrelated parse error carrying the finding.
+        assert!(
+            items.iter().all(|item| item.get("code").and_then(Value::as_str)
+                != Some(DiagnosticCode::ParseError.as_str())),
+            "fixture must not rely on a parse error: {items:?}"
+        );
+        let risk: Vec<_> = items
+            .iter()
+            .filter(|item| item.get("code").and_then(Value::as_str) == Some("PL1000"))
+            .collect();
+        assert_eq!(risk.len(), 1, "syntax-only must publish the backtracking risk: {items:?}");
+
+        // Enrichment parity (#1773): a catalog-backed code keeps its documentation
+        // link and structured metadata in this mode too, so a client does not see a
+        // different shape for the same code depending on how the server was started.
+        let item = risk[0];
+        assert!(
+            item.pointer("/codeDescription/href").and_then(Value::as_str).is_some(),
+            "PL1000 must carry its catalog documentation link: {item:?}"
+        );
+        assert_eq!(
+            item.pointer("/data/code").and_then(Value::as_str),
+            Some("PL1000"),
+            "PL1000 must carry structured data: {item:?}"
+        );
     }
 
     #[test]

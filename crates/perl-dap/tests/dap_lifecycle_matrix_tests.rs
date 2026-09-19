@@ -14,7 +14,7 @@
 mod common;
 
 use common::{DapWorkflowSession, debuggee_perl_or_typed_skip, workflow_timeout};
-use perl_dap::debug_adapter::{DapMessage, DebugAdapter};
+use perl_dap::debug_adapter::{DapMessage, DapMessageWithEpoch, DebugAdapter};
 use perl_tdd_support::must_some;
 use serde_json::{Value, json};
 use std::fs::write;
@@ -549,18 +549,22 @@ fn test_stacktrace_no_session_returns_empty() -> Result<(), Box<dyn std::error::
 //
 // Each test uses `make_adapter_with_rx` + `wait_cleanup_event` (defined below).
 
-fn make_adapter_with_rx() -> (DebugAdapter, Receiver<DapMessage>) {
+fn make_adapter_with_rx() -> (DebugAdapter, Receiver<DapMessageWithEpoch>) {
     let (tx, rx) = sync_channel(64);
     let mut adapter = DebugAdapter::new();
     adapter.set_event_sender(tx);
     (adapter, rx)
 }
 
-fn require_terminal_count(rx: &Receiver<DapMessage>, expected: usize, context: &str) -> TestResult {
+fn require_terminal_count(
+    rx: &Receiver<DapMessageWithEpoch>,
+    expected: usize,
+    context: &str,
+) -> TestResult {
     let observed = rx
         .try_iter()
         .filter(
-            |message| matches!(message, DapMessage::Event { event, .. } if event == "terminated"),
+            |message| matches!(message, (DapMessage::Event { event, .. }, _) if event == "terminated"),
         )
         .count();
     if observed != expected {
@@ -686,15 +690,15 @@ fn disconnect_terminal_successful_replacement_reopens_lifecycle() -> TestResult 
             "launch",
             true,
         )?;
-        let deadline = std::time::Instant::now() + Duration::from_millis(1000);
+        let deadline = std::time::Instant::now() + Duration::from_secs(1);
         loop {
             match rx.recv_timeout(deadline.saturating_duration_since(std::time::Instant::now())) {
-                Ok(DapMessage::Event { event, .. }) if event == "terminated" => {
+                Ok((DapMessage::Event { event, .. }, _)) if event == "terminated" => {
                     return Err(
                         "replacement terminated before establishing a stopped debuggee".into()
                     );
                 }
-                Ok(DapMessage::Event { event, .. }) if event == "stopped" => break,
+                Ok((DapMessage::Event { event, .. }, _)) if event == "stopped" => break,
                 Ok(_) => {}
                 Err(error) => return Err(format!("replacement did not stop: {error}").into()),
             }
@@ -718,13 +722,53 @@ fn disconnect_terminal_successful_replacement_reopens_lifecycle() -> TestResult 
 
 /// Drain the event channel looking for an event with the given name, up to
 /// `timeout_ms` total. Returns the event body on match.
-fn wait_cleanup_event(rx: &Receiver<DapMessage>, name: &str, timeout_ms: u64) -> Option<Value> {
+fn wait_cleanup_event(
+    rx: &Receiver<DapMessageWithEpoch>,
+    name: &str,
+    timeout_ms: u64,
+) -> Option<Value> {
     let deadline = std::time::Instant::now() + Duration::from_millis(timeout_ms);
     while std::time::Instant::now() < deadline {
         let remaining = deadline.saturating_duration_since(std::time::Instant::now());
         match rx.recv_timeout(remaining) {
-            Ok(DapMessage::Event { event, body, .. }) if event == name => {
+            Ok((DapMessage::Event { event, body, .. }, _)) if event == name => {
                 return Some(body.unwrap_or(Value::Null));
+            }
+            Ok(_) => continue,
+            Err(_) => break,
+        }
+    }
+    None
+}
+
+/// Drain waiting for `name`, recording whether a terminal event was seen
+/// and discarded along the way. `terminated`/`exited` is once-only per
+/// session generation (#15887, same family as #15884): a fast-exiting
+/// debuggee can commit it during the `initialized`/`stopped` setup waits,
+/// in which case a later post-disconnect-only assert would spin out though
+/// the adapter behaved correctly. Callers assert at-least-once per
+/// generation instead of strictly-post-disconnect.
+fn wait_cleanup_event_track_terminal(
+    rx: &Receiver<DapMessageWithEpoch>,
+    name: &str,
+    timeout: Duration,
+    terminated_seen: &mut bool,
+) -> Option<Value> {
+    let deadline = std::time::Instant::now() + timeout;
+    while std::time::Instant::now() < deadline {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        match rx.recv_timeout(remaining) {
+            Ok((DapMessage::Event { event, body, .. }, _)) if event == name => {
+                if event == "terminated" || event == "exited" {
+                    *terminated_seen = true;
+                }
+                return Some(body.unwrap_or(Value::Null));
+            }
+            Ok((DapMessage::Event { event, .. }, _)) => {
+                if event == "terminated" || event == "exited" {
+                    *terminated_seen = true;
+                }
+                continue;
             }
             Ok(_) => continue,
             Err(_) => break,
@@ -815,38 +859,50 @@ fn test_terminate_preserves_breakpoints_but_replace_still_clears() -> TestResult
     Ok(())
 }
 
-// ── C2: attach then terminate cleanup ────────────────────────────────────────
+// ── C2: refused PID attach leaves no session to leak ─────────────────────────
 
-/// C2 — PID-attach session → terminate → session torn down, no leaked handle.
+/// C2 — PID-attach refusal (#8109) → no session created, no stopped event,
+/// and nothing leaked: subsequent `threads` stays empty.
 ///
-/// After terminate the session state is cleared and a "terminated" event is
-/// emitted. Subsequent `threads` calls return an empty list (no leaked attach
-/// thread), confirming the handle was released.
+/// #8109 removed the signal-control PID attach: process existence plus signal
+/// control never established a debugger transport, so the adapter must refuse
+/// the request instead of synthesizing a stopped session. The no-leak property
+/// this row guards is now that a refusal creates no session at all — later
+/// `threads` calls stay empty.
 #[test]
-fn test_attach_then_terminate_cleanup() -> TestResult {
+fn test_refused_pid_attach_leaves_no_session_to_leak() -> TestResult {
     let (mut adapter, rx) = make_adapter_with_rx();
 
-    // Attach in PID-signal-control mode.  #4638: use current process PID so
-    // verify_attach_target succeeds.
+    // Attach in PID-signal-control mode is refused fail-closed (#8109).
     let attach_response =
         adapter.handle_request(1, "attach", Some(json!({ "processId": std::process::id() })));
-    assert_cleanup_success(&attach_response, "attach")?;
+    match &attach_response {
+        DapMessage::Response { success, command, body, message, .. } => {
+            if *command != "attach" {
+                return Err(format!("expected attach response command, got {command}").into());
+            }
+            if *success {
+                return Err("PID attach must be refused (#8109)".into());
+            }
+            if body.is_some() {
+                return Err("refusal must not carry an attach body".into());
+            }
+            let msg = message.as_deref().ok_or("Expected refusal message")?;
+            if !msg.contains("not supported") {
+                return Err(format!("refusal must name the disposition: {msg}").into());
+            }
+        }
+        other => return Err(format!("Expected attach response, got {other:?}").into()),
+    }
 
-    // Drain the "stopped" event emitted by attach.
-    let _ = wait_cleanup_event(&rx, "stopped", 200);
-
-    // Terminate the attached session.
-    let term_response = adapter.handle_request(2, "terminate", None);
-    assert_cleanup_success(&term_response, "terminate")?;
-
-    // "terminated" event must arrive.
+    // No synthetic "stopped" event may be emitted by the refusal.
     assert!(
-        wait_cleanup_event(&rx, "terminated", 300).is_some(),
-        "terminate after attach must emit a terminated event"
+        wait_cleanup_event(&rx, "stopped", 200).is_none(),
+        "a refused PID attach must not emit a stopped event (#8109)"
     );
 
-    // The PID session is torn down — threads must return empty (no leaked handle).
-    let threads_response = adapter.handle_request(3, "threads", None);
+    // threads must return empty (no leaked PID session).
+    let threads_response = adapter.handle_request(2, "threads", None);
     match threads_response {
         DapMessage::Response { success: true, body: Some(ref body), .. } => {
             let threads = body
@@ -855,7 +911,7 @@ fn test_attach_then_terminate_cleanup() -> TestResult {
                 .ok_or("threads body must have threads array")?;
             assert!(
                 threads.is_empty(),
-                "after terminate, threads must be empty (no leaked PID session), got {threads:?}"
+                "after a refused PID attach, threads must be empty (no leaked session), got {threads:?}"
             );
         }
         DapMessage::Response { success: true, body: None, .. } => {
@@ -889,15 +945,19 @@ fn test_disconnect_clears_active_session() -> TestResult {
 
     // Establish a real active launch-owned session before disconnect. The pinned
     // interpreter and stopOnEntry keep the child alive at the disconnect boundary.
+    let timeout = workflow_timeout();
+    let mut terminated_seen = false;
     let initialize = adapter.handle_request(1, "initialize", None);
     assert_cleanup_success(&initialize, "initialize")?;
-    if wait_cleanup_event(&rx, "initialized", 300).is_none() {
+    if wait_cleanup_event_track_terminal(&rx, "initialized", timeout, &mut terminated_seen)
+        .is_none()
+    {
         return Err("initialize must emit an initialized event".into());
     }
     let launch_args = common::resolved_launch_arguments_for_test(script_str, None, true)?;
     let launch = adapter.handle_request(2, "launch", Some(launch_args));
     assert_cleanup_success(&launch, "launch")?;
-    if wait_cleanup_event(&rx, "stopped", 1000).is_none() {
+    if wait_cleanup_event_track_terminal(&rx, "stopped", timeout, &mut terminated_seen).is_none() {
         return Err("stopOnEntry launch must establish an active stopped session".into());
     }
 
@@ -905,10 +965,28 @@ fn test_disconnect_clears_active_session() -> TestResult {
     let dc_response = adapter.handle_request(3, "disconnect", None);
     assert_cleanup_success(&dc_response, "disconnect")?;
 
-    // "terminated" event must be emitted.
+    // `terminated` is once-only per generation: it may already have been
+    // consumed during setup on a fast-exiting debuggee. Assert at-least-once
+    // per generation with a bounded grace drain (same discipline as
+    // `common::DapWorkflowSession::disconnect`), not strictly-post-disconnect.
+    let grace = timeout.min(Duration::from_secs(2));
+    let _ = wait_cleanup_event_track_terminal(&rx, "terminated", grace, &mut terminated_seen);
     assert!(
-        wait_cleanup_event(&rx, "terminated", 300).is_some(),
-        "disconnect must emit a terminated event"
+        terminated_seen,
+        "disconnect must yield a terminated event for the generation \
+         (already-consumed early termination counts)"
+    );
+    // At-most-once: no duplicate terminal event may be queued after accounting.
+    let duplicates = rx
+        .try_iter()
+        .filter(|message| {
+            matches!(message, (DapMessage::Event { event, .. }, _)
+                if event == "terminated" || event == "exited")
+        })
+        .count();
+    assert!(
+        duplicates == 0,
+        "terminated is once-only: duplicate terminal events queued after disconnect"
     );
 
     // After disconnect, stackTrace must prove the active session was cleared.

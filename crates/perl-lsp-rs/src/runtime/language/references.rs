@@ -1793,6 +1793,10 @@ impl LspServer {
             );
         }
 
+        // Resolve the legacy locations BEFORE entering the callback: the live
+        // cutover path must not re-enter `WorkspaceIndex` while
+        // `with_semantic_queries_for_uri` holds its read guards (#15644).
+        let legacy_locations = workspace_index.find_references(symbol);
         // Resolve the semantic outcome plus the declaration anchor when either
         // the caller wants it included or the P8 lexical slice needs to prove
         // this entity is an initialized lexical declaration.
@@ -1820,9 +1824,7 @@ impl LspServer {
                                         perl_semantic_facts::Provenance::ExactAst
                                             | perl_semantic_facts::Provenance::ImportExportInference
                                             | perl_semantic_facts::Provenance::LiteralRequireImport
-                                    ) && workspace_index
-                                        .semantic_anchor_wire_location(candidate.anchor_id)
-                                        .is_some()
+                                    ) && queries.anchor_source_span(candidate.anchor_id).is_some()
                                 })
                                 .collect();
                             match exact_candidates.as_slice() {
@@ -1856,9 +1858,7 @@ impl LspServer {
                             .filter(|c| {
                                 c.confidence == perl_semantic_facts::Confidence::High
                                     && c.entity_id == entity_id
-                                    && workspace_index
-                                        .semantic_anchor_wire_location(c.anchor_id)
-                                        .is_some()
+                                    && queries.anchor_source_span(c.anchor_id).is_some()
                             })
                             .map(|c| c.anchor_id)
                             .next()
@@ -1868,7 +1868,7 @@ impl LspServer {
                 };
 
                 let outcome = find_references_live_source_backed(
-                    workspace_index.as_ref(),
+                    legacy_locations,
                     &queries,
                     symbol,
                     entity_id,
@@ -2048,6 +2048,11 @@ impl LspServer {
                 match route_index_access(self.coordinator()) {
                     IndexAccessMode::Full(coordinator) => {
                         let index = coordinator.index();
+                        // Resolve the legacy locations BEFORE entering the
+                        // callback: the cutover path must not re-enter
+                        // `WorkspaceIndex` while `with_semantic_queries_for_uri`
+                        // holds its read guards (#15644).
+                        let legacy_locations = index.find_references(&symbol);
                         index
                         .with_semantic_queries_for_uri(uri, |file_id, queries| {
                             let ctx = QueryContext::new(file_id, None, Some(byte_offset));
@@ -2061,7 +2066,7 @@ impl LspServer {
                                         .map(|candidate| candidate.entity_id)
                                 })?;
                             let outcome = find_references_live_source_backed(
-                                index.as_ref(),
+                                legacy_locations,
                                 &queries,
                                 &symbol,
                                 entity_id,

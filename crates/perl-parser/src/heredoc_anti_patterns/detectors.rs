@@ -93,8 +93,19 @@ static SOURCE_FILTER_PATTERN: LazyLock<Result<Regex, regex::Error>> =
     LazyLock::new(|| Regex::new(r"use\s+Filter::(Simple|Util::Call|cpp|exec|sh|decrypt|tee)"));
 
 /// Pattern for identifying heredocs inside regex code blocks.
+///
+/// Matches both opener forms:
+/// - `(?{ ... })` — executable code block.
+/// - `(??{ ... })` — postponed code block (the body is evaluated as a subpattern).
+///
+/// The opener accepts 1 or 2 `?` characters; `\{1,2}` is bounded so the literal
+/// sequence `(??{` matches without producing a `(???{` over-match (a `?{` after
+/// two `?`s would still require a literal `{`, which is absent in that input).
+/// `[^}\n]*` is bounded by both the closing brace and the newline horizon so the
+/// scan stays linear on adversarial input. See `crates/perl-parser/tests/
+/// heredoc_antip_redos_guardrail.rs` for the bound measurements.
 static REGEX_HEREDOC_PATTERN: LazyLock<Result<Regex, regex::Error>> =
-    LazyLock::new(|| Regex::new(r"\(\?\{[^}\n]*<<[^}\n]*\}"));
+    LazyLock::new(|| Regex::new(r"\(\?{1,2}\{[^}\n]*<<[^}\n]*\}"));
 
 /// Pattern for identifying heredocs inside eval strings.
 static EVAL_HEREDOC_PATTERN: LazyLock<Result<Regex, regex::Error>> =
