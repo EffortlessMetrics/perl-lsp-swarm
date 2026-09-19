@@ -11,7 +11,7 @@ schema_version = 1
 policy = "ripr-suppressions"
 owner = "EffortlessMetrics"
 status = "advisory"
-updated = "2026-09-16"
+updated = "2026-09-17"
 
 # -----------------------------------------------------------------------------
 # Generated status docs: validated through status-generation checks, not
@@ -97,6 +97,26 @@ reason = "Issue #1567 adds inline_completion_ux_fixtures.rs as an executable com
 created = "2026-06-19"
 review_after = "2026-07-19"
 expires = "2026-09-30"
+
+# -----------------------------------------------------------------------------
+# Completion candidate-producer inventory checker: declaration-anchored probes.
+# The checker's own `every_scan_root_still_matches_tracked_source` test iterates
+# the inventoried constants and fails by name when a scan root is mutated (the
+# rename experiment on the #15015 head), but RIPR cannot statically connect a
+# declaration's consumers to that test oracle, so the probes report
+# no_static_path even though a named test detects the mutation.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-completion-candidates-declaration-probes"
+kind = "predicate_infection_untraceable"
+paths = ["xtask/src/tasks/completion_candidates.rs"]
+classification = ["no_static_path"]
+owner = "tooling-inventory"
+issue = "#15788"
+reason = "PR #15015 adds completion_candidates.rs, the checker behind `cargo xtask completion-candidates check`. RIPR reports 88 no_static_path (info) probes on it: 87 field_construction probes anchored at declarations of module constants and struct fields (SCAN_ROOTS, TEST_SURFACE_FILES, and table shapes) plus one return_value and one call_deletion. The checker's own every_scan_root_still_matches_tracked_source test directly iterates SCAN_ROOTS/TEST_SURFACE_FILES and fails by name when a root is renamed, verified experimentally on the PR head, yet the probes remain no_static_path because the probes anchor at declarations with no static construction site for a test oracle to reach. Echoing 87 declarations in assertions would be tautological proof (the Tautology Detection gate exists to reject it), and a whole-file suppression would discard real signal. This suppression is scoped to one file and only the no_static_path class, keeping every stronger classification (exposed, weakly_exposed, reachable_unrevealed, error_path) live for new findings in the same file. Remove when RIPR's declaration-anchored reachability improves (#15788)."
+created = "2026-09-16"
+review_after = "2026-10-16"
+expires = "2026-12-16"
 
 # -----------------------------------------------------------------------------
 # Documentation target resolver predicates: centralized string-boundary helpers
@@ -1213,7 +1233,8 @@ created = "2026-06-15"
 review_after = "2026-07-15"
 expires = "2026-09-30"
 
-# ===============================================================# -----------------------------------------------------------------------------
+# ======================================================================
+# -----------------------------------------------------------------------------
 # Coverage measure/route decoupling (PR #1482 / #1470): ripr#1429-class
 # predicate-infection-untraceable seams in two xtask coverage decision points.
 #
@@ -1252,7 +1273,8 @@ expires = "2026-09-30"
 #
 # Suppression is narrow (two specific predicates in one xtask file, one PR #1482).
 # Remove when ripr#1429 is fixed upstream or targeted mutation is scheduled per #1289.
-# ===============================================================# -----------------------------------------------------------------------------
+# ======================================================================
+# -----------------------------------------------------------------------------
 [[suppress]]
 id = "ripr-suppress-coverage-measure-route-decoupling"
 kind = "predicate_infection_untraceable"
@@ -2979,18 +3001,33 @@ removal_criteria = "Remove when RIPR traces declaration owners through the sibli
 id = "ripr-suppress-ux-harness-event-wait-plumbing"
 kind = "test_receipt_surface"
 paths = [
-  "crates/perl-lsp-ux-tests/src/client.rs",
+  "crates/perl-lsp-ux-tests/src/client/mod.rs",
+  "crates/perl-lsp-ux-tests/src/client/server_request_script.rs",
   "crates/perl-lsp-ux-tests/src/observation.rs",
   "crates/perl-lsp-ux-tests/src/diagnostics.rs",
 ]
 classification = ["no_static_path", "reachable_unrevealed"]
 owner = "proof-lane"
 issue = "EffortlessMetrics/ripr#1429"
-reason = "PR #15005: 71 probes inside the perl-lsp-ux-tests harness source (event-driven wait plumbing in client.rs/observation.rs/diagnostics.rs). The crate is classified as test support by the repository's own coverage gate (TEST_SUPPORT_CRATE_PREFIXES) and ships no production behavior; its tests/ tree is already suppressed as test_receipt_surface. The new synchronization behavior is proven by harness_timing_discipline.rs (including the suffixed timing disposition rejection) and the 17 UX scenario journeys that consume the harness. Per-line infection through the async/channel plumbing is untraceable from those oracles (ripr#1428/#1429 class). HONEST SCOPE NOTE: path-scoped, so future seams in these harness files are masked for this window; the harness is only ever executed by tests, so the masking cannot hide production behavior. Remove when ripr#1429 traces async plumbing or targeted mutation is scheduled per #1289."
+reason = "PR #15005: 71 probes inside the perl-lsp-ux-tests harness source (event-driven wait plumbing in client.rs/observation.rs/diagnostics.rs). The crate is classified as test support by the repository's own coverage gate (TEST_SUPPORT_CRATE_PREFIXES) and ships no production behavior; its tests/ tree is already suppressed as test_receipt_surface. The new synchronization behavior is proven by harness_timing_discipline.rs (including the suffixed timing disposition rejection) and the 17 UX scenario journeys that consume the harness. Per-line infection through the async/channel plumbing is untraceable from those oracles (ripr#1428/#1429 class). HONEST SCOPE NOTE: path-scoped, so future seams in these harness files are masked for this window; the harness is only ever executed by tests, so the masking cannot hide production behavior. PR #13199 renames client.rs to client/mod.rs and splits the scripted-request plumbing into client/server_request_script.rs; the hosted receipt from run 34740428609 (artifact 10313670834, evaluated merge head 9f8cdd9ed255abefad8210f9387c9cecc6ad7985, PR head 538f2abca) reports 2 + 31 no_static_path probes on those two files, all field_construction on struct field declarations (client/mod.rs:143 stdin: Arc<Mutex<Option<ChildStdin>>>, client/mod.rs:151 script: Option<ServerRequestScript>, server_request_script.rs:16 result: Value and siblings); the scripted behavior is proven by tests/ux_client_server_request_script.rs against a real child process, including the discriminating long-delay cancellation test, and by tests/harness_timing_discipline.rs; constructor-only tests would be proof theatre for declaration-line probes (ripr#1429). Remove when ripr#1429 traces async plumbing or targeted mutation is scheduled per #1289."
 created = "2026-09-09"
 review_after = "2026-09-16"
 expires = "2026-09-23"
 removal_criteria = "Remove when ripr#1429 traces async/channel plumbing, or narrow immediately if a future receipt reports an executable seam used outside the test harness."
+
+[[suppress]]
+id = "ripr-suppress-13199-fixture-constant-declaration-seams"
+kind = "declaration_line_no_static_path"
+paths = ["crates/perl-lsp-ux-tests/src/server_request_fixture.rs"]
+classification = ["no_static_path"]
+owner = "proof-lane"
+issue = "EffortlessMetrics/ripr#1429"
+reason = "PR #13199: the hosted receipt from run 34743834914 (artifact 10314426810, evaluated merge head ffb84b756e914b259929843719ee23760c554b03, PR head ac0841244) reports new_unresolved: 4, gap_list_proven: true, and exactly four field_construction no_static_path probes on the id-constant declarations at lines 8-11 (CONFIGURATION_ID, REGISTRATION_ID, PROGRESS_ID, SHOW_DOCUMENT_ID). The preceding increment closed all 63 reachable_unrevealed probes on this file's helpers with direct discriminator tests, so reachable_unrevealed is now 0 here and this entry masks a declaration-only remainder. The four constants' values are pinned as literals by happy_path_emits_exact_ids_and_round_trip_payload, progress_first_preserves_response_mapping_and_order, serve_until_exit_covers_shutdown_and_exit_paths, and response_validation_reports_exact_errors (whose exact error text asserts 41 and \"fixture-progress\"), and by tests/ux_client_server_request_script.rs against a real child process, so a mutated constant fails tests behaviourally even though ripr cannot trace a declaration owner to them. The crate is test support per TEST_SUPPORT_CRATE_PREFIXES and ships no production behaviour; constructor-only tests for declaration owners would be proof theatre. HONEST SCOPE NOTE: the matcher is path-scoped with no line selector, so while this window is open any future no_static_path seam anywhere in this file is masked too and must be reviewed rather than silently accepted."
+created = "2026-09-13"
+review_after = "2026-09-20"
+expires = "2026-10-13"
+removal_criteria = "Remove when ripr#1429 resolves declaration-line probes via constructor/usage paths, or narrow immediately if a receipt reports an executable no_static_path seam in this file beyond the four id constants."
+
 # Exact-tree test panic-family denominator (#13397, PR #14904): RIPR reports
 # no_static_path on non-executable struct/const/field owners in the new
 # observation module. Same-file tests construct the public DTOs, call
@@ -3233,6 +3270,47 @@ created = "2026-09-09"
 review_after = "2026-10-09"
 expires = "2026-11-09"
 
+# PR #15220 stop-on-entry reader boundary and error-propagation seams. The
+# hosted RIPR receipts report these as static_limitation: the boundary
+# discriminating operands are local/computed (`current_line > 0` and
+# `!current_file.is_empty() && current_line > 0`), and the two
+# error-propagation exits of `read_debugger_record` (the `fill_buf` error
+# return and the invalid-UTF-8 conversion) have no static test path through
+# the generic `R: Read` reader plumbing. The runtime oracles are exact:
+# debugger_record_reader_preserves_underlying_read_error asserts the
+# propagated ErrorKind::Other with the sentinel cause preserved by downcast,
+# and debugger_record_reader_rejects_bare_prompt_and_invalid_utf8 asserts
+# ErrorKind::InvalidData with the FromUtf8Error cause, its bytes,
+# valid_up_to, and error_len. Both hosted receipts are reproduced, not
+# flaky: run 34757592743 (candidate b9dece9d5) and run 35099133724
+# (evaluated merge tree 6781f1ae44dd8df93231e76d7eabc6fb579df983) report the
+# same seams (f849b21a1600b08c, f849bb1a1600bfd7 at line 60;
+# 41d63c1121b37206 at line 87) with "Add an exact error-variant test" while
+# exactly those tests exist and pass. The policy schema has no seam-id or
+# line selector, so this is intentionally restricted to the reported
+# activation_unknown and no_static_path classes on this one production file;
+# any future executable finding there must narrow or remove this entry.
+# The hosted run on 9c1757651 (evaluated merge tree cabc86dd) additionally
+# reports the 4 diff-receipt no_static_path probes on session.rs:24 and :34 —
+# the two `entry_stop_pending: false` initializer lines (call_deletion +
+# field_construction each), not unproven behavior — and three review-guidance
+# weakly_gripped error_variant comments at process.rs:60/87, so the entry
+# covers both files and the weakly_gripped grip_class those comments carry.
+# The reader-level barrier test and its old-gate mutant prove
+# the native-context ordering and the boundary outcomes.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-dap-entry-reader-local-boundaries"
+kind = "predicate_infection_untraceable"
+paths = ["crates/perl-dap/src/debug_adapter/process.rs", "crates/perl-dap/src/debug_adapter/session.rs"]
+classification = ["activation_unknown", "no_static_path", "weakly_gripped"]
+owner = "proof-lane"
+issue = "EffortlessMetrics/ripr#1429"
+reason = "The exact hosted RIPR receipt for PR #15220 reports four activation_unknown predicate-boundary findings in process.rs (seams bebf17059a062f3d, c7b6be059f3099fd, 1ae4339eeecae0c9, and summary-only 1af5359eeed95762) at lines 1223 and 1436. Each is gap_state=static_limitation and states that the missing discriminator is a local/computed current_line/current_file operand; RIPR requests analyzer support rather than a production repair. The reader-level barrier test output_reader_waits_for_native_context_after_warning exercises the native-context ordering with a warning-before-context fixture, the old-gate mutant fails with warning location line 3 consumed as the entry frame, and the focused process reader test command cargo test -p perl-dap --lib debug_adapter::process::tests --locked passes 35 tests on the repaired candidate. The suppression is path-plus-class scoped because schema version 1 has no seam-id or line selector; the receipt's six actionable execution.rs findings remain unaffected. Updated by the #15220 lane merge: hosted run 35099133724 (evaluated merge tree 6781f1ae4) also reports 4 no_static_path new-gap seams on the same two error-propagation exits of read_debugger_record (f849b21a1600b08c and f849bb1a1600bfd7 at line 60 — the fill_buf Err propagation; 41d63c1121b37206 at line 87 — the invalid-UTF-8 conversion), reproduced from run 34757592743 on b9dece9d5, each suggesting an exact error-variant test while debugger_record_reader_preserves_underlying_read_error (ErrorKind::Other, sentinel cause downcast, no os error) and debugger_record_reader_rejects_bare_prompt_and_invalid_utf8 (ErrorKind::InvalidData, FromUtf8Error cause bytes, valid_up_to, error_len) are exactly those tests and pass; the static tracer has no test path through the generic R: Read plumbing. A third hosted receipt (run on 9c1757651, evaluated merge tree cabc86dd6a5ecb5f1231688bc2b142847a4fa186) shows the 4 diff-receipt no_static_path probes are on session.rs lines 24 and 34 (probe pairs ade902cb/24ea7905 and ade902cb.2/24ea7905.2) — the two entry_stop_pending: false initializer lines this merge deduplicated, plain field-construction/call-deletion declaration probes whose init behavior the 1073-test lib suite exercises — and its review-guidance receipt carries the process.rs:60/87 seams as weakly_gripped error_variant comments, so the entry's paths and classification cover the files and classes the receipts actually report. Remove when RIPR resolves local/computed boundary operands or traces through generic reader error propagation, or when targeted mutation replaces this advisory path."
+created = "2026-09-09"
+review_after = "2026-09-30"
+expires = "2026-10-07"
+removal_criteria = "Remove when RIPR resolves local/computed predicate-boundary operands or traces generic reader error propagation, or narrow immediately if a future receipt reports an executable seam in process.rs or session.rs outside the listed activation_unknown, no_static_path, and weakly_gripped boundaries."
 # -----------------------------------------------------------------------------
 # Opaque LexerCheckpoint (#8090, PR #14896): hosted RIPR 0.10.0 on merge tree
 # ac17e230 (run 34418959457, artifact 10132869484) reports 101 new
@@ -3491,7 +3569,62 @@ expires = "2026-09-23"
 removal_criteria = "Remove when the registry gains a production consumer (re-scope suppression to that consumer's seams) or when ripr#1429 resolves declaration-line probes for data rows; narrow immediately if any executable (non-declaration) code lands in this file."
 
 # -----------------------------------------------------------------------------
-# PR #14758 (#10502) adds the Neovim activation/root envelope validator in
+# PR #13565 (#13360) adds the stack-increment admission/result trust-boundary
+# module. Hosted RIPR 0.10.0 (run 34736098538, head ebf57ab5e, evaluated merge
+# tree 00111226) reports 165 no_static_path probes — field_construction on
+# struct-field/const declaration lines across delta.rs, mod.rs, plan.rs,
+# result.rs, subject.rs, tests.rs, the ci-stack task wiring, and the
+# stack_local route-profile constant. The falsification is decisive for the
+# ripr#1429 declaration-line class: xtask/tests/stack_increment_seam_proof.rs
+# constructs the public structs literally (DeltaPath, ChildDelta,
+# StackSubjectInput, StackPlanRequest, StackResultInput) and drives
+# parse -> subject -> plan -> result -> explanation with accepting and
+# refusing assertions, yet the blocking count was identical (165) before and
+# after that seam test landed — declaration-line probes on non-primitive
+# fields do not resolve through struct-literal construction (same class as
+# the #12049 reachability-contract and #13397 no_panic_debt entries).
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-13360-stack-increment-declaration-seams"
+kind = "declaration_line_no_static_path"
+paths = ["xtask/src/stack_increment/*", "xtask/src/stack_increment/**", "xtask/src/tasks/ci_stack_increment.rs", "xtask/src/tasks/gates/route_profile.rs"]
+classification = ["no_static_path"]
+owner = "proof-lane"
+issue = "#13360"
+reason = "PR #13565 (#13360): 165 no_static_path field_construction probes on declaration lines (pub struct fields, consts, and error-code tables) across the new stack_increment module, its ci-stack task wiring, and the stack_local route-profile constant. Executable seams remain proven by the module's unit tests (cross-repository admission refusals, malformed rename rows, forged rowless results, canonical delta/subject/selector digests, protected-main promotion refusal) plus the external xtask/tests/stack_increment_seam_proof.rs integration test, which constructs every public struct literally and asserts both accepting and refusing branches — and the blocking count did not move, confirming the ripr#1429 declaration-line class rather than a coverage gap. Suppression is path-scoped and no_static_path-only; any reachable_unrevealed or other blocking classification in these files still gates, except the single declaration-line probe dispositioned by the companion entry below."
+created = "2026-09-13"
+review_after = "2026-10-13"
+expires = "2026-12-13"
+removal_criteria = "Remove when EffortlessMetrics/ripr#1429 traces declaration-line field_construction owners to same-crate or integration tests; then delete this entry and expect the stack_increment unit tests plus xtask/tests/stack_increment_seam_proof.rs to clear the seams without it. Do not extend this entry to any other classification."
+
+# -----------------------------------------------------------------------------
+# Companion single-probe entry for the same PR: RIPR reports one
+# reachable_unrevealed probe (probe:xtask_src_stack_increment_result.rs:
+# field_construction:be152ed4, result.rs:340) on the declaration line of the
+# `parent_state: ParentPrerequisiteState` parameter of
+# classify_context_status, stop_reason fixture_opaque. Tests reach and
+# discriminate the parameter: unit tests assert Failed -> BlockedParent,
+# Passed -> CurrentSuccess, and None -> NotReported, and the external seam
+# proof constructs StackResultInput with parent_state Some(Passed) and
+# asserts CurrentSuccess; the tracer cannot reveal a declaration-line
+# field_construction mutation through fixture-opaque construction — the same
+# ripr#1429 class as the entry above, reported under a different
+# classification.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-13360-result-parent-state-declaration"
+kind = "declaration_line_no_static_path"
+paths = ["xtask/src/stack_increment/result.rs"]
+classification = ["reachable_unrevealed"]
+owner = "proof-lane"
+issue = "#13360"
+reason = "PR #13565 (#13360): a single reachable_unrevealed field_construction probe on the declaration line of classify_context_status's parent_state parameter (result.rs:340, probe be152ed4, stop_reason fixture_opaque, run 34736098538). The parameter's behavior is discriminated by unit tests (ParentPrerequisiteState::Failed -> BlockedParent, Passed -> CurrentSuccess, None -> NotReported) and by the external seam-proof integration test; RIPR cannot reveal the declaration-line mutation through fixture-opaque construction. HONEST SCOPE NOTE: the matcher is file-scoped and classification-qualified, so a future genuine reachable_unrevealed executable seam in result.rs would be masked for this window — review at review_after and narrow or remove immediately if any receipt reports a non-declaration reachable_unrevealed probe here."
+created = "2026-09-13"
+review_after = "2026-10-13"
+expires = "2026-11-13"
+removal_criteria = "Remove when EffortlessMetrics/ripr#1429 resolves declaration-line probes via constructor/fixture call paths, or immediately narrow if a receipt reports a non-declaration reachable_unrevealed seam in this file."
+
+# -----------------------------------------------------------------------------
 # xtask/src/neovim_activation_root_envelope.rs. ripr 0.10.0 reports 62
 # no_static_path probes there — 31 field_construction and 31 call_deletion —
 # and every one sits on a declaration line: the `const` census tables
@@ -3789,6 +3922,38 @@ review_after = "2026-10-13"
 expires = "2026-12-31"
 removal_criteria = "Remove when #13238 lands the exact installed-name state that replaces this containment, or when the candidate gains its first production consumer (then re-scope the suppression to that consumer's seams and require activation evidence through it), or when ripr#1429 resolves activation tracing for modules with no production entry point. Narrow immediately if any seam unrelated to the containment predicates lands in this file."
 
+# Activation inventory generator (#9204, PR #14633): hosted RIPR on head
+# 09cb09d623 (merge tree d5827469, run 35005794864) reported 188 new
+# actionable gaps — 106 no_static_path + 82 reachable_unrevealed — in the
+# new xtask activation module. The claim is already discriminated by
+# cargo test -p xtask --test activation --test activation_cwd_independence
+# (63+1) and --lib activation (including protocol-kind wiring controls).
+# RIPR's own fallback named related tests for the error_path/? seams
+# (derive_features, feature_row, derive_gates) and labelled const/struct
+# owners as no_static_path field_construction — ripr#1429, same class as
+# no_panic_debt and tautology declaration suppressions. Review guidance
+# timed out at 600s so the producer could not emit per-line comments;
+# adding constructor-only tests for FEATURES_TOML would be proof theatre.
+# weakly_exposed stays visible. Narrow immediately if a receipt reports
+# an executable seam in these files that the existing tests do not name.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-9204-activation-inventory-declaration-and-error-path-seams"
+kind = "declaration_line_no_static_path"
+paths = [
+  "xtask/src/activation/*",
+  "xtask/src/activation/**",
+  "xtask/src/tasks/activation.rs",
+]
+classification = ["no_static_path", "reachable_unrevealed"]
+owner = "architecture/activation"
+issue = "#9204"
+reason = "PR #14633 (#9204) adds the versioned activation inventory generator. Hosted RIPR on head 09cb09d623 (merge tree d5827469, run 35005794864) reported 188 new actionable gaps: 106 no_static_path (const/struct field_construction owners in derive.rs plus declaration residue) and 82 reachable_unrevealed (error_path/?/side_effect on derive_features, feature_row, derive_gates). Discriminating proof already exists: cargo test -p xtask --test activation --test activation_cwd_independence (63+1) and --lib activation, including protocol_kind_strings_do_not_establish_an_unowned_preview and exact_derivation_receipts. RIPR's fallback named those same tests as related_tests for the error_path seams and still classified them reachable_unrevealed; const FEATURES_TOML/GATE_POLICY_YAML owners have no call path (ripr#1429). Same class as ripr-suppress-13397-panic-debt-declaration-seams and ripr-suppress-14058-tautology-declaration-seams. Classification is no_static_path and reachable_unrevealed only; weakly_exposed stays active. HONEST SCOPE NOTE: path-scoped to the new activation module and its CLI wrapper, so a future seam in these files is masked for this window — the next consumer (#9205) must re-scope rather than inherit. Remove when ripr#1429 traces declaration owners and error_path ? through the existing tests."
+created = "2026-09-15"
+review_after = "2026-10-15"
+expires = "2026-12-15"
+removal_criteria = "ripr#1429 traces declaration-line field_construction and error_path ? owners in xtask/src/activation to the existing unit and integration tests; then delete this entry and expect those tests to clear the seams without it. Narrow immediately if a receipt reports an executable seam in these files that cargo test -p xtask --test activation does not name. Do not keep the entry if a later PR adds an activation check/report consumer (#9205) without re-scoping."
+
 # -----------------------------------------------------------------------------
 # Signature-help prototype parameter numbering: side-effect push observation is
 # statically untraceable from loop-emitted struct literals (ripr#1429 class).
@@ -3985,6 +4150,57 @@ created = "2026-09-15"
 review_after = "2026-10-15"
 expires = "2026-12-31"
 removal_criteria = "Remove when ripr#1429-class tracing covers fn-pointer call sites on the deletion side of a diff, or when this PR's deletion probes age out of the diff scope. Narrow immediately if any seam unrelated to ParseFailure classification lands in this file."
+
+# -----------------------------------------------------------------------------
+# issue_controllers train validator (PR #15416, T02 of #11765): new-module
+# declarations with no static test path (ripr#1429 class).
+#
+# PR #15416 adds the independent static validator for the stable
+# issue_controller_train.v1 manifest: five production files plus an inline
+# cfg(test) falsifier suite. Diff-scoped RIPR 0.10.x reports 219
+# no_static_path seams across the module. The flagged seams are non-executable
+# declarations and fixture plumbing the analyzer cannot trace to a covering
+# test: frozen contract constants (SCHEMA_NAME, EXPECTED_NODES, LAW_EDGES,
+# vocabularies), clap-derived subcommand/field definitions in mod.rs (the same
+# proc-macro-opaque class as the xtask CLI and native_product_surface
+# suppressions), the internal Sha256Digest wrapper struct, and the cfg(test)
+# mutation-fixture builders in tests.rs.
+#
+# HONEST PROOF NOTE: the module's behavior proof is not declaration-level. It
+# is the 55-test falsifier suite that mutates the real stable manifest and
+# requires every law to reject it (cargo test -p xtask --bin xtask
+# issue_controllers), four command-level fail-closed tests (non-static refusal,
+# projection drift detection, refuse-to-project, explain-static), the
+# git_ancestry inventory contract test, and the fused CI gate
+# (issue-controller-train-contract.yml) that runs the suite, `train check
+# --static`, and `train graph --check` on every PR touching the module.
+# reachable_unrevealed findings are NOT suppressed and still block.
+#
+# HONEST SCOPE NOTE: the matcher is path-scoped, so a future no_static_path
+# seam in these files is masked for this window. That is a real cost; it is
+# accepted because every executable law in the module is falsifier-covered and
+# the fused CI gate re-proves the manifest on every touch. Narrow immediately
+# if any seam unrelated to the train validator lands in these files.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-issue-controllers-train-validator"
+kind = "predicate_infection_untraceable"
+paths = [
+  "xtask/src/tasks/issue_controllers/mod.rs",
+  "xtask/src/tasks/issue_controllers/model.rs",
+  "xtask/src/tasks/issue_controllers/validate.rs",
+  "xtask/src/tasks/issue_controllers/digest.rs",
+  "xtask/src/tasks/issue_controllers/projection.rs",
+  "xtask/src/tasks/issue_controllers/tests.rs",
+]
+classification = ["no_static_path"]
+owner = "proof-lane"
+issue = "#11765"
+reason = "PR #15416 (T02 of the issue-controller train, epic #11765) adds the independent static validator for the stable issue_controller_train.v1 manifest. Diff-scoped RIPR 0.10.x reports 219 no_static_path seams on the new module; they are non-executable declarations (frozen contract constants and vocabularies), clap-derived subcommand and field definitions, the internal Sha256Digest wrapper, and cfg(test) mutation-fixture builders — the analyzer cannot trace any of them to a static test path (ripr#1429 class, same as the xtask CLI, native_product_surface, quality_baseline, and agent_ledgers suppressions). The module's executable proof is the 55-test falsifier suite over the real stable manifest plus four command-level fail-closed tests, and the fused issue-controller-train-contract workflow re-runs the suite, `train check --static`, and `train graph --check` on every PR touching the module. Remove when ripr#1429 is fixed upstream or the module gains a registered static test mapping."
+created = "2026-09-16"
+review_after = "2026-10-16"
+expires = "2026-12-31"
+removal_criteria = "Remove when ripr#1429-class tracing maps new-module declarations to their covering falsifier suites, or when the module is deleted. Narrow immediately if any seam unrelated to the train validator lands in these files."
 
 # -----------------------------------------------------------------------------
 # xtask automation: compiler performance receipt gate module — no production
@@ -4203,3 +4419,382 @@ created = "2026-09-16"
 review_after = "2026-10-16"
 expires = "2026-12-31"
 removal_criteria = "Remove when EffortlessMetrics/ripr#1429 traces declaration-line probes to the tests that construct or exercise their owners, or at expiry. Narrow immediately if a receipt reports an executable no_static_path seam in xtask/src/compiler_upstream_status.rs, its tests submodule, or xtask/src/tasks/compiler_upstream_status.rs outside the 126 identities listed in gap_ids. Do not keep this entry if those probe ids rotate and the receipt names a different executable owner."
+
+# -----------------------------------------------------------------------------
+# Canonical regex retention declaration-line probes (#7024, PR #14751).
+#
+# ripr 0.10.0 diff-scoped analysis reports exactly 13 no_static_path probes as
+# the enforce-new-ripr gate's entire blocking basis for this PR, all on
+# declaration lines of the new canonical regex pipeline:
+# - report_identity.rs x2: the RULE_CATALOG_SCHEMA_VERSION result-id pin bump
+#   (base-relative `= 1` and head `= 2` probes on one changed line). The pin is
+#   consumed by pull_report_subject/compose and pinned by the same-file inline
+#   tests (identical_subjects_compose_identical_ids,
+#   composed_ids_parse_under_current_schema_only).
+# - perl-lsp-rs-core diagnostics.rs x1: the DiagnosticsProvider.regex_analysis
+#   field, constructed and consumed on every publish path exercised by
+#   crates/perl-lsp-rs-core/tests/regex_canonical_diagnostics_tests.rs
+#   (canonical_diagnostics builds the provider with_regex_analysis).
+# - regex_retention.rs x10: RetainedRegexSession fields (guard, source, the
+#   !Send PhantomData binding), PendingGeometrySession id/source_ptr fields and
+#   the for_source constructor, PendingGeometryGuard's id field and the
+#   thread-local retire pop, and the Retired::Active variant. Covered by the
+#   same-file inline seam-proof tests
+#   (the_session_guard_tracks_the_session_and_costs_no_source_scan,
+#   a_geometry_session_is_scoped_to_its_own_source_and_unwinds_cleanly,
+#   an_out_of_order_finish_leaves_no_orphaned_session_behind) and by
+#   crates/perl-parser-core/tests/retained_regex_session_tests.rs
+#   (out-of-order finish, foreign-buffer admission, staleness, abandoned
+#   session, fatal-parse retention).
+#
+# Declaration lines have no owner function, so ripr's owner-based test matcher
+# cannot relate any test to them (match_same_test_file is disabled without an
+# owner file stem); constructor-only tests would be proof theatre — the
+# receipt's own guidance ("say so in the PR instead of adding proof theatre",
+# ripr#1429 class) and the #14958/#15615 precedents. Same declaration-line
+# class as ripr-suppress-14958-startup-inc-snapshot-declarations,
+# ripr-suppress-15615-outbound-settlement-declaration-probes, and the #15604
+# compiler-upstream-status entry. reachable_unrevealed is 0 on this PR's
+# receipt; weakly_exposed and every other class stay visible.
+#
+# Identity key: `gap_ids` lists the 13 probe identities from this PR's
+# receipt, not the path. A future executable no_static_path seam in these
+# files with a different probe id stays visible. `kind` is descriptive
+# metadata, not a declaration selector.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-14751-regex-canonical-declaration-probes"
+kind = "declaration_line_no_static_path"
+paths = [
+  "crates/perl-lsp-rs/src/features/diagnostics/report_identity.rs",
+  "crates/perl-lsp-rs-core/src/providers/diagnostics/diagnostics.rs",
+  "crates/perl-parser-core/src/engine/regex_retention.rs",
+]
+classification = ["no_static_path"]
+gap_ids = [
+  "probe:crates_perl-lsp-rs_src_features_diagnostics_report_identity.rs:field_construction:45750d53",
+  "probe:crates_perl-lsp-rs_src_features_diagnostics_report_identity.rs:field_construction:7899af3d",
+  "probe:crates_perl-lsp-rs-core_src_providers_diagnostics_diagnostics.rs:field_construction:4899cb80",
+  "probe:crates_perl-parser-core_src_engine_regex_retention.rs:field_construction:651f44f7",
+  "probe:crates_perl-parser-core_src_engine_regex_retention.rs:field_construction:22ef4794",
+  "probe:crates_perl-parser-core_src_engine_regex_retention.rs:call_deletion:ca7361c5",
+  "probe:crates_perl-parser-core_src_engine_regex_retention.rs:field_construction:8d805d25",
+  "probe:crates_perl-parser-core_src_engine_regex_retention.rs:field_construction:1a2365e3",
+  "probe:crates_perl-parser-core_src_engine_regex_retention.rs:field_construction:7d13fe5f",
+  "probe:crates_perl-parser-core_src_engine_regex_retention.rs:call_deletion:b072da60",
+  "probe:crates_perl-parser-core_src_engine_regex_retention.rs:field_construction:1a2365e3.2",
+  "probe:crates_perl-parser-core_src_engine_regex_retention.rs:call_deletion:6dacbde9",
+  "probe:crates_perl-parser-core_src_engine_regex_retention.rs:call_deletion:712c9be0",
+]
+owner = "proof-lane"
+issue = "EffortlessMetrics/ripr#1429"
+reason = "PR #14751 (fix #7024): 13 no_static_path probes are the enforce-new-ripr gate's entire blocking basis, all declaration-line seams of the new canonical regex pipeline (report_identity RULE_CATALOG_SCHEMA_VERSION pin bump x2 base+head, DiagnosticsProvider.regex_analysis field x1, regex_retention session internals x10) covered by the inline seam-proof tests, retained_regex_session_tests.rs, regex_canonical_diagnostics_tests.rs, and the report_identity identity-composition inline tests. Declaration lines have no owner function, so the owner-based matcher cannot relate a test; constructor-only tests would be proof theatre per the receipt's own ripr#1429 guidance. reachable_unrevealed is 0 on the PR receipt. Same ripr#1429 declaration-line class as ripr-suppress-14958-startup-inc-snapshot-declarations, ripr-suppress-15615-outbound-settlement-declaration-probes, and the #15604 compiler-upstream-status entry. Selector is the 13 gap_ids from this PR's receipt, not the path; classification-qualified to no_static_path. A future executable no_static_path seam in these files with a different probe id stays visible. kind is descriptive metadata, not a declaration selector."
+created = "2026-09-16"
+review_after = "2026-10-16"
+expires = "2026-12-31"
+removal_criteria = "Remove when EffortlessMetrics/ripr#1429 traces declaration-line probes to the tests that construct or exercise their owners, or at expiry. Narrow immediately if a receipt reports an executable no_static_path seam in report_identity.rs, perl-lsp-rs-core diagnostics.rs, or regex_retention.rs outside the 13 identities listed in gap_ids. Do not keep this entry if those probe ids rotate and the receipt names a different executable owner."
+# -----------------------------------------------------------------------------
+# do-while keep-consuming and paren-tracking seams (PR #15719): the static
+# tracer cannot connect focused tests to inline boolean boundaries whose arms
+# (`bare_shape`, `subscript_chain`, paren depth) are only decidable by
+# running the parser, nor to supporting calls linked through multi-hop
+# parse paths. Same instrument-limitation class as #3355/#3397.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-do-while-seam-tracer-limitation"
+kind = "predicate_infection_untraceable"
+paths = [
+  "crates/perl-parser-core/src/engine/parser/expressions/postfix.rs",
+  "crates/perl-parser-core/src/engine/parser/expressions/primary.rs",
+]
+classification = ["weakly_gripped", "activation_unknown"]
+gap_ids = [
+  "47e6d7c5970fd3c5",
+  "47d5d6c597015edf",
+  "4801e6c59726b4fa",
+  "7094eba0a2aa14cb",
+  "ca50ce5d0b9b7584",
+  "ec90e25d1ee500f6",
+]
+owner = "proof-lane"
+issue = "EffortlessMetrics/ripr#1429"
+reason = "PR #15719 gates the do-while subscript-chain continuation behind inside_condition_group || (unparenthesized_condition && (bare_shape || subscript_chain)) with paren-group enter/leave tracking. The arms are only decidable by running the parser, so no static input matcher can link a test to a boundary: discriminators 1-4 pin every leaf outcome, parse_postfix_chain_boundary_discriminator asserts exact (total, brace-op) AST shape counts per arm, and consume_balanced_and_paren_group_call_observation pins the supporting calls (balanced/unclosed interpolation diagnoses plus nested-group depth balance with the exact DoWhileTrailingBlock variant), all in crates/perl-parser-core/tests/do_while_trailing_block_tests.rs. Scoped to six stable finding identities so any other seam in these files stays visible."
+created = "2026-09-16"
+review_after = "2026-10-16"
+expires = "2026-10-31"
+removal_criteria = "Remove when EffortlessMetrics/ripr#1429 connects these seams to the named tests, or at expiry. Narrow immediately if a receipt reports a seam in these files outside the six listed finding identities."
+# DAP debugger-capability probe seams (PR #15717): ripr#1429-class tracer
+# limitation — the static tracer cannot connect focused tests through the
+# check→cache→spawn→match indirection, nor link direct boundary unit calls.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-dap-capability-probe-tracer-limitation"
+kind = "predicate_infection_untraceable"
+paths = ["crates/perl-dap/src/debug_adapter/process.rs"]
+classification = ["weakly_gripped", "activation_unknown"]
+gap_ids = ["81b633d3fa5df1df", "c97d432fdf34e680", "25f58da00de2eca9"]
+owner = "proof-lane"
+issue = "EffortlessMetrics/ripr#1429"
+reason = "PR #15717 hardens the interpreter capability probe (bounded pipe drains, marker requirement, no caching of non-pass verdicts). Three named seams resist template-aligned proof: the Incapable match arms (process.rs:951) are covered by check_debugger_capability_exact_error_variant (silent double, matches! on DebuggerCapabilityProbe::Incapable, expect_err plus full-literal assert_eq on the exact remediation message); the marker boundary (process.rs:125) by has_probe_success_marker_boundary_discriminator (assert_eq true/false on bare/tab-padded/whitespace-only lines); the spawn activation (process.rs:1005) by run_debugger_capability_probe_call_presence_observer (argv-recording double asserting the perl5db load expression), which demonstrably closed its gap in the local oracle loop. The tracer cannot follow oracles through the spawn/statics/cache indirection (activation_unknown) nor link the direct boundary calls (same ripr#1429 limitation class as #3355/#3397). Scoped to the three stable finding identities so any other seam in this file stays visible."
+created = "2026-09-16"
+review_after = "2026-10-16"
+expires = "2026-10-31"
+removal_criteria = "Remove when EffortlessMetrics/ripr#1429 connects these seams to the named tests, or at expiry. Narrow immediately if a receipt reports a seam in this file outside the three listed finding identities."
+
+# -----------------------------------------------------------------------------
+# DAP debugger-capability probe declarations (PR #15717): the two
+# gate-blocking no_static_path probes are declaration lines the tracer can
+# never connect to a test — the DEBUGGER_PROBE_SUCCESS_MARKER const
+# (process.rs:71, field_construction) and the Incapable(String) enum variant
+# (process.rs:82, call_deletion). Constructor-only tests would be proof
+# theatre: the marker's behavior is covered by
+# probe_success_marker_requires_its_own_line plus
+# has_probe_success_marker_boundary_discriminator (13 direct_owner_call
+# links), and the variant by check_debugger_capability_exact_error_variant
+# (matches! on DebuggerCapabilityProbe::Incapable plus the exact remediation
+# literal). Same ripr#1429 declaration-line class as the compiler-upstream
+# and framework-DSL declaration entries. Scoped to the two stable probe
+# identities so any other seam in this file stays visible.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-dap-capability-probe-declarations"
+kind = "declaration_line_no_static_path"
+paths = ["crates/perl-dap/src/debug_adapter/process.rs"]
+classification = ["no_static_path"]
+gap_ids = ["probe:crates_perl-dap_src_debug_adapter_process.rs:field_construction:9898b020", "probe:crates_perl-dap_src_debug_adapter_process.rs:call_deletion:933cb207"]
+owner = "proof-lane"
+issue = "EffortlessMetrics/ripr#1429"
+reason = "PR #15717 hardens the interpreter capability probe. Its two gate-blocking no_static_path probes are declaration lines with no function body to trace into: the DEBUGGER_PROBE_SUCCESS_MARKER const (process.rs:71) and the Incapable(String) variant (process.rs:82). Behavior is covered without them — the marker by probe_success_marker_requires_its_own_line and has_probe_success_marker_boundary_discriminator, the variant by check_debugger_capability_exact_error_variant. Same declaration-line class as the compiler-upstream-status and framework-DSL suppression entries."
+created = "2026-09-16"
+review_after = "2026-10-16"
+expires = "2026-10-31"
+removal_criteria = "Remove when EffortlessMetrics/ripr#1429 traces declaration-line probes to the tests that construct or exercise their owners, or at expiry. Narrow immediately if a receipt reports a no_static_path seam in this file outside the two listed probe identities."
+# emacs_train_packet.rs E06 actor-packet adapter declaration lines: consts,
+# struct/clap-arg field declarations, and the reviewer-question table -
+# activation untraceable by ripr (ripr#1429 declaration-line class).
+#
+# PR #15573 (same-root transplant of #12277) adds the E06 actor-packet
+# adapter: packet / review-packet / reconcile-packet composition projecting
+# the joined E01/E02/E04/E01R train state into the shared
+# agent_implementation_packet.v1 and agent_review_packet.v1 contracts.
+#
+# Decisive receipt facts (ripr 0.10.0 diff-scoped, base origin/main, head
+# 82a3328372, CI run 35105086795 job 104844800697 plus the locally
+# reproduced receipt at the same head with the identical summary; the
+# review-binding repair commit 12ab3e0d8 added the builder_packet field
+# declarations, whose two probes were reported on CI run 35259555456 job
+# 105331572297 at head b83e9e073; the review-hygiene repair commit
+# 7b614df3 added the FixtureTree guard declaration, whose probe was
+# reported on CI run 35280300752 job 105419235350 at head 7b614df39):
+# no_static_path = 45 there, plus the 46th through 50th below,
+# reachable_unrevealed = 0, all severity info:
+#   - 39 field_construction on declaration lines of the new E06 adapter
+#     (emacs_train_packet.rs): the BUILDER_CONTRACT / REVIEW_CONTRACT /
+#     BUILDER_DISPOSITIONS / BLOCKING_DISPOSITIONS / BOUNDED_ROLES consts,
+#     the LiveObservation and ReviewFacts struct field declarations
+#     (including the builder_packet fields from the review-binding repair),
+#     and the clap arg struct fields of the packet commands;
+#   - 8 call_deletion probes on the REVIEWER_CHALLENGE_QUESTIONS tuple
+#     string literals and the pub(crate) mod test_support declaration;
+#   - 1 call_deletion probe on the clap Packet(EmacsTrainPacketCommand)
+#     enum variant declaration in the xtask dispatch enum at main.rs:4696;
+#   - 2 call_deletion probes on the tests.rs use-import line and the
+#     FixtureTree drop-guard tuple declaration (review-hygiene repair).
+#
+# Declaration lines have no function body for ripr to trace into, and a
+# constructor-only test for a const or struct field is the receipt's own
+# named anti-pattern ("say so in the PR instead of adding proof theatre").
+# The executable behavior is not unproven: the same receipts classify the
+# module's real seams exposed/weakly_exposed with reachable_unrevealed = 0,
+# and the covering proof is the 37-falsifier inline #[cfg(test)] suite
+# (xtask/src/tasks/emacs_train_packet/tests.rs) composing packets from
+# synthetic fixture trees, plus the shared-contract zero-drift checks and
+# the emacs-train-packet-contract lane.
+#
+# Identity key: gap_ids lists the 50 probe identities from those receipts.
+# Path + classification are additional filters, not the selector. A future
+# executable no_static_path seam in these files with a different probe id
+# stays visible. kind remains descriptive metadata, not a declaration
+# selector. Weakly_exposed / reachable_unrevealed / other classes stay
+# visible.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-15573-emacs-train-packet-declaration-probes"
+kind = "declaration_line_no_static_path"
+paths = [
+  "xtask/src/tasks/emacs_train_packet.rs",
+  "xtask/src/tasks/emacs_train_packet/tests.rs",
+  "xtask/src/main.rs",
+]
+classification = ["no_static_path"]
+gap_ids = [
+  "probe:xtask_src_tasks_emacs_train_packet.rs:call_deletion:5388849d",
+  "probe:xtask_src_tasks_emacs_train_packet.rs:call_deletion:6bb4a355",
+  "probe:xtask_src_tasks_emacs_train_packet.rs:call_deletion:7c050907",
+  "probe:xtask_src_tasks_emacs_train_packet.rs:call_deletion:c678b9e5",
+  "probe:xtask_src_tasks_emacs_train_packet.rs:call_deletion:ce99dc40",
+  "probe:xtask_src_tasks_emacs_train_packet.rs:call_deletion:d5255e55",
+  "probe:xtask_src_tasks_emacs_train_packet.rs:call_deletion:fbe6c54b",
+  "probe:xtask_src_tasks_emacs_train_packet.rs:call_deletion:feb432b4",
+  "probe:xtask_src_tasks_emacs_train_packet.rs:field_construction:09f94167",
+  "probe:xtask_src_tasks_emacs_train_packet.rs:field_construction:0a6580bd",
+  "probe:xtask_src_tasks_emacs_train_packet.rs:field_construction:1a6defb9",
+  "probe:xtask_src_tasks_emacs_train_packet.rs:field_construction:2a7f7f49",
+  "probe:xtask_src_tasks_emacs_train_packet.rs:field_construction:3372eed5",
+  "probe:xtask_src_tasks_emacs_train_packet.rs:field_construction:3cea95a2",
+  "probe:xtask_src_tasks_emacs_train_packet.rs:field_construction:3cea95a2.2",
+  "probe:xtask_src_tasks_emacs_train_packet.rs:field_construction:3cea95a2.3",
+  "probe:xtask_src_tasks_emacs_train_packet.rs:field_construction:4091e3d8",
+  "probe:xtask_src_tasks_emacs_train_packet.rs:field_construction:6ac74c11",
+  "probe:xtask_src_tasks_emacs_train_packet.rs:field_construction:6dba0e5f",
+  "probe:xtask_src_tasks_emacs_train_packet.rs:field_construction:7257c92b",
+  "probe:xtask_src_tasks_emacs_train_packet.rs:field_construction:760e7dc5",
+  "probe:xtask_src_tasks_emacs_train_packet.rs:field_construction:760e7dc5.2",
+  "probe:xtask_src_tasks_emacs_train_packet.rs:field_construction:760e7dc5.3",
+  "probe:xtask_src_tasks_emacs_train_packet.rs:field_construction:76570b61",
+  "probe:xtask_src_tasks_emacs_train_packet.rs:field_construction:872bb831",
+  "probe:xtask_src_tasks_emacs_train_packet.rs:field_construction:876e2ded",
+  "probe:xtask_src_tasks_emacs_train_packet.rs:field_construction:876e2ded.2",
+  "probe:xtask_src_tasks_emacs_train_packet.rs:field_construction:8b29c859",
+  "probe:xtask_src_tasks_emacs_train_packet.rs:field_construction:942570ca",
+  "probe:xtask_src_tasks_emacs_train_packet.rs:field_construction:a5e124af",
+  "probe:xtask_src_tasks_emacs_train_packet.rs:field_construction:a83bc6df",
+  "probe:xtask_src_tasks_emacs_train_packet.rs:field_construction:a84cfd9a",
+  "probe:xtask_src_tasks_emacs_train_packet.rs:field_construction:a9e15632",
+  "probe:xtask_src_tasks_emacs_train_packet.rs:field_construction:b31d0c26",
+  "probe:xtask_src_tasks_emacs_train_packet.rs:field_construction:b485e952",
+  "probe:xtask_src_tasks_emacs_train_packet.rs:field_construction:ba7f6a61",
+  "probe:xtask_src_tasks_emacs_train_packet.rs:field_construction:bf8fb9e5",
+  "probe:xtask_src_tasks_emacs_train_packet.rs:field_construction:c0d8aac7",
+  "probe:xtask_src_tasks_emacs_train_packet.rs:field_construction:c41eee7f",
+  "probe:xtask_src_tasks_emacs_train_packet.rs:field_construction:c94bed2d",
+  "probe:xtask_src_tasks_emacs_train_packet.rs:field_construction:dd717722",
+  "probe:xtask_src_tasks_emacs_train_packet.rs:field_construction:de698517",
+  "probe:xtask_src_tasks_emacs_train_packet.rs:field_construction:f1801e65",
+  "probe:xtask_src_tasks_emacs_train_packet.rs:field_construction:f2ab02fa",
+  "probe:xtask_src_tasks_emacs_train_packet.rs:field_construction:f8616cae",
+  "probe:xtask_src_main.rs:call_deletion:21107ffa",
+  "probe:xtask_src_tasks_emacs_train_packet_tests.rs:call_deletion:010a891f",
+  "probe:xtask_src_tasks_emacs_train_packet.rs:field_construction:5eeb2d23",
+  "probe:xtask_src_tasks_emacs_train_packet.rs:field_construction:b7932d22",
+  "probe:xtask_src_tasks_emacs_train_packet_tests.rs:call_deletion:01660a2b",
+]
+owner = "proof-lane"
+issue = "EffortlessMetrics/ripr#1429"
+reason = "PR #15573 (same-root transplant of #12277): all 50 no_static_path probes are the enforce-new-ripr gate's entire blocking basis on run 35105086795 (job 104844800697) at head 82a3328372 (45) plus the locally reproduced receipt at the same head (the 46th and 47th), follow-up run 35259555456 (job 105331572297) at head b83e9e073 (the 48th and 49th), and review-hygiene run 35280300752 (job 105419235350) at head 7b614df39 (the 50th) - 39 field_construction probes on declaration lines of the new E06 adapter (BUILDER_CONTRACT / REVIEW_CONTRACT / BUILDER_DISPOSITIONS / BLOCKING_DISPOSITIONS / BOUNDED_ROLES consts, LiveObservation and ReviewFacts struct field declarations including the builder_packet fields added by the review-binding repair 12ab3e0d8, clap arg struct fields), 8 call_deletion probes on the REVIEWER_CHALLENGE_QUESTIONS tuple string literals and the pub(crate) mod test_support declaration, 1 call_deletion probe on the clap Packet(EmacsTrainPacketCommand) enum variant declaration in the xtask dispatch enum at main.rs:4696, and 2 call_deletion probes on the tests.rs use-import line and the FixtureTree drop-guard tuple declaration added by the review-hygiene repair 7b614df3 (test-file plumbing and guard declaration, never production behavior - same test-scaffolding class as ripr-suppress-goals-next-json-cli-test). All 50 carry severity info. Declaration and import lines have no function body to trace into; constructor-only tests would be proof theatre. Executable behavior is not unproven: the same receipts report the module's real seams exposed/weakly_exposed with reachable_unrevealed = 0, and the focused suite is 37/37 green at that head. Same ripr#1429 declaration-line class as ripr-suppress-15604-compiler-upstream-status-declaration-probes, ripr-suppress-14958-startup-inc-snapshot-declarations, ripr-suppress-compiler-transformation-contract-declarations, and ripr-suppress-quality-baseline-cfg-test-scanner. Selector is the 50 gap_ids from those receipts, not the path; classification-qualified to no_static_path. A future executable no_static_path seam in these files with a different probe id stays visible. kind is descriptive metadata, not a declaration selector."
+created = "2026-09-16"
+review_after = "2026-10-16"
+expires = "2026-12-31"
+removal_criteria = "Remove when EffortlessMetrics/ripr#1429 traces declaration-line probes to the tests that construct or exercise their owners, or at expiry. Narrow immediately if a receipt reports an executable (non-declaration) no_static_path seam in xtask/src/tasks/emacs_train_packet.rs, its tests submodule, or xtask/src/main.rs outside the 50 identities listed in gap_ids. Do not keep this entry if those probe ids rotate and the receipt names a different executable owner."
+
+# -----------------------------------------------------------------------------
+# Moose/Moose::Role activation substrate (#7788): a checked activation detector
+# landed ahead of its production consumer. The analyzer-side extractor
+# (extract_moose_activation_sites) and the facts-side adapter
+# (detect_moose_class / detect_moose_role) are the same not-yet-wired substrate
+# boundary as the Mojo::Base (#9682) and QuickORM (#13374) entries: no rs-core
+# provider reads them yet, so the static tracer cannot connect a focused test
+# to the seam through production activation.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-7788-moose-activation-substrate-seams"
+kind = "predicate_infection_untraceable"
+paths = [
+    "crates/perl-semantic-analyzer/src/analysis/moose_activation.rs",
+    "crates/perl-semantic-facts/src/framework_adapters/moose.rs",
+]
+classification = ["weakly_exposed"]
+owner = "proof-lane"
+issue = "#7788"
+reason = "PR #13096 (#7788): hosted RIPR 0.10.0 (run 35199188807, evaluated merge tree 049c791b1 of head 9d97d77d8, base e588a4908) reports 41 severe weakly_exposed probes on the two new Shadow substrate files (27 in moose_activation.rs, 14 in framework_adapters/moose.rs): match_arm on the NodeKind dispatch and ModuleSelectorOutcome dispatch, call_deletion/return_value on the walker and import classifiers, field_construction on the MooseSiteAnchor declaration. All are the documented ripr#1429 tracer class: the seams are exercised end-to-end only through Parser::parse plus extract_moose_activation_sites and the framework SDK input builders, which the static tracer cannot connect to the covering oracles, and the substrate has no rs-core consumer yet (descriptor disposition is Shadow until the #6821 cutover). Proof already exists and is discriminating, not declarative-only: 20 focused tests (8 inline in moose_activation.rs covering exact class/role identity, wrapper/DSL non-activation, package-shape non-reclassification, version retention, unmodeled args, empty import list, lexical package restore, span/generation identity; 12 in crates/perl-semantic-analyzer/tests/moose_registry_activation.rs covering descriptor determinism, authoritative detection, absence vs partial discovery, fail-closed version/name-only/missing-version/ambiguous/duplicate inputs, generation staleness, import removal/re-addition identity, root isolation, and cancellation/broken-instrumentation states). reachable_unrevealed is 0 in the same receipt, so ripr found no reachable seam this proof fails to discriminate, and the review-guidance pass timed out at 600s (guidance_status incomplete), leaving the probes at the weakly_exposed default. HONEST SCOPE NOTE: the matcher is path-scoped, so any future weakly_exposed seam in these two files is masked for this window and must trigger review and narrowing rather than inherit this entry; exposed, reachable_unrevealed, error_path, and every other classification stay live. Remove when a rs-core consumer wires the substrate (re-scope to that consumer's seams), when EffortlessMetrics/ripr#1429 traces these seams to the named tests, or at expiry."
+created = "2026-09-17"
+review_after = "2026-10-17"
+expires = "2026-12-16"
+removal_criteria = "Remove when the substrate gains its first production consumer (re-scope the suppression to that consumer's seams) or when EffortlessMetrics/ripr#1429 traces the walker/adapter seams to the named focused tests. Narrow immediately if a future receipt reports an exposed or reachable_unrevealed seam in either file."
+# Writer-preflight pure-domain declarations (PR #12059 / #11633): the new
+# xtask/src/writer_preflight/ module is a pure typed domain (subject,
+# observation, decision, reason). All 95 diff-scoped no_static_path probes
+# are field_construction declaration lines the tracer cannot connect to a
+# covering test (ripr#1429 class): struct field declarations have no body to
+# trace. The module carries 45 focused tests including the 14 shift-left
+# falsifiers named by #11633; constructor-only tests for the field
+# declarations would be proof theatre, which the gate's own guidance forbids
+# for this class. Scoped to the one new directory and the no_static_path
+# classification only: any reachable_unrevealed, weakly_exposed, or
+# behavioral seam in these files stays visible and blocking.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-writer-preflight-domain-declarations"
+kind = "declaration_line_no_static_path"
+paths = ["xtask/src/writer_preflight/*", "xtask/src/writer_preflight/**"]
+classification = ["no_static_path"]
+owner = "proof-lane"
+issue = "#11633"
+reason = "PR #12059 defines the typed writer-preflight domain (#11633): pure subject/observation/decision/reason types with a total decision core, covered by 45 focused tests including all 14 shift-left falsifiers. The 95 diff-scoped no_static_path findings are field_construction declaration lines (pub struct fields) the tracer cannot link to covering tests — the same ripr#1429 declaration-line limitation class as the DAP capability-probe and compiler-upstream-status entries. Behavior is proven by the module's decision-table and falsifier tests; constructor-only oracle tests for field declarations would be proof theatre. Scoped to the one new directory and classification; behavioral seams in these files remain blocking."
+created = "2026-09-17"
+review_after = "2026-10-17"
+expires = "2026-10-31"
+removal_criteria = "Remove when EffortlessMetrics/ripr#1429 traces field_construction declaration lines to the tests that exercise their owning type, when the module gains a live adapter with traceable call seams and the declaration suppressions can narrow, or at expiry. Narrow immediately if a receipt reports a reachable_unrevealed or other-classified seam under xtask/src/writer_preflight/. Evidence basis: ripr run 35195292770 quality-gate receipt (95 no_static_path, 0 reachable_unrevealed on this diff)."
+
+# -----------------------------------------------------------------------------
+# QuickORM table-package facts declaration probes (PR #13174, issue #13120):
+# the same ripr#1429 declaration-line class already accepted for this
+# repository's siblings (ripr-suppress-15615-outbound-settlement-declaration-
+# probes, ripr-suppress-quickorm-api-reference-registry, the writer-preflight
+# entry above).
+#
+# PR #13174 adds crates/perl-workspace/src/semantic/quickorm.rs (the bounded
+# DBIx::QuickORM table-package fact extractor) and re-exports
+# GeneratedMemberFact through semantic/mod.rs. The hosted ripr lane (run
+# 35280473400, merge preview b021dcb72, base 41b643642) reports exactly five
+# no_static_path probes, all stop_reason no_changed_rust_line:
+#   - semantic/mod.rs:55 `pub(crate) use ...GeneratedMemberFact;` — a
+#     re-export declaration; type-identity plumbing the compiler pins, with
+#     the fact surface exercised by semantic_facade_wrappers_compose_core_
+#     and_quickorm_facts and crates/perl-workspace/tests/quickorm_generated_
+#     member.rs / quickorm_workspace_receipt.rs.
+#   - semantic/quickorm.rs:26 `const QORM_TABLE_MEMBER: &str = "qorm_table";`
+#     — the member-name constant is pinned by the User::qorm_table canonical-
+#     name assertions in src/semantic/quickorm/tests.rs and by
+#     quickorm_qorm_table_reaches_generated_member_surfaces.
+#   - semantic/quickorm.rs:121-123 WalkContext { current_package,
+#     table_package_authority, shadowed_builders } — walker state fields whose
+#     population/reset/authority gates are driven end-to-end by
+#     a_second_import_fails_the_package_closed_without_affecting_its_neighbour,
+#     a_package_switch_inside_the_table_builder_emits_no_candidates, and
+#     a_package_inside_a_deferred_definition_does_not_leak_to_the_outer_walk.
+# Declaration lines have no function body to trace into; constructor-only
+# tests would be proof theatre. reachable_unrevealed is 0 on the same
+# receipt, and the run's three changed-line guidance comments (the
+# classify_import_shape string-boundary predicates at quickorm.rs:684/694)
+# are already answered by classify_import_shape_source_pair_boundary_
+# discriminators plus the two cross-extractor disagreement tests from head
+# fbb6abb25 — infection_unknown is advisory and does not gate.
+#
+# Identity key: `gap_ids` lists the five probe identities from that receipt.
+# Path + classification are additional filters, not the selector. A future
+# executable no_static_path seam in these files with a different probe id
+# stays visible. `kind` is descriptive metadata, not a declaration selector.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-13174-quickorm-table-facts-declaration-probes"
+kind = "declaration_line_no_static_path"
+paths = [
+  "crates/perl-workspace/src/semantic/mod.rs",
+  "crates/perl-workspace/src/semantic/quickorm.rs",
+]
+classification = ["no_static_path"]
+gap_ids = [
+  "probe:crates_perl-workspace_src_semantic_mod.rs:call_deletion:f4831bf8",
+  "probe:crates_perl-workspace_src_semantic_quickorm.rs:field_construction:a18218ae",
+  "probe:crates_perl-workspace_src_semantic_quickorm.rs:field_construction:ece0cd6f",
+  "probe:crates_perl-workspace_src_semantic_quickorm.rs:field_construction:3968903b",
+  "probe:crates_perl-workspace_src_semantic_quickorm.rs:field_construction:67cd7e77",
+]
+owner = "proof-lane"
+issue = "EffortlessMetrics/ripr#1429"
+reason = "PR #13174 (#13120): five no_static_path probes, all stop_reason no_changed_rust_line, on run 35280473400 at merge preview b021dcb72 (base 41b643642, branch head fbb6abb25). One call_deletion probe is the semantic/mod.rs:55 pub(crate) GeneratedMemberFact re-export (compiler-pinned type plumbing; the fact surface is exercised by semantic_facade_wrappers_compose_core_and_quickorm_facts and the tests/quickorm_generated_member.rs plus tests/quickorm_workspace_receipt.rs integration suites). Four are declaration lines of the new semantic/quickorm.rs: the QORM_TABLE_MEMBER const whose qorm_table member name is pinned by the User::qorm_table canonical-name assertions in src/semantic/quickorm/tests.rs and quickorm_qorm_table_reaches_generated_member_surfaces, and the three WalkContext state fields (current_package, table_package_authority, shadowed_builders) whose authority/shadowing/package-reset logic is driven end-to-end by a_second_import_fails_the_package_closed_without_affecting_its_neighbour, a_package_switch_inside_the_table_builder_emits_no_candidates, and a_package_inside_a_deferred_definition_does_not_leak_to_the_outer_walk. Declaration lines have no function body to trace into; constructor-only tests would be proof theatre. Same ripr#1429 declaration-line class as ripr-suppress-15615-outbound-settlement-declaration-probes and the writer-preflight entry. reachable_unrevealed is 0 on the same receipt. Selector is the five gap_ids from that receipt, not the path; classification-qualified to no_static_path. A future executable no_static_path seam in these files with a different probe id stays visible. kind is descriptive metadata, not a declaration selector."
+created = "2026-09-17"
+review_after = "2026-10-17"
+expires = "2026-12-31"
+removal_criteria = "Remove when EffortlessMetrics/ripr#1429 traces declaration-line probes to the tests that construct or exercise their owners, or at expiry. Narrow immediately if a receipt reports an executable no_static_path seam in semantic/mod.rs or semantic/quickorm.rs outside the five identities listed in gap_ids. Do not keep this entry if those probe ids rotate and the receipt names a different executable owner."

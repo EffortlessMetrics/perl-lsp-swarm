@@ -1,5 +1,6 @@
 //! Intent/diff closeout evidence gate.
 
+use crate::tasks::change_set::{ArtifactIdentity, ChangeSet, resolve_change_set};
 use crate::utils::project_root;
 use color_eyre::eyre::{Context, Result, bail};
 use regex::Regex;
@@ -86,6 +87,47 @@ fn default_warn() -> GateLevel {
     GateLevel::Warn
 }
 
+/// Typed source-state for the PR change-set observation.
+///
+/// Replaces the prior implicit "whatever `gh pr view --json files` returned"
+/// contract — which silently truncated to the first 100 changed files
+/// (#15384). Only `Complete` may support a closeout verdict; the other
+/// states must produce a `Fail` violation whenever the PR body references a
+/// closing keyword (see `evaluate`).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+pub enum SourceState {
+    /// The full changed-file set was resolved from the immutable PR
+    /// change-set observation (#8042 producer), e.g. via
+    /// `change_set::resolve_change_set(baseRefOid, headRefOid)`.
+    Complete {
+        /// Resolved base commit SHA recorded alongside the file list.
+        base_sha: Option<String>,
+        /// Resolved head commit SHA recorded alongside the file list.
+        head_sha: Option<String>,
+    },
+    /// Some change-set source was obtained but the observation is known to
+    /// be incomplete (e.g. `gh pr view --json files` truncated, or a
+    /// `--fixture` deliberately loaded a partial prefix). The file list
+    /// MAY be a useful upper-bound for advisory checks but cannot authorise
+    /// a closeout verdict.
+    Partial { reason: String },
+    /// No change-set source could be observed (`gh pr view` failed, the
+    /// PR head was not available locally for `git diff`, etc.). Cannot
+    /// authorise any verdict.
+    Unavailable { reason: String },
+}
+
+impl Default for SourceState {
+    fn default() -> Self {
+        // Fixture mode defaults to `Complete`: the fixture author asserted
+        // the listed files are the full PR change set. Live `--pr` mode
+        // must set the source state explicitly based on the resolved
+        // observation.
+        SourceState::Complete { base_sha: None, head_sha: None }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 struct FixtureInput {
     title: String,
@@ -93,6 +135,11 @@ struct FixtureInput {
     changed_files: Vec<String>,
     #[serde(default)]
     evidence: FixtureEvidence,
+    /// Optional explicit source state — defaults to `Complete` for fixture
+    /// tests where the author asserts the file list is the full PR set.
+    /// Live `--pr` mode always sets this explicitly from the observation.
+    #[serde(default)]
+    source_state: SourceState,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
@@ -101,6 +148,7 @@ struct FixtureEvidence {
     test_updated: bool,
     #[serde(default)]
     behavior_receipt: bool,
+    #[serde(default)]
     override_approved: bool,
 }
 
@@ -109,6 +157,7 @@ struct PrInput {
     title: String,
     body: String,
     changed_files: Vec<String>,
+    source_state: SourceState,
     evidence: FixtureEvidence,
 }
 
@@ -126,6 +175,7 @@ struct Receipt {
     claimed_closeout_issues: Vec<u64>,
     expected_paths: Vec<String>,
     actual_paths: Vec<String>,
+    source_state: SourceState,
     evidence: ReceiptEvidence,
     verdict: Verdict,
     violations: Vec<Violation>,
@@ -155,7 +205,7 @@ pub fn run(config: IntentDiffGateConfig) -> Result<()> {
     let policy = read_policy(&root.join(DEFAULT_POLICY_PATH))?;
 
     let input = if let Some(pr) = config.pr {
-        load_pr_from_gh(pr)?
+        load_pr_from_gh(pr, &root)?
     } else {
         load_fixture(
             config
@@ -196,39 +246,108 @@ fn load_fixture(path: &Path) -> Result<PrInput> {
         title: fixture.title,
         body: fixture.body,
         changed_files: fixture.changed_files,
+        source_state: fixture.source_state,
         evidence: fixture.evidence,
     })
 }
 
+/// GitHub CLI metadata payload for `cargo xtask intent-diff-gate --pr N`.
+///
+/// The prior implementation (`load_pr_from_gh` pre-#15384) requested
+/// `files` from `gh pr view --json` and silently truncated to the first
+/// 100 entries. Per #15384 the loader must instead obtain the PR's
+/// `baseRefOid`/`headRefOid` and resolve the **complete** changed-file
+/// set through `change_set::resolve_change_set` (#8042 producer), which
+/// uses a local `git diff <base>..<head>` and is not subject to GitHub's
+/// pagination cap.
 #[derive(Debug, Deserialize)]
-struct GhPr {
+struct GhPrMetadata {
     title: String,
     body: String,
-    files: Vec<GhFile>,
+    #[serde(rename = "baseRefOid")]
+    base_ref_oid: String,
+    #[serde(rename = "headRefOid")]
+    head_ref_oid: String,
 }
 
-#[derive(Debug, Deserialize)]
-struct GhFile {
-    path: String,
-}
-
-fn load_pr_from_gh(pr: u64) -> Result<PrInput> {
+fn load_pr_from_gh(pr: u64, root: &Path) -> Result<PrInput> {
     let output = Command::new("gh")
-        .args(["pr", "view", &pr.to_string(), "--json", "title,body,files"])
+        .args(["pr", "view", &pr.to_string(), "--json", "title,body,baseRefOid,headRefOid"])
         .output()
-        .context("running gh pr view")?;
+        .context("running gh pr view (metadata only; file list resolved via change_set)")?;
 
     if !output.status.success() {
         bail!("gh pr view failed: {}", String::from_utf8_lossy(&output.stderr).trim());
     }
 
-    let parsed: GhPr = serde_json::from_slice(&output.stdout).context("parsing gh PR payload")?;
+    let parsed: GhPrMetadata =
+        serde_json::from_slice(&output.stdout).context("parsing gh PR metadata payload")?;
+
+    if parsed.base_ref_oid.is_empty() || parsed.head_ref_oid.is_empty() {
+        bail!(
+            "gh pr view returned empty baseRefOid/headRefOid for PR {} (base={:?}, head={:?})",
+            pr,
+            parsed.base_ref_oid,
+            parsed.head_ref_oid
+        );
+    }
+
+    // Resolve the complete PR change-set through the #8042 producer
+    // (`change_set::resolve_change_set`). This is a `git diff base..head`
+    // against the local repo — there is no 100-file pagination cap, so the
+    // returned `changed_paths` is the complete PR set (#15384).
+    //
+    // The PR head must be available locally (e.g. via `gh pr checkout` or
+    // a fetched refspec). When it isn't, report the source as unavailable
+    // rather than failing before `evaluate`: the verdict machinery turns an
+    // unavailable source into a structured `Fail` receipt instead of leaving
+    // no receipt at all. We deliberately do NOT fall back to
+    // `gh pr view --json files` (which would re-introduce the truncation bug).
+    let resolution = resolve_change_set(
+        ArtifactIdentity::CommitRange {
+            base: parsed.base_ref_oid.clone(),
+            head: parsed.head_ref_oid.clone(),
+        },
+        root,
+    );
+    let (changed_files, source_state) =
+        pr_input_source(pr, &parsed.base_ref_oid, &parsed.head_ref_oid, resolution);
+
     Ok(PrInput {
         title: parsed.title,
         body: parsed.body,
-        changed_files: parsed.files.into_iter().map(|f| f.path).collect(),
+        changed_files,
+        source_state,
         evidence: FixtureEvidence::default(),
     })
+}
+
+/// Map a change-set resolution onto the loader's file list and source
+/// state. A failed resolution (e.g. the PR head is not in the local clone)
+/// yields an empty list with an `Unavailable` source rather than failing
+/// before `evaluate`, so the verdict machinery still writes a structured
+/// `Fail` receipt instead of leaving no receipt at all.
+fn pr_input_source<E: std::fmt::Display>(
+    pr: u64,
+    base_ref_oid: &str,
+    head_ref_oid: &str,
+    resolution: Result<ChangeSet, E>,
+) -> (Vec<String>, SourceState) {
+    match resolution {
+        Ok(changeset) => (
+            changeset.changed_paths,
+            SourceState::Complete { base_sha: changeset.base_sha, head_sha: changeset.head_sha },
+        ),
+        Err(err) => {
+            let reason = format!(
+                "resolving complete PR change-set for #{} via git diff {}..{} failed: {} — \
+                 ensure the PR head is fetched locally (e.g. `gh pr checkout {}` \
+                 or `git fetch origin pull/{}/head:pr-{}`)",
+                pr, base_ref_oid, head_ref_oid, err, pr, pr, pr
+            );
+            (Vec::new(), SourceState::Unavailable { reason })
+        }
+    }
 }
 
 fn evaluate(input: &PrInput, policy: &PolicyFile) -> Receipt {
@@ -266,6 +385,27 @@ fn evaluate(input: &PrInput, policy: &PolicyFile) -> Receipt {
         .any(|needle| actual_paths.iter().any(|actual| path_matches(actual, needle)));
 
     let mut violations = Vec::new();
+
+    // #15384: an incomplete or unavailable PR change-set source cannot
+    // authorise any closeout verdict. We surface this before the generic
+    // `closeout_without_evidence` check below so the failure mode names the
+    // root cause (truncation / missing head) rather than masking it as a
+    // missing-evidence verdict.
+    if !closing_issues.is_empty() && !source_state_supports_closeout(&input.source_state) {
+        let detail = match &input.source_state {
+            SourceState::Partial { reason } => format!("partial change-set ({reason})"),
+            SourceState::Unavailable { reason } => format!("unavailable change-set ({reason})"),
+            SourceState::Complete { .. } => unreachable!(),
+        };
+        violations.push(Violation {
+            code: "closeout_with_incomplete_source".to_string(),
+            level: GateLevel::Fail,
+            message: format!(
+                "PR uses a closing keyword but the change-set source is {detail}; \
+                 resolve the complete base..head diff before authorising closeout"
+            ),
+        });
+    }
 
     if claimed_code_fix && docs_only {
         violations.push(Violation {
@@ -318,6 +458,7 @@ fn evaluate(input: &PrInput, policy: &PolicyFile) -> Receipt {
         claimed_closeout_issues: closing_issues,
         expected_paths,
         actual_paths,
+        source_state: input.source_state.clone(),
         evidence: ReceiptEvidence {
             target_path_touched,
             test_updated,
@@ -327,6 +468,12 @@ fn evaluate(input: &PrInput, policy: &PolicyFile) -> Receipt {
         verdict,
         violations,
     }
+}
+
+/// `true` iff the source state carries a complete PR change-set observation
+/// (#8042 producer — full `git diff base..head`, no pagination cap).
+fn source_state_supports_closeout(state: &SourceState) -> bool {
+    matches!(state, SourceState::Complete { .. })
 }
 
 fn normalize_paths(paths: &[String]) -> Vec<String> {
@@ -409,12 +556,17 @@ expected_paths = ["vscode-extension/package.json", "crates/perl-lsp-rs/tests/"]
         .context("valid inline policy")
     }
 
+    fn complete() -> SourceState {
+        SourceState::Complete { base_sha: Some("base".into()), head_sha: Some("head".into()) }
+    }
+
     #[test]
     fn docs_only_fix_claim_fails() -> Result<()> {
         let input = PrInput {
             title: "fix(vscode): VS Code activation bug".to_string(),
             body: "Fixes #6747".to_string(),
             changed_files: vec!["docs/notes.md".to_string()],
+            source_state: complete(),
             evidence: FixtureEvidence::default(),
         };
 
@@ -429,6 +581,7 @@ expected_paths = ["vscode-extension/package.json", "crates/perl-lsp-rs/tests/"]
             title: "feat(ci): partial scaffold".to_string(),
             body: "Refs #6747".to_string(),
             changed_files: vec!["docs/ci/new-gate.md".to_string()],
+            source_state: complete(),
             evidence: FixtureEvidence::default(),
         };
 
@@ -443,11 +596,173 @@ expected_paths = ["vscode-extension/package.json", "crates/perl-lsp-rs/tests/"]
             title: "fix(vscode): activation regression".to_string(),
             body: "Closes #6747".to_string(),
             changed_files: vec!["vscode-extension/package.json".to_string()],
+            source_state: complete(),
             evidence: FixtureEvidence::default(),
         };
 
         let receipt = evaluate(&input, &policy()?);
         assert!(matches!(receipt.verdict, Verdict::Pass));
+        Ok(())
+    }
+
+    /// #15384 regression guard: when the change-set source is `Partial`
+    /// (e.g. `gh pr view --json files` truncated to its first 100 entries
+    /// and the production code lives at file 101), a closing keyword MUST
+    /// fail the verdict rather than silently authorising closeout against
+    /// the truncated prefix.
+    #[test]
+    fn closeout_with_partial_source_fails() -> Result<()> {
+        let input = PrInput {
+            title: "fix(vscode): activation regression".to_string(),
+            body: "Closes #6747".to_string(),
+            // First 100 entries are docs — but file 101 is the actual
+            // production change. The truncated `files` prefix makes the PR
+            // look docs-only and the target path `vscode-extension/package.json`
+            // is missing entirely from this observation.
+            changed_files: (0..100).map(|i| format!("docs/page-{i:03}.md")).collect(),
+            source_state: SourceState::Partial {
+                reason: "gh pr view --json files truncated at 100 entries".into(),
+            },
+            evidence: FixtureEvidence::default(),
+        };
+
+        let receipt = evaluate(&input, &policy()?);
+        assert!(matches!(receipt.verdict, Verdict::Fail));
+        assert!(
+            receipt.violations.iter().any(|v| v.code == "closeout_with_incomplete_source"),
+            "expected closeout_with_incomplete_source violation, got: {:?}",
+            receipt.violations
+        );
+        // The new violation must be the load-bearing one — the truncated
+        // prefix cannot satisfy the generic target-path/test/receipt rule
+        // either, so both `closeout_with_incomplete_source` and
+        // `closeout_without_evidence` may fire; the source-state one must
+        // always be present.
+        Ok(())
+    }
+
+    /// #15384 mirror of the above for `Unavailable` (e.g. `gh pr view`
+    /// failed or the PR head is not in the local clone).
+    #[test]
+    fn closeout_with_unavailable_source_fails() -> Result<()> {
+        let input = PrInput {
+            title: "fix(vscode): activation regression".to_string(),
+            body: "Fixes #6747".to_string(),
+            changed_files: vec![],
+            source_state: SourceState::Unavailable {
+                reason: "gh pr view failed: PR not found".into(),
+            },
+            evidence: FixtureEvidence::default(),
+        };
+
+        let receipt = evaluate(&input, &policy()?);
+        assert!(matches!(receipt.verdict, Verdict::Fail));
+        assert!(
+            receipt.violations.iter().any(|v| v.code == "closeout_with_incomplete_source"),
+            "expected closeout_with_incomplete_source violation, got: {:?}",
+            receipt.violations
+        );
+        Ok(())
+    }
+
+    /// #15384 guard: a PR with no closing keyword is unaffected by the
+    /// new source-state rule — an incomplete change-set observation may
+    /// still drive advisory checks (docs-only claim, etc.) without
+    /// forcing a `Fail`.
+    #[test]
+    fn partial_source_without_closeout_does_not_force_fail() -> Result<()> {
+        let input = PrInput {
+            title: "feat(ci): scaffold new gate".to_string(),
+            body: "Refs #6747 — partial work in progress.".to_string(),
+            changed_files: vec!["docs/ci/new-gate.md".to_string()],
+            source_state: SourceState::Partial {
+                reason: "gh pr view --json files truncated at 100 entries".into(),
+            },
+            evidence: FixtureEvidence::default(),
+        };
+
+        let receipt = evaluate(&input, &policy()?);
+        assert!(
+            !matches!(receipt.verdict, Verdict::Fail),
+            "partial source without closeout must not force Fail; got: {:?}",
+            receipt.violations
+        );
+        Ok(())
+    }
+
+    /// #15384 guard: the typed `SourceState` is serialised into the
+    /// receipt so downstream consumers can distinguish a `Complete`
+    /// observation from a truncated `Partial` one (e.g. for advisory
+    /// dashboards, or to fail-closed at a higher gate).
+    #[test]
+    fn receipt_carries_source_state() -> Result<()> {
+        let input = PrInput {
+            title: "feat(ci): trivial".to_string(),
+            body: "Refs #6747".to_string(),
+            changed_files: vec!["docs/notes.md".to_string()],
+            source_state: SourceState::Complete {
+                base_sha: Some("deadbeef".into()),
+                head_sha: Some("feedface".into()),
+            },
+            evidence: FixtureEvidence::default(),
+        };
+
+        let receipt = evaluate(&input, &policy()?);
+        let payload = serde_json::to_value(&receipt).context("serialise receipt")?;
+        let source = payload
+            .get("source_state")
+            .ok_or_else(|| color_eyre::eyre::eyre!("receipt.source_state missing"))?;
+        let kind = source
+            .get("kind")
+            .and_then(|k| k.as_str())
+            .ok_or_else(|| color_eyre::eyre::eyre!("receipt.source_state.kind missing"))?;
+        assert_eq!(kind, "complete");
+        let base_sha = source.get("base_sha").and_then(|k| k.as_str());
+        let head_sha = source.get("head_sha").and_then(|k| k.as_str());
+        assert_eq!(base_sha, Some("deadbeef"));
+        assert_eq!(head_sha, Some("feedface"));
+        Ok(())
+    }
+
+    /// The live `gh pr view --json title,body,baseRefOid,headRefOid`
+    /// payload uses camelCase keys; without renames every `--pr`
+    /// invocation fails deserialization with a missing-field error.
+    #[test]
+    fn gh_pr_metadata_deserializes_camel_case_keys() -> Result<()> {
+        let raw = serde_json::json!({
+            "title": "fix(intent-diff-gate): bind closeout",
+            "body": "Closes #15384",
+            "baseRefOid": "aaa",
+            "headRefOid": "bbb",
+        });
+        let parsed: GhPrMetadata =
+            serde_json::from_value(raw).context("camelCase gh payload must deserialize")?;
+        assert_eq!(parsed.base_ref_oid, "aaa");
+        assert_eq!(parsed.head_ref_oid, "bbb");
+        Ok(())
+    }
+
+    /// A failed change-set resolution (e.g. PR head missing locally)
+    /// maps to an empty file list with an `Unavailable` source so
+    /// `evaluate` still writes a structured `Fail` receipt.
+    #[test]
+    fn failed_resolution_maps_to_unavailable_source() -> Result<()> {
+        let (files, state) = pr_input_source(
+            15855,
+            "aaa",
+            "bbb",
+            Err::<ChangeSet, _>("head bbb not in local clone"),
+        );
+        assert!(files.is_empty());
+        match state {
+            SourceState::Unavailable { reason } => {
+                assert!(
+                    reason.contains("15855") && reason.contains("bbb"),
+                    "reason must name the PR and head, got: {reason}"
+                );
+            }
+            other => panic!("expected Unavailable, got: {other:?}"),
+        }
         Ok(())
     }
 }

@@ -23,7 +23,7 @@
 //! lives in the `ci-route-plan` binary. This module still performs no
 //! filesystem, clock, or network access.
 
-mod canonical;
+pub(crate) mod canonical;
 mod compile;
 mod validate;
 

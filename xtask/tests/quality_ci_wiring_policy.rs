@@ -949,6 +949,29 @@ fn coverage_workflow_is_manual_or_nightly_only_and_requires_receipts() {
     ] {
         assert!(justfile.contains(required), "coverage-proof missing `{required}`");
     }
+    let ci_route_source =
+        must(fs::read_to_string(root.join("xtask").join("src").join("tasks").join("ci_route.rs")));
+    must(cross_check_ci_route_schema_version_literals(&ci_route_source, &codecov_router));
+    let mutated_python_receipt = codecov_router.replacen("\"ci-route.v1\"", "\"ci-route.v2\"", 1);
+    assert_ne!(
+        mutated_python_receipt, codecov_router,
+        "negative control must mutate the Python producer's `schema_version` literal"
+    );
+    assert!(
+        cross_check_ci_route_schema_version_literals(&ci_route_source, &mutated_python_receipt)
+            .is_err(),
+        "ci-route schema_version cross-check must reject Python producer drift"
+    );
+    let mutated_rust_receipt = ci_route_source.replacen("\"ci-route.v1\"", "\"ci-route.v2\"", 1);
+    assert_ne!(
+        mutated_rust_receipt, ci_route_source,
+        "negative control must mutate the Rust producer's `schema_version` literal"
+    );
+    assert!(
+        cross_check_ci_route_schema_version_literals(&mutated_rust_receipt, &codecov_router)
+            .is_err(),
+        "ci-route schema_version cross-check must reject Rust producer drift"
+    );
 }
 
 #[test]
@@ -2013,4 +2036,65 @@ fn yaml_mapping_entry<'a>(value: &'a Value, key: &str) -> Result<&'a Value> {
         .ok_or_else(|| anyhow!("expected a YAML mapping while looking for `{key}`"))?
         .get(Value::String(key.to_owned()))
         .ok_or_else(|| anyhow!("missing YAML key `{key}`"))
+}
+
+/// Cross-check the `schema_version` literals emitted by the two producers of
+/// `target/receipts/quality/ci-route.json`:
+///
+/// - `xtask/src/tasks/ci_route.rs` (Rust producer) — emits
+///   `schema_version: "ci-route.v1"` at the `CiRouteReceipt` emission site.
+/// - `scripts/ci/route-codecov-packs.py` (Python producer) — emits
+///   `"schema_version": "ci-route.v1"` at the `receipt = { ... }` site.
+///
+/// Both producers write to the same file path consumed by `ci-nightly.yml`,
+/// `justfile`, and `scripts/ci/generate-coverage-pack-commands.py`; a literal
+/// drift between the two producers (#15391 / F1) would silently break every
+/// downstream consumer that keys on the envelope identifier. This helper
+/// reads both sources at test time, extracts the literal at each emission
+/// site, and rejects any divergence.
+fn cross_check_ci_route_schema_version_literals(
+    rust_source: &str,
+    python_source: &str,
+) -> Result<()> {
+    // The Rust producer's envelope identifier moved in #15779: the receipt
+    // is built as `schema_version: envelope_version.to_string()`, so the
+    // single source of truth is `CURRENT_ENVELOPE_VERSION`, not a struct-init
+    // literal. Probe the const (#15878).
+    let rust_marker = "CURRENT_ENVELOPE_VERSION: &str = \"";
+    let rust_open = rust_source.find(rust_marker).ok_or_else(|| {
+        anyhow!(
+            "xtask/src/tasks/ci_route.rs is missing the Rust producer's `CURRENT_ENVELOPE_VERSION` \
+             literal (expected near the envelope admission site); the wire-policy test cannot \
+             validate drift"
+        )
+    })?;
+    let rust_start = rust_open + rust_marker.len();
+    let rust_end_rel = rust_source[rust_start..].find('"').ok_or_else(|| {
+        anyhow!(
+            "xtask/src/tasks/ci_route.rs `CURRENT_ENVELOPE_VERSION` literal is not closed by `\"`"
+        )
+    })?;
+    let rust_lit = &rust_source[rust_start..rust_start + rust_end_rel];
+
+    let python_marker = "\"schema_version\": \"";
+    let python_open = python_source.find(python_marker).ok_or_else(|| {
+        anyhow!(
+            "scripts/ci/route-codecov-packs.py is missing the Python producer's `\"schema_version\": \"...\"` literal; \
+             the wire-policy test cannot validate drift"
+        )
+    })?;
+    let python_start = python_open + python_marker.len();
+    let python_end_rel = python_source[python_start..].find('"').ok_or_else(|| {
+        anyhow!("scripts/ci/route-codecov-packs.py `schema_version` literal is not closed by `\"`")
+    })?;
+    let python_lit = &python_source[python_start..python_start + python_end_rel];
+
+    ensure!(
+        rust_lit == python_lit,
+        "ci-route.json producers disagree on `schema_version`: \
+         Rust (xtask/src/tasks/ci_route.rs) = {rust_lit:?}, \
+         Python (scripts/ci/route-codecov-packs.py) = {python_lit:?}; \
+         both producers write to target/receipts/quality/ci-route.json and must share one envelope identifier"
+    );
+    Ok(())
 }
