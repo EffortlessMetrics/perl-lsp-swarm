@@ -180,11 +180,13 @@ fn is_ci_config_file(file: &str) -> bool {
 /// This is intentionally path-based. `ci-scope` must remain a cheap, stable
 /// planner and does not read arbitrary file contents while classifying a diff.
 /// The selected paths are the repository's known portability seams: shell
-/// hooks/scripts, the `perl-ci-hygiene` process-helper seam, URI and
-/// workspace-index code, and explicitly named Windows implementations. The
-/// Unix-only release-artifact integration target is one deliberate exception:
-/// it is included solely for Windows compile admission, while its Bash/chmod
-/// behavior remains Unix-owned and is not claimed as Windows runtime coverage.
+/// hooks/scripts, the `perl-ci-hygiene` process-helper seam, the
+/// `perl-dap` reload module (which owns the bounded debugger availability
+/// probe reported from Windows in #15099), URI and workspace-index code, and
+/// explicitly named Windows implementations. The Unix-only release-artifact
+/// integration target is one deliberate exception: it is included solely for
+/// Windows compile admission, while its Bash/chmod behavior remains
+/// Unix-owned and is not claimed as Windows runtime coverage.
 pub fn requires_windows_runner(files: &[String]) -> bool {
     files.iter().any(|file| {
         let normalized = file.replace('\\', "/").to_ascii_lowercase();
@@ -193,6 +195,15 @@ pub fn requires_windows_runner(files: &[String]) -> bool {
             || (normalized.starts_with("scripts/") && normalized.ends_with(".sh"))
             || normalized == "crates/perl-ci-hygiene/src/process.rs"
             || normalized.starts_with("crates/perl-ci-hygiene/src/process/")
+            // The `perl-dap` reload module owns `probe_with_deadline`
+            // (`runtime.rs`) and the bounded probe decision
+            // (`Usable` / `Refused` / `TimedOut` / `InstrumentFailed`).
+            // It is the seam that was reported hanging on Windows in
+            // #15099 and was bounded on Linux only (#15529); promoting
+            // it here gives the Windows runner a path to actually
+            // exercise the bound and prove it terminates its probe child.
+            || normalized.starts_with("crates/perl-dap/src/reload/")
+            || normalized == "crates/perl-dap/src/reload.rs"
             || normalized.starts_with("crates/perl-uri/")
             || normalized.contains("workspace-index")
             || normalized.contains("workspace_index")
@@ -1131,6 +1142,9 @@ mod tests {
             "scripts/check-shell.sh",
             "crates/perl-ci-hygiene/src/process.rs",
             "crates/perl-ci-hygiene/src/process/tests.rs",
+            "crates/perl-dap/src/reload/mod.rs",
+            "crates/perl-dap/src/reload/runtime.rs",
+            "crates/perl-dap/src/reload/measurement.rs",
             "crates/perl-uri/src/fs.rs",
             "crates/perl-workspace/src/workspace-index.rs",
             "crates/perl-workspace/src/platform/windows.rs",
@@ -1149,6 +1163,11 @@ mod tests {
             "docs/windows.md".to_string(),
             "scripts/check-shell.py".to_string(),
             "crates/perl-parser/src/lib.rs".to_string(),
+            // perl-dap siblings outside the reload module should not
+            // select a Windows runner; the bounded-probe Windows
+            // coverage claim is scoped to the reload seam.
+            "crates/perl-dap/src/lib.rs".to_string(),
+            "crates/perl-dap/src/debug_adapter/protocol.rs".to_string(),
         ];
         assert!(!requires_windows_runner(&files));
     }

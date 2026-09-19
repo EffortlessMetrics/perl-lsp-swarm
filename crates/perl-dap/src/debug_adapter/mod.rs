@@ -93,6 +93,7 @@ use patterns::{
     prompt_re, regex_mutation_re, stack_frame_re, warning_re,
 };
 use safe_eval::validate_safe_expression;
+pub use sync_utils::{DapMessageWithEpoch, DrainEpoch};
 use sync_utils::{EventSender, lock_or_recover};
 
 #[derive(Debug, Default)]
@@ -317,7 +318,7 @@ impl DebugAdapter {
     /// sender will fail to compile since `SyncSender` and `Sender` are distinct
     /// types.  Use `sync_channel(EVENT_QUEUE_CAPACITY)` or any capacity large
     /// enough for the test's event volume.
-    pub fn set_event_sender(&mut self, sender: SyncSender<DapMessage>) {
+    pub fn set_event_sender(&mut self, sender: SyncSender<DapMessageWithEpoch>) {
         self.event_sender = Some(EventSender::new(sender));
     }
 
@@ -696,12 +697,22 @@ impl DebugAdapter {
             // residue that pushed every later response through the full
             // timeout; a refused or dropped dispatch rolls its reservation
             // back below.
-            self.event_drain.enqueue(1);
+            //
+            // Reservation is per-epoch (#15725): when the calling thread is
+            // the worker thread inside a request handler invocation, the
+            // thread-local `DRAIN_EPOCH` is set and the reservation lands on
+            // the request-scoped latch. Outside that context — background
+            // readers, the forwarder, tests — the cell is unset and we fall
+            // back to `DrainEpoch::Global`, which is preserved for backward
+            // compatibility but not waited on by the per-request response
+            // barrier.
+            let drain_epoch = crate::debug_adapter::sync_utils::current_drain_epoch();
+            self.event_drain.enqueue_at(drain_epoch, 1);
             if !matches!(
                 sender.send_event(&self.seq, event, body),
                 crate::debug_adapter::sync_utils::EventDispatchResult::Sent
             ) {
-                self.event_drain.complete(1);
+                self.event_drain.complete_at(drain_epoch, 1);
             }
         }
     }
