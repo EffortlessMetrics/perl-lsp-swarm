@@ -48,12 +48,7 @@ fn diagnostic_observations_after(
     events
         .iter()
         .filter_map(|event| {
-            let LspEvent::Diagnostics {
-                uri: event_uri,
-                version,
-                diagnostics,
-            } = event
-            else {
+            let LspEvent::Diagnostics { uri: event_uri, version, diagnostics } = event else {
                 return None;
             };
             (event_uri == uri).then(|| DiagnosticObservation {
@@ -69,11 +64,10 @@ fn latest_for_version(
     observations: &[DiagnosticObservation],
     minimum_version: i64,
 ) -> Option<&DiagnosticObservation> {
-    observations.iter().rev().find(|observation| {
-        observation
-            .version
-            .is_some_and(|version| version == minimum_version)
-    })
+    observations
+        .iter()
+        .rev()
+        .find(|observation| observation.version.is_some_and(|version| version == minimum_version))
 }
 
 /// Latest exact-version observation that already represents the terminal
@@ -209,14 +203,8 @@ mod oracle_unit_tests {
     #[test]
     fn stale_and_unversioned_publications_cannot_satisfy_repaired_version() {
         let observations = vec![
-            DiagnosticObservation {
-                version: Some(1),
-                diagnostics: Vec::new(),
-            },
-            DiagnosticObservation {
-                version: None,
-                diagnostics: Vec::new(),
-            },
+            DiagnosticObservation { version: Some(1), diagnostics: Vec::new() },
+            DiagnosticObservation { version: None, diagnostics: Vec::new() },
         ];
         assert_eq!(latest_for_version(&observations, 2), None);
     }
@@ -228,10 +216,7 @@ mod oracle_unit_tests {
                 version: Some(1),
                 diagnostics: vec![json!({"message": "stale"})],
             },
-            DiagnosticObservation {
-                version: Some(3),
-                diagnostics: Vec::new(),
-            },
+            DiagnosticObservation { version: Some(3), diagnostics: Vec::new() },
         ];
 
         assert_eq!(latest_for_version(&observations, 2), None);
@@ -240,17 +225,14 @@ mod oracle_unit_tests {
     #[test]
     fn latest_current_publication_is_authoritative() {
         let observations = vec![
-            DiagnosticObservation {
-                version: Some(2),
-                diagnostics: Vec::new(),
-            },
+            DiagnosticObservation { version: Some(2), diagnostics: Vec::new() },
             DiagnosticObservation {
                 version: Some(2),
                 diagnostics: vec![json!({"message": "late current regression"})],
             },
         ];
-        let latest = latest_for_version(&observations, 2)
-            .expect("a current publication should be selected");
+        let latest =
+            latest_for_version(&observations, 2).expect("a current publication should be selected");
         assert_eq!(latest.version, Some(2));
         assert!(!latest.diagnostics.is_empty());
     }
@@ -262,10 +244,7 @@ mod oracle_unit_tests {
                 version: Some(1),
                 diagnostics: vec![json!({"message": "stale"})],
             },
-            DiagnosticObservation {
-                version: Some(2),
-                diagnostics: Vec::new(),
-            },
+            DiagnosticObservation { version: Some(2), diagnostics: Vec::new() },
         ];
         let latest = latest_for_version(&observations, 2)
             .expect("a current empty publication should be selected");
