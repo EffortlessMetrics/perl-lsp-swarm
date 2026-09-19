@@ -142,6 +142,22 @@ pub fn scope_issues_to_diagnostics_with_semantics<Q: SemanticQueries>(
     file_id: FileId,
     semantic_queries: &Q,
 ) -> Vec<Diagnostic> {
+    scope_issues_to_diagnostics_with_semantics_ref(&issues, file_id, semantic_queries)
+}
+
+/// Borrowing form of [`scope_issues_to_diagnostics_with_semantics`].
+///
+/// Carries the whole implementation; the owning form above is a thin shim that
+/// keeps the published signature. A caller reading issues out of a shared,
+/// generation-owned `DocumentDiagnosticAnalysis` (#7286) has only a borrow and
+/// must not deep-clone the whole issue list per evaluation to call this --
+/// which is free, because nothing here moves out of an issue: every field is
+/// either `Copy` or read through a reference.
+pub(crate) fn scope_issues_to_diagnostics_with_semantics_ref<Q: SemanticQueries>(
+    issues: &[ScopeIssue],
+    file_id: FileId,
+    semantic_queries: &Q,
+) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
 
     for issue in issues {
@@ -262,10 +278,10 @@ pub fn scope_issues_to_diagnostics_with_semantics<Q: SemanticQueries>(
             _ => DiagnosticCode::ParseError, // Forward-compatible fallback (#2898)
         };
 
-        let mut related_info = build_scope_related_info(&issue);
+        let mut related_info = build_scope_related_info(issue);
         if issue.kind == IssueKind::UnquotedBareword {
             add_visible_symbol_trust_boundary_related_info(
-                &issue,
+                issue,
                 &mut related_info,
                 visible_symbol_diagnostic_trust(
                     semantic_queries,
@@ -275,13 +291,13 @@ pub fn scope_issues_to_diagnostics_with_semantics<Q: SemanticQueries>(
                 ),
             );
         }
-        let suggestion = build_scope_suggestion(&issue);
+        let suggestion = build_scope_suggestion(issue);
 
         diagnostics.push(Diagnostic {
             range: issue.range,
             severity,
             code: Some(code.as_str().to_string()),
-            message: build_enhanced_scope_message(&issue),
+            message: build_enhanced_scope_message(issue),
             related_information: related_info,
             tags: if matches!(issue.kind, IssueKind::UnusedVariable | IssueKind::UnusedParameter) {
                 vec![DiagnosticTag::Unnecessary]

@@ -49,6 +49,7 @@ pub mod rust_hygiene;
 pub mod schema_apply;
 pub mod source_authority;
 pub mod stack_increment;
+pub mod standalone_diagnostics;
 pub mod utils;
 pub mod vim_host_diagnostics_run;
 pub mod vim_host_freshness_run;

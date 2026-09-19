@@ -104,6 +104,7 @@ pub mod hardening;
 #[cfg(feature = "parser-tasks")]
 pub mod highlight;
 pub mod hook_checks;
+pub mod htmx_catalog_drift;
 pub mod ignored_tests;
 pub mod inc_claim_boundary;
 pub mod incremental_proof;
@@ -193,6 +194,7 @@ pub mod session_receipt;
 pub mod shadow_parity;
 pub mod srp_microcrates;
 pub mod staged;
+pub mod standalone_diagnostics;
 pub mod supported_editor_inline_smoke;
 pub mod swarm_agent_roster;
 pub mod swarm_summary;
