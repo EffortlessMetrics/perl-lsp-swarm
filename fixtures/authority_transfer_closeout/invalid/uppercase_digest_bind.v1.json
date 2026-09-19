@@ -1,9 +1,9 @@
 {
   "fixture": {
-    "description": "Valid bounded leaf with no live observation; offline closeout stays valid.",
-    "name": "leaf_ready_offline_live_unavailable.v1.json"
+    "description": "An uppercase digest bind is a format error, never a stale-packet result (#15820 finding 7).",
+    "name": "uppercase_digest_bind.v1.json"
   },
-  "expected_result": "LEAF_READY",
+  "expected_result": "CONTRACT_DRIFT",
   "git_facts": {
     "head_resolved": "2222222222222222222222222222222222222222222222222222222222222222",
     "base_resolved": "1111111111111111111111111111111111111111111111111111111111111111",
@@ -68,7 +68,10 @@
         ".ci/authority-transfer-programme/generated/closeout-cells.json"
       ]
     },
-    "live_observation": null,
+    "live_observation": {
+      "observation_digest": null,
+      "candidate_state": "not_observed"
+    },
     "packet_subject": {
       "current_main_sha": "2222222222222222222222222222222222222222222222222222222222222222",
       "packet_ruling_revision": "ruling.r1"
@@ -137,7 +140,7 @@
       "probe_observation_sha256": "b3b676edcfd005855ecf334243962028202f2a205220e1e153eee38aeea7e133",
       "issue_ruling_revision": "ruling.r1",
       "reviewer_packet_sha256": "6f50e599904b5cf9679b3a6bc5e3bf8c34bef7697bcd9e4692a0aa6c4e0295ce",
-      "builder_packet_sha256": "9d3f14de402fbe15e642b54c7493695a057aba1d9f5f21019e40a14da120ab52",
+      "builder_packet_sha256": "9D3F14DE402FBE15E642B54C7493695A057ABA1D9F5F21019E40A14DA120AB52",
       "programme_manifest_sha256": "7d488a8aef2434fdf4d0a5fc2ada02fdaff0fdf7064389b9bfe16aaf32cda6e0",
       "frontier_sha256": "3cbe306ab607e7eec5a345d49049bfd89470131c05109b945bee5fd279f6bef2"
     },

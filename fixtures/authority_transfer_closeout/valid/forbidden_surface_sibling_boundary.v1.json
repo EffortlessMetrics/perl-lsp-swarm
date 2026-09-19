@@ -1,7 +1,7 @@
 {
   "fixture": {
-    "description": "Valid bounded leaf with no live observation; offline closeout stays valid.",
-    "name": "leaf_ready_offline_live_unavailable.v1.json"
+    "description": "A forbidden surface without a trailing slash never matches sibling directories (#15820 finding 8).",
+    "name": "forbidden_surface_sibling_boundary.v1.json"
   },
   "expected_result": "LEAF_READY",
   "git_facts": {
@@ -14,7 +14,8 @@
       "schemas/authority_transfer_leaf_closeout_request.v1.schema.json",
       ".ci/authority-transfer-programme/generated/closeout-cells.json",
       "docs/project/status/authority-transfer-closeout.md",
-      ".ci/receipts/authority-transfer-closeout/leaf-closeout.receipt.json"
+      ".ci/receipts/authority-transfer-closeout/leaf-closeout.receipt.json",
+      "generated/closeout-alternative/scratch.txt"
     ],
     "limitations": [],
     "merge_base": "1111111111111111111111111111111111111111111111111111111111111111",
@@ -68,7 +69,10 @@
         ".ci/authority-transfer-programme/generated/closeout-cells.json"
       ]
     },
-    "live_observation": null,
+    "live_observation": {
+      "observation_digest": null,
+      "candidate_state": "not_observed"
+    },
     "packet_subject": {
       "current_main_sha": "2222222222222222222222222222222222222222222222222222222222222222",
       "packet_ruling_revision": "ruling.r1"
@@ -120,7 +124,8 @@
     "repository": "EffortlessMetrics/perl-lsp-swarm",
     "forbidden_surfaces": [
       ".ci/semantic-close-containment/",
-      ".github/workflows/"
+      ".github/workflows/",
+      "generated/closeout"
     ],
     "claimed_closes": [
       {

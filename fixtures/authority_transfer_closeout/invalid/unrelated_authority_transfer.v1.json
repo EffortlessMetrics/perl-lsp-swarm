@@ -1,9 +1,9 @@
 {
   "fixture": {
-    "description": "Valid bounded leaf with no live observation; offline closeout stays valid.",
-    "name": "leaf_ready_offline_live_unavailable.v1.json"
+    "description": "A claimed authority transfer that is not the leaf conflict key fails the leaf ceiling (#15820 finding 4).",
+    "name": "unrelated_authority_transfer.v1.json"
   },
-  "expected_result": "LEAF_READY",
+  "expected_result": "CLAIM_CEILING_EXCEEDED",
   "git_facts": {
     "head_resolved": "2222222222222222222222222222222222222222222222222222222222222222",
     "base_resolved": "1111111111111111111111111111111111111111111111111111111111111111",
@@ -22,7 +22,7 @@
   },
   "request": {
     "authority_transfers_claimed": [
-      "authority_transfer.closeout"
+      "authority_transfer.unrelated"
     ],
     "request_id": "closeout.11703.leaf.bounded.v1",
     "schema_version": 1,
@@ -68,7 +68,10 @@
         ".ci/authority-transfer-programme/generated/closeout-cells.json"
       ]
     },
-    "live_observation": null,
+    "live_observation": {
+      "observation_digest": null,
+      "candidate_state": "not_observed"
+    },
     "packet_subject": {
       "current_main_sha": "2222222222222222222222222222222222222222222222222222222222222222",
       "packet_ruling_revision": "ruling.r1"
