@@ -280,6 +280,11 @@ fn summarize_node(node: &Node, diagnostics: &mut Vec<Diagnostic>) -> FlowSummary
             }
             summarize_goto(target, form)
         }
+        NodeKind::TargetlessGoto {} => {
+            // Honest targetless goto has no target expression to summarize;
+            // it transfers control unconditionally with no executed child.
+            FlowSummary::transfer(ControlTransfer::DynamicGoto)
+        }
 
         NodeKind::ExpressionStatement { expression } => {
             summarize_expression(expression, diagnostics)

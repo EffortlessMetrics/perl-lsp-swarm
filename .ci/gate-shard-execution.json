@@ -47,6 +47,7 @@
     "nested_lock_check": {"requires": [], "on_dependency_failure": "blocked_not_proven"},
     "doctest_contract_proof": {"requires": [], "on_dependency_failure": "blocked_not_proven"},
     "doctest_enforcement": {"requires": [], "on_dependency_failure": "blocked_not_proven"},
-    "version_sync": {"requires": [], "on_dependency_failure": "blocked_not_proven"}
+    "version_sync": {"requires": [], "on_dependency_failure": "blocked_not_proven"},
+    "agent_ledgers_validate": {"requires": [], "on_dependency_failure": "blocked_not_proven"}
   }
 }
