@@ -40,7 +40,7 @@ label.
 Every `textDocument/codeAction` request enters at
 `crates/perl-lsp-rs/src/runtime/dispatch/routing.rs` and is answered by
 `handle_code_action` in `crates/perl-lsp-rs/src/runtime/language/code_actions.rs`.
-When the document has an AST, that function invokes ten producers in a fixed
+When the document has an AST, that function invokes nine producers in a fixed
 order; when it does not, it falls through to a single degraded text generation.
 
 | Stage | Generation | Path | Reachability |
@@ -48,7 +48,6 @@ order; when it does not, it falls through to a single degraded text generation.
 | 1 | `explain_diagnostic` | ast | production |
 | 2 | `missing_pragmas` | ast | production |
 | 3 | `native_critic` | ast | production |
-| 4 | `legacy_critic` | ast | production |
 | 5 | `provider_v2` | ast | production |
 | 6 | `provider_original` | ast | production |
 | 7 | `provider_enhanced` | ast | production |
@@ -56,10 +55,17 @@ order; when it does not, it falls through to a single degraded text generation.
 | 9 | `test_generator` | ast | production |
 | 10 | `source_fix_all_aggregate` | ast | production |
 | 11 | `text_fallback` | no_ast | production |
+| — | `legacy_critic` | none | unreachable_stub |
 | — | `lsp_compat_stub` | none | unreachable_stub |
 
-Stages 3 and 4 are mutually exclusive: the configured critic engine selects one
-of them, so they never publish together.
+Stage 4 is retired: the #9062 native CriticService cutover (#15418) removed the
+opt-in legacy evaluator, so `EffectiveCriticState` admits `Disabled | Native`
+only and no stage-4 producer remains. The native stage-3 path seals one
+accepted critic snapshot, stages fixes through the protocol-neutral service,
+and splices them back in place; the stage-10 aggregate is constructed by
+`build_source_fix_all` inside the owned `finalize_code_action_candidate`
+helper, which the check verifies as an explicit helper edge rather than by an
+in-handler literal.
 
 Stage 8 is called from *both* branches — once on the AST path and once again in
 the degraded no-AST branch — so it is the only generation besides
@@ -73,6 +79,15 @@ handler that sits after the no-AST boundary in the file. A file-wide search made
 `missing_pragmas` look like a both-branch producer and briefly recorded fallback
 behavior that does not exist. Review caught it; the check now rejects an anchor
 whose only occurrences are outside the handler.
+
+One explicitly owned helper edge is verified in code rather than by anchor:
+`source_fix_all_aggregate` anchors the reachable
+`finalize_staged_code_action_response(` call inside the handler, and the
+validator additionally requires `build_source_fix_all(` to occur inside the
+owned `finalize_code_action_candidate` helper with that helper reachable from
+the staged response. Deleting the aggregate construction, or disconnecting
+either finalizer link, fails the check; planting the anchor text outside the
+handler does not satisfy it.
 
 ## Disposition ledger
 
@@ -90,7 +105,7 @@ whose only occurrences are outside the handler.
 | provider_original | quickfix:diagnostic_routed | canonical_candidate | — |
 | provider_v2 | quickfix:diagnostic_routed | unique_behavior | canonical_route_omits_diagnostic_association |
 | native_critic | quickfix:critic_finding | canonical_candidate | — |
-| legacy_critic | quickfix:critic_finding | compatibility_only | opt_in_engine_has_no_canonical_equivalent |
+| legacy_critic | none:unreachable_stub | retire_candidate | — |
 | provider_original | quickfix:hardcoded_shebang | canonical_candidate | — |
 | provider_enhanced | refactor.extract:variable | canonical_candidate | — |
 | provider_original | refactor.extract:variable | redundant_behavior | — |
@@ -171,19 +186,19 @@ shape. No corpus fixture can pin that without racing the parser, so both
 treat them as parity-proven, and #9190 should decide whether a generation
 reachable only inside that window is worth keeping at all.
 
-### The legacy critic engine is unreachable from any LSP client setting
+### The legacy critic engine is retired
 
-`legacy_critic` is opt-in, but not through the channels a client controls.
-`parse_lsp_critic_engine` maps `Legacy` to `None`, so `critic.engine =
-"legacy"` is rejected as an invalid setting on `initializationOptions`,
-`didChangeConfiguration`, and `workspace/configuration` alike. Only the trusted
-`.perl-lsp.toml` project channel still accepts it, and that path logs a
-deprecation naming #8253 and #9072 as the owning migration.
+`legacy_critic` produced opt-in `Perl::Critic` policy-name quick fixes through
+a `BuiltInAnalyzer` that no longer exists in the orchestrator. The #9062
+native CriticService cutover (#15418) removed that evaluator:
+`EffectiveCriticState` admits `Disabled | Native` only, so a deprecated
+`legacy`/`external` value is a migration observation that cannot construct
+runtime state and selects no producer.
 
-So the row is `compatibility_only` with a recorded `proof_gap` rather than a
-fixture: reaching it needs a workspace fixture that writes a project config
-selecting a deprecated engine. Before #9190 spends effort proving parity here,
-it should check whether #9072 has already retired the engine.
+So the row is `retire_candidate` on `none:unreachable_stub` with no anchor,
+no fixture, and no gap: #9190 may delete it without parity evidence. The
+former project-channel deprecation note naming #8253/#9072 is superseded by
+removal.
 
 ### Pragma duplicate authority is user-visible, not suppressed
 
@@ -272,7 +287,7 @@ The corpus covers the outcome classes #9188 requires:
 | malformed | `cac-parity-parse-error-recovery-keeps-ast-path` |
 | legitimate empty | `cac-parity-legitimate-empty-out-of-range-source-action`, `cac-parity-kind-filter-excludes-other-families`, `cac-parity-unknown-document-is-empty-not-error` |
 | identity without edit | `cac-parity-explain-diagnostic-command-only`, `cac-parity-test-generation-command-only`, `cac-parity-v2-attaches-originating-diagnostic` |
-| recorded gap (`NOT_PROVEN`) | `text_fallback` (both rows), `legacy_critic`, `refactor.extract:subroutine` on both the enhanced and the original generation, and `refactor.extract:basic_fallback` carry a `proof_gap` instead of a fixture — six rows |
+| recorded gap (`NOT_PROVEN`) | `text_fallback` (both rows), `refactor.extract:subroutine` on both the enhanced and the original generation, and `refactor.extract:basic_fallback` carry a `proof_gap` instead of a fixture — five rows |
 
 Every `cac-parity-*` id named anywhere on this page is checked against the
 ledger's routes. This table previously named a fixture that had been renamed,

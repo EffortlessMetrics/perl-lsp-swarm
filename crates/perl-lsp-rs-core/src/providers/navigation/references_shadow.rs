@@ -33,7 +33,7 @@ use perl_workspace::semantic_shadow_compare::{
     SemanticShadowCompareReceipt, ShadowQueryInput, ShadowQueryName, ShadowResultSummary,
     summarize_identities,
 };
-use perl_workspace::workspace_index::{Location, WorkspaceIndex};
+use perl_workspace::workspace_index::Location;
 
 /// Result of a shadow-compared find-references request.
 ///
@@ -53,10 +53,19 @@ pub struct ReferencesShadowResult {
 ///
 /// # Arguments
 ///
-/// * `workspace_index` — the legacy workspace index for `find_references`.
+/// * `legacy_locations` — the legacy path result, resolved by the caller before
+///   this function is invoked (from `WorkspaceIndex::find_references`).
 /// * `semantic_queries` — the new semantic query facade.
-/// * `symbol` — the symbol name to look up (used for legacy path and receipt input).
+/// * `symbol` — the symbol name to look up (used for the receipt input).
 /// * `entity_id` — the entity ID to look up (used for semantic path).
+///
+/// # Re-entrancy contract
+///
+/// None of the functions in this module touches `WorkspaceIndex`. The callback
+/// of `WorkspaceIndex::with_semantic_queries_for_uri` still holds read guards
+/// on the index's shards and semantic maps while these functions run, so any
+/// re-entry can deadlock against a concurrently queued reindex (#15644). All
+/// anchor resolution is served from the snapshot `semantic_queries` borrows.
 ///
 /// # Returns
 ///
@@ -64,13 +73,12 @@ pub struct ReferencesShadowResult {
 /// The caller should return the legacy result to the LSP client during the
 /// shadow phase.
 pub fn find_references_shadow<Q: SemanticQueries>(
-    workspace_index: &WorkspaceIndex,
+    legacy_locations: Vec<Location>,
     semantic_queries: &Q,
     symbol: &str,
     entity_id: EntityId,
 ) -> ReferencesShadowResult {
-    // ── Legacy path ──
-    let legacy_locations = workspace_index.find_references(symbol);
+    // ── Legacy path (resolved by the caller before entering this query) ──
     let old_summary = legacy_locations_to_summary(&legacy_locations);
 
     // ── New semantic path ──
@@ -150,16 +158,17 @@ pub struct ReferencesCutoverOutcome {
 ///
 /// # Arguments
 ///
-/// * `workspace_index` — legacy workspace index for fallback.
+/// * `legacy_locations` — legacy path result, resolved by the caller before
+///   this function is invoked (from `WorkspaceIndex::find_references`).
 /// * `semantic_queries` — the semantic query facade (primary path).
-/// * `symbol` — the symbol name for legacy path and receipt input.
+/// * `symbol` — the symbol name for the receipt input.
 /// * `entity_id` — the entity ID for the semantic path.
 ///
 /// # Returns
 ///
 /// A [`ReferencesCutoverOutcome`] with the classified result and receipt.
 pub fn find_references_cutover<Q: SemanticQueries>(
-    workspace_index: &WorkspaceIndex,
+    legacy_locations: Vec<Location>,
     semantic_queries: &Q,
     symbol: &str,
     entity_id: EntityId,
@@ -176,8 +185,7 @@ pub fn find_references_cutover<Q: SemanticQueries>(
         .cloned()
         .collect();
 
-    // ── Legacy path (for fallback and receipt) ──
-    let legacy_locations = workspace_index.find_references(symbol);
+    // ── Legacy path (for fallback and receipt; resolved by the caller) ──
     let old_summary = legacy_locations_to_summary(&legacy_locations);
 
     // ── Classify result ──
@@ -215,20 +223,23 @@ pub fn find_references_cutover<Q: SemanticQueries>(
 /// imported/exported occurrence references. Generated, dynamic-boundary,
 /// low-confidence, ambiguous, and no-source occurrences stay on the legacy
 /// provider path.
+///
+/// `legacy_locations` is the legacy `WorkspaceIndex::find_references` result,
+/// resolved by the caller before entering a
+/// `with_semantic_queries_for_uri` callback (#15644).
 pub fn find_references_live_source_backed<Q: SemanticQueries>(
-    workspace_index: &WorkspaceIndex,
+    legacy_locations: Vec<Location>,
     semantic_queries: &Q,
     symbol: &str,
     entity_id: EntityId,
 ) -> ReferencesCutoverOutcome {
     let all_occurrences = semantic_queries.references(entity_id);
     let new_summary = semantic_occurrences_to_summary(&all_occurrences);
-    let legacy_locations = workspace_index.find_references(symbol);
     let old_summary = legacy_locations_to_summary(&legacy_locations);
 
     let live_occurrences = if !all_occurrences.is_empty()
         && all_occurrences.iter().all(|occurrence| {
-            is_live_source_backed_reference_occurrence(workspace_index, occurrence)
+            is_live_source_backed_reference_occurrence(semantic_queries, occurrence)
         }) {
         Some(all_occurrences.clone())
     } else {
@@ -247,7 +258,7 @@ pub fn find_references_live_source_backed<Q: SemanticQueries>(
         old_summary,
         new_summary,
         vec![references_live_source_backed_quality_note(
-            workspace_index,
+            semantic_queries,
             &result,
             &all_occurrences,
         )],
@@ -301,8 +312,15 @@ fn references_cutover_fallback_state(result: &ReferencesCutoverResult) -> Provid
     }
 }
 
-fn is_live_source_backed_reference_occurrence(
-    workspace_index: &WorkspaceIndex,
+/// Whether `occurrence` qualifies for the live source-backed slice.
+///
+/// The source-backed check resolves the occurrence's anchor from the snapshot
+/// `semantic_queries` borrows. It must not re-enter `WorkspaceIndex`: this
+/// filter runs inside `with_semantic_queries_for_uri`, whose `fact_shards`
+/// read guard a nested `semantic_anchor_wire_location` could deadlock against
+/// a queued reindex (#15644).
+fn is_live_source_backed_reference_occurrence<Q: SemanticQueries>(
+    semantic_queries: &Q,
     occurrence: &OccurrenceFact,
 ) -> bool {
     occurrence.confidence == Confidence::High
@@ -316,7 +334,7 @@ fn is_live_source_backed_reference_occurrence(
                 | OccurrenceKind::MethodCall
                 | OccurrenceKind::StaticMethodCall
         )
-        && workspace_index.semantic_anchor_wire_location(occurrence.anchor_id).is_some()
+        && semantic_queries.anchor_source_span(occurrence.anchor_id).is_some()
 }
 
 fn is_live_reference_provenance(provenance: Provenance) -> bool {
@@ -372,8 +390,8 @@ fn references_fact_source_traces(
     traces
 }
 
-fn references_live_source_backed_quality_note(
-    workspace_index: &WorkspaceIndex,
+fn references_live_source_backed_quality_note<Q: SemanticQueries>(
+    semantic_queries: &Q,
     result: &ReferencesCutoverResult,
     occurrences: &[OccurrenceFact],
 ) -> String {
@@ -401,7 +419,7 @@ fn references_live_source_backed_quality_note(
         .iter()
         .filter(|occurrence| {
             occurrence.kind == OccurrenceKind::GeneratedUse
-                || workspace_index.semantic_anchor_wire_location(occurrence.anchor_id).is_none()
+                || semantic_queries.anchor_source_span(occurrence.anchor_id).is_none()
         })
         .count();
     let low_confidence_fallbacks =
@@ -564,18 +582,53 @@ mod tests {
         VisibleSymbol,
     };
     use perl_workspace::semantic::queries::{
-        DynamicCallableEvidence, QueryContext, SemanticQueries,
+        AnchorSourceSpan, DynamicCallableEvidence, QueryContext, SemanticQueries,
     };
     use perl_workspace::semantic_shadow_compare::ShadowCompareVerdict;
+    use perl_workspace::workspace_index::WorkspaceIndex;
     use url::Url;
 
     // ── Minimal SemanticQueries stub for testing ──
 
     struct StubSemanticQueries {
         references_result: Vec<OccurrenceFact>,
+        /// Anchor spans this stub can resolve, mirroring the snapshot a real
+        /// `WorkspaceSemanticQueries` borrows. Anchors absent here resolve to
+        /// `None`, which is how a generated/virtual member behaves.
+        anchor_spans: Vec<(AnchorId, AnchorSourceSpan)>,
+    }
+
+    impl StubSemanticQueries {
+        fn new(references_result: Vec<OccurrenceFact>) -> Self {
+            Self { references_result, anchor_spans: Vec::new() }
+        }
+
+        /// Populate resolvable anchor spans from a real indexed fact shard, so
+        /// the stub answers exactly what the production snapshot would.
+        fn with_spans_from(mut self, index: &WorkspaceIndex, uri: &str) -> Self {
+            if let Some(shard) = index.file_fact_shard(uri) {
+                for anchor in &shard.anchors {
+                    if anchor.span_end_byte > anchor.span_start_byte {
+                        self.anchor_spans.push((
+                            anchor.id,
+                            AnchorSourceSpan {
+                                source_uri: shard.source_uri.clone(),
+                                start_byte: anchor.span_start_byte,
+                                end_byte: anchor.span_end_byte,
+                            },
+                        ));
+                    }
+                }
+            }
+            self
+        }
     }
 
     impl SemanticQueries for StubSemanticQueries {
+        fn anchor_source_span(&self, anchor_id: AnchorId) -> Option<AnchorSourceSpan> {
+            self.anchor_spans.iter().find(|(id, _)| *id == anchor_id).map(|(_, span)| span.clone())
+        }
+
         fn symbol_at(
             &self,
             _file_id: FileId,
@@ -725,9 +778,14 @@ mod tests {
     #[test]
     fn shadow_both_empty_yields_same() -> Result<(), Box<dyn std::error::Error>> {
         let index = WorkspaceIndex::new();
-        let queries = StubSemanticQueries { references_result: vec![] };
+        let queries = StubSemanticQueries::new(vec![]);
 
-        let result = find_references_shadow(&index, &queries, "No::Such::Symbol", EntityId(999));
+        let result = find_references_shadow(
+            index.find_references("No::Such::Symbol"),
+            &queries,
+            "No::Such::Symbol",
+            EntityId(999),
+        );
 
         assert!(result.legacy_result.is_empty());
         assert_eq!(result.receipt.query, ShadowQueryName::FindReferences);
@@ -744,9 +802,14 @@ mod tests {
     fn shadow_new_path_has_occurrences_old_empty() -> Result<(), Box<dyn std::error::Error>> {
         let index = WorkspaceIndex::new();
         let occ = make_ref_occurrence(1, 10, 20);
-        let queries = StubSemanticQueries { references_result: vec![occ] };
+        let queries = StubSemanticQueries::new(vec![occ]);
 
-        let result = find_references_shadow(&index, &queries, "Foo::bar", EntityId(20));
+        let result = find_references_shadow(
+            index.find_references("Foo::bar"),
+            &queries,
+            "Foo::bar",
+            EntityId(20),
+        );
 
         assert!(result.legacy_result.is_empty());
         assert!(result.receipt.old_result.available);
@@ -761,9 +824,14 @@ mod tests {
     #[test]
     fn shadow_returns_legacy_result() -> Result<(), Box<dyn std::error::Error>> {
         let index = WorkspaceIndex::new();
-        let queries = StubSemanticQueries { references_result: vec![] };
+        let queries = StubSemanticQueries::new(vec![]);
 
-        let result = find_references_shadow(&index, &queries, "test_symbol", EntityId(1));
+        let result = find_references_shadow(
+            index.find_references("test_symbol"),
+            &queries,
+            "test_symbol",
+            EntityId(1),
+        );
 
         // Legacy result is always returned during shadow phase.
         // With an empty workspace index, legacy returns empty.
@@ -776,9 +844,10 @@ mod tests {
     #[test]
     fn shadow_receipt_uses_find_references_query_name() -> Result<(), Box<dyn std::error::Error>> {
         let index = WorkspaceIndex::new();
-        let queries = StubSemanticQueries { references_result: vec![] };
+        let queries = StubSemanticQueries::new(vec![]);
 
-        let result = find_references_shadow(&index, &queries, "test", EntityId(1));
+        let result =
+            find_references_shadow(index.find_references("test"), &queries, "test", EntityId(1));
 
         assert_eq!(result.receipt.query, ShadowQueryName::FindReferences);
         assert_eq!(result.receipt.input.symbol, "test");
@@ -795,9 +864,14 @@ mod tests {
         let occ1 = make_ref_occurrence(1, 10, 20);
         let occ2 = make_ref_occurrence(2, 30, 20);
         let occ3 = make_ref_occurrence(3, 50, 20);
-        let queries = StubSemanticQueries { references_result: vec![occ1, occ2, occ3] };
+        let queries = StubSemanticQueries::new(vec![occ1, occ2, occ3]);
 
-        let result = find_references_shadow(&index, &queries, "Foo::bar", EntityId(20));
+        let result = find_references_shadow(
+            index.find_references("Foo::bar"),
+            &queries,
+            "Foo::bar",
+            EntityId(20),
+        );
 
         assert_eq!(result.receipt.new_result.match_count, 3);
         assert!(result.receipt.new_result.available);
@@ -859,9 +933,14 @@ mod tests {
     fn cutover_exact_typed_references() -> Result<(), Box<dyn std::error::Error>> {
         let index = WorkspaceIndex::new();
         let occ = make_ref_occurrence(1, 10, 20);
-        let queries = StubSemanticQueries { references_result: vec![occ.clone()] };
+        let queries = StubSemanticQueries::new(vec![occ.clone()]);
 
-        let outcome = find_references_cutover(&index, &queries, "Foo::bar", EntityId(20));
+        let outcome = find_references_cutover(
+            index.find_references("Foo::bar"),
+            &queries,
+            "Foo::bar",
+            EntityId(20),
+        );
 
         match &outcome.result {
             ReferencesCutoverResult::Exact(refs) => {
@@ -877,9 +956,14 @@ mod tests {
     #[test]
     fn cutover_fallback_when_no_occurrences() -> Result<(), Box<dyn std::error::Error>> {
         let index = WorkspaceIndex::new();
-        let queries = StubSemanticQueries { references_result: vec![] };
+        let queries = StubSemanticQueries::new(vec![]);
 
-        let outcome = find_references_cutover(&index, &queries, "No::Such", EntityId(999));
+        let outcome = find_references_cutover(
+            index.find_references("No::Such"),
+            &queries,
+            "No::Such",
+            EntityId(999),
+        );
 
         match &outcome.result {
             ReferencesCutoverResult::LegacyFallback(locs) => {
@@ -902,9 +986,14 @@ mod tests {
             Provenance::DynamicBoundary,
             Confidence::Low,
         );
-        let queries = StubSemanticQueries { references_result: vec![dynamic_occ] };
+        let queries = StubSemanticQueries::new(vec![dynamic_occ]);
 
-        let outcome = find_references_cutover(&index, &queries, "Foo::bar", EntityId(20));
+        let outcome = find_references_cutover(
+            index.find_references("Foo::bar"),
+            &queries,
+            "Foo::bar",
+            EntityId(20),
+        );
 
         match &outcome.result {
             ReferencesCutoverResult::LegacyFallback(_) => {}
@@ -924,9 +1013,14 @@ mod tests {
             Provenance::NameHeuristic,
             Confidence::Low,
         );
-        let queries = StubSemanticQueries { references_result: vec![low_occ] };
+        let queries = StubSemanticQueries::new(vec![low_occ]);
 
-        let outcome = find_references_cutover(&index, &queries, "Foo::bar", EntityId(20));
+        let outcome = find_references_cutover(
+            index.find_references("Foo::bar"),
+            &queries,
+            "Foo::bar",
+            EntityId(20),
+        );
 
         match &outcome.result {
             ReferencesCutoverResult::LegacyFallback(_) => {}
@@ -947,9 +1041,14 @@ mod tests {
             Provenance::DynamicBoundary,
             Confidence::Low,
         );
-        let queries = StubSemanticQueries { references_result: vec![good.clone(), dynamic] };
+        let queries = StubSemanticQueries::new(vec![good.clone(), dynamic]);
 
-        let outcome = find_references_cutover(&index, &queries, "Foo::bar", EntityId(20));
+        let outcome = find_references_cutover(
+            index.find_references("Foo::bar"),
+            &queries,
+            "Foo::bar",
+            EntityId(20),
+        );
 
         // Dynamic occurrence filtered out, leaving one usable → Exact.
         match &outcome.result {
@@ -984,9 +1083,14 @@ mod tests {
             Provenance::NameHeuristic,
             Confidence::Medium,
         );
-        let queries = StubSemanticQueries { references_result: vec![exact, heuristic] };
+        let queries = StubSemanticQueries::new(vec![exact, heuristic]);
 
-        let outcome = find_references_cutover(&index, &queries, "Foo::bar", EntityId(20));
+        let outcome = find_references_cutover(
+            index.find_references("Foo::bar"),
+            &queries,
+            "Foo::bar",
+            EntityId(20),
+        );
 
         match &outcome.result {
             ReferencesCutoverResult::Ambiguous(refs) => {
@@ -1009,9 +1113,14 @@ mod tests {
             Provenance::DynamicBoundary,
             Confidence::Low,
         );
-        let queries = StubSemanticQueries { references_result: vec![occ1, occ2] };
+        let queries = StubSemanticQueries::new(vec![occ1, occ2]);
 
-        let outcome = find_references_cutover(&index, &queries, "Foo::bar", EntityId(20));
+        let outcome = find_references_cutover(
+            index.find_references("Foo::bar"),
+            &queries,
+            "Foo::bar",
+            EntityId(20),
+        );
 
         // Receipt should reflect ALL occurrences (before filtering).
         assert_eq!(outcome.receipt.new_result.match_count, 2);
@@ -1031,9 +1140,14 @@ mod tests {
             Provenance::ImportExportInference,
             Confidence::High,
         );
-        let queries = StubSemanticQueries { references_result: vec![occ] };
+        let queries = StubSemanticQueries::new(vec![occ]);
 
-        let result = find_references_shadow(&index, &queries, "imported_func", EntityId(20));
+        let result = find_references_shadow(
+            index.find_references("imported_func"),
+            &queries,
+            "imported_func",
+            EntityId(20),
+        );
         let trace = first_trace(&result.receipt)?;
 
         assert!(result.legacy_result.is_empty());
@@ -1058,9 +1172,14 @@ mod tests {
             Provenance::FrameworkSynthesis,
             Confidence::Medium,
         );
-        let queries = StubSemanticQueries { references_result: vec![occ] };
+        let queries = StubSemanticQueries::new(vec![occ]);
 
-        let result = find_references_shadow(&index, &queries, "generated_accessor", EntityId(30));
+        let result = find_references_shadow(
+            index.find_references("generated_accessor"),
+            &queries,
+            "generated_accessor",
+            EntityId(30),
+        );
         let trace = first_trace(&result.receipt)?;
 
         assert_eq!(trace.surface, ProviderSurface::References);
@@ -1083,9 +1202,14 @@ mod tests {
             Provenance::DynamicBoundary,
             Confidence::High,
         );
-        let queries = StubSemanticQueries { references_result: vec![occ] };
+        let queries = StubSemanticQueries::new(vec![occ]);
 
-        let result = find_references_shadow(&index, &queries, "dynamic_symbol", EntityId(40));
+        let result = find_references_shadow(
+            index.find_references("dynamic_symbol"),
+            &queries,
+            "dynamic_symbol",
+            EntityId(40),
+        );
         let trace = first_trace(&result.receipt)?;
 
         assert_eq!(trace.surface, ProviderSurface::References);
@@ -1109,9 +1233,14 @@ mod tests {
             Provenance::NameHeuristic,
             Confidence::Low,
         );
-        let queries = StubSemanticQueries { references_result: vec![exact.clone(), low] };
+        let queries = StubSemanticQueries::new(vec![exact.clone(), low]);
 
-        let outcome = find_references_cutover(&index, &queries, "Foo::bar", EntityId(20));
+        let outcome = find_references_cutover(
+            index.find_references("Foo::bar"),
+            &queries,
+            "Foo::bar",
+            EntityId(20),
+        );
 
         match &outcome.result {
             ReferencesCutoverResult::Exact(refs) => {
@@ -1170,12 +1299,14 @@ mod tests {
             Provenance::NameHeuristic,
             Confidence::Low,
         );
-        let queries = StubSemanticQueries {
-            references_result: vec![imported, generated, dynamic, low_confidence],
-        };
+        let queries = StubSemanticQueries::new(vec![imported, generated, dynamic, low_confidence]);
 
-        let result =
-            find_references_shadow(&index, &queries, "Real::Nav::legacy_helper", EntityId(20));
+        let result = find_references_shadow(
+            index.find_references("Real::Nav::legacy_helper"),
+            &queries,
+            "Real::Nav::legacy_helper",
+            EntityId(20),
+        );
 
         assert!(!result.legacy_result.is_empty(), "legacy workspace references should resolve");
         assert_eq!(result.receipt.new_result.match_count, 4);
@@ -1210,10 +1341,15 @@ mod tests {
     fn references_live_source_backed_accepts_source_backed_exact_ast_occurrences()
     -> Result<(), Box<dyn std::error::Error>> {
         let (index, entity_id, references) = source_backed_exact_references()?;
-        let queries = StubSemanticQueries { references_result: references.clone() };
+        let queries = StubSemanticQueries::new(references.clone())
+            .with_spans_from(&index, "file:///lib/LiveRefs.pm");
 
-        let outcome =
-            find_references_live_source_backed(&index, &queries, "LiveRefs::target", entity_id);
+        let outcome = find_references_live_source_backed(
+            index.find_references("LiveRefs::target"),
+            &queries,
+            "LiveRefs::target",
+            entity_id,
+        );
 
         assert_eq!(outcome.result, ReferencesCutoverResult::Exact(references.clone()));
         assert!(
@@ -1240,10 +1376,14 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let index = WorkspaceIndex::new();
         let occurrence = make_ref_occurrence(1, 10, 20);
-        let queries = StubSemanticQueries { references_result: vec![occurrence] };
+        let queries = StubSemanticQueries::new(vec![occurrence]);
 
-        let outcome =
-            find_references_live_source_backed(&index, &queries, "Foo::bar", EntityId(20));
+        let outcome = find_references_live_source_backed(
+            index.find_references("Foo::bar"),
+            &queries,
+            "Foo::bar",
+            EntityId(20),
+        );
 
         assert!(matches!(outcome.result, ReferencesCutoverResult::LegacyFallback(_)));
         let note = outcome.receipt.notes.join(" ");
@@ -1259,9 +1399,15 @@ mod tests {
         let (index, entity_id, references) = source_backed_exact_references()?;
         let mut imported = references.first().ok_or("missing reference")?.clone();
         imported.provenance = Provenance::ImportExportInference;
-        let queries = StubSemanticQueries { references_result: vec![imported.clone()] };
+        let queries = StubSemanticQueries::new(vec![imported.clone()])
+            .with_spans_from(&index, "file:///lib/LiveRefs.pm");
 
-        let outcome = find_references_live_source_backed(&index, &queries, "target", entity_id);
+        let outcome = find_references_live_source_backed(
+            index.find_references("target"),
+            &queries,
+            "target",
+            entity_id,
+        );
 
         assert_eq!(outcome.result, ReferencesCutoverResult::Exact(vec![imported]));
         let note = outcome.receipt.notes.join(" ");
@@ -1280,9 +1426,15 @@ mod tests {
         let (index, entity_id, references) = source_backed_exact_references()?;
         let mut imported = references.first().ok_or("missing reference")?.clone();
         imported.provenance = Provenance::LiteralRequireImport;
-        let queries = StubSemanticQueries { references_result: vec![imported.clone()] };
+        let queries = StubSemanticQueries::new(vec![imported.clone()])
+            .with_spans_from(&index, "file:///lib/LiveRefs.pm");
 
-        let outcome = find_references_live_source_backed(&index, &queries, "target", entity_id);
+        let outcome = find_references_live_source_backed(
+            index.find_references("target"),
+            &queries,
+            "target",
+            entity_id,
+        );
 
         assert_eq!(outcome.result, ReferencesCutoverResult::Exact(vec![imported]));
         let note = outcome.receipt.notes.join(" ");
@@ -1307,10 +1459,14 @@ mod tests {
             Provenance::DynamicBoundary,
             Confidence::High,
         );
-        let queries = StubSemanticQueries { references_result: vec![dynamic] };
+        let queries = StubSemanticQueries::new(vec![dynamic]);
 
-        let outcome =
-            find_references_live_source_backed(&index, &queries, "Foo::dynamic", EntityId(20));
+        let outcome = find_references_live_source_backed(
+            index.find_references("Foo::dynamic"),
+            &queries,
+            "Foo::dynamic",
+            EntityId(20),
+        );
 
         assert!(matches!(outcome.result, ReferencesCutoverResult::LegacyFallback(_)));
         let note = outcome.receipt.notes.join(" ");
@@ -1332,9 +1488,14 @@ mod tests {
             Provenance::SemanticAnalyzer,
             Confidence::Medium,
         );
-        let queries = StubSemanticQueries { references_result: vec![medium.clone()] };
+        let queries = StubSemanticQueries::new(vec![medium.clone()]);
 
-        let outcome = find_references_cutover(&index, &queries, "Foo::bar", EntityId(20));
+        let outcome = find_references_cutover(
+            index.find_references("Foo::bar"),
+            &queries,
+            "Foo::bar",
+            EntityId(20),
+        );
 
         // Medium confidence is usable — should produce Exact, not fallback.
         match &outcome.result {
@@ -1392,6 +1553,99 @@ mod tests {
             }
             other => return Err(format!("expected Ambiguous, got {:?}", other).into()),
         }
+        Ok(())
+    }
+
+    /// The live references cutover must complete inside a
+    /// `with_semantic_queries_for_uri` callback while an indexing write is
+    /// queued (#15644). Mirror of the definition regression control: the
+    /// bounded join turns a re-entry deadlock into a test failure.
+    #[test]
+    fn live_references_cutover_completes_inside_callback_while_reindex_is_queued()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let index = std::sync::Arc::new(WorkspaceIndex::new());
+        let uri = Url::parse("file:///lib/LiveRefDeadlock.pm")?;
+        index.index_file(
+            uri.clone(),
+            "package LiveRefDeadlock;\nsub target { 1 }\nsub caller {\n    target();\n    LiveRefDeadlock::target();\n}\n1;\n"
+                .to_string(),
+        )?;
+
+        let (entity_id, references) = index
+            .with_semantic_queries_for_uri(uri.as_str(), |file_id, queries| {
+                let ctx = QueryContext::new(file_id, None, Some(0));
+                let candidate =
+                    queries.definitions("LiveRefDeadlock::target", &ctx).into_iter().next()?;
+                let references = queries.references(candidate.entity_id);
+                Some((candidate.entity_id, references))
+            })
+            .flatten()
+            .ok_or("missing source-backed references fixture")?;
+        if references.is_empty() {
+            return Err("expected at least one source-backed reference".into());
+        }
+
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel::<&'static str>();
+        let request_index = std::sync::Arc::clone(&index);
+        let requester = std::thread::spawn(move || {
+            // Legacy resolution happens BEFORE the callback (#15644).
+            let legacy_locations = request_index.find_references("LiveRefDeadlock::target");
+            request_index.with_semantic_queries_for_uri(uri.as_str(), |_file_id, queries| {
+                let _ = entered_tx.send("callback_entered");
+                // Give the writer time to queue behind the callback's read
+                // guards before the cutover runs.
+                std::thread::sleep(std::time::Duration::from_millis(250));
+                find_references_live_source_backed(
+                    legacy_locations,
+                    &queries,
+                    "LiveRefDeadlock::target",
+                    entity_id,
+                )
+                .result
+            })
+        });
+
+        // Queue the reindex writer only once the callback holds its guards.
+        entered_rx.recv_timeout(std::time::Duration::from_secs(5))?;
+        let writer_index = std::sync::Arc::clone(&index);
+        let writer_uri = Url::parse("file:///lib/OtherRefDeadlock.pm")?;
+        let writer = std::thread::spawn(move || {
+            writer_index.index_initial_file(
+                writer_uri,
+                "package OtherRefDeadlock;\nsub other { 2 }\n1;\n".to_string(),
+            )
+        });
+
+        // Bounded join: a regression deadlocks here and must fail, not hang CI.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !requester.is_finished() {
+            if std::time::Instant::now() >= deadline {
+                return Err("references request deadlocked against a queued reindex inside \
+                     with_semantic_queries_for_uri (#15644 regression)"
+                    .into());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let result =
+            requester.join().map_err(|_| "references request thread panicked".to_string())?;
+        let Some(result) = result else {
+            return Err("the references callback lost its indexed URI".into());
+        };
+        if result != ReferencesCutoverResult::Exact(references) {
+            return Err(format!("expected an Exact live references cutover, got {result:?}").into());
+        }
+
+        // The queued writer must finish once the callback released its guards.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !writer.is_finished() {
+            if std::time::Instant::now() >= deadline {
+                return Err(
+                    "the reindex writer remained blocked after the callback returned".into()
+                );
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        writer.join().map_err(|_| "writer thread panicked".to_string())??;
         Ok(())
     }
 }

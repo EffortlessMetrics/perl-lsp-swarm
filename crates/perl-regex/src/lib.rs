@@ -4,9 +4,15 @@
 //! Perl regex validation and analysis.
 #![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
+/// Modifier, feature, and capture analysis over Perl regex operators.
 pub mod analyzer;
+/// Versioned conformance vocabulary for modifier-semantics fixtures.
+pub mod conformance;
+/// Typed error type surfaced by validation and analysis entry points.
 pub mod error;
+/// Re-exports of the crate's primary entry-point types.
 pub mod prelude;
+/// Fail-fast and fact-based regex validation.
 pub mod validator;
 
 mod syntax;

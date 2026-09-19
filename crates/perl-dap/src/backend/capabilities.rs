@@ -382,12 +382,14 @@ pub(crate) const MIRROR_ADVERTISES_EVALUATE_FOR_HOVERS: bool = false;
 /// The #9581 secondary-capability floor: one explicit unsupported disposition
 /// per floored request.
 ///
-/// Seven `initialize` capability fields — `supportsCompletionsRequest`,
+/// The floored `initialize` capability fields — `supportsCompletionsRequest`,
 /// `supportsModulesRequest`, `supportsLoadedSourcesRequest`,
 /// `supportsRestartRequest`, `supportsValueFormattingOptions`,
 /// `supportsBreakpointLocationsRequest`, and `supportsCancelRequest` — are
-/// forced `false` in every mode (native launch, TCP attach, and both mirror
-/// peer surfaces) until that field's own exact-behavior receipt passes (#9581).
+/// kept false for direct/in-process, TCP, and mirror/peer surfaces until each
+/// field's own exact-behavior receipt passes (#9581). Native stdio enables only
+/// `supportsCancelRequest` after selecting its concurrent intake transport; the
+/// other listed fields remain false.
 /// Each row is independent: one field's gate evidence never widens another, and
 /// no row is derived from `supports_core`, catalog maturity, handler presence,
 /// or another mode's support.
@@ -483,6 +485,23 @@ pub(crate) fn value_format_unsupported_message(command: &str) -> String {
 /// its own sanctioned seam and constructs only its own refusal response from
 /// it, so the two families cannot drift apart between surfaces.
 pub(crate) fn capability_floor_message(command: &str, arguments: Option<&Value>) -> Option<String> {
+    capability_floor_message_for_native_stdio(command, arguments, false)
+}
+
+/// Apply the secondary capability floor for a selected transport profile.
+///
+/// Native stdio is the only profile that may admit request-scoped cancellation:
+/// its transport owns concurrent wire intake and the broker operation registry.
+/// Direct adapter calls and external-peer frontends remain fail-closed until
+/// their own cancellation proof exists.
+pub(crate) fn capability_floor_message_for_native_stdio(
+    command: &str,
+    arguments: Option<&Value>,
+    native_stdio: bool,
+) -> Option<String> {
+    if command == "cancel" && native_stdio {
+        return None;
+    }
     if let Some(message) = secondary_capability_floor_message(command) {
         return Some(message);
     }
@@ -1401,6 +1420,24 @@ mod tests {
         assert!(
             peer_bridge_set_expression_admission(false, true),
             "an open peer gate opens on its own authority, not the native one"
+        );
+    }
+
+    #[test]
+    fn native_stdio_only_admits_cancel() {
+        assert!(
+            capability_floor_message_for_native_stdio("cancel", None, true).is_none(),
+            "native stdio cancellation must reach the request-scoped broker"
+        );
+        let refusal = capability_floor_message_for_native_stdio("cancel", None, false)
+            .unwrap_or_else(|| "missing direct/peer refusal".to_string());
+        assert!(
+            refusal.contains("supportsCancelRequest") && refusal.contains("#9581"),
+            "non-stdio cancellation must remain fail-closed: {refusal}"
+        );
+        assert!(
+            capability_floor_message_for_native_stdio("restart", None, true).is_some(),
+            "native cancellation promotion must not widen unrelated floor rows"
         );
     }
 
