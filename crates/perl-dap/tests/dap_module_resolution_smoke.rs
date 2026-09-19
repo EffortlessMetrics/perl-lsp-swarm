@@ -338,12 +338,17 @@ fn test_module_breakpoint_hit_status_receipt() -> TestResult {
     // `min(timeout, 2s)` and ignore the result), so a host under load that
     // queues `terminated` a few hundred ms later still completes the receipt
     // without failing. The hard 5-second wait that used to live here racy'd
-    // `unit_routed_full` (#15884, same family as #15749 / #15887).
-    if !hit_disconnect_sent {
-        let _ = adapter.handle_request(7, "disconnect", Some(json!({})));
+    // `unit_routed_full` (#15884, same family as #15749 / #15887). When the
+    // terminal event was already observed above, the disconnect and the
+    // drain-grace wait are redundant (`terminated` is once-only, so the wait
+    // would always time out): skip both.
+    if !session_terminated {
+        if !hit_disconnect_sent {
+            let _ = adapter.handle_request(7, "disconnect", Some(json!({})));
+        }
+        let drain_grace = timeout.min(Duration::from_secs(2));
+        let _ = wait_for_event(&rx, "terminated", drain_grace);
     }
-    let drain_grace = timeout.min(Duration::from_secs(2));
-    let _ = wait_for_event(&rx, "terminated", drain_grace);
 
     Ok(())
 }
