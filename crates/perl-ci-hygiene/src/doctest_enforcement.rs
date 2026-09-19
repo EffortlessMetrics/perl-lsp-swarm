@@ -17,7 +17,7 @@
 //!
 //! The gate row is the single authority for which packages are enforced; this
 //! check reads the package list back out of the row's own command rather than
-//! keeping a second copy. Four laws follow from it:
+//! keeping a second copy. Five laws follow from it:
 //!
 //! 1. the route still exists, is still a `tier: merge_gate` row with
 //!    `required: true` and `quarantine: false`, still passes `--doc`, and
@@ -28,9 +28,12 @@
 //!    fence appears in the route's package list;
 //! 3. every package the route names is a real workspace package, so a rename
 //!    cannot silently drop a crate out of the route;
-//! 4. the inventory cannot fail open: an unreadable or unparsable member
-//!    manifest, a wildcard `workspace.members` entry, and an unreadable
-//!    source file are all errors, never an empty pass.
+//! 4. no contract sits in a non-library target, where `cargo test --doc`
+//!    cannot reach it however the route selects the package;
+//! 5. the inventory cannot fail open: an unreadable or unparsable member
+//!    manifest, a wildcard `workspace.members` entry, an unreadable source
+//!    file, and a directory the walk cannot enumerate are all errors, never
+//!    an empty pass.
 //!
 //! # `doctest = false` is not an exclusion
 //!
@@ -63,12 +66,19 @@
 //! Fence forms: the detector counts `///` and `//!` line doc comments and
 //! `/**` and `/*!` block doc comments, each with a fence delimiter of three
 //! or more backticks or tildes — the spellings rustdoc collects. Still out of
-//! scope are `#[doc = "…"]` attribute forms; fences under `tests/` (rustdoc
-//! does not collect them as doctests); and fences in non-library targets such
-//! as `src/bin/**` or a package's `main.rs`, because `cargo test --doc`
-//! collects only the *library's* documentation. A contract written in one of
-//! those places needs a gate-run target of its own, like the migrated
-//! `perl-parser` target.
+//! scope are `#[doc = "…"]` attribute forms and fences under `tests/`
+//! (rustdoc does not collect them as doctests).
+//!
+//! Fences in non-library targets — a package's `main.rs` or `src/bin/**` —
+//! are *not* silently out of scope: they are reported as violations.
+//! `cargo test --doc` collects only the *library's* documentation, so such a
+//! contract is unreachable however the route selects the package. Counting it
+//! as covered because its package is on the route would report safety the
+//! route cannot deliver, which is the documented-but-unenforced shape this
+//! gate exists to remove. The repair is a gate-run target of its own, like
+//! the migrated `perl-parser` target. Cargo's conventional binary locations
+//! are what this recognises; a custom `[[bin]] path = "…"` elsewhere under
+//! `src/` still reads as library surface.
 //!
 //! The block-comment scanner tracks `/*` and `*/` nesting depth textually, so
 //! doctest source containing comment-looking tokens can skew the depth of one
@@ -101,8 +111,13 @@ pub struct ContractSite {
 pub struct PackageFacts {
     /// Cargo package name.
     pub name: String,
-    /// `compile_fail` fences found under the package's `src/`.
+    /// `compile_fail` fences in the package's library sources — the ones
+    /// `cargo test --doc` can actually collect.
     pub contracts: Vec<ContractSite>,
+    /// `compile_fail` fences in the package's non-library targets
+    /// (`src/main.rs`, `src/bin/**`). `cargo test --doc` never collects
+    /// these, so selecting the package does not execute them.
+    pub unexecutable: Vec<ContractSite>,
 }
 
 /// A law this check enforces, and the package that broke it.
@@ -121,6 +136,20 @@ pub enum Violation {
         /// The name that matched no workspace member.
         package: String,
     },
+    /// A `compile_fail` contract sits in a non-library target, where
+    /// `cargo test --doc` cannot reach it however the route is configured.
+    ///
+    /// Selecting the package does not rescue it, which is exactly why this
+    /// is reported rather than counted as covered: a contract that no route
+    /// can execute is the documented-but-unenforced shape this gate exists
+    /// to remove. The repair is a gate-run target of its own, as
+    /// `perl-parser` has.
+    ContractInUnexecutableTarget {
+        /// The package owning the non-library target.
+        package: String,
+        /// Where the unreachable contracts live.
+        sites: Vec<ContractSite>,
+    },
 }
 
 impl Violation {
@@ -128,7 +157,8 @@ impl Violation {
     fn package(&self) -> &str {
         match self {
             Self::ContractOutsideRoute { package, .. }
-            | Self::SelectedPackageUnknown { package } => package,
+            | Self::SelectedPackageUnknown { package }
+            | Self::ContractInUnexecutableTarget { package, .. } => package,
         }
     }
 }
@@ -403,8 +433,16 @@ pub fn package_facts(root: &Path) -> Result<BTreeMap<String, PackageFacts>> {
                 manifest_path.display()
             ));
         };
-        let contracts = scan_contracts(root, &directory.join("src"))?;
-        facts.insert(name.clone(), PackageFacts { name, contracts });
+        let src = directory.join("src");
+        // `ContractSite::file` is root-relative with forward slashes, so the
+        // classifier compares against this package's own `src/` prefix and
+        // cannot confuse one member's `main.rs` for another's.
+        let src_prefix = src.strip_prefix(root).unwrap_or(&src).display().to_string();
+        let src_prefix = src_prefix.replace('\\', "/");
+        let (unexecutable, contracts) = scan_contracts(root, &src)?
+            .into_iter()
+            .partition(|site| is_non_library_target(&src_prefix, &site.file));
+        facts.insert(name.clone(), PackageFacts { name, contracts, unexecutable });
     }
     Ok(facts)
 }
@@ -435,7 +473,7 @@ pub fn package_name(manifest: &str) -> Option<String> {
 /// instrument failure can never look like an empty contract surface.
 fn scan_contracts(root: &Path, src: &Path) -> Result<Vec<ContractSite>> {
     let mut sites = Vec::new();
-    for path in crate::walk_rs_files(src) {
+    for path in walk_rs_files_or_fail(src)? {
         let contents = fs::read_to_string(&path).map_err(|error| {
             eyre!(
                 "failed to read {}: {error}; the doctest inventory cannot fail open here",
@@ -449,6 +487,72 @@ fn scan_contracts(root: &Path, src: &Path) -> Result<Vec<ContractSite>> {
     }
     sites.sort();
     Ok(sites)
+}
+
+/// The error a failed directory walk becomes.
+///
+/// Split out so the fail-closed message is directly testable. Forcing a real
+/// `walkdir` error portably is not possible from a test — an unreadable
+/// directory needs Unix permissions and a non-root user, and walking a plain
+/// file succeeds rather than erroring — so the test covers this mapping and
+/// the `?` in [`walk_rs_files_or_fail`] carries it. That is weaker than an
+/// end-to-end falsifier and is recorded as such rather than dressed up.
+fn walk_failure(src: &Path, error: &walkdir::Error) -> color_eyre::Report {
+    eyre!(
+        "failed to walk {}: {error}; the doctest inventory cannot fail open on a directory it \
+         cannot read",
+        src.display()
+    )
+}
+
+/// Whether a contract site sits in a target `cargo test --doc` cannot collect.
+///
+/// `--doc` collects the *library's* documentation, so a fence in
+/// `<src>/main.rs` or under `<src>/bin/` never runs however the route selects
+/// the package. Both arguments are root-relative, forward-slash paths.
+///
+/// Limitation, stated rather than assumed away: this recognises Cargo's
+/// conventional binary locations, not a custom `[[bin]] path = "…"` pointing
+/// somewhere else under `src/`. Such a file is still counted as library
+/// surface, the same direction as the other documented carve-outs — it can
+/// hide a contract from this check, never invent one.
+fn is_non_library_target(src_prefix: &str, file: &str) -> bool {
+    let Some(relative) = file.strip_prefix(src_prefix).and_then(|rest| rest.strip_prefix('/'))
+    else {
+        return false;
+    };
+    relative == "main.rs" || relative.starts_with("bin/")
+}
+
+/// Every `.rs` file under `src`, failing closed on a traversal error.
+///
+/// [`crate::walk_rs_files`] drops traversal errors with
+/// `.filter_map(Result::ok)`, which is fine for the hygiene scans that use it
+/// but wrong here: a directory this inventory cannot enter would silently
+/// shrink the denominator, and a shrunken denominator is a green ratchet.
+/// That is the same fail-open already closed for unreadable manifests and
+/// unreadable source files; a directory is the third door into it.
+///
+/// A missing `src` is not an error — a workspace member may legitimately have
+/// no sources — but a directory that exists and cannot be walked is.
+///
+/// # Errors
+///
+/// Returns an error when the walk cannot enumerate an existing directory.
+fn walk_rs_files_or_fail(src: &Path) -> Result<Vec<PathBuf>> {
+    if !src.exists() {
+        return Ok(Vec::new());
+    }
+
+    let mut paths = Vec::new();
+    for entry in walkdir::WalkDir::new(src).follow_links(false) {
+        let entry = entry.map_err(|error| walk_failure(src, &error))?;
+        let path = entry.path();
+        if entry.file_type().is_file() && crate::is_rust_source_file(path) {
+            paths.push(path.to_path_buf());
+        }
+    }
+    Ok(paths)
 }
 
 /// Return the 1-based line numbers of `compile_fail` fence openers in one
@@ -598,6 +702,16 @@ pub fn violations(
                 sites: facts.contracts.clone(),
             });
         }
+        // Route membership is deliberately not consulted here. A fence in
+        // `src/main.rs` or `src/bin/**` is unreachable for `cargo test --doc`
+        // whether or not the package is selected, so counting it as covered
+        // would report safety the route cannot deliver.
+        if !facts.unexecutable.is_empty() {
+            violations.push(Violation::ContractInUnexecutableTarget {
+                package: facts.name.clone(),
+                sites: facts.unexecutable.clone(),
+            });
+        }
     }
 
     violations.sort_by(|left, right| left.package().cmp(right.package()));
@@ -610,10 +724,11 @@ mod tests {
 
     use super::{
         ContractSite, PackageFacts, Violation, compile_fail_fence_lines, is_compile_fail_fence,
-        package_facts, package_name, route_packages, violations,
+        is_non_library_target, package_facts, package_name, route_packages, violations,
+        walk_failure, walk_rs_files_or_fail,
     };
     use std::collections::{BTreeMap, BTreeSet};
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
     fn policy_with(command: &str) -> String {
         [
@@ -981,7 +1096,98 @@ mod tests {
                     line: index + 1,
                 })
                 .collect(),
+            unexecutable: Vec::new(),
         }
+    }
+
+    #[test]
+    fn a_contract_in_a_non_library_target_is_a_violation_even_when_selected() {
+        // `cargo test --doc` collects only the library, so a fence in
+        // `src/main.rs` or `src/bin/**` cannot run however the route selects
+        // the package. Counting it as covered would report safety the route
+        // cannot deliver.
+        let mut facts = facts("perl-token", 0);
+        facts.unexecutable =
+            vec![ContractSite { file: "crates/perl-token/src/bin/tool.rs".to_owned(), line: 7 }];
+        let route = ["perl-token".to_owned()].into_iter().collect();
+
+        let found = violations(&route, &inventory(vec![facts]));
+
+        assert!(
+            matches!(found.as_slice(), [Violation::ContractInUnexecutableTarget { package, sites }]
+                if package == "perl-token" && sites.len() == 1),
+            "selecting the package must not rescue an unreachable contract: {found:?}"
+        );
+    }
+
+    #[test]
+    fn non_library_targets_are_classified_by_their_own_package_src_prefix() {
+        let prefix = "crates/perl-token/src";
+
+        assert!(is_non_library_target(prefix, "crates/perl-token/src/main.rs"));
+        assert!(is_non_library_target(prefix, "crates/perl-token/src/bin/tool.rs"));
+        assert!(is_non_library_target(prefix, "crates/perl-token/src/bin/nested/tool.rs"));
+
+        assert!(!is_non_library_target(prefix, "crates/perl-token/src/lib.rs"));
+        assert!(
+            !is_non_library_target(prefix, "crates/perl-token/src/parser/main.rs"),
+            "only the crate-root `main.rs` is the binary target"
+        );
+        assert!(
+            !is_non_library_target(prefix, "crates/perl-module/src/main.rs"),
+            "another member's binary must not be attributed to this package"
+        );
+        assert!(
+            !is_non_library_target(prefix, "crates/perl-token/src-generated/main.rs"),
+            "the prefix must match a whole path component, not a string prefix"
+        );
+    }
+
+    #[test]
+    fn an_unwalkable_source_directory_becomes_a_fail_closed_error() {
+        // The third door into the fail-open already closed for unreadable
+        // manifests and unreadable files: a directory the walk cannot
+        // enumerate would shrink the denominator, and a shrunken denominator
+        // is a green ratchet.
+        //
+        // Honest limitation: this covers the mapping, not an end-to-end walk
+        // failure. A real `walkdir` error needs an unreadable directory,
+        // which needs Unix permissions *and* a non-root user; walking a
+        // plain file succeeds rather than erroring. The `?` in
+        // `walk_rs_files_or_fail` is what carries this into the inventory.
+        let entry = must_with(
+            walkdir::WalkDir::new(temp_repo_dir("walk-error").join("absent"))
+                .into_iter()
+                .next()
+                .ok_or("the walk yielded no entry at all"),
+            "a walk of a missing path yields one entry",
+        );
+        let walk_error = must_err_with(entry, "that entry is an error");
+
+        let error = walk_failure(Path::new("crates/perl-token/src"), &walk_error);
+
+        assert!(
+            error.to_string().contains("cannot fail open"),
+            "the error must name the fail-open it prevents: {error}"
+        );
+        assert!(
+            error.to_string().contains("crates/perl-token/src"),
+            "the error must name the directory: {error}"
+        );
+    }
+
+    #[test]
+    fn a_missing_source_directory_is_not_an_error() {
+        // A workspace member with no `src/` is legitimate; only a directory
+        // that exists and cannot be walked is an instrument failure.
+        let root = temp_repo_dir("walk-missing");
+
+        let paths = must_with(
+            walk_rs_files_or_fail(&root.join("src")),
+            "a missing src/ is not an instrument failure",
+        );
+
+        assert!(paths.is_empty(), "a missing src/ contributes no sites");
     }
 
     fn inventory(packages: Vec<PackageFacts>) -> BTreeMap<String, PackageFacts> {

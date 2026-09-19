@@ -72,6 +72,17 @@ pub(crate) fn check(repo_root: &Path) -> Result<i32> {
             Violation::SelectedPackageUnknown { package } => println!(
                 "  {YELLOW}{package}{NC}: selected by `{GATE_NAME}` but is not a workspace package"
             ),
+            Violation::ContractInUnexecutableTarget { package, sites } => {
+                println!(
+                    "  {YELLOW}{package}{NC}: {} compile_fail contract(s) in a non-library \
+                     target; `cargo test --doc` collects only the library, so selecting the \
+                     package cannot execute them",
+                    sites.len()
+                );
+                for site in sites {
+                    println!("    {}:{}", site.file, site.line);
+                }
+            }
         }
     }
     println!();
