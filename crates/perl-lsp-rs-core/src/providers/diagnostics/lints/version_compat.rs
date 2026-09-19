@@ -31,7 +31,7 @@
 
 use perl_diagnostics::codes::DiagnosticCode;
 use perl_parser_core::ast::{Node, NodeKind};
-use perl_pragma::{PerlVersion, PragmaQueryCursor, PragmaTracker, parse_perl_version};
+use perl_pragma::{PerlVersion, PragmaQueryCursor, PragmaState, parse_perl_version};
 
 use super::super::internal_types::Diagnostic;
 use super::super::walker::walk_node;
@@ -138,6 +138,9 @@ const POSTDEREF_UNCONDITIONAL_VERSION: PerlVersion = PerlVersion::new(5, 24);
 /// reads the exact source gap between the receiver end and the keys start.
 /// The same source also supplies the exact expression end for the star-form
 /// spellings, whose `Unary` nodes span only the receiver.
+///
+/// This entry point derives the pragma timeline from `node` itself. See
+/// `check_strict_warnings` for why the map-taking form is not public.
 pub fn check_version_compat(node: &Node, source: &str, diagnostics: &mut Vec<Diagnostic>) {
     check_version_compat_with_project_version(node, source, diagnostics, None);
 }
@@ -147,9 +150,36 @@ pub fn check_version_compat(node: &Node, source: &str, diagnostics: &mut Vec<Dia
 /// A source `use VERSION` declaration remains authoritative. When the source
 /// declares no version, `project_version` supplies the PL900 target only if its
 /// complete configured spelling is valid; malformed values fail closed.
+///
+/// Like [`check_version_compat`], derives its own pragma timeline; the
+/// shared-timeline form below is crate-internal.
 pub fn check_version_compat_with_project_version(
     node: &Node,
     source: &str,
+    diagnostics: &mut Vec<Diagnostic>,
+    project_version: Option<&str>,
+) {
+    check_version_compat_with_pragma_map(
+        node,
+        source,
+        &perl_pragma::PragmaTracker::build(node),
+        diagnostics,
+        project_version,
+    );
+}
+
+/// Crate-internal variant taking a caller-supplied pragma timeline (#7286).
+///
+/// Deliberately not public, for the reason given on
+/// `check_strict_warnings_with_pragma_map`: an independently supplied timeline
+/// cannot be proven to belong to `node`, so only `DiagnosticsProvider` — which
+/// reaches this after `DocumentDiagnosticAnalysis::matches` has bound the
+/// analysis to this exact tree and source — may supply one. The public entry
+/// points above keep main's signatures and derive their own.
+pub(crate) fn check_version_compat_with_pragma_map(
+    node: &Node,
+    source: &str,
+    pragma_map: &[(std::ops::Range<usize>, PragmaState)],
     diagnostics: &mut Vec<Diagnostic>,
     project_version: Option<&str>,
 ) {
@@ -231,13 +261,12 @@ pub fn check_version_compat_with_project_version(
         }
     };
 
-    let pragma_map = PragmaTracker::build(node);
     let mut pragma_cursor = PragmaQueryCursor::new();
 
     // Second pass: walk AST for version-gated constructs.
     let diagnostics_before_walk = diagnostics.len();
     walk_node(node, &mut |n| {
-        let pragma_state = pragma_cursor.state_for_offset(&pragma_map, n.location.start);
+        let pragma_state = pragma_cursor.state_for_offset(pragma_map, n.location.start);
         let postfix_deref = postfix_deref_spelling(n, source);
 
         match &n.kind {
