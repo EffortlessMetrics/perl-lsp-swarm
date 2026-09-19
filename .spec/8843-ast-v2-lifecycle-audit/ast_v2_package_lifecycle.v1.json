@@ -1294,14 +1294,14 @@
     {
       "surface_id": "ps:workspace-dependency",
       "surface": "workspace_dependency",
-      "site": "Cargo.toml:241",
+      "site": "Cargo.toml:246",
       "current_status": "path + version 0.17.0, so workspace consumers resolve the local path while the published version stays declared",
       "owner": "#7398"
     },
     {
       "surface_id": "ps:publish-allowlist",
       "surface": "publish_allowlist",
-      "site": "Cargo.toml:134",
+      "site": "Cargo.toml:139",
       "current_status": "Tier 1b publish-allowlisted crate",
       "owner": "release tooling"
     },
