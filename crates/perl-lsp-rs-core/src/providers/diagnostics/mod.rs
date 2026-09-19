@@ -46,6 +46,9 @@ mod internal_types;
 pub(crate) mod lints;
 /// Parse error to diagnostic conversion
 mod parse_errors;
+
+/// Canonical regex-diagnostic projection from the parser-retained analysis (#7024).
+pub mod regex_canonical;
 /// Scoped package-graph builder for cross-file PL303 role-conflict diagnostics.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod role_graph_scope;
@@ -63,7 +66,8 @@ pub use diagnostics::{DiagnosticsProvider, build_parse_error_hint};
 pub use document_analysis::DocumentDiagnosticAnalysis;
 pub use heredoc_antipatterns::detect_heredoc_antipatterns;
 pub use internal_types::{
-    Diagnostic, DiagnosticTag, RelatedInformation, take_critic_overlap_observations,
+    Diagnostic, DiagnosticTag, RelatedInformation, critic_overlap_observations,
+    take_critic_overlap_observations,
 };
 pub use parse_errors::{parse_error_code, parse_error_severity};
 pub use perl_diagnostics::codes::DiagnosticSeverity;

@@ -19,11 +19,9 @@ use super::{
 };
 use crate::protocol::invalid_params;
 use crate::state::{DegradationTier, FIRST_ACCEPTED_DOCUMENT_GENERATION, ParsedSnapshot};
-#[cfg(feature = "workspace")]
-use perl_parser::workspace_index::{IndexPhase, IndexState};
 use perl_parser_core::source_file::is_binary_content;
 #[cfg(feature = "workspace")]
-use perl_workspace::workspace_index::{SourceCommit, SourceCommitOutcome};
+use perl_workspace::workspace_index::{IndexPhase, IndexState, SourceCommit, SourceCommitOutcome};
 
 mod document_state;
 mod lifecycle;
@@ -394,23 +392,26 @@ impl LspServer {
             // No AST-only cache lookup: the retired AstCache stored only the
             // AST without parse errors, so a hit synthesised Vec::new() --
             // live semantic corruption for recovery-bearing source (#11215).
-            let (ast, errors) = {
+            // The parse runs inside a `RetainedRegexSession` (#7024) so this exact
+            // source keeps its one canonical regex analysis. See `parse_worker`.
+            let (ast, errors, regex_analysis) = {
                 let code_text = crate::util::code_slice(text);
+                let session = perl_parser_core::RetainedRegexSession::begin(code_text);
                 let mut parser = match cancellation_token {
                     Some(token) => Parser::new_with_cancellation(code_text, token),
                     None => Parser::new(code_text),
                 };
                 match parser.parse() {
-                    Ok(ast) => {
+                    Ok(mut ast) => {
+                        let table = session.finish(Some(&mut ast));
                         let errors = parser.errors().to_vec();
-                        let arc_ast = Arc::new(ast);
-                        (Some((*arc_ast).clone()), errors)
+                        (Some(ast), errors, Arc::new(table))
                     }
                     Err(crate::error::ParseError::Cancelled) => {
                         tracing::debug!("Parse cancelled for {} — newer change pending", uri);
                         return Ok(());
                     }
-                    Err(e) => (None, vec![e]),
+                    Err(e) => (None, vec![e], Arc::new(session.finish(None))),
                 }
             };
 
@@ -490,12 +491,10 @@ impl LspServer {
             // starts pending and can only advance through the acceptance and
             // required-effect stages below.
             self.install_active_document_pending(&normalized_uri, uri, &generation, doc_generation);
-            let snapshot = Arc::new(ParsedSnapshot::from_parse_result(
-                doc_generation,
-                text,
-                ast_arc.clone(),
-                errors,
-            ));
+            let snapshot = Arc::new(
+                ParsedSnapshot::from_parse_result(doc_generation, text, ast_arc.clone(), errors)
+                    .with_regex_analysis(regex_analysis),
+            );
             doc_state.publish_parsed_if_current(doc_generation, Arc::clone(&snapshot));
 
             {
@@ -855,18 +854,10 @@ impl LspServer {
                 // The candidate is private until the line bound passes. Keep the
                 // document lock so validation and these effects use the same
                 // predecessor; rejection must preserve its generation/readiness.
-                // Invalidate cached diagnostics only for an accepted buffer.
-                #[cfg(not(target_arch = "wasm32"))]
-                {
-                    let file_path = url::Url::parse(uri).ok().and_then(|u| u.to_file_path().ok());
-                    if let Some(path) = file_path {
-                        let path_str = path.to_string_lossy().to_string();
-                        if let Some(ref mut analyzer) = *self.critic_analyzer.lock() {
-                            analyzer.invalidate_cache(&path_str);
-                        }
-                        self.pull_diagnostics_orchestrator.invalidate_file_cache(&path);
-                    }
-                }
+                // No per-file cache invalidation here: the CriticService is
+                // stateless (freshness is keyed by content/state fingerprint),
+                // and the orchestrator's per-file violation cache was removed
+                // with the old analyzer plumbing (#9062).
 
                 let next_gen = doc_state.generation.fetch_add(1, Ordering::SeqCst).wrapping_add(1);
                 let target_version = version;
@@ -1147,17 +1138,19 @@ impl LspServer {
                 // -- live semantic corruption for recovery-bearing source
                 // (#11215).
                 let t_parse_start = std::time::Instant::now();
-                let (ast, errors) = {
+                // Retained canonical regex analysis for this generation (#7024).
+                let (ast, errors, regex_analysis) = {
                     let code_text = crate::util::code_slice(&text);
+                    let session = perl_parser_core::RetainedRegexSession::begin(code_text);
                     let mut parser = match cancellation_token {
                         Some(token) => Parser::new_with_cancellation(code_text, token),
                         None => Parser::new(code_text),
                     };
                     match parser.parse() {
-                        Ok(ast) => {
+                        Ok(mut ast) => {
+                            let table = session.finish(Some(&mut ast));
                             let errors = parser.errors().to_vec();
-                            let arc_ast = Arc::new(ast);
-                            (Some((*arc_ast).clone()), errors)
+                            (Some(ast), errors, Arc::new(table))
                         }
                         Err(crate::error::ParseError::Cancelled) => {
                             tracing::debug!("Parse cancelled for {} — newer change pending", uri);
@@ -1174,7 +1167,7 @@ impl LspServer {
                             }
                             return Ok(());
                         }
-                        Err(e) => (None, vec![e]),
+                        Err(e) => (None, vec![e], Arc::new(session.finish(None))),
                     }
                 };
                 let full_parse_ms = crate::runtime::timing::elapsed_ms(t_parse_start);
@@ -1192,12 +1185,10 @@ impl LspServer {
                 // are cheap by comparison. Published later, once `doc_state`
                 // has been rebuilt below.
                 let t_parent_map_start = std::time::Instant::now();
-                let snapshot = Arc::new(ParsedSnapshot::from_parse_result(
-                    next_gen,
-                    &text,
-                    ast_arc.clone(),
-                    errors,
-                ));
+                let snapshot = Arc::new(
+                    ParsedSnapshot::from_parse_result(next_gen, &text, ast_arc.clone(), errors)
+                        .with_regex_analysis(regex_analysis),
+                );
                 let parent_map_ms = crate::runtime::timing::elapsed_ms(t_parent_map_start);
 
                 let t_incremental_start = std::time::Instant::now();

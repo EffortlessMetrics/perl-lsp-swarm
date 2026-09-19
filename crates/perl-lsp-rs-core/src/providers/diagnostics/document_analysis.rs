@@ -113,6 +113,22 @@ impl DocumentDiagnosticAnalysis {
         Arc::ptr_eq(&self.ast, ast) && self.matches_source(source)
     }
 
+    /// Whether this analysis describes exactly the tree behind this borrowed
+    /// `ast` **and** this `source`.
+    ///
+    /// Same contract as [`Self::matches`] for callers that hold only `&Node`
+    /// (for example the #9062 critic service, whose accepted subject stores a
+    /// borrowed tree). Tree identity is compared by allocation address —
+    /// the same comparison [`Arc::ptr_eq`] performs — and this is sound
+    /// against address reuse because both allocations are simultaneously
+    /// live here: this analysis owns a strong `Arc` reference to its tree,
+    /// and the caller's borrow keeps its tree alive for the comparison, so
+    /// two different trees can never occupy the same address at check time.
+    #[must_use]
+    pub fn matches_node(&self, ast: &Node, source: &str) -> bool {
+        std::ptr::eq(ast, self.ast.as_ref()) && self.matches_source(source)
+    }
+
     /// Whether this analysis is bound to exactly `source`.
     ///
     /// Binds the source bytes only. Prefer [`Self::matches`], which also binds

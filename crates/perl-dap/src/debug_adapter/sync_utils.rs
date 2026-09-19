@@ -1,9 +1,18 @@
 use super::DapMessage;
 use serde_json::Value;
+use std::cell::RefCell;
+use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{SyncSender, TrySendError};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
+
+/// Outbound channel message: a DAP event paired with the [`DrainEpoch`]
+/// under which it was reserved. The event-consumer thread reads the
+/// epoch on consume and debits the matching per-epoch reservation so the
+/// request-scoped wait drains only the events emitted by that request
+/// (#15725).
+pub type DapMessageWithEpoch = (DapMessage, DrainEpoch);
 
 /// Counts dropped `output` events due to a full outbound queue.
 static DROPPED_OUTPUT_EVENTS: AtomicU64 = AtomicU64::new(0);
@@ -17,6 +26,66 @@ static LAST_NOTIFIED_DROP_COUNT: AtomicU64 = AtomicU64::new(0);
 /// debuggee cannot turn bounded-queue drops into unbounded log I/O (issue #5149 defect 3).
 const OUTPUT_DROP_WARN_INTERVAL: u64 = 64;
 
+/// Identity of a single DAP event for the purpose of the request-scoped
+/// drain barrier (#15725).
+///
+/// Every accepted event is reserved against exactly one [`DrainEpoch`]
+/// before it is pushed onto the outbound channel; the consumer debits
+/// the same epoch when it writes the message. The transport response
+/// wait only counts reservations against the epoch that captured this
+/// request, so unrelated asynchronous `send_event` traffic emitted under
+/// other epochs (background threads, the TCP-attach forwarder, synthetic
+/// drop notices, or unrelated prior requests) does not push the response
+/// wait up to the full `EVENT_DRAIN_MAX_WAIT` cap.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum DrainEpoch {
+    /// Events emitted outside a request-handler scope (background threads,
+    /// the TCP-attach forwarder, the synthetic drop notice, the reserved
+    /// `terminated` event, tests that drive the latch directly). Reserved
+    /// for backward compatibility and for the global-wait seam but not
+    /// waited on by any single request's response path.
+    Global,
+    /// Events emitted by a specific in-flight request handler. The
+    /// transport response wait drains only this epoch for that request's
+    /// response.
+    Request(u64),
+}
+
+impl DrainEpoch {
+    /// Convenience constructor for [`DrainEpoch::Global`].
+    pub(crate) const fn global() -> Self {
+        Self::Global
+    }
+}
+
+// Thread-local request epoch bound by the transport worker thread
+// before calling into the request handler and cleared immediately after.
+//
+// `dispatch_event` reads this cell to tag each accepted event with the
+// epoch under which the handler emitted it; the transport response wait
+// then drains only that epoch. Producers outside the worker thread
+// (test threads, background readers, the forwarder thread) see the
+// unset cell and fall through to `DrainEpoch::Global`, so their
+// events still reserve against the latch for backward compatibility
+// but are not waited on by any single request's response path (#15725).
+thread_local! {
+    static DRAIN_EPOCH: RefCell<Option<u64>> = const { RefCell::new(None) };
+}
+
+/// Set the calling thread's request epoch (used by the transport worker
+/// to mark each request handler invocation so its emitted events drain
+/// against the response wait for that request). Pass `None` to restore
+/// the unset state.
+pub(super) fn set_drain_epoch(epoch: Option<u64>) {
+    DRAIN_EPOCH.with(|cell| *cell.borrow_mut() = epoch);
+}
+
+/// Read the calling thread's currently bound request epoch, returning
+/// [`DrainEpoch::Global`] if no request context is active.
+pub(crate) fn current_drain_epoch() -> DrainEpoch {
+    DRAIN_EPOCH.with(|cell| cell.borrow().map(DrainEpoch::Request)).unwrap_or(DrainEpoch::Global)
+}
+
 /// Result of dispatching a DAP event to the bounded outbound channel.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum EventDispatchResult {
@@ -28,15 +97,151 @@ pub(crate) enum EventDispatchResult {
     Disconnected,
 }
 
+/// Bounded wait before a response write, used by the transport loop to
+/// let the event-consumer thread drain events that a command handler
+/// enqueued before the handler returned. Events accepted by
+/// [`EventSender::send_event`] reserve the latch before publishing (a
+/// refused or dropped dispatch rolls its reservation back); the consumer
+/// completes the exact drained count after its receive loop. The
+/// transport waits (capped) on the latch before writing a response, so a
+/// client observes a command's events before the terminal response that
+/// can imply their effect (review finding on #12745: queueing alone does
+/// not order the wire).
+///
+/// Saturation semantics keep the latch fail-open: uncounted synthetic
+/// messages (the drop notice) or lost decrements can only open the
+/// barrier early, never hang it, and the bounded wait caps every
+/// response's added latency even when the consumer is stalled on a
+/// blocked wire.
+///
+/// # Request-scoped wait (#15725)
+///
+/// The pending map is keyed by [`DrainEpoch`] rather than a single
+/// `usize`. The transport worker tags every event it emits inside a
+/// request handler with the captured request epoch via
+/// [`current_drain_epoch`]; the response wait then drains only the
+/// entries for that epoch via [`EventDrainLatch::wait_for_epoch`].
+/// Reservations against other epochs (background threads, the forwarder,
+/// prior requests still draining, synthetic drop notices) do not
+/// contribute to the per-request wait, so a busy debug session no longer
+/// pays unrelated-event latency on every response.
+#[derive(Clone, Default)]
+pub(crate) struct EventDrainLatch {
+    pending: std::sync::Arc<(Mutex<BTreeMap<DrainEpoch, usize>>, std::sync::Condvar)>,
+}
+
+impl EventDrainLatch {
+    /// Record `count` messages accepted onto the outbound channel under
+    /// [`DrainEpoch::Global`]. Kept for backward compatibility with code
+    /// paths that emit outside a request-handler scope; the request
+    /// handler response path does not wait on this epoch.
+    pub(crate) fn enqueue(&self, count: usize) {
+        self.enqueue_at(DrainEpoch::global(), count)
+    }
+
+    /// Record `count` messages accepted onto the outbound channel,
+    /// reserved against `epoch` so the matching
+    /// [`EventDrainLatch::wait_for_epoch`] call drains only this epoch.
+    /// Used by [`dispatch_event`] when the producer's thread-local
+    /// [`DRAIN_EPOCH`] is set (#15725).
+    pub(crate) fn enqueue_at(&self, epoch: DrainEpoch, count: usize) {
+        if count == 0 {
+            return;
+        }
+        let (mutex, _) = &*self.pending;
+        let mut map = lock_or_recover(mutex, "event_drain_latch.enqueue");
+        let entry = map.entry(epoch).or_insert(0);
+        *entry = entry.saturating_add(count);
+    }
+
+    /// Record that the consumer wrote `count` previously counted
+    /// messages reserved against [`DrainEpoch::Global`].
+    pub(crate) fn complete(&self, count: usize) {
+        self.complete_at(DrainEpoch::global(), count)
+    }
+
+    /// Record that the consumer wrote `count` previously counted
+    /// messages reserved against `epoch`. Removes the map entry when its
+    /// remaining count reaches zero so the wait can short-circuit.
+    pub(crate) fn complete_at(&self, epoch: DrainEpoch, count: usize) {
+        let (mutex, condvar) = &*self.pending;
+        let mut map = lock_or_recover(mutex, "event_drain_latch.complete");
+        if let Some(entry) = map.get_mut(&epoch) {
+            *entry = entry.saturating_sub(count);
+            if *entry == 0 {
+                map.remove(&epoch);
+            }
+        }
+        condvar.notify_all();
+    }
+
+    /// Clear any residue for every epoch (for example from a previous
+    /// transport run whose consumer terminated mid-batch).
+    pub(crate) fn reset(&self) {
+        let (mutex, condvar) = &*self.pending;
+        *lock_or_recover(mutex, "event_drain_latch.reset") = BTreeMap::new();
+        condvar.notify_all();
+    }
+
+    /// Wait until every counted message reserved against
+    /// [`DrainEpoch::Global`] has been written, bounded by `cap`.
+    /// Returns `true` when fully drained, `false` on timeout. Kept for
+    /// the historical seam; the request handler response path uses
+    /// [`EventDrainLatch::wait_for_epoch`] to drain only its own epoch.
+    #[cfg(test)]
+    pub(crate) fn wait_until_drained(&self, cap: std::time::Duration) -> bool {
+        self.wait_for_epoch(DrainEpoch::global(), cap)
+    }
+
+    /// Wait until every counted message reserved against `epoch` has
+    /// been written, bounded by `cap`. Returns `true` when fully drained,
+    /// `false` on timeout.
+    ///
+    /// The per-epoch wait isolates the response write from races against
+    /// unrelated asynchronous `send_event` traffic on other epochs
+    /// (#15725): reservations against other epochs (background threads,
+    /// the forwarder, synthetic drop notices, prior requests still
+    /// draining) do not contribute to this wait, so a busy debug session
+    /// no longer pays unrelated-event latency on every response. The
+    /// wait is still bounded and fail-open to preserve the saturation
+    /// semantics of [`EventDrainLatch`].
+    pub(crate) fn wait_for_epoch(&self, epoch: DrainEpoch, cap: std::time::Duration) -> bool {
+        let start = std::time::Instant::now();
+        let (mutex, condvar) = &*self.pending;
+        let mut map = lock_or_recover(mutex, "event_drain_latch.wait");
+        loop {
+            let pending = map.get(&epoch).copied().unwrap_or(0);
+            if pending == 0 {
+                return true;
+            }
+            let elapsed = start.elapsed();
+            if elapsed >= cap {
+                return false;
+            }
+            let (guard, timed_out) = match condvar.wait_timeout(map, cap - elapsed) {
+                Ok(pair) => pair,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            map = guard;
+            if timed_out.timed_out()
+                && map.get(&epoch).copied().unwrap_or(0) > 0
+                && start.elapsed() >= cap
+            {
+                return false;
+            }
+        }
+    }
+}
+
 /// Shared event-sender admission gate. A producer clones the sender while the
 /// gate is held, then performs its potentially blocking send after releasing
 /// the gate. Closing therefore cannot wait on a producer, while an admitted
 /// clone keeps the receiver connected until that send completes.
 #[derive(Clone)]
-pub(crate) struct EventSender(Arc<Mutex<Option<SyncSender<DapMessage>>>>);
+pub(crate) struct EventSender(Arc<Mutex<Option<SyncSender<DapMessageWithEpoch>>>>);
 
 impl EventSender {
-    pub(crate) fn new(sender: SyncSender<DapMessage>) -> Self {
+    pub(crate) fn new(sender: SyncSender<DapMessageWithEpoch>) -> Self {
         Self(Arc::new(Mutex::new(Some(sender))))
     }
 
@@ -44,7 +249,7 @@ impl EventSender {
         *lock_or_recover(&self.0, "event_sender") = None;
     }
 
-    fn admitted_sender(&self) -> Option<SyncSender<DapMessage>> {
+    pub(super) fn admitted_sender(&self) -> Option<SyncSender<DapMessageWithEpoch>> {
         lock_or_recover(&self.0, "event_sender").as_ref().cloned()
     }
 
@@ -137,7 +342,7 @@ fn should_warn_on_drop(count: u64) -> bool {
 /// doing so can deadlock when this call blocks on a full queue. See `transport.rs`'s
 /// `run_with_io` for the scoped-guard pattern that avoids this.
 pub(crate) fn dispatch_event(
-    sender: &SyncSender<DapMessage>,
+    sender: &SyncSender<DapMessageWithEpoch>,
     seq: &Mutex<i64>,
     event: &str,
     body: Option<Value>,
@@ -148,8 +353,10 @@ pub(crate) fn dispatch_event(
         (DapMessage::Event { seq: *seq_lock, event: event.to_string(), body }, seq_lock)
     };
 
+    let epoch = current_drain_epoch();
+
     if is_output_event(event) {
-        match sender.try_send(msg) {
+        match sender.try_send((msg, epoch)) {
             Ok(()) => EventDispatchResult::Sent,
             Err(TrySendError::Full(_)) => {
                 let dropped_total = DROPPED_OUTPUT_EVENTS.fetch_add(1, Ordering::Relaxed) + 1;
@@ -159,13 +366,13 @@ pub(crate) fn dispatch_event(
                         "DAP outbound queue full; dropping output events"
                     );
                 }
-                try_emit_drop_notice(sender, &mut seq_lock, dropped_total);
+                try_emit_drop_notice(sender, &mut seq_lock, epoch, dropped_total);
                 EventDispatchResult::Dropped
             }
             Err(TrySendError::Disconnected(_)) => EventDispatchResult::Disconnected,
         }
     } else {
-        match sender.send(msg) {
+        match sender.send((msg, epoch)) {
             Ok(()) => EventDispatchResult::Sent,
             Err(_) => EventDispatchResult::Disconnected,
         }
@@ -191,7 +398,7 @@ pub(crate) fn dispatch_event(
 /// **`output` events** keep the lossy non-blocking policy — a full queue sheds
 /// them, so they cannot park long enough for staleness to matter.
 pub(crate) fn dispatch_event_generation_guarded(
-    sender: &SyncSender<DapMessage>,
+    sender: &SyncSender<DapMessageWithEpoch>,
     seq: &Mutex<i64>,
     event: &str,
     body: Option<Value>,
@@ -203,8 +410,10 @@ pub(crate) fn dispatch_event_generation_guarded(
         (DapMessage::Event { seq: *seq_lock, event: event.to_string(), body }, seq_lock)
     };
 
+    let epoch = current_drain_epoch();
+
     if is_output_event(event) {
-        match sender.try_send(msg) {
+        match sender.try_send((msg, epoch)) {
             Ok(()) => GuardedDispatchResult::Sent,
             Err(TrySendError::Full(_)) => {
                 let dropped_total = DROPPED_OUTPUT_EVENTS.fetch_add(1, Ordering::Relaxed) + 1;
@@ -214,7 +423,7 @@ pub(crate) fn dispatch_event_generation_guarded(
                         "DAP outbound queue full; dropping output events"
                     );
                 }
-                try_emit_drop_notice(sender, &mut seq_lock, dropped_total);
+                try_emit_drop_notice(sender, &mut seq_lock, epoch, dropped_total);
                 GuardedDispatchResult::Dropped
             }
             Err(TrySendError::Disconnected(_)) => GuardedDispatchResult::Disconnected,
@@ -224,10 +433,10 @@ pub(crate) fn dispatch_event_generation_guarded(
             if stale() {
                 return GuardedDispatchResult::Stale;
             }
-            match sender.try_send(msg) {
+            match sender.try_send((msg, epoch)) {
                 Ok(()) => return GuardedDispatchResult::Sent,
                 Err(TrySendError::Full(returned)) => {
-                    msg = returned;
+                    msg = returned.0;
                     std::thread::sleep(GENERATION_GUARD_PARK);
                 }
                 Err(TrySendError::Disconnected(_)) => return GuardedDispatchResult::Disconnected,
@@ -254,8 +463,9 @@ pub(crate) fn dispatch_event_generation_guarded(
 /// - Called while the caller already holds `seq_lock`; reuses that guard instead of
 ///   re-acquiring the mutex.
 fn try_emit_drop_notice(
-    sender: &SyncSender<DapMessage>,
+    sender: &SyncSender<DapMessageWithEpoch>,
     seq_lock: &mut MutexGuard<'_, i64>,
+    epoch: DrainEpoch,
     dropped_total: u64,
 ) {
     let last_notified = LAST_NOTIFIED_DROP_COUNT.load(Ordering::Relaxed);
@@ -279,7 +489,7 @@ fn try_emit_drop_notice(
     for attempt in 0..MAX_ATTEMPTS {
         let msg =
             DapMessage::Event { seq: next_seq, event: "output".to_string(), body: body.clone() };
-        match sender.try_send(msg) {
+        match sender.try_send((msg, epoch)) {
             Ok(()) => {
                 **seq_lock = next_seq;
                 LAST_NOTIFIED_DROP_COUNT.store(dropped_total, Ordering::Relaxed);
@@ -328,9 +538,67 @@ mod tests {
                     .is_some_and(|t| t.contains("dropped due to slow debug client")))
     }
 
+    /// Per-epoch reservations are independent: `wait_for_epoch(R, …)` must
+    /// not block on reservations made against a different epoch, and
+    /// `complete_at(R, 1)` must not affect a different epoch's wait
+    /// (#15725).
+    #[test]
+    fn event_drain_latch_isolates_per_epoch_waits() {
+        let latch = EventDrainLatch::default();
+        latch.enqueue_at(DrainEpoch::Global, 1);
+        latch.enqueue_at(DrainEpoch::Request(7), 3);
+        latch.enqueue_at(DrainEpoch::Request(9), 2);
+
+        // Global epoch drains only when its reservation completes, even
+        // though Request epochs have live reservations.
+        assert!(!latch.wait_for_epoch(DrainEpoch::Global, Duration::from_millis(50)));
+        latch.complete_at(DrainEpoch::Global, 1);
+        assert!(latch.wait_for_epoch(DrainEpoch::Global, Duration::from_millis(50)));
+
+        // Per-request epoch drains only when its own reservation completes;
+        // unrelated-epoch traffic does not contribute.
+        assert!(!latch.wait_for_epoch(DrainEpoch::Request(7), Duration::from_millis(50)));
+        assert!(!latch.wait_for_epoch(DrainEpoch::Request(9), Duration::from_millis(50)));
+        // Debiting the unrelated Request(9) does not advance Request(7).
+        latch.complete_at(DrainEpoch::Request(9), 2);
+        assert!(latch.wait_for_epoch(DrainEpoch::Request(9), Duration::from_millis(50)));
+        assert!(!latch.wait_for_epoch(DrainEpoch::Request(7), Duration::from_millis(50)));
+        // A second `complete_at` from the consumer thread on the same
+        // request eventually drains it.
+        latch.complete_at(DrainEpoch::Request(7), 3);
+        assert!(latch.wait_for_epoch(DrainEpoch::Request(7), Duration::from_millis(50)));
+
+        // Over-completing an epoch is a saturating no-op (fail-open).
+        latch.complete_at(DrainEpoch::Request(7), 99);
+        assert!(latch.wait_for_epoch(DrainEpoch::Request(7), Duration::from_millis(50)));
+    }
+
+    /// `wait_until_drained` retains its historical semantics over the
+    /// global epoch (#15725).
+    #[test]
+    fn event_drain_latch_wait_until_drained_still_targets_global() {
+        let latch = EventDrainLatch::default();
+        latch.enqueue(1);
+        assert!(!latch.wait_until_drained(Duration::from_millis(50)));
+        latch.complete(1);
+        assert!(latch.wait_until_drained(Duration::from_millis(50)));
+    }
+
+    /// `reset` clears every epoch's reservations so a fresh run cannot
+    /// inherit a poisoned map from a prior run (#15725).
+    #[test]
+    fn event_drain_latch_reset_clears_every_epoch() {
+        let latch = EventDrainLatch::default();
+        latch.enqueue_at(DrainEpoch::Global, 1);
+        latch.enqueue_at(DrainEpoch::Request(3), 1);
+        latch.reset();
+        assert!(latch.wait_for_epoch(DrainEpoch::Global, Duration::from_millis(50)));
+        assert!(latch.wait_for_epoch(DrainEpoch::Request(3), Duration::from_millis(50)));
+    }
+
     #[test]
     fn event_sender_closes_admission_after_flushing_existing_event() -> Result<(), String> {
-        let (tx, rx) = sync_channel::<DapMessage>(2);
+        let (tx, rx) = sync_channel::<DapMessageWithEpoch>(2);
         let sender = EventSender::new(tx);
         let seq = Mutex::new(0i64);
         if sender.send_event(&seq, "output", Some(json!({"output": "before-close\n"})))
@@ -345,8 +613,8 @@ mod tests {
             return Err("late event was admitted after close".to_string());
         }
         match rx.recv().map_err(|error| error.to_string())? {
-            DapMessage::Event { event, .. } if event == "output" => {}
-            other => return Err(format!("unexpected flushed event: {other:?}")),
+            (DapMessage::Event { event, .. }, _) if event == "output" => {}
+            (other, _) => return Err(format!("unexpected flushed event: {other:?}")),
         }
         match rx.try_recv() {
             Err(std::sync::mpsc::TryRecvError::Disconnected) => Ok(()),
@@ -356,7 +624,7 @@ mod tests {
 
     #[test]
     fn event_sender_flushes_admitted_lifecycle_event_before_close() -> Result<(), String> {
-        let (tx, rx) = sync_channel::<DapMessage>(1);
+        let (tx, rx) = sync_channel::<DapMessageWithEpoch>(1);
         let sender = EventSender::new(tx);
         let seq = Arc::new(Mutex::new(0i64));
         if sender.send_event(&seq, "output", Some(json!({"output": "queued\n"})))
@@ -371,8 +639,8 @@ mod tests {
             producer_sender.send_event(&producer_seq, "stopped", Some(json!({"reason": "pause"})))
         });
         match rx.recv().map_err(|error| error.to_string())? {
-            DapMessage::Event { event, .. } if event == "output" => {}
-            other => return Err(format!("unexpected queued event: {other:?}")),
+            (DapMessage::Event { event, .. }, _) if event == "output" => {}
+            (other, _) => return Err(format!("unexpected queued event: {other:?}")),
         }
         if producer.join().map_err(|_| "producer panicked".to_string())?
             != EventDispatchResult::Sent
@@ -387,8 +655,8 @@ mod tests {
             return Err("late lifecycle event was admitted after close".to_string());
         }
         match rx.recv().map_err(|error| error.to_string())? {
-            DapMessage::Event { event, .. } if event == "stopped" => {}
-            other => return Err(format!("expected flushed lifecycle event: {other:?}")),
+            (DapMessage::Event { event, .. }, _) if event == "stopped" => {}
+            (other, _) => return Err(format!("expected flushed lifecycle event: {other:?}")),
         }
         drop(sender);
         match rx.try_recv() {
@@ -399,7 +667,7 @@ mod tests {
 
     #[test]
     fn event_sender_close_does_not_wait_on_admitted_send() -> Result<(), String> {
-        let (tx, rx) = sync_channel::<DapMessage>(1);
+        let (tx, rx) = sync_channel::<DapMessageWithEpoch>(1);
         let sender = EventSender::new(tx);
         let seq = Mutex::new(0i64);
         if sender.send_event(&seq, "output", Some(json!({"output": "queued\n"})))
@@ -437,7 +705,7 @@ mod tests {
             close_done_rx.recv_timeout(Duration::from_millis(200)).is_ok();
 
         let queued = rx.recv().map_err(|error| error.to_string())?;
-        if !matches!(&queued, DapMessage::Event { event, .. } if event == "output") {
+        if !matches!(&queued, (DapMessage::Event { event, .. }, _) if event == "output") {
             let _ = producer.join();
             let _ = closer.join();
             return Err(format!("unexpected queued event: {queued:?}"));
@@ -458,8 +726,8 @@ mod tests {
             return Err("admitted lifecycle event was not delivered".to_string());
         }
         match rx.recv().map_err(|error| error.to_string())? {
-            DapMessage::Event { event, .. } if event == "stopped" => {}
-            other => return Err(format!("expected admitted lifecycle event: {other:?}")),
+            (DapMessage::Event { event, .. }, _) if event == "stopped" => {}
+            (other, _) => return Err(format!("expected admitted lifecycle event: {other:?}")),
         }
         match rx.recv_timeout(Duration::from_millis(200)) {
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Ok(()),
@@ -472,7 +740,7 @@ mod tests {
     #[test]
     fn output_drop_when_queue_full() -> Result<(), String> {
         let cap = 2;
-        let (tx, _rx) = sync_channel::<DapMessage>(cap);
+        let (tx, _rx) = sync_channel::<DapMessageWithEpoch>(cap);
         let seq = Mutex::new(0i64);
 
         for i in 0..cap {
@@ -496,7 +764,7 @@ mod tests {
     #[test]
     fn lifecycle_blocks_until_drain() -> Result<(), String> {
         let cap = 1;
-        let (tx, rx) = sync_channel::<DapMessage>(cap);
+        let (tx, rx) = sync_channel::<DapMessageWithEpoch>(cap);
         let seq = Arc::new(Mutex::new(0i64));
 
         let r = dispatch_event(&tx, &seq, "output", Some(json!({"output": "filling\n"})));
@@ -520,14 +788,14 @@ mod tests {
         let drained = rx
             .recv_timeout(Duration::from_millis(200))
             .map_err(|e| format!("output event must be drainable: {e}"))?;
-        if !matches!(&drained, DapMessage::Event { event, .. } if event == "output") {
+        if !matches!(&drained, (DapMessage::Event { event, .. }, _) if event == "output") {
             return Err(format!("expected output event, got: {drained:?}"));
         }
 
         let stopped = rx
             .recv_timeout(Duration::from_millis(500))
             .map_err(|e| format!("stopped event must arrive after queue drains: {e}"))?;
-        if !matches!(&stopped, DapMessage::Event { event, .. } if event == "stopped") {
+        if !matches!(&stopped, (DapMessage::Event { event, .. }, _) if event == "stopped") {
             return Err(format!("expected stopped event, got: {stopped:?}"));
         }
 
@@ -543,7 +811,7 @@ mod tests {
     #[test]
     fn slow_consumer_output_flood_stays_bounded() -> Result<(), String> {
         let cap = 4;
-        let (tx, _rx) = sync_channel::<DapMessage>(cap);
+        let (tx, _rx) = sync_channel::<DapMessageWithEpoch>(cap);
         let seq = Mutex::new(0i64);
 
         let initial_drops = dropped_output_event_count();
@@ -591,7 +859,7 @@ mod tests {
     /// and lifecycle events.
     #[test]
     fn disconnected_receiver_returns_disconnected() -> Result<(), String> {
-        let (tx, rx) = sync_channel::<DapMessage>(4);
+        let (tx, rx) = sync_channel::<DapMessageWithEpoch>(4);
         let seq = Mutex::new(0i64);
 
         drop(rx); // disconnect the receiver
@@ -628,7 +896,7 @@ mod tests {
 
     fn run_seq_order_race_trial(trial: usize) -> Result<(), String> {
         let cap = 1;
-        let (tx, rx) = sync_channel::<DapMessage>(cap);
+        let (tx, rx) = sync_channel::<DapMessageWithEpoch>(cap);
         let seq = Arc::new(Mutex::new(0i64));
 
         let r = dispatch_event(&tx, &seq, "output", Some(json!({"output": "fill\n"})));
@@ -671,11 +939,11 @@ mod tests {
         let deadline = Instant::now() + Duration::from_secs(30);
         loop {
             match rx.recv_timeout(Duration::from_millis(50)) {
-                Ok(DapMessage::Event { seq, .. }) => observed_seqs.push(seq),
+                Ok((DapMessage::Event { seq, .. }, _)) => observed_seqs.push(seq),
                 Ok(_) => {}
                 Err(_) => {
                     if flood_handles.iter().all(|h| h.is_finished()) && life_handle.is_finished() {
-                        while let Ok(msg) = rx.try_recv() {
+                        while let Ok((msg, _)) = rx.try_recv() {
                             if let DapMessage::Event { seq, .. } = msg {
                                 observed_seqs.push(seq);
                             }
@@ -719,7 +987,7 @@ mod tests {
     #[test]
     fn terminated_event_never_dropped_when_queue_full() -> Result<(), String> {
         let cap = 1;
-        let (tx, rx) = sync_channel::<DapMessage>(cap);
+        let (tx, rx) = sync_channel::<DapMessageWithEpoch>(cap);
         let seq = Arc::new(Mutex::new(0i64));
 
         let r = dispatch_event(&tx, &seq, "output", Some(json!({"output": "filling\n"})));
@@ -738,14 +1006,14 @@ mod tests {
         let drained = rx
             .recv_timeout(Duration::from_millis(200))
             .map_err(|e| format!("output event must be drainable: {e}"))?;
-        if !matches!(&drained, DapMessage::Event { event, .. } if event == "output") {
+        if !matches!(&drained, (DapMessage::Event { event, .. }, _) if event == "output") {
             return Err(format!("expected output event, got: {drained:?}"));
         }
 
         let terminated = rx
             .recv_timeout(Duration::from_millis(500))
             .map_err(|e| format!("terminated event must arrive after queue drains: {e}"))?;
-        if !matches!(&terminated, DapMessage::Event { event, .. } if event == "terminated") {
+        if !matches!(&terminated, (DapMessage::Event { event, .. }, _) if event == "terminated") {
             return Err(format!("expected terminated event, got: {terminated:?}"));
         }
 
@@ -761,7 +1029,7 @@ mod tests {
     #[test]
     fn drop_notice_appears_after_drops() -> Result<(), String> {
         let cap = 1;
-        let (tx, rx) = sync_channel::<DapMessage>(cap);
+        let (tx, rx) = sync_channel::<DapMessageWithEpoch>(cap);
         let seq = Arc::new(Mutex::new(0i64));
 
         let producer_threads = 4;
@@ -788,7 +1056,7 @@ mod tests {
         let deadline = Instant::now() + Duration::from_secs(15);
         loop {
             match rx.recv_timeout(Duration::from_millis(50)) {
-                Ok(msg) if is_drop_notice(&msg) => {
+                Ok((msg, _)) if is_drop_notice(&msg) => {
                     found_notice = true;
                     break;
                 }
@@ -796,7 +1064,7 @@ mod tests {
                 Err(_) => {
                     if producers.iter().all(|h| h.is_finished()) {
                         while let Ok(msg) = rx.try_recv() {
-                            if is_drop_notice(&msg) {
+                            if is_drop_notice(&msg.0) {
                                 found_notice = true;
                             }
                         }
@@ -830,7 +1098,7 @@ mod tests {
     #[test]
     fn drop_notice_flood_does_not_produce_one_per_line() -> Result<(), String> {
         let cap = 1;
-        let (tx, rx) = sync_channel::<DapMessage>(cap);
+        let (tx, rx) = sync_channel::<DapMessageWithEpoch>(cap);
         let seq = Mutex::new(0i64);
 
         let r = dispatch_event(&tx, &seq, "output", Some(json!({"output": "keep\n"})));
@@ -855,7 +1123,7 @@ mod tests {
 
         let mut notices = 0usize;
         let mut total_drained = 0usize;
-        while let Ok(msg) = rx.try_recv() {
+        while let Ok((msg, _)) = rx.try_recv() {
             total_drained += 1;
             if is_drop_notice(&msg) {
                 notices += 1;

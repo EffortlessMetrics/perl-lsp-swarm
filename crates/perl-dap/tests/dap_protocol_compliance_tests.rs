@@ -11,7 +11,7 @@
 // and `expect()` on response body values that must be present per DAP spec.
 #![allow(clippy::panic, clippy::expect_used)]
 
-use perl_dap::debug_adapter::{DapMessage, DebugAdapter};
+use perl_dap::debug_adapter::{DapMessage, DapMessageWithEpoch, DebugAdapter};
 use serde_json::{Value, json};
 use std::sync::mpsc::sync_channel;
 
@@ -23,7 +23,7 @@ fn make_adapter() -> DebugAdapter {
     DebugAdapter::new()
 }
 
-fn make_adapter_with_events() -> (DebugAdapter, std::sync::mpsc::Receiver<DapMessage>) {
+fn make_adapter_with_events() -> (DebugAdapter, std::sync::mpsc::Receiver<DapMessageWithEpoch>) {
     let (tx, rx) = sync_channel(64);
     let mut adapter = DebugAdapter::new();
     adapter.set_event_sender(tx);
@@ -483,7 +483,7 @@ fn test_initialize_response_seq_before_initialized_event_seq()
         .recv_timeout(std::time::Duration::from_millis(200))
         .map_err(|_| "initialized event should be emitted")?;
     let event_seq = match event {
-        DapMessage::Event { seq, event, .. } => {
+        (DapMessage::Event { seq, event, .. }, _) => {
             assert_eq!(event, "initialized");
             seq
         }
