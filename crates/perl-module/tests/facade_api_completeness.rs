@@ -421,7 +421,7 @@ fn test_api_rs_re_export_count() -> Result<(), Box<dyn std::error::Error>> {
 /// Number of `pub use` statements in `src/api.rs`.
 ///
 /// Update this together with the import list above whenever the facade changes.
-const EXPECTED_API_RE_EXPORTS: usize = 87;
+const EXPECTED_API_RE_EXPORTS: usize = 98;
 
 /// Regression: verify legacy package separator handling.
 #[test]
