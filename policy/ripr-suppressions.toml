@@ -3865,6 +3865,29 @@ review_after = "2026-10-13"
 expires = "2026-12-13"
 removal_criteria = "Remove when EffortlessMetrics/ripr#1429 traces declaration owners to the tests that construct them and stops probing base-only deleted code for a head-side test path, or when targeted mutation replaces this advisory path per #1289. Narrow immediately if a receipt reports an executable no_static_path seam in class_model.rs, field_trait.rs or analysis/mod.rs outside the declaration and removed-owner shapes enumerated above."
 
+# -----------------------------------------------------------------------------
+# Workspace-authority declaration owners and removed mutable-root probes
+# (#14587, PR #14592): RIPR reports no_static_path on the new authority and
+# refusal types' declaration lines, and on the mutable workspace_root this PR
+# deletes. Neither shape has a call path a test could take.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-14587-workspace-authority-declaration-seams"
+kind = "declaration_line_no_static_path"
+paths = [
+  "crates/perl-dap/src/security/workspace_authority.rs",
+  "crates/perl-dap/src/debug_adapter/mod.rs",
+  "crates/perl-dap/src/main.rs",
+  "crates/perl-dap/src/server/config.rs",
+]
+classification = ["no_static_path"]
+owner = "proof-lane"
+issue = "EffortlessMetrics/ripr#1429"
+reason = "RIPR 0.10.0 diff-scoped receipt for PR #14592 at head 7866d250 (base 0a138a21) reports 27 no_static_path probes across four files, every one reach:no 'No static test path found for the changed owner', and none is a shape a test can reach. Three are base-only: the field_construction probe on workspace_root: Arc<Mutex<Option<PathBuf>>> at debug_adapter/mod.rs:188 and the call_deletion/return_value pair on *lock_or_recover(&self.workspace_root, ...) at mod.rs:347 both describe the mutable adapter root this PR removes; those coordinates are base-relative and at head land on doc comments (verified line-by-line against origin/main). The remaining twenty-four are declaration owners: the TrustedRoots(Vec<PathBuf>) newtype and the roots / grant payload fields of WorkspaceAuthority; the WorkspaceAuthorityError variants UnusableTrustedRoot(String), ProgramOutsideTrustedRoots { program, roots }, UnusableLaunchRoot { launch_root, detail } and LaunchRootWidensAuthority { launch_root, detail }, together with probes that land inside their multi-line #[error(...)] attribute literals (lines 159, 160, 171, 187, 199); SessionBoundary::Bounded(PathBuf); the new Args fields workspace_root: Vec<PathBuf> and allow_unbounded_workspace: bool and the AuthorityLogRecord::Confined { roots } variant in main.rs; and DapConfig.workspace_authority in server/config.rs. The falsification was run, not assumed: commit 948c8668 added five tests pinning every refusal payload and its rendered message slot, and each was verified by mutating the real construction site - unbounded-branch UnusableLaunchRoot fields swapped, require_directory not-a-directory fields swapped, ProgramOutsideTrustedRoots program/roots swapped, and LaunchRootWidensAuthority launch_root emptied - with all four caught by the intended test (one earlier draft of the launch-root test survived its mutant and was rewritten). The no_static_path count did not move: 19 at head dbd397be before those tests and 19 at head 7866d250 after, with an identical by-file split of 18/5/3/1. Behaviour in these files is not unproven: the same receipt classifies 164 findings in workspace_authority.rs, 121 in debug_adapter/mod.rs and 60 in main.rs as exposed, the module carries 33 inline tests, and perl-dap lib is at 1045 passing. This is the documented ripr#1429 declaration-owner tracing limitation recorded in docs/learnings/2026-07-ripr-weakly-exposed-suppression-churn.md - once the discriminator exists and RIPR still cannot see it, more tests do not clear the finding and constructor-only tests for an enum variant would be proof theatre. Same class as ripr-suppress-reachability-contract-declarations (#11553) and ripr-suppress-13449-field-trait-declaration-and-removed-owner-seams (#14997). Scope is no_static_path only: exposed, weakly_exposed, reachable_unrevealed, infection_unknown, propagation_unknown and static_unknown stay active in all four files. The matcher has no line or function selector, so debug_adapter/mod.rs and main.rs are listed only for the declaration and removed-owner shapes enumerated above - any future receipt reporting an executable no_static_path seam in these files must trigger review and narrowing rather than inherit this entry."
+created = "2026-09-14"
+review_after = "2026-10-14"
+expires = "2026-12-14"
+removal_criteria = "Remove when EffortlessMetrics/ripr#1429 traces declaration owners to the tests that construct them and stops probing base-only deleted code for a head-side test path, or when targeted mutation replaces this advisory path per #1289. Narrow immediately if a receipt reports an executable no_static_path seam in security/workspace_authority.rs, debug_adapter/mod.rs, main.rs or server/config.rs outside the declaration and removed-owner shapes enumerated above."
 # QuickORM containment candidate: activation untraceable because the extractor
 # has no production consumer by contract (ripr#1429 class).
 #
