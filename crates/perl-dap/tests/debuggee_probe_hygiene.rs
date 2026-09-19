@@ -83,6 +83,7 @@ fn compile_probe_control(directory: &Path, label: &str, body: &str) -> io::Resul
 
 #[test]
 #[cfg_attr(windows, allow(unreachable_code))]
+#[cfg_attr(windows, allow(clippy::print_stderr))]
 fn probe_workspace_cleanup_covers_each_child_exit_path() -> io::Result<()> {
     macro_rules! require {
         ($condition:expr, $($arg:tt)+) => {
@@ -812,6 +813,7 @@ fn wait_for_process_start(pid: u32, timeout: Duration) -> io::Result<()> {
 /// the regression is intentionally skipped: the discipline is exactly the
 /// tighter bound we want the production assertion to keep.
 #[test]
+#[cfg_attr(windows, allow(clippy::print_stderr))]
 fn pid_publication_helpers_hold_past_configured_timeout_on_windows_hosts() -> io::Result<()> {
     if !cfg!(windows) {
         eprintln!(
