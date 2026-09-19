@@ -11,6 +11,16 @@
 //! predecessor or compatibility exit, and exactly one correctly related
 //! terminal issue. A violated bind is never green.
 //!
+//! Digests alone accept any body, so the evidence binds go further
+//! (issue #15820): each packet role must parse as its canonical contract and
+//! name this repository and leaf node; every negative control records the
+//! exact head it was executed against; the claimed authority transfer must be
+//! the leaf conflict key; every issue reference must stay in the request
+//! repository; policy floors must be non-empty; forbidden surfaces match only
+//! at separator boundaries; and SHA-256 binds must use the lowercase spelling
+//! this verifier computes, so an uppercase spelling is a format error rather
+//! than a confusing stale-packet result.
+//!
 //! The emitted handoff is derived from checked state only. It can never close
 //! the controller, the parent, or any semantic-completion authority, and it
 //! never authorizes a merge, a release, or a GitHub mutation. Absence of an
@@ -285,6 +295,10 @@ pub struct NegativeControl {
     pub passes_only_intended_implementation: bool,
     /// The control was executed against this candidate's exact head.
     pub subject_matches_candidate: bool,
+    /// The exact head the control ran against; binds the subject claim to
+    /// comparable evidence instead of a caller-declared flag
+    /// (issue #15820 finding 2).
+    pub executed_against_sha: String,
 }
 
 /// Satisfied predecessor or compatibility exit.
@@ -417,8 +431,11 @@ impl Violation {
     }
 }
 
+/// SHA-256 binds must carry the lowercase spelling this verifier computes;
+/// an uppercase spelling is a format error, never a digest mismatch
+/// (issue #15820 finding 7).
 fn is_sha_hex(value: &str) -> bool {
-    value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+    value.len() == 64 && value.bytes().all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
 }
 
 /// Git object names are SHA-1 (40 hex) by default and SHA-256 (64 hex) in
@@ -462,6 +479,39 @@ fn validate_request(request: &CloseoutRequest) -> Vec<Violation> {
             "repository must be spelled `owner/name`",
         ));
     }
+    if request.forbidden_surfaces.is_empty() {
+        violations.push(Violation::new(
+            CloseoutResult::ContractDrift,
+            "policy floor declares no forbidden surfaces; empty scope exclusion is vacuous",
+        ));
+    }
+    if request.required_changes.iter().next().is_none() {
+        violations.push(Violation::new(
+            CloseoutResult::ContractDrift,
+            "policy floor requires no durable changes; empty required changes are vacuous",
+        ));
+    }
+    let mut issue_refs: Vec<(String, &IssueRef)> = vec![
+        ("identity.issue".to_string(), &request.identity.issue),
+        ("identity.controller_issue".to_string(), &request.identity.controller_issue),
+    ];
+    for (index, issue) in request.claimed_closes.iter().enumerate() {
+        issue_refs.push((format!("claimed_closes[{index}]"), issue));
+    }
+    for (index, issue) in request.forbidden_terminal_issues.iter().enumerate() {
+        issue_refs.push((format!("forbidden_terminal_issues[{index}]"), issue));
+    }
+    for (label, issue) in issue_refs {
+        if issue.repository != request.repository {
+            violations.push(Violation::new(
+                CloseoutResult::ContractDrift,
+                format!(
+                    "{label} names repository `{}`, not the request repository `{}`",
+                    issue.repository, request.repository
+                ),
+            ));
+        }
+    }
     for (label, sha) in [
         ("candidate.base_sha", &request.candidate.base_sha),
         ("candidate.head_sha", &request.candidate.head_sha),
@@ -487,7 +537,7 @@ fn validate_request(request: &CloseoutRequest) -> Vec<Violation> {
         if !is_sha_hex(digest) {
             violations.push(Violation::new(
                 CloseoutResult::ContractDrift,
-                format!("digest bind for {role:?} is not a SHA-256 digest"),
+                format!("digest bind for {role:?} is not a lowercase SHA-256 digest"),
             ));
         }
     }
@@ -504,6 +554,15 @@ fn validate_request(request: &CloseoutRequest) -> Vec<Violation> {
             violations.push(Violation::new(
                 CloseoutResult::ContractDrift,
                 format!("negative control `{}` is declared twice", control.control_id),
+            ));
+        }
+        if !is_git_object_name(&control.executed_against_sha) {
+            violations.push(Violation::new(
+                CloseoutResult::ContractDrift,
+                format!(
+                    "negative control `{}` records an executed-against head that is not a full git object name",
+                    control.control_id
+                ),
             ));
         }
     }
@@ -620,6 +679,84 @@ fn bind_proof_profile_artifact(request: &CloseoutRequest) -> Vec<Violation> {
     violations
 }
 
+/// Canonical contract discriminator each digest-bound packet role must carry.
+fn canonical_packet_schema(role: ArtifactRole) -> Option<&'static str> {
+    match role {
+        ArtifactRole::ProgrammeManifest => Some("programme_manifest.v1"),
+        ArtifactRole::ProbeObservation => Some("probe_observation.v1"),
+        ArtifactRole::Frontier => Some("frontier_digest.v1"),
+        ArtifactRole::BuilderPacket => Some("agent_implementation_packet.v1"),
+        ArtifactRole::ReviewerPacket => Some("agent_review_packet.v1"),
+        // Parsed structurally against the evaluated profile instead.
+        ArtifactRole::ProofProfile => None,
+    }
+}
+
+/// Digests alone accept any body, including a swapped packet whose digests
+/// were recomputed. Each packet role must therefore parse as its canonical
+/// contract and name this repository and this leaf node, so a swapped or
+/// repointed packet stays non-green on recomputed digests
+/// (issue #15820 finding 1).
+fn bind_packet_subjects(request: &CloseoutRequest) -> Vec<Violation> {
+    let mut violations = Vec::new();
+    for artifact in &request.artifacts {
+        let Some(expected_schema) = canonical_packet_schema(artifact.role) else {
+            continue;
+        };
+        let value = match serde_json::from_str::<serde_json::Value>(&artifact.contents) {
+            Ok(value) if value.is_object() => value,
+            _ => {
+                violations.push(Violation::new(
+                    CloseoutResult::ContractDrift,
+                    format!(
+                        "artifact {:?} at {} does not parse as a JSON contract object",
+                        artifact.role, artifact.path
+                    ),
+                ));
+                continue;
+            }
+        };
+        if value.get("schema").and_then(serde_json::Value::as_str) != Some(expected_schema) {
+            violations.push(Violation::new(
+                CloseoutResult::ContractDrift,
+                format!(
+                    "artifact {:?} at {} does not carry the canonical schema `{expected_schema}`; a swapped packet cannot stay green on recomputed digests",
+                    artifact.role, artifact.path
+                ),
+            ));
+            continue;
+        }
+        if artifact.role == ArtifactRole::ProgrammeManifest {
+            // The programme manifest spans every node; node binding happens
+            // through the frontier and the leaf packets.
+            continue;
+        }
+        if value.get("repository").and_then(serde_json::Value::as_str)
+            != Some(request.repository.as_str())
+        {
+            violations.push(Violation::new(
+                CloseoutResult::WrongSubject,
+                format!(
+                    "artifact {:?} at {} does not name the request repository `{}`",
+                    artifact.role, artifact.path, request.repository
+                ),
+            ));
+        }
+        if value.get("node_id").and_then(serde_json::Value::as_str)
+            != Some(request.identity.node_id.as_str())
+        {
+            violations.push(Violation::new(
+                CloseoutResult::WrongSubject,
+                format!(
+                    "artifact {:?} at {} does not name the leaf node `{}`",
+                    artifact.role, artifact.path, request.identity.node_id
+                ),
+            ));
+        }
+    }
+    violations
+}
+
 fn bind_subject(request: &CloseoutRequest, facts: &GitFacts) -> Vec<Violation> {
     let mut violations = Vec::new();
     for limitation in &facts.limitations {
@@ -695,8 +832,11 @@ fn bind_subject(request: &CloseoutRequest, facts: &GitFacts) -> Vec<Violation> {
 fn bind_scope(request: &CloseoutRequest, facts: &GitFacts) -> Vec<Violation> {
     let mut violations = Vec::new();
     for surface in &request.forbidden_surfaces {
-        let prefix = normalize_path(surface);
-        let touched = facts.changed_paths.iter().filter(|path| path.starts_with(&prefix)).count();
+        let touched = facts
+            .changed_paths
+            .iter()
+            .filter(|path| touches_forbidden_surface(path, surface))
+            .count();
         if touched > 0 {
             violations.push(Violation::new(
                 CloseoutResult::ScopeBreach,
@@ -733,6 +873,14 @@ fn bind_ceiling_and_relations(request: &CloseoutRequest) -> Vec<Violation> {
             format!(
                 "exactly one authority transfer must be claimed, found {}",
                 request.authority_transfers_claimed.len()
+            ),
+        ));
+    } else if request.authority_transfers_claimed[0] != request.identity.conflict_key {
+        violations.push(Violation::new(
+            CloseoutResult::ClaimCeilingExceeded,
+            format!(
+                "claimed authority transfer `{}` is not the leaf conflict key `{}`; an unrelated transfer cannot pass the leaf ceiling",
+                request.authority_transfers_claimed[0], request.identity.conflict_key
             ),
         ));
     }
@@ -856,6 +1004,14 @@ fn bind_proof(request: &CloseoutRequest) -> Vec<Violation> {
                     control.control_id
                 ),
             ));
+        } else if control.executed_against_sha != request.candidate.head_sha {
+            violations.push(Violation::new(
+                CloseoutResult::WrongSubject,
+                format!(
+                    "negative control `{}` was executed against head {}, not the candidate head {}; the subject claim is not bound to evidence",
+                    control.control_id, control.executed_against_sha, request.candidate.head_sha
+                ),
+            ));
         }
     }
     if profile.generated_outputs_current && profile.generated_identities.is_empty() {
@@ -922,6 +1078,7 @@ fn bind_handoff_inputs(request: &CloseoutRequest) -> Vec<Violation> {
 pub fn evaluate(request: &CloseoutRequest, facts: &GitFacts) -> CloseoutOutcome {
     let mut violations = validate_request(request);
     violations.extend(bind_artifacts(request));
+    violations.extend(bind_packet_subjects(request));
     violations.extend(bind_proof_profile_artifact(request));
     violations.extend(bind_subject(request, facts));
     violations.extend(bind_scope(request, facts));
@@ -999,6 +1156,17 @@ fn predecessor_status_text(request: &CloseoutRequest) -> String {
 
 fn normalize_path(path: &str) -> String {
     path.replace('\\', "/")
+}
+
+/// A forbidden surface matches a changed path only at a separator boundary:
+/// `specs` may hide `specs/leaf.md` and a bare `specs` entry, never the
+/// sibling `specs-alternative/` (issue #15820 finding 8).
+fn touches_forbidden_surface(path: &str, surface: &str) -> bool {
+    let prefix = normalize_path(surface);
+    match path.strip_prefix(&prefix) {
+        Some(rest) => prefix.ends_with('/') || rest.is_empty() || rest.starts_with('/'),
+        None => false,
+    }
 }
 
 /// Collect the git observations for one closeout from a real repository.
@@ -1135,8 +1303,11 @@ mod tests {
     use super::*;
     use anyhow::{Context, Result};
 
-    const VALID_FIXTURES: &[&str] =
-        &["valid/leaf_ready_offline_live_unavailable.v1.json", "valid/leaf_ready_offline.v1.json"];
+    const VALID_FIXTURES: &[&str] = &[
+        "valid/leaf_ready_offline_live_unavailable.v1.json",
+        "valid/leaf_ready_offline.v1.json",
+        "valid/forbidden_surface_sibling_boundary.v1.json",
+    ];
 
     fn fixture_path(relative: &str) -> Result<std::path::PathBuf> {
         let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -1248,6 +1419,13 @@ mod tests {
                 CloseoutResult::PredecessorStillReachable,
             ),
             ("invalid/contract_drift_schema.v1.json", CloseoutResult::ContractDrift),
+            ("invalid/control_executed_elsewhere.v1.json", CloseoutResult::WrongSubject),
+            ("invalid/unrelated_authority_transfer.v1.json", CloseoutResult::ClaimCeilingExceeded),
+            ("invalid/foreign_issue_repository.v1.json", CloseoutResult::ContractDrift),
+            ("invalid/empty_policy_floors.v1.json", CloseoutResult::ContractDrift),
+            ("invalid/uppercase_digest_bind.v1.json", CloseoutResult::ContractDrift),
+            ("invalid/contract_drift_swapped_packet.v1.json", CloseoutResult::ContractDrift),
+            ("invalid/wrong_subject_packet_node.v1.json", CloseoutResult::WrongSubject),
             ("invalid/leaf_incomplete_empty_diff.v1.json", CloseoutResult::LeafIncomplete),
             ("invalid/leaf_incomplete_no_limitations.v1.json", CloseoutResult::LeafIncomplete),
         ];
@@ -1360,6 +1538,142 @@ mod tests {
     }
 
     #[test]
+    fn swapped_packets_with_recomputed_digests_stay_non_green() -> Result<()> {
+        let (mut request, value) = load_document(VALID_FIXTURES[0])?;
+        let facts: GitFacts = serde_json::from_value(value["git_facts"].clone())?;
+        let bodies: BTreeMap<ArtifactRole, String> = request
+            .artifacts
+            .iter()
+            .map(|artifact| (artifact.role, artifact.contents.clone()))
+            .collect();
+        for artifact in &mut request.artifacts {
+            if artifact.role == ArtifactRole::BuilderPacket {
+                artifact.contents = bodies[&ArtifactRole::ReviewerPacket].clone();
+            } else if artifact.role == ArtifactRole::ReviewerPacket {
+                artifact.contents = bodies[&ArtifactRole::BuilderPacket].clone();
+            }
+        }
+        rebind_all_digest_binds(&mut request);
+        let outcome = evaluate(&request, &facts);
+        assert_eq!(outcome.result, CloseoutResult::ContractDrift, "{:?}", outcome.reasons);
+        assert!(
+            outcome.reasons.iter().any(|reason| reason.contains("swapped packet")),
+            "the swapped packet must be named as the cause"
+        );
+        assert!(outcome.handoff.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn repointed_packets_with_recomputed_digests_stay_non_green() -> Result<()> {
+        let (mut request, value) = load_document(VALID_FIXTURES[0])?;
+        let facts: GitFacts = serde_json::from_value(value["git_facts"].clone())?;
+        // Same schema, same shape, fresh digests — but the packet names
+        // another leaf node, so the subject bind must reject it.
+        for artifact in &mut request.artifacts {
+            if artifact.role == ArtifactRole::BuilderPacket {
+                let mut parsed: serde_json::Value = serde_json::from_str(&artifact.contents)?;
+                parsed["node_id"] =
+                    serde_json::Value::String("at.node.leaf.elsewhere.99999".to_string());
+                artifact.contents = serde_json::to_string(&parsed)?;
+            }
+        }
+        rebind_all_digest_binds(&mut request);
+        let outcome = evaluate(&request, &facts);
+        assert_eq!(outcome.result, CloseoutResult::WrongSubject, "{:?}", outcome.reasons);
+        assert!(outcome.handoff.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn uppercase_digest_binds_are_format_drift_not_stale_packets() -> Result<()> {
+        let (mut request, value) = load_document(VALID_FIXTURES[0])?;
+        let facts: GitFacts = serde_json::from_value(value["git_facts"].clone())?;
+        request.digest_binds.builder_packet_sha256 =
+            request.digest_binds.builder_packet_sha256.to_uppercase();
+        let outcome = evaluate(&request, &facts);
+        assert_eq!(outcome.result, CloseoutResult::ContractDrift);
+        assert!(
+            outcome.reasons.iter().any(|reason| reason.contains("lowercase SHA-256")),
+            "an uppercase digest must be reported as a format error: {:?}",
+            outcome.reasons
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn controls_executed_elsewhere_cannot_claim_subject_alignment() -> Result<()> {
+        let (mut request, value) = load_document(VALID_FIXTURES[0])?;
+        let facts: GitFacts = serde_json::from_value(value["git_facts"].clone())?;
+        for control in &mut request.proof_profile.negative_controls {
+            control.executed_against_sha = "9".repeat(64);
+        }
+        rebind_profile_artifact(&mut request);
+        let outcome = evaluate(&request, &facts);
+        assert_eq!(outcome.result, CloseoutResult::WrongSubject, "{:?}", outcome.reasons);
+        assert!(
+            outcome.reasons.iter().any(|reason| reason.contains("not the candidate head")),
+            "the executed-against bind must be named as the cause"
+        );
+        assert!(outcome.handoff.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn empty_policy_floors_are_contract_drift() -> Result<()> {
+        let (mut request, value) = load_document(VALID_FIXTURES[0])?;
+        let facts: GitFacts = serde_json::from_value(value["git_facts"].clone())?;
+        request.forbidden_surfaces.clear();
+        let without_surfaces = evaluate(&request, &facts);
+        assert_eq!(without_surfaces.result, CloseoutResult::ContractDrift);
+        let (mut request, _value) = load_document(VALID_FIXTURES[0])?;
+        request.required_changes = RequiredChanges::default();
+        let without_required = evaluate(&request, &facts);
+        assert_eq!(without_required.result, CloseoutResult::ContractDrift);
+        Ok(())
+    }
+
+    #[test]
+    fn unrelated_authority_transfers_fail_the_leaf_ceiling() -> Result<()> {
+        let (mut request, value) = load_document(VALID_FIXTURES[0])?;
+        let facts: GitFacts = serde_json::from_value(value["git_facts"].clone())?;
+        request.authority_transfers_claimed = vec!["authority_transfer.unrelated".to_string()];
+        let outcome = evaluate(&request, &facts);
+        assert_eq!(outcome.result, CloseoutResult::ClaimCeilingExceeded);
+        assert!(
+            outcome.reasons.iter().any(|reason| reason.contains("not the leaf conflict key")),
+            "the authority identity bind must be named as the cause"
+        );
+        assert!(outcome.handoff.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn foreign_issue_repositories_are_contract_drift() -> Result<()> {
+        let (mut request, value) = load_document(VALID_FIXTURES[0])?;
+        let facts: GitFacts = serde_json::from_value(value["git_facts"].clone())?;
+        request.claimed_closes[0].repository = "other/repo".to_string();
+        let outcome = evaluate(&request, &facts);
+        assert_eq!(outcome.result, CloseoutResult::ContractDrift);
+        assert!(
+            outcome.reasons.iter().any(|reason| reason.contains("not the request repository")),
+            "the issue repository bind must be named as the cause"
+        );
+        assert!(outcome.handoff.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn forbidden_surface_matching_stops_at_separator_boundaries() {
+        assert!(touches_forbidden_surface("specs/leaf.md", "specs/"));
+        assert!(touches_forbidden_surface("specs/leaf.md", "specs"));
+        assert!(touches_forbidden_surface("specs", "specs"));
+        assert!(!touches_forbidden_surface("specs-alternative/leaf.md", "specs"));
+        assert!(!touches_forbidden_surface("docs-alternative/x.md", "docs/"));
+        assert!(!touches_forbidden_surface("docsy/x.md", "docs"));
+    }
+
+    #[test]
     fn inconsistent_live_observations_are_contract_drift() -> Result<()> {
         let (mut request, value) = load_document(VALID_FIXTURES[0])?;
         let facts: GitFacts = serde_json::from_value(value["git_facts"].clone())?;
@@ -1389,7 +1703,7 @@ mod tests {
         write_commit(&repository, "seed.txt", "seed\n", "seed")?;
         let base = git_at(&repository, &["rev-parse", "HEAD"])?;
 
-        let manifest_body = "{\"graph\":\"v1\"}\n";
+        let manifest_body = "{\"schema\":\"programme_manifest.v1\",\"nodes\":1}\n";
         write_commit(&repository, ".ci/graph.v1.json", manifest_body, "manifest")?;
         write_commit(&repository, "docs/spec.md", "spec\n", "spec")?;
         write_commit(&repository, "tests/leaf.rs", "test\n", "test")?;
@@ -1418,6 +1732,7 @@ mod tests {
                 red_before_evidence: true,
                 passes_only_intended_implementation: true,
                 subject_matches_candidate: true,
+                executed_against_sha: head.to_string(),
             }],
             first_falsifier_id: "falsifier.first".to_string(),
             generated_outputs_current: true,
@@ -1427,6 +1742,12 @@ mod tests {
         };
         let profile_body =
             serde_json::to_string(&proof_profile).expect("profile serializes in test fixtures");
+        let probe_body = canonical_packet("probe_observation.v1", "probe", "node.round.trip");
+        let frontier_body = canonical_packet("frontier_digest.v1", "frontier", "node.round.trip");
+        let builder_body =
+            canonical_packet("agent_implementation_packet.v1", "builder", "node.round.trip");
+        let reviewer_body =
+            canonical_packet("agent_review_packet.v1", "reviewer", "node.round.trip");
         CloseoutRequest {
             schema: CLOSEOUT_REQUEST_SCHEMA_V1.to_string(),
             schema_version: 1,
@@ -1446,19 +1767,19 @@ mod tests {
             },
             digest_binds: DigestBinds {
                 programme_manifest_sha256: sha256_hex(manifest_body),
-                probe_observation_sha256: sha256_hex("probe\n"),
-                frontier_sha256: sha256_hex("frontier\n"),
-                builder_packet_sha256: sha256_hex("builder\n"),
-                reviewer_packet_sha256: sha256_hex("reviewer\n"),
+                probe_observation_sha256: sha256_hex(&probe_body),
+                frontier_sha256: sha256_hex(&frontier_body),
+                builder_packet_sha256: sha256_hex(&builder_body),
+                reviewer_packet_sha256: sha256_hex(&reviewer_body),
                 proof_profile_sha256: sha256_hex(&profile_body),
                 issue_ruling_revision: "ruling.r1".to_string(),
             },
             artifacts: vec![
                 artifact(ArtifactRole::ProgrammeManifest, "artifacts/graph.json", manifest_body),
-                artifact(ArtifactRole::ProbeObservation, "artifacts/probe.json", "probe\n"),
-                artifact(ArtifactRole::Frontier, "artifacts/frontier.json", "frontier\n"),
-                artifact(ArtifactRole::BuilderPacket, "artifacts/builder.json", "builder\n"),
-                artifact(ArtifactRole::ReviewerPacket, "artifacts/reviewer.json", "reviewer\n"),
+                artifact(ArtifactRole::ProbeObservation, "artifacts/probe.json", &probe_body),
+                artifact(ArtifactRole::Frontier, "artifacts/frontier.json", &frontier_body),
+                artifact(ArtifactRole::BuilderPacket, "artifacts/builder.json", &builder_body),
+                artifact(ArtifactRole::ReviewerPacket, "artifacts/reviewer.json", &reviewer_body),
                 artifact(ArtifactRole::ProofProfile, "artifacts/profile.json", &profile_body),
             ],
             claimed_closes: vec![IssueRef { repository: "owner/name".to_string(), number: 11703 }],
@@ -1486,7 +1807,19 @@ mod tests {
     }
 
     fn artifact(role: ArtifactRole, path: &str, contents: &str) -> ArtifactInput {
-        ArtifactInput { role, path: path.to_string(), contents: contents.to_string() }
+        ArtifactInput { role: role, path: path.to_string(), contents: contents.to_string() }
+    }
+
+    /// A canonical packet body carrying the schema discriminator and the
+    /// repository/node subject binds required by `bind_packet_subjects`.
+    fn canonical_packet(schema: &str, packet_id: &str, node: &str) -> String {
+        serde_json::json!({
+            "schema": schema,
+            "packet_id": packet_id,
+            "repository": "owner/name",
+            "node_id": node,
+        })
+        .to_string()
     }
 
     /// Re-bind the digest-bound profile artifact after mutating the profile,
@@ -1501,6 +1834,28 @@ mod tests {
             }
         }
         request.digest_binds.proof_profile_sha256 = digest;
+    }
+
+    /// Re-bind every digest bind to the supplied artifact bodies, simulating
+    /// an attacker who recomputes digests after swapping or repointing packet
+    /// contents. Only the packet contracts and subject binds may reject that.
+    fn rebind_all_digest_binds(request: &mut CloseoutRequest) {
+        for artifact in &request.artifacts {
+            let digest = sha256_hex(&artifact.contents);
+            let field = match artifact.role {
+                ArtifactRole::ProgrammeManifest => {
+                    &mut request.digest_binds.programme_manifest_sha256
+                }
+                ArtifactRole::ProbeObservation => {
+                    &mut request.digest_binds.probe_observation_sha256
+                }
+                ArtifactRole::Frontier => &mut request.digest_binds.frontier_sha256,
+                ArtifactRole::BuilderPacket => &mut request.digest_binds.builder_packet_sha256,
+                ArtifactRole::ReviewerPacket => &mut request.digest_binds.reviewer_packet_sha256,
+                ArtifactRole::ProofProfile => &mut request.digest_binds.proof_profile_sha256,
+            };
+            *field = digest;
+        }
     }
 
     fn sha256_hex(body: &str) -> String {

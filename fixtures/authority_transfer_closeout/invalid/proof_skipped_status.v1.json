@@ -97,19 +97,22 @@
           "control_id": "falsifier.first.stale_head",
           "subject_matches_candidate": true,
           "passes_only_intended_implementation": true,
-          "red_before_evidence": true
+          "red_before_evidence": true,
+          "executed_against_sha": "2222222222222222222222222222222222222222222222222222222222222222"
         },
         {
           "control_id": "falsifier.zero_work_proof",
           "subject_matches_candidate": true,
           "passes_only_intended_implementation": true,
-          "red_before_evidence": true
+          "red_before_evidence": true,
+          "executed_against_sha": "2222222222222222222222222222222222222222222222222222222222222222"
         },
         {
           "control_id": "falsifier.controller_close",
           "subject_matches_candidate": true,
           "passes_only_intended_implementation": true,
-          "red_before_evidence": true
+          "red_before_evidence": true,
+          "executed_against_sha": "2222222222222222222222222222222222222222222222222222222222222222"
         }
       ]
     },
@@ -133,13 +136,13 @@
       "controller fan-in completion is owned by #11696 and is not established here"
     ],
     "digest_binds": {
-      "proof_profile_sha256": "7f43cb751b1a2607a3b437d9f999e39ae06383752e300f04a08447ca866dc237",
-      "probe_observation_sha256": "274ee680c343ff897c99e0059cf70926bb12c2e37f021ef426db97aa4137f44a",
+      "proof_profile_sha256": "5d3778b911c377a634feb4825e6f0043d138913dda714c3ac293c7fb17eb2cbc",
+      "probe_observation_sha256": "b3b676edcfd005855ecf334243962028202f2a205220e1e153eee38aeea7e133",
       "issue_ruling_revision": "ruling.r1",
-      "reviewer_packet_sha256": "45063b7ba0ce0ade09f3d698e07398104a670695e5d87c5a5c03cc1298a3d8a2",
-      "builder_packet_sha256": "41bb14ba18dc8a9747f9f82443e10db929a1377d9eb0143ff48c728edb579edd",
+      "reviewer_packet_sha256": "6f50e599904b5cf9679b3a6bc5e3bf8c34bef7697bcd9e4692a0aa6c4e0295ce",
+      "builder_packet_sha256": "9d3f14de402fbe15e642b54c7493695a057aba1d9f5f21019e40a14da120ab52",
       "programme_manifest_sha256": "7d488a8aef2434fdf4d0a5fc2ada02fdaff0fdf7064389b9bfe16aaf32cda6e0",
-      "frontier_sha256": "89c067afb425a3724a838151631fd1e8aeaa4a8cabb0bf15e6ee6d02ed3992b0"
+      "frontier_sha256": "3cbe306ab607e7eec5a345d49049bfd89470131c05109b945bee5fd279f6bef2"
     },
     "predecessor_exit": {
       "compatibility_exit_identity": null,
@@ -170,27 +173,27 @@
       },
       {
         "path": "target/closeout/probe.json",
-        "contents": "{\"schema\":\"probe_observation.v1\",\"state\":\"clean\"}\n",
+        "contents": "{\"schema\":\"probe_observation.v1\",\"state\":\"clean\",\"repository\":\"EffortlessMetrics/perl-lsp-swarm\",\"node_id\":\"at.node.leaf.closeout.11703\"}",
         "role": "probe_observation"
       },
       {
         "path": "target/closeout/frontier.json",
-        "contents": "{\"schema\":\"frontier_digest.v1\",\"decision\":\"ready\"}\n",
+        "contents": "{\"schema\":\"frontier_digest.v1\",\"decision\":\"ready\",\"repository\":\"EffortlessMetrics/perl-lsp-swarm\",\"node_id\":\"at.node.leaf.closeout.11703\"}",
         "role": "frontier"
       },
       {
         "path": "target/closeout/builder_packet.json",
-        "contents": "{\"schema\":\"agent_implementation_packet.v1\",\"packet_id\":\"pkt.builder.11703\"}\n",
+        "contents": "{\"schema\":\"agent_implementation_packet.v1\",\"packet_id\":\"pkt.builder.11703\",\"repository\":\"EffortlessMetrics/perl-lsp-swarm\",\"node_id\":\"at.node.leaf.closeout.11703\"}",
         "role": "builder_packet"
       },
       {
         "path": "target/closeout/reviewer_packet.json",
-        "contents": "{\"schema\":\"agent_review_packet.v1\",\"packet_id\":\"pkt.reviewer.11703\"}\n",
+        "contents": "{\"schema\":\"agent_review_packet.v1\",\"packet_id\":\"pkt.reviewer.11703\",\"repository\":\"EffortlessMetrics/perl-lsp-swarm\",\"node_id\":\"at.node.leaf.closeout.11703\"}",
         "role": "reviewer_packet"
       },
       {
         "path": "target/closeout/proof_profile.json",
-        "contents": "{\"selected\":[\"cargo.test.xtask.authority_transfer_closeout\",\"cargo.clippy.xtask.scoped\"],\"claims_installed_behavior\":false,\"executed\":{\"cargo.clippy.xtask.scoped\":\"passed\",\"cargo.test.xtask.authority_transfer_closeout\":\"skipped\"},\"installed_observation_sha256\":null,\"generated_identities\":[\"generation.g1\"],\"first_falsifier_id\":\"falsifier.first.stale_head\",\"generated_outputs_current\":true,\"negative_controls\":[{\"control_id\":\"falsifier.first.stale_head\",\"subject_matches_candidate\":true,\"passes_only_intended_implementation\":true,\"red_before_evidence\":true},{\"control_id\":\"falsifier.zero_work_proof\",\"subject_matches_candidate\":true,\"passes_only_intended_implementation\":true,\"red_before_evidence\":true},{\"control_id\":\"falsifier.controller_close\",\"subject_matches_candidate\":true,\"passes_only_intended_implementation\":true,\"red_before_evidence\":true}]}\n",
+        "contents": "{\"selected\":[\"cargo.test.xtask.authority_transfer_closeout\",\"cargo.clippy.xtask.scoped\"],\"claims_installed_behavior\":false,\"executed\":{\"cargo.clippy.xtask.scoped\":\"passed\",\"cargo.test.xtask.authority_transfer_closeout\":\"skipped\"},\"installed_observation_sha256\":null,\"generated_identities\":[\"generation.g1\"],\"first_falsifier_id\":\"falsifier.first.stale_head\",\"generated_outputs_current\":true,\"negative_controls\":[{\"control_id\":\"falsifier.first.stale_head\",\"subject_matches_candidate\":true,\"passes_only_intended_implementation\":true,\"red_before_evidence\":true,\"executed_against_sha\":\"2222222222222222222222222222222222222222222222222222222222222222\"},{\"control_id\":\"falsifier.zero_work_proof\",\"subject_matches_candidate\":true,\"passes_only_intended_implementation\":true,\"red_before_evidence\":true,\"executed_against_sha\":\"2222222222222222222222222222222222222222222222222222222222222222\"},{\"control_id\":\"falsifier.controller_close\",\"subject_matches_candidate\":true,\"passes_only_intended_implementation\":true,\"red_before_evidence\":true,\"executed_against_sha\":\"2222222222222222222222222222222222222222222222222222222222222222\"}]}",
         "role": "proof_profile"
       }
     ]

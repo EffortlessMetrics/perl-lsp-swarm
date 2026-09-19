@@ -1,9 +1,9 @@
 {
   "fixture": {
-    "description": "Valid bounded leaf with no live observation; offline closeout stays valid.",
-    "name": "leaf_ready_offline_live_unavailable.v1.json"
+    "description": "A terminal relation naming a foreign repository is contract drift (#15820 finding 5).",
+    "name": "foreign_issue_repository.v1.json"
   },
-  "expected_result": "LEAF_READY",
+  "expected_result": "CONTRACT_DRIFT",
   "git_facts": {
     "head_resolved": "2222222222222222222222222222222222222222222222222222222222222222",
     "base_resolved": "1111111111111111111111111111111111111111111111111111111111111111",
@@ -68,7 +68,10 @@
         ".ci/authority-transfer-programme/generated/closeout-cells.json"
       ]
     },
-    "live_observation": null,
+    "live_observation": {
+      "observation_digest": null,
+      "candidate_state": "not_observed"
+    },
     "packet_subject": {
       "current_main_sha": "2222222222222222222222222222222222222222222222222222222222222222",
       "packet_ruling_revision": "ruling.r1"
@@ -124,7 +127,7 @@
     ],
     "claimed_closes": [
       {
-        "repository": "EffortlessMetrics/perl-lsp-swarm",
+        "repository": "other/repo",
         "number": 11703
       }
     ],

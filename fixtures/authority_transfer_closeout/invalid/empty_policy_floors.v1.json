@@ -1,9 +1,9 @@
 {
   "fixture": {
-    "description": "Valid bounded leaf with no live observation; offline closeout stays valid.",
-    "name": "leaf_ready_offline_live_unavailable.v1.json"
+    "description": "Empty forbidden surfaces and required changes make the policy floor vacuous (#15820 finding 3).",
+    "name": "empty_policy_floors.v1.json"
   },
-  "expected_result": "LEAF_READY",
+  "expected_result": "CONTRACT_DRIFT",
   "git_facts": {
     "head_resolved": "2222222222222222222222222222222222222222222222222222222222222222",
     "base_resolved": "1111111111111111111111111111111111111111111111111111111111111111",
@@ -46,29 +46,18 @@
     ],
     "schema": "authority_transfer_leaf_closeout_request.v1",
     "required_changes": {
-      "tests": [
-        "xtask/src/authority_transfer_closeout.rs"
-      ],
-      "specs": [
-        "docs/policy/AUTHORITY_TRANSFER_LEAF_CLOSEOUT.md"
-      ],
-      "schemas": [
-        "schemas/authority_transfer_leaf_closeout_request.v1.schema.json"
-      ],
-      "docs": [
-        "docs/project/status/authority-transfer-closeout.md"
-      ],
-      "fixtures": [
-        "fixtures/authority_transfer_closeout/fixture-manifest.generated.json"
-      ],
-      "receipts": [
-        ".ci/receipts/authority-transfer-closeout/leaf-closeout.receipt.json"
-      ],
-      "generated": [
-        ".ci/authority-transfer-programme/generated/closeout-cells.json"
-      ]
+      "tests": [],
+      "specs": [],
+      "schemas": [],
+      "docs": [],
+      "fixtures": [],
+      "receipts": [],
+      "generated": []
     },
-    "live_observation": null,
+    "live_observation": {
+      "observation_digest": null,
+      "candidate_state": "not_observed"
+    },
     "packet_subject": {
       "current_main_sha": "2222222222222222222222222222222222222222222222222222222222222222",
       "packet_ruling_revision": "ruling.r1"
@@ -118,10 +107,7 @@
       "head_sha": "2222222222222222222222222222222222222222222222222222222222222222"
     },
     "repository": "EffortlessMetrics/perl-lsp-swarm",
-    "forbidden_surfaces": [
-      ".ci/semantic-close-containment/",
-      ".github/workflows/"
-    ],
+    "forbidden_surfaces": [],
     "claimed_closes": [
       {
         "repository": "EffortlessMetrics/perl-lsp-swarm",
