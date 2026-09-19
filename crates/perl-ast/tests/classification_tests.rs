@@ -73,7 +73,7 @@ fn recovery_implies_not_safe_for_breakpoint() {
 // ────────────────────────────────────────────────────────
 
 /// The exact set of variant names that must be safe_for_breakpoint=TRUE
-/// per the plan-reviewer corrected table (44 variants after #1713 adds ArraySlice/HashSlice/KeyValueSlice).
+/// per the plan-reviewer corrected table (47 variants after #15742 adds TargetlessGoto).
 /// Use and No removed (compile-time pragma/unimport; not runtime-breakable).
 const SAFE_FOR_BREAKPOINT_TRUE: &[&str] = &[
     "ExpressionStatement",
@@ -112,6 +112,7 @@ const SAFE_FOR_BREAKPOINT_TRUE: &[&str] = &[
     "Return",
     "LoopControl",
     "Goto",
+    "TargetlessGoto",
     "MethodCall",
     "FunctionCall",
     "AmperCall",
