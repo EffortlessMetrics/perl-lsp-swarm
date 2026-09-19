@@ -658,3 +658,33 @@ fn antip_normal_file_performance() {
         elapsed
     );
 }
+
+#[test]
+fn antip_postponed_opener_detected_and_linear_on_production_seam() {
+    // #14390 intent, carried across the #3597 rewrite of the detection seam:
+    // the postponed opener `(??{` is reported like `(?{`, and adversarial
+    // unclosed input stays fast through `detect_all` itself rather than
+    // through a private copy of a pattern.
+    assert!(
+        has_regex_code_block("m/a(??{b<<'X'})c/"),
+        "postponed code block heredoc must be reported"
+    );
+
+    let pathological = format!("{}{}", "(??{", "a".repeat(5000));
+    let start = Instant::now();
+    let _ = detect(&pathological);
+    let elapsed = start.elapsed();
+    assert!(
+        elapsed < Duration::from_millis(50),
+        "postponed-opener scan took {elapsed:?} on 5KB unclosed input; expected linear behavior"
+    );
+}
+
+#[test]
+fn antip_triple_question_opener_is_not_a_code_block() {
+    // `(???{` is not valid Perl opener syntax. #14390 pinned this against the
+    // old regex static; the opener scan must keep the same discipline while
+    // `(?{` keeps being detected.
+    assert!(!has_regex_code_block("m/a(???{b<<'X'})c/"));
+    assert!(has_regex_code_block("m/a(?{b<<'X'})c/"));
+}

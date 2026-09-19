@@ -1,5 +1,9 @@
 use super::AntiPatternDetector;
-use crate::heredoc_anti_patterns::model::AntiPattern;
+use crate::heredoc_anti_patterns::model::{
+    AntiPattern, DetectionStatus, DetectorFailureReason, DetectorId, DetectorState,
+    HeredocDelimiter,
+};
+use regex::Regex;
 
 #[test]
 fn test_format_heredoc_detection() {
@@ -21,7 +25,7 @@ END
     assert!(matches!(diagnostics[0].pattern, AntiPattern::FormatHeredoc { .. }));
 
     if let AntiPattern::FormatHeredoc { heredoc_delimiter, .. } = &diagnostics[0].pattern {
-        assert_eq!(heredoc_delimiter, "END");
+        assert_eq!(*heredoc_delimiter, HeredocDelimiter::Extracted("END".to_string()));
     }
 }
 
@@ -134,6 +138,74 @@ fn test_regex_heredoc_detection_spanning_lines() {
             .any(|diag| matches!(diag.pattern, AntiPattern::RegexCodeBlockHeredoc { .. })),
         "multi-line regex code block heredoc must be detected"
     );
+}
+
+#[test]
+fn test_regex_postponed_heredoc_detection() {
+    // #14390: `(??{ ... })` is the postponed (subpattern-evaluating) form of the regex
+    // code block and carries the same heredoc parsing hazard as `(?{ ... })`. The detector
+    // must report a PL804 diagnostic for it as well.
+    let detector = AntiPatternDetector::new();
+
+    let single_line = "m/a(??{b<<'X'})c/";
+    let diagnostics = detector.detect_all(single_line);
+    assert_eq!(
+        diagnostics.len(),
+        1,
+        "expected one RegexCodeBlockHeredoc diagnostic for `(??{{b<<'X'}})`, got {diagnostics:?}"
+    );
+    assert!(matches!(diagnostics[0].pattern, AntiPattern::RegexCodeBlockHeredoc { .. }));
+}
+
+#[test]
+fn test_regex_heredoc_does_not_overmatch_triple_question() {
+    // Regression guard: the bounded `?{1,2}` opener must not match `(???{`. The
+    // literal `{` must appear immediately after the 1-2 `?` characters; a third `?`
+    // is a literal `?` and breaks the pattern. `[^}\n]*` then never reaches the `<<`.
+    let detector = AntiPatternDetector::new();
+    let code = "m/a(???{b<<'X'})c/";
+    let diagnostics = detector.detect_all(code);
+    let regex_code_block_count = diagnostics
+        .iter()
+        .filter(|diag| matches!(diag.pattern, AntiPattern::RegexCodeBlockHeredoc { .. }))
+        .count();
+    assert_eq!(
+        regex_code_block_count, 0,
+        "expected no RegexCodeBlockHeredoc diagnostic for `(???{{b<<'X'}})` (not a valid Perl opener), got {diagnostics:?}"
+    );
+}
+
+#[test]
+fn test_regex_code_block_scan_matches_both_openers() {
+    // #14390: since #3597 the detector finds regex code blocks with a literal
+    // opener scan rather than a regex static, so the production seam is
+    // `regex_code_block_matches`. The same falsifying inputs stay pinned: the
+    // `(?{` and `(??{` openers both match, `(???{` does not.
+    assert!(!super::regex_code_block_matches("m/a(?{b<<'X'})c/").is_empty());
+    assert!(!super::regex_code_block_matches("m/a(??{b<<'X'})c/").is_empty());
+    assert!(super::regex_code_block_matches("m/a(???{b<<'X'})c/").is_empty());
+}
+
+#[test]
+fn test_detector_state_helpers_call_observation() {
+    // #14390 repair: the detector-state helpers `unavailable`, `limited`, and
+    // `required_state` are otherwise reached only transitively through detector
+    // dispatch, which static analysis cannot follow; observe each helper by direct
+    // call and pin its state mapping.
+    let unavailable = super::unavailable(&["regex_heredoc"]);
+    assert!(matches!(unavailable, DetectorState::Unavailable { .. }));
+
+    let limited = super::limited(&["regex_heredoc"]);
+    assert!(matches!(limited, DetectorState::Limited { .. }));
+
+    assert!(matches!(super::required_state(&[("regex_heredoc", true)]), DetectorState::Complete));
+
+    match super::required_state(&[("regex_heredoc", false)]) {
+        DetectorState::Unavailable {
+            reason: DetectorFailureReason::PatternUnavailable { pattern_ids },
+        } => assert_eq!(pattern_ids, vec!["regex_heredoc"]),
+        _ => panic!("required_state must report Unavailable for missing patterns"),
+    }
 }
 
 #[test]
@@ -369,4 +441,247 @@ fn test_find_matching_brace_returns_none_for_unclosed_block() {
     let closing = super::find_matching_brace(code, opening);
 
     assert!(closing.is_none());
+}
+
+#[test]
+fn production_catalog_compiles_and_empty_source_is_complete_clean() {
+    let detector = AntiPatternDetector::new();
+    let report = detector.detect_all_report("");
+
+    assert_eq!(report.status, DetectionStatus::Complete);
+    assert!(report.detectors.iter().all(|obs| matches!(obs.state, DetectorState::Complete)));
+    assert_eq!(report.detectors.len(), ALL_DETECTOR_IDS.len());
+    assert!(report.is_complete_clean());
+}
+
+fn forced_reason() -> DetectorFailureReason {
+    DetectorFailureReason::PatternUnavailable { pattern_ids: vec!["TEST_FORCED"] }
+}
+
+fn detector_forcing_unavailable(ids: &[DetectorId]) -> AntiPatternDetector {
+    let reason = forced_reason();
+    let patterns = super::production_pattern_detectors()
+        .into_iter()
+        .map(|live| {
+            let id = live.id();
+            if ids.contains(&id) {
+                Box::new(super::ForcedUnavailableDetector { id, reason: reason.clone() })
+                    as Box<dyn super::PatternDetector>
+            } else {
+                live
+            }
+        })
+        .collect();
+    AntiPatternDetector::from_pattern_detectors(patterns)
+}
+
+const ALL_DETECTOR_IDS: [DetectorId; 7] = [
+    DetectorId::FormatHeredoc,
+    DetectorId::BeginTimeHeredoc,
+    DetectorId::DynamicDelimiter,
+    DetectorId::SourceFilter,
+    DetectorId::RegexCodeBlock,
+    DetectorId::EvalString,
+    DetectorId::TiedHandle,
+];
+
+#[test]
+fn forced_unavailable_detector_does_not_panic_and_leaves_others_running() {
+    let detector = detector_forcing_unavailable(&[DetectorId::FormatHeredoc]);
+    let code = "use Filter::Simple;\n";
+    let report = detector.detect_all_report(code);
+
+    assert_eq!(report.status, DetectionStatus::Partial);
+    assert_eq!(report.diagnostics.len(), 1);
+    assert!(matches!(report.diagnostics[0].pattern, AntiPattern::SourceFilterHeredoc { .. }));
+    let format = report
+        .detectors
+        .iter()
+        .find(|obs| obs.id == DetectorId::FormatHeredoc)
+        .expect("format detector observation");
+    assert!(matches!(format.state, DetectorState::Unavailable { .. }));
+}
+
+#[test]
+fn partial_empty_scan_is_not_complete_clean() {
+    let detector = detector_forcing_unavailable(&[DetectorId::SourceFilter]);
+    let code = "my $x = 1;\n";
+    let report = detector.detect_all_report(code);
+
+    assert_eq!(report.status, DetectionStatus::Partial);
+    assert!(report.diagnostics.is_empty());
+    assert!(!report.is_complete_clean());
+    assert!(detector.detect_all(code).is_empty());
+
+    let formatted = detector.format_detection_report(&report);
+    assert!(formatted.contains("Status: partial"));
+    assert!(
+        !formatted.contains("No problematic patterns detected."),
+        "partial-empty must not masquerade as complete-clean"
+    );
+    assert!(
+        detector.format_report(&report.diagnostics).contains("No problematic patterns detected."),
+        "diagnostics-only projection remains lossy and must not be the completeness authority"
+    );
+}
+
+#[test]
+fn all_detectors_unavailable_is_unavailable_not_clean() {
+    let detector = detector_forcing_unavailable(&ALL_DETECTOR_IDS);
+    let code = "use Filter::Simple;\nprint <<$x;\n";
+    let report = detector.detect_all_report(code);
+
+    assert_eq!(report.status, DetectionStatus::Unavailable);
+    assert!(report.diagnostics.is_empty());
+    assert!(!report.is_complete_clean());
+    assert!(
+        detector
+            .format_detection_report(&report)
+            .contains("Analysis unavailable: no detector completed.")
+    );
+}
+
+#[test]
+fn tied_handle_missing_required_pattern_emits_no_findings() {
+    let code = "tie *FH, 'Tie::Handle';\nprint FH <<'DATA';\nTied\nDATA\n";
+    let line_starts = crate::heredoc_anti_patterns::utils::build_line_starts(code);
+    let print = Regex::new(r"print\s+([*$]?\w+)\s+<<").expect("test print pattern");
+
+    let findings = super::detect_tied_handle(code, 0, &line_starts, None, Some(&print));
+    assert!(findings.is_empty(), "missing TIE_PATTERN must not fabricate tied-handle findings");
+
+    let tie = Regex::new(r"tie\s+([*$]\w+)").expect("test tie pattern");
+    let findings = super::detect_tied_handle(code, 0, &line_starts, Some(&tie), None);
+    assert!(
+        findings.is_empty(),
+        "missing PRINT_HEREDOC_PATTERN must not fabricate tied-handle findings"
+    );
+
+    let state = super::required_state(&[("TIE_PATTERN", false), ("PRINT_HEREDOC_PATTERN", true)]);
+    assert_eq!(
+        state,
+        DetectorState::Unavailable {
+            reason: DetectorFailureReason::PatternUnavailable { pattern_ids: vec!["TIE_PATTERN"] },
+        }
+    );
+}
+
+#[test]
+fn delimiter_unknown_is_not_pattern_unavailable() {
+    let pattern =
+        Regex::new(r#"<<\s*['"`]?([A-Za-z_][A-Za-z0-9_]*)['"`]?"#).expect("test delimiter pattern");
+
+    assert_eq!(
+        super::extract_heredoc_delimiter_with(Some(&pattern), "<<'END'"),
+        HeredocDelimiter::Extracted("END".to_string())
+    );
+    assert_eq!(
+        super::extract_heredoc_delimiter_with(Some(&pattern), "no delimiter here"),
+        HeredocDelimiter::Unknown
+    );
+    assert_eq!(
+        super::extract_heredoc_delimiter_with(None, "<<'END'"),
+        HeredocDelimiter::Unavailable
+    );
+}
+
+#[test]
+fn shared_delimiter_failure_does_not_fabricate_or_suppress_unrelated_findings() {
+    let patterns = super::production_pattern_detectors()
+        .into_iter()
+        .map(|live| {
+            if live.id() == DetectorId::FormatHeredoc {
+                Box::new(super::ForcedLimitedFormatDetector) as Box<dyn super::PatternDetector>
+            } else {
+                live
+            }
+        })
+        .collect();
+    let detector = AntiPatternDetector::from_pattern_detectors(patterns);
+    let code = r#"
+format REPORT =
+<<'END'
+Name: @<<<<<<<<<<<<
+$name
+END
+.
+use Filter::Simple;
+"#;
+
+    let report = detector.detect_all_report(code);
+    assert_eq!(report.status, DetectionStatus::Partial);
+    assert!(!report.is_complete_clean());
+
+    let format = report
+        .diagnostics
+        .iter()
+        .find(|diag| matches!(diag.pattern, AntiPattern::FormatHeredoc { .. }))
+        .expect("format finding must survive delimiter unavailability");
+    let AntiPattern::FormatHeredoc { heredoc_delimiter, .. } = &format.pattern else {
+        unreachable!("format finding");
+    };
+    assert_eq!(*heredoc_delimiter, HeredocDelimiter::Unavailable);
+
+    assert!(
+        report
+            .diagnostics
+            .iter()
+            .any(|diag| matches!(diag.pattern, AntiPattern::SourceFilterHeredoc { .. }))
+    );
+
+    let format_state = report
+        .detectors
+        .iter()
+        .find(|obs| obs.id == DetectorId::FormatHeredoc)
+        .expect("format observation");
+    assert!(matches!(format_state.state, DetectorState::Limited { .. }));
+}
+
+#[test]
+fn shuffled_catalog_still_emits_stable_observation_order() {
+    let mut patterns = super::production_pattern_detectors();
+    patterns.reverse();
+    let detector = AntiPatternDetector::from_pattern_detectors(patterns);
+    let report = detector.detect_all_report("use Filter::Simple;\n");
+
+    let ids: Vec<DetectorId> = report.detectors.iter().map(|obs| obs.id).collect();
+    assert_eq!(ids, ALL_DETECTOR_IDS);
+    assert_eq!(report.status, DetectionStatus::Complete);
+    assert_eq!(report.diagnostics.len(), 1);
+    assert!(matches!(report.diagnostics[0].pattern, AntiPattern::SourceFilterHeredoc { .. }));
+}
+
+#[test]
+fn healthy_source_filter_fixture_retains_kind_location_message_and_order() {
+    let detector = AntiPatternDetector::new();
+    let code = "my $x = 1;\nuse Filter::Simple;\n";
+    let first = detector.detect_all_report(code);
+    let second = detector.detect_all_report(code);
+
+    assert_eq!(first, second);
+    assert_eq!(first.status, DetectionStatus::Complete);
+    assert_eq!(first.diagnostics.len(), 1);
+    assert_eq!(first.diagnostics[0].message, "Source filter detected: Filter::Simple");
+    let AntiPattern::SourceFilterHeredoc { location, .. } = &first.diagnostics[0].pattern else {
+        unreachable!("expected SourceFilterHeredoc");
+    };
+    assert_eq!(location.line, 1);
+    assert_eq!(location.column, 0);
+    assert_eq!(location.offset, 11);
+}
+
+#[test]
+fn format_availability_distinguishes_required_pattern_from_helper() {
+    assert_eq!(super::format_availability(true, true), DetectorState::Complete);
+    assert!(matches!(super::format_availability(true, false), DetectorState::Limited { .. }));
+    assert!(matches!(super::format_availability(false, true), DetectorState::Unavailable { .. }));
+}
+
+#[test]
+fn empty_catalog_is_unavailable_not_complete_clean() {
+    let detector = AntiPatternDetector::from_pattern_detectors(Vec::new());
+    let report = detector.detect_all_report("use Filter::Simple;\n");
+    assert_eq!(report.status, DetectionStatus::Unavailable);
+    assert!(report.diagnostics.is_empty());
+    assert!(!report.is_complete_clean());
 }

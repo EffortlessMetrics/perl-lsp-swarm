@@ -24,8 +24,8 @@
 
 use crate::framework::AdapterDetectionResult;
 use crate::framework_adapters::dancer2::{
-    DANCER2_ADAPTER_ID, DANCER2_DSL_CONTRACT_VERSION, DANCER2_FRAMEWORK_NAME,
-    Dancer2ActivationFacts, Dancer2KeywordImportFact, Dancer2KeywordState,
+    DANCER2_ADAPTER_ID, DANCER2_FRAMEWORK_NAME, Dancer2ActivationFacts, Dancer2KeywordImportFact,
+    Dancer2KeywordState,
 };
 use crate::route::{
     RouteDeclaration, RouteEffectivePattern, RouteFact, RouteHandler, RouteHandlerContextFact,
@@ -80,6 +80,7 @@ pub struct Dancer2RouteDeclaration {
     pub file_id: FileId,
     /// Full declaration range (keyword start to last operand end).
     pub declaration_start_byte: u32,
+    /// End of the full declaration range.
     pub declaration_end_byte: u32,
     /// Canonical route payload (name/methods/pattern/effective/options/handler).
     pub route: RouteDeclaration,
@@ -146,8 +147,11 @@ pub trait RouteFamilyKeywordView {
     /// The adapter identity every minted leaf carries — 2.x facts must
     /// attribute to the 2.x adapter, never the 1.x one (#15006 review).
     fn adapter_id(&self) -> crate::framework::AdapterId;
+    /// Application name the activation established, when exact.
     fn application_name(&self) -> Option<&str>;
+    /// Observed framework version, when known.
     fn framework_version(&self) -> Option<&str>;
+    /// Source generation of the activation, when known.
     fn source_generation(&self) -> Option<&SourceGeneration>;
     /// State of one DSL keyword under this activation.
     fn keyword_state(&self, keyword: &str) -> Option<Dancer2KeywordState>;
@@ -254,6 +258,7 @@ pub fn dancer2_route_family_facts(
         declarations,
         prefix_declarations,
         RouteFactsContract::OneX,
+        activation.dsl_contract_version,
     )
 }
 
@@ -295,6 +300,7 @@ pub(crate) fn route_family_facts_from_view(
     declarations: &[Dancer2RouteDeclaration],
     prefix_declarations: &[Dancer2PrefixDeclaration],
     contract: RouteFactsContract,
+    dsl_contract_version: &str,
 ) -> Dancer2RouteFacts {
     let mut facts = Dancer2RouteFacts { contract, ..Dancer2RouteFacts::default() };
     if !detected || !view.is_exact() {
@@ -379,6 +385,7 @@ pub(crate) fn route_family_facts_from_view(
                 application_name,
                 framework_version,
                 source_generation,
+                dsl_contract_version,
             ));
         }
         route_facts.push(route_fact);
@@ -565,6 +572,7 @@ fn mint_handler_context_fact(
     application_name: &str,
     framework_version: &str,
     generation: &SourceGeneration,
+    dsl_contract_version: &str,
 ) -> RouteHandlerContextFact {
     let (fact_id, entity_id) = route_handler_context_identity(
         declaration.file_id,
@@ -610,7 +618,7 @@ fn mint_handler_context_fact(
         framework_version,
         application_name,
         declaration.route.declaration_index,
-        DANCER2_DSL_CONTRACT_VERSION,
+        dsl_contract_version,
     )
 }
 
@@ -1124,7 +1132,7 @@ mod tests {
         let context = &family.handler_contexts[0];
         assert_eq!(context.envelope.entity_id, Some(route_entity));
         assert_eq!(context.envelope.kind, crate::SemanticFactKind::RouteHandlerContext);
-        assert_eq!(context.dsl_contract_version, DANCER2_DSL_CONTRACT_VERSION);
+        assert_eq!(context.dsl_contract_version, activation.dsl_contract_version);
         assert_eq!(context.status(), crate::SemanticFactStatus::Exact);
 
         // A bounded handler mints no handler context.

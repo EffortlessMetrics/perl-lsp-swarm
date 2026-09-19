@@ -235,7 +235,7 @@ pub fn all_nodekind_instances() -> Vec<Node> {
         Node::new(NodeKind::Undef, loc()),
         Node::new(NodeKind::Readline { filehandle: None }, loc()),
         Node::new(NodeKind::Glob { pattern: "*".to_string() }, loc()),
-        Node::new(NodeKind::Typeglob { name: "foo".to_string() }, loc()),
+        Node::new(NodeKind::Typeglob { name: "foo".to_string(), body: None }, loc()),
         Node::new(
             NodeKind::DataSection {
                 marker: "__DATA__".to_string(),
@@ -391,5 +391,6 @@ pub fn all_nodekind_instances() -> Vec<Node> {
             NodeKind::Goto { target: Box::new(var("$", "sub_ref")), form: GotoTargetForm::Label },
             loc(),
         ),
+        Node::new(NodeKind::TargetlessGoto {}, loc()),
     ]
 }

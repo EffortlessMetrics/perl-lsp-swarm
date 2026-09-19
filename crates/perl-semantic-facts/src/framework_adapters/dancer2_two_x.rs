@@ -497,6 +497,7 @@ pub struct Dancer2TwoXKeywordView<'a> {
 }
 
 impl<'a> Dancer2TwoXKeywordView<'a> {
+    /// Construct a keyword view over the given 2.x activation facts.
     pub fn new(facts: &'a Dancer2TwoXActivationFacts) -> Self {
         Self { facts }
     }
@@ -565,6 +566,7 @@ pub fn dancer2_two_x_route_family_facts(
         declarations,
         prefix_declarations,
         crate::framework_adapters::dancer2_routes::RouteFactsContract::TwoX,
+        activation.dsl_contract_version,
     )
 }
 

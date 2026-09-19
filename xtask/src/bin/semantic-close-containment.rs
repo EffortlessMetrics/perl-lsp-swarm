@@ -9,6 +9,7 @@ use clap::{Parser, ValueEnum};
 use color_eyre::eyre::{Context, ContextCompat, Result, bail};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
     env, fs,
@@ -23,6 +24,7 @@ const EXIT_NOT_PROVEN: i32 = 3;
 const MAX_EVENT_BYTES: usize = 2 * 1024 * 1024;
 const MAX_FIXTURE_BYTES: usize = 512 * 1024;
 const MAX_PR_BODY_BYTES: usize = 128 * 1024;
+const MAX_PR_TITLE_BYTES: usize = 4 * 1024;
 const MAX_ISSUE_BODY_BYTES: usize = 256 * 1024;
 const MAX_GITHUB_OUTPUT_BYTES: usize = 512 * 1024;
 const MAX_RELATIONS: usize = 32;
@@ -221,6 +223,21 @@ enum SectionKind {
 struct Section {
     headings: Vec<String>,
     body: String,
+    occurrence_starts: Vec<usize>,
+    occurrence_headings: Vec<String>,
+}
+
+impl Section {
+    fn occurrences(&self) -> impl Iterator<Item = &str> {
+        self.occurrence_starts.iter().enumerate().flat_map(|(index, start)| {
+            let end = self.occurrence_starts.get(index + 1).copied().unwrap_or(self.body.len());
+            // Heading and body are separate units; neither can supply a missing
+            // subject or predicate to the other. Keep exact bounded source text.
+            [self.occurrence_headings.get(index).map(String::as_str), self.body.get(*start..end)]
+                .into_iter()
+                .flatten()
+        })
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -232,6 +249,10 @@ struct Report {
     aggregate_code: ResultCode,
     semantic_completion_proven: bool,
     rows: Vec<RelationResult>,
+    /// Present only for live evaluation (#15640): the captured
+    /// `pulls_api` snapshot the verdict was computed from. Fixture reports
+    /// carry `None` because fixture provenance lives in the fixture itself.
+    subject_snapshot: Option<SubjectSnapshot>,
 }
 
 impl Report {
@@ -263,7 +284,7 @@ struct RelationResult {
 #[derive(Debug, Deserialize)]
 struct GithubEvent {
     repository: GithubRepository,
-    pull_request: GithubPullRequest,
+    pull_request: GithubPullRequestLocator,
 }
 
 #[derive(Debug, Deserialize)]
@@ -271,11 +292,51 @@ struct GithubRepository {
     full_name: String,
 }
 
+/// #15640: reruns replay the original event payload, so the event's PR
+/// title/body can never observe a later body correction. The event supplies
+/// only the immutable locator plus audit metadata; the semantic subject is
+/// built exclusively from a live `GET /repos/{owner}/{repo}/pulls/{number}`
+/// snapshot. The locator struct deliberately has no title/body fields, so the
+/// stale event prose cannot be read even by accident.
 #[derive(Debug, Deserialize)]
-struct GithubPullRequest {
+struct GithubPullRequestLocator {
     number: u64,
-    title: String,
-    body: Option<String>,
+    base: GithubPullRequestBase,
+    head: GithubPullRequestHeadRef,
+}
+
+#[derive(Debug, Deserialize)]
+struct GithubPullRequestBase {
+    repo: GithubRepository,
+}
+
+#[derive(Debug, Deserialize)]
+struct GithubPullRequestHeadRef {
+    #[serde(default)]
+    sha: Option<String>,
+}
+
+/// Provenance receipt for the semantic subject (#15640): the report proves
+/// what it actually evaluated — one captured live snapshot — instead of
+/// merely saying "current body".
+#[derive(Clone, Debug, Serialize)]
+struct SubjectSnapshot {
+    /// Where the subject bytes came from. Only `pulls_api` subjects reach
+    /// live evaluation; fixtures carry their own provenance block.
+    source: &'static str,
+    /// GitHub `updated_at` of the fetched pull request.
+    pr_updated_at: String,
+    /// Head SHA recorded by the originating event (audit; "unknown" when
+    /// absent). Comparing it with `head_sha` shows whether the live snapshot
+    /// sits at the event's head or a push landed in between.
+    event_head_sha: String,
+    /// Live head SHA of the fetched pull request ("unknown" when absent).
+    head_sha: String,
+    /// SHA-256 over the evaluated title bytes, a NUL separator, and the
+    /// evaluated body bytes (hex).
+    title_body_sha256: String,
+    title_bytes: usize,
+    body_bytes: usize,
 }
 
 #[derive(Debug, Deserialize)]
@@ -384,26 +445,156 @@ fn run_cli() -> Result<()> {
     Ok(())
 }
 
+/// #15640: the event payload supplies only the immutable locator; the
+/// semantic subject always comes from one live pulls-API snapshot captured in
+/// this run. A fetch failure is an instrument failure — there is no fallback
+/// to the event's stale title/body, because stale prose is never current
+/// proof.
 fn evaluate_live_event(path: &Path) -> Result<Report> {
     let raw = read_bounded(path, MAX_EVENT_BYTES, "GitHub event payload")?;
-    let event: GithubEvent =
-        serde_json::from_slice(&raw).context("parsing pull_request_target event payload")?;
-    let pull = PullRequestSubject {
-        repository: canonical_repository(&event.repository.full_name)?,
-        number: event.pull_request.number,
-        title: event.pull_request.title,
-        body: event.pull_request.body.unwrap_or_default(),
-    };
+    let locator = parse_event_locator(&raw)?;
+    let (pull, snapshot) = fetch_live_subject(&locator)?;
 
     let mut cache: BTreeMap<IssueKey, IssueEvidence> = BTreeMap::new();
-    evaluate(&pull, |key| {
+    let mut report = evaluate(&pull, |key| {
         if let Some(cached) = cache.get(key) {
             return cached.clone();
         }
         let evidence = fetch_issue_live(key);
         cache.insert(key.clone(), evidence.clone());
         evidence
+    })?;
+    report.subject_snapshot = Some(snapshot);
+    Ok(report)
+}
+
+/// Immutable identity of the pull request to evaluate, extracted from the
+/// `pull_request_target` event payload: repository identity, PR number, base
+/// repository, and head SHA (audit only).
+#[derive(Clone, Debug)]
+struct EventLocator {
+    repository: String,
+    number: u64,
+    head_sha: String,
+}
+
+fn parse_event_locator(raw: &[u8]) -> Result<EventLocator> {
+    let event: GithubEvent =
+        serde_json::from_slice(raw).context("parsing pull_request_target event payload")?;
+    let repository = canonical_repository(&event.repository.full_name)?;
+    let base = canonical_repository(&event.pull_request.base.repo.full_name)
+        .context("canonicalizing event base repository")?;
+    if base != repository {
+        bail!(
+            "event repository {repository} does not match event base repository \
+             {base}; refusing to evaluate across a locator mismatch"
+        );
+    }
+    Ok(EventLocator {
+        repository,
+        number: event.pull_request.number,
+        head_sha: event.pull_request.head.sha.unwrap_or_else(|| "unknown".to_string()),
     })
+}
+
+fn fetch_live_subject(locator: &EventLocator) -> Result<(PullRequestSubject, SubjectSnapshot)> {
+    let raw = fetch_pull_request_json(locator)?;
+    validate_live_snapshot(&raw, locator)
+}
+
+/// One bounded `gh api` call with the existing read-only token. Exactly one
+/// fetch per evaluation: a body edit during the run starts a newer run rather
+/// than invalidating this snapshot.
+fn fetch_pull_request_json(locator: &EventLocator) -> Result<Vec<u8>> {
+    let endpoint = format!("repos/{}/pulls/{}", locator.repository, locator.number);
+    let output = Command::new("gh")
+        .args(["api", "--method", "GET", &endpoint])
+        .output()
+        .context("failed to start gh api for the live pull request snapshot")?;
+    if !output.status.success() {
+        bail!(
+            "live pull request fetch failed: gh api exited with status {} \
+             (no event-payload fallback is permitted; rerun event prose is \
+             never current proof)",
+            output.status
+        );
+    }
+    if output.stdout.len() > MAX_GITHUB_OUTPUT_BYTES {
+        bail!("live pull request response exceeded the bounded containment input");
+    }
+    Ok(output.stdout)
+}
+
+#[derive(Debug, Deserialize)]
+struct LivePullRequest {
+    number: u64,
+    title: String,
+    body: Option<String>,
+    updated_at: String,
+    head: GithubPullRequestHeadRef,
+    base: GithubPullRequestBase,
+}
+
+/// Validate the fetched snapshot against the event locator, apply the
+/// subject bounds, and derive the snapshot receipt. Locator mismatch,
+/// malformed data, and oversized title/body fail closed as instrument
+/// failures (exit 3) — they are never semantic verdicts.
+fn validate_live_snapshot(
+    raw: &[u8],
+    locator: &EventLocator,
+) -> Result<(PullRequestSubject, SubjectSnapshot)> {
+    let payload: LivePullRequest =
+        serde_json::from_slice(raw).context("parsing live pull request response")?;
+    if payload.number != locator.number {
+        bail!(
+            "live pull request response returned number {} but the event locator \
+             is {}",
+            payload.number,
+            locator.number
+        );
+    }
+    let base = canonical_repository(&payload.base.repo.full_name)
+        .context("canonicalizing live pull request base repository")?;
+    if base != locator.repository {
+        bail!(
+            "live pull request base repository {base} does not match the event \
+             locator {}",
+            locator.repository
+        );
+    }
+    if payload.title.len() > MAX_PR_TITLE_BYTES {
+        bail!("live pull request title exceeds the bounded containment input");
+    }
+    let body = payload.body.unwrap_or_default();
+    if body.len() > MAX_PR_BODY_BYTES {
+        bail!("live pull request body exceeds the bounded containment input");
+    }
+
+    let mut hasher = Sha256::new();
+    hasher.update(payload.title.as_bytes());
+    hasher.update([0u8]);
+    hasher.update(body.as_bytes());
+    let title_body_sha256 =
+        hasher.finalize().iter().map(|byte| format!("{byte:02x}")).collect::<String>();
+
+    let snapshot = SubjectSnapshot {
+        source: "pulls_api",
+        pr_updated_at: payload.updated_at,
+        event_head_sha: locator.head_sha.clone(),
+        head_sha: payload.head.sha.unwrap_or_else(|| "unknown".to_string()),
+        title_body_sha256,
+        title_bytes: payload.title.len(),
+        body_bytes: body.len(),
+    };
+    Ok((
+        PullRequestSubject {
+            repository: locator.repository.clone(),
+            number: locator.number,
+            title: payload.title,
+            body,
+        },
+        snapshot,
+    ))
 }
 
 fn load_fixture(path: &Path) -> Result<Fixture> {
@@ -539,6 +730,7 @@ where
             aggregate_code: ResultCode::PassNotApplicable,
             semantic_completion_proven: false,
             rows: Vec::new(),
+            subject_snapshot: None,
         });
     }
 
@@ -565,6 +757,7 @@ where
         aggregate_code,
         semantic_completion_proven: false,
         rows,
+        subject_snapshot: None,
     })
 }
 
@@ -707,20 +900,27 @@ fn evaluate_relation(
         }
     }
 
-    let explicitly_unproven_text = exclusion_text_attributable_to_closed_issue(
-        &relation_scoped_section_text(
-            sections,
-            &[SectionKind::ClaimBoundary, SectionKind::NonGoals],
-            relation_count,
-            &relation.key,
-            &pull.repository,
-        ),
-        &relation.key,
-        &pull.repository,
-    );
+    // CP00-003 owns complete attribution units, including soft-wrapped predicates.
+    // Keep the phase rule's separate line-scoping semantics unchanged.
+    let explicitly_unproven_text = [SectionKind::ClaimBoundary, SectionKind::NonGoals]
+        .iter()
+        .filter_map(|kind| sections.get(kind))
+        .flat_map(Section::occurrences)
+        .map(|occurrence| {
+            exclusion_text_attributable_to_closed_issue(
+                occurrence,
+                &relation.key,
+                &pull.repository,
+                relation_count,
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n");
     if rules.enabled(RuleId::ExplicitlyNotProven)
-        && scoped_to_issue
-        && explicitly_not_proven_required_work(&explicitly_unproven_text)
+        && required_work_exclusion(
+            &explicitly_unproven_text,
+            Some((&relation.key, &pull.repository)),
+        )
     {
         return failed_row(
             &relation,
@@ -903,6 +1103,8 @@ fn parse_sections(body: &str, max_body_bytes: usize) -> Result<BTreeMap<SectionK
         if let Some((kind, heading)) = classify_heading(trimmed) {
             let section = sections.entry(kind).or_default();
             section.headings.push(heading);
+            section.occurrence_starts.push(section.body.len());
+            section.occurrence_headings.push(trimmed.trim_start_matches('#').trim().to_string());
             current = Some(kind);
             current_level = markdown_heading_level(trimmed);
             continue;
@@ -1107,6 +1309,19 @@ const PROOF_LEVEL_NEGATIVE_POLARITY_MARKERS: [&str; 21] = [
     "aren't needed",
 ];
 
+// #15463: the marker list above enumerates three negation verbs (change,
+// require, need). The CP00-PROOF-LEVEL-CONTRADICTION rule needs to recognize
+// negative phrasings of *any* verb that introduce a proof-level term — e.g.
+// "does not manufacture installed proof". Rather than grow the list forever,
+// clause-scoped negation tokens ("not", "never", "no", "cannot", "n't") are
+// detected structurally within the segment the term lives in. `n't` uses a
+// substring match because the leading letter is alphanumeric ("isn't" →
+// before the apostrophe is 's'); the other four use word-boundary matching so
+// substrings like "noted", "another", "snowfall" do not disarm a genuine
+// requirement.
+const NEGATION_TOKEN_WORDS: [&str; 4] = ["not", "never", "no", "cannot"];
+const NEGATION_TOKEN_SUBSTRING: &str = "n't";
+
 const PROOF_LEVEL_REQUIREMENT_PREDICATES: [&str; 6] =
     ["required", "requires", "require", "must", "needed", "needs"];
 
@@ -1126,7 +1341,25 @@ fn proof_level_is_explicitly_excluded(
     }
     PROOF_LEVEL_TERMS.iter().any(|term| {
         issue_requires_proof_level_term(&issue_requirements, term)
-            && contains_proof_level_term(&exclusions_lower, term)
+            && proof_level_term_is_excluded(&exclusions_lower, term)
+    })
+}
+
+/// Returns true when `text` (already known to contain at least one explicit-
+/// exclusion marker from [`contains_explicit_exclusion`]) excludes the proof-
+/// level `term` somewhere in the same sentence/list-item/clause.
+///
+/// This mirrors `unit_requires_proof_level_term`'s clause-scoping for the PR
+/// side. The earlier section-wide `contains_proof_level_term` allowed any
+/// mention of `public`/`installed`/`packaged`/`presentation`/`release`/
+/// `actual host` to satisfy the rule as long as the section also contained
+/// any exclusion marker — so a Claim Boundary that *asserted* the public
+/// surface was covered still armed CP00 whenever a sibling sentence said
+/// "Not claimed: foo.". See #15627.
+fn proof_level_term_is_excluded(text: &str, term: &str) -> bool {
+    requirement_units(text).iter().flat_map(|unit| split_coordinated_clauses(unit)).any(|unit| {
+        let lower = unit.to_ascii_lowercase();
+        contains_explicit_exclusion(&lower) && contains_proof_level_term(&lower, term)
     })
 }
 
@@ -1261,12 +1494,66 @@ fn earliest_polarity_signal(text: &str) -> Option<PolaritySignal> {
             replace_earlier_signal(&mut best, index, PolaritySignal::Negative);
         }
     }
+    if let Some(index) = earliest_negation_token_index(text) {
+        replace_earlier_signal(&mut best, index, PolaritySignal::Negative);
+    }
     for predicate in PROOF_LEVEL_REQUIREMENT_PREDICATES {
-        if let Some(index) = first_word_index(text, predicate) {
+        if let Some(index) = first_word_index_unless_negated(text, predicate) {
             replace_earlier_signal(&mut best, index, PolaritySignal::Require);
         }
     }
     best.map(|(_, signal)| signal)
+}
+
+/// Returns the earliest byte index of any clause-scoped negation token in
+/// `text`, or `None` if none is present. See [`NEGATION_TOKEN_WORDS`] and
+/// [`NEGATION_TOKEN_SUBSTRING`] for the rationale.
+fn earliest_negation_token_index(text: &str) -> Option<usize> {
+    let mut best: Option<usize> = None;
+    for token in NEGATION_TOKEN_WORDS {
+        if let Some(index) = first_word_index(text, token) {
+            best = Some(best.map_or(index, |current| current.min(index)));
+        }
+    }
+    if let Some(index) = text.find(NEGATION_TOKEN_SUBSTRING) {
+        best = Some(best.map_or(index, |current| current.min(index)));
+    }
+    best
+}
+
+/// Returns the index of the first whole-word occurrence of `word` in `text`
+/// that is *not* immediately followed by a clause-scoped negation token.
+///
+/// The CP00 requirement predicates (must, required, needed, …) are otherwise
+/// legitimate Require signals, but a modal like "must" inside a "must not X"
+/// phrase is part of a negative construction, not a positive one. Without
+/// this guard, `Mapping must not manufacture public proof` would arm the rule
+/// on the bare "must" predicate at byte offset 7 even though the structural
+/// "not" at offset 12 should win (#15463).
+fn first_word_index_unless_negated(text: &str, word: &str) -> Option<usize> {
+    word_match_indices(text, word)
+        .into_iter()
+        .find(|index| !is_immediately_followed_by_negation(text, *index, word.len()))
+}
+
+/// True when the text following `word` (of length `word_len` starting at
+/// `index`) opens with a negation token after any leading whitespace. Covers
+/// `must not X`, `required not`, `mustn't X` (no space), and the broader
+/// `not / never / no / cannot / n't` vocabulary.
+fn is_immediately_followed_by_negation(text: &str, index: usize, word_len: usize) -> bool {
+    let after = text.get(index + word_len..).unwrap_or("");
+    let trimmed = after.trim_start();
+    for neg in NEGATION_TOKEN_WORDS {
+        if let Some(rest) = trimmed.strip_prefix(neg)
+            && (rest.is_empty()
+                || !rest.chars().next().is_some_and(|character| {
+                    character.is_ascii_alphanumeric() && character != '\''
+                }))
+        {
+            return true;
+        }
+    }
+    trimmed.starts_with(NEGATION_TOKEN_SUBSTRING)
 }
 
 fn replace_earlier_signal(
@@ -1310,14 +1597,18 @@ fn word_match_indices(text: &str, word: &str) -> Vec<usize> {
 }
 
 fn word_boundaries_hold(text: &str, index: usize, len: usize) -> bool {
-    let before_ok = text
-        .get(..index)
-        .and_then(|prefix| prefix.chars().next_back())
-        .is_none_or(|character| !character.is_ascii_alphanumeric() && character != '_');
-    let after_ok = text
-        .get(index + len..)
-        .and_then(|suffix| suffix.chars().next())
-        .is_none_or(|character| !character.is_ascii_alphanumeric() && character != '_');
+    // A hyphenated compound (`source-release`) must not donate its trailing
+    // term (`release`) as a standalone proof-level mention (#15505): `-`
+    // joins identifier characters for proof-level matching, alongside
+    // alphanumerics and `_`.
+    let before_ok =
+        text.get(..index).and_then(|prefix| prefix.chars().next_back()).is_none_or(|character| {
+            !character.is_ascii_alphanumeric() && character != '_' && character != '-'
+        });
+    let after_ok =
+        text.get(index + len..).and_then(|suffix| suffix.chars().next()).is_none_or(|character| {
+            !character.is_ascii_alphanumeric() && character != '_' && character != '-'
+        });
     before_ok && after_ok
 }
 
@@ -1370,23 +1661,221 @@ fn contains_proof_level_term(text: &str, term: &str) -> bool {
     if term.contains(' ') { text.contains(term) } else { contains_word(&text, term) }
 }
 
-const REQUIRED_WORK_SCOPE_MARKERS: [&str; 10] = [
-    "full",
-    "complete",
-    "remaining",
-    "every",
-    "all",
-    "installed",
-    "public",
-    "packaged",
-    "acceptance",
-    "presentation",
+const REQUIRED_WORK_SUBJECTS: &[&str] = &[
+    "full acceptance criteria",
+    "complete acceptance criteria",
+    "remaining acceptance criteria",
+    "full acceptance",
+    "complete acceptance",
+    "remaining acceptance",
+    "full issue work",
+    "complete issue work",
+    "remaining issue work",
+    "full required work",
+    "complete required work",
+    "remaining required work",
+    "complete remaining work",
+    "remaining work",
+    "complete remaining call-site cohort",
 ];
 
+#[cfg(test)]
 fn explicitly_not_proven_required_work(text: &str) -> bool {
-    let text = text.to_ascii_lowercase();
-    contains_explicit_exclusion(&text)
-        && REQUIRED_WORK_SCOPE_MARKERS.iter().any(|marker| contains_word(&text, marker))
+    required_work_exclusion(text, None)
+}
+
+fn required_work_exclusion(text: &str, owner_context: Option<(&IssueKey, &str)>) -> bool {
+    attribution_units(text).iter().any(|unit| {
+        // Markdown emphasis and soft line wrapping do not change a subject.
+        // Keep paragraph/list/sentence boundaries before normalizing whitespace.
+        let unit = prose_without_inline_code(unit).to_ascii_lowercase();
+        let unit = unit.split_whitespace().collect::<Vec<_>>().join(" ");
+        let unit = without_supported_emphasis(&unit);
+        REQUIRED_WORK_SUBJECTS.iter().any(|subject| {
+            word_match_indices(&unit, subject).into_iter().any(|index| {
+                // A contained subject cannot bypass ownership attached to the
+                // complete supported subject, even when its start differs.
+                if REQUIRED_WORK_SUBJECTS.iter().any(|longer| {
+                    longer.len() > subject.len()
+                        && word_match_indices(&unit, longer).into_iter().any(|start| {
+                            start <= index && start + longer.len() >= index + subject.len()
+                        })
+                }) {
+                    return false;
+                }
+                let Some(before) = unit.get(..index) else { return false };
+                let Some(after) = unit.get(index + subject.len()..) else { return false };
+                let before = before.trim_end();
+                let before = if before == "the" {
+                    ""
+                } else {
+                    before.strip_suffix(" the").unwrap_or(before)
+                };
+                let (before, prefix_owner) = strip_issue_owner_suffix(before);
+                let (after, suffix_owner) = strip_issue_owner_prefix(after.trim_start());
+                if [prefix_owner, suffix_owner]
+                    .into_iter()
+                    .flatten()
+                    .any(|owner| !subject_owner_matches(owner, owner_context))
+                {
+                    return false;
+                }
+                let prefix_exclusion = [
+                    "does not prove",
+                    "does not establish",
+                    "does not claim",
+                    "not proved",
+                    "not proven",
+                    "not established",
+                    "not claimed",
+                    "explicitly out of scope",
+                ]
+                .iter()
+                .any(|exclusion| {
+                    let Some(introduction) =
+                        before.trim_end_matches(':').trim_end().strip_suffix(exclusion)
+                    else {
+                        return false;
+                    };
+                    if introduction
+                        .chars()
+                        .next_back()
+                        .is_some_and(|character| character.is_alphanumeric() || character == '_')
+                    {
+                        return false;
+                    }
+                    *exclusion != "explicitly out of scope"
+                        || !matches!(introduction.split_whitespace().last(), Some("not" | "never"))
+                });
+                let suffix_exclusion = ["is ", "are ", "remains "]
+                    .iter()
+                    .filter_map(|copula| after.strip_prefix(copula))
+                    .any(|predicate| {
+                        [
+                            "not proved",
+                            "not proven",
+                            "not established",
+                            "not claimed",
+                            "explicitly out of scope",
+                        ]
+                        .iter()
+                        .any(|exclusion| {
+                            predicate.strip_prefix(exclusion).is_some_and(|rest| {
+                                rest.chars().next().is_none_or(|ch| !ch.is_alphanumeric())
+                            })
+                        })
+                    });
+                prefix_exclusion || suffix_exclusion
+            })
+        })
+    })
+}
+
+fn strip_issue_owner_suffix(text: &str) -> (&str, Option<&str>) {
+    let (before, owner) = text.rsplit_once(' ').unwrap_or(("", text));
+    match owner.strip_suffix("'s") {
+        // Issue-looking tokens still pass the strict identity parser below;
+        // malformed owners are refused, never reinterpreted as ordinary prose.
+        Some(owner) if hash_issue_number_present(owner) => (before, Some(owner)),
+        _ => (text, None),
+    }
+}
+
+fn without_supported_emphasis(text: &str) -> String {
+    let mut normalized = text.to_string();
+    // These are complete supported subjects and exclusion labels/predicates,
+    // not arbitrary Markdown fragments or punctuation deletion.
+    for phrase in REQUIRED_WORK_SUBJECTS.iter().copied().chain([
+        "does not prove",
+        "does not establish",
+        "does not claim",
+        "not proved",
+        "not proven",
+        "not established",
+        "not claimed",
+        "explicitly out of scope",
+    ]) {
+        for phrase in [phrase.to_string(), format!("{phrase}:")] {
+            for (delimiter, marker) in [("**", '*'), ("*", '*'), ("__", '_'), ("_", '_')] {
+                let pattern = format!("{delimiter}{phrase}{delimiter}");
+                let starts: Vec<usize> = normalized
+                    .match_indices(&pattern)
+                    .filter_map(|(start, _)| {
+                        let end = start + pattern.len();
+                        let before = normalized.get(..start)?.chars().next_back();
+                        let after = normalized.get(end..)?.chars().next();
+                        // Escape parity is the same for emphasis and backticks.
+                        (!backtick_is_escaped(&normalized, start)
+                            && before != Some(marker)
+                            && after != Some(marker)
+                            && !before.is_some_and(|character| {
+                                character.is_alphanumeric() || character == '_'
+                            })
+                            && !after.is_some_and(|character| {
+                                character.is_alphanumeric() || character == '_'
+                            }))
+                        .then_some(start)
+                    })
+                    .collect();
+                for start in starts.into_iter().rev() {
+                    normalized.replace_range(start..start + pattern.len(), &phrase);
+                }
+            }
+        }
+    }
+    normalized
+}
+
+fn prose_without_inline_code(text: &str) -> String {
+    let mut prose = String::new();
+    let mut index = 0;
+    while let Some(tail) = text.get(index..) {
+        let Some(character) = tail.chars().next() else { break };
+        if character == '`' && !backtick_is_escaped(text, index) {
+            let run = tail.chars().take_while(|next| *next == '`').count();
+            if let Some(end) = matching_inline_code_span_end(text, index, run) {
+                // Preserve an opaque boundary: removing an example must not join
+                // separate prose fragments into a supported subject/template.
+                prose.push('\0');
+                index = end;
+                continue;
+            }
+            // An unmatched run is literal prose, not a shorter code opener.
+            prose.extend(std::iter::repeat_n('`', run));
+            index += run;
+            continue;
+        }
+        prose.push(character);
+        index += character.len_utf8();
+    }
+    prose
+}
+
+fn strip_issue_owner_prefix(text: &str) -> (&str, Option<&str>) {
+    let Some(owned) = text.strip_prefix("owned by ").or_else(|| text.strip_prefix("of ")) else {
+        return (text, None);
+    };
+    let (owner, after) = owned.split_once(' ').unwrap_or((owned, ""));
+    (after, Some(owner.trim_end_matches(['.', ';', ':', '!', '?'])))
+}
+
+fn subject_owner_matches(text: &str, context: Option<(&IssueKey, &str)>) -> bool {
+    let current_repository = context.map_or("example/repository", |(_, repository)| repository);
+    let Some(owner) = parse_issue_reference(text, current_repository) else { return false };
+    context.is_none_or(|(key, _)| owner == *key)
+}
+
+fn parse_issue_reference(text: &str, current_repository: &str) -> Option<IssueKey> {
+    let (repository, number) = text.rsplit_once('#')?;
+    if number.is_empty() || !number.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    let number = number.parse::<u64>().ok()?;
+    if number == 0 {
+        return None;
+    }
+    let repository = if repository.is_empty() { current_repository } else { repository };
+    Some(IssueKey { repository: canonical_repository(repository).ok()?, number })
 }
 
 fn contains_explicit_exclusion(text: &str) -> bool {
@@ -1463,21 +1952,33 @@ fn relation_scoped_section_text(
 /// is a neighboring-issue disclaimer. Unnumbered prose still counts: atomic
 /// closes often describe "the remaining work" without repeating `#N`, even
 /// when a later sentence names the issue that tracks that leftover.
+/// With multiple closing relations, retain only complete units naming this issue;
+/// a soft-wrapped predicate stays with its owner, while separate units do not borrow it.
 fn exclusion_text_attributable_to_closed_issue(
     text: &str,
     key: &IssueKey,
     current_repository: &str,
+    relation_count: usize,
 ) -> String {
     attribution_units(text)
         .into_iter()
-        .filter(|unit| !foreign_issue_disclaimer(unit, key, current_repository))
+        .filter(|unit| {
+            let prose = prose_without_inline_code(unit);
+            let references = exact_issue_references(&prose, current_repository);
+            if references.is_empty() {
+                relation_count == 1
+            } else {
+                references.iter().any(|reference| reference == key)
+            }
+        })
         .collect::<Vec<_>>()
-        .join(" ")
+        .join("\n\n")
 }
 
 fn attribution_units(text: &str) -> Vec<String> {
     markdown_paragraphs(text)
         .into_iter()
+        .flat_map(split_markdown_list_items)
         .flat_map(|paragraph| split_sentences(&paragraph))
         .filter(|unit| !unit.is_empty())
         .collect()
@@ -1579,12 +2080,50 @@ fn backtick_is_escaped(text: &str, index: usize) -> bool {
     backslashes % 2 == 1
 }
 
-fn foreign_issue_disclaimer(text: &str, key: &IssueKey, current_repository: &str) -> bool {
-    mentions_an_issue_subject(text) && !references_issue(text, key, current_repository)
-}
-
-fn mentions_an_issue_subject(text: &str) -> bool {
-    hash_issue_number_present(text) || github_issue_url_present(text)
+fn exact_issue_references(text: &str, current_repository: &str) -> Vec<IssueKey> {
+    let lower = text.to_ascii_lowercase();
+    let mut references: Vec<IssueKey> = lower
+        .split(|character: char| {
+            !character.is_alphanumeric() && !matches!(character, '_' | '-' | '.' | '/' | '#')
+        })
+        .filter_map(|token| parse_issue_reference(token.trim_end_matches('.'), current_repository))
+        .collect();
+    for (start, _) in lower.match_indices("https://github.com/") {
+        let enclosing_prefix = lower
+            .get(..start)
+            .unwrap_or_default()
+            .rsplit(|character: char| {
+                character.is_whitespace() || matches!(character, '<' | '(' | '[' | '"' | '\'')
+            })
+            .next()
+            .unwrap_or_default();
+        if enclosing_prefix.contains("://") {
+            continue;
+        }
+        if lower.get(..start).and_then(|prefix| prefix.chars().next_back()).is_some_and(
+            |character| {
+                character.is_alphanumeric()
+                    || matches!(character, '_' | '-' | '.' | '/' | ':' | '#' | '?')
+            },
+        ) {
+            continue;
+        }
+        let Some(tail) = lower.get(start + "https://github.com/".len()..) else { continue };
+        let path = tail
+            .split(|character: char| {
+                !character.is_alphanumeric() && !matches!(character, '_' | '-' | '.' | '/')
+            })
+            .next()
+            .unwrap_or_default()
+            .trim_end_matches('.');
+        let Some((repository, number)) = path.split_once("/issues/") else { continue };
+        if let Some(reference) =
+            parse_issue_reference(&format!("{repository}#{number}"), current_repository)
+        {
+            references.push(reference);
+        }
+    }
+    references
 }
 
 fn hash_issue_number_present(text: &str) -> bool {
@@ -1593,17 +2132,6 @@ fn hash_issue_number_present(text: &str) -> bool {
             .and_then(|tail| tail.chars().next())
             .is_some_and(|character| character.is_ascii_digit())
     })
-}
-
-fn github_issue_url_present(text: &str) -> bool {
-    let lower = text.to_ascii_lowercase();
-    let Some(index) = lower.find("/issues/") else {
-        return false;
-    };
-    lower
-        .get(index + "/issues/".len()..)
-        .and_then(|tail| tail.chars().next())
-        .is_some_and(|character| character.is_ascii_digit())
 }
 
 fn references_number(text: &str, number: u64) -> bool {
@@ -1699,6 +2227,22 @@ fn print_human(report: &Report) {
         report.pull_request_number,
         sanitize_for_output(&report.pull_request_title, 512)
     );
+    // #15640: prove what this run actually evaluated — one captured live
+    // snapshot — so a rerun verdict can be tied to the exact subject bytes.
+    // Printed before any early return: a no-relation verdict still carries
+    // its subject receipt.
+    if let Some(snapshot) = &report.subject_snapshot {
+        println!(
+            "  subject snapshot: {} updated_at={} event_head={} live_head={} title/body sha256={} ({}+{} bytes)",
+            snapshot.source,
+            snapshot.pr_updated_at,
+            snapshot.event_head_sha,
+            snapshot.head_sha,
+            snapshot.title_body_sha256,
+            snapshot.title_bytes,
+            snapshot.body_bytes
+        );
+    }
     if report.rows.is_empty() {
         println!("  no automatic closing relation; issue/domain lookup skipped");
         return;
@@ -1733,7 +2277,35 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
-    const FIXTURES: [(&str, &str); 20] = [
+    const FIXTURES: [(&str, &str); 26] = [
+        (
+            "valid-explicit-subject-inventory-14633",
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../.ci/semantic-close-containment/fixtures/valid-explicit-subject-inventory-14633.json"
+            )),
+        ),
+        (
+            "valid-explicit-subject-guard-14654",
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../.ci/semantic-close-containment/fixtures/valid-explicit-subject-guard-14654.json"
+            )),
+        ),
+        (
+            "valid-explicit-subject-markdown-boundaries",
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../.ci/semantic-close-containment/fixtures/valid-explicit-subject-markdown-boundaries.json"
+            )),
+        ),
+        (
+            "invalid-explicit-subject-full-acceptance",
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../.ci/semantic-close-containment/fixtures/invalid-explicit-subject-full-acceptance.json"
+            )),
+        ),
         (
             "invalid-phase-terminal-5023-5001",
             include_str!(concat!(
@@ -1767,6 +2339,20 @@ mod tests {
             include_str!(concat!(
                 env!("CARGO_MANIFEST_DIR"),
                 "/../.ci/semantic-close-containment/fixtures/invalid-proof-level-required-release.json"
+            )),
+        ),
+        (
+            "valid-proof-level-hyphenated-compound-source-release",
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../.ci/semantic-close-containment/fixtures/valid-proof-level-hyphenated-compound-source-release.json"
+            )),
+        ),
+        (
+            "valid-proof-level-does-not-manufacture-10831",
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../.ci/semantic-close-containment/fixtures/valid-proof-level-does-not-manufacture-10831.json"
             )),
         ),
         (
@@ -2206,6 +2792,192 @@ mod tests {
         Ok(())
     }
 
+    // PR-side polarity: the section-wide "term appears anywhere" check is
+    // loosened so a sentence that *asserts* a public/installed/packaged/released
+    // surface does not arm the rule merely because another sentence in the same
+    // section contains an exclusion marker. The PR side now requires the term
+    // and the exclusion marker to share a sentence/list-item/clause. See #15627.
+
+    #[test]
+    fn proof_level_pr_assertion_does_not_arm_when_exclusion_is_in_a_separate_sentence() -> Result<()>
+    {
+        // Reproducer from #15627 against #7129: the Claim Boundary contains an
+        // explicit-exclusion marker ("Not claimed:") for an unrelated surface and
+        // an assertion that the public formatter surface is covered. The
+        // existing issue acceptance requires "public" proof.
+        let issue = "## Acceptance\nRemove compat from public configuration.\n";
+        let pr = "## Claim Boundary\nNot claimed: the legacy compat engine shim.\n\
+                  Provably true: no public formatter surface offers compat as an engine.\n\n\
+                  Closes #7129\n";
+        assert!(
+            !proof_level_from_bodies(issue, pr)?,
+            "an assertion in one sentence must not arm the rule because another \
+             sentence excludes an unrelated surface"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn proof_level_pr_exclusion_in_same_sentence_still_arms() -> Result<()> {
+        // Negative control: the exclusion marker and the term live in the same
+        // sentence, so the term genuinely is being excluded.
+        let issue = "## Acceptance\nPublic proof is required.\n";
+        let pr = "## Claim Boundary\nPublic evidence is explicitly out of scope.\n\
+                  Closes #1\n";
+        assert!(
+            proof_level_from_bodies(issue, pr)?,
+            "an exclusion that names the term in the same sentence must still arm"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn proof_level_pr_exclusion_via_does_not_prove_in_same_sentence_still_arms() -> Result<()> {
+        // A second exclusion-marker style in the same sentence still arms.
+        let issue = "## Acceptance\nPublic proof is required.\n";
+        let pr = "## Claim Boundary\nThe release train does not prove public surface parity.\n\
+                  Closes #1\n";
+        assert!(
+            proof_level_from_bodies(issue, pr)?,
+            "an exclusion that names the term in the same sentence via a different marker must still arm"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn proof_level_pr_assertion_in_markdown_table_cell_does_not_arm() -> Result<()> {
+        // Markdown-table reproducer from the #15627 comment about #15633/#7588:
+        // the table cell quotes the issue's acceptance criterion verbatim while
+        // asserting it is satisfied; the exclusion marker lives in a separate
+        // paragraph. The check must not arm on the cell mention.
+        let issue = "## Acceptance\nPublic docs/API make the per-file claim explicit.\n";
+        let pr = "## Claim Boundary\n\
+                  | Acceptance criterion | Evidence |\n\
+                  | --- | --- |\n\
+                  | Public docs/API make the per-file claim explicit | rewritten module docs |\n\
+                  \n\
+                  Not claimed: the per-file proof in legacy 5.8 branches.\n\n\
+                  Closes #7588\n";
+        assert!(
+            !proof_level_from_bodies(issue, pr)?,
+            "a Markdown-table cell that quotes the issue's acceptance criterion must not arm"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn proof_level_pr_term_in_exclusion_clause_of_split_sentence_arms() -> Result<()> {
+        // The exclusion marker and the term live in the same coordinate clause,
+        // even when the sentence also contains an assertion for another term.
+        let issue = "## Acceptance\nPublic proof is required.\n";
+        let pr = "## Claim Boundary\n\
+                  Public evidence is explicitly out of scope, but installed proof is asserted.\n\
+                  Closes #1\n";
+        assert!(
+            proof_level_from_bodies(issue, pr)?,
+            "a clause that excludes the term must still arm even when another clause asserts a different term"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn proof_level_pr_term_in_different_coordinate_clause_does_not_arm() -> Result<()> {
+        // Coordinate-clause scoping (#15627 review): the exclusion marker
+        // lives in one coordinate ("Not claimed: the legacy shim") while the
+        // term is asserted in the other ("the public formatter surface is
+        // covered"). The marker must not leak across the "but" boundary.
+        // Inverse of proof_level_pr_term_in_exclusion_clause_of_split_sentence_arms.
+        let issue = "## Acceptance\nPublic proof is required.\n";
+        let pr = "## Claim Boundary\n\
+                  Not claimed: the legacy shim, but the public formatter surface is covered.\n\
+                  Closes #1\n";
+        assert!(
+            !proof_level_from_bodies(issue, pr)?,
+            "an assertion in a different coordinate clause from the exclusion marker must not arm"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn proof_level_pr_term_in_different_list_item_from_marker_does_not_arm() -> Result<()> {
+        // List-item clause scoping: the exclusion marker is in one bullet, the
+        // term appears in a different bullet asserting coverage.
+        let issue = "## Acceptance\nPublic proof is required.\n";
+        let pr = "## Claim Boundary\n\
+                  - Not claimed: the legacy compat shim.\n\
+                  - The public formatter surface is provably covered.\n\
+                  Closes #1\n";
+        assert!(
+            !proof_level_from_bodies(issue, pr)?,
+            "an assertion in a different list item from the exclusion marker must not arm"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn proof_level_pr_term_and_marker_in_same_list_item_arm() -> Result<()> {
+        // Negative control for list-item clause scoping.
+        let issue = "## Acceptance\nPublic proof is required.\n";
+        let pr = "## Claim Boundary\n\
+                  - Public evidence is explicitly out of scope.\n\
+                  - Installed proof is asserted.\n\
+                  Closes #1\n";
+        assert!(
+            proof_level_from_bodies(issue, pr)?,
+            "a list item that excludes the term must arm even when another list item asserts a different term"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn proof_level_pr_template_claim_boundary_does_not_arm_per_template_vocabulary() -> Result<()> {
+        // Reproducer for the .github/PULL_REQUEST_TEMPLATE.md vocabulary path:
+        // the template's "Claim Boundary" heading contains "out of scope" as
+        // section vocabulary, but the body itself contains no actual
+        // exclusion. The rule must not arm merely because the section name
+        // carries exclusion vocabulary.
+        let issue = "## Acceptance\nPublic docs carry the per-file claim.\n";
+        let pr = "## Claim Boundary\n\
+                  ## What becomes provably true\n\
+                  The public formatter surface is covered by the rewritten module docs.\n\
+                  ## What is explicitly out of scope\n\
+                  The 5.8-era per-file parity test bench.\n\n\
+                  Closes #1\n";
+        assert!(
+            !proof_level_from_bodies(issue, pr)?,
+            "the template's Claim Boundary vocabulary must not arm when no clause excludes the term"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn proof_level_pr_term_local_requirement_only_false_counts_as_excluded() {
+        // The PR-side helper mirrors unit_requires_proof_level_term but counts
+        // a term as excluded when its local polarity is negative (Some(false))
+        // rather than when it is positive (Some(true)).
+        // "Public evidence is explicitly out of scope." has no polarity
+        // marker in the negative-polarity list, but the section-level
+        // explicit-exclusion marker carries it. The helper checks
+        // (contains_explicit_exclusion && contains_proof_level_term) at the
+        // sentence granularity produced by requirement_units.
+        assert!(proof_level_term_is_excluded(
+            "Public evidence is explicitly out of scope.",
+            "public"
+        ));
+        assert!(!proof_level_term_is_excluded(
+            "Provably true: no public formatter surface offers compat as an engine.",
+            "public"
+        ));
+        assert!(proof_level_term_is_excluded(
+            "Public evidence is explicitly out of scope, but installed proof is asserted.",
+            "public"
+        ));
+        assert!(!proof_level_term_is_excluded(
+            "Not claimed: the legacy shim. The public surface is covered.",
+            "public"
+        ));
+    }
+
     #[test]
     fn proof_level_requirement_units_discriminate_mixed_and_unrelated_not() {
         assert!(issue_requires_proof_level_term(
@@ -2227,6 +2999,746 @@ mod tests {
         ));
     }
 
+    // #15463: the marker list above enumerates only three negation verbs
+    // (change / require / need). Acceptance text that introduces a proof-level
+    // term with any other negation verb ("does not manufacture", "does not
+    // assert", "does not establish", "does not prove", "does not claim",
+    // "does not guarantee") must still disarm CP00. The structural
+    // clause-scoped negation tokens (not / never / no / cannot / n't) make
+    // every verb a negative phrasing without enumerating each.
+
+    #[test]
+    fn proof_level_does_not_manufacture_arms_disarm_installed() -> Result<()> {
+        // #10831 / #15458 reproducer: the issue names `installed proof` in a
+        // list whose leading clause says "Mapping does not manufacture …". A
+        // PR that excludes installed proof must not be told to downgrade its
+        // relation because it agrees with the issue's own negative phrasing.
+        let pr =
+            "## Claim Boundary\nInstalled evidence is explicitly out of scope.\n\nCloses #10831\n";
+        let issue = "## Acceptance\nMapping does not manufacture currentness, publication, installed proof, or support.\n";
+        assert!(
+            !proof_level_from_bodies(issue, pr)?,
+            "an issue that frames installed proof inside a 'does not manufacture' clause must disarm CP00"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn proof_level_structural_negation_disarms_other_verbs() -> Result<()> {
+        // The verb list is intentionally open: any verb following a negation
+        // token disarms the same way. Each row is an independent issue/PR pair
+        // sharing the same shape: an Acceptance clause that names the term
+        // under a negative verb, and a PR that excludes the term.
+        let pr = "## Claim Boundary\nPublic evidence is explicitly out of scope.\n\nCloses #1\n";
+        for issue in [
+            "## Acceptance\nMapping does not assert currentness, publication, public proof, or support.\n",
+            "## Acceptance\nMapping does not prove currentness, publication, public proof, or support.\n",
+            "## Acceptance\nMapping does not establish currentness, publication, public proof, or support.\n",
+            "## Acceptance\nMapping does not claim currentness, publication, public proof, or support.\n",
+            "## Acceptance\nMapping does not guarantee currentness, publication, public proof, or support.\n",
+            "## Acceptance\nMapping cannot manufacture currentness, publication, public proof, or support.\n",
+            "## Acceptance\nMapping will not manufacture currentness, publication, public proof, or support.\n",
+            "## Acceptance\nMapping must not manufacture currentness, publication, public proof, or support.\n",
+            "## Acceptance\nMapping never manufactures currentness, publication, public proof, or support.\n",
+            "## Acceptance\nMapping doesn't manufacture currentness, publication, public proof, or support.\n",
+        ] {
+            assert!(
+                !proof_level_from_bodies(issue, pr)?,
+                "structural negation failed to disarm public for {issue:?}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn proof_level_required_predicate_wins_when_negation_is_in_a_different_clause() -> Result<()> {
+        // Regression: a bare 'not' in a *different* clause from the term must
+        // not disarm a genuine requirement. The clause-scoping already splits
+        // the segments at " and " / " but "; structural negation operates on
+        // the segment, so an unrelated segment's 'not' must not bleed in.
+        let issue = "## Acceptance\nPublic proof is required while the helper is not used here.\n";
+        let pr = "## Claim Boundary\nPublic evidence is explicitly out of scope.\n\nCloses #1\n";
+        assert!(
+            proof_level_from_bodies(issue, pr)?,
+            "an earlier required clause must still arm when a later clause only carries bare 'not'"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn proof_level_modal_must_not_x_disarms_for_any_x() -> Result<()> {
+        // A predicate word like "must" that is *immediately* followed by a
+        // negation token is no longer a Require signal. This complements the
+        // "must not change" / "must not be changed" markers — every other
+        // verb in a "must not X" phrase now disarms without enumeration.
+        let pr = "## Claim Boundary\nPublic evidence is explicitly out of scope.\n\nCloses #1\n";
+        for issue in [
+            "## Acceptance\nPublic proof must not be manufactured here.\n",
+            "## Acceptance\nMapping must not assert public proof.\n",
+            "## Acceptance\nMapping mustn't claim public proof.\n",
+            "## Acceptance\nRequired public proof must not be a goal.\n",
+        ] {
+            assert!(
+                !proof_level_from_bodies(issue, pr)?,
+                "must-not-X phrasing must disarm CP00 for {issue:?}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn proof_level_modal_must_alone_still_arms() -> Result<()> {
+        // Negative control: the predicate-unless-negated guard must not
+        // disable bare "must" when there is no following negation.
+        let issue = "## Acceptance\nPublic proof must be present.\n";
+        let pr = "## Claim Boundary\nPublic evidence is explicitly out of scope.\n\nCloses #1\n";
+        assert!(
+            proof_level_from_bodies(issue, pr)?,
+            "a bare 'must' predicate with no following negation must still arm"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn proof_level_substring_words_do_not_disarm_unrelated_noted_nothing() -> Result<()> {
+        // Word-boundary correctness: 'noted', 'nothing', 'another', 'snowfall'
+        // all contain a 'not' or 'no' substring that must NOT disarm a real
+        // requirement. Only whole-word tokens with ASCII-alphanumeric
+        // boundaries count.
+        let issue = "## Acceptance\nAnother requirement, nothing more, is needed: installed proof is required.\n";
+        let pr = "## Claim Boundary\nInstalled evidence is explicitly out of scope.\n\nCloses #1\n";
+        assert!(
+            proof_level_from_bodies(issue, pr)?,
+            "substrings like 'noted', 'nothing', 'another' must not disarm a genuine requirement"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn proof_level_cannot_token_matches_even_when_not_is_substring() {
+        // 'cannot' contains 'not' as a substring but its preceding character
+        // ('n') is alphanumeric — so word-boundary matching rejects 'not' as
+        // a whole word here. The structural detector must catch 'cannot'
+        // explicitly so a phrase like 'Mapping cannot proceed' still disarms
+        // the term it is bound to.
+        assert!(
+            earliest_negation_token_index("Mapping cannot proceed with public proof.").is_some()
+        );
+        // Sanity: a word that merely contains 'not' as a non-word substring
+        // must NOT trip the detector.
+        assert_eq!(earliest_negation_token_index("The noted item is required."), None);
+        assert_eq!(earliest_negation_token_index("Another story is required."), None);
+        assert_eq!(earliest_negation_token_index("Nothing to add is required."), None);
+    }
+
+    #[test]
+    fn proof_level_nt_substring_matches_even_when_preceded_by_alphanumeric() {
+        // "isn't", "doesn't", "didn't" all have 'n' immediately before the
+        // apostrophe. Word-boundary matching rejects 'n't' as a whole word
+        // there. The substring detector must catch it.
+        assert!(earliest_negation_token_index("Mapping isn't public proof.").is_some());
+        assert!(
+            earliest_negation_token_index("Mapping doesn't manufacture public proof.").is_some()
+        );
+        // Sanity: the apostrophe itself without a preceding 'n' should still
+        // match — "we'll" is not a negation, but "doesn't" is. The detector
+        // is intentionally liberal about "'t" placement to mirror the way
+        // English contractions form.
+        assert!(earliest_negation_token_index("Mapping doesn't claim installed proof.").is_some());
+    }
+
+    #[test]
+    fn explicit_attribution_uses_exact_reference_identity_and_real_issue_owners() -> Result<()> {
+        let local = "effortlessmetrics/perl-lsp-swarm";
+        let multi =
+            "Closes #10\nCloses #11\nCloses #100\nCloses other/repo#10\nCloses other/repo#100";
+        let mut mismatches = Vec::new();
+        for (boundary, closes, owner) in [
+            ("C#'s full acceptance criteria are not established.", "Closes #10", Some((local, 10))),
+            (
+                "Full acceptance criteria are not established; example `#11`.",
+                "Closes #10",
+                Some((local, 10)),
+            ),
+            ("Full acceptance criteria are not established; see #11.", "Closes #10", None),
+            (
+                "For https://example.test/?next=https://github.com/other/repo/issues/10, full acceptance criteria are not established.",
+                multi,
+                None,
+            ),
+            (
+                "For reference=https://github.com/other/repo/issues/10, full acceptance criteria are not established.",
+                multi,
+                Some(("other/repo", 10)),
+            ),
+            (
+                "For [reference](https://github.com/other/repo/issues/10), full acceptance criteria are not established.",
+                multi,
+                Some(("other/repo", 10)),
+            ),
+            (
+                "This PR's full acceptance criteria are not established.",
+                "Closes #10",
+                Some((local, 10)),
+            ),
+            (
+                "#11's full acceptance criteria are not established; see #10.",
+                multi,
+                Some((local, 11)),
+            ),
+            (
+                "For other/repo#10, full acceptance criteria are not established.",
+                multi,
+                Some(("other/repo", 10)),
+            ),
+            (
+                "For other/repo#100, full acceptance criteria are not established.",
+                multi,
+                Some(("other/repo", 100)),
+            ),
+            ("For #10, full acceptance criteria are not established.", multi, Some((local, 10))),
+            ("For #100, full acceptance criteria are not established.", multi, Some((local, 100))),
+            (
+                "For https://github.com/other/repo/issues/10, full acceptance criteria are not established.",
+                multi,
+                Some(("other/repo", 10)),
+            ),
+            (
+                "For https://github.com/other/repo/issues/100, full acceptance criteria are not established.",
+                multi,
+                Some(("other/repo", 100)),
+            ),
+            ("For xother/repo#10, full acceptance criteria are not established.", multi, None),
+            ("For other/repo#100x, full acceptance criteria are not established.", multi, None),
+            (
+                "For xhttps://github.com/other/repo/issues/10, full acceptance criteria are not established.",
+                multi,
+                None,
+            ),
+            (
+                "For https://example.test/https://github.com/other/repo/issues/10, full acceptance criteria are not established.",
+                multi,
+                None,
+            ),
+            ("not-a-repo#11's full acceptance criteria are not established; see #10.", multi, None),
+        ] {
+            let pull = PullRequestSubject {
+                repository: local.into(),
+                number: 990108,
+                title: "fix: exact attribution controls".into(),
+                body: format!("## Claim Boundary\n{boundary}\n\n{closes}"),
+            };
+            let report = evaluate(&pull, |key| {
+                IssueEvidence::Available(IssueSubject {
+                    number: key.number,
+                    title: "Complete the named change".into(),
+                    body: "## Acceptance\nThe named change is established.".into(),
+                })
+            })?;
+            if report.rows.len() != closes.lines().count() {
+                bail!("missing relation row");
+            }
+            for row in report.rows {
+                let expected = if owner == Some((row.repository.as_str(), row.issue_number)) {
+                    ResultCode::FailExplicitUnprovenRequiredWork
+                } else {
+                    ResultCode::PassNoHighConfidenceContradiction
+                };
+                if row.code != expected {
+                    mismatches.push(format!(
+                        "{boundary}: {}#{} expected {expected:?}, observed {:?}",
+                        row.repository, row.issue_number, row.code
+                    ));
+                }
+            }
+        }
+        if !mismatches.is_empty() {
+            bail!("exact attribution mismatches: {mismatches:?}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn explicit_owner_class_retains_longest_subject_and_section_scope() -> Result<()> {
+        let mut cases = Vec::new();
+        for subject in [
+            "full acceptance",
+            "full acceptance criteria",
+            "complete acceptance",
+            "complete acceptance criteria",
+            "remaining acceptance",
+            "remaining acceptance criteria",
+            "complete remaining work",
+            "remaining work",
+        ] {
+            for (reference, expected_owner) in
+                [("#11", Some(11)), ("#11x", None), ("#0", None), ("#18446744073709551616", None)]
+            {
+                for owned in [
+                    format!("{reference}'s {subject}"),
+                    format!("{subject} of {reference}"),
+                    format!("{subject} owned by {reference}"),
+                ] {
+                    cases.push((
+                        format!("This PR does not prove {owned}; see #10."),
+                        true,
+                        expected_owner,
+                    ));
+                    cases.push((format!("Not claimed: {owned}; see #10."), true, expected_owner));
+                    cases.push((
+                        format!("{owned} are not established; see #10."),
+                        true,
+                        expected_owner,
+                    ));
+                }
+            }
+        }
+        cases.push((
+            "#11's complete remaining work is not established; see #10.".into(),
+            true,
+            Some(11),
+        ));
+        cases.push(("#11's complete remaining work is established; #10's remaining work is not established.".into(), true, Some(10)));
+        for token in [
+            "#10x",
+            "#0",
+            "#18446744073709551616",
+            "not-a-repo#10",
+            "https://github.com/other/repo/issues/10x",
+        ] {
+            cases.push((format!("Full acceptance criteria are not established; parser token {token} remains unchanged."), false, Some(10)));
+        }
+        for owned in [
+            "#10x's full acceptance criteria",
+            "full acceptance criteria of #10x",
+            "full acceptance criteria owned by #10x",
+        ] {
+            cases.push((format!("This PR does not prove the {owned}."), false, None));
+        }
+        cases.push(("#10's full acceptance criteria are not established.".into(), true, Some(10)));
+        cases.push(("Full acceptance criteria are not established.".into(), true, None));
+        let mut mismatches = Vec::new();
+        for section in ["Claim Boundary", "Non-goals"] {
+            for (boundary, multiple, owner) in &cases {
+                let closes = if *multiple { "Closes #10\nCloses #11" } else { "Closes #10" };
+                let pull = PullRequestSubject {
+                    repository: "effortlessmetrics/perl-lsp-swarm".into(),
+                    number: 990109,
+                    title: "fix: owned exclusion class".into(),
+                    body: format!("## {section}\n{boundary}\n\n{closes}"),
+                };
+                let report = evaluate(&pull, |key| {
+                    IssueEvidence::Available(IssueSubject {
+                        number: key.number,
+                        title: "Complete the named change".into(),
+                        body: "## Acceptance\nThe named change is established.".into(),
+                    })
+                })?;
+                if report.rows.len() != closes.lines().count() {
+                    bail!("missing owned exclusion class relation row");
+                }
+                for row in report.rows {
+                    let expected = if *owner == Some(row.issue_number) {
+                        ResultCode::FailExplicitUnprovenRequiredWork
+                    } else {
+                        ResultCode::PassNoHighConfidenceContradiction
+                    };
+                    if row.code != expected {
+                        mismatches.push(format!(
+                            "{section}: {boundary}: #{} expected {expected:?}, observed {:?}",
+                            row.issue_number, row.code
+                        ));
+                    }
+                }
+            }
+        }
+        if !mismatches.is_empty() {
+            bail!("owned exclusion class mismatches: {mismatches:?}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn explicit_heading_and_literal_star_controls_use_full_evaluator() -> Result<()> {
+        let mut mismatches = Vec::new();
+        for (body, contradictory) in [
+            ("## Claim Boundary: Full acceptance criteria are not established", true),
+            ("## Non-Goals: Full acceptance criteria are not established", true),
+            (
+                "## Claim Boundary\nComplete\n## Claim Boundary: Full acceptance criteria are not established",
+                true,
+            ),
+            ("## Claim Boundary: Full acceptance criteria\nare not established", false),
+            (
+                "## Claim Boundary: Full acceptance criteria\n## Claim Boundary: are not established",
+                false,
+            ),
+            ("## Claim Boundary\nFull accept*ance criteria are not established", false),
+            ("## Claim Boundary\nFull acceptance criteria are not estab*lished", false),
+            ("## Claim Boundary\n*Full acceptance criteria* are not established", true),
+            ("## Claim Boundary\n**Full acceptance criteria** are not established", true),
+            ("## Claim Boundary\n\\*Full acceptance criteria* are not established", false),
+            ("## Claim Boundary\n*Full acceptance criteria\\* are not established", false),
+            (
+                "## Claim Boundary\nFull accept*ance is an example; full acceptance criteria are not established",
+                true,
+            ),
+            ("## Claim Boundary\n**Not claimed:** the full acceptance criteria", true),
+            ("## Claim Boundary\nx**not claimed:** the full acceptance criteria", false),
+            ("## Claim Boundary\nxnot claimed: the full acceptance criteria", false),
+            ("## Claim Boundary\nNot claimedthe full acceptance criteria", false),
+            ("## Claim Boundary\nNot claimed: the full acceptance criteria", true),
+            ("## Claim Boundary\nFor this PR, not claimed: the full acceptance criteria", true),
+            ("## Claim Boundary\nidentifier_**not claimed:** the full acceptance criteria", false),
+            ("## Claim Boundary\n**Not cla*imed:** the full acceptance criteria", false),
+            ("## Claim Boundary\nFull acceptance criteria are **not established**", true),
+            ("## Claim Boundary\n`Full acceptance criteria are not established\\`.", false),
+            ("## Claim Boundary\n\\`Full acceptance criteria are not established\\`.", true),
+        ] {
+            let pull = PullRequestSubject {
+                repository: "effortlessmetrics/perl-lsp-swarm".into(),
+                number: 990107,
+                title: "fix: heading and literal delimiter controls".into(),
+                body: format!("{body}\n\nCloses #10"),
+            };
+            let report = evaluate(&pull, |key| {
+                IssueEvidence::Available(IssueSubject {
+                    number: key.number,
+                    title: "Complete the named change".into(),
+                    body: "## Acceptance\nThe named change is established.".into(),
+                })
+            })?;
+            let expected = if contradictory {
+                ResultCode::FailExplicitUnprovenRequiredWork
+            } else {
+                ResultCode::PassNoHighConfidenceContradiction
+            };
+            if report.rows.first().map(|row| row.code) != Some(expected) {
+                mismatches.push(format!("{body}: expected {expected:?}"));
+            }
+        }
+        if !mismatches.is_empty() {
+            bail!("heading/literal-star mismatches: {mismatches:?}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn explicit_owner_occurrence_and_scope_polarity_are_independent() -> Result<()> {
+        let local = "effortlessmetrics/perl-lsp-swarm";
+        let multi = "Closes #10\nCloses #11\nCloses #100\nCloses other/repo#10";
+        let mut mismatches = Vec::new();
+        for (boundary, closes, owner) in [
+            (
+                "#11's full acceptance criteria are not established; see #10.",
+                multi,
+                Some((local, 11)),
+            ),
+            (
+                "other/repo#10's full acceptance criteria are not established; see #10.",
+                multi,
+                Some(("other/repo", 10)),
+            ),
+            (
+                "Full acceptance criteria of #11\nare not established; see #10.",
+                multi,
+                Some((local, 11)),
+            ),
+            ("Not established: #11's remaining required work; see #10.", multi, Some((local, 11))),
+            (
+                "Remaining required work owned by #11 is not established; see #10.",
+                multi,
+                Some((local, 11)),
+            ),
+            (
+                "Remaining required work of other/repo#10 is not established; #10 is complete.",
+                multi,
+                Some(("other/repo", 10)),
+            ),
+            (
+                "Not established: other/repo#10's remaining required work; #10 is complete.",
+                multi,
+                Some(("other/repo", 10)),
+            ),
+            (
+                "Remaining required work owned by other/repo#10 is not established; #10 is complete.",
+                multi,
+                Some(("other/repo", 10)),
+            ),
+            (
+                "Remaining required work of #100 is not established; see #10.",
+                multi,
+                Some((local, 100)),
+            ),
+            (
+                "Full acceptance criteria of #10\n## Claim Boundary\nare not established",
+                multi,
+                None,
+            ),
+            (
+                "Full acceptance criteria of #10\n## Other heading\nExample\n## Claim Boundary\nare not established",
+                multi,
+                None,
+            ),
+            (
+                "Example café\n## Claim Boundary\n## Claim Boundary\nFull acceptance criteria of #10 are not established",
+                multi,
+                Some((local, 10)),
+            ),
+            ("Not explicitly out of scope: the remaining required work.", "Closes #10", None),
+            ("Never explicitly out of scope: the remaining required work.", "Closes #10", None),
+            (
+                "Explicitly out of scope: the remaining required work.",
+                "Closes #10",
+                Some((local, 10)),
+            ),
+            (
+                "Not explicitly out of scope: the remaining required work. Explicitly out of scope: the full acceptance criteria.",
+                "Closes #10",
+                Some((local, 10)),
+            ),
+        ] {
+            let pull = PullRequestSubject {
+                repository: local.into(),
+                number: 990106,
+                title: "fix: attribution class controls".into(),
+                body: format!("## Claim Boundary\n{boundary}\n\n{closes}"),
+            };
+            let report = evaluate(&pull, |key| {
+                IssueEvidence::Available(IssueSubject {
+                    number: key.number,
+                    title: "Complete the named change".into(),
+                    body: "## Acceptance\nThe named change is established.".into(),
+                })
+            })?;
+            if report.rows.len() != closes.lines().count() {
+                bail!("missing relation row");
+            }
+            for row in report.rows {
+                let expected = if owner == Some((row.repository.as_str(), row.issue_number)) {
+                    ResultCode::FailExplicitUnprovenRequiredWork
+                } else {
+                    ResultCode::PassNoHighConfidenceContradiction
+                };
+                if row.code != expected {
+                    mismatches.push(format!(
+                        "{boundary}: {}#{} expected {expected:?}, observed {:?}",
+                        row.repository, row.issue_number, row.code
+                    ));
+                }
+            }
+        }
+        if !mismatches.is_empty() {
+            bail!("attribution class mismatches: {mismatches:?}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn explicit_review_exclusions_preserve_wrapped_relation_ownership() -> Result<()> {
+        let mut mismatches = Vec::new();
+        for (boundary, failing_issue) in [
+            ("Explicitly out of scope: the remaining required work of #10.", Some(10)),
+            ("The remaining required work of #10 is explicitly out of scope.", Some(10)),
+            ("Full acceptance criteria of #10\nare not established.", Some(10)),
+            (
+                "- Full acceptance criteria of #11\n  are not established\n- Full acceptance criteria of #10 are established",
+                Some(11),
+            ),
+            (
+                "Full acceptance criteria of #10\nare established.\n\nThe guard is explicitly out of scope.",
+                None,
+            ),
+            ("Full acceptance criteria of #10\n\nare not established.", None),
+            ("Full acceptance criteria of #12\nare not established.", None),
+        ] {
+            let pull = PullRequestSubject {
+                repository: "effortlessmetrics/perl-lsp-swarm".into(),
+                number: 990105,
+                title: "fix: review exclusion controls".into(),
+                body: format!("## Claim Boundary\n{boundary}\n\nCloses #10\nCloses #11"),
+            };
+            let report = evaluate(&pull, |key| {
+                IssueEvidence::Available(IssueSubject {
+                    number: key.number,
+                    title: "Complete the named change".into(),
+                    body: "## Acceptance\nThe named change is established.".into(),
+                })
+            })?;
+            if report.rows.len() != 2 {
+                bail!("expected two relation rows");
+            }
+            for row in report.rows {
+                let expected = if Some(row.issue_number) == failing_issue {
+                    ResultCode::FailExplicitUnprovenRequiredWork
+                } else {
+                    ResultCode::PassNoHighConfidenceContradiction
+                };
+                if row.code != expected {
+                    mismatches.push(format!(
+                        "{boundary}: #{} expected {expected:?}, observed {:?}",
+                        row.issue_number, row.code
+                    ));
+                }
+            }
+        }
+        if !mismatches.is_empty() {
+            bail!("review exclusion mismatches: {mismatches:?}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn explicit_required_subject_families_retain_prefix_and_suffix_exclusions() -> Result<()> {
+        let mut mismatches = Vec::new();
+        for modifier in ["full", "complete", "remaining"] {
+            for work in ["acceptance criteria", "acceptance", "issue work", "required work"] {
+                let predicate = if work == "acceptance criteria" {
+                    "are not established"
+                } else {
+                    "is not proven"
+                };
+                for boundary in [
+                    format!("This PR does not prove the {modifier} {work}."),
+                    format!("The {modifier} {work} {predicate}."),
+                    format!("Explicitly out of scope: the {modifier} {work}."),
+                    format!("The {modifier} {work} is explicitly out of scope."),
+                ] {
+                    let pull = PullRequestSubject {
+                        repository: "effortlessmetrics/perl-lsp-swarm".into(),
+                        number: 990104,
+                        title: "fix: required subject family control".into(),
+                        body: format!("## Claim Boundary\n{boundary}\n\nCloses #10"),
+                    };
+                    let report = evaluate(&pull, |key| {
+                        IssueEvidence::Available(IssueSubject {
+                            number: key.number,
+                            title: "Complete the named change".into(),
+                            body: "## Acceptance\nThe named change is established.".into(),
+                        })
+                    })?;
+                    if report.rows.first().map(|row| row.code)
+                        != Some(ResultCode::FailExplicitUnprovenRequiredWork)
+                    {
+                        mismatches.push(boundary);
+                    }
+                }
+            }
+        }
+        if !mismatches.is_empty() {
+            bail!("required subject exclusions were lost: {mismatches:?}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn explicit_subject_inline_code_is_data_in_full_evaluator() -> Result<()> {
+        let mut mismatches = Vec::new();
+        for (boundary, contradictory) in [
+            (
+                "The guard rejects `full acceptance criteria are not established` as a contradiction. This is parser coverage, not a claim of general completeness.",
+                false,
+            ),
+            (
+                "The guard rejects ``full acceptance criteria are not established; `sample` `` as an example.",
+                false,
+            ),
+            ("Full acceptance criteria are not established for `some_value`.", true),
+            ("`Full acceptance criteria are not established.", true),
+            ("\\`Full acceptance criteria are not established\\`.", true),
+            ("Full `example` acceptance criteria are not established.", false),
+            ("Full acceptance criteria are satisfied; `not established` is an example.", false),
+        ] {
+            let pull = PullRequestSubject {
+                repository: "effortlessmetrics/perl-lsp-swarm".into(),
+                number: 990103,
+                title: "fix: inline example control".into(),
+                body: format!("## Claim Boundary\n{boundary}\n\nCloses #10"),
+            };
+            let report = evaluate(&pull, |key| {
+                IssueEvidence::Available(IssueSubject {
+                    number: key.number,
+                    title: "Complete the named change".into(),
+                    body: "## Acceptance\nThe named change is established.".into(),
+                })
+            })?;
+            let observed = report
+                .rows
+                .first()
+                .ok_or_else(|| color_eyre::eyre::eyre!("missing relation row"))?
+                .code;
+            let expected = if contradictory {
+                ResultCode::FailExplicitUnprovenRequiredWork
+            } else {
+                ResultCode::PassNoHighConfidenceContradiction
+            };
+            if observed != expected {
+                mismatches
+                    .push(format!("{boundary}: expected {expected:?}, observed {observed:?}"));
+            }
+        }
+        if !mismatches.is_empty() {
+            bail!("inline-code full evaluator mismatches: {mismatches:?}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn explicit_subject_ownership_and_emphasis_survive_attribution() -> Result<()> {
+        let key = IssueKey { repository: "effortlessmetrics/perl-lsp-swarm".into(), number: 10 };
+        let mut mismatches = Vec::new();
+        for (text, expected) in [
+            ("Full acceptance criteria of #10 are not established.", true),
+            ("Full acceptance criteria of #11 are not established.", false),
+            ("__Full acceptance criteria__ are not established.", true),
+            ("_Full acceptance criteria_ are not established.", true),
+            ("Full issue work remains not proven.", true),
+            ("prefix_full acceptance criteria_suffix are not established.", false),
+            ("Full_acceptance criteria are not established.", false),
+        ] {
+            let attributable =
+                exclusion_text_attributable_to_closed_issue(text, &key, &key.repository, 1);
+            if explicitly_not_proven_required_work(&attributable) != expected {
+                mismatches.push(format!("expected {expected}: {text}"));
+            }
+        }
+        if !mismatches.is_empty() {
+            bail!("owned rendered subject mismatches: {mismatches:?}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn explicit_subject_exclusion_is_bound_to_required_work() -> Result<()> {
+        for text in [
+            "Every row is classified. Activation is not claimed.",
+            "Not claimed: that this guard is now complete.",
+            "Full acceptance criteria are satisfied and this guard is not claimed complete.",
+            "Full acceptance criteria are satisfied; this guard is not claimed complete.",
+            "Full acceptance criteria\n\nare not established for this guard.",
+            "- Full acceptance criteria\n- are not established for this guard",
+            "Full acceptance criteria are satisfied. This guard is not claimed complete.",
+        ] {
+            if explicitly_not_proven_required_work(text) {
+                bail!("unrelated exclusion must not borrow the required-work subject: {text}");
+            }
+        }
+        for text in [
+            "This PR does not prove the full acceptance criteria.",
+            "Full acceptance criteria are not established.",
+            "Not claimed: the remaining required work.",
+            "The complete remaining work is not proven.",
+            "This PR does not establish #10's remaining required work.",
+            "The complete remaining call-site cohort is not established.",
+            "Full acceptance criteria are satisfied and remaining required work is not established.",
+        ] {
+            if !explicitly_not_proven_required_work(text) {
+                bail!("explicit required-work exclusion must remain blocking: {text}");
+            }
+        }
+        Ok(())
+    }
+
     #[test]
     fn explicitly_not_proven_required_work_uses_whole_word_scope_markers() {
         assert!(explicitly_not_proven_required_work(
@@ -2245,8 +3757,8 @@ mod tests {
     fn neighbor_issue_disclaimer_is_not_attributable_unproven_required_work() {
         let key = IssueKey { repository: "effortlessmetrics/perl-lsp-swarm".into(), number: 10 };
         let current = "effortlessmetrics/perl-lsp-swarm";
-        let text = "This PR proves #10's claim in full.\n\nWork owned by #11 is not established.";
-        let attributable = exclusion_text_attributable_to_closed_issue(text, &key, current);
+        let text = "This PR proves #10's claim in full.\n\nRemaining required work owned by #11 is not established.";
+        let attributable = exclusion_text_attributable_to_closed_issue(text, &key, current, 1);
         assert!(
             !explicitly_not_proven_required_work(&attributable),
             "filtered text must drop the neighboring-issue exclusion: {attributable:?}"
@@ -2258,16 +3770,15 @@ mod tests {
 
         let named_closed = "This PR does not prove #10's remaining required work.\n\nWork owned by #11 is separately not established.";
         let attributable_named =
-            exclusion_text_attributable_to_closed_issue(named_closed, &key, current);
+            exclusion_text_attributable_to_closed_issue(named_closed, &key, current, 1);
         assert!(
             explicitly_not_proven_required_work(&attributable_named),
             "naming the closed issue must keep the exclusion: {attributable_named:?}"
         );
 
-        let spaced =
-            "This PR proves #10's claim in full.\n \t\nWork owned by #11 is not established.";
+        let spaced = "This PR proves #10's claim in full.\n \t\nRemaining required work owned by #11 is not established.";
         let attributable_spaced =
-            exclusion_text_attributable_to_closed_issue(spaced, &key, current);
+            exclusion_text_attributable_to_closed_issue(spaced, &key, current, 1);
         assert!(
             !explicitly_not_proven_required_work(&attributable_spaced),
             "whitespace-only blank lines must still drop the neighboring disclaimer: {attributable_spaced:?}"
@@ -2276,7 +3787,7 @@ mod tests {
         let tracked =
             "This PR does not prove the complete remaining work. That work is tracked by #11.";
         let attributable_tracked =
-            exclusion_text_attributable_to_closed_issue(tracked, &key, current);
+            exclusion_text_attributable_to_closed_issue(tracked, &key, current, 1);
         assert!(
             explicitly_not_proven_required_work(&attributable_tracked),
             "an unnumbered closed-issue exclusion must survive a later tracker sentence: {attributable_tracked:?}"
@@ -2287,7 +3798,7 @@ mod tests {
                 "This PR does not prove the complete remaining work{terminator} That work is tracked by #11."
             );
             let attributable_punctuated =
-                exclusion_text_attributable_to_closed_issue(&punctuated, &key, current);
+                exclusion_text_attributable_to_closed_issue(&punctuated, &key, current, 1);
             assert!(
                 explicitly_not_proven_required_work(&attributable_punctuated),
                 "sentence terminators other than '.' must still keep the exclusion: {attributable_punctuated:?}"
@@ -2295,9 +3806,9 @@ mod tests {
         }
 
         let inline_question =
-            "Complete behavior is not established for `$ready ? $new : $old`; see #11.";
+            "Remaining required work is not established for `$ready ? $new : $old`; see #11.";
         let attributable_inline_question =
-            exclusion_text_attributable_to_closed_issue(inline_question, &key, current);
+            exclusion_text_attributable_to_closed_issue(inline_question, &key, current, 1);
         assert!(
             !explicitly_not_proven_required_work(&attributable_inline_question),
             "a `?` inside an inline code span must not split off the neighbor reference: {attributable_inline_question:?}"
@@ -2307,9 +3818,10 @@ mod tests {
             "unfiltered inline-code neighbor text must still show why attribution is load-bearing"
         );
 
-        let inline_bang = "Complete behavior is not established for `die $msg! now`; see #11.";
+        let inline_bang =
+            "Remaining required work is not established for `die $msg! now`; see #11.";
         let attributable_inline_bang =
-            exclusion_text_attributable_to_closed_issue(inline_bang, &key, current);
+            exclusion_text_attributable_to_closed_issue(inline_bang, &key, current, 1);
         assert!(
             !explicitly_not_proven_required_work(&attributable_inline_bang),
             "a `!` inside an inline code span must not split off the neighbor reference: {attributable_inline_bang:?}"
@@ -2319,9 +3831,9 @@ mod tests {
             "unfiltered inline-bang neighbor text must still show why attribution is load-bearing"
         );
 
-        let inline_dot = "Complete behavior is not established for `$x. meth $y`; see #11.";
+        let inline_dot = "Remaining required work is not established for `$x. meth $y`; see #11.";
         let attributable_inline_dot =
-            exclusion_text_attributable_to_closed_issue(inline_dot, &key, current);
+            exclusion_text_attributable_to_closed_issue(inline_dot, &key, current, 1);
         assert!(
             !explicitly_not_proven_required_work(&attributable_inline_dot),
             "a `.` inside an inline code span must not split off the neighbor reference: {attributable_inline_dot:?}"
@@ -2329,7 +3841,7 @@ mod tests {
 
         let escaped = "This PR does not prove the complete remaining work for \\`foo? bar\\`. That work is tracked by #11.";
         let attributable_escaped =
-            exclusion_text_attributable_to_closed_issue(escaped, &key, current);
+            exclusion_text_attributable_to_closed_issue(escaped, &key, current, 1);
         assert!(
             explicitly_not_proven_required_work(&attributable_escaped),
             "escaped backticks must not hide an unnumbered closed-issue exclusion: {attributable_escaped:?}"
@@ -2526,6 +4038,163 @@ mod tests {
             MAX_PR_BODY_BYTES,
         )?;
         assert!(has_semantic_close_packet(&packet, &key, current_repository));
+        Ok(())
+    }
+
+    /// #15640: the event payload is parsed for the locator only. A stale
+    /// event title/body (the rerun payload) must not be bound anywhere the
+    /// evaluator can reach.
+    #[test]
+    fn event_payload_supplies_a_locator_never_a_semantic_subject() -> Result<()> {
+        let raw = br#"{
+          "repository": {"full_name": "EffortlessMetrics/perl-lsp-swarm"},
+          "pull_request": {
+            "number": 15605,
+            "title": "stale rerun title",
+            "body": "Closes #12905 on merge",
+            "base": {"repo": {"full_name": "EffortlessMetrics/perl-lsp-swarm"}},
+            "head": {"sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
+          }
+        }"#;
+        let locator = parse_event_locator(raw)?;
+        assert_eq!(locator.repository, "effortlessmetrics/perl-lsp-swarm");
+        assert_eq!(locator.number, 15605);
+        assert_eq!(locator.head_sha, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        Ok(())
+    }
+
+    #[test]
+    fn event_base_repository_mismatch_fails_closed() -> Result<()> {
+        let raw = br#"{
+          "repository": {"full_name": "EffortlessMetrics/perl-lsp-swarm"},
+          "pull_request": {
+            "number": 1,
+            "base": {"repo": {"full_name": "OtherOrg/OtherRepo"}},
+            "head": {"sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
+          }
+        }"#;
+        assert!(parse_event_locator(raw).is_err());
+        Ok(())
+    }
+
+    /// #15640 required control: the live snapshot must agree with the event
+    /// locator (repository, PR number, base repository) before use.
+    #[test]
+    fn live_snapshot_locator_mismatch_fails_closed() -> Result<()> {
+        let locator = EventLocator {
+            repository: "effortlessmetrics/perl-lsp-swarm".into(),
+            number: 15605,
+            head_sha: "unknown".into(),
+        };
+        let different_number = br#"{
+          "number": 999,
+          "title": "t",
+          "body": null,
+          "updated_at": "2026-09-12T12:26:40Z",
+          "head": {"sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
+          "base": {"repo": {"full_name": "EffortlessMetrics/perl-lsp-swarm"}}
+        }"#;
+        assert!(validate_live_snapshot(different_number, &locator).is_err());
+
+        let different_base = br#"{
+          "number": 15605,
+          "title": "t",
+          "body": null,
+          "updated_at": "2026-09-12T12:26:40Z",
+          "head": {"sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
+          "base": {"repo": {"full_name": "OtherOrg/OtherRepo"}}
+        }"#;
+        assert!(validate_live_snapshot(different_base, &locator).is_err());
+
+        let malformed = br#"{"number": 15605, "title": "t""#;
+        assert!(validate_live_snapshot(malformed, &locator).is_err());
+        Ok(())
+    }
+
+    /// The subject comes from the live snapshot (title/body), the snapshot
+    /// receipt records `updated_at`/head/digest, and the digest changes when
+    /// the evaluated prose changes — the property that makes a stale rerun
+    /// verdict detectable.
+    #[test]
+    fn live_snapshot_builds_subject_and_stable_digest() -> Result<()> {
+        let locator = EventLocator {
+            repository: "effortlessmetrics/perl-lsp-swarm".into(),
+            number: 15605,
+            head_sha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
+        };
+        let raw = br#"{
+          "number": 15605,
+          "title": "fix(ci): live subject",
+          "body": "Fixes #15641",
+          "updated_at": "2026-09-12T12:26:40Z",
+          "head": {"sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
+          "base": {"repo": {"full_name": "EffortlessMetrics/perl-lsp-swarm"}}
+        }"#;
+        let (pull, snapshot) = validate_live_snapshot(raw, &locator)?;
+        assert_eq!(pull.title, "fix(ci): live subject");
+        assert_eq!(pull.body, "Fixes #15641");
+        assert_eq!(snapshot.source, "pulls_api");
+        assert_eq!(snapshot.pr_updated_at, "2026-09-12T12:26:40Z");
+        assert_eq!(snapshot.event_head_sha, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        assert_eq!(snapshot.head_sha, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        assert_eq!(snapshot.title_bytes, "fix(ci): live subject".len());
+        assert_eq!(snapshot.body_bytes, "Fixes #15641".len());
+        assert_eq!(snapshot.title_body_sha256.len(), 64);
+        assert!(snapshot.title_body_sha256.chars().all(|character| character.is_ascii_hexdigit()));
+
+        let edited = br#"{
+          "number": 15605,
+          "title": "fix(ci): live subject",
+          "body": "Advances #15641",
+          "updated_at": "2026-09-12T12:30:00Z",
+          "head": {"sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
+          "base": {"repo": {"full_name": "EffortlessMetrics/perl-lsp-swarm"}}
+        }"#;
+        let (_, edited_snapshot) = validate_live_snapshot(edited, &locator)?;
+        assert_ne!(
+            snapshot.title_body_sha256, edited_snapshot.title_body_sha256,
+            "a body edit must change the snapshot digest"
+        );
+
+        // Deterministic: the same bytes produce the same digest.
+        let (_, replayed) = validate_live_snapshot(raw, &locator)?;
+        assert_eq!(snapshot.title_body_sha256, replayed.title_body_sha256);
+        Ok(())
+    }
+
+    /// A null live body is an empty description, not unavailable data; an
+    /// oversized live body or title fails closed (#15640).
+    #[test]
+    fn live_snapshot_bounds_fail_closed() -> Result<()> {
+        let locator = EventLocator {
+            repository: "effortlessmetrics/perl-lsp-swarm".into(),
+            number: 15605,
+            head_sha: "unknown".into(),
+        };
+        let null_body = br#"{
+          "number": 15605,
+          "title": "t",
+          "body": null,
+          "updated_at": "2026-09-12T12:26:40Z",
+          "head": {"sha": null},
+          "base": {"repo": {"full_name": "EffortlessMetrics/perl-lsp-swarm"}}
+        }"#;
+        let (pull, snapshot) = validate_live_snapshot(null_body, &locator)?;
+        assert_eq!(pull.body, "");
+        assert_eq!(snapshot.head_sha, "unknown");
+        assert_eq!(snapshot.body_bytes, 0);
+
+        let oversized_body = format!(
+            r#"{{"number":15605,"title":"t","body":"{}","updated_at":"2026-09-12T12:26:40Z","head":{{"sha":null}},"base":{{"repo":{{"full_name":"EffortlessMetrics/perl-lsp-swarm"}}}}}}"#,
+            "x".repeat(MAX_PR_BODY_BYTES + 1)
+        );
+        assert!(validate_live_snapshot(oversized_body.as_bytes(), &locator).is_err());
+
+        let oversized_title = format!(
+            r#"{{"number":15605,"title":"{}","body":"b","updated_at":"2026-09-12T12:26:40Z","head":{{"sha":null}},"base":{{"repo":{{"full_name":"EffortlessMetrics/perl-lsp-swarm"}}}}}}"#,
+            "x".repeat(MAX_PR_TITLE_BYTES + 1)
+        );
+        assert!(validate_live_snapshot(oversized_title.as_bytes(), &locator).is_err());
         Ok(())
     }
 }

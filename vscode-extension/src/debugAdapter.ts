@@ -1,7 +1,18 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
-import { BinaryDownloader } from './downloader';
+import {
+  BinaryDownloader,
+  classifyWindowsArm64Support,
+  detectMusl,
+  isAndroidEnvironment,
+  isTermuxEnvironment,
+} from './downloader';
+import {
+  CANONICAL_PERL_LANGUAGE_ID,
+  PERL_ALIAS_LANGUAGE_ID,
+  isPerlLanguageId,
+} from './languageIdentity';
 
 const SERVER_DEBUG_TEST_COMMAND = 'perl.debugTest';
 export const VSCODE_DEBUG_TEST_COMMAND = 'perl-lsp.debugTest';
@@ -12,6 +23,47 @@ export interface DebugTestLaunchTarget {
   label: string;
   program: string;
   args: string[];
+}
+
+function packagedDapTargetDirectoryForContext(
+  context: vscode.ExtensionContext,
+  isExecutable: (filePath: string) => boolean,
+): string | undefined {
+  const arch = process.arch === 'arm64' ? 'arm64' : process.arch === 'x64' ? 'x64' : undefined;
+  const hostTargets =
+    process.platform === 'linux' && arch && !isAndroidEnvironment() && !isTermuxEnvironment()
+      ? [`${detectMusl() ? 'alpine' : 'linux'}-${arch}`]
+      : process.platform === 'darwin' && arch
+        ? [`darwin-${arch}`]
+        : process.platform === 'win32' && arch
+          ? arch === 'arm64'
+            ? [
+                'win32-arm64',
+                ...(classifyWindowsArm64Support() === 'windows-11-or-newer' ? ['win32-x64'] : []),
+              ]
+            : ['win32-x64']
+          : [];
+  const dapName = process.platform === 'win32' ? 'perl-dap.exe' : 'perl-dap';
+
+  let packagedTarget: unknown;
+  try {
+    const packageJson = JSON.parse(
+      fs.readFileSync(path.join(context.extensionPath, 'package.json'), 'utf8'),
+    ) as { __metadata?: { targetPlatform?: unknown } };
+    packagedTarget = packageJson.__metadata?.targetPlatform;
+    if (
+      typeof packagedTarget === 'string' &&
+      /^(?:linux|alpine|darwin|win32)-(?:x64|arm64)$/.test(packagedTarget)
+    ) {
+      return hostTargets.includes(packagedTarget) ? packagedTarget : undefined;
+    }
+  } catch {
+    // Development test fixtures may omit package.json; inspect known payloads.
+  }
+
+  return hostTargets.find((target) =>
+    isExecutable(path.join(context.extensionPath, 'bin', target, dapName)),
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -295,7 +347,7 @@ export async function offerDebugConfigOnFirstPerlOpen(
   if (_debugConfigPromptShown) {
     return;
   }
-  if (document.languageId !== 'perl') {
+  if (!isPerlLanguageId(document.languageId)) {
     return;
   }
 
@@ -712,7 +764,22 @@ export class PerlDebugAdapterDescriptorFactory implements vscode.DebugAdapterDes
   }
 
   private findDebugAdapter(): string | undefined {
-    // First, check the auto-download directory (ships with perl-lsp)
+    const binary = process.platform === 'win32' ? 'perl-dap.exe' : 'perl-dap';
+
+    // Prefer the adapter shipped by this extension. This keeps a clean
+    // installed profile bound to the package it just loaded instead of an
+    // unrelated adapter found in managed storage or PATH.
+    const targetDirectory = packagedDapTargetDirectoryForContext(this.context, (candidate) =>
+      this.isExecutable(candidate),
+    );
+    if (targetDirectory) {
+      const bundledDap = path.join(this.context.extensionPath, 'bin', targetDirectory, binary);
+      if (this.isExecutable(bundledDap)) {
+        return bundledDap;
+      }
+    }
+
+    // Next, check the auto-download directory (ships with perl-lsp)
     const downloadedDap = BinaryDownloader.getLocalDapPath(this.context);
     if (this.isExecutable(downloadedDap)) {
       return downloadedDap;
@@ -725,7 +792,6 @@ export class PerlDebugAdapterDescriptorFactory implements vscode.DebugAdapterDes
     }
 
     // Otherwise, check common installation locations
-    const binary = process.platform === 'win32' ? 'perl-dap.exe' : 'perl-dap';
     const possiblePaths: string[] = [
       path.join(process.env.HOME || '', '.cargo', 'bin', binary),
       path.join(process.env.CARGO_HOME || '', 'bin', binary),
@@ -799,10 +865,19 @@ export class PerlDebugConfigurationProvider implements vscode.DebugConfiguration
     config: vscode.DebugConfiguration,
     _token?: vscode.CancellationToken,
   ): vscode.ProviderResult<vscode.DebugConfiguration> {
+    // Alias debug contract (#7699): a `type: perl5` launch configuration
+    // resolves onto the one contributed `perl` debugger. Only `perl` is a
+    // contributed debugger, and only its contributor may register its
+    // descriptor factory — registering one for `perl5` throws at
+    // activation — so the alias is rewritten here, before VS Code looks
+    // the debugger up for the resolved configuration.
+    if (config.type === PERL_ALIAS_LANGUAGE_ID) {
+      config.type = CANONICAL_PERL_LANGUAGE_ID;
+    }
     // If launch.json is missing or empty
     if (!config.type && !config.request && !config.name) {
       const editor = vscode.window.activeTextEditor;
-      if (editor && editor.document.languageId === 'perl') {
+      if (editor && isPerlLanguageId(editor.document.languageId)) {
         config.type = 'perl';
         config.name = 'Launch Perl';
         config.request = 'launch';
@@ -811,8 +886,14 @@ export class PerlDebugConfigurationProvider implements vscode.DebugConfiguration
     }
 
     if (config.request === 'attach') {
-      // Attach supports either processId or host/port. External-peer fields are
-      // validated separately by the descriptor factory.
+      // TCP host/port is the only supported attach mode: the adapter refuses
+      // processId attach fail-closed (#8109), so no template, snippet, or
+      // schema here advertises it. External-peer fields are validated
+      // separately by the descriptor factory.
+      // Preserve an explicit legacy processId unchanged when forwarding an
+      // existing configuration for adapter diagnostics; never default it into
+      // the TCP host/port path. The adapter owns the deterministic #8109
+      // refusal for that compatibility input.
       if (config.processId === undefined || config.processId === null) {
         if (!config.host) {
           config.host = 'localhost';
@@ -865,12 +946,6 @@ export class PerlDebugConfigurationProvider implements vscode.DebugConfiguration
         port: 13603,
         timeout: 5000,
       },
-      {
-        type: 'perl',
-        request: 'attach',
-        name: 'Attach by Process ID',
-        processId: 12345,
-      },
     ];
   }
 }
@@ -882,6 +957,16 @@ export function activateDebugger(context: vscode.ExtensionContext) {
 
   const factory = new PerlDebugAdapterDescriptorFactory(context);
   context.subscriptions.push(vscode.debug.registerDebugAdapterDescriptorFactory('perl', factory));
+
+  // Alias debug contract (#7699): a `type: perl5` launch configuration is
+  // owned by this provider for resolution (so onDebugResolve:perl5 has an
+  // owner) and rewritten to the contributed `perl` type there, which routes
+  // it to the one canonical factory below. Registering a descriptor factory
+  // for `perl5` is forbidden — only the contributor of a debugger may
+  // register its factory, and this package contributes exactly one debugger.
+  context.subscriptions.push(
+    vscode.debug.registerDebugConfigurationProvider(PERL_ALIAS_LANGUAGE_ID, provider),
+  );
 
   // Register debug commands
   context.subscriptions.push(
