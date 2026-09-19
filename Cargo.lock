@@ -1982,6 +1982,7 @@ name = "perl-module"
 version = "0.17.0"
 dependencies = [
  "perl-parser-core",
+ "perl-semantic-facts",
  "perl-tdd-support",
  "perl-workspace",
  "proptest",
