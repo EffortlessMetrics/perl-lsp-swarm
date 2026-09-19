@@ -760,7 +760,6 @@ fn line_ending_kind(source: &str) -> (bool, bool, bool) {
 const fn formatter_mode_name(mode: FormatterMode) -> &'static str {
     match mode {
         FormatterMode::Native => "native",
-        FormatterMode::Compat => "compat",
         FormatterMode::ExternalLegacy => "external-legacy",
         FormatterMode::Off => "off",
     }

@@ -130,9 +130,7 @@ impl<'a> Parser<'a> {
                                 let test_token = self.tokens.next()?;
                                 let end = test_token.end();
                                 return Ok(Node::new(
-                                    NodeKind::Identifier {
-                                        name: format!("-{}", test_token.text),
-                                    },
+                                    NodeKind::Identifier { name: format!("-{}", test_token.text) },
                                     SourceLocation { start, end },
                                 ));
                             }
@@ -164,15 +162,17 @@ impl<'a> Parser<'a> {
                                             | TokenKind::RightBrace
                                             | TokenKind::RightBracket
                                     )
-                                )
-                            {
+                                ) {
                                 // No operand, test $_
                                 Node::new(
                                     NodeKind::Variable {
                                         sigil: "$".to_string(),
                                         name: "_".to_string(),
                                     },
-                                    SourceLocation { start: test_token.end(), end: test_token.end() },
+                                    SourceLocation {
+                                        start: test_token.end(),
+                                        end: test_token.end(),
+                                    },
                                 )
                             } else {
                                 self.parse_unary()?
@@ -191,28 +191,31 @@ impl<'a> Parser<'a> {
                     // keys when immediately followed by `=>`:
                     //   -or => 1, -and => 2, -xor => 3
                     // The fat arrow auto-quotes the combined "-keyword" string.
-                    if self
-                        .tokens
-                        .peek_second()
-                        .is_ok_and(|t| t.kind() == TokenKind::FatArrow)
+                    if self.tokens.peek_second().is_ok_and(|t| t.kind() == TokenKind::FatArrow)
                         && let Some(kw_kind) = self.peek_kind()
-                            && Self::is_word_op_keyword(kw_kind) {
-                                let kw_token = self.tokens.next()?;
-                                let end = kw_token.end();
-                                return Ok(Node::new(
-                                    NodeKind::Identifier {
-                                        name: format!("-{}", kw_token.text),
-                                    },
-                                    SourceLocation { start, end },
-                                ));
-                            }
+                        && Self::is_word_op_keyword(kw_kind)
+                    {
+                        let kw_token = self.tokens.next()?;
+                        let end = kw_token.end();
+                        return Ok(Node::new(
+                            NodeKind::Identifier { name: format!("-{}", kw_token.text) },
+                            SourceLocation { start, end },
+                        ));
+                    }
 
                     // Regular unary minus
-                    let operand = self.parse_power()?;
+                    let operand = if self.goto_starts_control_flow() {
+                        self.parse_goto()?
+                    } else {
+                        self.parse_power()?
+                    };
                     let end = operand.location.end;
 
                     return Ok(Node::new(
-                        NodeKind::Unary { op: op_token.text.to_string(), operand: Box::new(operand) },
+                        NodeKind::Unary {
+                            op: op_token.text.to_string(),
+                            operand: Box::new(operand),
+                        },
                         SourceLocation { start, end },
                     ));
                 }
@@ -229,7 +232,10 @@ impl<'a> Parser<'a> {
 
                         // Wrap the hash in a unary plus to preserve the explicit disambiguation
                         let node = Node::new(
-                            NodeKind::Unary { op: op_token.text.to_string(), operand: Box::new(hash) },
+                            NodeKind::Unary {
+                                op: op_token.text.to_string(),
+                                operand: Box::new(hash),
+                            },
                             SourceLocation { start, end },
                         );
                         return self.parse_postfix_chain(node);
@@ -251,11 +257,18 @@ impl<'a> Parser<'a> {
                         ));
                     }
 
-                    let operand = self.parse_power()?;
+                    let operand = if self.goto_starts_control_flow() {
+                        self.parse_goto()?
+                    } else {
+                        self.parse_power()?
+                    };
                     let end = operand.location.end;
 
                     return Ok(Node::new(
-                        NodeKind::Unary { op: op_token.text.to_string(), operand: Box::new(operand) },
+                        NodeKind::Unary {
+                            op: op_token.text.to_string(),
+                            operand: Box::new(operand),
+                        },
                         SourceLocation { start, end },
                     ));
                 }
@@ -297,228 +310,272 @@ impl<'a> Parser<'a> {
                     // AC1: Disambiguate typeglob (*foo) from multiplication (*)
                     // If TokenKind is Star and it is followed by an identifier or {
                     if op_token.kind() == TokenKind::Star
-                        && let Some(next_kind) = self.peek_kind() {
-                            let next_text = self.tokens.peek()?.text.to_string();
-                            let next_is_sigil_identifier = next_kind == TokenKind::Identifier
-                                && next_text
-                                    .chars()
-                                    .next()
-                                    .is_some_and(|c| matches!(c, '$' | '@' | '%' | '&' | '*'));
-                            let terminator_kind =
-                                self.tokens.peek_second().ok().map(|t| t.kind());
-                            if let Some(name) = typeglob_punctuation_name(
-                                next_kind,
-                                &next_text,
-                                terminator_kind,
-                            ) {
+                        && let Some(next_kind) = self.peek_kind()
+                    {
+                        let next_text = self.tokens.peek()?.text.to_string();
+                        let next_is_sigil_identifier = next_kind == TokenKind::Identifier
+                            && next_text
+                                .chars()
+                                .next()
+                                .is_some_and(|c| matches!(c, '$' | '@' | '%' | '&' | '*'));
+                        let terminator_kind = self.tokens.peek_second().ok().map(|t| t.kind());
+                        if let Some(name) =
+                            typeglob_punctuation_name(next_kind, &next_text, terminator_kind)
+                        {
+                            let t = self.tokens.next()?;
+                            return Ok(Node::new(
+                                NodeKind::Typeglob { name, body: None },
+                                SourceLocation { start, end: t.end() },
+                            ));
+                        }
+
+                        match next_kind {
+                            kind if Self::can_be_sub_name(kind) && !next_is_sigil_identifier => {
+                                let id_token = self.tokens.next()?;
+                                let end = id_token.end();
+                                let node = Node::new(
+                                    NodeKind::Typeglob {
+                                        name: id_token.text.to_string(),
+                                        body: None,
+                                    },
+                                    SourceLocation { start, end },
+                                );
+                                // Allow postfix chaining: *$self->{key}
+                                return self.parse_postfix_chain(node);
+                            }
+                            TokenKind::LeftBrace => {
+                                // Dynamic typeglob *{$name}
+                                // Parse the braced primary before looking for assignment so a
+                                // postfix such as `*{$glob}{CODE}` cannot be mistaken for a
+                                // direct dynamic typeglob assignment.
+                                let brace_expr = self.parse_primary()?;
+                                let direct_assignment = self.peek_kind() == Some(TokenKind::Assign);
+                                let body_end = brace_expr.location.end;
+                                let brace_expr = self.parse_postfix_chain(brace_expr)?;
+                                let end = brace_expr.location.end;
+                                if direct_assignment {
+                                    // Slice the braced source text (including the
+                                    // braces) and normalize exactly like the
+                                    // variable-path dynamic typeglob assignment.
+                                    let raw = String::from_utf8_lossy(
+                                        &self.src_bytes[brace_expr.location.start..body_end],
+                                    );
+                                    let name = normalize_dynamic_typeglob_name(&raw);
+                                    // A computed body keeps its braced name; retain
+                                    // the parsed expression as the structured body
+                                    // so scope analysis can see the variables it
+                                    // uses (#15731). A braced bareword strips to
+                                    // its static name and carries no body.
+                                    let body = name.starts_with('{').then(|| Box::new(brace_expr));
+                                    return Ok(Node::new(
+                                        NodeKind::Typeglob { name, body },
+                                        SourceLocation { start, end: body_end },
+                                    ));
+                                }
+                                let node = Node::new(
+                                    NodeKind::Unary {
+                                        op: "*{}".to_string(),
+                                        operand: Box::new(brace_expr),
+                                    },
+                                    SourceLocation { start, end },
+                                );
+                                return self.parse_postfix_chain(node);
+                            }
+                            TokenKind::BitwiseXor => {
+                                // *^X typeglob for control variable $^X (e.g. *^N, *^W, *^F)
+                                self.consume_token()?; // consume ^
+                                if let Some(TokenKind::Identifier) = self.peek_kind() {
+                                    let id_token = self.tokens.next()?;
+                                    let name = format!("^{}", id_token.text);
+                                    let end = id_token.end();
+                                    return Ok(Node::new(
+                                        NodeKind::Typeglob { name, body: None },
+                                        SourceLocation { start, end },
+                                    ));
+                                }
+                                // Standalone *^ — fall through to parse operand
+                            }
+                            // Typeglobs for Perl's process-identity punctuation variables.
+                            // English.pm aliases: *REAL_USER_ID = *<; *EFFECTIVE_USER_ID = *>;
+                            //                    *REAL_GROUP_ID = *(; *EFFECTIVE_GROUP_ID = *);
+                            // Use 2-token lookahead so *<EXPR> and *(EXPR) still fall through
+                            // when a real sub-expression follows the punctuation character.
+                            TokenKind::Less => {
+                                let second_kind = self.tokens.peek_second().ok().map(|t| t.kind());
+                                if is_typeglob_punct_terminator(second_kind) {
+                                    let t = self.tokens.next()?;
+                                    return Ok(Node::new(
+                                        NodeKind::Typeglob { name: "<".to_string(), body: None },
+                                        SourceLocation { start, end: t.end() },
+                                    ));
+                                }
+                            }
+                            TokenKind::Greater => {
+                                let second_kind = self.tokens.peek_second().ok().map(|t| t.kind());
+                                if is_typeglob_punct_terminator(second_kind) {
+                                    let t = self.tokens.next()?;
+                                    return Ok(Node::new(
+                                        NodeKind::Typeglob { name: ">".to_string(), body: None },
+                                        SourceLocation { start, end: t.end() },
+                                    ));
+                                }
+                            }
+                            TokenKind::LeftParen => {
+                                let second_kind = self.tokens.peek_second().ok().map(|t| t.kind());
+                                if is_typeglob_punct_terminator(second_kind) {
+                                    let t = self.tokens.next()?;
+                                    return Ok(Node::new(
+                                        NodeKind::Typeglob { name: "(".to_string(), body: None },
+                                        SourceLocation { start, end: t.end() },
+                                    ));
+                                }
+                            }
+                            TokenKind::RightParen => {
+                                // *) is always a typeglob for $) (effective GID).
+                                // RightParen cannot start a valid sub-expression in this
+                                // context, so no lookahead disambiguation is needed.
                                 let t = self.tokens.next()?;
                                 return Ok(Node::new(
-                                    NodeKind::Typeglob { name, body: None },
+                                    NodeKind::Typeglob { name: ")".to_string(), body: None },
                                     SourceLocation { start, end: t.end() },
                                 ));
                             }
-
-                            match next_kind {
-                                kind if Self::can_be_sub_name(kind)
-                                    && !next_is_sigil_identifier =>
-                                {
-                                    let id_token = self.tokens.next()?;
-                                    let end = id_token.end();
-                                    let node = Node::new(
-                                        NodeKind::Typeglob { name: id_token.text.to_string(), body: None },
-                                        SourceLocation { start, end },
-                                    );
-                                    // Allow postfix chaining: *$self->{key}
-                                    return self.parse_postfix_chain(node);
-                                }
-                                TokenKind::LeftBrace => {
-                                    // Dynamic typeglob *{$name}
-                                    // Parse the braced primary before looking for assignment so a
-                                    // postfix such as `*{$glob}{CODE}` cannot be mistaken for a
-                                    // direct dynamic typeglob assignment.
-                                    let brace_expr = self.parse_primary()?;
-                                    let direct_assignment =
-                                        self.peek_kind() == Some(TokenKind::Assign);
-                                    let body_end = brace_expr.location.end;
-                                    let brace_expr = self.parse_postfix_chain(brace_expr)?;
-                                    let end = brace_expr.location.end;
-                                    if direct_assignment {
-                                        // Slice the braced source text (including the
-                                        // braces) and normalize exactly like the
-                                        // variable-path dynamic typeglob assignment.
-                                        let raw = String::from_utf8_lossy(
-                                            &self.src_bytes[brace_expr.location.start..body_end],
-                                        );
-                                        let name = normalize_dynamic_typeglob_name(&raw);
-                                        // A computed body keeps its braced name; retain
-                                        // the parsed expression as the structured body
-                                        // so scope analysis can see the variables it
-                                        // uses (#15731). A braced bareword strips to
-                                        // its static name and carries no body.
-                                        let body = name.starts_with('{').then(|| Box::new(brace_expr));
-                                        return Ok(Node::new(
-                                            NodeKind::Typeglob { name, body },
-                                            SourceLocation { start, end: body_end },
-                                        ));
-                                    }
-                                    let node = Node::new(
-                                        NodeKind::Unary {
-                                            op: "*{}".to_string(),
-                                            operand: Box::new(brace_expr),
-                                        },
-                                        SourceLocation { start, end },
-                                    );
-                                    return self.parse_postfix_chain(node);
-                                }
-                                TokenKind::BitwiseXor => {
-                                    // *^X typeglob for control variable $^X (e.g. *^N, *^W, *^F)
-                                    self.consume_token()?; // consume ^
-                                    if let Some(TokenKind::Identifier) = self.peek_kind() {
-                                        let id_token = self.tokens.next()?;
-                                        let name = format!("^{}", id_token.text);
-                                        let end = id_token.end();
-                                        return Ok(Node::new(
-                                            NodeKind::Typeglob { name, body: None },
-                                            SourceLocation { start, end },
-                                        ));
-                                    }
-                                    // Standalone *^ — fall through to parse operand
-                                }
-                                // Typeglobs for Perl's process-identity punctuation variables.
-                                // English.pm aliases: *REAL_USER_ID = *<; *EFFECTIVE_USER_ID = *>;
-                                //                    *REAL_GROUP_ID = *(; *EFFECTIVE_GROUP_ID = *);
-                                // Use 2-token lookahead so *<EXPR> and *(EXPR) still fall through
-                                // when a real sub-expression follows the punctuation character.
-                                TokenKind::Less => {
-                                    let second_kind =
-                                        self.tokens.peek_second().ok().map(|t| t.kind());
-                                    if is_typeglob_punct_terminator(second_kind) {
-                                        let t = self.tokens.next()?;
-                                        return Ok(Node::new(
-                                            NodeKind::Typeglob { name: "<".to_string(), body: None },
-                                            SourceLocation { start, end: t.end() },
-                                        ));
-                                    }
-                                }
-                                TokenKind::Greater => {
-                                    let second_kind =
-                                        self.tokens.peek_second().ok().map(|t| t.kind());
-                                    if is_typeglob_punct_terminator(second_kind) {
-                                        let t = self.tokens.next()?;
-                                        return Ok(Node::new(
-                                            NodeKind::Typeglob { name: ">".to_string(), body: None },
-                                            SourceLocation { start, end: t.end() },
-                                        ));
-                                    }
-                                }
-                                TokenKind::LeftParen => {
-                                    let second_kind =
-                                        self.tokens.peek_second().ok().map(|t| t.kind());
-                                    if is_typeglob_punct_terminator(second_kind) {
-                                        let t = self.tokens.next()?;
-                                        return Ok(Node::new(
-                                            NodeKind::Typeglob { name: "(".to_string(), body: None },
-                                            SourceLocation { start, end: t.end() },
-                                        ));
-                                    }
-                                }
-                                TokenKind::RightParen => {
-                                    // *) is always a typeglob for $) (effective GID).
-                                    // RightParen cannot start a valid sub-expression in this
-                                    // context, so no lookahead disambiguation is needed.
-                                    let t = self.tokens.next()?;
-                                    return Ok(Node::new(
-                                        NodeKind::Typeglob { name: ")".to_string(), body: None },
-                                        SourceLocation { start, end: t.end() },
-                                    ));
-                                }
-                                // *? = typeglob for $? (child process status).
-                                // Question cannot start an expression after *, so no lookahead.
-                                TokenKind::Question => {
-                                    let t = self.tokens.next()?;
-                                    return Ok(Node::new(
-                                        NodeKind::Typeglob { name: "?".to_string(), body: None },
-                                        SourceLocation { start, end: t.end() },
-                                    ));
-                                }
-                                // *, = typeglob for $, (output field separator).
-                                // Comma cannot start an expression after *, so no lookahead.
-                                TokenKind::Comma => {
-                                    let t = self.tokens.next()?;
-                                    return Ok(Node::new(
-                                        NodeKind::Typeglob { name: ",".to_string(), body: None },
-                                        SourceLocation { start, end: t.end() },
-                                    ));
-                                }
-                                // *= — the lexer emits StarAssign for the compound assignment
-                                // operator, so Star followed by bare Assign is always the typeglob
-                                // *=  (for $= "format lines per page").  No lookahead needed.
-                                TokenKind::Assign => {
-                                    let t = self.tokens.next()?;
-                                    return Ok(Node::new(
-                                        NodeKind::Typeglob { name: "=".to_string(), body: None },
-                                        SourceLocation { start, end: t.end() },
-                                    ));
-                                }
-                                // */ = typeglob for $/ (input record separator).
-                                // Use lookahead: if followed by a statement terminator, it's a
-                                // typeglob; otherwise fall through (could be multiply + regex).
-                                TokenKind::Slash => {
-                                    let second_kind =
-                                        self.tokens.peek_second().ok().map(|t| t.kind());
-                                    if is_typeglob_punct_terminator(second_kind) {
-                                        let t = self.tokens.next()?;
-                                        return Ok(Node::new(
-                                            NodeKind::Typeglob { name: "/".to_string(), body: None },
-                                            SourceLocation { start, end: t.end() },
-                                        ));
-                                    }
-                                }
-                                // *. = typeglob for $. (input line number).
-                                // Use lookahead: if followed by a statement terminator, it's a
-                                // typeglob; otherwise fall through (could be multiply + concat).
-                                TokenKind::Dot => {
-                                    let second_kind =
-                                        self.tokens.peek_second().ok().map(|t| t.kind());
-                                    if is_typeglob_punct_terminator(second_kind) {
-                                        let t = self.tokens.next()?;
-                                        return Ok(Node::new(
-                                            NodeKind::Typeglob { name: ".".to_string(), body: None },
-                                            SourceLocation { start, end: t.end() },
-                                        ));
-                                    }
-                                }
-                                // *| = typeglob for $| (output autoflush flag).
-                                // Use lookahead: if followed by a statement terminator, it's a
-                                // typeglob; otherwise fall through (could be multiply + bitwise-or).
-                                TokenKind::BitwiseOr => {
-                                    let second_kind =
-                                        self.tokens.peek_second().ok().map(|t| t.kind());
-                                    if is_typeglob_punct_terminator(second_kind) {
-                                        let t = self.tokens.next()?;
-                                        return Ok(Node::new(
-                                            NodeKind::Typeglob { name: "|".to_string(), body: None },
-                                            SourceLocation { start, end: t.end() },
-                                        ));
-                                    }
-                                }
-                                // *: = typeglob for $: (format line-break characters).
-                                // Use lookahead: if followed by a statement terminator, it's a
-                                // typeglob; otherwise fall through (could be label or ternary colon).
-                                TokenKind::Colon => {
-                                    let second_kind =
-                                        self.tokens.peek_second().ok().map(|t| t.kind());
-                                    if is_typeglob_punct_terminator(second_kind) {
-                                        let t = self.tokens.next()?;
-                                        return Ok(Node::new(
-                                            NodeKind::Typeglob { name: ":".to_string(), body: None },
-                                            SourceLocation { start, end: t.end() },
-                                        ));
-                                    }
-                                }
-                                _ => {}
+                            // *? = typeglob for $? (child process status).
+                            // Question cannot start an expression after *, so no lookahead.
+                            TokenKind::Question => {
+                                let t = self.tokens.next()?;
+                                return Ok(Node::new(
+                                    NodeKind::Typeglob { name: "?".to_string(), body: None },
+                                    SourceLocation { start, end: t.end() },
+                                ));
                             }
+                            // *, = typeglob for $, (output field separator).
+                            // Comma cannot start an expression after *, so no lookahead.
+                            TokenKind::Comma => {
+                                let t = self.tokens.next()?;
+                                return Ok(Node::new(
+                                    NodeKind::Typeglob { name: ",".to_string(), body: None },
+                                    SourceLocation { start, end: t.end() },
+                                ));
+                            }
+                            // *= — the lexer emits StarAssign for the compound assignment
+                            // operator, so Star followed by bare Assign is always the typeglob
+                            // *=  (for $= "format lines per page").  No lookahead needed.
+                            TokenKind::Assign => {
+                                let t = self.tokens.next()?;
+                                return Ok(Node::new(
+                                    NodeKind::Typeglob { name: "=".to_string(), body: None },
+                                    SourceLocation { start, end: t.end() },
+                                ));
+                            }
+                            // */ = typeglob for $/ (input record separator).
+                            // Use lookahead: if followed by a statement terminator, it's a
+                            // typeglob; otherwise fall through (could be multiply + regex).
+                            TokenKind::Slash => {
+                                let second_kind = self.tokens.peek_second().ok().map(|t| t.kind());
+                                if is_typeglob_punct_terminator(second_kind) {
+                                    let t = self.tokens.next()?;
+                                    return Ok(Node::new(
+                                        NodeKind::Typeglob { name: "/".to_string(), body: None },
+                                        SourceLocation { start, end: t.end() },
+                                    ));
+                                }
+                            }
+                            // *. = typeglob for $. (input line number).
+                            // Use lookahead: if followed by a statement terminator, it's a
+                            // typeglob; otherwise fall through (could be multiply + concat).
+                            TokenKind::Dot => {
+                                let second_kind = self.tokens.peek_second().ok().map(|t| t.kind());
+                                if is_typeglob_punct_terminator(second_kind) {
+                                    let t = self.tokens.next()?;
+                                    return Ok(Node::new(
+                                        NodeKind::Typeglob { name: ".".to_string(), body: None },
+                                        SourceLocation { start, end: t.end() },
+                                    ));
+                                }
+                            }
+                            // *| = typeglob for $| (output autoflush flag).
+                            // Use lookahead: if followed by a statement terminator, it's a
+                            // typeglob; otherwise fall through (could be multiply + bitwise-or).
+                            TokenKind::BitwiseOr => {
+                                let second_kind = self.tokens.peek_second().ok().map(|t| t.kind());
+                                if is_typeglob_punct_terminator(second_kind) {
+                                    let t = self.tokens.next()?;
+                                    return Ok(Node::new(
+                                        NodeKind::Typeglob { name: "|".to_string(), body: None },
+                                        SourceLocation { start, end: t.end() },
+                                    ));
+                                }
+                            }
+                            // *: = typeglob for $: (format line-break characters).
+                            // Use lookahead: if followed by a statement terminator, it's a
+                            // typeglob; otherwise fall through (could be label or ternary colon).
+                            TokenKind::Colon => {
+                                let second_kind = self.tokens.peek_second().ok().map(|t| t.kind());
+                                if is_typeglob_punct_terminator(second_kind) {
+                                    let t = self.tokens.next()?;
+                                    return Ok(Node::new(
+                                        NodeKind::Typeglob { name: ":".to_string(), body: None },
+                                        SourceLocation { start, end: t.end() },
+                                    ));
+                                }
+                            }
+                            TokenKind::ArraySigil
+                            | TokenKind::HashSigil
+                            | TokenKind::SubSigil
+                            | TokenKind::BitwiseAnd => {
+                                // `*@x` and friends: a bare aggregate or
+                                // code sigil directly after the typeglob
+                                // sigil is the bare double-sigil shape of
+                                // issue #15750 (only `$` scalars, braced
+                                // expressions, and names are valid unbraced
+                                // `*` operands). Surface the UnexpectedToken
+                                // diagnostic + ERROR node instead of
+                                // silently parsing the sigil as a variable
+                                // operand.
+                                let bad = self.tokens.next()?;
+                                let bad_text = bad.text.to_string();
+                                let node = self.recover_from_error(
+                                    "bare '*' sigil followed by another sigil — \
+                                     not a valid Perl variable"
+                                        .to_string(),
+                                    "identifier, '$', or '{' after '*' sigil".to_string(),
+                                    bad_text,
+                                    start,
+                                );
+                                // Widen the ERROR span to cover the bad token.
+                                let mut node = node;
+                                node.location.end = bad.end();
+                                return Ok(node);
+                            }
+                            // The lexer folds a trailing sigil+name like `*@x`
+                            // into one Identifier token, so the operand parse
+                            // below would silently build a `Variable` from it.
+                            // A non-`$` sigil after the typeglob sigil is the
+                            // bare double-sigil shape of issue #15750 (only `$`
+                            // scalars, braced expressions, and plain names are
+                            // valid unbraced `*` operands): surface the
+                            // UnexpectedToken diagnostic + ERROR node instead.
+                            TokenKind::Identifier
+                                if next_text.starts_with(['@', '%', '&', '*']) =>
+                            {
+                                let bad = self.tokens.next()?;
+                                let bad_text = bad.text.to_string();
+                                let node = self.recover_from_error(
+                                    "bare '*' sigil followed by another sigil — \
+                                     not a valid Perl variable"
+                                        .to_string(),
+                                    "identifier, '$', or '{' after '*' sigil".to_string(),
+                                    bad_text,
+                                    start,
+                                );
+                                let mut node = node;
+                                node.location.end = bad.end();
+                                return Ok(node);
+                            }
+                            _ => {}
                         }
+                    }
 
                     // Check if we're at EOF or a terminator (for standalone operators)
                     if self.tokens.is_eof() || self.is_at_statement_end() {
@@ -536,7 +593,9 @@ impl<'a> Parser<'a> {
                         ));
                     }
 
-                    let operand = if matches!(
+                    let operand = if self.goto_starts_control_flow() {
+                        self.parse_goto()?
+                    } else if matches!(
                         op_token.kind(),
                         TokenKind::Not | TokenKind::Backslash | TokenKind::BitwiseNot
                     ) {
@@ -547,7 +606,10 @@ impl<'a> Parser<'a> {
                     let end = operand.location.end;
 
                     let node = Node::new(
-                        NodeKind::Unary { op: op_token.text.to_string(), operand: Box::new(operand) },
+                        NodeKind::Unary {
+                            op: op_token.text.to_string(),
+                            operand: Box::new(operand),
+                        },
                         SourceLocation { start, end },
                     );
 
@@ -566,7 +628,10 @@ impl<'a> Parser<'a> {
                     let end = operand.location.end;
 
                     return Ok(Node::new(
-                        NodeKind::Unary { op: op_token.text.to_string(), operand: Box::new(operand) },
+                        NodeKind::Unary {
+                            op: op_token.text.to_string(),
+                            operand: Box::new(operand),
+                        },
                         SourceLocation { start, end },
                     ));
                 }
@@ -595,7 +660,10 @@ impl<'a> Parser<'a> {
                     let end = operand.location.end;
 
                     return Ok(Node::new(
-                        NodeKind::Unary { op: op_token.text.to_string(), operand: Box::new(operand) },
+                        NodeKind::Unary {
+                            op: op_token.text.to_string(),
+                            operand: Box::new(operand),
+                        },
                         SourceLocation { start, end },
                     ));
                 }
