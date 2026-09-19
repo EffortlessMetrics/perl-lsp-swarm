@@ -6,6 +6,17 @@
 # Output:
 #   artifacts/ci-time.json  (machine-readable)
 #   artifacts/ci-time.md    (human-readable)
+#
+# Schema contract (#15381): this script is the manual `bash` fallback for the
+# canonical `cargo xtask ci-measure` producer. Both producers MUST emit the
+# same `schema_version` so a consumer can identify the file shape, and a
+# distinct `producer` string so a consumer can identify which tool wrote it.
+# The constants below are kept byte-identical with
+# `xtask/src/tasks/ci_measure.rs`'s `SCHEMA_VERSION` and `PRODUCER`; the
+# inline test in that file ratchets the two.
+SCHEMA_VERSION="ci-time.v1"
+PRODUCER="cargo-xtask-ci-measure"
+
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -25,7 +36,7 @@ time_cmd() {
   local name="$1"
   shift
   echo "==> $name" >&2
-  "$python_bin" - "$name" "$@" <<'PY'
+  "$python_bin" - "$name" "$@" "$SCHEMA_VERSION" "$PRODUCER" <<'PY'
 import json
 import os
 import subprocess
@@ -33,7 +44,9 @@ import sys
 import time
 
 name = sys.argv[1]
-cmd = sys.argv[2:]
+cmd = sys.argv[2:-2]
+schema_version = sys.argv[-2]
+producer = sys.argv[-1]
 
 start = time.perf_counter()
 proc = subprocess.run(
@@ -45,7 +58,14 @@ proc = subprocess.run(
 )
 end = time.perf_counter()
 
-sys.stdout.write(json.dumps({"name": name, "seconds": round(end - start, 3), "returncode": proc.returncode}) + "\n")
+ndjson_line = json.dumps({
+  "schema_version": schema_version,
+  "producer": producer,
+  "name": name,
+  "seconds": round(end - start, 3),
+  "returncode": proc.returncode,
+}) + "\n"
+sys.stdout.write(ndjson_line)
 sys.exit(proc.returncode)
 PY
 }
@@ -66,7 +86,7 @@ time_cmd "ci-lsp-def"            just ci-lsp-def            | tee -a "$tmp_json"
 time_cmd "status-check"          just status-check          | tee -a "$tmp_json"
 
 # Build consolidated JSON
-"$python_bin" - "$tmp_json" "$ARTIFACTS/ci-time.json" "$(now_iso)" <<'PY'
+"$python_bin" - "$tmp_json" "$ARTIFACTS/ci-time.json" "$(now_iso)" "$SCHEMA_VERSION" "$PRODUCER" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -74,11 +94,15 @@ from pathlib import Path
 ndjson = Path(sys.argv[1]).read_text(encoding="utf-8").splitlines()
 out_path = Path(sys.argv[2])
 generated_at = sys.argv[3]
+schema_version = sys.argv[4]
+producer = sys.argv[5]
 
 rows = [json.loads(line) for line in ndjson if line.strip()]
 total = round(sum(r["seconds"] for r in rows), 3)
 
 payload = {
+  "schema_version": schema_version,
+  "producer": producer,
   "generated_at": generated_at,
   "lanes": rows,
   "total_seconds": total,
@@ -100,6 +124,8 @@ lines.append("# CI Timing Baseline")
 lines.append("")
 lines.append(f"- Generated at: `{data['generated_at']}`")
 lines.append(f"- Total: `{data['total_seconds']}s`")
+lines.append(f"- Schema: `{data.get('schema_version', 'unknown')}`")
+lines.append(f"- Producer: `{data.get('producer', 'unknown')}`")
 lines.append("")
 lines.append("| Lane | Seconds | RC |")
 lines.append("|------|---------|----|")
