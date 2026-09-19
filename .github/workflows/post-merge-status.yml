@@ -551,6 +551,7 @@ jobs:
           BRANCH: automation/post-merge-status
           BASE_SHA: ${{ github.sha }}
           GENERATED_HEAD_SHA: ${{ steps.create-pr.outputs.pull-request-head-sha }}
+          GENERATED_PR_NUMBER: ${{ steps.create-pr.outputs.pull-request-number }}
         run: |
           # ci.yml's workflow_dispatch declares required inputs (since #13019):
           # the dispatched subject's exact base and head SHAs. Dispatching it
@@ -560,7 +561,11 @@ jobs:
           # it equals the live default-branch tip, i.e. the generated PR's
           # base. head_sha is the automation branch head the create-pr step
           # just wrote, which is the same commit the --ref below dispatches.
-          # The other three workflows declare no dispatch inputs and stay bare.
+          # pr-title-check.yml also declares required dispatch inputs (since
+          # #15351): the exact generated PR number and its expected head SHA.
+          # Its validate-title context is exact-subject bound — a bare dispatch
+          # fails closed instead of succeeding without validating this PR.
+          # The other two workflows declare no dispatch inputs and stay bare.
           # Keep attempting every required workflow so one transient dispatch
           # failure cannot strand the later required checks. The final status
           # remains failing when any dispatch failed.
@@ -571,6 +576,12 @@ jobs:
               if gh workflow run "$workflow" --ref "$BRANCH" \
                 -f "base_sha=$BASE_SHA" \
                 -f "head_sha=$GENERATED_HEAD_SHA"; then
+                continue
+              fi
+            elif [ "$workflow" = pr-title-check.yml ]; then
+              if gh workflow run "$workflow" --ref "$BRANCH" \
+                -f "pr_number=$GENERATED_PR_NUMBER" \
+                -f "expected_head_sha=$GENERATED_HEAD_SHA"; then
                 continue
               fi
             elif gh workflow run "$workflow" --ref "$BRANCH"; then
