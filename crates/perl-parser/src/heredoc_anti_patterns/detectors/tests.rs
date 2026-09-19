@@ -163,6 +163,19 @@ fn test_regex_heredoc_does_not_overmatch_triple_question() {
 }
 
 #[test]
+fn test_regex_heredoc_pattern_static_matches_both_openers() {
+    // #14390: observe the production REGEX_HEREDOC_PATTERN static directly. The
+    // detector-level tests above reach it only transitively through trait-object
+    // dispatch, which static analysis cannot follow; this direct observation pins
+    // the changed `?{1,2}` opener to its falsifying inputs.
+    let pattern =
+        super::compiled(&super::REGEX_HEREDOC_PATTERN).expect("production regex compiles");
+    assert!(pattern.is_match("m/a(?{b<<'X'})c/"));
+    assert!(pattern.is_match("m/a(??{b<<'X'})c/"));
+    assert!(!pattern.is_match("m/a(???{b<<'X'})c/"));
+}
+
+#[test]
 fn test_eval_heredoc_detection() {
     let detector = AntiPatternDetector::new();
     // Single-line case: eval and << on the same line — detected by the bounded pattern.
