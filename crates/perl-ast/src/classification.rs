@@ -212,7 +212,8 @@ impl NodeKind {
             | NodeKind::StatementModifier { .. }
             | NodeKind::Return { .. }
             | NodeKind::LoopControl { .. }
-            | NodeKind::Goto { .. } => NodeKindCategory::Statement,
+            | NodeKind::Goto { .. }
+            | NodeKind::TargetlessGoto { .. } => NodeKindCategory::Statement,
 
             NodeKind::Variable { .. }
             | NodeKind::VariableWithAttributes { .. }
@@ -779,6 +780,15 @@ impl NodeKind {
                 recovery = false,
                 bp = true
             ),
+            NodeKind::TargetlessGoto { .. } => flags!(
+                exec = true,
+                scope = false,
+                decl = false,
+                refs = false,
+                children = false,
+                recovery = false,
+                bp = true
+            ),
             NodeKind::MethodCall { .. } => flags!(
                 exec = true,
                 scope = false,
@@ -1232,6 +1242,7 @@ mod tests {
             NodeKind::Return { value: None },
             NodeKind::LoopControl { op: "next".to_string(), label: None },
             NodeKind::Goto { target: Box::new(leaf()), form: GotoTargetForm::Label },
+            NodeKind::TargetlessGoto {},
             NodeKind::MethodCall {
                 object: Box::new(leaf()),
                 method: "foo".to_string(),
@@ -1801,6 +1812,7 @@ mod tests {
             n(NodeKind::Return { value: Some(Box::new(leaf())) }),
             n(NodeKind::LoopControl { op: "next".to_string(), label: None }),
             n(NodeKind::Goto { target: Box::new(leaf()), form: GotoTargetForm::Label }),
+            n(NodeKind::TargetlessGoto {}),
             n(NodeKind::MethodCall {
                 object: Box::new(leaf()),
                 method: "foo".to_string(),
