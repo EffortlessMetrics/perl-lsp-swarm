@@ -23,8 +23,14 @@ and `docs/reference/NATIVE_STACK_POLICY.md`.
   asks for.
 - Modules: `boundary`, `builder`, `dist`, `dist_authoring`, `effects`, `error`, `export`,
   `fact_classes`, `file`, `id`, `import` (+ `import_walk`), `meta_yml`, `model`,
-  `package`, `pod`, `provenance`, `range`, `relation`, `symbol`, `test`,
-  `test_item`, `test_item_discovery`.
+  `package`, `pod`, `provenance`, `range`, `relation`, `semantic_query_view`,
+  `symbol`, `test`, `test_command`, `test_item`, `test_item_discovery`.
+- `test_command` -- non-executing test-command planning: turns one
+  accepted `ProjectEnvironmentSnapshot` plus caller-supplied
+  `GeneratedStateEvidence` into typed `prove` / `make test` / `Build test`
+  candidates. It plans only; selection, authorization, and execution belong to
+  the test-execution layer, and generated-state freshness is consumed, never
+  observed here.
 - `SCHEMA_VERSION` -- the fact-schema version this crate emits; bump on any
   breaking model change.
 

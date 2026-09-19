@@ -81,17 +81,17 @@ pub(crate) mod position {
 
 /// Declaration types re-export
 pub(crate) mod declaration {
-    pub use perl_parser::declaration::*;
+    pub use perl_semantic_analyzer::analysis::declaration::*;
 }
 
 /// Workspace index re-export
 pub(crate) mod workspace_index {
-    pub use perl_parser::workspace_index::*;
+    pub use perl_workspace::workspace_index::*;
 }
 
 /// Symbol types re-export
 pub(crate) mod symbol {
-    pub use perl_parser::symbol::*;
+    pub use perl_semantic_analyzer::analysis::symbol::*;
 }
 
 /// AST types re-export
@@ -141,7 +141,7 @@ pub(crate) mod perl_critic {
 }
 
 pub(crate) mod semantic {
-    pub use perl_parser::semantic::*;
+    pub use perl_semantic_analyzer::analysis::semantic::*;
 }
 
 pub(crate) mod error {
@@ -165,7 +165,7 @@ pub(crate) use perl_parser::ast::SourceLocation;
 
 // Engine modules needed by runtime
 pub(crate) mod type_inference {
-    pub use perl_parser::type_inference::*;
+    pub use perl_semantic_analyzer::analysis::type_inference::*;
 }
 
 pub(crate) mod builtin_signatures {

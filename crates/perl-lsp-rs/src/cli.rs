@@ -549,6 +549,23 @@ fn run_server(command_name: &str, launch_config: LaunchConfig) {
                                         return;
                                     }
                                 };
+                                let peer_shutdown = match std_stream.try_clone() {
+                                    Ok(shutdown) => shutdown,
+                                    Err(error) => {
+                                        tracing::error!(%error, "failed to clone socket shutdown handle");
+                                        return;
+                                    }
+                                };
+                                // Resolve every fallible socket clone before
+                                // constructing the server or starting readers,
+                                // so clone failure cannot leave a live worker.
+                                let failure_shutdown = match peer_shutdown.try_clone() {
+                                    Ok(shutdown) => shutdown,
+                                    Err(error) => {
+                                        tracing::error!(%error, "failed to clone failure shutdown handle");
+                                        return;
+                                    }
+                                };
                                 let reader = std_stream;
                                 let profile = feature_profile;
 
@@ -579,7 +596,16 @@ fn run_server(command_name: &str, launch_config: LaunchConfig) {
                                     );
                                 }
 
-                                server.serve_async(rx).await;
+                                let failure_server = Arc::clone(&server);
+                                let failure_task = tokio::spawn(async move {
+                                    failure_server.response_delivery_failure_notified().await;
+                                    let _ = failure_shutdown.shutdown(std::net::Shutdown::Both);
+                                });
+                                Arc::clone(&server).serve_async(rx).await;
+                                if server.response_delivery_failed() {
+                                    let _ = peer_shutdown.shutdown(std::net::Shutdown::Both);
+                                }
+                                failure_task.abort();
                             });
                         }
                         Err(e) => {

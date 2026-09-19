@@ -1,0 +1,17 @@
+name: fixture-xtask-cli-echoed-invocation
+# Negative control. Printing the command as advice is not running it. The
+# finding is error-level, so treating this as an invocation would block an
+# otherwise valid workflow change.
+on:
+  pull_request:
+    paths:
+      - 'docs/ci/example.md'
+permissions:
+  contents: read
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - run: echo 'Run cargo xtask example-contract check locally to reproduce'

@@ -113,8 +113,34 @@ struct BaselineReport {
     generated_at: String,
     branch: String,
     days_analyzed: u64,
+    /// Whether the fetched sample covers the whole requested window.
+    ///
+    /// `gh run list --limit N` returns the N most recent runs. When the
+    /// fetch hits that cap while the requested window extends further back,
+    /// the retained rows are a `partial_sample` of the period, not a
+    /// complete baseline (#15377). Downstream consumers (release-health,
+    /// policy thresholds) must not treat a partial sample as a full period.
+    sample_completeness: SampleCompleteness,
+    /// Raw rows returned by the fetch, before date filtering.
+    fetched_runs: u64,
+    /// Oldest/newest `createdAt` actually fetched; `None` when no row
+    /// carried a parseable timestamp. Together they show the window the
+    /// sample really covers.
+    oldest_fetched_at: Option<String>,
+    newest_fetched_at: Option<String>,
     workflows: BTreeMap<String, BaselineWorkflow>,
     summary: BaselineSummary,
+}
+
+/// Completeness of a baseline sample relative to its requested window.
+///
+/// Serialized as `complete` / `partial_sample` so JSON consumers can match
+/// without tracking Rust variant renames.
+#[derive(Serialize, Clone, Copy, PartialEq, Eq, Debug)]
+#[serde(rename_all = "snake_case")]
+enum SampleCompleteness {
+    Complete,
+    PartialSample,
 }
 
 struct BaselineRun {
@@ -416,6 +442,13 @@ pub fn run_ci_baseline(branch: String, days: u64, limit: usize, output_dir: Path
 
     run_gh_auth_check(&root)?;
 
+    // Resolve the branch: an empty CLI default is "use whatever the repo's
+    // default branch is right now", so the tool doesn't silently emit a
+    // baseline for a branch the repository does not have. This guards
+    // against the long-standing `master` default that returned zero rows on
+    // the `main` branch without recording why.
+    let branch = if branch.is_empty() { resolve_default_branch(&root)? } else { branch };
+
     let runs_json = run_gh_command(
         &root,
         "listing workflow runs",
@@ -437,10 +470,22 @@ pub fn run_ci_baseline(branch: String, days: u64, limit: usize, output_dir: Path
 
     let generated_at = Utc::now();
     let cutoff = generated_at - ChronoDuration::days(days as i64);
-    let report = match build_baseline_report(&branch, days, generated_at, cutoff, &runs) {
+    let report = match build_baseline_report(&branch, days, generated_at, cutoff, limit, &runs) {
         Some(report) => report,
         None => {
-            println!("No workflow runs found in requested period");
+            // Distinguish "no runs in the requested window" from
+            // "branch does not exist in this repository" so a default
+            // invocation that silently returns zero rows cannot leave a
+            // stale baseline behind without explanation.
+            if branch_exists(&root, &branch)? {
+                println!("No workflow runs found in requested period");
+            } else {
+                bail!(
+                    "branch '{branch}' was not found in this repository; \
+                     supply --branch with a branch that exists or run without \
+                     --branch to use the repository default"
+                );
+            }
             return Ok(());
         }
     };
@@ -466,6 +511,17 @@ pub fn run_ci_baseline(branch: String, days: u64, limit: usize, output_dir: Path
     println!("======================================");
     println!("Branch:              {}", report.branch);
     println!("Analysis period:     Last {} days", report.days_analyzed);
+    println!(
+        "Sample:              {} (fetched {}, window {}..{})",
+        match report.sample_completeness {
+            SampleCompleteness::Complete => "complete",
+            SampleCompleteness::PartialSample =>
+                "PARTIAL SAMPLE - fetch cap hit before the window was covered",
+        },
+        report.fetched_runs,
+        report.oldest_fetched_at.as_deref().unwrap_or("?"),
+        report.newest_fetched_at.as_deref().unwrap_or("?"),
+    );
     println!("Total runs:          {}", report.summary.total_runs);
     println!("Total billable:      {}m", report.summary.total_billable_minutes);
     println!("Overall success:     {:.1}%", report.summary.overall_success_rate_percent);
@@ -481,10 +537,37 @@ fn build_baseline_report(
     days: u64,
     generated_at: DateTime<Utc>,
     cutoff: DateTime<Utc>,
+    limit: usize,
     runs: &[Value],
 ) -> Option<BaselineReport> {
     let mut workflow_counters: BTreeMap<String, BaselineCounters> = BTreeMap::new();
     let mut baseline_runs: Vec<BaselineRun> = Vec::new();
+
+    // The fetch returns most-recent-first up to `limit` rows. Record the
+    // fetched span before date filtering: when the cap is hit while the
+    // requested window reaches further back, the retained rows cannot stand
+    // in for the whole period (#15377).
+    let fetched_runs = runs.len();
+    let mut oldest_fetched: Option<DateTime<Utc>> = None;
+    let mut newest_fetched: Option<DateTime<Utc>> = None;
+    for run in runs {
+        if let Some(created) = read_timestamp(run, &["createdAt", "created_at"]) {
+            oldest_fetched = Some(oldest_fetched.map_or(created, |oldest| oldest.min(created)));
+            newest_fetched = Some(newest_fetched.map_or(created, |newest| newest.max(created)));
+        }
+    }
+    let cap_hit = limit > 0 && fetched_runs >= limit;
+    let sample_completeness = match (cap_hit, oldest_fetched) {
+        // Fewer rows than the cap: the API returned everything available,
+        // so whatever the date filter keeps is the complete picture.
+        (false, _) => SampleCompleteness::Complete,
+        // Cap hit but the fetched span already reaches past the window edge:
+        // the cap did not cut off any in-window row.
+        (true, Some(oldest)) if oldest < cutoff => SampleCompleteness::Complete,
+        // Cap hit and every fetched row is inside the window: older
+        // in-window rows exist that we never saw.
+        (true, _) => SampleCompleteness::PartialSample,
+    };
 
     for run in runs {
         let created = match read_timestamp(run, &["createdAt", "created_at"]) {
@@ -628,6 +711,10 @@ fn build_baseline_report(
         generated_at: generated_at.to_rfc3339(),
         branch: branch.to_string(),
         days_analyzed: days,
+        sample_completeness,
+        fetched_runs: u64::try_from(fetched_runs).unwrap_or(u64::MAX),
+        oldest_fetched_at: oldest_fetched.map(|ts| ts.to_rfc3339()),
+        newest_fetched_at: newest_fetched.map(|ts| ts.to_rfc3339()),
         workflows: workflow_reports,
         summary: BaselineSummary {
             total_runs,
@@ -702,6 +789,71 @@ fn run_gh_command(root: &Path, action: &str, args: Vec<String>) -> Result<String
     String::from_utf8(output.stdout).context("gh output was not valid UTF-8")
 }
 
+/// Resolve the repository's current default branch via `gh repo view`.
+///
+/// We avoid hardcoding any branch name (the previous default of `master`
+/// silently returned zero rows once the repository moved to `main`).
+/// Errors from `gh` are surfaced verbatim so the caller sees why the
+/// resolution failed.
+fn resolve_default_branch(root: &Path) -> Result<String> {
+    let raw = run_gh_command(
+        root,
+        "resolving repository default branch",
+        vec![
+            "repo".to_string(),
+            "view".to_string(),
+            "--json".to_string(),
+            "defaultBranchRef".to_string(),
+        ],
+    )?;
+
+    parse_default_branch(&raw)
+}
+
+/// Parse the JSON envelope returned by `gh repo view --json defaultBranchRef`.
+///
+/// Extracted as a pure helper so the parsing path can be exercised without
+/// invoking the `gh` CLI. Returns an error when `defaultBranchRef` is absent
+/// (forks, archived repositories, or older `gh` versions may omit it).
+fn parse_default_branch(raw: &str) -> Result<String> {
+    #[derive(Deserialize)]
+    struct DefaultBranchRef {
+        name: String,
+    }
+    #[derive(Deserialize)]
+    struct DefaultBranchEnvelope {
+        #[serde(rename = "defaultBranchRef")]
+        default_branch_ref: Option<DefaultBranchRef>,
+    }
+
+    let envelope: DefaultBranchEnvelope =
+        serde_json::from_str(raw).context("failed to parse gh repo view defaultBranchRef")?;
+
+    envelope
+        .default_branch_ref
+        .map(|r| r.name)
+        .ok_or_else(|| color_eyre::eyre::eyre!("gh repo view did not return a defaultBranchRef"))
+}
+
+/// Test whether a branch ref exists in the current repository.
+///
+/// Uses the GitHub `GET /repos/{owner}/{repo}/branches/{branch}` API via
+/// `gh api`. A non-existent branch returns HTTP 404, which we report as
+/// `Ok(false)` rather than a `gh` error so the caller can produce a clean
+/// "branch not found" diagnostic.
+fn branch_exists(root: &Path, branch: &str) -> Result<bool> {
+    let repo = parse_repo_info(root)?;
+    let endpoint = format!("repos/{}/{}/branches/{}", repo.owner.login, repo.name, branch,);
+
+    let status = Command::new("gh")
+        .current_dir(root)
+        .args(["api", "--method", "GET", &endpoint])
+        .output()
+        .with_context(|| format!("failed to query branch existence for {branch}"))?;
+
+    Ok(status.status.success())
+}
+
 fn read_timestamp(run: &Value, keys: &[&str]) -> Option<DateTime<Utc>> {
     for key in keys {
         let value = match run.get(*key).and_then(Value::as_str) {
@@ -754,7 +906,18 @@ fn build_baseline_markdown(report: &BaselineReport) -> Result<String> {
     out.push_str("# CI Baseline Metrics Report\n\n");
     out.push_str(&format!("**Generated:** {}\n", report.generated_at.replace('T', " ")));
     out.push_str(&format!("**Branch:** {}\n", report.branch));
-    out.push_str(&format!("**Analysis Period:** Last {} days\n\n", report.days_analyzed));
+    out.push_str(&format!("**Analysis Period:** Last {} days\n", report.days_analyzed));
+    out.push_str(&format!(
+        "**Sample:** {} (fetched {}, window {}..{})\n\n",
+        match report.sample_completeness {
+            SampleCompleteness::Complete => "complete",
+            SampleCompleteness::PartialSample =>
+                "PARTIAL SAMPLE - fetch cap hit before the window was covered; do not use as a full-period baseline",
+        },
+        report.fetched_runs,
+        report.oldest_fetched_at.as_deref().unwrap_or("?"),
+        report.newest_fetched_at.as_deref().unwrap_or("?"),
+    ));
 
     out.push_str("## Summary\n\n");
     out.push_str("| Metric | Value |\n|--------|-------|\n");
@@ -870,7 +1033,7 @@ mod tests {
             }),
         ];
 
-        let report = build_baseline_report("master", 1, generated_at, cutoff, &runs)
+        let report = build_baseline_report("master", 1, generated_at, cutoff, 200, &runs)
             .ok_or_else(|| eyre!("expected baseline report"))?;
         let workflow =
             report.workflows.get("CI").ok_or_else(|| eyre!("expected workflow report"))?;
@@ -932,7 +1095,7 @@ mod tests {
             }),
         ];
 
-        let report = build_baseline_report("master", 1, generated_at, cutoff, &runs)
+        let report = build_baseline_report("master", 1, generated_at, cutoff, 200, &runs)
             .ok_or_else(|| eyre!("expected baseline report"))?;
         let ci = report.workflows.get("CI").ok_or_else(|| eyre!("expected CI workflow"))?;
         let lint = report.workflows.get("Lint").ok_or_else(|| eyre!("expected Lint workflow"))?;
@@ -943,6 +1106,143 @@ mod tests {
         assert_eq!(lint.failure_count, 1);
         assert_eq!(lint.unique_failures, 0);
         assert_eq!(report.summary.total_unique_failures, 1);
+
+        Ok(())
+    }
+
+    /// `parse_default_branch` must extract the `name` field from a real
+    /// `gh repo view --json defaultBranchRef` payload, including the
+    /// `main` shape that the previous hard-coded `master` default
+    /// silently missed.
+    #[test]
+    fn parse_default_branch_extracts_main() -> Result<()> {
+        let raw = r#"{"defaultBranchRef":{"name":"main"}}"#;
+        assert_eq!(parse_default_branch(raw)?, "main");
+        Ok(())
+    }
+
+    /// A payload that does not carry `defaultBranchRef` (archived forks,
+    /// older `gh` versions) must surface a clear error rather than
+    /// returning an empty string that the caller would forward as a
+    /// branch filter.
+    #[test]
+    fn parse_default_branch_errors_when_default_branch_ref_absent() {
+        let raw = r#"{}"#;
+        let result = parse_default_branch(raw);
+        assert!(result.is_err(), "expected an error when defaultBranchRef is missing");
+    }
+
+    /// A malformed payload (the kind a transient `gh` failure produces)
+    /// must surface a parse error rather than silently substituting an
+    /// empty branch.
+    #[test]
+    fn parse_default_branch_errors_on_garbage_input() {
+        let raw = "this is not json";
+        let result = parse_default_branch(raw);
+        assert!(result.is_err(), "expected an error when payload is not valid JSON");
+    }
+
+    /// `build_baseline_report` must accept an empty run slice without
+    /// panicking: the wrong-branch diagnostic is delivered by the caller
+    /// after this returns `None`. A panic here would mask the
+    /// `gh run list --branch foo` zero-row case that the issue cites.
+    #[test]
+    fn build_baseline_report_returns_none_for_empty_runs() -> Result<()> {
+        let generated_at =
+            DateTime::parse_from_rfc3339("2026-03-25T12:00:00Z")?.with_timezone(&Utc);
+        let cutoff = DateTime::parse_from_rfc3339("2026-03-24T12:00:00Z")?.with_timezone(&Utc);
+        let runs: Vec<Value> = Vec::new();
+
+        let report = build_baseline_report("main", 1, generated_at, cutoff, 200, &runs);
+        assert!(report.is_none(), "expected no report when zero rows are fetched");
+
+        Ok(())
+    }
+
+    fn truncated_window_runs() -> Vec<Value> {
+        // Two rows, both inside the requested window: with `--limit 2` the
+        // fetch hit the cap while the window reaches further back, so older
+        // in-window rows exist that were never fetched.
+        vec![
+            json!({
+                "workflowName": "CI",
+                "conclusion": "success",
+                "createdAt": "2026-03-25T11:00:00Z",
+                "startedAt": "2026-03-25T11:00:00Z",
+                "updatedAt": "2026-03-25T11:01:00Z"
+            }),
+            json!({
+                "workflowName": "CI",
+                "conclusion": "success",
+                "createdAt": "2026-03-25T10:00:00Z",
+                "startedAt": "2026-03-25T10:00:00Z",
+                "updatedAt": "2026-03-25T10:01:00Z"
+            }),
+        ]
+    }
+
+    /// 201+ runs inside the period cannot appear as a complete 30-day
+    /// 200-run baseline (#15377): when the fetch hits `--limit` while the
+    /// window extends past the oldest fetched row, the report must say
+    /// `partial_sample` everywhere the sample is presented.
+    #[test]
+    fn baseline_report_marks_truncated_fetch_as_partial_sample() -> Result<()> {
+        let generated_at =
+            DateTime::parse_from_rfc3339("2026-03-25T12:00:00Z")?.with_timezone(&Utc);
+        let cutoff = DateTime::parse_from_rfc3339("2026-03-24T12:00:00Z")?.with_timezone(&Utc);
+
+        let report =
+            build_baseline_report("main", 1, generated_at, cutoff, 2, &truncated_window_runs())
+                .ok_or_else(|| eyre!("expected baseline report"))?;
+        assert_eq!(report.sample_completeness, SampleCompleteness::PartialSample);
+        assert_eq!(report.fetched_runs, 2);
+        assert_eq!(report.oldest_fetched_at.as_deref(), Some("2026-03-25T10:00:00+00:00"));
+        assert_eq!(report.newest_fetched_at.as_deref(), Some("2026-03-25T11:00:00+00:00"));
+
+        let markdown = build_baseline_markdown(&report)?;
+        assert!(
+            markdown.contains("PARTIAL SAMPLE"),
+            "markdown must carry the partial-sample warning, got:\n{markdown}"
+        );
+        assert!(
+            markdown.contains("do not use as a full-period baseline"),
+            "markdown must state the consumption limit, got:\n{markdown}"
+        );
+
+        Ok(())
+    }
+
+    /// Hitting the cap is not itself truncation: when the fetched span
+    /// already reaches past the window edge, no in-window row was cut off.
+    /// (The 10:00 row falls outside the window so only the 11:00 row is
+    /// retained, but the fetched span proves the window is covered.)
+    #[test]
+    fn baseline_report_marks_cap_covered_window_complete() -> Result<()> {
+        let generated_at =
+            DateTime::parse_from_rfc3339("2026-03-25T12:00:00Z")?.with_timezone(&Utc);
+        let cutoff = DateTime::parse_from_rfc3339("2026-03-25T10:30:00Z")?.with_timezone(&Utc);
+
+        let report =
+            build_baseline_report("main", 1, generated_at, cutoff, 2, &truncated_window_runs())
+                .ok_or_else(|| eyre!("expected baseline report"))?;
+        assert_eq!(report.sample_completeness, SampleCompleteness::Complete);
+
+        Ok(())
+    }
+
+    /// Fewer rows than the cap means the API returned everything available:
+    /// the sample is complete even though the same rows would be partial
+    /// under a tighter limit.
+    #[test]
+    fn baseline_report_marks_under_cap_fetch_complete() -> Result<()> {
+        let generated_at =
+            DateTime::parse_from_rfc3339("2026-03-25T12:00:00Z")?.with_timezone(&Utc);
+        let cutoff = DateTime::parse_from_rfc3339("2026-03-24T12:00:00Z")?.with_timezone(&Utc);
+
+        let report =
+            build_baseline_report("main", 1, generated_at, cutoff, 200, &truncated_window_runs())
+                .ok_or_else(|| eyre!("expected baseline report"))?;
+        assert_eq!(report.sample_completeness, SampleCompleteness::Complete);
 
         Ok(())
     }

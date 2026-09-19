@@ -37,6 +37,229 @@ fn make_server_with_capture() -> (LspServer, StdArc<parking_lot::Mutex<Vec<u8>>>
     (server, buf)
 }
 
+#[test]
+fn dispatch_rejects_malformed_change_before_document_mutation()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = LspServer::new();
+    let initialized = server.handle_request(JsonRpcRequest {
+        _jsonrpc: "2.0".to_string(),
+        id: Some(crate::protocol::JsonRpcId::Integer(0)),
+        method: "initialize".to_string(),
+        params: Some(json!({})),
+    });
+    if initialized.as_ref().is_none_or(|response| response.error.is_some()) {
+        return Err("test initialize request failed".into());
+    }
+    let uri = "file:///malformed-admission.pl";
+    server.did_open(json!({
+        "textDocument": {"uri": uri, "languageId": "perl", "version": 1, "text": "my $x = 1;\n"}
+    }))?;
+    let before = {
+        let documents = server.documents.lock();
+        let document = documents.get(uri).ok_or("didOpen did not store document")?;
+        (document.text.clone(), document.version, document.current_generation())
+    };
+    let normalized_uri = server.normalize_uri_key(uri);
+    let readiness_before = {
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            if let Some(receipt) = server.test_active_document_readiness(&normalized_uri)
+                && receipt.0 != "pending_parser"
+            {
+                break receipt;
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err("didOpen did not settle active-document readiness".into());
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    };
+    let start_predecessor_stream = || {
+        server.stream_sessions().start_session(crate::runtime::stream_session::SessionKey {
+            uri: uri.to_owned(),
+            document_version: 1,
+            line: 0,
+            character: 0,
+        })
+    };
+    let same_version_stream =
+        server.stream_sessions().start_session(crate::runtime::stream_session::SessionKey {
+            uri: uri.to_owned(),
+            document_version: 2,
+            line: 0,
+            character: 0,
+        });
+    let other_document_stream =
+        server.stream_sessions().start_session(crate::runtime::stream_session::SessionKey {
+            uri: "file:///other-document.pl".to_owned(),
+            document_version: 1,
+            line: 0,
+            character: 0,
+        });
+    if same_version_stream.is_cancelled()
+        || other_document_stream.is_cancelled()
+        || server.memory_state_snapshot().stream_sessions != 2
+    {
+        return Err("baseline control streams were not retained".into());
+    }
+    let predecessor_parse_token = server.new_parse_token(uri);
+    if predecessor_parse_token.load(Ordering::Relaxed) {
+        return Err("baseline parse token was unexpectedly cancelled".into());
+    }
+    for changes in [
+        json!([{"text": 7}, {"text": "my $x = 2;\n"}]),
+        json!([{"text": "my $x = 2;\n"}, {"text": 7}]),
+        json!([{"text": 7}]),
+        json!([{"rangeLength": 7, "text": "my $x = 2;\n"}]),
+        json!([{"rangeLength": null, "text": "my $x = 2;\n"}]),
+        json!([{"range": null, "text": "my $x = 2;\n"}]),
+    ] {
+        let session = start_predecessor_stream();
+        let malformed = JsonRpcRequest {
+            _jsonrpc: "2.0".to_string(),
+            id: None,
+            method: "textDocument/didChange".to_string(),
+            params: Some(
+                json!({"textDocument": {"uri": uri, "version": 2}, "contentChanges": changes}),
+            ),
+        };
+        if server.handle_request(malformed).is_some() {
+            return Err("notification-shaped malformed change must not respond".into());
+        }
+        let after = {
+            let documents = server.documents.lock();
+            let document = documents.get(uri).ok_or("document disappeared after rejection")?;
+            (document.text.clone(), document.version, document.current_generation())
+        };
+        if after != before {
+            return Err(format!(
+                "malformed change mutated document: before={before:?}, after={after:?}"
+            )
+            .into());
+        }
+        if !session.is_cancelled() {
+            return Err("malformed change retained an obsolete editor stream".into());
+        }
+        if server.memory_state_snapshot().stream_sessions != 2
+            || same_version_stream.is_cancelled()
+            || other_document_stream.is_cancelled()
+        {
+            return Err("malformed change did not isolate obsolete-stream cancellation".into());
+        }
+        if predecessor_parse_token.load(Ordering::Relaxed)
+            || !server
+                .parse_cancel_flags
+                .lock()
+                .get(uri)
+                .is_some_and(|token| Arc::ptr_eq(token, &predecessor_parse_token))
+        {
+            return Err("malformed change rotated or cancelled the parse token".into());
+        }
+        if server.test_active_document_readiness(&normalized_uri) != Some(readiness_before) {
+            return Err("malformed change altered active-document readiness".into());
+        }
+    }
+    for params in [
+        json!({"textDocument": {"uri": uri, "version": 2}}),
+        json!({"textDocument": {"uri": uri, "version": 2}, "contentChanges": {}}),
+        json!({"textDocument": {"uri": uri, "version": 2}, "contentChanges": null}),
+    ] {
+        let session = start_predecessor_stream();
+        let malformed = JsonRpcRequest {
+            _jsonrpc: "2.0".to_string(),
+            id: None,
+            method: "textDocument/didChange".to_string(),
+            params: Some(params),
+        };
+        if server.handle_request(malformed).is_some() {
+            return Err("notification-shaped malformed contentChanges must not respond".into());
+        }
+        let after = {
+            let documents = server.documents.lock();
+            let document = documents.get(uri).ok_or("document disappeared after rejection")?;
+            (document.text.clone(), document.version, document.current_generation())
+        };
+        if after != before
+            || !session.is_cancelled()
+            || server.memory_state_snapshot().stream_sessions != 2
+            || same_version_stream.is_cancelled()
+            || other_document_stream.is_cancelled()
+            || predecessor_parse_token.load(Ordering::Relaxed)
+            || !server
+                .parse_cancel_flags
+                .lock()
+                .get(uri)
+                .is_some_and(|token| Arc::ptr_eq(token, &predecessor_parse_token))
+            || server.test_active_document_readiness(&normalized_uri) != Some(readiness_before)
+        {
+            return Err("invalid contentChanges shape altered document side effects".into());
+        }
+    }
+    let session = start_predecessor_stream();
+    let recovery = JsonRpcRequest {
+        _jsonrpc: "2.0".to_string(),
+        id: None,
+        method: "textDocument/didChange".to_string(),
+        params: Some(
+            json!({"textDocument": {"uri": uri, "version": 2}, "contentChanges": [{"text": "my $x = 3;\n"}]}),
+        ),
+    };
+    if server.handle_request(recovery).is_some() {
+        return Err("notification-shaped recovery must not respond".into());
+    }
+    let recovered = {
+        let documents = server.documents.lock();
+        let document = documents.get(uri).ok_or("document disappeared after recovery")?;
+        (document.text.clone(), document.version, document.current_generation())
+    };
+    if recovered.0 != "my $x = 3;\n" || recovered.1 != 2 || recovered.2 <= before.2 {
+        return Err(format!(
+            "valid recovery was not applied: before={before:?}, recovered={recovered:?}"
+        )
+        .into());
+    }
+    if !session.is_cancelled()
+        || server.memory_state_snapshot().stream_sessions != 2
+        || same_version_stream.is_cancelled()
+        || other_document_stream.is_cancelled()
+    {
+        return Err("valid recovery did not cancel and evict the retained stream".into());
+    }
+    if !predecessor_parse_token.load(Ordering::Relaxed) {
+        return Err("valid recovery did not cancel the predecessor parse token".into());
+    }
+    Ok(())
+}
+#[test]
+fn malformed_change_cancels_raw_uri_stream_but_not_invalid_uri_stream()
+-> Result<(), Box<dyn std::error::Error>> {
+    for (uri, should_cancel) in [("file://localhost/raw-stream.pl", true), ("", false)] {
+        let server = LspServer::new();
+        if should_cancel && server.normalize_uri_key(uri) == uri {
+            return Err("raw URI fixture did not exercise normalization".into());
+        }
+        let session =
+            server.stream_sessions().start_session(crate::runtime::stream_session::SessionKey {
+                uri: uri.to_owned(),
+                document_version: 1,
+                line: 0,
+                character: 0,
+            });
+        let result = server.handle_did_change(Some(json!({
+            "textDocument": {"uri": uri, "version": 2}, "contentChanges": [{"text": 7}]
+        })));
+        let error = result.err().ok_or("malformed direct change was accepted")?;
+        if error.code != -32602 || session.is_cancelled() != should_cancel {
+            return Err(format!(
+                "wrong malformed URI admission: uri={uri:?}, cancelled={}, error={error}",
+                session.is_cancelled()
+            )
+            .into());
+        }
+    }
+    Ok(())
+}
+
 #[cfg(feature = "incremental")]
 #[test]
 fn test_build_incremental_edits_uses_evolving_document_ranges() {
@@ -877,6 +1100,19 @@ fn test_diagnostics_churn_drains_retained_state_after_close_delete()
                 "textDocument": { "uri": uri, "version": version },
                 "contentChanges": [{ "text": text }]
             })))?;
+            // Observe the armed debounce before the synchronous publish below:
+            // that publish runs the full analysis stack and can exceed the
+            // 60ms debounce window on slow platforms (Windows file IO), so a
+            // snapshot taken after it systematically sees an already-fired
+            // worker there. Poll briefly for the worker thread to record the
+            // schedule, mirroring the drain poll after close/delete below.
+            for _ in 0..500 {
+                if server.runtime_pressure_snapshot().diagnostic_debounce_pending_uris > 0 {
+                    saw_debounce_pressure = true;
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
             server.publish_diagnostics(&uri);
 
             let pressure = server.runtime_pressure_snapshot();
@@ -1533,7 +1769,7 @@ fn test_did_save_text_preserves_client_version() -> Result<(), Box<dyn std::erro
 }
 
 /// The per-line resource bound must be enforced after both forms of didChange
-/// produce their resulting buffer, without committing the rejected text.
+/// produce their resulting buffer, preserving the predecessor's sink-owned state.
 #[test]
 fn test_did_change_rejects_overlong_result_before_commit() -> Result<(), Box<dyn std::error::Error>>
 {
@@ -1562,11 +1798,27 @@ fn test_did_change_rejects_overlong_result_before_commit() -> Result<(), Box<dyn
             }
         }))?;
 
+        let before = server.documents.lock().get(uri).ok_or("opened document missing")?.clone();
+        let before_generation = before.current_generation();
+        let normalized_uri = server.normalize_uri_key(uri);
+        let before_readiness = server
+            .test_active_document_readiness(&normalized_uri)
+            .ok_or("opened document readiness missing")?;
+        let stream =
+            server.stream_sessions().start_session(crate::runtime::stream_session::SessionKey {
+                uri: uri.to_string(),
+                document_version: 1,
+                line: 0,
+                character: 0,
+            });
+
         let result = server.handle_did_change(Some(json!({
             "textDocument": {"uri": uri, "version": 2},
             "contentChanges": [change]
         })));
-        assert!(result.is_err(), "didChange case {case} must reject an overlong line");
+        if result.is_ok() {
+            return Err(format!("didChange case {case} accepted an overlong line").into());
+        }
 
         let document = server
             .documents
@@ -1574,7 +1826,54 @@ fn test_did_change_rejects_overlong_result_before_commit() -> Result<(), Box<dyn
             .get(uri)
             .ok_or("rejected didChange must retain the document")?
             .clone();
-        assert_eq!(document.text, "short\n", "rejected didChange must not commit case {case}");
+        if document.text != before.text || document.version != before.version {
+            return Err(format!("rejected didChange committed text/version in case {case}").into());
+        }
+        if document.current_generation() != before_generation
+            || !StdArc::ptr_eq(&document.generation, &before.generation)
+        {
+            return Err(format!("rejected didChange changed generation in case {case}").into());
+        }
+        if server.test_active_document_readiness(&normalized_uri) != Some(before_readiness) {
+            return Err(format!("rejected didChange replaced readiness in case {case}").into());
+        }
+        if !stream.is_cancelled() || server.stream_sessions().len() != 0 {
+            return Err(format!(
+                "rejected didChange retained an obsolete editor stream in case {case}"
+            )
+            .into());
+        }
+
+        let recovery_stream =
+            server.stream_sessions().start_session(crate::runtime::stream_session::SessionKey {
+                uri: uri.to_string(),
+                document_version: 1,
+                line: 0,
+                character: 0,
+            });
+        server.handle_did_change(Some(json!({
+            "textDocument": {"uri": uri, "version": 2},
+            "contentChanges": [{"text": "my $recovered = 1;\n"}]
+        })))?;
+        let recovered =
+            server.documents.lock().get(uri).ok_or("recovered document missing")?.clone();
+        if recovered.text != "my $recovered = 1;\n" {
+            return Err(format!("valid recovery did not commit text in case {case}").into());
+        }
+        if recovered.version != 2 {
+            return Err(format!("valid recovery did not commit version in case {case}").into());
+        }
+        if recovered.current_generation() != before_generation.wrapping_add(1) {
+            return Err(
+                format!("valid recovery did not increment generation in case {case}").into()
+            );
+        }
+        if !recovery_stream.is_cancelled() {
+            return Err(format!("valid recovery did not cancel stale stream in case {case}").into());
+        }
+        if server.stream_sessions().len() != 0 {
+            return Err(format!("valid recovery did not evict stale stream in case {case}").into());
+        }
     }
 
     Ok(())
@@ -1597,15 +1896,78 @@ fn test_did_save_rejects_overlong_text_before_commit() -> Result<(), Box<dyn std
         }
     }))?;
 
+    let before_generation = server
+        .documents
+        .lock()
+        .get(uri)
+        .ok_or("opened save document missing")?
+        .current_generation();
+    let normalized_uri = server.normalize_uri_key(uri);
+    let before_readiness = server
+        .test_active_document_readiness(&normalized_uri)
+        .ok_or("opened save readiness missing")?;
+    let stream =
+        server.stream_sessions().start_session(crate::runtime::stream_session::SessionKey {
+            uri: uri.to_string(),
+            document_version: 1,
+            line: 0,
+            character: 0,
+        });
+
     let result = server.handle_did_save(Some(json!({
         "textDocument": {"uri": uri, "version": 1},
         "text": overlong
     })));
-    assert!(result.is_err(), "didSave must reject an overlong saved line");
+    if result.is_ok() {
+        return Err("didSave accepted an overlong saved line".into());
+    }
 
-    let documents = server.documents.lock();
-    let document = documents.get(uri).ok_or("rejected didSave must retain the document")?;
-    assert_eq!(document.text, "saved\n", "rejected didSave must not commit the text");
+    let document = server
+        .documents
+        .lock()
+        .get(uri)
+        .ok_or("rejected didSave must retain the document")?
+        .clone();
+    if document.text != "saved\n"
+        || document.version != 1
+        || document.current_generation() != before_generation
+        || server.test_active_document_readiness(&normalized_uri) != Some(before_readiness)
+        || !stream.is_cancelled()
+        || server.stream_sessions().len() != 0
+    {
+        return Err(
+            "rejected didSave changed document/readiness or retained an obsolete stream".into()
+        );
+    }
+
+    let recovery_stream =
+        server.stream_sessions().start_session(crate::runtime::stream_session::SessionKey {
+            uri: uri.to_string(),
+            document_version: 1,
+            line: 0,
+            character: 0,
+        });
+    server.handle_did_save(Some(json!({
+        "textDocument": {"uri": uri},
+        "text": "my $saved = 1;\n"
+    })))?;
+    let document =
+        server.documents.lock().get(uri).ok_or("recovered save document missing")?.clone();
+    if document.text != "my $saved = 1;\n" {
+        return Err("valid save recovery did not commit text".into());
+    }
+    if document.version != 1 {
+        return Err("valid save recovery did not preserve version".into());
+    }
+    if document.current_generation() != before_generation.wrapping_add(1) {
+        return Err("valid save recovery did not increment generation".into());
+    }
+    if !recovery_stream.is_cancelled() {
+        return Err("valid save recovery did not cancel same-version stream".into());
+    }
+    if server.stream_sessions().len() != 0 {
+        return Err("valid save recovery did not evict same-version stream".into());
+    }
     Ok(())
 }
 
@@ -2398,7 +2760,10 @@ fn rapid_burst_does_not_permanently_degrade_the_workspace_index_coordinator()
 
     let coordinator = must_some(server.coordinator());
     assert!(
-        !matches!(coordinator.state(), perl_parser::workspace_index::IndexState::Degraded { .. }),
+        !matches!(
+            coordinator.state(),
+            perl_workspace::workspace_index::IndexState::Degraded { .. }
+        ),
         "the coordinator must not remain Degraded once the burst has fully settled; got: {:?}",
         coordinator.state()
     );
@@ -2484,7 +2849,10 @@ fn panicking_new_lifecycle_job_still_credits_the_pending_parse_settle()
         coordinator.pending_parse_count()
     );
     assert!(
-        !matches!(coordinator.state(), perl_parser::workspace_index::IndexState::Degraded { .. }),
+        !matches!(
+            coordinator.state(),
+            perl_workspace::workspace_index::IndexState::Degraded { .. }
+        ),
         "the coordinator must not be left Degraded by an uncredited panic; got: {:?}",
         coordinator.state()
     );
@@ -2568,7 +2936,10 @@ fn terminal_stale_reject_with_no_successor_still_credits_the_pending_parse_settl
         coordinator.pending_parse_count()
     );
     assert!(
-        !matches!(coordinator.state(), perl_parser::workspace_index::IndexState::Degraded { .. }),
+        !matches!(
+            coordinator.state(),
+            perl_workspace::workspace_index::IndexState::Degraded { .. }
+        ),
         "the coordinator must not be left Degraded by an uncredited terminal stale-reject; got: {:?}",
         coordinator.state()
     );

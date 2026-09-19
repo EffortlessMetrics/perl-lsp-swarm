@@ -1404,7 +1404,7 @@ impl LspServer {
                     // offset is inside a comment.
                     let text = &doc.text;
                     if is_in_comment_naive(offset, text) {
-                        return Ok(None);
+                        return Ok(Some(Value::Null));
                     }
 
                     let radius = 50;
@@ -1843,7 +1843,7 @@ impl LspServer {
                                     return Ok(Some(result));
                                 }
                             }
-                            FqnCursorComponent::Prefix => return Ok(None),
+                            FqnCursorComponent::Prefix => return Ok(Some(Value::Null)),
                         }
                     }
                 }
@@ -2223,9 +2223,13 @@ impl LspServer {
         if !snapshot_is_current() {
             return None;
         }
+        // Resolve the legacy location BEFORE entering the callback: the cutover
+        // path must not re-enter `WorkspaceIndex` while
+        // `with_semantic_queries_for_uri` holds its read guards (#15644).
+        let legacy_location = index.find_definition(&symbol);
         let receipt = index.with_semantic_queries_for_uri(uri, |file_id, queries| {
             let context = QueryContext::new(file_id, None, Some(byte_offset));
-            goto_definition_live_exact_or_imported(index.as_ref(), &queries, &symbol, &context)
+            goto_definition_live_exact_or_imported(legacy_location, &queries, &symbol, &context)
                 .receipt
         })?;
         if !snapshot_is_current() || self.workspace_index_stale_for_any_open_document() {
@@ -2289,10 +2293,15 @@ impl LspServer {
                 match route_index_access(self.coordinator()) {
                     IndexAccessMode::Full(coordinator) => {
                         let index = coordinator.index();
+                        // Resolve the legacy location BEFORE entering the
+                        // callback: the cutover path must not re-enter
+                        // `WorkspaceIndex` while `with_semantic_queries_for_uri`
+                        // holds its read guards (#15644).
+                        let legacy_location = index.find_definition(&symbol);
                         index.with_semantic_queries_for_uri(uri, |file_id, queries| {
                         let ctx = QueryContext::new(file_id, None, Some(byte_offset));
                         let mut receipt = goto_definition_live_exact_or_imported(
-                            index.as_ref(),
+                            legacy_location,
                             &queries,
                             &symbol,
                             &ctx,
@@ -2394,9 +2403,13 @@ impl LspServer {
             return None;
         }
         let workspace_index = self.workspace_index()?;
+        // Resolve the legacy location BEFORE entering the callback: the cutover
+        // path must not re-enter `WorkspaceIndex` while
+        // `with_semantic_queries_for_uri` holds its read guards (#15644).
+        let legacy_location = workspace_index.find_definition(symbol);
         let outcome = workspace_index.with_semantic_queries_for_uri(uri, |file_id, queries| {
             let ctx = QueryContext::new(file_id, None, Some(byte_offset));
-            goto_definition_live_exact_or_imported(workspace_index.as_ref(), &queries, symbol, &ctx)
+            goto_definition_live_exact_or_imported(legacy_location, &queries, symbol, &ctx)
         })?;
 
         if self.workspace_index_stale_for_any_open_document() {
@@ -3056,7 +3069,7 @@ mod tests {
             goto_definition_request_receipt(&server, main_uri, 3, 1)?;
         assert!(
             prefix_fresh_index.as_ref().and_then(Value::as_array).is_some_and(Vec::is_empty)
-                || prefix_fresh_index.is_none(),
+                || prefix_fresh_index.as_ref().is_some_and(Value::is_null),
             "a package-prefix cursor must yield an empty answer; got {prefix_fresh_index:?}"
         );
         assert_eq!(prefix_fresh_receipt.get("result_count").and_then(Value::as_u64), Some(0));
@@ -3095,7 +3108,7 @@ mod tests {
             goto_definition_request_receipt(&server, main_uri, 3, 1)?;
         assert!(
             prefix_stale_index.as_ref().and_then(Value::as_array).is_some_and(Vec::is_empty)
-                || prefix_stale_index.is_none(),
+                || prefix_stale_index.as_ref().is_some_and(Value::is_null),
             "a package-prefix cursor must stay empty under a stale index; got {prefix_stale_index:?}"
         );
         assert_eq!(prefix_stale_receipt.get("result_count").and_then(Value::as_u64), Some(0));
@@ -3227,7 +3240,7 @@ mod tests {
     /// `symbol_at_cursor_with_source` both extract the LAST component (`bar`)
     /// regardless of cursor position, so falling through to them navigates to
     /// `sub bar` — a confidently wrong target. `handle_definition_inner`
-    /// therefore returns `Ok(None)` for a prefix cursor.
+    /// therefore returns an explicit null result for a prefix cursor.
     ///
     /// That guard used to live inside the workspace-index freshness gate, so an
     /// unrelated edited buffer with a stale index entry skipped the whole block
