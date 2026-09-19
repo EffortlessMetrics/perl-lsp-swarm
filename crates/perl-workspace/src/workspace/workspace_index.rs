@@ -3570,7 +3570,12 @@ impl WorkspaceIndex {
         // Build an entity lookup map for reference resolution.
         let entity_ids_by_name: std::collections::BTreeMap<String, EntityId> =
             decl_facts.entities.iter().map(|e| (e.canonical_name.clone(), e.id)).collect();
-        let ref_facts = symbol_refs_to_semantic_facts(&refs, file_id, &entity_ids_by_name);
+        let ref_facts = symbol_refs_to_semantic_facts(
+            &refs,
+            file_id,
+            &entity_ids_by_name,
+            &std::collections::BTreeMap::new(),
+        );
 
         // Extract dynamic boundary evidence for `eval "sub NAME { ... }"` patterns.
         // Non-literal evals (e.g. `eval $code`) are intentionally skipped — the
@@ -3640,6 +3645,12 @@ impl WorkspaceIndex {
     /// file is committed, so its local name map cannot see declarations from
     /// a parent file; this alias map keeps that cross-file identity at the
     /// canonical fact boundary instead of making providers rediscover it.
+    ///
+    /// Inheritance walks the whole ancestor chain: hop 1 comes from the
+    /// caller's just-extracted edges (the current file's own `use parent` is
+    /// not yet committed to the package graph index at this point), and
+    /// deeper hops come from the graph's transitive ancestor walk, so
+    /// grandparent declarations resolve through the same canonical path.
     fn inherited_method_aliases(
         &self,
         package_edges: &[PackageEdge],
@@ -3649,33 +3660,48 @@ impl WorkspaceIndex {
         // Collect every candidate entity per alias key before admitting any
         // alias. `fact_shards` is a HashMap, so a direct insert would let
         // shard visit order -- not Perl semantics -- silently pick the winner
-        // whenever two direct parents define the same method or a parent
-        // package is reopened across shards. Only an unambiguous single
-        // declaration is admitted; ambiguous names stay absent so the
-        // occurrence remains honestly unresolved (#812: stale or ambiguous
-        // parent/MRO facts remain qualified or refused).
+        // whenever two ancestors define the same method or a package is
+        // reopened across shards. Only an unambiguous single declaration is
+        // admitted; ambiguous names stay absent so the occurrence remains
+        // honestly unresolved (#812: stale or ambiguous parent/MRO facts
+        // remain qualified or refused).
         let mut candidates: std::collections::BTreeMap<
             String,
             std::collections::BTreeSet<EntityId>,
         > = std::collections::BTreeMap::new();
 
         for edge in package_edges.iter().filter(|edge| edge.kind == PackageEdgeKind::Inherits) {
-            let parent_prefix = format!("{}::", edge.to_package);
-            for shard in shards.values() {
-                for entity in &shard.entities {
-                    let Some(method_name) = entity.canonical_name.strip_prefix(&parent_prefix)
-                    else {
-                        continue;
-                    };
-                    if method_name.contains("::")
-                        || !matches!(entity.kind, EntityKind::Method | EntityKind::Subroutine)
-                    {
-                        continue;
+            // Hop 1 is this file's direct parent from the just-extracted
+            // edges; `package_graph_ancestors` supplies the transitive chain
+            // (including that same direct parent once committed) for deeper
+            // hops.
+            let mut ancestors = vec![edge.to_package.clone()];
+            ancestors.extend(self.package_graph_ancestors(&edge.to_package).ancestors);
+            ancestors.sort();
+            ancestors.dedup();
+            for ancestor_package in ancestors {
+                let parent_prefix = format!("{ancestor_package}::");
+                for shard in shards.values() {
+                    for entity in &shard.entities {
+                        let Some(method_name) = entity.canonical_name.strip_prefix(&parent_prefix)
+                        else {
+                            continue;
+                        };
+                        if method_name.contains("::")
+                            || !matches!(
+                                entity.kind,
+                                EntityKind::Method
+                                    | EntityKind::Subroutine
+                                    | EntityKind::GeneratedMember
+                            )
+                        {
+                            continue;
+                        }
+                        candidates
+                            .entry(format!("{}::{}", edge.from_package, method_name))
+                            .or_default()
+                            .insert(entity.id);
                     }
-                    candidates
-                        .entry(format!("{}::{}", edge.from_package, method_name))
-                        .or_default()
-                        .insert(entity.id);
                 }
             }
         }
@@ -3721,16 +3747,20 @@ impl WorkspaceIndex {
         reindex_metrics::record_decl_extract(decl_start.elapsed());
         let decl_facts = symbol_decls_to_semantic_facts(&decls, file_id);
 
-        let mut entity_ids_by_name: std::collections::BTreeMap<String, EntityId> =
-            decl_facts.entities.iter().map(|e| (e.canonical_name.clone(), e.id)).collect();
         // Own declarations rank above inherited aliases (#812: own overrides
-        // rank above inherited methods) -- insert aliases only for vacant
-        // names so a child file's local declaration keeps its own entity
-        // identity instead of being overwritten by the parent's.
-        for (name, entity_id) in inherited_method_aliases {
-            entity_ids_by_name.entry(name.clone()).or_insert(*entity_id);
-        }
-        let ref_facts = symbol_refs_to_semantic_facts(refs, file_id, &entity_ids_by_name);
+        // rank above inherited methods): the declaration map wins the lookup
+        // and the alias map is only consulted when it misses. Aliases are
+        // dispatch-only entries -- a `Child::name()` call or `\&Child::name`
+        // coderef names a concrete subroutine and must not silently bind the
+        // parent's method entity.
+        let entity_ids_by_name: std::collections::BTreeMap<String, EntityId> =
+            decl_facts.entities.iter().map(|e| (e.canonical_name.clone(), e.id)).collect();
+        let ref_facts = symbol_refs_to_semantic_facts(
+            refs,
+            file_id,
+            &entity_ids_by_name,
+            inherited_method_aliases,
+        );
 
         #[cfg(test)]
         let eval_sub_start = Instant::now();
@@ -8041,11 +8071,7 @@ print $value;
     fn test_reference_kinds_import_parent_and_export_ok_are_currently_import_only() {
         let index = WorkspaceIndex::new();
         let uri = "file:///typed-refs-import-export.pm";
-        let code = "package Child;
-use parent 'Base';
-our @EXPORT_OK = qw(foo);
-1;
-";
+        let code = "package Child;\nuse parent 'Base';\nour @EXPORT_OK = qw(foo);\n1;\n";
         must(index.index_file(must(url::Url::parse(uri)), code.to_string()));
 
         let parent_kinds = reference_kinds_for(&index, uri, "Base");
@@ -10679,6 +10705,113 @@ Utils::process_data();
             child_b2_name.is_none(),
             "reopened parent method must refuse the alias, got {child_b2_name:?}"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn test_inherited_alias_binds_only_dispatching_reference_kinds()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use crate::semantic::queries::SemanticQueries;
+
+        let index = WorkspaceIndex::new();
+        let parent_uri = must(url::Url::parse("file:///test/workspace/kinds-parent.pm"));
+        let child_uri = must(url::Url::parse("file:///test/workspace/kinds-child.pl"));
+        let child_source = "package Child;\nuse parent 'Parent';\nChild->greet();\nChild::greet();\n\\&Child::greet;\n1;\n";
+
+        must(index.index_file(parent_uri, "package Parent;\nsub greet { 1 }\n1;\n".to_string()));
+        must(index.index_file(child_uri.clone(), child_source.to_string()));
+
+        let resolved_name_at = |qualifier: &str| {
+            let offset = u32::try_from(
+                child_source.find(qualifier).expect("anchor present") + qualifier.len(),
+            )
+            .expect("anchor offset fits u32");
+            index
+                .with_semantic_queries_for_uri(child_uri.as_str(), |file_id, queries| {
+                    queries.symbol_at(file_id, offset).map(|(entity, _)| entity.canonical_name)
+                })
+                .flatten()
+        };
+
+        // `->` dispatch inherits through @ISA and binds the parent method.
+        assert_eq!(resolved_name_at("Child->").as_deref(), Some("Parent::greet"));
+
+        // `::` and `\&` name a concrete subroutine; neither dispatches through
+        // @ISA, so binding them to the parent's method would fabricate a
+        // definition for code Perl reports as undefined.
+        assert_eq!(resolved_name_at("Child::"), None);
+        assert_eq!(resolved_name_at("&Child::"), None);
+        Ok(())
+    }
+
+    #[test]
+    fn test_inherited_alias_resolves_through_transitive_ancestor_chain()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use crate::semantic::queries::SemanticQueries;
+
+        let index = WorkspaceIndex::new();
+        let grandparent_uri = must(url::Url::parse("file:///test/workspace/chain-grandparent.pm"));
+        let parent_uri = must(url::Url::parse("file:///test/workspace/chain-parent.pm"));
+        let child_uri = must(url::Url::parse("file:///test/workspace/chain-child.pl"));
+        let child_source = "package Child;\nuse parent 'Parent';\nChild->greet();\n1;\n";
+
+        must(index.index_file(
+            grandparent_uri,
+            "package GrandParent;\nsub greet { 1 }\n1;\n".to_string(),
+        ));
+        must(index.index_file(
+            parent_uri,
+            "package Parent;\nuse parent 'GrandParent';\n1;\n".to_string(),
+        ));
+        must(index.index_file(child_uri.clone(), child_source.to_string()));
+
+        let entity_name = index
+            .with_semantic_queries_for_uri(child_uri.as_str(), |file_id, queries| {
+                let offset = u32::try_from(
+                    child_source.find("Child->").expect("call site present") + "Child->".len(),
+                )
+                .expect("call anchor offset fits u32");
+                queries.symbol_at(file_id, offset).map(|(entity, _)| entity.canonical_name)
+            })
+            .ok_or("missing semantic queries for grandparent chain")?;
+
+        // `use parent` chains transitively: `Child->greet()` must resolve the
+        // method declared on GrandParent through Parent, not stay unresolved
+        // because the child file's direct edge stops at Parent.
+        assert_eq!(entity_name.as_deref(), Some("GrandParent::greet"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_inherited_alias_includes_framework_generated_members()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use crate::semantic::queries::SemanticQueries;
+
+        let index = WorkspaceIndex::new();
+        let parent_uri = must(url::Url::parse("file:///test/workspace/genmem-parent.pm"));
+        let child_uri = must(url::Url::parse("file:///test/workspace/genmem-child.pl"));
+        let parent_source = "package Parent;\nuse Moo;\nhas name => (is => 'ro');\n1;\n";
+        let child_source = "package Child;\nuse parent 'Parent';\nChild->name();\n1;\n";
+
+        must(index.index_file(parent_uri, parent_source.to_string()));
+        must(index.index_file(child_uri.clone(), child_source.to_string()));
+
+        let entity = index
+            .with_semantic_queries_for_uri(child_uri.as_str(), |file_id, queries| {
+                let offset = u32::try_from(
+                    child_source.find("Child->").expect("call site present") + "Child->".len(),
+                )
+                .expect("call anchor offset fits u32");
+                queries.symbol_at(file_id, offset).map(|(entity, _)| entity)
+            })
+            .ok_or("missing semantic queries for generated member chain")?;
+
+        // `method_candidates` already admits EntityKind::GeneratedMember, so
+        // the alias map must too: a Moo-generated accessor on the parent is a
+        // real inherited method target.
+        let entity = entity.ok_or("generated accessor did not resolve through inheritance")?;
+        assert_eq!(entity.canonical_name, "Parent::name");
+        assert_eq!(entity.kind, EntityKind::GeneratedMember);
         Ok(())
     }
 
