@@ -971,6 +971,10 @@ impl DebugAdapter {
             );
         }
 
+        // #15538: make the session child a process-group leader on Unix so
+        // every terminate path can reach its descendants.
+        crate::process_tree::prepare_owned_command(&mut cmd);
+
         match cmd.spawn() {
             Ok(mut child) => {
                 // Only advance the session generation once spawning has succeeded. A rejected
@@ -1195,6 +1199,10 @@ impl DebugAdapter {
         // resolves and compiles perl5db.pl, so this cannot flip the verdict —
         // and if that ever stopped being true, the probe would now observe it.
         apply_windows_debugger_transport_env(&mut cmd);
+        // #15538: the bounded probe paths below must reach descendants, not
+        // only the direct child. On Unix this makes the probe a
+        // process-group leader.
+        crate::process_tree::prepare_owned_command(&mut cmd);
 
         let mut child = match cmd.spawn() {
             Ok(child) => child,
@@ -1226,9 +1234,8 @@ impl DebugAdapter {
                     thread::sleep(DEBUGGER_PROBE_POLL_INTERVAL);
                 }
                 Err(e) => {
-                    // Instrument failure: kill what we spawned and skip.
-                    let _ = child.kill();
-                    let _ = child.wait();
+                    // Instrument failure: kill the whole owned tree and skip.
+                    let _ = crate::process_tree::terminate_tree_and_reap(&mut child);
                     tracing::warn!(
                         "perl5db capability probe of '{perl_interpreter}' could not be \
                          observed (will attempt the launch anyway): {e}"
@@ -1240,10 +1247,10 @@ impl DebugAdapter {
 
         let Some(status) = status else {
             // Deadline reached with no exit: the probe is inconclusive, not a
-            // capability verdict. Kill the child so nothing outlives the
-            // probe, then keep the launch-continue disposition.
-            let _ = child.kill();
-            let _ = child.wait();
+            // capability verdict. Kill the whole owned tree (#15538) so
+            // nothing outlives the probe, then keep the launch-continue
+            // disposition.
+            let _ = crate::process_tree::terminate_tree_and_reap(&mut child);
             tracing::warn!(
                 "perl5db capability probe of '{perl_interpreter}' exceeded its \
                  {} budget (will attempt the launch anyway)",
@@ -3101,6 +3108,10 @@ impl DebugAdapter {
                             Duration::from_millis(DEBUG_SESSION_TERMINATE_WAIT_MS),
                         )
                     {
+                        // #15538: the direct child exited gracefully, but the
+                        // group it led can still hold descendants (a pager or
+                        // readline helper under `perl -d`).
+                        crate::process_tree::terminate_descendants(process);
                         return outcome;
                     }
                 }
@@ -3110,6 +3121,10 @@ impl DebugAdapter {
             }
         }
 
+        // #15538: reach descendants before the direct child dies — on
+        // Windows by walking the live parent→child tree from this child, on
+        // Unix by killing the process group it leads.
+        crate::process_tree::terminate_descendants(process);
         if let Err(e) = process.kill() {
             tracing::warn!(pid = process.id(), error = %e, "Failed to terminate process");
         }
