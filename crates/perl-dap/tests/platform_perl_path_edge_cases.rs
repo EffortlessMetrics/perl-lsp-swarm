@@ -4,9 +4,14 @@
 //! - Non-standard Perl installations (custom PATH, perlbrew, plenv, system perl)
 //! - Edge cases: empty PATH, missing perl, multiple perls, unusual locations
 //! - Path normalization boundary conditions
-#![expect(
-    clippy::unwrap_used,
-    reason = "tracked conversion debt: https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3021"
+// The unwrap debt lives entirely in `#[cfg(not(windows))]` rows, so the
+// expectation only applies where that code is compiled (issue #3021).
+#![cfg_attr(
+    not(windows),
+    expect(
+        clippy::unwrap_used,
+        reason = "tracked conversion debt: https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3021"
+    )
 )]
 
 use perl_dap::platform::{
