@@ -10836,7 +10836,7 @@ sub dynamic_boundary_case {
                 ),
             ),
             ("cache_reuse", cache_reuse_metrics(&incremental, cadence)),
-            ("determinism", determinism_metrics(&determinism, cadence)),
+            ("determinism", determinism_metrics(&determinism, &test_legacy_population(), cadence)),
             ("gold_drift", gold_drift_metrics(&GoldDrift::default(), 1, cadence)),
         ];
 
