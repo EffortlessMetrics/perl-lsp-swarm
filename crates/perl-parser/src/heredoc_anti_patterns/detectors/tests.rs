@@ -187,10 +187,7 @@ fn test_detector_state_helpers_call_observation() {
     let limited = super::limited(&["regex_heredoc"]);
     assert!(matches!(limited, DetectorState::Limited { .. }));
 
-    assert!(matches!(
-        super::required_state(&[("regex_heredoc", true)]),
-        DetectorState::Complete
-    ));
+    assert!(matches!(super::required_state(&[("regex_heredoc", true)]), DetectorState::Complete));
 
     match super::required_state(&[("regex_heredoc", false)]) {
         DetectorState::Unavailable {
