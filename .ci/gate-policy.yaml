@@ -824,7 +824,7 @@ gates:
 
   - name: clippy_tests_kernel
     tier: pr_fast
-    description: "Clippy --all-targets on the known-clean staged cohort (37/48 crates): required within the pr_fast runner for test/bench/example code in these crates (#11736)"
+    description: "Clippy --all-targets on the known-clean staged cohort (38/49 crates): required within the pr_fast runner for test/bench/example code in these crates (#11736)"
     required: true
     # (#11736): The workspace lints in Cargo.toml deny `unwrap_used`, `expect_used`,
     # and `panic` but the existing clippy gates use `--lib` only, so these denials
@@ -928,6 +928,12 @@ gates:
     # to the strict list below, but main's stack-increment admission boundary
     # (#15677) now classifies it in CLIPPY_TESTS_KERNEL_RESIDUAL_PACKAGES; the
     # residual lane owns its clippy status, so that selector is not restored.
+    #   2026-09-16 batch (measured clean, no fixes needed, PR #15028):
+    #     perl-operation-trace — new Tier-1 leaf crate; passes the exact kernel
+    #     command locally on the integrated candidate head. The partition check
+    #     (msrv_authority_sync / gate-policy) requires every workspace package
+    #     to carry a clippy all-target disposition, so the crate joins the
+    #     cohort in the same PR that adds it to the workspace.
     #   2026-09-17 batch (#15414 admission): perl-sync-convergence joins the
     #     cohort; new Tier-1 leaf verified clean under this exact command on the
     #     transplant head (PR #15414 proof: fmt/clippy -D warnings, 28 unit +
@@ -971,6 +977,7 @@ gates:
       -p perllsp
       -p perl-lexer
       -p perl-ci-hygiene
+      -p perl-operation-trace
       --all-targets --locked
       -- -D warnings -A missing_docs
     # Budget: measured ~80s locally with warm dependencies and cold check
