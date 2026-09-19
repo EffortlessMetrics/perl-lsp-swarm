@@ -94,6 +94,12 @@ concurrency:
 
 permissions:
   contents: read
+  # actions: write is required only by the aggregate's deadline cancel of a
+  # queued trusted-lane job (#15900): job queue time ignores timeout-minutes,
+  # so without an explicit cancel a queued-forever job keeps the run and its
+  # check pending forever. The same automatic GITHUB_TOKEN is used; no
+  # secrets and no expressions in run source.
+  actions: write
 
 jobs:
   validate:
@@ -349,6 +355,32 @@ jobs:
             esac
             sleep "$POLL_INTERVAL_SECONDS"
           done
+          # A trusted lane that never receives a runner stays queued forever
+          # (queue time ignores timeout-minutes), so the run and its check
+          # never reach a terminal state (#15900). At the poll deadline,
+          # cancel the queued job explicitly with actionable diagnostics;
+          # the verdict below already fail-overs to the hosted lane when the
+          # trusted lane is pending.
+          if [ -z "$nano_conclusion" ] || [ "$nano_conclusion" = "pending" ]; then
+            nano_job_id="$(gh api "repos/$REPO/actions/runs/$RUN_ID/jobs?per_page=100" \
+              --jq ".jobs[] | select(.name == \"$NANO_JOB\" and (.conclusion | not)) | .id" \
+              | head -n 1)"
+            if [ -n "$nano_job_id" ]; then
+              if gh api -X POST "repos/$REPO/actions/jobs/$nano_job_id/cancel" >/dev/null 2>&1; then
+                echo "::warning::Trusted lane stayed queued with no runner for ${POLL_DEADLINE_SECONDS}s after the hosted lane finished (runner group em-ci-nano, labels self-hosted/linux/x64/em-ci/trusted-pr/workflow-nano); cancelled queued job $nano_job_id so the run reaches a terminal state. See issue #15900."
+              else
+                echo "::warning::Trusted lane stayed queued with no runner for ${POLL_DEADLINE_SECONDS}s and the cancel API call failed (job $nano_job_id); the run may remain queued. Investigate the em-ci-nano runner pool. See issue #15900."
+              fi
+              {
+                echo "### Trusted-lane failover diagnostics"
+                echo ""
+                echo "- Trusted job stayed queued with no runner for more than ${POLL_DEADLINE_SECONDS}s past the hosted lane (queue time ignores timeout-minutes)."
+                echo "- Trusted placement: runner group em-ci-nano, labels self-hosted, linux, x64, em-ci, trusted-pr, workflow-nano."
+                echo "- Action: cancelled queued job $nano_job_id; the required verdict is the hosted-lane failover below."
+                echo "- Follow-up: verify em-ci-nano runner registration and connectivity before the next trusted run."
+              } >> "$GITHUB_STEP_SUMMARY"
+            fi
+          fi
           nano="${nano_conclusion:-pending}"
           echo "nano=$nano hosted=$HOSTED_RESULT"
           case "$nano" in
