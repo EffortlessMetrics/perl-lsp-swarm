@@ -2116,16 +2116,23 @@ fn cross_check_ci_route_schema_version_literals(
     rust_source: &str,
     python_source: &str,
 ) -> Result<()> {
-    let rust_marker = "schema_version: \"";
+    // The Rust producer's envelope identifier moved in #15779: the receipt
+    // is built as `schema_version: envelope_version.to_string()`, so the
+    // single source of truth is `CURRENT_ENVELOPE_VERSION`, not a struct-init
+    // literal. Probe the const (#15878).
+    let rust_marker = "CURRENT_ENVELOPE_VERSION: &str = \"";
     let rust_open = rust_source.find(rust_marker).ok_or_else(|| {
         anyhow!(
-            "xtask/src/tasks/ci_route.rs is missing the Rust producer's `schema_version: \"...\"` literal \
-             (expected near the CiRouteReceipt emission site); the wire-policy test cannot validate drift"
+            "xtask/src/tasks/ci_route.rs is missing the Rust producer's `CURRENT_ENVELOPE_VERSION` \
+             literal (expected near the envelope admission site); the wire-policy test cannot \
+             validate drift"
         )
     })?;
     let rust_start = rust_open + rust_marker.len();
     let rust_end_rel = rust_source[rust_start..].find('"').ok_or_else(|| {
-        anyhow!("xtask/src/tasks/ci_route.rs `schema_version` literal is not closed by `\"`")
+        anyhow!(
+            "xtask/src/tasks/ci_route.rs `CURRENT_ENVELOPE_VERSION` literal is not closed by `\"`"
+        )
     })?;
     let rust_lit = &rust_source[rust_start..rust_start + rust_end_rel];
 
