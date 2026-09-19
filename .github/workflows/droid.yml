@@ -1,8 +1,38 @@
 name: Droid Tag
 
 # Explicit, authorized PR mentions only. Automatic review/security stay paused.
-# The model runs behind droid-action-safe's isolated review boundary; GitHub
-# publication authority remains deterministic and credential-separated.
+#
+# Security boundary for the manual @droid tag lane (#15840):
+#
+# - the job runs only for human (non-bot) OWNER/MEMBER/COLLABORATOR authors on
+#   this repository's own open pull requests, and the reviewed subject is the
+#   resolved authorized head SHA, checked out with persist-credentials: false;
+# - no workflow-level `env:` block: workflow env would be inherited by every
+#   step including the action, and therefore by the model process. Provider
+#   secrets appear only as inputs of the isolated-review step; the MiniMax key
+#   is serialized by the pinned action into a 0600-keyed private runtime home
+#   and never enters the workflow environment;
+# - the pinned isolated-review action (the droid-action-safe isolated
+#   publisher split, dev merges #7 + #8, verified 2026-09-16) separates model
+#   analysis from publication authority: the job token is consumed only by its
+#   deterministic preparation and publication steps. Model phases receive a
+#   constructed minimal environment (an explicit allowlist plus the Factory
+#   key), a restricted three-tool surface in the lowest autonomy mode, and
+#   redacted, size-capped output capture; the model process never receives a
+#   GitHub credential;
+# - the ephemeral private HOME (GITHUB_ENV) carries no secrets; its HOME/XDG
+#   paths are exactly the allowlisted keys the model phase forwards, so agent
+#   writes land in a throwaway directory instead of the runner home.
+#
+# Accepted residuals (tracked upstream, #15840 / #15863):
+# - the Droid CLI process legitimately holds FACTORY_API_KEY; the model
+#   endpoint remains the only intended egress channel for that value;
+# - the upstream base action still hardcodes its unsafe model-execution
+#   permission bypass and a full process-env spread. This lane does not invoke
+#   the base action path; the isolated-review split above is the structural
+#   remedy, and the open P1 review thread on this lane stays until the
+#   upstream removal lands.
+
 on:
   issue_comment:
     types: [created]

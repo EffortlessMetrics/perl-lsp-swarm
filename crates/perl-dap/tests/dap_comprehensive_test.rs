@@ -2,6 +2,7 @@
     clippy::print_stderr,
     reason = "Integration-test diagnostic and skip output; tracing is not the harness logger."
 )]
+use perl_dap::debug_adapter::DapMessageWithEpoch;
 use perl_dap::{DapMessage, DebugAdapter};
 use perl_lsp_rs_core::config::PerlOracleEnv;
 use perl_tdd_support::{must, must_some};
@@ -15,7 +16,7 @@ type TestResult = Result<(), Box<dyn std::error::Error>>;
 
 /// Helper to wait for a specific DAP event
 fn wait_for_event(
-    rx: &Receiver<DapMessage>,
+    rx: &Receiver<DapMessageWithEpoch>,
     event_name: &str,
     timeout_secs: u64,
 ) -> Result<DapMessage, String> {
@@ -23,10 +24,10 @@ fn wait_for_event(
     loop {
         match rx.recv_timeout(timeout) {
             Ok(msg) => {
-                if let DapMessage::Event { ref event, .. } = msg
+                if let (DapMessage::Event { ref event, .. }, _) = msg
                     && event == event_name
                 {
-                    return Ok(msg);
+                    return Ok(msg.0);
                 }
                 // Continue waiting for the specific event
             }
