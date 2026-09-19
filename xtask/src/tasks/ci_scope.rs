@@ -797,7 +797,19 @@ pub fn classify_files(
     let windows_test_crates = if windows_runner {
         let mut crates: Vec<String> = direct_crates.iter().map(|c| c.name.clone()).collect();
         if crates.is_empty() {
-            crates.extend(["perl-uri".to_string(), "perl-workspace".to_string()]);
+            // #15405: add `perl-dap` to the default Windows smoke set so
+            // every Windows-bound PR surfaces the deterministic Windows-
+            // local failures (admitted_debugger_alias symlink privilege,
+            // live_perl_debuggee_reload perl5db stall — #15395 slices B1
+            // and B2 own the fixes) as visible check runs rather than
+            // letting them silently bit-rot on the floor. The set is
+            // advisory: promotion to required belongs to the owner once
+            // B1/B2 land.
+            crates.extend([
+                "perl-uri".to_string(),
+                "perl-workspace".to_string(),
+                "perl-dap".to_string(),
+            ]);
         }
         crates.sort();
         crates.dedup();
@@ -1594,6 +1606,49 @@ mod tests {
 
         assert!(!output.platform_overrides.windows_runner);
         assert!(output.platform_overrides.windows_test_crates.is_empty());
+        Ok(())
+    }
+
+    /// #15405: when the Windows runner is triggered by a path outside any
+    /// crate (e.g. a shell hook change) the default fallback `windows_test_
+    /// crates` set must include `perl-dap` so the deterministic Windows-local
+    /// failures observed by #15395 (admitted_debugger_alias symlink privilege,
+    /// live_perl_debuggee_reload perl5db stall) reach the advisory Windows
+    /// smoke on every Windows-bound PR rather than only when the change
+    /// happens to touch `crates/perl-dap/**` directly. Slices B1 and B2 own
+    /// the fixes; this lane owns the observation. Promotion to required is
+    /// the owner's call once those slices land.
+    #[test]
+    fn classify_files_fallback_includes_perl_dap_when_windows_runner_triggers_without_direct_crates()
+    -> Result<()> {
+        // `hooks/pre-push` selects the Windows runner but is not under
+        // `crates/`, so `direct_crates` will be empty and the fallback list
+        // is what `windows_test_crates` reads from.
+        let metadata = fake_metadata(&[("perl-dap", "crates/perl-dap")]);
+        let files = vec!["hooks/pre-push".to_string()];
+        let output = classify_files(&files, &metadata, "/workspace")?;
+
+        assert!(
+            output.platform_overrides.windows_runner,
+            "hooks/pre-push should trigger the Windows runner"
+        );
+        assert!(
+            output.direct_crates.is_empty(),
+            "no crate is touched, so direct_crates must be empty for the fallback path"
+        );
+        let crates = &output.platform_overrides.windows_test_crates;
+        assert!(
+            crates.iter().any(|c| c == "perl-dap"),
+            "perl-dap must be in the fallback windows_test_crates set, got {crates:?}"
+        );
+        assert!(
+            crates.iter().any(|c| c == "perl-uri"),
+            "perl-uri must remain in the fallback windows_test_crates set, got {crates:?}"
+        );
+        assert!(
+            crates.iter().any(|c| c == "perl-workspace"),
+            "perl-workspace must remain in the fallback windows_test_crates set, got {crates:?}"
+        );
         Ok(())
     }
 
