@@ -1153,6 +1153,19 @@ fn test_diagnostics_churn_drains_retained_state_after_close_delete()
                 "textDocument": { "uri": uri, "version": version },
                 "contentChanges": [{ "text": text }]
             })))?;
+            // Observe the armed debounce before the synchronous publish below:
+            // that publish runs the full analysis stack and can exceed the
+            // 60ms debounce window on slow platforms (Windows file IO), so a
+            // snapshot taken after it systematically sees an already-fired
+            // worker there. Poll briefly for the worker thread to record the
+            // schedule, mirroring the drain poll after close/delete below.
+            for _ in 0..500 {
+                if server.runtime_pressure_snapshot().diagnostic_debounce_pending_uris > 0 {
+                    saw_debounce_pressure = true;
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
             server.publish_diagnostics(&uri);
 
             let pressure = server.runtime_pressure_snapshot();
@@ -2800,7 +2813,10 @@ fn rapid_burst_does_not_permanently_degrade_the_workspace_index_coordinator()
 
     let coordinator = must_some(server.coordinator());
     assert!(
-        !matches!(coordinator.state(), perl_parser::workspace_index::IndexState::Degraded { .. }),
+        !matches!(
+            coordinator.state(),
+            perl_workspace::workspace_index::IndexState::Degraded { .. }
+        ),
         "the coordinator must not remain Degraded once the burst has fully settled; got: {:?}",
         coordinator.state()
     );
@@ -2886,7 +2902,10 @@ fn panicking_new_lifecycle_job_still_credits_the_pending_parse_settle()
         coordinator.pending_parse_count()
     );
     assert!(
-        !matches!(coordinator.state(), perl_parser::workspace_index::IndexState::Degraded { .. }),
+        !matches!(
+            coordinator.state(),
+            perl_workspace::workspace_index::IndexState::Degraded { .. }
+        ),
         "the coordinator must not be left Degraded by an uncredited panic; got: {:?}",
         coordinator.state()
     );
@@ -2970,7 +2989,10 @@ fn terminal_stale_reject_with_no_successor_still_credits_the_pending_parse_settl
         coordinator.pending_parse_count()
     );
     assert!(
-        !matches!(coordinator.state(), perl_parser::workspace_index::IndexState::Degraded { .. }),
+        !matches!(
+            coordinator.state(),
+            perl_workspace::workspace_index::IndexState::Degraded { .. }
+        ),
         "the coordinator must not be left Degraded by an uncredited terminal stale-reject; got: {:?}",
         coordinator.state()
     );
