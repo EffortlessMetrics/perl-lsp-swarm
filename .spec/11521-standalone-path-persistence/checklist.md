@@ -4,9 +4,11 @@
 
 Step 0, blocking and permanent: this lane mutates no shell profile, no registry,
 no environment, no install root, and no current process, and launches no hosted
-fresh-process proof. `this_validator_performs_no_platform_mutation` enforces it
-against the validator's own source; any successor that needs to write platform
-state belongs to the #7832 adapters, not here.
+fresh-process proof. `this_validator_performs_no_platform_mutation` scans the validator's own source
+for write, spawn, and environment-mutation calls. That is a substring check, not
+a capability proof — it would not survive a deliberate equivalent-effect rewrite
+— so it is a drift tripwire on today's honest source, not a sandbox. Any
+successor that needs to write platform state belongs to the #7832 adapters.
 
 Evidence base: `origin/main@75016cda820a`.
 
@@ -42,15 +44,15 @@ Evidence base: `origin/main@75016cda820a`.
 for f in context.md acceptance.md checklist.md; do
   [ -f ".spec/11521-standalone-path-persistence/$f" ] || exit 1
 done
-rg -c "SPP-C(0[1-9]|[12][0-9]|30)" .spec/11521-standalone-path-persistence/acceptance.md    # expect >= 30 contract rows
+rg -c "SPP-C(0[1-9]|[12][0-9]|3[0-3])" .spec/11521-standalone-path-persistence/acceptance.md  # expect >= 33 contract rows
 rg -c "^\| [0-9]+ \| " .spec/11521-standalone-path-persistence/acceptance.md                # expect exactly 10 falsifier rows
 rg -n "origin/main@75016cda820a" .spec/11521-standalone-path-persistence/checklist.md        # pinned evidence base
 
 cargo fmt -p xtask -- --check
 cargo clippy -p xtask --all-targets --locked -- -D warnings
-cargo test -p xtask --example standalone_path_persistence --locked                          # 52 focused tests
+cargo test -p xtask --example standalone_path_persistence --locked                          # 54 focused tests
 python3 -m venv .venv-schema-harness && .venv-schema-harness/bin/pip install --quiet jsonschema referencing
-.venv-schema-harness/bin/python -m unittest scripts.ci.test_standalone_path_contract_schemas  # 42 schema-law checks
+.venv-schema-harness/bin/python -m unittest scripts.ci.test_standalone_path_contract_schemas  # 44 schema-law checks
 cargo xtask check-file-policy
 cargo xtask changelog check
 ```

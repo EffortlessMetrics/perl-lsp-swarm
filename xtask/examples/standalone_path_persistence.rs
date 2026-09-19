@@ -238,6 +238,29 @@ fn require_nonempty(value: &str, field: &str) -> ContractResult<()> {
     Ok(())
 }
 
+/// Identifiers correlate documents; they are not a place to put observations.
+/// Leaving them free text let a complete PATH or a home directory ride into a
+/// durable receipt through `candidate_id` while every path-shaped field around
+/// them was checked, which is exactly what `bounded_typed_fields_only` denies.
+fn validate_identifier(value: &str, field: &str) -> ContractResult<()> {
+    require_nonempty(value, field)?;
+    if value.len() > 128 {
+        return err(format!(
+            "{field}: an identifier is a bounded token of at most 128 characters, not a place to carry observed values"
+        ));
+    }
+    let mut characters = value.chars();
+    let starts_well = characters.next().is_some_and(|first| first.is_ascii_alphanumeric());
+    let rest_ok =
+        characters.all(|character| character.is_ascii_alphanumeric() || "._-".contains(character));
+    if !starts_well || !rest_ok {
+        return err(format!(
+            "{field}: an identifier must be an ASCII token of letters, digits, `.`, `_`, or `-` starting alphanumeric; free text here would carry complete PATH, profile, or home values into a durable receipt (`{value}`)"
+        ));
+    }
+    Ok(())
+}
+
 fn validate_sha256(value: &str, field: &str) -> ContractResult<()> {
     let hex_ok =
         value.len() == 64 && value.bytes().all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'));
@@ -408,9 +431,19 @@ fn is_under_root(child: &str, root: &str) -> bool {
         return false;
     }
     let trimmed_root = root.trim_end_matches(separator);
-    let Some(rest) = child.strip_prefix(trimmed_root) else {
-        return false;
+    // Windows and UNC paths are case-insensitive, so two spellings of one
+    // directory are one directory; refusing them would reject a legitimate
+    // document rather than catch a laundering attempt. POSIX stays exact.
+    let prefix_matches = if separator == '\\' {
+        child.len() > trimmed_root.len()
+            && child[..trimmed_root.len()].eq_ignore_ascii_case(trimmed_root)
+    } else {
+        child.starts_with(trimmed_root)
     };
+    if !prefix_matches {
+        return false;
+    }
+    let rest = &child[trimmed_root.len()..];
     rest.starts_with(separator) && rest.len() > 1
 }
 
@@ -620,9 +653,9 @@ pub fn validate_plan(plan: &PathPlan) -> ContractResult<()> {
             "redaction_policy: must be `{REQUIRED_REDACTION_POLICY}`; complete PATH, profile, registry, and home values never enter a durable receipt"
         ));
     }
-    require_nonempty(&plan.plan_id, "plan_id")?;
-    require_nonempty(&plan.transaction_id, "transaction_id")?;
-    require_nonempty(&plan.subject.candidate_id, "subject.candidate_id")?;
+    validate_identifier(&plan.plan_id, "plan_id")?;
+    validate_identifier(&plan.transaction_id, "transaction_id")?;
+    validate_identifier(&plan.subject.candidate_id, "subject.candidate_id")?;
 
     let environment = &plan.environment;
     let subject = &plan.subject;
@@ -866,7 +899,7 @@ pub fn validate_persistence(receipt: &PersistenceReceipt) -> ContractResult<()> 
             "redaction_policy: must be `{REQUIRED_REDACTION_POLICY}`; complete PATH, profile, registry, and home values never enter a durable receipt"
         ));
     }
-    require_nonempty(&receipt.bound_plan_id, "bound_plan_id")?;
+    validate_identifier(&receipt.bound_plan_id, "bound_plan_id")?;
     validate_sha256(&receipt.bound_plan_sha256, "bound_plan_sha256")?;
 
     let result = receipt.result;
@@ -1089,7 +1122,7 @@ pub fn validate_fresh_process(observation: &FreshProcessObservation) -> Contract
             "redaction_policy: must be `{REQUIRED_REDACTION_POLICY}`; complete PATH, profile, registry, and home values never enter a durable receipt"
         ));
     }
-    require_nonempty(&observation.bound_plan_id, "bound_plan_id")?;
+    validate_identifier(&observation.bound_plan_id, "bound_plan_id")?;
     validate_sha256(&observation.bound_plan_sha256, "bound_plan_sha256")?;
 
     let session = &observation.session;
@@ -1550,6 +1583,7 @@ fn main() -> Result<()> {
         None => None,
     };
 
+    let mut observed_without_persistence = false;
     let mut validated_persistence: Option<PersistenceReceipt> = None;
     if let Some(receipt_path) = &args.persistence {
         let bytes = fs::read(receipt_path)
@@ -1593,6 +1627,32 @@ fn main() -> Result<()> {
         println!(
             "standalone-path-persistence: fresh-process valid ({})",
             observation.result.as_str()
+        );
+        observed_without_persistence =
+            validated_persistence.is_none() && observation.bound_persistence_result.is_some();
+    }
+
+    // "valid" must not be read as "fully checked". The cross-document laws only
+    // fire when the documents they relate are supplied together, and no JSON
+    // Schema can express them, so a partial invocation states its own scope.
+    let mut unverified: Vec<&str> = Vec::new();
+    if validated_plan.is_none() && (args.persistence.is_some() || args.fresh_process.is_some()) {
+        unverified.push(
+            "plan binding (bound_plan_id, bound_plan_sha256) — no --plan supplied, so the declared subject was not checked against a real plan",
+        );
+    }
+    if observed_without_persistence {
+        unverified.push(
+            "persistence agreement (bound_persistence_result) — no --persistence supplied, so the outcome this observation claims to follow was not checked",
+        );
+    }
+    for skipped in &unverified {
+        println!("standalone-path-persistence: NOT VERIFIED: {skipped}");
+    }
+    if !unverified.is_empty() {
+        println!(
+            "standalone-path-persistence: {} cross-document law(s) were not evaluated by this invocation",
+            unverified.len()
         );
     }
 
@@ -2366,6 +2426,69 @@ mod tests {
             validate_persistence(&overwritten),
             "an observed conflict cannot be reported under",
         )
+    }
+
+    /// An identifier is a correlation token, not a smuggling channel. Every
+    /// path-shaped field was checked while these four were free text, so a
+    /// complete PATH rode through the full validator untouched.
+    #[test]
+    fn an_identifier_cannot_carry_a_complete_path_or_a_private_value() -> Result<()> {
+        let leaks = [
+            "leaked-PATH=/usr/local/bin:/usr/bin:/home/operator/.ssh",
+            "/home/operator/.aws/credentials",
+            "$HOME/.secret",
+            "id with spaces",
+        ];
+        for leak in leaks {
+            let plan: ContractResult<PathPlan> =
+                mutated("plan_posix_installer_user_scope.json", |value| {
+                    value["subject"]["candidate_id"] = json!(leak);
+                });
+            expect_rejected(
+                plan.and_then(|plan| validate_plan(&plan)),
+                "an identifier must be an ASCII token",
+            )?;
+        }
+
+        let long: ContractResult<PathPlan> =
+            mutated("plan_posix_installer_user_scope.json", |value| {
+                value["plan_id"] = json!("a".repeat(129));
+            });
+        expect_rejected(
+            long.and_then(|plan| validate_plan(&plan)),
+            "bounded token of at most 128 characters",
+        )?;
+
+        let receipt: ContractResult<PersistenceReceipt> =
+            mutated("persistence_installer_persisted.json", |value| {
+                value["bound_plan_id"] = json!("/etc/paths:/usr/bin");
+            });
+        expect_rejected(
+            receipt.and_then(|receipt| validate_persistence(&receipt)),
+            "an identifier must be an ASCII token",
+        )
+    }
+
+    /// Windows and UNC paths are case-insensitive, so two spellings of one
+    /// directory are one directory. Refusing them rejects a legitimate document
+    /// rather than catching a laundering attempt.
+    #[test]
+    fn windows_root_containment_is_case_insensitive() -> Result<()> {
+        let plan: PathPlan = mutated("plan_windows_registry_user_path.json", |value| {
+            value["environment"]["install_root"]["path"] =
+                json!("C:\\users\\operator\\appdata\\local\\perl-lsp");
+        })?;
+        validate_plan(&plan).map_err(|error| {
+            color_eyre::eyre::eyre!("windows paths are case-insensitive: {error}")
+        })?;
+
+        // POSIX stays exact: case is meaningful there.
+        let posix: ContractResult<PathPlan> =
+            mutated("plan_posix_installer_user_scope.json", |value| {
+                value["environment"]["install_root"]["path"] =
+                    json!("/home/operator/.local/share/PERL-LSP");
+            });
+        expect_rejected(posix.and_then(|plan| validate_plan(&plan)), "is not under install root")
     }
 
     // ── review findings (PR #16014, Codex) ──────────────────────────────────

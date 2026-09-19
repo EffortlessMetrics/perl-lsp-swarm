@@ -57,6 +57,9 @@
 | SPP-C28 | The resolved winner and its row in the observed candidate set carry one identity; a recorded digest on that row must agree. |
 | SPP-C29 | A `logout_login` boundary is strictly stronger than a new shell and is only exercised by a `new_login_session`. |
 | SPP-C30 | A current-process environment edit with no durable write cannot certify a visible entry — enforced in the Rust validator **and** the published schema. |
+| SPP-C31 | Identifiers (`plan_id`, `transaction_id`, `candidate_id`, `bound_plan_id`) are bounded ASCII tokens of at most 128 characters, not free text: an unguarded identifier carries a complete PATH or home value past every other redaction check. |
+| SPP-C32 | An `entry_location`, in a plan or a conflict report, is one location and never a PATH or profile set. |
+| SPP-C33 | Root containment is case-insensitive on Windows and UNC paths and exact on POSIX, matching each platform's real path semantics. |
 
 ## §Falsifier map
 
@@ -104,15 +107,63 @@ JSON Schema 2020-12 cannot relate two string fields, so one contract row is a
 
 | Row | Why | Who enforces it |
 |---|---|---|
-| SPP-C06 (owned entry lies under the install root) | requires prefix containment between `path_policy.owned_entry.entry_value` and `environment.install_root.path` | the Rust validator; a schema-only consumer **must** perform the check itself |
+| SPP-C06 (owned entry lies under the install root) | prefix containment between two string fields | the Rust validator; a schema-only consumer **must** perform it |
+| the candidate lies under the install root | prefix containment between two string fields | the Rust validator |
+| SPP-C27 (command name names the executable) | relates `command_name` to the final segment of `executable_path` | the Rust validator |
+| traversal segments after a valid prefix | the published path pattern anchors the first segment only | the Rust validator |
+| SPP-C20 (candidate set ascending, unique by path, contains the winner) | ordering and cross-element comparison | the Rust validator; schema `uniqueItems` compares whole objects, so two rows with one path and different digests pass it |
+| SPP-C23, SPP-C25, SPP-C28 (every cross-document binding) | JSON Schema validates one document at a time | the Rust validator, **and only when the related documents are supplied together** |
 
 This is stated in the schema's own `entry_value` description with a
 `NOT SCHEMA-ENFORCED` marker, and pinned by
 `test_install_root_containment_is_a_declared_consumer_obligation`, which asserts
 both that the schema still accepts `plan_invalid_entry_outside_root.json` and
 that the marker is present. If a future schema dialect can express containment,
-that test fails and the fixture moves into `INVALID_PLAN_FIXTURES`. Every other
-contract row is carried by both the Rust validator and the published schemas.
+that test fails and the fixture moves into `INVALID_PLAN_FIXTURES`.
+
+Because the cross-document rows fire only when the documents are supplied
+together, the CLI now reports its own scope rather than letting "valid" be read
+as "fully checked":
+
+```text
+standalone-path-persistence: fresh-process valid (path_visible_after_documented_new_session)
+standalone-path-persistence: NOT VERIFIED: plan binding (bound_plan_id, bound_plan_sha256) — no --plan supplied ...
+standalone-path-persistence: NOT VERIFIED: persistence agreement (bound_persistence_result) — no --persistence supplied ...
+standalone-path-persistence: 2 cross-document law(s) were not evaluated by this invocation
+```
+
+Every row not listed above is carried by both the Rust validator and the
+published schemas.
+
+## §Trust boundary
+
+This validator checks **internal consistency, not ground truth.** It reads
+documents; it opens no file, hashes no binary, reads no registry key, and
+launches no process — deliberately, since the lane mutates nothing. A plan may
+therefore declare `confirmation_state: confirmed_current` with a syntactically
+valid but entirely fictitious `executable_sha256`, and every downstream document
+need only *agree* with that declared value.
+
+What this contract guarantees is that a set of documents cannot contradict each
+other or the laws, and that an outcome word cannot be claimed without the
+evidence shape it requires. What it cannot guarantee is that the declared
+evidence was ever observed. Binding observation to reality is the hosted
+fresh-process proof (#10746) and the adapters under #7832; the digests here are
+the seam those lanes attach to.
+
+## §Known representational limits
+
+Two real installer patterns this contract cannot currently express. Both are
+deliberate boundaries rather than oversights, and neither is silently accepted —
+each is refused with a message naming the law:
+
+| Pattern | Current behaviour | Why not widened here |
+|---|---|---|
+| one entry written to several profiles (`.bashrc` **and** `.zshrc`) | refused: `owned_entries_observed` must be exactly 1 for `added`/`already_present` | the vocabulary has no way to distinguish an intentional multi-location canonical write from the duplicate/alias spellings SPP-C13 exists to catch. Adding one is a contract change, not a repair, and belongs with the POSIX adapter (#7832) that would first need it. |
+| fish `fish_add_path` (a universal-variable write, not a text append) | representable only by mislabelling it `profile_line` | `OwnedEntryKind` models file- and registry-backed mechanisms. A `shell_variable_store` kind is the honest addition, again with the adapter that needs it. |
+
+Recording them here means the adapter lane meets a documented boundary and a
+typed refusal rather than discovering the gap as a mysterious rejection.
 
 ## §API-Shape
 
@@ -131,8 +182,8 @@ New, additive only. No existing public surface changes.
 
 | Layer | Command | Count |
 |---|---|---|
-| Checked validator battery | `cargo test -p xtask --example standalone_path_persistence --locked` | 52 |
-| Schema-only parity harness | `python -m unittest scripts.ci.test_standalone_path_contract_schemas` | 42 |
+| Checked validator battery | `cargo test -p xtask --example standalone_path_persistence --locked` | 54 |
+| Schema-only parity harness | `python -m unittest scripts.ci.test_standalone_path_contract_schemas` | 44 |
 | Fixtures | `fixtures/experience/install_path_persistence/` | 27 (19 positive, 8 committed-invalid) |
 
 The battery includes `every_invalid_fixture_is_valid_once_its_one_violation_is_repaired`,

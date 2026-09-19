@@ -23,7 +23,10 @@
     },
     "bound_plan_id": {
       "type": "string",
-      "minLength": 1
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$",
+      "description": "A bounded correlation token. Free text here would carry complete PATH, profile, or home values into a durable receipt, which bounded_typed_fields_only denies."
     },
     "bound_plan_sha256": {
       "type": "string",

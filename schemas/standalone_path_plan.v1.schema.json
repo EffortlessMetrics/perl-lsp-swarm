@@ -21,11 +21,17 @@
     },
     "plan_id": {
       "type": "string",
-      "minLength": 1
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$",
+      "description": "A bounded correlation token. Free text here would carry complete PATH, profile, or home values into a durable receipt, which bounded_typed_fields_only denies."
     },
     "transaction_id": {
       "type": "string",
-      "minLength": 1
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$",
+      "description": "A bounded correlation token. Free text here would carry complete PATH, profile, or home values into a durable receipt, which bounded_typed_fields_only denies."
     },
     "subject": {
       "type": "object",
@@ -41,7 +47,10 @@
       "properties": {
         "candidate_id": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$",
+          "description": "A bounded correlation token. Free text here would carry complete PATH, profile, or home values into a durable receipt, which bounded_typed_fields_only denies."
         },
         "selection_generation": {
           "type": "integer",
@@ -600,9 +609,21 @@
             {
               "type": "string",
               "minLength": 1,
-              "not": {
-                "pattern": "[$%`;&|<>\"'*?~]"
-              }
+              "allOf": [
+                {
+                  "$comment": "Expansion syntax never reaches a profile, a script, or the registry.",
+                  "not": {
+                    "pattern": "[$%`;&|<>\"'*?~]|[\\u0000-\\u001f\\u007f]"
+                  }
+                },
+                {
+                  "$comment": "A list separator is the signature of a complete PATH or profile set pasted into a durable receipt.",
+                  "not": {
+                    "pattern": "^.{2,}:"
+                  }
+                }
+              ],
+              "maxLength": 4096
             },
             {
               "type": "null"

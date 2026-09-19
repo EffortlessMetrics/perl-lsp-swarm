@@ -617,6 +617,57 @@ class StandalonePathContractSchemaTests(unittest.TestCase):
         )
         self.assertIn("install_root", description)
 
+    def test_identifiers_are_bounded_tokens_not_free_text(self):
+        """Free-text identifiers defeated bounded_typed_fields_only entirely."""
+        leaks = [
+            "leaked-PATH=/usr/local/bin:/usr/bin:/home/operator/.ssh",
+            "/home/operator/.aws/credentials",
+            "$HOME/.secret",
+            "id with spaces",
+            "a" * 129,
+        ]
+        for leak in leaks:
+            with self.subTest(identifier=leak[:40]):
+                document = self._plan()
+                document["subject"]["candidate_id"] = leak
+                self._expect_rejected(
+                    self.plan_validator,
+                    document,
+                    "an identifier is a bounded correlation token",
+                )
+
+                receipt = self._persistence()
+                receipt["bound_plan_id"] = leak
+                self._expect_rejected(
+                    self.persistence_validator,
+                    receipt,
+                    "an identifier is a bounded correlation token",
+                )
+
+    def test_an_entry_location_cannot_carry_a_complete_path_set(self):
+        """The literal 'complete PATH in a durable document' case, schema-side."""
+        for leaked in (
+            "PATH=/usr/local/bin:/usr/bin:/home/operator/.cargo/bin",
+            "/home/operator/.bashrc:/home/operator/.zshrc:/home/operator/.profile",
+            "$HOME/.profile",
+        ):
+            with self.subTest(entry_location=leaked):
+                document = self._plan()
+                document["path_policy"]["owned_entry"]["entry_location"] = leaked
+                self._expect_rejected(
+                    self.plan_validator,
+                    document,
+                    "a durable receipt carries the exact owned entry, never a PATH set",
+                )
+
+                receipt = self._persistence("persistence_conflict_wrong_existing_entry.json")
+                receipt["conflicting_entry"]["entry_location"] = leaked
+                self._expect_rejected(
+                    self.persistence_validator,
+                    receipt,
+                    "a conflicting entry is one location, not a PATH set",
+                )
+
     def test_unmodelled_fields_and_words_are_refused(self):
         document = self._plan()
         document["surprise"] = "unmodelled"
