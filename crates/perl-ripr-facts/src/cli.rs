@@ -199,7 +199,49 @@ fn write_packet(out: &str, packet: &serde_json::Value) -> std::io::Result<()> {
         std::fs::create_dir_all(parent)?;
     }
     let json = serde_json::to_string_pretty(packet)?;
-    std::fs::write(path, json)
+
+    let parent = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+    let file_name = path.file_name().ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, "packet output has no file name")
+    })?;
+    let mut temp_path = None;
+    let mut temp_file = None;
+    for attempt in 0..100u32 {
+        let candidate = parent.join(format!(
+            ".{}.tmp-{}-{}",
+            file_name.to_string_lossy(),
+            std::process::id(),
+            attempt
+        ));
+        match std::fs::OpenOptions::new().write(true).create_new(true).open(&candidate) {
+            Ok(file) => {
+                temp_path = Some(candidate);
+                temp_file = Some(file);
+                break;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error),
+        }
+    }
+    let temp_path = temp_path.ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            "could not allocate packet temporary",
+        )
+    })?;
+    let mut temp_file = temp_file.take().ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::Other, "packet temporary handle was not created")
+    })?;
+    let write_result = (|| {
+        use std::io::Write;
+        temp_file.write_all(json.as_bytes())?;
+        temp_file.sync_all()?;
+        std::fs::rename(&temp_path, path)
+    })();
+    if write_result.is_err() {
+        let _ = std::fs::remove_file(&temp_path);
+    }
+    write_result
 }
 
 #[cfg(test)]
@@ -501,6 +543,43 @@ mod tests {
         let parsed: serde_json::Value = serde_json::from_str(&written)?;
         assert_eq!(parsed["schema_version"], "ripr-perl-facts-v1");
         assert_eq!(parsed["packet_status"], "unavailable");
+        Ok(())
+    }
+
+    #[test]
+    fn ripr_facts_replaces_packet_without_truncating_existing_readers() -> std::io::Result<()> {
+        use std::io::Read;
+
+        let out = "target/ripr/test-ripr-facts-atomic.json";
+        let first = build_unavailable_packet(
+            "ripr-perl-facts-v1",
+            ".",
+            None,
+            None,
+            &["owners".to_string()],
+        );
+        write_packet(out, &first)?;
+        let previous = std::fs::File::open(out)?;
+        let previous_bytes = std::fs::read(out)?;
+
+        let second = build_unavailable_packet(
+            "ripr-perl-facts-v1",
+            ".",
+            Some("origin/main"),
+            Some("HEAD"),
+            &["tests".to_string()],
+        );
+        write_packet(out, &second)?;
+
+        let mut reader_bytes = Vec::new();
+        let mut previous = previous;
+        previous.read_to_end(&mut reader_bytes)?;
+        assert_eq!(reader_bytes, previous_bytes, "existing readers retain the old packet");
+        assert_ne!(std::fs::read(out)?, previous_bytes, "destination is replaced, not truncated");
+        assert!(std::fs::read_dir("target/ripr")?.filter_map(Result::ok).all(|entry| {
+            !entry.file_name().to_string_lossy().starts_with(".test-ripr-facts-atomic.json.tmp-")
+        }));
+        let _ = std::fs::remove_file(out);
         Ok(())
     }
 
