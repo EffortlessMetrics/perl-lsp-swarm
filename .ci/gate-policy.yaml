@@ -824,7 +824,7 @@ gates:
 
   - name: clippy_tests_kernel
     tier: pr_fast
-    description: "Clippy --all-targets on the known-clean staged cohort (36/46 crates): required within the pr_fast runner for test/bench/example code in these crates (#11736)"
+    description: "Clippy --all-targets on the known-clean staged cohort (37/47 crates): required within the pr_fast runner for test/bench/example code in these crates (#11736)"
     required: true
     # (#11736): The workspace lints in Cargo.toml deny `unwrap_used`, `expect_used`,
     # and `panic` but the existing clippy gates use `--lib` only, so these denials
@@ -893,6 +893,10 @@ gates:
     #     verification on 6ec7242bd: lexer_robustness_tests green twice,
     #     check-panic-test exit 0. Exact extended-cohort rerun PASS on this
     #     branch.
+    #   2026-09-17 batch (#15414 admission): perl-sync-convergence joins the
+    #     cohort; new Tier-1 leaf verified clean under this exact command on the
+    #     transplant head (PR #15414 proof: fmt/clippy -D warnings, 28 unit +
+    #     16 integration + 2 dependency-contract tests).
     command: >-
       cargo clippy
       -p perl-token
@@ -920,6 +924,7 @@ gates:
       -p perl-incremental-parsing
       -p tree-sitter-perl-rs
       -p perl-release-readiness
+      -p perl-sync-convergence
       -p perl-workspace-core
       -p perl-tree-sitter-compat
       -p perl-module
