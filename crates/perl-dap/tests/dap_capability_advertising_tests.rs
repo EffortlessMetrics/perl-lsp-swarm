@@ -12,15 +12,17 @@
 //! * a capability that is advertised must be backed by the feature catalog, so
 //!   `features.toml` and the wire response can never drift apart.
 //!
-//! Exception (#9581): the seven secondary-capability rows are explicit `false`
-//! wire cells in every mode until each field's own exact-behavior receipt
-//! passes — they are deliberately NOT derived from catalog registration, so a
-//! catalog row advertising one of these families cannot widen the wire claim.
+//! Exception (#9581): the secondary-capability rows remain explicit `false`
+//! wire cells for direct/in-process, TCP, and mirror/peer modes. Native stdio
+//! enables only `supportsCancelRequest` after selecting its concurrent intake
+//! transport; the other rows remain false until their own exact-behavior
+//! receipts pass. These cells are deliberately NOT derived from catalog
+//! registration, so a catalog row cannot widen the wire claim.
 
 #[cfg(feature = "dap-phase2")]
 mod capability_tests {
     use anyhow::Result;
-    use perl_dap::debug_adapter::{DapMessage, DebugAdapter};
+    use perl_dap::debug_adapter::{DapMessage, DapMessageWithEpoch, DebugAdapter};
     use perl_dap::types::{Source, StackFrame};
     use serde_json::Value;
     use std::fs;
@@ -128,7 +130,7 @@ mod capability_tests {
     #[tokio::test]
     async fn test_goto_is_not_advertised_and_rejected_goto_has_no_side_effects() -> Result<()> {
         // Keep the receiver alive so a (forbidden) event emission is observable.
-        let (tx, rx) = sync_channel::<DapMessage>(64);
+        let (tx, rx) = sync_channel::<DapMessageWithEpoch>(64);
         let mut adapter = DebugAdapter::new();
         adapter.set_event_sender(tx);
         let caps = initialize_capabilities(&mut adapter)?;
@@ -181,7 +183,7 @@ mod capability_tests {
 
         // No execution side effect: only the initialize-time `initialized`
         // event may exist; a rejected goto must not emit `continued`.
-        while let Ok(msg) = rx.try_recv() {
+        while let Ok((msg, _)) = rx.try_recv() {
             let rendered = serde_json::to_string(&msg)?;
             assert!(
                 !rendered.contains("\"continued\""),
