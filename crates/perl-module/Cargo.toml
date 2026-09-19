@@ -35,9 +35,8 @@ perl-workspace = { workspace = true }
 regex.workspace = true
 
 [dev-dependencies]
-perl-semantic-facts = { workspace = true }
-serde_json.workspace = true
 proptest = { workspace = true }
+serde_json.workspace = true
 tempfile = { workspace = true }
 perl-tdd-support = { workspace = true }
 
