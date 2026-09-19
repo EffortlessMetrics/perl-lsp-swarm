@@ -358,8 +358,8 @@ crate = "perl-parser"
 name = "cli"
 role = "build_composition"
 owner = "#8409"
-consumers = ["required_features"]
-note = "Selects whether the perl-parse binary builds: [[bin]] perl-parse declares required-features = [\"cli\"]."
+consumers = ["cfg_gated", "required_features"]
+note = "Selects whether the perl-parse binary builds: [[bin]] perl-parse declares required-features = [\"cli\"], and tests/perl_parse_cli.rs is cfg-gated on it."
 
 [[feature]]
 crate = "perl-parser"
@@ -735,6 +735,14 @@ role = "build_composition"
 owner = "#8409"
 consumers = ["cfg_gated", "composition"]
 note = "Enables the regex dependency for query support."
+
+[[feature]]
+crate = "tree-sitter-perl-rs"
+name = "semantic-overlay"
+role = "build_composition"
+owner = "#8409"
+consumers = ["cfg_gated", "composition", "required_features"]
+note = "Enables the optional perl-module, perl-pragma, and perl-semantic-analyzer deps behind the overlay facade (#14839); [[test]] semantic_overlay_tests and [[example]] semantic_overlay_queries declare required-features."
 
 [[feature]]
 crate = "xtask"
