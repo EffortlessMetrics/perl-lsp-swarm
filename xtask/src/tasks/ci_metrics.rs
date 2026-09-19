@@ -113,8 +113,34 @@ struct BaselineReport {
     generated_at: String,
     branch: String,
     days_analyzed: u64,
+    /// Whether the fetched sample covers the whole requested window.
+    ///
+    /// `gh run list --limit N` returns the N most recent runs. When the
+    /// fetch hits that cap while the requested window extends further back,
+    /// the retained rows are a `partial_sample` of the period, not a
+    /// complete baseline (#15377). Downstream consumers (release-health,
+    /// policy thresholds) must not treat a partial sample as a full period.
+    sample_completeness: SampleCompleteness,
+    /// Raw rows returned by the fetch, before date filtering.
+    fetched_runs: u64,
+    /// Oldest/newest `createdAt` actually fetched; `None` when no row
+    /// carried a parseable timestamp. Together they show the window the
+    /// sample really covers.
+    oldest_fetched_at: Option<String>,
+    newest_fetched_at: Option<String>,
     workflows: BTreeMap<String, BaselineWorkflow>,
     summary: BaselineSummary,
+}
+
+/// Completeness of a baseline sample relative to its requested window.
+///
+/// Serialized as `complete` / `partial_sample` so JSON consumers can match
+/// without tracking Rust variant renames.
+#[derive(Serialize, Clone, Copy, PartialEq, Eq, Debug)]
+#[serde(rename_all = "snake_case")]
+enum SampleCompleteness {
+    Complete,
+    PartialSample,
 }
 
 struct BaselineRun {
@@ -444,7 +470,7 @@ pub fn run_ci_baseline(branch: String, days: u64, limit: usize, output_dir: Path
 
     let generated_at = Utc::now();
     let cutoff = generated_at - ChronoDuration::days(days as i64);
-    let report = match build_baseline_report(&branch, days, generated_at, cutoff, &runs) {
+    let report = match build_baseline_report(&branch, days, generated_at, cutoff, limit, &runs) {
         Some(report) => report,
         None => {
             // Distinguish "no runs in the requested window" from
@@ -452,7 +478,19 @@ pub fn run_ci_baseline(branch: String, days: u64, limit: usize, output_dir: Path
             // invocation that silently returns zero rows cannot leave a
             // stale baseline behind without explanation.
             if branch_exists(&root, &branch)? {
+                // Legitimate no-data: the branch exists but has no runs in
+                // the window. A previous successful run may have left
+                // `ci_baseline.{json,md}` behind; retaining them would let a
+                // stale baseline look current to file consumers
+                // (release-health degrades an absent file to null, so
+                // removal is the honest signal). The branch-missing arm
+                // below stays untouched: it bails, and a failed invocation
+                // must not delete evidence.
+                let removed = clear_stale_baseline_outputs(&root, &output_dir)?;
                 println!("No workflow runs found in requested period");
+                for path in &removed {
+                    println!("Removed stale baseline output: {}", path.display());
+                }
             } else {
                 bail!(
                     "branch '{branch}' was not found in this repository; \
@@ -485,6 +523,17 @@ pub fn run_ci_baseline(branch: String, days: u64, limit: usize, output_dir: Path
     println!("======================================");
     println!("Branch:              {}", report.branch);
     println!("Analysis period:     Last {} days", report.days_analyzed);
+    println!(
+        "Sample:              {} (fetched {}, window {}..{})",
+        match report.sample_completeness {
+            SampleCompleteness::Complete => "complete",
+            SampleCompleteness::PartialSample =>
+                "PARTIAL SAMPLE - fetch cap hit before the window was covered",
+        },
+        report.fetched_runs,
+        report.oldest_fetched_at.as_deref().unwrap_or("?"),
+        report.newest_fetched_at.as_deref().unwrap_or("?"),
+    );
     println!("Total runs:          {}", report.summary.total_runs);
     println!("Total billable:      {}m", report.summary.total_billable_minutes);
     println!("Overall success:     {:.1}%", report.summary.overall_success_rate_percent);
@@ -495,15 +544,63 @@ pub fn run_ci_baseline(branch: String, days: u64, limit: usize, output_dir: Path
     Ok(())
 }
 
+/// Remove stale `ci_baseline.{json,md}` outputs after a successful no-data
+/// invocation, returning what was removed.
+///
+/// A no-data run writes nothing; without this, a previous successful run's
+/// files would remain on disk and file consumers would present them as the
+/// current baseline (#15377). Only the two exact baseline filenames are ever
+/// removed, and only when they are plain files: anything else in the output
+/// directory (including an absent directory itself) is left alone.
+fn clear_stale_baseline_outputs(root: &Path, output_dir: &Path) -> Result<Vec<PathBuf>> {
+    let mut removed = Vec::new();
+    for file in ["ci_baseline.json", "ci_baseline.md"] {
+        let path = root.join(output_dir).join(file);
+        if path.is_file() {
+            fs::remove_file(&path)
+                .with_context(|| format!("failed to remove stale {}", path.display()))?;
+            removed.push(path);
+        }
+    }
+    Ok(removed)
+}
+
 fn build_baseline_report(
     branch: &str,
     days: u64,
     generated_at: DateTime<Utc>,
     cutoff: DateTime<Utc>,
+    limit: usize,
     runs: &[Value],
 ) -> Option<BaselineReport> {
     let mut workflow_counters: BTreeMap<String, BaselineCounters> = BTreeMap::new();
     let mut baseline_runs: Vec<BaselineRun> = Vec::new();
+
+    // The fetch returns most-recent-first up to `limit` rows. Record the
+    // fetched span before date filtering: when the cap is hit while the
+    // requested window reaches further back, the retained rows cannot stand
+    // in for the whole period (#15377).
+    let fetched_runs = runs.len();
+    let mut oldest_fetched: Option<DateTime<Utc>> = None;
+    let mut newest_fetched: Option<DateTime<Utc>> = None;
+    for run in runs {
+        if let Some(created) = read_timestamp(run, &["createdAt", "created_at"]) {
+            oldest_fetched = Some(oldest_fetched.map_or(created, |oldest| oldest.min(created)));
+            newest_fetched = Some(newest_fetched.map_or(created, |newest| newest.max(created)));
+        }
+    }
+    let cap_hit = limit > 0 && fetched_runs >= limit;
+    let sample_completeness = match (cap_hit, oldest_fetched) {
+        // Fewer rows than the cap: the API returned everything available,
+        // so whatever the date filter keeps is the complete picture.
+        (false, _) => SampleCompleteness::Complete,
+        // Cap hit but the fetched span already reaches past the window edge:
+        // the cap did not cut off any in-window row.
+        (true, Some(oldest)) if oldest < cutoff => SampleCompleteness::Complete,
+        // Cap hit and every fetched row is inside the window: older
+        // in-window rows exist that we never saw.
+        (true, _) => SampleCompleteness::PartialSample,
+    };
 
     for run in runs {
         let created = match read_timestamp(run, &["createdAt", "created_at"]) {
@@ -647,6 +744,10 @@ fn build_baseline_report(
         generated_at: generated_at.to_rfc3339(),
         branch: branch.to_string(),
         days_analyzed: days,
+        sample_completeness,
+        fetched_runs: u64::try_from(fetched_runs).unwrap_or(u64::MAX),
+        oldest_fetched_at: oldest_fetched.map(|ts| ts.to_rfc3339()),
+        newest_fetched_at: newest_fetched.map(|ts| ts.to_rfc3339()),
         workflows: workflow_reports,
         summary: BaselineSummary {
             total_runs,
@@ -838,7 +939,18 @@ fn build_baseline_markdown(report: &BaselineReport) -> Result<String> {
     out.push_str("# CI Baseline Metrics Report\n\n");
     out.push_str(&format!("**Generated:** {}\n", report.generated_at.replace('T', " ")));
     out.push_str(&format!("**Branch:** {}\n", report.branch));
-    out.push_str(&format!("**Analysis Period:** Last {} days\n\n", report.days_analyzed));
+    out.push_str(&format!("**Analysis Period:** Last {} days\n", report.days_analyzed));
+    out.push_str(&format!(
+        "**Sample:** {} (fetched {}, window {}..{})\n\n",
+        match report.sample_completeness {
+            SampleCompleteness::Complete => "complete",
+            SampleCompleteness::PartialSample =>
+                "PARTIAL SAMPLE - fetch cap hit before the window was covered; do not use as a full-period baseline",
+        },
+        report.fetched_runs,
+        report.oldest_fetched_at.as_deref().unwrap_or("?"),
+        report.newest_fetched_at.as_deref().unwrap_or("?"),
+    ));
 
     out.push_str("## Summary\n\n");
     out.push_str("| Metric | Value |\n|--------|-------|\n");
@@ -909,6 +1021,7 @@ mod tests {
     use super::*;
     use color_eyre::eyre::eyre;
     use serde_json::json;
+    use tempfile::TempDir;
 
     #[test]
     fn read_timestamp_uses_fallback_keys() -> Result<()> {
@@ -954,7 +1067,7 @@ mod tests {
             }),
         ];
 
-        let report = build_baseline_report("master", 1, generated_at, cutoff, &runs)
+        let report = build_baseline_report("master", 1, generated_at, cutoff, 200, &runs)
             .ok_or_else(|| eyre!("expected baseline report"))?;
         let workflow =
             report.workflows.get("CI").ok_or_else(|| eyre!("expected workflow report"))?;
@@ -1016,7 +1129,7 @@ mod tests {
             }),
         ];
 
-        let report = build_baseline_report("master", 1, generated_at, cutoff, &runs)
+        let report = build_baseline_report("master", 1, generated_at, cutoff, 200, &runs)
             .ok_or_else(|| eyre!("expected baseline report"))?;
         let ci = report.workflows.get("CI").ok_or_else(|| eyre!("expected CI workflow"))?;
         let lint = report.workflows.get("Lint").ok_or_else(|| eyre!("expected Lint workflow"))?;
@@ -1074,8 +1187,138 @@ mod tests {
         let cutoff = DateTime::parse_from_rfc3339("2026-03-24T12:00:00Z")?.with_timezone(&Utc);
         let runs: Vec<Value> = Vec::new();
 
-        let report = build_baseline_report("main", 1, generated_at, cutoff, &runs);
+        let report = build_baseline_report("main", 1, generated_at, cutoff, 200, &runs);
         assert!(report.is_none(), "expected no report when zero rows are fetched");
+
+        Ok(())
+    }
+
+    fn truncated_window_runs() -> Vec<Value> {
+        // Two rows, both inside the requested window: with `--limit 2` the
+        // fetch hit the cap while the window reaches further back, so older
+        // in-window rows exist that were never fetched.
+        vec![
+            json!({
+                "workflowName": "CI",
+                "conclusion": "success",
+                "createdAt": "2026-03-25T11:00:00Z",
+                "startedAt": "2026-03-25T11:00:00Z",
+                "updatedAt": "2026-03-25T11:01:00Z"
+            }),
+            json!({
+                "workflowName": "CI",
+                "conclusion": "success",
+                "createdAt": "2026-03-25T10:00:00Z",
+                "startedAt": "2026-03-25T10:00:00Z",
+                "updatedAt": "2026-03-25T10:01:00Z"
+            }),
+        ]
+    }
+
+    /// 201+ runs inside the period cannot appear as a complete 30-day
+    /// 200-run baseline (#15377): when the fetch hits `--limit` while the
+    /// window extends past the oldest fetched row, the report must say
+    /// `partial_sample` everywhere the sample is presented.
+    #[test]
+    fn baseline_report_marks_truncated_fetch_as_partial_sample() -> Result<()> {
+        let generated_at =
+            DateTime::parse_from_rfc3339("2026-03-25T12:00:00Z")?.with_timezone(&Utc);
+        let cutoff = DateTime::parse_from_rfc3339("2026-03-24T12:00:00Z")?.with_timezone(&Utc);
+
+        let report =
+            build_baseline_report("main", 1, generated_at, cutoff, 2, &truncated_window_runs())
+                .ok_or_else(|| eyre!("expected baseline report"))?;
+        assert_eq!(report.sample_completeness, SampleCompleteness::PartialSample);
+        assert_eq!(report.fetched_runs, 2);
+        assert_eq!(report.oldest_fetched_at.as_deref(), Some("2026-03-25T10:00:00+00:00"));
+        assert_eq!(report.newest_fetched_at.as_deref(), Some("2026-03-25T11:00:00+00:00"));
+
+        let markdown = build_baseline_markdown(&report)?;
+        assert!(
+            markdown.contains("PARTIAL SAMPLE"),
+            "markdown must carry the partial-sample warning, got:\n{markdown}"
+        );
+        assert!(
+            markdown.contains("do not use as a full-period baseline"),
+            "markdown must state the consumption limit, got:\n{markdown}"
+        );
+
+        Ok(())
+    }
+
+    /// Hitting the cap is not itself truncation: when the fetched span
+    /// already reaches past the window edge, no in-window row was cut off.
+    /// (The 10:00 row falls outside the window so only the 11:00 row is
+    /// retained, but the fetched span proves the window is covered.)
+    #[test]
+    fn baseline_report_marks_cap_covered_window_complete() -> Result<()> {
+        let generated_at =
+            DateTime::parse_from_rfc3339("2026-03-25T12:00:00Z")?.with_timezone(&Utc);
+        let cutoff = DateTime::parse_from_rfc3339("2026-03-25T10:30:00Z")?.with_timezone(&Utc);
+
+        let report =
+            build_baseline_report("main", 1, generated_at, cutoff, 2, &truncated_window_runs())
+                .ok_or_else(|| eyre!("expected baseline report"))?;
+        assert_eq!(report.sample_completeness, SampleCompleteness::Complete);
+
+        Ok(())
+    }
+
+    /// Fewer rows than the cap means the API returned everything available:
+    /// the sample is complete even though the same rows would be partial
+    /// under a tighter limit.
+    #[test]
+    fn baseline_report_marks_under_cap_fetch_complete() -> Result<()> {
+        let generated_at =
+            DateTime::parse_from_rfc3339("2026-03-25T12:00:00Z")?.with_timezone(&Utc);
+        let cutoff = DateTime::parse_from_rfc3339("2026-03-24T12:00:00Z")?.with_timezone(&Utc);
+
+        let report =
+            build_baseline_report("main", 1, generated_at, cutoff, 200, &truncated_window_runs())
+                .ok_or_else(|| eyre!("expected baseline report"))?;
+        assert_eq!(report.sample_completeness, SampleCompleteness::Complete);
+
+        Ok(())
+    }
+
+    /// A successful no-data run must not leave an older baseline looking
+    /// current (#15377): both baseline outputs are removed when present, an
+    /// unrelated file in the same directory survives, and the removed paths
+    /// are reported back.
+    #[test]
+    fn clear_stale_baseline_outputs_removes_only_baseline_files() -> Result<()> {
+        let tmp = TempDir::new()?;
+        let out = tmp.path().join("target").join("metrics");
+        fs::create_dir_all(&out)?;
+        fs::write(out.join("ci_baseline.json"), r#"{"stale": true}"#)?;
+        fs::write(out.join("ci_baseline.md"), "# stale")?;
+        fs::write(out.join("other-artifact.json"), "{}")?;
+
+        let removed = clear_stale_baseline_outputs(tmp.path(), Path::new("target/metrics"))?;
+        assert_eq!(removed.len(), 2);
+        assert!(!out.join("ci_baseline.json").exists());
+        assert!(!out.join("ci_baseline.md").exists());
+        assert!(
+            out.join("other-artifact.json").exists(),
+            "unrelated files in the output directory must survive"
+        );
+
+        Ok(())
+    }
+
+    /// Clearing a directory that holds no baseline files (or no directory
+    /// at all, e.g. a fresh clone) is a no-op success, not an error.
+    #[test]
+    fn clear_stale_baseline_outputs_tolerates_absence() -> Result<()> {
+        let tmp = TempDir::new()?;
+        let removed = clear_stale_baseline_outputs(tmp.path(), Path::new("target/metrics"))?;
+        assert!(removed.is_empty());
+
+        let out = tmp.path().join("target").join("metrics");
+        fs::create_dir_all(&out)?;
+        fs::write(out.join("other-artifact.json"), "{}")?;
+        let removed = clear_stale_baseline_outputs(tmp.path(), Path::new("target/metrics"))?;
+        assert!(removed.is_empty());
 
         Ok(())
     }

@@ -182,26 +182,35 @@ fn walk_direct_statement(
                 context.shadowed_builders.remove(&package);
                 context.table_package_authority.insert(package);
             } else {
+                // A subsequent bare, dynamic, or ORM-mode use merely prevents
+                // the next direct `table`/`view` call from being attributed
+                // to QuickORM; the already-installed qorm_table fact remains
+                // source-backed and is not invalidated here. A future explicit
+                // `sub qorm_table {}` is the construct that overwrites it.
                 context.table_package_authority.remove(&package);
-                invalidate_qorm_table_fact(&package, facts);
             }
         }
         NodeKind::Use { module, args, .. }
             if module != QUICKORM_MODULE && imports_table_builder(args) =>
         {
+            // A competing importer of the `table`/`view` keyword shadows the
+            // builder for any *future* direct calls; it does not by itself
+            // remove the already-installed qorm_table member from the package.
             let package = current_package(context).to_string();
             context.table_package_authority.remove(&package);
-            invalidate_qorm_table_fact(&package, facts);
         }
         NodeKind::ExpressionStatement { expression } if is_competing_import_call(expression) => {
+            // A competing method/function `import` call drops QuickORM's
+            // builder authority for future direct calls but does not delete
+            // or redefine the installed qorm_table member.
             let package = current_package(context).to_string();
             context.table_package_authority.remove(&package);
-            invalidate_qorm_table_fact(&package, facts);
         }
         NodeKind::No { module, .. } if module == QUICKORM_MODULE => {
+            // `no DBIx::QuickORM` only retracts the import; the package-level
+            // qorm_table member installed by a prior build is unaffected.
             let package = current_package(context).to_string();
             context.table_package_authority.remove(&package);
-            invalidate_qorm_table_fact(&package, facts);
         }
         NodeKind::ExpressionStatement { expression } => {
             let package = current_package(context).to_string();
@@ -226,9 +235,20 @@ fn walk_direct_statement(
         }
         NodeKind::Subroutine { name: Some(name), .. } if is_builder_name(name) => {
             let package = current_package(context).to_string();
-            context.shadowed_builders.insert(package.clone());
-            context.table_package_authority.remove(&package);
-            invalidate_qorm_table_fact(&package, facts);
+            if name == QORM_TABLE_MEMBER {
+                // A local `sub qorm_table {}` literally redefines the
+                // installed generated member; the fact must be invalidated.
+                context.table_package_authority.remove(&package);
+                invalidate_qorm_table_fact(&package, facts);
+            } else {
+                // A local `sub table {}` / `sub view {}` only shadows the
+                // builder keyword for future direct calls. The already
+                // installed qorm_table member remains source-backed and is
+                // not invalidated by the shadow alone; a separate explicit
+                // `sub qorm_table {}` would still invalidate it.
+                context.table_package_authority.remove(&package);
+                context.shadowed_builders.insert(package);
+            }
 
             if let NodeKind::Subroutine { body, .. } = &node.kind {
                 walk_compile_time_descendants(body, file_id, context, facts, source);
@@ -292,8 +312,10 @@ fn walk_compile_time_descendants(
                 context.shadowed_builders.remove(&package);
                 context.table_package_authority.insert(package);
             } else {
+                // See the matching branch in walk_direct_statement: a later
+                // bare/dynamic/orm configuration stops future direct builds
+                // but does not invalidate the installed qorm_table fact.
                 context.table_package_authority.remove(&package);
-                invalidate_qorm_table_fact(&package, facts);
             }
         }
         NodeKind::Use { module, args, .. }
@@ -301,17 +323,24 @@ fn walk_compile_time_descendants(
         {
             let package = current_package(context).to_string();
             context.table_package_authority.remove(&package);
-            invalidate_qorm_table_fact(&package, facts);
         }
         NodeKind::No { module, .. } if module == QUICKORM_MODULE => {
             let package = current_package(context).to_string();
             context.table_package_authority.remove(&package);
-            invalidate_qorm_table_fact(&package, facts);
+        }
+        NodeKind::ExpressionStatement { expression } if is_competing_import_call(expression) => {
+            // A nested competing import call only drops builder authority;
+            // it does not by itself remove or redefine the installed member.
+            let package = current_package(context).to_string();
+            context.table_package_authority.remove(&package);
         }
         NodeKind::ExpressionStatement { expression }
-            if is_competing_import_call(expression)
-                || is_qualified_table_or_view_call(expression, current_package(context)) =>
+            if is_qualified_table_or_view_call(expression, current_package(context)) =>
         {
+            // A current-package-qualified `Package::table`/`Package::view`
+            // call replaces the installed qorm_table member and must
+            // invalidate the prior fact. This branch is *not* an
+            // authority-loss-only event.
             let package = current_package(context).to_string();
             context.table_package_authority.remove(&package);
             invalidate_qorm_table_fact(&package, facts);
@@ -319,7 +348,6 @@ fn walk_compile_time_descendants(
         NodeKind::MethodCall { .. } if is_competing_import_call(node) => {
             let package = current_package(context).to_string();
             context.table_package_authority.remove(&package);
-            invalidate_qorm_table_fact(&package, facts);
         }
         NodeKind::FunctionCall { .. }
             if is_qualified_table_or_view_call(node, current_package(context)) =>

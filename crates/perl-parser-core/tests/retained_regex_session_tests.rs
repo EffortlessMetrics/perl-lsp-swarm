@@ -11,10 +11,20 @@ use perl_parser_core::{
 
 /// Source with one finding of each canonical class that this layer can reach:
 /// a risk advisory (nested quantifier), a dynamic boundary (embedded code), a
-/// syntax-class modifier finding, and a clean substitution as a negative control.
+/// nested-quantifier finding on the match family, and a clean substitution
+/// as a negative control.
+///
+/// Note: prior to #14980 the match family line carried a bogus modifier
+/// (`m/foo/zz`) that the parser silently retained while the regex analyzer
+/// flagged it as a syntax-class modifier finding. The strict match
+/// validation introduced by #14980 rejects that input at parse time, so
+/// the fixture now uses a valid modifier (`g`) plus nested quantifiers on
+/// the pattern body. Modifier-level diagnostics for bogus letters are
+/// pinned separately by the parser tests in
+/// `command_line_regex_modifier_matrix.rs::invalid_match_modifiers_*`.
 const MIXED: &str = r#"my $re = qr/(a+)+b/;
 my $x = /(?{ print 1 })/;
-if ($s =~ m/foo/zz) { }
+if ($s =~ m/(a+)+b/g) { }
 my $y = $s =~ s/(x)/y/gr;
 "#;
 
@@ -252,6 +262,15 @@ fn a_parse_of_another_buffer_cannot_contribute_geometry() {
 
 /// Negative control for the equivalence above. It passes only because the session
 /// actually retained something; an empty table would make the comparison vacuous.
+///
+/// Note: prior to #14980, modifier-level syntactic findings on `m//`,
+/// `/.../`, and `qr//` reached the regex analyzer because the parser
+/// silently retained bogus modifier letters in the AST. With strict match
+/// validation, those findings surface at parse time as typed `SyntaxError`
+/// diagnostics instead, so this corpus deliberately uses only valid
+/// modifiers to keep the analyzer-level findings on structural patterns.
+/// Parser-level modifier findings are pinned separately by
+/// `command_line_regex_modifier_matrix.rs::invalid_match_modifiers_*`.
 #[test]
 fn the_equivalence_corpus_is_not_vacuous() {
     let session = session_table(MIXED);
@@ -263,15 +282,9 @@ fn the_equivalence_corpus_is_not_vacuous() {
         .filter_map(|record| record.pattern.as_ref())
         .map(|pattern| pattern.structural.diagnostics.len())
         .sum();
-    let modifier: usize = session
-        .records
-        .iter()
-        .filter_map(|record| record.modifiers.as_ref())
-        .map(|analysis| analysis.diagnostics.len())
-        .sum();
     assert!(
-        structural >= 2 && modifier >= 2,
-        "corpus must carry both structural and modifier findings, got {structural} and {modifier}"
+        structural >= 2,
+        "corpus must carry structural findings on nested quantifiers, got {structural}"
     );
 }
 
