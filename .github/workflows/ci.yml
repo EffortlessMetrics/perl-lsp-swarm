@@ -1132,13 +1132,63 @@ jobs:
       - name: Warm xtask
         run: cargo build -p xtask --locked
 
-      - name: Verify complete shard runner falsifiers
+      - name: Verify candidate meta self-tests
         if: matrix.name == 'meta'
-        run: python3 -m unittest scripts/ci/test_run_gate_shard.py
-
-      - name: Verify scope cache key composition
-        if: matrix.name == 'meta'
-        run: python3 -m unittest scripts/ci/test_scope_cache_key.py
+        shell: bash
+        env:
+          PR_BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || '' }}
+        run: |
+          set -euo pipefail
+          checkout_root="$(realpath -e -- .)"
+          meta_self_tests=(
+            scripts/ci/test_run_gate_shard.py
+            scripts/ci/test_scope_cache_key.py
+            scripts/ci/test_candidate_meta_self_tests.py
+          )
+          for self_test in "${meta_self_tests[@]}"; do
+            if [[ ! -e "$self_test" && ! -L "$self_test" ]]; then
+              if [[ ! "$PR_BASE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+                echo "::error title=Unclassifiable missing candidate meta self-test::$self_test is absent without an immutable PR base SHA"
+                exit 1
+              fi
+              if ! git cat-file -e "${PR_BASE_SHA}^{commit}" 2>/dev/null; then
+                echo "::error title=Unclassifiable missing candidate meta self-test::PR base $PR_BASE_SHA is unavailable; refusing to classify $self_test as stale"
+                exit 1
+              fi
+              mapfile -t historical_base_shas < <(git merge-base --all HEAD "$PR_BASE_SHA")
+              if [[ "${#historical_base_shas[@]}" -ne 1 ]]; then
+                echo "::error title=Unclassifiable missing candidate meta self-test::Historical merge-base decision is ambiguous or unavailable for HEAD and PR base $PR_BASE_SHA"
+                exit 1
+              fi
+              historical_base_sha="${historical_base_shas[0]}"
+              if git cat-file -e "${historical_base_sha}:${self_test}" 2>/dev/null; then
+                echo "::error title=Candidate meta self-test removed::$self_test exists in historical PR base $historical_base_sha but is absent from the candidate"
+                exit 1
+              fi
+              disposition="STALE_HEAD_SCOPED_NOOP: candidate path $self_test is absent"
+              echo "::notice title=Authorized stale-head meta self-test no-op::$disposition"
+              if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
+                printf -- '- `%s`: `STALE_HEAD_SCOPED_NOOP` (candidate path absent)\n' "$self_test" >> "$GITHUB_STEP_SUMMARY"
+              fi
+              continue
+            fi
+            if [[ ! -f "$self_test" || -L "$self_test" ]]; then
+              echo "::error title=Invalid candidate meta self-test::$self_test is present but is not a regular non-symlink file"
+              exit 1
+            fi
+            resolved_self_test="$(realpath -e -- "$self_test")" || {
+              echo "::error title=Unresolvable candidate meta self-test::$self_test cannot be resolved safely"
+              exit 1
+            }
+            case "$resolved_self_test" in
+              "$checkout_root"/*) ;;
+              *)
+                echo "::error title=Candidate meta self-test escapes checkout::$self_test resolves outside the checkout"
+                exit 1
+                ;;
+            esac
+            python3 -m unittest "$self_test"
+          done
 
       - name: Verify candidate proof presence classification
         if: matrix.name == 'meta'
@@ -1777,6 +1827,15 @@ jobs:
       - name: Workspace/index facade consumer contract (required merge surface)
         run: cargo test -p xtask --test parser_workspace_index_facade_consumers --locked -- --nocapture
 
+      # Same reasoning as the contracts above, and the #10544 recurrence #10433
+      # exists to prevent: the merge gate runs `cargo test --workspace --lib`, so
+      # this ledger would otherwise only execute via advisory pr-smoke. It is the
+      # architecture check that stops a second canonical index lifecycle authority,
+      # a telemetry-as-readiness disposition, or an unmapped lifecycle declaration
+      # from merging, so the producer needs a blocking execution route here.
+      - name: Index lifecycle ownership ledger (required merge surface)
+        run: cargo test -p xtask --test workspace_index_lifecycle_ledger --locked -- --nocapture
+
       # Same reasoning as the contracts above: the #11382 TDD-facade
       # recurrence guard otherwise only executes through diff-routed advisory
       # lanes, so stale facade imports could merge without it ever running.
@@ -1789,6 +1848,12 @@ jobs:
       # to the four contracts above on the same required merge surface.
       - name: Gate-policy budget witness contract (required merge surface)
         run: cargo test -p xtask --test issue_4657_ci_workflow_contract --locked -- --nocapture
+
+      # #7611: keep the JSON-RPC dependency-boundary probe on a required
+      # merge surface so a restored Perl taxonomy dependency cannot merge
+      # behind the advisory PR Smoke lane.
+      - name: LSP JSON-RPC dependency probe (required merge surface)
+        run: cargo test -p xtask --test lsp_jsonrpc_dependency_probe --locked -- --nocapture
 
       # #14585: nothing executed `xtask/tests/file_policy.rs`. No workflow named
       # `--test file_policy`, the merge gate runs `cargo test --workspace --lib`
@@ -1895,6 +1960,26 @@ jobs:
         run: |
           cargo test -p xtask --bin product-topology --locked -- --nocapture
           cargo test -p xtask --test product_topology_cli --locked -- --nocapture
+
+      # #9777: the dead-code API disposition ledger's drift check lives in
+      # `xtask/src/tasks/dead_code_api_ledger.rs` — a *bin* unit-test module.
+      # Same failure mode as the changelog contract above (#13484): `--lib`
+      # gates skip bin targets entirely, and unit_routed_full only executes via
+      # advisory pr-smoke and only when the PR diff selects xtask. A public item
+      # added to `crates/perl-parser/src/dead_code/mod.rs` alone therefore
+      # touches no xtask path, so the ledger could go stale — the surface
+      # growing an undispositioned item — with every required check green. That
+      # is the exact guard-with-no-way-to-fail this ledger exists to prevent.
+      # Filtered to this module rather than the whole bin suite on purpose: that
+      # suite also carries inventory ratchets red on main today.
+      # The ledger check proves the *record* matches the source. It does not run
+      # the behavioral fixtures, so an analyzer change could contradict a
+      # `never_produced`, `inert` or constant-confidence disposition while the
+      # ledger stayed green. Both halves are required for the claim to hold.
+      - name: Dead-code API ledger contract (required merge surface)
+        run: |
+          cargo test -p xtask --bin xtask --locked -- --nocapture dead_code_api_ledger
+          cargo test -p perl-parser --test dead_code_api_compat --locked -- --nocapture
 
   lsp-memory-smoke:
     name: LSP Memory Smoke

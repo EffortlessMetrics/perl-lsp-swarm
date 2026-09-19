@@ -197,8 +197,15 @@ fn scenario_53_constructor_inline_completion_quality_receipt() {
             harness.open_file(SIGNATURE_STYLE_PATH, SIGNATURE_STYLE_SOURCE)?;
             // Same readiness race as #15870: synchronize on the server's own
             // analysis-readiness signal instead of a fixed sleep.
-            let _ = harness.wait_for_diagnostics(SHIFT_STYLE_PATH, Duration::from_secs(30));
-            let _ = harness.wait_for_diagnostics(SIGNATURE_STYLE_PATH, Duration::from_secs(30));
+            let readiness = harness.wait_for_diagnostics(SHIFT_STYLE_PATH, Duration::from_secs(30));
+            if readiness.is_empty() {
+                return Err(anyhow::anyhow!("analysis readiness: no publishDiagnostics; completion probes would poll blind (#15899)").into());
+            }
+            let readiness =
+                harness.wait_for_diagnostics(SIGNATURE_STYLE_PATH, Duration::from_secs(30));
+            if readiness.is_empty() {
+                return Err(anyhow::anyhow!("analysis readiness: no publishDiagnostics; completion probes would poll blind (#15899)").into());
+            }
 
             recorder.mark_request_start("dynamic_inline_registration");
             let dynamic_registration_seen = wait_for_inline_registration(&harness);
