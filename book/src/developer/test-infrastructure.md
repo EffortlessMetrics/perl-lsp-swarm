@@ -770,7 +770,7 @@ RUST_LOG=debug cargo test -p perl-lsp-rs --test failing_test -- --nocapture
 RUST_LOG=trace cargo test -p perl-lsp-rs --test lsp_comprehensive_e2e_test -- --nocapture
 
 # Module-specific logging
-RUST_LOG=perl_parser::semantic=debug cargo test -p perl-parser
+RUST_LOG=perl_semantic_analyzer=debug cargo test -p perl-parser
 ```
 
 ---

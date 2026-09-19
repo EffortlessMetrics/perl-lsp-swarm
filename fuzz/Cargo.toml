@@ -14,6 +14,9 @@ libfuzzer-sys = "0.4"
 path = "../crates/perl-parser"
 features = ["incremental"]
 
+[dependencies.perl-semantic-analyzer]
+path = "../crates/perl-semantic-analyzer"
+
 [dependencies.serde_json]
 version = "1.0.149"
 
