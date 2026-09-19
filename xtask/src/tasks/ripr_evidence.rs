@@ -722,6 +722,33 @@ struct RiprSuppressionRules {
     suppression_reasons: Vec<Value>,
 }
 
+/// Classification values a suppression entry may select on.
+///
+/// `suppression_matches_finding` compares these, by exact canonicalized
+/// string, against a finding's `classification` (ripr 0.5.x) or `grip_class`
+/// (ripr 0.9.x+) field. The set is closed: it is exactly `ripr.toml`'s
+/// `[severity.findings]` vocabulary plus the `weakly_gripped` alias that
+/// [`canonical_suppression_classification`] folds onto `reachable_unrevealed`.
+/// Every other word in circulation — `kind` words such as `activation_unknown`
+/// (they name the seam's activation trace, and also appear in RIPR's
+/// human-readable annotation text) and diff-receipt gap kinds such as
+/// `call_deletion` — is never written into that field, so an entry listing one
+/// parses, loads, keeps suppressing the repo-wide seam receipt
+/// ([`suppression_matches_seam`] is path-only), and yet can never fire against
+/// the diff-scoped `ripr+ New Gap Gate`. That silent inertness is the recorded
+/// defect in issue #15519; loading now refuses such an entry, exactly like an
+/// invalid path glob.
+const SUPPRESSION_CLASSIFICATION_VOCABULARY: [&str; 8] = [
+    "exposed",
+    "weakly_exposed",
+    "reachable_unrevealed",
+    "no_static_path",
+    "infection_unknown",
+    "propagation_unknown",
+    "static_unknown",
+    "weakly_gripped",
+];
+
 fn read_ripr_suppression_rules(repo: &Path, path: &Path) -> Result<RiprSuppressionRules> {
     let policy_path = if path.is_absolute() { path.to_path_buf() } else { repo.join(path) };
     let raw = fs::read_to_string(&policy_path)
@@ -731,6 +758,26 @@ fn read_ripr_suppression_rules(repo: &Path, path: &Path) -> Result<RiprSuppressi
 
     let mut rules = RiprSuppressionRules::default();
     for suppression in policy.suppressions {
+        let unknown_classifications: Vec<&str> = suppression
+            .classification
+            .iter()
+            .map(String::as_str)
+            .filter(|value| !SUPPRESSION_CLASSIFICATION_VOCABULARY.contains(value))
+            .collect();
+        if !unknown_classifications.is_empty() {
+            bail!(
+                "RIPR suppression {} lists classification value(s) [{}] that no finding \
+                 classification or grip_class can ever carry, leaving the entry inert against \
+                 the new-gap gate; allowed vocabulary: {}",
+                if suppression.id.trim().is_empty() {
+                    "<unnamed entry>"
+                } else {
+                    suppression.id.trim()
+                },
+                unknown_classifications.join(", "),
+                SUPPRESSION_CLASSIFICATION_VOCABULARY.join(", ")
+            );
+        }
         let paths =
             suppression.paths.iter().map(|path| normalize_path_text(path)).collect::<Vec<_>>();
         if !suppression.id.trim().is_empty()
@@ -5911,9 +5958,8 @@ mod tests {
         for pattern in patterns {
             rules.display_patterns.push((*pattern).to_string());
             rules.path_patterns.push(Pattern::new(pattern).context("test glob must be valid")?);
-            // Empty = no classification filter, matching how the current matcher
-            // treats `policy/ripr-suppressions.toml` classification lists as
-            // documentary rather than selective.
+            // Empty = no classification filter: an entry without a
+            // `classification` key suppresses on path alone (#15519).
             rules.classification_patterns.push(Vec::new());
         }
         Ok(rules)
@@ -5976,6 +6022,141 @@ mod tests {
             (counts_for(&check).weakly_exposed) == (1),
             "proof predicate failed: {}",
             stringify!((counts_for(&check).weakly_exposed) == (1))
+        );
+        Ok(())
+    }
+
+    fn policy_with_classification(dir: &Path, classification: Option<&str>) -> Result<PathBuf> {
+        let policy_path = dir.join("suppressions.toml");
+        let classification_line =
+            classification.map(|values| format!("classification = {values}\n")).unwrap_or_default();
+        write_text(
+            &policy_path,
+            format!("[[suppress]]\nid = \"row\"\npaths = [\"src/**\"]\n{classification_line}")
+                .as_str(),
+        )?;
+        Ok(policy_path)
+    }
+
+    /// One ripr 0.5.x-shaped finding (`classification`) and one ripr 0.9.x-shaped
+    /// finding (`grip_class`), no `summary` object so the buckets are the totals.
+    fn mixed_shape_check() -> Result<Value> {
+        parse_check(
+            r#"{
+                "findings": [
+                    {
+                        "id": "probe:src_lib.rs:call_deletion:065a796b",
+                        "probe": {"file": "./src/lib.rs"},
+                        "classification": "weakly_exposed"
+                    },
+                    {
+                        "id": "seam:src_other.rs:call_effect:deadbeef",
+                        "seam": {"file": "./src/other.rs"},
+                        "grip_class": "weakly_gripped"
+                    }
+                ]
+            }"#,
+        )
+    }
+
+    #[test]
+    fn suppression_load_rejects_classifications_no_finding_can_carry() -> Result<()> {
+        // #15519: `activation_unknown` is a `kind` word, and diff-receipt gap
+        // kinds such as `call_deletion` are not finding classifications. An
+        // entry listing either used to parse, load, keep suppressing the
+        // repo-wide seam receipt (path-only matcher), and yet could never fire
+        // against the diff-scoped new-gap gate. The load must refuse it with
+        // the offending row and value named, exactly like a malformed glob.
+        let dir = tempfile::tempdir()?;
+        for (classification, offending) in [
+            ("[\"activation_unknown\"]", "activation_unknown"),
+            ("[\"weakly_exposed\", \"call_deletion\"]", "call_deletion"),
+        ] {
+            let policy_path = policy_with_classification(dir.path(), Some(classification))?;
+            let error = read_ripr_suppression_rules(dir.path(), &policy_path)
+                .expect_err("an unmatchable classification must fail the load");
+            let message = format!("{error:#}");
+            color_eyre::eyre::ensure!(
+                message.contains("row") && message.contains(offending),
+                "the refusal must name the offending row and value: {message}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn checked_in_ripr_suppression_policy_loads_under_classification_vocabulary() -> Result<()> {
+        // Negative control for the #15519 ledger repair: the production ledger
+        // itself must load — every classification it lists is one a finding can
+        // actually carry — and still contribute path rules.
+        let repo =
+            Path::new(env!("CARGO_MANIFEST_DIR")).parent().context("xtask crate has a parent")?;
+        let rules = read_ripr_suppression_rules(repo, Path::new(DEFAULT_RIPR_SUPPRESSIONS))?;
+        color_eyre::eyre::ensure!(
+            !rules.path_patterns.is_empty(),
+            "the checked-in ledger must contribute path rules"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn suppression_classification_selects_only_values_a_finding_can_carry() -> Result<()> {
+        // The falsifier set from #15519: a listed real value filters to exactly
+        // the findings carrying it (both field spellings, across producer
+        // versions), `weakly_gripped` still selects through its
+        // `reachable_unrevealed` canonicalization, and omitting the key still
+        // suppresses on path alone. Without these controls a loader that
+        // dropped the classification filter entirely would be indistinguishable
+        // from a correct one.
+        let check = mixed_shape_check()?;
+        let dir = tempfile::tempdir()?;
+        let counts_for_policy = |classification: Option<&str>| -> Result<RiprPrSummaryCounts> {
+            let policy_path = policy_with_classification(dir.path(), classification)?;
+            let rules = read_ripr_suppression_rules(dir.path(), &policy_path)?;
+            Ok(counts_with(&check, &rules))
+        };
+
+        // No `classification` key: path-scoped, suppresses both findings.
+        let path_scoped = counts_for_policy(None)?;
+        color_eyre::eyre::ensure!(
+            (path_scoped.suppressed_by_policy) == (2),
+            "a keyless entry must suppress on path alone"
+        );
+
+        // A listed real value selects only the finding carrying it: the
+        // selected finding leaves its bucket (0), the survivor stays visible
+        // and blocking (1).
+        let exposed_only = counts_for_policy(Some("[\"weakly_exposed\"]"))?;
+        color_eyre::eyre::ensure!(
+            (exposed_only.suppressed_by_policy) == (1)
+                && (exposed_only.weakly_exposed) == (0)
+                && (exposed_only.reachable_unrevealed) == (1),
+            "weakly_exposed must select exactly the weakly_exposed finding: {exposed_only:?}"
+        );
+
+        // `weakly_gripped` canonicalizes to `reachable_unrevealed` on both
+        // sides of the comparison, in either spelling.
+        let gripped_by_canon = counts_for_policy(Some("[\"reachable_unrevealed\"]"))?;
+        color_eyre::eyre::ensure!(
+            (gripped_by_canon.suppressed_by_policy) == (1)
+                && (gripped_by_canon.reachable_unrevealed) == (0)
+                && (gripped_by_canon.weakly_exposed) == (1),
+            "reachable_unrevealed must select the weakly_gripped finding: {gripped_by_canon:?}"
+        );
+        let gripped_by_alias = counts_for_policy(Some("[\"weakly_gripped\"]"))?;
+        color_eyre::eyre::ensure!(
+            (gripped_by_alias.suppressed_by_policy) == (1),
+            "the weakly_gripped alias must keep selecting weakly_gripped findings"
+        );
+
+        // A real but absent value selects nothing: the finding stays visible
+        // and blocking rather than being silently suppressed.
+        let absent_value = counts_for_policy(Some("[\"no_static_path\"]"))?;
+        color_eyre::eyre::ensure!(
+            (absent_value.suppressed_by_policy) == (0)
+                && (absent_value.weakly_exposed) == (1)
+                && (absent_value.reachable_unrevealed) == (1),
+            "an unmatched classification must leave every finding visible: {absent_value:?}"
         );
         Ok(())
     }
