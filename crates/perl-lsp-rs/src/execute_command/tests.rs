@@ -1684,15 +1684,9 @@ fn test_command_exists_behavior() {
         !provider.command_exists("definitely_nonexistent_command_12345"),
         "a name that is not installed must report absent"
     );
-
-    // Opposite direction: tightening admission must not report a genuinely
-    // installed tool absent. `sh` is required to exist on POSIX, and it lives
-    // in a system directory rather than the test's working directory.
-    #[cfg(unix)]
-    assert!(
-        provider.command_exists("sh"),
-        "a tool installed in an absolute PATH directory must remain available"
-    );
+    // Positive admission is proven hermetically by the command_exists_in
+    // fixture rows in perl-subprocess-runtime's availability tests; asserting
+    // a host-installed tool here would depend on the runner's PATH.
 }
 
 /// The module must expose exactly one bare-name availability authority.

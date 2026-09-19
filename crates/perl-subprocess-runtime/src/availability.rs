@@ -14,8 +14,9 @@
 //! # Why the current directory is not searchable
 //!
 //! `std::env::split_paths` yields an empty component for `PATH=""`, `":"`, or a
-//! trailing separator, and an empty or relative component names *this process's*
-//! current directory.  For a language server that directory is routinely the
+//! trailing separator.  An empty component names *this process's* current
+//! directory, and a relative component names a directory relative to it.  For a
+//! language server the current directory is routinely the
 //! opened workspace, i.e. content the user has not vouched for.  A probe that
 //! joins a bare tool name onto it cannot distinguish an installed tool from a
 //! planted file (#2764 / #3028).
