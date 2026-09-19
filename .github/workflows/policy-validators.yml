@@ -94,6 +94,11 @@ concurrency:
 
 permissions:
   contents: read
+  # No write authority here: the workflow security ratchet forbids write
+  # grants on PR-triggered workflows (#15900). The deadline diagnostics in
+  # validate-result are advisory only; the scheduled
+  # policy-validators-nano-reaper workflow owns the explicit cancel of a
+  # queued-forever trusted lane.
 
 jobs:
   validate:
@@ -349,6 +354,25 @@ jobs:
             esac
             sleep "$POLL_INTERVAL_SECONDS"
           done
+          # A trusted lane that never receives a runner stays queued forever
+          # (queue time ignores timeout-minutes), so the run and its check
+          # never reach a terminal state (#15900). This workflow holds no
+          # write authority (PR-triggered), so it reports actionable
+          # diagnostics and leaves the explicit cancel to the scheduled
+          # policy-validators-nano-reaper workflow. The verdict below
+          # already fail-overs to the hosted lane when the trusted lane is
+          # pending.
+          if [ -z "$nano_conclusion" ] || [ "$nano_conclusion" = "pending" ]; then
+            echo "::warning::Trusted lane stayed queued with no runner for ${POLL_DEADLINE_SECONDS}s past the hosted lane (runner group em-ci-nano, labels self-hosted/linux/x64/em-ci/trusted-pr/workflow-nano); the scheduled policy-validators-nano-reaper cancels the queued job so this run reaches a terminal state. The verdict below is the hosted-lane failover. See issue #15900."
+            {
+              echo "### Trusted-lane failover diagnostics"
+              echo ""
+              echo "- Trusted job stayed queued with no runner for more than ${POLL_DEADLINE_SECONDS}s past the hosted lane (queue time ignores timeout-minutes)."
+              echo "- Trusted placement: runner group em-ci-nano, labels self-hosted, linux, x64, em-ci, trusted-pr, workflow-nano."
+              echo "- Action: the scheduled policy-validators-nano-reaper cancels this queued job; the required verdict is the hosted-lane failover below."
+              echo "- Follow-up: verify em-ci-nano runner registration and connectivity before the next trusted run."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
           nano="${nano_conclusion:-pending}"
           echo "nano=$nano hosted=$HOSTED_RESULT"
           case "$nano" in
