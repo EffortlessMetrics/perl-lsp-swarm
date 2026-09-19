@@ -499,14 +499,11 @@ mod tests {
             .context("parse written aggregate receipt as generic json")?;
         let version =
             raw.get("schema_version").context("schema_version missing from written receipt")?;
-        assert!(
-            version.is_u64() || version.is_i64(),
-            "schema_version must serialize as a number (peer receipts use u32); got {version}"
-        );
+        // as_u64 subsumes any is_u64/is_i64 pre-check: only the literal 1 passes.
         assert_eq!(
             version.as_u64(),
             Some(1),
-            "schema_version must serialize as the literal 1 to match peer receipts"
+            "schema_version must serialize as the numeric literal 1 to match peer receipts (got {version})"
         );
         let receipt: AggregatorReceipt = serde_json::from_str(&body)
             .context("parse aggregate receipt as typed struct after numeric wire check")?;
