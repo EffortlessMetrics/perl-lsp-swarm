@@ -173,6 +173,16 @@ pub struct MeasureOptions {
     pub verbose: bool,
 }
 
+/// Canonical schema version stamped on every [`SweepReport`] written by the
+/// producer. Bumping this constant is a contract change — see the
+/// backward-compat fixtures in the test module for the older schema envelopes
+/// (1.0.0 / 1.2.0) that must remain deserializable.
+///
+/// Issue #15360: this constant is the single source of truth. The producer
+/// writer and the `test_report` helper both reference it; bumping the field
+/// no longer requires touching two call sites.
+pub const SWEEP_REPORT_SCHEMA_VERSION: &str = "1.3.0";
+
 /// Overall sweep report (serialized to JSON)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SweepReport {
@@ -1159,7 +1169,7 @@ fn measure_files(
     };
     let slowest_files = top_n_slowest(&measurements, SLOWEST_FILES_LIMIT);
     Ok(SweepReport {
-        schema_version: "1.3.0".to_string(),
+        schema_version: SWEEP_REPORT_SCHEMA_VERSION.to_string(),
         commit: get_git_commit(),
         timestamp: chrono::Utc::now().to_rfc3339(),
         corpus_profile: options.corpus_profile.clone(),
@@ -1417,7 +1427,7 @@ mod tests {
         first_error_buckets: BTreeMap<String, usize>,
     ) -> SweepReport {
         SweepReport {
-            schema_version: "1.2.0".to_string(),
+            schema_version: SWEEP_REPORT_SCHEMA_VERSION.to_string(),
             commit: "abc".to_string(),
             timestamp: "now".to_string(),
             corpus_profile: "system".to_string(),
@@ -1451,6 +1461,27 @@ mod tests {
     /// Helper to create a Node with the given kind at the given byte offset.
     fn node_at(kind: NodeKind, start: usize, end: usize) -> Node {
         Node::new(kind, SourceLocation { start, end })
+    }
+
+    /// Tripwire for issue #15360: the producer writer and the `test_report`
+    /// helper both stamp `SWEEP_REPORT_SCHEMA_VERSION` on every `SweepReport`
+    /// they emit. If either site re-introduces a hard-coded `"1.x.y"` literal
+    /// the assertion here still passes, but the constant must always match
+    /// the struct's documented envelope. This test asserts the canonical
+    /// value is pinned and the helper propagates it (so a future bump cannot
+    /// leave the two surfaces out of sync silently).
+    #[test]
+    fn sweep_report_schema_version_constant_is_pinned() {
+        assert_eq!(
+            SWEEP_REPORT_SCHEMA_VERSION, "1.3.0",
+            "SweepReport envelope bumped: update SWEEP_REPORT_SCHEMA_VERSION and the backward-compat fixtures in this file"
+        );
+        let report = test_report(1, 0, 0, 0, BTreeMap::new());
+        assert_eq!(
+            report.schema_version,
+            SWEEP_REPORT_SCHEMA_VERSION,
+            "test_report must stamp the canonical schema_version constant"
+        );
     }
 
     #[test]
