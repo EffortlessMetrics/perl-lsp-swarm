@@ -27,6 +27,12 @@ cargo xtask intent-diff-gate --fixture <json>
 5. VS Code activation fix claims map to expected paths:
    - `vscode-extension/package.json`, or
    - relevant tests under `crates/perl-lsp-rs/tests/`.
+6. Closing keywords (`Closes/Fixes/Resolves #NNNN`) require a **complete** change-set
+   observation (`source_state = complete`, resolved from the immutable
+   `baseRefOid..headRefOid` diff via `change_set::resolve_change_set`, #15384). A
+   `partial` or `unavailable` source fails with `closeout_with_incomplete_source`
+   before the generic evidence checks, so a truncated observation can never
+   authorise closeout. Advisory (non-closeout) checks are unaffected.
 
 ## Inputs and policy
 
@@ -42,6 +48,8 @@ The gate writes a receipt containing:
 - `claimed_closeout_issues`
 - `expected_paths`
 - `actual_paths`
+- `source_state` — `complete { base_sha, head_sha }`, `partial { reason }`, or
+  `unavailable { reason }` (see `.ci/receipts/schemas/intent-diff-gate.schema.json`)
 - `evidence`
 - `verdict`
 - `violations`
