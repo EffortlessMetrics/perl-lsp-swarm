@@ -246,8 +246,8 @@ fn walk_direct_statement(
                 // installed qorm_table member remains source-backed and is
                 // not invalidated by the shadow alone; a separate explicit
                 // `sub qorm_table {}` would still invalidate it.
-                context.shadowed_builders.insert(package.clone());
                 context.table_package_authority.remove(&package);
+                context.shadowed_builders.insert(package);
             }
 
             if let NodeKind::Subroutine { body, .. } = &node.kind {

@@ -609,7 +609,7 @@ sub table { 1 };
 "#,
         ),
     ];
-    for (uri_str, source) in cases {
+    for &(uri_str, source) in cases {
         let index = WorkspaceIndex::new();
         let uri = Url::parse(uri_str)?;
         index.index_initial_file(uri.clone(), source.to_string())?;
