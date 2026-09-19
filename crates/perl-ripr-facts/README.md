@@ -42,6 +42,23 @@ Three entry points:
   exit code (`0` success, `1` on any validation or write failure). Use
   `run_ripr_facts_with_diff` when the caller already has diff text.
 
+### Output safety
+
+The wrapper **replaces** `out`; it never rewrites it in place (#16022, #8165
+"Output safety"). The packet is serialized in full, staged in a temporary
+sibling inside the destination's own directory, synced, and only then renamed
+over `out`.
+
+A consumer reading `out` therefore observes either the previous complete packet
+or the new complete packet — never a truncated or half-written one — and a
+failed generation, whether it fails at request validation, serialization, or
+the write itself, leaves the previous packet byte-identical. Staging is
+confined to the destination directory so the rename stays on one filesystem,
+and the staged sibling is removed on both the success and the failure path.
+
+Written bytes are `serde_json::to_string_pretty` output with no trailing
+newline, unchanged by the staging.
+
 ```rust
 use perl_ripr_facts::{build_ripr_facts_packet, RiprFactsRequest};
 
