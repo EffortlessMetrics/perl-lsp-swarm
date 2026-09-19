@@ -138,7 +138,7 @@ def _validate_targets(
 class BenchmarkTargetAuthorityTests(unittest.TestCase):
     def test_all_nightly_targets_match_metadata_paths_features_and_sources(self) -> None:
         nightly = _workflow_targets()
-        self.assertEqual(len(nightly), 14)
+        self.assertEqual(len(nightly), 15)
         _validate_targets(nightly, _metadata())
 
     def test_wrong_src_path_is_rejected(self) -> None:

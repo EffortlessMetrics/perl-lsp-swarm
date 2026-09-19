@@ -64,7 +64,7 @@ and `Test2::Bundle::*` prefixes additionally recognize unknown module names,
 widening that limitation beyond inventoried modules. #13347 owns fail-closed
 admission. #13527 owns the exact pinned first-party module/import/generated-helper
 contract; its
-[draft pinned-source receipt PR #13534](https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/13534)
+[pinned-source receipt PR #13534](https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/13534)
 is source-review input, not canonical authority. #13225 and #13226 own the
 independent runtime oracle and durable falsification corpus; and #13544 owns
 the separate direct `Test2::Tools::Target` compatibility leaf.

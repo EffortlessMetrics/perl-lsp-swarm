@@ -27,6 +27,7 @@ Choose the path that matches what you are trying to do:
 | I want to... | Read this first |
 |---|---|
 | Install the language server | [Installation Guide](how-to/INSTALLATION.md) |
+| Distinguish native `--check`, `--check-project`, and `perl -c` | [Checking Perl files](reference/CHECKING.md) |
 | Integrate perl-lsp into GitHub Actions | [GitHub Actions Integration](how-to/GITHUB_ACTIONS.md) |
 | Upgrade an existing installation | [Upgrading](how-to/UPGRADING.md) |
 | Promote a prepared swarm release into `perl-lsp` without losing history | [History-Preserving Publication Sync](how-to/PUBLICATION_SYNC.md) |
@@ -88,6 +89,7 @@ Task-focused instructions for common workflows (goal-oriented).
 Authoritative descriptions of commands, options, data, and feature contracts (information-oriented).
 
 - [Commands Reference](reference/COMMANDS_REFERENCE.md)
+- [Checking Perl files](reference/CHECKING.md)
 - [Configuration Reference](reference/CONFIG.md)
 - [Architecture Reference](reference/ARCHITECTURE.md)
 - [LSP Features](reference/LSP_FEATURES.md)
@@ -126,6 +128,7 @@ Decision records, project status, and planning documents.
 - [Agent Build Storage and Gates Spec](specs/PLSP-SPEC-0013-agent-build-storage-and-gates.md)
 - [Refactor Acceptance Spec](specs/PLSP-SPEC-0014-refactor-acceptance.md)
 - [Native Stack Product Surface Spec](specs/PLSP-SPEC-0015-native-stack-product-surface.md)
+- [Reload Lifecycle and Observation-Route Contract](specs/PLSP-SPEC-0037-reload-lifecycle-v1.md) — the single architecture authority for generation-bound reload, observation routes, and workspace publication
 - [Receiver Expression Facts Spec](specs/PLSP-SPEC-0005-receiver-expression-facts.md), [Receiver Facts Implementation Plan](project/RECEIVER_FACTS_IMPLEMENTATION_PLAN.md), and [Receiver Facts Status](project/status/receiver_facts.md)
 - [Project Milestones](project/MILESTONES.md)
 - [Feature Governance](project/FEATURE_GOVERNANCE.md)
@@ -173,7 +176,12 @@ perllsp --version
 perllsp --health
 perllsp --info
 perllsp --check path/to/file.pl
+perllsp --check-project .
 perllsp --completion bash
 ```
+
+`--check` is a native listed-file parser check; `--check-project` is an 80%
+parsability report, not a strict all-clean check. See
+[Checking Perl files](reference/CHECKING.md).
 
 For the complete option list and behavior, see the [Commands Reference](reference/COMMANDS_REFERENCE.md).

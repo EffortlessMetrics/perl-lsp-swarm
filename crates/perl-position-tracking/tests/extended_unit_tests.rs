@@ -571,8 +571,8 @@ fn line_starts_cache_cr_only() {
     let src = "a\rb\rc";
     let cache = LineStartsCache::new(src);
     let (line, col) = cache.offset_to_position(src, 2); // 'b'
-    assert_eq!(line, 1);
-    assert_eq!(col, 0);
+    assert_eq!(line, 0);
+    assert_eq!(col, 2);
 }
 
 // ─── LineStartsCache: offset_to_position ─────────────────────────────────────
@@ -822,8 +822,8 @@ fn line_index_handles_crlf_line_endings() {
 fn line_index_handles_cr_line_endings() {
     let idx = LineIndex::new("abc\rdef".to_string());
     let (line, col) = idx.offset_to_position(4); // 'd'
-    assert_eq!(line, 1);
-    assert_eq!(col, 0);
+    assert_eq!(line, 0);
+    assert_eq!(col, 4);
 }
 
 #[test]

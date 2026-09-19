@@ -18,10 +18,10 @@ Ask:
 
 ## Orchestration affordances
 
-### Lane-root decisions
+### Root decisions
 
-The lane root retains the accepted candidate claim, proof-sufficiency judgment, which
-new paths are material, proof-cost tradeoffs, and whether a discovery changes the
+The accountable root retains the accepted candidate claim, proof-sufficiency judgment,
+which new paths are material, proof-cost tradeoffs, and whether a discovery changes the
 requirement/owner rather than merely strengthening tests.
 
 ### Delegable read-only questions

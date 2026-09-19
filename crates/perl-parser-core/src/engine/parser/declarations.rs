@@ -179,13 +179,14 @@ impl<'a> Parser<'a> {
                 let mut attr_name = base_name.clone();
 
                 if self.peek_kind() == Some(TokenKind::LeftParen) {
-                    self.consume_token()?; // consume (
-                    attr_name.push('(');
+                    let opening = self.consume_token()?;
+                    let argument_start = opening.start();
+                    let mut argument_end = opening.end();
 
                     let mut paren_depth = 1;
                     while paren_depth > 0 && !self.tokens.is_eof() {
                         let token = self.tokens.next()?;
-                        attr_name.push_str(&token.text);
+                        argument_end = token.end();
 
                         if base_name == "prototype"
                             && paren_depth == 1
@@ -208,6 +209,8 @@ impl<'a> Parser<'a> {
                             self.current_position(),
                         ));
                     }
+                    attr_name
+                        .push_str(self.source_attribute_argument(argument_start, argument_end)?);
                 }
 
                 // Perl allows arbitrary subroutine attributes via the
@@ -243,6 +246,42 @@ impl<'a> Parser<'a> {
     /// Convenience wrapper for the common subroutine/method case.
     fn parse_declaration_attributes(&mut self) -> ParseResult<Vec<String>> {
         self.parse_declaration_attributes_with_extras(&[])
+    }
+
+    /// Preserve argument bytes rather than joining trivia-stripped token text.
+    /// Perl scans attribute arguments as balanced, escaped parentheses: quote
+    /// and comment-looking bytes inside them are literal argument text.
+    /// Token traversal still owns consumption. Refuse a token-derived boundary
+    /// that disagrees with source instead of publishing a fabricated attribute.
+    fn source_attribute_argument(&self, start: usize, end: usize) -> ParseResult<&str> {
+        let invalid = || ParseError::syntax("Untrusted attribute argument boundary", start);
+        let bytes = self.src_bytes.get(start..end).ok_or_else(invalid)?;
+        if bytes.first() != Some(&b'(') {
+            return Err(invalid());
+        }
+        let mut depth = 0usize;
+        let mut escaped = false;
+        for (index, byte) in bytes.iter().enumerate() {
+            if escaped {
+                escaped = false;
+                continue;
+            }
+            match byte {
+                b'\\' => escaped = true,
+                b'(' => depth = depth.saturating_add(1),
+                b')' => {
+                    depth = depth.checked_sub(1).ok_or_else(invalid)?;
+                    if depth == 0 && index.saturating_add(1) != bytes.len() {
+                        return Err(invalid());
+                    }
+                }
+                _ => {}
+            }
+        }
+        if depth != 0 || escaped {
+            return Err(invalid());
+        }
+        std::str::from_utf8(bytes).map_err(|_| invalid())
     }
 
     /// Parse variable declaration attributes (`:shared`, `:param`, `:reader`, etc.).
@@ -487,10 +526,10 @@ impl<'a> Parser<'a> {
             .filter(|s| !s.is_empty())
             .collect();
 
-        self.in_class_body += 1;
-        let body = self.parse_block();
-        self.in_class_body -= 1;
-        let body = body?;
+        // Block-form class body. The grammar frame is scoped to `parse_block`
+        // so it is restored on every exit path, including recovery and
+        // truncated input, without a paired reset here.
+        let body = self.within_class_grammar(ClassGrammarForm::Block, Self::parse_block)?;
 
         let end = self.previous_position();
         Ok(Node::new(
@@ -690,8 +729,11 @@ impl<'a> Parser<'a> {
         // Expect =
         self.expect(TokenKind::Assign)?;
 
-        // Tell the lexer to enter format body mode
-        self.tokens.enter_format_mode();
+        // Tell the lexer to enter format body mode. A buffered stream that
+        // cannot honor the entry records an advisory; the format-body expect
+        // below then surfaces the misaligned cache as a typed error instead of
+        // silently accepting a wrongly classified token (#8128).
+        self.observe_contextual_operation(ContextualTokenOp::EnterFormatBody, start)?;
 
         // Get the format body
         let body_token = self.tokens.next()?;
@@ -1269,6 +1311,51 @@ impl<'a> Parser<'a> {
                             }
                         }
                     }
+                    Some(TokenKind::LeftBrace) => {
+                        // A configuration hashref may follow the flag arguments,
+                        // as in `use Sub::Exporter -setup => { ... },
+                        // { into => 'Target' };`. Breaking here would drop it
+                        // and every later argument from the recorded list, so a
+                        // reader of these arguments cannot tell that spelling
+                        // from one carrying no configuration at all.
+                        let mut depth = 0usize;
+                        while !self.tokens.is_eof() {
+                            // A statement terminator sitting directly inside the
+                            // block means the block never closes — malformed or
+                            // half-typed source, which an editor sees constantly.
+                            // Consuming past it would pull every later
+                            // declaration in the file into this one `use`, so the
+                            // subs and statements after it would vanish from the
+                            // tree entirely. Hand it back to the statement parser
+                            // instead, which is what happened before this arm
+                            // existed. A semicolon nested deeper belongs to a
+                            // block inside the hash, such as the body of
+                            // `generator => sub { ...; ... }`, and is kept.
+                            if depth == 1 && self.peek_kind() == Some(TokenKind::Semicolon) {
+                                break;
+                            }
+                            match self.peek_kind() {
+                                Some(TokenKind::LeftBrace) => {
+                                    depth = depth.saturating_add(1);
+                                    args.push(self.consume_token()?.text.to_string());
+                                }
+                                Some(TokenKind::RightBrace) => {
+                                    args.push(self.consume_token()?.text.to_string());
+                                    depth = depth.saturating_sub(1);
+                                    if depth == 0 {
+                                        break;
+                                    }
+                                }
+                                Some(_) => {
+                                    args.push(self.consume_token()?.text.to_string());
+                                }
+                                None => break,
+                            }
+                        }
+                        if self.peek_kind() == Some(TokenKind::Comma) {
+                            self.consume_token()?;
+                        }
+                    }
                     Some(TokenKind::Comma) => {
                         // Skip standalone commas (already handled after identifiers)
                         self.consume_token()?;
@@ -1387,22 +1474,32 @@ impl<'a> Parser<'a> {
     fn parse_data_section(&mut self) -> ParseResult<Node> {
         let start = self.current_position();
 
-        // Consume the data marker token
+        // Consume the data marker token, capturing its exact span from real
+        // token positions rather than deriving it from string lengths.
         let marker_token = self.consume_token()?;
         let marker = marker_token.text.to_string();
+        let marker_span = Some(SourceLocation { start, end: self.previous_position() });
 
-        // Check if there's a data body token
-        let body = if self.peek_kind() == Some(TokenKind::DataBody) {
+        // Check if there's a data body token, capturing its exact span the
+        // same way. No body means no span, not an empty range.
+        let (body, body_span) = if self.peek_kind() == Some(TokenKind::DataBody) {
+            let body_start = self.current_position();
             let body_token = self.consume_token()?;
-            Some(body_token.text.to_string())
+            let text = body_token.text.to_string();
+            let span = Some(SourceLocation { start: body_start, end: self.previous_position() });
+            (Some(text), span)
         } else {
-            None
+            (None, None)
         };
 
         let end = self.previous_position();
 
-        // Create a data section node
-        Ok(Node::new(NodeKind::DataSection { marker, body }, SourceLocation { start, end }))
+        // Create a data section node. The whole-node span stays exactly as
+        // before so existing consumers of the node's own location do not shift.
+        Ok(Node::new(
+            NodeKind::DataSection { marker, marker_span, body, body_span },
+            SourceLocation { start, end },
+        ))
     }
 
     /// Parse no statement (similar to use but disables pragmas/modules)

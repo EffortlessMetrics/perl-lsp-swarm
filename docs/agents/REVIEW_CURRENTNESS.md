@@ -145,7 +145,7 @@ submitted review body:
 Generate it only after the useful review record is complete:
 
 ```bash
-python3 scripts/ci/check-pr-semantic-review-currentness.py   <pr> <owner/repo> --emit-marker
+python3 scripts/ci/check-pr-semantic-review-currentness.py   <pr> <owner/repo> --emit-marker --result REVIEW_CURRENT
 ```
 
 The digest covers `git diff --binary --full-index <merge-base> <reviewed-head>`. The
@@ -212,17 +212,29 @@ interaction, repair that interaction rather than predicting overlap in advance.
 ### Rebase as integration work
 
 Rebase is an ordinary integration tool, not a freshness ceremony. Its main accepted
-use is while resolving an actual merge conflict. The candidate lane rebases, resolves
+use is while resolving an actual merge conflict. One candidate writer rebases, resolves
 the conflict, and refreshes the proof and review subjects affected by the new combined
 tree and the resolution.
 
-The lane owner may also rebase when refreshing the base materially simplifies active
-work or reduces a concrete integration risk. It does not need to be the final action,
-and there is no mechanical one-rebase limit. Commit distance can inform that judgment,
-but it is not an acceptance condition.
+The accountable root may also direct a rebase when refreshing the base materially
+simplifies active work or reduces a concrete integration risk. The single-writer rule
+still binds: the root rebases only as the current candidate writer after explicit
+writer reassignment, or directs the active candidate writer to perform it — it does not
+mutate the candidate concurrently with a writer. A rebase does not need to be the final
+action, and there is no mechanical one-rebase limit. Commit distance can inform that
+judgment, but it is not an acceptance condition.
 
 Behind-only movement still requires no action. Do not rebase after every unrelated
 `main` commit, push empty commits, or keep a PR at exact head merely to retrigger CI.
+
+Before choosing rebase, merge, or a port, establish the branch's relation to current
+`main` from its merge base. The September 3, 2026 `main` history replacement left some
+branches without a merge base, but many older branches still share history; those are
+live candidates to compare at claim level, not orphan ports. Resolve generated-projection
+conflicts through the owning writer and publication policy, never by hand-merging.
+Feature branches do not regenerate or stage the default-branch publication
+`docs/policy/NON_RUST_INVENTORY.md`; follow [file policy](../FILE_POLICY.md) and
+[non-Rust policy](../policy/NON_RUST_POLICY.md) for its current-tree evidence path.
 Repeated rebases are churn when they have no conflict, interaction, or active-work
 reason; distinct integration work may justify more than one.
 

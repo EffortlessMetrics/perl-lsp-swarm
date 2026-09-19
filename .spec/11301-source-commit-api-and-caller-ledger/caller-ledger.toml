@@ -51,13 +51,38 @@ compatibility_apis = ["index_file", "index_file_str", "index_file_with_generatio
 # thin alias of it, so the migration is behavior-preserving and removes four
 # compatibility callers rather than accepting them into the baseline. Net
 # effect on the combined tree: 696 - 1 = 695.
-# Burndown 695 -> 687 by #14032 (#5231 RefactoringEngine retirement): deleting
+# Burndown 695 -> 693 by #7588 (PR #15633, per-file SemanticQueryFacade).
+# `SemanticQueryFacade::visible_imports` was the facade's only cross-file
+# query; it forwarded to `WorkspaceIndex::file_dependencies` without reading
+# the facade's own model, and had no caller anywhere in the workspace. Retiring
+# it removed its two unit tests, which were the only source-commit API callers
+# in that file:
+#   crates/perl-semantic-analyzer/src/analysis/semantic/query_facade.rs
+#     2 -> 0 (-2 index_file_str, both `#[cfg(test)]` fixtures that pre-seeded a
+#     WorkspaceIndex solely to exercise the retired wrapper)
+# The file therefore leaves `caller_paths` entirely rather than dropping to a
+# zero-call row, which the checker rejects as a stale identity. No call was
+# migrated to a canonical API: the calls are gone because the behaviour they
+# set up is gone. The `crates/perl-semantic-analyzer` owner row stays -- it
+# still anchors `analysis/index.rs` and the ripr seam proof.
+# Burndown 693 -> 694 by #15761 (#15644 navigation-reindex-deadlock cutover):
+# one added `.index_file(url, ...)` call in the already-ledgered caller file
+#   crates/perl-lsp-rs-core/src/providers/navigation/references_shadow.rs
+# inside `mod tests` (`live_references_cutover_completes_inside_callback_while_
+# reindex_is_queued`), the #15644 regression control mirroring the definition
+# deadlock test. Fixture-only: it pre-seeds a WorkspaceIndex to exercise the
+# cutover inside a `with_semantic_queries_for_uri` callback, matching the
+# pre-existing `index_file` fixtures in the same test module. Outside the
+# #11305 banned prefix (`crates/perl-lsp-rs/src/runtime/text_sync`).
+# By API: index_file +1.
+# The #13120 QuickORM work adds canonical index-initial callers and no
+# compatibility calls of its own.
+# Burndown 694 -> 686 by #14032 (#5231 RefactoringEngine retirement): deleting
 # crates/perl-parser/src/refactor/refactoring.rs and
 # crates/perl-parser/src/refactor/scoped_rename_tests.rs removed their 8
-# compatibility `.index_file(...)` call sites (4 per file, checker-equivalent
-# regex scan over the pre-deletion blobs); both files dropped out of
-# caller_paths with them.
-compatibility_baseline = 687
+# `.index_file(...)` call sites (4 per file, checker-equivalent normalized scan
+# over the origin/main blobs; both files leave caller_paths with them).
+compatibility_baseline = 686
 
 # Structural recurrence control (#11305): files under these prefixes must
 # never call compatibility source APIs at all -- live commits go through
@@ -82,6 +107,7 @@ caller_paths = [
   "crates/perl-lsp-rs-core/src/providers/navigation/references_shadow.rs",
   "crates/perl-lsp-rs-core/tests/detect_dead_code_mid_surrogate_position.rs",
   "crates/perl-lsp-rs-core/tests/dynamic_callable_integration_tests.rs",
+  "crates/perl-lsp-rs-core/tests/quickorm_completion_tests.rs",
   "crates/perl-lsp-rs-core/tests/role_conflict_cross_file_wiring_tests.rs",
   "crates/perl-lsp-rs/src/features/workspace_rename.rs",
   "crates/perl-lsp-rs/src/runtime/dispatch/workspace/file_preflight.rs",
@@ -107,13 +133,13 @@ caller_paths = [
   "crates/perl-lsp-rs/tests/workstream_e_trust_anchor_tests.rs",
   "crates/perl-parser/src/refactor/workspace_refactor.rs",
   "crates/perl-parser/src/refactor/workspace_rename.rs",
+  "crates/perl-parser/tests/dead_code_api_compat.rs",
   "crates/perl-parser/tests/dead_code_detector.rs",
   "crates/perl-parser/tests/index_lifecycle_tests.rs",
   "crates/perl-parser/tests/lsp_cancellation_mutation_hardening.rs",
   "crates/perl-parser/tests/mutation_hardening_tests.rs",
   "crates/perl-parser/tests/workspace_index_tests.rs",
   "crates/perl-semantic-analyzer/src/analysis/index.rs",
-  "crates/perl-semantic-analyzer/src/analysis/semantic/query_facade.rs",
   "crates/perl-semantic-analyzer/tests/ripr_seam_proof_qw_whitespace.rs",
   "crates/perl-workspace/benches/workspace_index_benchmark.rs",
   "crates/perl-workspace/src/bin/workspace_memory_profile.rs",
@@ -133,6 +159,8 @@ caller_paths = [
   "crates/perl-workspace/tests/legacy_public_api_regression_tests.rs",
   "crates/perl-workspace/tests/memory_leak_regression.rs",
   "crates/perl-workspace/tests/memory_profiling_test.rs",
+  "crates/perl-workspace/tests/quickorm_generated_member.rs",
+  "crates/perl-workspace/tests/quickorm_workspace_receipt.rs",
   "crates/perl-workspace/tests/semantic_real_workspace_baseline.rs",
   "crates/perl-workspace/tests/short_query_workspace_symbols_bdd.rs",
   "crates/perl-workspace/tests/surface_workspace_parity.rs",

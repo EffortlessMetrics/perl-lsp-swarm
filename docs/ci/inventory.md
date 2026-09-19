@@ -14,7 +14,7 @@ is decided in PR 15+ once actuals confirm the overlap.
 
 | | |
 |---|---|
-| Default branch | `master` |
+| Default branch | `main` |
 | Rust workspace | resolver `3`, MSRV `1.95.0` (per `rust-toolchain.toml`) |
 | Workspace members | 134 (per `cargo metadata --no-deps`) |
 | Required branch checks | `merge-gate` (aggregate), `pr-title-check`, `methodology-gate`, `workflow-policy` |
@@ -54,7 +54,7 @@ is decided in PR 15+ once actuals confirm the overlap.
 | Workflow | Trigger | Blocking? | Runner | Intent | Est. LEM | Whitelist id | Disposition |
 |---|---|---:|---|---|---:|---|---|
 | `ci-nightly.yml` (mutation) | `schedule`, `workflow_dispatch`, label | no | `ubuntu-24.04` | Mutation testing | 60 | `mutation` | keep |
-| `ci-nightly.yml` (test-coverage) | `schedule`, `workflow_dispatch`, label | no | `ubuntu-24.04` | Coverage | 45 | `coverage` | keep |
+| `ci-nightly.yml` (test-coverage) | `schedule`, `workflow_dispatch` | no | `ubuntu-24.04` | Coverage | 45 | `coverage` | keep |
 | `ci-nightly.yml` (fuzz) | `schedule`, `workflow_dispatch` | no | `ubuntu-24.04` | Bounded fuzz sweep | 60 | `fuzz` | keep |
 | `ci-nightly.yml` (real-repo-latency) | `schedule`, `workflow_dispatch`, label | no | `ubuntu-24.04` | Real-repo latency | 30 | `real_repo_latency` | keep |
 | `ci-nightly.yml` (memory-plateau) | `schedule`, `workflow_dispatch`, label | no | `ubuntu-24.04` | Memory plateau | 35 | `memory_plateau` | keep |

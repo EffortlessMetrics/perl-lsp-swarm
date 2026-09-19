@@ -1,0 +1,47 @@
+[package]
+name = "perl-release-readiness"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Legacy mixed repository/product release-readiness evaluator retained for perl_kwalitee.v1 compatibility"
+readme = "README.md"
+repository.workspace = true
+homepage.workspace = true
+keywords = ["perl", "release", "readiness", "evidence", "compatibility"]
+categories = ["development-tools"]
+# Historical compatibility crate. The `perl-kwalitee` package/library names
+# stay vacant for the native distribution analyser; this crate is the one
+# code home of the frozen mixed evaluator.
+publish = false
+include = [
+    "src/**",
+    "legacy_indicator_migrations.toml",
+    "distribution_kwalitee_catalog.v1.toml",
+    "distribution_kwalitee_fixtures.v1.toml",
+    "fixtures/**",
+    "README.md",
+    "LICENSE*",
+    "Cargo.toml",
+]
+
+[lib]
+name = "perl_release_readiness"
+path = "src/lib.rs"
+
+[dependencies]
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+thiserror.workspace = true
+# Kept aligned with xtask. Used for legacy Cargo-manifest evidence and the
+# checked-in migration ledger.
+toml = "1.1.2"
+
+[dev-dependencies]
+perl-tdd-support = { workspace = true }
+sha2.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true

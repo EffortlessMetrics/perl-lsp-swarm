@@ -286,10 +286,10 @@ fn comment_gap_after_whitespace_skips_consecutive_comments() -> TestResult {
 }
 
 #[test]
-fn paired_substitution_replacement_gap_skips_consecutive_comments() -> TestResult {
+fn two_body_quote_like_gap_skips_consecutive_comments() -> TestResult {
     let mut lexer = PerlLexer::new(" # first\n # second\n [replacement]");
 
-    lexer.skip_paired_substitution_replacement_gap();
+    lexer.skip_two_body_quote_like_gap();
 
     assert_eq!(lexer.current_char(), Some('['));
     assert_eq!(lexer.position, " # first\n # second\n ".len());
@@ -567,5 +567,25 @@ fn test_exponent_marker_without_digits_after_sign_only() -> TestResult {
         tok3.token_type
     );
 
+    Ok(())
+}
+
+#[test]
+fn budget_limit_mirrors_in_contract_tests_stay_pinned() -> TestResult {
+    // `tests/budget_recovery_contract.rs` mirrors these crate-private limits
+    // as literals so its fixtures sit exactly on the production boundaries.
+    // This pin fails when a production limit moves, forcing the external
+    // mirror to be revisited in the same change instead of silently testing
+    // stale thresholds.
+    assert_eq!(
+        MAX_REGEX_BYTES,
+        64 * 1024,
+        "update the mirrored MAX_REGEX_BYTES in tests/budget_recovery_contract.rs in the same change"
+    );
+    assert_eq!(
+        MAX_HEREDOC_BYTES,
+        256 * 1024,
+        "update the mirrored MAX_HEREDOC_BYTES in tests/budget_recovery_contract.rs in the same change"
+    );
     Ok(())
 }
