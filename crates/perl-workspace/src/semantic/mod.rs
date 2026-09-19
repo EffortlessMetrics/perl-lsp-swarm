@@ -53,8 +53,11 @@ pub mod generated_member_extractor {
     use perl_semantic_facts::FileId;
 
     pub(crate) use super::generated_member_extractor_core::GeneratedMemberFact;
+    #[allow(unused_imports)]
     pub(crate) use super::generated_member_extractor_core::NameCandidate;
+    #[allow(unused_imports)]
     pub(crate) use super::generated_member_extractor_core::normalize_symbol_name;
+    #[allow(unused_imports)]
     pub(crate) use super::generated_member_extractor_core::stable_id;
 
     /// Extract generated-member facts from the canonical framework producers.
