@@ -16,11 +16,17 @@ on:
       - '.ci/gate-policy.yaml'
       - '.ci/parser-facade/**'
       - '.github/workflows/**'
-      - 'crates/perl-parser/Cargo.toml'
+      # Any manifest anywhere: `discover_consumer_contexts` scans every
+      # Cargo.toml in the repository for perl-parser dependencies, so a
+      # consumer manifest outside `crates/**` (xtask, fuzz, tests/fuzz,
+      # archive/...) must trigger this workflow too, or consumer drift in
+      # those files passes silently (#15580). `**/Cargo.toml` names manifests
+      # at any depth; the bare `Cargo.toml` entry pins the workspace-root
+      # manifest explicitly.
+      - '**/Cargo.toml'
+      - 'Cargo.toml'
       - 'crates/perl-parser/src/lib.rs'
       - 'crates/perl-parser/src/incremental/mod.rs'
-      - 'crates/perl-parser-core/Cargo.toml'
-      - 'crates/**/Cargo.toml'
       - 'docs/project/PARSER_FACADE_AUTHORITY.md'
       - 'scripts/ci/parser_facade_authority.py'
       - 'scripts/ci/parser_facade_inventory.py'
@@ -50,6 +56,15 @@ on:
       - 'scripts/ci/test_validate_cargo_feature_roles.py'
       - 'docs/how-to/DEPENDENCY_QUICK_REFERENCE.md'
       - 'docs/how-to/DEPENDENCY_MANAGEMENT.md'
+      - 'CONTRIBUTING.md'
+      - 'book/src/developer/contributing.md'
+      - 'scripts/populate-book.sh'
+      - '.github/dependabot.yml'
+      - 'scripts/ci/validate_dependabot_contract.py'
+      - 'scripts/ci/test_validate_dependabot_contract.py'
+      - 'scripts/ci/validate_dependabot_cooldown.py'
+      - 'scripts/ci/test_validate_dependabot_cooldown.py'
+      - 'vscode-extension/.npmrc'
       - 'docs/reference/WORKTREE_PROTOCOL.md'
       - 'docs/project/CI_LOCAL_VALIDATION.md'
       - 'scripts/ci/check_perl_lsp_rs_core_package.py'
@@ -90,7 +105,18 @@ permissions:
 
 jobs:
   validate:
-    name: Validate CI policy ledgers
+    name: Validate CI policy ledgers (self-hosted)
+    # Trusted self-hosted capacity stays off forks and bot PRs; those are
+    # proven by the hosted lane alone. A queued-forever nano (outage) is
+    # tolerated: the aggregate polls it with a deadline instead of
+    # needs-gating on it.
+    if: >-
+      github.event_name != 'pull_request' ||
+      (github.event.pull_request.head.repo.full_name == github.repository &&
+        github.event.pull_request.user.type != 'Bot' &&
+        !startsWith(github.event.pull_request.user.login, 'dependabot') &&
+        !startsWith(github.event.pull_request.user.login, 'app/') &&
+        !endsWith(github.event.pull_request.user.login, '[bot]'))
     runs-on:
       group: em-ci-nano
       labels: [self-hosted, linux, x64, em-ci, trusted-pr, workflow-nano]
@@ -158,6 +184,16 @@ jobs:
           python3 scripts/ci/test_validate_cargo_feature_roles.py
           python3 scripts/ci/validate_cargo_feature_roles.py --repo-root .
 
+      - name: Validate Dependabot source contract
+        run: |
+          python3 scripts/ci/test_validate_dependabot_contract.py
+          python3 scripts/ci/validate_dependabot_contract.py --repo-root .
+
+      - name: Validate Dependabot cooldown contract
+        run: |
+          python3 scripts/ci/test_validate_dependabot_cooldown.py
+          python3 scripts/ci/validate_dependabot_cooldown.py --repo-root .
+
       - name: Validate exposed-surface disposition contract
         run: |
           python3 -m unittest scripts/tests/test-validate-exposed-surface-disposition.py
@@ -180,3 +216,184 @@ jobs:
       - name: Validate Homebrew formula digest binding
         run: |
           python3 scripts/ci/test_verify_homebrew_formula_digests.py
+
+  validate-hosted:
+    name: Validate CI policy ledgers (GitHub-hosted)
+    # Always runs in parallel: the aggregate below decides between the
+    # trusted verdict and the fallback, so a queued-forever trusted lane
+    # (runner outage; queue time ignores timeout-minutes) cannot block
+    # failover the way a needs-gated lane would.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 1
+
+      # ubuntu-24.04 ships python3.12 with tomllib in the stdlib, so the
+      # validators run with system python3 exactly as on em-ci-nano: no
+      # toolchain install, no cargo, checkout only. The step list below is
+      # intentionally identical to `validate`; the fallback contract test
+      # (scripts/ci/test_policy_validators_route_contract.py) fails the
+      # required aggregate if the two copies drift.
+      - name: Validate risk packs
+        run: |
+          python3 scripts/ci/validate_risk_packs.py --strict
+
+      - name: Validate trust lanes
+        run: |
+          python3 scripts/ci/validate_trust_lanes.py --strict
+
+      - name: Validate gate -> lane mapping
+        run: |
+          workflow_args=()
+          for workflow in .github/workflows/*.yml .github/workflows/*.yaml; do
+            [[ -f "$workflow" ]] && workflow_args+=(--workflow "$workflow")
+          done
+          python3 scripts/ci/validate_gate_lane_mapping.py --strict "${workflow_args[@]}"
+
+      - name: Validate policy_checks inventory
+        run: |
+          python3 scripts/ci/test_validate_policy_checks_inventory.py
+          python3 scripts/ci/validate_policy_checks_inventory.py --check
+
+      - name: Validate policy TOML parses
+        run: |
+          python3 - <<'EOF'
+          import sys, tomllib
+          from pathlib import Path
+          failed = []
+          for p in sorted(Path("policy").glob("*.toml")):
+              try:
+                  tomllib.loads(p.read_text(encoding="utf-8"))
+                  print(f"OK: {p}")
+              except tomllib.TOMLDecodeError as e:
+                  failed.append((p, e))
+                  print(f"FAIL: {p}: {e}")
+          sys.exit(1 if failed else 0)
+          EOF
+
+      - name: Validate provider fact-read inventory
+        run: |
+          python3 scripts/ci/validate_provider_fact_reads.py
+
+      - name: Validate Cargo.lock conflict-repair policy
+        run: |
+          python3 scripts/ci/test_validate_cargo_lock_conflict_policy.py
+          python3 scripts/ci/validate_cargo_lock_conflict_policy.py --repo-root .
+
+      - name: Validate Dependabot source contract
+        run: |
+          python3 scripts/ci/test_validate_dependabot_contract.py
+          python3 scripts/ci/validate_dependabot_contract.py --repo-root .
+
+      - name: Validate Dependabot cooldown contract
+        run: |
+          python3 scripts/ci/test_validate_dependabot_cooldown.py
+          python3 scripts/ci/validate_dependabot_cooldown.py --repo-root .
+
+      - name: Validate exposed-surface disposition contract
+        run: |
+          python3 -m unittest scripts/tests/test-validate-exposed-surface-disposition.py
+          python3 scripts/validate-exposed-surface-disposition.py \
+            --authority-catalog docs/releases/exposed-surface-authorities.v1.json \
+            --projection docs/releases/exposed-surface-disposition.v1.json
+
+      - name: Validate bounded-result overflow invariants
+        run: |
+          python3 scripts/ci/check_bounded_result_overflow.py
+
+      - name: Validate parser facade authority
+        run: |
+          python3 scripts/ci/test_parser_facade_authority.py
+          python3 scripts/ci/check_parser_facade_authority.py --check-doc
+
+      # brew-bump.yml only runs on release/dispatch, so its own workflow never
+      # gates a PR. Without this step the digest-to-stanza binding would have a
+      # swapped-digest negative control that never runs (#6013).
+      - name: Validate Homebrew formula digest binding
+        run: |
+          python3 scripts/ci/test_verify_homebrew_formula_digests.py
+
+  validate-result:
+    name: Validate CI policy ledgers
+    # Only the always-running fallback is a hard dependency: a queued-forever
+    # trusted lane (runner outage) must not block failover, and job queue
+    # time does not count toward timeout-minutes. The trusted verdict is read
+    # by polling the run's jobs below.
+    needs:
+      - validate-hosted
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 1
+
+      - name: Prove policy-validators fallback contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m unittest scripts/ci/test_policy_validators_route_contract.py
+
+      # Fail-closed aggregation with a bounded wait for the trusted lane.
+      # Context values arrive via env (never embedded in run source) per the
+      # workflow security ratchet; the API token is the automatic
+      # GITHUB_TOKEN, never a secret reference.
+      - name: Evaluate routed result
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          HOSTED_RESULT: ${{ needs.validate-hosted.result }}
+          NANO_JOB: Validate CI policy ledgers (self-hosted)
+          POLL_DEADLINE_SECONDS: 900
+          POLL_INTERVAL_SECONDS: 30
+        run: |
+          set -euo pipefail
+          nano_conclusion=""
+          deadline=$((SECONDS + POLL_DEADLINE_SECONDS))
+          while [ "$SECONDS" -lt "$deadline" ]; do
+            nano_conclusion="$(gh api "repos/$REPO/actions/runs/$RUN_ID/jobs?per_page=100" \
+              --jq ".jobs[] | select(.name == \"$NANO_JOB\") | .conclusion // \"pending\"")"
+            case "$nano_conclusion" in
+              success | failure | cancelled | skipped) break ;;
+            esac
+            sleep "$POLL_INTERVAL_SECONDS"
+          done
+          nano="${nano_conclusion:-pending}"
+          echo "nano=$nano hosted=$HOSTED_RESULT"
+          case "$nano" in
+            success)
+              if [ "$HOSTED_RESULT" = "success" ]; then
+                echo "Policy Validators trusted result: both lanes agree."
+                exit 0
+              fi
+              echo "::error::lane divergence: trusted lane passed but fallback is $HOSTED_RESULT"
+              exit 1
+              ;;
+            failure)
+              echo "::error::Policy Validators trusted lane failed (fallback $HOSTED_RESULT)"
+              exit 1
+              ;;
+            skipped | cancelled)
+              if [ "$HOSTED_RESULT" = "success" ]; then
+                echo "Policy Validators fallback result: trusted lane $nano, hosted passed."
+                exit 0
+              fi
+              echo "::error::Policy Validators failed (trusted $nano, hosted $HOSTED_RESULT)"
+              exit 1
+              ;;
+            *)
+              if [ "$HOSTED_RESULT" = "success" ]; then
+                echo "Policy Validators failover result: trusted lane still $nano after deadline, hosted passed."
+                exit 0
+              fi
+              echo "::error::Policy Validators failed (trusted $nano, hosted $HOSTED_RESULT)"
+              exit 1
+              ;;
+          esac

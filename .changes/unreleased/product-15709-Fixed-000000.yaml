@@ -1,0 +1,9 @@
+project: product
+component: Developer experience
+kind: Fixed
+body: "Fixed the Windows platform smoke failure in `client_settings_replacement_releases_detector_ownership` (#15611): the test compared the normalized detector-ownership list against the raw forward-slash detector literal, which only matches where `normalize_include_path` re-joins components with `/`; the assertion now normalizes both sides, matching the sibling metadata-replacement test and keeping the ownership-release failure path discriminated on every platform."
+time: 2026-09-15T00:00:00Z
+custom:
+  PR: "15709"
+  Slug: normalize-detector-ownership-test-15611
+  Breaking: "no"

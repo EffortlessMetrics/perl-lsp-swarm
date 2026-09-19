@@ -67,6 +67,12 @@ GATE_TO_LANE_MAP: dict[str, dict[str, Any]] = {
     # The gate runs inside the existing pr-fast invocation in advisory
     # `pr-smoke`; it is not a separate workflow or receipt-producing lane.
     "clippy_tests_kernel": {"lanes": ["pr_smoke"]},
+    # Focused control-plane owner proofs (#13698). Declared immediately before
+    # `unit_routed_full` in gate-policy.yaml so a deterministic control-plane
+    # defect surfaces (and short-circuits the cohort) before the broad run;
+    # both roll up under the same advisory pr_smoke lane.
+    "ci_subject_digest_oracle": {"lanes": ["pr_smoke"]},
+    "unit_control_plane_bins": {"lanes": ["pr_smoke"]},
     # Former `inline_completion_contract` (&&-composite, issue #6845) split
     # into four independent gates.  All four remain in the pr_smoke tier lane.
     "inline_completion_registration": {"lanes": ["pr_smoke"]},
@@ -88,10 +94,21 @@ GATE_TO_LANE_MAP: dict[str, dict[str, Any]] = {
     "unit_lsp_core_full": {"lanes": ["merge_gate_shards"]},
     "unit_lsp_full": {"lanes": ["merge_gate_shards"]},
     "unit_dap_support_full": {"lanes": ["merge_gate_shards"]},
+    # #11933 freshness gates run in the same required `lsp` merge-gate shard as
+    # unit_lsp_full/unit_lsp_core_full, so they share that shard's economics.
+    "pending_parse_freshness": {"lanes": ["merge_gate_shards"]},
+    "pull_diagnostics_freshness": {"lanes": ["merge_gate_shards"]},
     # The must-context guard runs in the required merge-gate shard. Keep this
     # explicit so gate-policy additions cannot silently leave the
     # policy/economics mapping incomplete.
     "must_context_check": {"lanes": ["merge_gate_shards"]},
+    # Always-running required existence check for docs/agents contract
+    # workflows (#14628). Lives in the policy shard so deleting one of those
+    # path-filtered workflows cannot silently stop enforcement.
+    "docs_agents_contract_workflows": {"lanes": ["merge_gate_shards"]},
+    # The agent-ledger validator (#15380) runs in the required merge-gate
+    # policy shard, so it shares that shard's economics.
+    "agent_ledgers_validate": {"lanes": ["merge_gate_shards"]},
     "compile_all_targets": {"lanes": ["check_all_targets"]},
     "lsp_smoke": {"lanes": ["ux_tests"]},
 
@@ -113,8 +130,12 @@ GATE_TO_LANE_MAP: dict[str, dict[str, Any]] = {
     "lint_policy": {"lanes": ["merge_gate_shards"]},
     "msrv_authority_sync": {"lanes": ["merge_gate_shards"]},
     "compiler_concept_ledger": {"lanes": ["merge_gate_shards"]},
+    "compiler_performance_receipt_contract": {"lanes": ["merge_gate_shards"]},
+    "kubernetes_dap_profiles": {"lanes": ["merge_gate_shards"]},
     "compiler_proof_policy": {"lanes": ["merge_gate_shards"]},
     "compiler_concept_proof": {"lanes": ["merge_gate_shards"]},
+    "postfix_capability_closure": {"lanes": ["merge_gate_shards"]},
+    "release_trust_invariants": {"lanes": ["merge_gate_shards"]},
 
     # commit-tier staged-tree hygiene (local pre-commit; not CI)
     "staged_tree_identity": {"lanes": ["commit_checks"]},

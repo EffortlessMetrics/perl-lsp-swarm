@@ -272,10 +272,10 @@ impl LspServer {
     ///
     /// # Returns
     /// - `Ok(Some(locations))`: Definition location(s) found.
-    /// - `Ok(None)`: No definition found at position.
+    /// - `Ok(Some(Value::Null))` or an empty location array: No definition found.
     ///
     /// # Errors
-    /// Returns [`JsonRpcError`] if params are invalid or document not found.
+    /// Returns [`JsonRpcError`] if provided params are invalid.
     pub fn test_handle_definition(
         &self,
         params: Option<Value>,
@@ -411,10 +411,11 @@ impl LspServer {
     ///
     /// # Returns
     /// - `Ok(Some(signature_help))`: Signature information found.
-    /// - `Ok(None)`: No signature help available at position.
+    /// - `Ok(Some(Value::Null))`: No signature help available at position or the
+    ///   document is not open.
     ///
     /// # Errors
-    /// Returns [`JsonRpcError`] if params are invalid or document not found.
+    /// Returns [`JsonRpcError`] if params are invalid or the feature is not advertised.
     pub fn test_handle_signature_help(
         &self,
         params: Option<Value>,
@@ -624,47 +625,6 @@ impl LspServer {
         runtime: std::sync::Arc<dyn perl_subprocess_runtime::SubprocessRuntime>,
     ) {
         *self.formatter_runtime_override.lock() = Some(runtime);
-    }
-
-    /// Install a mock subprocess runtime for the `CriticAnalyzer`.
-    ///
-    /// When set, the lazy-init path in `collect_external_perlcritic_diagnostics`
-    /// constructs a `CriticAnalyzer` using this runtime instead of the OS runtime.
-    /// This allows tests to exercise the full pipeline — including config-driven
-    /// profile discovery — without spawning a real `perlcritic` process.
-    ///
-    /// Call [`Self::test_bypass_perlcritic_command_check`] alongside this to
-    /// skip the `command_exists` guard.
-    ///
-    /// Resets the cached analyzer to `None` so the next diagnostic cycle
-    /// rebuilds it with the injected runtime.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn test_install_mock_critic_runtime(
-        &self,
-        runtime: std::sync::Arc<dyn perl_subprocess_runtime::SubprocessRuntime>,
-    ) {
-        *self.critic_runtime_override.lock() = Some(runtime);
-        // Reset any cached analyzer so it is rebuilt with the new runtime.
-        *self.critic_analyzer.lock() = None;
-    }
-
-    /// Skip the `command_exists("perlcritic")` guard in
-    /// `collect_external_perlcritic_diagnostics` for the lifetime of this server.
-    ///
-    /// This lets tests exercise the full diagnostic pipeline with a mock runtime
-    /// without needing perlcritic installed on the test machine.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn test_bypass_perlcritic_command_check(&self) {
-        self.skip_perlcritic_command_check.store(true, std::sync::atomic::Ordering::Relaxed);
-    }
-
-    /// Force the perlcritic availability check to report a missing binary.
-    ///
-    /// This keeps unavailable-binary tests deterministic on hosts where
-    /// `perlcritic` is installed, without changing the process `PATH`.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn test_force_perlcritic_command_unavailable(&self) {
-        self.force_perlcritic_command_unavailable.store(true, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// Set the server root path (used for `.perlcriticrc` walk-up discovery).
@@ -942,6 +902,31 @@ impl LspServer {
             started,
             release,
         );
+    }
+
+    /// Pause the real background scan inside its per-file commit critical
+    /// section, after `indexing_transition_lock` is acquired (#13308). The
+    /// gate fires once, at the first indexed file, and holds the scan — and
+    /// the transition lock — until `release` fires or the gate times out.
+    #[cfg(feature = "workspace")]
+    pub fn test_gate_indexing_commit(
+        &self,
+        started: std::sync::mpsc::Sender<()>,
+        release: std::sync::mpsc::Receiver<()>,
+    ) {
+        super::readiness::set_indexing_commit_gate(&self.indexing_commit_gate, started, release);
+    }
+
+    /// Hold a workspace-folder transition after membership/index mutation and
+    /// before matching project configuration is installed.
+    pub fn test_gate_workspace_topology_transition(
+        &self,
+        started: std::sync::mpsc::Sender<()>,
+        release: std::sync::mpsc::Receiver<()>,
+    ) {
+        if let Ok(mut gate) = self.workspace_transition_test_gate.lock() {
+            *gate = Some(super::WorkspaceTopologyTransitionGate { started, release });
+        }
     }
 
     #[cfg(feature = "workspace")]
@@ -1336,6 +1321,9 @@ mod tests {
 
     #[test]
     fn test_notify_index_ready_wait_entered_forwards_to_readiness_observer() -> Result<()> {
+        // Same process-global wait-entered slot as the readiness contract
+        // tests (#15016). Serialize with every other notify-capable wait.
+        let _serial = crate::runtime::readiness::readiness_wait_path_test_lock();
         let server = LspServer::new();
         let coordinator = server
             .index_coordinator
@@ -1348,8 +1336,11 @@ mod tests {
         let (wait_entered_tx, wait_entered_rx) = std::sync::mpsc::channel();
         server.test_notify_index_ready_wait_entered(wait_entered_tx);
         let worker_coordinator = coordinator;
+        // Wide observer budget: under CI scheduling jitter a one-second
+        // recv can expire before the main thread reaches its wait, failing
+        // the join and flaking the contract test (same class as #15016).
         let worker = std::thread::spawn(move || -> Result<()> {
-            wait_entered_rx.recv_timeout(Duration::from_secs(1))?;
+            wait_entered_rx.recv_timeout(Duration::from_secs(30))?;
             worker_coordinator.transition_to_ready(0, 0);
             Ok(())
         });

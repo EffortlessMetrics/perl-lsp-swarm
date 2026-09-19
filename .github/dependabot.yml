@@ -8,6 +8,8 @@ updates:
       day: "monday"
       time: "09:00"
       timezone: "UTC"
+    cooldown:
+      default-days: 14
     open-pull-requests-limit: 10
     groups:
       # Group all serde-related crates together
@@ -35,7 +37,6 @@ updates:
       lsp:
         patterns:
           - "lsp-types"
-          - "lsp-server"
         update-types:
           - "minor"
           - "patch"
@@ -79,10 +80,7 @@ updates:
         update-types: ["version-update:semver-major"]
       - dependency-name: "tokio"
         update-types: ["version-update:semver-major"]
-    labels:
-      - "dependencies"
-      - "cargo"
-      - "automated"
+    labels: []
     commit-message:
       prefix: "chore"
       include: "scope"
@@ -95,6 +93,8 @@ updates:
       day: "monday"
       time: "09:00"
       timezone: "UTC"
+    cooldown:
+      default-days: 14
     open-pull-requests-limit: 5
     groups:
       # Group all actions/* updates together
@@ -118,12 +118,9 @@ updates:
           - "*"
         update-types:
           - "patch"
-    labels:
-      - "dependencies"
-      - "github-actions"
-      - "automated"
+    labels: []
     commit-message:
-      prefix: "chore(deps)"
+      prefix: "chore"
       include: "scope"
 
   # npm dependencies for vscode-extension
@@ -134,6 +131,8 @@ updates:
       day: "monday"
       time: "09:00"
       timezone: "UTC"
+    cooldown:
+      default-days: 14
     open-pull-requests-limit: 5
     groups:
       # Group all vscode related packages
@@ -176,11 +175,7 @@ updates:
       # for dependabot.yml/vscode-extension/package.json-only changes).
       - dependency-name: "@types/vscode"
         update-types: ["version-update:semver-major", "version-update:semver-minor"]
-    labels:
-      - "dependencies"
-      - "npm"
-      - "vscode-extension"
-      - "automated"
+    labels: []
     commit-message:
-      prefix: "chore(deps)"
+      prefix: "chore"
       include: "scope"

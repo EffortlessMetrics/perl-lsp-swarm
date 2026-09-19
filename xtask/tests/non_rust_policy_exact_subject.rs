@@ -84,6 +84,105 @@ fn write(path: &Path, contents: &str) -> Result<()> {
     fs::write(path, contents).with_context(|| format!("writing {}", path.display()))
 }
 
+const EVALUATOR_INPUTS: &[&str] = &[
+    "Cargo.toml",
+    "Cargo.lock",
+    "xtask/Cargo.toml",
+    "xtask/src/main.rs",
+    "xtask/src/tasks/file_policy.rs",
+];
+
+fn write_available_evaluator(root: &Path, workflow_text: &str) -> Result<()> {
+    for relative in
+        EVALUATOR_INPUTS.iter().copied().chain([".github/workflows/non-rust-policy.yml"])
+    {
+        let path = root.join(relative);
+        fs::create_dir_all(path.parent().ok_or_else(|| anyhow!("fixture parent"))?)?;
+        write(
+            &path,
+            if relative.ends_with("non-rust-policy.yml") {
+                workflow_text
+            } else {
+                "fixture input\n"
+            },
+        )?;
+    }
+    Ok(())
+}
+
+fn guard_output(root: &Path) -> Result<(Output, String)> {
+    let output_file = tempfile::NamedTempFile::new()?;
+    let output = Command::new(bash_executable())
+        .args([
+            "--noprofile",
+            "--norc",
+            "-e",
+            "-o",
+            "pipefail",
+            "-c",
+            &named_run_block("Verify trusted workflow contract")?,
+        ])
+        .current_dir(root)
+        .env("BASE_SHA", "1111111111111111111111111111111111111111")
+        .env("EVALUATOR_SHA", "2222222222222222222222222222222222222222")
+        .env("SUBJECT_SHA", "3333333333333333333333333333333333333333")
+        .env("GITHUB_OUTPUT", output_file.path())
+        .output()
+        .context("executing trusted evaluator guard")?;
+    Ok((output, fs::read_to_string(output_file.path())?))
+}
+
+#[test]
+fn evaluator_availability_refusal_is_distinct_and_repeatable() -> Result<()> {
+    let fixture = tempfile::tempdir()?;
+    for _ in 0..2 {
+        let (output, stage) = guard_output(fixture.path())?;
+        ensure!(!output.status.success(), "missing evaluator must refuse every attempt");
+        let diagnostic = String::from_utf8(output.stderr)?;
+        for expected in [
+            "evaluator-availability",
+            "pre-bootstrap or incomplete",
+            "base=1111111111111111111111111111111111111111",
+            "evaluator=2222222222222222222222222222222222222222",
+            "subject=3333333333333333333333333333333333333333",
+            "Inventory was not evaluated",
+            "unchanged rerun is not recovery",
+        ] {
+            ensure!(
+                diagnostic.contains(expected),
+                "missing availability diagnostic {expected}: {diagnostic}"
+            );
+        }
+        ensure!(!diagnostic.contains("grep:"), "availability refusal precedes generic guard");
+        ensure!(stage.trim() == "failure_stage=evaluator-availability");
+    }
+    Ok(())
+}
+
+#[test]
+fn supported_evaluator_distinguishes_missing_input_and_malformed_contract() -> Result<()> {
+    let fixture = tempfile::tempdir()?;
+    let source = fs::read_to_string(project_root().join(".github/workflows/non-rust-policy.yml"))?;
+    write_available_evaluator(fixture.path(), &source)?;
+    let (valid, _) = guard_output(fixture.path())?;
+    ensure!(
+        valid.status.success(),
+        "complete current contract must pass: {}",
+        String::from_utf8_lossy(&valid.stderr)
+    );
+    fs::remove_file(fixture.path().join("xtask/src/tasks/file_policy.rs"))?;
+    let (missing, stage) = guard_output(fixture.path())?;
+    ensure!(!missing.status.success() && stage.trim() == "failure_stage=evaluator-availability");
+    write_available_evaluator(
+        fixture.path(),
+        &source.replace("  merge_group: {}", "  workflow_call: {}"),
+    )?;
+    let (malformed, stage) = guard_output(fixture.path())?;
+    ensure!(!malformed.status.success(), "present malformed trusted contract must refuse");
+    ensure!(stage.lines().last() == Some("failure_stage=trusted-workflow-contract"));
+    Ok(())
+}
+
 struct PrFixture {
     _temp: TempDir,
     trusted: PathBuf,
@@ -197,18 +296,13 @@ fn pull_request_target_constructs_a_subject_from_exact_base_and_head() -> Result
             && workflow_text.contains("github\\.event\\.pull_request"),
         "trusted workflow must structurally inspect executable run bodies"
     );
-    let guard = named_run_block("Verify trusted workflow contract")?;
-    let guard_output = Command::new(bash_executable())
-        .args(["--noprofile", "--norc", "-e", "-o", "pipefail", "-c", &guard])
-        .current_dir(project_root())
-        .output()
-        .context("executing trusted workflow contract guard")?;
-    if !guard_output.status.success() {
+    let (current_guard, _) = guard_output(&project_root())?;
+    if !current_guard.status.success() {
         bail!(
             "trusted workflow guard failed with {:?}\nstdout:\n{}\nstderr:\n{}",
-            guard_output.status.code(),
-            String::from_utf8_lossy(&guard_output.stdout),
-            String::from_utf8_lossy(&guard_output.stderr)
+            current_guard.status.code(),
+            String::from_utf8_lossy(&current_guard.stdout),
+            String::from_utf8_lossy(&current_guard.stderr)
         );
     }
 
@@ -231,13 +325,8 @@ fn pull_request_target_constructs_a_subject_from_exact_base_and_head() -> Result
         &format!("{malicious_step}      - name: Verify trusted workflow contract\n"),
         1,
     );
-    let malicious_path = guard_workflow.join("non-rust-policy.yml");
-    write(&malicious_path, &malicious_workflow)?;
-    let malicious_guard = Command::new(bash_executable())
-        .args(["--noprofile", "--norc", "-e", "-o", "pipefail", "-c", &guard])
-        .current_dir(guard_fixture.path())
-        .output()
-        .context("executing malicious trusted workflow guard fixture")?;
+    write_available_evaluator(guard_fixture.path(), &malicious_workflow)?;
+    let (malicious_guard, _) = guard_output(guard_fixture.path())?;
     ensure!(
         !malicious_guard.status.success(),
         "trusted workflow guard must reject pull-request interpolation"
@@ -297,9 +386,22 @@ fn pull_request_target_constructs_a_subject_from_exact_base_and_head() -> Result
         .output()
         .context("executing stale-head subject-binding block")?;
     ensure!(!stale.status.success(), "stale PR head must fail closed");
+    let stale_output = fs::read_to_string(&output_path)?;
+    let stale_subject =
+        stale_output.lines().find_map(|line| line.strip_prefix("subject_sha=")).unwrap_or("");
     ensure!(
-        fs::read_to_string(&output_path)?.is_empty(),
-        "stale PR head must not export a synthetic subject"
+        stale_subject.is_empty(),
+        "stale PR head must not export a synthetic subject; subject_sha was '{stale_subject}'"
+    );
+    ensure!(
+        stale_output.lines().any(|line| line.starts_with("bind_failure_stage=event-head-mismatch")),
+        "stale PR head must emit bind_failure_stage=event-head-mismatch; got: {stale_output}"
+    );
+    ensure!(
+        stale_output.lines().any(
+            |line| line.starts_with("artifact_id=bind-failure-event-head-mismatch-pr-42-head-")
+        ),
+        "stale PR head must emit a stable artifact_id; got: {stale_output}"
     );
 
     // The synthetic subject is reproducible across reruns, independent of
@@ -352,5 +454,236 @@ fn pull_request_target_constructs_a_subject_from_exact_base_and_head() -> Result
         "advanced base"
     );
     assert_eq!(fs::read_to_string(&env_path)?, format!("SUBJECT_SHA={subject_sha}\n"));
+    Ok(())
+}
+
+#[test]
+fn pre_evaluation_receipts_preserve_stage_and_never_claim_inventory() -> Result<()> {
+    let receipt_run = named_run_block("Write pre-evaluation failure receipt")?;
+    for (bind, bind_failure_stage, guard_stage, expected) in [
+        ("failure", "", "evaluator-availability", "identity-binding"),
+        ("success", "", "evaluator-availability", "evaluator-availability"),
+        ("success", "", "trusted-workflow-contract", "trusted-workflow-contract"),
+        ("failure", "subject-merge-conflict", "", "identity-binding-subject-merge-conflict"),
+    ] {
+        let fixture = tempfile::tempdir()?;
+        let output = Command::new(bash_executable())
+            .args(["--noprofile", "--norc", "-e", "-o", "pipefail", "-c", &receipt_run])
+            .current_dir(fixture.path())
+            .env("BIND_ERROR", bind)
+            .env("BIND_FAILURE_STAGE", bind_failure_stage)
+            .env("GUARD_FAILURE_STAGE", guard_stage)
+            .env("BASE_SHA", "base-fixture")
+            .env("EVALUATOR_SHA", "evaluator-fixture")
+            .env("SUBJECT_SHA", "subject-fixture")
+            .output()?;
+        ensure!(
+            output.status.success(),
+            "failure receipt writer: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let receipt: serde_json::Value = serde_json::from_str(&fs::read_to_string(
+            fixture.path().join("target/policy/non-rust-policy-exact-tree.json"),
+        )?)?;
+        let field =
+            |name: &str| receipt.get(name).ok_or_else(|| anyhow!("missing receipt field {name}"));
+        ensure!(field("schema_version")? == 2 && field("outcome")? == "fail");
+        ensure!(field("failure_stage")? == expected);
+        ensure!(
+            field("base_sha")? == "base-fixture"
+                && field("evaluator_commit")? == "evaluator-fixture"
+                && field("subject_sha")? == "subject-fixture"
+        );
+        ensure!(
+            field("inventory_markdown_path")?.is_null() && field("inventory_json_path")?.is_null()
+        );
+        if bind != "failure" {
+            ensure!(
+                field("error")?
+                    .as_str()
+                    .is_some_and(|error| error.contains("inventory was not evaluated"))
+            );
+        } else if !bind_failure_stage.is_empty() {
+            ensure!(
+                field("error")?.as_str().is_some_and(|error| error.contains(bind_failure_stage)),
+                "named bind failure must mention {bind_failure_stage} in error"
+            );
+        }
+    }
+    let workflow = workflow()?;
+    let steps = workflow
+        .get("jobs")
+        .and_then(|jobs| jobs.get("exact-tree"))
+        .and_then(|job| job.get("steps"))
+        .and_then(serde_yaml_ng::Value::as_sequence)
+        .ok_or_else(|| anyhow!("missing exact-tree steps"))?;
+    let position = |name: &str| {
+        steps
+            .iter()
+            .position(|step| step.get("name").and_then(serde_yaml_ng::Value::as_str) == Some(name))
+            .ok_or_else(|| anyhow!("missing step {name}"))
+    };
+    let guard = position("Verify trusted workflow contract")?;
+    let receipt = position("Write pre-evaluation failure receipt")?;
+    let evaluator = position("Run trusted exact-tree evaluator")?;
+    ensure!(guard < receipt && receipt < evaluator);
+    let guard = steps.get(guard).ok_or_else(|| anyhow!("missing guard step"))?;
+    let receipt = steps.get(receipt).ok_or_else(|| anyhow!("missing receipt step"))?;
+    let evaluator = steps.get(evaluator).ok_or_else(|| anyhow!("missing evaluator step"))?;
+    ensure!(
+        guard.get("continue-on-error").is_none(),
+        "guard failure must retain Actions default success gating"
+    );
+    ensure!(
+        evaluator.get("if").and_then(serde_yaml_ng::Value::as_str)
+            == Some("steps.bind.outcome == 'success'"),
+        "no always/status override may bypass failed guard"
+    );
+    let receipt_condition = receipt
+        .get("if")
+        .and_then(serde_yaml_ng::Value::as_str)
+        .ok_or_else(|| anyhow!("receipt condition"))?;
+    ensure!(
+        receipt_condition
+            == "always() && (steps.bind.outcome == 'failure' || steps.verify-trusted-workflow-contract.outcome == 'failure')",
+        "receipt must run for either pre-evaluation failure even after a failed step"
+    );
+    Ok(())
+}
+
+struct ConflictPrFixture {
+    _temp: TempDir,
+    trusted: PathBuf,
+    base_sha: String,
+    head_sha: String,
+}
+
+fn conflict_pr_fixture() -> Result<ConflictPrFixture> {
+    // Build a remote/PR-head pair whose exact merge of advanced base and PR
+    // head conflicts on the same line of the same file. The fixture must
+    // produce a real conflict in git merge-tree --write-tree (not just a
+    // textually-different file), so both sides modify the same line.
+    let temp = tempfile::tempdir()?;
+    let remote = temp.path().join("remote.git");
+    let seed = temp.path().join("seed");
+    let trusted = temp.path().join("trusted");
+    fs::create_dir_all(&seed)?;
+
+    run_ok(
+        "git",
+        &["init", "--bare", remote.to_str().ok_or_else(|| anyhow!("remote path"))?],
+        temp.path(),
+    )?;
+    run_ok("git", &["init"], &seed)?;
+    run_ok("git", &["config", "user.name", "test"], &seed)?;
+    run_ok("git", &["config", "user.email", "test@example.invalid"], &seed)?;
+    write(&seed.join("conflict.txt"), "line 1 base\nline 2 shared\n")?;
+    run_ok("git", &["add", "conflict.txt"], &seed)?;
+    run_ok("git", &["commit", "-m", "base"], &seed)?;
+    run_ok("git", &["branch", "-M", "main"], &seed)?;
+    run_ok(
+        "git",
+        &["remote", "add", "origin", remote.to_str().ok_or_else(|| anyhow!("remote path"))?],
+        &seed,
+    )?;
+    run_ok("git", &["push", "origin", "main"], &seed)?;
+
+    run_ok("git", &["switch", "-c", "candidate"], &seed)?;
+    write(&seed.join("conflict.txt"), "line 1 candidate\nline 2 shared\n")?;
+    run_ok("git", &["add", "conflict.txt"], &seed)?;
+    run_ok("git", &["commit", "-m", "candidate"], &seed)?;
+    let head_sha = git_output(&["rev-parse", "HEAD"], &seed)?;
+    run_ok("git", &["push", "origin", "candidate"], &seed)?;
+
+    // Advance the target branch so the PR's base is no longer the same as the
+    // candidate's fork point. Both sides now modify line 1 of conflict.txt
+    // differently, which forces git merge-tree --write-tree to leave unmerged
+    // entries in the index.
+    run_ok("git", &["switch", "main"], &seed)?;
+    write(&seed.join("conflict.txt"), "line 1 advanced base\nline 2 shared\n")?;
+    run_ok("git", &["add", "conflict.txt"], &seed)?;
+    run_ok("git", &["commit", "-m", "advance base"], &seed)?;
+    let base_sha = git_output(&["rev-parse", "HEAD"], &seed)?;
+    run_ok("git", &["push", "origin", "main"], &seed)?;
+
+    run_ok(
+        "git",
+        &[
+            "--git-dir",
+            remote.to_str().ok_or_else(|| anyhow!("remote path"))?,
+            "update-ref",
+            "refs/pull/77/head",
+            &head_sha,
+        ],
+        temp.path(),
+    )?;
+
+    run_ok(
+        "git",
+        &[
+            "clone",
+            remote.to_str().ok_or_else(|| anyhow!("remote path"))?,
+            trusted.to_str().ok_or_else(|| anyhow!("trusted path"))?,
+        ],
+        temp.path(),
+    )?;
+    run_ok("git", &["switch", "main"], &trusted)?;
+
+    Ok(ConflictPrFixture { _temp: temp, trusted, base_sha, head_sha })
+}
+
+#[test]
+fn pull_request_target_merging_with_real_conflict_emits_named_failure_stage() -> Result<()> {
+    // Regression for #15636: an exact-subject merge that git merge-tree
+    // --write-tree cannot resolve must fail closed with the named
+    // bind_failure_stage=subject-merge-conflict, must not export a synthetic
+    // subject, and must emit a stable artifact_id so the failed step's
+    // artifact keeps a non-empty identity.
+    let fixture = conflict_pr_fixture()?;
+    let output_path = fixture.trusted.join("github-output");
+    let env_path = fixture.trusted.join("github-env");
+    write(&output_path, "")?;
+    write(&env_path, "")?;
+    let run = bind_run_block()?;
+    let output = Command::new(bash_executable())
+        .args(["--noprofile", "--norc", "-e", "-o", "pipefail", "-c", &run])
+        .current_dir(&fixture.trusted)
+        .env("BASE_SHA", &fixture.base_sha)
+        .env("PR_HEAD_SHA", &fixture.head_sha)
+        .env("PR_NUMBER", "77")
+        .env("SUBJECT_SHA", "0000000000000000000000000000000000000000")
+        .env("GITHUB_OUTPUT", &output_path)
+        .env("GITHUB_ENV", &env_path)
+        .output()
+        .context("executing conflict subject-binding block")?;
+    ensure!(
+        !output.status.success(),
+        "real conflict must fail closed; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    ensure!(
+        stderr.contains("bind-subject-merge-conflict"),
+        "conflict must surface bind-subject-merge-conflict stage; stderr: {stderr}"
+    );
+    let output_value = fs::read_to_string(&output_path)?;
+    ensure!(
+        output_value.lines().any(|line| line == "bind_failure_stage=subject-merge-conflict"),
+        "conflict must emit bind_failure_stage=subject-merge-conflict; got: {output_value}"
+    );
+    let subject_value =
+        output_value.lines().find_map(|line| line.strip_prefix("subject_sha=")).unwrap_or("");
+    ensure!(
+        subject_value.is_empty(),
+        "conflict must not export a synthetic subject; subject_sha was '{subject_value}'"
+    );
+    ensure!(
+        output_value.lines().any(|line| {
+            line.starts_with("artifact_id=bind-failure-subject-merge-conflict-pr-77-head-")
+                && line.len() > "artifact_id=bind-failure-subject-merge-conflict-pr-77-head-".len()
+        }),
+        "conflict must emit a stable, non-empty artifact_id; got: {output_value}"
+    );
     Ok(())
 }

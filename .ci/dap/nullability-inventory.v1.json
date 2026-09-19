@@ -1,0 +1,4510 @@
+{
+  "class_counts": {
+    "optional-non-null-when-present": 282,
+    "optional-nullable": 8,
+    "required-non-null": 198,
+    "required-nullable": 1,
+    "unsupported": 71
+  },
+  "rows": [
+    {
+      "class": "required-non-null",
+      "definition": "AttachRequest",
+      "field": "arguments",
+      "reason": "not modeled in protocol.rs",
+      "rust_owner": null,
+      "rust_type": null,
+      "serde_skips_when_none": null
+    },
+    {
+      "class": "required-non-null",
+      "definition": "AttachRequest",
+      "field": "command",
+      "reason": "not modeled in protocol.rs",
+      "rust_owner": null,
+      "rust_type": null,
+      "serde_skips_when_none": null
+    },
+    {
+      "class": "optional-nullable",
+      "definition": "AttachRequestArguments",
+      "field": "__restart",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "Breakpoint",
+      "field": "column",
+      "rust_owner": "Breakpoint::column",
+      "rust_type": "Option<i64>",
+      "serde_skips_when_none": true
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "Breakpoint",
+      "field": "endColumn",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "Breakpoint",
+      "field": "endLine",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "Breakpoint",
+      "field": "id",
+      "rust_owner": "Breakpoint::id",
+      "rust_type": "i64",
+      "serde_skips_when_none": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "Breakpoint",
+      "field": "instructionReference",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "Breakpoint",
+      "field": "line",
+      "rust_owner": "Breakpoint::line",
+      "rust_type": "i64",
+      "serde_skips_when_none": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "Breakpoint",
+      "field": "message",
+      "rust_owner": "Breakpoint::message",
+      "rust_type": "Option<String>",
+      "serde_skips_when_none": true
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "Breakpoint",
+      "field": "offset",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "Breakpoint",
+      "field": "reason",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "Breakpoint",
+      "field": "source",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null
+    },
+    {
+      "class": "required-non-null",
+      "definition": "Breakpoint",
+      "field": "verified",
+      "rust_owner": "Breakpoint::verified",
+      "rust_type": "bool",
+      "serde_skips_when_none": false
+    },
+    {
+      "class": "required-non-null",
+      "definition": "BreakpointEventBody",
+      "field": "breakpoint",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null,
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "required-non-null",
+      "definition": "BreakpointEventBody",
+      "field": "reason",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null,
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "BreakpointLocation",
+      "field": "column",
+      "rust_owner": "BreakpointLocation::column",
+      "rust_type": "Option<i64>",
+      "serde_skips_when_none": true
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "BreakpointLocation",
+      "field": "endColumn",
+      "rust_owner": "BreakpointLocation::end_column",
+      "rust_type": "Option<i64>",
+      "serde_skips_when_none": true
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "BreakpointLocation",
+      "field": "endLine",
+      "rust_owner": "BreakpointLocation::end_line",
+      "rust_type": "Option<i64>",
+      "serde_skips_when_none": true
+    },
+    {
+      "class": "required-non-null",
+      "definition": "BreakpointLocation",
+      "field": "line",
+      "rust_owner": "BreakpointLocation::line",
+      "rust_type": "i64",
+      "serde_skips_when_none": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "BreakpointLocationsArguments",
+      "field": "column",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "BreakpointLocationsArguments",
+      "field": "endColumn",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "BreakpointLocationsArguments",
+      "field": "endLine",
+      "rust_owner": "BreakpointLocationsArguments::end_line",
+      "rust_type": "Option<i64>",
+      "serde_skips_when_none": true
+    },
+    {
+      "class": "required-non-null",
+      "definition": "BreakpointLocationsArguments",
+      "field": "line",
+      "rust_owner": "BreakpointLocationsArguments::line",
+      "rust_type": "i64",
+      "serde_skips_when_none": false
+    },
+    {
+      "class": "required-non-null",
+      "definition": "BreakpointLocationsArguments",
+      "field": "source",
+      "rust_owner": "BreakpointLocationsArguments::source",
+      "rust_type": "Source",
+      "serde_skips_when_none": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "BreakpointLocationsRequest",
+      "field": "arguments",
+      "reason": "not modeled in protocol.rs",
+      "rust_owner": null,
+      "rust_type": null,
+      "serde_skips_when_none": null
+    },
+    {
+      "class": "required-non-null",
+      "definition": "BreakpointLocationsRequest",
+      "field": "command",
+      "reason": "not modeled in protocol.rs",
+      "rust_owner": null,
+      "rust_type": null,
+      "serde_skips_when_none": null
+    },
+    {
+      "class": "required-non-null",
+      "definition": "BreakpointLocationsResponseBody",
+      "field": "breakpoints",
+      "rust_owner": "BreakpointLocationsResponseBody::breakpoints",
+      "rust_type": "Vec<BreakpointLocation>",
+      "seeded": false
+    },
+    {
+      "class": "unsupported",
+      "definition": "BreakpointMode",
+      "field": "appliesTo",
+      "reason": "no matching Rust struct in protocol.rs",
+      "rust_owner": null
+    },
+    {
+      "class": "unsupported",
+      "definition": "BreakpointMode",
+      "field": "description",
+      "reason": "no matching Rust struct in protocol.rs",
+      "rust_owner": null
+    },
+    {
+      "class": "unsupported",
+      "definition": "BreakpointMode",
+      "field": "label",
+      "reason": "no matching Rust struct in protocol.rs",
+      "rust_owner": null
+    },
+    {
+      "class": "unsupported",
+      "definition": "BreakpointMode",
+      "field": "mode",
+      "reason": "no matching Rust struct in protocol.rs",
+      "rust_owner": null
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "CancelArguments",
+      "field": "progressId",
+      "rust_owner": "CancelArguments::progress_id",
+      "rust_type": "Option<String>",
+      "serde_skips_when_none": true
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "CancelArguments",
+      "field": "requestId",
+      "rust_owner": "CancelArguments::request_id",
+      "rust_type": "Option<i64>",
+      "serde_skips_when_none": true
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "CancelRequest",
+      "field": "arguments",
+      "reason": "not modeled in protocol.rs",
+      "rust_owner": null,
+      "rust_type": null,
+      "serde_skips_when_none": null
+    },
+    {
+      "class": "required-non-null",
+      "definition": "CancelRequest",
+      "field": "command",
+      "reason": "not modeled in protocol.rs",
+      "rust_owner": null,
+      "rust_type": null,
+      "serde_skips_when_none": null
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "Capabilities",
+      "field": "additionalModuleColumns",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "Capabilities",
+      "field": "breakpointModes",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "Capabilities",
+      "field": "completionTriggerCharacters",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "Capabilities",
+      "field": "exceptionBreakpointFilters",
+      "rust_owner": "Capabilities::exception_breakpoint_filters",
+      "rust_type": "Option<Vec<ExceptionBreakpointFilter>>",
+      "serde_skips_when_none": true
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "Capabilities",
+      "field": "supportSuspendDebuggee",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "Capabilities",
+      "field": "supportTerminateDebuggee",
+      "rust_owner": "Capabilities::support_terminate_debuggee",
+      "rust_type": "Option<bool>",
+      "serde_skips_when_none": true
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "Capabilities",
+      "field": "supportedChecksumAlgorithms",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "Capabilities",
+      "field": "supportsANSIStyling",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "Capabilities",
+      "field": "supportsBreakpointLocationsRequest",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "Capabilities",
+      "field": "supportsCancelRequest",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "Capabilities",
+      "field": "supportsClipboardContext",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "Capabilities",
+      "field": "supportsCompletionsRequest",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "Capabilities",
+      "field": "supportsConditionalBreakpoints",
+      "rust_owner": "Capabilities::supports_conditional_breakpoints",
+      "rust_type": "Option<bool>",
+      "serde_skips_when_none": true
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "Capabilities",
+      "field": "supportsConfigurationDoneRequest",
+      "rust_owner": "Capabilities::supports_configuration_done_request",
+      "rust_type": "Option<bool>",
+      "serde_skips_when_none": true
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "Capabilities",
+      "field": "supportsDataBreakpointBytes",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "Capabilities",
+      "field": "supportsDataBreakpoints",
+      "rust_owner": "Capabilities::supports_data_breakpoints",
+      "rust_type": "Option<bool>",
+      "serde_skips_when_none": true
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "Capabilities",
+      "field": "supportsDelayedStackTraceLoading",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "Capabilities",
+      "field": "supportsDisassembleRequest",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "Capabilities",
+      "field": "supportsEvaluateForHovers",
+      "rust_owner": "Capabilities::supports_evaluate_for_hovers",
+      "rust_type": "Option<bool>",
+      "serde_skips_when_none": true
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "Capabilities",
+      "field": "supportsExceptionFilterOptions",
+      "rust_owner": "Capabilities::supports_exception_filter_options",
+      "rust_type": "Option<bool>",
+      "serde_skips_when_none": true
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "Capabilities",
+      "field": "supportsExceptionInfoRequest",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "Capabilities",
+      "field": "supportsExceptionOptions",
+      "rust_owner": "Capabilities::supports_exception_options",
+      "rust_type": "Option<bool>",
+      "serde_skips_when_none": true
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "Capabilities",
+      "field": "supportsFunctionBreakpoints",
+      "rust_owner": "Capabilities::supports_function_breakpoints",
+      "rust_type": "Option<bool>",
+      "serde_skips_when_none": true
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "Capabilities",
+      "field": "supportsGotoTargetsRequest",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "Capabilities",
+      "field": "supportsHitConditionalBreakpoints",
+      "rust_owner": "Capabilities::supports_hit_conditional_breakpoints",
+      "rust_type": "Option<bool>",
+      "serde_skips_when_none": true
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "Capabilities",
+      "field": "supportsInstructionBreakpoints",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "Capabilities",
+      "field": "supportsLoadedSourcesRequest",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "Capabilities",
+      "field": "supportsLogPoints",
+      "rust_owner": "Capabilities::supports_log_points",
+      "rust_type": "Option<bool>",
+      "serde_skips_when_none": true
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "Capabilities",
+      "field": "supportsModulesRequest",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "Capabilities",
+      "field": "supportsReadMemoryRequest",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "Capabilities",
+      "field": "supportsRestartFrame",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "Capabilities",
+      "field": "supportsRestartRequest",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "Capabilities",
+      "field": "supportsSetExpression",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "Capabilities",
+      "field": "supportsSetVariable",
+      "rust_owner": "Capabilities::supports_set_variable",
+      "rust_type": "Option<bool>",
+      "serde_skips_when_none": true
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "Capabilities",
+      "field": "supportsSingleThreadExecutionRequests",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "Capabilities",
+      "field": "supportsStepBack",
+      "rust_owner": "Capabilities::supports_step_back",
+      "rust_type": "Option<bool>",
+      "serde_skips_when_none": true
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "Capabilities",
+      "field": "supportsStepInTargetsRequest",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "Capabilities",
+      "field": "supportsSteppingGranularity",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "Capabilities",
+      "field": "supportsTerminateRequest",
+      "rust_owner": "Capabilities::supports_terminate_request",
+      "rust_type": "Option<bool>",
+      "serde_skips_when_none": true
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "Capabilities",
+      "field": "supportsTerminateThreadsRequest",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "Capabilities",
+      "field": "supportsValueFormattingOptions",
+      "rust_owner": "Capabilities::supports_value_formatting_options",
+      "rust_type": "Option<bool>",
+      "serde_skips_when_none": true
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "Capabilities",
+      "field": "supportsWriteMemoryRequest",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null
+    },
+    {
+      "class": "required-non-null",
+      "definition": "CapabilitiesEventBody",
+      "field": "capabilities",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null,
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "unsupported",
+      "definition": "Checksum",
+      "field": "algorithm",
+      "reason": "no matching Rust struct in protocol.rs",
+      "rust_owner": null
+    },
+    {
+      "class": "unsupported",
+      "definition": "Checksum",
+      "field": "checksum",
+      "reason": "no matching Rust struct in protocol.rs",
+      "rust_owner": null
+    },
+    {
+      "class": "unsupported",
+      "definition": "ColumnDescriptor",
+      "field": "attributeName",
+      "reason": "no matching Rust struct in protocol.rs",
+      "rust_owner": null
+    },
+    {
+      "class": "unsupported",
+      "definition": "ColumnDescriptor",
+      "field": "format",
+      "reason": "no matching Rust struct in protocol.rs",
+      "rust_owner": null
+    },
+    {
+      "class": "unsupported",
+      "definition": "ColumnDescriptor",
+      "field": "label",
+      "reason": "no matching Rust struct in protocol.rs",
+      "rust_owner": null
+    },
+    {
+      "class": "unsupported",
+      "definition": "ColumnDescriptor",
+      "field": "type",
+      "reason": "no matching Rust struct in protocol.rs",
+      "rust_owner": null
+    },
+    {
+      "class": "unsupported",
+      "definition": "ColumnDescriptor",
+      "field": "width",
+      "reason": "no matching Rust struct in protocol.rs",
+      "rust_owner": null
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "CompletionItem",
+      "field": "detail",
+      "rust_owner": "CompletionItem::detail",
+      "rust_type": "Option<String>",
+      "serde_skips_when_none": true
+    },
+    {
+      "class": "required-non-null",
+      "definition": "CompletionItem",
+      "field": "label",
+      "rust_owner": "CompletionItem::label",
+      "rust_type": "String",
+      "serde_skips_when_none": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "CompletionItem",
+      "field": "length",
+      "rust_owner": "CompletionItem::length",
+      "rust_type": "Option<i64>",
+      "serde_skips_when_none": true
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "CompletionItem",
+      "field": "selectionLength",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "CompletionItem",
+      "field": "selectionStart",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "CompletionItem",
+      "field": "sortText",
+      "rust_owner": "CompletionItem::sort_text",
+      "rust_type": "Option<String>",
+      "serde_skips_when_none": true
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "CompletionItem",
+      "field": "start",
+      "rust_owner": "CompletionItem::start",
+      "rust_type": "Option<i64>",
+      "serde_skips_when_none": true
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "CompletionItem",
+      "field": "text",
+      "rust_owner": "CompletionItem::text",
+      "rust_type": "Option<String>",
+      "serde_skips_when_none": true
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "CompletionItem",
+      "field": "type",
+      "rust_owner": "CompletionItem::type_",
+      "rust_type": "Option<String>",
+      "serde_skips_when_none": true
+    },
+    {
+      "class": "required-non-null",
+      "definition": "CompletionsArguments",
+      "field": "column",
+      "rust_owner": "CompletionsArguments::column",
+      "rust_type": "i64",
+      "serde_skips_when_none": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "CompletionsArguments",
+      "field": "frameId",
+      "rust_owner": "CompletionsArguments::frame_id",
+      "rust_type": "Option<i64>",
+      "serde_skips_when_none": true
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "CompletionsArguments",
+      "field": "line",
+      "rust_owner": "CompletionsArguments::line",
+      "rust_type": "Option<i64>",
+      "serde_skips_when_none": true
+    },
+    {
+      "class": "required-non-null",
+      "definition": "CompletionsArguments",
+      "field": "text",
+      "rust_owner": "CompletionsArguments::text",
+      "rust_type": "String",
+      "serde_skips_when_none": false
+    },
+    {
+      "class": "required-non-null",
+      "definition": "CompletionsRequest",
+      "field": "arguments",
+      "reason": "not modeled in protocol.rs",
+      "rust_owner": null,
+      "rust_type": null,
+      "serde_skips_when_none": null
+    },
+    {
+      "class": "required-non-null",
+      "definition": "CompletionsRequest",
+      "field": "command",
+      "reason": "not modeled in protocol.rs",
+      "rust_owner": null,
+      "rust_type": null,
+      "serde_skips_when_none": null
+    },
+    {
+      "class": "required-non-null",
+      "definition": "CompletionsResponseBody",
+      "field": "targets",
+      "rust_owner": "CompletionsResponseBody::targets",
+      "rust_type": "Vec<CompletionItem>",
+      "seeded": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "ConfigurationDoneRequest",
+      "field": "arguments",
+      "reason": "not modeled in protocol.rs",
+      "rust_owner": null,
+      "rust_type": null,
+      "serde_skips_when_none": null
+    },
+    {
+      "class": "required-non-null",
+      "definition": "ConfigurationDoneRequest",
+      "field": "command",
+      "reason": "not modeled in protocol.rs",
+      "rust_owner": null,
+      "rust_type": null,
+      "serde_skips_when_none": null
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "ContinueArguments",
+      "field": "singleThread",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null
+    },
+    {
+      "class": "required-non-null",
+      "definition": "ContinueArguments",
+      "field": "threadId",
+      "rust_owner": "ContinueArguments::thread_id",
+      "rust_type": "i64",
+      "serde_skips_when_none": false
+    },
+    {
+      "class": "required-non-null",
+      "definition": "ContinueRequest",
+      "field": "arguments",
+      "reason": "not modeled in protocol.rs",
+      "rust_owner": null,
+      "rust_type": null,
+      "serde_skips_when_none": null
+    },
+    {
+      "class": "required-non-null",
+      "definition": "ContinueRequest",
+      "field": "command",
+      "reason": "not modeled in protocol.rs",
+      "rust_owner": null,
+      "rust_type": null,
+      "serde_skips_when_none": null
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "ContinueResponseBody",
+      "field": "allThreadsContinued",
+      "rust_owner": "ContinueResponseBody::all_threads_continued",
+      "rust_type": "bool",
+      "seeded": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "ContinuedEventBody",
+      "field": "allThreadsContinued",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null,
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "required-non-null",
+      "definition": "ContinuedEventBody",
+      "field": "threadId",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null,
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "DataBreakpoint",
+      "field": "accessType",
+      "rust_owner": "DataBreakpoint::access_type",
+      "rust_type": "Option<String>",
+      "serde_skips_when_none": true
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "DataBreakpoint",
+      "field": "condition",
+      "rust_owner": "DataBreakpoint::condition",
+      "rust_type": "Option<String>",
+      "serde_skips_when_none": true
+    },
+    {
+      "class": "required-non-null",
+      "definition": "DataBreakpoint",
+      "field": "dataId",
+      "rust_owner": "DataBreakpoint::data_id",
+      "rust_type": "String",
+      "serde_skips_when_none": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "DataBreakpoint",
+      "field": "hitCondition",
+      "rust_owner": "DataBreakpoint::hit_condition",
+      "rust_type": "Option<String>",
+      "serde_skips_when_none": true
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "DataBreakpointInfoArguments",
+      "field": "asAddress",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "DataBreakpointInfoArguments",
+      "field": "bytes",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "DataBreakpointInfoArguments",
+      "field": "frameId",
+      "rust_owner": "DataBreakpointInfoArguments::frame_id",
+      "rust_type": "Option<i64>",
+      "serde_skips_when_none": true
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "DataBreakpointInfoArguments",
+      "field": "mode",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null
+    },
+    {
+      "class": "required-non-null",
+      "definition": "DataBreakpointInfoArguments",
+      "field": "name",
+      "rust_owner": "DataBreakpointInfoArguments::name",
+      "rust_type": "String",
+      "serde_skips_when_none": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "DataBreakpointInfoArguments",
+      "field": "variablesReference",
+      "rust_owner": "DataBreakpointInfoArguments::variables_reference",
+      "rust_type": "Option<i64>",
+      "serde_skips_when_none": true
+    },
+    {
+      "class": "required-non-null",
+      "definition": "DataBreakpointInfoRequest",
+      "field": "arguments",
+      "reason": "not modeled in protocol.rs",
+      "rust_owner": null,
+      "rust_type": null,
+      "serde_skips_when_none": null
+    },
+    {
+      "class": "required-non-null",
+      "definition": "DataBreakpointInfoRequest",
+      "field": "command",
+      "reason": "not modeled in protocol.rs",
+      "rust_owner": null,
+      "rust_type": null,
+      "serde_skips_when_none": null
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "DataBreakpointInfoResponseBody",
+      "field": "accessTypes",
+      "rust_owner": "DataBreakpointInfoResponseBody::access_types",
+      "rust_type": "Option<Vec<String>>",
+      "seeded": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "DataBreakpointInfoResponseBody",
+      "field": "canPersist",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null,
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "required-nullable",
+      "definition": "DataBreakpointInfoResponseBody",
+      "field": "dataId",
+      "rust_owner": "DataBreakpointInfoResponseBody::data_id",
+      "rust_type": "Option<String>",
+      "seeded": true
+    },
+    {
+      "class": "required-non-null",
+      "definition": "DataBreakpointInfoResponseBody",
+      "field": "description",
+      "rust_owner": "DataBreakpointInfoResponseBody::description",
+      "rust_type": "String",
+      "seeded": false
+    },
+    {
+      "class": "unsupported",
+      "definition": "DisassembleArguments",
+      "field": "instructionCount",
+      "reason": "no matching Rust struct in protocol.rs",
+      "rust_owner": null
+    },
+    {
+      "class": "unsupported",
+      "definition": "DisassembleArguments",
+      "field": "instructionOffset",
+      "reason": "no matching Rust struct in protocol.rs",
+      "rust_owner": null
+    },
+    {
+      "class": "unsupported",
+      "definition": "DisassembleArguments",
+      "field": "memoryReference",
+      "reason": "no matching Rust struct in protocol.rs",
+      "rust_owner": null
+    },
+    {
+      "class": "unsupported",
+      "definition": "DisassembleArguments",
+      "field": "offset",
+      "reason": "no matching Rust struct in protocol.rs",
+      "rust_owner": null
+    },
+    {
+      "class": "unsupported",
+      "definition": "DisassembleArguments",
+      "field": "resolveSymbols",
+      "reason": "no matching Rust struct in protocol.rs",
+      "rust_owner": null
+    },
+    {
+      "class": "required-non-null",
+      "definition": "DisassembleRequest",
+      "field": "arguments",
+      "reason": "not modeled in protocol.rs",
+      "rust_owner": null,
+      "rust_type": null,
+      "serde_skips_when_none": null
+    },
+    {
+      "class": "required-non-null",
+      "definition": "DisassembleRequest",
+      "field": "command",
+      "reason": "not modeled in protocol.rs",
+      "rust_owner": null,
+      "rust_type": null,
+      "serde_skips_when_none": null
+    },
+    {
+      "class": "required-non-null",
+      "definition": "DisassembleResponseBody",
+      "field": "instructions",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null,
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "unsupported",
+      "definition": "DisassembledInstruction",
+      "field": "address",
+      "reason": "no matching Rust struct in protocol.rs",
+      "rust_owner": null
+    },
+    {
+      "class": "unsupported",
+      "definition": "DisassembledInstruction",
+      "field": "column",
+      "reason": "no matching Rust struct in protocol.rs",
+      "rust_owner": null
+    },
+    {
+      "class": "unsupported",
+      "definition": "DisassembledInstruction",
+      "field": "endColumn",
+      "reason": "no matching Rust struct in protocol.rs",
+      "rust_owner": null
+    },
+    {
+      "class": "unsupported",
+      "definition": "DisassembledInstruction",
+      "field": "endLine",
+      "reason": "no matching Rust struct in protocol.rs",
+      "rust_owner": null
+    },
+    {
+      "class": "unsupported",
+      "definition": "DisassembledInstruction",
+      "field": "instruction",
+      "reason": "no matching Rust struct in protocol.rs",
+      "rust_owner": null
+    },
+    {
+      "class": "unsupported",
+      "definition": "DisassembledInstruction",
+      "field": "instructionBytes",
+      "reason": "no matching Rust struct in protocol.rs",
+      "rust_owner": null
+    },
+    {
+      "class": "unsupported",
+      "definition": "DisassembledInstruction",
+      "field": "line",
+      "reason": "no matching Rust struct in protocol.rs",
+      "rust_owner": null
+    },
+    {
+      "class": "unsupported",
+      "definition": "DisassembledInstruction",
+      "field": "location",
+      "reason": "no matching Rust struct in protocol.rs",
+      "rust_owner": null
+    },
+    {
+      "class": "unsupported",
+      "definition": "DisassembledInstruction",
+      "field": "presentationHint",
+      "reason": "no matching Rust struct in protocol.rs",
+      "rust_owner": null
+    },
+    {
+      "class": "unsupported",
+      "definition": "DisassembledInstruction",
+      "field": "symbol",
+      "reason": "no matching Rust struct in protocol.rs",
+      "rust_owner": null
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "DisconnectArguments",
+      "field": "restart",
+      "rust_owner": "DisconnectArguments::restart",
+      "rust_type": "Option<bool>",
+      "serde_skips_when_none": true
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "DisconnectArguments",
+      "field": "suspendDebuggee",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "DisconnectArguments",
+      "field": "terminateDebuggee",
+      "rust_owner": "DisconnectArguments::terminate_debuggee",
+      "rust_type": "Option<bool>",
+      "serde_skips_when_none": true
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "DisconnectRequest",
+      "field": "arguments",
+      "reason": "not modeled in protocol.rs",
+      "rust_owner": null,
+      "rust_type": null,
+      "serde_skips_when_none": null
+    },
+    {
+      "class": "required-non-null",
+      "definition": "DisconnectRequest",
+      "field": "command",
+      "reason": "not modeled in protocol.rs",
+      "rust_owner": null,
+      "rust_type": null,
+      "serde_skips_when_none": null
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "ErrorResponseBody",
+      "field": "error",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null,
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "EvaluateArguments",
+      "field": "column",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "EvaluateArguments",
+      "field": "context",
+      "rust_owner": "EvaluateArguments::context",
+      "rust_type": "Option<String>",
+      "serde_skips_when_none": true
+    },
+    {
+      "class": "required-non-null",
+      "definition": "EvaluateArguments",
+      "field": "expression",
+      "rust_owner": "EvaluateArguments::expression",
+      "rust_type": "String",
+      "serde_skips_when_none": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "EvaluateArguments",
+      "field": "format",
+      "rust_owner": "EvaluateArguments::format",
+      "rust_type": "Option<ValueFormat>",
+      "serde_skips_when_none": true
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "EvaluateArguments",
+      "field": "frameId",
+      "rust_owner": "EvaluateArguments::frame_id",
+      "rust_type": "Option<i64>",
+      "serde_skips_when_none": true
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "EvaluateArguments",
+      "field": "line",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "EvaluateArguments",
+      "field": "source",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null
+    },
+    {
+      "class": "required-non-null",
+      "definition": "EvaluateRequest",
+      "field": "arguments",
+      "reason": "not modeled in protocol.rs",
+      "rust_owner": null,
+      "rust_type": null,
+      "serde_skips_when_none": null
+    },
+    {
+      "class": "required-non-null",
+      "definition": "EvaluateRequest",
+      "field": "command",
+      "reason": "not modeled in protocol.rs",
+      "rust_owner": null,
+      "rust_type": null,
+      "serde_skips_when_none": null
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "EvaluateResponseBody",
+      "field": "indexedVariables",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null,
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "EvaluateResponseBody",
+      "field": "memoryReference",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null,
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "EvaluateResponseBody",
+      "field": "namedVariables",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null,
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "EvaluateResponseBody",
+      "field": "presentationHint",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null,
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "required-non-null",
+      "definition": "EvaluateResponseBody",
+      "field": "result",
+      "rust_owner": "EvaluateResponseBody::result",
+      "rust_type": "String",
+      "seeded": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "EvaluateResponseBody",
+      "field": "type",
+      "rust_owner": "EvaluateResponseBody::type_",
+      "rust_type": "Option<String>",
+      "seeded": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "EvaluateResponseBody",
+      "field": "valueLocationReference",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null,
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "required-non-null",
+      "definition": "EvaluateResponseBody",
+      "field": "variablesReference",
+      "rust_owner": "EvaluateResponseBody::variables_reference",
+      "rust_type": "i64",
+      "seeded": false
+    },
+    {
+      "class": "optional-nullable",
+      "definition": "Event",
+      "field": "body",
+      "reason": null,
+      "rust_owner": "Event::body",
+      "rust_type": "Option<serde_json::Value>",
+      "serde_skips_when_none": true
+    },
+    {
+      "class": "required-non-null",
+      "definition": "Event",
+      "field": "event",
+      "reason": null,
+      "rust_owner": "Event::event",
+      "rust_type": "String",
+      "serde_skips_when_none": false
+    },
+    {
+      "class": "required-non-null",
+      "definition": "Event",
+      "field": "type",
+      "reason": null,
+      "rust_owner": "Event::msg_type",
+      "rust_type": "String",
+      "serde_skips_when_none": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "ExceptionBreakpointsFilter",
+      "field": "conditionDescription",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "ExceptionBreakpointsFilter",
+      "field": "default",
+      "rust_owner": "ExceptionBreakpointFilter::default",
+      "rust_type": "Option<bool>",
+      "serde_skips_when_none": true
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "ExceptionBreakpointsFilter",
+      "field": "description",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null
+    },
+    {
+      "class": "required-non-null",
+      "definition": "ExceptionBreakpointsFilter",
+      "field": "filter",
+      "rust_owner": "ExceptionBreakpointFilter::filter",
+      "rust_type": "String",
+      "serde_skips_when_none": false
+    },
+    {
+      "class": "required-non-null",
+      "definition": "ExceptionBreakpointsFilter",
+      "field": "label",
+      "rust_owner": "ExceptionBreakpointFilter::label",
+      "rust_type": "String",
+      "serde_skips_when_none": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "ExceptionBreakpointsFilter",
+      "field": "supportsCondition",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "ExceptionDetails",
+      "field": "evaluateName",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "ExceptionDetails",
+      "field": "fullTypeName",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "ExceptionDetails",
+      "field": "innerException",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "ExceptionDetails",
+      "field": "message",
+      "rust_owner": "ExceptionDetails::message",
+      "rust_type": "Option<String>",
+      "serde_skips_when_none": true
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "ExceptionDetails",
+      "field": "stackTrace",
+      "rust_owner": "ExceptionDetails::stack_trace",
+      "rust_type": "Option<String>",
+      "serde_skips_when_none": true
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "ExceptionDetails",
+      "field": "typeName",
+      "rust_owner": "ExceptionDetails::type_name",
+      "rust_type": "Option<String>",
+      "serde_skips_when_none": true
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "ExceptionFilterOptions",
+      "field": "condition",
+      "rust_owner": "ExceptionFilterOption::condition",
+      "rust_type": "Option<String>",
+      "serde_skips_when_none": true
+    },
+    {
+      "class": "required-non-null",
+      "definition": "ExceptionFilterOptions",
+      "field": "filterId",
+      "rust_owner": "ExceptionFilterOption::filter_id",
+      "rust_type": "String",
+      "serde_skips_when_none": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "ExceptionFilterOptions",
+      "field": "mode",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null
+    },
+    {
+      "class": "required-non-null",
+      "definition": "ExceptionInfoArguments",
+      "field": "threadId",
+      "rust_owner": "ExceptionInfoArguments::thread_id",
+      "rust_type": "i64",
+      "serde_skips_when_none": false
+    },
+    {
+      "class": "required-non-null",
+      "definition": "ExceptionInfoRequest",
+      "field": "arguments",
+      "reason": "not modeled in protocol.rs",
+      "rust_owner": null,
+      "rust_type": null,
+      "serde_skips_when_none": null
+    },
+    {
+      "class": "required-non-null",
+      "definition": "ExceptionInfoRequest",
+      "field": "command",
+      "reason": "not modeled in protocol.rs",
+      "rust_owner": null,
+      "rust_type": null,
+      "serde_skips_when_none": null
+    },
+    {
+      "class": "required-non-null",
+      "definition": "ExceptionInfoResponseBody",
+      "field": "breakMode",
+      "rust_owner": "ExceptionInfoResponseBody::break_mode",
+      "rust_type": "String",
+      "seeded": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "ExceptionInfoResponseBody",
+      "field": "description",
+      "rust_owner": "ExceptionInfoResponseBody::description",
+      "rust_type": "Option<String>",
+      "seeded": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "ExceptionInfoResponseBody",
+      "field": "details",
+      "rust_owner": "ExceptionInfoResponseBody::details",
+      "rust_type": "Option<ExceptionDetails>",
+      "seeded": false
+    },
+    {
+      "class": "required-non-null",
+      "definition": "ExceptionInfoResponseBody",
+      "field": "exceptionId",
+      "rust_owner": "ExceptionInfoResponseBody::exception_id",
+      "rust_type": "String",
+      "seeded": false
+    },
+    {
+      "class": "unsupported",
+      "definition": "ExceptionOptions",
+      "field": "breakMode",
+      "reason": "no matching Rust struct in protocol.rs",
+      "rust_owner": null
+    },
+    {
+      "class": "unsupported",
+      "definition": "ExceptionOptions",
+      "field": "path",
+      "reason": "no matching Rust struct in protocol.rs",
+      "rust_owner": null
+    },
+    {
+      "class": "unsupported",
+      "definition": "ExceptionPathSegment",
+      "field": "names",
+      "reason": "no matching Rust struct in protocol.rs",
+      "rust_owner": null
+    },
+    {
+      "class": "unsupported",
+      "definition": "ExceptionPathSegment",
+      "field": "negate",
+      "reason": "no matching Rust struct in protocol.rs",
+      "rust_owner": null
+    },
+    {
+      "class": "required-non-null",
+      "definition": "ExitedEventBody",
+      "field": "exitCode",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null,
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "FunctionBreakpoint",
+      "field": "condition",
+      "rust_owner": "FunctionBreakpoint::condition",
+      "rust_type": "Option<String>",
+      "serde_skips_when_none": true
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "FunctionBreakpoint",
+      "field": "hitCondition",
+      "rust_owner": "FunctionBreakpoint::hit_condition",
+      "rust_type": "Option<String>",
+      "serde_skips_when_none": true
+    },
+    {
+      "class": "required-non-null",
+      "definition": "FunctionBreakpoint",
+      "field": "name",
+      "rust_owner": "FunctionBreakpoint::name",
+      "rust_type": "String",
+      "serde_skips_when_none": false
+    },
+    {
+      "class": "required-non-null",
+      "definition": "GotoArguments",
+      "field": "targetId",
+      "rust_owner": "GotoArguments::target_id",
+      "rust_type": "i64",
+      "serde_skips_when_none": false
+    },
+    {
+      "class": "required-non-null",
+      "definition": "GotoArguments",
+      "field": "threadId",
+      "rust_owner": "GotoArguments::thread_id",
+      "rust_type": "i64",
+      "serde_skips_when_none": false
+    },
+    {
+      "class": "required-non-null",
+      "definition": "GotoRequest",
+      "field": "arguments",
+      "reason": "not modeled in protocol.rs",
+      "rust_owner": null,
+      "rust_type": null,
+      "serde_skips_when_none": null
+    },
+    {
+      "class": "required-non-null",
+      "definition": "GotoRequest",
+      "field": "command",
+      "reason": "not modeled in protocol.rs",
+      "rust_owner": null,
+      "rust_type": null,
+      "serde_skips_when_none": null
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "GotoTarget",
+      "field": "column",
+      "rust_owner": "GotoTarget::column",
+      "rust_type": "Option<i64>",
+      "serde_skips_when_none": true
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "GotoTarget",
+      "field": "endColumn",
+      "rust_owner": "GotoTarget::end_column",
+      "rust_type": "Option<i64>",
+      "serde_skips_when_none": true
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "GotoTarget",
+      "field": "endLine",
+      "rust_owner": "GotoTarget::end_line",
+      "rust_type": "Option<i64>",
+      "serde_skips_when_none": true
+    },
+    {
+      "class": "required-non-null",
+      "definition": "GotoTarget",
+      "field": "id",
+      "rust_owner": "GotoTarget::id",
+      "rust_type": "i64",
+      "serde_skips_when_none": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "GotoTarget",
+      "field": "instructionPointerReference",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null
+    },
+    {
+      "class": "required-non-null",
+      "definition": "GotoTarget",
+      "field": "label",
+      "rust_owner": "GotoTarget::label",
+      "rust_type": "String",
+      "serde_skips_when_none": false
+    },
+    {
+      "class": "required-non-null",
+      "definition": "GotoTarget",
+      "field": "line",
+      "rust_owner": "GotoTarget::line",
+      "rust_type": "i64",
+      "serde_skips_when_none": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "GotoTargetsArguments",
+      "field": "column",
+      "rust_owner": "GotoTargetsArguments::column",
+      "rust_type": "Option<i64>",
+      "serde_skips_when_none": true
+    },
+    {
+      "class": "required-non-null",
+      "definition": "GotoTargetsArguments",
+      "field": "line",
+      "rust_owner": "GotoTargetsArguments::line",
+      "rust_type": "i64",
+      "serde_skips_when_none": false
+    },
+    {
+      "class": "required-non-null",
+      "definition": "GotoTargetsArguments",
+      "field": "source",
+      "rust_owner": "GotoTargetsArguments::source",
+      "rust_type": "Source",
+      "serde_skips_when_none": false
+    },
+    {
+      "class": "required-non-null",
+      "definition": "GotoTargetsRequest",
+      "field": "arguments",
+      "reason": "not modeled in protocol.rs",
+      "rust_owner": null,
+      "rust_type": null,
+      "serde_skips_when_none": null
+    },
+    {
+      "class": "required-non-null",
+      "definition": "GotoTargetsRequest",
+      "field": "command",
+      "reason": "not modeled in protocol.rs",
+      "rust_owner": null,
+      "rust_type": null,
+      "serde_skips_when_none": null
+    },
+    {
+      "class": "required-non-null",
+      "definition": "GotoTargetsResponseBody",
+      "field": "targets",
+      "rust_owner": "GotoTargetsResponseBody::targets",
+      "rust_type": "Vec<GotoTarget>",
+      "seeded": false
+    },
+    {
+      "class": "required-non-null",
+      "definition": "InitializeRequest",
+      "field": "arguments",
+      "reason": "not modeled in protocol.rs",
+      "rust_owner": null,
+      "rust_type": null,
+      "serde_skips_when_none": null
+    },
+    {
+      "class": "required-non-null",
+      "definition": "InitializeRequest",
+      "field": "command",
+      "reason": "not modeled in protocol.rs",
+      "rust_owner": null,
+      "rust_type": null,
+      "serde_skips_when_none": null
+    },
+    {
+      "class": "required-non-null",
+      "definition": "InitializeRequestArguments",
+      "field": "adapterID",
+      "rust_owner": "InitializeRequestArguments::adapter_id",
+      "rust_type": "String",
+      "serde_skips_when_none": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "InitializeRequestArguments",
+      "field": "clientID",
+      "rust_owner": "InitializeRequestArguments::client_id",
+      "rust_type": "Option<String>",
+      "serde_skips_when_none": true
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "InitializeRequestArguments",
+      "field": "clientName",
+      "rust_owner": "InitializeRequestArguments::client_name",
+      "rust_type": "Option<String>",
+      "serde_skips_when_none": true
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "InitializeRequestArguments",
+      "field": "columnsStartAt1",
+      "rust_owner": "InitializeRequestArguments::columns_start_at1",
+      "rust_type": "Option<bool>",
+      "serde_skips_when_none": true
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "InitializeRequestArguments",
+      "field": "linesStartAt1",
+      "rust_owner": "InitializeRequestArguments::lines_start_at1",
+      "rust_type": "Option<bool>",
+      "serde_skips_when_none": true
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "InitializeRequestArguments",
+      "field": "locale",
+      "rust_owner": "InitializeRequestArguments::locale",
+      "rust_type": "Option<String>",
+      "serde_skips_when_none": true
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "InitializeRequestArguments",
+      "field": "pathFormat",
+      "rust_owner": "InitializeRequestArguments::path_format",
+      "rust_type": "Option<String>",
+      "serde_skips_when_none": true
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "InitializeRequestArguments",
+      "field": "supportsANSIStyling",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "InitializeRequestArguments",
+      "field": "supportsArgsCanBeInterpretedByShell",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "InitializeRequestArguments",
+      "field": "supportsInvalidatedEvent",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "InitializeRequestArguments",
+      "field": "supportsMemoryEvent",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "InitializeRequestArguments",
+      "field": "supportsMemoryReferences",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "InitializeRequestArguments",
+      "field": "supportsProgressReporting",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "InitializeRequestArguments",
+      "field": "supportsRunInTerminalRequest",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "InitializeRequestArguments",
+      "field": "supportsStartDebuggingRequest",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "InitializeRequestArguments",
+      "field": "supportsVariablePaging",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "InitializeRequestArguments",
+      "field": "supportsVariableType",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "InitializeResponse",
+      "field": "body",
+      "reason": "not modeled in protocol.rs",
+      "rust_owner": null,
+      "rust_type": null,
+      "serde_skips_when_none": null
+    },
+    {
+      "class": "required-non-null",
+      "definition": "InitializedEvent",
+      "field": "event",
+      "reason": "not modeled in protocol.rs",
+      "rust_owner": null,
+      "rust_type": null,
+      "serde_skips_when_none": null
+    },
+    {
+      "class": "unsupported",
+      "definition": "InstructionBreakpoint",
+      "field": "condition",
+      "reason": "no matching Rust struct in protocol.rs",
+      "rust_owner": null
+    },
+    {
+      "class": "unsupported",
+      "definition": "InstructionBreakpoint",
+      "field": "hitCondition",
+      "reason": "no matching Rust struct in protocol.rs",
+      "rust_owner": null
+    },
+    {
+      "class": "unsupported",
+      "definition": "InstructionBreakpoint",
+      "field": "instructionReference",
+      "reason": "no matching Rust struct in protocol.rs",
+      "rust_owner": null
+    },
+    {
+      "class": "unsupported",
+      "definition": "InstructionBreakpoint",
+      "field": "mode",
+      "reason": "no matching Rust struct in protocol.rs",
+      "rust_owner": null
+    },
+    {
+      "class": "unsupported",
+      "definition": "InstructionBreakpoint",
+      "field": "offset",
+      "reason": "no matching Rust struct in protocol.rs",
+      "rust_owner": null
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "InvalidatedEventBody",
+      "field": "areas",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null,
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "InvalidatedEventBody",
+      "field": "stackFrameId",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null,
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "InvalidatedEventBody",
+      "field": "threadId",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null,
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "required-non-null",
+      "definition": "LaunchRequest",
+      "field": "arguments",
+      "reason": "not modeled in protocol.rs",
+      "rust_owner": null,
+      "rust_type": null,
+      "serde_skips_when_none": null
+    },
+    {
+      "class": "required-non-null",
+      "definition": "LaunchRequest",
+      "field": "command",
+      "reason": "not modeled in protocol.rs",
+      "rust_owner": null,
+      "rust_type": null,
+      "serde_skips_when_none": null
+    },
+    {
+      "class": "optional-nullable",
+      "definition": "LaunchRequestArguments",
+      "field": "__restart",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "LaunchRequestArguments",
+      "field": "noDebug",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null
+    },
+    {
+      "class": "required-non-null",
+      "definition": "LoadedSourceEventBody",
+      "field": "reason",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null,
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "required-non-null",
+      "definition": "LoadedSourceEventBody",
+      "field": "source",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null,
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "LoadedSourcesRequest",
+      "field": "arguments",
+      "reason": "not modeled in protocol.rs",
+      "rust_owner": null,
+      "rust_type": null,
+      "serde_skips_when_none": null
+    },
+    {
+      "class": "required-non-null",
+      "definition": "LoadedSourcesRequest",
+      "field": "command",
+      "reason": "not modeled in protocol.rs",
+      "rust_owner": null,
+      "rust_type": null,
+      "serde_skips_when_none": null
+    },
+    {
+      "class": "required-non-null",
+      "definition": "LoadedSourcesResponseBody",
+      "field": "sources",
+      "rust_owner": "LoadedSourcesResponseBody::sources",
+      "rust_type": "Vec<Source>",
+      "seeded": false
+    },
+    {
+      "class": "unsupported",
+      "definition": "LocationsArguments",
+      "field": "locationReference",
+      "reason": "no matching Rust struct in protocol.rs",
+      "rust_owner": null
+    },
+    {
+      "class": "required-non-null",
+      "definition": "LocationsRequest",
+      "field": "arguments",
+      "reason": "not modeled in protocol.rs",
+      "rust_owner": null,
+      "rust_type": null,
+      "serde_skips_when_none": null
+    },
+    {
+      "class": "required-non-null",
+      "definition": "LocationsRequest",
+      "field": "command",
+      "reason": "not modeled in protocol.rs",
+      "rust_owner": null,
+      "rust_type": null,
+      "serde_skips_when_none": null
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "LocationsResponseBody",
+      "field": "column",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null,
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "LocationsResponseBody",
+      "field": "endColumn",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null,
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "LocationsResponseBody",
+      "field": "endLine",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null,
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "required-non-null",
+      "definition": "LocationsResponseBody",
+      "field": "line",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null,
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "required-non-null",
+      "definition": "LocationsResponseBody",
+      "field": "source",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null,
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "required-non-null",
+      "definition": "MemoryEventBody",
+      "field": "count",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null,
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "required-non-null",
+      "definition": "MemoryEventBody",
+      "field": "memoryReference",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null,
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "required-non-null",
+      "definition": "MemoryEventBody",
+      "field": "offset",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null,
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "unsupported",
+      "definition": "Message",
+      "field": "format",
+      "reason": "no matching Rust struct in protocol.rs",
+      "rust_owner": null
+    },
+    {
+      "class": "unsupported",
+      "definition": "Message",
+      "field": "id",
+      "reason": "no matching Rust struct in protocol.rs",
+      "rust_owner": null
+    },
+    {
+      "class": "unsupported",
+      "definition": "Message",
+      "field": "sendTelemetry",
+      "reason": "no matching Rust struct in protocol.rs",
+      "rust_owner": null
+    },
+    {
+      "class": "unsupported",
+      "definition": "Message",
+      "field": "showUser",
+      "reason": "no matching Rust struct in protocol.rs",
+      "rust_owner": null
+    },
+    {
+      "class": "unsupported",
+      "definition": "Message",
+      "field": "url",
+      "reason": "no matching Rust struct in protocol.rs",
+      "rust_owner": null
+    },
+    {
+      "class": "unsupported",
+      "definition": "Message",
+      "field": "urlLabel",
+      "reason": "no matching Rust struct in protocol.rs",
+      "rust_owner": null
+    },
+    {
+      "class": "unsupported",
+      "definition": "Message",
+      "field": "variables",
+      "reason": "no matching Rust struct in protocol.rs",
+      "rust_owner": null
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "Module",
+      "field": "addressRange",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "Module",
+      "field": "dateTimeStamp",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null
+    },
+    {
+      "class": "required-non-null",
+      "definition": "Module",
+      "field": "id",
+      "rust_owner": "Module::id",
+      "rust_type": "String",
+      "serde_skips_when_none": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "Module",
+      "field": "isOptimized",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "Module",
+      "field": "isUserCode",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null
+    },
+    {
+      "class": "required-non-null",
+      "definition": "Module",
+      "field": "name",
+      "rust_owner": "Module::name",
+      "rust_type": "String",
+      "serde_skips_when_none": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "Module",
+      "field": "path",
+      "rust_owner": "Module::path",
+      "rust_type": "Option<String>",
+      "serde_skips_when_none": true
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "Module",
+      "field": "symbolFilePath",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "Module",
+      "field": "symbolStatus",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "Module",
+      "field": "version",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null
+    },
+    {
+      "class": "required-non-null",
+      "definition": "ModuleEventBody",
+      "field": "module",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null,
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "required-non-null",
+      "definition": "ModuleEventBody",
+      "field": "reason",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null,
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "ModulesArguments",
+      "field": "moduleCount",
+      "rust_owner": "ModulesArguments::module_count",
+      "rust_type": "Option<i64>",
+      "serde_skips_when_none": true
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "ModulesArguments",
+      "field": "startModule",
+      "rust_owner": "ModulesArguments::start_module",
+      "rust_type": "Option<i64>",
+      "serde_skips_when_none": true
+    },
+    {
+      "class": "required-non-null",
+      "definition": "ModulesRequest",
+      "field": "arguments",
+      "reason": "not modeled in protocol.rs",
+      "rust_owner": null,
+      "rust_type": null,
+      "serde_skips_when_none": null
+    },
+    {
+      "class": "required-non-null",
+      "definition": "ModulesRequest",
+      "field": "command",
+      "reason": "not modeled in protocol.rs",
+      "rust_owner": null,
+      "rust_type": null,
+      "serde_skips_when_none": null
+    },
+    {
+      "class": "required-non-null",
+      "definition": "ModulesResponseBody",
+      "field": "modules",
+      "rust_owner": "ModulesResponseBody::modules",
+      "rust_type": "Vec<Module>",
+      "seeded": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "ModulesResponseBody",
+      "field": "totalModules",
+      "rust_owner": "ModulesResponseBody::total_modules",
+      "rust_type": "Option<i64>",
+      "seeded": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "NextArguments",
+      "field": "granularity",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "NextArguments",
+      "field": "singleThread",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null
+    },
+    {
+      "class": "required-non-null",
+      "definition": "NextArguments",
+      "field": "threadId",
+      "rust_owner": "NextArguments::thread_id",
+      "rust_type": "i64",
+      "serde_skips_when_none": false
+    },
+    {
+      "class": "required-non-null",
+      "definition": "NextRequest",
+      "field": "arguments",
+      "reason": "not modeled in protocol.rs",
+      "rust_owner": null,
+      "rust_type": null,
+      "serde_skips_when_none": null
+    },
+    {
+      "class": "required-non-null",
+      "definition": "NextRequest",
+      "field": "command",
+      "reason": "not modeled in protocol.rs",
+      "rust_owner": null,
+      "rust_type": null,
+      "serde_skips_when_none": null
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "OutputEventBody",
+      "field": "category",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null,
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "OutputEventBody",
+      "field": "column",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null,
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "optional-nullable",
+      "definition": "OutputEventBody",
+      "field": "data",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null,
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "OutputEventBody",
+      "field": "group",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null,
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "OutputEventBody",
+      "field": "line",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null,
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "OutputEventBody",
+      "field": "locationReference",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null,
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "required-non-null",
+      "definition": "OutputEventBody",
+      "field": "output",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null,
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "OutputEventBody",
+      "field": "source",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null,
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "OutputEventBody",
+      "field": "variablesReference",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null,
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "required-non-null",
+      "definition": "PauseArguments",
+      "field": "threadId",
+      "rust_owner": "PauseArguments::thread_id",
+      "rust_type": "i64",
+      "serde_skips_when_none": false
+    },
+    {
+      "class": "required-non-null",
+      "definition": "PauseRequest",
+      "field": "arguments",
+      "reason": "not modeled in protocol.rs",
+      "rust_owner": null,
+      "rust_type": null,
+      "serde_skips_when_none": null
+    },
+    {
+      "class": "required-non-null",
+      "definition": "PauseRequest",
+      "field": "command",
+      "reason": "not modeled in protocol.rs",
+      "rust_owner": null,
+      "rust_type": null,
+      "serde_skips_when_none": null
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "ProcessEventBody",
+      "field": "isLocalProcess",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null,
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "required-non-null",
+      "definition": "ProcessEventBody",
+      "field": "name",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null,
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "ProcessEventBody",
+      "field": "pointerSize",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null,
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "ProcessEventBody",
+      "field": "startMethod",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null,
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "ProcessEventBody",
+      "field": "systemProcessId",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null,
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "ProgressEndEventBody",
+      "field": "message",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null,
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "required-non-null",
+      "definition": "ProgressEndEventBody",
+      "field": "progressId",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null,
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "ProgressStartEventBody",
+      "field": "cancellable",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null,
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "ProgressStartEventBody",
+      "field": "message",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null,
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "ProgressStartEventBody",
+      "field": "percentage",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null,
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "required-non-null",
+      "definition": "ProgressStartEventBody",
+      "field": "progressId",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null,
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "ProgressStartEventBody",
+      "field": "requestId",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null,
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "required-non-null",
+      "definition": "ProgressStartEventBody",
+      "field": "title",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null,
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "ProgressUpdateEventBody",
+      "field": "message",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null,
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "ProgressUpdateEventBody",
+      "field": "percentage",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null,
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "required-non-null",
+      "definition": "ProgressUpdateEventBody",
+      "field": "progressId",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null,
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "unsupported",
+      "definition": "ProtocolMessage",
+      "field": "seq",
+      "reason": "no matching Rust struct in protocol.rs",
+      "rust_owner": null
+    },
+    {
+      "class": "unsupported",
+      "definition": "ProtocolMessage",
+      "field": "type",
+      "reason": "no matching Rust struct in protocol.rs",
+      "rust_owner": null
+    },
+    {
+      "class": "unsupported",
+      "definition": "ReadMemoryArguments",
+      "field": "count",
+      "reason": "no matching Rust struct in protocol.rs",
+      "rust_owner": null
+    },
+    {
+      "class": "unsupported",
+      "definition": "ReadMemoryArguments",
+      "field": "memoryReference",
+      "reason": "no matching Rust struct in protocol.rs",
+      "rust_owner": null
+    },
+    {
+      "class": "unsupported",
+      "definition": "ReadMemoryArguments",
+      "field": "offset",
+      "reason": "no matching Rust struct in protocol.rs",
+      "rust_owner": null
+    },
+    {
+      "class": "required-non-null",
+      "definition": "ReadMemoryRequest",
+      "field": "arguments",
+      "reason": "not modeled in protocol.rs",
+      "rust_owner": null,
+      "rust_type": null,
+      "serde_skips_when_none": null
+    },
+    {
+      "class": "required-non-null",
+      "definition": "ReadMemoryRequest",
+      "field": "command",
+      "reason": "not modeled in protocol.rs",
+      "rust_owner": null,
+      "rust_type": null,
+      "serde_skips_when_none": null
+    },
+    {
+      "class": "required-non-null",
+      "definition": "ReadMemoryResponseBody",
+      "field": "address",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null,
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "ReadMemoryResponseBody",
+      "field": "data",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null,
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "ReadMemoryResponseBody",
+      "field": "unreadableBytes",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null,
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "optional-nullable",
+      "definition": "Request",
+      "field": "arguments",
+      "reason": null,
+      "rust_owner": "Request::arguments",
+      "rust_type": "Option<serde_json::Value>",
+      "serde_skips_when_none": true
+    },
+    {
+      "class": "required-non-null",
+      "definition": "Request",
+      "field": "command",
+      "reason": null,
+      "rust_owner": "Request::command",
+      "rust_type": "String",
+      "serde_skips_when_none": false
+    },
+    {
+      "class": "required-non-null",
+      "definition": "Request",
+      "field": "type",
+      "reason": null,
+      "rust_owner": "Request::msg_type",
+      "rust_type": "String",
+      "serde_skips_when_none": false
+    },
+    {
+      "class": "optional-nullable",
+      "definition": "Response",
+      "field": "body",
+      "reason": null,
+      "rust_owner": "Response::body",
+      "rust_type": "Option<serde_json::Value>",
+      "serde_skips_when_none": true
+    },
+    {
+      "class": "required-non-null",
+      "definition": "Response",
+      "field": "command",
+      "reason": null,
+      "rust_owner": "Response::command",
+      "rust_type": "String",
+      "serde_skips_when_none": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "Response",
+      "field": "message",
+      "reason": null,
+      "rust_owner": "Response::message",
+      "rust_type": "Option<String>",
+      "serde_skips_when_none": true
+    },
+    {
+      "class": "required-non-null",
+      "definition": "Response",
+      "field": "request_seq",
+      "reason": "not modeled in protocol.rs",
+      "rust_owner": null,
+      "rust_type": null,
+      "serde_skips_when_none": null
+    },
+    {
+      "class": "required-non-null",
+      "definition": "Response",
+      "field": "success",
+      "reason": null,
+      "rust_owner": "Response::success",
+      "rust_type": "bool",
+      "serde_skips_when_none": false
+    },
+    {
+      "class": "required-non-null",
+      "definition": "Response",
+      "field": "type",
+      "reason": null,
+      "rust_owner": "Response::msg_type",
+      "rust_type": "String",
+      "serde_skips_when_none": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "RestartArguments",
+      "field": "arguments",
+      "rust_owner": "RestartArguments::arguments",
+      "rust_type": "Option<serde_json::Value>",
+      "serde_skips_when_none": true
+    },
+    {
+      "class": "required-non-null",
+      "definition": "RestartFrameArguments",
+      "field": "frameId",
+      "rust_owner": "RestartFrameArguments::frame_id",
+      "rust_type": "i64",
+      "serde_skips_when_none": false
+    },
+    {
+      "class": "required-non-null",
+      "definition": "RestartFrameRequest",
+      "field": "arguments",
+      "reason": "not modeled in protocol.rs",
+      "rust_owner": null,
+      "rust_type": null,
+      "serde_skips_when_none": null
+    },
+    {
+      "class": "required-non-null",
+      "definition": "RestartFrameRequest",
+      "field": "command",
+      "reason": "not modeled in protocol.rs",
+      "rust_owner": null,
+      "rust_type": null,
+      "serde_skips_when_none": null
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "RestartRequest",
+      "field": "arguments",
+      "reason": "not modeled in protocol.rs",
+      "rust_owner": null,
+      "rust_type": null,
+      "serde_skips_when_none": null
+    },
+    {
+      "class": "required-non-null",
+      "definition": "RestartRequest",
+      "field": "command",
+      "reason": "not modeled in protocol.rs",
+      "rust_owner": null,
+      "rust_type": null,
+      "serde_skips_when_none": null
+    },
+    {
+      "class": "unsupported",
+      "definition": "ReverseContinueArguments",
+      "field": "singleThread",
+      "reason": "no matching Rust struct in protocol.rs",
+      "rust_owner": null
+    },
+    {
+      "class": "unsupported",
+      "definition": "ReverseContinueArguments",
+      "field": "threadId",
+      "reason": "no matching Rust struct in protocol.rs",
+      "rust_owner": null
+    },
+    {
+      "class": "required-non-null",
+      "definition": "ReverseContinueRequest",
+      "field": "arguments",
+      "reason": "not modeled in protocol.rs",
+      "rust_owner": null,
+      "rust_type": null,
+      "serde_skips_when_none": null
+    },
+    {
+      "class": "required-non-null",
+      "definition": "ReverseContinueRequest",
+      "field": "command",
+      "reason": "not modeled in protocol.rs",
+      "rust_owner": null,
+      "rust_type": null,
+      "serde_skips_when_none": null
+    },
+    {
+      "class": "required-non-null",
+      "definition": "RunInTerminalRequest",
+      "field": "arguments",
+      "reason": "not modeled in protocol.rs",
+      "rust_owner": null,
+      "rust_type": null,
+      "serde_skips_when_none": null
+    },
+    {
+      "class": "required-non-null",
+      "definition": "RunInTerminalRequest",
+      "field": "command",
+      "reason": "not modeled in protocol.rs",
+      "rust_owner": null,
+      "rust_type": null,
+      "serde_skips_when_none": null
+    },
+    {
+      "class": "unsupported",
+      "definition": "RunInTerminalRequestArguments",
+      "field": "args",
+      "reason": "no matching Rust struct in protocol.rs",
+      "rust_owner": null
+    },
+    {
+      "class": "unsupported",
+      "definition": "RunInTerminalRequestArguments",
+      "field": "argsCanBeInterpretedByShell",
+      "reason": "no matching Rust struct in protocol.rs",
+      "rust_owner": null
+    },
+    {
+      "class": "unsupported",
+      "definition": "RunInTerminalRequestArguments",
+      "field": "cwd",
+      "reason": "no matching Rust struct in protocol.rs",
+      "rust_owner": null
+    },
+    {
+      "class": "unsupported",
+      "definition": "RunInTerminalRequestArguments",
+      "field": "env",
+      "reason": "no matching Rust struct in protocol.rs",
+      "rust_owner": null
+    },
+    {
+      "class": "unsupported",
+      "definition": "RunInTerminalRequestArguments",
+      "field": "kind",
+      "reason": "no matching Rust struct in protocol.rs",
+      "rust_owner": null
+    },
+    {
+      "class": "unsupported",
+      "definition": "RunInTerminalRequestArguments",
+      "field": "title",
+      "reason": "no matching Rust struct in protocol.rs",
+      "rust_owner": null
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "RunInTerminalResponseBody",
+      "field": "processId",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null,
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "RunInTerminalResponseBody",
+      "field": "shellProcessId",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null,
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "Scope",
+      "field": "column",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "Scope",
+      "field": "endColumn",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "Scope",
+      "field": "endLine",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null
+    },
+    {
+      "class": "required-non-null",
+      "definition": "Scope",
+      "field": "expensive",
+      "rust_owner": "Scope::expensive",
+      "rust_type": "bool",
+      "serde_skips_when_none": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "Scope",
+      "field": "indexedVariables",
+      "rust_owner": "Scope::indexed_variables",
+      "rust_type": "Option<i64>",
+      "serde_skips_when_none": true
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "Scope",
+      "field": "line",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null
+    },
+    {
+      "class": "required-non-null",
+      "definition": "Scope",
+      "field": "name",
+      "rust_owner": "Scope::name",
+      "rust_type": "String",
+      "serde_skips_when_none": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "Scope",
+      "field": "namedVariables",
+      "rust_owner": "Scope::named_variables",
+      "rust_type": "Option<i64>",
+      "serde_skips_when_none": true
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "Scope",
+      "field": "presentationHint",
+      "rust_owner": "Scope::presentation_hint",
+      "rust_type": "Option<String>",
+      "serde_skips_when_none": true
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "Scope",
+      "field": "source",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null
+    },
+    {
+      "class": "required-non-null",
+      "definition": "Scope",
+      "field": "variablesReference",
+      "rust_owner": "Scope::variables_reference",
+      "rust_type": "i64",
+      "serde_skips_when_none": false
+    },
+    {
+      "class": "required-non-null",
+      "definition": "ScopesArguments",
+      "field": "frameId",
+      "rust_owner": "ScopesArguments::frame_id",
+      "rust_type": "i64",
+      "serde_skips_when_none": false
+    },
+    {
+      "class": "required-non-null",
+      "definition": "ScopesRequest",
+      "field": "arguments",
+      "reason": "not modeled in protocol.rs",
+      "rust_owner": null,
+      "rust_type": null,
+      "serde_skips_when_none": null
+    },
+    {
+      "class": "required-non-null",
+      "definition": "ScopesRequest",
+      "field": "command",
+      "reason": "not modeled in protocol.rs",
+      "rust_owner": null,
+      "rust_type": null,
+      "serde_skips_when_none": null
+    },
+    {
+      "class": "required-non-null",
+      "definition": "ScopesResponseBody",
+      "field": "scopes",
+      "rust_owner": "ScopesResponseBody::scopes",
+      "rust_type": "Vec<Scope>",
+      "seeded": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "SetBreakpointsArguments",
+      "field": "breakpoints",
+      "rust_owner": "SetBreakpointsArguments::breakpoints",
+      "rust_type": "Option<Vec<SourceBreakpoint>>",
+      "serde_skips_when_none": true
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "SetBreakpointsArguments",
+      "field": "lines",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null
+    },
+    {
+      "class": "required-non-null",
+      "definition": "SetBreakpointsArguments",
+      "field": "source",
+      "rust_owner": "SetBreakpointsArguments::source",
+      "rust_type": "Source",
+      "serde_skips_when_none": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "SetBreakpointsArguments",
+      "field": "sourceModified",
+      "rust_owner": "SetBreakpointsArguments::source_modified",
+      "rust_type": "Option<bool>",
+      "serde_skips_when_none": true
+    },
+    {
+      "class": "required-non-null",
+      "definition": "SetBreakpointsRequest",
+      "field": "arguments",
+      "reason": "not modeled in protocol.rs",
+      "rust_owner": null,
+      "rust_type": null,
+      "serde_skips_when_none": null
+    },
+    {
+      "class": "required-non-null",
+      "definition": "SetBreakpointsRequest",
+      "field": "command",
+      "reason": "not modeled in protocol.rs",
+      "rust_owner": null,
+      "rust_type": null,
+      "serde_skips_when_none": null
+    },
+    {
+      "class": "required-non-null",
+      "definition": "SetBreakpointsResponseBody",
+      "field": "breakpoints",
+      "rust_owner": "SetBreakpointsResponseBody::breakpoints",
+      "rust_type": "Vec<Breakpoint>",
+      "seeded": false
+    },
+    {
+      "class": "required-non-null",
+      "definition": "SetDataBreakpointsArguments",
+      "field": "breakpoints",
+      "rust_owner": "SetDataBreakpointsArguments::breakpoints",
+      "rust_type": "Vec<DataBreakpoint>",
+      "serde_skips_when_none": false
+    },
+    {
+      "class": "required-non-null",
+      "definition": "SetDataBreakpointsRequest",
+      "field": "arguments",
+      "reason": "not modeled in protocol.rs",
+      "rust_owner": null,
+      "rust_type": null,
+      "serde_skips_when_none": null
+    },
+    {
+      "class": "required-non-null",
+      "definition": "SetDataBreakpointsRequest",
+      "field": "command",
+      "reason": "not modeled in protocol.rs",
+      "rust_owner": null,
+      "rust_type": null,
+      "serde_skips_when_none": null
+    },
+    {
+      "class": "required-non-null",
+      "definition": "SetDataBreakpointsResponseBody",
+      "field": "breakpoints",
+      "rust_owner": "SetDataBreakpointsResponseBody::breakpoints",
+      "rust_type": "Vec<Breakpoint>",
+      "seeded": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "SetExceptionBreakpointsArguments",
+      "field": "exceptionOptions",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "SetExceptionBreakpointsArguments",
+      "field": "filterOptions",
+      "rust_owner": "SetExceptionBreakpointsArguments::filter_options",
+      "rust_type": "Option<Vec<ExceptionFilterOption>>",
+      "serde_skips_when_none": true
+    },
+    {
+      "class": "required-non-null",
+      "definition": "SetExceptionBreakpointsArguments",
+      "field": "filters",
+      "rust_owner": "SetExceptionBreakpointsArguments::filters",
+      "rust_type": "Vec<String>",
+      "serde_skips_when_none": false
+    },
+    {
+      "class": "required-non-null",
+      "definition": "SetExceptionBreakpointsRequest",
+      "field": "arguments",
+      "reason": "not modeled in protocol.rs",
+      "rust_owner": null,
+      "rust_type": null,
+      "serde_skips_when_none": null
+    },
+    {
+      "class": "required-non-null",
+      "definition": "SetExceptionBreakpointsRequest",
+      "field": "command",
+      "reason": "not modeled in protocol.rs",
+      "rust_owner": null,
+      "rust_type": null,
+      "serde_skips_when_none": null
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "SetExceptionBreakpointsResponseBody",
+      "field": "breakpoints",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null,
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "required-non-null",
+      "definition": "SetExpressionArguments",
+      "field": "expression",
+      "rust_owner": "SetExpressionArguments::expression",
+      "rust_type": "String",
+      "serde_skips_when_none": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "SetExpressionArguments",
+      "field": "format",
+      "rust_owner": "SetExpressionArguments::format",
+      "rust_type": "Option<ValueFormat>",
+      "serde_skips_when_none": true
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "SetExpressionArguments",
+      "field": "frameId",
+      "rust_owner": "SetExpressionArguments::frame_id",
+      "rust_type": "Option<i64>",
+      "serde_skips_when_none": true
+    },
+    {
+      "class": "required-non-null",
+      "definition": "SetExpressionArguments",
+      "field": "value",
+      "rust_owner": "SetExpressionArguments::value",
+      "rust_type": "String",
+      "serde_skips_when_none": false
+    },
+    {
+      "class": "required-non-null",
+      "definition": "SetExpressionRequest",
+      "field": "arguments",
+      "reason": "not modeled in protocol.rs",
+      "rust_owner": null,
+      "rust_type": null,
+      "serde_skips_when_none": null
+    },
+    {
+      "class": "required-non-null",
+      "definition": "SetExpressionRequest",
+      "field": "command",
+      "reason": "not modeled in protocol.rs",
+      "rust_owner": null,
+      "rust_type": null,
+      "serde_skips_when_none": null
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "SetExpressionResponseBody",
+      "field": "indexedVariables",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null,
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "SetExpressionResponseBody",
+      "field": "memoryReference",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null,
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "SetExpressionResponseBody",
+      "field": "namedVariables",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null,
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "SetExpressionResponseBody",
+      "field": "presentationHint",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null,
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "SetExpressionResponseBody",
+      "field": "type",
+      "rust_owner": "SetExpressionResponseBody::type_",
+      "rust_type": "Option<String>",
+      "seeded": false
+    },
+    {
+      "class": "required-non-null",
+      "definition": "SetExpressionResponseBody",
+      "field": "value",
+      "rust_owner": "SetExpressionResponseBody::value",
+      "rust_type": "String",
+      "seeded": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "SetExpressionResponseBody",
+      "field": "valueLocationReference",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null,
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "SetExpressionResponseBody",
+      "field": "variablesReference",
+      "rust_owner": "SetExpressionResponseBody::variables_reference",
+      "rust_type": "i64",
+      "seeded": false
+    },
+    {
+      "class": "required-non-null",
+      "definition": "SetFunctionBreakpointsArguments",
+      "field": "breakpoints",
+      "rust_owner": "SetFunctionBreakpointsArguments::breakpoints",
+      "rust_type": "Vec<FunctionBreakpoint>",
+      "serde_skips_when_none": false
+    },
+    {
+      "class": "required-non-null",
+      "definition": "SetFunctionBreakpointsRequest",
+      "field": "arguments",
+      "reason": "not modeled in protocol.rs",
+      "rust_owner": null,
+      "rust_type": null,
+      "serde_skips_when_none": null
+    },
+    {
+      "class": "required-non-null",
+      "definition": "SetFunctionBreakpointsRequest",
+      "field": "command",
+      "reason": "not modeled in protocol.rs",
+      "rust_owner": null,
+      "rust_type": null,
+      "serde_skips_when_none": null
+    },
+    {
+      "class": "required-non-null",
+      "definition": "SetFunctionBreakpointsResponseBody",
+      "field": "breakpoints",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null,
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "unsupported",
+      "definition": "SetInstructionBreakpointsArguments",
+      "field": "breakpoints",
+      "reason": "no matching Rust struct in protocol.rs",
+      "rust_owner": null
+    },
+    {
+      "class": "required-non-null",
+      "definition": "SetInstructionBreakpointsRequest",
+      "field": "arguments",
+      "reason": "not modeled in protocol.rs",
+      "rust_owner": null,
+      "rust_type": null,
+      "serde_skips_when_none": null
+    },
+    {
+      "class": "required-non-null",
+      "definition": "SetInstructionBreakpointsRequest",
+      "field": "command",
+      "reason": "not modeled in protocol.rs",
+      "rust_owner": null,
+      "rust_type": null,
+      "serde_skips_when_none": null
+    },
+    {
+      "class": "required-non-null",
+      "definition": "SetInstructionBreakpointsResponseBody",
+      "field": "breakpoints",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null,
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "SetVariableArguments",
+      "field": "format",
+      "rust_owner": "SetVariableArguments::format",
+      "rust_type": "Option<ValueFormat>",
+      "serde_skips_when_none": true
+    },
+    {
+      "class": "required-non-null",
+      "definition": "SetVariableArguments",
+      "field": "name",
+      "rust_owner": "SetVariableArguments::name",
+      "rust_type": "String",
+      "serde_skips_when_none": false
+    },
+    {
+      "class": "required-non-null",
+      "definition": "SetVariableArguments",
+      "field": "value",
+      "rust_owner": "SetVariableArguments::value",
+      "rust_type": "String",
+      "serde_skips_when_none": false
+    },
+    {
+      "class": "required-non-null",
+      "definition": "SetVariableArguments",
+      "field": "variablesReference",
+      "rust_owner": "SetVariableArguments::variables_reference",
+      "rust_type": "i64",
+      "serde_skips_when_none": false
+    },
+    {
+      "class": "required-non-null",
+      "definition": "SetVariableRequest",
+      "field": "arguments",
+      "reason": "not modeled in protocol.rs",
+      "rust_owner": null,
+      "rust_type": null,
+      "serde_skips_when_none": null
+    },
+    {
+      "class": "required-non-null",
+      "definition": "SetVariableRequest",
+      "field": "command",
+      "reason": "not modeled in protocol.rs",
+      "rust_owner": null,
+      "rust_type": null,
+      "serde_skips_when_none": null
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "SetVariableResponseBody",
+      "field": "indexedVariables",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null,
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "SetVariableResponseBody",
+      "field": "memoryReference",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null,
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "SetVariableResponseBody",
+      "field": "namedVariables",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null,
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "SetVariableResponseBody",
+      "field": "type",
+      "rust_owner": "SetVariableResponseBody::type_",
+      "rust_type": "Option<String>",
+      "seeded": false
+    },
+    {
+      "class": "required-non-null",
+      "definition": "SetVariableResponseBody",
+      "field": "value",
+      "rust_owner": "SetVariableResponseBody::value",
+      "rust_type": "String",
+      "seeded": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "SetVariableResponseBody",
+      "field": "valueLocationReference",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null,
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "SetVariableResponseBody",
+      "field": "variablesReference",
+      "rust_owner": "SetVariableResponseBody::variables_reference",
+      "rust_type": "i64",
+      "seeded": false
+    },
+    {
+      "class": "optional-nullable",
+      "definition": "Source",
+      "field": "adapterData",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "Source",
+      "field": "checksums",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "Source",
+      "field": "name",
+      "rust_owner": "Source::name",
+      "rust_type": "Option<String>",
+      "serde_skips_when_none": true
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "Source",
+      "field": "origin",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "Source",
+      "field": "path",
+      "rust_owner": "Source::path",
+      "rust_type": "Option<String>",
+      "serde_skips_when_none": true
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "Source",
+      "field": "presentationHint",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "Source",
+      "field": "sourceReference",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "Source",
+      "field": "sources",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "SourceArguments",
+      "field": "source",
+      "rust_owner": "SourceArguments::source",
+      "rust_type": "Option<Source>",
+      "serde_skips_when_none": true
+    },
+    {
+      "class": "required-non-null",
+      "contradiction": "schema requires non-null but the Rust owner is Option<> (Option<i64>)",
+      "definition": "SourceArguments",
+      "field": "sourceReference",
+      "rust_owner": "SourceArguments::source_reference",
+      "rust_type": "Option<i64>",
+      "serde_skips_when_none": true
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "SourceBreakpoint",
+      "field": "column",
+      "rust_owner": "SourceBreakpoint::column",
+      "rust_type": "Option<i64>",
+      "serde_skips_when_none": true
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "SourceBreakpoint",
+      "field": "condition",
+      "rust_owner": "SourceBreakpoint::condition",
+      "rust_type": "Option<String>",
+      "serde_skips_when_none": true
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "SourceBreakpoint",
+      "field": "hitCondition",
+      "rust_owner": "SourceBreakpoint::hit_condition",
+      "rust_type": "Option<String>",
+      "serde_skips_when_none": true
+    },
+    {
+      "class": "required-non-null",
+      "definition": "SourceBreakpoint",
+      "field": "line",
+      "rust_owner": "SourceBreakpoint::line",
+      "rust_type": "i64",
+      "serde_skips_when_none": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "SourceBreakpoint",
+      "field": "logMessage",
+      "rust_owner": "SourceBreakpoint::log_message",
+      "rust_type": "Option<String>",
+      "serde_skips_when_none": true
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "SourceBreakpoint",
+      "field": "mode",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null
+    },
+    {
+      "class": "required-non-null",
+      "definition": "SourceRequest",
+      "field": "arguments",
+      "reason": "not modeled in protocol.rs",
+      "rust_owner": null,
+      "rust_type": null,
+      "serde_skips_when_none": null
+    },
+    {
+      "class": "required-non-null",
+      "definition": "SourceRequest",
+      "field": "command",
+      "reason": "not modeled in protocol.rs",
+      "rust_owner": null,
+      "rust_type": null,
+      "serde_skips_when_none": null
+    },
+    {
+      "class": "required-non-null",
+      "definition": "SourceResponseBody",
+      "field": "content",
+      "rust_owner": "SourceResponseBody::content",
+      "rust_type": "String",
+      "seeded": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "SourceResponseBody",
+      "field": "mimeType",
+      "rust_owner": "SourceResponseBody::mime_type",
+      "rust_type": "Option<String>",
+      "seeded": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "StackFrame",
+      "field": "canRestart",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null
+    },
+    {
+      "class": "required-non-null",
+      "definition": "StackFrame",
+      "field": "column",
+      "rust_owner": "ProtocolStackFrame::column",
+      "rust_type": "i64",
+      "serde_skips_when_none": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "StackFrame",
+      "field": "endColumn",
+      "rust_owner": "ProtocolStackFrame::end_column",
+      "rust_type": "Option<i64>",
+      "serde_skips_when_none": true
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "StackFrame",
+      "field": "endLine",
+      "rust_owner": "ProtocolStackFrame::end_line",
+      "rust_type": "Option<i64>",
+      "serde_skips_when_none": true
+    },
+    {
+      "class": "required-non-null",
+      "definition": "StackFrame",
+      "field": "id",
+      "rust_owner": "ProtocolStackFrame::id",
+      "rust_type": "i64",
+      "serde_skips_when_none": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "StackFrame",
+      "field": "instructionPointerReference",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null
+    },
+    {
+      "class": "required-non-null",
+      "definition": "StackFrame",
+      "field": "line",
+      "rust_owner": "ProtocolStackFrame::line",
+      "rust_type": "i64",
+      "serde_skips_when_none": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "StackFrame",
+      "field": "moduleId",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null
+    },
+    {
+      "class": "required-non-null",
+      "definition": "StackFrame",
+      "field": "name",
+      "rust_owner": "ProtocolStackFrame::name",
+      "rust_type": "String",
+      "serde_skips_when_none": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "StackFrame",
+      "field": "presentationHint",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "StackFrame",
+      "field": "source",
+      "rust_owner": "ProtocolStackFrame::source",
+      "rust_type": "Option<Source>",
+      "serde_skips_when_none": true
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "StackFrameFormat",
+      "field": "includeAll",
+      "reason": "not modeled in protocol.rs",
+      "rust_owner": null,
+      "rust_type": null,
+      "serde_skips_when_none": null
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "StackFrameFormat",
+      "field": "line",
+      "reason": "not modeled in protocol.rs",
+      "rust_owner": null,
+      "rust_type": null,
+      "serde_skips_when_none": null
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "StackFrameFormat",
+      "field": "module",
+      "reason": "not modeled in protocol.rs",
+      "rust_owner": null,
+      "rust_type": null,
+      "serde_skips_when_none": null
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "StackFrameFormat",
+      "field": "parameterNames",
+      "reason": "not modeled in protocol.rs",
+      "rust_owner": null,
+      "rust_type": null,
+      "serde_skips_when_none": null
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "StackFrameFormat",
+      "field": "parameterTypes",
+      "reason": "not modeled in protocol.rs",
+      "rust_owner": null,
+      "rust_type": null,
+      "serde_skips_when_none": null
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "StackFrameFormat",
+      "field": "parameterValues",
+      "reason": "not modeled in protocol.rs",
+      "rust_owner": null,
+      "rust_type": null,
+      "serde_skips_when_none": null
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "StackFrameFormat",
+      "field": "parameters",
+      "reason": "not modeled in protocol.rs",
+      "rust_owner": null,
+      "rust_type": null,
+      "serde_skips_when_none": null
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "StackTraceArguments",
+      "field": "format",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "StackTraceArguments",
+      "field": "levels",
+      "rust_owner": "StackTraceArguments::levels",
+      "rust_type": "Option<i64>",
+      "serde_skips_when_none": true
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "StackTraceArguments",
+      "field": "startFrame",
+      "rust_owner": "StackTraceArguments::start_frame",
+      "rust_type": "Option<i64>",
+      "serde_skips_when_none": true
+    },
+    {
+      "class": "required-non-null",
+      "definition": "StackTraceArguments",
+      "field": "threadId",
+      "rust_owner": "StackTraceArguments::thread_id",
+      "rust_type": "i64",
+      "serde_skips_when_none": false
+    },
+    {
+      "class": "required-non-null",
+      "definition": "StackTraceRequest",
+      "field": "arguments",
+      "reason": "not modeled in protocol.rs",
+      "rust_owner": null,
+      "rust_type": null,
+      "serde_skips_when_none": null
+    },
+    {
+      "class": "required-non-null",
+      "definition": "StackTraceRequest",
+      "field": "command",
+      "reason": "not modeled in protocol.rs",
+      "rust_owner": null,
+      "rust_type": null,
+      "serde_skips_when_none": null
+    },
+    {
+      "class": "required-non-null",
+      "definition": "StackTraceResponseBody",
+      "field": "stackFrames",
+      "rust_owner": "StackTraceResponseBody::stack_frames",
+      "rust_type": "Vec<ProtocolStackFrame>",
+      "seeded": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "StackTraceResponseBody",
+      "field": "totalFrames",
+      "rust_owner": "StackTraceResponseBody::total_frames",
+      "rust_type": "Option<i64>",
+      "seeded": false
+    },
+    {
+      "class": "required-non-null",
+      "definition": "StartDebuggingRequest",
+      "field": "arguments",
+      "reason": "not modeled in protocol.rs",
+      "rust_owner": null,
+      "rust_type": null,
+      "serde_skips_when_none": null
+    },
+    {
+      "class": "required-non-null",
+      "definition": "StartDebuggingRequest",
+      "field": "command",
+      "reason": "not modeled in protocol.rs",
+      "rust_owner": null,
+      "rust_type": null,
+      "serde_skips_when_none": null
+    },
+    {
+      "class": "unsupported",
+      "definition": "StartDebuggingRequestArguments",
+      "field": "configuration",
+      "reason": "no matching Rust struct in protocol.rs",
+      "rust_owner": null
+    },
+    {
+      "class": "unsupported",
+      "definition": "StartDebuggingRequestArguments",
+      "field": "outputPresentation",
+      "reason": "no matching Rust struct in protocol.rs",
+      "rust_owner": null
+    },
+    {
+      "class": "unsupported",
+      "definition": "StartDebuggingRequestArguments",
+      "field": "request",
+      "reason": "no matching Rust struct in protocol.rs",
+      "rust_owner": null
+    },
+    {
+      "class": "unsupported",
+      "definition": "StepBackArguments",
+      "field": "granularity",
+      "reason": "no matching Rust struct in protocol.rs",
+      "rust_owner": null
+    },
+    {
+      "class": "unsupported",
+      "definition": "StepBackArguments",
+      "field": "singleThread",
+      "reason": "no matching Rust struct in protocol.rs",
+      "rust_owner": null
+    },
+    {
+      "class": "unsupported",
+      "definition": "StepBackArguments",
+      "field": "threadId",
+      "reason": "no matching Rust struct in protocol.rs",
+      "rust_owner": null
+    },
+    {
+      "class": "required-non-null",
+      "definition": "StepBackRequest",
+      "field": "arguments",
+      "reason": "not modeled in protocol.rs",
+      "rust_owner": null,
+      "rust_type": null,
+      "serde_skips_when_none": null
+    },
+    {
+      "class": "required-non-null",
+      "definition": "StepBackRequest",
+      "field": "command",
+      "reason": "not modeled in protocol.rs",
+      "rust_owner": null,
+      "rust_type": null,
+      "serde_skips_when_none": null
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "StepInArguments",
+      "field": "granularity",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "StepInArguments",
+      "field": "singleThread",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "StepInArguments",
+      "field": "targetId",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null
+    },
+    {
+      "class": "required-non-null",
+      "definition": "StepInArguments",
+      "field": "threadId",
+      "rust_owner": "StepInArguments::thread_id",
+      "rust_type": "i64",
+      "serde_skips_when_none": false
+    },
+    {
+      "class": "required-non-null",
+      "definition": "StepInRequest",
+      "field": "arguments",
+      "reason": "not modeled in protocol.rs",
+      "rust_owner": null,
+      "rust_type": null,
+      "serde_skips_when_none": null
+    },
+    {
+      "class": "required-non-null",
+      "definition": "StepInRequest",
+      "field": "command",
+      "reason": "not modeled in protocol.rs",
+      "rust_owner": null,
+      "rust_type": null,
+      "serde_skips_when_none": null
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "StepInTarget",
+      "field": "column",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "StepInTarget",
+      "field": "endColumn",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "StepInTarget",
+      "field": "endLine",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null
+    },
+    {
+      "class": "required-non-null",
+      "definition": "StepInTarget",
+      "field": "id",
+      "rust_owner": "StepInTarget::id",
+      "rust_type": "i64",
+      "serde_skips_when_none": false
+    },
+    {
+      "class": "required-non-null",
+      "definition": "StepInTarget",
+      "field": "label",
+      "rust_owner": "StepInTarget::label",
+      "rust_type": "String",
+      "serde_skips_when_none": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "StepInTarget",
+      "field": "line",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null
+    },
+    {
+      "class": "required-non-null",
+      "definition": "StepInTargetsArguments",
+      "field": "frameId",
+      "rust_owner": "StepInTargetsArguments::frame_id",
+      "rust_type": "i64",
+      "serde_skips_when_none": false
+    },
+    {
+      "class": "required-non-null",
+      "definition": "StepInTargetsRequest",
+      "field": "arguments",
+      "reason": "not modeled in protocol.rs",
+      "rust_owner": null,
+      "rust_type": null,
+      "serde_skips_when_none": null
+    },
+    {
+      "class": "required-non-null",
+      "definition": "StepInTargetsRequest",
+      "field": "command",
+      "reason": "not modeled in protocol.rs",
+      "rust_owner": null,
+      "rust_type": null,
+      "serde_skips_when_none": null
+    },
+    {
+      "class": "required-non-null",
+      "definition": "StepInTargetsResponseBody",
+      "field": "targets",
+      "rust_owner": "StepInTargetsResponseBody::targets",
+      "rust_type": "Vec<StepInTarget>",
+      "seeded": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "StepOutArguments",
+      "field": "granularity",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "StepOutArguments",
+      "field": "singleThread",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null
+    },
+    {
+      "class": "required-non-null",
+      "definition": "StepOutArguments",
+      "field": "threadId",
+      "rust_owner": "StepOutArguments::thread_id",
+      "rust_type": "i64",
+      "serde_skips_when_none": false
+    },
+    {
+      "class": "required-non-null",
+      "definition": "StepOutRequest",
+      "field": "arguments",
+      "reason": "not modeled in protocol.rs",
+      "rust_owner": null,
+      "rust_type": null,
+      "serde_skips_when_none": null
+    },
+    {
+      "class": "required-non-null",
+      "definition": "StepOutRequest",
+      "field": "command",
+      "reason": "not modeled in protocol.rs",
+      "rust_owner": null,
+      "rust_type": null,
+      "serde_skips_when_none": null
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "StoppedEventBody",
+      "field": "allThreadsStopped",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null,
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "StoppedEventBody",
+      "field": "description",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null,
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "StoppedEventBody",
+      "field": "hitBreakpointIds",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null,
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "StoppedEventBody",
+      "field": "preserveFocusHint",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null,
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "required-non-null",
+      "definition": "StoppedEventBody",
+      "field": "reason",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null,
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "StoppedEventBody",
+      "field": "text",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null,
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "StoppedEventBody",
+      "field": "threadId",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null,
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "TerminateArguments",
+      "field": "restart",
+      "rust_owner": "TerminateArguments::restart",
+      "rust_type": "Option<bool>",
+      "serde_skips_when_none": true
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "TerminateRequest",
+      "field": "arguments",
+      "reason": "not modeled in protocol.rs",
+      "rust_owner": null,
+      "rust_type": null,
+      "serde_skips_when_none": null
+    },
+    {
+      "class": "required-non-null",
+      "definition": "TerminateRequest",
+      "field": "command",
+      "reason": "not modeled in protocol.rs",
+      "rust_owner": null,
+      "rust_type": null,
+      "serde_skips_when_none": null
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "TerminateThreadsArguments",
+      "field": "threadIds",
+      "rust_owner": "TerminateThreadsArguments::thread_ids",
+      "rust_type": "Option<Vec<i64>>",
+      "serde_skips_when_none": true
+    },
+    {
+      "class": "required-non-null",
+      "definition": "TerminateThreadsRequest",
+      "field": "arguments",
+      "reason": "not modeled in protocol.rs",
+      "rust_owner": null,
+      "rust_type": null,
+      "serde_skips_when_none": null
+    },
+    {
+      "class": "required-non-null",
+      "definition": "TerminateThreadsRequest",
+      "field": "command",
+      "reason": "not modeled in protocol.rs",
+      "rust_owner": null,
+      "rust_type": null,
+      "serde_skips_when_none": null
+    },
+    {
+      "class": "optional-nullable",
+      "definition": "TerminatedEventBody",
+      "field": "restart",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null,
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "required-non-null",
+      "definition": "Thread",
+      "field": "id",
+      "rust_owner": "Thread::id",
+      "rust_type": "i64",
+      "serde_skips_when_none": false
+    },
+    {
+      "class": "required-non-null",
+      "definition": "Thread",
+      "field": "name",
+      "rust_owner": "Thread::name",
+      "rust_type": "String",
+      "serde_skips_when_none": false
+    },
+    {
+      "class": "required-non-null",
+      "definition": "ThreadEventBody",
+      "field": "reason",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null,
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "required-non-null",
+      "definition": "ThreadEventBody",
+      "field": "threadId",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null,
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "required-non-null",
+      "definition": "ThreadsRequest",
+      "field": "command",
+      "reason": "not modeled in protocol.rs",
+      "rust_owner": null,
+      "rust_type": null,
+      "serde_skips_when_none": null
+    },
+    {
+      "class": "required-non-null",
+      "definition": "ThreadsResponseBody",
+      "field": "threads",
+      "rust_owner": "ThreadsResponseBody::threads",
+      "rust_type": "Vec<Thread>",
+      "seeded": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "ValueFormat",
+      "field": "hex",
+      "rust_owner": "ValueFormat::hex",
+      "rust_type": "Option<bool>",
+      "serde_skips_when_none": true
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "Variable",
+      "field": "declarationLocationReference",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "Variable",
+      "field": "evaluateName",
+      "rust_owner": "ProtocolVariable::evaluate_name",
+      "rust_type": "Option<String>",
+      "serde_skips_when_none": true
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "Variable",
+      "field": "indexedVariables",
+      "rust_owner": "ProtocolVariable::indexed_variables",
+      "rust_type": "Option<i64>",
+      "serde_skips_when_none": true
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "Variable",
+      "field": "memoryReference",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null
+    },
+    {
+      "class": "required-non-null",
+      "definition": "Variable",
+      "field": "name",
+      "rust_owner": "ProtocolVariable::name",
+      "rust_type": "String",
+      "serde_skips_when_none": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "Variable",
+      "field": "namedVariables",
+      "rust_owner": "ProtocolVariable::named_variables",
+      "rust_type": "Option<i64>",
+      "serde_skips_when_none": true
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "Variable",
+      "field": "presentationHint",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "Variable",
+      "field": "type",
+      "rust_owner": "ProtocolVariable::type_",
+      "rust_type": "Option<String>",
+      "serde_skips_when_none": true
+    },
+    {
+      "class": "required-non-null",
+      "definition": "Variable",
+      "field": "value",
+      "rust_owner": "ProtocolVariable::value",
+      "rust_type": "String",
+      "serde_skips_when_none": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "Variable",
+      "field": "valueLocationReference",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null
+    },
+    {
+      "class": "required-non-null",
+      "definition": "Variable",
+      "field": "variablesReference",
+      "rust_owner": "ProtocolVariable::variables_reference",
+      "rust_type": "i64",
+      "serde_skips_when_none": false
+    },
+    {
+      "class": "unsupported",
+      "definition": "VariablePresentationHint",
+      "field": "attributes",
+      "reason": "no matching Rust struct in protocol.rs",
+      "rust_owner": null
+    },
+    {
+      "class": "unsupported",
+      "definition": "VariablePresentationHint",
+      "field": "kind",
+      "reason": "no matching Rust struct in protocol.rs",
+      "rust_owner": null
+    },
+    {
+      "class": "unsupported",
+      "definition": "VariablePresentationHint",
+      "field": "lazy",
+      "reason": "no matching Rust struct in protocol.rs",
+      "rust_owner": null
+    },
+    {
+      "class": "unsupported",
+      "definition": "VariablePresentationHint",
+      "field": "visibility",
+      "reason": "no matching Rust struct in protocol.rs",
+      "rust_owner": null
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "VariablesArguments",
+      "field": "count",
+      "rust_owner": "VariablesArguments::count",
+      "rust_type": "Option<i64>",
+      "serde_skips_when_none": true
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "VariablesArguments",
+      "field": "filter",
+      "rust_owner": "VariablesArguments::filter",
+      "rust_type": "Option<String>",
+      "serde_skips_when_none": true
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "VariablesArguments",
+      "field": "format",
+      "rust_owner": "VariablesArguments::format",
+      "rust_type": "Option<ValueFormat>",
+      "serde_skips_when_none": true
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "VariablesArguments",
+      "field": "start",
+      "rust_owner": "VariablesArguments::start",
+      "rust_type": "Option<i64>",
+      "serde_skips_when_none": true
+    },
+    {
+      "class": "required-non-null",
+      "definition": "VariablesArguments",
+      "field": "variablesReference",
+      "rust_owner": "VariablesArguments::variables_reference",
+      "rust_type": "i64",
+      "serde_skips_when_none": false
+    },
+    {
+      "class": "required-non-null",
+      "definition": "VariablesRequest",
+      "field": "arguments",
+      "reason": "not modeled in protocol.rs",
+      "rust_owner": null,
+      "rust_type": null,
+      "serde_skips_when_none": null
+    },
+    {
+      "class": "required-non-null",
+      "definition": "VariablesRequest",
+      "field": "command",
+      "reason": "not modeled in protocol.rs",
+      "rust_owner": null,
+      "rust_type": null,
+      "serde_skips_when_none": null
+    },
+    {
+      "class": "required-non-null",
+      "definition": "VariablesResponseBody",
+      "field": "variables",
+      "rust_owner": "VariablesResponseBody::variables",
+      "rust_type": "Vec<ProtocolVariable>",
+      "seeded": false
+    },
+    {
+      "class": "unsupported",
+      "definition": "WriteMemoryArguments",
+      "field": "allowPartial",
+      "reason": "no matching Rust struct in protocol.rs",
+      "rust_owner": null
+    },
+    {
+      "class": "unsupported",
+      "definition": "WriteMemoryArguments",
+      "field": "data",
+      "reason": "no matching Rust struct in protocol.rs",
+      "rust_owner": null
+    },
+    {
+      "class": "unsupported",
+      "definition": "WriteMemoryArguments",
+      "field": "memoryReference",
+      "reason": "no matching Rust struct in protocol.rs",
+      "rust_owner": null
+    },
+    {
+      "class": "unsupported",
+      "definition": "WriteMemoryArguments",
+      "field": "offset",
+      "reason": "no matching Rust struct in protocol.rs",
+      "rust_owner": null
+    },
+    {
+      "class": "required-non-null",
+      "definition": "WriteMemoryRequest",
+      "field": "arguments",
+      "reason": "not modeled in protocol.rs",
+      "rust_owner": null,
+      "rust_type": null,
+      "serde_skips_when_none": null
+    },
+    {
+      "class": "required-non-null",
+      "definition": "WriteMemoryRequest",
+      "field": "command",
+      "reason": "not modeled in protocol.rs",
+      "rust_owner": null,
+      "rust_type": null,
+      "serde_skips_when_none": null
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "WriteMemoryResponseBody",
+      "field": "bytesWritten",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null,
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "WriteMemoryResponseBody",
+      "field": "offset",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null,
+      "rust_type": null,
+      "seeded": false
+    }
+  ],
+  "schema_field_rows": 560,
+  "schema_version": "dap_nullability_inventory.v1",
+  "upstream_sha256": "ff8ae4c6cfd588a050e9346c35fd104748a27ef4518d1c3268529ca6f8ff5818"
+}

@@ -9,17 +9,25 @@ from dap_authority_common import (
     DEBUG_ADAPTER_ROOT,
     DISPATCH_PATH,
     PEER_DISPATCH_PATHS,
+    RECEIPT_SCHEMA,
     SEND_EVENT_CALL_RE,
     SEND_EVENT_LITERAL_RE,
     AuthorityError,
     array_value,
+    extractor_identity,
     manifest_rows,
+    object_value,
     parse_request_table,
     parse_peer_dispatch_routes,
     production_dispatch_sources,
+    production_source_graph,
+    read_json,
     read_text,
     string_value,
+    validate_manifest,
 )
+from dap_authority_docs import validate_docs
+from dap_authority_receipt import manifest_digest
 
 
 def _production_request_rows(root: Path) -> list[dict[str, str]]:
@@ -59,6 +67,11 @@ def _request_routes(row: Mapping[str, str]) -> list[dict[str, str]]:
         }
     ]
     explicit = row["availability"] == "all_frontends"
+    # A native-only row is still a known catalog route, so the pinned peer
+    # fallback (EXPECTED_PEER_FALLBACKS, #9527/#9069) refuses it fail-closed
+    # with success: false. The success-empty acknowledgement applies only to
+    # commands outside the catalog, which have no row here; that policy is
+    # projected separately under `fallback_policies`.
     for frontend, owner, selector in (
         ("external_peer", PEER_DISPATCH_PATHS[0], "--external-peer"),
         ("mirror_peer", PEER_DISPATCH_PATHS[1], "--external-peer-listen"),
@@ -71,13 +84,109 @@ def _request_routes(row: Mapping[str, str]) -> list[dict[str, str]]:
                 "handler": (
                     f"{'DapPeerBridge' if frontend == 'external_peer' else 'MirrorPeerBridge'}::dispatch"
                     if explicit
-                    else "dynamic_compatibility_ack_success_empty"
+                    else "fail_closed_unavailable_in_frontend"
                 ),
                 "condition": selector,
-                "disposition": "handler_present" if explicit else "not_proven",
+                "disposition": "handler_present" if explicit else "fail_closed",
             }
         )
     return routes
+
+
+def verify_inventory_binding(
+    root: Path,
+    receipt: Mapping[str, Any],
+    manifest_path: Path | None = None,
+) -> Mapping[str, Any]:
+    """Reject a receipt whose authority inputs or source graph are not current.
+
+    `check` always regenerates, so it cannot catch staleness; the risk is a
+    receipt kept and consumed after the manifest, extractor, or governed sources
+    moved. Recompute all identities from the tree in hand and refuse the receipt
+    on any drift, including a receipt that predates a binding and therefore
+    carries no identity to compare at all.
+    """
+    receipt = object_value(receipt, "receipt")
+    if receipt.get("schema_version") != RECEIPT_SCHEMA:
+        raise AuthorityError(
+            f"receipt.schema_version must be {RECEIPT_SCHEMA!r}"
+        )
+
+    current_manifest_path = manifest_path or root / ".ci/dap/protocol-authority.json"
+    current_manifest = validate_manifest(
+        read_json(current_manifest_path), require_sha256=True
+    )
+    validate_docs(root, current_manifest)
+
+    authority = object_value(receipt.get("authority"), "receipt.authority")
+    recorded_manifest_digest = string_value(
+        authority.get("manifest_sha256"), "receipt.authority.manifest_sha256"
+    )
+    current_manifest_digest = manifest_digest(current_manifest)
+    if recorded_manifest_digest != current_manifest_digest:
+        raise AuthorityError(
+            "receipt was produced from a different DAP authority manifest: "
+            f"recorded={recorded_manifest_digest}, current={current_manifest_digest}"
+        )
+
+    production = object_value(receipt.get("production"), "receipt.production")
+
+    recorded_extractor = object_value(production.get("extractor"), "receipt.production.extractor")
+    recorded_graph = object_value(
+        production.get("source_graph"), "receipt.production.source_graph"
+    )
+
+    current_extractor = extractor_identity()
+    current_graph = production_source_graph(root)
+
+    recorded_extractor_digest = string_value(
+        recorded_extractor.get("digest"), "receipt.production.extractor.digest"
+    )
+    if recorded_extractor_digest != current_extractor["digest"]:
+        recorded_modules: dict[str, str] = {}
+        for index, raw_module in enumerate(
+            array_value(
+                recorded_extractor.get("modules"), "receipt.production.extractor.modules"
+            )
+        ):
+            module = object_value(
+                raw_module, f"receipt.production.extractor.modules[{index}]"
+            )
+            module_name = string_value(
+                module.get("module"),
+                f"receipt.production.extractor.modules[{index}].module",
+            )
+            recorded_modules[module_name] = string_value(
+                module.get("git_blob_sha1"),
+                f"receipt.production.extractor.modules[{index}].git_blob_sha1",
+            )
+        current_modules = {row["module"]: row["git_blob_sha1"] for row in current_extractor["modules"]}
+        changed = sorted(
+            name
+            for name in recorded_modules.keys() | current_modules.keys()
+            if recorded_modules.get(name) != current_modules.get(name)
+        )
+        raise AuthorityError(
+            "receipt was produced by a different DAP authority extractor: "
+            f"recorded={recorded_extractor_digest}, current={current_extractor['digest']}, "
+            f"changed modules={changed}"
+        )
+
+    recorded_graph_digest = string_value(
+        recorded_graph.get("digest"), "receipt.production.source_graph.digest"
+    )
+    if recorded_graph_digest != current_graph["digest"]:
+        raise AuthorityError(
+            "receipt was produced from a different production source graph: "
+            f"recorded={recorded_graph_digest} ({recorded_graph.get('file_count')} files), "
+            f"current={current_graph['digest']} ({current_graph['file_count']} files)"
+        )
+
+    return {
+        "extractor_digest": current_extractor["digest"],
+        "source_graph_digest": current_graph["digest"],
+        "source_graph_file_count": current_graph["file_count"],
+    }
 
 
 def validate_production_boundary(
@@ -196,6 +305,13 @@ def validate_production_boundary(
     return {
         "dispatch_path": DISPATCH_PATH.as_posix(),
         "source_root": DEBUG_ADAPTER_ROOT.as_posix(),
+        # Which extractor produced these rows, and from what source content.
+        # Without this an inventory is self-describing only: the rows are
+        # reported, but nothing says they were derived by the current
+        # extractor from the current tree, so a receipt kept past either
+        # change stays indistinguishable from a fresh one (#9527 falsifier 9).
+        "extractor": extractor_identity(),
+        "source_graph": production_source_graph(root),
         "request_rows": [
             {
                 "row_id": row["row_id"],
