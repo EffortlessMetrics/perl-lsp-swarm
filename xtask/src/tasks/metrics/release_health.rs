@@ -7,6 +7,8 @@
 //!   and the budgets that scope each.
 //! * `target/metrics/ci_baseline.json` — written by `cargo xtask ci-baseline`,
 //!   giving merge-gate pass-rate and billable-minutes for a recent window.
+//!   The output directory is pinned by [`CI_BASELINE_OUTPUT_DIR`] so the
+//!   producer CLI default and this consumer read path cannot drift.
 //! * `Cargo.toml` workspace version — the alpha release we are tracking
 //!   against.
 //!
@@ -173,6 +175,12 @@ struct BuildTimingMeasurement {
 struct CiBaselineFile {
     #[serde(default)]
     summary: Option<CiBaselineSummary>,
+    /// Completeness flag written by `cargo xtask ci-baseline` (#15377):
+    /// `complete` or `partial_sample`. Older files predate the flag and
+    /// carry `None`, which means complete (the flag did not exist to be
+    /// set, and those files were written before truncation marking).
+    #[serde(default)]
+    sample_completeness: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -181,6 +189,14 @@ struct CiBaselineSummary {
     total_billable_minutes: u64,
     overall_success_rate_percent: f64,
 }
+
+/// Canonical output directory written by `cargo xtask ci-baseline` and read
+/// by [`read_ci_baseline`].
+///
+/// The CLI default for the `CiBaseline` subcommand in `xtask/src/main.rs`
+/// references this same constant so the producer default and the consumer
+/// read path stay aligned. Changing this value requires updating both sites.
+pub const CI_BASELINE_OUTPUT_DIR: &str = "target/metrics";
 
 // ---------------------------------------------------------------------------
 // Public entry point
@@ -206,7 +222,12 @@ pub fn run(days: u64, json: bool) -> Result<()> {
 
 fn collect_release_health(root: &Path, days: u64) -> Result<ReleaseHealthMetrics> {
     let ledger = read_debt_ledger(root)?;
-    let baseline = read_ci_baseline(root);
+    // A `partial_sample` baseline is a truncated fetch, not a full period
+    // (#15377): publishing its pass rate as release health would present a
+    // slice of the window as the window. Degrade to null exactly like an
+    // absent file so the scorecard shows unknown instead of wrong.
+    let baseline = read_ci_baseline(root)
+        .filter(|file| file.sample_completeness.as_deref() != Some("partial_sample"));
     let version = read_workspace_version(root);
     let dev_loop_durations = read_dev_loop_durations(root);
 
@@ -266,7 +287,7 @@ fn read_debt_ledger(root: &Path) -> Result<DebtLedger> {
 /// Returns `None` if the file is absent or fails to parse — the scorecard
 /// degrades gracefully and reports `null` for the merge-gate metrics.
 fn read_ci_baseline(root: &Path) -> Option<CiBaselineFile> {
-    let path = root.join("target").join("metrics").join("ci_baseline.json");
+    let path = root.join(CI_BASELINE_OUTPUT_DIR).join("ci_baseline.json");
     let raw = fs::read_to_string(&path).ok()?;
     serde_json::from_str(&raw).ok()
 }
@@ -402,7 +423,7 @@ fn print_table(m: &ReleaseHealthMetrics) {
         None => {
             println!("  No CI baseline available.");
             println!(
-                "  Run `cargo xtask ci-baseline --branch master --days {}` to populate.",
+                "  Run `cargo xtask ci-baseline --days {}` to populate (omitting --branch uses the repository default).",
                 m.history_window_days
             );
         }
@@ -464,7 +485,7 @@ mod tests {
     }
 
     fn write_ci_baseline(root: &Path, summary_json: &str) -> Result<()> {
-        let dir = root.join("target").join("metrics");
+        let dir = root.join(super::CI_BASELINE_OUTPUT_DIR);
         fs::create_dir_all(&dir)?;
         fs::write(dir.join("ci_baseline.json"), format!("{{\"summary\": {summary_json}}}"))?;
         Ok(())
@@ -580,13 +601,59 @@ technical_debt:
     #[test]
     fn collect_tolerates_malformed_ci_baseline() -> Result<()> {
         let tmp = TempDir::new()?;
-        let dir = tmp.path().join("target").join("metrics");
+        let dir = tmp.path().join(super::CI_BASELINE_OUTPUT_DIR);
         fs::create_dir_all(&dir)?;
         fs::write(dir.join("ci_baseline.json"), "{ this is not json")?;
         let m = collect_release_health(tmp.path(), 30)?;
         assert_eq!(m.merge_gate_pass_rate, None);
         assert_eq!(m.merge_gate_runs_analyzed, None);
         assert_eq!(m.merge_gate_billable_minutes, None);
+        Ok(())
+    }
+
+    /// A `partial_sample` baseline must not populate release health as a
+    /// full period (#15377): the merge-gate metrics degrade to null exactly
+    /// like an absent file, so the scorecard shows unknown instead of a
+    /// truncated slice presented as the window.
+    #[test]
+    fn collect_refuses_partial_sample_ci_baseline() -> Result<()> {
+        let tmp = TempDir::new()?;
+        let dir = tmp.path().join(super::CI_BASELINE_OUTPUT_DIR);
+        fs::create_dir_all(&dir)?;
+        fs::write(
+            dir.join("ci_baseline.json"),
+            r#"{"sample_completeness": "partial_sample", "fetched_runs": 200, "summary": {"total_runs": 200, "total_billable_minutes": 137, "overall_success_rate_percent": 95.5}}"#,
+        )?;
+        let m = collect_release_health(tmp.path(), 30)?;
+        assert_eq!(m.merge_gate_pass_rate, None);
+        assert_eq!(m.merge_gate_runs_analyzed, None);
+        assert_eq!(m.merge_gate_billable_minutes, None);
+        Ok(())
+    }
+
+    #[test]
+    fn ci_baseline_output_dir_constant_matches_consumer_read_path() -> Result<()> {
+        // Tripwire: the producer's CLI default (CiBaseline `--output` in
+        // `xtask/src/main.rs`) references `super::CI_BASELINE_OUTPUT_DIR`,
+        // and `read_ci_baseline` reads from `root.join(CI_BASELINE_OUTPUT_DIR)`.
+        // Both must point at the same directory — if either drifts, the
+        // default invocation silently degrades to "no baseline".
+        assert_eq!(
+            super::CI_BASELINE_OUTPUT_DIR,
+            "target/metrics",
+            "CI_BASELINE_OUTPUT_DIR must remain the canonical contract path"
+        );
+
+        let tmp = TempDir::new()?;
+        write_ci_baseline(
+            tmp.path(),
+            r#"{"total_runs": 7, "total_billable_minutes": 11, "overall_success_rate_percent": 88.5}"#,
+        )?;
+        let parsed = read_ci_baseline(tmp.path())
+            .expect("consumer must read the file at the canonical contract path");
+        let summary = parsed.summary.expect("summary must round-trip");
+        assert_eq!(summary.total_runs, 7);
+        assert_eq!(summary.total_billable_minutes, 11);
         Ok(())
     }
 

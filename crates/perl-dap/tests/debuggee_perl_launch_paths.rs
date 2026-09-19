@@ -17,9 +17,9 @@ use serial_test::serial;
 use std::env;
 use std::error::Error;
 use std::fs;
-#[cfg(windows)]
 use std::path::Path;
 use std::path::PathBuf;
+#[cfg(windows)]
 use std::process::Command;
 use std::time::Duration;
 
@@ -62,13 +62,21 @@ fn stage_perl_library_layout(
     }
     let staged_install = destination.join("perl-install");
     let mut staged_roots = Vec::new();
+    // Config-reported roots may use an 8.3 short-name or different-casing
+    // spelling of the installation root (e.g. `C:\STRAWB~1\perl\lib` against a
+    // locator-provided `C:\Strawberry\perl`), so both sides are resolved to the
+    // same on-disk prefix spelling before the relative layout is derived.
+    let canonical_source_root = fs::canonicalize(source_root)
+        .map_err(|error| format!("cannot canonicalize Perl installation root: {error}"))?;
     for raw_root in config_lines.map(str::trim).filter(|root| !root.is_empty()) {
         let root = PathBuf::from(raw_root);
         if !root.is_dir() {
             continue;
         }
+        let root = fs::canonicalize(&root)
+            .map_err(|error| format!("cannot canonicalize Perl library root: {error}"))?;
         let relative = root
-            .strip_prefix(source_root)
+            .strip_prefix(&canonical_source_root)
             .map_err(|_| format!("Perl library root is outside installation root: {root:?}"))?;
         let staged = staged_install.join(relative);
         if staged_roots.iter().any(|existing: &PathBuf| staged.starts_with(existing)) {
@@ -109,7 +117,14 @@ fn copy_adjacent_dlls(source_perl: &Path, destination_dir: &Path) -> Result<(), 
     let source_dir = source_perl.parent().ok_or("Perl path has no parent directory")?;
     for entry in fs::read_dir(source_dir)? {
         let entry = entry?;
-        if entry.path().extension().and_then(|extension| extension.to_str()) == Some("dll") {
+        // Windows extension matching is case-insensitive (`perl528.dll` and
+        // `PERL528.DLL` are the same file), so the filter must be too.
+        if entry
+            .path()
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("dll"))
+        {
             fs::copy(entry.path(), destination_dir.join(entry.file_name()))?;
         }
     }
@@ -176,20 +191,55 @@ fn find_configured_or_path_pipe_perl() -> Result<Option<PathBuf>, Box<dyn Error>
         return Ok(Some(candidate));
     }
 
-    let locator = if cfg!(windows) { "where.exe" } else { "which" };
-    let output = Command::new(locator).arg("perl").output()?;
-    if !output.status.success() {
-        return Ok(None);
+    Ok(path_pipe_perl_candidates()?.into_iter().next())
+}
+
+/// Every PATH `perl` candidate that passes the real pipe probe in place, in
+/// locator order so an earlier PATH entry keeps its precedence.
+///
+/// In-place capability is not sufficient for proofs that stage copies of the
+/// candidate: an interpreter whose `@INC` is mount-relative (a Git-Bash/MSYS
+/// perl) passes at its installation yet cannot load perl5db.pl once copied
+/// out of it. Such candidates are rejected later, per staged proof, so the
+/// caller can continue with the next candidate instead of failing. That
+/// continuation only works when every PATH candidate was enumerated up front
+/// — Unix `which` resolves a bare name to only its first hit, so the shared
+/// search-path enumeration is used instead of a locator parse.
+fn path_pipe_perl_candidates() -> Result<Vec<PathBuf>, Box<dyn Error>> {
+    Ok(common::search_path_perl_candidates()
+        .into_iter()
+        .filter(|candidate| {
+            candidate.is_file()
+                && probe_debuggee_perl_for_test(candidate, Duration::from_secs(10), false).is_ok()
+        })
+        .collect())
+}
+
+/// Sentinel for a candidate whose staged copy passes its in-place probe but
+/// cannot load perl5db.pl once relocated (a Git-Bash/MSYS perl with
+/// mount-relative `@INC`). The caller treats it as a per-candidate rejection
+/// and continues with the next candidate instead of failing the proof.
+#[derive(Debug)]
+struct StagedInterpreterNotHostable(String);
+
+impl std::fmt::Display for StagedInterpreterNotHostable {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("staged interpreter cannot host the debugger (perl5db.pl not loadable from the staged copy)")
+            .and_then(|()| {
+                if self.0.trim().is_empty() {
+                    Ok(())
+                } else {
+                    write!(formatter, ": {}", self.0)
+                }
+            })
     }
-    for line in String::from_utf8_lossy(&output.stdout).lines() {
-        let candidate = PathBuf::from(line.trim());
-        if candidate.is_file()
-            && probe_debuggee_perl_for_test(&candidate, Duration::from_secs(10), false).is_ok()
-        {
-            return Ok(Some(candidate));
-        }
-    }
-    Ok(None)
+}
+
+impl Error for StagedInterpreterNotHostable {}
+
+fn require_perl_strict() -> bool {
+    env::var_os("PERL_LSP_DAP_REQUIRE_PERL")
+        .is_some_and(|value| value == "1" || value.eq_ignore_ascii_case("true"))
 }
 
 #[test]
@@ -249,6 +299,38 @@ fn observe_pin_with_session(
         other => return Err(format!("unknown launch path {other}")),
     }
     let stopped = session.wait_stopped_with_frame()?;
+    if launch_path == "launch_with_stop_on_entry" && stopped.reason != "entry" {
+        return Err(format!(
+            "stopOnEntry must publish the entry stop after its frame snapshot; got {:?}",
+            stopped.reason
+        ));
+    }
+    if launch_path == "launch_with_stop_on_entry" {
+        let expected_name = PathBuf::from(script)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .map(str::to_owned)
+            .ok_or("launch fixture has no filename")?;
+        if stopped.source_path == "<unknown>"
+            || !PathBuf::from(&stopped.source_path)
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name == expected_name)
+            || stopped.line == 0
+        {
+            return Err(format!(
+                "stopOnEntry frame must identify the initial source location; got path={} line={}",
+                stopped.source_path, stopped.line
+            ));
+        }
+        let extra_stops = session.pending_stopped_events();
+        if extra_stops != 0 {
+            return Err(format!(
+                "stopOnEntry must publish exactly one initial stopped event; got {} extra",
+                extra_stops
+            ));
+        }
+    }
     session.evaluate_expression("$^X", stopped.frame_id).map(|(value, _)| value)
 }
 
@@ -256,44 +338,103 @@ fn observe_pin_with_session(
 #[serial(dap_debuggee_environment)]
 #[allow(clippy::print_stderr)]
 fn all_convenience_launch_paths_reach_the_pinned_interpreter() -> Result<(), Box<dyn Error>> {
-    let Some(source_perl) = find_configured_or_path_pipe_perl()? else {
-        let strict = env::var_os("PERL_LSP_DAP_REQUIRE_PERL")
-            .is_some_and(|value| value == "1" || value.eq_ignore_ascii_case("true"));
-        if strict {
+    let explicit = env::var_os(DEBUGGEE_PERL_OVERRIDE_ENV).is_some();
+    let candidates: Vec<PathBuf> = if explicit {
+        let Some(configured) = env::var_os(DEBUGGEE_PERL_OVERRIDE_ENV).map(PathBuf::from) else {
+            return Err(format!("{DEBUGGEE_PERL_OVERRIDE_ENV} became unset between checks").into());
+        };
+        if !configured.is_file() {
+            return Err(format!(
+                "{DEBUGGEE_PERL_OVERRIDE_ENV} names a missing interpreter: {}",
+                configured.display()
+            )
+            .into());
+        }
+        probe_debuggee_perl_for_test(&configured, Duration::from_secs(10), false)
+            .map_err(|reason| format!("configured interpreter is not pipe-usable: {reason}"))?;
+        vec![configured]
+    } else {
+        path_pipe_perl_candidates()?
+    };
+    if candidates.is_empty() {
+        if require_perl_strict() {
             return Err("strict launch-path proof found no pipe-capable Perl candidate".into());
         }
         eprintln!(
             "SKIP all_convenience_launch_paths_reach_the_pinned_interpreter: Perl unavailable"
         );
         return Ok(());
-    };
+    }
+
+    // A candidate that pipes in place can still lose perl5db.pl when staged
+    // out of its installation (mount-relative `@INC`). That rejects the
+    // candidate, not the proof: continue with the next PATH candidate and
+    // only report a typed skip when none survives staging.
+    let mut stage_rejections: Vec<String> = Vec::new();
+    for source_perl in &candidates {
+        match run_pinned_launch_paths_proof(source_perl) {
+            Ok(()) => return Ok(()),
+            Err(error) => {
+                let staged_rejection =
+                    error.downcast_ref::<StagedInterpreterNotHostable>().is_some();
+                if staged_rejection && !explicit {
+                    stage_rejections.push(format!("{}: {error}", source_perl.display()));
+                    continue;
+                }
+                return Err(error);
+            }
+        }
+    }
+    if require_perl_strict() {
+        return Err(format!(
+            "strict launch-path proof rejected every staged interpreter: {}",
+            stage_rejections.join("; ")
+        )
+        .into());
+    }
+    eprintln!(
+        "SKIP all_convenience_launch_paths_reach_the_pinned_interpreter: no PATH candidate \
+         survives staging as a pipe-capable debugger host ({})",
+        stage_rejections.join("; ")
+    );
+    Ok(())
+}
+
+/// Stage the ambient/pinned controls from `source_perl` and drive every
+/// convenience launch path through the real adapter, asserting each session
+/// observes the pinned interpreter identity.
+fn run_pinned_launch_paths_proof(source_perl: &Path) -> Result<(), Box<dyn Error>> {
     let controls = tempfile::tempdir()?;
     #[cfg(windows)]
     let (ambient, pinned) = if let Some((ambient, pinned, _)) =
-        prepare_native_perl_fixture(&source_perl, controls.path())?
+        prepare_native_perl_fixture(source_perl, controls.path())?
     {
         (ambient, pinned)
     } else {
         let ambient = controls.path().join("perl.exe");
         let pinned = controls.path().join("perl5.exe");
-        fs::copy(&source_perl, &ambient)?;
-        fs::copy(&source_perl, &pinned)?;
-        copy_adjacent_dlls(&source_perl, controls.path())?;
+        fs::copy(source_perl, &ambient)?;
+        fs::copy(source_perl, &pinned)?;
+        copy_adjacent_dlls(source_perl, controls.path())?;
         (ambient, pinned)
     };
     #[cfg(not(windows))]
     let (ambient, pinned) = {
         let ambient = controls.path().join("perl");
         let pinned = controls.path().join("perl5");
-        fs::copy(&source_perl, &ambient)?;
-        fs::copy(&source_perl, &pinned)?;
+        fs::copy(source_perl, &ambient)?;
+        fs::copy(source_perl, &pinned)?;
         (ambient, pinned)
     };
     // Keep the copied pin's basename within the adapter's strict Perl-name
     // contract while still making it distinct from the ambient copy.
     for binary in [&ambient, &pinned] {
-        probe_debuggee_perl_for_test(binary, Duration::from_secs(10), false)
-            .map_err(|reason| format!("{} is not pipe-usable: {reason}", binary.display()))?;
+        if let Err(reason) = probe_debuggee_perl_for_test(binary, Duration::from_secs(10), false) {
+            if common::staged_copy_cannot_load_perl5db(&reason) {
+                return Err(Box::new(StagedInterpreterNotHostable(reason)));
+            }
+            return Err(format!("{} is not pipe-usable: {reason}", binary.display()).into());
+        }
     }
 
     let path_directory = ambient.parent().ok_or("ambient Perl has no parent directory")?;
@@ -329,6 +470,42 @@ fn all_convenience_launch_paths_reach_the_pinned_interpreter() -> Result<(), Box
             &format!("configured {launch_path}"),
         )
         .map_err(std::io::Error::other)?;
+    }
+    Ok(())
+}
+
+#[test]
+#[serial(dap_debuggee_environment)]
+fn stop_on_entry_publishes_one_real_frame() -> Result<(), Box<dyn Error>> {
+    let Some(perl) = find_configured_or_path_pipe_perl()? else {
+        eprintln!("SKIP stop_on_entry_publishes_one_real_frame: Perl unavailable");
+        return Ok(());
+    };
+    let fixture = tempfile::tempdir()?;
+    let spaced_dir = fixture.path().join("fixture with spaces (ctx)");
+    fs::create_dir(&spaced_dir)?;
+    let script = spaced_dir.join("stop on entry (frame).pl");
+    fs::write(&script, "use strict;\nuse warnings;\nmy $entry = 1;\n$entry++;\n")?;
+    let mut session = DapWorkflowSession::new_with_perl(workflow_timeout(), Some(&perl))?;
+    session.launch_with_stop_on_entry(&script.to_string_lossy(), true)?;
+    let stopped = session.wait_stopped_with_frame()?;
+    let expected_path = fs::canonicalize(&script)?;
+    let reported_path = fs::canonicalize(&stopped.source_path).map_err(|error| {
+        format!("stopOnEntry reported a non-canonical source path {}: {error}", stopped.source_path)
+    })?;
+    if stopped.reason != "entry"
+        || reported_path != expected_path
+        || stopped.line != 3
+        || session.pending_stopped_events() != 0
+    {
+        return Err(format!(
+            "stopOnEntry must publish exactly one real entry frame at {}: got reason={} path={} line={}",
+            expected_path.display(),
+            stopped.reason,
+            stopped.source_path,
+            stopped.line
+        )
+        .into());
     }
     Ok(())
 }

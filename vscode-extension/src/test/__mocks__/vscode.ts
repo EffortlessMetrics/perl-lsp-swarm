@@ -269,6 +269,13 @@ export const window = {
     return task(progress, token);
   }),
   activeTextEditor: undefined as { document: unknown } | undefined,
+  createWebviewPanel: jest.fn(() => ({
+    reveal: jest.fn(),
+    dispose: jest.fn(),
+    onDidDispose: jest.fn(() => ({ dispose: jest.fn() })),
+    title: '',
+    webview: { html: '' },
+  })),
   // Server-demand deferral (#8180) arms this listener so a Perl document
   // restored with the window still starts the language server.
   onDidChangeActiveTextEditor: jest.fn(() => ({ dispose: jest.fn() })),
@@ -421,6 +428,14 @@ export enum ConfigurationTarget {
   WorkspaceFolder = 3,
 }
 
+export const ViewColumn = {
+  Active: -1,
+  Beside: -2,
+  One: 1,
+  Two: 2,
+  Three: 3,
+};
+
 export const languages = {
   onDidChangeDiagnostics: jest.fn(() => ({ dispose: jest.fn() })),
   getDiagnostics: jest.fn(() => [] as Array<[unknown, unknown[]]>),
@@ -428,4 +443,5 @@ export const languages = {
   registerFoldingRangeProvider: jest.fn(() => ({ dispose: jest.fn() })),
   registerCodeActionsProvider: jest.fn(() => ({ dispose: jest.fn() })),
   registerDefinitionProvider: jest.fn(() => ({ dispose: jest.fn() })),
+  setLanguageConfiguration: jest.fn(() => ({ dispose: jest.fn() })),
 };

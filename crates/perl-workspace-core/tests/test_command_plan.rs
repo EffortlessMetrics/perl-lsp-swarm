@@ -5,6 +5,8 @@
 //! `PATH`, a build-system fact, or an inactive input must never by itself make
 //! `make test` or `Build test` look runnable.
 
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
+
 use perl_workspace_core::{
     BuildSystemFactRef, BuildSystemKind, Digest, EnvironmentBuildError, EnvironmentInput,
     EnvironmentInputAuthority, EnvironmentInputId, EnvironmentInputState, EnvironmentPathRef,

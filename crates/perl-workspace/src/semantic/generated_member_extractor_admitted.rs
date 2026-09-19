@@ -17,8 +17,8 @@
 //! the equivalent admitted facts and the matching provider surfaces prove
 //! same-request parity.
 
-pub(crate) use super::legacy_generated_member_extractor::GeneratedMemberFact;
-use super::legacy_generated_member_extractor::{
+pub(crate) use super::generated_member_extractor_core::GeneratedMemberFact;
+use super::generated_member_extractor_core::{
     self, is_dbix_class_member_method, is_dbix_class_module, package_target_matches,
     use_args_include_dbix_class,
 };
@@ -48,7 +48,7 @@ pub(crate) fn extract_generated_member_facts(
     ast: &Node,
     file_id: FileId,
 ) -> Vec<GeneratedMemberFact> {
-    let mut facts = legacy_generated_member_extractor::extract_generated_member_facts(ast, file_id);
+    let mut facts = generated_member_extractor_core::extract_generated_member_facts(ast, file_id);
     let mut quarantined = Vec::new();
     collect_quarantined_dbix_ranges(ast, &mut WalkCtx::default(), &mut quarantined);
 
@@ -150,7 +150,7 @@ __PACKAGE__->add_columns(qw/id name email/);
         );
 
         let legacy =
-            legacy_generated_member_extractor::extract_generated_member_facts(&ast, FileId(1));
+            generated_member_extractor_core::extract_generated_member_facts(&ast, FileId(1));
         assert!(names(&legacy).contains(&"MyApp::Schema::Result::User::id"));
 
         let admitted = extract_generated_member_facts(&ast, FileId(1));
@@ -235,7 +235,7 @@ MyApp::Schema::Result::User->add_columns(qw/id/);
         );
 
         let legacy =
-            legacy_generated_member_extractor::extract_generated_member_facts(&ast, FileId(1));
+            generated_member_extractor_core::extract_generated_member_facts(&ast, FileId(1));
         assert!(names(&legacy).contains(&"MyApp::Schema::Result::User::id"));
         assert!(extract_generated_member_facts(&ast, FileId(1)).is_empty());
     }
@@ -282,7 +282,7 @@ __PACKAGE__->has_many('children', 'Plain::Child', 'parent_id');
         // added; a restated list would be a third denominator free to drift.
         // A dead entry fails the legacy assertion, and a method the gate stops
         // removing fails the canonical one.
-        for method in legacy_generated_member_extractor::DBIX_CLASS_MEMBER_METHODS {
+        for method in generated_member_extractor_core::DBIX_CLASS_MEMBER_METHODS {
             let call = if *method == "add_columns" {
                 "__PACKAGE__->add_columns(qw/member/);".to_string()
             } else {
@@ -292,7 +292,7 @@ __PACKAGE__->has_many('children', 'Plain::Child', 'parent_id');
             let ast =
                 parse(&format!("package Coupled::Result;\nuse DBIx::Class::Core;\n{call}\n1;\n"));
             let legacy =
-                legacy_generated_member_extractor::extract_generated_member_facts(&ast, FileId(1));
+                generated_member_extractor_core::extract_generated_member_facts(&ast, FileId(1));
             assert!(
                 names(&legacy).contains(&"Coupled::Result::member"),
                 "{method}: legacy oracle must still emit the compatibility row"
