@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "owner_issue": 7699,
-  "reason": "Issue #7699 records the perl/perl5 language-id contract: the perl5 alias shares the canonical client, grammar, and debug pipeline with no second debugger, grammar, or language contribution. Base e383b75828 to this candidate carries the alias activation repairs (language-configuration patterns revived to RegExp; type-perl5 launches resolved onto the contributed perl debugger) plus the alias feature growth itself: a declared size-only transition, readme/package.json/bundle growth with no packaged file added, removed, or renamed.",
-  "base_baseline_file_sha256": "4975456bf6937f17c1ebdb1d947103ebd3773cf2d455f5b2aa2475aa551b249a",
-  "candidate_baseline_file_sha256": "4c255b43c74e7d82f6cd80b4f72a17d9c53fd3809e648006fe5fc0170282590b",
-  "base_inventory_sha256": "d45b4db58d565d8473bdbac8140ebaec65dec3624ae2151f2a82b4bdef7db9f1",
-  "candidate_inventory_sha256": "7a4998a323300acbe550598f0622dcc9cf437b087ab37b5b0f5d574de519ad64"
+  "owner_issue": 8109,
+  "reason": "Issue #8109 resolved the DAP processId attach refusal fail-closed (carrier PR #14402), whose README claim correction replaced the PID-attach bullet with the accurate TCP-attach text: packaged readme.md grew 26643 to 26678 bytes with no file added, removed, or renamed. Declared size-only transition under the #6889 candidate-bound inventory contract; measurement source is the current-source Linux smoke projected actual on linux-x64.",
+  "base_baseline_file_sha256": "4c255b43c74e7d82f6cd80b4f72a17d9c53fd3809e648006fe5fc0170282590b",
+  "candidate_baseline_file_sha256": "9ce2942d3dd0d02fdbbc3da2ca83e8a43f64867eaf2f5146c184836572cff409",
+  "base_inventory_sha256": "7a4998a323300acbe550598f0622dcc9cf437b087ab37b5b0f5d574de519ad64",
+  "candidate_inventory_sha256": "49b660b62b3dcd264bde239fe974c5f07b75b9483eb860996575faf1eb59531c"
 }

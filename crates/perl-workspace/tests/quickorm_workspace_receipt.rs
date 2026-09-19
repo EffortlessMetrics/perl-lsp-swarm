@@ -519,11 +519,105 @@ table second => sub {};
             .entities
             .iter()
             .all(|entity| entity.canonical_name != "MyApp::Schema::Reconfigured::qorm_table"),
-        "dynamic QuickORM reconfiguration must invalidate the prior generated fact"
+        "dynamic QuickORM reconfiguration followed by a non-direct second build must invalidate the prior generated fact"
     );
     assert!(
         index.search_generated_workspace_symbols("qorm_table", None).is_empty(),
-        "dynamic QuickORM reconfiguration must not retain a stale workspace symbol"
+        "a non-direct second build under re-established authority must invalidate the prior workspace symbol"
     );
+    Ok(())
+}
+
+#[test]
+fn workspace_index_keeps_prior_qorm_table_after_authority_loss_only_events()
+-> Result<(), Box<dyn std::error::Error>> {
+    // Production-path receipt for #15472: a later authority-loss-only
+    // event in the same package must not propagate into the
+    // WorkspaceIndex generated symbol set as a deletion of the
+    // already-earned qorm_table member. The first build remains
+    // source-backed across later bare/dynamic/orm re-imports, module
+    // unimports, competing importer calls, and builder-keyword shadows.
+    let cases: &[(&str, &str)] = &[
+        (
+            "file:///lib/MyApp/Schema/Retention/Bare.pm",
+            r#"
+package MyApp::Schema::Retention::Bare;
+use DBIx::QuickORM type => 'table';
+
+table "users" => sub {
+    column id;
+    columns qw/name email/;
+};
+use DBIx::QuickORM;
+1;
+"#,
+        ),
+        (
+            "file:///lib/MyApp/Schema/Retention/Orm.pm",
+            r#"
+package MyApp::Schema::Retention::Orm;
+use DBIx::QuickORM type => 'table';
+
+table "users" => sub {
+    column id;
+    columns qw/name email/;
+};
+use DBIx::QuickORM type => 'orm';
+1;
+"#,
+        ),
+        (
+            "file:///lib/MyApp/Schema/Retention/Dyn.pm",
+            r#"
+package MyApp::Schema::Retention::Dyn;
+use DBIx::QuickORM type => 'table';
+
+table "users" => sub {
+    column id;
+    columns qw/name email/;
+};
+use DBIx::QuickORM type => table();
+1;
+"#,
+        ),
+        (
+            "file:///lib/MyApp/Schema/Retention/Unimport.pm",
+            r#"
+package MyApp::Schema::Retention::Unimport;
+use DBIx::QuickORM type => 'table';
+
+table "users" => sub {
+    column id;
+    columns qw/name email/;
+};
+no DBIx::QuickORM;
+1;
+"#,
+        ),
+        (
+            "file:///lib/MyApp/Schema/Retention/SubShadow.pm",
+            r#"
+package MyApp::Schema::Retention::SubShadow;
+use DBIx::QuickORM type => 'table';
+
+table "users" => sub {
+    column id;
+    columns qw/name email/;
+};
+sub table { 1 };
+1;
+"#,
+        ),
+    ];
+    for &(uri_str, source) in cases {
+        let index = WorkspaceIndex::new();
+        let uri = Url::parse(uri_str)?;
+        index.index_initial_file(uri.clone(), source.to_string())?;
+        let generated = index.search_generated_workspace_symbols("qorm_table", None);
+        assert!(
+            !generated.is_empty(),
+            "authority-loss-only event must keep the prior generated workspace symbol: {source}"
+        );
+    }
     Ok(())
 }

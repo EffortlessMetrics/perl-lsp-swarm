@@ -49,8 +49,8 @@
       "rule": "gate-policy-gates",
       "authority": ".ci/gate-policy.yaml",
       "emits": "gate",
-      "considered": 87,
-      "emitted": 87,
+      "considered": 88,
+      "emitted": 88,
       "not_seeded_reason": "every entry under gates: is emitted; nothing is filtered"
     },
     {
@@ -2737,6 +2737,33 @@
         "state": "not_evaluated"
       },
       "notes": "Every workspace member has package-local context, an exemption, or tracked context debt (advisory; needs_context non-empty)"
+    },
+    {
+      "surface_id": "gate:agent_ledgers_validate",
+      "class": "gate",
+      "class_authority": {
+        "kind": "derived",
+        "authority": ".ci/gate-policy.yaml",
+        "rule": "gate-policy-gates"
+      },
+      "semantic_authority": ".ci/gate-policy.yaml#agent_ledgers_validate",
+      "consumers": [],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": ".ci/gate-policy.yaml",
+        "detail": "tier = \"merge_gate\"; required = true"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": ".ci/gate-policy.yaml"
+      },
+      "owner": "release/ci",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "Validate docs/agents/ledgers/*.jsonl against the agent-ledger contract"
     },
     {
       "surface_id": "gate:benchmarks",

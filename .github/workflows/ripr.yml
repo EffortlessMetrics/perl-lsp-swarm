@@ -226,6 +226,12 @@ jobs:
       preflight_ok: ${{ steps.preflight.outputs.preflight_ok }}
     env:
       RIPR_VERSION: "0.10.0"
+      # #15498: pin the admission boundary explicitly on every producer lane.
+      # The self-hosted lane holds the measured 2560-file/14g pair with
+      # headroom; without the pin it silently inherits the CLI's built-in
+      # default (800 in ripr 0.10.0), moving the fail-closed boundary onto the
+      # capable lane whenever a large closure routes here.
+      RIPR_MAX_DIFF_INDEX_FILES: "2560"
       BASE_REF: ${{ github.base_ref || github.event.merge_group.base_ref || github.event.repository.default_branch }}
       PR_HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || '' }}
       PR_LABELS: ${{ github.event_name == 'pull_request' && join(github.event.pull_request.labels.*.name, ',') || '' }}
@@ -325,6 +331,7 @@ jobs:
             --cpus="14" \
             --memory="28g" \
             -e RIPR_VERSION="$RIPR_VERSION" \
+            -e RIPR_MAX_DIFF_INDEX_FILES="$RIPR_MAX_DIFF_INDEX_FILES" \
             -e BASE_REF="$BASE_REF" \
             -e PR_HEAD_SHA="$PR_HEAD_SHA" \
             -e RIPR_FRESHNESS_HANDOFF=/freshness \

@@ -44,27 +44,28 @@ use tasks::{
     ci_scope, clean, clippy_cost_measure, code_action_generation_ledger, command_evidence, compare,
     compat_inventory, compiler_lexical_cutline, compiler_performance_receipt,
     compiler_upstream_status, completion_candidates, corpus_audit, count_ratchet, cpan_corpus,
-    critic_rule_proof, dead_code, debt_report, dependency_hygiene, dev, devex_docs, devex_doctor,
-    devex_plan, doc, doc_claims, e2e_validate, edge_cases, emacs_train_context, emacs_train_packet,
-    emacs_train_specs, features, finalize_check, fix_forward, fmt, forbid_fatal_constructs,
-    forensics, gate_receipts, gates, generated_files, github, github_preflight, github_review,
-    goals, hardening, hook_checks, ignored_tests, incremental_proof, inject_sha_assets,
-    inline_completion_quality, inline_completion_smoke, install_surface_check, integration_proof,
-    intent_diff_gate, issue_controllers, issue_plan, layer_check, lsp_318_claims, lsp_318_matrix,
-    lsp_ux_smoke, memory_trends, merge_ready, methodology_gate, metrics, module_train,
-    module_train_live, native_critic, native_format, native_neovim_train, native_product_surface,
-    native_tooling, oneliner_capability_matrix, oracle_fixture_manifest, oracle_receipt_schema,
-    oracle_runner, parse_rust, parser_corpus_sweep, parser_matrix, parser_ratchet,
-    perl_core_harness, perl_corpus_train, perl_kwalitee, populate_book, pre_push_plan,
-    prep_crates_io_launch, product_health_rail_contract, product_health_status,
-    protocol_type_substrate_matrix, provider_confidence_matrix, provider_promotion_ledger,
-    publication_facts, publish, publish_closure, publish_manifest_check, publish_receipts,
-    quality_baseline, quality_gate, queue_health, queue_snapshot, quickorm_api_matrix, receipts,
-    release, release_artifact_check, release_candidate_artifacts, release_evidence, release_notes,
-    release_trust_invariants, release_turnkey, repo_hygiene, repository_topology, ripr_evidence,
-    rust_small_proof, seam_diff, semantic_inline_next_edit, semantic_inline_receipts,
-    semantic_scorecard, semantic_shadow_compare, semantic_token_classes, session_receipt,
-    shadow_parity, srp_microcrates, supported_editor_inline_smoke, swarm_agent_roster,
+    critic_rule_proof, dead_code, dead_code_api_ledger, debt_report, dependency_hygiene, dev,
+    devex_docs, devex_doctor, devex_plan, doc, doc_claims, e2e_validate, edge_cases,
+    emacs_train_context, emacs_train_packet, emacs_train_specs, features, finalize_check,
+    fix_forward, fmt, forbid_fatal_constructs, forensics, gate_receipts, gates, generated_files,
+    github, github_preflight, github_review, goals, hardening, hook_checks, ignored_tests,
+    incremental_proof, inject_sha_assets, inline_completion_quality, inline_completion_smoke,
+    install_surface_check, integration_proof, intent_diff_gate, issue_controllers, issue_plan,
+    kwalitee_namespace_inventory, layer_check, lsp_318_claims, lsp_318_matrix, lsp_ux_smoke,
+    memory_trends, merge_ready, methodology_gate, metrics, module_train, module_train_live,
+    native_critic, native_format, native_neovim_train, native_product_surface, native_tooling,
+    oneliner_capability_matrix, oracle_fixture_manifest, oracle_receipt_schema, oracle_runner,
+    parse_rust, parser_corpus_sweep, parser_matrix, parser_ratchet, perl_core_harness,
+    perl_corpus_train, perl_kwalitee, populate_book, pre_push_plan, prep_crates_io_launch,
+    product_health_rail_contract, product_health_status, protocol_type_substrate_matrix,
+    provider_confidence_matrix, provider_promotion_ledger, publication_facts, publish,
+    publish_closure, publish_manifest_check, publish_receipts, quality_baseline, quality_gate,
+    queue_health, queue_snapshot, quickorm_api_matrix, receipts, release, release_artifact_check,
+    release_candidate_artifacts, release_evidence, release_notes, release_trust_invariants,
+    release_turnkey, repo_hygiene, repository_topology, ripr_evidence, rust_small_proof, seam_diff,
+    semantic_inline_next_edit, semantic_inline_receipts, semantic_scorecard,
+    semantic_shadow_compare, semantic_token_classes, session_receipt, shadow_parity,
+    srp_microcrates, standalone_diagnostics, supported_editor_inline_smoke, swarm_agent_roster,
     swarm_summary, sync_release_docs, targeted_checks, test, test_lsp, train_edge_contract,
     unwired_scan, update_homebrew, update_status, ux_regression_receipt, ux_scorecard,
     validate_workspace_exclusions, workflow_authority_inventory, workflow_policy_lint,
@@ -157,6 +158,15 @@ enum Commands {
     /// parity corpus against current source (#9188).
     CheckCodeActionGenerationLedger,
 
+    /// Validate the `perl_parser::dead_code` API disposition ledger against
+    /// current module source, the public-API baseline, its compatibility
+    /// corpus, the consumer inventory and the generated projection (#9777).
+    CheckDeadCodeApiLedger {
+        /// Regenerate the Markdown projection from the ledger before checking.
+        #[arg(long)]
+        write: bool,
+    },
+
     /// Validate declared differential real-Perl oracle fixtures.
     CheckOracleFixtureManifest,
 
@@ -178,6 +188,14 @@ enum Commands {
         /// Operation to run against the manifest.
         #[command(subcommand)]
         command: tasks::compiler_lexical_cutline::CompilerLexicalCutlineSubcommand,
+    },
+
+    /// Check, explain, and project the standalone diagnostic reason/action
+    /// registry (`standalone_diagnostics.v1`, #11493).
+    StandaloneDiagnostics {
+        /// Operation to run against the registry.
+        #[command(subcommand)]
+        command: tasks::standalone_diagnostics::StandaloneDiagnosticsSubcommand,
     },
 
     /// Validate the versioned critic rule-proof manifest, live fixture
@@ -399,6 +417,22 @@ enum Commands {
         /// Validate only, and require the checked-in projection to be current.
         #[arg(long)]
         check: bool,
+    },
+
+    /// Reconcile `policy/kwalitee-namespace-inventory.toml` against every live
+    /// `perl-kwalitee` / `perl_kwalitee` reference and report unresolved active
+    /// counts by migration target (#8752).
+    #[command(name = "kwalitee-inventory")]
+    KwaliteeInventory {
+        /// Reconcile references and add a confirmation line on success.
+        #[arg(long)]
+        check: bool,
+        /// Print entry skeletons with current line hashes instead of checking.
+        #[arg(long, conflicts_with = "check")]
+        scaffold: bool,
+        /// Evaluate a different repository tree (for hermetic tests).
+        #[arg(long)]
+        root: Option<PathBuf>,
     },
 
     /// Reconcile `policy/completion-candidate-producers.toml` against the live
@@ -5286,6 +5320,26 @@ enum UxScorecardOutputFormat {
 
 fn main() -> Result<()> {
     color_eyre::install()?;
+    // The 236-variant `Commands` derive makes clap's parse matcher overflow the
+    // 1 MB Windows main-thread stack in debug builds (STATUS_STACK_OVERFLOW,
+    // #15918); Linux's 8 MB default hides it. Run the CLI on a worker thread
+    // with an explicit 64 MiB stack — cross-platform, no CLI surface change.
+    const CLI_STACK_SIZE: usize = 64 * 1024 * 1024;
+    let worker = std::thread::Builder::new()
+        .name("xtask-cli".to_owned())
+        .stack_size(CLI_STACK_SIZE)
+        .spawn(run_cli_main);
+    match worker {
+        Ok(handle) => match handle.join() {
+            Ok(result) => result,
+            // Propagate a panic from the CLI thread with its original payload.
+            Err(payload) => std::panic::resume_unwind(payload),
+        },
+        Err(error) => Err(eyre!("failed to spawn xtask CLI thread: {error}")),
+    }
+}
+
+fn run_cli_main() -> Result<()> {
     run_cli(Cli::parse())
 }
 
@@ -5329,9 +5383,11 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::CheckActiveGoalManifest => active_goal_manifest::run(),
         Commands::CheckProviderPromotionLedger => provider_promotion_ledger::run(),
         Commands::CheckCodeActionGenerationLedger => code_action_generation_ledger::run(),
+        Commands::CheckDeadCodeApiLedger { write } => dead_code_api_ledger::run(write),
         Commands::CheckOracleFixtureManifest => oracle_fixture_manifest::run(),
         Commands::Activation { command } => activation::run(command),
         Commands::CompilerLexicalCutline { command } => compiler_lexical_cutline::run(command),
+        Commands::StandaloneDiagnostics { command } => standalone_diagnostics::run(command),
         Commands::CriticRuleProof { command } => critic_rule_proof::run(command),
         Commands::ReleaseTrustInvariants { command } => release_trust_invariants::run(command),
         Commands::CheckOracleReceiptSchema => oracle_receipt_schema::run(),
@@ -5782,6 +5838,9 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::OnelinerCapabilityMatrix { check } => oneliner_capability_matrix::run(check),
         Commands::RepoTopology { check } => repository_topology::run(check),
         Commands::CompatInventory { check } => compat_inventory::run(check),
+        Commands::KwaliteeInventory { check, scaffold, root } => {
+            kwalitee_namespace_inventory::run(check, scaffold, root)
+        }
         Commands::CompletionCandidates { command } => completion_candidates::run(command),
         Commands::GenerateProtocolTypeSubstrateMatrix { check } => {
             protocol_type_substrate_matrix::run(check)

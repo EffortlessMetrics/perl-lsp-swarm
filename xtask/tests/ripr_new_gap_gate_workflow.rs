@@ -2549,10 +2549,11 @@ fn workflow_job_env_value(job_name: &str, env_key: &str) -> Result<String> {
 }
 
 // #15498: ripr 0.10.0 tightened the built-in diff-index refusal from 1600
-// files (0.9.0) to 800. Both GitHub-hosted lanes must therefore pin the
+// files (0.9.0) to 800. Every producer lane must therefore pin the
 // admission boundary explicitly and pair it with a container budget measured
 // to hold it (1600-file closures indexed inside 6g => <=3.75 MB/file, so
-// 2560 files needs ~9.6 GB inside a 14g container on the 16 GB runner).
+// 2560 files needs ~9.6 GB inside a 14g container; the self-hosted lane's
+// larger envelope holds the 2560 pair with headroom).
 #[test]
 fn hosted_ripr_lanes_pin_the_diff_index_boundary_with_a_measured_budget() -> Result<()> {
     let root = project_root()?;
@@ -2563,6 +2564,13 @@ fn hosted_ripr_lanes_pin_the_diff_index_boundary_with_a_measured_budget() -> Res
         hosted_cap == "2560",
         "ripr-fallback must pin RIPR_MAX_DIFF_INDEX_FILES=2560 explicitly; found {hosted_cap:?}.          Without the pin the lane inherits the CLI's built-in default, which ripr 0.10.0          silently tightened from 1600 to 800 (#15498)"
     );
+    for lane in ["ripr-selfhosted"] {
+        let cap = workflow_job_env_value(lane, "RIPR_MAX_DIFF_INDEX_FILES")?;
+        ensure!(
+            cap == "2560",
+            "{lane} must pin RIPR_MAX_DIFF_INDEX_FILES=2560 explicitly; found {cap:?}.              Without the pin the capable lane inherits the CLI default (800), moving the              fail-closed boundary onto self-hosted as soon as a large closure routes there (#15498)"
+        );
+    }
 
     let script = workflow_step(&workflow, "Generate PR evidence")
         .ok_or_else(|| anyhow!("missing Generate PR evidence step"))?;
