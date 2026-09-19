@@ -9,7 +9,7 @@
 use super::{
     ResolveAtOutcome, ResolveAtSource, ResolveGenerationBasis, ResolveLimitation, ResolveNotReady,
     ResolveUnavailable, ResolvedOccurrence, resolve_at_position,
-    resolve_at_position_with_dynamic_boundary, stable_generation_basis,
+    resolve_at_position_with_dynamic_boundary, stable_basis_view, stable_generation_basis,
 };
 use perl_semantic_facts::{
     AnchorId, Confidence, EntityFact, EntityId, EntityKind, FileId, OccurrenceFact, OccurrenceId,
@@ -26,6 +26,7 @@ const FILE: FileId = FileId(7);
 struct StubSource {
     symbol_at: Vec<(u32, EntityFact, OccurrenceFact)>,
     dynamic_at: Vec<(u32, OccurrenceFact)>,
+    occurrence_at: Vec<(u32, OccurrenceFact)>,
 }
 
 impl StubSource {
@@ -36,6 +37,14 @@ impl StubSource {
 
     fn with_dynamic(mut self, offset: u32, occurrence: OccurrenceFact) -> Self {
         self.dynamic_at.push((offset, occurrence));
+        self
+    }
+
+    /// Publish an occurrence the entity pair lookup does not return — the
+    /// production shape where `symbol_at` collapses an entity-less occurrence
+    /// to `None` while `occurrence_at` still reports it.
+    fn with_occurrence_only(mut self, offset: u32, occurrence: OccurrenceFact) -> Self {
+        self.occurrence_at.push((offset, occurrence));
         self
     }
 }
@@ -58,6 +67,12 @@ impl ResolveAtSource for StubSource {
         byte_offset: u32,
     ) -> Option<OccurrenceFact> {
         self.dynamic_at.iter().find_map(|(offset, occurrence)| {
+            (file_id == FILE && *offset == byte_offset).then(|| occurrence.clone())
+        })
+    }
+
+    fn resolve_occurrence_at(&self, file_id: FileId, byte_offset: u32) -> Option<OccurrenceFact> {
+        self.occurrence_at.iter().find_map(|(offset, occurrence)| {
             (file_id == FILE && *offset == byte_offset).then(|| occurrence.clone())
         })
     }
@@ -241,6 +256,40 @@ fn occurrence_without_entity_is_partial_not_exact() {
         }
         other => panic!("expected Partial, got {other:?}"),
     }
+}
+
+/// The production shape of the same state: the entity–occurrence pair lookup
+/// returns `None` because no entity was bound, while the occurrence-only
+/// lookup still reports the published fact. The outcome must be the
+/// entity-less limitation, never "no occurrence at this position".
+#[test]
+fn occurrence_without_entity_stays_visible_when_the_pair_lookup_collapses() {
+    let source = StubSource::default()
+        .with_occurrence_only(10, occurrence(50, OccurrenceKind::Read, None, 101));
+
+    let outcome = resolve(&source, 10);
+
+    match outcome {
+        ResolveAtOutcome::Partial { limitations, .. } => {
+            assert!(limitations.contains(&ResolveLimitation::OccurrenceWithoutEntity));
+        }
+        other => panic!("expected Partial(OccurrenceWithoutEntity), got {other:?}"),
+    }
+}
+
+/// A position with truly nothing published stays unavailable — the
+/// occurrence-only fallback must not manufacture a boundary where none was
+/// published.
+#[test]
+fn no_published_occurrence_anywhere_is_still_unavailable() {
+    let source = StubSource::default();
+
+    let outcome = resolve(&source, 10);
+
+    assert!(matches!(
+        outcome,
+        ResolveAtOutcome::Unavailable(ResolveUnavailable::NoOccurrenceAtPosition)
+    ));
 }
 
 /// A dynamic method selector stays an explicit boundary rather than resolving to
@@ -672,6 +721,80 @@ fn the_torn_read_protocol_is_bounded() {
 
     // Two version reads per attempt, three attempts.
     assert_eq!(reads.get(), 6, "the protocol must stop after its attempt bound");
+}
+
+// ── Basis-to-view stability bracket ──
+
+/// A commit that lands between basis capture and view completion is retried:
+/// the surviving attempt carries the post-commit basis, not a pair spanning
+/// two snapshots. This is the deterministic version of the race the bracket
+/// exists for — the write fires while the first view is open.
+#[test]
+fn a_commit_between_basis_and_view_is_retried_with_a_fresh_basis() {
+    use std::cell::Cell;
+
+    let version = Cell::new(10u64);
+    let view_calls = Cell::new(0u32);
+    let result = stable_basis_view(
+        || format!("basis@{}", version.get()),
+        || version.get(),
+        |basis| {
+            view_calls.set(view_calls.get() + 1);
+            // First attempt: a writer commits while the view is open.
+            if view_calls.get() == 1 {
+                version.set(11);
+            }
+            basis.clone()
+        },
+        3,
+    );
+
+    assert_eq!(view_calls.get(), 2, "the torn attempt must be retried");
+    let (basis, view_basis) = result.expect("a settled index must still yield a view");
+    assert_eq!(basis, "basis@11", "the surviving basis must name the post-commit version");
+    assert_eq!(
+        view_basis, "basis@11",
+        "the surviving view must have resolved against that same basis"
+    );
+}
+
+/// A view whose version never settles yields `None` — the caller's named
+/// instability — rather than a pair spanning two snapshots.
+#[test]
+fn a_view_that_never_settles_yields_no_result() {
+    use std::cell::Cell;
+
+    let version = Cell::new(0u64);
+    let result: Option<(u64, ())> = stable_basis_view(
+        || version.get(),
+        || version.get(),
+        |_| version.set(version.get() + 1), // a writer commits during every view
+        3,
+    );
+
+    assert!(result.is_none(), "instability must be explicit, not laundered into a pair");
+}
+
+/// The bracket is bounded: it stops after its attempt limit instead of
+/// spinning on a busy index.
+#[test]
+fn the_basis_view_bracket_is_bounded() {
+    use std::cell::Cell;
+
+    let version = Cell::new(0u64);
+    let attempts = Cell::new(0u32);
+    let result: Option<(u64, ())> = stable_basis_view(
+        || version.get(),
+        || version.get(),
+        |_| {
+            attempts.set(attempts.get() + 1);
+            version.set(version.get() + 1);
+        },
+        3,
+    );
+
+    assert!(result.is_none());
+    assert_eq!(attempts.get(), 3, "the bracket must stop after its attempt bound");
 }
 
 /// A uri the index has never seen still yields an explicit unknown document

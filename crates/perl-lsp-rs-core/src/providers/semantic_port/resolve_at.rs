@@ -52,6 +52,18 @@ pub trait ResolveAtSource {
         file_id: FileId,
         byte_offset: u32,
     ) -> Option<OccurrenceFact>;
+
+    /// Occurrence covering `byte_offset`, whether or not the producer bound an
+    /// entity to it.
+    ///
+    /// `resolve_symbol_at` answers the entity–occurrence pair; this answers the
+    /// published occurrence alone so "occurrence without entity" stays distinct
+    /// from "no occurrence at this position". Defaults to `None` for sources
+    /// that cannot make the distinction.
+    fn resolve_occurrence_at(&self, file_id: FileId, byte_offset: u32) -> Option<OccurrenceFact> {
+        let _ = (file_id, byte_offset);
+        None
+    }
 }
 
 /// Adapts the workspace semantic facade to the narrow resolve port.
@@ -63,18 +75,12 @@ pub trait ResolveAtSource {
 /// # Reachability of the entity-less case
 ///
 /// `WorkspaceSemanticQueries::symbol_at` resolves the entity itself and returns
-/// `None` when the covering occurrence carries no `entity_id`. Through *this*
-/// adapter an entity-less occurrence therefore arrives as "no occurrence", so
-/// the cursor reports [`ResolveAtOutcome::Unavailable`] and
-/// [`ResolveLimitation::OccurrenceWithoutEntity`] is not reachable.
-///
-/// That state is kept in the model deliberately rather than deleted: the
-/// distinction it draws — a producer published an occurrence but resolved no
-/// entity for it — is real, and collapsing it into "nothing is here" is exactly
-/// the conflation this layer exists to prevent. Exposing it through the
-/// workspace facade needs an occurrence-only lookup on `SemanticQueries`, which
-/// belongs to the producer, not to this layer. Until then it is modelled and
-/// proven against stub sources, but not observable through this adapter.
+/// `None` when the covering occurrence carries no `entity_id`. The producer
+/// therefore also publishes `SemanticQueries::occurrence_at`, an
+/// occurrence-only lookup this adapter exposes as
+/// [`ResolveAtSource::resolve_occurrence_at`], so an entity-less occurrence
+/// arrives as [`ResolveLimitation::OccurrenceWithoutEntity`] rather than "no
+/// occurrence" — the distinction this layer exists to keep.
 #[derive(Debug, Clone, Copy)]
 pub struct SemanticQueriesResolveSource<'queries, Q: ?Sized>(&'queries Q);
 
@@ -109,6 +115,10 @@ where
         byte_offset: u32,
     ) -> Option<OccurrenceFact> {
         self.0.dynamic_boundary_at(file_id, byte_offset, None)
+    }
+
+    fn resolve_occurrence_at(&self, file_id: FileId, byte_offset: u32) -> Option<OccurrenceFact> {
+        self.0.occurrence_at(file_id, byte_offset)
     }
 }
 
@@ -182,6 +192,32 @@ where
     // No stable pair was observable. Say so explicitly: an unknown generation
     // is a state this type models, a fabricated one is not.
     ResolveGenerationBasis::new(SourceGeneration::Unknown, SourceGeneration::Unknown)
+}
+
+/// The basis-to-view stability bracket, over plain closures so it can be
+/// proven against a source that commits mid-view without racing a real index.
+///
+/// `write_version` brackets each attempt: capture it before `basis` runs, then
+/// re-check it after `view` completes. A writer that commits between basis
+/// capture and view completion would let the outcome describe a different
+/// snapshot than the basis claims, so the attempt is discarded and retried.
+/// `None` means no stable attempt was observable within `attempts` — an
+/// explicit instability the caller must name, not a torn pair to return.
+pub fn stable_basis_view<Basis, Outcome>(
+    basis: impl Fn() -> Basis,
+    write_version: impl Fn() -> u64,
+    mut view: impl FnMut(&Basis) -> Outcome,
+    attempts: u8,
+) -> Option<(Basis, Outcome)> {
+    for _ in 0..attempts {
+        let before = write_version();
+        let basis_value = basis();
+        let outcome = view(&basis_value);
+        if write_version() == before {
+            return Some((basis_value, outcome));
+        }
+    }
+    None
 }
 
 /// Accepted generations one resolve result is bound to.
@@ -636,7 +672,18 @@ where
     }
 
     let Some((entity, occurrence)) = source.resolve_symbol_at(file_id, byte_offset) else {
-        return ResolveAtOutcome::Unavailable(ResolveUnavailable::NoOccurrenceAtPosition);
+        // `resolve_symbol_at` collapses "occurrence published, no entity
+        // bound" into `None`. Ask for the covering occurrence alone so the
+        // published fact stays visible rather than arriving as "nothing is
+        // here" — the conflation this layer exists to prevent.
+        return match source.resolve_occurrence_at(file_id, byte_offset) {
+            Some(_occurrence) => ResolveAtOutcome::Partial {
+                candidates: Vec::new(),
+                limitations: vec![ResolveLimitation::OccurrenceWithoutEntity],
+                generation: generation.clone(),
+            },
+            None => ResolveAtOutcome::Unavailable(ResolveUnavailable::NoOccurrenceAtPosition),
+        };
     };
 
     let Some(entity_id) = occurrence.entity_id else {

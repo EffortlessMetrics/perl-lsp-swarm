@@ -33,6 +33,7 @@ pub use resolve_at::{
     ResolveAtOutcome, ResolveAtSource, ResolveGenerationBasis, ResolveLimitation, ResolveNotReady,
     ResolveUnavailable, ResolvedOccurrence, SemanticQueriesResolveSource,
     accepted_generation_basis, resolve_at_position, resolve_at_position_with_dynamic_boundary,
+    stable_basis_view,
 };
 pub use result::*;
 
