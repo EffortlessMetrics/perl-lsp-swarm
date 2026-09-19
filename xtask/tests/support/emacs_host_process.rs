@@ -6,11 +6,11 @@
 //! gone. An unavailable or unparseable probe is `not_proven`, never `pass`.
 
 use super::{
+    DriverEvent, DriverEventKind, EmacsHostRunPlan, HermeticLayout, MAX_CAPTURE_BYTES,
     bytes_sha256, file_sha256, lifecycle_rank, parse_driver_event_prefix, parse_driver_events,
-    validate_safe_identity, DriverEvent, DriverEventKind, EmacsHostRunPlan, HermeticLayout,
-    MAX_CAPTURE_BYTES,
+    validate_safe_identity,
 };
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use regex::Regex;
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
@@ -143,11 +143,7 @@ fn candidate_needle(plan: &EmacsHostRunPlan) -> String {
 }
 
 fn parse_probe(text: &str) -> Result<Vec<ProcessProbeLine>> {
-    if cfg!(windows) {
-        parse_windows_process_snapshot(text)
-    } else {
-        parse_process_snapshot(text)
-    }
+    if cfg!(windows) { parse_windows_process_snapshot(text) } else { parse_process_snapshot(text) }
 }
 
 /// Execute one owned host process under a parent-owned deadline. Cleanup
@@ -800,11 +796,7 @@ fn redact_resident_private_paths(text: &mut String) {
 }
 
 fn bound_capture(bytes: &[u8]) -> &[u8] {
-    if bytes.len() <= MAX_CAPTURE_BYTES {
-        bytes
-    } else {
-        &bytes[..MAX_CAPTURE_BYTES]
-    }
+    if bytes.len() <= MAX_CAPTURE_BYTES { bytes } else { &bytes[..MAX_CAPTURE_BYTES] }
 }
 
 pub fn parse_process_snapshot(text: &str) -> Result<Vec<ProcessProbeLine>> {
@@ -1042,11 +1034,7 @@ fn probe_owned_pid_identity(pid: u32) -> Option<String> {
         }
         let line = stdout.lines().next()?;
         let image = line.trim_start_matches('"').split('"').next()?;
-        if image.is_empty() {
-            None
-        } else {
-            Some(image.to_string())
-        }
+        if image.is_empty() { None } else { Some(image.to_string()) }
     } else {
         let output = Command::new("ps")
             .args(["-o", "args=", "-p", &pid.to_string()])
@@ -1058,11 +1046,7 @@ fn probe_owned_pid_identity(pid: u32) -> Option<String> {
             return None;
         }
         let args = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        if args.is_empty() {
-            None
-        } else {
-            Some(args)
-        }
+        if args.is_empty() { None } else { Some(args) }
     }
 }
 
