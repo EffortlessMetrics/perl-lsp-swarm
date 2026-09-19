@@ -1186,7 +1186,7 @@ mod process_tests {
         // we owe a kill to. Verify that the survivors list is the
         // authoritative input (no needle, no before-baseline, no
         // host_pid subtraction).
-        let recorded = vec![
+        let recorded = [
             ProcessProbeLine { pid: 100, args: "/tmp/run/perllsp serve".into() },
             ProcessProbeLine { pid: 200, args: "/tmp/run/perllsp --stdio".into() },
         ];
