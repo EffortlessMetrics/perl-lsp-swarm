@@ -4937,4 +4937,91 @@ mod tests {
             other => Err(format!("expected Response from handle_launch; got {other:?}")),
         }
     }
+
+    #[test]
+    fn parse_process_id_refuses_zero_with_exact_error_variant() -> Result<(), String> {
+        let error = DebugAdapter::parse_process_id(&json!({ "processId": 0 }))
+            .err()
+            .ok_or("pid zero was accepted by the attach subject classifier")?;
+        let expected = "Invalid processId: value must be greater than zero";
+        if error != expected {
+            return Err(format!("pid zero refusal was {error:?}, expected {expected:?}"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn parse_process_id_refuses_malformed_and_oversized_with_exact_variants() -> Result<(), String>
+    {
+        let expected = "Invalid processId: expected a positive integer in the range 1-4294967295";
+        for subject in [json!({ "processId": "4242" }), json!({ "processId": 4_294_967_296_u64 })] {
+            let error = DebugAdapter::parse_process_id(&subject)
+                .err()
+                .ok_or("invalid processId was accepted by the attach subject classifier")?;
+            if error != expected {
+                return Err(format!(
+                    "invalid processId refusal was {error:?}, expected {expected:?}"
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn handle_attach_pid_only_call_observes_unsupported_refusal_without_session_mutation()
+    -> Result<(), String> {
+        let adapter = DebugAdapter::new();
+        let response = adapter.handle_attach(7, 9, Some(json!({ "processId": 4242 })));
+        let (success, command, message) = match &response {
+            super::DapMessage::Response { success, command, message, .. } => {
+                (*success, command.clone(), message.clone())
+            }
+            other => return Err(format!("expected Response from handle_attach; got {other:?}")),
+        };
+        if success || command != "attach" {
+            return Err("pid-only attach response was not an attach refusal".to_string());
+        }
+        let expected = "Attaching by processId is not supported. Use TCP attach with host \
+                        and port instead.";
+        if message.as_deref() != Some(expected) {
+            return Err(format!("pid-only refusal message was {message:?}, expected {expected:?}"));
+        }
+        let seeded = adapter.session.lock().map_err(|_| "session lock poisoned")?.is_some();
+        if seeded {
+            return Err("pid-only refusal mutated modeled session state".to_string());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn handle_attach_ambiguous_call_observes_typed_ambiguity_before_tcp_connection()
+    -> Result<(), String> {
+        let adapter = DebugAdapter::new();
+        let response = adapter.handle_attach(
+            8,
+            10,
+            Some(json!({ "processId": 4242, "host": "127.0.0.1", "port": 13603 })),
+        );
+        let (success, command, message) = match &response {
+            super::DapMessage::Response { success, command, message, .. } => {
+                (*success, command.clone(), message.clone())
+            }
+            other => return Err(format!("expected Response from handle_attach; got {other:?}")),
+        };
+        if success || command != "attach" {
+            return Err("ambiguous attach response was not an attach refusal".to_string());
+        }
+        let expected = "Ambiguous attach: processId cannot be combined with explicit host or port";
+        if message.as_deref() != Some(expected) {
+            return Err(format!(
+                "ambiguous refusal message was {message:?}, expected {expected:?}"
+            ));
+        }
+        let tcp_seeded =
+            adapter.tcp_session.lock().map_err(|_| "tcp session lock poisoned")?.is_some();
+        if tcp_seeded {
+            return Err("ambiguous refusal created a TCP session".to_string());
+        }
+        Ok(())
+    }
 }
