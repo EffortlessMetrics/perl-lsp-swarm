@@ -1,4 +1,3 @@
-use perl_parser_core::percentile::nearest_rank_percentile;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs;
@@ -82,7 +81,16 @@ where
     samples.sort_unstable();
     let n = samples.len();
     let median_ns = samples.get(n / 2).copied().unwrap_or_default();
-    let p95_ns = nearest_rank_percentile(&samples, 95);
+    // Nearest-rank p95: ceil(0.95 * N) converted to a 0-based index. This is
+    // the same rank the retired `nearest_rank_percentile` computed, so no
+    // reported value changes; it matches the parser bench scorecard too.
+    // Ceiling division is what keeps that true: the floor formula
+    // ((n * 95) / 100) picks the next-higher sample whenever N is a multiple
+    // of 20 — which includes both sample counts this bench actually uses,
+    // 3000 and 5000. This bench owns its own measurement math; the parser no
+    // longer publishes a percentile helper (#7595).
+    let p95_idx = (n * 95).div_ceil(100).saturating_sub(1).min(n.saturating_sub(1));
+    let p95_ns = samples.get(p95_idx).copied().unwrap_or_default();
 
     ScoreMetric { iterations: rounds, median_ns, p95_ns }
 }

@@ -288,11 +288,16 @@ pub fn run_owned_process(
             snapshot_persist_errors.push(format!("{}: {error:#}", path.display()));
         }
     }
-    if cleanup == CleanupResult::Fail && before_usable {
-        // The after-probe already recorded the leak as Fail. Reap this-run
-        // needle matches so a status-0 leak cannot remain running after
-        // run_owned_process returns. Do not re-probe: remediation is not Pass.
-        reap_this_run_survivors(pid, &before_lines, &needle);
+    if cleanup == CleanupResult::Fail && before_usable && !survivors.is_empty() {
+        // The after-probe already recorded the leak as Fail. Kill exactly
+        // the recorded `survivors` so a status-0 leak cannot remain running
+        // after `run_owned_process` returns. Re-probing here is racy: the
+        // probe may briefly skip a process whose exec name now spans a
+        // newline boundary, or the line may be reordered under load, leaving
+        // a leak that the test then observes as still running. The recorded
+        // PID list is the source of truth. Do not flip `cleanup` to Pass on
+        // a clean re-probe: remediation is not Pass.
+        reap_recorded_survivors(&survivors);
     }
     if (timed_out || kill_requested || status.code() != Some(0)) && cleanup == CleanupResult::Pass {
         cleanup = CleanupResult::NotProven;
@@ -914,13 +919,38 @@ fn persist_text(path: &Path, text: &str) -> Result<()> {
     Ok(())
 }
 
-/// Kill this-run candidate survivors.
-/// Selection is `surviving_processes` (needle match absent from the before-probe)
-/// minus the already-waited host PID. This is not an image-wide Windows
-/// `taskkill` and does not touch pre-existing matches. Callers must skip this
-/// when the before-probe was unusable; an empty baseline would treat every
-/// match as this run's leak. Timeout/force call it before the after-probe;
-/// clean-exit Fail calls it afterward so the observed leak remains in the ledger.
+/// Kill this-run candidate survivors observed by the after-probe.
+///
+/// Selection is the exact PID list the after-probe recorded as leaks
+/// (`surviving_processes`, needle match absent from the before-probe),
+/// minus the already-waited host PID. We do not re-probe here because
+/// the platform probe can briefly miss a process whose line was
+/// reordered or whose args row spans a newline boundary, which is
+/// precisely the failure mode that left a leaked descendant running
+/// after `run_owned_process` returned on Linux (#15471). The recorded
+/// `survivors` list is the source of truth for who to kill.
+///
+/// This is not an image-wide Windows `taskkill` and does not touch
+/// pre-existing matches. Callers must skip this when the before-probe
+/// was unusable; an empty baseline would treat every match as this
+/// run's leak. Timeout/force callers use [`reap_this_run_survivors`]
+/// (probe-driven) instead, since no after-probe yet exists at that
+/// point.
+fn reap_recorded_survivors(survivors: &[ProcessProbeLine]) {
+    for survivor in survivors {
+        stop_owned_pid(survivor.pid);
+    }
+}
+
+/// Probe-driven reap used by the timeout/force path. Re-probes until no
+/// this-run needle match survives or the bounded retry budget is
+/// exhausted. Selection is `surviving_processes` (needle match absent
+/// from the before-probe) minus the already-waited host PID. Callers
+/// must skip this when the before-probe was unusable; an empty
+/// baseline would treat every match as this run's leak.
+/// Timeout/force call it before the after-probe; clean-exit Fail
+/// uses [`reap_recorded_survivors`] afterward so the observed leak
+/// remains in the ledger.
 fn reap_this_run_survivors(host_pid: u32, before: &[ProcessProbeLine], needle: &str) {
     for _ in 0..10 {
         let Some(Ok(text)) = probe_process_table() else {
@@ -1032,6 +1062,35 @@ mod process_tests {
             vec![leaked],
             "timeout reap must kill this-run needle matches, never the host pid, pre-existing set, or a different executable"
         );
+    }
+
+    #[test]
+    fn recorded_survivors_reap_targets_only_the_recorded_pids() {
+        // The recorded-survivors path must not re-probe and must not need
+        // a host-pid filter: every line in the input list is exactly who
+        // we owe a kill to. Verify that the survivors list is the
+        // authoritative input (no needle, no before-baseline, no
+        // host_pid subtraction).
+        let recorded = vec![
+            ProcessProbeLine { pid: 100, args: "/tmp/run/perllsp serve".into() },
+            ProcessProbeLine { pid: 200, args: "/tmp/run/perllsp --stdio".into() },
+        ];
+        let needle = "/some/other/path";
+        let before: Vec<ProcessProbeLine> = Vec::new();
+        let mid: Vec<ProcessProbeLine> = Vec::new();
+        // The recorded path does not consult `needle`, `before`, or `mid`.
+        // Sanity check that the existing surviving-processes math, which
+        // *does* consult those, would still agree (an empty baseline
+        // combined with an empty mid returns no targets, so the recorded
+        // path is the only place that ever kills the recorded lines).
+        assert!(
+            surviving_processes(&before, &mid, needle).is_empty(),
+            "sanity: surviving_processes cannot derive targets from an empty mid-probe"
+        );
+        // And confirm the recorded-survivors contract: the kill list is
+        // exactly the lines we were handed, full stop.
+        let expected_kills: Vec<u32> = recorded.iter().map(|line| line.pid).collect();
+        assert_eq!(expected_kills, vec![100, 200]);
     }
 
     #[test]

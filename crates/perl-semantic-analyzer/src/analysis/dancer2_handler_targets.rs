@@ -142,7 +142,7 @@ impl SubroutineTargetIndex {
                 // other subroutine at runtime: existence of a same-name `sub`
                 // no longer proves which target a `\&name` invokes. Record
                 // the slot and keep it unresolvable.
-                if let NodeKind::Typeglob { name: glob_name } = &lhs.kind {
+                if let NodeKind::Typeglob { name: glob_name, .. } = &lhs.kind {
                     let (package, name) =
                         split_qualified_name(glob_name, current_package.as_deref())
                             .unwrap_or_else(|| ("main".to_string(), None));
