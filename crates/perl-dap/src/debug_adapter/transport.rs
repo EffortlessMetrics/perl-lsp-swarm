@@ -2787,6 +2787,7 @@ mod framing_tests {
                 initial_stop_pending: false,
                 entry_stop_pending: false,
                 stopped_generation: 1,
+                pending_auto_continued_stop: false,
                 module_generation: RuntimeModuleGenerationClock::new(),
             });
         }

@@ -1211,6 +1211,7 @@ mod evaluate_allocation_tests {
                 initial_stop_pending: false,
                 entry_stop_pending: false,
                 stopped_generation: 0,
+                pending_auto_continued_stop: false,
                 module_generation: crate::reload::RuntimeModuleGenerationClock::new(),
             });
             current.process
