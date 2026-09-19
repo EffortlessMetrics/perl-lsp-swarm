@@ -499,6 +499,13 @@ fn is_xtask_policy_guarded_input(file: &str) -> bool {
             // and CI stayed green because xtask was never in scope.
             | ".github/workflows/vim-hermetic-host.yml"
     )
+        // The gate policy is the gate owner's source: its declaration order is
+        // execution order (short-circuit focused gates, #13698/#14409), and the
+        // pinning proof `focused_control_plane_gates_precede_unit_routed_full_
+        // and_pin_the_backstop` lives in xtask's bin target. Without this
+        // routing, a gate-policy-only PR would skip both focused owner gates
+        // and the very proof that pins the policy's shape (#14409 review).
+        || file == ".ci/gate-policy.yaml"
         // Publishable-crate manifests: binstall metadata, publish metadata, and
         // version-sync are all xtask-owned assertions over these files.
         || (file.starts_with("crates/") && file.ends_with("/Cargo.toml"))
@@ -1309,6 +1316,24 @@ mod tests {
                 "changing {workflow} must route to the xtask contract that reads it"
             );
         }
+        Ok(())
+    }
+
+    /// A gate-policy-only diff must select xtask (#14409 review of #13698):
+    /// the focused owner gates are `rust_package_scoped` on xtask, and the
+    /// pinning proof for the policy's declaration order/commands lives in the
+    /// xtask bin target. Without this routing, gate-policy drift would bypass
+    /// both on exactly the PRs that move the policy.
+    #[test]
+    fn gate_policy_change_selects_xtask() -> Result<()> {
+        let files = vec![".ci/gate-policy.yaml".to_string()];
+        let metadata = fake_metadata(&[("xtask", "xtask")]);
+        let crates = crates_from_files(&files, &metadata, "/workspace")?;
+        assert!(
+            crates.contains("xtask"),
+            "changing .ci/gate-policy.yaml must route to the gate owner whose \
+             pinning proof asserts on it"
+        );
         Ok(())
     }
 
