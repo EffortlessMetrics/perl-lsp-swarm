@@ -212,7 +212,11 @@ pub fn run_ripr_facts_with_diff(
 /// temp directory, so the rename stays within one filesystem; a cross-device
 /// rename fails with `EXDEV` and would defeat the recipe.
 fn write_packet(out: &str, packet: &serde_json::Value) -> std::io::Result<()> {
-    let path = std::path::Path::new(out);
+    // Replace the file `std::fs::write` would have written through, not the
+    // link pointing at it: `fs::write` follows a symlinked destination, while
+    // `fs::rename` would replace the link itself and strand its target.
+    let path = resolve_destination(std::path::Path::new(out));
+    let path = path.as_path();
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -227,11 +231,65 @@ fn write_packet(out: &str, packet: &serde_json::Value) -> std::io::Result<()> {
         let _ = std::fs::remove_file(&temp);
         return Err(error);
     }
+    carry_destination_permissions(path, &temp);
     if let Err(error) = std::fs::rename(&temp, path) {
         let _ = std::fs::remove_file(&temp);
         return Err(error);
     }
     Ok(())
+}
+
+/// Follow a symlinked destination to the file it names.
+///
+/// `std::fs::write` follows the link and updates its target, keeping the link
+/// in place. A bare `fs::rename` onto the link would instead replace the link
+/// with a regular file and leave the real target frozen at its last contents,
+/// silently breaking any `latest.json -> packet-vN.json` style publication.
+/// Resolving first keeps the pre-existing behavior and still replaces the real
+/// file atomically, because the staged sibling then lands beside *it*.
+///
+/// Only the final component is followed, and the walk is bounded so a symlink
+/// cycle terminates instead of spinning. A broken or unreadable link resolves
+/// to itself, which lets the ordinary create path report the real error.
+fn resolve_destination(path: &std::path::Path) -> std::path::PathBuf {
+    /// Matches the conventional `SYMLOOP_MAX` floor; deeper chains are cycles
+    /// for this purpose.
+    const MAX_LINK_DEPTH: usize = 8;
+
+    let mut current = path.to_path_buf();
+    for _ in 0..MAX_LINK_DEPTH {
+        let Ok(metadata) = std::fs::symlink_metadata(&current) else {
+            return current;
+        };
+        if !metadata.file_type().is_symlink() {
+            return current;
+        }
+        let Ok(target) = std::fs::read_link(&current) else {
+            return current;
+        };
+        current = match current.parent() {
+            // A relative link resolves against the directory holding the link.
+            Some(parent) if !parent.as_os_str().is_empty() && target.is_relative() => {
+                parent.join(target)
+            }
+            _ => target,
+        };
+    }
+    current
+}
+
+/// Carry an existing destination's permissions onto the staged sibling.
+///
+/// `std::fs::write` reuses the destination's inode, so its mode survives a
+/// rewrite. A staged file is new, so it would otherwise publish with the
+/// process umask and silently reset an operator's `chmod 600` on every run.
+/// Best-effort by design: when there is no previous destination the umask
+/// default is correct, and a platform that cannot read or apply the mode must
+/// not fail an otherwise complete packet.
+fn carry_destination_permissions(destination: &std::path::Path, staged: &std::path::Path) {
+    if let Ok(metadata) = std::fs::metadata(destination) {
+        let _ = std::fs::set_permissions(staged, metadata.permissions());
+    }
 }
 
 /// Per-process sequence making each staged sibling unique, so two writers in
@@ -916,5 +974,141 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(dir);
         Ok(())
+    }
+    // ── #16022 review round 2: behavior drift vs the old `std::fs::write` ──
+    //
+    // Replacing a file is not the same operation as rewriting one, and three
+    // differences are observable. These pin the ones that would otherwise be
+    // silent regressions against `std::fs::write`.
+
+    #[test]
+    fn staged_sibling_always_lands_beside_its_destination() {
+        // The EXDEV guarantee the rustdoc and README both claim. An
+        // implementation that staged into `std::env::temp_dir()` and renamed
+        // across mounts passes every other test in this file — the success and
+        // failure cleanup tests only assert the destination directory holds no
+        // scratch, which is trivially true if the scratch was never put there.
+        // Only this test fails against that wrong implementation.
+        for destination in ["target/ripr-x/packet.json", "packet.json", "/tmp/packet.json"] {
+            let path = std::path::Path::new(destination);
+            let staged = temp_sibling_path(path);
+            assert_eq!(
+                staged.parent(),
+                path.parent(),
+                "staged sibling for `{destination}` must share the destination's directory"
+            );
+            assert_ne!(staged, path, "staged sibling must not be the destination itself");
+        }
+    }
+
+    #[test]
+    fn staged_sibling_names_are_unique_per_call() {
+        // Two writers aimed at one destination must not share a scratch path.
+        let path = std::path::Path::new("target/ripr-x/packet.json");
+        assert_ne!(temp_sibling_path(path), temp_sibling_path(path));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_preserves_an_existing_destinations_permissions() -> std::io::Result<()> {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        // `std::fs::write` reuses the destination inode, so a `chmod 600` on
+        // the packet survived a regeneration. A staged sibling is a new file,
+        // so without carrying the mode across it would publish at the umask
+        // default and silently widen an operator's restriction on every run.
+        let dir = "target/ripr-atomic-perms";
+        let _ = std::fs::remove_dir_all(dir);
+        std::fs::create_dir_all(dir)?;
+        let out = format!("{dir}/packet.json");
+
+        let rc = run_ripr_facts("ripr-perl-facts-v1", ".", None, None, "tests,oracles", &out);
+        assert_eq!(rc, 0, "the first generation must succeed");
+        std::fs::set_permissions(&out, std::fs::Permissions::from_mode(0o600))?;
+
+        let rc = run_ripr_facts("ripr-perl-facts-v1", ".", None, None, "tests,oracles", &out);
+        assert_eq!(rc, 0, "the second generation must succeed");
+
+        assert_eq!(
+            std::fs::metadata(&out)?.permissions().mode() & 0o777,
+            0o600,
+            "regenerating the packet must not widen the destination's permissions"
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_through_a_symlinked_destination_keeps_the_link_and_updates_its_target()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // `std::fs::write` follows a symlinked destination and updates the file
+        // it names. A bare rename onto the link would replace the link with a
+        // regular file and strand the real target at its previous contents —
+        // silently breaking a `latest.json -> packet-vN.json` publication.
+        let dir = "target/ripr-atomic-symlink";
+        let _ = std::fs::remove_dir_all(dir);
+        std::fs::create_dir_all(format!("{dir}/real"))?;
+        let target = format!("{dir}/real/actual.json");
+        std::fs::write(&target, "{}")?;
+
+        let link = format!("{dir}/packet.json");
+        std::os::unix::fs::symlink("real/actual.json", &link)?;
+
+        let rc = run_ripr_facts("ripr-perl-facts-v1", ".", None, None, "tests,oracles", &link);
+        assert_eq!(rc, 0, "writing through the link must succeed");
+
+        assert!(
+            std::fs::symlink_metadata(&link)?.file_type().is_symlink(),
+            "the destination must still be a symlink, not a replaced regular file"
+        );
+        let through_link = std::fs::read_to_string(&link)?;
+        let at_target = std::fs::read_to_string(&target)?;
+        assert_eq!(through_link, at_target, "the link must still name the written file");
+        assert_ne!(at_target, "{}", "the real target must have been updated, not stranded");
+
+        // Atomicity still holds for the resolved file: staging happened beside
+        // the target, so nothing was left behind in either directory.
+        assert_eq!(
+            dir_entries(&format!("{dir}/real"))?,
+            vec!["actual.json".to_string()],
+            "no staged sibling may remain beside the resolved target"
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
+        Ok(())
+    }
+
+    #[test]
+    fn resolve_destination_returns_a_plain_path_unchanged() {
+        // Negative control for the symlink walk: a non-link destination, and a
+        // destination that does not exist yet, must resolve to themselves
+        // rather than to some canonicalized or parent-relative rewrite.
+        let plain = std::path::Path::new("target/ripr-x/packet.json");
+        assert_eq!(resolve_destination(plain), plain.to_path_buf());
+
+        let missing = std::path::Path::new("target/ripr-x/does-not-exist/packet.json");
+        assert_eq!(resolve_destination(missing), missing.to_path_buf());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolve_destination_terminates_on_a_symlink_cycle() {
+        // A cycle must return rather than spin; the bounded walk is what makes
+        // that true, and the returned path is then reported by the ordinary
+        // create path as a real error instead of hanging the producer.
+        let dir = "target/ripr-atomic-cycle";
+        let _ = std::fs::remove_dir_all(dir);
+        let Ok(()) = std::fs::create_dir_all(dir) else { return };
+        let a = format!("{dir}/a");
+        let b = format!("{dir}/b");
+        let Ok(()) = std::os::unix::fs::symlink("b", &a) else { return };
+        let Ok(()) = std::os::unix::fs::symlink("a", &b) else { return };
+
+        let resolved = resolve_destination(std::path::Path::new(&a));
+        assert!(resolved.ends_with("a") || resolved.ends_with("b"), "cycle must terminate");
+
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

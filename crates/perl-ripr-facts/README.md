@@ -53,11 +53,29 @@ A consumer reading `out` therefore observes either the previous complete packet
 or the new complete packet — never a truncated or half-written one — and a
 failed generation, whether it fails at request validation, serialization, or
 the write itself, leaves the previous packet byte-identical. Staging is
-confined to the destination directory so the rename stays on one filesystem,
-and the staged sibling is removed on both the success and the failure path.
+confined to the destination directory so the rename stays on one filesystem.
+The staged sibling never survives the call: on success it is renamed into
+place, and on failure it is removed.
+
+Replacing a file is not the same operation as rewriting one, so the two
+differences a caller could otherwise observe are held to the previous
+behavior:
+
+- a **symlinked** `out` is followed to the file it names, which is then
+  replaced atomically. The link is preserved rather than overwritten by a
+  regular file, so a `latest.json -> packet-vN.json` publication keeps working.
+- an existing destination's **permissions** are carried onto the replacement,
+  so a `chmod` on the packet is not reset to the process umask on the next run.
 
 Written bytes are `serde_json::to_string_pretty` output with no trailing
 newline, unchanged by the staging.
+
+Durability is bounded: the staged file is synced before the rename, but the
+containing directory is not, so a crash can lose the rename itself. That
+still leaves a complete packet — the old one or the new one — never a partial
+one. On Windows the rename can fail with a sharing violation if another
+process holds `out` open without delete sharing; that surfaces as a normal
+write failure with the previous packet intact, not as corruption.
 
 ```rust
 use perl_ripr_facts::{build_ripr_facts_packet, RiprFactsRequest};
