@@ -638,9 +638,12 @@ impl<'a> Parser<'a> {
         // (#15742). Genuinely missing operands elsewhere keep the blocking
         // recovery via `recover_missing_infix_rhs` (#13489 review).
         let target = if self.is_infix_rhs_absent() {
-            // Admitted parse output (a valid targetless `goto`), not a
-            // recovery shell, so it routes through the charged node seam.
-            self.charge_node(NodeKind::MissingExpression, SourceLocation { start, end: start })?
+            // A valid targetless `goto`: charge the would-be child
+            // construction for budget accounting (#13489 review), but
+            // attach no node — the omission is legal, so the dedicated
+            // childless `TargetlessGoto` node carries it (#15742).
+            self.charge_node(NodeKind::MissingExpression, SourceLocation { start, end: start })?;
+            None
         } else if let Some(missing) = self.recover_missing_infix_rhs(start) {
             Some(missing)
         } else {
