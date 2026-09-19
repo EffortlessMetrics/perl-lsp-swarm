@@ -62,9 +62,11 @@ jobs:
     steps:
       # The publish workflow writes this only after verifying the crates are
       # present in the crates.io sparse index, and never for a dry run, so its
-      # presence is evidence of a real publication. Missing artifact is not an
-      # error here: the run block below turns its absence into a refusal with a
-      # diagnostic, rather than falling back to guessing from the ref.
+      # presence is evidence of a real publication. This step fails both when
+      # the artifact is absent and when the artifact service or the network
+      # fails, and `continue-on-error` keeps the job alive through both: the
+      # run block below separates the two against the upstream run's artifact
+      # metadata (#15481) instead of trusting this step's outcome.
       - name: Download publication receipt
         if: github.event_name == 'workflow_run'
         continue-on-error: true
@@ -81,8 +83,16 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           DISPATCH_VERSION: ${{ github.event.inputs.version }}
           WORKFLOW_RUN_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          WORKFLOW_RUN_ID: ${{ github.event.workflow_run.id }}
           RECEIPT_PATH: receipt/publication-receipt.json
+          # The artifact-name contract with the publish workflow; the resolver
+          # re-derives absence from the upstream run's artifact metadata
+          # (#15481), so it needs the same name the download step uses.
+          RECEIPT_ARTIFACT: publication-receipt
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          # The artifact metadata probe (#15481) is an authenticated
+          # actions: read call; GH_TOKEN authorises gh for it.
+          GH_TOKEN: ${{ github.token }}
         run: |
           if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
             VERSION="$DISPATCH_VERSION"
@@ -109,10 +119,57 @@ jobs:
             # (#9593). The receipt is written by the publish workflow after it
             # verifies the crates on the sparse index.
             if [ ! -f "$RECEIPT_PATH" ]; then
-              echo "::warning::Upstream run published no receipt; refusing to guess a version from the ref. Re-run this workflow by dispatch with an explicit version."
+              # An absent file is ambiguous (#15481): the download step above
+              # reports failure both when the upstream run published no
+              # receipt (a dry run, which publishes nothing and is a
+              # legitimate skip) and when the artifact service, the network,
+              # or auth broke (instrument failure reading as a skip). The
+              # step's own outcome cannot separate the two, so this branch
+              # consults a second, independent read of the upstream run: its
+              # artifact metadata, already within this workflow's actions
+              # read scope.
+              ARTIFACTS_QUERY_ERROR="$(mktemp)"
+              ARTIFACTS="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$WORKFLOW_RUN_ID/artifacts?name=$RECEIPT_ARTIFACT" 2>"$ARTIFACTS_QUERY_ERROR")" || {
+                printf '::error::The artifact metadata query for upstream run %s failed (%s), so an absent %s receipt cannot be distinguished from a failed download. This is instrument failure, not a verified skip; failing closed. (#15481)\n' \
+                  "$WORKFLOW_RUN_ID" "$(tr '\n' ' ' < "$ARTIFACTS_QUERY_ERROR")" "$RECEIPT_ARTIFACT"
+                echo "should_run=false" >> "$GITHUB_OUTPUT"
+                echo "version=unknown" >> "$GITHUB_OUTPUT"
+                exit 1
+              }
+              ARTIFACT_COUNT="$(printf '%s' "$ARTIFACTS" | python3 -c '
+          import json, sys
+          try:
+              print(json.load(sys.stdin).get("total_count", 0))
+          except Exception:
+              raise SystemExit("artifact metadata is not readable JSON")
+          ')" || {
+                printf '::error::The artifact metadata response for upstream run %s is not readable, so an absent %s receipt cannot be distinguished from a failed download; failing closed. (#15481)\n' "$WORKFLOW_RUN_ID" "$RECEIPT_ARTIFACT"
+                echo "should_run=false" >> "$GITHUB_OUTPUT"
+                echo "version=unknown" >> "$GITHUB_OUTPUT"
+                exit 1
+              }
+              if [ "$ARTIFACT_COUNT" -eq 0 ]; then
+                # Metadata confirms the artifact was never uploaded: the
+                # publish run published nothing, normally a dry run. That is
+                # a legitimate skip, and it must stay one: failing it would
+                # turn every dry run red. The warning names what was absent
+                # and where it was expected, and says what the skip does not
+                # prove, so a non-dry-run producer failure stays visible.
+                echo "::warning::Upstream run $WORKFLOW_RUN_ID has no $RECEIPT_ARTIFACT artifact (metadata confirms it was never uploaded; expected it to land at $RECEIPT_PATH): nothing was published, normally a publish dry run. Skipping. If this run was not a dry run, the publish run failed to emit its receipt and this skip proves nothing; re-run by dispatch with an explicit version."
+                echo "should_run=false" >> "$GITHUB_OUTPUT"
+                echo "version=unknown" >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
+              # The artifact exists, so the missing file can only be a failed
+              # read. Skipping here would present an unperformed proof as a
+              # benign outcome, the exact conflation #15481 names, so the job
+              # fails closed and the download step's log carries the
+              # transport or auth cause.
+              printf '::error::The %s artifact exists on upstream run %s, but the download failed (see the Download publication receipt step for the transport or auth cause). That is a failed read, not an absent receipt: refusing to skip or guess a version. (#15481)\n' \
+                "$RECEIPT_ARTIFACT" "$WORKFLOW_RUN_ID"
               echo "should_run=false" >> "$GITHUB_OUTPUT"
               echo "version=unknown" >> "$GITHUB_OUTPUT"
-              exit 0
+              exit 1
             fi
             # A receipt that exists but cannot be read as this schema is a
             # broken instrument, not a licence to skip. The reads below used to
@@ -121,19 +178,10 @@ jobs:
             # the job went green, the smoke test never ran, and nothing said so.
             # A v2 producer renaming a field would have landed in exactly that
             # branch (#15332). Refusing out loud is the point — the absence of
-            # a proof has to be as visible as a failed one.
-            #
-            # Note the asymmetry with the missing-file branch above, and what
-            # that branch does and does not establish. A file that is present
-            # but unintelligible means something was published and we cannot
-            # say what, so it fails here. No file at all is weaker evidence
-            # than it looks: it is usually a dry run, which publishes nothing
-            # and is a legitimate skip, but `continue-on-error` on the download
-            # also swallows an artifact-service failure into the same state,
-            # and the step's outcome is `failure` either way. Separating those
-            # needs evidence this job does not have — see #15481. Until then
-            # that branch stays a warning, and it is not proof that nothing
-            # was published.
+            # a proof has to be as visible as a failed one. It is the same
+            # asymmetry the missing-file branch now resolves against artifact
+            # metadata (#15481): present-but-unintelligible means something was
+            # published and cannot be described, so it fails here outright.
             #
             # The subject is decoded here too, from the same read. The receipt
             # records the commit the publish actually ran from, and the proof
