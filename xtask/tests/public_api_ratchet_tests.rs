@@ -117,6 +117,25 @@ fn baselines_exist_for_every_listed_crate() -> Result<(), Box<dyn std::error::Er
     Ok(())
 }
 
+/// True when the line is a guarded public item (#15634): a plain `pub ` item,
+/// or an attribute-fronted item — any run of leading bracketed attributes
+/// (`#[repr(u8)]`, `#[non_exhaustive] #[repr(i32)]`, ...) followed by `pub `.
+///
+/// The attribute run is stripped iteratively from the front rather than by
+/// splitting on `"] "`: an item whose own signature contains `] ` (for
+/// example a slice in a rendered return type) would otherwise split at the
+/// wrong bracket and produce a false negative.
+fn is_guarded_surface_line(line: &str) -> bool {
+    let mut tail = line;
+    while let Some(rest) = tail.strip_prefix("#[") {
+        match rest.find(']') {
+            Some(end) => tail = rest[end + 1..].trim_start(),
+            None => return false,
+        }
+    }
+    tail.starts_with("pub ")
+}
+
 /// Test B: Each listed crate's baseline file is non-empty
 #[test]
 fn baseline_files_are_non_empty() -> Result<(), Box<dyn std::error::Error>> {
@@ -136,12 +155,16 @@ fn baseline_files_are_non_empty() -> Result<(), Box<dyn std::error::Error>> {
             crate_name
         );
 
-        // Verify that lines start with "pub " (public API items)
+        // Every line must be a guarded public item (#15634): a plain `pub `
+        // item, or an attribute-fronted item (`#[repr(u8)] pub ...`) —
+        // attributes on public items are part of the public contract and the
+        // ratchet must record them, not silently drop them.
         let non_empty_lines: Vec<_> = content.lines().filter(|l| !l.trim().is_empty()).collect();
         for (line_num, line) in non_empty_lines.iter().enumerate() {
             assert!(
-                line.starts_with("pub "),
-                "Baseline {} line {} does not start with 'pub ': {}",
+                is_guarded_surface_line(line),
+                "Baseline {} line {} is not a guarded public item (expected 'pub ' or \
+                 attribute-fronted 'pub'): {}",
                 crate_name,
                 line_num + 1,
                 line
@@ -150,6 +173,30 @@ fn baseline_files_are_non_empty() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     Ok(())
+}
+
+/// Test B2 (unit): the guarded-surface shape checker admits exactly the lines
+/// the widened `_public-api-filter` regex keeps (#15634).
+#[test]
+fn guarded_surface_line_shape() {
+    // Plain public items.
+    assert!(is_guarded_surface_line("pub struct alpha"));
+    assert!(is_guarded_surface_line("pub fn perl_lsp_rs_core::f"));
+    // Single and repeated attribute fronts (the cases the old `^pub ` filter
+    // dropped).
+    assert!(is_guarded_surface_line("#[repr(u8)] pub enum beta"));
+    assert!(is_guarded_surface_line(
+        "#[repr(i32)] #[non_exhaustive] pub enum perl_lsp_rs_core::protocol::ErrorCode"
+    ));
+    // An item signature containing `] ` must not break the attribute scan.
+    assert!(is_guarded_surface_line("#[some_attr] pub fn foo() -> &[u8] where T: Debug"));
+    // Non-item lines stay out.
+    assert!(!is_guarded_surface_line("// comment line"));
+    assert!(!is_guarded_surface_line(""));
+    // Attributes without a following `pub ` item stay out: the filter must
+    // not admit arbitrary attribute lines.
+    assert!(!is_guarded_surface_line("#[repr(u8)] struct secret"));
+    assert!(!is_guarded_surface_line("#[unterminated"));
 }
 
 /// Test C: Justfile has public-api-check and public-api-update recipes
@@ -314,9 +361,13 @@ fn contributing_md_documents_public_api_workflow() -> Result<(), Box<dyn std::er
 ///
 /// Specifically verifies:
 /// 1. `set -euo pipefail` is present so the script aborts on errors.
-/// 2. The grep pipeline uses `|| true` so that an empty match (e.g., from a compile error
-///    silenced by `2>/dev/null`) does NOT abort the script early via set -e, allowing the
-///    FAILED counter and the final exit-1 to report the real problem instead.
+/// 2. The guarded surface is derived through the shared `_public-api-filter`
+///    helper (#15634), which keeps the `|| true` tolerance so that an empty
+///    match (e.g., from a compile error silenced by `2>/dev/null`) does NOT
+///    abort the script early via set -e, allowing the FAILED counter and the
+///    final exit-1 to report the real problem instead. The helper must admit
+///    attribute-fronted public items (`#[repr(u8)] pub ...`) — the old
+///    `^pub `-only filter silently dropped them from the ratchet.
 /// 3. The `diff -u` comparison runs and FAILED is set on non-zero diff exit.
 #[test]
 fn public_api_check_script_has_correct_fail_semantics() -> Result<(), Box<dyn std::error::Error>> {
@@ -337,19 +388,45 @@ fn public_api_check_script_has_correct_fail_semantics() -> Result<(), Box<dyn st
         "public-api-check must use 'set -euo pipefail'"
     );
 
-    // The grep invocation must have '|| true' to avoid aborting the loop when
+    // One filter, one owner (#15634): the check recipe must not restate the
+    // surface filter; it delegates to the shared _public-api-filter helper.
+    assert!(
+        check_body.contains(
+            "just _public-api-filter \"/tmp/${crate}-raw.txt\" \"/tmp/${crate}-current.txt\""
+        ),
+        "public-api-check must derive the guarded surface via the shared _public-api-filter helper (#15634)"
+    );
+    assert!(
+        !check_body.contains("grep \"^pub \"") && !check_body.contains("grep '^pub '"),
+        "public-api-check must not restate the surface filter; _public-api-filter owns it (#15634)"
+    );
+
+    // Extract the shared filter recipe body: the signature line opens it and
+    // the next recipe's comment header closes it.
+    let filter_body = justfile
+        .split("_public-api-filter raw out:\n")
+        .nth(1)
+        .ok_or("Could not find _public-api-filter recipe in justfile")?
+        .split("\n# Check public API surface")
+        .next()
+        .ok_or("Could not delimit _public-api-filter recipe body")?;
+
+    // The filter invocation must have '|| true' to avoid aborting the loop when
     // cargo-public-api produces empty output (e.g., due to a compile error silenced
     // by `2>/dev/null`).  Without it, grep exits 1 on zero matches and set -e kills
     // the script before the FAILED counter is evaluated.
     assert!(
-        check_body.contains("grep \"^pub \"") || check_body.contains("grep '^pub '"),
-        "public-api-check must grep for '^pub ' items"
+        filter_body.contains("|| true"),
+        "_public-api-filter must tolerate grep's no-match exit so an empty surface \
+         reaches the caller's INSTRUMENT-FAIL classification"
     );
+
+    // The filter must admit attribute-fronted public items (#15634): a run of
+    // bracketed attributes followed by `pub `, alongside plain `pub ` items.
     assert!(
-        check_body.contains("grep \"^pub \" > \"/tmp/${crate}-current.txt\" || true")
-            || check_body.contains("grep \"^pub \" > \"/tmp/${crate}-current.txt\"  || true")
-            || (check_body.contains("grep \"^pub \"") && check_body.contains("|| true")),
-        "public-api-check grep pipeline must end with '|| true' to prevent set -e abort on empty output"
+        filter_body.contains("^(pub |(#\\[[^]]*\\][[:space:]]*)+pub )"),
+        "_public-api-filter must keep both plain 'pub ' items and attribute-fronted \
+         public items ('#[...] pub ...'), not drop the latter (#15634)"
     );
 
     assert!(

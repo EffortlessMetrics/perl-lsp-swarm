@@ -15,7 +15,9 @@ from copy import deepcopy
 from tempfile import TemporaryDirectory
 import unittest
 from pathlib import Path
-from shutil import copytree, which
+
+from bash_binary import bash_binary
+from shutil import copytree
 from unittest.mock import patch
 
 
@@ -508,12 +510,20 @@ class ReleaseTopologyTests(unittest.TestCase):
         targets = MODULE.derive_targets(workflow, "0.18.0")
         self.assertTrue(any(target["archive_name"].endswith(".zip") for target in targets))
         self.assertTrue(any(target["archive_name"].endswith(".tar.gz") for target in targets))
-        bash = which("bash")
+        bash = bash_binary()
         self.assertIsNotNone(bash, "Linux Bash (or WSL Bash) is required for the producer oracle")
         platform = subprocess.run([bash, "--noprofile", "--norc", "-c", "uname -s"],
                                   capture_output=True, text=True, timeout=30)
         self.assertEqual(platform.returncode, 0, platform.stderr)
-        self.assertEqual(platform.stdout.strip(), "Linux", "The production checksum oracle requires Linux; Git Bash uses a different sha256sum default")
+        if platform.stdout.strip() != "Linux":
+            # Honest platform envelope (#15401, #15395 pattern): the production
+            # checksum oracle requires Linux — Git Bash's sha256sum behaves
+            # differently — so the producer half of this oracle is Linux-only.
+            # The workflow-shape assertions above already ran everywhere.
+            self.skipTest(
+                "production checksum producer requires Linux; "
+                f"bash here reports {platform.stdout.strip()!r}"
+            )
 
         def execute(script, duplicate=False):
             with TemporaryDirectory() as temporary:
@@ -1976,6 +1986,163 @@ class ReleaseTopologyTests(unittest.TestCase):
         self.assertEqual(
             MODULE.derive_downloader_targets(commented_return, workflow_targets), set()
         )
+
+    def test_downloader_target_derivation_rejects_regex_literal_pseudo_returns(self):
+        """TypeScript regex literals must not satisfy a Windows target return.
+
+        ``/return 'x86_64-pc-windows-msvc'/g`` is lexically a regex literal, not
+        code; the downloader's mask must treat it as a non-code region.  This is
+        the regression fixed alongside the existing comment/string coverage.
+        """
+        workflow_targets = {"x86_64-pc-windows-msvc"}
+        regex_in_assignment = """
+        const pseudo = /return 'x86_64-pc-windows-msvc'/g;
+        """
+        regex_after_newline = """
+        /return 'x86_64-pc-windows-msvc'/;
+        """
+        regex_with_flags = """
+        const re = /return 'x86_64-pc-windows-msvc'/gim;
+        """
+        regex_inside_block = """
+        const arr = [
+            /return 'x86_64-pc-windows-msvc'/,
+        ];
+        """
+        # The same shape, but inside a string literal, must also be rejected.
+        string_with_regex_text = """
+        const doc = "/return 'x86_64-pc-windows-msvc'/";
+        """
+        # And division on the same source must NOT be confused with a regex
+        # literal — this is the lexer-disambiguation surface.
+        division_safe = """
+        const a = numerator;
+        const b = a / denominator;
+        return 'x86_64-pc-windows-msvc';
+        """
+        self.assertEqual(
+            MODULE.derive_downloader_targets(regex_in_assignment, workflow_targets),
+            set(),
+        )
+        self.assertEqual(
+            MODULE.derive_downloader_targets(regex_after_newline, workflow_targets),
+            set(),
+        )
+        self.assertEqual(
+            MODULE.derive_downloader_targets(regex_with_flags, workflow_targets),
+            set(),
+        )
+        self.assertEqual(
+            MODULE.derive_downloader_targets(regex_inside_block, workflow_targets),
+            set(),
+        )
+        self.assertEqual(
+            MODULE.derive_downloader_targets(string_with_regex_text, workflow_targets),
+            set(),
+        )
+        self.assertEqual(
+            MODULE.derive_downloader_targets(division_safe, workflow_targets),
+            {"x86_64-pc-windows-msvc"},
+        )
+
+    def test_downloader_target_derivation_rejects_commented_darwin_ternary(self):
+        """A commented macOS target ternary must not satisfy darwin targets.
+
+        The downloader constructs both darwin targets in one ternary
+        expression.  Commenting out that ternary (line or block comment)
+        must remove the targets from the admitted set.
+        """
+        workflow_targets = {"aarch64-apple-darwin", "x86_64-apple-darwin"}
+        live = """
+        return arch === 'arm64' ? 'aarch64-apple-darwin' : 'x86_64-apple-darwin';
+        """
+        commented_line = """
+        // return arch === 'arm64' ? 'aarch64-apple-darwin' : 'x86_64-apple-darwin';
+        """
+        commented_block = """
+        /* return arch === 'arm64' ? 'aarch64-apple-darwin' : 'x86_64-apple-darwin'; */
+        """
+        regex_pseudo = """
+        const re = /return arch === 'arm64' \\? 'aarch64-apple-darwin' : 'x86_64-apple-darwin'/;
+        """
+        self.assertEqual(
+            MODULE.derive_downloader_targets(live, workflow_targets),
+            workflow_targets,
+        )
+        self.assertEqual(
+            MODULE.derive_downloader_targets(commented_line, workflow_targets),
+            set(),
+        )
+        self.assertEqual(
+            MODULE.derive_downloader_targets(commented_block, workflow_targets),
+            set(),
+        )
+        self.assertEqual(
+            MODULE.derive_downloader_targets(regex_pseudo, workflow_targets),
+            set(),
+        )
+
+    def test_downloader_target_derivation_rejects_comment_linux_construction(self):
+        """Commented Linux target construction must not satisfy Linux targets.
+
+        ``derive_downloader_targets`` admits every ``*-unknown-linux-{gnu,musl}``
+        workflow target when the downloader constructs the Linux triple with
+        ``return `${archPrefix}-unknown-linux-${libc}``` *and* sets ``archPrefix``
+        *and* recognises both ``gnu`` and ``musl`` libc branches.  Each of those
+        signals must be present in executable code; a commented-out form of any
+        one of them must not be admitted.
+        """
+        workflow_targets = {
+            "x86_64-unknown-linux-gnu",
+            "aarch64-unknown-linux-gnu",
+            "x86_64-unknown-linux-musl",
+            "aarch64-unknown-linux-musl",
+        }
+        full = """
+        return `${archPrefix}-unknown-linux-${libc}`;
+        archPrefix = arch === 'arm64' ? 'aarch64' : 'x86_64';
+        value === 'gnu';
+        value === 'musl';
+        """
+        self.assertEqual(
+            MODULE.derive_downloader_targets(full, workflow_targets),
+            workflow_targets,
+        )
+        commented_template = """
+        // return `${archPrefix}-unknown-linux-${libc}`;
+        archPrefix = arch === 'arm64' ? 'aarch64' : 'x86_64';
+        value === 'gnu';
+        value === 'musl';
+        """
+        commented_arch = """
+        return `${archPrefix}-unknown-linux-${libc}`;
+        // archPrefix = arch === 'arm64' ? 'aarch64' : 'x86_64';
+        value === 'gnu';
+        value === 'musl';
+        """
+        commented_gnu = """
+        return `${archPrefix}-unknown-linux-${libc}`;
+        archPrefix = arch === 'arm64' ? 'aarch64' : 'x86_64';
+        // value === 'gnu';
+        value === 'musl';
+        """
+        commented_musl = """
+        return `${archPrefix}-unknown-linux-${libc}`;
+        archPrefix = arch === 'arm64' ? 'aarch64' : 'x86_64';
+        value === 'gnu';
+        // value === 'musl';
+        """
+        for name, source in (
+            ("commented template", commented_template),
+            ("commented arch", commented_arch),
+            ("commented gnu", commented_gnu),
+            ("commented musl", commented_musl),
+        ):
+            with self.subTest(case=name):
+                self.assertEqual(
+                    MODULE.derive_downloader_targets(source, workflow_targets),
+                    set(),
+                )
 
     def test_manifest_mutations_fail_closed(self):
         with self.valid_manifest_fixture() as (root, manifest, frozen_sha):
