@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "owner_issue": 8109,
-  "reason": "Issue #8109 resolved the DAP processId attach refusal fail-closed (carrier PR #14402), whose README claim correction replaced the PID-attach bullet with the accurate TCP-attach text: packaged readme.md grew 26643 to 26678 bytes with no file added, removed, or renamed. Declared size-only transition under the #6889 candidate-bound inventory contract; measurement source is the current-source Linux smoke projected actual on linux-x64.",
-  "base_baseline_file_sha256": "4c255b43c74e7d82f6cd80b4f72a17d9c53fd3809e648006fe5fc0170282590b",
-  "candidate_baseline_file_sha256": "9ce2942d3dd0d02fdbbc3da2ca83e8a43f64867eaf2f5146c184836572cff409",
-  "base_inventory_sha256": "7a4998a323300acbe550598f0622dcc9cf437b087ab37b5b0f5d574de519ad64",
-  "candidate_inventory_sha256": "49b660b62b3dcd264bde239fe974c5f07b75b9483eb860996575faf1eb59531c"
+  "owner_issue": 15981,
+  "reason": "The checked-in baseline recorded by #15940 packaged out/extension.js=1696148, package.json=60871, and snippets/launch.json=1139 — sizes that match no tree since f7730d229c and never matched the commit that merged (#15981). The repo files are 60716 and 791 bytes verbatim; three observed linux-x64 archive measurements (both #15949 matrix legs and the main-tip dispatch run 35460883422) agree byte-for-byte on the corrected map recorded here (total 1876288, actual inventory 896b3f73…). This transition re-binds the baseline to the produced package.",
+  "base_baseline_file_sha256": "9ce2942d3dd0d02fdbbc3da2ca83e8a43f64867eaf2f5146c184836572cff409",
+  "candidate_baseline_file_sha256": "68410631ff794c5ce32e28c310645316898e0b7f79f7fd85910fcb59a79f4530",
+  "base_inventory_sha256": "49b660b62b3dcd264bde239fe974c5f07b75b9483eb860996575faf1eb59531c",
+  "candidate_inventory_sha256": "896b3f738662ab34991fc07b499033eb647fbaf2c1d8b39d2b46bae3cbc3df3a"
 }
