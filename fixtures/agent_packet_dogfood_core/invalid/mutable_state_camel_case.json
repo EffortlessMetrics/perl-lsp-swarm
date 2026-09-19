@@ -1,0 +1,7 @@
+{
+  "schema": "agent_packet_dogfood.core.v1",
+  "metadata": {
+    "wakeEvent": "checks complete",
+    "leaseOwner": "agent"
+  }
+}
