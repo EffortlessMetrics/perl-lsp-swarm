@@ -1195,9 +1195,27 @@ fn observe_candidate_git_identity(
                     .instrument_failures
                     .push(format!("resolving candidate {label} identity: {error}")),
             },
-            Err(error) => evidence
-                .contradictions
-                .push(format!("CANDIDATE_{label}_IDENTITY_UNAVAILABLE: {error}")),
+            Err(error) => {
+                // When the administrative file backing this git check is already
+                // known to be missing, the git failure is a downstream consequence
+                // of that observed absence. Record it as an unknown rather than a
+                // contradiction so the planner can classify DirtyOrIndexUnknown
+                // from the missing-file observation instead of IdentityConflict.
+                let admin_missing = match argument {
+                    "--git-dir" => evidence.administrative_gitdir.value.is_none(),
+                    "--git-common-dir" => evidence.administrative_commondir.value.is_none(),
+                    _ => false,
+                };
+                if admin_missing {
+                    evidence
+                        .unknowns
+                        .push(format!("CANDIDATE_{label}_IDENTITY_UNAVAILABLE: {error}"));
+                } else {
+                    evidence
+                        .contradictions
+                        .push(format!("CANDIDATE_{label}_IDENTITY_UNAVAILABLE: {error}"));
+                }
+            }
         }
     }
     match read_git_line_required(candidate, &["rev-parse", "HEAD"]) {
