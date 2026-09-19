@@ -11,6 +11,9 @@
 use anyhow::{Context, Result, anyhow};
 use perl_dap::DapMessage;
 use perl_dap::backend::capabilities::ControlMode;
+// The token canary check is a `#[cfg(target_os = "linux")]` row; off Linux the
+// import is deliberately unused.
+#[cfg_attr(not(target_os = "linux"), allow(unused_imports))]
 use perl_dap::backend::peer_launch::{ENV_PEER_TOKEN, PeerListenEndpoint};
 use perl_dap::peer_protocol::message::{PeerMessage, PeerRequest, command};
 use perl_dap::peer_protocol::payloads::HelloArgs;
@@ -360,8 +363,11 @@ fn assert_socket_fails_before_bind(
 struct StdioAdapter {
     child: Child,
     stdin: Option<std::process::ChildStdin>,
+    // Only the `#[cfg(target_os = "linux")]` protocol rows read these fields.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     rx: Receiver<std::result::Result<DapMessage, String>>,
     stderr: Option<JoinHandle<String>>,
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     pending: VecDeque<DapMessage>,
 }
 
@@ -390,6 +396,7 @@ impl StdioAdapter {
         self.child.id()
     }
 
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     fn send_request(&mut self, seq: i64, command: &str, arguments: Option<Value>) -> Result<()> {
         let payload = serde_json::to_vec(&json!({
             "type": "request",
@@ -404,6 +411,7 @@ impl StdioAdapter {
         Ok(())
     }
 
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     fn wait_for_response(&mut self, request_seq: i64, command: &str) -> Result<DapMessage> {
         self.wait_for_message(format!("response `{command}` #{request_seq}"), |msg| {
             matches!(
@@ -414,6 +422,7 @@ impl StdioAdapter {
         })
     }
 
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     fn wait_for_event(&mut self, name: &str) -> Result<DapMessage> {
         self.wait_for_message(
             format!("event `{name}`"),
@@ -421,6 +430,7 @@ impl StdioAdapter {
         )
     }
 
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     fn wait_for_message(
         &mut self,
         description: String,
@@ -590,6 +600,7 @@ fn assert_no_tcp_initialize(addr: SocketAddr, why: &str) -> Result<()> {
     }
 }
 
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn initialize_args() -> Value {
     json!({
         "adapterID": "perl-dap",
@@ -599,6 +610,7 @@ fn initialize_args() -> Value {
     })
 }
 
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn dap_text(message: &DapMessage) -> String {
     serde_json::to_string(message).unwrap_or_else(|_| format!("{message:?}"))
 }
@@ -690,6 +702,7 @@ impl Drop for ListeningFakePeer {
     }
 }
 
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn send_wrong_token_hello(addr: SocketAddr, token: &str) -> Result<()> {
     let mut stream = TcpStream::connect_timeout(&addr, ATTACKER_TIMEOUT)?;
     stream.set_write_timeout(Some(ATTACKER_TIMEOUT))?;

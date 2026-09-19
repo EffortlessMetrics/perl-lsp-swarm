@@ -2181,7 +2181,7 @@ print "result: $final\n";
                     }
                     Ok(())
                 }
-                _ => return Err("Expected response".into()),
+                _ => Err("Expected response".into()),
             }
         };
         let assert_invalid = |response: DapMessage| -> Result<(), Box<dyn std::error::Error>> {
@@ -2196,7 +2196,7 @@ print "result: $final\n";
                     }
                     Ok(())
                 }
-                _ => return Err("Expected response".into()),
+                _ => Err("Expected response".into()),
             }
         };
         let assert_ambiguous = |response: DapMessage| -> Result<(), Box<dyn std::error::Error>> {
