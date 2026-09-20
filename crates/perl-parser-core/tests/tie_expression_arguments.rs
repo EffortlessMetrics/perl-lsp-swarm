@@ -178,3 +178,121 @@ fn bare_tie_retains_list_operator_ownership() -> TestResult {
         "wrong nested bare argument",
     )
 }
+
+#[test]
+fn ternary_class_keeps_constructor_and_caller_arguments() -> TestResult {
+    for separator in [",", "=>"] {
+        let source = format!("f(tie(%h, $cond ? 'C' : 'D' {separator} $seed), $after);");
+        let ast = clean(&source)?;
+        let call = find(&ast, "FunctionCall").ok_or("missing outer call")?;
+        let NodeKind::FunctionCall { name, args } = &call.kind else {
+            return Err("expected function call".into());
+        };
+        require(name == "f" && args.len() == 2, "caller must own two arguments")?;
+        let tied = args.first().ok_or("missing tie argument")?;
+        let NodeKind::Tie { variable, package, args: constructor_args } = &tied.kind else {
+            return Err("expected tie argument".into());
+        };
+        require(
+            matches!(&variable.kind, NodeKind::Variable { sigil, name } if sigil == "%" && name == "h"),
+            "wrong tied variable",
+        )?;
+        require(constructor_args.len() == 1, "ternary class swallowed constructor argument")?;
+        let NodeKind::Ternary { condition, then_expr, else_expr } = &package.kind else {
+            return Err("class must be a ternary expression".into());
+        };
+        require(
+            matches!(&condition.kind, NodeKind::Variable { sigil, name } if sigil == "$" && name == "cond"),
+            "wrong ternary condition",
+        )?;
+        for (branch, expected) in [(then_expr, "'C'"), (else_expr, "'D'")] {
+            require(
+                matches!(&branch.kind, NodeKind::String { value, .. } if value == expected)
+                    && text(&source, branch) == Some(expected),
+                "ternary branch must retain only its class operand",
+            )?;
+        }
+        require(text(&source, package) == Some("$cond ? 'C' : 'D'"), "wrong class span")?;
+        let seed = constructor_args.first().ok_or("missing constructor seed")?;
+        require(
+            matches!(&seed.kind, NodeKind::Variable { sigil, name } if sigil == "$" && name == "seed")
+                && text(&source, seed) == Some("$seed"),
+            "wrong constructor argument",
+        )?;
+        require(
+            text(&source, tied)
+                == Some(format!("tie(%h, $cond ? 'C' : 'D' {separator} $seed)").as_str()),
+            "wrong tie span",
+        )?;
+        let after = args.get(1).ok_or("missing caller sibling")?;
+        require(
+            matches!(&after.kind, NodeKind::Variable { sigil, name } if sigil == "$" && name == "after")
+                && text(&source, after) == Some("$after"),
+            "wrong caller sibling",
+        )?;
+    }
+    Ok(())
+}
+
+#[test]
+fn tie_operand_boundary_preserves_nested_expression_ownership() -> TestResult {
+    for expression in [
+        "$cond ? ('C', 'D') : 'E'",
+        "$cond ? 'C' : ('D', 'E')",
+        "choose('C', 'D')",
+        "$class = $cond ? 'C' : 'D'",
+        "$cond ? 'C' : $other ? 'D' : 'E'",
+    ] {
+        let source = format!("f(tie(%h, {expression}, $seed), $after);");
+        let ast = clean(&source)?;
+        let tied = find(&ast, "Tie").ok_or("missing tie")?;
+        let NodeKind::Tie { package, args, .. } = &tied.kind else {
+            return Err("expected tie".into());
+        };
+        require(
+            text(&source, package) == Some(expression),
+            "class lost nested expression ownership",
+        )?;
+        require(args.len() == 1, "nested class must leave one constructor argument")?;
+        require(
+            matches!(&args.first().ok_or("missing seed")?.kind, NodeKind::Variable { sigil, name } if sigil == "$" && name == "seed"),
+            "wrong constructor seed",
+        )?;
+        if expression.starts_with("$cond ?")
+            && (expression.contains("('C', 'D')") || expression.contains("('D', 'E')"))
+        {
+            let NodeKind::Ternary { then_expr, else_expr, .. } = &package.kind else {
+                return Err("grouped class must retain ternary".into());
+            };
+            let grouped = if expression.starts_with("$cond ? (") { then_expr } else { else_expr };
+            require(
+                matches!(&grouped.kind, NodeKind::ArrayLiteral { elements } if elements.len() == 2),
+                "explicit group must retain both list elements",
+            )?;
+        } else if expression.starts_with("choose") {
+            require(
+                matches!(&package.kind, NodeKind::FunctionCall { name, args } if name == "choose" && args.len() == 2),
+                "nested call must retain both operands",
+            )?;
+        } else if expression.starts_with("$class =") {
+            require(
+                matches!(&package.kind, NodeKind::Assignment { rhs, .. } if matches!(&rhs.kind, NodeKind::Ternary { .. })),
+                "assignment RHS must retain the ternary",
+            )?;
+        } else {
+            require(
+                matches!(&package.kind, NodeKind::Ternary { else_expr, .. } if matches!(&else_expr.kind, NodeKind::Ternary { .. })),
+                "else chain must remain nested",
+            )?;
+        }
+    }
+    let source = "f(tie(%h, 'C', $cond ? $left : $right, $seed), $after);";
+    let ast = clean(source)?;
+    let tied = find(&ast, "Tie").ok_or("missing constructor ternary tie")?;
+    let args = tie(tied, source, "%h", "C", "tie(%h, 'C', $cond ? $left : $right, $seed)", 2)?;
+    require(
+        matches!(&args.first().ok_or("missing ternary argument")?.kind, NodeKind::Ternary { .. })
+            && args.get(1).and_then(|arg| text(source, arg)) == Some("$seed"),
+        "constructor ternary must leave its following operand outside",
+    )
+}

@@ -792,7 +792,7 @@ impl<'a> Parser<'a> {
                             ) {
                                 Box::new(self.parse_variable_declaration()?)
                             } else {
-                                Box::new(self.parse_assignment()?)
+                                Box::new(self.parse_assignment_before_separator()?)
                             };
                             // Accept comma or fat arrow between variable and
                             // package — Perl treats `=>` as a synonym for `,`.
@@ -810,7 +810,7 @@ impl<'a> Parser<'a> {
                                     ));
                                 }
                             }
-                            let package = Box::new(self.parse_assignment()?);
+                            let package = Box::new(self.parse_assignment_before_separator()?);
                             let mut args = vec![];
                             while matches!(
                                 self.peek_kind(),
@@ -820,7 +820,7 @@ impl<'a> Parser<'a> {
                                 if has_parens && self.peek_kind() == Some(TokenKind::RightParen) {
                                     break;
                                 }
-                                args.push(self.parse_assignment()?);
+                                args.push(self.parse_assignment_before_separator()?);
                             }
                             // Some operands consume tokens directly, so their AST end is authoritative.
                             let mut end = args.last().map_or(package.location.end, |arg| arg.location.end);
