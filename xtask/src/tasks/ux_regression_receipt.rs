@@ -304,12 +304,15 @@ fn discriminate_failing_tests(raw: &str) -> Vec<UxFailingTest> {
         });
     }
 
-    if !discriminated.is_empty() {
-        return discriminated;
-    }
-
-    // Cargo reported failures but printed no stdout block for them. Name the tests
+    // Cargo reported these failures but printed no stdout block for them. Name them
     // and admit the mode is unknown rather than borrowing the whole-log class.
+    //
+    // This runs even when other failures did produce blocks. A blockless failure the
+    // array silently dropped was invisible to every consumer: to `first_failing_test`'s
+    // own lookup, which then printed no per-test clause at all instead of saying
+    // `not discriminated`, and to `no_failing_test_compared_anything`, which would
+    // have read a run as crash-only while an unexplained failure sat beside the
+    // crash. Raised in review as `#discussion_r4058216209`.
     for line in raw.lines() {
         let Some(capture) = FAILED_TEST_RE.captures(line) else {
             continue;
@@ -500,9 +503,9 @@ fn scenario_from_test_name(test: &str) -> Option<String> {
 /// `BaselineDrift` routes to `update_baseline`, which tells a reader to accept the
 /// observed value as the new expectation. A test that panicked produced no observed
 /// value, so there is nothing to accept, and following that instruction would widen
-/// a budget or rewrite a snapshot on the strength of a crash. When the failing tests
-/// show a crash and no comparison at all (`no_failing_test_compared_anything`), the
-/// baseline verdict is therefore withdrawn in favour of `Unknown`, which routes to
+/// a budget or rewrite a snapshot on the strength of a crash. When every failing
+/// test is a proven crash (`no_failing_test_compared_anything`), the baseline
+/// verdict is therefore withdrawn in favour of `Unknown`, which routes to
 /// `Triage`. That is deliberately not a claim about what did go wrong — naming the
 /// right class for a panic is the open taxonomy question in #16103 — only that this
 /// run cannot be answered with a baseline. `blocking` does not read the class, so
@@ -530,29 +533,29 @@ fn run_failure_class(failing_tests: &[UxFailingTest], raw: &str) -> UxFailureCla
     scanned
 }
 
-/// True when a crash, and nothing that compared a value, is all the failing tests
-/// show.
+/// True when every failing test is a proven crash.
 ///
 /// A baseline or snapshot failure is an assertion: two values were produced and one
 /// was rejected. `classify_failure_mode` records an assertion in a block as
 /// `AssertionFailed` or `AssertionOnAbsentObservation`, and reaches `Panic` only
-/// after finding no assertion line at all; `Unknown` means the block carried
-/// neither. So when every failing test is `Panic` or `Unknown` and at least one
-/// panicked, no failing test performed a comparison, and the word that produced
-/// `BaselineDrift` came from somewhere in the log that did not fail.
+/// after reading the whole block and finding no assertion line at all. So a run
+/// whose every failing test is `Panic` contains no comparison, and the word that
+/// produced `BaselineDrift` came from somewhere in the log that did not fail.
 ///
-/// The converse is why any other co-failure leaves the class alone: an
+/// Every other mode leaves the class alone, and `Unknown` is the one worth naming.
+/// It does not mean "no comparison" — it means `classify_failure_mode` recognised
+/// no marker, which is also what a failure with no stdout block at all produces. An
+/// unrecognised baseline mismatch is exactly that shape, so reading `Unknown` as
+/// corroboration would take `update_baseline` away from a real baseline failure on
+/// the strength of having learned nothing about it. Review raised that
+/// (`#discussion_r4058216213`) against a first version that admitted `Unknown`
+/// alongside `Panic`; requiring affirmative evidence from every failing test is the
+/// same precedence `run_failure_class` already applies to budgets one level up.
 /// `AssertionFailed` beside a panic may well be the baseline comparison the class
-/// names, and taking `update_baseline` away from it would be the mirror of the
-/// defect this guards. `BudgetExceeded` returns at the deadline marker without
-/// reading further, so a block classified that way is not known to be free of an
-/// assertion either. Absence of evidence does not become evidence here any more
-/// than it does one level down.
+/// names, and `BudgetExceeded` returns at the deadline marker without reading
+/// further, so such a block is not known to be free of an assertion either.
 fn no_failing_test_compared_anything(failing_tests: &[UxFailingTest]) -> bool {
-    failing_tests.iter().any(|test| test.mode == UxFailureMode::Panic)
-        && failing_tests
-            .iter()
-            .all(|test| matches!(test.mode, UxFailureMode::Panic | UxFailureMode::Unknown))
+    !failing_tests.is_empty() && failing_tests.iter().all(|test| test.mode == UxFailureMode::Panic)
 }
 
 fn infer_failure_class(raw: &str) -> UxFailureClass {
@@ -1555,5 +1558,109 @@ test result: FAILED. 0 passed; 2 failed; 0 ignored";
             receipt.merge_action, "update_baseline",
             "the guard withdraws an unsupported verdict; it must not withdraw a supported one"
         );
+    }
+
+    /// Two failing tests where the FIRST printed no stdout block at all and the
+    /// second did. Cargo does this whenever a failure produces no captured output.
+    const BLOCKLESS_FIRST_FAILURE_LOG: &str = "running 2 tests\n\
+test ux_scenario_01_startup::start ... FAILED\n\
+test ux_latency_raw_rpc::ux_latency_hover_is_prompt ... FAILED\n\
+\n\
+failures:\n\
+\n\
+---- ux_latency_raw_rpc::ux_latency_hover_is_prompt stdout ----\n\
+thread 'main' panicked at crates/perl-lsp-ux-tests/tests/ux_latency_raw_rpc.rs:212:5:\n\
+hover wait ended: deadline expired after 5000ms with the stream still live\n\
+\n\
+failures:\n\
+    ux_scenario_01_startup::start\n\
+    ux_latency_raw_rpc::ux_latency_hover_is_prompt\n\
+\n\
+test result: FAILED. 0 passed; 2 failed; 0 ignored";
+
+    #[test]
+    fn a_blockless_failure_survives_beside_one_that_printed_a_block() {
+        let receipt = classify(BLOCKLESS_FIRST_FAILURE_LOG, None);
+
+        assert_eq!(
+            receipt.failing_tests.len(),
+            2,
+            "a failure cargo printed no block for is still a failure: {:?}",
+            receipt.failing_tests.iter().map(|test| &test.name).collect::<Vec<_>>()
+        );
+
+        let blockless =
+            receipt.failing_tests.iter().find(|test| test.name == "ux_scenario_01_startup::start");
+        assert_eq!(
+            blockless.map(|test| test.mode),
+            Some(UxFailureMode::Unknown),
+            "the blockless failure must be recorded, and as unexplained"
+        );
+        assert_eq!(
+            blockless.map(|test| test.discriminated),
+            Some(false),
+            "no block is no evidence"
+        );
+
+        let with_block = receipt
+            .failing_tests
+            .iter()
+            .find(|test| test.name == "ux_latency_raw_rpc::ux_latency_hover_is_prompt");
+        assert_eq!(
+            with_block.map(|test| test.mode),
+            Some(UxFailureMode::BudgetExceeded),
+            "the block-backed failure keeps its own reading"
+        );
+        assert_eq!(
+            with_block.map(|test| test.evidence.is_some()),
+            Some(true),
+            "its deadline line is still its evidence"
+        );
+
+        assert!(
+            receipt.human_summary.contains("not discriminated"),
+            "the first failing test is the blockless one, so the sentence must say so: {}",
+            receipt.human_summary
+        );
+    }
+
+    /// The same incidental `baseline` as the crash fixture, but the co-failure is a
+    /// plausible baseline comparison that printed no block — so nothing is known
+    /// about it.
+    const UNKNOWN_BESIDE_A_CRASH_LOG: &str = "   Compiling perl-lsp-ux-baselines v0.1.0\n\
+running 2 tests\n\
+test ux_scenario_07_baseline_probe::compares ... FAILED\n\
+test ux_latency_raw_rpc::ux_latency_document_symbols_returns_real_process_shape ... FAILED\n\
+\n\
+failures:\n\
+\n\
+---- ux_latency_raw_rpc::ux_latency_document_symbols_returns_real_process_shape stdout ----\n\
+thread 'main' panicked at crates/perl-lsp-ux-tests/tests/ux_latency_raw_rpc.rs:331:5:\n\
+called `Option::unwrap()` on a `None` value\n\
+\n\
+failures:\n\
+    ux_scenario_07_baseline_probe::compares\n\
+    ux_latency_raw_rpc::ux_latency_document_symbols_returns_real_process_shape\n\
+\n\
+test result: FAILED. 0 passed; 2 failed; 0 ignored";
+
+    #[test]
+    fn an_unexplained_co_failure_keeps_the_baseline_remedy() {
+        // `Unknown` means no marker was recognised, not that no comparison
+        // happened — an unrecognised baseline mismatch has exactly this shape.
+        // Letting it corroborate the crash would take `update_baseline` away from a
+        // real baseline failure on the strength of having learned nothing.
+        let receipt = classify(UNKNOWN_BESIDE_A_CRASH_LOG, None);
+
+        assert_eq!(receipt.failing_tests.len(), 2);
+        assert!(
+            receipt.failing_tests.iter().any(|test| test.mode == UxFailureMode::Unknown),
+            "the blockless failure must reach the guard as unexplained"
+        );
+        assert!(
+            matches!(receipt.failure_class, UxFailureClass::BaselineDrift),
+            "the guard needs affirmative crash evidence from every failing test"
+        );
+        assert_eq!(receipt.merge_action, "update_baseline");
     }
 }
