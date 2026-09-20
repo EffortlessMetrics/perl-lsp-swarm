@@ -15,7 +15,7 @@
 //! rejected.
 
 use std::fs;
-use std::path::Path;
+use std::path::{Component, Path};
 
 use serde_yaml_ng::Value;
 use toml::Value as TomlValue;
@@ -108,7 +108,7 @@ fn ledger_violations(policy: &TomlValue) -> Vec<String> {
 
         let workflow = row.get("workflow").and_then(TomlValue::as_str);
         match workflow {
-            Some(path) if path.starts_with(".github/workflows/") => {}
+            Some(path) if valid_workflow_path(path) => {}
             Some(path) => {
                 violations.push(format!(
                     "required context `{name}` workflow `{path}` is outside \
@@ -175,6 +175,12 @@ fn producer_existence_violations(root: &Path, policy: &TomlValue) -> Vec<String>
             continue;
         };
 
+        if !valid_workflow_path(workflow) {
+            violations.push(format!(
+                "required context `{name}` workflow `{workflow}` is not a safe workflow path"
+            ));
+            continue;
+        }
         let path = root.join(workflow);
         let Ok(raw) = fs::read_to_string(&path) else {
             violations.push(format!(
@@ -209,6 +215,13 @@ fn producer_existence_violations(root: &Path, policy: &TomlValue) -> Vec<String>
 
 fn fixture(toml_text: &str) -> TomlValue {
     toml::from_str(toml_text).expect("fixture must parse as TOML")
+}
+
+fn valid_workflow_path(path: &str) -> bool {
+    path.starts_with(".github/workflows/")
+        && Path::new(path)
+            .components()
+            .all(|component| !matches!(component, Component::ParentDir))
 }
 
 const WELL_FORMED_ROW: &str = r#"
@@ -283,6 +296,25 @@ fn required_row_without_job_identity_is_rejected() {
             && violation.contains("`job`")),
         "a required row without an emitting job must be rejected: {violations:?}"
     );
+}
+
+#[test]
+fn workflow_paths_with_parent_components_are_rejected_before_file_access() {
+    let policy = fixture(&WELL_FORMED_ROW.replace(
+        "workflow = \".github/workflows/example.yml\"",
+        "workflow = \".github/workflows/../secrets.yml\"",
+    ));
+    let violations = ledger_violations(&policy);
+    assert!(
+        violations.iter().any(|violation| {
+            violation.contains("Example Required Context")
+                && (violation.contains("outside `.github/workflows/`")
+                    || violation.contains("safe workflow path"))
+        }),
+        "a workflow path that escapes its allowed directory must be rejected: {violations:?}"
+    );
+    assert!(!valid_workflow_path(".github/workflows/../secrets.yml"));
+    assert!(valid_workflow_path(".github/workflows/ci.yml"));
 }
 
 #[test]
