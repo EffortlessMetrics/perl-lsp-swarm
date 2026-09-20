@@ -429,6 +429,14 @@ pub fn perl_parser_core::syntax::error::ErrorCategory::clone(&self) -> perl_pars
 pub fn perl_parser_core::syntax::error::ErrorCategory::eq(&self, other: &perl_parser_core::syntax::error::ErrorCategory) -> bool
 pub fn perl_parser_core::syntax::error::ErrorCategory::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_parser_core::syntax::error::ErrorCategory::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub enum perl_parser_core::engine::error::InvalidSignatureOrderingKind
+pub perl_parser_core::engine::error::InvalidSignatureOrderingKind::MandatoryAfterOptional
+pub perl_parser_core::engine::error::InvalidSignatureOrderingKind::ParameterAfterSlurpy
+pub perl_parser_core::engine::error::InvalidSignatureOrderingKind::PositionalAfterNamed
+pub perl_parser_core::engine::error::InvalidSignatureOrderingKind::RequiredNamedAfterOptional
+pub fn perl_parser_core::syntax::error::InvalidSignatureOrderingKind::clone(&self) -> perl_parser_core::syntax::error::InvalidSignatureOrderingKind
+pub fn perl_parser_core::syntax::error::InvalidSignatureOrderingKind::eq(&self, other: &perl_parser_core::syntax::error::InvalidSignatureOrderingKind) -> bool
+pub fn perl_parser_core::syntax::error::InvalidSignatureOrderingKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub enum perl_parser_core::engine::error::InvalidSignatureParameterKind
 pub perl_parser_core::engine::error::InvalidSignatureParameterKind::MissingDefaultExpression
 pub perl_parser_core::engine::error::InvalidSignatureParameterKind::NamedAggregate
@@ -481,6 +489,9 @@ pub perl_parser_core::engine::error::ParseError::InvalidNumber
 pub perl_parser_core::engine::error::ParseError::InvalidNumber::literal: alloc::string::String
 pub perl_parser_core::engine::error::ParseError::InvalidRegex
 pub perl_parser_core::engine::error::ParseError::InvalidRegex::message: alloc::string::String
+pub perl_parser_core::engine::error::ParseError::InvalidSignatureOrdering
+pub perl_parser_core::engine::error::ParseError::InvalidSignatureOrdering::kind: perl_parser_core::syntax::error::InvalidSignatureOrderingKind
+pub perl_parser_core::engine::error::ParseError::InvalidSignatureOrdering::range: perl_position_tracking::span::SourceLocation
 pub perl_parser_core::engine::error::ParseError::InvalidSignatureParameter
 pub perl_parser_core::engine::error::ParseError::InvalidSignatureParameter::kind: perl_parser_core::syntax::error::InvalidSignatureParameterKind
 pub perl_parser_core::engine::error::ParseError::InvalidSignatureParameter::range: perl_position_tracking::span::SourceLocation
@@ -973,6 +984,14 @@ pub fn perl_parser_core::syntax::error::ErrorCategory::clone(&self) -> perl_pars
 pub fn perl_parser_core::syntax::error::ErrorCategory::eq(&self, other: &perl_parser_core::syntax::error::ErrorCategory) -> bool
 pub fn perl_parser_core::syntax::error::ErrorCategory::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_parser_core::syntax::error::ErrorCategory::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub enum perl_parser_core::error::InvalidSignatureOrderingKind
+pub perl_parser_core::error::InvalidSignatureOrderingKind::MandatoryAfterOptional
+pub perl_parser_core::error::InvalidSignatureOrderingKind::ParameterAfterSlurpy
+pub perl_parser_core::error::InvalidSignatureOrderingKind::PositionalAfterNamed
+pub perl_parser_core::error::InvalidSignatureOrderingKind::RequiredNamedAfterOptional
+pub fn perl_parser_core::syntax::error::InvalidSignatureOrderingKind::clone(&self) -> perl_parser_core::syntax::error::InvalidSignatureOrderingKind
+pub fn perl_parser_core::syntax::error::InvalidSignatureOrderingKind::eq(&self, other: &perl_parser_core::syntax::error::InvalidSignatureOrderingKind) -> bool
+pub fn perl_parser_core::syntax::error::InvalidSignatureOrderingKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub enum perl_parser_core::error::InvalidSignatureParameterKind
 pub perl_parser_core::error::InvalidSignatureParameterKind::MissingDefaultExpression
 pub perl_parser_core::error::InvalidSignatureParameterKind::NamedAggregate
@@ -1025,6 +1044,9 @@ pub perl_parser_core::error::ParseError::InvalidNumber
 pub perl_parser_core::error::ParseError::InvalidNumber::literal: alloc::string::String
 pub perl_parser_core::error::ParseError::InvalidRegex
 pub perl_parser_core::error::ParseError::InvalidRegex::message: alloc::string::String
+pub perl_parser_core::error::ParseError::InvalidSignatureOrdering
+pub perl_parser_core::error::ParseError::InvalidSignatureOrdering::kind: perl_parser_core::syntax::error::InvalidSignatureOrderingKind
+pub perl_parser_core::error::ParseError::InvalidSignatureOrdering::range: perl_position_tracking::span::SourceLocation
 pub perl_parser_core::error::ParseError::InvalidSignatureParameter
 pub perl_parser_core::error::ParseError::InvalidSignatureParameter::kind: perl_parser_core::syntax::error::InvalidSignatureParameterKind
 pub perl_parser_core::error::ParseError::InvalidSignatureParameter::range: perl_position_tracking::span::SourceLocation
@@ -3854,6 +3876,14 @@ pub fn perl_parser_core::syntax::error::ErrorCategory::clone(&self) -> perl_pars
 pub fn perl_parser_core::syntax::error::ErrorCategory::eq(&self, other: &perl_parser_core::syntax::error::ErrorCategory) -> bool
 pub fn perl_parser_core::syntax::error::ErrorCategory::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_parser_core::syntax::error::ErrorCategory::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub enum perl_parser_core::syntax::error::InvalidSignatureOrderingKind
+pub perl_parser_core::syntax::error::InvalidSignatureOrderingKind::MandatoryAfterOptional
+pub perl_parser_core::syntax::error::InvalidSignatureOrderingKind::ParameterAfterSlurpy
+pub perl_parser_core::syntax::error::InvalidSignatureOrderingKind::PositionalAfterNamed
+pub perl_parser_core::syntax::error::InvalidSignatureOrderingKind::RequiredNamedAfterOptional
+pub fn perl_parser_core::syntax::error::InvalidSignatureOrderingKind::clone(&self) -> perl_parser_core::syntax::error::InvalidSignatureOrderingKind
+pub fn perl_parser_core::syntax::error::InvalidSignatureOrderingKind::eq(&self, other: &perl_parser_core::syntax::error::InvalidSignatureOrderingKind) -> bool
+pub fn perl_parser_core::syntax::error::InvalidSignatureOrderingKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub enum perl_parser_core::syntax::error::InvalidSignatureParameterKind
 pub perl_parser_core::syntax::error::InvalidSignatureParameterKind::MissingDefaultExpression
 pub perl_parser_core::syntax::error::InvalidSignatureParameterKind::NamedAggregate
@@ -3906,6 +3936,9 @@ pub perl_parser_core::syntax::error::ParseError::InvalidNumber
 pub perl_parser_core::syntax::error::ParseError::InvalidNumber::literal: alloc::string::String
 pub perl_parser_core::syntax::error::ParseError::InvalidRegex
 pub perl_parser_core::syntax::error::ParseError::InvalidRegex::message: alloc::string::String
+pub perl_parser_core::syntax::error::ParseError::InvalidSignatureOrdering
+pub perl_parser_core::syntax::error::ParseError::InvalidSignatureOrdering::kind: perl_parser_core::syntax::error::InvalidSignatureOrderingKind
+pub perl_parser_core::syntax::error::ParseError::InvalidSignatureOrdering::range: perl_position_tracking::span::SourceLocation
 pub perl_parser_core::syntax::error::ParseError::InvalidSignatureParameter
 pub perl_parser_core::syntax::error::ParseError::InvalidSignatureParameter::kind: perl_parser_core::syntax::error::InvalidSignatureParameterKind
 pub perl_parser_core::syntax::error::ParseError::InvalidSignatureParameter::range: perl_position_tracking::span::SourceLocation
@@ -4758,6 +4791,14 @@ pub fn perl_parser_core::syntax::error::ErrorCategory::clone(&self) -> perl_pars
 pub fn perl_parser_core::syntax::error::ErrorCategory::eq(&self, other: &perl_parser_core::syntax::error::ErrorCategory) -> bool
 pub fn perl_parser_core::syntax::error::ErrorCategory::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_parser_core::syntax::error::ErrorCategory::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub enum perl_parser_core::InvalidSignatureOrderingKind
+pub perl_parser_core::InvalidSignatureOrderingKind::MandatoryAfterOptional
+pub perl_parser_core::InvalidSignatureOrderingKind::ParameterAfterSlurpy
+pub perl_parser_core::InvalidSignatureOrderingKind::PositionalAfterNamed
+pub perl_parser_core::InvalidSignatureOrderingKind::RequiredNamedAfterOptional
+pub fn perl_parser_core::syntax::error::InvalidSignatureOrderingKind::clone(&self) -> perl_parser_core::syntax::error::InvalidSignatureOrderingKind
+pub fn perl_parser_core::syntax::error::InvalidSignatureOrderingKind::eq(&self, other: &perl_parser_core::syntax::error::InvalidSignatureOrderingKind) -> bool
+pub fn perl_parser_core::syntax::error::InvalidSignatureOrderingKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub enum perl_parser_core::InvalidSignatureParameterKind
 pub perl_parser_core::InvalidSignatureParameterKind::MissingDefaultExpression
 pub perl_parser_core::InvalidSignatureParameterKind::NamedAggregate
@@ -4801,6 +4842,9 @@ pub perl_parser_core::ParseError::InvalidNumber
 pub perl_parser_core::ParseError::InvalidNumber::literal: alloc::string::String
 pub perl_parser_core::ParseError::InvalidRegex
 pub perl_parser_core::ParseError::InvalidRegex::message: alloc::string::String
+pub perl_parser_core::ParseError::InvalidSignatureOrdering
+pub perl_parser_core::ParseError::InvalidSignatureOrdering::kind: perl_parser_core::syntax::error::InvalidSignatureOrderingKind
+pub perl_parser_core::ParseError::InvalidSignatureOrdering::range: perl_position_tracking::span::SourceLocation
 pub perl_parser_core::ParseError::InvalidSignatureParameter
 pub perl_parser_core::ParseError::InvalidSignatureParameter::kind: perl_parser_core::syntax::error::InvalidSignatureParameterKind
 pub perl_parser_core::ParseError::InvalidSignatureParameter::range: perl_position_tracking::span::SourceLocation
