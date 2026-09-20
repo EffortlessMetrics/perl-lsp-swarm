@@ -329,6 +329,18 @@ impl MetricRegistry {
                     }
                     *confidence = Confidence::Low;
                 }
+                // An investigation row's trust and disposition fields are set at
+                // construction from the typed contract (#13656), never derived from the
+                // registry; the registry only holds it to the registration rule the
+                // other variants satisfy.
+                MetricRow::InvestigationOnly { metric, .. } => {
+                    if !self.policies.contains_key(metric.as_str()) {
+                        bail!(
+                            "parser accuracy emitted unregistered metric '{metric}'; add it to \
+                             {REGISTRY_PATH}"
+                        );
+                    }
+                }
             }
         }
         Ok(())
