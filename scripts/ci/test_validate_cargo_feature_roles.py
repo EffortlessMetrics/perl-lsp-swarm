@@ -272,6 +272,19 @@ class NegativeControlTests(unittest.TestCase):
         errors = validator.validate(registry([row(role="invented")]), discovered)
         self.assert_rejects(errors, "unknown role")
 
+    def test_unhashable_role_is_reported_not_raised(self) -> None:
+        # `ROLES` is a tuple, so `role not in ROLES` tolerates any value and
+        # reports it. The frozensets downstream do not: a row written
+        # `role = ["test_only"]` reached `role in MIGRATION_REQUIRED_ROLES`
+        # and aborted the run with a TypeError instead of a FAIL. A row whose
+        # observed signals are empty is used deliberately, because that is the
+        # path that evaluates the migration rule.
+        discovered = {("demo", "alpha"): facts("demo", "alpha", cfg_uses=0)}
+        errors = validator.validate(
+            registry([row(role=["test_only"], consumers=[])]), discovered
+        )
+        self.assert_rejects(errors, "unknown role")
+
     def test_missing_owner_fails(self) -> None:
         discovered = {("demo", "alpha"): facts("demo", "alpha")}
         errors = validator.validate(registry([row(owner="a person")]), discovered)
@@ -651,7 +664,14 @@ class DiscoveryUnitTests(unittest.TestCase):
             discovered = validator.discover(root)
             for name, label in (("a", "test:t"), ("b", "example:e"), ("c", "bench:n")):
                 self.assertIn(label, discovered[("demo", name)].required_by_targets)
-            self.assertIn("lib", discovered[("demo", "d")].required_by_targets)
+            # `[lib]` is the exception, and it is Cargo's, not ours: the Cargo
+            # reference says `required-features` "has no effect on [lib]", and
+            # `cargo metadata` confirms it -- the key is reported for a
+            # `[[bin]]` and dropped for a `[lib]`, which builds without the
+            # feature. Crediting it would be a false `required_features`
+            # signal that keeps an unconsumed feature's row green.
+            self.assertEqual(discovered[("demo", "d")].required_by_targets, ())
+            self.assertEqual(discovered[("demo", "d")].observed_signals(), ())
 
     def test_build_output_under_the_crate_is_not_scanned(self) -> None:
         # A warm `target/` holds generated .rs files; counting their cfg forms
@@ -752,6 +772,74 @@ class DiscoveryUnitTests(unittest.TestCase):
             )
             with self.assertRaises(validator.ValidationError):
                 validator.member_dirs(root)
+
+    def test_non_list_workspace_exclude_is_an_instrument_failure(self) -> None:
+        # A bare string iterates character by character: every character is a
+        # `str`, so the per-entry guard passes and `exclude = "vendor"`
+        # silently excludes `v`, `e`, `n`, ... and never `vendor`. Coercing it
+        # is the same denominator hole as a malformed `members`.
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            # A real member must resolve, or `member_dirs` raises "no workspace
+            # member manifests resolved" whatever `exclude` holds and the
+            # control would pass for the wrong reason.
+            self.write_workspace(
+                root, {"kept": '[package]\nname = "kept"\n[features]\nalpha = []\n'}
+            )
+            sane = '[workspace]\nmembers = ["crates/*"]\nexclude = ["crates/gone"]\n'
+            (root / "Cargo.toml").write_text(sane, encoding="utf-8")
+            self.assertEqual(
+                [path.name for path in validator.member_dirs(root)], ["kept"]
+            )
+            (root / "Cargo.toml").write_text(
+                sane.replace('exclude = ["crates/gone"]', 'exclude = "crates/gone"'),
+                encoding="utf-8",
+            )
+            with self.assertRaises(validator.ValidationError):
+                validator.member_dirs(root)
+
+    def test_duplicate_package_name_is_an_instrument_failure(self) -> None:
+        # Cargo rejects this outright ("two packages named `dup` in this
+        # workspace"), so reaching it means the tree is already broken. Keying
+        # manifests by name without this check silently overwrites one member
+        # with the other and drops a whole crate out of the denominator.
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            self.write_workspace(
+                root,
+                {
+                    "first": '[package]\nname = "dup"\n[features]\nalpha = []\n',
+                    "second": '[package]\nname = "dup"\n[features]\nbeta = []\n',
+                },
+            )
+            with self.assertRaises(validator.ValidationError):
+                validator.discover(root)
+
+    def test_renamed_dependency_alias_resolves_to_the_real_package(self) -> None:
+        # A feature edge names the dependency by its table key. With
+        # `alias = { package = "real", path = ... }`, the edge `alias/beta`
+        # enables `real`'s `beta`. Matching the alias against package names
+        # finds nothing, so a genuinely propagated feature reads as
+        # unconsumed — the false-negative direction.
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            self.write_workspace(
+                root,
+                {
+                    "front": (
+                        '[package]\nname = "front"\n'
+                        '[features]\nalpha = ["alias/beta"]\n'
+                        '[dependencies]\n'
+                        'alias = { package = "real", path = "../real" }\n'
+                    ),
+                    "real": '[package]\nname = "real"\n[features]\nbeta = []\n',
+                },
+            )
+            discovered = validator.discover(root)
+            self.assertEqual(
+                discovered[("real", "beta")].inbound_refs, ("front/alpha",)
+            )
+            self.assertIn("propagated", discovered[("real", "beta")].observed_signals())
 
     def test_virtual_workspace_without_members_still_fails(self) -> None:
         # The existing error must survive: a virtual manifest naming no members

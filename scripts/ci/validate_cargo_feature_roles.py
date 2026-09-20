@@ -315,7 +315,15 @@ def member_dirs(root: Path) -> list[Path]:
     # member as a member. Applying it to literal entries would silently drop a
     # crate that really is in the workspace, which is the worse error here.
     excluded: set[Path] = set()
-    for pattern in workspace.get("exclude") or []:
+    exclude = workspace.get("exclude") or []
+    if not isinstance(exclude, list):
+        # A bare string iterates character by character, so `exclude = "vendor"`
+        # would silently exclude directories named `v`, `e`, `n`, ... and
+        # nothing named `vendor`. Same instrument-failure rule as `members`.
+        raise ValidationError(
+            f"root Cargo.toml has a non-list workspace exclude value: {exclude!r}"
+        )
+    for pattern in exclude:
         if not isinstance(pattern, str):
             raise ValidationError(f"non-string workspace exclude: {pattern!r}")
         if any(char in pattern for char in "*?["):
@@ -430,7 +438,14 @@ def optional_dependencies(manifest: dict) -> set[str]:
     }
 
 
-CARGO_TARGET_TABLES = ("lib", "bin", "test", "example", "bench")
+# `[lib]` is deliberately absent. The Cargo reference states that
+# `required-features` "has no effect on [lib]", and Cargo confirms it: a
+# `[lib]` declaring `required-features = ["cli"]` is reported by
+# `cargo metadata` with `required-features = None` and builds without `cli`,
+# whereas the same key on a `[[bin]]` is reported verbatim. Crediting a
+# `required_features` signal Cargo does not honour would let an otherwise
+# unconsumed feature read as consumed and keep a stale row green.
+CARGO_TARGET_TABLES = ("bin", "test", "example", "bench")
 
 
 def required_feature_targets(manifest: dict) -> dict[str, list[str]]:
@@ -691,11 +706,34 @@ def discover(root: Path) -> dict[tuple[str, str], FeatureFacts]:
         package = data.get("package")
         if not isinstance(package, dict) or not isinstance(package.get("name"), str):
             raise ValidationError(f"{manifest_path} declares no package name")
-        manifests[package["name"]] = (member, data)
+        name = package["name"]
+        if name in manifests:
+            # Cargo rejects this outright ("two packages named `x` in this
+            # workspace"), so reaching it means the tree is already broken.
+            # Overwriting silently would be strictly worse than Cargo: it
+            # drops a whole crate out of the governed denominator.
+            raise ValidationError(
+                f"two workspace members declare the package name {name!r}: "
+                f"{manifests[name][0] / 'Cargo.toml'} and {manifest_path}"
+            )
+        manifests[name] = (member, data)
 
     # Inbound references: which feature enables this (crate, feature)?
     inbound: dict[tuple[str, str], set[str]] = {}
     for crate, (_member, data) in manifests.items():
+        # A feature edge names the dependency by its *table key*, which is the
+        # alias when the dependency is renamed (`other = { package = "real" }`
+        # makes `other/feat` enable `real`'s `feat`). `manifests` is keyed by
+        # real package name, so without this an edge into a renamed in-tree
+        # crate resolves to nothing and a genuinely propagated feature reads
+        # as unconsumed -- the false-negative direction this registry exists
+        # to close. No dependency in this workspace is renamed today.
+        aliases = {
+            key: spec["package"]
+            for table in dependency_tables(data)
+            for key, spec in table.items()
+            if isinstance(spec, dict) and isinstance(spec.get("package"), str)
+        }
         features = data.get("features", {})
         if not isinstance(features, dict):
             raise ValidationError(f"{crate} declares a non-table [features]")
@@ -709,6 +747,7 @@ def discover(root: Path) -> dict[tuple[str, str], FeatureFacts]:
                     dep, target = edge.split("/", 1)
                     dep = dep.rstrip("?")
                     target = target.lstrip("?")
+                    dep = aliases.get(dep, dep)
                     if dep in manifests:
                         inbound.setdefault((dep, target), set()).add(
                             f"{crate}/{feature}"
@@ -883,6 +922,15 @@ def validate(
         role = row["role"]
         if role not in ROLES:
             errors.append(f"{label}: unknown role {role!r}")
+            # Reporting it is not enough: `ROLES` is a tuple, so this test is
+            # equality-based and tolerates any value, but the downstream
+            # `role in MIGRATION_REQUIRED_ROLES` and
+            # `role in DEFAULT_RESTRICTED_ROLES` tests are frozensets, which
+            # hash their operand. A row written `role = ["test_only"]` reached
+            # them and aborted the whole run with a TypeError traceback
+            # instead of this FAIL. Narrowing to a value no later rule matches
+            # keeps one malformed row to one reported error.
+            role = ""
         owner = row["owner"]
         if not isinstance(owner, str) or not OWNER_RE.match(owner):
             errors.append(f"{label}: owner must be an issue reference like '#8409'")
