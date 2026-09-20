@@ -2363,9 +2363,15 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
         assert_eq!(owners, Ok(vec![UNOWNED.to_string()]));
     }
-}
-#[test]
-fn gated_features_preserves_offsets_after_multibyte_comments() {
-    let text = "// é\nconst enabled: bool = cfg!(feature = \"simd\");";
-    assert_eq!(gated_features(text), BTreeSet::from(["simd".to_string()]));
+
+    #[test]
+    fn gated_features_preserves_offsets_after_multibyte_comments() -> Result<(), String> {
+        let text = "// é\nconst enabled: bool = cfg!(feature = \"simd\");";
+        let actual = gated_features(text);
+        let expected = BTreeSet::from(["simd".to_string()]);
+        if actual != expected {
+            return Err(format!("expected {expected:?}, got {actual:?}"));
+        }
+        Ok(())
+    }
 }
