@@ -40,7 +40,13 @@ jobs:
         with:
           persist-credentials: false
 
+      # The action takes its channel from `github.action_ref`, which is this
+      # SHA when the action is pinned, so the toolchain has to be named
+      # explicitly. 1.95.0 matches `rust-toolchain.toml` and every other
+      # SHA-pinned use in this repository.
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # stable (master)
+        with:
+          toolchain: 1.95.0
 
       - name: Cache cargo dependencies
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
