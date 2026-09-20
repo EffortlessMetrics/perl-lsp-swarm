@@ -304,8 +304,27 @@ impl OpenDocumentsHandle {
 
 #[cfg(feature = "workspace")]
 #[allow(unsafe_code)]
+// SAFETY: for `Send`, moving a clone of `OpenDocumentsHandle` to the indexing
+// thread is sound because the `*const Node` pointers inside `DocumentState`
+// (which make the auto traits conservative) are only ever dereferenced
+// under the wrapping mutex — the same invariant as `LspServer`'s unsafe
+// `Send`/`Sync` impls — and this handle is consumed exclusively through
+// [`LspServer::documents_open_in`], which reads key membership and never
+// touches pointed-to contents, so the move creates no unsynchronized
+// access to shared nodes.
+#[cfg(feature = "workspace")]
+#[allow(unsafe_code)]
 unsafe impl Send for OpenDocumentsHandle {}
 
+#[cfg(feature = "workspace")]
+#[allow(unsafe_code)]
+// SAFETY: for `Sync`, sharing `&OpenDocumentsHandle` across threads is sound
+// for a distinct reason from `Send`: concurrent callers each reach the
+// `DocumentState` behind the `Arc` only through the wrapping mutex, so
+// mutex exclusion — not thread confinement — is what prevents aliased
+// access to the raw `*const Node` pointers, and the key-membership read
+// in [`LspServer::documents_open_in`] never dereferences those pointers
+// at all.
 #[cfg(feature = "workspace")]
 #[allow(unsafe_code)]
 unsafe impl Sync for OpenDocumentsHandle {}

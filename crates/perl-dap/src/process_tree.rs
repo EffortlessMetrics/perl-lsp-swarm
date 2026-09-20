@@ -119,6 +119,14 @@ fn descendant_pids(root: u32) -> Vec<u32> {
         TH32CS_SNAPPROCESS,
     };
 
+    // SAFETY: `CreateToolhelp32Snapshot` has no argument preconditions; the
+    // only obligation it creates is handle ownership, and its Win32 contract
+    // reports failure in-band as `INVALID_HANDLE_VALUE` rather than a null
+    // handle. We test for exactly that sentinel immediately below and return
+    // without closing (there is no handle to close); any other value is a
+    // valid snapshot handle, closed exactly once by the `CloseHandle` at the
+    // end of the walk block, which no early return between open and close can
+    // skip.
     let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
     if snapshot == INVALID_HANDLE_VALUE {
         tracing::warn!(
@@ -129,6 +137,16 @@ fn descendant_pids(root: u32) -> Vec<u32> {
         return Vec::new();
     }
     let mut parent_to_children: HashMap<u32, Vec<u32>> = HashMap::new();
+    // SAFETY: `PROCESSENTRY32W` is a plain C struct of integers and fixed
+    // arrays with no references or validity-sensitive fields, so an all-zero
+    // bit pattern is a valid initial value for `std::mem::zeroed`. The API
+    // additionally requires the caller to set `dwSize` to the struct size
+    // before the first `Process32FirstW` call, which the next line does.
+    // `Process32FirstW`/`Process32NextW` write only through the `&mut entry`
+    // we own and take the `snapshot` handle validated above; the walk stops
+    // when the API reports no further entries, and `CloseHandle(snapshot)`
+    // runs exactly once at the end of this block with no early return in
+    // between.
     unsafe {
         let mut entry: PROCESSENTRY32W = std::mem::zeroed();
         entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
@@ -170,6 +188,13 @@ fn terminate_pid(pid: u32) -> std::io::Result<()> {
     use winapi::um::handleapi::CloseHandle;
     use winapi::um::processthreadsapi::{OpenProcess, TerminateProcess};
     use winapi::um::winnt::PROCESS_TERMINATE;
+    // SAFETY: `OpenProcess` reports failure by returning NULL (an out-of-band
+    // sentinel, unlike the toolhelp snapshot), which is checked before any
+    // use; on success the handle carries exactly the `PROCESS_TERMINATE`
+    // access right `TerminateProcess` requires. The handle is closed exactly
+    // once on every path: the null branch returns before a handle exists,
+    // and the non-null path calls `CloseHandle` before each of its two exits
+    // (terminated and failed), so neither path leaks or double-closes.
     unsafe {
         let handle = OpenProcess(PROCESS_TERMINATE, 0, pid);
         if handle.is_null() {
