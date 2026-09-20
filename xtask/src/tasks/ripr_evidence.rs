@@ -3226,6 +3226,48 @@ impl<'ast> Visit<'ast> for NonLiteralExprProbe {
 }
 
 impl<'ast> Visit<'ast> for DeclarationSeamCollector {
+    /// Conservative default for item kinds this collector does not screen.
+    ///
+    /// Every kind below is classified by an explicit rule. Anything else — an
+    /// item-position macro (`global_asm!`, `include!`, a declarative macro that
+    /// expands to arbitrary code), an `extern` block, a trait alias, or a
+    /// `Verbatim` item `syn` could not resolve into a known kind — occupies its
+    /// lines instead. An unclassified kind must not silently default to
+    /// "carries no call": marking is per line and a finding is matched by
+    /// `(file, line)` alone, so `use std::arch::global_asm; global_asm!("nop");`
+    /// would otherwise let the `use` subtract the macro's finding from a
+    /// required gate's blocking basis (#16077 review).
+    ///
+    /// `Item::Mod` is excluded because its span covers its children, which are
+    /// visited on their own terms; marking it would occupy every line inside it.
+    fn visit_item(&mut self, item: &'ast syn::Item) {
+        let screened = matches!(
+            item,
+            syn::Item::Use(_)
+                | syn::Item::ExternCrate(_)
+                | syn::Item::Mod(_)
+                | syn::Item::Fn(_)
+                | syn::Item::Impl(_)
+                | syn::Item::Trait(_)
+                | syn::Item::Enum(_)
+                | syn::Item::Struct(_)
+                | syn::Item::Union(_)
+                | syn::Item::Type(_)
+                | syn::Item::Const(_)
+                | syn::Item::Static(_)
+        );
+        if !screened {
+            let attrs: &[syn::Attribute] = match item {
+                syn::Item::ForeignMod(unscreened) => &unscreened.attrs,
+                syn::Item::Macro(unscreened) => &unscreened.attrs,
+                syn::Item::TraitAlias(unscreened) => &unscreened.attrs,
+                _ => &[],
+            };
+            self.mark_executable(attrs, item.span());
+        }
+        syn::visit::visit_item(self, item);
+    }
+
     fn visit_item_use(&mut self, item: &'ast syn::ItemUse) {
         self.mark(&item.attrs, item.span());
     }
@@ -7026,6 +7068,38 @@ pub struct Pair; impl Pair { fn go(&self) -> bool { compute() } }
         }
         // A declaration with the line to itself is still a seam, so the filter
         // has not simply been switched off.
+        if !marked.contains(&2) {
+            return Err(eyre!("line 2 is a declaration seam and must still be marked"));
+        }
+        Ok(())
+    }
+
+    /// #16077 review: an item kind the collector does not screen must occupy
+    /// its lines. Before this, `DeclarationSeamCollector` enumerated the
+    /// executable kinds it knew about, so anything it had not enumerated —
+    /// starting with `Item::Macro` — added nothing to `executable` and let a
+    /// declaration on the same physical line subtract the unscreened item's
+    /// finding from a required gate.
+    #[test]
+    fn declaration_seam_lines_keeps_lines_shared_with_unscreened_items() -> Result<()> {
+        let source = r##"use std::arch::global_asm; global_asm!("nop");
+pub const ALONE: bool = false;
+extern "C" { fn imported(); } pub const WITH_EXTERN: bool = true;
+"##;
+        let marked = declaration_seam_lines(source);
+
+        // Line 1 carries a `use` AND an item-position macro; line 3 carries a
+        // literal `const` AND an `extern` block. The macro can expand to
+        // anything and the `extern` block declares a callable, so neither line
+        // may be subtracted on the strength of the declaration beside it.
+        for line in [1, 3] {
+            if marked.contains(&line) {
+                return Err(eyre!(
+                    "line {line} shares a line with an unscreened item and must stay in the blocking basis"
+                ));
+            }
+        }
+        // The filter is still on: a literal const alone on its line is a seam.
         if !marked.contains(&2) {
             return Err(eyre!("line 2 is a declaration seam and must still be marked"));
         }
