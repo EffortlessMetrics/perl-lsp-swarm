@@ -6,6 +6,7 @@
 //! cargo test -p perl-corpus --test gold_repository_contract
 //! ```
 
+use perl_corpus::byte_fidelity::{ByteFidelity, Encoding, NewlineStyle};
 use perl_corpus::gold::{
     CompletionGoldExpected, DocumentSymbolGoldExpected, GoldAssertion, GoldExpected,
     GotoGoldExpected, HoverGoldExpected, RenameGoldExpected,
@@ -13,12 +14,16 @@ use perl_corpus::gold::{
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 const MIN_FIXTURE_DIRECTORIES: usize = 36;
+
+/// Floor on the number of members the byte-fidelity walk must classify, so a
+/// walk that silently finds nothing cannot be mistaken for a clean corpus.
+const MIN_GOLD_MEMBERS: usize = 90;
 
 const SIDECAR_FLOORS: [(&str, usize); 7] = [
     ("expected.json", 28),
@@ -41,17 +46,54 @@ const FIXTURE_FILES: [&str; 8] = [
     "expected_module.json",
 ];
 
+/// A gold member whose bytes deliberately deviate from [`DEFAULT_BYTE_CLASS`].
+///
+/// Deviation is a reviewed, declared property, never an accident: the entry
+/// pins the exact class the member is expected to have, and the member is
+/// admitted only when `.gitattributes` disables git's text normalization for
+/// its path. Without that protection git would be free to rewrite the very
+/// bytes the entry claims are load-bearing.
+#[derive(Debug, Clone, Copy)]
+struct ByteExactDeviation {
+    /// Repository-relative, `/`-separated path.
+    path: &'static str,
+    /// Terminator representation the member is expected to have.
+    newline_style: NewlineStyle,
+    /// Whether the member is expected to end with a terminator.
+    final_newline: bool,
+    /// Whether the member is expected to begin with a UTF-8 BOM.
+    byte_order_mark: bool,
+    /// Why these bytes are load-bearing.
+    reason: &'static str,
+}
+
+/// The class every gold member has unless it is declared in
+/// [`BYTE_EXACT_DEVIATIONS`]: LF terminators, a final newline, and no BOM.
+const DEFAULT_BYTE_CLASS: (NewlineStyle, bool, bool) = (NewlineStyle::Lf, true, false);
+
+/// Gold members that intentionally carry other bytes.
+///
+/// Empty today, and that emptiness is the contract: every member of
+/// `test_corpus/gold` is currently LF-terminated UTF-8 without a BOM, and any
+/// change to that — including one git makes on a contributor's behalf — has to
+/// be declared here and protected in `.gitattributes` before it is admitted.
+const BYTE_EXACT_DEVIATIONS: &[ByteExactDeviation] = &[];
+
 fn contract_error(message: impl Into<String>) -> std::io::Error {
     std::io::Error::other(message.into())
 }
 
-fn gold_root() -> Result<PathBuf, Box<dyn Error>> {
+fn workspace_root() -> Result<PathBuf, Box<dyn Error>> {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let workspace_root = manifest_dir
+    let root = manifest_dir
         .parent()
         .and_then(Path::parent)
         .ok_or_else(|| contract_error("perl-corpus must live under <workspace>/crates"))?;
-    Ok(workspace_root.join("test_corpus").join("gold"))
+    Ok(root.to_path_buf())
+}
+
+fn gold_root() -> Result<PathBuf, Box<dyn Error>> {
+    Ok(workspace_root()?.join("test_corpus").join("gold"))
 }
 
 fn fixture_name(directory: &Path) -> Result<String, Box<dyn Error>> {
@@ -495,6 +537,333 @@ fn validate_fixture_directory(
     Ok(())
 }
 
+/// The effective state of git's `text` attribute for one path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TextAttribute {
+    /// `-text`: git will not normalize this path. Bytes survive verbatim.
+    Unset,
+    /// `text`, `text=auto`, or any other set/valued state: git may rewrite
+    /// line endings for this path.
+    NormalizationPossible,
+}
+
+/// Ask git for the effective `text` attribute of one repository-relative path.
+///
+/// Git, not this test, is the authority on attribute resolution. Reading
+/// `.gitattributes` directly cannot answer the question: attributes resolve
+/// last-match-wins across the whole file, patterns use git's own glob
+/// language, macros such as `binary` expand to `-text`, and per-directory
+/// `.gitattributes` files participate. A reader that merely collected `-text`
+/// lines would call a path protected even when a later rule restored `text` —
+/// admitting a member git is free to rewrite. `git check-attr` resolves all of
+/// that exactly as the working tree will.
+///
+/// Fails closed: an unavailable or unparseable answer is an error, never a
+/// silent "protected".
+fn git_text_attribute(
+    workspace_root: &Path,
+    repository_path: &str,
+) -> Result<TextAttribute, Box<dyn Error>> {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(workspace_root)
+        .args(["check-attr", "text", "--"])
+        .arg(repository_path)
+        .output()
+        .map_err(|error| {
+            contract_error(format!("running `git check-attr` for {repository_path}: {error}"))
+        })?;
+
+    if !output.status.success() {
+        return Err(contract_error(format!(
+            "`git check-attr text -- {repository_path}` failed with {}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        ))
+        .into());
+    }
+
+    let stdout = String::from_utf8(output.stdout).map_err(|error| {
+        contract_error(format!(
+            "`git check-attr` output for {repository_path} is not UTF-8: {error}"
+        ))
+    })?;
+
+    parse_check_attr_text(&stdout).ok_or_else(|| {
+        contract_error(format!(
+            "could not read a `text` attribute state for {repository_path} from `git check-attr` \
+             output: {stdout:?}"
+        ))
+        .into()
+    })
+}
+
+/// Parse `git check-attr text -- <path>` output, whose line shape is
+/// `<path>: text: <state>`.
+fn parse_check_attr_text(stdout: &str) -> Option<TextAttribute> {
+    let line = stdout.lines().next()?.trim_end();
+    let state = line.rsplit_once(": text: ").map(|(_, state)| state)?;
+    match state.trim() {
+        "unset" => Some(TextAttribute::Unset),
+        "" => None,
+        _ => Some(TextAttribute::NormalizationPossible),
+    }
+}
+
+/// Repository-relative paths that git will not normalize, resolved for exactly
+/// the declared deviations.
+///
+/// Only declared deviations need an answer, so an empty deviation table asks
+/// git nothing at all.
+fn git_protected_paths(
+    workspace_root: &Path,
+    deviations: &[ByteExactDeviation],
+) -> Result<BTreeSet<String>, Box<dyn Error>> {
+    if deviations.is_empty() {
+        return Ok(BTreeSet::new());
+    }
+    reject_untracked_attribute_overrides(workspace_root)?;
+
+    let mut protected = BTreeSet::new();
+    for deviation in deviations {
+        if git_text_attribute(workspace_root, deviation.path)? == TextAttribute::Unset {
+            protected.insert(deviation.path.to_owned());
+        }
+    }
+    Ok(protected)
+}
+
+/// Refuse to judge protection while an untracked per-clone attributes file
+/// could be supplying it.
+///
+/// `$GIT_DIR/info/attributes` is untracked and clone-local, and git honours it
+/// above the committed `.gitattributes`. No invocation can exclude it —
+/// `--source=<tree>`, `GIT_ATTR_NOSYSTEM`, and `core.attributesFile` were each
+/// verified not to suppress it. A local rule could therefore make a deviation
+/// look protected here while every other clone, and CI, normalizes the bytes.
+///
+/// The contract's subject is repository-wide protection, so the honest answer
+/// when that file exists is a named instrument failure rather than a verdict
+/// derived from state only this clone has. It is only reachable once a
+/// deviation is declared; an empty table never consults protection at all.
+fn reject_untracked_attribute_overrides(workspace_root: &Path) -> Result<(), Box<dyn Error>> {
+    // Ask git where the file lives rather than joining a path onto the git
+    // directory. In a linked worktree `--absolute-git-dir` is
+    // `.git/worktrees/<name>`, while `info/attributes` stays in the common
+    // directory and is still honoured — so a hand-built path would look in the
+    // wrong place and miss the override entirely. `--git-path` applies git's
+    // own per-worktree/common resolution.
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(workspace_root)
+        .args(["rev-parse", "--path-format=absolute", "--git-path", "info/attributes"])
+        .output()
+        .map_err(|error| {
+            contract_error(format!("locating the git attributes override path: {error}"))
+        })?;
+
+    if !output.status.success() {
+        return Err(contract_error(format!(
+            "could not locate the git attributes override path to check for per-clone \
+             overrides: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ))
+        .into());
+    }
+
+    let overrides = PathBuf::from(String::from_utf8(output.stdout)?.trim());
+    if overrides.exists() {
+        return Err(contract_error(format!(
+            "{} exists, so git's text attribute for a declared deviation cannot be proved \
+             to hold outside this clone. That file is untracked and overrides the committed \
+             .gitattributes, and no `git check-attr` invocation can exclude it. Remove it, or \
+             move the rule into the repository-root .gitattributes where every clone sees it.",
+            overrides.display()
+        ))
+        .into());
+    }
+
+    Ok(())
+}
+
+fn collect_gold_members(
+    directory: &Path,
+    members: &mut Vec<PathBuf>,
+) -> Result<(), Box<dyn Error>> {
+    for entry in fs::read_dir(directory)? {
+        let entry = entry?;
+        let path = entry.path();
+        let file_type = entry.file_type()?;
+
+        if file_type.is_symlink() {
+            return Err(contract_error(format!(
+                "gold corpus contains a symbolic link: {}",
+                path.display()
+            ))
+            .into());
+        }
+        if file_type.is_dir() {
+            collect_gold_members(&path, members)?;
+        } else if file_type.is_file() {
+            members.push(path);
+        } else {
+            return Err(contract_error(format!(
+                "gold corpus member is not a regular file: {}",
+                path.display()
+            ))
+            .into());
+        }
+    }
+
+    Ok(())
+}
+
+fn gold_members(root: &Path) -> Result<Vec<PathBuf>, Box<dyn Error>> {
+    let mut members = Vec::new();
+    collect_gold_members(root, &mut members)?;
+    members.sort();
+    Ok(members)
+}
+
+fn repository_relative(workspace_root: &Path, path: &Path) -> Result<String, Box<dyn Error>> {
+    let relative = path
+        .strip_prefix(workspace_root)
+        .map_err(|_| contract_error(format!("{} is outside the workspace", path.display())))?;
+
+    let mut rendered = String::new();
+    for component in relative.components() {
+        let Some(text) = component.as_os_str().to_str() else {
+            return Err(contract_error(format!(
+                "gold member path is not UTF-8: {}",
+                path.display()
+            ))
+            .into());
+        };
+        if !rendered.is_empty() {
+            rendered.push('/');
+        }
+        rendered.push_str(text);
+    }
+
+    Ok(rendered)
+}
+
+/// Judge one member's observed bytes against the declared contract.
+///
+/// Pure over its inputs so the rejection paths can be exercised directly,
+/// without mutating a tracked fixture to observe a failure.
+fn check_member_byte_fidelity(
+    repository_path: &str,
+    fidelity: ByteFidelity,
+    deviations: &[ByteExactDeviation],
+    protected_paths: &BTreeSet<String>,
+) -> Result<(), String> {
+    if let Encoding::InvalidUtf8 { valid_up_to } = fidelity.encoding {
+        return Err(format!(
+            "{repository_path} is not valid UTF-8: first undecodable byte at offset \
+             {valid_up_to}. Gold members must decode exactly; a replacement character is \
+             not an acceptable substitute for the original byte."
+        ));
+    }
+
+    let Some(declared) = deviations.iter().find(|deviation| deviation.path == repository_path)
+    else {
+        let (newline_style, final_newline, byte_order_mark) = DEFAULT_BYTE_CLASS;
+        if fidelity.newline_style != newline_style
+            || fidelity.final_newline != final_newline
+            || fidelity.byte_order_mark != byte_order_mark
+        {
+            return Err(format!(
+                "{repository_path} has {fidelity}, but an undeclared gold member must be \
+                 newlines={}, final newline={final_newline}, BOM={byte_order_mark}. \
+                 Restore the bytes, or declare the deviation in BYTE_EXACT_DEVIATIONS \
+                 and give the path a literal `-text` entry in .gitattributes.",
+                newline_style.as_str()
+            ));
+        }
+        return Ok(());
+    };
+
+    if !protected_paths.contains(repository_path) {
+        return Err(format!(
+            "{repository_path} is declared byte-exact ({}) but .gitattributes does not \
+             disable text normalization for it. Add a literal `{repository_path} -text` \
+             entry so `git check-attr text` reports it unset and git cannot rewrite the \
+             bytes the declaration depends on.",
+            declared.reason
+        ));
+    }
+
+    if fidelity.newline_style != declared.newline_style
+        || fidelity.final_newline != declared.final_newline
+        || fidelity.byte_order_mark != declared.byte_order_mark
+    {
+        return Err(format!(
+            "{repository_path} is declared as newlines={}, final newline={}, BOM={} ({}), \
+             but has {fidelity}. The declared bytes were rewritten.",
+            declared.newline_style.as_str(),
+            declared.final_newline,
+            declared.byte_order_mark,
+            declared.reason
+        ));
+    }
+
+    Ok(())
+}
+
+/// The first path declared more than once, if any.
+///
+/// Two entries for one member would let the first silently shadow the second,
+/// so a duplicate is a contract error rather than a resolved conflict.
+fn duplicate_declaration(deviations: &[ByteExactDeviation]) -> Option<&'static str> {
+    let mut seen = BTreeSet::new();
+    deviations.iter().find(|deviation| !seen.insert(deviation.path)).map(|deviation| deviation.path)
+}
+
+fn validate_gold_byte_fidelity(root: &Path) -> Result<usize, Box<dyn Error>> {
+    if let Some(path) = duplicate_declaration(BYTE_EXACT_DEVIATIONS) {
+        return Err(contract_error(format!(
+            "BYTE_EXACT_DEVIATIONS declares {path} more than once; one member cannot hold \
+             two byte classes"
+        ))
+        .into());
+    }
+
+    let workspace_root = workspace_root()?;
+    let protected_paths = git_protected_paths(&workspace_root, BYTE_EXACT_DEVIATIONS)?;
+    let members = gold_members(root)?;
+
+    let mut observed_paths = BTreeSet::new();
+    for member in &members {
+        let bytes = fs::read(member)
+            .map_err(|error| contract_error(format!("reading {}: {error}", member.display())))?;
+        let repository_path = repository_relative(&workspace_root, member)?;
+
+        check_member_byte_fidelity(
+            &repository_path,
+            ByteFidelity::classify(&bytes),
+            BYTE_EXACT_DEVIATIONS,
+            &protected_paths,
+        )
+        .map_err(contract_error)?;
+
+        observed_paths.insert(repository_path);
+    }
+
+    // A declaration that no longer names a real member is stale authority.
+    for deviation in BYTE_EXACT_DEVIATIONS {
+        if !observed_paths.contains(deviation.path) {
+            return Err(contract_error(format!(
+                "BYTE_EXACT_DEVIATIONS names {}, which is not a gold corpus member",
+                deviation.path
+            ))
+            .into());
+        }
+    }
+
+    Ok(members.len())
+}
+
 #[test]
 fn gold_repository_contract_holds() -> Result<(), Box<dyn Error>> {
     let root = gold_root()?;
@@ -513,6 +882,19 @@ fn gold_repository_contract_holds() -> Result<(), Box<dyn Error>> {
             "gold corpus shrank to {} fixture directories; floor is {}",
             directories.len(),
             MIN_FIXTURE_DIRECTORIES
+        ))
+        .into());
+    }
+
+    // Byte fidelity gates the decoded views deliberately: every later step
+    // reads members as `String`, so an undecodable member must be reported
+    // here — with its path and the offending offset — rather than surfacing
+    // downstream as an anonymous "stream did not contain valid UTF-8".
+    let classified = validate_gold_byte_fidelity(&root)?;
+    if classified < MIN_GOLD_MEMBERS {
+        return Err(contract_error(format!(
+            "byte-fidelity classification saw only {classified} gold members; floor is \
+             {MIN_GOLD_MEMBERS}. A walk that finds nothing must not pass as a clean corpus."
         ))
         .into());
     }
@@ -774,6 +1156,459 @@ mod tests {
         if !error.contains("symbolic link") {
             return Err(contract_error(format!("unexpected validation error: {error}")).into());
         }
+        Ok(())
+    }
+
+    // -----------------------------------------------------------------------
+    // Byte fidelity (#15011)
+    //
+    // The rejection paths are exercised against synthetic members so that
+    // proving the contract bites never requires rewriting a tracked fixture.
+    // -----------------------------------------------------------------------
+
+    const LF_SOURCE: &[u8] = b"use strict;\nmy $x = 1;\n";
+
+    fn protected(paths: &[&str]) -> BTreeSet<String> {
+        paths.iter().map(|path| (*path).to_owned()).collect()
+    }
+
+    fn rejection(
+        repository_path: &str,
+        bytes: &[u8],
+        deviations: &[ByteExactDeviation],
+        protected_paths: &BTreeSet<String>,
+    ) -> Result<String, Box<dyn Error>> {
+        match check_member_byte_fidelity(
+            repository_path,
+            ByteFidelity::classify(bytes),
+            deviations,
+            protected_paths,
+        ) {
+            Ok(()) => Err(contract_error(format!(
+                "{repository_path} was admitted, but the contract must reject it"
+            ))
+            .into()),
+            Err(message) => Ok(message),
+        }
+    }
+
+    #[test]
+    fn an_ordinary_lf_member_is_admitted() -> Result<(), Box<dyn Error>> {
+        check_member_byte_fidelity(
+            "test_corpus/gold/hello_world/fixture.pl",
+            ByteFidelity::classify(LF_SOURCE),
+            BYTE_EXACT_DEVIATIONS,
+            &BTreeSet::new(),
+        )
+        .map_err(contract_error)?;
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_a_member_converted_to_crlf() -> Result<(), Box<dyn Error>> {
+        let crlf = b"use strict;\r\nmy $x = 1;\r\n";
+        let message = rejection(
+            "test_corpus/gold/hello_world/fixture.pl",
+            crlf,
+            BYTE_EXACT_DEVIATIONS,
+            &BTreeSet::new(),
+        )?;
+        assert!(
+            message.contains("newlines=crlf"),
+            "message must name the observed class: {message}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_a_member_that_lost_or_gained_a_final_newline() -> Result<(), Box<dyn Error>> {
+        let stripped = b"use strict;\nmy $x = 1;";
+        let message = rejection(
+            "test_corpus/gold/hello_world/fixture.pl",
+            stripped,
+            BYTE_EXACT_DEVIATIONS,
+            &BTreeSet::new(),
+        )?;
+        assert!(
+            message.contains("final newline=false"),
+            "message must name the missing terminator: {message}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_a_member_that_gained_a_byte_order_mark() -> Result<(), Box<dyn Error>> {
+        let mut with_bom = vec![0xEF, 0xBB, 0xBF];
+        with_bom.extend_from_slice(LF_SOURCE);
+
+        let message = rejection(
+            "test_corpus/gold/hello_world/fixture.pl",
+            &with_bom,
+            BYTE_EXACT_DEVIATIONS,
+            &BTreeSet::new(),
+        )?;
+        assert!(message.contains("BOM=true"), "message must name the BOM: {message}");
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_undecodable_bytes_by_offset_instead_of_replacing_them() -> Result<(), Box<dyn Error>>
+    {
+        let message = rejection(
+            "test_corpus/gold/hello_world/fixture.pl",
+            b"use strict;\n\xFFmy $x = 1;\n",
+            BYTE_EXACT_DEVIATIONS,
+            &BTreeSet::new(),
+        )?;
+        assert!(
+            message.contains("not valid UTF-8") && message.contains("offset 12"),
+            "message must name the undecodable offset: {message}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_a_declared_deviation_that_git_may_normalize() -> Result<(), Box<dyn Error>> {
+        let declared = [ByteExactDeviation {
+            path: "test_corpus/gold/crlf_positions/fixture.pl",
+            newline_style: NewlineStyle::CrLf,
+            final_newline: true,
+            byte_order_mark: false,
+            reason: "CRLF position fixture",
+        }];
+
+        let message = rejection(
+            "test_corpus/gold/crlf_positions/fixture.pl",
+            b"use strict;\r\nmy $x = 1;\r\n",
+            &declared,
+            // Nothing protects the path: git is free to rewrite the bytes.
+            &BTreeSet::new(),
+        )?;
+        assert!(
+            message.contains(".gitattributes"),
+            "message must point at the missing git protection: {message}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn admits_a_declared_deviation_that_git_cannot_normalize() -> Result<(), Box<dyn Error>> {
+        let declared = [ByteExactDeviation {
+            path: "test_corpus/gold/crlf_positions/fixture.pl",
+            newline_style: NewlineStyle::CrLf,
+            final_newline: true,
+            byte_order_mark: false,
+            reason: "CRLF position fixture",
+        }];
+
+        check_member_byte_fidelity(
+            "test_corpus/gold/crlf_positions/fixture.pl",
+            ByteFidelity::classify(b"use strict;\r\nmy $x = 1;\r\n"),
+            &declared,
+            &protected(&["test_corpus/gold/crlf_positions/fixture.pl"]),
+        )
+        .map_err(contract_error)?;
+        Ok(())
+    }
+
+    /// The scenario the whole contract exists for: a fixture declared CRLF
+    /// whose bytes arrived as LF because something normalized them. Git
+    /// protection alone cannot catch this; only comparing declared bytes to
+    /// observed bytes can.
+    #[test]
+    fn rejects_a_declared_crlf_member_whose_bytes_arrived_as_lf() -> Result<(), Box<dyn Error>> {
+        let declared = [ByteExactDeviation {
+            path: "test_corpus/gold/crlf_positions/fixture.pl",
+            newline_style: NewlineStyle::CrLf,
+            final_newline: true,
+            byte_order_mark: false,
+            reason: "CRLF position fixture",
+        }];
+
+        let message = rejection(
+            "test_corpus/gold/crlf_positions/fixture.pl",
+            LF_SOURCE,
+            &declared,
+            &protected(&["test_corpus/gold/crlf_positions/fixture.pl"]),
+        )?;
+        assert!(
+            message.contains("declared as newlines=crlf") && message.contains("newlines=lf"),
+            "message must contrast declared and observed bytes: {message}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn check_attr_output_is_read_as_a_text_state() {
+        assert_eq!(
+            parse_check_attr_text("path/to/x.pl: text: unset\n"),
+            Some(TextAttribute::Unset)
+        );
+        assert_eq!(
+            parse_check_attr_text("path/to/x.pl: text: set\n"),
+            Some(TextAttribute::NormalizationPossible)
+        );
+        assert_eq!(
+            parse_check_attr_text("path/to/x.pl: text: unspecified\n"),
+            Some(TextAttribute::NormalizationPossible),
+            "an unspecified attribute leaves git free to normalize"
+        );
+        assert_eq!(
+            parse_check_attr_text("path/to/x.pl: text: auto\n"),
+            Some(TextAttribute::NormalizationPossible)
+        );
+        // A path containing the separator must not confuse the split.
+        assert_eq!(
+            parse_check_attr_text("weird: text: name.pl: text: unset\n"),
+            Some(TextAttribute::Unset)
+        );
+        // Unreadable output must fail closed rather than default to protected.
+        assert_eq!(parse_check_attr_text(""), None);
+        assert_eq!(parse_check_attr_text("garbage\n"), None);
+    }
+
+    /// Positive and negative control against the repository's real attributes,
+    /// resolved by git itself.
+    #[test]
+    fn repository_attributes_protect_the_span_fixtures_and_not_the_gold_corpus()
+    -> Result<(), Box<dyn Error>> {
+        let root = workspace_root()?;
+
+        assert_eq!(
+            git_text_attribute(&root, "crates/perl-corpus/fixtures/parser_accuracy/span_crlf.pl")?,
+            TextAttribute::Unset,
+            "the parser-accuracy CRLF fixture is byte-exact and must be protected"
+        );
+        assert_eq!(
+            git_text_attribute(&root, "test_corpus/gold/hello_world/fixture.pl")?,
+            TextAttribute::NormalizationPossible,
+            "no gold member is exempt from normalization today; if one becomes exempt it \
+             must also be declared in BYTE_EXACT_DEVIATIONS"
+        );
+        Ok(())
+    }
+
+    /// A `-text` rule that a later rule overrides is not protection.
+    ///
+    /// Git resolves attributes last-match-wins, so collecting `-text` lines
+    /// out of `.gitattributes` would report this path protected while git
+    /// happily normalizes it — admitting exactly the member the contract
+    /// exists to reject. Asking git removes the whole class.
+    #[test]
+    fn a_later_rule_that_restores_text_defeats_an_earlier_exemption() -> Result<(), Box<dyn Error>>
+    {
+        let repository = tempdir()?;
+        let root = repository.path();
+
+        let git = |args: &[&str]| -> Result<(), Box<dyn Error>> {
+            let output =
+                std::process::Command::new("git").arg("-C").arg(root).args(args).output()?;
+            if !output.status.success() {
+                return Err(contract_error(format!(
+                    "git {args:?} failed: {}",
+                    String::from_utf8_lossy(&output.stderr).trim()
+                ))
+                .into());
+            }
+            Ok(())
+        };
+        git(&["init", "--quiet"])?;
+
+        fs::write(root.join("fixture.pl"), b"my $x = 1;\r\n")?;
+
+        fs::write(root.join(".gitattributes"), "fixture.pl -text\n")?;
+        assert_eq!(
+            git_text_attribute(root, "fixture.pl")?,
+            TextAttribute::Unset,
+            "a lone -text rule is genuine protection"
+        );
+
+        fs::write(root.join(".gitattributes"), "fixture.pl -text\nfixture.pl text\n")?;
+        assert_eq!(
+            git_text_attribute(root, "fixture.pl")?,
+            TextAttribute::NormalizationPossible,
+            "a later literal rule overrides the earlier exemption"
+        );
+
+        fs::write(root.join(".gitattributes"), "fixture.pl -text\n* text\n")?;
+        assert_eq!(
+            git_text_attribute(root, "fixture.pl")?,
+            TextAttribute::NormalizationPossible,
+            "a later matching glob overrides the earlier exemption too"
+        );
+
+        // The macro form resolves to -text, which a literal reader would miss.
+        fs::write(root.join(".gitattributes"), "fixture.pl binary\n")?;
+        assert_eq!(
+            git_text_attribute(root, "fixture.pl")?,
+            TextAttribute::Unset,
+            "git's `binary` macro expands to -text and is real protection"
+        );
+
+        Ok(())
+    }
+
+    /// A per-clone attributes file must not be able to supply protection.
+    ///
+    /// `$GIT_DIR/info/attributes` is untracked and overrides the committed
+    /// `.gitattributes`, so a local rule would make a deviation look protected
+    /// here while every other clone normalizes the bytes.
+    #[test]
+    fn an_untracked_per_clone_attributes_file_blocks_a_protection_verdict()
+    -> Result<(), Box<dyn Error>> {
+        let repository = tempdir()?;
+        let root = repository.path();
+        let status = std::process::Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(["init", "--quiet"])
+            .status()?;
+        assert!(status.success(), "git init failed");
+
+        let declared = [ByteExactDeviation {
+            path: "fixture.pl",
+            newline_style: NewlineStyle::CrLf,
+            final_newline: true,
+            byte_order_mark: false,
+            reason: "CRLF position fixture",
+        }];
+
+        fs::write(root.join(".gitattributes"), "fixture.pl -text\n")?;
+        assert!(
+            git_protected_paths(root, &declared)?.contains("fixture.pl"),
+            "a tracked -text rule is provable protection"
+        );
+
+        // The same protection, supplied only to this clone, must not count.
+        let info = root.join(".git").join("info");
+        fs::create_dir_all(&info)?;
+        fs::write(info.join("attributes"), "fixture.pl -text\n")?;
+
+        let error = git_protected_paths(root, &declared)
+            .err()
+            .ok_or_else(|| contract_error("a per-clone attributes file must block a verdict"))?
+            .to_string();
+        assert!(
+            error.contains("info/attributes") && error.contains("outside this clone"),
+            "the failure must name the untracked override: {error}"
+        );
+
+        // With nothing declared, protection is never consulted, so the same
+        // clone-local file is irrelevant.
+        assert!(git_protected_paths(root, &[])?.is_empty());
+        Ok(())
+    }
+
+    /// A linked worktree must not hide a per-clone override.
+    ///
+    /// `--absolute-git-dir` in a linked worktree is `.git/worktrees/<name>`,
+    /// but `info/attributes` lives in the common directory and git still
+    /// honours it. Building the path by hand would look in the worktree
+    /// directory, find nothing, and report clone-local protection as
+    /// repository-wide — in exactly the worktree-per-claim layout this
+    /// repository mandates.
+    #[test]
+    fn a_linked_worktree_still_sees_the_common_attributes_override() -> Result<(), Box<dyn Error>> {
+        let scratch = tempdir()?;
+        let primary = scratch.path().join("primary");
+        let linked = scratch.path().join("linked");
+        fs::create_dir_all(&primary)?;
+
+        let git = |cwd: &Path, args: &[&str]| -> Result<(), Box<dyn Error>> {
+            let output =
+                std::process::Command::new("git").arg("-C").arg(cwd).args(args).output()?;
+            if !output.status.success() {
+                return Err(contract_error(format!(
+                    "git {args:?} failed: {}",
+                    String::from_utf8_lossy(&output.stderr).trim()
+                ))
+                .into());
+            }
+            Ok(())
+        };
+
+        git(&primary, &["init", "--quiet"])?;
+        fs::write(primary.join("fixture.pl"), b"my $x = 1;\r\n")?;
+        fs::write(primary.join(".gitattributes"), "fixture.pl -text\n")?;
+        git(&primary, &["add", "-A"])?;
+        git(
+            &primary,
+            &["-c", "user.email=t@example.invalid", "-c", "user.name=t", "commit", "-qm", "init"],
+        )?;
+        git(
+            &primary,
+            &["worktree", "add", "--quiet", linked.to_str().unwrap_or_default(), "-b", "wt"],
+        )?;
+
+        let declared = [ByteExactDeviation {
+            path: "fixture.pl",
+            newline_style: NewlineStyle::CrLf,
+            final_newline: true,
+            byte_order_mark: false,
+            reason: "CRLF position fixture",
+        }];
+
+        assert!(
+            git_protected_paths(&linked, &declared)?.contains("fixture.pl"),
+            "the tracked rule is provable protection from the worktree too"
+        );
+
+        // The override lives in the COMMON git directory, not the worktree's.
+        let info = primary.join(".git").join("info");
+        fs::create_dir_all(&info)?;
+        fs::write(info.join("attributes"), "fixture.pl -text\n")?;
+
+        let error = git_protected_paths(&linked, &declared)
+            .err()
+            .ok_or_else(|| {
+                contract_error("a common-directory override must block a verdict from a worktree")
+            })?
+            .to_string();
+        assert!(
+            error.contains("info/attributes"),
+            "the failure must name the override even from a linked worktree: {error}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_path_declared_twice_is_a_contract_error_not_a_silent_shadow() {
+        let first = ByteExactDeviation {
+            path: "test_corpus/gold/crlf_positions/fixture.pl",
+            newline_style: NewlineStyle::CrLf,
+            final_newline: true,
+            byte_order_mark: false,
+            reason: "CRLF position fixture",
+        };
+        let shadowing = ByteExactDeviation { newline_style: NewlineStyle::Lf, ..first };
+
+        assert_eq!(duplicate_declaration(&[first]), None);
+        assert_eq!(
+            duplicate_declaration(&[first, shadowing]),
+            Some("test_corpus/gold/crlf_positions/fixture.pl")
+        );
+    }
+
+    #[test]
+    fn every_gold_member_is_classified_and_none_is_skipped() -> Result<(), Box<dyn Error>> {
+        let root = gold_root()?;
+        let members = gold_members(&root)?;
+
+        assert!(
+            members.len() >= MIN_GOLD_MEMBERS,
+            "gold corpus member count regressed to {}",
+            members.len()
+        );
+        assert!(
+            members.iter().any(|member| member.ends_with("fixture.pl")),
+            "the walk must reach fixture sources"
+        );
+        assert!(
+            members
+                .iter()
+                .any(|member| member.extension().is_some_and(|extension| extension == "pm")),
+            "the walk must reach lib payload modules, not just top-level members"
+        );
         Ok(())
     }
 }

@@ -1404,9 +1404,14 @@ my $value = 42;
     assert!(
         broken_messages.iter().any(|message| {
             let lower = message.to_ascii_lowercase();
-            lower.contains("expected") || lower.contains("recovered from missingoperand")
+            // Current native wording for the `my $value = ;` parse error is
+            // "Missing operand in expression"; older builds said
+            // "Expected ..." / "Recovered from missingoperand".
+            lower.contains("expected")
+                || lower.contains("missing operand")
+                || lower.contains("recovered from missingoperand")
         }),
-        "broken document diagnostics should mention an expected token or recovered missing operand: {broken_messages:?}"
+        "broken document diagnostics should mention an expected token or missing operand: {broken_messages:?}"
     );
 
     common::send_notification(
@@ -1440,7 +1445,9 @@ my $value = 42;
     assert!(
         fixed_messages.iter().all(|message| {
             let lower = message.to_ascii_lowercase();
-            !lower.contains("expected") && !lower.contains("recovered from missingoperand")
+            !lower.contains("expected")
+                && !lower.contains("missing operand")
+                && !lower.contains("recovered from missingoperand")
         }),
         "fixed document should clear parse-error diagnostics: {fixed_messages:?}"
     );

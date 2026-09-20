@@ -199,7 +199,14 @@ impl LspServer {
                         None
                     };
 
-                    (offset, doc.current_parsed(), doc.text_arc.to_string(), hover_range)
+                    (
+                        offset,
+                        doc.current_parsed(),
+                        doc.text_arc.to_string(),
+                        hover_range,
+                        doc.full_sync_required(),
+                        doc.current_generation(),
+                    )
                 })
             };
             // documents guard dropped here
@@ -212,8 +219,19 @@ impl LspServer {
             }
 
             let t_analyze_start = std::time::Instant::now();
-            let (extracted, live_compiler_context, hover_range) = match locked {
-                Some((offset, parsed, text, range)) => {
+            let (extracted, live_compiler_context, hover_range, captured_generation) = match locked
+            {
+                Some((_, _, _, _, true, _)) | None => {
+                    if timing_on {
+                        crate::runtime::timing::emit(crate::runtime::timing::TimingSpan::labeled(
+                            "provider.hover.analyze",
+                            crate::runtime::timing::elapsed_ms(t_analyze_start),
+                            crate::runtime::timing::uri_tail(uri),
+                        ));
+                    }
+                    return Ok(Some(json!(null)));
+                }
+                Some((offset, parsed, text, range, false, generation)) => {
                     // Generation-bound source-region evidence (#5003). Beyond the
                     // dispatcher trace, it now routes the generic fallback paths:
                     // semantic/index lookups and the token/builtin fallback only
@@ -274,7 +292,12 @@ impl LspServer {
                                     "value": content,
                                 }
                             });
-                            return Ok(Self::inject_hover_range_opt(value, &range));
+                            return Ok(Some(self.publish_user_answer_value(
+                                uri,
+                                generation,
+                                Self::inject_hover_range_opt(value, &range).unwrap_or(json!(null)),
+                                json!(null),
+                            )));
                         }
                         // Check for `use Module` at this offset first
                         let extracted = if let Some(module_name) =
@@ -314,18 +337,15 @@ impl LspServer {
                         } else {
                             self.extract_symbol_hover(uri, ast, &text, offset, &parsed)
                         };
-                        (extracted, live_compiler_context, range)
+                        (extracted, live_compiler_context, range, generation)
                     } else {
                         (
                             Self::extract_token_hover(uri, &text, offset, source_region.as_deref()),
                             live_compiler_context,
                             range,
+                            generation,
                         )
                     }
-                }
-                None => {
-                    set_hover_trace_source_region_kind(None);
-                    (HoverExtracted::None, None, None)
                 }
             };
             if timing_on {
@@ -342,9 +362,17 @@ impl LspServer {
                     if let Some(compiler_hover) =
                         self.try_live_compiler_hover(Some(&value), live_compiler_context.as_ref())
                     {
-                        return Self::inject_hover_range(compiler_hover, &hover_range);
+                        return self.publish_hover_answer(
+                            uri,
+                            captured_generation,
+                            Self::inject_hover_range_opt(compiler_hover, &hover_range),
+                        );
                     }
-                    return Ok(Self::inject_hover_range_opt(value, &hover_range));
+                    return self.publish_hover_answer(
+                        uri,
+                        captured_generation,
+                        Self::inject_hover_range_opt(value, &hover_range),
+                    );
                 }
                 HoverExtracted::UseModule(module_name, doc_text, doc_uri, doc_offset) => {
                     let hv = self.build_module_hover(
@@ -353,12 +381,20 @@ impl LspServer {
                         &doc_uri,
                         Some(doc_offset),
                     );
-                    return Ok(Self::inject_hover_range_opt(hv, &hover_range));
+                    return self.publish_hover_answer(
+                        uri,
+                        captured_generation,
+                        Self::inject_hover_range_opt(hv, &hover_range),
+                    );
                 }
                 HoverExtracted::PossiblePackage(pkg_name, doc_text, doc_uri, doc_offset) => {
                     let hv =
                         self.build_module_hover(&pkg_name, &doc_text, &doc_uri, Some(doc_offset));
-                    return Ok(Self::inject_hover_range_opt(hv, &hover_range));
+                    return self.publish_hover_answer(
+                        uri,
+                        captured_generation,
+                        Self::inject_hover_range_opt(hv, &hover_range),
+                    );
                 }
                 #[cfg(feature = "workspace")]
                 HoverExtracted::InheritedMethod(
@@ -372,7 +408,11 @@ impl LspServer {
                         if let Some(hover_value) =
                             self.build_inherited_method_hover(&receiver_pkg, &method_name, &doc_uri)
                         {
-                            return Self::inject_hover_range(hover_value, &hover_range);
+                            return self.publish_hover_answer(
+                                uri,
+                                captured_generation,
+                                Self::inject_hover_range_opt(hover_value, &hover_range),
+                            );
                         }
                     }
                     // The workspace lookup found nothing (or the index is stale).
@@ -389,9 +429,17 @@ impl LspServer {
                             Some(&hover_value),
                             live_compiler_context.as_ref(),
                         ) {
-                            return Self::inject_hover_range(compiler_hover, &hover_range);
+                            return self.publish_hover_answer(
+                                uri,
+                                captured_generation,
+                                Self::inject_hover_range_opt(compiler_hover, &hover_range),
+                            );
                         }
-                        return Self::inject_hover_range(hover_value, &hover_range);
+                        return self.publish_hover_answer(
+                            uri,
+                            captured_generation,
+                            Self::inject_hover_range_opt(hover_value, &hover_range),
+                        );
                     }
                 }
                 #[cfg(not(feature = "workspace"))]
@@ -400,21 +448,32 @@ impl LspServer {
                     if let Some(compiler_hover) =
                         self.try_live_compiler_hover(None, live_compiler_context.as_ref())
                     {
-                        return Self::inject_hover_range(compiler_hover, &hover_range);
+                        return self.publish_hover_answer(
+                            uri,
+                            captured_generation,
+                            Self::inject_hover_range_opt(compiler_hover, &hover_range),
+                        );
                     }
                 }
             }
+            self.publish_hover_answer(uri, captured_generation, Some(json!(null)))
+        } else {
+            Ok(Some(json!(null)))
         }
-
-        Ok(Some(json!(null)))
     }
 
-    /// Inject the `range` field into a hover response value. (#5085)
-    fn inject_hover_range(
-        value: Value,
-        range: &Option<Value>,
+    fn publish_hover_answer(
+        &self,
+        uri: &str,
+        generation: u32,
+        value: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
-        Ok(Self::inject_hover_range_opt(value, range))
+        Ok(Some(self.publish_user_answer_value(
+            uri,
+            generation,
+            value.unwrap_or(json!(null)),
+            json!(null),
+        )))
     }
 
     fn inject_hover_range_opt(mut value: Value, range: &Option<Value>) -> Option<Value> {
@@ -491,19 +550,48 @@ impl LspServer {
         let token_candidate_is_proven =
             Self::token_fallback_is_proven_code(source_region, text, offset);
 
-        if token_candidate_is_proven
+        // Method-modifier target island (#15425). The synthetic modifier
+        // symbol spans the whole `before 'save' => sub { … };` statement, and
+        // its target name is a quoted string, so the proven-Code gate can
+        // never see a cursor on the target — the region index proves
+        // StringLiteral there (#4967). The declaration head is still precise
+        // evidence: allow the modifier card when the whole token range is
+        // proven StringLiteral and the hovered token text matches the
+        // symbol's target name (multi-target disambiguation). Body strings,
+        // comments, POD, and heredocs keep failing closed because their
+        // text won't match any modifier target name.
+        let modifier_target_island = !token_candidate_is_proven
+            && Self::token_range_is_proven_kind(
+                source_region,
+                text,
+                offset,
+                SourceRegionKind::StringLiteral,
+            );
+
+        if (token_candidate_is_proven || modifier_target_island)
             && let Some(symbol_info) =
                 analyzer.symbol_at(crate::SourceLocation { start: offset, end: offset })
             && let Some(modifier_kind) =
                 symbol_info.attributes.iter().find_map(|a| a.strip_prefix("modifier="))
         {
-            let method_name = &symbol_info.name;
-            let doc = symbol_info.documentation.as_deref().unwrap_or("");
-            return HoverExtracted::Complete(hover_cards::method_modifier_hover(
-                modifier_kind,
-                method_name,
-                doc,
-            ));
+            // Multi-target disambiguation (#15425 review): when several
+            // modifier symbols share the same statement span, `symbol_at` may
+            // return any of them. Verify the hovered token text matches this
+            // symbol's name (the modifier target). Non-target tokens (body
+            // strings, comments) don't match any modifier name and fail
+            // closed naturally.
+            let token_text = Self::get_token_at_position_static(text, offset);
+            let target_matches = token_text == symbol_info.name;
+            let _ = modifier_target_island; // island gate already applied above
+            if target_matches || token_candidate_is_proven {
+                let method_name = &symbol_info.name;
+                let doc = symbol_info.documentation.as_deref().unwrap_or("");
+                return HoverExtracted::Complete(hover_cards::method_modifier_hover(
+                    modifier_kind,
+                    method_name,
+                    doc,
+                ));
+            }
         }
 
         // Detect early when the cursor is on a `->method` call: defer to the
@@ -841,6 +929,93 @@ impl LspServer {
         )
     }
 
+    /// Whether the whole token range at `offset` is proven to be exactly
+    /// `kind` by the generation-bound source-region index (#5003/#4967).
+    ///
+    /// Empty token ranges (cursor on punctuation) never qualify: there is no
+    /// identifier evidence to prove. Missing evidence fails closed.
+    fn token_range_is_proven_kind(
+        region_index: Option<&SourceRegionIndex>,
+        text: &str,
+        offset: usize,
+        kind: SourceRegionKind,
+    ) -> bool {
+        let Some(index) = region_index else {
+            return false;
+        };
+        let (start, end) = Self::token_byte_bounds_of(text, offset);
+        if start >= end {
+            return false;
+        }
+        matches!(
+            index.classify_range(start, end),
+            RangeClassification::Proven { kind: proven } if proven == kind
+        )
+    }
+
+    /// Whether the token candidate at `offset` is an unescaped `$`/`@` variable
+    /// interpolated inside a double-quoted string literal (#14860).
+    ///
+    /// The region index records both `"…"` and `'…'` spans as
+    /// [`SourceRegionKind::StringLiteral`] without interpolation awareness, so
+    /// the opener byte decides: `'…'` never interpolates. Backticks and other
+    /// quote-likes are separate region kinds and stay outside this island. `%`
+    /// never interpolates, and an odd run of preceding backslashes escapes the
+    /// sigil. Missing evidence fails closed.
+    fn token_is_interpolated_string_variable(
+        region_index: Option<&SourceRegionIndex>,
+        text: &str,
+        offset: usize,
+    ) -> bool {
+        let Some(index) = region_index else {
+            return false;
+        };
+        // Punctuation variables (`$!`, `$^W`, `@+`) have no word-token bounds,
+        // so the candidate span comes from the same extractor that names them;
+        // sigiled identifiers fall back to word bounds.
+        let (start, end) = Self::special_variable_byte_bounds_of(text, offset)
+            .unwrap_or_else(|| Self::token_byte_bounds_of(text, offset));
+        if start >= end || !matches!(text.as_bytes().get(start), Some(b'$' | b'@')) {
+            return false;
+        }
+        let Some(region) = index.regions().iter().find(|region| {
+            region.kind == SourceRegionKind::StringLiteral && region.contains_range(start, end)
+        }) else {
+            return false;
+        };
+        let bytes = text.as_bytes();
+        let interpolating = matches!(bytes.get(region.start), Some(b'"'));
+        if !interpolating || start <= region.start {
+            return false;
+        }
+        let escaping_backslashes =
+            bytes[region.start..start].iter().rev().take_while(|b| **b == b'\\').count();
+        escaping_backslashes % 2 == 0
+    }
+
+    /// Byte span of the punctuation or caret special variable that
+    /// [`Self::extract_special_variable`] names at `offset`, anchored at the
+    /// sigil it found (cursor on the sigil or on the punctuation).
+    fn special_variable_byte_bounds_of(text: &str, offset: usize) -> Option<(usize, usize)> {
+        let name = Self::extract_special_variable(text, offset)?;
+        let start = [Some(offset), offset.checked_sub(1), offset.checked_sub(2)]
+            .into_iter()
+            .flatten()
+            .find(|pos| text.get(*pos..).is_some_and(|rest| rest.starts_with(name.as_str())))?;
+        let end = start + name.len();
+        // Preserve punctuation-boundary hover, but never claim identifier text
+        // immediately following a punctuation variable inside the string.
+        if offset >= end
+            && text
+                .get(offset..)
+                .and_then(|rest| rest.chars().next())
+                .is_some_and(|ch| ch.is_alphanumeric() || ch == '_')
+        {
+            return None;
+        }
+        Some((start, end))
+    }
+
     /// Extract hover information from the token fallback path.
     fn extract_token_hover(
         uri: &str,
@@ -863,7 +1038,25 @@ impl LspServer {
         // Generic symbol/token/builtin fallback: proven code only. Comments,
         // POD, literals, quote-likes, regex bodies, heredocs, `__DATA__`, and
         // recovery-ambiguous input fail closed to `None` (#4967).
+        //
+        // One island survives inside a string: an unescaped sigil variable in
+        // a double-quoted literal is a live variable reference, so its
+        // variable card stays answerable. Builtin, keyword,
+        // and bare-token cards remain suppressed there (#14860).
         if !Self::token_fallback_is_proven_code(region_index, text, offset) {
+            if Self::token_is_interpolated_string_variable(region_index, text, offset) {
+                if let Some(special_var) = Self::extract_special_variable(text, offset)
+                    && let Some(hover) = Self::get_special_variable_hover(&special_var)
+                {
+                    return HoverExtracted::Complete(hover);
+                }
+                let token = Self::get_token_at_position_static(text, offset);
+                if token.starts_with(['$', '@'])
+                    && let Some(hover) = Self::get_special_variable_hover(&token)
+                {
+                    return HoverExtracted::Complete(hover);
+                }
+            }
             return HoverExtracted::None;
         }
 

@@ -31,10 +31,12 @@ The implemented slice lives in `crates/perl-parser-core/src/pir/` and lowers a
 - the PIR v0 data model from the [Target Code Shape](#target-code-shape)
   (`PirNode`, `PirId`, `PirContext`, `PirEvaluationDemand`, `PirAccessMode`, `PirOperation`, `PirCallee`/`PirReceiver`/
   `PirMethod`, `PirSourceAnchor`, `PirEdge`, `PirReceipt`);
-- HIR-to-PIR lowering for the data-access, call, and dynamic-boundary operation
-  families HIR can prove from source (`LexicalWrite`, `StashWrite`, `Assign`,
-  `Call`, `MethodCall`, `Literal`, `DynamicBoundary`), with every source-derived
-  node anchored and visible `Unknown` context where context is not provable;
+- HIR-to-PIR lowering for the operation families HIR can prove from source, with
+  every source-derived node anchored and visible `Unknown` context where context
+  is not provable. Which families are modeled is
+  `PirOperation::ALL_OPERATION_NAMES` in
+  [`crates/perl-parser-core/src/pir/model.rs`](../../crates/perl-parser-core/src/pir/model.rs);
+  lowering coverage of that set is reported by receipts, not restated here;
 - dynamic-boundary preservation, including the link from a coderef `Call` to the
   HIR-emitted boundary, plus dynamic-exit CFG edges;
 - a conservative first control-flow graph (intra-scope fallthrough edges and
@@ -74,13 +76,13 @@ silently dropped. The returned expression (`return $x`) and the HIR
 named follow-up, mirroring the deferred condition lowering for Branch/Loop.
 
 Condition-expression lowering, branch arm edges, loop back-edges, non-return
-control-transfer lowering, read-side (`LexicalRead`/`StashRead`) lowering,
-retained PIR caches, and any provider cutover remain out of scope and are tracked
-separately (provider cutover stays gated by
+control-transfer lowering, retained PIR caches, and any provider cutover remain
+out of scope and are tracked separately (provider cutover stays gated by
 [#8197](https://github.com/EffortlessMetrics/perl-lsp/issues/8197)).
-The `PirOperation` contract reserves the `LexicalRead` and `StashRead` families
-so later passes populate them without a model break; the receipt makes the
-current gap visible rather than guessing.
+`LexicalRead` and `StashRead` are in the model and lowering already emits them;
+they are not reserved for a later pass. Coverage gaps stay visible in receipts
+rather than in a restated enum listing. The live operation-name registry is
+`PirOperation::ALL_OPERATION_NAMES`; see [Target Code Shape](#target-code-shape).
 
 This spec defines the PIR v0 contract. The data model and lowering above honor
 it without adding provider behavior, retained cache behavior, determinism
@@ -115,7 +117,15 @@ PIR v0 must not:
 
 ## Target Code Shape
 
-Future code may introduce types with this shape:
+The implemented types have this shape. The block below is **illustrative**: it
+shows node, context, demand, and access shape. It is not the live
+`PirOperation` inventory.
+
+The live operation-family names used by receipts and status generators are
+`PirOperation::ALL_OPERATION_NAMES` in
+[`crates/perl-parser-core/src/pir/model.rs`](../../crates/perl-parser-core/src/pir/model.rs).
+A hand-maintained copy of that list in this spec is not authoritative and must
+not be treated as complete.
 
 ```rust
 pub struct PirNode {
@@ -147,24 +157,19 @@ pub enum PirAccessMode {
     ReadModifyWrite,
 }
 
+// Illustrative shape only. See PirOperation::ALL_OPERATION_NAMES for the live
+// operation-family registry. Do not treat the variants sketched here as the
+// complete or current set.
 pub enum PirOperation {
     LexicalRead { name: LexicalName },
     LexicalWrite { name: LexicalName },
-    StashRead { symbol: SymbolName },
-    StashWrite { symbol: SymbolName },
-    Literal { kind: PirLiteralKind },
-    Assign,
-    Call { callee: PirCallee },
-    MethodCall { receiver: PirReceiver, method: PirMethod },
-    Deref { aggregate: DerefAggregateKind, operand: DerefOperandKind },
-    Branch { condition: PirId },
-    Loop { condition: Option<PirId> },
-    Return,
-    DynamicBoundary { kind: DynamicBoundaryKind },
+    // ...
 }
 ```
 
-The exact Rust names may differ. The semantics above are the contract.
+The exact Rust names may differ. The semantics of the modeled families are the
+contract. The operation-name registry is `ALL_OPERATION_NAMES`, not the sketch
+above.
 
 ## Required Node Identity
 

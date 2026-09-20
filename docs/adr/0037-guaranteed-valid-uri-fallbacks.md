@@ -7,6 +7,26 @@
 
 ## Context
 
+### Scope clarification (2026-09-07)
+
+The current layering decision in [#8499](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/8499)
+and its strict-conversion slice [#14810](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/14810)
+narrows the original decision below: synthetic recovery belongs only to an explicitly
+lossy final Perl LSP response adapter, where method policy permits it. It must not
+establish retained document identity, source-backed exactness, or edit/resource authority.
+
+`perl-position-tracking::WireLocation` is a structural conversion below that adapter.
+It returns the exact absolute URI and structural range, or `WireLocationUriError`
+carrying the rejected input. It never substitutes another resource. References and
+definition consumers decline their exact-location path when conversion fails.
+Callers must bound and redact rejected input before writing durable evidence.
+
+This clarification supersedes the lower-layer fallback ownership described in the
+original rationale below. The final adapter and its remaining caller migration stay
+owned by #8499; this strict seam does not establish their completion.
+
+### Original rationale
+
 The codebase contains an unusual but intentional pattern at the LSP wire boundary: URI parsing
 helpers do not propagate parse failures upward and do not panic when given malformed URI strings.
 Instead, they synthesize a known-valid fallback URI.

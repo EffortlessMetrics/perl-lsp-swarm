@@ -1,19 +1,19 @@
 //! Live-collection falsifiers for branch-deletion admission (#12885).
 //!
-//! The adapter is driven through a fake command surface, so every case is
-//! hermetic: no network, no `gh`, no real repository, and nothing mutated.
-//! What is under test is that live collection is *fail-closed* — an
-//! unreadable, unparseable, or truncated read must not become a permissive
-//! default.
+//! The collection adapter is driven through a fake command surface, so its
+//! cases are hermetic: no network and no `gh`. The dedicated local-ref route
+//! tests also execute its generated argv in a temporary Git repository.
 
 use std::collections::HashMap;
 
 use std::cell::RefCell;
+use std::process::Command;
 
 use xtask::branch_deletion_admission::{
-    DeletionAdmission, DeletionExecutor, ReadOnlyCommands, RecheckGate, RemoteIdentity,
-    branch_deletion_command, collect_request, evaluate, execute_admitted_deletion,
-    parse_remote_identity, recheck_gate, repository_from_remote_url, verify_remote_identity,
+    DeletionAdmission, DeletionExecutor, ParentTerminality, ReadOnlyCommands, RecheckGate,
+    RemoteIdentity, branch_deletion_command, collect_request, collect_request_for_local_alias,
+    evaluate, execute_admitted_deletion, parse_remote_identity, recheck_gate,
+    repository_from_remote_url, verify_remote_identity,
 };
 
 const BRANCH: &str = "agent/vim-activation-root-7762";
@@ -56,6 +56,23 @@ impl FakeCommands {
 
 impl ReadOnlyCommands for FakeCommands {
     fn capture(&self, program: &str, args: &[&str]) -> color_eyre::eyre::Result<String> {
+        if program == "gh" && args.starts_with(&["pr", "view"]) {
+            // Independent CLI contract: https://cli.github.com/manual/gh_pr_view
+            // Prefix stubs must not conceal unsupported requested JSON fields.
+            let fields = args.windows(2).find_map(|pair| match pair {
+                ["--json", fields] => Some(*fields),
+                _ => None,
+            });
+            let mut requested: Vec<_> = fields.unwrap_or_default().split(',').collect();
+            requested.sort_unstable();
+            let expected = ["headRefName", "headRefOid", "isCrossRepository", "number", "state"];
+            if requested != expected {
+                return Err(color_eyre::eyre::eyre!(
+                    "unsupported parent JSON field contract: {requested:?}"
+                ));
+            }
+        }
+
         // Reject anything that could mutate: the adapter must stay read-only.
         let mutating = ["push", "delete", "commit", "merge", "close", "edit", "create"];
         for argument in args {
@@ -81,7 +98,7 @@ impl ReadOnlyCommands for FakeCommands {
 
 fn merged_parent_json() -> String {
     format!(
-        r#"{{"number":7799,"state":"MERGED","merged":true,"headRefName":"{BRANCH}","headRefOid":"{HEAD_SHA}","isCrossRepository":false}}"#
+        r#"{{"number":7799,"state":"MERGED","headRefName":"{BRANCH}","headRefOid":"{HEAD_SHA}","isCrossRepository":false}}"#
     )
 }
 
@@ -114,6 +131,330 @@ fn a_fully_read_unencumbered_subject_is_admitted() -> Result<(), Box<dyn std::er
     assert_eq!(outcome.repository, "EffortlessMetrics/perl-lsp-swarm");
     assert_eq!(outcome.admitted_sha.as_deref(), Some(HEAD_SHA));
     assert!(branch_deletion_command(&outcome).is_some());
+    Ok(())
+}
+
+#[test]
+fn a_local_alias_is_collected_from_the_local_tip_and_never_remote_deleted()
+-> Result<(), Box<dyn std::error::Error>> {
+    const ALIAS: &str = "codex/13178-dancer2-v1-integrated";
+    let commands = healthy()
+        .on("git check-ref-format refs/heads", ALIAS)
+        .on(
+            "git for-each-ref --format=%(refname)%00%(symref) refs/heads",
+            &format!("refs/heads/{ALIAS}\0\n"),
+        )
+        .on("git rev-parse --verify --quiet refs/heads", &format!("{HEAD_SHA}\n"))
+        .on("git worktree list", "worktree /repo\nHEAD abc\nbranch refs/heads/main\n");
+
+    let collected = collect_request_for_local_alias(&commands, 7799, "origin", ALIAS)?;
+    let outcome = evaluate(&collected.request);
+    if outcome.admission != DeletionAdmission::SafeToDelete {
+        return Err(format!("local alias retained: {}", outcome.detail).into());
+    }
+    let command = branch_deletion_command(&outcome).ok_or("local alias emitted no argv")?;
+    if command.first().map(String::as_str) != Some("git")
+        || !command.contains(&"update-ref".to_string())
+        || !command.contains(&"--no-deref".to_string())
+        || command.contains(&"--delete".to_string())
+        || command.contains(&"origin".to_string())
+    {
+        return Err(format!("unexpected local deletion argv: {command:?}").into());
+    }
+    Ok(())
+}
+
+#[test]
+fn a_symbolic_local_alias_is_not_admitted() -> Result<(), Box<dyn std::error::Error>> {
+    const ALIAS: &str = "codex/symbolic-alias";
+    let commands = healthy()
+        .on("git check-ref-format refs/heads", ALIAS)
+        .on(
+            "git for-each-ref --format=%(refname)%00%(symref) refs/heads",
+            &format!("refs/heads/{ALIAS}\0refs/remotes/origin/other\n"),
+        )
+        .on("git worktree list", "worktree /repo\nHEAD abc\nbranch refs/heads/main\n");
+
+    let collected = collect_request_for_local_alias(&commands, 7799, "origin", ALIAS)?;
+    let outcome = evaluate(&collected.request);
+    if outcome.admission != DeletionAdmission::RetainBranchMoved {
+        return Err(format!("symbolic alias was not retained: {:?}", outcome.admission).into());
+    }
+    if branch_deletion_command(&outcome).is_some() {
+        return Err("symbolic alias emitted a deletion command".into());
+    }
+    Ok(())
+}
+
+#[test]
+fn a_local_alias_checked_out_in_a_worktree_is_not_admitted()
+-> Result<(), Box<dyn std::error::Error>> {
+    const ALIAS: &str = "codex/checked-out-alias";
+    let commands = healthy()
+        .on("git check-ref-format refs/heads", ALIAS)
+        .on(
+            "git for-each-ref --format=%(refname)%00%(symref) refs/heads",
+            &format!("refs/heads/{ALIAS}\0\n"),
+        )
+        .on("git rev-parse --verify --quiet refs/heads", &format!("{HEAD_SHA}\n"))
+        .on("git worktree list", &format!("worktree /repo\nHEAD abc\nbranch refs/heads/{ALIAS}\n"));
+
+    let collected = collect_request_for_local_alias(&commands, 7799, "origin", ALIAS)?;
+    let outcome = evaluate(&collected.request);
+    if outcome.admission != DeletionAdmission::RetainGraphNotProven {
+        return Err(format!("checked-out alias was not retained: {:?}", outcome.admission).into());
+    }
+    if branch_deletion_command(&outcome).is_some() {
+        return Err("checked-out alias emitted a deletion command".into());
+    }
+    Ok(())
+}
+
+#[test]
+fn a_local_alias_metadata_read_error_is_not_treated_as_direct_ref()
+-> Result<(), Box<dyn std::error::Error>> {
+    const ALIAS: &str = "codex/unreadable-alias";
+    let commands = healthy().on("git check-ref-format refs/heads", ALIAS).failing(
+        "git for-each-ref --format=%(refname)%00%(symref) refs/heads",
+        "permission denied",
+    );
+
+    let collected = collect_request_for_local_alias(&commands, 7799, "origin", ALIAS)?;
+    let outcome = evaluate(&collected.request);
+    if outcome.admission != DeletionAdmission::RetainBranchMoved {
+        return Err(format!("unreadable alias was not retained: {:?}", outcome.admission).into());
+    }
+    if branch_deletion_command(&outcome).is_some() {
+        return Err("unreadable alias emitted a deletion command".into());
+    }
+    Ok(())
+}
+
+fn run_git(
+    repo: &std::path::Path,
+    args: &[&str],
+) -> Result<std::process::Output, Box<dyn std::error::Error>> {
+    Ok(Command::new("git").args(args).current_dir(repo).output()?)
+}
+
+fn require_success(
+    label: &str,
+    output: &std::process::Output,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if output.status.success() { Ok(()) } else { Err(format!("{label} failed: {output:?}").into()) }
+}
+
+#[test]
+fn a_local_alias_argv_deletes_only_the_admitted_temp_repo_ref()
+-> Result<(), Box<dyn std::error::Error>> {
+    let repo = tempfile::tempdir()?;
+    let init = run_git(repo.path(), &["init", "--quiet"])?;
+    require_success("git init", &init)?;
+    std::fs::write(repo.path().join("payload"), b"alias proof")?;
+    let add = run_git(repo.path(), &["add", "payload"])?;
+    require_success("git add", &add)?;
+    let commit = run_git(
+        repo.path(),
+        &[
+            "-c",
+            "user.name=proof",
+            "-c",
+            "user.email=proof@example.invalid",
+            "commit",
+            "--quiet",
+            "-m",
+            "proof",
+        ],
+    )?;
+    require_success("git commit", &commit)?;
+    let head = run_git(repo.path(), &["rev-parse", "HEAD"])?;
+    require_success("git rev-parse", &head)?;
+    let sha = String::from_utf8(head.stdout)?.trim().to_string();
+    let alias = "refs/heads/codex/local-alias";
+    let update = run_git(repo.path(), &["update-ref", alias, &sha])?;
+    require_success("git update-ref", &update)?;
+
+    let mut request = collect_request(&healthy(), 7799, "origin")?.request;
+    request.parent.reviewed_head_sha = sha.clone();
+    request.branch.current_sha = Some(sha.clone());
+    request.branch.local_ref = Some(
+        alias
+            .strip_prefix("refs/heads/")
+            .ok_or("test ref did not have refs/heads prefix")?
+            .to_string(),
+    );
+    let outcome = evaluate(&request);
+    if outcome.admission != DeletionAdmission::SafeToDelete {
+        return Err(format!("local admission retained: {:?}", outcome.admission).into());
+    }
+    let argv = branch_deletion_command(&outcome).ok_or("local admission did not emit argv")?;
+    let (program, args) = argv.split_first().ok_or("local admission emitted an empty argv")?;
+    let mutation = Command::new(program).args(args).current_dir(repo.path()).output()?;
+    require_success("local deletion", &mutation)?;
+    let remains = run_git(repo.path(), &["show-ref", "--verify", alias])?;
+    if remains.status.success() {
+        return Err(format!("local alias survived: {remains:?}").into());
+    }
+    Ok(())
+}
+
+#[test]
+fn a_symbolic_switch_after_admission_cannot_delete_the_target_ref()
+-> Result<(), Box<dyn std::error::Error>> {
+    let repo = tempfile::tempdir()?;
+    let init = run_git(repo.path(), &["init", "--quiet"])?;
+    require_success("git init", &init)?;
+    std::fs::write(repo.path().join("payload"), b"alias race")?;
+    let add = run_git(repo.path(), &["add", "payload"])?;
+    require_success("git add", &add)?;
+    let commit = run_git(
+        repo.path(),
+        &[
+            "-c",
+            "user.name=proof",
+            "-c",
+            "user.email=proof@example.invalid",
+            "commit",
+            "--quiet",
+            "-m",
+            "proof",
+        ],
+    )?;
+    require_success("git commit", &commit)?;
+    let head = run_git(repo.path(), &["rev-parse", "HEAD"])?;
+    require_success("git rev-parse", &head)?;
+    let sha = String::from_utf8(head.stdout)?.trim().to_string();
+    let update = run_git(repo.path(), &["update-ref", "refs/heads/codex/local-alias", &sha])?;
+    require_success("git update-ref", &update)?;
+    let target = run_git(repo.path(), &["update-ref", "refs/heads/target", &sha])?;
+    require_success("target setup", &target)?;
+
+    let mut request = collect_request(&healthy(), 7799, "origin")?.request;
+    request.parent.reviewed_head_sha = sha.clone();
+    request.branch.current_sha = Some(sha);
+    request.branch.local_ref = Some("codex/local-alias".to_string());
+    let outcome = evaluate(&request);
+    let argv = branch_deletion_command(&outcome).ok_or("local admission did not emit argv")?;
+    let switched = run_git(
+        repo.path(),
+        &["symbolic-ref", "refs/heads/codex/local-alias", "refs/heads/target"],
+    )?;
+    require_success("symbolic switch", &switched)?;
+    let (program, args) = argv.split_first().ok_or("local admission emitted an empty argv")?;
+    let mutation = Command::new(program).args(args).current_dir(repo.path()).output()?;
+    require_success("symbolic alias deletion", &mutation)?;
+    let alias_remains =
+        run_git(repo.path(), &["show-ref", "--verify", "refs/heads/codex/local-alias"])?;
+    if alias_remains.status.success() {
+        return Err(format!("symbolic local alias survived: {alias_remains:?}").into());
+    }
+    let target_remains = run_git(repo.path(), &["show-ref", "--verify", "refs/heads/target"])?;
+    require_success("symbolic target remains", &target_remains)?;
+    Ok(())
+}
+
+#[test]
+fn the_parent_command_fixture_rejects_unsupported_fields() -> Result<(), Box<dyn std::error::Error>>
+{
+    let commands = healthy();
+    let result = commands.capture(
+        "gh",
+        &[
+            "pr",
+            "view",
+            "7799",
+            "--json",
+            "number,state,merged,headRefName,headRefOid,isCrossRepository",
+        ],
+    );
+    let error = result.err().ok_or("the fixture accepted unsupported field")?;
+    if !error.to_string().contains("unsupported parent JSON field contract") {
+        return Err(format!("fixture failed for the wrong reason: {error}").into());
+    }
+    Ok(())
+}
+
+#[test]
+fn missing_parent_fork_evidence_is_an_error() -> Result<(), Box<dyn std::error::Error>> {
+    let parent = merged_parent_json().replace(",\"isCrossRepository\":false", "");
+    let commands = healthy().on("gh pr view 7799", &parent);
+    if collect_request(&commands, 7799, "origin").is_ok() {
+        return Err("missing parent fork evidence was accepted".into());
+    }
+    Ok(())
+}
+
+#[test]
+fn an_unknown_parent_state_is_not_proven() -> Result<(), Box<dyn std::error::Error>> {
+    for state in ["", "UNKNOWN", "merged", " MERGED "] {
+        let parent = merged_parent_json().replace("\"MERGED\"", &format!("\"{state}\""));
+        let commands = healthy().on("gh pr view 7799", &parent);
+        let collected = collect_request(&commands, 7799, "origin")?;
+        if collected.request.parent.terminality != ParentTerminality::NotProven {
+            return Err(format!("unknown parent state {state:?} became proven").into());
+        }
+        let outcome = evaluate(&collected.request);
+        if outcome.admission == DeletionAdmission::SafeToDelete
+            || branch_deletion_command(&outcome).is_some()
+        {
+            return Err(format!("unknown parent state {state:?} authorized deletion").into());
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn malformed_or_duplicate_parent_state_is_an_error() -> Result<(), Box<dyn std::error::Error>> {
+    for state_fields in [
+        "",
+        r#""state":null,"#,
+        r#""state":true,"#,
+        r#""state":1,"#,
+        r#""state":[],"#,
+        r#""state":{},"#,
+        r#""state":"MERGED","state":"OPEN","#,
+        r#""state":"OPEN","state":"MERGED","#,
+        r#""state":"MERGED","state":"MERGED","#,
+    ] {
+        let parent = format!(
+            r#"{{"number":7799,{state_fields}"headRefName":"{BRANCH}","headRefOid":"{HEAD_SHA}","isCrossRepository":false}}"#
+        );
+        let commands = healthy().on("gh pr view 7799", &parent);
+        if collect_request(&commands, 7799, "origin").is_ok() {
+            return Err(
+                format!("invalid parent state evidence was accepted: {state_fields}").into()
+            );
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn malformed_parent_fork_evidence_is_an_error() -> Result<(), Box<dyn std::error::Error>> {
+    for value in ["null", "\"false\"", "0", "[]", "{}"] {
+        let parent = merged_parent_json()
+            .replace("\"isCrossRepository\":false", &format!("\"isCrossRepository\":{value}"));
+        let commands = healthy().on("gh pr view 7799", &parent);
+        if collect_request(&commands, 7799, "origin").is_ok() {
+            return Err(format!("non-boolean parent fork evidence was accepted: {value}").into());
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn duplicate_parent_fork_evidence_is_an_error() -> Result<(), Box<dyn std::error::Error>> {
+    for fields in [
+        r#""isCrossRepository":false,"isCrossRepository":true"#,
+        r#""isCrossRepository":true,"isCrossRepository":false"#,
+        r#""isCrossRepository":false,"isCrossRepository":false"#,
+    ] {
+        let parent = merged_parent_json().replace("\"isCrossRepository\":false", fields);
+        let commands = healthy().on("gh pr view 7799", &parent);
+        if collect_request(&commands, 7799, "origin").is_ok() {
+            return Err(format!("duplicate parent fork evidence was accepted: {fields}").into());
+        }
+    }
     Ok(())
 }
 
@@ -415,11 +756,11 @@ fn local_worktree_ownership_blocks_and_fails_closed() -> Result<(), Box<dyn std:
 /// A parent that is not merged retains, whatever else is true.
 #[test]
 fn a_non_terminal_parent_retains() -> Result<(), Box<dyn std::error::Error>> {
-    for (state, merged) in [("OPEN", false), ("CLOSED", false)] {
+    for state in ["OPEN", "CLOSED"] {
         let commands = healthy().on(
             "gh pr view 7799",
             &format!(
-                r#"{{"number":7799,"state":"{state}","merged":{merged},"headRefName":"{BRANCH}","headRefOid":"{HEAD_SHA}"}}"#
+                r#"{{"number":7799,"state":"{state}","headRefName":"{BRANCH}","headRefOid":"{HEAD_SHA}","isCrossRepository":false}}"#
             ),
         );
         let outcome = evaluate(&collect_request(&commands, 7799, "origin")?.request);
@@ -551,7 +892,7 @@ fn the_deletion_path_refuses_every_retaining_outcome() -> Result<(), Box<dyn std
         healthy().on(
             "gh pr view 7799",
             &format!(
-                r#"{{"number":7799,"state":"OPEN","merged":false,"headRefName":"{BRANCH}","headRefOid":"{HEAD_SHA}"}}"#
+                r#"{{"number":7799,"state":"OPEN","headRefName":"{BRANCH}","headRefOid":"{HEAD_SHA}","isCrossRepository":false}}"#
             ),
         ),
     ];
@@ -611,7 +952,7 @@ fn a_branch_name_with_shell_metacharacters_stays_one_argument()
         .on(
             "gh pr view 7799",
             &format!(
-                r#"{{"number":7799,"state":"MERGED","merged":true,"headRefName":"{hostile}","headRefOid":"{HEAD_SHA}"}}"#
+                r#"{{"number":7799,"state":"MERGED","headRefName":"{hostile}","headRefOid":"{HEAD_SHA}","isCrossRepository":false}}"#
             ),
         )
         .on("git ls-remote origin", &format!("{HEAD_SHA}\trefs/heads/{hostile}\n"));
@@ -812,7 +1153,7 @@ fn a_cross_repository_parent_retains() -> Result<(), Box<dyn std::error::Error>>
     let fork = healthy().on(
         "gh pr view 7799",
         &format!(
-            r#"{{"number":7799,"state":"MERGED","merged":true,"headRefName":"{BRANCH}","headRefOid":"{HEAD_SHA}","isCrossRepository":true}}"#
+            r#"{{"number":7799,"state":"MERGED","headRefName":"{BRANCH}","headRefOid":"{HEAD_SHA}","isCrossRepository":true}}"#
         ),
     );
     let collected = collect_request(&fork, 7799, "origin")?;
@@ -829,6 +1170,46 @@ fn a_cross_repository_parent_retains() -> Result<(), Box<dyn std::error::Error>>
     // test cannot pass because the fixture is broken.
     let same_but_owned = evaluate(&collect_request(&healthy(), 7799, "origin")?.request);
     assert_eq!(same_but_owned.admission, DeletionAdmission::SafeToDelete);
+    Ok(())
+}
+
+/// Repository binding evidence is required before a parent can enter the
+/// admission graph. Missing, null, wrong-type, and duplicate values must all
+/// retain rather than becoming the same-repository default.
+#[test]
+fn missing_or_ambiguous_repository_binding_retains() -> anyhow::Result<()> {
+    for (label, parent) in [
+        (
+            "missing",
+            format!(
+                r#"{{"number":7799,"state":"MERGED","headRefName":"{BRANCH}","headRefOid":"{HEAD_SHA}"}}"#
+            ),
+        ),
+        (
+            "null",
+            format!(
+                r#"{{"number":7799,"state":"MERGED","headRefName":"{BRANCH}","headRefOid":"{HEAD_SHA}","isCrossRepository":null}}"#
+            ),
+        ),
+        (
+            "wrong type",
+            format!(
+                r#"{{"number":7799,"state":"MERGED","headRefName":"{BRANCH}","headRefOid":"{HEAD_SHA}","isCrossRepository":"false"}}"#
+            ),
+        ),
+        (
+            "duplicate",
+            format!(
+                r#"{{"number":7799,"state":"MERGED","headRefName":"{BRANCH}","headRefOid":"{HEAD_SHA}","isCrossRepository":false,"isCrossRepository":true}}"#
+            ),
+        ),
+    ] {
+        let commands = healthy().on("gh pr view 7799", &parent);
+        anyhow::ensure!(
+            collect_request(&commands, 7799, "origin").is_err(),
+            "{label} repository-binding evidence must not be accepted",
+        );
+    }
     Ok(())
 }
 

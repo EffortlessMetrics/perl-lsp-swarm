@@ -1404,7 +1404,7 @@ impl LspServer {
                     // offset is inside a comment.
                     let text = &doc.text;
                     if is_in_comment_naive(offset, text) {
-                        return Ok(None);
+                        return Ok(Some(Value::Null));
                     }
 
                     let radius = 50;
@@ -1843,7 +1843,7 @@ impl LspServer {
                                     return Ok(Some(result));
                                 }
                             }
-                            FqnCursorComponent::Prefix => return Ok(None),
+                            FqnCursorComponent::Prefix => return Ok(Some(Value::Null)),
                         }
                     }
                 }
@@ -2223,9 +2223,13 @@ impl LspServer {
         if !snapshot_is_current() {
             return None;
         }
+        // Resolve the legacy location BEFORE entering the callback: the cutover
+        // path must not re-enter `WorkspaceIndex` while
+        // `with_semantic_queries_for_uri` holds its read guards (#15644).
+        let legacy_location = index.find_definition(&symbol);
         let receipt = index.with_semantic_queries_for_uri(uri, |file_id, queries| {
             let context = QueryContext::new(file_id, None, Some(byte_offset));
-            goto_definition_live_exact_or_imported(index.as_ref(), &queries, &symbol, &context)
+            goto_definition_live_exact_or_imported(legacy_location, &queries, &symbol, &context)
                 .receipt
         })?;
         if !snapshot_is_current() || self.workspace_index_stale_for_any_open_document() {
@@ -2248,7 +2252,7 @@ impl LspServer {
                 "provider": "definition",
                 "live_provider_result": live_provider_result,
                 "live_provider_count": live_provider_count,
-                "compiler_receipt": null,
+                "source_backed_receipt": null,
                 "no_live_behavior_change": true,
                 "note": "definition runtime proof unavailable without workspace semantic queries"
             })))
@@ -2261,7 +2265,7 @@ impl LspServer {
                     "provider": "definition",
                     "live_provider_result": live_provider_result,
                     "live_provider_count": live_provider_count,
-                    "compiler_receipt": null,
+                    "source_backed_receipt": null,
                     "no_live_behavior_change": true,
                     "note": "definition runtime proof missing request params"
                 })));
@@ -2276,32 +2280,37 @@ impl LspServer {
                     "provider": "definition",
                     "live_provider_result": live_provider_result,
                     "live_provider_count": live_provider_count,
-                    "compiler_receipt": null,
+                    "source_backed_receipt": null,
                     "no_live_behavior_change": true,
                     "note": "definition runtime proof found no symbol at request position"
                 })));
             };
 
             let _ = self.check_index_readiness(IndexReadinessPolicy::WaitBriefly);
-            let compiler_receipt = if self.workspace_index_stale_for_any_open_document() {
+            let source_backed_receipt = if self.workspace_index_stale_for_any_open_document() {
                 None
             } else {
                 match route_index_access(self.coordinator()) {
                     IndexAccessMode::Full(coordinator) => {
                         let index = coordinator.index();
+                        // Resolve the legacy location BEFORE entering the
+                        // callback: the cutover path must not re-enter
+                        // `WorkspaceIndex` while `with_semantic_queries_for_uri`
+                        // holds its read guards (#15644).
+                        let legacy_location = index.find_definition(&symbol);
                         index.with_semantic_queries_for_uri(uri, |file_id, queries| {
                         let ctx = QueryContext::new(file_id, None, Some(byte_offset));
                         let mut receipt = goto_definition_live_exact_or_imported(
-                            index.as_ref(),
+                            legacy_location,
                             &queries,
                             &symbol,
                             &ctx,
                         )
                         .receipt;
-                        let compiler_result_count = receipt.new_result.match_count;
+                        let source_backed_result_count = receipt.new_result.match_count;
                         receipt.notes.push(format!(
-                            "definition runtime proof: live_provider_results={live_provider_count}; compiler_fact_candidates={}; compiler_result_count={}; partial live exact/imported cutover",
-                            compiler_result_count, compiler_result_count
+                            "definition runtime proof: live_provider_results={live_provider_count}; source_backed_candidates={}; source_backed_result_count={}; partial live exact/imported cutover",
+                            source_backed_result_count, source_backed_result_count
                         ));
                         receipt
                     })
@@ -2309,14 +2318,14 @@ impl LspServer {
                     IndexAccessMode::Partial(_) | IndexAccessMode::None => None,
                 }
             };
-            let live_cutover = compiler_receipt.is_some();
+            let live_cutover = source_backed_receipt.is_some();
 
             Ok(Some(json!({
                 "provider": "definition",
                 "symbol": symbol,
                 "live_provider_result": live_provider_result,
                 "live_provider_count": live_provider_count,
-                "compiler_receipt": compiler_receipt,
+                "source_backed_receipt": source_backed_receipt,
                 "no_live_behavior_change": !live_cutover,
                 "live_cutover": if live_cutover {
                     Some("partial_exact_imported")
@@ -2394,9 +2403,13 @@ impl LspServer {
             return None;
         }
         let workspace_index = self.workspace_index()?;
+        // Resolve the legacy location BEFORE entering the callback: the cutover
+        // path must not re-enter `WorkspaceIndex` while
+        // `with_semantic_queries_for_uri` holds its read guards (#15644).
+        let legacy_location = workspace_index.find_definition(symbol);
         let outcome = workspace_index.with_semantic_queries_for_uri(uri, |file_id, queries| {
             let ctx = QueryContext::new(file_id, None, Some(byte_offset));
-            goto_definition_live_exact_or_imported(workspace_index.as_ref(), &queries, symbol, &ctx)
+            goto_definition_live_exact_or_imported(legacy_location, &queries, symbol, &ctx)
         })?;
 
         if self.workspace_index_stale_for_any_open_document() {
@@ -2407,7 +2420,10 @@ impl LspServer {
             return None;
         };
         let def_location = workspace_index.semantic_anchor_wire_location(candidate.anchor_id)?;
-        let location: lsp_types::Location = def_location.into();
+        // An unconvertible URI yields no definition rather than a fabricated one:
+        // this exact path claims source-backed exactness, which a substituted
+        // resource cannot support.
+        let location = lsp_types::Location::try_from(def_location).ok()?;
         serde_json::to_value(location).ok()
     }
 
@@ -3016,6 +3032,97 @@ mod tests {
         Ok((result, receipt))
     }
 
+    /// Cross-file definition must not consume predecessor workspace facts while
+    /// a Full-sync violation is outstanding, and must recover after an admitted
+    /// full replacement plus index catch-up (#8129).
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn definition_skips_workspace_index_while_full_sync_required()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        let caller_uri = "file:///workspace/desync-def-caller.pl";
+        let target_uri = "file:///workspace/desync-def-target.pl";
+        let caller_text = "DesyncDefTarget::shared_entry();\n";
+        let target_v1 = "package DesyncDefTarget;\nsub shared_entry { 1 }\n";
+        let target_v2 = "package DesyncDefTarget;\nsub shared_entry { 2 }\n";
+
+        server.test_apply_did_open(caller_uri, caller_text, 1)?;
+        server.test_apply_did_open(target_uri, target_v1, 1)?;
+        server
+            .test_index_file_in_building_state(caller_uri, caller_text)
+            .map_err(std::io::Error::other)?;
+        server
+            .test_index_file_in_building_state(target_uri, target_v1)
+            .map_err(std::io::Error::other)?;
+        server.test_simulate_indexing_complete();
+        assert!(
+            !server.workspace_index_stale_for_any_open_document(),
+            "the fixture starts with a current workspace index"
+        );
+
+        let (fresh, fresh_receipt) = goto_definition_request_receipt(&server, caller_uri, 0, 18)?;
+        assert!(
+            fresh.as_ref().and_then(Value::as_array).is_some_and(|locations| !locations.is_empty()),
+            "cross-file DesyncDefTarget::shared_entry should resolve while the index is current: {fresh:?}"
+        );
+        assert_eq!(
+            fresh_receipt.get("freshness").and_then(Value::as_str),
+            Some("fresh"),
+            "fresh definition over a current index: {fresh_receipt}"
+        );
+
+        server.handle_did_change(Some(json!({
+            "textDocument": { "uri": target_uri, "version": 2 },
+            "contentChanges": [{
+                "range": {
+                    "start": { "line": 1, "character": 4 },
+                    "end": { "line": 1, "character": 16 }
+                },
+                "text": "renamed"
+            }]
+        })))?;
+        assert!(server.workspace_index_stale_for_any_open_document());
+
+        let (desync, desync_receipt) = goto_definition_request_receipt(&server, caller_uri, 0, 18)?;
+        assert!(
+            desync.as_ref().and_then(Value::as_array).is_some_and(Vec::is_empty)
+                || desync.is_none(),
+            "cross-file definition must not consume predecessor workspace facts: {desync:?}"
+        );
+        assert_eq!(
+            desync_receipt.get("freshness").and_then(Value::as_str),
+            Some("unknown"),
+            "empty definition over a Full-sync-stale index must not claim freshness: {desync_receipt}"
+        );
+
+        server.test_apply_did_change(target_uri, target_v2, 3)?;
+        let recovered_gen = {
+            let docs = server.documents.lock();
+            docs.get(target_uri).ok_or("recovered definition target")?.current_generation()
+        };
+        server
+            .test_index_live_file(target_uri, target_v2, recovered_gen)
+            .map_err(std::io::Error::other)?;
+        server.test_simulate_indexing_complete();
+        assert!(!server.workspace_index_stale_for_any_open_document());
+
+        let (recovered, recovered_receipt) =
+            goto_definition_request_receipt(&server, caller_uri, 0, 18)?;
+        assert!(
+            recovered
+                .as_ref()
+                .and_then(Value::as_array)
+                .is_some_and(|locations| !locations.is_empty()),
+            "full-document recovery must restore cross-file definition: {recovered:?}"
+        );
+        assert_eq!(
+            recovered_receipt.get("freshness").and_then(Value::as_str),
+            Some("fresh"),
+            "recovered definition over a current index: {recovered_receipt}"
+        );
+        Ok(())
+    }
+
     /// End-to-end counter-assertion that the goto-definition receipt's
     /// `freshness` is wired to the derivation rather than emitted as a literal
     /// (#14162).
@@ -3053,7 +3160,7 @@ mod tests {
             goto_definition_request_receipt(&server, main_uri, 3, 1)?;
         assert!(
             prefix_fresh_index.as_ref().and_then(Value::as_array).is_some_and(Vec::is_empty)
-                || prefix_fresh_index.is_none(),
+                || prefix_fresh_index.as_ref().is_some_and(Value::is_null),
             "a package-prefix cursor must yield an empty answer; got {prefix_fresh_index:?}"
         );
         assert_eq!(prefix_fresh_receipt.get("result_count").and_then(Value::as_u64), Some(0));
@@ -3092,7 +3199,7 @@ mod tests {
             goto_definition_request_receipt(&server, main_uri, 3, 1)?;
         assert!(
             prefix_stale_index.as_ref().and_then(Value::as_array).is_some_and(Vec::is_empty)
-                || prefix_stale_index.is_none(),
+                || prefix_stale_index.as_ref().is_some_and(Value::is_null),
             "a package-prefix cursor must stay empty under a stale index; got {prefix_stale_index:?}"
         );
         assert_eq!(prefix_stale_receipt.get("result_count").and_then(Value::as_u64), Some(0));
@@ -3224,7 +3331,7 @@ mod tests {
     /// `symbol_at_cursor_with_source` both extract the LAST component (`bar`)
     /// regardless of cursor position, so falling through to them navigates to
     /// `sub bar` — a confidently wrong target. `handle_definition_inner`
-    /// therefore returns `Ok(None)` for a prefix cursor.
+    /// therefore returns an explicit null result for a prefix cursor.
     ///
     /// That guard used to live inside the workspace-index freshness gate, so an
     /// unrelated edited buffer with a stale index entry skipped the whole block

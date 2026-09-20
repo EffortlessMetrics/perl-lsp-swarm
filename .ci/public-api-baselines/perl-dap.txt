@@ -487,7 +487,7 @@ pub struct perl_dap::backend::peer_bridge::DapPeerBridge
 pub fn perl_dap::backend::peer_bridge::DapPeerBridge::dispatch(&mut self, request_seq: i64, command: &str, arguments: core::option::Option<serde_json::value::Value>) -> alloc::vec::Vec<perl_dap::debug_adapter::DapMessage>
 pub fn perl_dap::backend::peer_bridge::DapPeerBridge::new(backend: alloc::boxed::Box<dyn perl_dap::backend::DebugBackend>) -> Self
 pub fn perl_dap::backend::peer_bridge::DapPeerBridge::poll_events(&mut self) -> alloc::vec::Vec<perl_dap::debug_adapter::DapMessage>
-pub fn perl_dap::backend::peer_bridge::run_external_peer_session_stdio(bridge: perl_dap::backend::peer_bridge::DapPeerBridge, poll_interval: core::time::Duration) -> core::io::error::Result<()>
+pub fn perl_dap::backend::peer_bridge::run_external_peer_session_stdio(bridge: perl_dap::backend::peer_bridge::DapPeerBridge, poll_interval: core::time::Duration) -> std::io::Result<()>
 pub mod perl_dap::backend::peer_launch
 pub enum perl_dap::backend::peer_launch::ExternalDebuggerKind
 pub perl_dap::backend::peer_launch::ExternalDebuggerKind::Custom
@@ -528,7 +528,7 @@ pub fn perl_dap::backend::peer_launch::MirrorPeerBridge::poll_events(&mut self) 
 pub struct perl_dap::backend::peer_launch::PeerListenEndpoint
 pub perl_dap::backend::peer_launch::PeerListenEndpoint::addr: core::net::socket_addr::SocketAddr
 pub perl_dap::backend::peer_launch::PeerListenEndpoint::control: perl_dap::backend::capabilities::ControlMode
-pub fn perl_dap::backend::peer_launch::PeerListenEndpoint::bind(host: &str, port: u16, control: perl_dap::backend::capabilities::ControlMode) -> core::io::error::Result<(std::net::tcp::TcpListener, Self)>
+pub fn perl_dap::backend::peer_launch::PeerListenEndpoint::bind(host: &str, port: u16, control: perl_dap::backend::capabilities::ControlMode) -> std::io::Result<(std::net::tcp::TcpListener, Self)>
 pub fn perl_dap::backend::peer_launch::PeerListenEndpoint::env_vars(&self) -> alloc::vec::Vec<(alloc::string::String, alloc::string::String)>
 pub fn perl_dap::backend::peer_launch::PeerListenEndpoint::session_credential(&self) -> perl_dap::backend::external_peer::PeerSessionToken
 pub fn perl_dap::backend::peer_launch::PeerListenEndpoint::session_token(&self) -> alloc::string::String
@@ -540,8 +540,8 @@ pub const perl_dap::backend::peer_launch::ENV_PEER_ADDR: &str
 pub const perl_dap::backend::peer_launch::ENV_PEER_MODE: &str
 pub const perl_dap::backend::peer_launch::ENV_PEER_TOKEN: &str
 pub fn perl_dap::backend::peer_launch::control_mode_env_str(mode: perl_dap::backend::capabilities::ControlMode) -> &'static str
-pub fn perl_dap::backend::peer_launch::prepare_mirror_listen_session(config: &perl_dap::backend::peer_launch::ExternalPeerLaunchConfig) -> core::io::error::Result<(std::net::tcp::TcpListener, perl_dap::backend::peer_launch::PeerListenEndpoint, perl_dap::backend::peer_launch::MirrorPeerBridge)>
-pub fn perl_dap::backend::peer_launch::run_mirror_listen_session_stdio(peer_listener: std::net::tcp::TcpListener, bridge: perl_dap::backend::peer_launch::MirrorPeerBridge, handshake_timeout: core::time::Duration, poll_interval: core::time::Duration, expected_token: core::option::Option<perl_dap::backend::external_peer::PeerSessionToken>) -> core::io::error::Result<()>
+pub fn perl_dap::backend::peer_launch::prepare_mirror_listen_session(config: &perl_dap::backend::peer_launch::ExternalPeerLaunchConfig) -> std::io::Result<(std::net::tcp::TcpListener, perl_dap::backend::peer_launch::PeerListenEndpoint, perl_dap::backend::peer_launch::MirrorPeerBridge)>
+pub fn perl_dap::backend::peer_launch::run_mirror_listen_session_stdio(peer_listener: std::net::tcp::TcpListener, bridge: perl_dap::backend::peer_launch::MirrorPeerBridge, handshake_timeout: core::time::Duration, poll_interval: core::time::Duration, expected_token: core::option::Option<perl_dap::backend::external_peer::PeerSessionToken>) -> std::io::Result<()>
 pub fn perl_dap::backend::peer_launch::static_mirror_capabilities() -> serde_json::value::Value
 pub enum perl_dap::backend::BackendError
 pub perl_dap::backend::BackendError::Engine(alloc::string::String)
@@ -683,7 +683,7 @@ pub fn perl_dap::backend::peer_launch::MirrorPeerBridge::poll_events(&mut self) 
 pub struct perl_dap::backend::PeerListenEndpoint
 pub perl_dap::backend::PeerListenEndpoint::addr: core::net::socket_addr::SocketAddr
 pub perl_dap::backend::PeerListenEndpoint::control: perl_dap::backend::capabilities::ControlMode
-pub fn perl_dap::backend::peer_launch::PeerListenEndpoint::bind(host: &str, port: u16, control: perl_dap::backend::capabilities::ControlMode) -> core::io::error::Result<(std::net::tcp::TcpListener, Self)>
+pub fn perl_dap::backend::peer_launch::PeerListenEndpoint::bind(host: &str, port: u16, control: perl_dap::backend::capabilities::ControlMode) -> std::io::Result<(std::net::tcp::TcpListener, Self)>
 pub fn perl_dap::backend::peer_launch::PeerListenEndpoint::env_vars(&self) -> alloc::vec::Vec<(alloc::string::String, alloc::string::String)>
 pub fn perl_dap::backend::peer_launch::PeerListenEndpoint::session_credential(&self) -> perl_dap::backend::external_peer::PeerSessionToken
 pub fn perl_dap::backend::peer_launch::PeerListenEndpoint::session_token(&self) -> alloc::string::String
@@ -773,9 +773,9 @@ pub fn perl_dap::backend::native_perldb::NativePerlDbBackend::step_in(&mut self,
 pub fn perl_dap::backend::native_perldb::NativePerlDbBackend::step_out(&mut self, thread_id: perl_dap::model::ThreadId) -> perl_dap::backend::BackendResult<()>
 pub fn perl_dap::backend::native_perldb::NativePerlDbBackend::variables(&mut self, _variables_ref: perl_dap::model::VariablesRef) -> perl_dap::backend::BackendResult<alloc::vec::Vec<perl_dap::model::DebugVariable>>
 pub fn perl_dap::backend::intersect_dap_capabilities(catalog: &perl_dap::backend::capabilities::CatalogDapFlags, backend: &perl_dap::backend::capabilities::DebugBackendCapabilities) -> perl_dap::backend::capabilities::NegotiatedDapCapabilities
-pub fn perl_dap::backend::prepare_mirror_listen_session(config: &perl_dap::backend::peer_launch::ExternalPeerLaunchConfig) -> core::io::error::Result<(std::net::tcp::TcpListener, perl_dap::backend::peer_launch::PeerListenEndpoint, perl_dap::backend::peer_launch::MirrorPeerBridge)>
-pub fn perl_dap::backend::run_external_peer_session_stdio(bridge: perl_dap::backend::peer_bridge::DapPeerBridge, poll_interval: core::time::Duration) -> core::io::error::Result<()>
-pub fn perl_dap::backend::run_mirror_listen_session_stdio(peer_listener: std::net::tcp::TcpListener, bridge: perl_dap::backend::peer_launch::MirrorPeerBridge, handshake_timeout: core::time::Duration, poll_interval: core::time::Duration, expected_token: core::option::Option<perl_dap::backend::external_peer::PeerSessionToken>) -> core::io::error::Result<()>
+pub fn perl_dap::backend::prepare_mirror_listen_session(config: &perl_dap::backend::peer_launch::ExternalPeerLaunchConfig) -> std::io::Result<(std::net::tcp::TcpListener, perl_dap::backend::peer_launch::PeerListenEndpoint, perl_dap::backend::peer_launch::MirrorPeerBridge)>
+pub fn perl_dap::backend::run_external_peer_session_stdio(bridge: perl_dap::backend::peer_bridge::DapPeerBridge, poll_interval: core::time::Duration) -> std::io::Result<()>
+pub fn perl_dap::backend::run_mirror_listen_session_stdio(peer_listener: std::net::tcp::TcpListener, bridge: perl_dap::backend::peer_launch::MirrorPeerBridge, handshake_timeout: core::time::Duration, poll_interval: core::time::Duration, expected_token: core::option::Option<perl_dap::backend::external_peer::PeerSessionToken>) -> std::io::Result<()>
 pub fn perl_dap::backend::static_mirror_capabilities() -> serde_json::value::Value
 pub type perl_dap::backend::BackendResult<T> = core::result::Result<T, perl_dap::backend::BackendError>
 pub mod perl_dap::breakpoint
@@ -875,11 +875,13 @@ pub fn perl_dap::breakpoints::BreakpointRecord::clone(&self) -> perl_dap::breakp
 pub fn perl_dap::breakpoints::BreakpointRecord::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_dap::breakpoints::BreakpointStore
 pub fn perl_dap::breakpoints::BreakpointStore::adjust_breakpoints_for_edit(&self, source_path: &str, start_line: i64, lines_delta: i64)
+pub fn perl_dap::breakpoints::BreakpointStore::ambiguous_breakpoint_source(&self, source_path: &str) -> bool
 pub fn perl_dap::breakpoints::BreakpointStore::clear_all(&self)
 pub fn perl_dap::breakpoints::BreakpointStore::clear_breakpoints(&self, source_path: &str)
 pub fn perl_dap::breakpoints::BreakpointStore::get_breakpoint_by_id(&self, id: i64) -> core::option::Option<perl_dap::breakpoints::BreakpointRecord>
 pub fn perl_dap::breakpoints::BreakpointStore::get_breakpoints(&self, source_path: &str) -> alloc::vec::Vec<perl_dap::breakpoints::BreakpointRecord>
 pub fn perl_dap::breakpoints::BreakpointStore::is_empty(&self) -> bool
+pub fn perl_dap::breakpoints::BreakpointStore::mark_breakpoints_pending_reconciliation(&self, source_path: &str) -> alloc::vec::Vec<perl_dap::breakpoints::BreakpointRecord>
 pub fn perl_dap::breakpoints::BreakpointStore::new() -> Self
 pub fn perl_dap::breakpoints::BreakpointStore::register_breakpoint_hit(&self, source_path: &str, line: i64) -> perl_dap::breakpoints::BreakpointHitOutcome
 pub fn perl_dap::breakpoints::BreakpointStore::register_breakpoint_hit_with_variables(&self, source_path: &str, line: i64, variables: core::option::Option<&std::collections::hash::map::HashMap<alloc::string::String, alloc::string::String>>) -> perl_dap::breakpoints::BreakpointHitOutcome
@@ -996,16 +998,27 @@ pub perl_dap::debug_adapter::DapMessage::Response::success: bool
 pub fn perl_dap::debug_adapter::DapMessage::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_dap::debug_adapter::DapMessage::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 pub fn perl_dap::debug_adapter::DapMessage::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub enum perl_dap::debug_adapter::DrainEpoch
+pub perl_dap::debug_adapter::DrainEpoch::Global
+pub perl_dap::debug_adapter::DrainEpoch::Request(u64)
+pub fn perl_dap::debug_adapter::DrainEpoch::clone(&self) -> perl_dap::debug_adapter::DrainEpoch
+pub fn perl_dap::debug_adapter::DrainEpoch::cmp(&self, other: &perl_dap::debug_adapter::DrainEpoch) -> core::cmp::Ordering
+pub fn perl_dap::debug_adapter::DrainEpoch::eq(&self, other: &perl_dap::debug_adapter::DrainEpoch) -> bool
+pub fn perl_dap::debug_adapter::DrainEpoch::partial_cmp(&self, other: &perl_dap::debug_adapter::DrainEpoch) -> core::option::Option<core::cmp::Ordering>
+pub fn perl_dap::debug_adapter::DrainEpoch::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_dap::debug_adapter::DebugAdapter
 pub fn perl_dap::debug_adapter::DebugAdapter::handle_request(&mut self, request_seq: i64, command: &str, arguments: core::option::Option<serde_json::value::Value>) -> perl_dap::debug_adapter::DapMessage
 pub fn perl_dap::debug_adapter::DebugAdapter::handle_request_mock(&mut self, request_seq: i64, command: &str, arguments: core::option::Option<serde_json::value::Value>) -> perl_dap::debug_adapter::DapMessage
 pub fn perl_dap::debug_adapter::DebugAdapter::handle_scopes(&self, seq: i64, request_seq: i64, arguments: core::option::Option<serde_json::value::Value>) -> perl_dap::debug_adapter::DapMessage
 pub fn perl_dap::debug_adapter::DebugAdapter::handle_variables(&self, seq: i64, request_seq: i64, arguments: core::option::Option<serde_json::value::Value>) -> perl_dap::debug_adapter::DapMessage
+pub fn perl_dap::debug_adapter::DebugAdapter::last_authority_receipt(&self) -> core::option::Option<perl_dap::security::launch_authority::LaunchAuthorityReceipt>
 pub fn perl_dap::debug_adapter::DebugAdapter::new() -> Self
-pub fn perl_dap::debug_adapter::DebugAdapter::set_event_sender(&mut self, sender: std::sync::mpsc::SyncSender<perl_dap::debug_adapter::DapMessage>)
+pub fn perl_dap::debug_adapter::DebugAdapter::set_event_sender(&mut self, sender: std::sync::mpsc::SyncSender<perl_dap::debug_adapter::DapMessageWithEpoch>)
+pub fn perl_dap::debug_adapter::DebugAdapter::set_launch_authority(&self, authority: perl_dap::security::launch_authority::LaunchAuthority)
 pub fn perl_dap::debug_adapter::DebugAdapter::set_workspace_root(&self, root: std::path::PathBuf)
 pub fn perl_dap::debug_adapter::DebugAdapter::default() -> Self
 pub fn perl_dap::debug_adapter::DebugAdapter::drop(&mut self)
+pub type perl_dap::debug_adapter::DapMessageWithEpoch = (perl_dap::debug_adapter::DapMessage, perl_dap::debug_adapter::DrainEpoch)
 pub mod perl_dap::eval
 pub enum perl_dap::eval::ValidationError
 pub perl_dap::eval::ValidationError::AssignmentOperator(alloc::string::String)
@@ -1241,6 +1254,7 @@ pub fn perl_dap::mutation::FreshReferentKind::clone(&self) -> perl_dap::mutation
 pub fn perl_dap::mutation::FreshReferentKind::eq(&self, other: &perl_dap::mutation::FreshReferentKind) -> bool
 pub fn perl_dap::mutation::FreshReferentKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_dap::mutation::FreshReferentKind::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+#[non_exhaustive] pub enum perl_dap::mutation::StructuredRefusal
 pub perl_dap::mutation::StructuredRefusal::AggregateTooLarge
 pub perl_dap::mutation::StructuredRefusal::AggregateTooLarge::limit: usize
 pub perl_dap::mutation::StructuredRefusal::DepthExceeded
@@ -1456,6 +1470,7 @@ pub const perl_dap::peer_protocol::message::event::OUTPUT: &str
 pub const perl_dap::peer_protocol::message::event::SOURCE_FACTS: &str
 pub const perl_dap::peer_protocol::message::event::STOPPED: &str
 pub const perl_dap::peer_protocol::message::event::TERMINATED: &str
+#[non_exhaustive] pub enum perl_dap::peer_protocol::message::PeerFailureCause
 pub perl_dap::peer_protocol::message::PeerFailureCause::Debuggee
 pub perl_dap::peer_protocol::message::PeerFailureCause::InvalidRequest
 pub perl_dap::peer_protocol::message::PeerFailureCause::SessionState
@@ -1742,6 +1757,7 @@ pub fn perl_dap::peer_protocol::payloads::WireVariable::eq(&self, other: &perl_d
 pub fn perl_dap::peer_protocol::payloads::WireVariable::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_dap::peer_protocol::payloads::WireVariable::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 pub fn perl_dap::peer_protocol::payloads::WireVariable::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+#[non_exhaustive] pub enum perl_dap::peer_protocol::PeerFailureCause
 pub perl_dap::peer_protocol::PeerFailureCause::Debuggee
 pub perl_dap::peer_protocol::PeerFailureCause::InvalidRequest
 pub perl_dap::peer_protocol::PeerFailureCause::SessionState
@@ -2523,15 +2539,6 @@ pub fn perl_dap::reload::DapObjectKind::eq(&self, other: &perl_dap::reload::DapO
 pub fn perl_dap::reload::DapObjectKind::partial_cmp(&self, other: &perl_dap::reload::DapObjectKind) -> core::option::Option<core::cmp::Ordering>
 pub fn perl_dap::reload::DapObjectKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_dap::reload::DapObjectKind::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
-pub enum perl_dap::reload::GenerationAdvance
-pub perl_dap::reload::GenerationAdvance::Advanced(perl_dap::reload::RuntimeModuleGeneration)
-pub perl_dap::reload::GenerationAdvance::Unchanged(perl_dap::reload::RuntimeModuleGeneration)
-pub fn perl_dap::reload::GenerationAdvance::advanced(self) -> bool
-pub fn perl_dap::reload::GenerationAdvance::code(self) -> &'static str
-pub fn perl_dap::reload::GenerationAdvance::generation(self) -> perl_dap::reload::RuntimeModuleGeneration
-pub fn perl_dap::reload::GenerationAdvance::clone(&self) -> perl_dap::reload::GenerationAdvance
-pub fn perl_dap::reload::GenerationAdvance::eq(&self, other: &perl_dap::reload::GenerationAdvance) -> bool
-pub fn perl_dap::reload::GenerationAdvance::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub enum perl_dap::reload::GenerationEffect
 pub perl_dap::reload::GenerationEffect::Advance
 pub perl_dap::reload::GenerationEffect::None
@@ -2736,6 +2743,28 @@ pub fn perl_dap::reload::ReloadTransactionPhase::partial_cmp(&self, other: &perl
 pub fn perl_dap::reload_family::WirePhase::from(phase: perl_dap::reload::ReloadTransactionPhase) -> Self
 pub fn perl_dap::reload::ReloadTransactionPhase::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_dap::reload::ReloadTransactionPhase::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub enum perl_dap::reload::ReloadWiringRefusal
+pub perl_dap::reload::ReloadWiringRefusal::ComposedTableViolated(perl_dap::reload::InvalidationPlanError)
+pub perl_dap::reload::ReloadWiringRefusal::GenerationAhead
+pub perl_dap::reload::ReloadWiringRefusal::GenerationAhead::claim_generation: perl_dap::reload::RuntimeModuleGeneration
+pub perl_dap::reload::ReloadWiringRefusal::GenerationAhead::current_generation: perl_dap::reload::RuntimeModuleGeneration
+pub perl_dap::reload::ReloadWiringRefusal::GenerationExhausted
+pub perl_dap::reload::ReloadWiringRefusal::GenerationSuperseded
+pub perl_dap::reload::ReloadWiringRefusal::GenerationSuperseded::claim_generation: perl_dap::reload::RuntimeModuleGeneration
+pub perl_dap::reload::ReloadWiringRefusal::GenerationSuperseded::current_generation: perl_dap::reload::RuntimeModuleGeneration
+pub perl_dap::reload::ReloadWiringRefusal::MutationProjectedClean
+pub perl_dap::reload::ReloadWiringRefusal::OperationAlreadyCompleted
+pub perl_dap::reload::ReloadWiringRefusal::OperationAlreadyCompleted::operation_id: u64
+pub perl_dap::reload::ReloadWiringRefusal::OperationNotAdmitted
+pub perl_dap::reload::ReloadWiringRefusal::OperationNotAdmitted::operation_id: u64
+pub perl_dap::reload::ReloadWiringRefusal::SessionEpochReplaced
+pub perl_dap::reload::ReloadWiringRefusal::SessionEpochReplaced::claim_epoch: u64
+pub perl_dap::reload::ReloadWiringRefusal::SessionEpochReplaced::current_epoch: u64
+pub const fn perl_dap::reload::ReloadWiringRefusal::code(self) -> &'static str
+pub const fn perl_dap::reload::ReloadWiringRefusal::invalidation_error(self) -> core::option::Option<perl_dap::reload::InvalidationPlanError>
+pub fn perl_dap::reload::ReloadWiringRefusal::clone(&self) -> perl_dap::reload::ReloadWiringRefusal
+pub fn perl_dap::reload::ReloadWiringRefusal::eq(&self, other: &perl_dap::reload::ReloadWiringRefusal) -> bool
+pub fn perl_dap::reload::ReloadWiringRefusal::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub enum perl_dap::reload::SubjectBindingError
 pub perl_dap::reload::SubjectBindingError::InsufficientSubjectIdentity
 pub const perl_dap::reload::SubjectBindingError::ALL: [perl_dap::reload::SubjectBindingError; 1]
@@ -2785,6 +2814,15 @@ pub perl_dap::reload::DapReferenceBinding::stopped_generation: u64
 pub fn perl_dap::reload::DapReferenceBinding::clone(&self) -> perl_dap::reload::DapReferenceBinding
 pub fn perl_dap::reload::DapReferenceBinding::eq(&self, other: &perl_dap::reload::DapReferenceBinding) -> bool
 pub fn perl_dap::reload::DapReferenceBinding::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_dap::reload::GenerationAdvance
+pub fn perl_dap::reload::GenerationAdvance::advanced(self) -> bool
+pub fn perl_dap::reload::GenerationAdvance::code(self) -> &'static str
+pub fn perl_dap::reload::GenerationAdvance::generation(self) -> perl_dap::reload::RuntimeModuleGeneration
+pub fn perl_dap::reload::GenerationAdvance::is_contiguous(self) -> bool
+pub fn perl_dap::reload::GenerationAdvance::previous(self) -> perl_dap::reload::RuntimeModuleGeneration
+pub fn perl_dap::reload::GenerationAdvance::clone(&self) -> perl_dap::reload::GenerationAdvance
+pub fn perl_dap::reload::GenerationAdvance::eq(&self, other: &perl_dap::reload::GenerationAdvance) -> bool
+pub fn perl_dap::reload::GenerationAdvance::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_dap::reload::LoadedModuleReloadPlan
 pub fn perl_dap::reload::LoadedModuleReloadPlan::admitted_session_generation(&self) -> u64
 pub fn perl_dap::reload::LoadedModuleReloadPlan::admitted_suspension_generation(&self) -> u64
@@ -2825,6 +2863,13 @@ pub fn perl_dap::reload::MechanismMeasurement::unmeasured(mechanism: perl_dap::r
 pub fn perl_dap::reload::MechanismMeasurement::clone(&self) -> perl_dap::reload::MechanismMeasurement
 pub fn perl_dap::reload::MechanismMeasurement::eq(&self, other: &perl_dap::reload::MechanismMeasurement) -> bool
 pub fn perl_dap::reload::MechanismMeasurement::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_dap::reload::ObservationClaim
+pub perl_dap::reload::ObservationClaim::epoch: u64
+pub perl_dap::reload::ObservationClaim::generation: perl_dap::reload::RuntimeModuleGeneration
+pub perl_dap::reload::ObservationClaim::operation_id: u64
+pub fn perl_dap::reload::ObservationClaim::clone(&self) -> perl_dap::reload::ObservationClaim
+pub fn perl_dap::reload::ObservationClaim::eq(&self, other: &perl_dap::reload::ObservationClaim) -> bool
+pub fn perl_dap::reload::ObservationClaim::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_dap::reload::ReloadAdmissionObservation
 pub perl_dap::reload::ReloadAdmissionObservation::active_frame_in_target: bool
 pub perl_dap::reload::ReloadAdmissionObservation::client_source_matches_saved: bool
@@ -2847,11 +2892,6 @@ pub fn perl_dap::reload::ReloadCommandPlan::clone(&self) -> perl_dap::reload::Re
 pub fn perl_dap::reload::ReloadCommandPlan::eq(&self, other: &perl_dap::reload::ReloadCommandPlan) -> bool
 pub fn perl_dap::reload::ReloadCommandPlan::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_dap::reload::ReloadExecution
-pub perl_dap::reload::ReloadExecution::generation: perl_dap::reload::GenerationAdvance
-pub perl_dap::reload::ReloadExecution::mechanism: perl_dap::reload::ReloadMechanism
-pub perl_dap::reload::ReloadExecution::mutation_issued: bool
-pub perl_dap::reload::ReloadExecution::outcome: perl_dap::reload::LoadedModuleReloadOutcome
-pub perl_dap::reload::ReloadExecution::phase_reached: perl_dap::reload::ReloadTransactionPhase
 pub fn perl_dap::reload::ReloadExecution::projects_as_clean(&self) -> bool
 pub fn perl_dap::reload::ReloadExecution::clone(&self) -> perl_dap::reload::ReloadExecution
 pub fn perl_dap::reload::ReloadExecution::eq(&self, other: &perl_dap::reload::ReloadExecution) -> bool
@@ -2882,6 +2922,14 @@ pub fn perl_dap::reload::ReloadRequestSurfaceDescriptor::clone(&self) -> perl_da
 pub fn perl_dap::reload::ReloadRequestSurfaceDescriptor::eq(&self, other: &perl_dap::reload::ReloadRequestSurfaceDescriptor) -> bool
 pub fn perl_dap::reload::ReloadRequestSurfaceDescriptor::default() -> Self
 pub fn perl_dap::reload::ReloadRequestSurfaceDescriptor::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_dap::reload::ReloadSessionWiring
+pub fn perl_dap::reload::ReloadSessionWiring::epoch(&self) -> u64
+pub fn perl_dap::reload::ReloadSessionWiring::evaluate(&mut self, raw: &serde_json::value::Value) -> perl_dap::reload_family::ReloadRequestEvaluation
+pub fn perl_dap::reload::ReloadSessionWiring::is_backed(&self) -> bool
+pub fn perl_dap::reload::ReloadSessionWiring::negotiate(&mut self, declaration: core::option::Option<&perl_dap::reload_family::ClientFamilyDeclaration>) -> core::result::Result<u32, perl_dap::reload_family::FamilyNegotiationRefusal>
+pub fn perl_dap::reload::ReloadSessionWiring::new(epoch: u64, backed: bool) -> perl_dap::reload::ReloadSessionWiring
+pub fn perl_dap::reload::ReloadSessionWiring::reconcile_observation(&self, claim: &perl_dap::reload::ObservationClaim, current_generation: perl_dap::reload::RuntimeModuleGeneration) -> core::result::Result<(), perl_dap::reload::ReloadWiringRefusal>
+pub fn perl_dap::reload::ReloadSessionWiring::route_terminal(&mut self, operation_id: u64, outcome: &perl_dap::reload::LoadedModuleReloadOutcome, clock: &mut perl_dap::reload::RuntimeModuleGenerationClock, reasons: &[alloc::string::String]) -> core::result::Result<perl_dap::reload::RoutedReloadTerminal, perl_dap::reload::ReloadWiringRefusal>
 pub struct perl_dap::reload::RetainedModuleObservations
 pub fn perl_dap::reload::RetainedModuleObservations::is_current(&self, inc_key: &str, current: perl_dap::reload::RuntimeModuleGeneration) -> bool
 pub fn perl_dap::reload::RetainedModuleObservations::is_empty(&self) -> bool
@@ -2892,6 +2940,15 @@ pub fn perl_dap::reload::RetainedModuleObservations::clone(&self) -> perl_dap::r
 pub fn perl_dap::reload::RetainedModuleObservations::eq(&self, other: &perl_dap::reload::RetainedModuleObservations) -> bool
 pub fn perl_dap::reload::RetainedModuleObservations::default() -> Self
 pub fn perl_dap::reload::RetainedModuleObservations::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_dap::reload::RoutedReloadTerminal
+pub perl_dap::reload::RoutedReloadTerminal::invalidation: perl_dap::reload::ReloadInvalidationPlan
+pub perl_dap::reload::RoutedReloadTerminal::mutated: bool
+pub perl_dap::reload::RoutedReloadTerminal::reconciliation: perl_dap::reload_family::WireReconciliation
+pub perl_dap::reload::RoutedReloadTerminal::response: perl_dap::reload_family::LoadedModuleReloadWireResponse
+pub fn perl_dap::reload::RoutedReloadTerminal::invalidated_areas(&self) -> &'static [&'static str]
+pub fn perl_dap::reload::RoutedReloadTerminal::clone(&self) -> perl_dap::reload::RoutedReloadTerminal
+pub fn perl_dap::reload::RoutedReloadTerminal::eq(&self, other: &perl_dap::reload::RoutedReloadTerminal) -> bool
+pub fn perl_dap::reload::RoutedReloadTerminal::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_dap::reload::RuntimeModuleGeneration(_)
 pub const perl_dap::reload::RuntimeModuleGeneration::INITIAL: perl_dap::reload::RuntimeModuleGeneration
 pub const fn perl_dap::reload::RuntimeModuleGeneration::distance_to(self, other: perl_dap::reload::RuntimeModuleGeneration) -> core::option::Option<u64>
@@ -2906,7 +2963,7 @@ pub fn perl_dap::reload::RuntimeModuleGeneration::default() -> perl_dap::reload:
 pub fn perl_dap::reload::RuntimeModuleGeneration::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_dap::reload::RuntimeModuleGeneration::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
 pub struct perl_dap::reload::RuntimeModuleGenerationClock
-pub fn perl_dap::reload::RuntimeModuleGenerationClock::apply(&mut self, outcome: &perl_dap::reload::LoadedModuleReloadOutcome) -> perl_dap::reload::GenerationAdvance
+pub fn perl_dap::reload::RuntimeModuleGenerationClock::apply(&mut self, outcome: &perl_dap::reload::LoadedModuleReloadOutcome, operation: u64) -> perl_dap::reload::GenerationAdvance
 pub const fn perl_dap::reload::RuntimeModuleGenerationClock::current(&self) -> perl_dap::reload::RuntimeModuleGeneration
 pub const fn perl_dap::reload::RuntimeModuleGenerationClock::new() -> perl_dap::reload::RuntimeModuleGenerationClock
 pub fn perl_dap::reload::RuntimeModuleGenerationClock::clone(&self) -> perl_dap::reload::RuntimeModuleGenerationClock
@@ -2939,6 +2996,8 @@ pub perl_dap::reload::SubjectCurrentnessView::suspension_generation: u64
 pub fn perl_dap::reload::SubjectCurrentnessView::clone(&self) -> perl_dap::reload::SubjectCurrentnessView
 pub fn perl_dap::reload::SubjectCurrentnessView::eq(&self, other: &perl_dap::reload::SubjectCurrentnessView) -> bool
 pub fn perl_dap::reload::SubjectCurrentnessView::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub const perl_dap::reload::MAX_RETAINED_COMPLETIONS: usize
+pub const perl_dap::reload::MUTATION_INVALIDATED_AREAS: [&str; 3]
 pub trait perl_dap::reload::ReloadRuntimeChannel
 pub fn perl_dap::reload::ReloadRuntimeChannel::currentness_view(&mut self) -> core::option::Option<perl_dap::reload::SubjectCurrentnessView>
 pub fn perl_dap::reload::ReloadRuntimeChannel::run_mutation(&mut self, commands: &[alloc::string::String]) -> perl_dap::reload::ChannelSettlement
@@ -2949,15 +3008,18 @@ pub fn perl_dap::reload::invalidation_plan_for(outcome: &perl_dap::reload::Loade
 pub fn perl_dap::reload::measure_mechanism_on_real_perl(mechanism: perl_dap::reload::ReloadMechanism) -> core::option::Option<core::result::Result<perl_dap::reload::MechanismMeasurement, alloc::string::String>>
 pub const fn perl_dap::reload::mechanism_is_executable(mechanism: perl_dap::reload::ReloadMechanism) -> bool
 pub fn perl_dap::reload::mechanism_records() -> alloc::vec::Vec<perl_dap::reload::ReloadMechanismRecord>
+pub fn perl_dap::reload::outcome_is_mutating(outcome: &perl_dap::reload::LoadedModuleReloadOutcome) -> bool
 pub fn perl_dap::reload::phase_permits_outcome(phase: perl_dap::reload::ReloadTransactionPhase, outcome: &perl_dap::reload::LoadedModuleReloadOutcome) -> bool
 pub fn perl_dap::reload::plan_commands(subject: &perl_dap::reload::LoadedModuleSubject, mechanism: perl_dap::reload::ReloadMechanism) -> core::result::Result<perl_dap::reload::ReloadCommandPlan, perl_dap::reload::CommandPlanError>
 pub fn perl_dap::reload::plan_reload(subject: &perl_dap::reload::LoadedModuleSubject, observation: &perl_dap::reload::ReloadAdmissionObservation) -> core::result::Result<perl_dap::reload::LoadedModuleReloadPlan, perl_dap::reload::LoadedModuleReloadEligibility>
 pub fn perl_dap::reload::project_unknown_after_mutation(phase: perl_dap::reload::ReloadTransactionPhase, cause: perl_dap::reload::IndeterminateCause) -> perl_dap::reload::LoadedModuleReloadOutcome
+pub fn perl_dap::reload::reconciliation_dispositions_for(outcome: &perl_dap::reload::LoadedModuleReloadOutcome) -> perl_dap::reload_family::WireReconciliation
 pub fn perl_dap::reload::reference_is_stale(binding: &perl_dap::reload::DapReferenceBinding, current_runtime_module: perl_dap::reload::RuntimeModuleGeneration, current_stopped: u64) -> bool
 pub fn perl_dap::reload::validate_request_surface(descriptor: &perl_dap::reload::ReloadRequestSurfaceDescriptor) -> core::result::Result<(), perl_dap::reload::SurfaceViolation>
 pub fn perl_dap::reload::verify_invalidation_plan(plan: &perl_dap::reload::ReloadInvalidationPlan, outcome: &perl_dap::reload::LoadedModuleReloadOutcome) -> core::result::Result<(), perl_dap::reload::InvalidationPlanError>
 pub fn perl_dap::reload::verify_measurement(measurement: &perl_dap::reload::MechanismMeasurement) -> core::result::Result<(), perl_dap::reload::MeasurementRecordError>
 pub fn perl_dap::reload::verify_mechanism_claims(claims: &perl_dap::reload::MechanismClaims) -> core::result::Result<(), perl_dap::reload::MechanismRecordError>
+pub fn perl_dap::reload::verify_reconciliation_claim(outcome: &perl_dap::reload::LoadedModuleReloadOutcome, dispositions: &perl_dap::reload_family::WireReconciliation, plan: &perl_dap::reload::ReloadInvalidationPlan) -> core::result::Result<(), perl_dap::reload::ReloadWiringRefusal>
 pub mod perl_dap::reload_family
 pub enum perl_dap::reload_family::FamilyNegotiationRefusal
 pub perl_dap::reload_family::FamilyNegotiationRefusal::FamilyAbsent
@@ -3045,13 +3107,20 @@ pub fn perl_dap::reload_family::WirePhase::fmt(&self, f: &mut core::fmt::Formatt
 pub fn perl_dap::reload_family::WirePhase::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 pub fn perl_dap::reload_family::WirePhase::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
 pub enum perl_dap::reload_family::WireProjectionRefusal
+pub perl_dap::reload_family::WireProjectionRefusal::GenerationAdvanceMismatch
 pub perl_dap::reload_family::WireProjectionRefusal::OutcomePhaseKindMismatch
 pub fn perl_dap::reload_family::WireProjectionRefusal::clone(&self) -> perl_dap::reload_family::WireProjectionRefusal
 pub fn perl_dap::reload_family::WireProjectionRefusal::eq(&self, other: &perl_dap::reload_family::WireProjectionRefusal) -> bool
 pub fn perl_dap::reload_family::WireProjectionRefusal::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_dap::reload_family::WireProjectionRefusal::fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub enum perl_dap::reload_family::WireReconciliationDisposition
-pub perl_dap::reload_family::WireReconciliationDisposition::Deferred
+pub perl_dap::reload_family::WireReconciliationDisposition::Invalidated
+pub perl_dap::reload_family::WireReconciliationDisposition::NotApplicable
+pub perl_dap::reload_family::WireReconciliationDisposition::Pending
+pub perl_dap::reload_family::WireReconciliationDisposition::Unavailable
+pub const perl_dap::reload_family::WireReconciliationDisposition::ALL: [perl_dap::reload_family::WireReconciliationDisposition; 4]
+pub const fn perl_dap::reload_family::WireReconciliationDisposition::as_str(self) -> &'static str
+pub fn perl_dap::reload_family::WireReconciliationDisposition::parse(code: &str) -> core::option::Option<perl_dap::reload_family::WireReconciliationDisposition>
 pub fn perl_dap::reload_family::WireReconciliationDisposition::clone(&self) -> perl_dap::reload_family::WireReconciliationDisposition
 pub fn perl_dap::reload_family::WireReconciliationDisposition::eq(&self, other: &perl_dap::reload_family::WireReconciliationDisposition) -> bool
 pub fn perl_dap::reload_family::WireReconciliationDisposition::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
@@ -3148,7 +3217,9 @@ pub fn perl_dap::reload_family::LoadedModuleReloadWireResponse::fmt(&self, f: &m
 pub fn perl_dap::reload_family::LoadedModuleReloadWireResponse::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 pub fn perl_dap::reload_family::LoadedModuleReloadWireResponse::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
 pub struct perl_dap::reload_family::ReloadFamilySession
+pub fn perl_dap::reload_family::ReloadFamilySession::epoch(&self) -> u64
 pub fn perl_dap::reload_family::ReloadFamilySession::evaluate(&mut self, raw: &serde_json::value::Value) -> perl_dap::reload_family::ReloadRequestEvaluation
+pub fn perl_dap::reload_family::ReloadFamilySession::is_backed(&self) -> bool
 pub fn perl_dap::reload_family::ReloadFamilySession::negotiate(&mut self, declaration: core::option::Option<&perl_dap::reload_family::ClientFamilyDeclaration>) -> core::result::Result<u32, perl_dap::reload_family::FamilyNegotiationRefusal>
 pub fn perl_dap::reload_family::ReloadFamilySession::new(epoch: u64, backed: bool) -> perl_dap::reload_family::ReloadFamilySession
 pub struct perl_dap::reload_family::WireGenerationWitness
@@ -3164,6 +3235,7 @@ pub struct perl_dap::reload_family::WireReconciliation
 pub perl_dap::reload_family::WireReconciliation::breakpoint_reconciliation: perl_dap::reload_family::WireReconciliationDisposition
 pub perl_dap::reload_family::WireReconciliation::inspection_invalidation: perl_dap::reload_family::WireReconciliationDisposition
 pub perl_dap::reload_family::WireReconciliation::loaded_source_refresh: perl_dap::reload_family::WireReconciliationDisposition
+pub const fn perl_dap::reload_family::WireReconciliation::all(disposition: perl_dap::reload_family::WireReconciliationDisposition) -> perl_dap::reload_family::WireReconciliation
 pub fn perl_dap::reload_family::WireReconciliation::clone(&self) -> perl_dap::reload_family::WireReconciliation
 pub fn perl_dap::reload_family::WireReconciliation::eq(&self, other: &perl_dap::reload_family::WireReconciliation) -> bool
 pub fn perl_dap::reload_family::WireReconciliation::default() -> Self
@@ -3195,8 +3267,119 @@ pub const perl_dap::reload_family::MAX_RETAINED_OPERATIONS: usize
 pub const perl_dap::reload_family::MIN_DEADLINE_MS: u64
 pub const perl_dap::reload_family::REASONS_TRUNCATED_MARKER: &str
 pub fn perl_dap::reload_family::classify_wire_terminal(kind: &str, possibly_applied: bool) -> perl_dap::reload_family::WireTerminalClassification
-pub fn perl_dap::reload_family::project_outcome(outcome: &perl_dap::reload::LoadedModuleReloadOutcome, operation_id: u64, clock: &mut perl_dap::reload::RuntimeModuleGenerationClock, reasons: &[alloc::string::String], remediation: core::option::Option<&str>) -> core::result::Result<perl_dap::reload_family::LoadedModuleReloadWireResponse, perl_dap::reload_family::WireProjectionRefusal>
+pub fn perl_dap::reload_family::project_execution(execution: &perl_dap::reload::ReloadExecution, reasons: &[alloc::string::String], remediation: core::option::Option<&str>) -> core::result::Result<perl_dap::reload_family::LoadedModuleReloadWireResponse, perl_dap::reload_family::WireProjectionRefusal>
 pub mod perl_dap::security
+pub mod perl_dap::security::launch_authority
+pub enum perl_dap::security::launch_authority::LaunchAuthorityError
+pub perl_dap::security::launch_authority::LaunchAuthorityError::AmbiguousAuthorityMode
+pub perl_dap::security::launch_authority::LaunchAuthorityError::DuplicateTrustedRoot
+pub perl_dap::security::launch_authority::LaunchAuthorityError::DuplicateTrustedRoot::path: std::path::PathBuf
+pub perl_dap::security::launch_authority::LaunchAuthorityError::InvalidAcknowledgement(alloc::string::String)
+pub perl_dap::security::launch_authority::LaunchAuthorityError::NoAuthorityConfigured
+pub perl_dap::security::launch_authority::LaunchAuthorityError::TrustedRootAliasConflict
+pub perl_dap::security::launch_authority::LaunchAuthorityError::TrustedRootAliasConflict::canonical: std::path::PathBuf
+pub perl_dap::security::launch_authority::LaunchAuthorityError::TrustedRootAliasConflict::first: std::path::PathBuf
+pub perl_dap::security::launch_authority::LaunchAuthorityError::TrustedRootAliasConflict::second: std::path::PathBuf
+pub perl_dap::security::launch_authority::LaunchAuthorityError::TrustedRootNotADirectory
+pub perl_dap::security::launch_authority::LaunchAuthorityError::TrustedRootNotADirectory::path: std::path::PathBuf
+pub perl_dap::security::launch_authority::LaunchAuthorityError::TrustedRootNotFound
+pub perl_dap::security::launch_authority::LaunchAuthorityError::TrustedRootNotFound::path: std::path::PathBuf
+pub perl_dap::security::launch_authority::LaunchAuthorityError::TrustedRootSymlink
+pub perl_dap::security::launch_authority::LaunchAuthorityError::TrustedRootSymlink::path: std::path::PathBuf
+pub fn perl_dap::security::launch_authority::LaunchAuthorityError::eq(&self, other: &perl_dap::security::launch_authority::LaunchAuthorityError) -> bool
+pub fn perl_dap::security::launch_authority::LaunchAuthorityError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::security::launch_authority::LaunchAuthorityError::fmt(&self, __formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum perl_dap::security::launch_authority::LaunchAuthorityMode
+pub perl_dap::security::launch_authority::LaunchAuthorityMode::ExplicitUnbounded
+pub perl_dap::security::launch_authority::LaunchAuthorityMode::WorkspaceBound
+pub fn perl_dap::security::launch_authority::LaunchAuthorityMode::label(self) -> &'static str
+pub fn perl_dap::security::launch_authority::LaunchAuthorityMode::clone(&self) -> perl_dap::security::launch_authority::LaunchAuthorityMode
+pub fn perl_dap::security::launch_authority::LaunchAuthorityMode::eq(&self, other: &perl_dap::security::launch_authority::LaunchAuthorityMode) -> bool
+pub fn perl_dap::security::launch_authority::LaunchAuthorityMode::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum perl_dap::security::launch_authority::LaunchAuthoritySource
+pub perl_dap::security::launch_authority::LaunchAuthoritySource::CommandLine
+pub perl_dap::security::launch_authority::LaunchAuthoritySource::HostSetting
+pub fn perl_dap::security::launch_authority::LaunchAuthoritySource::label(self) -> &'static str
+pub fn perl_dap::security::launch_authority::LaunchAuthoritySource::clone(&self) -> perl_dap::security::launch_authority::LaunchAuthoritySource
+pub fn perl_dap::security::launch_authority::LaunchAuthoritySource::eq(&self, other: &perl_dap::security::launch_authority::LaunchAuthoritySource) -> bool
+pub fn perl_dap::security::launch_authority::LaunchAuthoritySource::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_dap::security::launch_authority::LaunchAuthority
+pub fn perl_dap::security::launch_authority::LaunchAuthority::admits_launch_path(&self, program: &std::path::Path) -> core::result::Result<(), alloc::string::String>
+pub fn perl_dap::security::launch_authority::LaunchAuthority::begin_session(&mut self) -> u64
+pub fn perl_dap::security::launch_authority::LaunchAuthority::identity(&self) -> &str
+pub fn perl_dap::security::launch_authority::LaunchAuthority::mode(&self) -> perl_dap::security::launch_authority::LaunchAuthorityMode
+pub fn perl_dap::security::launch_authority::LaunchAuthority::narrow_launch_root(&self, requested: &std::path::Path) -> core::result::Result<core::option::Option<std::path::PathBuf>, alloc::string::String>
+pub fn perl_dap::security::launch_authority::LaunchAuthority::receipt(&self) -> perl_dap::security::launch_authority::LaunchAuthorityReceipt
+pub fn perl_dap::security::launch_authority::LaunchAuthority::resolve(startup: &perl_dap::security::launch_authority::LaunchAuthorityStartup) -> core::result::Result<Self, perl_dap::security::launch_authority::LaunchAuthorityError>
+pub fn perl_dap::security::launch_authority::LaunchAuthority::root_for_program(&self, program: &std::path::Path) -> core::option::Option<std::path::PathBuf>
+pub fn perl_dap::security::launch_authority::LaunchAuthority::session_generation(&self) -> u64
+pub fn perl_dap::security::launch_authority::LaunchAuthority::trusted_roots(&self) -> &[perl_dap::security::launch_authority::TrustedRoot]
+pub fn perl_dap::security::launch_authority::LaunchAuthority::clone(&self) -> perl_dap::security::launch_authority::LaunchAuthority
+pub fn perl_dap::security::launch_authority::LaunchAuthority::eq(&self, other: &perl_dap::security::launch_authority::LaunchAuthority) -> bool
+pub fn perl_dap::security::launch_authority::LaunchAuthority::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_dap::security::launch_authority::LaunchAuthorityReceipt
+pub perl_dap::security::launch_authority::LaunchAuthorityReceipt::acknowledgement_identity: core::option::Option<alloc::string::String>
+pub perl_dap::security::launch_authority::LaunchAuthorityReceipt::authority_identity: alloc::string::String
+pub perl_dap::security::launch_authority::LaunchAuthorityReceipt::mode: &'static str
+pub perl_dap::security::launch_authority::LaunchAuthorityReceipt::session_generation: u64
+pub perl_dap::security::launch_authority::LaunchAuthorityReceipt::trusted_root_count: usize
+pub perl_dap::security::launch_authority::LaunchAuthorityReceipt::trusted_root_identities: alloc::vec::Vec<alloc::string::String>
+pub fn perl_dap::security::launch_authority::LaunchAuthorityReceipt::clone(&self) -> perl_dap::security::launch_authority::LaunchAuthorityReceipt
+pub fn perl_dap::security::launch_authority::LaunchAuthorityReceipt::eq(&self, other: &perl_dap::security::launch_authority::LaunchAuthorityReceipt) -> bool
+pub fn perl_dap::security::launch_authority::LaunchAuthorityReceipt::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_dap::security::launch_authority::LaunchAuthorityStartup
+pub perl_dap::security::launch_authority::LaunchAuthorityStartup::allow_unbounded: core::option::Option<perl_dap::security::launch_authority::UnboundedAcknowledgement>
+pub perl_dap::security::launch_authority::LaunchAuthorityStartup::trusted_roots: alloc::vec::Vec<std::path::PathBuf>
+pub fn perl_dap::security::launch_authority::LaunchAuthorityStartup::clone(&self) -> perl_dap::security::launch_authority::LaunchAuthorityStartup
+pub fn perl_dap::security::launch_authority::LaunchAuthorityStartup::eq(&self, other: &perl_dap::security::launch_authority::LaunchAuthorityStartup) -> bool
+pub fn perl_dap::security::launch_authority::LaunchAuthorityStartup::default() -> perl_dap::security::launch_authority::LaunchAuthorityStartup
+pub fn perl_dap::security::launch_authority::LaunchAuthorityStartup::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_dap::security::launch_authority::TrustedRoot
+pub fn perl_dap::security::launch_authority::TrustedRoot::canonical(&self) -> &std::path::Path
+pub fn perl_dap::security::launch_authority::TrustedRoot::identity(&self) -> &str
+pub fn perl_dap::security::launch_authority::TrustedRoot::clone(&self) -> perl_dap::security::launch_authority::TrustedRoot
+pub fn perl_dap::security::launch_authority::TrustedRoot::eq(&self, other: &perl_dap::security::launch_authority::TrustedRoot) -> bool
+pub fn perl_dap::security::launch_authority::TrustedRoot::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_dap::security::launch_authority::UnboundedAcknowledgement
+pub perl_dap::security::launch_authority::UnboundedAcknowledgement::note: alloc::string::String
+pub perl_dap::security::launch_authority::UnboundedAcknowledgement::source: perl_dap::security::launch_authority::LaunchAuthoritySource
+pub fn perl_dap::security::launch_authority::UnboundedAcknowledgement::new(source: perl_dap::security::launch_authority::LaunchAuthoritySource, note: impl core::convert::Into<alloc::string::String>) -> Self
+pub fn perl_dap::security::launch_authority::UnboundedAcknowledgement::clone(&self) -> perl_dap::security::launch_authority::UnboundedAcknowledgement
+pub fn perl_dap::security::launch_authority::UnboundedAcknowledgement::eq(&self, other: &perl_dap::security::launch_authority::UnboundedAcknowledgement) -> bool
+pub fn perl_dap::security::launch_authority::UnboundedAcknowledgement::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum perl_dap::security::LaunchAuthorityError
+pub perl_dap::security::LaunchAuthorityError::AmbiguousAuthorityMode
+pub perl_dap::security::LaunchAuthorityError::DuplicateTrustedRoot
+pub perl_dap::security::LaunchAuthorityError::DuplicateTrustedRoot::path: std::path::PathBuf
+pub perl_dap::security::LaunchAuthorityError::InvalidAcknowledgement(alloc::string::String)
+pub perl_dap::security::LaunchAuthorityError::NoAuthorityConfigured
+pub perl_dap::security::LaunchAuthorityError::TrustedRootAliasConflict
+pub perl_dap::security::LaunchAuthorityError::TrustedRootAliasConflict::canonical: std::path::PathBuf
+pub perl_dap::security::LaunchAuthorityError::TrustedRootAliasConflict::first: std::path::PathBuf
+pub perl_dap::security::LaunchAuthorityError::TrustedRootAliasConflict::second: std::path::PathBuf
+pub perl_dap::security::LaunchAuthorityError::TrustedRootNotADirectory
+pub perl_dap::security::LaunchAuthorityError::TrustedRootNotADirectory::path: std::path::PathBuf
+pub perl_dap::security::LaunchAuthorityError::TrustedRootNotFound
+pub perl_dap::security::LaunchAuthorityError::TrustedRootNotFound::path: std::path::PathBuf
+pub perl_dap::security::LaunchAuthorityError::TrustedRootSymlink
+pub perl_dap::security::LaunchAuthorityError::TrustedRootSymlink::path: std::path::PathBuf
+pub fn perl_dap::security::launch_authority::LaunchAuthorityError::eq(&self, other: &perl_dap::security::launch_authority::LaunchAuthorityError) -> bool
+pub fn perl_dap::security::launch_authority::LaunchAuthorityError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::security::launch_authority::LaunchAuthorityError::fmt(&self, __formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum perl_dap::security::LaunchAuthorityMode
+pub perl_dap::security::LaunchAuthorityMode::ExplicitUnbounded
+pub perl_dap::security::LaunchAuthorityMode::WorkspaceBound
+pub fn perl_dap::security::launch_authority::LaunchAuthorityMode::label(self) -> &'static str
+pub fn perl_dap::security::launch_authority::LaunchAuthorityMode::clone(&self) -> perl_dap::security::launch_authority::LaunchAuthorityMode
+pub fn perl_dap::security::launch_authority::LaunchAuthorityMode::eq(&self, other: &perl_dap::security::launch_authority::LaunchAuthorityMode) -> bool
+pub fn perl_dap::security::launch_authority::LaunchAuthorityMode::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum perl_dap::security::LaunchAuthoritySource
+pub perl_dap::security::LaunchAuthoritySource::CommandLine
+pub perl_dap::security::LaunchAuthoritySource::HostSetting
+pub fn perl_dap::security::launch_authority::LaunchAuthoritySource::label(self) -> &'static str
+pub fn perl_dap::security::launch_authority::LaunchAuthoritySource::clone(&self) -> perl_dap::security::launch_authority::LaunchAuthoritySource
+pub fn perl_dap::security::launch_authority::LaunchAuthoritySource::eq(&self, other: &perl_dap::security::launch_authority::LaunchAuthoritySource) -> bool
+pub fn perl_dap::security::launch_authority::LaunchAuthoritySource::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub enum perl_dap::security::SecurityError
 pub perl_dap::security::SecurityError::ExcessiveTimeout(u32)
 pub perl_dap::security::SecurityError::InvalidExpression
@@ -3209,6 +3392,50 @@ pub fn perl_dap::security::SecurityError::from(error: perl_parser_core::syntax::
 pub fn perl_dap::security::SecurityError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_dap::security::SecurityError::fmt(&self, __formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_dap::security::SecurityError::error_class(&self) -> perl_parser_core::syntax::error::ErrorCategory
+pub struct perl_dap::security::LaunchAuthority
+pub fn perl_dap::security::launch_authority::LaunchAuthority::admits_launch_path(&self, program: &std::path::Path) -> core::result::Result<(), alloc::string::String>
+pub fn perl_dap::security::launch_authority::LaunchAuthority::begin_session(&mut self) -> u64
+pub fn perl_dap::security::launch_authority::LaunchAuthority::identity(&self) -> &str
+pub fn perl_dap::security::launch_authority::LaunchAuthority::mode(&self) -> perl_dap::security::launch_authority::LaunchAuthorityMode
+pub fn perl_dap::security::launch_authority::LaunchAuthority::narrow_launch_root(&self, requested: &std::path::Path) -> core::result::Result<core::option::Option<std::path::PathBuf>, alloc::string::String>
+pub fn perl_dap::security::launch_authority::LaunchAuthority::receipt(&self) -> perl_dap::security::launch_authority::LaunchAuthorityReceipt
+pub fn perl_dap::security::launch_authority::LaunchAuthority::resolve(startup: &perl_dap::security::launch_authority::LaunchAuthorityStartup) -> core::result::Result<Self, perl_dap::security::launch_authority::LaunchAuthorityError>
+pub fn perl_dap::security::launch_authority::LaunchAuthority::root_for_program(&self, program: &std::path::Path) -> core::option::Option<std::path::PathBuf>
+pub fn perl_dap::security::launch_authority::LaunchAuthority::session_generation(&self) -> u64
+pub fn perl_dap::security::launch_authority::LaunchAuthority::trusted_roots(&self) -> &[perl_dap::security::launch_authority::TrustedRoot]
+pub fn perl_dap::security::launch_authority::LaunchAuthority::clone(&self) -> perl_dap::security::launch_authority::LaunchAuthority
+pub fn perl_dap::security::launch_authority::LaunchAuthority::eq(&self, other: &perl_dap::security::launch_authority::LaunchAuthority) -> bool
+pub fn perl_dap::security::launch_authority::LaunchAuthority::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_dap::security::LaunchAuthorityReceipt
+pub perl_dap::security::LaunchAuthorityReceipt::acknowledgement_identity: core::option::Option<alloc::string::String>
+pub perl_dap::security::LaunchAuthorityReceipt::authority_identity: alloc::string::String
+pub perl_dap::security::LaunchAuthorityReceipt::mode: &'static str
+pub perl_dap::security::LaunchAuthorityReceipt::session_generation: u64
+pub perl_dap::security::LaunchAuthorityReceipt::trusted_root_count: usize
+pub perl_dap::security::LaunchAuthorityReceipt::trusted_root_identities: alloc::vec::Vec<alloc::string::String>
+pub fn perl_dap::security::launch_authority::LaunchAuthorityReceipt::clone(&self) -> perl_dap::security::launch_authority::LaunchAuthorityReceipt
+pub fn perl_dap::security::launch_authority::LaunchAuthorityReceipt::eq(&self, other: &perl_dap::security::launch_authority::LaunchAuthorityReceipt) -> bool
+pub fn perl_dap::security::launch_authority::LaunchAuthorityReceipt::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_dap::security::LaunchAuthorityStartup
+pub perl_dap::security::LaunchAuthorityStartup::allow_unbounded: core::option::Option<perl_dap::security::launch_authority::UnboundedAcknowledgement>
+pub perl_dap::security::LaunchAuthorityStartup::trusted_roots: alloc::vec::Vec<std::path::PathBuf>
+pub fn perl_dap::security::launch_authority::LaunchAuthorityStartup::clone(&self) -> perl_dap::security::launch_authority::LaunchAuthorityStartup
+pub fn perl_dap::security::launch_authority::LaunchAuthorityStartup::eq(&self, other: &perl_dap::security::launch_authority::LaunchAuthorityStartup) -> bool
+pub fn perl_dap::security::launch_authority::LaunchAuthorityStartup::default() -> perl_dap::security::launch_authority::LaunchAuthorityStartup
+pub fn perl_dap::security::launch_authority::LaunchAuthorityStartup::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_dap::security::TrustedRoot
+pub fn perl_dap::security::launch_authority::TrustedRoot::canonical(&self) -> &std::path::Path
+pub fn perl_dap::security::launch_authority::TrustedRoot::identity(&self) -> &str
+pub fn perl_dap::security::launch_authority::TrustedRoot::clone(&self) -> perl_dap::security::launch_authority::TrustedRoot
+pub fn perl_dap::security::launch_authority::TrustedRoot::eq(&self, other: &perl_dap::security::launch_authority::TrustedRoot) -> bool
+pub fn perl_dap::security::launch_authority::TrustedRoot::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_dap::security::UnboundedAcknowledgement
+pub perl_dap::security::UnboundedAcknowledgement::note: alloc::string::String
+pub perl_dap::security::UnboundedAcknowledgement::source: perl_dap::security::launch_authority::LaunchAuthoritySource
+pub fn perl_dap::security::launch_authority::UnboundedAcknowledgement::new(source: perl_dap::security::launch_authority::LaunchAuthoritySource, note: impl core::convert::Into<alloc::string::String>) -> Self
+pub fn perl_dap::security::launch_authority::UnboundedAcknowledgement::clone(&self) -> perl_dap::security::launch_authority::UnboundedAcknowledgement
+pub fn perl_dap::security::launch_authority::UnboundedAcknowledgement::eq(&self, other: &perl_dap::security::launch_authority::UnboundedAcknowledgement) -> bool
+pub fn perl_dap::security::launch_authority::UnboundedAcknowledgement::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub const perl_dap::security::DEFAULT_TIMEOUT_MS: u32
 pub const perl_dap::security::MAX_TIMEOUT_MS: u32
 pub fn perl_dap::security::validate_condition(condition: &str) -> core::result::Result<(), perl_dap::security::SecurityError>
@@ -3223,6 +3450,7 @@ pub fn perl_dap::DapMode::eq(&self, other: &perl_dap::DapMode) -> bool
 pub fn perl_dap::DapMode::default() -> perl_dap::DapMode
 pub fn perl_dap::DapMode::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_dap::server::DapConfig
+pub perl_dap::server::DapConfig::launch_authority: perl_dap::security::launch_authority::LaunchAuthorityStartup
 pub perl_dap::server::DapConfig::log_level: alloc::string::String
 pub perl_dap::server::DapConfig::mode: perl_dap::DapMode
 pub perl_dap::server::DapConfig::workspace_root: core::option::Option<std::path::PathBuf>
@@ -3744,6 +3972,39 @@ pub fn perl_dap::DapMode::clone(&self) -> perl_dap::DapMode
 pub fn perl_dap::DapMode::eq(&self, other: &perl_dap::DapMode) -> bool
 pub fn perl_dap::DapMode::default() -> perl_dap::DapMode
 pub fn perl_dap::DapMode::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum perl_dap::LaunchAuthorityError
+pub perl_dap::LaunchAuthorityError::AmbiguousAuthorityMode
+pub perl_dap::LaunchAuthorityError::DuplicateTrustedRoot
+pub perl_dap::LaunchAuthorityError::DuplicateTrustedRoot::path: std::path::PathBuf
+pub perl_dap::LaunchAuthorityError::InvalidAcknowledgement(alloc::string::String)
+pub perl_dap::LaunchAuthorityError::NoAuthorityConfigured
+pub perl_dap::LaunchAuthorityError::TrustedRootAliasConflict
+pub perl_dap::LaunchAuthorityError::TrustedRootAliasConflict::canonical: std::path::PathBuf
+pub perl_dap::LaunchAuthorityError::TrustedRootAliasConflict::first: std::path::PathBuf
+pub perl_dap::LaunchAuthorityError::TrustedRootAliasConflict::second: std::path::PathBuf
+pub perl_dap::LaunchAuthorityError::TrustedRootNotADirectory
+pub perl_dap::LaunchAuthorityError::TrustedRootNotADirectory::path: std::path::PathBuf
+pub perl_dap::LaunchAuthorityError::TrustedRootNotFound
+pub perl_dap::LaunchAuthorityError::TrustedRootNotFound::path: std::path::PathBuf
+pub perl_dap::LaunchAuthorityError::TrustedRootSymlink
+pub perl_dap::LaunchAuthorityError::TrustedRootSymlink::path: std::path::PathBuf
+pub fn perl_dap::security::launch_authority::LaunchAuthorityError::eq(&self, other: &perl_dap::security::launch_authority::LaunchAuthorityError) -> bool
+pub fn perl_dap::security::launch_authority::LaunchAuthorityError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::security::launch_authority::LaunchAuthorityError::fmt(&self, __formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum perl_dap::LaunchAuthorityMode
+pub perl_dap::LaunchAuthorityMode::ExplicitUnbounded
+pub perl_dap::LaunchAuthorityMode::WorkspaceBound
+pub fn perl_dap::security::launch_authority::LaunchAuthorityMode::label(self) -> &'static str
+pub fn perl_dap::security::launch_authority::LaunchAuthorityMode::clone(&self) -> perl_dap::security::launch_authority::LaunchAuthorityMode
+pub fn perl_dap::security::launch_authority::LaunchAuthorityMode::eq(&self, other: &perl_dap::security::launch_authority::LaunchAuthorityMode) -> bool
+pub fn perl_dap::security::launch_authority::LaunchAuthorityMode::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum perl_dap::LaunchAuthoritySource
+pub perl_dap::LaunchAuthoritySource::CommandLine
+pub perl_dap::LaunchAuthoritySource::HostSetting
+pub fn perl_dap::security::launch_authority::LaunchAuthoritySource::label(self) -> &'static str
+pub fn perl_dap::security::launch_authority::LaunchAuthoritySource::clone(&self) -> perl_dap::security::launch_authority::LaunchAuthoritySource
+pub fn perl_dap::security::launch_authority::LaunchAuthoritySource::eq(&self, other: &perl_dap::security::launch_authority::LaunchAuthoritySource) -> bool
+pub fn perl_dap::security::launch_authority::LaunchAuthoritySource::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub enum perl_dap::ScopeKind
 pub perl_dap::ScopeKind::Arguments = 4
 pub perl_dap::ScopeKind::Globals = 3
@@ -3849,11 +4110,13 @@ pub fn perl_dap::breakpoints::BreakpointRecord::clone(&self) -> perl_dap::breakp
 pub fn perl_dap::breakpoints::BreakpointRecord::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_dap::BreakpointStore
 pub fn perl_dap::breakpoints::BreakpointStore::adjust_breakpoints_for_edit(&self, source_path: &str, start_line: i64, lines_delta: i64)
+pub fn perl_dap::breakpoints::BreakpointStore::ambiguous_breakpoint_source(&self, source_path: &str) -> bool
 pub fn perl_dap::breakpoints::BreakpointStore::clear_all(&self)
 pub fn perl_dap::breakpoints::BreakpointStore::clear_breakpoints(&self, source_path: &str)
 pub fn perl_dap::breakpoints::BreakpointStore::get_breakpoint_by_id(&self, id: i64) -> core::option::Option<perl_dap::breakpoints::BreakpointRecord>
 pub fn perl_dap::breakpoints::BreakpointStore::get_breakpoints(&self, source_path: &str) -> alloc::vec::Vec<perl_dap::breakpoints::BreakpointRecord>
 pub fn perl_dap::breakpoints::BreakpointStore::is_empty(&self) -> bool
+pub fn perl_dap::breakpoints::BreakpointStore::mark_breakpoints_pending_reconciliation(&self, source_path: &str) -> alloc::vec::Vec<perl_dap::breakpoints::BreakpointRecord>
 pub fn perl_dap::breakpoints::BreakpointStore::new() -> Self
 pub fn perl_dap::breakpoints::BreakpointStore::register_breakpoint_hit(&self, source_path: &str, line: i64) -> perl_dap::breakpoints::BreakpointHitOutcome
 pub fn perl_dap::breakpoints::BreakpointStore::register_breakpoint_hit_with_variables(&self, source_path: &str, line: i64, variables: core::option::Option<&std::collections::hash::map::HashMap<alloc::string::String, alloc::string::String>>) -> perl_dap::breakpoints::BreakpointHitOutcome
@@ -3929,6 +4192,7 @@ pub fn perl_dap::protocol::ContinueResponseBody::fmt(&self, f: &mut core::fmt::F
 pub fn perl_dap::protocol::ContinueResponseBody::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 pub fn perl_dap::protocol::ContinueResponseBody::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
 pub struct perl_dap::DapConfig
+pub perl_dap::DapConfig::launch_authority: perl_dap::security::launch_authority::LaunchAuthorityStartup
 pub perl_dap::DapConfig::log_level: alloc::string::String
 pub perl_dap::DapConfig::mode: perl_dap::DapMode
 pub perl_dap::DapConfig::workspace_root: core::option::Option<std::path::PathBuf>
@@ -3966,8 +4230,10 @@ pub fn perl_dap::debug_adapter::DebugAdapter::handle_request(&mut self, request_
 pub fn perl_dap::debug_adapter::DebugAdapter::handle_request_mock(&mut self, request_seq: i64, command: &str, arguments: core::option::Option<serde_json::value::Value>) -> perl_dap::debug_adapter::DapMessage
 pub fn perl_dap::debug_adapter::DebugAdapter::handle_scopes(&self, seq: i64, request_seq: i64, arguments: core::option::Option<serde_json::value::Value>) -> perl_dap::debug_adapter::DapMessage
 pub fn perl_dap::debug_adapter::DebugAdapter::handle_variables(&self, seq: i64, request_seq: i64, arguments: core::option::Option<serde_json::value::Value>) -> perl_dap::debug_adapter::DapMessage
+pub fn perl_dap::debug_adapter::DebugAdapter::last_authority_receipt(&self) -> core::option::Option<perl_dap::security::launch_authority::LaunchAuthorityReceipt>
 pub fn perl_dap::debug_adapter::DebugAdapter::new() -> Self
-pub fn perl_dap::debug_adapter::DebugAdapter::set_event_sender(&mut self, sender: std::sync::mpsc::SyncSender<perl_dap::debug_adapter::DapMessage>)
+pub fn perl_dap::debug_adapter::DebugAdapter::set_event_sender(&mut self, sender: std::sync::mpsc::SyncSender<perl_dap::debug_adapter::DapMessageWithEpoch>)
+pub fn perl_dap::debug_adapter::DebugAdapter::set_launch_authority(&self, authority: perl_dap::security::launch_authority::LaunchAuthority)
 pub fn perl_dap::debug_adapter::DebugAdapter::set_workspace_root(&self, root: std::path::PathBuf)
 pub fn perl_dap::debug_adapter::DebugAdapter::default() -> Self
 pub fn perl_dap::debug_adapter::DebugAdapter::drop(&mut self)
@@ -4095,6 +4361,37 @@ pub fn perl_dap::protocol::InitializeRequestArguments::clone(&self) -> perl_dap:
 pub fn perl_dap::protocol::InitializeRequestArguments::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_dap::protocol::InitializeRequestArguments::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 pub fn perl_dap::protocol::InitializeRequestArguments::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_dap::LaunchAuthority
+pub fn perl_dap::security::launch_authority::LaunchAuthority::admits_launch_path(&self, program: &std::path::Path) -> core::result::Result<(), alloc::string::String>
+pub fn perl_dap::security::launch_authority::LaunchAuthority::begin_session(&mut self) -> u64
+pub fn perl_dap::security::launch_authority::LaunchAuthority::identity(&self) -> &str
+pub fn perl_dap::security::launch_authority::LaunchAuthority::mode(&self) -> perl_dap::security::launch_authority::LaunchAuthorityMode
+pub fn perl_dap::security::launch_authority::LaunchAuthority::narrow_launch_root(&self, requested: &std::path::Path) -> core::result::Result<core::option::Option<std::path::PathBuf>, alloc::string::String>
+pub fn perl_dap::security::launch_authority::LaunchAuthority::receipt(&self) -> perl_dap::security::launch_authority::LaunchAuthorityReceipt
+pub fn perl_dap::security::launch_authority::LaunchAuthority::resolve(startup: &perl_dap::security::launch_authority::LaunchAuthorityStartup) -> core::result::Result<Self, perl_dap::security::launch_authority::LaunchAuthorityError>
+pub fn perl_dap::security::launch_authority::LaunchAuthority::root_for_program(&self, program: &std::path::Path) -> core::option::Option<std::path::PathBuf>
+pub fn perl_dap::security::launch_authority::LaunchAuthority::session_generation(&self) -> u64
+pub fn perl_dap::security::launch_authority::LaunchAuthority::trusted_roots(&self) -> &[perl_dap::security::launch_authority::TrustedRoot]
+pub fn perl_dap::security::launch_authority::LaunchAuthority::clone(&self) -> perl_dap::security::launch_authority::LaunchAuthority
+pub fn perl_dap::security::launch_authority::LaunchAuthority::eq(&self, other: &perl_dap::security::launch_authority::LaunchAuthority) -> bool
+pub fn perl_dap::security::launch_authority::LaunchAuthority::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_dap::LaunchAuthorityReceipt
+pub perl_dap::LaunchAuthorityReceipt::acknowledgement_identity: core::option::Option<alloc::string::String>
+pub perl_dap::LaunchAuthorityReceipt::authority_identity: alloc::string::String
+pub perl_dap::LaunchAuthorityReceipt::mode: &'static str
+pub perl_dap::LaunchAuthorityReceipt::session_generation: u64
+pub perl_dap::LaunchAuthorityReceipt::trusted_root_count: usize
+pub perl_dap::LaunchAuthorityReceipt::trusted_root_identities: alloc::vec::Vec<alloc::string::String>
+pub fn perl_dap::security::launch_authority::LaunchAuthorityReceipt::clone(&self) -> perl_dap::security::launch_authority::LaunchAuthorityReceipt
+pub fn perl_dap::security::launch_authority::LaunchAuthorityReceipt::eq(&self, other: &perl_dap::security::launch_authority::LaunchAuthorityReceipt) -> bool
+pub fn perl_dap::security::launch_authority::LaunchAuthorityReceipt::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_dap::LaunchAuthorityStartup
+pub perl_dap::LaunchAuthorityStartup::allow_unbounded: core::option::Option<perl_dap::security::launch_authority::UnboundedAcknowledgement>
+pub perl_dap::LaunchAuthorityStartup::trusted_roots: alloc::vec::Vec<std::path::PathBuf>
+pub fn perl_dap::security::launch_authority::LaunchAuthorityStartup::clone(&self) -> perl_dap::security::launch_authority::LaunchAuthorityStartup
+pub fn perl_dap::security::launch_authority::LaunchAuthorityStartup::eq(&self, other: &perl_dap::security::launch_authority::LaunchAuthorityStartup) -> bool
+pub fn perl_dap::security::launch_authority::LaunchAuthorityStartup::default() -> perl_dap::security::launch_authority::LaunchAuthorityStartup
+pub fn perl_dap::security::launch_authority::LaunchAuthorityStartup::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_dap::LaunchConfiguration
 pub perl_dap::LaunchConfiguration::args: alloc::vec::Vec<alloc::string::String>
 pub perl_dap::LaunchConfiguration::cwd: core::option::Option<std::path::PathBuf>
@@ -4414,6 +4711,19 @@ pub fn perl_dap::protocol::ThreadsResponseBody::clone(&self) -> perl_dap::protoc
 pub fn perl_dap::protocol::ThreadsResponseBody::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_dap::protocol::ThreadsResponseBody::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 pub fn perl_dap::protocol::ThreadsResponseBody::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_dap::TrustedRoot
+pub fn perl_dap::security::launch_authority::TrustedRoot::canonical(&self) -> &std::path::Path
+pub fn perl_dap::security::launch_authority::TrustedRoot::identity(&self) -> &str
+pub fn perl_dap::security::launch_authority::TrustedRoot::clone(&self) -> perl_dap::security::launch_authority::TrustedRoot
+pub fn perl_dap::security::launch_authority::TrustedRoot::eq(&self, other: &perl_dap::security::launch_authority::TrustedRoot) -> bool
+pub fn perl_dap::security::launch_authority::TrustedRoot::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_dap::UnboundedAcknowledgement
+pub perl_dap::UnboundedAcknowledgement::note: alloc::string::String
+pub perl_dap::UnboundedAcknowledgement::source: perl_dap::security::launch_authority::LaunchAuthoritySource
+pub fn perl_dap::security::launch_authority::UnboundedAcknowledgement::new(source: perl_dap::security::launch_authority::LaunchAuthoritySource, note: impl core::convert::Into<alloc::string::String>) -> Self
+pub fn perl_dap::security::launch_authority::UnboundedAcknowledgement::clone(&self) -> perl_dap::security::launch_authority::UnboundedAcknowledgement
+pub fn perl_dap::security::launch_authority::UnboundedAcknowledgement::eq(&self, other: &perl_dap::security::launch_authority::UnboundedAcknowledgement) -> bool
+pub fn perl_dap::security::launch_authority::UnboundedAcknowledgement::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_dap::ValueFormat
 pub perl_dap::ValueFormat::hex: core::option::Option<bool>
 pub fn perl_dap::protocol::ValueFormat::clone(&self) -> perl_dap::protocol::ValueFormat

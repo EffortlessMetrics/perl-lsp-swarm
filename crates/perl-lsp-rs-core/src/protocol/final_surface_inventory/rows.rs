@@ -178,7 +178,7 @@ fn capability_rows() -> Vec<SurfaceRow> {
             "cap.textDocumentSync.change",
             "textDocumentSync.change",
             S_DOC_SYNC,
-            "textDocument/didChange (Full=1 reparse)",
+            "textDocument/didChange (Full=1 complete document transfer)",
             "features.toml#lsp.text_document_sync; lifecycle tests text_document_sync_advertises_full_sync_and_open_close",
         ),
         SurfaceRow {
@@ -635,13 +635,13 @@ fn mutation_rows() -> Vec<SurfaceRow> {
         SurfaceRow {
             additional_owned_pointers: super::NO_POINTERS,
             client_capability_inputs: &[
-                "general.positionEncodings (negotiated, stored, NOT advertised)",
+                "general.positionEncodings (classified into the accepted session contract)",
             ],
             ..mut_row(
                 "mut.handle_initialize.positionEncodingPin",
                 "positionEncoding",
                 &["general.positionEncodings"],
-                "position contract pinned utf-16 until negotiated encoding threads through providers; see compat.protocol.positionEncodingUtf16Pin",
+                "wire encoding and sync kind written from the immutable accepted text-sync session contract (#9378); see compat.protocol.positionEncodingUtf16Pin",
             )
         },
         SurfaceRow {
@@ -700,6 +700,7 @@ fn mutation_rows() -> Vec<SurfaceRow> {
                 "codeActionProvider.documentation[].kind",
                 "codeActionProvider.documentation[].command.title",
                 "codeActionProvider.documentation[].command.command",
+                "codeActionProvider.documentation[].command.tooltip",
                 "codeActionProvider.documentation[].command.arguments[]",
                 "codeActionProvider.documentation[].command.arguments[].provider",
                 "codeActionProvider.documentation[].command.arguments[].receipt_id",
@@ -1199,13 +1200,13 @@ fn compatibility_rows() -> Vec<SurfaceRow> {
         ),
         compat(
             "compat.protocol.positionEncodingUtf16Pin",
-            "positionEncoding always advertised utf-16 despite general.positionEncodings negotiation",
+            "positionEncoding always advertised utf-16; offers without utf-16 use mandatory fallback",
             RT_INIT,
             &["general.positionEncodings"],
-            "phase-comment block in handle_initialize; position authority #2298",
-            "every client negotiating a non-UTF-16 preferred encoding",
-            "providers still compute UTF-16 offsets; advertising anything else would corrupt positions, so the negotiated value is stored but not advertised",
-            "#8032 train stage threading the negotiated encoding through position/text contracts",
+            "accepted text-sync session contract in handle_initialize (#9378); position authority #2298",
+            "every client whose valid positionEncodings offer excludes utf-16",
+            "the v0.18 envelope (#8129 full_document_utf16) owns one immutable FULL + UTF-16 session contract: absent/empty offers default to utf-16, offers containing utf-16 select it, and a valid nonempty offer without utf-16 selects mandatory UTF-16 fallback",
+            "#9380/#9383 own the later full-replacement and range-refusal leaves; #8129 keeps the release claim ceiling",
         ),
         compat(
             "compat.negotiated.clientInputsWithoutAdvertisementSeam",
@@ -1281,6 +1282,7 @@ fn command_rows() -> Vec<SurfaceRow> {
 #[cfg(test)]
 mod ripr_seam_proof {
     use super::*;
+    use perl_test_must::must_some_with;
 
     #[test]
     fn capability_rows_are_static_capability_fields() {
@@ -1433,9 +1435,10 @@ mod ripr_seam_proof {
                 "compatibility row {} must be unadvertised",
                 row.surface_id
             );
-            let boundary = row.compatibility.as_ref().unwrap_or_else(|| {
-                panic!("compatibility row {} must carry a boundary", row.surface_id)
-            });
+            let boundary = must_some_with(
+                row.compatibility.as_ref(),
+                format!("compatibility row {} must carry a boundary", row.surface_id),
+            );
             assert!(
                 !boundary.subject.is_empty()
                     && !boundary.reason.is_empty()

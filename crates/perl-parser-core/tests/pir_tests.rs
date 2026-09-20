@@ -863,10 +863,9 @@ fn local_simple_initializer_body_path_is_unchanged() {
 #[test]
 fn local_element_initializer_body_path_keeps_the_target_fail_closed() {
     // `local $ENV{PATH} = '/bin'` targets an element, which PIR-A does not yet
-    // model as a place. The body path must not silently drop that target: the
-    // whole assignment is lowered, so the fail-closed `Subscript` marker and
-    // the assignment node are recorded. (The declaration's `<unknown>` symbol
-    // is a pre-existing HIR placeholder tracked separately in #14809.)
+    // model as a place. The body path must not invent a `<unknown>` stash write:
+    // the whole assignment is lowered, so the fail-closed `Subscript` marker and
+    // the assignment node are recorded (#14809).
     let mut parser = Parser::new("local $ENV{PATH} = '/bin';");
     let output = parser.parse_with_recovery();
     let graph = lower_hir_bodies(&lower_ast(&output.ast));
@@ -879,5 +878,14 @@ fn local_element_initializer_body_path_keeps_the_target_fail_closed() {
     assert!(
         graph.nodes.iter().any(|node| matches!(node.operation, PirOperation::Assign)),
         "element assignment must keep its Assign node: {names:?}"
+    );
+    assert!(
+        !graph.nodes.iter().any(|node| match &node.operation {
+            PirOperation::StashWrite { symbol }
+            | PirOperation::StashRead { symbol }
+            | PirOperation::StashModify { symbol, .. } => symbol.name == "<unknown>",
+            _ => false,
+        }),
+        "element local must not stash-write <unknown>: {names:?}"
     );
 }

@@ -16,6 +16,8 @@ on:
       - 'vscode-extension/**'
       - 'features.toml'
       - '.github/workflows/ux-regression-gate.yml'
+      - 'xtask/src/main.rs'
+      - 'xtask/src/tasks/mod.rs'
   workflow_dispatch: {}
 
 concurrency:
@@ -73,7 +75,7 @@ jobs:
           toolchain: 1.95.0
 
       - name: Install just
-        uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf # v2.87.2
+        uses: taiki-e/install-action@5bf6ce016fd2e72eefc647cbca1e4213f65955b8 # v2.87.5
         with:
           tool: just
 
@@ -319,7 +321,12 @@ jobs:
                           f"- Route: `{receipt.get('route') or 'triage'}`",
                       ]
 
-          summary.write_text("\n".join(lines) + "\n", encoding="utf-8")
+          rendered = "\n".join(lines) + "\n"
+          summary.write_text(rendered, encoding="utf-8")
+          # Mirror the receipt summary into stdout so the fields appear in the
+          # job-log tail when GITHUB_STEP_SUMMARY or artifact downloads are
+          # inaccessible (#16026).
+          print(rendered)
           PY
 
       - name: Fail UX regression gate on test failures

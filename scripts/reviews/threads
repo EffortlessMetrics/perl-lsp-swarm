@@ -45,7 +45,7 @@
 #
 # ── Exit codes ───────────────────────────────────────────────────────────────
 #   0 enumeration succeeded (including the zero-thread case)
-#   2 usage error, missing gh/jq, or GraphQL fetch failure
+#   2 usage error, missing gh/jq, or failed/incomplete GraphQL enumeration
 set -euo pipefail
 
 die_usage() { echo "ERROR: $1" >&2; exit 2; }
@@ -98,12 +98,14 @@ trap 'rm -rf "$WORK_DIR"' EXIT
 # that need this script most. Every jq handoff below therefore goes through a
 # file or stdin.
 PAGES_FILE="$WORK_DIR/pages.json"
+SEEN_CURSORS_FILE="$WORK_DIR/seen-cursors.jsonl"
 : > "$PAGES_FILE"
+: > "$SEEN_CURSORS_FILE"
 CURSOR="null"
 HAS_NEXT="true"
 while [[ "$HAS_NEXT" == "true" ]]; do
     AFTER_ARG=""
-    [[ "$CURSOR" == "null" ]] || AFTER_ARG=", after: \"$CURSOR\""
+    [[ "$CURSOR" == "null" ]] || AFTER_ARG=", after: $CURSOR"
 
     QUERY=$(cat <<EOF
 query {
@@ -137,27 +139,57 @@ EOF
         cat "$WORK_DIR/page.err" "$PAGE_FILE" >&2 || true
         exit 2
     fi
-    if ! jq -ce '.data.repository.pullRequest.reviewThreads.nodes' "$PAGE_FILE" >> "$PAGES_FILE"; then
-        echo "ERROR: unexpected GraphQL response for $REPO#$PR:" >&2
-        head -c 2000 "$PAGE_FILE" >&2
+    # A successful transport and a nodes array do not prove a complete page.
+    # Missing/non-boolean hasNextPage used to end the loop as if it were false;
+    # a string isResolved could disappear from the unresolved-only projection.
+    # Validate one response, its pagination, and the fields that carry the count
+    # before appending anything. Ancillary nullable metadata stays permissive.
+    if ! jq -e -s '
+        length == 1 and (.[0] |
+            type == "object"
+            and ((has("errors") | not) or .errors == [])
+            and (.data.repository.pullRequest.reviewThreads |
+                type == "object"
+                and (.nodes | type == "array")
+                and all(.nodes[];
+                    type == "object"
+                    and (.id | type == "string" and length > 0)
+                    and (.isResolved | type == "boolean")
+                    and (.isOutdated | type == "boolean"))
+                and (.pageInfo |
+                    type == "object"
+                    and (.hasNextPage | type == "boolean")
+                    and has("endCursor")
+                    and (.endCursor | . == null or type == "string"))))
+    ' "$PAGE_FILE" >/dev/null 2>&1; then
+        echo "ERROR: incomplete or malformed review-thread page for $REPO#$PR;" >&2
+        echo "       refusing to report a possibly truncated thread list." >&2
         exit 2
     fi
 
     HAS_NEXT="$(jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage' "$PAGE_FILE")"
-    CURSOR="$(jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.endCursor // "null"' "$PAGE_FILE")"
-    # "more pages exist" + "no cursor to fetch them with" is the ONE shape in
-    # which this script could return a truncated list while exiting 0 — the
-    # exact failure it exists to prevent. Fail loudly instead of stopping quietly.
-    if [[ "$HAS_NEXT" == "true" && "$CURSOR" == "null" ]]; then
-        echo "ERROR: $REPO#$PR reported more review-thread pages but returned no cursor;" >&2
-        echo "       refusing to report a possibly truncated thread list." >&2
-        exit 2
+    # Preserve the opaque cursor as a JSON string, including its quoting. This
+    # also keeps the literal string "null" distinct from the absence of a cursor.
+    CURSOR="$(jq -c '.data.repository.pullRequest.reviewThreads.pageInfo.endCursor' "$PAGE_FILE")"
+    if [[ "$HAS_NEXT" == "true" ]]; then
+        if [[ "$CURSOR" == "null" || "$CURSOR" == '""' ]] \
+            || ! jq -e '.data.repository.pullRequest.reviewThreads.nodes | length > 0' "$PAGE_FILE" >/dev/null; then
+            echo "ERROR: $REPO#$PR reported more pages without threads or a usable cursor;" >&2
+            echo "       refusing to report a possibly truncated thread list." >&2
+            exit 2
+        fi
+        if grep -Fqx -- "$CURSOR" "$SEEN_CURSORS_FILE"; then
+            echo "ERROR: repeated review-thread cursor for $REPO#$PR; refusing a pagination cycle." >&2
+            exit 2
+        fi
+        printf '%s\n' "$CURSOR" >> "$SEEN_CURSORS_FILE"
     fi
+    jq -c '.data.repository.pullRequest.reviewThreads.nodes' "$PAGE_FILE" >> "$PAGES_FILE"
 done
 
 # ── Projection ──────────────────────────────────────────────────────────────
 PROJECTED_FILE="$WORK_DIR/projected.json"
-jq -c --argjson unresolved_only "$UNRESOLVED_ONLY" -s 'add // []
+if ! jq -c --argjson unresolved_only "$UNRESOLVED_ONLY" -s 'add // []
     |
     def excerpt:
         (. // "")
@@ -170,8 +202,8 @@ jq -c --argjson unresolved_only "$UNRESOLVED_ONLY" -s 'add // []
         | if length > 120 then .[0:117] + "..." else . end;
     map({
         id: .id,
-        isResolved: (.isResolved // false),
-        isOutdated: (.isOutdated // false),
+        isResolved: .isResolved,
+        isOutdated: .isOutdated,
         path: (.path // null),
         line: (.line // .originalLine),
         line_is_original: (.line == null and .originalLine != null),
@@ -183,7 +215,12 @@ jq -c --argjson unresolved_only "$UNRESOLVED_ONLY" -s 'add // []
         excerpt: (.comments.nodes[0].body | excerpt)
     })
     | if $unresolved_only == 1 then map(select(.isResolved == false)) else . end
-' "$PAGES_FILE" > "$PROJECTED_FILE"
+' "$PAGES_FILE" > "$PROJECTED_FILE" 2>"$WORK_DIR/project.err"; then
+    echo "ERROR: malformed review-thread metadata for $REPO#$PR;" >&2
+    echo "       refusing to report an incomplete thread projection." >&2
+    cat "$WORK_DIR/project.err" >&2 || true
+    exit 2
+fi
 
 SUMMARY_FILE="$WORK_DIR/summary.json"
 jq -n --slurpfile projected "$PROJECTED_FILE" --arg pr "$PR" --arg repo "$REPO" '

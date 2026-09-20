@@ -86,6 +86,15 @@ const OWNERSHIP: &[OwnershipRow] = &[
         "#8386"
     ),
     row!(
+        "initialization_accepted",
+        ClientSession,
+        "AtomicBool",
+        "connection replacement",
+        "client session",
+        false,
+        "#8386"
+    ),
+    row!(
         "initialized",
         ClientSession,
         "AtomicBool",
@@ -239,6 +248,15 @@ const OWNERSHIP: &[OwnershipRow] = &[
         "#8386"
     ),
     row!(
+        "text_sync_session",
+        ClientSession,
+        "Mutex<Option<AcceptedTextSyncSession>>",
+        "connection replacement",
+        "accepted text-sync session contract (#9378): immutable FULL + UTF-16 authority written once at initialize acceptance",
+        false,
+        "#9378"
+    ),
+    row!(
         "client_supports_pull_diags",
         ClientSession,
         "Arc<AtomicBool>",
@@ -264,6 +282,18 @@ const OWNERSHIP: &[OwnershipRow] = &[
         "client session + configuration generation",
         false,
         "#8386"
+    ),
+    // #15715: tier-3 client settings replayed over merged project config
+    // across folder removals; same server-global config ownership shape
+    // as server_config_baseline.
+    row!(
+        "last_client_settings",
+        WorkspaceServices,
+        "Arc<Mutex<Option>>",
+        "project config reset / server drop",
+        "tier-3 client settings replay generation",
+        false,
+        "#15715"
     ),
     row!(
         "next_request_id",
@@ -311,31 +341,13 @@ const OWNERSHIP: &[OwnershipRow] = &[
         "#8388"
     ),
     row!(
-        "diagnostic_debouncer",
+        "runtime_services",
         RuntimeServices,
-        "Mutex<Option>",
+        "owned service",
         "application shutdown",
-        "runtime + document generation",
+        "runtime + document/root generation",
         true,
-        "#9508"
-    ),
-    row!(
-        "parse_worker_handle",
-        RuntimeServices,
-        "Mutex<Option<Arc>>",
-        "application shutdown",
-        "runtime + document generation",
-        true,
-        "#9508"
-    ),
-    row!(
-        "file_watcher_debouncer",
-        RuntimeServices,
-        "Mutex<Option>",
-        "application shutdown",
-        "runtime + root generation",
-        true,
-        "#9508"
+        "#10024"
     ),
     row!(
         "notebook_store",
@@ -446,7 +458,149 @@ const OWNERSHIP: &[OwnershipRow] = &[
         "#8385"
     ),
     row!(
+        "workspace_identity_generation",
+        WorkspaceServices,
+        "Arc<AtomicU64>",
+        "server instance drop",
+        "workspace generation",
+        false,
+        "#8385"
+    ),
+    // #15418 added folder-transition topology tracking alongside the
+    // workspace generation counters; same ownership shape.
+    row!(
+        "workspace_topology_generation",
+        WorkspaceServices,
+        "Arc<AtomicU32>",
+        "server instance drop",
+        "workspace generation",
+        false,
+        "#8385"
+    ),
+    row!(
+        "workspace_topology_stable",
+        WorkspaceServices,
+        "Arc<AtomicBool>",
+        "server instance drop",
+        "workspace generation",
+        false,
+        "#8385"
+    ),
+    // Test-only one-shot barrier fired in the startup scan critical
+    // section for the workspace-transition race proof (#13308); server
+    // work signals it, never blocks on it.
+    row!(
+        "workspace_transition_test_gate",
+        WorkspaceServices,
+        "Arc<Mutex<Option>>",
+        "test gate release / server drop",
+        "workspace transition race proof",
+        false,
+        "#13308"
+    ),
+    row!(
+        "dependency_facts_generation",
+        WorkspaceServices,
+        "Arc<AtomicU64>",
+        "server instance drop",
+        "dependency-facts generation",
+        false,
+        "#8385"
+    ),
+    row!(
+        "stale_dependency_facts",
+        WorkspaceServices,
+        "Arc<Mutex>",
+        "metadata refresh resolution / server drop",
+        "workspace folder URIs with retained facts",
+        false,
+        "#8385"
+    ),
+    row!(
+        "metadata_refresh_serialization",
+        WorkspaceServices,
+        "Arc<Mutex>",
+        "refresh terminal / server drop",
+        "metadata refresh operation",
+        false,
+        "#8385"
+    ),
+    row!(
+        "workspace_identity_lock",
+        WorkspaceServices,
+        "Arc<Mutex>",
+        "invalidation terminal / server drop",
+        "workspace identity generation",
+        false,
+        "#8385"
+    ),
+    row!(
+        "workspace_topology_generation",
+        WorkspaceServices,
+        "Arc<AtomicU32>",
+        "server instance drop",
+        "workspace-topology generation",
+        false,
+        "#9062"
+    ),
+    row!(
+        "workspace_topology_stable",
+        WorkspaceServices,
+        "Arc<AtomicBool>",
+        "server instance drop",
+        "workspace-topology publication stability",
+        false,
+        "#9062"
+    ),
+    row!(
+        "workspace_transition_test_gate",
+        WorkspaceServices,
+        "Arc<Mutex<Option>>",
+        "test gate release / server drop",
+        "workspace-transition race proof gate",
+        true,
+        "#9062"
+    ),
+    row!(
+        "single_file_project_config",
+        WorkspaceServices,
+        "Arc<Mutex>",
+        "document close / server drop",
+        "single-file document URI + config generation",
+        false,
+        "#8385"
+    ),
+    // #15715: defaults + tier-1 + tier-3 baseline surviving the per-call
+    // project-config reset; same server-global config ownership shape.
+    row!(
+        "server_config_baseline",
+        WorkspaceServices,
+        "Arc<Mutex<Option>>",
+        "project config reset / server drop",
+        "server-global config baseline generation",
+        false,
+        "#15715"
+    ),
+    row!(
+        "single_file_project_config_generation",
+        WorkspaceServices,
+        "Arc<AtomicU64>",
+        "server instance drop",
+        "single-file project config generation",
+        false,
+        "#8385"
+    ),
+    row!(
         "workspace_indexing_start_gate",
+        RuntimeServices,
+        "Arc<std::sync::Mutex>",
+        "test gate release / server drop",
+        "test runtime",
+        true,
+        "#7394"
+    ),
+    row!(
+        "indexing_commit_gate",
         RuntimeServices,
         "Arc<std::sync::Mutex>",
         "test gate release / server drop",
@@ -554,6 +708,15 @@ const OWNERSHIP: &[OwnershipRow] = &[
         "#8388"
     ),
     row!(
+        "indexing_scan_observation",
+        RuntimeServices,
+        "Arc<Mutex>",
+        "observation consumption / server drop",
+        "admitted unit-test scan",
+        false,
+        "#7394"
+    ),
+    row!(
         "permission_denied_shown",
         WorkspaceServices,
         "Arc<AtomicBool>",
@@ -572,24 +735,6 @@ const OWNERSHIP: &[OwnershipRow] = &[
         "#8386"
     ),
     row!(
-        "critic_analyzer",
-        AnalysisServices,
-        "Mutex<Option>",
-        "critic config transition / analysis shutdown",
-        "configuration + document generation",
-        true,
-        "#7410"
-    ),
-    row!(
-        "critic_runtime_override",
-        ProductComposition,
-        "Mutex<Option<Arc>>",
-        "test/product composition reset",
-        "process/test subject",
-        true,
-        "#8400"
-    ),
-    row!(
         "formatter_runtime_override",
         ProductComposition,
         "Mutex<Option<Arc>>",
@@ -597,24 +742,6 @@ const OWNERSHIP: &[OwnershipRow] = &[
         "process/test subject",
         true,
         "#5001"
-    ),
-    row!(
-        "skip_perlcritic_command_check",
-        ProductComposition,
-        "AtomicBool",
-        "test server drop",
-        "test subject",
-        false,
-        "#8400"
-    ),
-    row!(
-        "force_perlcritic_command_unavailable",
-        ProductComposition,
-        "AtomicBool",
-        "test server drop",
-        "test subject",
-        false,
-        "#8400"
     ),
     row!(
         "session_warning_dedup",
@@ -994,6 +1121,109 @@ pub struct PullDiagnosticsOrchestrator {
         orchestrator_body.contains("HashSet"),
         "fixture must carry the renamed store for the assertion below"
     );
+
+    Ok(())
+}
+
+/// `LspServer` fields that legitimately declare a task-handle-shaped type
+/// under their own decided ownership row. `runtime_services` is the #10024
+/// governed owner of application worker execution-handle state.
+/// `outbound_writer_handle` is the one accepted pre-existing exception: it
+/// is `ClientTransport`-owned connection-shutdown state under the
+/// independently decided #9507 row, not application worker state, and
+/// predates the #10024 ownership move.
+const TASK_HANDLE_STATE_FIELDS: &[&str] = &["runtime_services", "outbound_writer_handle"];
+
+/// True when a declaration's type TEXT is task-handle-shaped -- a raw
+/// `JoinHandle`/`AbortHandle`, or a bare application worker type such as
+/// `ParseWorker` or a `*Debouncer`.
+///
+/// Independent of the FIELD name: a renamed
+/// `stray_worker: Mutex<Option<Arc<ParseWorker>>>` is still task-handle
+/// state (#10024).
+///
+/// Known limit: this is a type-text scan, not a resolved-type scan, so a
+/// type alias (`type OpaqueWorkerHandle = JoinHandle<()>;`) or a renamed
+/// import (`use ParseWorker as Wkr;`) evades it. Closing that would need
+/// real type resolution, which this contract deliberately does not attempt.
+/// The backstop is `ownership_map_covers_every_current_lsp_server_field`:
+/// an aliased handle field is still a NEW `LspServer` field and cannot land
+/// without an explicit #8383 ownership row naming its owner.
+fn is_task_handle_shaped(declaration: &str) -> bool {
+    declaration_type(declaration).is_some_and(|ty| {
+        ty.contains("JoinHandle")
+            || ty.contains("AbortHandle")
+            || ty.contains("ParseWorker")
+            || ty.contains("Debouncer")
+    })
+}
+
+/// #10024 architecture negative control: a NEW `LspServer` field whose
+/// declared type is task-handle-shaped must not land outside the single
+/// governed `RuntimeServices` field, whatever it is named.
+#[test]
+fn application_worker_handles_stay_inside_runtime_services() -> Result<()> {
+    let source = fs::read_to_string(repo_root()?.join("crates/perl-lsp-rs/src/runtime/mod.rs"))?;
+    let body = lsp_server_body(&source)?;
+    let declarations = split_declarations(&body)?;
+
+    for declaration in &declarations {
+        if !is_task_handle_shaped(declaration) {
+            continue;
+        }
+        let name = declaration_field_name(declaration)?;
+        ensure!(
+            TASK_HANDLE_STATE_FIELDS.contains(&name.as_str()),
+            "LspServer must not declare application worker execution-handle state outside \
+             the governed #10024 RuntimeServices field: {declaration}"
+        );
+    }
+
+    ensure!(
+        declarations.iter().any(|declaration| declaration
+            .starts_with("runtime_services: runtime_services::RuntimeServices")),
+        "the governed #10024 RuntimeServices field must remain declared"
+    );
+
+    Ok(())
+}
+
+/// Regression fixture for the #10024 structural scan: a renamed task-handle
+/// field evades name-based checks but not the structural type scan, and the
+/// governed allowlist keeps passing the same scan.
+#[test]
+fn renamed_task_handle_state_cannot_escape_the_scan() -> Result<()> {
+    let renamed = r#"
+pub struct LspServer {
+    documents: Arc<Mutex<HashMap<String, DocumentState>>>,
+    stray_parse_worker: Mutex<Option<Arc<ParseWorker>>>,
+}
+"#;
+    let declarations = split_declarations(&lsp_server_body(renamed)?)?;
+    let flagged: Vec<String> = declarations
+        .iter()
+        .filter(|declaration| {
+            is_task_handle_shaped(declaration)
+                && !TASK_HANDLE_STATE_FIELDS
+                    .contains(&declaration_field_name(declaration).unwrap_or_default().as_str())
+        })
+        .cloned()
+        .collect();
+    assert_eq!(flagged.len(), 1, "the renamed task-handle field must be flagged");
+    assert!(flagged[0].contains("stray_parse_worker"));
+
+    let governed = r#"
+pub struct LspServer {
+    runtime_services: Mutex<Option<ParseWorker>>,
+    outbound_writer_handle: Option<std::thread::JoinHandle<()>>,
+}
+"#;
+    let governed_declarations = split_declarations(&lsp_server_body(governed)?)?;
+    assert!(governed_declarations.iter().all(|declaration| {
+        !is_task_handle_shaped(declaration)
+            || TASK_HANDLE_STATE_FIELDS
+                .contains(&declaration_field_name(declaration).unwrap_or_default().as_str())
+    }));
 
     Ok(())
 }

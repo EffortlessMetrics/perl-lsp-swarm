@@ -66,8 +66,11 @@ use std::collections::{HashSet, VecDeque};
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
+mod class_grammar;
+use class_grammar::{ClassGrammarContext, ClassGrammarForm};
+
 mod operation;
-use operation::ParserOperationContext;
+use operation::{NestedCoreUsage, ParserOperationContext};
 pub use operation::{ParserConfigIdentity, ParserOperationId};
 
 /// Strip Perl-style line comments from `qw()` content.
@@ -128,8 +131,30 @@ pub struct Parser<'a> {
     last_end_position: usize,
     /// Context flag for disambiguating for-loop initialization syntax
     in_for_loop_init: bool,
-    /// Depth of nested class bodies for context-sensitive class-body constructs
-    in_class_body: usize,
+    /// Context flag for do-while condition parsing. While set, a `{` following
+    /// the parsed condition expression must not be absorbed as a hash
+    /// subscript: in `do { ... } while (cond) { ... }` the trailing block is a
+    /// syntax error real Perl reports near `") {"`, and absorbing it here
+    /// silently accepted the input (#15649). The flag lets the brace survive to
+    /// `parse_statement_modifier`, which records the rejection.
+    in_do_while_condition: bool,
+    /// Whether the armed do-while condition starts with `(`. Only a
+    /// parenthesized condition can be followed by the trailing block real Perl
+    /// rejects: after the condition's closing `)`, a `{` can no longer be a
+    /// subscript. Unparenthesized conditions (`while $h{k}{j}`) never enter
+    /// the reject zone.
+    do_while_paren_reject: bool,
+    /// Nesting depth of grouping parentheses inside an armed, parenthesized
+    /// do-while condition. Depth > 0 means the parser is still inside the
+    /// condition's own `(...)`, where postfix braces are ordinary subscripts;
+    /// depth 0 there means the group closed and a following `{` is the
+    /// trailing block. Maintained by [`Parser::enter_paren_group`] and
+    /// [`Parser::leave_paren_group`].
+    do_while_paren_depth: usize,
+    /// Scope-aware class grammar context governing context-sensitive
+    /// class-member admission (currently `ADJUST` blocks). Grammar admission
+    /// only — never semantic class ownership. See [`class_grammar`].
+    class_grammar: ClassGrammarContext,
     /// Statement boundary tracking for indirect object syntax detection
     at_stmt_start: bool,
     /// FIFO queue of pending heredoc declarations awaiting content collection
@@ -221,7 +246,10 @@ impl<'a> Parser<'a> {
             block_depth: 0,
             last_end_position: 0,
             in_for_loop_init: false,
-            in_class_body: 0,
+            in_do_while_condition: false,
+            do_while_paren_reject: false,
+            do_while_paren_depth: 0,
+            class_grammar: ClassGrammarContext::default(),
             at_stmt_start: true,
             pending_heredocs: VecDeque::new(),
             custom_attribute_handlers: HashSet::new(),
@@ -467,6 +495,13 @@ impl<'a> Parser<'a> {
     fn begin_operation(&mut self) {
         self.operation.begin();
         self.block_depth = 0;
+        // #8786: the retained diagnostics are operation-scoped too. `begin`
+        // zeroes the charge counters, so leaving the vector behind would let a
+        // second operation return the first operation's diagnostics while
+        // reporting `errors_emitted` that does not account for them — the
+        // receipt and the vector describing different operations. Retention and
+        // its charge share one lifetime, or neither means anything.
+        self.errors.clear();
     }
 
     /// Get all parse errors collected during parsing
@@ -512,7 +547,7 @@ impl<'a> Parser<'a> {
             | ContextualOpResult::AppliedReplay
             | ContextualOpResult::NotRequired => Ok(()),
             ContextualOpResult::FallbackRequired { reason } => {
-                self.errors.push(ParseError::Advisory {
+                self.record_error(ParseError::Advisory {
                     message: format!(
                         "{label} requires a rebuild through a live lexer ({reason:?}); \
                          continuing with cached classification"
@@ -522,7 +557,7 @@ impl<'a> Parser<'a> {
                 Ok(())
             }
             ContextualOpResult::Unsupported => {
-                self.errors.push(ParseError::Advisory {
+                self.record_error(ParseError::Advisory {
                     message: format!(
                         "{label} is not supported for this stream state; \
                          continuing with cached classification"
@@ -584,11 +619,21 @@ impl<'a> Parser<'a> {
 
                 // Ensure the terminal error is recorded in the diagnostic vector, but only
                 // once — `Cancelled` in particular can already be present from prior work.
+                // #8786: retained directly, not through `record_error`. This is
+                // the operation's own terminal cause; dropping it because the
+                // diagnostic budget is spent would leave `stop_cause()` with no
+                // matching diagnostic and report a truncated parse as clean.
                 if !self.errors.contains(&e) {
                     self.errors.push(e);
                 }
 
                 // Return a partial Program node so consumers always receive a usable AST.
+                // #8786: not charged. This is the terminal fallback shell
+                // returned after the operation already stopped, not admitted
+                // parse work — charging it would report work the refused
+                // operation never performed, and on a `CoreBudgetExhausted`
+                // stop the charge would itself be refused. The typed
+                // fallback/terminal accounting is #7074's.
                 (
                     Node::new(
                         NodeKind::Program { statements: vec![] },
@@ -620,6 +665,8 @@ include!("expressions/calls.rs");
 include!("expressions/hashes.rs");
 include!("expressions/quotes.rs");
 
+#[cfg(test)]
+mod attribute_source_body_tests;
 #[cfg(test)]
 mod builtin_block_list_tests;
 #[cfg(test)]

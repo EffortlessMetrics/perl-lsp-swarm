@@ -4,6 +4,7 @@ use std::{fs, path::PathBuf};
 
 use anyhow::{Result, anyhow, ensure};
 use assert_cmd::Command;
+use assert_cmd::cargo::cargo_bin_cmd;
 use perl_tdd_support::{must, must_some};
 use serde_yaml_ng::Value;
 use toml::Value as TomlValue;
@@ -126,6 +127,26 @@ fn ignored_test_issue_reference_gate_is_required_on_prs() {
             "PR Smoke must prebuild `{command}` before running independent gates"
         );
     }
+    let summary_step = must_some(workflow_step(smoke, "Summarize PR-fast gate failures"));
+    assert!(
+        summary_step.contains("GITHUB_STEP_SUMMARY")
+            && summary_step.contains("Non-success gates")
+            && summary_step.contains("exit_code"),
+        "PR Smoke must publish failing gate names and exit codes in the job summary"
+    );
+    // The pr-fast receipt producer (GateResult in xtask/src/tasks/gates.rs)
+    // serializes its identifier as `gate_name`, not `name`: reading `name`
+    // renders every failing gate as `unknown` and defeats the summary's
+    // diagnostic purpose (#15492 review thread).
+    let producer = must(fs::read_to_string(root.join("xtask/src/tasks/gates.rs")));
+    assert!(
+        producer.contains("pub gate_name: String"),
+        "GateResult must keep serializing its identifier as `gate_name`"
+    );
+    assert!(
+        summary_step.contains("gate.get('gate_name'"),
+        "PR Smoke summary must read the producer's `gate_name` field, not `name`"
+    );
 }
 
 #[test]
@@ -949,6 +970,29 @@ fn coverage_workflow_is_manual_or_nightly_only_and_requires_receipts() {
     ] {
         assert!(justfile.contains(required), "coverage-proof missing `{required}`");
     }
+    let ci_route_source =
+        must(fs::read_to_string(root.join("xtask").join("src").join("tasks").join("ci_route.rs")));
+    must(cross_check_ci_route_schema_version_literals(&ci_route_source, &codecov_router));
+    let mutated_python_receipt = codecov_router.replacen("\"ci-route.v1\"", "\"ci-route.v2\"", 1);
+    assert_ne!(
+        mutated_python_receipt, codecov_router,
+        "negative control must mutate the Python producer's `schema_version` literal"
+    );
+    assert!(
+        cross_check_ci_route_schema_version_literals(&ci_route_source, &mutated_python_receipt)
+            .is_err(),
+        "ci-route schema_version cross-check must reject Python producer drift"
+    );
+    let mutated_rust_receipt = ci_route_source.replacen("\"ci-route.v1\"", "\"ci-route.v2\"", 1);
+    assert_ne!(
+        mutated_rust_receipt, ci_route_source,
+        "negative control must mutate the Rust producer's `schema_version` literal"
+    );
+    assert!(
+        cross_check_ci_route_schema_version_literals(&mutated_rust_receipt, &codecov_router)
+            .is_err(),
+        "ci-route schema_version cross-check must reject Rust producer drift"
+    );
 }
 
 #[test]
@@ -1213,6 +1257,134 @@ fn conventional_required_checks_record_live_proof_floor() {
             "docs must name advisory coverage context `{advisory}`"
         );
     }
+}
+
+#[test]
+fn agent_ledgers_validator_recipe_wired_into_merge_gate() {
+    // #15380 (local shift-left half): the `ci-agent-ledgers-validate` recipe
+    // plus a `_timed` call inside `merge-gate`, mirroring how `ci-format` /
+    // `ci-clippy` / `ci-policy` are wired. This is developer-facing only; the
+    // hosted closure proof is `agent_ledgers_validator_wired_into_hosted_policy_shard`
+    // below. This test pins the local half so it cannot silently regress.
+    let root = repo_root();
+    let justfile = must(fs::read_to_string(root.join("justfile")));
+
+    let recipe_marker = "ci-agent-ledgers-validate:";
+    let recipe_start = must_some(justfile.find(recipe_marker));
+    let recipe_window = &justfile[recipe_start..];
+    let recipe_end_rel = recipe_window.find("\n\n").unwrap_or(recipe_window.len());
+    let recipe = &recipe_window[..recipe_end_rel];
+    assert!(
+        recipe.contains("cargo xtask agent ledgers validate --format json"),
+        "ci-agent-ledgers-validate recipe must invoke the `agent ledgers validate` CLI in JSON mode, got: {recipe}"
+    );
+
+    let merge_gate_marker = "merge-gate: _check-tools-basic pr-fast";
+    let merge_gate_start = must_some(justfile.find(merge_gate_marker));
+    let merge_gate_window = &justfile[merge_gate_start..];
+    let merge_gate_end_rel = merge_gate_window.find("\n\n").unwrap_or(merge_gate_window.len());
+    let merge_gate = &merge_gate_window[..merge_gate_end_rel];
+    assert!(
+        merge_gate
+            .contains("_timed \"ci-agent-ledgers-validate\" \"just ci-agent-ledgers-validate\""),
+        "merge-gate must call ci-agent-ledgers-validate via _timed so non-zero exit fails closed"
+    );
+}
+
+#[test]
+fn agent_ledgers_validator_wired_into_hosted_policy_shard() {
+    // #15380 (hosted closure proof): the merge surface is not `just
+    // merge-gate` but ci.yml -> merge-gate-shards ->
+    // scripts/ci/run_gate_shard.py -> .ci/gate-policy.yaml. Every leg below
+    // is asserted independently so removing the gate from any one of them
+    // fails this test with the exact missing leg named.
+    let root = repo_root();
+
+    // Leg 1: the gate-policy defines a required merge_gate entry that runs
+    // the validator CLI in JSON mode.
+    let policy = must(fs::read_to_string(root.join(".ci/gate-policy.yaml")));
+    let gate_start = must_some(policy.find("  - name: agent_ledgers_validate"));
+    let gate_tail = &policy[gate_start..];
+    let gate_end = gate_tail.find("\n  - name:").unwrap_or(gate_tail.len());
+    let gate = &gate_tail[..gate_end];
+    for required in [
+        "tier: merge_gate",
+        "required: true",
+        "command: cargo xtask agent ledgers validate --format json",
+        "quarantine: false",
+    ] {
+        assert!(
+            gate.contains(required),
+            "agent_ledgers_validate gate entry must contain `{required}`, got: {gate}"
+        );
+    }
+
+    // Leg 2: the hosted `policy` shard executes the gate by name. The shard
+    // runner resolves names through `cargo xtask gates --gate`, so a name
+    // present here but absent from the policy is a loud runtime failure, not
+    // a silent skip — and a policy entry absent here never runs on merge.
+    let workflow = must(fs::read_to_string(root.join(".github/workflows/ci.yml")));
+    let policy_shard = must_some(workflow.find("- name: policy"));
+    let gates_key = must_some(workflow[policy_shard..].find("gates:"));
+    let gates_line_start = policy_shard + gates_key;
+    let gates_line_end_rel = must_some(workflow[gates_line_start..].find('\n'));
+    let gates_line = &workflow[gates_line_start..gates_line_start + gates_line_end_rel];
+    assert!(
+        gates_line.contains("agent_ledgers_validate"),
+        "ci.yml policy shard gates line must execute agent_ledgers_validate, got: {gates_line}"
+    );
+
+    // Leg 3: policy/workflow agreement — the workflow_integration job mapping
+    // must claim the same gate, or policy and execution disagree about what
+    // the merge surface owns.
+    let mapping_start = must_some(policy.find("job_mapping:"));
+    let mapping = &policy[mapping_start..];
+    assert!(
+        mapping.contains("agent_ledgers_validate"),
+        "workflow_integration.job_mapping.ci-gate.gates must list agent_ledgers_validate"
+    );
+
+    // Leg 4: the shard execution policy knows the gate (dependency row), and
+    // the lane/economics map accounts for it — otherwise the
+    // gate-enforcement and lane-mapping validators report the addition as
+    // unmapped the moment both files meet.
+    let execution = must(fs::read_to_string(root.join(".ci/gate-shard-execution.json")));
+    assert!(
+        execution.contains("\"agent_ledgers_validate\""),
+        "gate-shard-execution.json must carry an agent_ledgers_validate dependency row"
+    );
+    let lane_map = must(fs::read_to_string(root.join("scripts/ci/validate_gate_lane_mapping.py")));
+    assert!(
+        lane_map.contains("\"agent_ledgers_validate\""),
+        "GATE_TO_LANE_MAP must account for agent_ledgers_validate"
+    );
+}
+
+#[test]
+fn agent_ledgers_validator_runs_clean_against_committed_files() {
+    // #15380 (Lane A): once the validator is wired into merge-gate it must pass
+    // against the current committed ledger files. A future drift that breaks a
+    // committed row will fail this test (and the merge-gate), forcing the change
+    // through review instead of being silently absorbed.
+    let root = repo_root();
+    let ledger_dir = root.join("docs/agents/ledgers");
+    assert!(
+        ledger_dir.is_dir(),
+        "committed docs/agents/ledgers/ directory must exist for the wiring to have something to check"
+    );
+
+    let output = cargo_bin_cmd!("xtask")
+        .args(["agent", "ledgers", "validate", "--format", "json"])
+        .current_dir(&root)
+        .output()
+        .expect("spawn cargo xtask agent ledgers validate");
+    assert!(
+        output.status.success(),
+        "agent ledgers validate must pass against the committed files (issue #15380 wired the CLI into CI); \
+         stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
 }
 
 #[test]
@@ -1839,10 +2011,10 @@ fn coverage_baseline_contract(
         recipe_tail.find("\n# Generate route-selected coverage").unwrap_or(recipe_tail.len());
     let recipe = &recipe_tail[..recipe_end];
     for required in [
-        "cargo xtask coverage-baseline",
+        "\"$HOME/.cargo/bin/rustup\" run nightly cargo xtask coverage-baseline",
         "--codecov codecov.yml",
         "--receipt target/receipts/quality/coverage-baseline.json",
-        "cargo xtask quality-gate",
+        "\"$HOME/.cargo/bin/rustup\" run nightly cargo xtask quality-gate",
         "--mode enforce-patch-coverage",
         "--receipt target/receipts/quality/quality-gate-coverage.json",
         "--summary target/receipts/quality/quality-gate-coverage.md",
@@ -1852,6 +2024,66 @@ fn coverage_baseline_contract(
     ensure!(
         recipe.matches("--mode enforce-patch-coverage").count() == 2,
         "coverage proof recipe must enforce the patch gate on write and check passes"
+    );
+    let report_end = recipe
+        .find("cargo llvm-cov report")
+        .ok_or_else(|| anyhow!("coverage proof recipe must report LCOV before xtask commands"))?;
+    let post_report = recipe
+        .get(report_end..)
+        .ok_or_else(|| anyhow!("coverage report boundary must be valid"))?;
+    coverage_post_report_xtask_route_contract(post_report)
+}
+
+fn coverage_post_report_xtask_route_contract(post_report: &str) -> Result<()> {
+    let xtask_commands = post_report
+        .lines()
+        .filter(|line| line.contains("cargo xtask"))
+        .map(str::trim)
+        .collect::<Vec<_>>();
+    ensure!(
+        xtask_commands.len() == 4,
+        "coverage proof must run exactly four post-report xtask commands, got {}",
+        xtask_commands.len()
+    );
+    ensure!(
+        xtask_commands
+            .iter()
+            .all(|line| line.starts_with("\"$HOME/.cargo/bin/rustup\" run nightly cargo xtask")),
+        "post-report xtask commands must stay on the nightly toolchain"
+    );
+    Ok(())
+}
+
+#[test]
+fn coverage_post_report_route_rejects_one_bare_xtask_mutation() -> Result<()> {
+    let root = repo_root();
+    let justfile = fs::read_to_string(root.join("justfile"))?;
+    let recipe_start = justfile
+        .find("coverage-proof base='origin/main':")
+        .ok_or_else(|| anyhow!("coverage proof recipe is required"))?;
+    let recipe_tail = justfile
+        .get(recipe_start..)
+        .ok_or_else(|| anyhow!("coverage proof recipe start must be a valid boundary"))?;
+    let recipe_end =
+        recipe_tail.find("\n# Generate route-selected coverage").unwrap_or(recipe_tail.len());
+    let recipe = recipe_tail
+        .get(..recipe_end)
+        .ok_or_else(|| anyhow!("coverage proof recipe end must be a valid boundary"))?;
+    let report_end = recipe
+        .find("cargo llvm-cov report")
+        .ok_or_else(|| anyhow!("coverage proof must report LCOV before xtask commands"))?;
+    let post_report = recipe
+        .get(report_end..)
+        .ok_or_else(|| anyhow!("coverage report boundary must be valid"))?;
+    let mutated = post_report.replacen(
+        "\"$HOME/.cargo/bin/rustup\" run nightly cargo xtask",
+        "cargo xtask",
+        1,
+    );
+    ensure!(mutated != post_report, "negative control must mutate one post-report command");
+    ensure!(
+        coverage_post_report_xtask_route_contract(&mutated).is_err(),
+        "coverage route must reject one bare xtask command"
     );
     Ok(())
 }
@@ -1953,4 +2185,65 @@ fn yaml_mapping_entry<'a>(value: &'a Value, key: &str) -> Result<&'a Value> {
         .ok_or_else(|| anyhow!("expected a YAML mapping while looking for `{key}`"))?
         .get(Value::String(key.to_owned()))
         .ok_or_else(|| anyhow!("missing YAML key `{key}`"))
+}
+
+/// Cross-check the `schema_version` literals emitted by the two producers of
+/// `target/receipts/quality/ci-route.json`:
+///
+/// - `xtask/src/tasks/ci_route.rs` (Rust producer) — emits
+///   `schema_version: "ci-route.v1"` at the `CiRouteReceipt` emission site.
+/// - `scripts/ci/route-codecov-packs.py` (Python producer) — emits
+///   `"schema_version": "ci-route.v1"` at the `receipt = { ... }` site.
+///
+/// Both producers write to the same file path consumed by `ci-nightly.yml`,
+/// `justfile`, and `scripts/ci/generate-coverage-pack-commands.py`; a literal
+/// drift between the two producers (#15391 / F1) would silently break every
+/// downstream consumer that keys on the envelope identifier. This helper
+/// reads both sources at test time, extracts the literal at each emission
+/// site, and rejects any divergence.
+fn cross_check_ci_route_schema_version_literals(
+    rust_source: &str,
+    python_source: &str,
+) -> Result<()> {
+    // The Rust producer's envelope identifier moved in #15779: the receipt
+    // is built as `schema_version: envelope_version.to_string()`, so the
+    // single source of truth is `CURRENT_ENVELOPE_VERSION`, not a struct-init
+    // literal. Probe the const (#15878).
+    let rust_marker = "CURRENT_ENVELOPE_VERSION: &str = \"";
+    let rust_open = rust_source.find(rust_marker).ok_or_else(|| {
+        anyhow!(
+            "xtask/src/tasks/ci_route.rs is missing the Rust producer's `CURRENT_ENVELOPE_VERSION` \
+             literal (expected near the envelope admission site); the wire-policy test cannot \
+             validate drift"
+        )
+    })?;
+    let rust_start = rust_open + rust_marker.len();
+    let rust_end_rel = rust_source[rust_start..].find('"').ok_or_else(|| {
+        anyhow!(
+            "xtask/src/tasks/ci_route.rs `CURRENT_ENVELOPE_VERSION` literal is not closed by `\"`"
+        )
+    })?;
+    let rust_lit = &rust_source[rust_start..rust_start + rust_end_rel];
+
+    let python_marker = "\"schema_version\": \"";
+    let python_open = python_source.find(python_marker).ok_or_else(|| {
+        anyhow!(
+            "scripts/ci/route-codecov-packs.py is missing the Python producer's `\"schema_version\": \"...\"` literal; \
+             the wire-policy test cannot validate drift"
+        )
+    })?;
+    let python_start = python_open + python_marker.len();
+    let python_end_rel = python_source[python_start..].find('"').ok_or_else(|| {
+        anyhow!("scripts/ci/route-codecov-packs.py `schema_version` literal is not closed by `\"`")
+    })?;
+    let python_lit = &python_source[python_start..python_start + python_end_rel];
+
+    ensure!(
+        rust_lit == python_lit,
+        "ci-route.json producers disagree on `schema_version`: \
+         Rust (xtask/src/tasks/ci_route.rs) = {rust_lit:?}, \
+         Python (scripts/ci/route-codecov-packs.py) = {python_lit:?}; \
+         both producers write to target/receipts/quality/ci-route.json and must share one envelope identifier"
+    );
+    Ok(())
 }

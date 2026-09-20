@@ -7,7 +7,7 @@ use std::{
     process::{Command, Stdio},
 };
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Context, Result, anyhow, bail, ensure};
 use serde_json::Value as JsonValue;
 use serde_yaml_ng::Value;
 use zip::{ZipWriter, write::SimpleFileOptions};
@@ -113,11 +113,41 @@ fn workflow_step_value(job_name: &str, step_name: &str) -> Result<Value> {
         .ok_or_else(|| anyhow!("{job_name} step {step_name} is missing"))
 }
 
+fn require_single_canonical_container_installer(script: &str) -> Result<(), String> {
+    let installers: Vec<_> = script
+        .lines()
+        .map(str::trim)
+        .filter(|line| line.starts_with("cargo install ripr"))
+        .collect();
+    let expected = r#"cargo install ripr --version "$RIPR_VERSION" --locked"#;
+    if installers.len() != 1 || installers.first().copied() != Some(expected) {
+        return Err(format!(
+            "normal hosted producer must have exactly one canonical container RIPR installer; \
+             found {installers:?}"
+        ));
+    }
+    Ok(())
+}
+
+#[test]
+fn container_installer_contract_rejects_extra_or_mismatched_installers()
+-> Result<(), Box<dyn std::error::Error>> {
+    let canonical = r#"cargo install ripr --version "$RIPR_VERSION" --locked"#;
+    require_single_canonical_container_installer(canonical)?;
+
+    for extra in [r#"cargo install ripr --version "0.9.0" --locked"#, "cargo install ripr"] {
+        let script = format!("{canonical}\n{extra}");
+        if require_single_canonical_container_installer(&script).is_ok() {
+            return Err(format!("accepted invalid container installer fixture: {extra}").into());
+        }
+    }
+    Ok(())
+}
+
 #[derive(Clone, Copy)]
 struct GateRoute<'a> {
     router_target: &'a str,
-    cx53_result: &'a str,
-    cx43_result: &'a str,
+    selfhosted_result: &'a str,
     github_result: &'a str,
     fallback_result: &'a str,
 }
@@ -193,8 +223,7 @@ impl<'a> GateRoute<'a> {
     fn github_failure() -> Self {
         Self {
             router_target: "github",
-            cx53_result: "skipped",
-            cx43_result: "skipped",
+            selfhosted_result: "skipped",
             github_result: "failure",
             fallback_result: "skipped",
         }
@@ -206,8 +235,7 @@ fn gate_lane_identity(route: GateRoute<'_>) -> (&'static str, &'static str) {
         return ("ripr+ (Disk-Full Fallback)", "88001");
     }
     match route.router_target {
-        "cx53" => ("ripr+ on CX53", "53001"),
-        "cx43" => ("ripr+ on CX43", "43001"),
+        "selfhosted" => ("ripr+ on Self-Hosted (rust-standard)", "53001"),
         "github" => ("ripr+ on GitHub Hosted", "97001"),
         _ => ("unknown", "0"),
     }
@@ -233,6 +261,29 @@ fn run_gate_with_fake_gh(
         GhApiControl::Valid,
         Some("gate-token"),
         0,
+        30,
+    )
+}
+
+/// Model the production failure shape: a request that fails fast, so the
+/// attempt schedule rather than the deadline decides how long the gate waits
+/// for a freshly evicted lane's log (#14774).
+fn run_gate_with_fast_failing_requests(
+    log: Option<&str>,
+    lookup_failures: u32,
+    fetch_failures: u32,
+    route: GateRoute<'_>,
+) -> Result<(std::process::Output, String, Option<String>)> {
+    run_gate_with_fake_gh_logs(
+        log,
+        "##[error]The runner has received a shutdown signal.\n",
+        lookup_failures,
+        fetch_failures,
+        route,
+        GhApiControl::Valid,
+        Some("gate-token"),
+        0,
+        2,
     )
 }
 
@@ -250,6 +301,7 @@ fn run_gate_after_delayed_setup(
         GhApiControl::Valid,
         Some("gate-token"),
         initial_now,
+        30,
     )
 }
 
@@ -271,6 +323,7 @@ fn run_gate_with_fake_gh_logs(
     api_control: GhApiControl,
     token: Option<&str>,
     initial_now: u64,
+    request_seconds: u64,
 ) -> Result<(std::process::Output, String, Option<String>)> {
     let root = project_root()?;
     let sandbox = tempfile::tempdir().context("creating gate workflow sandbox")?;
@@ -416,8 +469,7 @@ gh() {
         .env("ROUTE_RESULT", "success")
         .env("ROUTER_TARGET", route.router_target)
         .env("ROUTER_REASON", "test")
-        .env("CX53_RESULT", route.cx53_result)
-        .env("CX43_RESULT", route.cx43_result)
+        .env("SELFHOSTED_RESULT", route.selfhosted_result)
         .env("GITHUB_RESULT", route.github_result)
         .env("FALLBACK_RESULT", route.fallback_result)
         .env("GITHUB_REPOSITORY", "EffortlessMetrics/perl-lsp-swarm")
@@ -436,7 +488,7 @@ gh() {
         .env("FAKE_FETCH_URLS", &fetch_urls)
         .env("FAKE_TIMEOUT_CALLS", &timeout_calls)
         .env("FAKE_ELAPSED_SECONDS", &elapsed_seconds)
-        .env("FAKE_REQUEST_SECONDS", "30")
+        .env("FAKE_REQUEST_SECONDS", request_seconds.to_string())
         .env("RIPR_GATE_DEADLINE_EPOCH", "240")
         .env("RIPR_GATE_FINALIZATION_RESERVE_SECONDS", "60")
         .env("FAKE_JOBS_RESPONSE", &jobs_response)
@@ -501,15 +553,19 @@ gh() {
 
 fn runner_response(fixture: &str) -> Result<&'static str> {
     match fixture {
+        // A live rust-standard pool: one busy member and one idle member.
+        // Busy state is irrelevant to routing -- GitHub queues within the
+        // capability pool -- so both count as capacity.
         "ready" => Ok(
-            r#"{"runners":[{"id":53001,"name":"cx53-ready","status":"online","busy":false,"labels":[{"name":"EM-CI"},{"name":"CX53"},{"name":"rust-small"},{"name":"trusted-pr"}]},{"id":43001,"name":"cx43-ready","status":"online","busy":false,"labels":[{"name":"em-ci"},{"name":"cx43"},{"name":"rust-small"},{"name":"trusted-pr"}]},{"id":53002,"name":"cx53-busy","status":"online","busy":true,"labels":[{"name":"em-ci"},{"name":"cx53"},{"name":"rust-small"},{"name":"trusted-pr"}]},{"id":53003,"name":"cx53-missing-label","status":"online","busy":false,"labels":[{"name":"em-ci"},{"name":"cx53"},{"name":"rust-small"}]},{"id":53004,"name":"cx53-offline","status":"offline","busy":false,"labels":[{"name":"em-ci"},{"name":"cx53"},{"name":"rust-small"},{"name":"trusted-pr"}]}]}"#,
+            r#"{"runners":[{"id":53001,"name":"rust-standard-busy","status":"online","busy":true,"labels":[{"name":"EM-CI"},{"name":"Rust-Standard"},{"name":"trusted-pr"}]},{"id":43001,"name":"rust-standard-idle","status":"online","busy":false,"labels":[{"name":"em-ci"},{"name":"rust-standard"},{"name":"trusted-pr"}]},{"id":53003,"name":"wrong-capability","status":"online","busy":false,"labels":[{"name":"em-ci"},{"name":"rust-light"},{"name":"trusted-pr"}]},{"id":53004,"name":"rust-standard-offline","status":"offline","busy":false,"labels":[{"name":"em-ci"},{"name":"rust-standard"},{"name":"trusted-pr"}]}]}"#,
         ),
         "busy-only" => Ok(
-            r#"{"runners":[{"id":53002,"name":"cx53-busy","status":"online","busy":true,"labels":[{"name":"em-ci"},{"name":"cx53"},{"name":"rust-small"},{"name":"trusted-pr"}]}]}"#,
+            r#"{"runners":[{"id":53001,"name":"rust-standard-busy","status":"online","busy":true,"labels":[{"name":"em-ci"},{"name":"rust-standard"},{"name":"trusted-pr"}]}]}"#,
         ),
         "missing-label-only" => Ok(
-            r#"{"runners":[{"id":53003,"name":"cx53-missing-label","status":"online","busy":false,"labels":[{"name":"em-ci"},{"name":"cx53"},{"name":"rust-small"}]}]}"#,
+            r#"{"runners":[{"id":53003,"name":"wrong-capability","status":"online","busy":false,"labels":[{"name":"em-ci"},{"name":"rust-light"}]}]}"#,
         ),
+        "empty" => Ok(r#"{"runners":[]}"#),
         _ => bail!("unknown runner fixture: {fixture}"),
     }
 }
@@ -593,6 +649,7 @@ curl() {
         .env("FAKE_RUNNERS_JSON", runner_json)
         .env("FAKE_CURL_STATUS", curl_status)
         .env("FAKE_CURL_REQUEST", &curl_request)
+        .env("RIPR_ROUTER_PROBE_SECONDS", "0")
         .env("GITHUB_OUTPUT", &output_file)
         .env("GITHUB_STEP_SUMMARY", &summary)
         .stdin(Stdio::piped())
@@ -629,7 +686,7 @@ fn run_preflight_case(
     let cache = sandbox.path().join("cache");
     fs::create_dir_all(&scratch)?;
     fs::create_dir_all(&cache)?;
-    let run = workflow_run_block("ripr-cx53", "Preflight disk")?;
+    let run = workflow_run_block("ripr-selfhosted", "Preflight disk")?;
     let fake = r#"
 docker() {
   if [ "$1" = "image" ] && [ "$2" = "inspect" ]; then
@@ -678,9 +735,8 @@ ci-disk-guard() {
 
 fn run_fallback_condition(
     router_target: &str,
-    cx53_result: &str,
-    cx43_result: &str,
-    cx53_preflight_ok: &str,
+    selfhosted_result: &str,
+    selfhosted_preflight_ok: &str,
 ) -> Result<(std::process::Output, String)> {
     let sandbox = tempfile::tempdir().context("creating fallback-condition sandbox")?;
     let summary = sandbox.path().join("summary.md");
@@ -688,10 +744,8 @@ fn run_fallback_condition(
         .replace("always()", "true")
         .replace("needs.route-ripr.result", "\"$ROUTE_RESULT\"")
         .replace("needs.route-ripr.outputs.target", "\"$ROUTER_TARGET\"")
-        .replace("needs.ripr-cx53.result", "\"$CX53_RESULT\"")
-        .replace("needs.ripr-cx53.outputs.preflight_ok", "\"$CX53_PREFLIGHT_OK\"")
-        .replace("needs.ripr-cx43.result", "\"$CX43_RESULT\"")
-        .replace("needs.ripr-cx43.outputs.preflight_ok", "\"$CX43_PREFLIGHT_OK\"");
+        .replace("needs.ripr-selfhosted.result", "\"$SELFHOSTED_RESULT\"")
+        .replace("needs.ripr-selfhosted.outputs.preflight_ok", "\"$SELFHOSTED_PREFLIGHT_OK\"");
     let run = workflow_run_block("ripr-fallback", "Annotate failover reason")?
         .replace("${{ needs.route-ripr.outputs.target }}", router_target);
     let script = format!(
@@ -702,10 +756,8 @@ fn run_fallback_condition(
         .current_dir(sandbox.path())
         .env("ROUTE_RESULT", "success")
         .env("ROUTER_TARGET", router_target)
-        .env("CX53_RESULT", cx53_result)
-        .env("CX43_RESULT", cx43_result)
-        .env("CX53_PREFLIGHT_OK", cx53_preflight_ok)
-        .env("CX43_PREFLIGHT_OK", "")
+        .env("SELFHOSTED_RESULT", selfhosted_result)
+        .env("SELFHOSTED_PREFLIGHT_OK", selfhosted_preflight_ok)
         .env("GITHUB_STEP_SUMMARY", &summary)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -797,8 +849,12 @@ fn run_fallback_path(quality_gate_fails: bool) -> Result<FallbackPathEvidence> {
     let summary = sandbox.path().join("summary.md");
     let quality_receipt = sandbox.path().join("target/receipts/quality/quality-gate-ripr.json");
     let quality_summary = sandbox.path().join("target/receipts/quality/quality-gate-ripr.md");
+    let freshness_handoff = sandbox.path().join("ripr-freshness");
+    let freshness_token = "fallback-test/1/producer";
+    fs::create_dir_all(&freshness_handoff)?;
+    fs::write(freshness_handoff.join("clear-succeeded"), format!("{freshness_token}\n"))?;
     let annotation = workflow_run_block("ripr-fallback", "Annotate failover reason")?
-        .replace("${{ needs.route-ripr.outputs.target }}", "cx53");
+        .replace("${{ needs.route-ripr.outputs.target }}", "selfhosted");
     let normalize = workflow_run_block("ripr-fallback", "Normalize base ref")?;
     let executable_steps = [
         "Toolchain (rust-toolchain.toml pins 1.95.0)",
@@ -851,7 +907,7 @@ git() {
           [ "$5" = "--head" ] && [ "$6" = "HEAD" ] || return 1
           [ "$7" = "--pr-head" ] && [ "$8" = "$FAKE_PR_HEAD_SHA" ] || return 1
           if [ "$#" -eq 10 ]; then
-            [ "$9" = "--timeout-seconds" ] && [ "${10}" = "600" ] || return 1
+            [ "$9" = "--timeout-seconds" ] && [ "${10}" = "3600" ] || return 1
           elif [ "$#" -eq 9 ]; then
             [ "$9" = "--check" ] || return 1
           else
@@ -914,9 +970,11 @@ checkout_action
         .env("BASE_REF", "refs/heads/main")
         .env("PR_HEAD_SHA", "0123456789abcdef0123456789abcdef01234567")
         .env("PR_LABELS", "ci")
-        .env("RIPR_VERSION", "0.9.0")
+        .env("RIPR_VERSION", "0.10.0")
         .env("GITHUB_ENV", &github_env)
         .env("GITHUB_STEP_SUMMARY", &summary)
+        .env("RIPR_FRESHNESS_HANDOFF", &freshness_handoff)
+        .env("RIPR_FRESHNESS_TOKEN", freshness_token)
         .env("FAKE_CALLS", &calls)
         .env("FAKE_CHECKOUT_MARKER", &checkout_marker)
         .env(
@@ -1219,7 +1277,9 @@ fn ripr_workflow_runs_on_ready_for_review_without_path_filter()
         "ripr.yml must not path-filter the ready-for-review proof run"
     );
     assert!(
-        workflow.contains("if: github.event.pull_request.draft != true"),
+        workflow.contains(
+            "(github.event.pull_request.draft != true || github.event_name != 'pull_request')"
+        ),
         "ripr.yml may skip draft PRs while they are still draft"
     );
     let gate_step = workflow_step(&workflow, "Enforce new RIPR gap quality gate")
@@ -1231,6 +1291,47 @@ fn ripr_workflow_runs_on_ready_for_review_without_path_filter()
     assert!(
         workflow.contains("cargo xtask ripr-pr --base") && workflow.contains("target/ripr/pr/**"),
         "ripr.yml must produce and upload diff-scoped RIPR PR receipts"
+    );
+    if workflow_run_block("ripr-github", "Install ripr")?.trim()
+        != r#"cargo install ripr --version "$RIPR_VERSION" --locked"#
+    {
+        return Err(anyhow!(
+            "normal hosted job must retain its pinned host-side ripr installer for downstream consumers"
+        )
+        .into());
+    }
+    let hosted_producer = workflow_run_block("ripr-github", "Generate PR evidence")?;
+    require_single_canonical_container_installer(&hosted_producer)?;
+    assert!(
+        hosted_producer.contains("docker run --rm")
+            && hosted_producer.contains("--memory=14g")
+            && hosted_producer.contains("--memory-swap=14g")
+            && hosted_producer.contains("timeout --signal=TERM --kill-after=30s 40m")
+            && hosted_producer.contains("timeout --signal=TERM --kill-after=30s 25m")
+            && hosted_producer.contains("-e RIPR_MAX_DIFF_INDEX_FILES=2560")
+            && hosted_producer.contains("-e RIPR_FRESHNESS_HANDOFF=/freshness")
+            && hosted_producer.contains("-v \"$RIPR_FRESHNESS_HANDOFF:/freshness\"")
+            && hosted_producer.contains("--name \"$container_name\"")
+            && hosted_producer.contains("trap cleanup_host_state EXIT")
+            && hosted_producer.contains("timeout --signal=TERM --kill-after=5s 15s docker ps -aq")
+            && hosted_producer.contains(
+                "timeout --signal=TERM --kill-after=5s 15s docker rm -f \"$container_name\""
+            )
+            && hosted_producer.contains("sudo -n chown -R \"$(id -u):$(id -g)\" target")
+            && hosted_producer.contains(
+                "cargo xtask ripr-pr --base \"$base_arg\" --head HEAD --pr-head \"$PR_HEAD_SHA\""
+            ),
+        "normal GitHub-hosted RIPR production must use the bounded Docker producer"
+    );
+    assert!(
+        !hosted_producer.contains("test -n \"$PR_HEAD_SHA\""),
+        "normal hosted producer must preserve empty PR_HEAD_SHA for merge-group and push events"
+    );
+    assert!(
+        !workflow.contains("ripr_hosted_measurement")
+            && !workflow.contains("measurement_head_sha")
+            && !workflow.contains("ripr-hosted-measurement"),
+        "capacity measurement must be part of the normal hosted producer, not a duplicate manual job"
     );
     assert!(
         workflow.contains("PR_HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || '' }}")
@@ -1285,13 +1386,254 @@ fn ripr_workflow_runs_on_ready_for_review_without_path_filter()
         upload_step.contains("if-no-files-found: error"),
         "RIPR proof artifacts are required after PR8"
     );
+    assert_eq!(
+        workflow.matches("Prepare RIPR freshness handoff").count(),
+        3,
+        "every producer job must create a distinct freshness handoff"
+    );
+    assert_eq!(
+        workflow.matches("steps.ripr-freshness-result.outputs.ready == 'true'").count(),
+        3,
+        "every producer upload must require its producer freshness handoff"
+    );
+    assert_eq!(
+        workflow.matches("RIPR freshness handoff unavailable; suppressing stale summary").count(),
+        3,
+        "every producer summary step must suppress stale output without its handoff"
+    );
+    for job in ["ripr-github", "ripr-fallback"] {
+        for step in ["Validate PR evidence contracts", "Enforce new RIPR gap quality gate"] {
+            let run = workflow_run_block(job, step)?;
+            assert!(
+                run.contains("marker=\"$RIPR_FRESHNESS_HANDOFF/clear-succeeded\"")
+                    && run.contains(
+                        "RIPR artifact invalidation did not complete for this producer invocation"
+                    ),
+                "{job} {step} must fail closed when its producer handoff is absent"
+            );
+        }
+    }
+    assert!(
+        workflow.contains("mktemp -d \"$RUNNER_TEMP/ripr-freshness.XXXXXX\"")
+            && workflow.contains("RIPR_FRESHNESS_TOKEN")
+            && workflow.contains("clear-succeeded"),
+        "RIPR producer jobs must bind uploads to a per-invocation clear-success marker"
+    );
     let summary_step =
         workflow_step(&workflow, "Append PR evidence summary").ok_or("missing summary step")?;
     assert!(
-        summary_step.contains("if: always()") && summary_step.contains("target/ripr/pr/summary.md"),
-        "RIPR summary step must publish PR evidence even when earlier receipt steps fail"
+        summary_step.contains("if: always()")
+            && summary_step.contains("target/ripr/pr/summary.md")
+            && summary_step.contains("RIPR freshness handoff unavailable"),
+        "RIPR summary step must publish only current evidence after a successful handoff"
     );
 
+    Ok(())
+}
+
+#[test]
+fn hosted_producer_cleanup_preserves_failure_and_restores_target_owner() -> Result<()> {
+    let hosted_producer = workflow_run_block("ripr-github", "Generate PR evidence")?;
+    let cleanup_body = hosted_producer
+        .split_once("cleanup_host_state() {")
+        .ok_or_else(|| anyhow!("hosted producer cleanup function is missing"))?
+        .1
+        .split_once("trap cleanup_host_state EXIT")
+        .ok_or_else(|| anyhow!("hosted producer cleanup trap is missing"))?
+        .0;
+    let sandbox = tempfile::tempdir()?;
+    let script = format!(
+        r#"set -u
+container_name='fixture-container'
+docker() {{ printf '%s' "$*" > "$DOCKER_MARKER"; if [ "$1" = ps ]; then printf 'fixture-id\n'; fi; return 0; }}
+sudo() {{ printf '%s' "$*" > "$CHOWN_MARKER"; if [ "${{FAIL_CHOWN:-0}}" = 1 ]; then return 1; fi; return 0; }}
+timeout() {{ printf '%s' "$*" > "$TIMEOUT_MARKER"; shift 3; "$@"; }}
+cleanup_host_state() {{{cleanup_body}
+trap cleanup_host_state EXIT
+exit 23
+"#
+    );
+    let mut child = Command::new(bash_executable())
+        .args(["--noprofile", "--norc", "-s"])
+        .current_dir(sandbox.path())
+        .env("DOCKER_MARKER", sandbox.path().join("docker.marker"))
+        .env("CHOWN_MARKER", sandbox.path().join("chown.marker"))
+        .env("TIMEOUT_MARKER", sandbox.path().join("timeout.marker"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    child
+        .stdin
+        .take()
+        .ok_or_else(|| anyhow!("cleanup fixture stdin unavailable"))?
+        .write_all(script.as_bytes())?;
+    let output = child.wait_with_output()?;
+    ensure!(
+        output.status.code() == Some(23),
+        "cleanup must preserve producer failure status: {output:?}"
+    );
+    ensure!(
+        fs::read_to_string(sandbox.path().join("docker.marker"))?.contains("fixture-container"),
+        "cleanup must attempt removal of the uniquely named container"
+    );
+    ensure!(
+        fs::read_to_string(sandbox.path().join("timeout.marker"))?.contains("docker"),
+        "cleanup must route container inspection/removal through bounded timeout"
+    );
+    ensure!(
+        fs::read_to_string(sandbox.path().join("chown.marker"))?.contains("target"),
+        "cleanup must restore host target ownership after producer failure"
+    );
+
+    let mut cleanup_failure = Command::new(bash_executable())
+        .args(["--noprofile", "--norc", "-s"])
+        .current_dir(sandbox.path())
+        .env("DOCKER_MARKER", sandbox.path().join("docker.failure.marker"))
+        .env("CHOWN_MARKER", sandbox.path().join("chown.failure.marker"))
+        .env("TIMEOUT_MARKER", sandbox.path().join("timeout.failure.marker"))
+        .env("FAIL_CHOWN", "1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    cleanup_failure
+        .stdin
+        .take()
+        .ok_or_else(|| anyhow!("cleanup failure fixture stdin unavailable"))?
+        .write_all(script.replace("exit 23", "exit 0").as_bytes())?;
+    let cleanup_failure_output = cleanup_failure.wait_with_output()?;
+    ensure!(
+        cleanup_failure_output.status.code() == Some(1),
+        "cleanup failure must turn an otherwise successful producer into failure: {cleanup_failure_output:?}"
+    );
+    ensure!(
+        fs::read_to_string(sandbox.path().join("chown.failure.marker"))?.contains("target")
+            && fs::read_to_string(sandbox.path().join("timeout.failure.marker"))?
+                .contains("docker rm -f"),
+        "cleanup failure fixture must execute ownership restoration after bounded removal"
+    );
+    ensure!(
+        String::from_utf8_lossy(&cleanup_failure_output.stderr)
+            .contains("failed to restore hosted RIPR target ownership"),
+        "cleanup failure must report the ownership error"
+    );
+    Ok(())
+}
+
+#[test]
+fn ripr_append_summary_suppresses_stale_files_without_freshness_handoff() -> Result<()> {
+    let sandbox = tempfile::tempdir()?;
+    let summary = sandbox.path().join("summary.md");
+    let stale_summary = sandbox.path().join("target/ripr/pr/summary.md");
+    let stale_quality = sandbox.path().join("target/receipts/quality/quality-gate-ripr.md");
+    let stale_annotations = sandbox.path().join("target/ripr/review/annotations.txt");
+    for path in [&stale_summary, &stale_quality, &stale_annotations] {
+        fs::create_dir_all(path.parent().ok_or_else(|| anyhow!("stale parent missing"))?)?;
+        fs::write(path, "stale prior invocation\n")?;
+    }
+    let script = workflow_run_block("ripr-fallback", "Append PR evidence summary")?;
+    let mut child = Command::new(bash_executable())
+        .args(["--noprofile", "--norc", "-s"])
+        .current_dir(sandbox.path())
+        .env("GITHUB_STEP_SUMMARY", &summary)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    child
+        .stdin
+        .take()
+        .ok_or_else(|| anyhow!("append-summary bash stdin unavailable"))?
+        .write_all(script.as_bytes())?;
+    let output = child.wait_with_output()?;
+    ensure!(output.status.success(), "append step failed: {output:?}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let summary_text = match fs::read_to_string(&summary) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(error) => return Err(error.into()),
+    };
+    ensure!(
+        !summary_text.contains("stale prior invocation")
+            && !stdout.contains("stale prior invocation"),
+        "append step must not publish stale files without a matching handoff"
+    );
+
+    let handoff = sandbox.path().join("freshness");
+    let token = "append-test/1/producer";
+    fs::create_dir_all(&handoff)?;
+    fs::write(handoff.join("clear-succeeded"), format!("{token}\n"))?;
+    let mut child = Command::new(bash_executable())
+        .args(["--noprofile", "--norc", "-s"])
+        .current_dir(sandbox.path())
+        .env("GITHUB_STEP_SUMMARY", &summary)
+        .env("RIPR_FRESHNESS_HANDOFF", &handoff)
+        .env("RIPR_FRESHNESS_TOKEN", token)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    child
+        .stdin
+        .take()
+        .ok_or_else(|| anyhow!("positive append-summary bash stdin unavailable"))?
+        .write_all(script.as_bytes())?;
+    let output = child.wait_with_output()?;
+    ensure!(output.status.success(), "positive append step failed: {output:?}");
+    let summary_text = fs::read_to_string(&summary)?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    ensure!(
+        summary_text.contains("stale prior invocation")
+            && stdout.contains("stale prior invocation"),
+        "matching handoff must permit current summary and annotation publication"
+    );
+    Ok(())
+}
+
+#[test]
+fn ripr_validation_requires_freshness_before_invoking_consumers() -> Result<()> {
+    let sandbox = tempfile::tempdir()?;
+    let calls = sandbox.path().join("cargo-calls");
+    let script = workflow_run_block("ripr-fallback", "Validate PR evidence contracts")?;
+    let fake_cargo =
+        format!("cargo() {{ printf '%s\\n' \"$*\" >> '{}' ; }}\n{}", calls.display(), script);
+    let run = |handoff: Option<(&PathBuf, &str)>| -> Result<std::process::Output> {
+        let mut command = Command::new(bash_executable());
+        command
+            .args(["--noprofile", "--norc", "-s"])
+            .current_dir(sandbox.path())
+            .env("BASE_REF", "main")
+            .env("PR_HEAD_SHA", "0123456789abcdef0123456789abcdef01234567")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        if let Some((path, token)) = handoff {
+            command.env("RIPR_FRESHNESS_HANDOFF", path).env("RIPR_FRESHNESS_TOKEN", token);
+        }
+        let mut child = command.spawn()?;
+        child
+            .stdin
+            .take()
+            .ok_or_else(|| anyhow!("validation bash stdin unavailable"))?
+            .write_all(fake_cargo.as_bytes())?;
+        Ok(child.wait_with_output()?)
+    };
+
+    let rejected = run(None)?;
+    ensure!(!rejected.status.success(), "validation must reject a missing handoff");
+    ensure!(!calls.exists(), "missing handoff must prevent Cargo consumer invocation");
+
+    let handoff = sandbox.path().join("validation-freshness");
+    let token = "validation-test/1/producer";
+    fs::create_dir_all(&handoff)?;
+    fs::write(handoff.join("clear-succeeded"), format!("{token}\n"))?;
+    let accepted = run(Some((&handoff, token)))?;
+    ensure!(accepted.status.success(), "matching handoff must admit validation");
+    ensure!(
+        fs::read_to_string(&calls)?.contains("ripr-pr --base"),
+        "matching handoff must invoke the Cargo consumers"
+    );
     Ok(())
 }
 
@@ -1308,31 +1650,29 @@ fn ripr_self_hosted_preflight_falls_back_when_required_image_is_missing() -> Res
                 line.trim_start().starts_with("if ! docker image inspect em-ci-rust:1.95")
             })
             .count(),
-        2,
-        "CX53 and CX43 preflight must both check the required Docker image before running ripr"
+        1,
+        "the self-hosted rust-standard lane must check the required Docker image before running ripr"
     );
     assert!(
-        workflow.contains("Required Docker image em-ci-rust:1.95 is missing on CX53")
-            && workflow.contains("Required Docker image em-ci-rust:1.95 is missing on CX43"),
+        workflow
+            .contains("Required Docker image em-ci-rust:1.95 is missing on the self-hosted runner"),
         "missing self-hosted Rust image must be reported as preflight failure"
     );
     assert!(
         workflow.contains(
-            "needs.route-ripr.outputs.target == 'cx53' && needs.ripr-cx53.result == 'failure' && needs.ripr-cx53.outputs.preflight_ok == 'false'",
-        )
-            && workflow.contains(
-                "needs.route-ripr.outputs.target == 'cx43' && needs.ripr-cx43.result == 'failure' && needs.ripr-cx43.outputs.preflight_ok == 'false'",
-            ),
+            "needs.route-ripr.outputs.target == 'selfhosted' &&
+      needs.ripr-selfhosted.result == 'failure' &&
+      needs.ripr-selfhosted.outputs.preflight_ok == 'false'",
+        ),
         "only a failed self-hosted preflight with preflight_ok=false must route the run to the GitHub-hosted fallback"
     );
 
     let (self_hosted_route, self_hosted_output) =
         run_router_case("false", "runner-token", "ready", "200")?;
     if !self_hosted_route.status.success()
-        || !self_hosted_output.contains("target=cx53")
-        || !self_hosted_output.contains("reason=cx53_idle")
-        || !self_hosted_output.contains("idle_cx53=1")
-        || !self_hosted_output.contains("idle_cx43=1")
+        || !self_hosted_output.contains("target=selfhosted")
+        || !self_hosted_output.contains("reason=rust_standard_capacity_online")
+        || !self_hosted_output.contains("online_rust_standard=2")
         || !self_hosted_output.contains(
             "endpoint=https://api.github.com/orgs/EffortlessMetrics/actions/runners?per_page=100",
         )
@@ -1346,18 +1686,20 @@ fn ripr_self_hosted_preflight_falls_back_when_required_image_is_missing() -> Res
     }
     let (busy_route, busy_output) = run_router_case("false", "runner-token", "busy-only", "200")?;
     if !busy_route.status.success()
-        || !busy_output.contains("target=github")
-        || !busy_output.contains("reason=no_idle_runner")
-        || !busy_output.contains("idle_cx53=0")
+        || !busy_output.contains("target=selfhosted")
+        || !busy_output.contains("reason=rust_standard_capacity_online")
+        || !busy_output.contains("online_rust_standard=1")
     {
-        bail!("a busy runner must not be routed to self-hosted:\n{busy_output}");
+        bail!(
+            "a busy rust-standard runner is still capacity and must route self-hosted:\n{busy_output}"
+        );
     }
     let (missing_label_route, missing_label_output) =
         run_router_case("false", "runner-token", "missing-label-only", "200")?;
     if !missing_label_route.status.success()
         || !missing_label_output.contains("target=github")
-        || !missing_label_output.contains("reason=no_idle_runner")
-        || !missing_label_output.contains("idle_cx53=0")
+        || !missing_label_output.contains("reason=no_rust_standard_capacity_online")
+        || !missing_label_output.contains("online_rust_standard=0")
     {
         bail!(
             "a runner missing a required label must not be routed to self-hosted:\n{missing_label_output}"
@@ -1375,7 +1717,7 @@ fn ripr_self_hosted_preflight_falls_back_when_required_image_is_missing() -> Res
     let (missing_image, missing_image_output) = run_preflight_case(false, false)?;
     if missing_image.status.success()
         || !missing_image_output
-            .contains("Required Docker image em-ci-rust:1.95 is missing on CX53")
+            .contains("Required Docker image em-ci-rust:1.95 is missing on the self-hosted runner")
         || !missing_image_output.contains("preflight_ok=false")
     {
         bail!(
@@ -1388,7 +1730,7 @@ fn ripr_self_hosted_preflight_falls_back_when_required_image_is_missing() -> Res
         bail!("missing-image preflight did not produce the expected false output")
     };
     let (fallback_started, fallback_output) =
-        run_fallback_condition("cx53", "failure", "skipped", missing_image_preflight)?;
+        run_fallback_condition("selfhosted", "failure", missing_image_preflight)?;
     if !fallback_started.status.success()
         || !fallback_output.contains("fallback_started=true")
         || !fallback_output.contains("### ripr Disk-Full Failover")
@@ -1425,7 +1767,7 @@ fn ripr_self_hosted_preflight_falls_back_when_required_image_is_missing() -> Res
     for expected_command in [
         "cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json",
         "cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json --check",
-        "cargo xtask ripr-review-comments --base origin/main --head HEAD --pr-head 0123456789abcdef0123456789abcdef01234567 --timeout-seconds 600",
+        "cargo xtask ripr-review-comments --base origin/main --head HEAD --pr-head 0123456789abcdef0123456789abcdef01234567 --timeout-seconds 3600",
         "cargo xtask ripr-review-comments --base origin/main --head HEAD --pr-head 0123456789abcdef0123456789abcdef01234567 --check",
         "cargo xtask impacted-evidence --labels-csv ci",
         "cargo xtask impacted-evidence --labels-csv ci --check",
@@ -1437,7 +1779,7 @@ fn ripr_self_hosted_preflight_falls_back_when_required_image_is_missing() -> Res
         }
     }
     let (preflight_passed, preflight_passed_output) =
-        run_fallback_condition("cx53", "failure", "skipped", "true")?;
+        run_fallback_condition("selfhosted", "failure", "true")?;
     if !preflight_passed.status.success()
         || !preflight_passed_output.contains("fallback_started=false")
         || preflight_passed_output.contains("### ripr Disk-Full Failover")
@@ -1445,7 +1787,7 @@ fn ripr_self_hosted_preflight_falls_back_when_required_image_is_missing() -> Res
         bail!("a successful preflight must not start ripr-fallback:\n{preflight_passed_output}");
     }
     let (primary_succeeded, primary_succeeded_output) =
-        run_fallback_condition("cx53", "success", "skipped", "false")?;
+        run_fallback_condition("selfhosted", "success", "false")?;
     if !primary_succeeded.status.success()
         || !primary_succeeded_output.contains("fallback_started=false")
         || primary_succeeded_output.contains("### ripr Disk-Full Failover")
@@ -1463,7 +1805,7 @@ fn ripr_self_hosted_preflight_falls_back_when_required_image_is_missing() -> Res
     let (disk_guard_failure, disk_guard_output) = run_preflight_case(true, true)?;
     if disk_guard_failure.status.success()
         || !disk_guard_output.contains("preflight_ok=false")
-        || !disk_guard_output.contains("Self-hosted preflight failed on CX53")
+        || !disk_guard_output.contains("Self-hosted preflight failed after cleanup")
     {
         bail!(
             "a failing disk guard must fail preflight and record false for fallback routing:\n{disk_guard_output}"
@@ -1832,6 +2174,7 @@ fn ripr_infra_classifier_is_shared_tested_and_boundary_documented()
         "RIPR_GATE_VERDICT=ripr-failure",
         "RIPR_GATE_VERDICT=cancelled-no-verdict",
         "RIPR_GATE_VERDICT=neutral-router-skipped",
+        "RIPR_GATE_VERDICT=draft-no-proof",
         "RIPR_GATE_VERDICT=router-not-success",
         "RIPR_GATE_VERDICT=success",
     ] {
@@ -1980,7 +2323,7 @@ fn ripr_gate_retrieval_reaches_classifier_and_failed_fetch_fails_closed() -> Res
         bail!("an unretrievable lane log must keep the gate red");
     }
     if !failed_output.contains("classification=ripr-failure")
-        || !failed_output.contains("was not retrievable after 5 attempts")
+        || !failed_output.contains("eviction classification skipped and the gate will fail closed")
         || !failed_output.contains("RIPR_GATE_VERDICT=ripr-failure")
         || failed_output.contains("verdict=infra-no-proof")
     {
@@ -1991,12 +2334,97 @@ fn ripr_gate_retrieval_reaches_classifier_and_failed_fetch_fails_closed() -> Res
     if no_classification.is_some() {
         bail!("failed retrieval must not create an infra retry artifact:\n{no_classification:?}");
     }
-    if !failed_output.contains("lookup=Some(\"1\")\nfetch=Some(\"5\")") {
-        bail!("log retrieval retry must be bounded at five attempts:\n{failed_output}");
-    }
-    if failed_output.matches(timeout_prefix).count() != 6 {
+    // #14774: the bound is the shared deadline, not an attempt count. With the
+    // 30s request model the budget is what stops the loop, so the warning must
+    // be the deadline branch and the elapsed clock must read the full reserve.
+    if !failed_output.contains("reached the job-level retrieval deadline")
+        || !failed_output.contains("elapsed=Some(\"240\\n\")")
+    {
         bail!(
-            "failed retrieval must execute the bounded lookup once and bounded log fetch five times:\n{failed_output}"
+            "retrieval must spend the gate's reserved budget before failing closed:\n{failed_output}"
+        );
+    }
+
+    // The production shape the old five-attempt schedule could not reach
+    // (#14774): a freshly evicted lane's log is not served for the first
+    // minute-plus, and each failing request returns fast, so an attempt-count
+    // bound gave up with most of the budget unspent. Seven fast failures then a
+    // success must now classify, and must still write the retry artifact.
+    let (late_log, late_output, late_classification) =
+        run_gate_with_fast_failing_requests(Some(evicted_log), 0, 7, GateRoute::github_failure())?;
+    if late_log.status.success() {
+        bail!("an evicted lane must keep the gate red even once it is classified:\n{late_output}");
+    }
+    if !late_output.contains("classification=infra-no-proof")
+        || !late_output.contains("RIPR_GATE_VERDICT=infra-no-proof")
+        || !late_output.contains("fetch=Some(\"8\")")
+    {
+        bail!(
+            "a log that only becomes retrievable after the old five-attempt bound must still be classified:\n{late_output}"
+        );
+    }
+    if !late_classification
+        .ok_or_else(|| anyhow!("late-retrieved classification artifact is missing"))?
+        .contains("classification=infra-no-proof")
+    {
+        bail!("a late-retrieved eviction must still arm the bounded retry:\n{late_output}");
+    }
+
+    // The same fast-request model with a log that never arrives must still fail
+    // closed and must not arm the retry — but it must exhaust the budget first.
+    // Fifteen attempts reaching 227s of a 240s reserve is the deterministic
+    // outcome under the virtual clock; the loop stops only once the next
+    // backoff would overrun the deadline. The old five-attempt bound stopped
+    // here at 5 attempts with most of the reserve unspent, which is the defect.
+    let (never, never_output, never_classification) =
+        run_gate_with_fast_failing_requests(None, 0, 0, GateRoute::github_failure())?;
+    if never.status.success()
+        || never_classification.is_some()
+        || !never_output.contains("classification=ripr-failure")
+        || !never_output.contains("RIPR_GATE_VERDICT=ripr-failure")
+        || never_output.contains("verdict=infra-no-proof")
+    {
+        bail!("an unretrievable log must fail closed without arming the retry:\n{never_output}");
+    }
+    if !never_output.contains("lookup=Some(\"1\")\nfetch=Some(\"15\")")
+        || !never_output.contains("elapsed=Some(\"227\\n\")")
+        || !never_output.contains("was not retrievable after 15 attempts")
+    {
+        bail!(
+            "fast-failing retrieval must spend the reserve rather than stop at a fixed attempt count:\n{never_output}"
+        );
+    }
+
+    // The job-id lookup has its own loop and its own pair of warning branches,
+    // and nothing above can reach either: every case that drives lookup to give
+    // up uses the slow 30s-request model and asserts only the terminal verdict,
+    // and every fast-failing case resolves the job id on its first attempt. A
+    // change that fixed only the fetch loop would still pass all of them. So
+    // pin the lookup phase directly (#14774): fast failures that never resolve
+    // a job id must spend the same reserved budget the fetch phase does —
+    // fifteen attempts reaching the full 240s, where the old five-attempt
+    // schedule stopped with most of the reserve unspent — and must report the
+    // deadline branch rather than the attempt-count branch.
+    let (lookup_never, lookup_never_output, lookup_never_classification) =
+        run_gate_with_fast_failing_requests(None, 99, 0, GateRoute::github_failure())?;
+    if lookup_never.status.success()
+        || lookup_never_classification.is_some()
+        || !lookup_never_output.contains("classification=ripr-failure")
+        || !lookup_never_output.contains("RIPR_GATE_VERDICT=ripr-failure")
+        || lookup_never_output.contains("verdict=infra-no-proof")
+    {
+        bail!(
+            "an unresolvable job id must fail closed without arming the retry:\n{lookup_never_output}"
+        );
+    }
+    if !lookup_never_output.contains("lookup=Some(\"15\")")
+        || !lookup_never_output.contains("fetch=None")
+        || !lookup_never_output.contains("elapsed=Some(\"240\\n\")")
+        || !lookup_never_output
+            .contains("job id for ripr+ on GitHub Hosted reached the job-level retrieval deadline")
+    {
+        bail!(
+            "fast-failing job-id lookup must spend the reserve and report the deadline branch, not a fixed attempt count:\n{lookup_never_output}"
         );
     }
 
@@ -2067,6 +2495,7 @@ fn ripr_gate_retrieval_reaches_classifier_and_failed_fetch_fails_closed() -> Res
         GhApiControl::Valid,
         Some("gate-token"),
         0,
+        30,
     )?;
     if reused.status.success()
         || !reused_output.contains("classification=ripr-failure")
@@ -2082,41 +2511,27 @@ fn ripr_gate_retrieval_reaches_classifier_and_failed_fetch_fails_closed() -> Res
         );
     }
 
-    for (route_name, route) in [
-        (
-            "cx53",
-            GateRoute {
-                router_target: "cx53",
-                cx53_result: "failure",
-                cx43_result: "skipped",
-                github_result: "skipped",
-                fallback_result: "skipped",
-            },
-        ),
-        (
-            "cx43",
-            GateRoute {
-                router_target: "cx43",
-                cx53_result: "skipped",
-                cx43_result: "failure",
-                github_result: "skipped",
-                fallback_result: "skipped",
-            },
-        ),
-    ] {
-        let expected_job_id = if route_name == "cx53" { "53001" } else { "43001" };
+    {
+        let route = GateRoute {
+            router_target: "selfhosted",
+            selfhosted_result: "failure",
+            github_result: "skipped",
+            fallback_result: "skipped",
+        };
+        let expected_job_id = "53001";
+        let expected_lane_name = "ripr+ on Self-Hosted (rust-standard)";
         let (self_hosted, output, artifact) =
             run_gate_with_fake_gh(Some(evicted_log), 0, 0, route)?;
-        let artifact = artifact.ok_or_else(|| anyhow!("{route_name} classification is missing"))?;
+        let artifact = artifact.ok_or_else(|| anyhow!("selfhosted classification is missing"))?;
         if self_hosted.status.success()
             || !output.contains("classification=infra-no-proof")
             || !output.contains("RIPR_GATE_VERDICT=infra-no-proof")
             || !output.contains("lookup=Some(\"1\")\nfetch=Some(\"1\")")
-            || !artifact.contains(&format!("lane_name=ripr+ on {}", route_name.to_uppercase()))
+            || !artifact.contains(&format!("lane_name={expected_lane_name}"))
             || !artifact.contains(&format!("lane_job_id={expected_job_id}"))
         {
             bail!(
-                "{route_name} runner failure must select its job, classify its downloaded log, and publish the retry artifact:\n{output}\n{artifact}"
+                "selfhosted runner failure must select its job, classify its downloaded log, and publish the retry artifact:\n{output}\n{artifact}"
             );
         }
     }
@@ -2135,16 +2550,15 @@ fn ripr_gate_retrieval_reaches_classifier_and_failed_fetch_fails_closed() -> Res
         );
     }
     let fallback_route = GateRoute {
-        router_target: "cx53",
-        cx53_result: "failure",
-        cx43_result: "skipped",
+        router_target: "selfhosted",
+        selfhosted_result: "failure",
         github_result: "skipped",
         fallback_result,
     };
     let (fallback, fallback_output, fallback_artifact) =
         run_gate_with_fake_gh(None, 0, 0, fallback_route)?;
     if !fallback.status.success()
-        || !fallback_output.contains("CX53 disk preflight failed")
+        || !fallback_output.contains("Self-hosted disk preflight failed")
         || !fallback_output.contains("lookup=None\nfetch=None")
         || fallback_artifact.is_some()
     {
@@ -2152,7 +2566,6 @@ fn ripr_gate_retrieval_reaches_classifier_and_failed_fetch_fails_closed() -> Res
             "successful disk-full fallback must skip primary-log retrieval that nothing would read (the verdict path only warns), emit the fallback warning, and take the fallback route without a retry artifact:\n{fallback_output}"
         );
     }
-
     let fallback_failure_execution = run_fallback_path(true)?;
     let fallback_failure_execution_output = &fallback_failure_execution.transcript;
     let fallback_failure_result = fallback_failure_execution.decision()?;
@@ -2166,9 +2579,8 @@ fn ripr_gate_retrieval_reaches_classifier_and_failed_fetch_fails_closed() -> Res
         );
     }
     let fallback_failure_route = GateRoute {
-        router_target: "cx53",
-        cx53_result: "failure",
-        cx43_result: "skipped",
+        router_target: "selfhosted",
+        selfhosted_result: "failure",
         github_result: "skipped",
         fallback_result: fallback_failure_result,
     };
@@ -2202,6 +2614,7 @@ fn ripr_gate_retrieval_reaches_classifier_and_failed_fetch_fails_closed() -> Res
             control,
             token,
             0,
+            30,
         )?;
         if negative.status.success() || artifact.is_some() {
             bail!(
@@ -2213,5 +2626,118 @@ fn ripr_gate_retrieval_reaches_classifier_and_failed_fetch_fails_closed() -> Res
         }
     }
 
+    Ok(())
+}
+
+#[path = "support/draft_routed_result.rs"]
+mod draft_routed_result;
+
+#[test]
+fn ripr_draft_result_is_not_proof() -> Result<(), Box<dyn std::error::Error>> {
+    draft_routed_result::check_contract(
+        &project_root()?.join(".github/workflows/ripr.yml"),
+        "ripr",
+        "RIPR_GATE_VERDICT=draft-no-proof",
+    )
+}
+
+fn workflow_job_env_value(job_name: &str, env_key: &str) -> Result<String> {
+    let root = project_root()?;
+    let workflow = fs::read_to_string(root.join(".github/workflows/ripr.yml"))?;
+    let yaml: Value = serde_yaml_ng::from_str(&workflow)?;
+    let jobs = yaml
+        .get("jobs")
+        .and_then(Value::as_mapping)
+        .ok_or_else(|| anyhow!("ripr.yml has no jobs mapping"))?;
+    let job = jobs
+        .get(Value::String(job_name.into()))
+        .ok_or_else(|| anyhow!("ripr.yml has no {job_name} job"))?;
+    job.get("env")
+        .and_then(Value::as_mapping)
+        .and_then(|env| env.get(Value::String(env_key.into())))
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .ok_or_else(|| anyhow!("{job_name} env has no {env_key}"))
+}
+
+// #15498: ripr 0.10.0 tightened the built-in diff-index refusal from 1600
+// files (0.9.0) to 800. Every producer lane must therefore pin the
+// admission boundary explicitly and pair it with a container budget measured
+// to hold it (1600-file closures indexed inside 6g => <=3.75 MB/file, so
+// 2560 files needs ~9.6 GB inside a 14g container; the self-hosted lane's
+// larger envelope holds the 2560 pair with headroom).
+#[test]
+fn hosted_ripr_lanes_pin_the_diff_index_boundary_with_a_measured_budget() -> Result<()> {
+    let root = project_root()?;
+    let workflow = fs::read_to_string(root.join(".github/workflows/ripr.yml"))?;
+
+    let hosted_cap = workflow_job_env_value("ripr-fallback", "RIPR_MAX_DIFF_INDEX_FILES")?;
+    ensure!(
+        hosted_cap == "2560",
+        "ripr-fallback must pin RIPR_MAX_DIFF_INDEX_FILES=2560 explicitly; found {hosted_cap:?}.          Without the pin the lane inherits the CLI's built-in default, which ripr 0.10.0          silently tightened from 1600 to 800 (#15498)"
+    );
+    for lane in ["ripr-selfhosted"] {
+        let cap = workflow_job_env_value(lane, "RIPR_MAX_DIFF_INDEX_FILES")?;
+        ensure!(
+            cap == "2560",
+            "{lane} must pin RIPR_MAX_DIFF_INDEX_FILES=2560 explicitly; found {cap:?}.              Without the pin the capable lane inherits the CLI default (800), moving the              fail-closed boundary onto self-hosted as soon as a large closure routes there (#15498)"
+        );
+    }
+
+    let script = workflow_step(&workflow, "Generate PR evidence")
+        .ok_or_else(|| anyhow!("missing Generate PR evidence step"))?;
+    for expected in [
+        "-e RIPR_MAX_DIFF_INDEX_FILES=2560",
+        "--memory=14g",
+        "--memory-swap=14g",
+        "docker_memory=14g",
+    ] {
+        ensure!(
+            script.contains(expected),
+            "ripr-github's hosted producer must carry {expected:?}; the admission boundary and              the container budget are one measured pair (#15498)"
+        );
+    }
+    ensure!(
+        !script.contains("--memory=6g") && !script.contains("RIPR_MAX_DIFF_INDEX_FILES=1600"),
+        "stale 6g/1600 hosted budgets must not survive beside the measured 14g/2560 pair"
+    );
+
+    // #15082/#15028: the review-guidance pass on a new-crate diff no longer
+    // completes in 600s on the hosted lane, so the gate failed closed on an
+    // incomplete receipt while 64-67 mechanical seams went unadjudicated.
+    // Both hosted lanes must carry the raised bound; the self-hosted 210s
+    // lanes are intentionally untouched.
+    for lane in ["ripr-github", "ripr-fallback"] {
+        // Job-scoped on purpose: workflow_step would return the first
+        // matching step in the file, so both iterations would inspect
+        // ripr-github and ripr-fallback could silently miss the bound.
+        let guidance = workflow_run_block(lane, "Generate review guidance")?;
+        // Token-aware on purpose: a substring match would also accept a
+        // longer value, silently unenforcing the bound.
+        let bound = guidance
+            .split_whitespace()
+            .skip_while(|token| *token != "--timeout-seconds")
+            .nth(1)
+            .ok_or_else(|| {
+                anyhow!("{lane}'s review-guidance pass carries no --timeout-seconds value")
+            })?;
+        ensure!(
+            bound == "3600",
+            "{lane}'s review-guidance pass must carry --timeout-seconds 3600; found {bound:?}.              The 600s and 1800s bounds each failed closed on large-closure diffs (#15082, #15028, #14897)"
+        );
+    }
+    let count = workflow
+        .lines()
+        .filter(|line| {
+            line.split_whitespace()
+                .skip_while(|token| *token != "--timeout-seconds")
+                .nth(1)
+                .is_some_and(|value| value == "3600")
+        })
+        .count();
+    ensure!(
+        count == 2,
+        "exactly the two hosted lanes must carry the 3600s guidance bound; found {count}"
+    );
     Ok(())
 }

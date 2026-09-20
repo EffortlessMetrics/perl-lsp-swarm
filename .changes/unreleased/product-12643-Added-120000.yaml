@@ -1,0 +1,9 @@
+project: product
+component: Developer experience
+kind: Added
+body: Kubernetes DAP in-workspace debugger profiles are now governed by one machine-checkable contract that admits only project_image and injected_tool subjects and mechanically rejects every unsupported network, service, sidecar, operator, and Kubernetes-API topology with typed reasons before any cluster execution work begins.
+time: 2026-08-25T00:00:00Z
+custom:
+  PR: 12643
+  Slug: kubernetes-dap-profile-contract
+  Breaking: "no"

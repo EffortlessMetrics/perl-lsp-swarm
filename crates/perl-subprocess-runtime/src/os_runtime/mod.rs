@@ -17,7 +17,18 @@ use crate::{SubprocessError, SubprocessOutput, SubprocessRuntime};
 // are exported for test use on all platforms — not just Windows.  This lets
 // the ripr quality gate observe call paths on Linux CI runners.
 #[cfg(test)]
-pub(crate) use path_selection::{candidate_priority, select_path_candidate};
+pub(crate) use path_selection::candidate_priority;
+
+// `select_path_candidate` is the admission authority on every platform, but it
+// is reached differently: on Windows through `windows::resolve_windows_program`
+// (which imports it directly from `path_selection`), and on other platforms
+// through `crate::availability`.  Both apply the same absolute-only +
+// CWD-exclusion invariant, so neither platform grows a second policy.
+//
+// The re-export is therefore needed for the non-Windows production route and
+// for the cross-platform tests, but would be unused on a Windows build.
+#[cfg(any(test, not(windows)))]
+pub(crate) use path_selection::select_path_candidate;
 
 // `windows_program_priority` is the historical name for `candidate_priority`
 // used in Windows-specific tests.  Export it as an alias on Windows so tests

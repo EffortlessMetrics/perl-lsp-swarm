@@ -7,12 +7,15 @@ Verifies that:
 - Non-integration commands are emitted with strict error-exit semantics.
 - The generated script still has ``set -euo pipefail`` at the top.
 - pack-ids and commands are deduplicated correctly.
+- The ci-route envelope schema id is validated fail-closed (#15389) and
+  stays drift-free across the Python and Rust producers (#15388).
 """
 
 from __future__ import annotations
 
 import importlib.util
 import json
+import re
 import sys
 import tempfile
 import unittest
@@ -132,7 +135,7 @@ class GenerateScriptTests(unittest.TestCase):
 
     def _make_route_receipt(self, packs: list[dict]) -> dict:
         return {
-            "schema_version": "ci_route.v1",
+            "schema_version": "ci-route.v1",
             "coverage_proof_packs": packs,
         }
 
@@ -258,6 +261,84 @@ class GenerateScriptTests(unittest.TestCase):
                 self.assertEqual(1, result)
             finally:
                 os.chdir(old_cwd)
+
+
+class EnvelopeGuardTests(unittest.TestCase):
+    """Fail-closed ci-route envelope validation in the consumer (#15388, #15389)."""
+
+    def _write_receipt_and_run(self, receipt: dict) -> int:
+        """Write a fake route receipt under a temp cwd and return main()'s exit."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            receipt_dir = Path(tmpdir) / "target" / "receipts" / "quality"
+            receipt_dir.mkdir(parents=True)
+            (receipt_dir / "ci-route.json").write_text(
+                json.dumps(receipt), encoding="utf-8"
+            )
+            import os
+            old_cwd = os.getcwd()
+            try:
+                os.chdir(tmpdir)
+                return gen.main()
+            finally:
+                os.chdir(old_cwd)
+
+    def test_matching_schema_version_is_accepted(self) -> None:
+        receipt = {
+            "schema_version": gen.CI_ROUTE_SCHEMA_VERSION,
+            "coverage_proof_packs": [
+                {"id": "pack-a", "commands": ["cargo check --workspace"]},
+            ],
+        }
+        self.assertEqual(0, self._write_receipt_and_run(receipt))
+
+    def test_underscore_drift_spelling_is_refused_fail_closed(self) -> None:
+        """The historical underscore drift `ci_route.v1` (#15388) must be refused."""
+        receipt = {
+            "schema_version": "ci_route.v1",
+            "coverage_proof_packs": [
+                {"id": "pack-a", "commands": ["cargo check --workspace"]},
+            ],
+        }
+        self.assertEqual(1, self._write_receipt_and_run(receipt))
+
+    def test_missing_schema_version_is_refused_fail_closed(self) -> None:
+        receipt = {"coverage_proof_packs": [{"id": "pack-a", "commands": []}]}
+        self.assertEqual(1, self._write_receipt_and_run(receipt))
+
+    def test_unknown_future_version_is_refused_fail_closed(self) -> None:
+        receipt = {
+            "schema_version": "ci-route.v999",
+            "coverage_proof_packs": [{"id": "pack-a", "commands": []}],
+        }
+        self.assertEqual(1, self._write_receipt_and_run(receipt))
+
+    def test_python_producer_emits_consumer_expected_schema_version(self) -> None:
+        """D1 drift guard (#15388): route-codecov-packs.py must emit the exact
+        schema id this consumer validates, so the Python producer/consumer pair
+        cannot silently re-drift."""
+        producer_source = (
+            Path(__file__).parent / "route-codecov-packs.py"
+        ).read_text(encoding="utf-8")
+        match = re.search(r'"schema_version":\s*"([^"]+)"', producer_source)
+        self.assertIsNotNone(
+            match, "producer must emit a schema_version literal"
+        )
+        self.assertEqual(gen.CI_ROUTE_SCHEMA_VERSION, match.group(1))
+
+    def test_rust_producer_canonical_version_matches_consumer(self) -> None:
+        """D1 drift guard (#15388): the Rust producer's allowlisted envelope
+        (xtask/src/tasks/ci_route.rs CURRENT_ENVELOPE_VERSION) must stay
+        byte-identical to the id this consumer expects, so the two producers
+        of ci-route.json cannot re-drift (dash vs underscore)."""
+        rust_source = (
+            Path(__file__).parent.parent.parent
+            / "xtask" / "src" / "tasks" / "ci_route.rs"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            'const CURRENT_ENVELOPE_VERSION: &str = "ci-route.v1";',
+            rust_source,
+        )
+        self.assertNotIn("ci_route.v1", rust_source)
 
 
 if __name__ == "__main__":

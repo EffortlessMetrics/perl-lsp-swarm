@@ -96,9 +96,6 @@ pub(super) fn handle_foreach<'a>(
 
     ancestors.push(node);
 
-    // Declare the loop variable and immediately mark it initialized — the list
-    // provides its value at runtime so there is no uninitialized window.
-    //
     // When `for (@list) { ... }` has no explicit loop variable, the parser
     // synthesises a zero-width `Variable { "$", "_" }`.  That synthesized node
     // must be declared in the loop scope (Perl guarantees `$_` is localized for
@@ -108,21 +105,45 @@ pub(super) fn handle_foreach<'a>(
     let is_implicit_topic = variable.location.start == variable.location.end
         && matches!(&variable.kind, NodeKind::Variable { sigil, name } if sigil == "$" && name == "_");
 
-    if is_implicit_topic {
-        analyzer.declare_variable_parts_in_context(
+    // Record `our` and a bare iterator (`for $x (...)`) before the list:
+    // `our` is a compile-time package alias (`for our $x ($x)` is legal under
+    // strict), and a bare `$x` uses the outer binding even when the list
+    // declares `my $x` (perl Concise: enteriter on the outer pad; body print
+    // on the list pad). Lexical `my`/`state` and implicit `$_` stay hidden
+    // until after the list so `for my $x ($x)` remains undeclared. Bindings
+    // stay in `loop_scope`, so `print $x` after `for our $x (1)` is undeclared
+    // and a list-side `my` is visible in the body only.
+    let iterator_is_our = matches!(
+        &variable.kind,
+        NodeKind::VariableDeclaration { declarator, .. } if declarator == "our"
+    );
+    let iterator_is_declaration = matches!(&variable.kind, NodeKind::VariableDeclaration { .. });
+    let record_iterator_before_list =
+        iterator_is_our || (!iterator_is_declaration && !is_implicit_topic);
+
+    if record_iterator_before_list {
+        declare_foreach_iterator(
+            analyzer,
+            variable,
+            is_implicit_topic,
             &loop_scope,
-            "$",
-            "_",
-            variable.location.start,
-            false,
-            true,
+            ancestors,
+            issues,
             context,
         );
-    } else {
-        analyzer.analyze_node(variable, &loop_scope, ancestors, issues, context);
     }
-    analyzer.mark_initialized(variable, &loop_scope, context);
     analyzer.analyze_node(list, &loop_scope, ancestors, issues, context);
+    if !record_iterator_before_list {
+        declare_foreach_iterator(
+            analyzer,
+            variable,
+            is_implicit_topic,
+            &loop_scope,
+            ancestors,
+            issues,
+            context,
+        );
+    }
     analyzer.analyze_node(body, &loop_scope, ancestors, issues, context);
     if let Some(cb) = continue_block {
         analyzer.analyze_node(cb, &loop_scope, ancestors, issues, context);
@@ -131,6 +152,39 @@ pub(super) fn handle_foreach<'a>(
     ancestors.pop();
 
     analyzer.collect_unused_variables(&loop_scope, issues, context);
+}
+
+fn declare_foreach_iterator<'a>(
+    analyzer: &ScopeAnalyzer,
+    variable: &'a Node,
+    is_implicit_topic: bool,
+    loop_scope: &Rc<Scope>,
+    ancestors: &mut Vec<&'a Node>,
+    issues: &mut Vec<ScopeIssue>,
+    context: &AnalysisContext<'a>,
+) {
+    // Declare the loop variable and immediately mark it initialized — the list
+    // provides its value at runtime so there is no uninitialized window.
+    if is_implicit_topic {
+        analyzer.declare_variable_parts_in_context(
+            loop_scope,
+            "$",
+            "_",
+            variable.location.start,
+            false,
+            true,
+            context,
+        );
+        analyzer.mark_initialized(variable, loop_scope, context);
+    } else if matches!(&variable.kind, NodeKind::VariableDeclaration { .. }) {
+        analyzer.analyze_node(variable, loop_scope, ancestors, issues, context);
+        analyzer.mark_initialized(variable, loop_scope, context);
+    } else {
+        // Bare `for $x (LIST)` aliases the outer binding. The list supplies the
+        // value, so a use of `$x` here is not an uninitialized read.
+        analyzer.mark_initialized(variable, loop_scope, context);
+        analyzer.analyze_node(variable, loop_scope, ancestors, issues, context);
+    }
 }
 
 /// Inner body shared by `handle_subroutine` and `handle_method`.
@@ -232,40 +286,39 @@ fn process_callable_scope<'a>(
     ancestors.pop();
 
     // Check for unused parameters
-    if let Some(sig) = signature {
-        if let NodeKind::Signature { parameters } = &sig.kind {
-            for param in parameters {
-                let extracted = analyzer.extract_variable_name(param);
-                if !extracted.is_empty() {
-                    let (sigil, name) = extracted.parts();
-                    let full_name = extracted.as_string();
+    if let Some(sig) = signature
+        && let NodeKind::Signature { parameters } = &sig.kind
+    {
+        for param in parameters {
+            let extracted = analyzer.extract_variable_name(param);
+            if !extracted.is_empty() {
+                let (sigil, name) = extracted.parts();
+                let full_name = extracted.as_string();
 
-                    // Skip parameters starting with underscore (intentionally unused)
-                    if name.starts_with('_') {
-                        continue;
-                    }
+                // Skip parameters starting with underscore (intentionally unused)
+                if name.starts_with('_') {
+                    continue;
+                }
 
-                    // Optimization: Access variable directly from current scope to avoid Rc clone
-                    let idx = sigil_to_index(sigil);
-                    let vars = sub_scope.variables.borrow();
-                    if let Some(map) = vars[idx].as_ref() {
-                        if let Some(var) = map.get(name) {
-                            if !*var.is_used.borrow() {
-                                issues.push(ScopeIssue {
-                                    kind: IssueKind::UnusedParameter,
-                                    variable_name: full_name.clone(),
-                                    line: context.get_line(param.location.start),
-                                    range: (param.location.start, param.location.end),
-                                    description: format!(
-                                        "Parameter '{}' is declared but never used",
-                                        full_name
-                                    ),
-                                });
-                                // Mark as used to prevent double reporting
-                                *var.is_used.borrow_mut() = true;
-                            }
-                        }
-                    }
+                // Optimization: Access variable directly from current scope to avoid Rc clone
+                let idx = sigil_to_index(sigil);
+                let vars = sub_scope.variables.borrow();
+                if let Some(map) = vars[idx].as_ref()
+                    && let Some(var) = map.get(name)
+                    && !*var.is_used.borrow()
+                {
+                    issues.push(ScopeIssue {
+                        kind: IssueKind::UnusedParameter,
+                        variable_name: full_name.clone(),
+                        line: context.get_line(param.location.start),
+                        range: (param.location.start, param.location.end),
+                        description: format!(
+                            "Parameter '{}' is declared but never used",
+                            full_name
+                        ),
+                    });
+                    // Mark as used to prevent double reporting
+                    *var.is_used.borrow_mut() = true;
                 }
             }
         }
@@ -355,27 +408,28 @@ pub(super) fn handle_try<'a>(
             // it via a fragile backward substring scan.
             let catch_var_range = (var_loc.start, var_loc.end);
             let (sigil, name) = split_variable_name(full_name);
-            if !sigil.is_empty() && !name.is_empty() && !name.contains("::") {
-                if let Some(issue_kind) =
+            if !sigil.is_empty()
+                && !name.is_empty()
+                && !name.contains("::")
+                && let Some(issue_kind) =
                     catch_scope.declare_variable_parts(sigil, name, catch_var_range.0, false, true)
-                {
-                    let description = match issue_kind {
-                        IssueKind::VariableShadowing => {
-                            format!("Variable '{}' shadows a variable in outer scope", full_name)
-                        }
-                        IssueKind::VariableRedeclaration => {
-                            format!("Variable '{}' is already declared in this scope", full_name)
-                        }
-                        _ => String::new(),
-                    };
-                    issues.push(ScopeIssue {
-                        kind: issue_kind,
-                        variable_name: full_name.to_string(),
-                        line: context.get_line(catch_var_range.0),
-                        range: catch_var_range,
-                        description,
-                    });
-                }
+            {
+                let description = match issue_kind {
+                    IssueKind::VariableShadowing => {
+                        format!("Variable '{}' shadows a variable in outer scope", full_name)
+                    }
+                    IssueKind::VariableRedeclaration => {
+                        format!("Variable '{}' is already declared in this scope", full_name)
+                    }
+                    _ => String::new(),
+                };
+                issues.push(ScopeIssue {
+                    kind: issue_kind,
+                    variable_name: full_name.to_string(),
+                    line: context.get_line(catch_var_range.0),
+                    range: catch_var_range,
+                    description,
+                });
             }
         }
 
@@ -433,5 +487,79 @@ pub(super) fn handle_package<'a>(
         // are not mis-reported as redeclarations.
         context.package_change_generation.set(context.package_change_generation.get() + 1);
         *context.current_package.borrow_mut() = name.to_string();
+    }
+}
+
+// ============================================================================
+// Inline lib tests for the unused-parameter seam in `process_callable_scope`.
+// The integration suite covers this behavior from outside the crate, which
+// leaves the seam without a statically traceable test path; these cases
+// discriminate each term of the collapsed condition in-crate.
+// ============================================================================
+#[cfg(test)]
+mod tests_unused_parameter_seam {
+    use super::{IssueKind, ScopeAnalyzer, ScopeIssue};
+    use crate::Parser;
+    use crate::pragma_tracker::PragmaTracker;
+    use perl_tdd_support::must;
+
+    fn analyze(code: &str) -> Vec<ScopeIssue> {
+        let mut parser = Parser::new(code);
+        let ast = must(parser.parse());
+        let pragma_map = PragmaTracker::build(&ast);
+        ScopeAnalyzer::new().analyze(&ast, code, &pragma_map)
+    }
+
+    fn unused_parameters(issues: &[ScopeIssue]) -> Vec<String> {
+        issues
+            .iter()
+            .filter(|issue| issue.kind == IssueKind::UnusedParameter)
+            .map(|issue| issue.variable_name.trim_start_matches(['$', '@', '%']).to_string())
+            .collect()
+    }
+
+    /// Control: a signature parameter that the body never reads is reported,
+    /// exactly once (the seam marks the variable used to avoid double reporting).
+    #[test]
+    fn unused_signature_parameter_is_reported_once() {
+        let issues = analyze("sub process($input) {\n    return 42;\n}\n");
+        assert_eq!(
+            unused_parameters(&issues),
+            vec!["input".to_string()],
+            "unused signature parameter must be reported exactly once; got: {issues:?}"
+        );
+    }
+
+    /// Discriminates the `!*var.is_used.borrow()` term: a parameter read in the
+    /// body must not be reported.
+    #[test]
+    fn used_signature_parameter_is_not_reported() {
+        let issues = analyze("sub process($input) {\n    return $input;\n}\n");
+        assert!(
+            unused_parameters(&issues).is_empty(),
+            "a parameter read in the body must not be reported; got: {issues:?}"
+        );
+    }
+
+    /// Discriminates the underscore skip that precedes the collapsed condition.
+    #[test]
+    fn underscore_prefixed_parameter_is_skipped() {
+        let issues = analyze("sub callback($_event) {\n    return 1;\n}\n");
+        assert!(
+            unused_parameters(&issues).is_empty(),
+            "underscore-prefixed parameters are intentionally unused; got: {issues:?}"
+        );
+    }
+
+    /// Discriminates the per-parameter scope lookup: only the unused one of a
+    /// pair is reported.
+    #[test]
+    fn only_the_unused_parameter_of_a_pair_is_reported() {
+        let issues = analyze("sub pair($used, $spare) {\n    return $used;\n}\n");
+        assert_eq!(
+            unused_parameters(&issues),
+            vec!["spare".to_string()],
+            "only the unused parameter must be reported; got: {issues:?}"
+        );
     }
 }

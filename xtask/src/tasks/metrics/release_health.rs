@@ -7,6 +7,8 @@
 //!   and the budgets that scope each.
 //! * `target/metrics/ci_baseline.json` — written by `cargo xtask ci-baseline`,
 //!   giving merge-gate pass-rate and billable-minutes for a recent window.
+//!   The output directory is pinned by [`CI_BASELINE_OUTPUT_DIR`] so the
+//!   producer CLI default and this consumer read path cannot drift.
 //! * `Cargo.toml` workspace version — the alpha release we are tracking
 //!   against.
 //!
@@ -53,9 +55,10 @@
 //! than fabricated.  This keeps the scorecard honest when running locally
 //! without the optional CI-baseline artifact.
 
+use crate::tasks::build_timing::SCHEMA_VERSION as BUILD_TIMING_RECEIPT_SCHEMA_VERSION;
 use crate::utils::project_root;
 use chrono::Utc;
-use color_eyre::eyre::{Context, Result};
+use color_eyre::eyre::{Context, Result, ensure, eyre};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -155,6 +158,10 @@ struct DebtFlakyTest {
 
 #[derive(Debug, Deserialize)]
 struct BuildTimingReceiptFile {
+    /// No serde default: a receipt without the envelope field fails to parse,
+    /// which [`read_dev_loop_durations`] turns into an error (fail-closed,
+    /// #15357).
+    schema_version: u32,
     #[serde(default)]
     measurements: BTreeMap<String, BuildTimingMeasurement>,
 }
@@ -173,6 +180,12 @@ struct BuildTimingMeasurement {
 struct CiBaselineFile {
     #[serde(default)]
     summary: Option<CiBaselineSummary>,
+    /// Completeness flag written by `cargo xtask ci-baseline` (#15377):
+    /// `complete` or `partial_sample`. Older files predate the flag and
+    /// carry `None`, which means complete (the flag did not exist to be
+    /// set, and those files were written before truncation marking).
+    #[serde(default)]
+    sample_completeness: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -181,6 +194,14 @@ struct CiBaselineSummary {
     total_billable_minutes: u64,
     overall_success_rate_percent: f64,
 }
+
+/// Canonical output directory written by `cargo xtask ci-baseline` and read
+/// by [`read_ci_baseline`].
+///
+/// The CLI default for the `CiBaseline` subcommand in `xtask/src/main.rs`
+/// references this same constant so the producer default and the consumer
+/// read path stay aligned. Changing this value requires updating both sites.
+pub const CI_BASELINE_OUTPUT_DIR: &str = "target/metrics";
 
 // ---------------------------------------------------------------------------
 // Public entry point
@@ -206,9 +227,14 @@ pub fn run(days: u64, json: bool) -> Result<()> {
 
 fn collect_release_health(root: &Path, days: u64) -> Result<ReleaseHealthMetrics> {
     let ledger = read_debt_ledger(root)?;
-    let baseline = read_ci_baseline(root);
+    // A `partial_sample` baseline is a truncated fetch, not a full period
+    // (#15377): publishing its pass rate as release health would present a
+    // slice of the window as the window. Degrade to null exactly like an
+    // absent file so the scorecard shows unknown instead of wrong.
+    let baseline = read_ci_baseline(root)
+        .filter(|file| file.sample_completeness.as_deref() != Some("partial_sample"));
     let version = read_workspace_version(root);
-    let dev_loop_durations = read_dev_loop_durations(root);
+    let dev_loop_durations = read_dev_loop_durations(root)?;
 
     let quarantined =
         ledger.flaky_tests.iter().filter(|t| t.tier.as_deref() == Some("quarantine")).count();
@@ -266,7 +292,7 @@ fn read_debt_ledger(root: &Path) -> Result<DebtLedger> {
 /// Returns `None` if the file is absent or fails to parse — the scorecard
 /// degrades gracefully and reports `null` for the merge-gate metrics.
 fn read_ci_baseline(root: &Path) -> Option<CiBaselineFile> {
-    let path = root.join("target").join("metrics").join("ci_baseline.json");
+    let path = root.join(CI_BASELINE_OUTPUT_DIR).join("ci_baseline.json");
     let raw = fs::read_to_string(&path).ok()?;
     serde_json::from_str(&raw).ok()
 }
@@ -281,7 +307,12 @@ fn read_workspace_version(root: &Path) -> Option<String> {
 /// Read optional build-timing receipt written by
 /// `cargo xtask build-timing-receipt` and expose a stable subset of
 /// developer-loop metrics.
-fn read_dev_loop_durations(root: &Path) -> BTreeMap<String, Option<f64>> {
+///
+/// A wholly absent receipt degrades to all-`None` (fresh clone). A receipt
+/// that is present but unparseable, or whose `schema_version` differs from
+/// [`BUILD_TIMING_RECEIPT_SCHEMA_VERSION`], is an error: rendering schema
+/// drift as "all measurements missing" would fail open (#15357).
+fn read_dev_loop_durations(root: &Path) -> Result<BTreeMap<String, Option<f64>>> {
     let tracked: BTreeSet<&str> = [
         "clean_build_workspace",
         "incremental_build_providers",
@@ -294,25 +325,36 @@ fn read_dev_loop_durations(root: &Path) -> BTreeMap<String, Option<f64>> {
     let path = root.join("artifacts").join("build-timing-receipt.json");
     let raw = match fs::read_to_string(&path) {
         Ok(raw) => raw,
-        Err(_) => {
-            return tracked.into_iter().map(|k| (k.to_string(), None)).collect();
+        // Absent receipt is a fresh-clone condition, not schema drift. Any
+        // other read failure (permissions, is-a-directory, transient I/O)
+        // must propagate with path context: degrading it to missing
+        // measurements would fail open on a present-but-unreadable receipt.
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(tracked.into_iter().map(|k| (k.to_string(), None)).collect());
+        }
+        Err(error) => {
+            return Err(error).with_context(|| format!("reading {}", path.display()));
         }
     };
 
-    let parsed = match serde_json::from_str::<BuildTimingReceiptFile>(&raw) {
-        Ok(parsed) => parsed,
-        Err(_) => {
-            return tracked.into_iter().map(|k| (k.to_string(), None)).collect();
-        }
-    };
+    let parsed = serde_json::from_str::<BuildTimingReceiptFile>(&raw)
+        .with_context(|| format!("parsing {}", path.display()))?;
+    if parsed.schema_version != BUILD_TIMING_RECEIPT_SCHEMA_VERSION {
+        let found = parsed.schema_version;
+        return Err(eyre!(
+            "build timing receipt schema version mismatch at {}: expected \
+             {BUILD_TIMING_RECEIPT_SCHEMA_VERSION}, got {found}",
+            path.display()
+        ));
+    }
 
-    tracked
+    Ok(tracked
         .into_iter()
         .map(|k| {
             let value = parsed.measurements.get(k).map(|m| round_one_decimal(m.duration_seconds));
             (k.to_string(), value)
         })
-        .collect()
+        .collect())
 }
 
 /// Return `Some(percent)` of `cap` consumed by `count`, or `None` when the
@@ -402,7 +444,7 @@ fn print_table(m: &ReleaseHealthMetrics) {
         None => {
             println!("  No CI baseline available.");
             println!(
-                "  Run `cargo xtask ci-baseline --branch master --days {}` to populate.",
+                "  Run `cargo xtask ci-baseline --days {}` to populate (omitting --branch uses the repository default).",
                 m.history_window_days
             );
         }
@@ -464,7 +506,7 @@ mod tests {
     }
 
     fn write_ci_baseline(root: &Path, summary_json: &str) -> Result<()> {
-        let dir = root.join("target").join("metrics");
+        let dir = root.join(super::CI_BASELINE_OUTPUT_DIR);
         fs::create_dir_all(&dir)?;
         fs::write(dir.join("ci_baseline.json"), format!("{{\"summary\": {summary_json}}}"))?;
         Ok(())
@@ -475,8 +517,71 @@ mod tests {
         fs::create_dir_all(&dir)?;
         fs::write(
             dir.join("build-timing-receipt.json"),
-            format!("{{\"measurements\": {measurements_json}}}"),
+            format!("{{\"schema_version\": 1, \"measurements\": {measurements_json}}}"),
         )?;
+        Ok(())
+    }
+
+    fn write_raw_receipt(root: &Path, contents: &str) -> Result<()> {
+        let dir = root.join("artifacts");
+        fs::create_dir_all(&dir)?;
+        fs::write(dir.join("build-timing-receipt.json"), contents)?;
+        Ok(())
+    }
+
+    /// #15357: a receipt from a future producer generation is refused instead
+    /// of silently rendering every dev-loop measurement as missing.
+    #[test]
+    fn read_dev_loop_durations_refuses_wrong_schema_version() -> Result<()> {
+        let tmp = TempDir::new()?;
+        write_raw_receipt(
+            tmp.path(),
+            r#"{"schema_version": 2, "measurements": {"clean_build_workspace": {"duration_seconds": 1.0}}}"#,
+        )?;
+        let err = read_dev_loop_durations(tmp.path())
+            .err()
+            .ok_or_else(|| eyre!("expected schema version rejection"))?;
+        ensure!(err.to_string().contains("schema version mismatch"), "{err}");
+        Ok(())
+    }
+
+    /// #15357: legacy receipts without the envelope field fail closed; only a
+    /// wholly absent file degrades to all-`None`.
+    #[test]
+    fn read_dev_loop_durations_refuses_missing_schema_version() -> Result<()> {
+        let tmp = TempDir::new()?;
+        write_raw_receipt(tmp.path(), r#"{"measurements": {}}"#)?;
+        ensure!(
+            read_dev_loop_durations(tmp.path()).is_err(),
+            "receipt without schema_version must fail closed"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn read_dev_loop_durations_degrades_only_absent_receipt_to_missing() -> Result<()> {
+        // Absent receipt is the fresh-clone condition: every tracked metric
+        // degrades to `None`.
+        let tmp = TempDir::new()?;
+        let durations = read_dev_loop_durations(tmp.path())?;
+        ensure!(
+            !durations.is_empty() && durations.values().all(|value| value.is_none()),
+            "absent receipt must degrade every tracked metric to None, got {durations:?}"
+        );
+
+        // A present-but-unreadable receipt (invalid UTF-8 here; permissions
+        // or is-a-directory in the field) must propagate, not degrade: only
+        // `NotFound` means fresh clone (#16024 review).
+        let dir = tmp.path().join("artifacts");
+        fs::create_dir_all(&dir)?;
+        fs::write(dir.join("build-timing-receipt.json"), [0xff, 0xfe, 0x00])?;
+        let err = read_dev_loop_durations(tmp.path())
+            .err()
+            .ok_or_else(|| eyre!("unreadable receipt must propagate, not degrade"))?;
+        ensure!(
+            err.to_string().contains("build-timing-receipt.json"),
+            "expected path context in the propagated error, got: {err}"
+        );
         Ok(())
     }
 
@@ -580,13 +685,59 @@ technical_debt:
     #[test]
     fn collect_tolerates_malformed_ci_baseline() -> Result<()> {
         let tmp = TempDir::new()?;
-        let dir = tmp.path().join("target").join("metrics");
+        let dir = tmp.path().join(super::CI_BASELINE_OUTPUT_DIR);
         fs::create_dir_all(&dir)?;
         fs::write(dir.join("ci_baseline.json"), "{ this is not json")?;
         let m = collect_release_health(tmp.path(), 30)?;
         assert_eq!(m.merge_gate_pass_rate, None);
         assert_eq!(m.merge_gate_runs_analyzed, None);
         assert_eq!(m.merge_gate_billable_minutes, None);
+        Ok(())
+    }
+
+    /// A `partial_sample` baseline must not populate release health as a
+    /// full period (#15377): the merge-gate metrics degrade to null exactly
+    /// like an absent file, so the scorecard shows unknown instead of a
+    /// truncated slice presented as the window.
+    #[test]
+    fn collect_refuses_partial_sample_ci_baseline() -> Result<()> {
+        let tmp = TempDir::new()?;
+        let dir = tmp.path().join(super::CI_BASELINE_OUTPUT_DIR);
+        fs::create_dir_all(&dir)?;
+        fs::write(
+            dir.join("ci_baseline.json"),
+            r#"{"sample_completeness": "partial_sample", "fetched_runs": 200, "summary": {"total_runs": 200, "total_billable_minutes": 137, "overall_success_rate_percent": 95.5}}"#,
+        )?;
+        let m = collect_release_health(tmp.path(), 30)?;
+        assert_eq!(m.merge_gate_pass_rate, None);
+        assert_eq!(m.merge_gate_runs_analyzed, None);
+        assert_eq!(m.merge_gate_billable_minutes, None);
+        Ok(())
+    }
+
+    #[test]
+    fn ci_baseline_output_dir_constant_matches_consumer_read_path() -> Result<()> {
+        // Tripwire: the producer's CLI default (CiBaseline `--output` in
+        // `xtask/src/main.rs`) references `super::CI_BASELINE_OUTPUT_DIR`,
+        // and `read_ci_baseline` reads from `root.join(CI_BASELINE_OUTPUT_DIR)`.
+        // Both must point at the same directory — if either drifts, the
+        // default invocation silently degrades to "no baseline".
+        assert_eq!(
+            super::CI_BASELINE_OUTPUT_DIR,
+            "target/metrics",
+            "CI_BASELINE_OUTPUT_DIR must remain the canonical contract path"
+        );
+
+        let tmp = TempDir::new()?;
+        write_ci_baseline(
+            tmp.path(),
+            r#"{"total_runs": 7, "total_billable_minutes": 11, "overall_success_rate_percent": 88.5}"#,
+        )?;
+        let parsed = read_ci_baseline(tmp.path())
+            .expect("consumer must read the file at the canonical contract path");
+        let summary = parsed.summary.expect("summary must round-trip");
+        assert_eq!(summary.total_runs, 7);
+        assert_eq!(summary.total_billable_minutes, 11);
         Ok(())
     }
 
@@ -675,22 +826,22 @@ technical_debt:
         Ok(())
     }
 
+    /// #15357: a present-but-unparseable receipt must fail closed — rendering
+    /// schema drift as "all measurements missing" hides a broken producer.
     #[test]
-    fn collect_tolerates_malformed_dev_loop_receipt() -> Result<()> {
+    fn collect_rejects_malformed_dev_loop_receipt() -> Result<()> {
         let tmp = TempDir::new()?;
         let dir = tmp.path().join("artifacts");
         fs::create_dir_all(&dir)?;
         fs::write(dir.join("build-timing-receipt.json"), "not json")?;
 
-        let m = collect_release_health(tmp.path(), 30)?;
-        for k in [
-            "clean_build_workspace",
-            "incremental_build_providers",
-            "incremental_build_parser",
-            "test_build_workspace",
-        ] {
-            assert_eq!(m.dev_loop_durations_seconds[k], None);
-        }
+        let err = collect_release_health(tmp.path(), 30)
+            .err()
+            .ok_or_else(|| eyre!("expected malformed receipt to fail closed"))?;
+        assert!(
+            err.to_string().contains("build-timing-receipt.json"),
+            "error should name the receipt: {err}"
+        );
         Ok(())
     }
 

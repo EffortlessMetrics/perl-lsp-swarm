@@ -9,6 +9,7 @@
 #![allow(clippy::print_stderr)]
 
 use anyhow::{Context, Result, anyhow, bail};
+use perl_lsp_ux_tests::client::EventSource;
 use perl_lsp_ux_tests::{
     LspEvent, ScenarioConfig, UxCiTier, UxComponent, UxHarness, binary_available,
     missing_binary_skip, run_ux_scenario,
@@ -20,6 +21,8 @@ use std::time::{Duration, Instant};
 const SCENARIO_FILE: &str =
     "ux_scenario_60_gated_multiline_constructor_inline_completion_quality.rs";
 const CONSTRUCTOR_PATH: &str = "lib/Inline/GatedMultilineConstructor.pm";
+// A fresh harness opens version 1 and applies exactly one full-document edit.
+const APPLIED_DOCUMENT_VERSION: i64 = 2;
 
 const CONSTRUCTOR_SOURCE: &str = r#"package Inline::GatedMultilineConstructor;
 use strict;
@@ -64,6 +67,7 @@ struct AppliedEditReport {
     range_source: &'static str,
     applied_matches_expected: bool,
     parse_diagnostics_absent: bool,
+    diagnostics_document_version: i64,
     diagnostics_after_apply: Vec<Value>,
     parse_diagnostics_after_apply: Vec<Value>,
 }
@@ -267,6 +271,34 @@ fn apply_inline_item(source: &str, line: u32, character: u32, item: &Value) -> R
     Ok(applied)
 }
 
+// This is a versioned observation for this one-open/one-edit fixture, not a
+// general transition cursor for reused versions, reopened files or config changes.
+fn wait_for_applied_diagnostics(
+    source: &impl EventSource,
+    uri: &str,
+    timeout: Duration,
+) -> Result<(i64, Vec<Value>)> {
+    source
+        .wait_for_events(timeout, |events| {
+            events.iter().rev().find_map(|event| match event {
+                LspEvent::Diagnostics {
+                    uri: observed_uri,
+                    version: Some(version),
+                    diagnostics,
+                } if observed_uri == uri && *version == APPLIED_DOCUMENT_VERSION => {
+                    Some((*version, diagnostics.clone()))
+                }
+                _ => None,
+            })
+        })
+        .map_err(|end| {
+            anyhow!(
+                "no diagnostics for applied document {uri} version {APPLIED_DOCUMENT_VERSION}: {}",
+                end.describe()
+            )
+        })
+}
+
 fn apply_invoked_constructor_edit(
     harness: &UxHarness,
     line: u32,
@@ -284,11 +316,12 @@ fn apply_invoked_constructor_edit(
     let applied_matches_expected = applied == EXPECTED_APPLIED_SOURCE;
 
     harness.assert_no_crash();
-    let _ = harness.collect_notifications();
     harness.change_file_full(CONSTRUCTOR_PATH, applied.as_str())?;
-    std::thread::sleep(Duration::from_millis(250));
-    let diagnostics_after_apply =
-        harness.wait_for_latest_diagnostics(CONSTRUCTOR_PATH, Duration::from_secs(5));
+    let (diagnostics_document_version, diagnostics_after_apply) = wait_for_applied_diagnostics(
+        &harness.client,
+        &harness.workspace.uri(CONSTRUCTOR_PATH),
+        Duration::from_secs(5),
+    )?;
     let parse_diagnostics_after_apply = parser_diagnostics(&diagnostics_after_apply);
     let parse_diagnostics_absent = parse_diagnostics_after_apply.is_empty();
 
@@ -296,9 +329,120 @@ fn apply_invoked_constructor_edit(
         range_source,
         applied_matches_expected,
         parse_diagnostics_absent,
+        diagnostics_document_version,
         diagnostics_after_apply,
         parse_diagnostics_after_apply,
     })
+}
+
+#[cfg(test)]
+mod applied_diagnostics_tests {
+    use super::*;
+    use anyhow::ensure;
+    use perl_lsp_ux_tests::{Inbox, StreamEnd};
+
+    const URI: &str = "file:///workspace/constructor.pm";
+
+    fn publish(inbox: &Inbox, uri: &str, version: Option<i64>, diagnostics: Vec<Value>) {
+        inbox.push_event(json!({
+            "jsonrpc": "2.0", "method": "textDocument/publishDiagnostics",
+            "params": {"uri": uri, "version": version, "diagnostics": diagnostics}
+        }));
+    }
+
+    #[test]
+    fn rejects_stale_unversioned_and_unrequested_future_publications() -> Result<()> {
+        for version in [Some(1), None, Some(3)] {
+            let inbox = Inbox::new();
+            publish(&inbox, URI, version, vec![]);
+            ensure!(
+                wait_for_applied_diagnostics(&inbox, URI, Duration::ZERO).is_err(),
+                "version {version:?} cannot prove the applied version"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_another_document_at_the_applied_version() -> Result<()> {
+        let inbox = Inbox::new();
+        publish(&inbox, "file:///workspace/other.pm", Some(2), vec![]);
+        ensure!(
+            wait_for_applied_diagnostics(&inbox, URI, Duration::ZERO).is_err(),
+            "another document cannot prove this edit"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn missing_publication_does_not_mean_clean_diagnostics() -> Result<()> {
+        let inbox = Inbox::new();
+        ensure!(
+            wait_for_applied_diagnostics(&inbox, URI, Duration::ZERO).is_err(),
+            "silence cannot prove an empty publication"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn transport_failure_remains_an_error_with_its_reason() -> Result<()> {
+        let inbox = Inbox::new();
+        inbox
+            .close(StreamEnd::TransportFailure { detail: "fixture transport failure".to_string() });
+        let error = wait_for_applied_diagnostics(&inbox, URI, Duration::ZERO)
+            .err()
+            .ok_or_else(|| anyhow!("transport failure must not become clean diagnostics"))?;
+        ensure!(
+            error.to_string().contains("fixture transport failure"),
+            "missing failure reason: {error}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn drained_required_evidence_cannot_satisfy_the_wait() -> Result<()> {
+        let inbox = Inbox::new();
+        publish(&inbox, URI, Some(2), vec![]);
+        let _ = inbox.drain_events();
+        publish(&inbox, URI, Some(1), vec![]);
+        ensure!(
+            wait_for_applied_diagnostics(&inbox, URI, Duration::ZERO).is_err(),
+            "draining evidence must not promote a stale publication"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn exact_version_clear_is_not_overwritten_by_a_late_stale_error() -> Result<()> {
+        let inbox = Inbox::new();
+        publish(&inbox, URI, Some(2), vec![]);
+        publish(&inbox, URI, Some(1), vec![json!({"code": "PL001", "severity": 1})]);
+        let (version, diagnostics) = wait_for_applied_diagnostics(&inbox, URI, Duration::ZERO)?;
+        ensure!(
+            version == 2 && diagnostics.is_empty(),
+            "expected the explicit applied-version clear"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn latest_exact_version_error_is_preserved_for_the_parser_oracle() -> Result<()> {
+        let inbox = Inbox::new();
+        publish(&inbox, URI, Some(2), vec![]);
+        let expected = vec![json!({"code": "PL001", "severity": 1})];
+        publish(&inbox, URI, Some(2), expected.clone());
+        publish(&inbox, URI, Some(1), vec![]);
+        let (version, diagnostics) = wait_for_applied_diagnostics(&inbox, URI, Duration::ZERO)?;
+        ensure!(
+            version == 2 && diagnostics == expected,
+            "latest applied-version errors must remain visible"
+        );
+        ensure!(
+            !parser_diagnostics(&diagnostics).is_empty(),
+            "the existing parser check must reject this payload"
+        );
+        Ok(())
+    }
 }
 
 fn parser_diagnostics(diagnostics: &[Value]) -> Vec<Value> {
@@ -331,7 +475,9 @@ fn scenario_60_gated_multiline_constructor_inline_completion_quality_receipt() {
 
             let harness = create_harness()?;
             harness.open_file(CONSTRUCTOR_PATH, CONSTRUCTOR_SOURCE)?;
-            std::thread::sleep(Duration::from_millis(250));
+            // Same readiness race as #15870: synchronize on the server's own
+            // analysis-readiness signal instead of a fixed sleep.
+            let _ = harness.wait_for_diagnostics(CONSTRUCTOR_PATH, Duration::from_secs(30));
 
             recorder.mark_request_start("dynamic_inline_registration");
             let dynamic_registration_seen = wait_for_inline_registration(&harness);

@@ -325,6 +325,12 @@ impl StdioSession {
             .arg("--stdio")
             .arg("--log-level")
             .arg("error")
+            // Value-format proof exercises evaluate output, not the
+            // launch-authority contract (#8656): without an explicit
+            // acknowledgement every `launch` is refused.
+            .arg("--allow-unbounded")
+            .arg("--unbounded-note")
+            .arg("test: value format stdio proof")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -372,14 +378,15 @@ impl StdioSession {
             return Err("initialize over framed stdio failed".into());
         };
         // #9581 capability-set identity, in the same session that serves the
-        // rows: the format and cancel cells are floored false, the #8354
+        // rows: the format cell remains floored false while native stdio
+        // admits request cancellation; the #8354
         // exact-mutation authority advertises setVariable false, and the
         // #9568 promotion boundary keeps setExpression false. Main's new
         // supportsTerminateRequest row is asserted true. A wire row that
         // drifted from any of these fails here, before any row is recorded.
         for (capability, expected) in [
             ("supportsValueFormattingOptions", false),
-            ("supportsCancelRequest", false),
+            ("supportsCancelRequest", true),
             ("supportsSetVariable", false),
             ("supportsSetExpression", false),
             ("supportsTerminateRequest", true),
@@ -754,7 +761,7 @@ fn write_receipt_to(
                 "supportsValueFormattingOptions": false,
                 "supportsSetVariable": false,
                 "supportsSetExpression": false,
-                "supportsCancelRequest": false,
+                "supportsCancelRequest": true,
             },
         },
         "rows": matrix.rows,
@@ -1234,16 +1241,13 @@ fn value_format_stdio_proof_matrix() -> ProofResult<()> {
         assert_canary_empty(&canary_path, "after setExpression rows")?;
     }
 
-    // --- cancellation stays floored and leaves the session coherent ---------
+    // --- native cancellation leaves the session coherent --------------------
     {
-        let cancel_message = dap.expect_failure("cancel", Some(json!({ "requestId": 1 })))?;
-        if !cancel_message.contains("unsupported")
-            || !cancel_message.contains("supportsCancelRequest")
-        {
-            return Err(format!(
-                "cancel must be floored-rejected without touching shared state, got: {cancel_message}"
-            )
-            .into());
+        let cancel = dap.request("cancel", Some(json!({ "requestId": 1 })))?;
+        if !matches!(cancel, ResponseOutcome::Success(_)) {
+            return Err("native cancel must be acknowledged without touching shared state"
+                .to_string()
+                .into());
         }
         let after_cancel =
             dap.expect_success("variables", Some(json!({ "variablesReference": locals_ref })))?;
@@ -1253,10 +1257,10 @@ fn value_format_stdio_proof_matrix() -> ProofResult<()> {
             return Err("default variables after floored cancel must remain exact".into());
         }
         matrix.pass(
-            "cancel-floored-then-default-exact",
+            "cancel-then-default-exact",
             "variables",
             "default",
-            "cancel explicitly unsupported; policy path and session state unaffected",
+            "native cancel acknowledgement leaves the value-format session coherent",
         );
     }
 
@@ -1429,7 +1433,7 @@ fn receipt_binds_subject_identity_and_row_verdicts() -> ProofResult<()> {
     if receipt.pointer("/subject/capabilities/supportsValueFormattingOptions")
         != Some(&Value::Bool(false))
         || receipt.pointer("/subject/capabilities/supportsCancelRequest")
-            != Some(&Value::Bool(false))
+            != Some(&Value::Bool(true))
     {
         return Err("receipt must bind the #9581 capability-floor identity".into());
     }

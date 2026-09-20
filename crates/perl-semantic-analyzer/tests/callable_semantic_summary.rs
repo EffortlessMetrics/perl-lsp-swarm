@@ -651,3 +651,77 @@ fn callable_semantic_summary_invalid_packet_is_a_blocker_not_a_summary() -> Test
     );
     Ok(())
 }
+
+/// A `field` access is real work the callable does. Before core-class fields
+/// had their own PIR operations a field read lowered to `StashRead` and landed
+/// in the effect ledger; the field operations must not let it fall through the
+/// wildcard arm and vanish, because the Place and Effect facets then declare
+/// completeness over an access they never counted (#13817).
+#[test]
+fn callable_semantic_summary_counts_field_accesses() -> TestResult {
+    let assembly = assemble(
+        "use feature 'class';\nclass C {\n    field $n;\n    method bump { $n = 1; $n += 2; return $n; }\n}\n",
+        "gen-1",
+    )?;
+    let packet = only_summary(&assembly)?;
+    packet.validate().map_err(|v| format!("packet must validate: {v:?}"))?;
+
+    let places: Vec<_> =
+        packet.bindings.iter().filter(|place| place.name == "$n").map(|place| place.role).collect();
+    assert!(
+        !places.is_empty(),
+        "field accesses must reach the place ledger, got bindings {:?} and effects {:?}",
+        packet.bindings.iter().map(|place| (&place.name, place.role)).collect::<Vec<_>>(),
+        packet.effects.iter().map(|effect| effect.kind).collect::<Vec<_>>()
+    );
+    assert!(
+        places.contains(&perl_semantic_facts::interprocedural::PlaceRole::Modify),
+        "the compound assignment must be recorded as a Modify place, got {places:?}"
+    );
+    assert!(
+        packet
+            .effects
+            .iter()
+            .any(|effect| effect.kind
+                == perl_semantic_facts::interprocedural::EffectKind::FieldModify),
+        "a field read-modify-write must be its own effect, not a lexical or stash one"
+    );
+    Ok(())
+}
+
+/// A declaration-shaped legacy call (`field $x`) parses as a declaration but
+/// invokes an arbitrary subroutine whose behaviour PIR does not model. PIR
+/// records the callee as unsupported, but `lower_single_body` returns nodes
+/// only, so that receipt never reached the facet ledger and the body could
+/// report every facet `Complete` over a call it had not modelled at all.
+///
+/// The two sources are a minimal pair — identical but for the legacy call —
+/// so the control proves the assertion discriminates rather than naming a
+/// facet that is never `Complete` anyway. Note the shape matters: a body such
+/// as `sub f { field $x = 1; }` is already `Limited` for an unrelated reason,
+/// so it cannot witness this gap.
+#[test]
+fn legacy_field_call_body_cannot_report_complete_facets() -> TestResult {
+    let control = assemble("sub f { my $x; $x; }", "gen-control")?;
+    let control = only_summary(&control)?;
+    for facet in [SummaryFacetKind::Place, SummaryFacetKind::Effect] {
+        assert_eq!(
+            facet_status(control, facet)?,
+            SummaryFacetStatus::Complete,
+            "control: {facet:?} must reach Complete for a fully modelled body, \
+             otherwise the legacy-call assertion below proves nothing"
+        );
+    }
+
+    let legacy = assemble("sub f { my $x; field $x; }", "gen-legacy")?;
+    let legacy = only_summary(&legacy)?;
+    for facet in [SummaryFacetKind::Place, SummaryFacetKind::Effect] {
+        assert_ne!(
+            facet_status(legacy, facet)?,
+            SummaryFacetStatus::Complete,
+            "{facet:?} must not report Complete for a body holding an \
+             unmodelled legacy call"
+        );
+    }
+    Ok(())
+}

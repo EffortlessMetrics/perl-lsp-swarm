@@ -82,17 +82,46 @@ require(
     'const PERLLSP_REPO: &str = "EffortlessMetrics/perl-lsp";' in source,
     "candidate source must download from EffortlessMetrics/perl-lsp",
 )
+launch_projection = json.loads(read(packet / "launch-contract.v1.json"))
 require(
-    "normalize_perllsp_args" in source and 'normalized.push("--stdio".to_string())' in source,
-    "candidate source must normalize to exactly one explicit --stdio argument",
+    launch_projection.get("schema_version") == "zed_perllsp_launch_contract.v1",
+    "launch projection schema version drifted",
 )
 require(
-    'argument == "--stdio" || argument == "--mcp" || argument == "mcp"' in source,
-    "candidate source must treat mcp/--mcp as stdio launcher aliases",
+    launch_projection.get("required_transport_flag") == "--stdio",
+    "launch projection must pin exact --stdio transport",
 )
 require(
-    "is_non_lsp_argument" in source and '"--socket"' in source,
-    "candidate source must reject non-LSP transport routes such as --socket",
+    launch_projection.get("fail_closed_default") is True,
+    "launch projection must fail closed by default",
+)
+rejected_tokens = set(launch_projection.get("rejected_exact_tokens", [])) | set(
+    launch_projection.get("rejected_flags", [])
+)
+require(
+    {"--socket", "--port"} <= rejected_tokens,
+    "launch projection must reject non-LSP transport routes such as --socket/--port",
+)
+require(
+    {"mcp", "--mcp"} <= rejected_tokens,
+    "launch projection must reject the MCP route tokens",
+)
+require(
+    'include_str!("../../launch-contract.v1.json")' in source
+    and "normalize_perllsp_args" in source,
+    "candidate source must classify argv through the checked launch projection",
+)
+require(
+    "normalized.insert(0, contract.required_transport_flag.clone())" in source,
+    "candidate source must construct exactly one leading explicit --stdio argument",
+)
+require(
+    "selects the MCP route rather than the LSP stdio transport" in source,
+    "candidate source must refuse to flatten mcp/--mcp into LSP stdio",
+)
+require(
+    "unsupported perllsp argument" in source,
+    "candidate source must keep the fail-closed unsupported-argument diagnostic",
 )
 require(
     "LspSettings::for_worktree(PERLLSP_SERVER_ID, worktree)" in source,

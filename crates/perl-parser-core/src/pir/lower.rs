@@ -11,8 +11,8 @@ use std::collections::HashMap;
 use crate::hir::{
     AccessMode, AssignMode, BranchKeyword, BranchShell, CallForm, ControlTransferKind,
     DeclStorageClass, DerefExpr, DynamicBoundaryKind, HIR_BODY_MODEL_VERSION, HirBody, HirBodyId,
-    HirExpr, HirExprId, HirFile, HirItem, HirKind, HirScopeId, HirStmt, LiteralKind, LoopShell,
-    RegexTargetKind, Sigil, StatementModifierKind, UnaryMode, VariableKind,
+    HirExpr, HirExprId, HirFile, HirItem, HirKind, HirRegexTarget, HirScopeId, HirStmt,
+    LiteralKind, LoopShell, RegexTargetKind, Sigil, StatementModifierKind, UnaryMode, VariableKind,
 };
 
 use super::model::{
@@ -196,11 +196,7 @@ impl Lowerer {
             }
             HirKind::DerefExpr(deref) => self.lower_deref(item, deref),
             HirKind::DynamicBoundary(boundary) => {
-                self.lower_dynamic_boundary(
-                    item,
-                    map_boundary_kind(boundary.kind),
-                    boundary.reason.clone(),
-                );
+                self.lower_dynamic_boundary(item, boundary.kind, boundary.reason.clone());
             }
             HirKind::LiteralExpr(literal) => self.lower_literal(item, literal.kind),
             HirKind::RegexExpr(regex) => self.lower_regex_literal(item, regex),
@@ -257,7 +253,21 @@ impl Lowerer {
     }
 
     fn lower_variable_decl(&mut self, item: &HirItem, decl: &crate::hir::VariableDecl) {
+        // A declaration-shaped legacy call (`field $x = 1`) reaches flat
+        // lowering as a `VariableDecl` too, but it declares nothing. Emitting
+        // the write below would publish a lexical binding the program never
+        // creates — the same false fact body PIR stopped publishing. Flat
+        // lowering carries no scope cursor, so it cannot resolve the argument's
+        // real storage; declaring the omission is honest where guessing is not.
+        let is_legacy_call =
+            DeclStorageClass::from_str(&decl.declarator) == DeclStorageClass::Unknown;
+        if is_legacy_call {
+            *self.unsupported.entry("LegacyFieldCall").or_insert(0) += 1;
+        }
         for variable in &decl.variables {
+            if is_legacy_call {
+                continue;
+            }
             let anchor = PirSourceAnchor::explicit(variable.range, item.id);
             let operation = if is_stash_declarator(&decl.declarator) {
                 PirOperation::StashWrite {
@@ -445,17 +455,24 @@ impl Lowerer {
     fn lower_dynamic_boundary(
         &mut self,
         item: &HirItem,
-        kind: PirDynamicBoundaryKind,
+        hir_kind: DynamicBoundaryKind,
         reason: String,
     ) -> PirId {
+        let kind = map_boundary_kind(hir_kind);
         let anchor = PirSourceAnchor::dynamic_boundary(item.range, item.id);
-        let id = self.push_node(
-            item,
-            anchor,
-            PirOperation::DynamicBoundary { kind, reason },
-            PirContext::Unknown,
-            None,
-        );
+        let operation = PirOperation::DynamicBoundary { kind, reason };
+        let id = if matches!(
+            hir_kind,
+            DynamicBoundaryKind::TiedPlaceBinding | DynamicBoundaryKind::TiedPlaceRelease
+        ) {
+            // Tie and untie are the post-order boundary forms in flat HIR:
+            // their operands precede the hidden dispatch boundary. When one is
+            // nested, splice that boundary before the already-lowered consumer
+            // without changing adjacency for the pre-order boundary families.
+            self.push_node_maybe_operand(item, anchor, operation, None)
+        } else {
+            self.push_node(item, anchor, operation, PirContext::Unknown, None)
+        };
         // Control may not return through a dynamic boundary; record the exit
         // edge instead of dropping it.
         self.edges.push(PirEdge { from: id, to: None, kind: PirEdgeKind::DynamicExit });
@@ -799,6 +816,14 @@ fn map_boundary_kind(kind: DynamicBoundaryKind) -> PirDynamicBoundaryKind {
         DynamicBoundaryKind::Autoload => PirDynamicBoundaryKind::Autoload,
         DynamicBoundaryKind::SymbolicReferenceDeref => PirDynamicBoundaryKind::SymbolicReference,
         DynamicBoundaryKind::EmbeddedRegexCode => PirDynamicBoundaryKind::EmbeddedRegexCode,
+        // Tie/untie reach PIR as unclassified boundaries on purpose. The
+        // boundary itself is real — control leaves through hidden TIE*/UNTIE
+        // dispatch — so it must not be dropped, but PIR has no tied-place
+        // concept to classify it with yet. Giving it one is #6683's work, not
+        // this mapping's; `Unknown` states exactly what is known today.
+        DynamicBoundaryKind::TiedPlaceBinding | DynamicBoundaryKind::TiedPlaceRelease => {
+            PirDynamicBoundaryKind::Unknown
+        }
     }
 }
 
@@ -1029,7 +1054,28 @@ impl BodyLowerer {
             None => return,
         };
         match stmt {
-            HirStmt::Let { name, sigil, storage, init, binding_range } => {
+            // `binding` (#14166) is deliberately not consumed here yet: threading
+            // canonical binding identity and storage class into PIR facts is
+            // #6659 item 2, a separate slice.
+            HirStmt::Let { name, sigil, storage, init, binding_range, binding: _ } => {
+                if *storage == DeclStorageClass::Unknown {
+                    // Parser-shaped legacy calls (for example `field $x = 1`)
+                    // do not bind a lexical declaration. For `Unknown` storage
+                    // the `init` slot carries the call's argument expression —
+                    // the assignment for `field $x = 1`, the read for the bare
+                    // `field $x` — and HIR has already resolved that target
+                    // against the visible scope. Lower it plainly; assuming a
+                    // package slot here would drop a preceding lexical's
+                    // call-site reference, which `extract_lexical_facts` only
+                    // sees as a `LexicalRead`/`LexicalWrite`.
+                    // Keep the call boundary visible to completeness consumers:
+                    // the callee's runtime behavior remains unmodeled.
+                    *self.unsupported.entry("LegacyFieldCall").or_insert(0) += 1;
+                    if let Some(arg_id) = init {
+                        self.lower_expr(body, *arg_id, file);
+                    }
+                    return;
+                }
                 // Emit exactly ONE Write op for the declaration target.
                 // `storage` determines whether this is a lexical (my/state) or
                 // package (our) slot. Ignoring `storage` was the root cause of
@@ -1047,30 +1093,42 @@ impl BodyLowerer {
                 // declaration form — including bare declarations WITHOUT an
                 // initialiser (`my $x;` / `our $x;`), which the previous
                 // init-LHS-or-statement-span fallback mis-anchored at the statement.
-                {
+                if name.as_str() == "<unknown>" {
+                    // A placeholder Let is not a real symbol. Do not emit a
+                    // stash/lexical write of `<unknown>`; lower the initializer
+                    // so the actual target (or a fail-closed marker) remains.
+                    *self.unsupported.entry("PlaceholderDeclarationName").or_insert(0) += 1;
+                } else {
                     let anchor = self.make_body_anchor(*binding_range);
                     let op = match storage {
                         // `our` binds a package/stash symbol; `local` dynamically
                         // scopes a package/global slot. Both are stash writes.
                         DeclStorageClass::Our | DeclStorageClass::Local => {
-                            PirOperation::StashWrite {
+                            Some(PirOperation::StashWrite {
                                 symbol: SymbolName {
                                     sigil: sigil_str(sigil),
                                     name: name.clone(),
                                     package: None, // package context not yet threaded into body arena
                                 },
-                            }
+                            })
                         }
-                        // my / state / any other declarator → lexical write
-                        _ => PirOperation::LexicalWrite {
-                            name: LexicalName { sigil: sigil_str(sigil), name: name.clone() },
-                        },
+                        // `my` and `state` are lexical writes. An unknown
+                        // parser-shaped declarator is a legacy call, not a
+                        // declaration, and must not publish a binding.
+                        DeclStorageClass::My | DeclStorageClass::State => {
+                            Some(PirOperation::LexicalWrite {
+                                name: LexicalName { sigil: sigil_str(sigil), name: name.clone() },
+                            })
+                        }
+                        DeclStorageClass::Unknown => None,
                     };
                     // The write access comes from `access_for_operation`; the
                     // value context of the declared place is not proven by
                     // this lowering (scalar versus list assignment shape), so
                     // it stays `Unknown` rather than the statement's `Void`.
-                    self.push_body_node(anchor, op, PirContext::Unknown, None, file);
+                    if let Some(op) = op {
+                        self.push_body_node(anchor, op, PirContext::Unknown, None, file);
+                    }
                 }
                 // Lower the initialiser. A simple initialiser is
                 // HirExpr::Assign { lhs: Variable(Write), rhs, mode: Simple }; the
@@ -1080,11 +1138,12 @@ impl BodyLowerer {
                 // is a real modification of the slot on top of the localization,
                 // so lower the whole Assign: the RMW arm emits one Modify node for
                 // the place plus the RHS read, never a second plain Write.
-                // A simple initialiser whose target is not a plain variable
-                // (`local $ENV{PATH} = EXPR`) is not covered by the declaration
-                // write above, which only names the declared symbol; lower the
-                // whole Assign so the real target reaches PIR (today as the
-                // fail-closed `Subscript` marker) instead of vanishing.
+                // A simple initialiser whose target is not a plain variable is
+                // not covered by the declaration write above; lower the whole
+                // Assign so the real target reaches PIR (today as the fail-closed
+                // `Subscript` marker) instead of vanishing. Canonical HIR no
+                // longer emits Let { name: "<unknown>" } for those targets
+                // (#14809); this arm remains for any residual non-variable init.
                 if let Some(init_id) = init {
                     match body.expr(*init_id) {
                         Some(HirExpr::Assign { lhs, rhs, mode: AssignMode::Simple })
@@ -1102,6 +1161,16 @@ impl BodyLowerer {
             HirStmt::Expr(expr_id) => {
                 self.lower_expr(body, *expr_id, file);
             }
+            HirStmt::Block(block_id) => {
+                // A bare block executes its statements in order in the
+                // enclosing flow, so walk them rather than treating the block
+                // as one opaque statement (#13249).
+                if let Some(nested) = body.block(*block_id) {
+                    for nested_stmt in nested.stmts.clone() {
+                        self.lower_stmt(body, nested_stmt, file);
+                    }
+                }
+            }
             HirStmt::LoopControl { .. } => {
                 *self.unsupported.entry("LoopControl").or_insert(0) += 1;
                 // Loop-control transfers (`last`/`next`/`redo`) do not emit a
@@ -1110,7 +1179,7 @@ impl BodyLowerer {
                 // this body inherit a spurious fallthrough predecessor.
                 self.last_in_scope.remove(&None);
             }
-            HirStmt::PostfixCondition { statement, condition, verb } => {
+            HirStmt::PostfixCondition { statement, condition, verb, .. } => {
                 *self.unsupported.entry("PostfixCondition").or_insert(0) += 1;
                 let statement_first_modifier =
                     matches!(verb, StatementModifierKind::While | StatementModifierKind::Until);
@@ -1131,6 +1200,15 @@ impl BodyLowerer {
                 // not become an unconditional predecessor of later siblings.
                 self.last_in_scope.remove(&None);
             }
+        }
+    }
+
+    /// Walk the operand of a regex-family operation (#7136).
+    ///
+    /// An implicit default topic has no operand expression to walk.
+    fn lower_regex_target(&mut self, body: &HirBody, target: &HirRegexTarget, file: &HirFile) {
+        if let HirRegexTarget::Bound { expr, .. } = target {
+            self.lower_expr(body, *expr, file);
         }
     }
 
@@ -1175,8 +1253,13 @@ impl BodyLowerer {
                             // Lower RHS as a Read operand.
                             self.lower_expr(body, *rhs, file);
                         } else {
-                            // Non-variable LHS for compound assign → unsupported (fail-closed).
+                            // Non-variable LHS for compound assign → unsupported
+                            // (fail-closed), but still walk the place and RHS so
+                            // an element target (`local $h{k} .= …`) reaches PIR
+                            // as Subscript rather than vanishing.
                             *self.unsupported.entry("CompoundAssignNonVarLhs").or_insert(0) += 1;
+                            self.lower_expr(body, *lhs, file);
+                            self.lower_expr(body, *rhs, file);
                         }
                     }
                 }
@@ -1502,6 +1585,37 @@ impl BodyLowerer {
                 self.last_in_scope.remove(&None);
             }
 
+            // Regex-family operations (#7136).
+            //
+            // Canonical body HIR now models these as typed forms, but PIR-A
+            // does not yet own canonical regex operations — that is #7137, and
+            // implementing them here is an explicit non-goal. Each family is
+            // therefore still recorded as unsupported, but under its own honest
+            // key: previously match/substitution/transliteration were booked as
+            // `"Call"` and `qr//` as `"OpaqueExpr"`, which conflated regex
+            // operations with function calls in the receipt.
+            //
+            // The bound target is still walked so variable reads in target
+            // position keep emitting facts, exactly as before.
+            HirExpr::Regex(_) => {
+                *self.unsupported.entry("Regex").or_insert(0) += 1;
+            }
+
+            HirExpr::Match(op) => {
+                *self.unsupported.entry("Match").or_insert(0) += 1;
+                self.lower_regex_target(body, &op.target, file);
+            }
+
+            HirExpr::Substitution(op) => {
+                *self.unsupported.entry("Substitution").or_insert(0) += 1;
+                self.lower_regex_target(body, &op.target, file);
+            }
+
+            HirExpr::Transliteration(op) => {
+                *self.unsupported.entry("Transliteration").or_insert(0) += 1;
+                self.lower_regex_target(body, &op.target, file);
+            }
+
             HirExpr::Opaque { ast_kind } => {
                 // Fail-closed: opaque nodes never emit exact facts.
                 *self.unsupported.entry(ast_kind_to_static(ast_kind)).or_insert(0) += 1;
@@ -1546,6 +1660,103 @@ impl BodyLowerer {
                 // Glob expansion is runtime filesystem behavior; the typed body
                 // shell must not be mistaken for a known match set.
                 *self.unsupported.entry("Glob").or_insert(0) += 1;
+            }
+
+            HirExpr::Try { body: try_body, catch_handlers, finally_block } => {
+                // #15567. The statements inside a try/catch/finally region are
+                // ordinary, statically knowable code: before this arm existed
+                // the whole construct reached PIR-A as `HirExpr::Call` over
+                // three childless `Opaque` blocks, so every read, write, and
+                // call inside the regions was dropped and the construct was
+                // counted as an unsupported `Call`.
+                //
+                // Lower each region so its effects are recorded. What PIR v0
+                // still does not model is the *exceptional* control flow: which
+                // operations can throw, which handler a throw selects, and the
+                // guarantee that `finally` runs on every exit path. That gap is
+                // recorded explicitly below rather than implied by silence, and
+                // it is why no handler is reached by `Fallthrough`.
+                // The node control reaches the try region from, captured before
+                // the body is lowered. It is the fallback edge source for a try
+                // body that models no node of its own.
+                let entry_predecessor = self.last_in_scope.get(&None).copied();
+
+                let try_first = self.next_id;
+                self.lower_block(body, *try_body, file);
+
+                // Edge source (v0 approximation, same shape as the `Branch`
+                // condition link above): a throw may originate anywhere in the
+                // try body, so PIR v0 cannot name one true source node. The
+                // region's last modeled node stands in for the throw point.
+                //
+                // A try body that models no node at all — `try { }`, or a body
+                // whose only content is opaque such as `try { 1 }` — still has
+                // a reachable region after it, so it falls back to the node
+                // control entered the try from. Without that fallback the
+                // handler and finally regions would be left with no incoming
+                // edge whatsoever, which reads as unreachable rather than as
+                // conditionally reached, and `PirEdgeKind::Unknown` exists
+                // precisely so such an edge is not dropped silently.
+                let try_exit = (self.next_id > try_first)
+                    .then(|| PirId::from_index(self.next_id - 1))
+                    .or(entry_predecessor);
+
+                for handler in catch_handlers {
+                    // A handler is entered only by an exception, never as an
+                    // unconditional successor of the try body or of a previous
+                    // handler. Severing `last_in_scope` first — the same
+                    // mechanism `lower_branch_arm` uses for mutually exclusive
+                    // arms — stops a spurious `Fallthrough` predecessor, and
+                    // the region is reached by the conservative `Unknown` edge
+                    // that must not be dropped silently.
+                    self.last_in_scope.remove(&None);
+                    let handler_first = self.next_id;
+                    if let Some(binding) = handler.binding {
+                        self.lower_expr(body, binding, file);
+                    }
+                    self.lower_block(body, handler.block, file);
+                    if let Some(from) = try_exit
+                        && self.next_id > handler_first
+                    {
+                        self.edges.push(PirEdge {
+                            from,
+                            to: Some(PirId::from_index(handler_first)),
+                            kind: PirEdgeKind::Unknown,
+                        });
+                    }
+                }
+
+                if let Some(finally_id) = finally_block {
+                    // `finally` runs on both the ordinary and the exceptional
+                    // exit path. PIR v0 can express only one of those, so it is
+                    // reached by `Unknown` too: claiming `Fallthrough` would
+                    // assert an ordinary-only successor that is wrong whenever
+                    // the try body throws.
+                    self.last_in_scope.remove(&None);
+                    let finally_first = self.next_id;
+                    self.lower_block(body, *finally_id, file);
+                    if let Some(from) = try_exit
+                        && self.next_id > finally_first
+                    {
+                        self.edges.push(PirEdge {
+                            from,
+                            to: Some(PirId::from_index(finally_first)),
+                            kind: PirEdgeKind::Unknown,
+                        });
+                    }
+                }
+
+                // The regions are modeled; the exceptional edges between them
+                // are not. Record that residue under its own key so a consumer
+                // cannot read a lowered try region as a complete exception CFG,
+                // and so this construct stops being counted as a `Call`.
+                // A dedicated exceptional-edge taxonomy is #6661.
+                *self.unsupported.entry("TryExceptionalEdges").or_insert(0) += 1;
+
+                // A try region has no unconditional successor a following
+                // statement may inherit: control may leave the try body through
+                // a throw. Mirrors the `Branch` arm's conservative severing.
+                self.last_in_scope.remove(&None);
             }
         }
     }
@@ -1598,6 +1809,12 @@ impl BodyLowerer {
             VariableKind::Lexical => {
                 PirOperation::LexicalWrite { name: LexicalName { sigil, name: v.name.clone() } }
             }
+            VariableKind::Field if v.access == AccessMode::Read => {
+                PirOperation::FieldRead { name: LexicalName { sigil, name: v.name.clone() } }
+            }
+            VariableKind::Field => {
+                PirOperation::FieldWrite { name: LexicalName { sigil, name: v.name.clone() } }
+            }
             VariableKind::Package if v.access == AccessMode::Read => PirOperation::StashRead {
                 symbol: SymbolName {
                     sigil,
@@ -1628,6 +1845,10 @@ impl BodyLowerer {
         let sigil = sigil_str(&v.sigil);
         let op = match &v.kind {
             VariableKind::Lexical => PirOperation::Modify {
+                name: LexicalName { sigil, name: v.name.clone() },
+                op: op_text,
+            },
+            VariableKind::Field => PirOperation::FieldModify {
                 name: LexicalName { sigil, name: v.name.clone() },
                 op: op_text,
             },
