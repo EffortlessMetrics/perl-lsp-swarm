@@ -118,14 +118,35 @@ fn validate_clippy_description_counts(
     workspace_count: usize,
 ) -> Result<()> {
     let expected = format!("({strict_count}/{workspace_count} crates)");
-    if !description.contains(&expected) {
+    // A bare `contains` check would accept a description that carries the
+    // current denominator next to a stale one, so every `(N/M crates)` token
+    // must agree with the derived counts.
+    let tokens = clippy_denominator_tokens(description);
+    if tokens.is_empty() || tokens.iter().any(|token| *token != expected) {
         bail!(
-            "'{CLIPPY_TESTS_KERNEL_GATE}' description must carry the current cohort denominator \
-             '{expected}' derived from the strict cohort plus the cargo-metadata workspace set; \
-             update the counts whenever package membership moves. Found: {description:?}"
+            "'{CLIPPY_TESTS_KERNEL_GATE}' description must carry exactly the current cohort \
+             denominator '{expected}' derived from the strict cohort plus the cargo-metadata \
+             workspace set; update the counts whenever package membership moves. \
+             Found count token(s) {tokens:?} in {description:?}"
         );
     }
     Ok(())
+}
+
+fn clippy_denominator_tokens(description: &str) -> Vec<&str> {
+    description
+        .match_indices('(')
+        .filter_map(|(index, _)| {
+            let candidate = &description[index..];
+            let end = candidate.find(" crates)")? + " crates)".len();
+            let token = &candidate[..end];
+            let inner = &token[1..token.len() - " crates)".len()];
+            let (strict, workspace) = inner.split_once('/')?;
+            let digits =
+                |part: &str| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit());
+            (digits(strict) && digits(workspace) && !workspace.contains('/')).then_some(token)
+        })
+        .collect()
 }
 
 fn validate_clippy_command_contract(command: &str) -> Result<()> {
@@ -576,9 +597,14 @@ mod tests {
     fn clippy_description_counts_reject_missing_or_mismatched_denominator() -> Result<()> {
         validate_clippy_description_counts("staged cohort (2/3 crates): rest", 2, 3)?;
 
-        for (description, strict, workspace) in
-            [("staged cohort (3/3 crates)", 2, 3), ("no counts here", 2, 3)]
-        {
+        for (description, strict, workspace) in [
+            ("staged cohort (3/3 crates)", 2, 3),
+            ("no counts here", 2, 3),
+            // A current denominator next to a stale one must not pass merely
+            // because the expected token is present somewhere in the prose.
+            ("known-clean cohort (2/3 crates); current inventory (2/4 crates)", 2, 3),
+            ("known-clean cohort (2/4 crates); current inventory (2/3 crates)", 2, 3),
+        ] {
             let error = match validate_clippy_description_counts(description, strict, workspace) {
                 Ok(()) => bail!("description '{description}' must fail"),
                 Err(error) => error,
