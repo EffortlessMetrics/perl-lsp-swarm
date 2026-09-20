@@ -108,13 +108,11 @@ fn list_declaration_accepts_repetition_assignment() -> Result<(), String> {
     let trailing = "my ($x, $y) x= 3, $z;";
     assert_clean_parse(trailing);
     let trailing_ast = parse(trailing);
-    let trailing_assignment = find_assignment(&trailing_ast, "x=")
-        .ok_or_else(|| format!("trailing comma lost declaration x=:\n{}", trailing_ast.to_sexp()))?;
+    let trailing_assignment = find_assignment(&trailing_ast, "x=").ok_or_else(|| {
+        format!("trailing comma lost declaration x=:\n{}", trailing_ast.to_sexp())
+    })?;
     if source_slice(trailing, trailing_assignment)? != "my ($x, $y) x= 3" {
-        return Err(format!(
-            "comma leaked into the repetition RHS:\n{}",
-            trailing_ast.to_sexp()
-        ));
+        return Err(format!("comma leaked into the repetition RHS:\n{}", trailing_ast.to_sexp()));
     }
     let NodeKind::Assignment { rhs, .. } = &trailing_assignment.kind else {
         return Err(format!("expected Assignment, got {:?}", trailing_assignment.kind));
