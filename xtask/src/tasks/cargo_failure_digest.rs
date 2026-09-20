@@ -421,10 +421,19 @@ fn render(summary: &Value, failures: &[GateFailure]) -> String {
                 render_failing_tests(&mut out, failure);
             }
         } else if failure.failing_tests.is_empty() {
+            // Absence of a libtest marker is not evidence of a non-test cause.
+            // This reader recognises `test <name> ... FAILED` and
+            // `---- <name> stdout ----`; a lint, a script or a timeout leaves
+            // neither, but so does an assertion failure in a log that was
+            // truncated, written by an unfamiliar harness, or captured empty.
+            // Naming a cause here would be the classification this module
+            // exists to refuse.
             let _ = writeln!(
                 out,
-                "The gate's log names no failing test, so it did not fail on an \
-                 assertion. Read the command's own output in the job log.\n"
+                "The gate's log names no failing test. What failed is not established \
+                 here — this reads libtest output, and a lint, a script, a timeout, or \
+                 a truncated or unfamiliar log all leave no test name. Read the \
+                 command's own output in the job log.\n"
             );
         } else {
             let _ = writeln!(out, "Failing test(s):\n");
@@ -629,16 +638,17 @@ test result: FAILED. 0 passed; 2 failed
         assert!(markdown.contains("missing evidence, not a clean run"));
         assert!(markdown.contains("could not be read"));
         assert!(
-            !markdown.contains("did not fail on an assertion"),
-            "a missing log must not be reported as a non-assertion failure"
+            !markdown.contains("names no failing test"),
+            "a missing log must not be reported through the no-test-name branch"
         );
         Ok(())
     }
 
-    /// A gate that failed on something other than a test — a lint, a script,
-    /// a timeout — says so, and still carries its repro command.
+    /// A gate whose log names no test still carries its repro command, and
+    /// reports only what was observed. The absent name is evidence that this
+    /// reader recognised nothing, not evidence about what failed.
     #[test]
-    fn a_gate_that_failed_without_a_test_says_so() -> Result<()> {
+    fn a_gate_with_no_recognized_test_name_does_not_infer_a_cause() -> Result<()> {
         let temp = tempfile::tempdir()?;
         write_log(temp.path(), "clippy_gate", "error: unused variable `x`\nerror: aborting\n")?;
         let summary = summary_with(json!({
@@ -650,8 +660,51 @@ test result: FAILED. 0 passed; 2 failed
 
         let markdown = render(&summary, &collect_failures(&summary, temp.path()));
 
-        assert!(markdown.contains("did not fail on an assertion"));
+        assert!(markdown.contains("names no failing test"));
+        assert!(markdown.contains("not established"));
+        assert!(
+            !markdown.contains("did not fail on an assertion"),
+            "the digest must not claim a cause the parser cannot observe"
+        );
         assert!(markdown.contains("cargo clippy --workspace -- -D warnings"));
+        Ok(())
+    }
+
+    /// The discriminating control for the above. This log *is* an assertion
+    /// failure, but it was truncated before libtest wrote either the
+    /// `---- <name> stdout ----` header or the `test <name> ... FAILED`
+    /// status line. The reader recognises no test name here — exactly as it
+    /// does for a lint — so any sentence distinguishing the two cases would
+    /// be asserting something neither log establishes.
+    #[test]
+    fn a_truncated_assertion_log_is_not_called_a_non_assertion_failure() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        write_log(
+            temp.path(),
+            "truncated_gate",
+            "running 412 tests\n\
+             assertion `left == right` failed: hover returned the wrong module\n  \
+             left: \"Foo::Bar\"\n right: \"Foo::Baz\"\n",
+        )?;
+        let summary = summary_with(json!({
+            "gate_name": "truncated_gate",
+            "result": "failure",
+            "exit_code": 101,
+            "reproduce": "cargo test -p perl-lsp-ux-tests",
+        }));
+
+        let failures = collect_failures(&summary, temp.path());
+        let markdown = render(&summary, &failures);
+
+        assert!(
+            failures[0].failing_tests.is_empty(),
+            "no libtest marker is present, so no name can be recovered"
+        );
+        assert!(
+            !markdown.contains("did not fail on an assertion"),
+            "this log is an assertion failure; claiming otherwise inverts the truth"
+        );
+        assert!(markdown.contains("not established"));
         Ok(())
     }
 
