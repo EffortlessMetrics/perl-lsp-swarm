@@ -30,7 +30,7 @@ impl<'a> Parser<'a> {
         while let Some(kind) = self.peek_kind() {
             match kind {
                 TokenKind::WordOr | TokenKind::WordXor => {
-                    let op_token = self.tokens.next()?;
+                    let op_token = self.advance_token()?;
                     // Parse the right side as a full expression starting with assignment.
                     // In Perl, comma has higher precedence than word operators, so
                     // '\ or \ = 1, 0' parses as '\ or ((\ = 1), 0)'.
@@ -50,14 +50,14 @@ impl<'a> Parser<'a> {
                     let start = expr.location.start;
                     let end = right.location.end;
 
-                    expr = Node::new(
+                    expr = self.charge_node(
                         NodeKind::Binary {
                             op: op_token.text.to_string(),
                             left: Box::new(expr),
                             right: Box::new(right),
                         },
                         SourceLocation { start, end },
-                    );
+                    )?;
                 }
                 _ => break,
             }
@@ -74,7 +74,7 @@ impl<'a> Parser<'a> {
     /// Parse word and expression with existing left side
     fn parse_word_and_expr_with(&mut self, mut expr: Node) -> ParseResult<Node> {
         while self.peek_kind() == Some(TokenKind::WordAnd) {
-            let op_token = self.tokens.next()?;
+            let op_token = self.advance_token()?;
             // Parse right side as a 'not' expression or assignment.
             // In Perl, comma has higher precedence than word operators, so
             // `$a and $x = 1, last` parses as `$a and ($x = 1, last)`.
@@ -90,14 +90,14 @@ impl<'a> Parser<'a> {
             let start = expr.location.start;
             let end = right.location.end;
 
-            expr = Node::new(
+            expr = self.charge_node(
                 NodeKind::Binary {
                     op: op_token.text.to_string(),
                     left: Box::new(expr),
                     right: Box::new(right),
                 },
                 SourceLocation { start, end },
-            );
+            )?;
         }
 
         Ok(expr)
@@ -129,7 +129,7 @@ impl<'a> Parser<'a> {
     fn parse_word_not_expr(&mut self) -> ParseResult<Node> {
         self.with_recursion_guard(|s| {
             if s.peek_kind() == Some(TokenKind::WordNot) {
-                let op_token = s.tokens.next()?;
+                let op_token = s.advance_token()?;
                 let start = op_token.start();
                 let operand = if s.goto_starts_control_flow() {
                     s.parse_goto()?
@@ -138,10 +138,10 @@ impl<'a> Parser<'a> {
                 };
                 let end = operand.location.end;
 
-                return Ok(Node::new(
+                return s.charge_node(
                     NodeKind::Unary { op: op_token.text.to_string(), operand: Box::new(operand) },
                     SourceLocation { start, end },
-                ));
+                );
             }
 
             // The right side of a word operator should be a full expression
@@ -156,7 +156,7 @@ impl<'a> Parser<'a> {
     /// Perl accepts `$value x= 3` but not `$value x = 3`.
     fn consume_assignment_operator(&mut self) -> ParseResult<Option<(&'static str, usize)>> {
         if let Some(op) = self.peek_kind().and_then(Self::assignment_operator_text) {
-            let token = self.tokens.next()?;
+            let token = self.advance_token()?;
             return Ok(Some((op, token.start())));
         }
 
@@ -172,8 +172,8 @@ impl<'a> Parser<'a> {
                     .is_ok_and(|token| token.kind() == TokenKind::Assign && token.start() == end);
 
             if adjacent_assign {
-                self.tokens.next()?; // consume x
-                self.tokens.next()?; // consume =
+                self.advance_token()?; // consume x
+                self.advance_token()?; // consume =
                 return Ok(Some(("x=", start)));
             }
         }
@@ -189,11 +189,11 @@ impl<'a> Parser<'a> {
                 TokenKind::WordNot | TokenKind::WordAnd | TokenKind::WordOr | TokenKind::WordXor
             ) && self.is_keyword_before_fat_arrow()
             {
-                let token = self.tokens.next()?;
-                return Ok(Node::new(
+                let token = self.advance_token()?;
+                return self.charge_node(
                     NodeKind::Identifier { name: token.text.to_string() },
                     SourceLocation { start: token.start(), end: token.end() },
-                ));
+                );
             }
 
             // Check if we have a 'not' operator first
@@ -223,14 +223,14 @@ impl<'a> Parser<'a> {
             let start = expr.location.start;
             let end = rhs.location.end;
 
-            expr = Node::new(
+            expr = self.charge_node(
                 NodeKind::Assignment {
                     lhs: Box::new(expr),
                     rhs: Box::new(rhs),
                     op: op.to_string(),
                 },
                 SourceLocation { start, end },
-            );
+            )?;
         }
 
         Ok(expr)
@@ -250,7 +250,7 @@ impl<'a> Parser<'a> {
         let mut expr = self.parse_range()?;
 
         if self.peek_kind() == Some(TokenKind::Question) {
-            self.tokens.next()?; // consume ?
+            self.advance_token()?; // consume ?
             // The then-branch (between ? and :) allows full assignment
             // expressions because : acts as a terminator.  parse_assignment
             // calls parse_ternary internally, so nested ternaries still work.
@@ -267,14 +267,14 @@ impl<'a> Parser<'a> {
             let start = expr.location.start;
             let end = else_expr.location.end;
 
-            expr = Node::new(
+            expr = self.charge_node(
                 NodeKind::Ternary {
                     condition: Box::new(expr),
                     then_expr: Box::new(then_expr),
                     else_expr: Box::new(else_expr),
                 },
                 SourceLocation { start, end },
-            );
+            )?;
         }
 
         Ok(expr)
@@ -285,7 +285,7 @@ impl<'a> Parser<'a> {
     /// `defined $var ? then : else` is correctly wrapped in a Ternary node.
     fn parse_ternary_with(&mut self, mut expr: Node) -> ParseResult<Node> {
         if self.peek_kind() == Some(TokenKind::Question) {
-            self.tokens.next()?; // consume ?
+            self.advance_token()?; // consume ?
             let then_expr = self.parse_assignment()?;
             let then_expr = self.collect_fat_arrow_ternary_branch(then_expr)?;
             self.expect(TokenKind::Colon)?;
@@ -295,14 +295,14 @@ impl<'a> Parser<'a> {
             let start = expr.location.start;
             let end = else_expr.location.end;
 
-            expr = Node::new(
+            expr = self.charge_node(
                 NodeKind::Ternary {
                     condition: Box::new(expr),
                     then_expr: Box::new(then_expr),
                     else_expr: Box::new(else_expr),
                 },
                 SourceLocation { start, end },
-            );
+            )?;
         }
 
         Ok(expr)
@@ -339,9 +339,9 @@ impl<'a> Parser<'a> {
             if let NodeKind::Identifier { ref name } = elements[0].kind {
                 let loc = elements[0].location;
                 elements[0] =
-                    Node::new(NodeKind::String { value: name.clone(), interpolated: false }, loc);
+                    self.charge_node(NodeKind::String { value: name.clone(), interpolated: false }, loc)?;
             }
-            self.tokens.next()?; // consume =>
+            self.advance_token()?; // consume =>
             if !matches!(
                 self.peek_kind(),
                 Some(
@@ -381,10 +381,10 @@ impl<'a> Parser<'a> {
                 if let Some(last) = elements.last_mut()
                     && let NodeKind::Identifier { ref name } = last.kind
                 {
-                    *last = Node::new(
+                    *last = self.charge_node(
                         NodeKind::String { value: name.clone(), interpolated: false },
                         last.location,
-                    );
+                    )?;
                 }
             }
 
@@ -406,12 +406,12 @@ impl<'a> Parser<'a> {
             if self.peek_kind() == Some(TokenKind::FatArrow) {
                 saw_fat_arrow = true;
                 if let NodeKind::Identifier { ref name } = elem.kind {
-                    elem = Node::new(
+                    elem = self.charge_node(
                         NodeKind::String { value: name.clone(), interpolated: false },
                         elem.location,
-                    );
+                    )?;
                 }
-                self.tokens.next()?; // consume =>
+                self.advance_token()?; // consume =>
                 elements.push(elem);
 
                 match self.peek_kind() {
@@ -435,7 +435,7 @@ impl<'a> Parser<'a> {
             .ok_or_else(|| ParseError::syntax("Empty ternary branch list", start))?
             .location
             .end;
-        Ok(Self::build_list_or_hash(elements, saw_fat_arrow, start, end))
+        self.build_list_or_hash(elements, saw_fat_arrow, start, end)
     }
 
     /// Apply all binary operators below assignment precedence to an already-parsed
@@ -520,7 +520,7 @@ impl<'a> Parser<'a> {
 
     fn parse_or_with(&mut self, mut expr: Node) -> ParseResult<Node> {
         while Self::is_logical_or(self.peek_kind()) {
-            let op_token = self.tokens.next()?;
+            let op_token = self.advance_token()?;
             let right = if let Some(missing) = self.recover_missing_infix_rhs(op_token.start()) {
                 missing
             } else {
@@ -529,14 +529,14 @@ impl<'a> Parser<'a> {
             let start = expr.location.start;
             let end = right.location.end;
 
-            expr = Node::new(
+            expr = self.charge_node(
                 NodeKind::Binary {
                     op: op_token.text.to_string(),
                     left: Box::new(expr),
                     right: Box::new(right),
                 },
                 SourceLocation { start, end },
-            );
+            )?;
         }
 
         Ok(expr)
@@ -544,7 +544,7 @@ impl<'a> Parser<'a> {
 
     fn parse_and_with(&mut self, mut expr: Node) -> ParseResult<Node> {
         while self.peek_kind() == Some(TokenKind::And) {
-            let op_token = self.tokens.next()?;
+            let op_token = self.advance_token()?;
             let right = if let Some(missing) = self.recover_missing_infix_rhs(op_token.start()) {
                 missing
             } else {
@@ -553,14 +553,14 @@ impl<'a> Parser<'a> {
             let start = expr.location.start;
             let end = right.location.end;
 
-            expr = Node::new(
+            expr = self.charge_node(
                 NodeKind::Binary {
                     op: op_token.text.to_string(),
                     left: Box::new(expr),
                     right: Box::new(right),
                 },
                 SourceLocation { start, end },
-            );
+            )?;
         }
 
         Ok(expr)
@@ -568,7 +568,7 @@ impl<'a> Parser<'a> {
 
     fn parse_bitwise_or_with(&mut self, mut expr: Node) -> ParseResult<Node> {
         while self.peek_kind() == Some(TokenKind::BitwiseOr) {
-            let op_token = self.tokens.next()?;
+            let op_token = self.advance_token()?;
             let right = if let Some(missing) = self.recover_missing_infix_rhs(op_token.start()) {
                 missing
             } else {
@@ -577,14 +577,14 @@ impl<'a> Parser<'a> {
             let start = expr.location.start;
             let end = right.location.end;
 
-            expr = Node::new(
+            expr = self.charge_node(
                 NodeKind::Binary {
                     op: op_token.text.to_string(),
                     left: Box::new(expr),
                     right: Box::new(right),
                 },
                 SourceLocation { start, end },
-            );
+            )?;
         }
 
         Ok(expr)
@@ -592,7 +592,7 @@ impl<'a> Parser<'a> {
 
     fn parse_bitwise_xor_with(&mut self, mut expr: Node) -> ParseResult<Node> {
         while self.peek_kind() == Some(TokenKind::BitwiseXor) {
-            let op_token = self.tokens.next()?;
+            let op_token = self.advance_token()?;
             let right = if let Some(missing) = self.recover_missing_infix_rhs(op_token.start()) {
                 missing
             } else {
@@ -601,14 +601,14 @@ impl<'a> Parser<'a> {
             let start = expr.location.start;
             let end = right.location.end;
 
-            expr = Node::new(
+            expr = self.charge_node(
                 NodeKind::Binary {
                     op: op_token.text.to_string(),
                     left: Box::new(expr),
                     right: Box::new(right),
                 },
                 SourceLocation { start, end },
-            );
+            )?;
         }
 
         Ok(expr)
@@ -625,7 +625,7 @@ impl<'a> Parser<'a> {
     /// descent (`parse_or` on the right, the caller's ladder on the left).
     fn parse_range_with(&mut self, mut expr: Node) -> ParseResult<Node> {
         if self.peek_kind() == Some(TokenKind::Range) {
-            let op_token = self.tokens.next()?;
+            let op_token = self.advance_token()?;
             let right = if let Some(missing) = self.recover_missing_infix_rhs(op_token.start()) {
                 missing
             } else {
@@ -634,14 +634,14 @@ impl<'a> Parser<'a> {
             let start = expr.location.start;
             let end = right.location.end;
 
-            expr = Node::new(
+            expr = self.charge_node(
                 NodeKind::Binary {
                     op: op_token.text.to_string(),
                     left: Box::new(expr),
                     right: Box::new(right),
                 },
                 SourceLocation { start, end },
-            );
+            )?;
         }
 
         Ok(expr)
@@ -649,7 +649,7 @@ impl<'a> Parser<'a> {
 
     fn parse_bitwise_and_with(&mut self, mut expr: Node) -> ParseResult<Node> {
         while self.peek_kind() == Some(TokenKind::BitwiseAnd) {
-            let op_token = self.tokens.next()?;
+            let op_token = self.advance_token()?;
             let right = if let Some(missing) = self.recover_missing_infix_rhs(op_token.start()) {
                 missing
             } else {
@@ -658,14 +658,14 @@ impl<'a> Parser<'a> {
             let start = expr.location.start;
             let end = right.location.end;
 
-            expr = Node::new(
+            expr = self.charge_node(
                 NodeKind::Binary {
                     op: op_token.text.to_string(),
                     left: Box::new(expr),
                     right: Box::new(right),
                 },
                 SourceLocation { start, end },
-            );
+            )?;
         }
 
         Ok(expr)
@@ -677,7 +677,7 @@ impl<'a> Parser<'a> {
                 TokenKind::Identifier => {
                     let next_text = self.tokens.peek()?.text.as_ref();
                     if matches!(next_text, "eq" | "ne" | "cmp") {
-                        let op_token = self.tokens.next()?;
+                        let op_token = self.advance_token()?;
                         let right = if let Some(missing) =
                             self.recover_missing_infix_rhs(op_token.start())
                         {
@@ -688,20 +688,20 @@ impl<'a> Parser<'a> {
                         let start = expr.location.start;
                         let end = right.location.end;
 
-                        expr = Node::new(
+                        expr = self.charge_node(
                             NodeKind::Binary {
                                 op: op_token.text.to_string(),
                                 left: Box::new(expr),
                                 right: Box::new(right),
                             },
                             SourceLocation { start, end },
-                        );
+                        )?;
                     } else {
                         break;
                     }
                 }
                 TokenKind::Spaceship | TokenKind::StringCompare => {
-                    let op_token = self.tokens.next()?;
+                    let op_token = self.advance_token()?;
                     let right =
                         if let Some(missing) = self.recover_missing_infix_rhs(op_token.start()) {
                             missing
@@ -711,21 +711,21 @@ impl<'a> Parser<'a> {
                     let start = expr.location.start;
                     let end = right.location.end;
 
-                    expr = Node::new(
+                    expr = self.charge_node(
                         NodeKind::Binary {
                             op: op_token.text.to_string(),
                             left: Box::new(expr),
                             right: Box::new(right),
                         },
                         SourceLocation { start, end },
-                    );
+                    )?;
                 }
                 TokenKind::Equal
                 | TokenKind::NotEqual
                 | TokenKind::Match
                 | TokenKind::NotMatch
                 | TokenKind::SmartMatch => {
-                    let op_token = self.tokens.next()?;
+                    let op_token = self.advance_token()?;
                     let right =
                         if let Some(missing) = self.recover_missing_infix_rhs(op_token.start()) {
                             missing
@@ -745,7 +745,7 @@ impl<'a> Parser<'a> {
                         } = &right.kind
                         {
                             let negated = matches!(op_token.kind(), TokenKind::NotMatch);
-                            expr = Node::new(
+                            expr = self.charge_node(
                                 NodeKind::Substitution {
                                     expr: Box::new(expr),
                                     pattern: pattern.clone(),
@@ -755,13 +755,13 @@ impl<'a> Parser<'a> {
                                     negated,
                                 },
                                 SourceLocation { start, end },
-                            );
+                            )?;
                         } else if let NodeKind::Transliteration {
                             search, replace, modifiers, ..
                         } = &right.kind
                         {
                             let negated = matches!(op_token.kind(), TokenKind::NotMatch);
-                            expr = Node::new(
+                            expr = self.charge_node(
                                 NodeKind::Transliteration {
                                     expr: Box::new(expr),
                                     search: search.clone(),
@@ -770,7 +770,7 @@ impl<'a> Parser<'a> {
                                     negated,
                                 },
                                 SourceLocation { start, end },
-                            );
+                            )?;
                         } else if let NodeKind::Regex {
                             pattern,
                             replacement,
@@ -785,7 +785,7 @@ impl<'a> Parser<'a> {
                                 } else {
                                     pattern.clone()
                                 };
-                                expr = Node::new(
+                                expr = self.charge_node(
                                     NodeKind::Substitution {
                                         expr: Box::new(expr),
                                         pattern: pat,
@@ -795,9 +795,9 @@ impl<'a> Parser<'a> {
                                         negated,
                                     },
                                     SourceLocation { start, end },
-                                );
+                                )?;
                             } else {
-                                expr = Node::new(
+                                expr = self.charge_node(
                                     NodeKind::Match {
                                         expr: Box::new(expr),
                                         pattern: pattern.clone(),
@@ -806,27 +806,27 @@ impl<'a> Parser<'a> {
                                         negated,
                                     },
                                     SourceLocation { start, end },
-                                );
+                                )?;
                             }
                         } else {
-                            expr = Node::new(
+                            expr = self.charge_node(
                                 NodeKind::Binary {
                                     op: op_token.text.to_string(),
                                     left: Box::new(expr),
                                     right: Box::new(right),
                                 },
                                 SourceLocation { start, end },
-                            );
+                            )?;
                         }
                     } else {
-                        expr = Node::new(
+                        expr = self.charge_node(
                             NodeKind::Binary {
                                 op: op_token.text.to_string(),
                                 left: Box::new(expr),
                                 right: Box::new(right),
                             },
                             SourceLocation { start, end },
-                        );
+                        )?;
                     }
                 }
                 _ => break,
@@ -861,7 +861,7 @@ impl<'a> Parser<'a> {
         if matches!(self.peek_kind(), Some(TokenKind::Identifier)) {
             let peek_text = self.tokens.peek()?.text.as_ref().to_string();
             if peek_text == "ISA" || peek_text == "isa" {
-                let op_token = self.tokens.next()?;
+                let op_token = self.advance_token()?;
                 let right = if let Some(missing) = self.recover_missing_infix_rhs(op_token.start())
                 {
                     missing
@@ -870,14 +870,14 @@ impl<'a> Parser<'a> {
                 };
                 let start = lhs.location.start;
                 let end = right.location.end;
-                lhs = Node::new(
+                lhs = self.charge_node(
                     NodeKind::Binary {
                         op: op_token.text.to_string(),
                         left: Box::new(lhs),
                         right: Box::new(right),
                     },
                     SourceLocation { start, end },
-                );
+                )?;
             } else if matches!(peek_text.as_str(), "lt" | "le" | "gt" | "ge") {
                 // fall through to chained-relational handling below
             } else {
@@ -891,7 +891,7 @@ impl<'a> Parser<'a> {
         }
 
         // Parse the first operator and its right-hand operand.
-        let op1 = self.tokens.next()?;
+        let op1 = self.advance_token()?;
         let rhs1 = if let Some(missing) = self.recover_missing_infix_rhs(op1.start()) {
             missing
         } else {
@@ -902,14 +902,14 @@ impl<'a> Parser<'a> {
         if !self.peek_is_relational_op() {
             let start = lhs.location.start;
             let end = rhs1.location.end;
-            return Ok(Node::new(
+            return self.charge_node(
                 NodeKind::Binary {
                     op: op1.text.to_string(),
                     left: Box::new(lhs),
                     right: Box::new(rhs1),
                 },
                 SourceLocation { start, end },
-            ));
+            );
         }
 
         // Chain mode: two or more consecutive relational comparisons.
@@ -919,7 +919,7 @@ impl<'a> Parser<'a> {
         let mut ops = vec![op1.text.to_string()];
 
         while self.peek_is_relational_op() {
-            let op_token = self.tokens.next()?;
+            let op_token = self.advance_token()?;
             let operand = if let Some(missing) = self.recover_missing_infix_rhs(op_token.start()) {
                 missing
             } else {
@@ -930,7 +930,7 @@ impl<'a> Parser<'a> {
         }
 
         let end = operands.last().map_or(start, |n| n.location.end);
-        Ok(Node::new(NodeKind::ChainedComparison { operands, ops }, SourceLocation { start, end }))
+        self.charge_node(NodeKind::ChainedComparison { operands, ops }, SourceLocation { start, end })
     }
 
     /// Parse shift expression
@@ -963,7 +963,7 @@ impl<'a> Parser<'a> {
         while let Some(kind) = self.peek_kind() {
             match kind {
                 TokenKind::LeftShift | TokenKind::RightShift => {
-                    let op_token = self.tokens.next()?;
+                    let op_token = self.advance_token()?;
                     let right =
                         if let Some(missing) = self.recover_missing_infix_rhs(op_token.start()) {
                             missing
@@ -973,14 +973,14 @@ impl<'a> Parser<'a> {
                     let start = expr.location.start;
                     let end = right.location.end;
 
-                    expr = Node::new(
+                    expr = self.charge_node(
                         NodeKind::Binary {
                             op: op_token.text.to_string(),
                             left: Box::new(expr),
                             right: Box::new(right),
                         },
                         SourceLocation { start, end },
-                    );
+                    )?;
                 }
                 _ => break,
             }
@@ -993,7 +993,7 @@ impl<'a> Parser<'a> {
         while let Some(kind) = self.peek_kind() {
             match kind {
                 TokenKind::Plus | TokenKind::Minus | TokenKind::Dot => {
-                    let op_token = self.tokens.next()?;
+                    let op_token = self.advance_token()?;
                     let right =
                         if let Some(missing) = self.recover_missing_infix_rhs(op_token.start()) {
                             missing
@@ -1003,14 +1003,14 @@ impl<'a> Parser<'a> {
                     let start = expr.location.start;
                     let end = right.location.end;
 
-                    expr = Node::new(
+                    expr = self.charge_node(
                         NodeKind::Binary {
                             op: op_token.text.to_string(),
                             left: Box::new(expr),
                             right: Box::new(right),
                         },
                         SourceLocation { start, end },
-                    );
+                    )?;
                 }
                 _ => break,
             }
@@ -1130,7 +1130,7 @@ impl<'a> Parser<'a> {
         while let Some(kind) = self.peek_kind() {
             match kind {
                 TokenKind::Star | TokenKind::Slash | TokenKind::Percent => {
-                    let op_token = self.tokens.next()?;
+                    let op_token = self.advance_token()?;
                     // Use parse_power() so that `a * b**c` parses as `a * (b**c)`.
                     // Exponentiation binds more tightly than multiplication in Perl.
                     let right =
@@ -1142,14 +1142,14 @@ impl<'a> Parser<'a> {
                     let start = expr.location.start;
                     let end = right.location.end;
 
-                    expr = Node::new(
+                    expr = self.charge_node(
                         NodeKind::Binary {
                             op: op_token.text.to_string(),
                             left: Box::new(expr),
                             right: Box::new(right),
                         },
                         SourceLocation { start, end },
-                    );
+                    )?;
                 }
                 TokenKind::Identifier => {
                     let peeked = self.tokens.peek()?;
@@ -1162,24 +1162,24 @@ impl<'a> Parser<'a> {
                         && peeked_text.starts_with('x')
                         && peeked_text[1..].chars().all(|c| c.is_ascii_digit());
                     if fused_x_digits {
-                        let op_token = self.tokens.next()?;
+                        let op_token = self.advance_token()?;
                         let num_str = op_token.text[1..].to_string();
                         let num_start = op_token.start() + 1;
                         let num_end = op_token.end();
-                        let right = Node::new(
+                        let right = self.charge_node(
                             NodeKind::Number { value: num_str },
                             SourceLocation { start: num_start, end: num_end },
-                        );
+                        )?;
                         let start = expr.location.start;
                         let end = right.location.end;
-                        expr = Node::new(
+                        expr = self.charge_node(
                             NodeKind::Binary {
                                 op: "x".to_string(),
                                 left: Box::new(expr),
                                 right: Box::new(right),
                             },
                             SourceLocation { start, end },
-                        );
+                        )?;
                         continue;
                     }
                     if peeked_text != "x" {
@@ -1193,7 +1193,7 @@ impl<'a> Parser<'a> {
                     ) {
                         break;
                     }
-                    let op_token = self.tokens.next()?;
+                    let op_token = self.advance_token()?;
                     // Use parse_power() so that `a x b**c` parses as `a x (b**c)`.
                     // Exponentiation binds more tightly than repetition in Perl.
                     let right = if disposition == RepetitionRhsDisposition::MissingOperand {
@@ -1206,14 +1206,14 @@ impl<'a> Parser<'a> {
                     let start = expr.location.start;
                     let end = right.location.end;
 
-                    expr = Node::new(
+                    expr = self.charge_node(
                         NodeKind::Binary {
                             op: op_token.text.to_string(),
                             left: Box::new(expr),
                             right: Box::new(right),
                         },
                         SourceLocation { start, end },
-                    );
+                    )?;
                 }
                 _ => break,
             }
@@ -1224,7 +1224,7 @@ impl<'a> Parser<'a> {
 
     fn parse_power_with(&mut self, mut expr: Node) -> ParseResult<Node> {
         while self.peek_kind() == Some(TokenKind::Power) {
-            let op_token = self.tokens.next()?;
+            let op_token = self.advance_token()?;
             let right = if let Some(missing) = self.recover_missing_infix_rhs(op_token.start()) {
                 missing
             } else {
@@ -1233,14 +1233,14 @@ impl<'a> Parser<'a> {
             let start = expr.location.start;
             let end = right.location.end;
 
-            expr = Node::new(
+            expr = self.charge_node(
                 NodeKind::Binary {
                     op: op_token.text.to_string(),
                     left: Box::new(expr),
                     right: Box::new(right),
                 },
                 SourceLocation { start, end },
-            );
+            )?;
         }
 
         Ok(expr)
