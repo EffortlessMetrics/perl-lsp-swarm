@@ -166,6 +166,7 @@ pub(crate) fn check_print_in_lib(repo_root: &Path) -> Result<i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use color_eyre::eyre::ensure;
     use std::path::PathBuf;
 
     /// A repository tree laid out on disk, removed when the test ends.
@@ -210,13 +211,19 @@ mod tests {
         }
     }
 
-    /// Asserts the scan reported exactly the given source lines, in order.
-    fn assert_offender_sources(offenders: &[String], expected: &[&str]) {
+    /// Checks that the scan reported exactly the given source lines, in order.
+    ///
+    /// Fallible rather than asserting: a panicking predicate in
+    /// `crates/perl-ci-hygiene/src/` lands under `allow-b0217`, an unowned
+    /// `baseline_debt` entry in `policy/allow.toml`, which is a floor to burn
+    /// down rather than an allowance to add to.
+    fn check_offender_sources(offenders: &[String], expected: &[&str]) -> Result<()> {
         let sources: Vec<&str> = offenders
             .iter()
             .map(|entry| entry.rsplit_once(':').map_or(entry.as_str(), |(_, source)| source))
             .collect();
-        assert_eq!(sources, expected, "offenders were {offenders:?}");
+        ensure!(sources == expected, "expected {expected:?}, offenders were {offenders:?}");
+        Ok(())
     }
 
     // ── trailing comment after an opt-out ────────────────────────────────────
@@ -242,7 +249,7 @@ mod tests {
                 "}\n",
             ),
         )?;
-        assert_offender_sources(&tree.scan()?, &["println!(\"reported\");"]);
+        check_offender_sources(&tree.scan()?, &["println!(\"reported\");"])?;
         Ok(())
     }
 
@@ -261,7 +268,7 @@ mod tests {
                 "}\n",
             ),
         )?;
-        assert_offender_sources(&tree.scan()?, &[]);
+        check_offender_sources(&tree.scan()?, &[])?;
         Ok(())
     }
 
@@ -284,7 +291,7 @@ mod tests {
                 "}\n",
             ),
         )?;
-        assert_offender_sources(&tree.scan()?, &["println!(\"reported\");"]);
+        check_offender_sources(&tree.scan()?, &["println!(\"reported\");"])?;
         Ok(())
     }
 
@@ -298,7 +305,7 @@ mod tests {
                 "pub fn banner() { println!(\"allowed\"); }\n",
             ),
         )?;
-        assert_offender_sources(&tree.scan()?, &[]);
+        check_offender_sources(&tree.scan()?, &[])?;
         Ok(())
     }
 
@@ -321,7 +328,7 @@ mod tests {
                 "}\n",
             ),
         )?;
-        assert_offender_sources(&tree.scan()?, &["println!(\"reported\");"]);
+        check_offender_sources(&tree.scan()?, &["println!(\"reported\");"])?;
         Ok(())
     }
 
@@ -342,7 +349,7 @@ mod tests {
                 "}\n",
             ),
         )?;
-        assert_offender_sources(&tree.scan()?, &[]);
+        check_offender_sources(&tree.scan()?, &[])?;
         Ok(())
     }
 
@@ -353,9 +360,11 @@ mod tests {
         let tree = RepoTree::new("offender-shape")?;
         tree.source("lib.rs", "pub fn leaked() {\n    println!(\"reported\");\n}\n")?;
         let offenders = tree.scan()?;
-        assert_eq!(offenders.len(), 1, "offenders were {offenders:?}");
-        let entry = &offenders[0];
-        assert!(entry.contains("probe/src/lib.rs:2:"), "entry was {entry}");
+        let entry = offenders
+            .first()
+            .ok_or_else(|| eyre!("the scan reported nothing; offenders were {offenders:?}"))?;
+        ensure!(offenders.len() == 1, "expected one offender, got {offenders:?}");
+        ensure!(entry.contains("probe/src/lib.rs:2:"), "entry was {entry}");
         Ok(())
     }
 }
