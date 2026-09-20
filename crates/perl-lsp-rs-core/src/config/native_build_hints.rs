@@ -676,7 +676,9 @@ fn parse_quoted_string(source: &str, start: usize) -> Option<(String, usize, boo
             }
         }
 
-        if ch as u8 == quote {
+        // Compare as chars: `ch as u8` truncates non-ASCII scalars and can
+        // false-match the quote byte (e.g. U+0222 has low byte 0x22).
+        if ch == quote as char {
             return Some((value, idx - start, interpolating));
         }
 
@@ -1123,6 +1125,18 @@ Module::Build->new(
         );
         assert!(hints.diagnostics.is_empty());
         Ok(())
+    }
+
+    #[test]
+    fn quoted_string_keeps_non_ascii_scalar_sharing_the_quote_low_byte() -> TestResult {
+        // U+0222 low byte is 0x22 ('"'); U+0227 low byte is 0x27 ('\'').
+        // A truncating `as u8` comparison ends the literal at either scalar.
+        let (double, _, _) =
+            parse_quoted_string("\"aȢb\"", 0).ok_or("double-quoted literal should parse")?;
+        ensure_eq(double, "aȢb".to_string(), "double-quoted content")?;
+        let (single, _, _) =
+            parse_quoted_string("'aȧb'", 0).ok_or("single-quoted literal should parse")?;
+        ensure_eq(single, "aȧb".to_string(), "single-quoted content")
     }
 
     #[test]
