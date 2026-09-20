@@ -48,7 +48,7 @@ class AggregateClassifierTests(unittest.TestCase):
         self.assertEqual((), verdict.blockers)
 
     def test_non_success_shard_cannot_report_green(self) -> None:
-        for result in ("failure", "cancelled", "skipped", "neutral", "pending"):
+        for result in ("failure", "skipped", "neutral", "pending"):
             with self.subTest(result=result):
                 verdict = gate.evaluate(applicable_needs(shard_result=result))
                 self.assertEqual("failure", verdict.status)
@@ -56,6 +56,28 @@ class AggregateClassifierTests(unittest.TestCase):
                     (f"merge-gate-shards={result}",),
                     verdict.blockers,
                 )
+
+    def test_all_cancelled_dependencies_are_reported_as_superseded(self) -> None:
+        needs = applicable_needs(shard_result="cancelled")
+        needs["check-all-targets"]["result"] = "cancelled"
+        needs["ux-tests"]["result"] = "cancelled"
+        verdict = gate.evaluate(needs)
+        self.assertEqual("superseded", verdict.status)
+        self.assertEqual(
+            (
+                "check-all-targets=cancelled",
+                "merge-gate-shards=cancelled",
+                "ux-tests=cancelled",
+            ),
+            verdict.blockers,
+        )
+
+    def test_real_failure_wins_over_cancelled_dependencies(self) -> None:
+        needs = applicable_needs(shard_result="cancelled")
+        needs["check-all-targets"]["result"] = "failure"
+        needs["ux-tests"]["result"] = "cancelled"
+        verdict = gate.evaluate(needs)
+        self.assertEqual("failure", verdict.status)
 
     def test_missing_shard_cannot_report_green(self) -> None:
         needs = applicable_needs()

@@ -145,6 +145,17 @@ def evaluate(
         if _result(needs, name) != "success"
     )
     if blockers:
+        if all(
+            name in EXPECTED_DEPENDENCIES and result == "cancelled"
+            for name, result in (
+                blocker.split("=", 1) for blocker in blockers
+            )
+        ):
+            return Verdict(
+                "superseded",
+                "all applicable dependencies were cancelled by a newer run",
+                blockers,
+            )
         return Verdict("failure", "applicable dependency did not succeed", blockers)
     return Verdict("success", "all applicable dependencies succeeded")
 
