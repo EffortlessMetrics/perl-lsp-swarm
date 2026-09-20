@@ -87,6 +87,23 @@ fn no_qw_owns_arguments_and_preserves_next_statement() -> Result<(), String> {
 }
 
 #[test]
+fn no_qw_pair_values_remain_inside_directive() -> Result<(), String> {
+    // Fat arrow is a comma in Perl: a trailing arrow is not a missing-value error.
+    no_with_following_declaration("no Example qw(a) =>", "Example", &["qw(a)"])?;
+    no_with_following_declaration("no Example qw(a b) => 1", "Example", &["qw(a b)", "1"])?;
+    no_with_following_declaration(
+        "no Example qw(a b) => { key => [1, 2] }, 'tail'",
+        "Example",
+        &["qw(a b)", "{", "key", "=>", "[", "1", ",", "2", "]", "}", "'tail'"],
+    )?;
+    no_with_following_declaration(
+        "no Example qw(a) => sub { 1; 2; }, qw(b)",
+        "Example",
+        &["qw(a)", "sub", "{", "1", ";", "2", ";", "}", "qw(b)"],
+    )
+}
+
+#[test]
 fn no_argument_ownership_opposite_controls() -> Result<(), String> {
     no_with_following_declaration("no warnings 'all'", "warnings", &["'all'"])?;
     no_with_following_declaration(

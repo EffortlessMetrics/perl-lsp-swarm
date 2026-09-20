@@ -1645,6 +1645,10 @@ impl<'a> Parser<'a> {
                         })?;
                         // Retain the existing directive compatibility representation.
                         args.push(format!("qw({})", words.join(" ")));
+                        if self.peek_kind() == Some(TokenKind::FatArrow) {
+                            self.consume_token()?;
+                            self.consume_use_import_value(&mut args)?;
+                        }
                     }
                     Some(TokenKind::String) => {
                         args.push(self.consume_token()?.text.to_string());
