@@ -1,6 +1,8 @@
 //! Shift-left falsifier proofs for #11664 (see
 //! `.spec/11664-host-work-status-domain/checklist.md` for the ID map).
 
+use anyhow::{Context, Result, bail, ensure};
+
 use super::{
     AdapterError, AdmissionAdapterOutcome, Attribution, CapacityFact, ClaimRelationship,
     CleanupReadiness, ComputeWorkObservation, Dimension, DimensionEvidence, DurableState,
@@ -114,7 +116,6 @@ fn compute(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn storage(
     key: &str,
     root_class: RootClass,
@@ -143,7 +144,6 @@ fn storage(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn worktree_entry(
     path: &str,
     branch: Option<&str>,
@@ -301,7 +301,7 @@ fn clean_snapshot(branch: &str, pr_open: bool) -> WriterAdmissionSnapshot {
 // ---- F1: agent/lane return never makes compute terminal --------------------
 
 #[test]
-fn host_work_status_f1_agent_return_not_terminal() {
+fn host_work_status_f1_agent_return_not_terminal() -> Result<()> {
     let subject = repository_subject(Some("wt"));
     let key = subject.subject_key();
     let classification = classify_compute(&compute(
@@ -318,19 +318,20 @@ fn host_work_status_f1_agent_return_not_terminal() {
         Settlement::Settled,
         InitiatorReturn::Returned,
     ));
-    assert_eq!(classification.lifecycle, HostWorkLifecycle::Stopping);
-    assert!(
+    ensure!(classification.lifecycle == HostWorkLifecycle::Stopping);
+    ensure!(
         classification.reasons.contains(&HostWorkReason::InitiatorReturnedButDescendantsUnsettled)
     );
     // The live tree is positive observed knowledge, so the evidence surface
     // is complete even though the lifecycle is STOPPING, not TERMINAL.
-    assert_eq!(classification.evidence, DimensionEvidence::Complete);
+    ensure!(classification.evidence == DimensionEvidence::Complete);
+    Ok(())
 }
 
 // ---- F2: parent exit does not settle descendants/reservations --------------
 
 #[test]
-fn host_work_status_f2_parent_exit_not_terminal() {
+fn host_work_status_f2_parent_exit_not_terminal() -> Result<()> {
     let subject = repository_subject(Some("wt"));
     let key = subject.subject_key();
     let classification = classify_compute(&compute(
@@ -344,13 +345,14 @@ fn host_work_status_f2_parent_exit_not_terminal() {
         Settlement::Settled,
         InitiatorReturn::Returned,
     ));
-    assert_eq!(classification.lifecycle, HostWorkLifecycle::Stopping);
+    ensure!(classification.lifecycle == HostWorkLifecycle::Stopping);
+    Ok(())
 }
 
 // ---- F3: process API unavailable is NOT_PROVEN, not zero processes ---------
 
 #[test]
-fn host_work_status_f3_api_unavailable_is_not_proven_not_zero() {
+fn host_work_status_f3_api_unavailable_is_not_proven_not_zero() -> Result<()> {
     let subject = repository_subject(Some("wt"));
     let key = subject.subject_key();
     let classification = classify_compute(&compute(
@@ -361,10 +363,10 @@ fn host_work_status_f3_api_unavailable_is_not_proven_not_zero() {
         Settlement::Settled,
         InitiatorReturn::Unknown,
     ));
-    assert_ne!(classification.lifecycle, HostWorkLifecycle::Terminal);
-    assert_eq!(classification.lifecycle, HostWorkLifecycle::Ambiguous);
-    assert!(classification.reasons.contains(&HostWorkReason::ProcessApiUnavailable));
-    assert_eq!(classification.evidence, DimensionEvidence::Incomplete);
+    ensure!(classification.lifecycle != HostWorkLifecycle::Terminal);
+    ensure!(classification.lifecycle == HostWorkLifecycle::Ambiguous);
+    ensure!(classification.reasons.contains(&HostWorkReason::ProcessApiUnavailable));
+    ensure!(classification.evidence == DimensionEvidence::Incomplete);
 
     let mut set = HostWorkObservationSet::new(key.clone());
     set.push_compute(compute(
@@ -375,15 +377,16 @@ fn host_work_status_f3_api_unavailable_is_not_proven_not_zero() {
         Settlement::Settled,
         InitiatorReturn::Unknown,
     ))
-    .expect("row bound to the set's own subject");
-    let status = HostWorkStatus::build(&subject, &set, &[]).expect("single-subject set builds");
-    assert!(status.aggregate.contains(&HostWorkObservationToken::NotProven));
+    .context("row bound to the set's own subject")?;
+    let status = HostWorkStatus::build(&subject, &set, &[]).context("single-subject set builds")?;
+    ensure!(status.aggregate.contains(&HostWorkObservationToken::NotProven));
+    Ok(())
 }
 
 // ---- F4: age alone can never create ORPHAN_CANDIDATE -----------------------
 
 #[test]
-fn host_work_status_f4_age_alone_never_orphan() {
+fn host_work_status_f4_age_alone_never_orphan() -> Result<()> {
     let subject = repository_subject(Some("wt"));
     let key = subject.subject_key();
     let aged_residue = MutationWorkObservation {
@@ -401,7 +404,7 @@ fn host_work_status_f4_age_alone_never_orphan() {
         instrument: Instrument::Available,
     };
     let old = classify_mutation(&aged_residue);
-    assert_eq!(old.lifecycle, HostWorkLifecycle::Ambiguous);
+    ensure!(old.lifecycle == HostWorkLifecycle::Ambiguous);
 
     // Partial premises stay ambiguous; only positive full evidence gates.
     let partial = MutationWorkObservation {
@@ -412,7 +415,7 @@ fn host_work_status_f4_age_alone_never_orphan() {
         }),
         ..clone_observation(&aged_residue)
     };
-    assert_eq!(classify_mutation(&partial).lifecycle, HostWorkLifecycle::Ambiguous);
+    ensure!(classify_mutation(&partial).lifecycle == HostWorkLifecycle::Ambiguous);
 
     let full = MutationWorkObservation {
         orphan_premises: Some(OrphanPremises {
@@ -423,8 +426,9 @@ fn host_work_status_f4_age_alone_never_orphan() {
         ..clone_observation(&aged_residue)
     };
     let gated = classify_mutation(&full);
-    assert_eq!(gated.lifecycle, HostWorkLifecycle::OrphanCandidate);
-    assert!(gated.reasons.contains(&HostWorkReason::OrphanPremisesProven));
+    ensure!(gated.lifecycle == HostWorkLifecycle::OrphanCandidate);
+    ensure!(gated.reasons.contains(&HostWorkReason::OrphanPremisesProven));
+    Ok(())
 }
 
 fn clone_observation(observation: &MutationWorkObservation) -> MutationWorkObservation {
@@ -434,7 +438,7 @@ fn clone_observation(observation: &MutationWorkObservation) -> MutationWorkObser
 // ---- F5: executable name/path cannot attribute another repository ----------
 
 #[test]
-fn host_work_status_f5_basename_attribution_rejected() {
+fn host_work_status_f5_basename_attribution_rejected() -> Result<()> {
     let subject = repository_subject(Some("wt"));
     let key = subject.subject_key();
     let name_only = classify_compute(&compute(
@@ -448,8 +452,8 @@ fn host_work_status_f5_basename_attribution_rejected() {
         Settlement::Settled,
         InitiatorReturn::StillWorking,
     ));
-    assert_eq!(name_only.lifecycle, HostWorkLifecycle::Ambiguous);
-    assert!(name_only.reasons.contains(&HostWorkReason::AttributionExecutableNameOnly));
+    ensure!(name_only.lifecycle == HostWorkLifecycle::Ambiguous);
+    ensure!(name_only.reasons.contains(&HostWorkReason::AttributionExecutableNameOnly));
 
     // The same-shaped row for a different subject is rejected outright.
     let other = repository_subject(Some("other-wt"));
@@ -466,13 +470,14 @@ fn host_work_status_f5_basename_attribution_rejected() {
         Settlement::Settled,
         InitiatorReturn::StillWorking,
     );
-    assert!(set.push_compute(foreign).is_err());
+    ensure!(set.push_compute(foreign).is_err());
+    Ok(())
 }
 
 // ---- F6: no universal dispatch verdict exists ------------------------------
 
 #[test]
-fn host_work_status_f6_no_dispatch_verdict() {
+fn host_work_status_f6_no_dispatch_verdict() -> Result<()> {
     // The aggregate vocabulary is closed over observation tokens only; the
     // exhaustive match below compiles precisely because ADMIT/DENY-style
     // verdict variants cannot exist.
@@ -506,17 +511,18 @@ fn host_work_status_f6_no_dispatch_verdict() {
     );
     heavy.capacity_units_in_use = Some(8);
     heavy.capacity_units_total = Some(8);
-    set.push_compute(heavy).expect("own subject");
-    let status = HostWorkStatus::build(&subject, &set, &[]).expect("builds");
-    assert!(status.aggregate.contains(&HostWorkObservationToken::Saturated));
-    assert!(!status.aggregate.iter().any(|token| token.as_str() == "ADMIT"));
-    assert!(!status.aggregate.iter().any(|token| token.as_str() == "DENY"));
+    set.push_compute(heavy).context("own subject")?;
+    let status = HostWorkStatus::build(&subject, &set, &[]).context("builds")?;
+    ensure!(status.aggregate.contains(&HostWorkObservationToken::Saturated));
+    ensure!(!status.aggregate.iter().any(|token| token.as_str() == "ADMIT"));
+    ensure!(!status.aggregate.iter().any(|token| token.as_str() == "DENY"));
+    Ok(())
 }
 
 // ---- F7: an open PR does not force physical retention ----------------------
 
 #[test]
-fn host_work_status_f7_open_pr_allows_reconstructible_terminal() {
+fn host_work_status_f7_open_pr_allows_reconstructible_terminal() -> Result<()> {
     let mut entry = worktree_entry(
         "E:/repo/.swarm/wt-open-pr",
         Some("agent/open-pr"),
@@ -532,33 +538,34 @@ fn host_work_status_f7_open_pr_allows_reconstructible_terminal() {
     });
     let plan = cleanup_plan(vec![entry]);
     let outcome: WorktreePlanAdapterOutcome =
-        adapt_worktree_cleanup_plan(&plan).expect("plan adapts");
-    assert_eq!(outcome.subjects.len(), 1);
-    let entry_subject: &SubjectObservations = &outcome.subjects[0];
+        adapt_worktree_cleanup_plan(&plan).context("plan adapts")?;
+    ensure!(outcome.subjects.len() == 1);
+    let entry_subject: &SubjectObservations =
+        outcome.subjects.first().context("expected adapted subject")?;
     let status = HostWorkStatus::build(
         &entry_subject.subject,
         &entry_subject.set,
         &entry_subject.supplied_readiness,
     )
-    .expect("builds");
+    .context("builds")?;
 
     let mutation = status
         .classifications
         .iter()
         .find(|c| c.dimension == Dimension::Mutation)
-        .expect("mutation classified");
-    assert_eq!(mutation.lifecycle, HostWorkLifecycle::Terminal);
-    assert!(mutation.reasons.contains(&HostWorkReason::CleanPushedTree));
+        .context("mutation classified")?;
+    ensure!(mutation.lifecycle == HostWorkLifecycle::Terminal);
+    ensure!(mutation.reasons.contains(&HostWorkReason::CleanPushedTree));
 
     let logical = status
         .classifications
         .iter()
         .find(|c| c.dimension == Dimension::Logical)
-        .expect("logical classified");
-    assert_eq!(logical.lifecycle, HostWorkLifecycle::RemoteInFlight);
+        .context("logical classified")?;
+    ensure!(logical.lifecycle == HostWorkLifecycle::RemoteInFlight);
 
     // Readiness records the descriptive cleanup handoff; nothing forced KEEP.
-    assert!(
+    ensure!(
         entry_subject
             .supplied_readiness
             .iter()
@@ -568,18 +575,22 @@ fn host_work_status_f7_open_pr_allows_reconstructible_terminal() {
     // decided and reconstructible, but this provider family supplies no
     // compute observation (#11659 has not landed), so the required compute
     // dimension stays visibly uncertain instead of collapsing to HEALTHY.
-    let compute =
-        status.classifications.iter().find(|c| c.dimension == Dimension::Compute).expect("compute");
-    assert_eq!(compute.evidence, DimensionEvidence::Incomplete);
-    assert!(status.aggregate.contains(&HostWorkObservationToken::Ambiguous));
-    assert!(status.aggregate.contains(&HostWorkObservationToken::NotProven));
-    assert!(!status.aggregate.contains(&HostWorkObservationToken::Healthy));
+    let compute = status
+        .classifications
+        .iter()
+        .find(|c| c.dimension == Dimension::Compute)
+        .context("compute")?;
+    ensure!(compute.evidence == DimensionEvidence::Incomplete);
+    ensure!(status.aggregate.contains(&HostWorkObservationToken::Ambiguous));
+    ensure!(status.aggregate.contains(&HostWorkObservationToken::NotProven));
+    ensure!(!status.aggregate.contains(&HostWorkObservationToken::Healthy));
+    Ok(())
 }
 
 // ---- F8: a closed issue never makes unique dirty work removable ------------
 
 #[test]
-fn host_work_status_f8_closed_issue_keeps_salvage_required() {
+fn host_work_status_f8_closed_issue_keeps_salvage_required() -> Result<()> {
     let subject = repository_subject(Some("wt"));
     let key = subject.subject_key();
     let mut set = HostWorkObservationSet::new(key.clone());
@@ -587,34 +598,35 @@ fn host_work_status_f8_closed_issue_keeps_salvage_required() {
     dirty_unique.index_state = IndexState::Dirty { staged: true, untracked: true };
     dirty_unique.push_state = PushState::Unpushed { ahead_count: 3 };
     dirty_unique.salvage_required = true;
-    set.push_mutation(dirty_unique).expect("own subject");
+    set.push_mutation(dirty_unique).context("own subject")?;
     let mut closed_issue_logical = logical(&key, DurableState::UniqueLocalState);
     closed_issue_logical.claim_relationship =
         ClaimRelationship::LinkedToClosedIssue { number: 999 };
     let closed_classification = classify_logical(&closed_issue_logical);
-    assert_eq!(closed_classification.lifecycle, HostWorkLifecycle::Ambiguous);
-    set.push_logical(closed_issue_logical).expect("own subject");
+    ensure!(closed_classification.lifecycle == HostWorkLifecycle::Ambiguous);
+    set.push_logical(closed_issue_logical).context("own subject")?;
 
-    let status = HostWorkStatus::build(&subject, &set, &[]).expect("builds");
-    assert!(status.aggregate.contains(&HostWorkObservationToken::SalvageRequired));
-    assert!(status.cleanup_readiness.contains(&CleanupReadiness::RequiresSalvage));
+    let status = HostWorkStatus::build(&subject, &set, &[]).context("builds")?;
+    ensure!(status.aggregate.contains(&HostWorkObservationToken::SalvageRequired));
+    ensure!(status.cleanup_readiness.contains(&CleanupReadiness::RequiresSalvage));
     let mutation_classification = status
         .classifications
         .iter()
         .find(|c| c.dimension == Dimension::Mutation)
-        .expect("mutation");
-    assert_ne!(mutation_classification.lifecycle, HostWorkLifecycle::Terminal);
-    assert_ne!(mutation_classification.lifecycle, HostWorkLifecycle::OrphanCandidate);
+        .context("mutation")?;
+    ensure!(mutation_classification.lifecycle != HostWorkLifecycle::Terminal);
+    ensure!(mutation_classification.lifecycle != HostWorkLifecycle::OrphanCandidate);
+    Ok(())
 }
 
 // ---- F9: shared cache state is never candidate authority -------------------
 
 #[test]
-fn host_work_status_f9_shared_cache_not_candidate_authority() {
+fn host_work_status_f9_shared_cache_not_candidate_authority() -> Result<()> {
     let subject = repository_subject(Some("wt"));
     let key = subject.subject_key();
 
-    let build_set = |root_class| {
+    let build_set = |root_class| -> Result<HostWorkObservationSet> {
         let mut set = HostWorkObservationSet::new(key.clone());
         set.push_storage(storage(
             &key,
@@ -625,39 +637,40 @@ fn host_work_status_f9_shared_cache_not_candidate_authority() {
             false,
             ReclaimClass::Approved { class: String::from("cache"), owner: String::from("#10263") },
         ))
-        .expect("own subject");
-        set.push_mutation(mutation(&key, MutationOwnership::Unowned)).expect("own subject");
-        set
+        .context("own subject")?;
+        set.push_mutation(mutation(&key, MutationOwnership::Unowned)).context("own subject")?;
+        Ok(set)
     };
 
-    let shared =
-        HostWorkStatus::build(&subject, &build_set(RootClass::SharedCache), &[]).expect("builds");
-    let private = HostWorkStatus::build(&subject, &build_set(RootClass::CandidatePrivate), &[])
-        .expect("builds");
+    let shared = HostWorkStatus::build(&subject, &build_set(RootClass::SharedCache)?, &[])
+        .context("builds")?;
+    let private = HostWorkStatus::build(&subject, &build_set(RootClass::CandidatePrivate)?, &[])
+        .context("builds")?;
 
     // Whichever cache scope the storage row reports, the other three
     // dimensions are byte-identical between the two statuses.
     for dimension in [Dimension::Logical, Dimension::Mutation, Dimension::Compute] {
         let in_shared =
-            shared.classifications.iter().find(|c| c.dimension == dimension).expect("present");
+            shared.classifications.iter().find(|c| c.dimension == dimension).context("present")?;
         let in_private =
-            private.classifications.iter().find(|c| c.dimension == dimension).expect("present");
-        assert_eq!(in_shared, in_private, "{dimension:?} must not move with storage scope");
+            private.classifications.iter().find(|c| c.dimension == dimension).context("present")?;
+        ensure!(in_shared == in_private, "{dimension:?} must not move with storage scope");
     }
-    assert!(shared.cleanup_readiness.contains(&CleanupReadiness::EligibleForCacheReclaimPlan));
+    ensure!(shared.cleanup_readiness.contains(&CleanupReadiness::EligibleForCacheReclaimPlan));
+    Ok(())
 }
 
 // ---- F10: dimensions never collapse into one status ------------------------
 
 #[test]
-fn host_work_status_f10_dimensions_stay_independent() {
+fn host_work_status_f10_dimensions_stay_independent() -> Result<()> {
     let subject = repository_subject(Some("wt"));
     let key = subject.subject_key();
     let mut set = HostWorkObservationSet::new(key.clone());
     let mut active_writer = mutation(&key, MutationOwnership::Unowned);
     active_writer.ownership = MutationOwnership::ActiveWriter { writer_id: String::from("w1") };
-    set.push_mutation(active_writer).expect("own subject");
-    set.push_logical(logical(&key, DurableState::RemoteInFlight)).expect("own subject");
+    set.push_mutation(active_writer).context("own subject")?;
+    set.push_logical(logical(&key, DurableState::RemoteInFlight)).context("own subject")?;
     set.push_compute(compute(
         &key,
         ProcessTreeFact::ExitedConfirmed { process_group_id: String::from("pg") },
@@ -666,7 +679,7 @@ fn host_work_status_f10_dimensions_stay_independent() {
         Settlement::Settled,
         InitiatorReturn::Returned,
     ))
-    .expect("own subject");
+    .context("own subject")?;
     set.push_storage(storage(
         &key,
         RootClass::CandidatePrivate,
@@ -676,21 +689,22 @@ fn host_work_status_f10_dimensions_stay_independent() {
         false,
         ReclaimClass::NoneApproved,
     ))
-    .expect("own subject");
+    .context("own subject")?;
 
-    let status = HostWorkStatus::build(&subject, &set, &[]).expect("builds");
+    let status = HostWorkStatus::build(&subject, &set, &[]).context("builds")?;
     let lifecycles: Vec<(Dimension, HostWorkLifecycle)> =
         status.classifications.iter().map(|c| (c.dimension, c.lifecycle)).collect();
-    assert!(lifecycles.contains(&(Dimension::Mutation, HostWorkLifecycle::Active)));
-    assert!(lifecycles.contains(&(Dimension::Logical, HostWorkLifecycle::RemoteInFlight)));
-    assert!(lifecycles.contains(&(Dimension::Compute, HostWorkLifecycle::Terminal)));
-    assert!(lifecycles.contains(&(Dimension::Storage, HostWorkLifecycle::Ambiguous)));
+    ensure!(lifecycles.contains(&(Dimension::Mutation, HostWorkLifecycle::Active)));
+    ensure!(lifecycles.contains(&(Dimension::Logical, HostWorkLifecycle::RemoteInFlight)));
+    ensure!(lifecycles.contains(&(Dimension::Compute, HostWorkLifecycle::Terminal)));
+    ensure!(lifecycles.contains(&(Dimension::Storage, HostWorkLifecycle::Ambiguous)));
+    Ok(())
 }
 
 // ---- F11: success/exit-zero signals cannot override typed blocked facts ----
 
 #[test]
-fn host_work_status_f11_exit_zero_cannot_override_typed_fact() {
+fn host_work_status_f11_exit_zero_cannot_override_typed_fact() -> Result<()> {
     let report = admission_report(
         vec![
             // Not part of the current provider vocabulary: its meaning is
@@ -707,36 +721,37 @@ fn host_work_status_f11_exit_zero_cannot_override_typed_fact() {
     // A worktree-scope subject is rejected: adapters bind one scope only.
     let mut wrong_scope = subject.clone();
     wrong_scope.scope = ObservationScope::Worktree;
-    assert!(matches!(
+    ensure!(matches!(
         adapt_admission_report(&report, Some(&snapshot), &wrong_scope),
         Err(AdapterError::WrongScope { .. })
     ));
 
     let outcome: AdmissionAdapterOutcome =
-        adapt_admission_report(&report, Some(&snapshot), &subject).expect("report adapts");
+        adapt_admission_report(&report, Some(&snapshot), &subject).context("report adapts")?;
     let observations: &SubjectObservations = &outcome.subject_observations;
     let status = HostWorkStatus::build(
         &observations.subject,
         &observations.set,
         &observations.supplied_readiness,
     )
-    .expect("builds");
+    .context("builds")?;
     // A check outside the provider's current vocabulary stays a visible
     // unknown variant and never fabricates a contested-ownership fact.
-    assert!(
+    ensure!(
         observations.set.mutation().iter().all(|row| row.ownership != MutationOwnership::Contested),
         "an unknown-named check must not be parsed into a collision verdict"
     );
-    assert!(!status.aggregate.contains(&HostWorkObservationToken::Collision));
-    assert!(status.aggregate.contains(&HostWorkObservationToken::Ambiguous));
-    assert!(status.aggregate.contains(&HostWorkObservationToken::NotProven));
-    assert_eq!(status.unknown_provider_variants.len(), 1);
+    ensure!(!status.aggregate.contains(&HostWorkObservationToken::Collision));
+    ensure!(status.aggregate.contains(&HostWorkObservationToken::Ambiguous));
+    ensure!(status.aggregate.contains(&HostWorkObservationToken::NotProven));
+    ensure!(status.unknown_provider_variants.len() == 1);
+    Ok(())
 }
 
 // ---- F12: provider human wording is never authority ------------------------
 
 #[test]
-fn host_work_status_f12_provider_wording_is_not_authority() {
+fn host_work_status_f12_provider_wording_is_not_authority() -> Result<()> {
     let subject = repository_subject(None);
     let snapshot = clean_snapshot("agent/x", false);
     let calm = admission_report(
@@ -753,31 +768,33 @@ fn host_work_status_f12_provider_wording_is_not_authority() {
         ],
         AdmissionVerdict::Pass,
     );
-    let calm_outcome = adapt_admission_report(&calm, Some(&snapshot), &subject).expect("adapts");
+    let calm_outcome =
+        adapt_admission_report(&calm, Some(&snapshot), &subject).context("adapts")?;
     let loud_outcome =
-        adapt_admission_report(&alarming, Some(&snapshot), &subject).expect("adapts");
+        adapt_admission_report(&alarming, Some(&snapshot), &subject).context("adapts")?;
     let calm_status = HostWorkStatus::build(
         &calm_outcome.subject_observations.subject,
         &calm_outcome.subject_observations.set,
         &[],
     )
-    .expect("builds");
+    .context("builds")?;
     let loud_status = HostWorkStatus::build(
         &loud_outcome.subject_observations.subject,
         &loud_outcome.subject_observations.set,
         &[],
     )
-    .expect("builds");
-    assert_eq!(
-        serde_json::to_string(&calm_status).expect("serializes"),
-        serde_json::to_string(&loud_status).expect("serializes")
+    .context("builds")?;
+    ensure!(
+        serde_json::to_string(&calm_status).context("serializes")?
+            == serde_json::to_string(&loud_status).context("serializes")?
     );
+    Ok(())
 }
 
 // ---- F13: unknown provider variants stay visible ---------------------------
 
 #[test]
-fn host_work_status_f13_unknown_variant_visible() {
+fn host_work_status_f13_unknown_variant_visible() -> Result<()> {
     let report = admission_report(
         vec![
             ("quantum-flux-check", CheckStatus::Pass, String::from("mystery pass")),
@@ -787,47 +804,49 @@ fn host_work_status_f13_unknown_variant_visible() {
     );
     let snapshot = clean_snapshot("agent/x", false);
     let subject = repository_subject(None);
-    let outcome = adapt_admission_report(&report, Some(&snapshot), &subject).expect("adapts");
+    let outcome = adapt_admission_report(&report, Some(&snapshot), &subject).context("adapts")?;
     let observations = &outcome.subject_observations;
-    assert_eq!(observations.set.unknown_variants().len(), 1);
-    let record: UnknownVariantRecord = observations.set.unknown_variants()[0].clone();
-    assert_eq!(record.variant, "quantum-flux-check");
+    ensure!(observations.set.unknown_variants().len() == 1);
+    let record: UnknownVariantRecord =
+        observations.set.unknown_variants().first().context("expected unknown variant")?.clone();
+    ensure!(record.variant == "quantum-flux-check");
     let status = HostWorkStatus::build(
         &observations.subject,
         &observations.set,
         &observations.supplied_readiness,
     )
-    .expect("builds");
-    assert!(status.aggregate.contains(&HostWorkObservationToken::Ambiguous));
-    assert!(status.aggregate.contains(&HostWorkObservationToken::NotProven));
-    assert!(!status.unknown_provider_variants.is_empty());
+    .context("builds")?;
+    ensure!(status.aggregate.contains(&HostWorkObservationToken::Ambiguous));
+    ensure!(status.aggregate.contains(&HostWorkObservationToken::NotProven));
+    ensure!(!status.unknown_provider_variants.is_empty());
+    Ok(())
 }
 
 // ---- F14: one subject's resource can never satisfy another -----------------
 
 #[test]
-fn host_work_status_f14_subject_mismatch_unrepresentable() {
+fn host_work_status_f14_subject_mismatch_unrepresentable() -> Result<()> {
     let subject = repository_subject(Some("wt-a"));
     let other = repository_subject(Some("wt-b"));
     let mut set = HostWorkObservationSet::new(subject.subject_key());
     let foreign_logical = logical(&other.subject_key(), DurableState::NoLocalResidue);
-    assert!(set.push_logical(foreign_logical).is_err());
+    ensure!(set.push_logical(foreign_logical).is_err());
 
     let built_for_other = HostWorkObservationSet::new(other.subject_key());
     match HostWorkStatus::build(&subject, &built_for_other, &[]) {
         Err(StatusError::SubjectMismatch { expected, actual }) => {
-            assert_eq!(expected, subject.subject_key());
-            assert_eq!(actual, other.subject_key());
+            ensure!(expected == subject.subject_key());
+            ensure!(actual == other.subject_key());
         }
-        other_result => panic!("expected subject mismatch, got {other_result:?}"),
+        other_result => bail!("expected subject mismatch, got {other_result:?}"),
     }
+    Ok(())
 }
 
 // ---- F15: aggregate HEALTHY can never hide required uncertainty ------------
 
 #[test]
-fn host_work_status_missing_provider_blocks_complete_cleanup_observation()
--> Result<(), Box<dyn std::error::Error>> {
+fn host_work_status_missing_provider_blocks_complete_cleanup_observation() -> Result<()> {
     let subject = repository_subject(Some("wt"));
     let key = subject.subject_key();
     let mut set = HostWorkObservationSet::new(key.clone());
@@ -855,36 +874,40 @@ fn host_work_status_missing_provider_blocks_complete_cleanup_observation()
     if complete.classifications.len() != 4
         || complete.classifications.iter().any(|row| row.evidence != DimensionEvidence::Complete)
     {
-        return Err("control requires all four dimensions to have complete evidence".into());
+        bail!("control requires all four dimensions to have complete evidence");
     }
     if complete.cleanup_readiness != [CleanupReadiness::ReadOnlyObservationComplete]
         || complete.aggregate != [HostWorkObservationToken::Healthy]
     {
-        return Err("complete observations without a missing provider must remain complete".into());
+        bail!("complete observations without a missing provider must remain complete");
     }
 
     set.declare_missing_provider(ProviderFamily::CapacityReservation);
     let missing = HostWorkStatus::build(&subject, &set, &[])?;
     if missing.classifications != complete.classifications {
-        return Err("provider uncertainty must not change the four observed dimensions".into());
+        bail!("provider uncertainty must not change the four observed dimensions");
     }
     if missing.cleanup_readiness != [CleanupReadiness::NotProven]
         || !missing.aggregate.contains(&HostWorkObservationToken::NotProven)
         || !missing.aggregate.contains(&HostWorkObservationToken::Ambiguous)
         || missing.aggregate.contains(&HostWorkObservationToken::Healthy)
     {
-        return Err("missing provider must prevent a complete cleanup observation".into());
+        bail!("missing provider must prevent a complete cleanup observation");
     }
     Ok(())
 }
 
 #[test]
-fn host_work_status_f15_healthy_never_hides_uncertainty() {
+fn host_work_status_f15_healthy_never_hides_uncertainty() -> Result<()> {
     let subject = repository_subject(Some("wt"));
     let key = subject.subject_key();
     let mut ambiguous_only = HostWorkObservationSet::new(key.clone());
-    ambiguous_only.push_logical(logical(&key, DurableState::Contradictory)).expect("own subject");
-    ambiguous_only.push_mutation(mutation(&key, MutationOwnership::Unowned)).expect("own subject");
+    ambiguous_only
+        .push_logical(logical(&key, DurableState::Contradictory))
+        .context("own subject")?;
+    ambiguous_only
+        .push_mutation(mutation(&key, MutationOwnership::Unowned))
+        .context("own subject")?;
     ambiguous_only
         .push_compute(compute(
             &key,
@@ -894,27 +917,27 @@ fn host_work_status_f15_healthy_never_hides_uncertainty() {
             Settlement::Settled,
             InitiatorReturn::Returned,
         ))
-        .expect("own subject");
-    let status = HostWorkStatus::build(&subject, &ambiguous_only, &[]).expect("builds");
-    assert!(status.aggregate.contains(&HostWorkObservationToken::Ambiguous));
-    assert!(!status.aggregate.contains(&HostWorkObservationToken::Healthy));
+        .context("own subject")?;
+    let status = HostWorkStatus::build(&subject, &ambiguous_only, &[]).context("builds")?;
+    ensure!(status.aggregate.contains(&HostWorkObservationToken::Ambiguous));
+    ensure!(!status.aggregate.contains(&HostWorkObservationToken::Healthy));
 
     // A declared-missing provider also blocks HEALTHY even with no rows.
     let mut missing = HostWorkObservationSet::new(key.clone());
     missing.declare_missing_provider(ProviderFamily::CapacityReservation);
     let status_missing =
-        HostWorkStatus::build(&repository_subject(Some("wt")), &missing, &[]).expect("builds");
-    assert!(status_missing.aggregate.contains(&HostWorkObservationToken::NotProven));
-    assert!(!status_missing.aggregate.contains(&HostWorkObservationToken::Healthy));
+        HostWorkStatus::build(&repository_subject(Some("wt")), &missing, &[]).context("builds")?;
+    ensure!(status_missing.aggregate.contains(&HostWorkObservationToken::NotProven));
+    ensure!(!status_missing.aggregate.contains(&HostWorkObservationToken::Healthy));
 
     // Only fully decided, complete, benign evidence may be HEALTHY.
     let mut benign = HostWorkObservationSet::new(key);
     benign
         .push_logical(logical(benign.subject_key(), DurableState::NoLocalResidue))
-        .expect("own subject");
+        .context("own subject")?;
     benign
         .push_mutation(mutation(benign.subject_key(), MutationOwnership::Unowned))
-        .expect("own subject");
+        .context("own subject")?;
     benign
         .push_compute(compute(
             benign.subject_key(),
@@ -924,7 +947,7 @@ fn host_work_status_f15_healthy_never_hides_uncertainty() {
             Settlement::Settled,
             InitiatorReturn::Returned,
         ))
-        .expect("own subject");
+        .context("own subject")?;
     benign
         .push_storage(storage(
             benign.subject_key(),
@@ -935,15 +958,16 @@ fn host_work_status_f15_healthy_never_hides_uncertainty() {
             false,
             ReclaimClass::NoneApproved,
         ))
-        .expect("own subject");
-    let healthy_status = HostWorkStatus::build(&subject, &benign, &[]).expect("builds");
-    assert_eq!(healthy_status.aggregate, vec![HostWorkObservationToken::Healthy]);
+        .context("own subject")?;
+    let healthy_status = HostWorkStatus::build(&subject, &benign, &[]).context("builds")?;
+    ensure!(healthy_status.aggregate == vec![HostWorkObservationToken::Healthy]);
+    Ok(())
 }
 
 // ---- F16: cleanup readiness is never cleanup authorization -----------------
 
 #[test]
-fn host_work_status_f16_readiness_is_not_authorization() {
+fn host_work_status_f16_readiness_is_not_authorization() -> Result<()> {
     let subject = repository_subject(Some("wt"));
     let key = subject.subject_key();
     let mut set = HostWorkObservationSet::new(key.clone());
@@ -958,27 +982,28 @@ fn host_work_status_f16_readiness_is_not_authorization() {
         Settlement::Unsettled,
         InitiatorReturn::Returned,
     ))
-    .expect("own subject");
-    let status = HostWorkStatus::build(&subject, &set, &[]).expect("builds");
+    .context("own subject")?;
+    let status = HostWorkStatus::build(&subject, &set, &[]).context("builds")?;
     // Descriptive handoff appears…
-    assert!(status.cleanup_readiness.contains(&CleanupReadiness::EligibleForProcessReapPlan));
+    ensure!(status.cleanup_readiness.contains(&CleanupReadiness::EligibleForProcessReapPlan));
     // …but the status carries no plan, action, or verdict surface at all:
     // its aggregate remains pure observation and readiness stays a closed,
     // descriptive enum rendered without any authorization token.
     let rendered = status.render_human();
-    assert!(rendered.contains("ELIGIBLE_FOR_PROCESS_REAP_PLAN"));
-    assert!(!rendered.contains("AUTHORIZED"));
-    assert!(!rendered.contains("APPROVED_FOR_EXECUTION"));
+    ensure!(rendered.contains("ELIGIBLE_FOR_PROCESS_REAP_PLAN"));
+    ensure!(!rendered.contains("AUTHORIZED"));
+    ensure!(!rendered.contains("APPROVED_FOR_EXECUTION"));
+    Ok(())
 }
 
 // ---- F17: input ordering cannot change semantic identity -------------------
 
 #[test]
-fn host_work_status_f17_ordering_does_not_change_identity() {
+fn host_work_status_f17_ordering_does_not_change_identity() -> Result<()> {
     let subject = repository_subject(Some("wt"));
     let key = subject.subject_key();
 
-    let build = |order: [usize; 3]| {
+    let build = |order: [usize; 3]| -> Result<HostWorkStatus> {
         let rows = [
             logical(&key, DurableState::ReconstructibleLocalState),
             logical(&key, DurableState::RemoteInFlight),
@@ -986,24 +1011,28 @@ fn host_work_status_f17_ordering_does_not_change_identity() {
         ];
         let mut set = HostWorkObservationSet::new(key.clone());
         for index in order {
-            set.push_logical(clone_logical(&rows[index])).expect("own subject");
+            set.push_logical(clone_logical(
+                rows.get(index).context("fixture ordering index must identify a row")?,
+            ))
+            .context("own subject")?;
         }
         set.declare_missing_provider(ProviderFamily::FilesystemStorage);
         set.declare_missing_provider(ProviderFamily::CapacityReservation);
-        HostWorkStatus::build(&subject, &set, &[]).expect("builds")
+        HostWorkStatus::build(&subject, &set, &[]).context("builds")
     };
 
-    let one = serde_json::to_string(&build([0, 1, 2])).expect("serializes");
-    let two = serde_json::to_string(&build([2, 0, 1])).expect("serializes");
-    let three = serde_json::to_string(&build([1, 2, 0])).expect("serializes");
-    assert_eq!(one, two);
-    assert_eq!(two, three);
+    let one = serde_json::to_string(&build([0, 1, 2])?).context("serializes")?;
+    let two = serde_json::to_string(&build([2, 0, 1])?).context("serializes")?;
+    let three = serde_json::to_string(&build([1, 2, 0])?).context("serializes")?;
+    ensure!(one == two);
+    ensure!(two == three);
+    Ok(())
 }
 
 // ---- Future #11650/#11653/#11659 provider hooks stay visible and honest ----
 
 #[test]
-fn host_work_status_future_provider_hooks_classify_honestly() {
+fn host_work_status_future_provider_hooks_classify_honestly() -> Result<()> {
     let subject = repository_subject(Some("wt"));
     let key = subject.subject_key();
 
@@ -1017,10 +1046,10 @@ fn host_work_status_future_provider_hooks_classify_honestly() {
     let reserved = classify_compute(&reservation_only);
     // The proven-active reservation is current work (ACTIVE), but the
     // unlanded process provider keeps the dimension's evidence incomplete.
-    assert_eq!(reserved.lifecycle, HostWorkLifecycle::Active);
-    assert_eq!(reserved.evidence, DimensionEvidence::Incomplete);
-    assert!(reserved.reasons.contains(&HostWorkReason::ReservationActive));
-    assert!(reserved.reasons.contains(&HostWorkReason::TerminalityNotProven));
+    ensure!(reserved.lifecycle == HostWorkLifecycle::Active);
+    ensure!(reserved.evidence == DimensionEvidence::Incomplete);
+    ensure!(reserved.reasons.contains(&HostWorkReason::ReservationActive));
+    ensure!(reserved.reasons.contains(&HostWorkReason::TerminalityNotProven));
 
     // A proven-active reservation with no process dimension at all is still
     // current work: ACTIVE comes from the reservation itself.
@@ -1032,7 +1061,7 @@ fn host_work_status_future_provider_hooks_classify_honestly() {
         Settlement::Settled,
         InitiatorReturn::StillWorking,
     );
-    assert_eq!(classify_compute(&reservation_active).lifecycle, HostWorkLifecycle::Active);
+    ensure!(classify_compute(&reservation_active).lifecycle == HostWorkLifecycle::Active);
 
     // A name-attributed process tree (exact binding not yet supplied) stays
     // ambiguous even when the caller is tempted to claim it.
@@ -1043,7 +1072,7 @@ fn host_work_status_future_provider_hooks_classify_honestly() {
         "pg-future",
         Attribution::ExecutableNameOnly,
     );
-    assert_eq!(classify_compute(&name_only).lifecycle, HostWorkLifecycle::Ambiguous);
+    ensure!(classify_compute(&name_only).lifecycle == HostWorkLifecycle::Ambiguous);
 
     // Executor-state storage scope without reclaim facts stays ambiguous.
     let scoped = storage_scope_observation(
@@ -1053,7 +1082,7 @@ fn host_work_status_future_provider_hooks_classify_honestly() {
         RootClass::CandidatePrivate,
         StorageDisposition::Unique,
     );
-    assert_eq!(classify_storage(&scoped).lifecycle, HostWorkLifecycle::Ambiguous);
+    ensure!(classify_storage(&scoped).lifecycle == HostWorkLifecycle::Ambiguous);
 
     // Declared-missing providers surface as NOT_PROVEN + AMBIGUOUS aggregate.
     // Future-owner hooks all construct; their declarations stay typed data.
@@ -1062,22 +1091,23 @@ fn host_work_status_future_provider_hooks_classify_honestly() {
         missing_executor_allocation(),
         missing_process_observation(),
     ];
-    assert!(hooks.iter().all(|hook| hook.family != ProviderFamily::WorktreePlan));
+    ensure!(hooks.iter().all(|hook| hook.family != ProviderFamily::WorktreePlan));
 
     let mut set = HostWorkObservationSet::new(key.clone());
-    set.push_compute(reservation_only).expect("own subject");
+    set.push_compute(reservation_only).context("own subject")?;
     declare_missing_provider(ProviderFamily::ProcessObservation);
     set.declare_missing_provider(ProviderFamily::CapacityReservation);
-    let status = HostWorkStatus::build(&subject, &set, &[]).expect("builds");
-    assert_eq!(status.schema_version, HOST_WORK_STATUS_SCHEMA_VERSION);
-    assert!(status.aggregate.contains(&HostWorkObservationToken::NotProven));
-    assert!(status.missing_providers.contains(&ProviderFamily::CapacityReservation));
+    let status = HostWorkStatus::build(&subject, &set, &[]).context("builds")?;
+    ensure!(status.schema_version == HOST_WORK_STATUS_SCHEMA_VERSION);
+    ensure!(status.aggregate.contains(&HostWorkObservationToken::NotProven));
+    ensure!(status.missing_providers.contains(&ProviderFamily::CapacityReservation));
+    Ok(())
 }
 
 // ---- Dimension merge: uncertainty dominates, reasons union -----------------
 
 #[test]
-fn host_work_status_merge_uncertainty_dominates_and_reasons_union() {
+fn host_work_status_merge_uncertainty_dominates_and_reasons_union() -> Result<()> {
     let subject = repository_subject(Some("wt"));
     let key = subject.subject_key();
     let terminal = classify_compute(&compute(
@@ -1092,11 +1122,12 @@ fn host_work_status_merge_uncertainty_dominates_and_reasons_union() {
     stopping.lifecycle = HostWorkLifecycle::Stopping;
     stopping.reasons.push(HostWorkReason::DescendantsUnsettled);
     let merged = merge_classifications(&[terminal.clone(), stopping]);
-    let merged = merged.expect("two rows merge");
-    assert_eq!(merged.dimension, Dimension::Compute);
-    assert_eq!(merged.lifecycle, HostWorkLifecycle::Stopping);
-    assert!(merged.reasons.contains(&HostWorkReason::NoRelevantOwnershipRemains));
-    assert!(merged.reasons.contains(&HostWorkReason::DescendantsUnsettled));
+    let merged = merged.context("two rows merge")?;
+    ensure!(merged.dimension == Dimension::Compute);
+    ensure!(merged.lifecycle == HostWorkLifecycle::Stopping);
+    ensure!(merged.reasons.contains(&HostWorkReason::NoRelevantOwnershipRemains));
+    ensure!(merged.reasons.contains(&HostWorkReason::DescendantsUnsettled));
+    Ok(())
 }
 
 fn clone_compute(classification: &HostWorkClassification) -> HostWorkClassification {
@@ -1110,31 +1141,32 @@ fn clone_logical(observation: &LogicalWorkObservation) -> LogicalWorkObservation
 // ---- F18: the domain performs no live observation or mutation --------------
 
 #[test]
-fn host_work_status_f18_module_is_pure_no_io_or_process_surface() {
+fn host_work_status_f18_module_is_pure_no_io_or_process_surface() -> Result<()> {
     const SOURCES: [&str; 6] =
         ["mod.rs", "subject.rs", "dimension.rs", "lifecycle.rs", "status.rs", "adapter.rs"];
     let manifest_dir = std::env!("CARGO_MANIFEST_DIR");
     for file in SOURCES {
         let path = std::path::Path::new(manifest_dir).join("src/host_work_status").join(file);
         let contents = std::fs::read_to_string(path)
-            .unwrap_or_else(|error| panic!("reading domain source {file}: {error}"));
+            .with_context(|| format!("reading domain source {file}"))?;
         for banned in
             ["std::process", "std::net", "Command::new", "fs::remove", "fs::write", "reqwest"]
         {
-            assert!(!contents.contains(banned), "{file} must not reference {banned}");
+            ensure!(!contents.contains(banned), "{file} must not reference {banned}");
         }
     }
+    Ok(())
 }
 
 // ---- Review response: readiness dedup is rank-independent -------------------
 
 #[test]
-fn host_work_status_readiness_dedup_collapses_nonadjacent_owned_by_duplicates() {
+fn host_work_status_readiness_dedup_collapses_nonadjacent_owned_by_duplicates() -> Result<()> {
     let subject = repository_subject(Some("wt"));
     let key = subject.subject_key();
     let mut set = HostWorkObservationSet::new(key.clone());
-    set.push_mutation(mutation(&key, MutationOwnership::Unowned)).expect("own subject");
-    set.push_logical(logical(&key, DurableState::NoLocalResidue)).expect("own subject");
+    set.push_mutation(mutation(&key, MutationOwnership::Unowned)).context("own subject")?;
+    set.push_logical(logical(&key, DurableState::NoLocalResidue)).context("own subject")?;
     set.push_compute(compute(
         &key,
         ProcessTreeFact::ExitedConfirmed { process_group_id: String::from("pg") },
@@ -1143,7 +1175,7 @@ fn host_work_status_readiness_dedup_collapses_nonadjacent_owned_by_duplicates() 
         Settlement::Settled,
         InitiatorReturn::Returned,
     ))
-    .expect("own subject");
+    .context("own subject")?;
     set.push_storage(storage(
         &key,
         RootClass::CandidatePrivate,
@@ -1153,7 +1185,7 @@ fn host_work_status_readiness_dedup_collapses_nonadjacent_owned_by_duplicates() 
         false,
         ReclaimClass::NoneApproved,
     ))
-    .expect("own subject");
+    .context("own subject")?;
 
     // Two "B" rows separated by an equal-ranked "A" row: dedup must still
     // collapse them (all WorktreeCleanupOwnedBy variants share one rank).
@@ -1162,7 +1194,7 @@ fn host_work_status_readiness_dedup_collapses_nonadjacent_owned_by_duplicates() 
         CleanupReadiness::WorktreeCleanupOwnedBy { owner: String::from("A") },
         CleanupReadiness::WorktreeCleanupOwnedBy { owner: String::from("B") },
     ];
-    let status = HostWorkStatus::build(&subject, &set, &supplied).expect("builds");
+    let status = HostWorkStatus::build(&subject, &set, &supplied).context("builds")?;
 
     let owned: Vec<&str> = status
         .cleanup_readiness
@@ -1172,13 +1204,14 @@ fn host_work_status_readiness_dedup_collapses_nonadjacent_owned_by_duplicates() 
             _ => None,
         })
         .collect();
-    assert_eq!(owned, vec!["A", "B"], "duplicate owners collapse; ties order deterministically");
+    ensure!(owned == vec!["A", "B"], "duplicate owners collapse; ties order deterministically");
+    Ok(())
 }
 
 // ---- Review response: the subject key is structurally collision-free -------
 
 #[test]
-fn host_work_status_subject_key_survives_delimiter_collision_attempts() {
+fn host_work_status_subject_key_survives_delimiter_collision_attempts() -> Result<()> {
     // Moving the U+001F separator between two adjacent string fields must
     // never merge two distinct subjects onto one key: the length-delimited
     // encoding pins every field boundary.
@@ -1191,25 +1224,25 @@ fn host_work_status_subject_key_survives_delimiter_collision_attempts() {
     absorbed.worktree =
         Some(WorktreeIdentity { path: std::path::PathBuf::from("b\u{1f}c"), branch: None });
 
-    assert_ne!(shifted, absorbed, "fixture subjects must be distinct");
-    assert_ne!(
-        shifted.subject_key(),
-        absorbed.subject_key(),
+    ensure!(shifted != absorbed, "fixture subjects must be distinct");
+    ensure!(
+        shifted.subject_key() != absorbed.subject_key(),
         "delimiter movement between adjacent fields cannot fuse identities"
     );
 
     // Equal subjects still produce equal keys, deterministically.
     let twin = shifted.clone();
-    assert_eq!(shifted.subject_key(), twin.subject_key());
+    ensure!(shifted.subject_key() == twin.subject_key());
 
     // The key remains a pure function of the typed fields (no ambient state).
-    assert_eq!(shifted.subject_key(), shifted.subject_key());
+    ensure!(shifted.subject_key() == shifted.subject_key());
+    Ok(())
 }
 
 // ---- Review response: NOT_PROVEN disk evidence never claims LOW_DISK --------
 
 #[test]
-fn host_work_status_disk_not_proven_stays_unknown_not_low_disk() {
+fn host_work_status_disk_not_proven_stays_unknown_not_low_disk() -> Result<()> {
     let report = admission_report(
         vec![
             ("remote-branch-identity", CheckStatus::Pass, String::from("ok")),
@@ -1219,14 +1252,14 @@ fn host_work_status_disk_not_proven_stays_unknown_not_low_disk() {
     );
     let snapshot = clean_snapshot("agent/x", false);
     let subject = repository_subject(None);
-    let outcome = adapt_admission_report(&report, Some(&snapshot), &subject).expect("adapts");
+    let outcome = adapt_admission_report(&report, Some(&snapshot), &subject).context("adapts")?;
     let observations = &outcome.subject_observations;
-    let storage_row = observations.set.storage().iter().next().expect("storage row");
-    assert!(
+    let storage_row = observations.set.storage().iter().next().context("storage row")?;
+    ensure!(
         !storage_row.below_configured_floor,
         "a failed/unavailable probe is not a below-floor capacity fact"
     );
-    assert!(
+    ensure!(
         matches!(storage_row.instrument, Instrument::Unavailable { .. }),
         "the unproven probe stays visible on the instrument surface"
     );
@@ -1236,16 +1269,17 @@ fn host_work_status_disk_not_proven_stays_unknown_not_low_disk() {
         &observations.set,
         &observations.supplied_readiness,
     )
-    .expect("builds");
-    assert!(
+    .context("builds")?;
+    ensure!(
         !status.aggregate.contains(&HostWorkObservationToken::LowDisk),
         "NOT_PROVEN evidence must not emit the factual LOW_DISK token"
     );
-    assert!(status.aggregate.contains(&HostWorkObservationToken::NotProven));
+    ensure!(status.aggregate.contains(&HostWorkObservationToken::NotProven));
+    Ok(())
 }
 
 #[test]
-fn host_work_status_disk_block_still_emits_low_disk() {
+fn host_work_status_disk_block_still_emits_low_disk() -> Result<()> {
     // Positive control: a proven blocking capacity result keeps its
     // concrete below-floor claim.
     let report = admission_report(
@@ -1254,24 +1288,25 @@ fn host_work_status_disk_block_still_emits_low_disk() {
     );
     let snapshot = clean_snapshot("agent/x", false);
     let subject = repository_subject(None);
-    let outcome = adapt_admission_report(&report, Some(&snapshot), &subject).expect("adapts");
+    let outcome = adapt_admission_report(&report, Some(&snapshot), &subject).context("adapts")?;
     let observations = &outcome.subject_observations;
-    let storage_row = observations.set.storage().iter().next().expect("storage row");
-    assert!(storage_row.below_configured_floor);
+    let storage_row = observations.set.storage().iter().next().context("storage row")?;
+    ensure!(storage_row.below_configured_floor);
 
     let status = HostWorkStatus::build(
         &observations.subject,
         &observations.set,
         &observations.supplied_readiness,
     )
-    .expect("builds");
-    assert!(status.aggregate.contains(&HostWorkObservationToken::LowDisk));
+    .context("builds")?;
+    ensure!(status.aggregate.contains(&HostWorkObservationToken::LowDisk));
+    Ok(())
 }
 
 // ---- F15b: an unlinked claim never emits CLAIM_LINKED -----------------------
 
 #[test]
-fn host_work_status_f15b_unlinked_claim_does_not_emit_claim_linked() {
+fn host_work_status_f15b_unlinked_claim_does_not_emit_claim_linked() -> Result<()> {
     let subject = repository_subject(Some("wt"));
     let key = subject.subject_key();
     let row = LogicalWorkObservation {
@@ -1279,15 +1314,17 @@ fn host_work_status_f15b_unlinked_claim_does_not_emit_claim_linked() {
         ..clone_logical(&logical(&key, DurableState::NoLocalResidue))
     };
     let classification = classify_logical(&row);
-    assert!(!classification.reasons.contains(&HostWorkReason::ClaimLinked));
-    assert!(classification.reasons.contains(&HostWorkReason::ClaimUnlinked));
-    assert_eq!(classification.evidence, DimensionEvidence::Complete);
+    ensure!(!classification.reasons.contains(&HostWorkReason::ClaimLinked));
+    ensure!(classification.reasons.contains(&HostWorkReason::ClaimUnlinked));
+    ensure!(classification.evidence == DimensionEvidence::Complete);
+    Ok(())
 }
 
 // ---- F1b: reservation-only unsettled never emits DescendantsUnsettled -------
 
 #[test]
-fn host_work_status_f1b_only_reservation_unsettled_does_not_emit_descendants_unsettled() {
+fn host_work_status_f1b_only_reservation_unsettled_does_not_emit_descendants_unsettled()
+-> Result<()> {
     let subject = repository_subject(Some("wt"));
     let key = subject.subject_key();
     let classification = classify_compute(&compute(
@@ -1301,15 +1338,16 @@ fn host_work_status_f1b_only_reservation_unsettled_does_not_emit_descendants_uns
         Settlement::Settled,
         InitiatorReturn::Returned,
     ));
-    assert_eq!(classification.lifecycle, HostWorkLifecycle::Stopping);
-    assert!(!classification.reasons.contains(&HostWorkReason::DescendantsUnsettled));
-    assert!(classification.reasons.contains(&HostWorkReason::ReservationSettlementPending));
+    ensure!(classification.lifecycle == HostWorkLifecycle::Stopping);
+    ensure!(!classification.reasons.contains(&HostWorkReason::DescendantsUnsettled));
+    ensure!(classification.reasons.contains(&HostWorkReason::ReservationSettlementPending));
+    Ok(())
 }
 
 // ---- F15c: stale evidence can never yield a HEALTHY aggregate ---------------
 
 #[test]
-fn host_work_status_f15c_stale_logical_never_healthy() {
+fn host_work_status_f15c_stale_logical_never_healthy() -> Result<()> {
     let subject = repository_subject(Some("wt"));
     let key = subject.subject_key();
     let stale = LogicalWorkObservation {
@@ -1317,12 +1355,12 @@ fn host_work_status_f15c_stale_logical_never_healthy() {
         ..clone_logical(&logical(&key, DurableState::NoLocalResidue))
     };
     let classification = classify_logical(&stale);
-    assert_eq!(classification.evidence, DimensionEvidence::Incomplete);
-    assert!(classification.reasons.contains(&HostWorkReason::CurrentnessNotProven));
+    ensure!(classification.evidence == DimensionEvidence::Incomplete);
+    ensure!(classification.reasons.contains(&HostWorkReason::CurrentnessNotProven));
 
     let mut set = HostWorkObservationSet::new(key.clone());
-    set.push_logical(stale).expect("own subject");
-    set.push_mutation(mutation(&key, MutationOwnership::Unowned)).expect("own subject");
+    set.push_logical(stale).context("own subject")?;
+    set.push_mutation(mutation(&key, MutationOwnership::Unowned)).context("own subject")?;
     set.push_compute(compute(
         &key,
         ProcessTreeFact::ExitedConfirmed { process_group_id: String::from("pg") },
@@ -1331,7 +1369,7 @@ fn host_work_status_f15c_stale_logical_never_healthy() {
         Settlement::Settled,
         InitiatorReturn::Returned,
     ))
-    .expect("own subject");
+    .context("own subject")?;
     set.push_storage(storage(
         &key,
         RootClass::CandidatePrivate,
@@ -1341,28 +1379,29 @@ fn host_work_status_f15c_stale_logical_never_healthy() {
         false,
         ReclaimClass::NoneApproved,
     ))
-    .expect("own subject");
-    let status = HostWorkStatus::build(&subject, &set, &[]).expect("builds");
-    assert!(
+    .context("own subject")?;
+    let status = HostWorkStatus::build(&subject, &set, &[]).context("builds")?;
+    ensure!(
         !status.aggregate.contains(&HostWorkObservationToken::Healthy),
         "a stale observation must keep the aggregate away from HEALTHY"
     );
-    assert!(status.aggregate.contains(&HostWorkObservationToken::NotProven));
+    ensure!(status.aggregate.contains(&HostWorkObservationToken::NotProven));
+    Ok(())
 }
 
 // ---- F15d: stale facts on every dimension are contagious --------------------
 
 #[test]
-fn host_work_status_f15d_stale_fact_on_each_dimension_is_contagious() {
+fn host_work_status_f15d_stale_fact_on_each_dimension_is_contagious() -> Result<()> {
     let subject = repository_subject(Some("wt"));
     let key = subject.subject_key();
     let mut set = HostWorkObservationSet::new(key.clone());
     let mut stale_logical = clone_logical(&logical(&key, DurableState::NoLocalResidue));
     stale_logical.freshness = Freshness::Stale;
-    set.push_logical(stale_logical).expect("own subject");
+    set.push_logical(stale_logical).context("own subject")?;
     let mut stale_mutation = mutation(&key, MutationOwnership::Unowned);
     stale_mutation.freshness = Freshness::Stale;
-    set.push_mutation(stale_mutation).expect("own subject");
+    set.push_mutation(stale_mutation).context("own subject")?;
     let mut stale_compute = compute(
         &key,
         ProcessTreeFact::ExitedConfirmed { process_group_id: String::from("pg") },
@@ -1372,7 +1411,7 @@ fn host_work_status_f15d_stale_fact_on_each_dimension_is_contagious() {
         InitiatorReturn::Returned,
     );
     stale_compute.freshness = Freshness::Stale;
-    set.push_compute(stale_compute).expect("own subject");
+    set.push_compute(stale_compute).context("own subject")?;
     let mut stale_storage = storage(
         &key,
         RootClass::CandidatePrivate,
@@ -1383,34 +1422,35 @@ fn host_work_status_f15d_stale_fact_on_each_dimension_is_contagious() {
         ReclaimClass::NoneApproved,
     );
     stale_storage.freshness = Freshness::Stale;
-    set.push_storage(stale_storage).expect("own subject");
+    set.push_storage(stale_storage).context("own subject")?;
 
-    let status = HostWorkStatus::build(&subject, &set, &[]).expect("builds");
-    assert!(!status.aggregate.contains(&HostWorkObservationToken::Healthy));
+    let status = HostWorkStatus::build(&subject, &set, &[]).context("builds")?;
+    ensure!(!status.aggregate.contains(&HostWorkObservationToken::Healthy));
     for classification in &status.classifications {
-        assert_eq!(classification.evidence, DimensionEvidence::Incomplete);
-        assert!(classification.reasons.contains(&HostWorkReason::CurrentnessNotProven));
+        ensure!(classification.evidence == DimensionEvidence::Incomplete);
+        ensure!(classification.reasons.contains(&HostWorkReason::CurrentnessNotProven));
     }
-    assert!(status.cleanup_readiness.contains(&CleanupReadiness::NotProven));
+    ensure!(status.cleanup_readiness.contains(&CleanupReadiness::NotProven));
+    Ok(())
 }
 
 // ---- F14b: host profile is part of the load-bearing subject key -------------
 
 #[test]
-fn host_work_status_f14b_host_profile_participates_in_subject_key() {
+fn host_work_status_f14b_host_profile_participates_in_subject_key() -> Result<()> {
     let mut other = repository_subject(Some("wt"));
     other.host_profile = String::from("linux-ci");
-    assert_ne!(
-        repository_subject(Some("wt")).subject_key(),
-        other.subject_key(),
+    ensure!(
+        repository_subject(Some("wt")).subject_key() != other.subject_key(),
         "evidence from one host profile can never satisfy another"
     );
+    Ok(())
 }
 
 // ---- F14c: incomplete PR ownership never fabricates an identity -------------
 
 #[test]
-fn host_work_status_f14c_open_without_number_stays_unknown() {
+fn host_work_status_f14c_open_without_number_stays_unknown() -> Result<()> {
     let report = admission_report(
         vec![
             ("candidate-presence", CheckStatus::Pass, String::from("ok")),
@@ -1421,21 +1461,22 @@ fn host_work_status_f14c_open_without_number_stays_unknown() {
     let mut snapshot = clean_snapshot("agent/x", true);
     snapshot.pr_ownership.pr_number = None;
     let subject = repository_subject(None);
-    let outcome = adapt_admission_report(&report, Some(&snapshot), &subject).expect("adapts");
+    let outcome = adapt_admission_report(&report, Some(&snapshot), &subject).context("adapts")?;
     let observations = &outcome.subject_observations;
-    let logical_row = observations.set.logical().iter().next().expect("logical row");
-    assert_eq!(logical_row.claim_relationship, ClaimRelationship::Unknown);
-    assert!(
+    let logical_row = observations.set.logical().iter().next().context("logical row")?;
+    ensure!(logical_row.claim_relationship == ClaimRelationship::Unknown);
+    ensure!(
         matches!(logical_row.durable_state, DurableState::NotProven),
         "incomplete ownership evidence must never read as an established PR link"
     );
-    assert!(matches!(logical_row.instrument, Instrument::Unavailable { .. }));
+    ensure!(matches!(logical_row.instrument, Instrument::Unavailable { .. }));
+    Ok(())
 }
 
 // ---- F14d: a snapshot for another target is rejected, not merged ------------
 
 #[test]
-fn host_work_status_f14d_mismatched_snapshot_target_rejected() {
+fn host_work_status_f14d_mismatched_snapshot_target_rejected() -> Result<()> {
     let report = admission_report(
         vec![("disk-capacity", CheckStatus::Pass, String::from("ok"))],
         AdmissionVerdict::Pass,
@@ -1444,17 +1485,18 @@ fn host_work_status_f14d_mismatched_snapshot_target_rejected() {
     let subject = repository_subject(None);
     match adapt_admission_report(&report, Some(&snapshot), &subject) {
         Err(AdapterError::SnapshotTargetMismatch { report_target, snapshot_target }) => {
-            assert_eq!(report_target, "agent/x");
-            assert_eq!(snapshot_target, "agent/other");
+            ensure!(report_target == "agent/x");
+            ensure!(snapshot_target == "agent/other");
         }
-        other => panic!("expected snapshot target mismatch, got {other:?}"),
+        other => bail!("expected snapshot target mismatch, got {other:?}"),
     }
+    Ok(())
 }
 
 // ---- F14e: a detached target never shares identity with a named branch ------
 
 #[test]
-fn host_work_status_f14e_detached_target_distinct_from_named_branch() {
+fn host_work_status_f14e_detached_target_distinct_from_named_branch() -> Result<()> {
     let named_report = admission_report(
         vec![("disk-capacity", CheckStatus::Pass, String::from("ok"))],
         AdmissionVerdict::Pass,
@@ -1462,21 +1504,32 @@ fn host_work_status_f14e_detached_target_distinct_from_named_branch() {
     let mut detached_report = named_report.clone();
     detached_report.target_branch_state = TargetBranchState::Detached;
     let subject = repository_subject(None);
-    let named = adapt_admission_report(&named_report, None, &subject).expect("named report adapts");
-    let detached =
-        adapt_admission_report(&detached_report, None, &subject).expect("detached report adapts");
-    assert_ne!(
-        named.subject_observations.subject.subject_key(),
-        detached.subject_observations.subject.subject_key(),
+    let named =
+        adapt_admission_report(&named_report, None, &subject).context("named report adapts")?;
+    let detached = adapt_admission_report(&detached_report, None, &subject)
+        .context("detached report adapts")?;
+    ensure!(
+        named.subject_observations.subject.subject_key()
+            != detached.subject_observations.subject.subject_key(),
         "a named branch literally spelled '(detached)' can never impersonate a detached checkout"
     );
-    assert!(detached.subject_observations.subject.worktree.as_ref().unwrap().branch.is_none());
+    ensure!(
+        detached
+            .subject_observations
+            .subject
+            .worktree
+            .as_ref()
+            .context("detached worktree fixture missing")?
+            .branch
+            .is_none()
+    );
+    Ok(())
 }
 
 // ---- F13b: the known-check list is exhaustive over the live provider --------
 
 #[test]
-fn host_work_status_f13b_current_check_names_have_no_unknown_variants() {
+fn host_work_status_f13b_current_check_names_have_no_unknown_variants() -> Result<()> {
     let report = admission_report(
         vec![
             ("canonical-base", CheckStatus::Pass, String::from("ok")),
@@ -1492,17 +1545,18 @@ fn host_work_status_f13b_current_check_names_have_no_unknown_variants() {
     );
     let snapshot = clean_snapshot("agent/x", false);
     let subject = repository_subject(None);
-    let outcome = adapt_admission_report(&report, Some(&snapshot), &subject).expect("adapts");
-    assert!(
+    let outcome = adapt_admission_report(&report, Some(&snapshot), &subject).context("adapts")?;
+    ensure!(
         outcome.subject_observations.set.unknown_variants().is_empty(),
         "every check emitted by run_checks must map exhaustively"
     );
+    Ok(())
 }
 
 // ---- F3b: an unobserved remote branch is a missing observation --------------
 
 #[test]
-fn host_work_status_f3b_unobserved_remote_branch_is_not_no_residue() {
+fn host_work_status_f3b_unobserved_remote_branch_is_not_no_residue() -> Result<()> {
     let report = admission_report(
         vec![("remote-branch-identity", CheckStatus::NotProven, String::from("no lookup"))],
         AdmissionVerdict::NotProven,
@@ -1510,17 +1564,17 @@ fn host_work_status_f3b_unobserved_remote_branch_is_not_no_residue() {
     let mut snapshot = clean_snapshot("agent/x", false);
     snapshot.remote_branch = crate::tasks::writer_admission::RemoteBranchInfo::default();
     let subject = repository_subject(None);
-    let outcome = adapt_admission_report(&report, Some(&snapshot), &subject).expect("adapts");
-    let logical_row = outcome.subject_observations.set.logical().iter().next().expect("row");
-    assert!(
+    let outcome = adapt_admission_report(&report, Some(&snapshot), &subject).context("adapts")?;
+    let logical_row = outcome.subject_observations.set.logical().iter().next().context("row")?;
+    ensure!(
         matches!(logical_row.durable_state, DurableState::NotProven),
         "an absent observation can never read as confirmed remote absence"
     );
+    Ok(())
 }
 
 #[test]
-fn host_work_status_subject_key_preserves_optional_presence()
--> Result<(), Box<dyn std::error::Error>> {
+fn host_work_status_subject_key_preserves_optional_presence() -> Result<()> {
     let mut absent = repository_subject(None);
     absent.canonical_remote = None;
     absent.worktree = None;
@@ -1552,9 +1606,9 @@ fn host_work_status_subject_key_preserves_optional_presence()
     worktree.worktree = Some(WorktreeIdentity { path: std::path::PathBuf::new(), branch: None });
     alternatives.push(worktree.clone());
     let branch_absent_key = worktree.subject_key();
-    worktree.worktree.as_mut().ok_or("worktree fixture missing")?.branch = Some(String::new());
+    worktree.worktree.as_mut().context("worktree fixture missing")?.branch = Some(String::new());
     if branch_absent_key == worktree.subject_key() {
-        return Err("absent and present-empty worktree branch must differ".into());
+        bail!("absent and present-empty worktree branch must differ");
     }
     alternatives.push(worktree);
     let mut keys = std::collections::BTreeSet::new();
@@ -1562,7 +1616,7 @@ fn host_work_status_subject_key_preserves_optional_presence()
     for alternative in alternatives {
         let key = alternative.subject_key();
         if key != alternative.clone().subject_key() || !keys.insert(key) {
-            return Err("optional presence must be distinct and deterministic".into());
+            bail!("optional presence must be distinct and deterministic");
         }
     }
     Ok(())
@@ -1570,8 +1624,7 @@ fn host_work_status_subject_key_preserves_optional_presence()
 
 #[cfg(any(unix, windows))]
 #[test]
-fn host_work_status_subject_key_preserves_native_non_unicode_paths()
--> Result<(), Box<dyn std::error::Error>> {
+fn host_work_status_subject_key_preserves_native_non_unicode_paths() -> Result<()> {
     #[cfg(unix)]
     let paths = {
         use std::os::unix::ffi::OsStringExt;
@@ -1584,7 +1637,7 @@ fn host_work_status_subject_key_preserves_native_non_unicode_paths()
     };
     let [first, second] = paths.map(std::path::PathBuf::from);
     if first.to_string_lossy() != second.to_string_lossy() {
-        return Err("control must distinguish paths the old display encoding collapsed".into());
+        bail!("control must distinguish paths the old display encoding collapsed");
     }
     for position in 0..4 {
         let mut left = repository_subject(None);
@@ -1600,13 +1653,11 @@ fn host_work_status_subject_key_preserves_native_non_unicode_paths()
         if left.subject_key() == right.subject_key()
             || left.subject_key() != left.clone().subject_key()
         {
-            return Err(
-                "native path identity must be lossless and deterministic in every field".into()
-            );
+            bail!("native path identity must be lossless and deterministic in every field");
         }
         let mut set = HostWorkObservationSet::new(left.subject_key());
         if set.push_logical(logical(&right.subject_key(), DurableState::NoLocalResidue)).is_ok() {
-            return Err("distinct native paths must not satisfy another subject".into());
+            bail!("distinct native paths must not satisfy another subject");
         }
     }
     Ok(())

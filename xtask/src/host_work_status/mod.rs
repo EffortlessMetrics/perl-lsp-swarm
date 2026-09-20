@@ -12,12 +12,23 @@
 //! typed owner (#11650/#11653/#11659/#11661) must be declared missing via
 //! [`adapter::declare_missing_provider`] so their absence stays visible.
 
-// WIP-01 (#11664) ships the pure domain ahead of its production consumer:
-// #11666 wires the live read-only observation command onto these types. Until
-// that successor lands, the module is reachable from tests only, so the
-// re-export surface below is intentionally kept with `unused_imports`
-// silenced and dead code allowed, scoped to this module alone.
-#![allow(unused_imports, dead_code)]
+// WIP-01 (#11664) stages this pure domain ahead of the live read-only
+// consumer (#11666). Remove these non-test-only expectations when that
+// consumer lands; tests must exercise the complete re-export surface.
+#![cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "policy:allow-11664-staged-domain-dead-code: remove with #11666 consumer"
+    )
+)]
+#![cfg_attr(
+    not(test),
+    expect(
+        unused_imports,
+        reason = "policy:allow-11664-staged-domain-exports: remove with #11666 consumer"
+    )
+)]
 
 mod adapter;
 mod dimension;
