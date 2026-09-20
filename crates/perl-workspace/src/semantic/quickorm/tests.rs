@@ -961,6 +961,60 @@ fn backtick_and_qx_table_names_do_not_emit_qorm_table() -> Result<(), Box<dyn st
 }
 
 #[test]
+fn plain_quote_repeated_table_names_match_quote_like_literals() -> anyhow::Result<()> {
+    for table_name in ["'aa'", "\"aa\"", "q{aa}", "qq{aa}"] {
+        let source = format!(
+            "package User; use DBIx::QuickORM type => q(table); table {table_name} => sub {{}};"
+        );
+        let facts =
+            generated_facts_from_source(&source).map_err(|error| anyhow::anyhow!("{error}"))?;
+        anyhow::ensure!(
+            canonical_names(&facts) == vec!["User::qorm_table"],
+            "static literal must retain the table fact: {source}; facts: {facts:?}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn plain_quote_repeated_prefix_does_not_hide_interpolation() -> anyhow::Result<()> {
+    for table_name in ["\"aba$name\"", "qq{aba$name}"] {
+        let source = format!(
+            "package User; use DBIx::QuickORM type => q(table); table {table_name} => sub {{}};"
+        );
+        let facts =
+            generated_facts_from_source(&source).map_err(|error| anyhow::anyhow!("{error}"))?;
+        anyhow::ensure!(
+            facts.is_empty(),
+            "interpolating name must remain dynamic: {source}; {facts:?}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn plain_quote_import_values_match_quote_like_literals() -> anyhow::Result<()> {
+    for value in ["'table'", "\"table\"", "q{table}", "qq{table}"] {
+        let source =
+            format!("package User; use DBIx::QuickORM type => {value}; table users => sub {{}};");
+        let specs =
+            import_specs_from_source(&source).map_err(|error| anyhow::anyhow!("{error}"))?;
+        let spec = quickorm_spec(&specs).map_err(|error| anyhow::anyhow!("{error}"))?;
+        anyhow::ensure!(
+            spec.kind == ImportKind::Use && spec.symbols == ImportSymbols::Default,
+            "static import must preserve default visibility: {source}; {spec:?}"
+        );
+        let facts =
+            generated_facts_from_source(&source).map_err(|error| anyhow::anyhow!("{error}"))?;
+        anyhow::ensure!(
+            canonical_names(&facts) == vec!["User::qorm_table"],
+            "static import must authorize the table fact: {source}; {facts:?}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
 fn q_and_qq_table_names_are_source_backed_literals() -> Result<(), Box<dyn std::error::Error>> {
     for (table_name, delimiter_kind) in [
         ("q(users)", "paren"),
