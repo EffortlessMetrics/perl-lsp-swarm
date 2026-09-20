@@ -2025,6 +2025,12 @@ struct RiprPrSummaryCounts {
     /// Same, for findings whose classification was not recognized. Decrements
     /// `severe_gaps` directly, like `suppressed_unclassified`.
     non_production_unclassified: usize,
+    /// `no_static_path` findings on a line that carries a declaration and no
+    /// executable code in the head revision (#16077), per
+    /// [`declaration_seam_lines`]. Dropped from the blocking bucket and
+    /// reported for transparency; not a policy suppression. Lowest precedence,
+    /// so a finding any other filter claims reports under that filter instead.
+    declaration_seam_excluded: usize,
 }
 
 /// The `summary` counts the required `ripr+ New Gap Gate` decision is derived from.
@@ -2138,6 +2144,7 @@ struct RiprFindingBuckets {
     suppressed: RiprPrSummaryCounts,
     outside_head: RiprPrSummaryCounts,
     non_production: RiprPrSummaryCounts,
+    declaration_seam: RiprPrSummaryCounts,
     unsuppressed_from_findings: RiprPrSummaryCounts,
     out_of_graph_buckets: RiprPrSummaryCounts,
     out_of_graph_total: usize,
@@ -2156,6 +2163,7 @@ impl RiprFindingBuckets {
             suppressed,
             outside_head,
             non_production,
+            declaration_seam,
             unsuppressed_from_findings,
             out_of_graph_buckets,
             out_of_graph_total,
@@ -2230,6 +2238,13 @@ impl RiprFindingBuckets {
             }
             return;
         }
+        // #16077: lowest precedence, and only for `no_static_path`. The other
+        // two classifications assert something a declaration line can still be
+        // guilty of, so they are never filtered here.
+        let declaration_seam_excluded = canonical == "no_static_path"
+            && ripr_finding_path(finding).is_some_and(|path| {
+                is_declaration_seam_at_line(production_surface, &path, finding_line)
+            });
         let counts = if policy_suppressed {
             suppressed.suppressed_by_policy += 1;
             &mut *suppressed
@@ -2239,6 +2254,9 @@ impl RiprFindingBuckets {
         } else if non_production_kind.is_some() {
             non_production.non_production_excluded += 1;
             &mut *non_production
+        } else if declaration_seam_excluded {
+            declaration_seam.declaration_seam_excluded += 1;
+            &mut *declaration_seam
         } else {
             &mut *unsuppressed_from_findings
         };
@@ -2263,6 +2281,7 @@ fn ripr_summary_counts_merge(
         suppressed,
         outside_head,
         non_production,
+        declaration_seam,
         unsuppressed_from_findings,
         out_of_graph_buckets,
         out_of_graph_total,
@@ -2291,7 +2310,8 @@ fn ripr_summary_counts_merge(
                 .saturating_sub(suppressed.no_static_path)
                 .saturating_sub(outside_head.no_static_path)
                 .saturating_sub(out_of_graph_buckets.no_static_path)
-                .saturating_sub(non_production.no_static_path),
+                .saturating_sub(non_production.no_static_path)
+                .saturating_sub(declaration_seam.no_static_path),
             suppressed_by_policy: suppressed.suppressed_by_policy,
             suppressed_unclassified: suppressed.suppressed_unclassified,
             outside_head_revision: outside_head.outside_head_revision,
@@ -2299,6 +2319,7 @@ fn ripr_summary_counts_merge(
             out_of_dependency_graph: out_of_graph_total,
             non_production_excluded: non_production.non_production_excluded,
             non_production_unclassified: non_production.non_production_unclassified,
+            declaration_seam_excluded: declaration_seam.declaration_seam_excluded,
         };
     }
     // Path B: no summary object — bucket totals come from `unsuppressed_from_findings`, which
@@ -2315,6 +2336,7 @@ fn ripr_summary_counts_merge(
         out_of_dependency_graph: out_of_graph_total,
         non_production_excluded: non_production.non_production_excluded,
         non_production_unclassified: 0,
+        declaration_seam_excluded: declaration_seam.declaration_seam_excluded,
         ..unsuppressed_from_findings
     }
 }
@@ -2868,6 +2890,10 @@ struct ProductionSurface {
     /// workspace artifacts.
     production_paths: BTreeSet<String>,
     inline_test_ranges: BTreeMap<String, Vec<(usize, usize)>>,
+    /// Lines that resolve, in the head revision, to a syn item carrying no
+    /// executable code (#16077). Used only to drop `no_static_path` findings,
+    /// which measure call-graph reachability a declaration line cannot have.
+    declaration_seam_lines: BTreeMap<String, BTreeSet<usize>>,
 }
 
 impl ProductionSurface {
@@ -2877,6 +2903,7 @@ impl ProductionSurface {
             repo_root: repo_root.to_string(),
             production_paths: production_paths.iter().map(|path| path.to_string()).collect(),
             inline_test_ranges: BTreeMap::new(),
+            declaration_seam_lines: BTreeMap::new(),
         }
     }
 }
@@ -2957,6 +2984,23 @@ fn classify_non_production_at_line(
     None
 }
 
+/// Whether a finding's line resolves to a non-executable declaration in the
+/// head revision (#16077).
+///
+/// Fail-closed at every step: no surface, an unresolvable path, a missing line,
+/// a file the head does not carry, or a file that would not parse all return
+/// `false`, which keeps the finding in the blocking basis.
+fn is_declaration_seam_at_line(
+    surface: Option<&ProductionSurface>,
+    raw_path: &str,
+    line: Option<u64>,
+) -> bool {
+    let Some(surface) = surface else { return false };
+    let Some(path) = repo_relative_surface_path(surface, raw_path) else { return false };
+    let Some(line) = line.and_then(|line| usize::try_from(line).ok()) else { return false };
+    surface.declaration_seam_lines.get(&path).is_some_and(|lines| lines.contains(&line))
+}
+
 /// Build the production surface from cargo metadata and the repo checkout.
 /// Errors mean the surface could not be established; callers must then skip
 /// non-production classification entirely rather than guess.
@@ -2979,6 +3023,7 @@ fn production_surface_from_metadata(
         repo_root: root,
         production_paths: BTreeSet::new(),
         inline_test_ranges: BTreeMap::new(),
+        declaration_seam_lines: BTreeMap::new(),
     };
     let mut scan_queue: Vec<String> = Vec::new();
     for package in packages {
@@ -3041,17 +3086,24 @@ fn production_surface_from_metadata(
         bail!("cargo metadata resolved no workspace production sources");
     }
     scan_include_closure(repo, &mut surface.production_paths, scan_queue);
-    surface.inline_test_ranges = changed_paths
+    for path in changed_paths
         .iter()
         .map(|path| normalize_repo_relative_path(path))
         .filter(|path| surface.production_paths.contains(path))
-        .filter_map(|path| {
-            let spec = format!("{head_sha}:{path}");
-            let source = run_git_output(repo, &["show", spec.as_str()]).ok()?;
-            let ranges = inline_cfg_test_ranges(&source);
-            (!ranges.is_empty()).then_some((path, ranges))
-        })
-        .collect();
+    {
+        let spec = format!("{head_sha}:{path}");
+        // A file the head revision does not carry leaves both maps without an
+        // entry, which keeps its findings in the blocking basis.
+        let Ok(source) = run_git_output(repo, &["show", spec.as_str()]) else { continue };
+        let ranges = inline_cfg_test_ranges(&source);
+        if !ranges.is_empty() {
+            surface.inline_test_ranges.insert(path.clone(), ranges);
+        }
+        let seams = declaration_seam_lines(&source);
+        if !seams.is_empty() {
+            surface.declaration_seam_lines.insert(path, seams);
+        }
+    }
     Ok(surface)
 }
 
@@ -3063,6 +3115,112 @@ fn inline_cfg_test_ranges(source: &str) -> Vec<(usize, usize)> {
     let mut collector = InlineCfgTestRangeCollector::default();
     collector.visit_file(&file);
     collector.ranges
+}
+
+/// Lines that carry a declaration and no executable code, in the head revision
+/// of one file (#16077).
+///
+/// `no_static_path` asserts that no static test path reaches the changed owner.
+/// That is a statement about the call graph, and the item kinds collected here
+/// contribute no node to it: a `use`, an `extern crate`, a bodiless `mod`, a
+/// type declaration, and a literal-initialized `const` or `static` contain no
+/// call site, so no test can produce a path to one. Reporting them as
+/// unreachable is the analyzer applying a call-graph model to a line that has
+/// no call (ripr#1429), not a coverage finding.
+///
+/// Deliberately excluded, because they can carry executable bodies:
+/// `Item::Trait` (default methods), `Item::Impl` (associated methods),
+/// `Item::Fn`, `Item::Mod` with content (its own items are visited on their
+/// own terms), and any `const`/`static` whose initializer is a call, a closure,
+/// or any other non-literal expression.
+///
+/// Like [`inline_cfg_test_ranges`], a parse failure yields nothing so the caller
+/// keeps every finding in the blocking basis.
+fn declaration_seam_lines(source: &str) -> BTreeSet<usize> {
+    let Ok(file) = syn::parse_file(source) else { return BTreeSet::new() };
+    let mut collector = DeclarationSeamCollector::default();
+    collector.visit_file(&file);
+    collector.lines
+}
+
+#[derive(Default)]
+struct DeclarationSeamCollector {
+    lines: BTreeSet<usize>,
+}
+
+impl DeclarationSeamCollector {
+    /// Mark every line the item occupies, attributes included. A doc comment or
+    /// a `#[derive]` above a declaration is no more executable than the
+    /// declaration itself, and a finding may land on either.
+    fn mark(&mut self, attrs: &[syn::Attribute], span: proc_macro2::Span) {
+        let start = attrs
+            .iter()
+            .map(Spanned::span)
+            .chain(std::iter::once(span))
+            .map(|span| span.start().line)
+            .min()
+            .unwrap_or_else(|| span.start().line);
+        for line in start..=span.end().line {
+            self.lines.insert(line);
+        }
+    }
+}
+
+/// A `const`/`static` initializer that executes nothing: a bare literal.
+///
+/// A call, a closure, a macro, or a path to another const are all rejected —
+/// each is a node the call graph can carry, so `no_static_path` on one of them
+/// is a claim this filter has no basis to overturn.
+fn initializer_is_literal(expr: &syn::Expr) -> bool {
+    matches!(expr, syn::Expr::Lit(_))
+}
+
+impl<'ast> Visit<'ast> for DeclarationSeamCollector {
+    fn visit_item_use(&mut self, item: &'ast syn::ItemUse) {
+        self.mark(&item.attrs, item.span());
+    }
+
+    fn visit_item_extern_crate(&mut self, item: &'ast syn::ItemExternCrate) {
+        self.mark(&item.attrs, item.span());
+    }
+
+    fn visit_item_mod(&mut self, item: &'ast syn::ItemMod) {
+        if item.content.is_none() {
+            // `mod name;` — the declaration line only. A module with a body is
+            // not marked; its items are visited individually below.
+            self.mark(&item.attrs, item.span());
+            return;
+        }
+        syn::visit::visit_item_mod(self, item);
+    }
+
+    fn visit_item_enum(&mut self, item: &'ast syn::ItemEnum) {
+        self.mark(&item.attrs, item.span());
+    }
+
+    fn visit_item_struct(&mut self, item: &'ast syn::ItemStruct) {
+        self.mark(&item.attrs, item.span());
+    }
+
+    fn visit_item_union(&mut self, item: &'ast syn::ItemUnion) {
+        self.mark(&item.attrs, item.span());
+    }
+
+    fn visit_item_type(&mut self, item: &'ast syn::ItemType) {
+        self.mark(&item.attrs, item.span());
+    }
+
+    fn visit_item_const(&mut self, item: &'ast syn::ItemConst) {
+        if initializer_is_literal(&item.expr) {
+            self.mark(&item.attrs, item.span());
+        }
+    }
+
+    fn visit_item_static(&mut self, item: &'ast syn::ItemStatic) {
+        if initializer_is_literal(&item.expr) {
+            self.mark(&item.attrs, item.span());
+        }
+    }
 }
 
 #[derive(Default)]
@@ -3427,6 +3585,7 @@ fn pr_evidence_packet_from_summary(
             "outside_head_revision": summary.outside_head_revision,
             "out_of_dependency_graph": summary.out_of_dependency_graph,
             "non_production_excluded": summary.non_production_excluded,
+            "declaration_seam_excluded": summary.declaration_seam_excluded,
             "suppression_patterns": suppressions.display_patterns.clone(),
         },
         "attribution": attribution_stamp(attribution_scope),
@@ -3546,6 +3705,10 @@ fn validate_pr_evidence_packet(
     if !summary.get("non_production_excluded").is_some_and(Value::is_u64) {
         violations.push("summary.non_production_excluded is missing or not an integer".to_string());
     }
+    if !summary.get("declaration_seam_excluded").is_some_and(Value::is_u64) {
+        violations
+            .push("summary.declaration_seam_excluded is missing or not an integer".to_string());
+    }
     match packet.get("attribution").and_then(Value::as_object) {
         Some(attribution) => {
             if attribution.get("basis").and_then(Value::as_str) != Some(ATTRIBUTION_BASIS) {
@@ -3630,6 +3793,10 @@ fn render_pr_evidence_markdown(packet: &Value) -> String {
     out.push_str(&format!(
         "- non_production_excluded: {}\n",
         count_field(summary, "non_production_excluded")
+    ));
+    out.push_str(&format!(
+        "- declaration_seam_excluded: {}\n",
+        count_field(summary, "declaration_seam_excluded")
     ));
     out.push_str(&format!("- severe gaps: {}\n\n", count_field(summary, "severe_gaps")));
     out.push_str("## Targeted Mutation\n\n");
@@ -6730,6 +6897,136 @@ mod maybe_tests {
                 "inline test filtering changed product counts: reachable={}, excluded={}",
                 counts.reachable_unrevealed,
                 counts.non_production_excluded
+            ));
+        }
+        Ok(())
+    }
+
+    /// #16077: the collector marks a line only when the item occupying it
+    /// carries no executable code. The rejected kinds are the point of the
+    /// test — a filter that swallowed a function body or a computed
+    /// initializer would drop findings the gate must keep.
+    #[test]
+    fn declaration_seam_lines_marks_only_non_executable_items() -> Result<()> {
+        let source = r##"use std::fmt::Debug;
+pub(crate) mod root_input;
+pub const SERVER_SUPPORT: bool = true;
+pub static BUILD_TAG: &str = "release";
+pub const DERIVED: bool = compute();
+pub(crate) enum InitialRootInput {
+    ExplicitWorkspaceFolders,
+    NoWorkspaceRoot,
+}
+pub(crate) use crate::protocol::capabilities::{
+    SERVER_SUPPORT,
+};
+const fn compute() -> bool {
+    true
+}
+pub trait Surface {
+    fn describe(&self) -> bool {
+        true
+    }
+}
+pub mod nested {
+    pub const INNER: u8 = 3;
+    pub fn run() -> u8 {
+        INNER
+    }
+}
+"##;
+        let marked = declaration_seam_lines(source);
+
+        // `use`, bodiless `mod`, literal `const`/`static`, `enum`, multi-line
+        // `use`, and a literal `const` nested in a module with a body.
+        for line in [1, 2, 3, 4, 6, 7, 8, 9, 10, 11, 12, 22] {
+            if !marked.contains(&line) {
+                return Err(eyre!("line {line} is a declaration seam but was not marked"));
+            }
+        }
+        // A computed const initializer, a `const fn` body, a trait default
+        // method, a module header with a body, and a function body.
+        for line in [5, 13, 14, 15, 16, 17, 18, 19, 20, 21, 23, 24, 25] {
+            if marked.contains(&line) {
+                return Err(eyre!("line {line} carries executable code but was marked"));
+            }
+        }
+        if !declaration_seam_lines("pub const BROKEN: bool = ;").is_empty() {
+            return Err(eyre!("unparseable source produced declaration seams"));
+        }
+        Ok(())
+    }
+
+    /// #16077: the filter removes `no_static_path` and nothing else, and only
+    /// on a declaration line. Every other combination stays in the blocking
+    /// basis, and the exclusion is reported rather than silent.
+    #[test]
+    fn declaration_seam_filter_drops_only_no_static_path_findings() -> Result<()> {
+        let source = r##"pub const SERVER_SUPPORT: bool = true;
+pub const DERIVED: bool = compute();
+const fn compute() -> bool {
+    true
+}
+"##;
+        let mut surface = ProductionSurface::from_parts("/ws", &["src/lib.rs"]);
+        surface
+            .declaration_seam_lines
+            .insert("src/lib.rs".to_string(), declaration_seam_lines(source));
+
+        let check = json!({
+            "summary": { "weakly_exposed": 0, "reachable_unrevealed": 1, "no_static_path": 3 },
+            "findings": [
+                // Declaration line: the one finding this filter exists for.
+                { "classification": "no_static_path", "seam": { "file": "src/lib.rs", "line": 1 } },
+                // Same line, different classification — never filtered.
+                { "classification": "reachable_unrevealed", "seam": { "file": "src/lib.rs", "line": 1 } },
+                // Computed initializer: a call the graph can carry.
+                { "classification": "no_static_path", "seam": { "file": "src/lib.rs", "line": 2 } },
+                // Inside a function body.
+                { "classification": "no_static_path", "seam": { "file": "src/lib.rs", "line": 4 } }
+            ]
+        });
+        let counts = ripr_pr_summary_counts(
+            &check,
+            check.get("summary").and_then(Value::as_object),
+            &no_suppressions(),
+            None,
+            None,
+            Some(&surface),
+        );
+        if counts.no_static_path != 2 {
+            return Err(eyre!(
+                "expected 2 blocking no_static_path findings, got {}",
+                counts.no_static_path
+            ));
+        }
+        if counts.reachable_unrevealed != 1 {
+            return Err(eyre!(
+                "declaration-seam filtering changed reachable_unrevealed to {}",
+                counts.reachable_unrevealed
+            ));
+        }
+        if counts.declaration_seam_excluded != 1 {
+            return Err(eyre!(
+                "expected 1 reported declaration-seam exclusion, got {}",
+                counts.declaration_seam_excluded
+            ));
+        }
+
+        // No surface means no filtering: every finding stays blocking.
+        let unfiltered = ripr_pr_summary_counts(
+            &check,
+            check.get("summary").and_then(Value::as_object),
+            &no_suppressions(),
+            None,
+            None,
+            None,
+        );
+        if unfiltered.no_static_path != 3 || unfiltered.declaration_seam_excluded != 0 {
+            return Err(eyre!(
+                "absent production surface still filtered: no_static_path={}, excluded={}",
+                unfiltered.no_static_path,
+                unfiltered.declaration_seam_excluded
             ));
         }
         Ok(())
