@@ -282,21 +282,32 @@ class AggregateWiringTests(unittest.TestCase):
                 )
                 self.assertEqual(1, status)
 
-    def test_a_cancelled_run_and_a_cancelled_lane_are_indistinguishable(
+    def test_forgiveness_turns_on_the_subject_not_on_why_a_lane_died(
         self,
     ) -> None:
-        """Why no verdict names cancellation as a cause.
+        """A lone cancelled lane and a cancelled run are treated alike, and why.
 
-        Run 35507473500 was concurrency-cancelled and still reported three
-        green lanes, because the fast guards had already finished when the
-        cancel landed. So a cancelled *run* and a single cancelled *job* reach
-        this function as the same shape: some lanes cancelled, some green,
-        none failed. Nothing in the needs map separates them, and the job's own
-        `cancelled()` is false for both.
+        Review raised this as the same gap wearing a different face: a
+        blocker-shaped predicate cannot tell a superseded run from one lost
+        lane, so greening both looked like accepting head movement as full
+        evidence.
 
-        Both are therefore `failure` — provable, and red either way. Only the
-        head comparison distinguishes a state worth forgiving, which is the
-        whole of the evidence model #16186's first attempt lacked.
+        It is not what this asserts. Run 35507473500 was concurrency-cancelled
+        and still reported three green lanes, because the fast guards finished
+        before the cancel landed — so the two states genuinely do arrive here
+        as the same shape, and the job's own `cancelled()` is false for both.
+        With no replacement run bound, both are `failure` and red.
+
+        What makes the forgiven case safe is not a claim about the lanes but a
+        claim about the run's *subject*: this run tested a head that is no
+        longer the candidate, and a run of this workflow demonstrably exists
+        for the one that is. That is true whether one lane died or fifteen,
+        which is why the two are deliberately alike here.
+
+        What still has to differ is a genuine failure. `_all_cancelled` keeps
+        that separate, because a lane that actually failed is information about
+        the code, and code survives a head move in a way a cancellation does
+        not.
         """
         lone_lane = applicable_needs(shard_result="cancelled")
         whole_run = _measured_cancelled_run()
@@ -313,8 +324,8 @@ class AggregateWiringTests(unittest.TestCase):
                 )
                 self.assertEqual(1, status)
 
-                # And the same two inputs are both forgiven once a newer head
-                # is positively established. The head is doing all the work.
+                # Both forgiven once the replacement run is bound — not by
+                # head movement alone, which is the distinction review drew.
                 superseded = gate.evaluate(
                     needs,
                     run_head=TESTED_HEAD,
