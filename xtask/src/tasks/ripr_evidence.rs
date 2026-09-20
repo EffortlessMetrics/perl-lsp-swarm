@@ -3140,12 +3140,22 @@ fn declaration_seam_lines(source: &str) -> BTreeSet<usize> {
     let Ok(file) = syn::parse_file(source) else { return BTreeSet::new() };
     let mut collector = DeclarationSeamCollector::default();
     collector.visit_file(&file);
-    collector.lines
+    // A line only stays a seam when nothing executable shares it. Subtracting
+    // rather than refusing to mark keeps the two passes independent: an item is
+    // screened by its own kind, and occupancy is resolved afterwards.
+    collector.lines.difference(&collector.executable).copied().collect()
 }
 
 #[derive(Default)]
 struct DeclarationSeamCollector {
     lines: BTreeSet<usize>,
+    /// Lines an executable construct occupies. Subtracted from `lines` at the
+    /// end, because marking is per line and a finding is matched by
+    /// `(file, line)` alone: `const OK: bool = true; fn run() { go(); }` puts a
+    /// declaration and a call on one physical line, and without this the call's
+    /// finding would be subtracted from a required gate's blocking basis
+    /// (#16077 review).
+    executable: BTreeSet<usize>,
 }
 
 impl DeclarationSeamCollector {
@@ -3162,6 +3172,21 @@ impl DeclarationSeamCollector {
             .unwrap_or_else(|| span.start().line);
         for line in start..=span.end().line {
             self.lines.insert(line);
+        }
+    }
+
+    /// Record every line an executable construct occupies, so a declaration
+    /// sharing a physical line with it cannot subtract that line.
+    fn mark_executable(&mut self, attrs: &[syn::Attribute], span: proc_macro2::Span) {
+        let start = attrs
+            .iter()
+            .map(Spanned::span)
+            .chain(std::iter::once(span))
+            .map(|span| span.start().line)
+            .min()
+            .unwrap_or_else(|| span.start().line);
+        for line in start..=span.end().line {
+            self.executable.insert(line);
         }
     }
 
@@ -3219,38 +3244,65 @@ impl<'ast> Visit<'ast> for DeclarationSeamCollector {
         syn::visit::visit_item_mod(self, item);
     }
 
+    fn visit_item_fn(&mut self, item: &'ast syn::ItemFn) {
+        self.mark_executable(&item.attrs, item.span());
+        syn::visit::visit_item_fn(self, item);
+    }
+
+    fn visit_item_impl(&mut self, item: &'ast syn::ItemImpl) {
+        self.mark_executable(&item.attrs, item.span());
+        syn::visit::visit_item_impl(self, item);
+    }
+
+    fn visit_item_trait(&mut self, item: &'ast syn::ItemTrait) {
+        self.mark_executable(&item.attrs, item.span());
+        syn::visit::visit_item_trait(self, item);
+    }
+
     fn visit_item_enum(&mut self, item: &'ast syn::ItemEnum) {
-        if !Self::carries_an_expression(|probe| probe.visit_item_enum(item)) {
+        if Self::carries_an_expression(|probe| probe.visit_item_enum(item)) {
+            self.mark_executable(&item.attrs, item.span());
+        } else {
             self.mark(&item.attrs, item.span());
         }
     }
 
     fn visit_item_struct(&mut self, item: &'ast syn::ItemStruct) {
-        if !Self::carries_an_expression(|probe| probe.visit_item_struct(item)) {
+        if Self::carries_an_expression(|probe| probe.visit_item_struct(item)) {
+            self.mark_executable(&item.attrs, item.span());
+        } else {
             self.mark(&item.attrs, item.span());
         }
     }
 
     fn visit_item_union(&mut self, item: &'ast syn::ItemUnion) {
-        if !Self::carries_an_expression(|probe| probe.visit_item_union(item)) {
+        if Self::carries_an_expression(|probe| probe.visit_item_union(item)) {
+            self.mark_executable(&item.attrs, item.span());
+        } else {
             self.mark(&item.attrs, item.span());
         }
     }
 
     fn visit_item_type(&mut self, item: &'ast syn::ItemType) {
-        if !Self::carries_an_expression(|probe| probe.visit_item_type(item)) {
+        if Self::carries_an_expression(|probe| probe.visit_item_type(item)) {
+            self.mark_executable(&item.attrs, item.span());
+        } else {
             self.mark(&item.attrs, item.span());
         }
     }
 
     fn visit_item_const(&mut self, item: &'ast syn::ItemConst) {
-        if !Self::carries_an_expression(|probe| probe.visit_item_const(item)) {
+        if Self::carries_an_expression(|probe| probe.visit_item_const(item)) {
+            self.mark_executable(&item.attrs, item.span());
+        } else {
             self.mark(&item.attrs, item.span());
         }
     }
 
     fn visit_item_static(&mut self, item: &'ast syn::ItemStatic) {
-        if !Self::carries_an_expression(|probe| probe.visit_item_static(item)) {
+        if Self::carries_an_expression(|probe| probe.visit_item_static(item)) {
+            self.mark_executable(&item.attrs, item.span());
+        } else {
             self.mark(&item.attrs, item.span());
         }
     }
@@ -6950,6 +7002,36 @@ mod maybe_tests {
     /// carries no executable code. The rejected kinds are the point of the
     /// test — a filter that swallowed a function body or a computed
     /// initializer would drop findings the gate must keep.
+    #[test]
+    fn declaration_seam_lines_keeps_lines_shared_with_executable_code() -> Result<()> {
+        // Marking is per line and findings are matched by `(file, line)` alone,
+        // so a declaration sharing a physical line with executable code would
+        // otherwise subtract that code's finding from the blocking basis of a
+        // required gate — a false clean result (#16077 review).
+        let source = r##"pub const FLAG: bool = true; pub fn run() -> bool { compute() }
+pub const ALONE: bool = false;
+const fn compute() -> bool { true }
+pub struct Pair; impl Pair { fn go(&self) -> bool { compute() } }
+"##;
+        let marked = declaration_seam_lines(source);
+
+        // Line 1 carries a literal `const` AND a function body; line 4 carries
+        // a unit struct AND an inherent method. Neither may be subtracted.
+        for line in [1, 3, 4] {
+            if marked.contains(&line) {
+                return Err(eyre!(
+                    "line {line} carries executable code and must stay in the blocking basis"
+                ));
+            }
+        }
+        // A declaration with the line to itself is still a seam, so the filter
+        // has not simply been switched off.
+        if !marked.contains(&2) {
+            return Err(eyre!("line 2 is a declaration seam and must still be marked"));
+        }
+        Ok(())
+    }
+
     #[test]
     fn declaration_seam_lines_marks_only_non_executable_items() -> Result<()> {
         let source = r##"use std::fmt::Debug;
