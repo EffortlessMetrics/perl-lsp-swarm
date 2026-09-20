@@ -142,7 +142,6 @@ impl LspServer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::textdoc::PosEnc;
     use serde_json::{Value, json};
     use std::collections::HashSet;
 
@@ -236,7 +235,18 @@ mod tests {
             }),
         )?;
 
-        assert!(matches!(server.client_capabilities.lock().position_encoding, PosEnc::Utf8));
+        // The client's offered preference lives in the accepted contract's
+        // bounded receipt — there is no mutable preference slot that could
+        // drift from the active encoding.
+        let session = server
+            .accepted_text_sync_session()
+            .ok_or("initialized session should hold an accepted contract")?;
+        let offer = serde_json::to_value(session.contract().client_offer())?;
+        assert_eq!(
+            offer.pointer("/entries/0/entry"),
+            Some(&json!("utf-8")),
+            "the client's utf-8 preference is retained as inert receipt data"
+        );
 
         let context = server
             .position_encoding_session_context()
@@ -316,7 +326,18 @@ mod tests {
             .ok_or("active encoding should survive rejected initialize")?;
         assert_eq!(error.code, -32600);
         assert_eq!(before, after);
-        assert!(matches!(server.client_capabilities.lock().position_encoding, PosEnc::Utf8));
+        assert_eq!(
+            serde_json::to_value(
+                server
+                    .accepted_text_sync_session()
+                    .ok_or("accepted contract should survive rejected initialize")?
+                    .contract()
+                    .client_offer()
+            )?
+            .pointer("/entries/0/entry"),
+            Some(&json!("utf-8")),
+            "the recorded client preference is immutable once accepted"
+        );
         Ok(())
     }
 
@@ -357,6 +378,10 @@ mod tests {
 
     #[test]
     fn legacy_preference_mutation_cannot_change_active_encoding() -> TestResult {
+        // The mutable client-preference slot was removed with the session
+        // contract (#9378): a utf-8-only offer is retained in the contract
+        // receipt as mandatory fallback, and there is no writable preference
+        // left that could change the active encoding after acceptance.
         let server = LspServer::new();
         initialize(
             &server,
@@ -364,8 +389,14 @@ mod tests {
                 "capabilities": {"general": {"positionEncodings": ["utf-8"]}}
             }),
         )?;
-        server.client_capabilities.lock().position_encoding = PosEnc::Utf8;
 
+        let session = server
+            .accepted_text_sync_session()
+            .ok_or("initialized session should hold an accepted contract")?;
+        assert_eq!(
+            serde_json::to_value(session.contract().client_offer())?.get("offer_class").cloned(),
+            Some(json!("present"))
+        );
         assert_eq!(server.position_encoding_for_coordinates()?, PositionEncoding::Utf16);
         Ok(())
     }

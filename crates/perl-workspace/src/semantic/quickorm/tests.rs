@@ -961,16 +961,113 @@ fn backtick_and_qx_table_names_do_not_emit_qorm_table() -> Result<(), Box<dyn st
 }
 
 #[test]
-fn q_and_qq_table_names_remain_unsupported() -> Result<(), Box<dyn std::error::Error>> {
-    for table_name in ["q(users)", "qq(users)"] {
+fn q_and_qq_table_names_are_source_backed_literals() -> Result<(), Box<dyn std::error::Error>> {
+    for (table_name, delimiter_kind) in [
+        ("q(users)", "paren"),
+        ("q{users}", "brace"),
+        ("q/ users /", "slash"),
+        ("q! users !", "bang"),
+        ("qq(users)", "paren"),
+        ("qq{users}", "brace"),
+        ("qq/ users /", "slash"),
+        ("qq! users !", "bang"),
+    ] {
+        let source = format!(
+            "package User; use DBIx::QuickORM type => 'table'; table {table_name} => sub {{}};"
+        );
+        let facts = generated_facts_from_source(&source)?;
+        assert_eq!(
+            canonical_names(&facts),
+            vec!["User::qorm_table"],
+            "{delimiter_kind}: quote-like literal must be admitted as a static table name: {source}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn escaped_quote_like_delimiters_remain_inside_static_table_names()
+-> Result<(), Box<dyn std::error::Error>> {
+    for table_name in [r#"q{users\}archive}"#, r#"q|users\|archive|"#] {
+        let source = format!(
+            "package User; use DBIx::QuickORM type => 'table'; table {table_name} => sub {{}};"
+        );
+        let facts = generated_facts_from_source(&source)?;
+        assert_eq!(
+            canonical_names(&facts),
+            vec!["User::qorm_table"],
+            "escaped quote-like delimiter must remain body text: {source}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn qq_interpolated_table_names_remain_dynamic() -> Result<(), Box<dyn std::error::Error>> {
+    for table_name in ["qq($name)", "qq{${prefix}_users}", "qq(@arr)", "qq($^O)", "qq($::prefix)"] {
         let source = format!(
             "package User; use DBIx::QuickORM type => 'table'; table {table_name} => sub {{}};"
         );
         assert!(
             generated_facts_from_source(&source)?.is_empty(),
-            "quote-like names remain outside the bounded pilot: {source}"
+            "qq interpolation must keep the table name dynamic: {source}"
         );
     }
+    Ok(())
+}
+
+#[test]
+fn qx_and_backtick_table_names_remain_execution_boundaries()
+-> Result<(), Box<dyn std::error::Error>> {
+    for table_name in ["qx(hostname)", "qx{hostname}", "qx/ hostname /", "`hostname`"] {
+        let source = format!(
+            "package User; use DBIx::QuickORM type => 'table'; table {table_name} => sub {{}};"
+        );
+        assert!(
+            generated_facts_from_source(&source)?.is_empty(),
+            "qx- and backtick-prefixed table names are deliberately not source-backed: {source}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn quickorm_import_admits_q_and_qq_key_value_pairs() -> Result<(), Box<dyn std::error::Error>> {
+    // The parser preserves the quote-like operator in the raw arg text; the
+    // bounded classifier reads the operator out of the source segment so the
+    // import shape is admitted as UnfilteredTable exactly like `'table'`.
+    for (key_arg, value_arg) in
+        [("q{type}", "q{table}"), ("q(type)", "q(table)"), ("qq{type}", "qq{table}")]
+    {
+        let source = format!("package User; use DBIx::QuickORM {key_arg} => {value_arg};");
+        let specs = import_specs_from_source(&source)?;
+        let spec = quickorm_spec(&specs)?;
+        assert_eq!(spec.kind, ImportKind::Use, "import kind for {key_arg} => {value_arg}");
+        assert_eq!(spec.symbols, ImportSymbols::Default, "symbols for {key_arg} => {value_arg}");
+        assert_eq!(
+            spec.provenance,
+            Provenance::ImportExportInference,
+            "provenance for {key_arg} => {value_arg}"
+        );
+        assert_eq!(spec.confidence, Confidence::Medium, "confidence for {key_arg} => {value_arg}");
+    }
+    Ok(())
+}
+
+#[test]
+fn quickorm_q_table_built_after_qq_import_still_emits_qorm_table()
+-> Result<(), Box<dyn std::error::Error>> {
+    // End-to-end: a `q{type} => q{table}` import must enable table-package
+    // authority just like the admitted `'table'` literal, and a static-name
+    // builder must emit the fact.
+    let source = r#"
+package MyApp::Schema::User;
+use DBIx::QuickORM q{type} => q{table};
+table 'users' => sub {};
+1;
+"#;
+    let facts = generated_facts_from_source(source)?;
+    assert_eq!(canonical_names(&facts), vec!["MyApp::Schema::User::qorm_table"]);
     Ok(())
 }
 
@@ -1308,5 +1405,46 @@ table users => sub {};
     )?;
 
     assert!(facts.is_empty());
+    Ok(())
+}
+
+#[test]
+fn semicolon_terminated_bareword_does_not_recover_hash_builder()
+-> Result<(), Box<dyn std::error::Error>> {
+    // `table; q(users) => sub {};` is two statements — a bare identifier
+    // followed by an unrelated hash — not the recovered `table KEY => BODY`
+    // shape. Recovery must require source adjacency (trivia only between the
+    // statements) or it consumes authority and emits/invalidates table facts
+    // on any `table;` + hash coincidence (#15964 review).
+    let facts = generated_facts_from_source(
+        r#"
+package MyApp::Schema::User;
+use DBIx::QuickORM type => 'table';
+table; q(users) => sub {};
+1;
+"#,
+    )?;
+
+    assert!(
+        !canonical_names(&facts).contains(&"MyApp::Schema::User::qorm_table"),
+        "a semicolon-terminated bareword must not recover a hash builder"
+    );
+    Ok(())
+}
+
+#[test]
+fn adjacent_bareword_still_recovers_quote_like_builder() -> Result<(), Box<dyn std::error::Error>> {
+    // Positive control: with only trivia between the bareword and the hash,
+    // recovery still applies.
+    let facts = generated_facts_from_source(
+        r#"
+package MyApp::Schema::User;
+use DBIx::QuickORM type => 'table';
+table q(users) => sub {};
+1;
+"#,
+    )?;
+
+    assert_eq!(canonical_names(&facts), vec!["MyApp::Schema::User::qorm_table"]);
     Ok(())
 }
