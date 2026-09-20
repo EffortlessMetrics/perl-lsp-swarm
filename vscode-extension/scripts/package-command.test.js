@@ -624,3 +624,377 @@ void test('archive validation failure propagates after packaging', () => {
   assert.equal(packageVsix(run, fileSystem), false);
   assert.equal(calls.length, 2);
 });
+
+// Benign synthetic composition: no VSCE, downloads or publisher is executed.
+async function mappedPackageFixture(extraFile = '') {
+  const crypto = require('node:crypto');
+  const JSZip = require('jszip');
+  const {
+    buildVsixCandidatePayloadManifest,
+    canonicalVsixPayloadJson,
+    deriveVsixTargetProjection,
+  } = require('../src/vsixPackageProjection.ts');
+  const { semanticInventorySha256 } = require('./check-vsix-inventory-transition');
+  const { summarizeInventory } = require('./check-vsix-inventory');
+  const repo = path.resolve(__dirname, '../..');
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-mapped-package-'));
+  const root = path.join(directory, 'vscode-extension');
+  fs.mkdirSync(root);
+  const digest = (bytes) => crypto.createHash('sha256').update(bytes).digest('hex');
+  const topology = JSON.parse(
+    fs.readFileSync(path.join(repo, 'fixtures/rc_vsix_binding/valid.topology.v4.json'), 'utf8'),
+  );
+  const matrixPath = 'docs/reference/downstream-dap-integrations.json';
+  const downloaderPath = 'vscode-extension/src/downloader.ts';
+  for (const relative of [matrixPath, downloaderPath]) {
+    const destination = path.join(directory, relative);
+    fs.mkdirSync(path.dirname(destination), { recursive: true });
+    const bytes = fs.readFileSync(path.join(repo, relative));
+    fs.writeFileSync(destination, bytes);
+    topology.sources[relative] = { path: relative, sha256: digest(bytes) };
+  }
+  const schemaPath = 'schemas/release_topology.v4.schema.json';
+  topology.sources[schemaPath].sha256 = digest(fs.readFileSync(path.join(repo, schemaPath)));
+  const triples = JSON.parse(fs.readFileSync(path.join(repo, matrixPath), 'utf8')).targets.map(
+    (row) => row.triple,
+  );
+  topology.binary_targets = triples.map((target) => ({
+    target,
+    runner: target.includes('windows')
+      ? 'windows-2022'
+      : target.includes('darwin')
+        ? 'macos-14'
+        : 'ubuntu-22.04',
+    os: target.includes('windows') ? 'windows' : target.includes('darwin') ? 'macos' : 'linux',
+    architecture: target.startsWith('aarch64') ? 'aarch64' : 'x86_64',
+    libc: target.includes('musl') ? 'musl' : target.includes('linux') ? 'gnu' : null,
+    archive_name: `perllsp-${topology.release}-${target}${target.includes('windows') ? '.zip' : '.tar.gz'}`,
+    required_members: target.includes('windows')
+      ? ['perllsp.exe', 'perl-dap.exe']
+      : ['perllsp', 'perl-dap'],
+  }));
+  topology.archive_count = triples.length;
+  topology.vsix.managed_targets = [...triples].sort();
+  const packageBytes = Buffer.from(
+    JSON.stringify({
+      publisher: topology.vsix.publisher,
+      name: topology.vsix.name,
+      version: topology.vsix.version,
+    }),
+  );
+  fs.writeFileSync(path.join(root, 'package.json'), packageBytes);
+  const topologyBytes = Buffer.from(JSON.stringify(topology));
+  fs.writeFileSync(path.join(directory, 'topology.json'), topologyBytes);
+  const projection = deriveVsixTargetProjection({
+    releaseTopologySha256: digest(topologyBytes),
+    includeUniversalManaged: true,
+    targets: topology.binary_targets.map((row) => ({
+      target: row.target,
+      os: row.os,
+      architecture: row.architecture,
+      libc: row.libc,
+      archiveName: row.archive_name,
+      requiredMembers: row.required_members,
+    })),
+  }).find((row) => row.packageMode === 'universal_managed');
+  if (!projection) throw new Error('synthetic universal projection missing');
+  const payload = JSON.parse(
+    JSON.stringify(
+      buildVsixCandidatePayloadManifest({
+        schema: 'vsix_candidate_payload.v2',
+        preRelease: true,
+        extension: {
+          id: `${topology.vsix.publisher}.${topology.vsix.name}`,
+          version: topology.vsix.version,
+          sourceSha: topology.prepared_swarm_sha,
+        },
+        candidate: {
+          id: topology.vsix.candidate_id,
+          release: topology.release,
+          sourceSha: topology.prepared_swarm_sha,
+        },
+        releaseTopologySha256: digest(topologyBytes),
+        projection,
+        packageInventorySha256: 'a'.repeat(64),
+      }),
+    ),
+  );
+  const baseline = JSON.parse(
+    fs.readFileSync(path.join(__dirname, 'vsix-inventory-baseline.json'), 'utf8'),
+  );
+  const files = Object.fromEntries(
+    Object.keys(baseline.files).map((file) => [file, Buffer.from('x')]),
+  );
+  files['package.json'] = packageBytes;
+  if (extraFile) files[extraFile] = Buffer.from('extra');
+  files['vsix-candidate-payload.json'] = Buffer.from(canonicalVsixPayloadJson(payload));
+  payload.package.inventorySha256 = semanticInventorySha256(
+    summarizeInventory(
+      Object.entries(files).map(([file, bytes]) => ({ file, bytes: bytes.length })),
+    ),
+  );
+  fs.writeFileSync(path.join(directory, 'payload.json'), canonicalVsixPayloadJson(payload));
+  const env = {
+    PERL_LSP_RELEASE_TOPOLOGY: path.join(directory, 'topology.json'),
+    PERL_LSP_CANDIDATE_PAYLOAD_MANIFEST: path.join(directory, 'payload.json'),
+    PERL_LSP_CURRENT_SOURCE_SHA: topology.prepared_swarm_sha,
+  };
+  const xml = `<PackageManifest><Metadata><Identity Id="${topology.vsix.name}" Publisher="${topology.vsix.publisher}" Version="${topology.vsix.version}"/><Properties><Property Id="Microsoft.VisualStudio.Code.PreRelease" Value="true"/></Properties></Metadata></PackageManifest>`;
+  const output = path.join(root, topology.vsix.asset_name);
+  const calls = [];
+  /** @param {string} script @param {string[]} args @param {(zip: import("jszip")) => void} change */
+  async function run(script, args, change = () => {}) {
+    calls.push({ script, args });
+    const zip = new JSZip();
+    for (const [file, bytes] of Object.entries(files)) zip.file(`extension/${file}`, bytes);
+    zip.file(
+      'extension/vsix-candidate-payload.json',
+      fs.readFileSync(path.join(root, 'vsix-candidate-payload.json')),
+    );
+    zip.file('extension.vsixmanifest', xml);
+    change(zip);
+    fs.writeFileSync(output, await zip.generateAsync({ type: 'nodebuffer' }));
+    return true;
+  }
+  return {
+    directory,
+    root,
+    topology,
+    payload,
+    env,
+    output,
+    calls,
+    run,
+    triples,
+    cleanup: () => fs.rmSync(directory, { recursive: true, force: true }),
+  };
+}
+
+async function mappedPackageTests() {
+  const { packageMappedVsix } = require('./package-vsix');
+  await test('mapped production package preserves the full canonical managed matrix and exact universal identity', async () => {
+    const f = await mappedPackageFixture();
+    try {
+      const before = JSON.stringify(f.env);
+      const prior = path.join(f.root, 'vsix-candidate-payload.json');
+      fs.writeFileSync(prior, 'prior contents');
+      const priorMode = fs.statSync(prior).mode;
+      assert.equal(await packageMappedVsix(f.run, fs, f.env, f.root), true);
+      assert.deepEqual(
+        f.calls.map((row) => row.args),
+        [['package', '--pre-release', '--out', f.topology.vsix.asset_name]],
+      );
+      assert.deepEqual([...f.topology.vsix.managed_targets].sort(), [...f.triples].sort());
+      assert.equal(fs.readFileSync(prior, 'utf8'), 'prior contents');
+      assert.equal(fs.statSync(prior).mode, priorMode);
+      assert.equal(JSON.stringify(f.env), before);
+      assert.ok(fs.statSync(f.output).size > 0);
+    } finally {
+      f.cleanup();
+    }
+  });
+  await test('mapped production admission rejects competing selection and independent identity changes before staging', async () => {
+    const cases = [
+      (f) => {
+        f.payload.package.mode = 'target_specific';
+      },
+      (f) => {
+        f.payload = [f.payload, f.payload];
+      },
+      (f) => {
+        f.topology.vsix.bundled_targets = [f.triples[0]];
+      },
+      (f) => {
+        f.topology.vsix.managed_targets.pop();
+      },
+      (f) => {
+        f.topology.vsix.managed_targets[0] = 'another-target';
+      },
+      (f) => {
+        f.payload.preRelease = false;
+      },
+      (f) => {
+        delete f.payload.preRelease;
+      },
+      (f) => {
+        f.payload.extension.version = '0.19.8';
+      },
+      (f) => {
+        f.payload.candidate.release = '0.18.0-rc.8';
+      },
+      (f) => {
+        f.payload.candidate.id = 'other-candidate';
+      },
+      (f) => {
+        f.env.PERL_LSP_CURRENT_SOURCE_SHA = 'c'.repeat(40);
+      },
+      (f) => {
+        f.payload.releaseTopologySha256 = 'c'.repeat(64);
+      },
+      (f) => {
+        f.env.PERL_LSP_VSCODE_TARGET = 'linux-x64';
+      },
+      (f) => {
+        f.topology.sources['vscode-extension/src/downloader.ts'].sha256 = 'c'.repeat(64);
+      },
+    ];
+    for (const change of cases) {
+      const f = await mappedPackageFixture();
+      try {
+        change(f);
+        fs.writeFileSync(f.env.PERL_LSP_RELEASE_TOPOLOGY, JSON.stringify(f.topology));
+        fs.writeFileSync(f.env.PERL_LSP_CANDIDATE_PAYLOAD_MANIFEST, JSON.stringify(f.payload));
+        await assert.rejects(packageMappedVsix(f.run, fs, f.env, f.root));
+        assert.equal(f.calls.length, 0);
+        assert.equal(fs.existsSync(path.join(f.root, 'vsix-candidate-payload.json')), false);
+        assert.equal(fs.existsSync(f.output), false);
+      } finally {
+        f.cleanup();
+      }
+    }
+  });
+  await test('mapped production actual archives reject missing or changed metadata and unexpected files with rollback', async () => {
+    const cases = [
+      (zip) => zip.remove('extension/vsix-candidate-payload.json'),
+      (zip) => zip.file('extension/vsix-candidate-payload.json', '{}'),
+      (zip) => zip.file('extension.vsixmanifest', '<PackageManifest/>'),
+      (zip) => zip.file('extension/unexpected.txt', 'unexpected'),
+      (zip) => zip.file('extension/package.json', '{}'),
+    ];
+    for (const change of cases) {
+      const f = await mappedPackageFixture();
+      try {
+        await assert.rejects(
+          packageMappedVsix((script, args) => f.run(script, args, change), fs, f.env, f.root),
+        );
+        assert.equal(fs.existsSync(f.output), false);
+        assert.equal(fs.existsSync(path.join(f.root, 'vsix-candidate-payload.json')), false);
+      } finally {
+        f.cleanup();
+      }
+    }
+    for (const duplicate of [false, true]) {
+      const f = await mappedPackageFixture();
+      try {
+        await assert.rejects(
+          packageMappedVsix(
+            async (script, args) => {
+              await f.run(script, args, (zip) => {
+                const bytes = fs.readFileSync(path.join(f.root, 'vsix-candidate-payload.json'));
+                if (duplicate) zip.file('extension/vsix-candidate-payloae.json', bytes);
+                else
+                  zip.file(
+                    'extension/vsix-candidate-payload.json',
+                    bytes.toString().replace('synthetic-rc-seven', 'synthetic-rc-seveX'),
+                  );
+              });
+              if (duplicate) {
+                const bytes = fs.readFileSync(f.output);
+                const from = Buffer.from('vsix-candidate-payloae.json');
+                const to = Buffer.from('vsix-candidate-payload.json');
+                for (
+                  let at = bytes.indexOf(from);
+                  at >= 0;
+                  at = bytes.indexOf(from, at + to.length)
+                )
+                  to.copy(bytes, at);
+                fs.writeFileSync(f.output, bytes);
+              }
+              return true;
+            },
+            fs,
+            f.env,
+            f.root,
+          ),
+        );
+        assert.equal(fs.existsSync(f.output), false);
+      } finally {
+        f.cleanup();
+      }
+    }
+  });
+  await test('mapped production exact inventory proof cannot waive additional files or ambient native payloads', async () => {
+    for (const extra of ['unexpected.txt', 'bin/linux-x64/perllsp']) {
+      const f = await mappedPackageFixture(extra);
+      try {
+        await assert.rejects(
+          packageMappedVsix(f.run, fs, f.env, f.root),
+          extra.startsWith('bin/') ? /contains native payload/ : /inventory policy refused/,
+        );
+        assert.equal(fs.existsSync(f.output), false);
+      } finally {
+        f.cleanup();
+      }
+    }
+    const f = await mappedPackageFixture();
+    try {
+      const native = path.join(f.root, 'bin/linux-x64/perllsp');
+      fs.mkdirSync(path.dirname(native), { recursive: true });
+      fs.writeFileSync(native, 'unrelated native bytes');
+      await assert.rejects(packageMappedVsix(f.run, fs, f.env, f.root), /ambient native payload/);
+      assert.equal(fs.readFileSync(native, 'utf8'), 'unrelated native bytes');
+      assert.equal(f.calls.length, 0);
+    } finally {
+      f.cleanup();
+    }
+  });
+  await test('mapped production packager and cleanup failures never retain a success artifact', async () => {
+    for (const outcome of ['false', 'throw', 'missing', 'empty', 'cleanup', 'stage']) {
+      const f = await mappedPackageFixture();
+      try {
+        const facade = Object.create(fs);
+        if (outcome === 'stage') {
+          const destination = path.join(f.root, 'vsix-candidate-payload.json');
+          fs.writeFileSync(destination, 'prior bytes');
+          let first = true;
+          facade.writeFileSync = (file, bytes) => {
+            fs.writeFileSync(file, bytes);
+            if (file === destination && first) {
+              first = false;
+              throw new Error('fixture partial stage failure');
+            }
+          };
+        }
+
+        if (outcome === 'cleanup')
+          facade.rmSync = (file, options) => {
+            if (file === path.join(f.root, 'vsix-candidate-payload.json'))
+              throw new Error('fixture cleanup failure');
+            return fs.rmSync(file, options);
+          };
+        const run = async (script, args) => {
+          if (outcome === 'false') return false;
+          if (outcome === 'throw') throw new Error('fixture packager failure');
+          if (outcome === 'missing') return true;
+          if (outcome === 'empty') {
+            fs.writeFileSync(f.output, '');
+            return true;
+          }
+          return f.run(script, args);
+        };
+        await assert.rejects(packageMappedVsix(run, facade, f.env, f.root));
+        assert.equal(fs.existsSync(f.output), false);
+        if (outcome === 'stage')
+          assert.equal(
+            fs.readFileSync(path.join(f.root, 'vsix-candidate-payload.json'), 'utf8'),
+            'prior bytes',
+          );
+      } finally {
+        f.cleanup();
+      }
+    }
+    const f = await mappedPackageFixture();
+    try {
+      fs.writeFileSync(f.output, 'existing artifact');
+      await assert.rejects(packageMappedVsix(f.run, fs, f.env, f.root), /already exists/);
+      assert.equal(fs.readFileSync(f.output, 'utf8'), 'existing artifact');
+      assert.equal(f.calls.length, 0);
+    } finally {
+      f.cleanup();
+    }
+  });
+}
+mappedPackageTests().catch((error) => {
+  process.stderr.write(`${String(error)}\n`);
+  process.exitCode = 1;
+});

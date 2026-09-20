@@ -75,16 +75,7 @@ async function mappedMetadata(vsix) {
   return values;
 }
 
-/** @param {string} vsix @param {Buffer|string} topologyBytes @param {string} expectedDigest */
-async function verifyMappedRc(vsix, topologyBytes, expectedDigest) {
-  const archiveBytes = fs.readFileSync(vsix);
-  topologyBytes = Buffer.from(topologyBytes);
-  if (
-    !/^[0-9a-f]{64}$/.test(expectedDigest) ||
-    crypto.createHash('sha256').update(archiveBytes).digest('hex') !== expectedDigest
-  ) {
-    throw new Error('Mapped VSIX bytes differ from expected digest');
-  }
+function validateMappedTopology(topologyBytes) {
   const topology = parseUniqueJson(topologyBytes);
   const Ajv2020 = require('ajv/dist/2020').default;
   const schemaPath = 'schemas/release_topology.v4.schema.json';
@@ -113,14 +104,47 @@ async function verifyMappedRc(vsix, topologyBytes, expectedDigest) {
     selected.pre_release !== true ||
     !/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(selected.publisher ?? '') ||
     !/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(selected.name ?? '') ||
-    selected.asset_name !== `${selected.name}-${selected.version}-${topology.release}.vsix` ||
-    path.basename(vsix) !== selected.asset_name
+    selected.asset_name !== `${selected.name}-${selected.version}-${topology.release}.vsix`
   ) {
     throw new Error('VSIX asset does not match selected RC identity');
   }
+  return topology;
+}
+
+/** @param {string} vsix @param {Buffer|string} topologyBytes @param {string} expectedDigest */
+async function verifyMappedRc(vsix, topologyBytes, expectedDigest) {
+  return verifyMappedSnapshot(vsix, fs.readFileSync(vsix), topologyBytes, expectedDigest);
+}
+
+async function verifyMappedSnapshot(
+  vsix,
+  snapshot,
+  topologyBytes,
+  expectedDigest,
+  expectedPayloadBytes,
+) {
+  const archiveBytes = Buffer.from(snapshot);
+  topologyBytes = Buffer.from(topologyBytes);
+  if (
+    !/^[0-9a-f]{64}$/.test(expectedDigest) ||
+    crypto.createHash('sha256').update(archiveBytes).digest('hex') !== expectedDigest
+  ) {
+    throw new Error('Mapped VSIX bytes differ from expected digest');
+  }
+  const topology = validateMappedTopology(topologyBytes);
+  const selected = topology.vsix;
+  if (path.basename(vsix) !== selected.asset_name)
+    throw new Error('VSIX asset does not match selected RC identity');
   const values = await mappedMetadata(archiveBytes);
   const pkg = parseUniqueJson(values.get('extension/package.json'));
   const payload = parseUniqueJson(values.get('extension/vsix-candidate-payload.json'));
+  const embedded = values.get('extension/vsix-candidate-payload.json');
+  if (
+    expectedPayloadBytes &&
+    (!embedded || !Buffer.from(embedded).equals(Buffer.from(expectedPayloadBytes)))
+  ) {
+    throw new Error('Embedded canonical payload bytes differ from admitted input');
+  }
   if (
     pkg.publisher !== selected.publisher ||
     pkg.name !== selected.name ||
@@ -219,14 +243,18 @@ async function verifyMappedRc(vsix, topologyBytes, expectedDigest) {
     collectArchiveInventory,
     semanticInventorySha256,
   } = require('./check-vsix-inventory-transition');
+  const inventory = (await collectArchiveInventory(archiveBytes)).inventory;
   if (
-    semanticInventorySha256((await collectArchiveInventory(archiveBytes)).inventory) !==
-    payload.package.inventorySha256
-  ) {
+    expectedPayloadBytes &&
+    inventory.files['vsix-candidate-payload.json'] !== Buffer.byteLength(expectedPayloadBytes)
+  )
+    throw new Error('Embedded canonical payload byte length differs');
+  if (semanticInventorySha256(inventory) !== payload.package.inventorySha256) {
     throw new Error('Mapped VSIX package inventory differs from payload');
   }
   // All checks above consume the same private buffer hashed at entry. Path replacement
   // cannot change the subject, and no later path read can mix artifact snapshots.
+  return inventory;
 }
 
 async function verifyPayloadMember(vsix, member, expected) {
@@ -314,4 +342,11 @@ if (require.main === module) {
   });
 }
 
-module.exports = { main, verifyPayloadMember, verifyMappedRc, parseUniqueJson };
+module.exports = {
+  main,
+  verifyPayloadMember,
+  verifyMappedRc,
+  verifyMappedSnapshot,
+  validateMappedTopology,
+  parseUniqueJson,
+};

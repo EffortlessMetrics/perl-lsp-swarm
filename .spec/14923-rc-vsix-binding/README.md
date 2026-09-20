@@ -140,10 +140,11 @@ terminal VSIX role and mandatory asset denominator, checksum/attestation integra
 same-artifact publisher consumption, and installed Windows/Linux server/DAP proof.
 #14406/#14479 retain graph authority; #4347/#6068/#6052 retain preparation identity;
 #6056/#4346/#14412 retain installed consumers. This packet does not close those claims.
-In particular, `vscode-extension/scripts/package-vsix.js` still rejects payload v2;
-production packaging admission and prerelease invocation belong to that composition
-slice. Offline synthetic ZIP proof here is not proof that this publisher/package
-entry point can already produce a mapped RC. The new mapping helper and v4/v2 schemas
+At the initial offline-slice boundary, `vscode-extension/scripts/package-vsix.js`
+rejected payload v2. The production packet below now adds the explicitly selected
+universal-managed v2 route and prerelease invocation; native v2 packaging remains
+refused in that route. Synthetic ZIP composition proves the selected source path,
+not an executed VSCE build or terminal/publisher acceptance. The new mapping helper and v4/v2 schemas
 are private contract machinery, not a second preparation or release authority.
 
 Rollback removes the opt-in contracts and callers together before any live consumer
@@ -175,3 +176,149 @@ the prepared inventory hash, then permits only that explicit inventory addition.
 V1/v2/v3 inventories and default selection are unchanged. The existing two CI
 jobs install scripts/requirements-release.txt before their newly affected proof;
 Python subprocess tests use the current interpreter rather than ambient python.
+
+
+## Production universal-managed packaging packet (root approved)
+
+Authorities: [writer claim](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/14923#issuecomment-5750592500)
+and [selected first-RC package](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/14923#issuecomment-5750642065).
+Implementation base is reviewed dependency `73d538bfe92b1eff80d9afa436282347eff035f2`;
+its hosted checks remain pending. This section advances the previously deferred
+production packaging seam only; it does not promote the dependency to release proof.
+
+### Selected interface and admission
+
+Keep `packageVsix` and the legacy v1/default packaging route behavior compatible.
+The mapped route is explicit: a `vsix_candidate_payload.v2` supplied through existing
+`PERL_LSP_CANDIDATE_PAYLOAD_MANIFEST` must additionally supply the exact raw topology
+file through proposed `PERL_LSP_RELEASE_TOPOLOGY`. This new path input carries the
+existing topology contract, not a new selection or identity database. Preserve
+`PERL_LSP_CURRENT_SOURCE_SHA`; require exact prepared-source equality. Do not infer
+mapped identity from package.json or silently switch a legacy request into v2.
+Root approved this environment input and the private asynchronous mapped route under
+the selected first-RC decision above.
+
+Capture topology and payload bytes once; use the existing duplicate-aware JSON
+admission, closed v4/v2 schema validation and schema-source digest checks. Factor
+reusable mapped-topology admission from the existing actual-archive verifier rather
+than copy its rules. Before any staging, require exact extension publisher/name/
+numeric version against package.json, candidate/full-RC identity, topology digest,
+prepared source, true prerelease, and canonical payload reconstruction.
+
+Select exactly one `universal_managed` projection from the topology's binary targets
+using the shared `deriveVsixTargetProjection` and `buildVsixCandidatePayloadManifest`.
+The topology must have empty `bundled_targets`; preserve and check its entire
+`managed_targets` denominator. Reject target-specific v2 payloads, native server/DAP
+inputs or target overrides, nonempty bundled targets, and array/multiple-package
+requests before creating files. Projection capabilities do not select additional
+packages. Existing v1 target-specific packaging and offline v2 native verification
+remain supported unchanged. Never allocate target-specific RC filenames.
+
+Rebuild the supplied v2 payload with the shared builder, including explicit schema,
+prerelease and null native payloads. Use its existing supplied inventory digest as
+an expectation, not a value computed from the final archive and relabeled as external
+proof. Canonical reconstruction must equal the admitted supplied payload. The caller
+continues to own preparation of that input, as in the existing v1 packaging route;
+this slice does not add an inventory producer or two-pass package transaction.
+Stage the canonical bytes as `vsix-candidate-payload.json` so they are actually embedded.
+
+### Packaging transaction and byte verification
+
+Use topology `vsix.asset_name` after validating the accepted exact basename formula.
+Invoke the existing pinned VSCE with `package --pre-release --out <exact-basename>`
+and no `--target` for universal-managed. No process environment mutation or publisher
+command is allowed. Reject ambient native payloads before staging using the existing
+native inventory boundary; do not delete unrelated binaries to manufacture universal.
+
+Preserve any existing embedded manifest and its mode; restore it after success or
+failure. Do not silently overwrite an existing output asset: reject it before staging
+for this new route. On failure remove only the new output created by this transaction;
+legacy output semantics stay unchanged. All stage, packager, missing/empty output,
+verification, inventory and cleanup failures must remain failures. Preserve the
+primary error and describe cleanup failure rather than reporting successful rollback.
+
+After packaging, invoke actual mapped archive verification and existing inventory
+policy before success. Reuse one archive snapshot for mapped metadata, payload and
+semantic inventory checks; preserve the verifier's expected-digest API. A digest
+computed immediately by this builder describes its output only and is not independent
+terminal artifact authority. Do not reopen different bytes between internal checks
+and call them the same artifact. The returned/output artifact retains its selected
+name and bytes for downstream consumers; no terminal or publisher admission is implied.
+If composing the existing synchronous legacy entry point with the asynchronous ZIP
+verifier needs an API split, retain the synchronous v1 entry point and add a private
+mapped async path handled by the CLI; do not silently change existing test/caller
+return types. A subprocess verifier alternative must consume captured immutable
+inputs, not reopen the caller's mutable topology path.
+
+### Expected source and proof cage
+
+- `vscode-extension/scripts/package-vsix.js`: explicit mapped admission, canonical
+  embedded staging, selected filename/prerelease invocation, verification and rollback.
+- `vscode-extension/scripts/check-vsix-prebuilt-payload.js`: extract shared admission
+  and, only if needed, expose snapshot verification without weakening the existing CLI.
+- `vscode-extension/scripts/package-command.test.js`: retain all legacy cases; add
+  mapped invocation and transaction accept/reject controls with the actual shared builder.
+- `vscode-extension/scripts/check-vsix-prebuilt-payload.test.js`: preserve actual ZIP
+  controls, add only composition-specific proof missing from packager tests.
+- Existing projection source/tests only if a reusable pure mapping seam is needed;
+  no schema, dependency, workflow, version or release denominator changes are planned.
+- This spec and existing exact non-Rust policy ownership/inventory, only if required
+  for changed source; no blanket exception or test weakening.
+
+Paired controls must independently observe: accepted binaryless universal payload;
+all managed targets retained; native v2 and multiple/array selection refused before
+staging; nonempty bundled targets refused; false/missing prerelease; wrong source,
+numeric version, candidate/full RC or topology digest; exact basename and absent
+TargetPlatform; embedded canonical v2 bytes in a benign actual synthetic ZIP;
+missing/empty output; actual verifier rejection and inventory mismatch; staging write,
+packager, verifier and cleanup failures; original embedded file/mode restored; unrelated
+native files and caller environment untouched. Keep stale schema-hash and legacy v1
+controls. Synthetic packager hooks establish composition, not that VSCE or an installed
+extension was executed successfully.
+
+Proof commands from `vscode-extension`: `node --test scripts/package-command.test.js
+scripts/check-vsix-prebuilt-payload.test.js scripts/check-vsix-inventory.test.js`,
+`npm run lint`, `npm run fmt:check`, and `npm run typecheck:all`. Run existing projection
+Jest tests through the package's current test runner if that source is changed.
+Use actual benign ZIPs for metadata/inventory join controls; no Cargo is required.
+Report test counts, skips and exact source blobs. `git diff --check` closes hygiene.
+
+Return to root before implementation if the proposed input or sync/async seam conflicts
+with an existing consumer; return before adding a new producer, package selection
+representation, native RC packaging, inventory baseline exemption or workflow routing.
+No terminal manifest, checksum/attestation transaction, registry occupancy/version
+allocation, tag, publishing or installed execution belongs here. #14406/#14479 keep
+terminal composition; #4347/#6068 preparation; #5889/#6067 topology; #6056 remains the
+mandatory Windows/Linux installed managed server/DAP acceptance owner.
+
+
+### Reviewed implementation refinements
+
+Root explicitly admitted only the required canonical embedded metadata file through
+existing inventory `allowedFiles`, after the same captured archive passes duplicate
+and regular-file checks, exact rebuilt-payload byte equality and exact byte length.
+The independent supplied semantic inventory digest is still checked. This permits
+`vsix-candidate-payload.json` only in the mapped universal route; no other filename,
+missing baseline entry, growth or native payload is exempted. Legacy baseline bytes
+and legacy admission remain unchanged. Paired tests bind even an unexpected file to
+a matching supplied inventory and still require baseline refusal.
+
+The complete managed-target set joins the existing machine-readable authority
+`docs/reference/downstream-dap-integrations.json` `targets[].triple` exactly with
+both topology binary targets and managed targets, with duplicate rejection. Both
+that source and `vscode-extension/src/downloader.ts` must match topology source
+path/digest bindings. The existing topology generator owns proof that the matrix is
+reachable through the downloader; this Node consumer does not reimplement its parser
+or claim independent canonical generation proof. No Python dependency is introduced.
+
+The asynchronous mapped function is explicit; CLI selects it only when the topology
+input exists. Legacy `packageVsix` remains synchronous. Output creation reserves the
+selected basename exclusively before staging; a preexisting output is preserved and
+refused. A failed transaction removes its reserved/new output, restores prior embedded
+manifest bytes/mode, and reports cleanup errors as failures. No terminal receipt or
+publisher-facing success artifact is minted.
+
+Focused proof uses a benign synthetic packager hook producing actual ZIP bytes and
+all entries of the current canonical matrix. It does not run VSCE, compile an installed
+extension, resolve registry occupancy, or satisfy installed acceptance. The caller's
+producer of the independently expected inventory remains an explicit downstream gap.
