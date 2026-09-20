@@ -1311,10 +1311,29 @@ jobs:
               fi
               sleep "$delay"
             }
+            # #14774: the bound on both retrieval phases is the gate's own
+            # budget, not a fixed attempt count. A five-attempt schedule of
+            # 5+10+15+20 spends ~50s, and a request that fails fast returns
+            # almost immediately, so on a freshly evicted lane the loop gave
+            # up ~180s short of the deadline the gate had already reserved —
+            # before the window in which the log becomes retrievable. The
+            # deadline stays the single hard stop and every exit below still
+            # routes to the same fail-closed verdict.
+            RETRIEVAL_BACKOFF_CAP_SECONDS=15
+            next_backoff() {
+              local attempt="$1" delay
+              delay=$((attempt * 5))
+              if [ "$delay" -gt "$RETRIEVAL_BACKOFF_CAP_SECONDS" ]; then
+                delay="$RETRIEVAL_BACKOFF_CAP_SECONDS"
+              fi
+              printf '%s\n' "$delay"
+            }
             # The Actions jobs listing can briefly lag the lane result.
             # Keep this lookup bounded rather than silently skipping it.
             lane_lookup_output=$(mktemp)
-            for attempt in 1 2 3 4 5; do
+            lane_lookup_attempts=0
+            while [ "$(remaining_until_deadline)" -gt 0 ]; do
+              lane_lookup_attempts=$((lane_lookup_attempts + 1))
               if bounded_gh_api "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/jobs?per_page=100" \
                 --jq ".jobs[] | select(.name == \"${lane_name}\") | .id" > "$lane_lookup_output"; then
                 lane_job_id=$(head -1 "$lane_lookup_output")
@@ -1324,10 +1343,8 @@ jobs:
               if [ -n "$lane_job_id" ]; then
                 break
               fi
-              if [ "$attempt" -lt 5 ]; then
-                if ! bounded_sleep $((attempt * 5)); then
-                  break
-                fi
+              if ! bounded_sleep "$(next_backoff "$lane_lookup_attempts")"; then
+                break
               fi
             done
             rm -f "$lane_lookup_output"
@@ -1347,7 +1364,9 @@ jobs:
               # ripr-infra-retry.yml strictly as data.
               lane_log=$(mktemp)
               fetched=false
-              for attempt in 1 2 3 4 5; do
+              lane_fetch_attempts=0
+              while [ "$(remaining_until_deadline)" -gt 0 ]; do
+                lane_fetch_attempts=$((lane_fetch_attempts + 1))
                 if bounded_gh_api "repos/${GITHUB_REPOSITORY}/actions/jobs/${lane_job_id}/logs" > "$lane_log" 2>/dev/null; then
                   fetched=true
                   clf_out=$(bash scripts/ci/classify-ripr-lane-termination "$lane_log") || clf_out=""
@@ -1360,10 +1379,8 @@ jobs:
                 if [ "$fetched" = "true" ]; then
                   break
                 fi
-                if [ "$attempt" -lt 5 ]; then
-                  if ! bounded_sleep $((attempt * 5)); then
-                    break
-                  fi
+                if ! bounded_sleep "$(next_backoff "$lane_fetch_attempts")"; then
+                  break
                 fi
               done
               if [ "$fetched" != "true" ]; then
@@ -1375,7 +1392,7 @@ jobs:
                 if [ "$(remaining_until_deadline)" -le 0 ]; then
                   echo "::warning::lane log for ${lane_name} (job ${lane_job_id}) reached the job-level retrieval deadline; eviction classification skipped and the gate will fail closed"
                 else
-                  echo "::warning::lane log for ${lane_name} (job ${lane_job_id}) was not retrievable after 5 attempts; eviction classification skipped and the gate will fail closed"
+                  echo "::warning::lane log for ${lane_name} (job ${lane_job_id}) was not retrievable after ${lane_fetch_attempts} attempts; eviction classification skipped and the gate will fail closed"
                 fi
               fi
               rm -f "$lane_log"
@@ -1384,7 +1401,7 @@ jobs:
               if [ "$(remaining_until_deadline)" -le 0 ]; then
                 echo "::warning::job id for ${lane_name} reached the job-level retrieval deadline; eviction classification skipped and the gate will fail closed"
               else
-                echo "::warning::job id for ${lane_name} was not retrievable after 5 attempts; eviction classification skipped and the gate will fail closed"
+                echo "::warning::job id for ${lane_name} was not retrievable after ${lane_lookup_attempts} attempts; eviction classification skipped and the gate will fail closed"
               fi
             fi
           fi
