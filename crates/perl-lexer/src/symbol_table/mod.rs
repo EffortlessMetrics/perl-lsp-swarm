@@ -69,9 +69,11 @@ impl LocalSymbolTable {
     /// cannot hide the declarations after it.
     ///
     /// Unrecognized source regions can still expose format-shaped prose to this
-    /// scan. Immediate scalar and bareword filehandles in `print FILEHANDLE LIST`
-    /// are recognized, but general indirect-method/list-slot grammar is not.
-    /// Quoted shift operands alone never authorize body skipping.
+    /// scan. Immediate scalar filehandles in `print $handle LIST` are recognized.
+    /// Bareword handles remain unresolved under #14927: constants and imported
+    /// callables can give even STDERR a different term expectation. General
+    /// indirect-method/list-slot grammar is not inferred here, and quoted shift
+    /// operands alone never authorize body skipping.
     ///
     /// Perl alternates picture lines and argument lines inside a body, and a
     /// `sub NAME {}` on an *argument* line is genuinely declared, so excluding
@@ -404,7 +406,7 @@ fn scan_code_line(
         {
             Some(offset)
         } else {
-            print_filehandle_heredoc_start(line, offset, known_subs, hints)
+            print_scalar_filehandle_heredoc_start(line, offset)
         };
         if let Some(start) = heredoc_start
             && let Some((pending, end)) = parse_heredoc_opener(line, start)
@@ -785,16 +787,11 @@ fn heredoc_allowed_before(
     previous_word_before(line, offset).is_some_and(|word| is_callable_word(word, known_subs, hints))
 }
 
-/// Recognize the immediate `print FILEHANDLE LIST` term slot while scanning code.
-/// Start at `print`, rather than searching a raw prefix that may contain prose.
-/// Completed terms still use `heredoc_allowed_before` and cannot become heredocs
-/// merely because their shift operand is a quoted label.
-fn print_filehandle_heredoc_start(
-    line: &str,
-    start: usize,
-    known_subs: &HashSet<Box<str>>,
-    hints: &HashSet<Box<str>>,
-) -> Option<usize> {
+/// Recognize the immediate scalar-filehandle `print $handle LIST` term slot.
+/// Start at `print` in code, rather than searching a prefix containing prose.
+/// Bareword handles are deliberately excluded: even STDERR can name a constant
+/// or imported callable, which requires semantic authority this scan lacks.
+fn print_scalar_filehandle_heredoc_start(line: &str, start: usize) -> Option<usize> {
     let after_print = line[start..].strip_prefix("print")?;
     if !after_print.starts_with([' ', '\t']) {
         return None;
@@ -809,17 +806,9 @@ fn print_filehandle_heredoc_start(
         return None;
     }
 
-    let mut offset = skip_horizontal_whitespace(line, start + "print".len());
-    let scalar = line[offset..].starts_with('$');
-    if scalar {
-        offset += 1;
-    }
-    let (name, end) = parse_qualified_name(line, offset)?;
-    // A callable bareword is not a filehandle. Leave existing callable handling
-    // in charge; this bounded recognizer does not infer prototype semantics.
-    if !scalar && is_callable_word(name, known_subs, hints) {
-        return None;
-    }
+    let offset = skip_horizontal_whitespace(line, start + "print".len());
+    line[offset..].strip_prefix('$')?;
+    let (_, end) = parse_qualified_name(line, offset + 1)?;
     let opener = skip_horizontal_whitespace(line, end);
     line[opener..].starts_with("<<").then_some(opener)
 }
@@ -1461,8 +1450,13 @@ mod tests {
     }
 
     #[test]
-    fn print_filehandle_heredocs_exclude_prose_and_preserve_real_subs() {
-        for call in ["print $fh", "print STDERR", "print HANDLE", "print $Pkg::fh"] {
+    fn print_scalar_filehandle_heredocs_exclude_prose_and_preserve_real_subs() {
+        for call in [
+            "print $fh",
+            "print $Pkg::fh",
+            "use constant STDERR => 4;\nprint $fh",
+            "use Fcntl qw(O_RDONLY);\nprint $fh",
+        ] {
             for prose in ["=head1 NAME", "format STDOUT =", "ordinary text"] {
                 let source =
                     format!("{call} <<'END';\n{prose}\nsub fake {{ }}\nEND\nsub real {{ }}\n");
@@ -1479,6 +1473,24 @@ mod tests {
                     "my $z = {term} <<{operand};\nsub real {{ }}\nEND\n; sub after {{ }}\n"
                 );
                 assert_membership_and_slash(&source, &["real", "after"], &[]);
+            }
+        }
+    }
+
+    #[test]
+    fn print_constant_operands_do_not_hide_declarations() {
+        for (declaration, operand) in [
+            ("use constant OUT => 4;", "OUT"),
+            ("use constant STDERR => 4;", "STDERR"),
+            ("use Fcntl qw(O_RDONLY);", "O_RDONLY"),
+        ] {
+            for spacing in ["", " "] {
+                for label in ["'END'", "END"] {
+                    let source = format!(
+                        "{declaration}\nmy $x = print {operand}{spacing}<<{label};\nsub real {{ }}\nEND\n; sub after {{ }}\n"
+                    );
+                    assert_membership_and_slash(&source, &["real", "after"], &[]);
+                }
             }
         }
     }
