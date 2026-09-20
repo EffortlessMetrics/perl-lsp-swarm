@@ -104,8 +104,10 @@ pub fn run(config: GateFailureDigestConfig) -> Result<()> {
     if let Some(parent) = config.out.parent() {
         fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
     }
-    let existing = fs::read_to_string(&config.out).unwrap_or_default();
-    fs::write(&config.out, format!("{existing}{markdown}"))
+    // Written fresh, not appended: `target/` is restored from a shared cache
+    // (#12085), so a digest left by an earlier run on an unrelated SHA would
+    // otherwise be pasted into this run's step summary ahead of its own.
+    fs::write(&config.out, &markdown)
         .with_context(|| format!("writing {}", config.out.display()))?;
     if config.print {
         print!("{markdown}");
@@ -164,7 +166,11 @@ fn gate_failure(gate: &Value, logs: &Path) -> GateFailure {
         // `reproduce` is the shard summary's pre-joined command; `command` is
         // the receipt's.
         reproduce: string_field(gate, "reproduce").or_else(|| string_field(gate, "command")),
-        message: string_field(gate, "message"),
+        // `message` is the shard summary's; `output_summary` is the receipt's,
+        // and it is where `xtask gates` puts an execution error — the status
+        // whose log most often does not exist, so dropping it left the reader
+        // with nothing at all.
+        message: string_field(gate, "message").or_else(|| string_field(gate, "output_summary")),
         failing_tests,
         log_unavailable,
     }
@@ -328,6 +334,24 @@ fn render(summary: &Value, failures: &[GateFailure]) -> String {
     out
 }
 
+/// The longest run of consecutive backticks anywhere in the excerpt, so the
+/// fence around it can be made longer than any run it contains.
+fn longest_backtick_run(lines: &[String]) -> usize {
+    let mut longest = 0usize;
+    for line in lines {
+        let mut run = 0usize;
+        for ch in line.chars() {
+            if ch == '`' {
+                run += 1;
+                longest = longest.max(run);
+            } else {
+                run = 0;
+            }
+        }
+    }
+    longest
+}
+
 fn render_failing_tests(out: &mut String, failure: &GateFailure) {
     for test in failure.failing_tests.iter().take(MAX_TESTS_PER_GATE) {
         let _ = writeln!(out, "- `{}`", test.name);
@@ -335,11 +359,15 @@ fn render_failing_tests(out: &mut String, failure: &GateFailure) {
             let _ = writeln!(out, "  - panicked at `{location}`");
         }
         if !test.excerpt.is_empty() {
-            out.push_str("  ```text\n");
+            // An assertion over markdown can itself contain a fence, which
+            // would close this block early and corrupt every section appended
+            // after it. Open with a longer one than anything in the excerpt.
+            let fence = "`".repeat(longest_backtick_run(&test.excerpt).max(2) + 1);
+            let _ = writeln!(out, "  {fence}text");
             for line in &test.excerpt {
                 let _ = writeln!(out, "  {line}");
             }
-            out.push_str("  ```\n");
+            let _ = writeln!(out, "  {fence}");
         }
     }
     let shown = failure.failing_tests.len().min(MAX_TESTS_PER_GATE);
@@ -356,6 +384,7 @@ fn render_failing_tests(out: &mut String, failure: &GateFailure) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use color_eyre::eyre::Result;
     use serde_json::json;
 
     const ASSERTION_LOG: &str = "\
@@ -393,17 +422,18 @@ test result: FAILED. 1 passed; 1 failed; 0 ignored
         })
     }
 
-    fn write_log(dir: &Path, gate: &str, body: &str) {
-        fs::create_dir_all(dir).expect("log dir");
-        fs::write(dir.join(format!("{gate}.log")), body).expect("write log");
+    fn write_log(dir: &Path, gate: &str, body: &str) -> Result<()> {
+        fs::create_dir_all(dir)?;
+        fs::write(dir.join(format!("{gate}.log")), body)?;
+        Ok(())
     }
 
     /// The whole point: a reader learns the test, the file and line, and the
     /// command, without opening the job log.
     #[test]
-    fn a_failing_assertion_names_its_test_location_and_repro() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        write_log(temp.path(), "parser_gate", ASSERTION_LOG);
+    fn a_failing_assertion_names_its_test_location_and_repro() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        write_log(temp.path(), "parser_gate", ASSERTION_LOG)?;
         let summary = summary_with(json!({
             "gate_name": "parser_gate",
             "result": "failure",
@@ -419,14 +449,15 @@ test result: FAILED. 1 passed; 1 failed; 0 ignored
         assert!(markdown.contains("crates/perl-parser-core/src/ranges.rs:118:9"));
         assert!(markdown.contains("utf-16 offset drifted"));
         assert!(markdown.contains("cargo test -p perl-parser-core --locked --lib"));
+        Ok(())
     }
 
     /// One test's panic location must never be reported against another's
     /// name. This is the failure mode that makes a digest worse than no
     /// digest, because it reads as authoritative.
     #[test]
-    fn two_failing_tests_keep_their_own_locations() {
-        let temp = tempfile::tempdir().expect("tempdir");
+    fn two_failing_tests_keep_their_own_locations() -> Result<()> {
+        let temp = tempfile::tempdir()?;
         write_log(
             temp.path(),
             "lsp_gate",
@@ -443,7 +474,7 @@ assertion failed: !items.is_empty()
 
 test result: FAILED. 0 passed; 2 failed
 ",
-        );
+        )?;
         let summary = summary_with(json!({
             "gate_name": "lsp_gate",
             "result": "failure",
@@ -470,14 +501,15 @@ test result: FAILED. 0 passed; 2 failed
             "hover's excerpt reached into completion's block: {:?}",
             tests[0].excerpt
         );
+        Ok(())
     }
 
     /// A missing log is missing evidence. Rendering "no failing test" over it
     /// would tell a reader the gate failed on something other than a test,
     /// which is a claim the digest has not earned.
     #[test]
-    fn an_unreadable_log_is_reported_as_missing_evidence() {
-        let temp = tempfile::tempdir().expect("tempdir");
+    fn an_unreadable_log_is_reported_as_missing_evidence() -> Result<()> {
+        let temp = tempfile::tempdir()?;
         let summary = summary_with(json!({
             "gate_name": "vanished_gate",
             "result": "failure",
@@ -496,14 +528,15 @@ test result: FAILED. 0 passed; 2 failed
             !markdown.contains("did not fail on an assertion"),
             "a missing log must not be reported as a non-assertion failure"
         );
+        Ok(())
     }
 
     /// A gate that failed on something other than a test — a lint, a script,
     /// a timeout — says so, and still carries its repro command.
     #[test]
-    fn a_gate_that_failed_without_a_test_says_so() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        write_log(temp.path(), "clippy_gate", "error: unused variable `x`\nerror: aborting\n");
+    fn a_gate_that_failed_without_a_test_says_so() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        write_log(temp.path(), "clippy_gate", "error: unused variable `x`\nerror: aborting\n")?;
         let summary = summary_with(json!({
             "gate_name": "clippy_gate",
             "result": "failure",
@@ -515,13 +548,14 @@ test result: FAILED. 0 passed; 2 failed
 
         assert!(markdown.contains("did not fail on an assertion"));
         assert!(markdown.contains("cargo clippy --workspace -- -D warnings"));
+        Ok(())
     }
 
     /// A gate that never started carries the runner's own reason. Reporting it
     /// with no note would look like an unexplained red.
     #[test]
-    fn an_unstarted_gate_carries_the_runners_message() {
-        let temp = tempfile::tempdir().expect("tempdir");
+    fn an_unstarted_gate_carries_the_runners_message() -> Result<()> {
+        let temp = tempfile::tempdir()?;
         let summary = summary_with(json!({
             "gate_name": "blocked_gate",
             "result": "not_proven",
@@ -534,14 +568,15 @@ test result: FAILED. 0 passed; 2 failed
 
         assert!(markdown.contains("not_proven"));
         assert!(markdown.contains("waiting for dependency result(s): fmt_gate"));
+        Ok(())
     }
 
     /// PR Smoke writes an `xtask gates` receipt, not a shard summary, and had
     /// no step summary at all. Its rows say `status`/`command`/`log_path`.
     #[test]
-    fn an_xtask_gates_receipt_is_read_as_well_as_a_shard_summary() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        write_log(&temp.path().join("logs"), "test_gate", ASSERTION_LOG);
+    fn an_xtask_gates_receipt_is_read_as_well_as_a_shard_summary() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        write_log(&temp.path().join("logs"), "test_gate", ASSERTION_LOG)?;
         let receipt = json!({
             "schema_version": "2",
             "subject_sha": "abc1234",
@@ -565,14 +600,15 @@ test result: FAILED. 0 passed; 2 failed
         assert!(markdown.contains("`parser::ranges::byte_offsets_round_trip`"));
         assert!(markdown.contains("crates/perl-parser-core/src/ranges.rs:118:9"));
         assert!(markdown.contains("cargo test -p perl-parser-core --locked"));
+        Ok(())
     }
 
     /// A status the digest does not recognise must be explained, not assumed
     /// green. `timeout` and `instrument_failure` are the states hardest to
     /// diagnose, so silently passing them would defeat the whole change.
     #[test]
-    fn an_unrecognised_status_is_treated_as_needing_explanation() {
-        let temp = tempfile::tempdir().expect("tempdir");
+    fn an_unrecognised_status_is_treated_as_needing_explanation() -> Result<()> {
+        let temp = tempfile::tempdir()?;
         let summary = json!({
             "subject_sha": "abc1234",
             "selected_gates": ["a", "b", "c"],
@@ -588,14 +624,15 @@ test result: FAILED. 0 passed; 2 failed
         assert_eq!(failures.len(), 2, "skipped is not a failure; the other two are");
         assert_eq!(failures[0].result, "timeout");
         assert_eq!(failures[1].result, "instrument_failure");
+        Ok(())
     }
 
     /// When the log is gone the receipt's own `first_failure` is still a
     /// direct runner observation. Discarding it would throw away the one
     /// thing that survived.
     #[test]
-    fn a_missing_log_still_reports_the_receipts_first_failure() {
-        let temp = tempfile::tempdir().expect("tempdir");
+    fn a_missing_log_still_reports_the_receipts_first_failure() -> Result<()> {
+        let temp = tempfile::tempdir()?;
         let receipt = json!({
             "subject_sha": "abc1234",
             "gates": [{
@@ -619,14 +656,15 @@ test result: FAILED. 0 passed; 2 failed
         assert!(markdown.contains("gone::tests::still_named"));
         assert!(markdown.contains("src/gone.rs:3"));
         assert!(markdown.contains("assertion failed: value.is_some()"));
+        Ok(())
     }
 
     /// A backtrace is the least useful and longest part of a failure block.
     /// Carrying it would spend the step-summary budget on what the reader
     /// already has in the log.
     #[test]
-    fn an_excerpt_stops_before_the_backtrace() {
-        let temp = tempfile::tempdir().expect("tempdir");
+    fn an_excerpt_stops_before_the_backtrace() -> Result<()> {
+        let temp = tempfile::tempdir()?;
         write_log(
             temp.path(),
             "noisy_gate",
@@ -641,7 +679,7 @@ stack backtrace:
    1: core::panicking::panic_fmt
 note: run with `RUST_BACKTRACE=full` for a verbose backtrace
 ",
-        );
+        )?;
         let summary = summary_with(json!({
             "gate_name": "noisy_gate",
             "result": "failure",
@@ -655,10 +693,63 @@ note: run with `RUST_BACKTRACE=full` for a verbose backtrace
         assert!(!markdown.contains("stack backtrace"));
         assert!(!markdown.contains("rust_begin_unwind"));
         assert!(!markdown.contains("RUST_BACKTRACE"));
+        Ok(())
+    }
+
+    /// `xtask gates` writes an execution failure's only human-readable reason
+    /// into `output_summary`, and usually leaves no log at all, so reading
+    /// `message` alone left the reader with nothing.
+    #[test]
+    fn a_receipts_execution_error_is_carried_from_output_summary() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let summary = json!({
+            "gates": [{
+                "gate_name": "spawn_gate",
+                "status": "error",
+                "output_summary": "Execution error: No such file or directory (os error 2)",
+            }]
+        });
+
+        let failures = collect_failures(&summary, temp.path());
+
+        assert_eq!(failures.len(), 1);
+        assert_eq!(
+            failures[0].message.as_deref(),
+            Some("Execution error: No such file or directory (os error 2)")
+        );
+        assert!(render(&summary, &failures).contains("No such file or directory"));
+        Ok(())
+    }
+
+    /// An assertion over markdown can carry a fence of its own, which would
+    /// close the excerpt's block early and corrupt every section appended
+    /// after it in the step summary.
+    #[test]
+    fn an_excerpt_carrying_a_fence_is_wrapped_in_a_longer_one() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        write_log(
+            temp.path(),
+            "hover_gate",
+            concat!(
+                "---- hover::fenced stdout ----\n",
+                "thread 'main' panicked at src/hover.rs:9:5:\n",
+                "assertion failed: rendered == \"```perl\\nmy $x;\\n```\"\n",
+                "\ntest result: FAILED. 0 passed; 1 failed\n",
+            ),
+        )?;
+        let summary = json!({
+            "gates": [{"gate_name": "hover_gate", "result": "failure", "exit_code": 101}]
+        });
+
+        let rendered = render(&summary, &collect_failures(&summary, temp.path()));
+
+        assert!(rendered.contains("````text"), "the fence must outgrow the excerpt's own");
+        assert!(rendered.contains("```perl"), "the excerpt itself is still shown verbatim");
+        Ok(())
     }
 
     #[test]
-    fn a_clean_shard_renders_a_single_line() {
+    fn a_clean_shard_renders_a_single_line() -> Result<()> {
         let summary = json!({
             "subject_sha": "abc1234",
             "selected_gates": ["fmt_gate"],
@@ -669,16 +760,17 @@ note: run with `RUST_BACKTRACE=full` for a verbose backtrace
 
         assert!(markdown.contains("Every one of the 1 selected gate(s) succeeded"));
         assert!(!markdown.contains("Reproduce"));
+        Ok(())
     }
 
     /// A gate with hundreds of failing tests must not push every other step's
     /// summary out of the job's step-summary budget.
     #[test]
-    fn a_long_failure_list_is_elided_with_a_count() {
-        let temp = tempfile::tempdir().expect("tempdir");
+    fn a_long_failure_list_is_elided_with_a_count() -> Result<()> {
+        let temp = tempfile::tempdir()?;
         let log: String =
             (0..25).map(|index| format!("test suite::case_{index} ... FAILED\n")).collect();
-        write_log(temp.path(), "wide_gate", &log);
+        write_log(temp.path(), "wide_gate", &log)?;
         let summary = summary_with(json!({
             "gate_name": "wide_gate",
             "result": "failure",
@@ -692,12 +784,13 @@ note: run with `RUST_BACKTRACE=full` for a verbose backtrace
         assert!(markdown.contains("suite::case_9"));
         assert!(!markdown.contains("suite::case_24"));
         assert!(markdown.contains("…and 15 more"));
+        Ok(())
     }
 
     /// The digest appends. The existing `Gate summary` step writes the gate
     /// table first, and overwriting it would trade one diagnostic for another.
     #[test]
-    fn writing_the_digest_appends_to_an_existing_summary() -> Result<()> {
+    fn writing_the_digest_replaces_a_file_left_by_another_run() -> Result<()> {
         let temp = tempfile::tempdir()?;
         let out = temp.path().join("summary.md");
         fs::write(&out, "### CI Gate shard: parser_stack\n")?;
@@ -719,8 +812,15 @@ note: run with `RUST_BACKTRACE=full` for a verbose backtrace
         })?;
 
         let written = fs::read_to_string(&out)?;
-        assert!(written.starts_with("### CI Gate shard: parser_stack"));
-        assert!(written.contains("### Why the gate failed"));
+        assert!(
+            !written.contains("### CI Gate shard: parser_stack"),
+            "a digest restored from another run's cached target/ must not ride \
+             into this run's summary"
+        );
+        assert!(
+            written.contains("Every one of the 1 selected gate(s) succeeded"),
+            "this run's own digest must still be written"
+        );
         Ok(())
     }
 }
