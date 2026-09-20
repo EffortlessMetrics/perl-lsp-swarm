@@ -506,6 +506,15 @@ fn is_xtask_policy_guarded_input(file: &str) -> bool {
         // routing, a gate-policy-only PR would skip both focused owner gates
         // and the very proof that pins the policy's shape (#14409 review).
         || file == ".ci/gate-policy.yaml"
+        // The required-context ledger is asserted by
+        // `xtask/tests/required_context_binding_contract.rs` (#15348): a
+        // required row's producer binding (`ruleset_integration_id`,
+        // workflow + job identity) is only meaningful against the ledger
+        // file. Without this routing, a ledger-only PR would skip xtask's
+        // `tests/` suite under scope-aware `unit_routed_full` and a deleted
+        // binding would sail through every required check green (#15995
+        // review).
+        || file == ".ci/policies/required-checks.toml"
         // Publishable-crate manifests: binstall metadata, publish metadata, and
         // version-sync are all xtask-owned assertions over these files.
         || (file.starts_with("crates/") && file.ends_with("/Cargo.toml"))
@@ -1286,6 +1295,22 @@ mod tests {
         assert!(
             crates.contains("xtask"),
             "changing the hermetic Vim lane must route to the contract tests that assert on it"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn required_checks_ledger_change_selects_xtask() -> Result<()> {
+        // #15348 / #15995 review: the required-context binding contract test
+        // reads `.ci/policies/required-checks.toml`. A ledger-only PR must
+        // route xtask into scope or a deleted producer binding sails through
+        // every required check green.
+        let files = vec![".ci/policies/required-checks.toml".to_string()];
+        let metadata = fake_metadata(&[("xtask", "xtask")]);
+        let crates = crates_from_files(&files, &metadata, "/workspace")?;
+        assert!(
+            crates.contains("xtask"),
+            "changing the required-checks ledger must route to the contract test that asserts on it"
         );
         Ok(())
     }
