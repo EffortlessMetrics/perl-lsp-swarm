@@ -4,9 +4,12 @@
 //! It deliberately performs no GitHub observation, readiness evaluation,
 //! preparation, synchronization, candidate selection, or publication.
 
-#![allow(
-    dead_code,
-    reason = "FF01 registers the structural model before FF02 #13856 adds emit/verify consumers"
+#![cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "policy:allow-13855-staged-contract: FF02 #13856 will consume this structural model"
+    )
 )]
 
 use serde::{Deserialize, Serialize};
@@ -20,6 +23,8 @@ const RELEASE: &str = "0.18.0";
 #[serde(rename_all = "snake_case")]
 pub(crate) enum ReceiptEvent {
     Local,
+    PullRequest,
+    MergeGroup,
     Push,
 }
 
@@ -92,6 +97,7 @@ pub(crate) struct ObservedPullRequest {
     pub(crate) state: PullRequestState,
     pub(crate) is_draft: bool,
     pub(crate) disposition: ReleaseDisposition,
+    #[serde(deserialize_with = "required_nullable")]
     pub(crate) controlling_issue: Option<u64>,
     pub(crate) evidence: EvidenceRef,
 }
@@ -248,6 +254,7 @@ pub(crate) struct ReleaseScopeV2 {
     pub(crate) phase: ReleasePhase,
     pub(crate) observation_sha: String,
     pub(crate) frozen_product_sha: String,
+    #[serde(deserialize_with = "required_nullable")]
     pub(crate) prepared_swarm_sha: Option<String>,
     pub(crate) observed_pull_requests: Vec<ObservedPullRequest>,
     pub(crate) blockers: Vec<BlockerBinding>,
@@ -284,10 +291,7 @@ impl ReleaseScopeV2 {
             "observed_pull_requests.number",
         )?;
         for (index, item) in self.observed_pull_requests.iter().enumerate() {
-            validate_sha(
-                &item.head_sha,
-                &format!("observed_pull_requests[{index}].head_sha"),
-            )?;
+            validate_sha(&item.head_sha, &format!("observed_pull_requests[{index}].head_sha"))?;
             if let Some(issue) = item.controlling_issue {
                 require(
                     issue > 0,
@@ -302,11 +306,7 @@ impl ReleaseScopeV2 {
 
         require(!self.blockers.is_empty(), "blockers must be non-empty")?;
         validate_sorted_identifiers(
-            &self
-                .blockers
-                .iter()
-                .map(|item| item.blocker_id.as_str())
-                .collect::<Vec<_>>(),
+            &self.blockers.iter().map(|item| item.blocker_id.as_str()).collect::<Vec<_>>(),
             "blockers.blocker_id",
         )?;
         for (index, blocker) in self.blockers.iter().enumerate() {
@@ -314,11 +314,7 @@ impl ReleaseScopeV2 {
         }
 
         validate_sorted_identifiers(
-            &self
-                .known_limitations
-                .iter()
-                .map(|item| item.id.as_str())
-                .collect::<Vec<_>>(),
+            &self.known_limitations.iter().map(|item| item.id.as_str()).collect::<Vec<_>>(),
             "known_limitations.id",
         )?;
         for (index, limitation) in self.known_limitations.iter().enumerate() {
@@ -334,22 +330,12 @@ impl ReleaseScopeV2 {
 
         require(!self.product_claims.is_empty(), "product_claims must be non-empty")?;
         validate_sorted_identifiers(
-            &self
-                .product_claims
-                .iter()
-                .map(|item| item.id.as_str())
-                .collect::<Vec<_>>(),
+            &self.product_claims.iter().map(|item| item.id.as_str()).collect::<Vec<_>>(),
             "product_claims.id",
         )?;
         for (index, claim) in self.product_claims.iter().enumerate() {
-            validate_statement(
-                &claim.statement,
-                &format!("product_claims[{index}].statement"),
-            )?;
-            validate_evidence(
-                &claim.evidence,
-                &format!("product_claims[{index}].evidence"),
-            )?;
+            validate_statement(&claim.statement, &format!("product_claims[{index}].statement"))?;
+            validate_evidence(&claim.evidence, &format!("product_claims[{index}].evidence"))?;
         }
 
         validate_sha(&self.topology.subject_sha, "topology.subject_sha")?;
@@ -404,6 +390,15 @@ pub(crate) fn canonical_release_scope_v2(model: &ReleaseScopeV2) -> Result<Strin
     Ok(output)
 }
 
+// Unlike Serde's default Option handling, the field must be present even when null.
+fn required_nullable<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer)
+}
+
 fn validate_subject_evidence(value: &SubjectEvidence, name: &str) -> Result<(), String> {
     validate_sha(&value.subject_sha, &format!("{name}.subject_sha"))?;
     validate_evidence(&value.evidence, &format!("{name}.evidence"))
@@ -426,28 +421,34 @@ fn validate_evidence(value: &EvidenceRef, name: &str) -> Result<(), String> {
     validate_digest(&value.digest, &format!("{name}.digest"))?;
     validate_statement(&value.reference, &format!("{name}.ref"))?;
     let valid = match value.kind {
-        EvidenceKind::GithubIssue => valid_numbered_url(
-            &value.reference,
-            "https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/",
-        ),
-        EvidenceKind::GithubIssueComment => valid_anchored_numbered_url(
-            &value.reference,
-            "https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/",
-            "#issuecomment-",
-        ),
-        EvidenceKind::GithubPull => valid_numbered_url(
-            &value.reference,
-            "https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/",
-        ),
-        EvidenceKind::GithubReview => valid_anchored_numbered_url(
-            &value.reference,
-            "https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/",
-            "#pullrequestreview-",
-        ),
-        EvidenceKind::GithubCheck => valid_check_url(&value.reference),
         EvidenceKind::RepositoryBlob | EvidenceKind::RepositoryReceipt => {
             valid_repository_ref(&value.reference)
         }
+        kind => ["perl-lsp-swarm", "perl-lsp"].into_iter().any(|repository| {
+            let base = format!("https://github.com/EffortlessMetrics/{repository}");
+            match kind {
+                EvidenceKind::GithubIssue => {
+                    valid_numbered_url(&value.reference, &format!("{base}/issues/"))
+                }
+                EvidenceKind::GithubIssueComment => valid_anchored_numbered_url(
+                    &value.reference,
+                    &format!("{base}/issues/"),
+                    "#issuecomment-",
+                ),
+                EvidenceKind::GithubPull => {
+                    valid_numbered_url(&value.reference, &format!("{base}/pull/"))
+                }
+                EvidenceKind::GithubReview => valid_anchored_numbered_url(
+                    &value.reference,
+                    &format!("{base}/pull/"),
+                    "#pullrequestreview-",
+                ),
+                EvidenceKind::GithubCheck => {
+                    valid_check_url(&value.reference, &format!("{base}/actions/runs/"))
+                }
+                EvidenceKind::RepositoryBlob | EvidenceKind::RepositoryReceipt => false,
+            }
+        }),
     };
     require(valid, format!("{name}.ref does not match {:?}", value.kind))
 }
@@ -466,10 +467,8 @@ fn valid_anchored_numbered_url(value: &str, prefix: &str, anchor: &str) -> bool 
     valid_positive_decimal(number) && valid_positive_decimal(anchor_number)
 }
 
-fn valid_check_url(value: &str) -> bool {
-    let Some(remainder) = value
-        .strip_prefix("https://github.com/EffortlessMetrics/perl-lsp-swarm/actions/runs/")
-    else {
+fn valid_check_url(value: &str, prefix: &str) -> bool {
+    let Some(remainder) = value.strip_prefix(prefix) else {
         return false;
     };
     let Some((run, job)) = remainder.split_once("/job/") else {
@@ -479,22 +478,20 @@ fn valid_check_url(value: &str) -> bool {
 }
 
 fn valid_repository_ref(value: &str) -> bool {
-    let Some(remainder) = value.strip_prefix("repo:") else {
+    let Some(remainder) = value
+        .strip_prefix("repo:EffortlessMetrics/perl-lsp-swarm:")
+        .or_else(|| value.strip_prefix("repo:EffortlessMetrics/perl-lsp:"))
+    else {
         return false;
     };
     let Some((path, sha)) = remainder.rsplit_once('@') else {
         return false;
     };
-    !path.is_empty()
-        && !path.contains('@')
-        && !path.chars().any(char::is_whitespace)
-        && is_sha(sha)
+    !path.is_empty() && !path.contains('@') && !path.chars().any(char::is_whitespace) && is_sha(sha)
 }
 
 fn valid_positive_decimal(value: &str) -> bool {
-    !value.is_empty()
-        && !value.starts_with('0')
-        && value.as_bytes().iter().all(u8::is_ascii_digit)
+    !value.is_empty() && !value.starts_with('0') && value.as_bytes().iter().all(u8::is_ascii_digit)
 }
 
 fn validate_sorted_identifiers(values: &[&str], name: &str) -> Result<(), String> {
@@ -502,7 +499,9 @@ fn validate_sorted_identifiers(values: &[&str], name: &str) -> Result<(), String
         require(is_identifier(value), format!("{name}[{index}] is invalid"))?;
     }
     for pair in values.windows(2) {
-        require(pair[0] < pair[1], format!("{name} must be sorted and unique"))?;
+        if let [previous, next] = pair {
+            require(previous < next, format!("{name} must be sorted and unique"))?;
+        }
     }
     Ok(())
 }
@@ -515,10 +514,7 @@ fn validate_strictly_increasing_u64(
     for value in values {
         require(value > 0, format!("{name} must contain positive numbers"))?;
         if let Some(previous_value) = previous {
-            require(
-                previous_value < value,
-                format!("{name} must be sorted and unique"),
-            )?;
+            require(previous_value < value, format!("{name} must be sorted and unique"))?;
         }
         previous = Some(value);
     }
@@ -558,11 +554,8 @@ fn is_sha(value: &str) -> bool {
 
 fn is_identifier(value: &str) -> bool {
     let bytes = value.as_bytes();
-    if bytes.is_empty()
-        || !bytes[0].is_ascii_lowercase() && !bytes[0].is_ascii_digit()
-        || !bytes[bytes.len() - 1].is_ascii_lowercase()
-            && !bytes[bytes.len() - 1].is_ascii_digit()
-    {
+    let endpoint_valid = |byte: &u8| byte.is_ascii_lowercase() || byte.is_ascii_digit();
+    if !bytes.first().is_some_and(endpoint_valid) || !bytes.last().is_some_and(endpoint_valid) {
         return false;
     }
     let mut previous_was_separator = false;
@@ -579,11 +572,7 @@ fn is_identifier(value: &str) -> bool {
 }
 
 fn require(condition: bool, message: impl Into<String>) -> Result<(), String> {
-    if condition {
-        Ok(())
-    } else {
-        Err(message.into())
-    }
+    if condition { Ok(()) } else { Err(message.into()) }
 }
 
 #[cfg(test)]

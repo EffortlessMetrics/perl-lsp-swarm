@@ -7,8 +7,10 @@ use std::fs;
 const FIXTURE_PATH: &str = "fixtures/release_scope_v2/valid.preparation-pending.json";
 
 fn read_repo_file(path: &str) -> Result<String, String> {
-    fs::read_to_string(project_root().join(path))
-        .map_err(|error| format!("cannot read {path}: {error}"))
+    fs::read_to_string(
+        project_root().map_err(|error| format!("cannot locate repository: {error}"))?.join(path),
+    )
+    .map_err(|error| format!("cannot read {path}: {error}"))
 }
 
 fn fixture_text() -> Result<String, String> {
@@ -16,8 +18,7 @@ fn fixture_text() -> Result<String, String> {
 }
 
 fn fixture_value() -> Result<Value, String> {
-    serde_json::from_str(&fixture_text()?)
-        .map_err(|error| format!("fixture is not JSON: {error}"))
+    serde_json::from_str(&fixture_text()?).map_err(|error| format!("fixture is not JSON: {error}"))
 }
 
 fn schema_value() -> Result<Value, String> {
@@ -39,9 +40,7 @@ fn model_accepts(value: &Value) -> Result<bool, String> {
 }
 
 fn root_object(value: &mut Value) -> Result<&mut serde_json::Map<String, Value>, String> {
-    value
-        .as_object_mut()
-        .ok_or_else(|| "fixture root is not an object".to_string())
+    value.as_object_mut().ok_or_else(|| "fixture root is not an object".to_string())
 }
 
 #[test]
@@ -77,11 +76,8 @@ fn prepared_identity_is_explicitly_nullable_then_admissible() -> Result<(), Stri
 #[test]
 fn complete_disposition_vocabulary_includes_already_included() -> Result<(), String> {
     let model = parse_release_scope_v2(&fixture_text()?)?;
-    let observed = model
-        .observed_pull_requests
-        .iter()
-        .map(|item| item.disposition)
-        .collect::<BTreeSet<_>>();
+    let observed =
+        model.observed_pull_requests.iter().map(|item| item.disposition).collect::<BTreeSet<_>>();
     let expected = [
         ReleaseDisposition::Blocker018,
         ReleaseDisposition::Candidate018,
@@ -175,9 +171,7 @@ fn v1_admission_receipt_cannot_masquerade_as_v2() -> Result<(), String> {
 #[test]
 fn fixture_contains_placeholders_not_live_release_state() -> Result<(), String> {
     let value = fixture_value()?;
-    let root = value
-        .as_object()
-        .ok_or_else(|| "fixture root is not an object".to_string())?;
+    let root = value.as_object().ok_or_else(|| "fixture root is not an object".to_string())?;
     for forbidden in ["tag", "channels", "candidate", "authorization", "published"] {
         require(!root.contains_key(forbidden), format!("fixture contains live field {forbidden}"))?;
     }
@@ -207,13 +201,14 @@ fn receipt_registry_points_to_the_published_schema() -> Result<(), String> {
         .get("receipt")
         .and_then(toml::Value::as_array)
         .ok_or_else(|| "receipt registry has no receipt array".to_string())?;
-    let entry = receipts.iter().find(|item| {
-        item.get("check").and_then(toml::Value::as_str) == Some(RELEASE_SCOPE_V2_CHECK)
-    })
-    .ok_or_else(|| "release-scope-v2 is not registered".to_string())?;
+    let entry = receipts
+        .iter()
+        .find(|item| {
+            item.get("check").and_then(toml::Value::as_str) == Some(RELEASE_SCOPE_V2_CHECK)
+        })
+        .ok_or_else(|| "release-scope-v2 is not registered".to_string())?;
     require(
-        entry.get("schema").and_then(toml::Value::as_str)
-            == Some(RELEASE_SCOPE_V2_SCHEMA_PATH),
+        entry.get("schema").and_then(toml::Value::as_str) == Some(RELEASE_SCOPE_V2_SCHEMA_PATH),
         "release-scope-v2 registry entry points to another schema",
     )
 }
@@ -233,4 +228,95 @@ fn collect_strings<'a>(value: &'a Value, output: &mut Vec<&'a str>) {
         }
         Value::Null | Value::Bool(_) | Value::Number(_) => {}
     }
+}
+
+#[test]
+fn nullable_fields_require_presence_in_schema_and_model() -> Result<(), String> {
+    for field in ["prepared_swarm_sha", "controlling_issue"] {
+        let mut value = fixture_value()?;
+        let object = if field == "controlling_issue" {
+            value
+                .pointer_mut("/observed_pull_requests/0")
+                .and_then(Value::as_object_mut)
+                .ok_or_else(|| "missing PR fixture".to_string())?
+        } else {
+            root_object(&mut value)?
+        };
+        object.insert(field.to_string(), Value::Null);
+        require(schema_accepts(&value)? && model_accepts(&value)?, "explicit null rejected")?;
+        let object = if field == "controlling_issue" {
+            value
+                .pointer_mut("/observed_pull_requests/0")
+                .and_then(Value::as_object_mut)
+                .ok_or_else(|| "missing PR fixture".to_string())?
+        } else {
+            root_object(&mut value)?
+        };
+        object.remove(field);
+        require(
+            !schema_accepts(&value)? && !model_accepts(&value)?,
+            format!("missing {field} accepted"),
+        )?;
+    }
+    Ok(())
+}
+
+#[test]
+fn receipt_event_vocabulary_matches_schema() -> Result<(), String> {
+    for event in ["local", "pull_request", "merge_group", "push", "unknown"] {
+        let mut value = fixture_value()?;
+        root_object(&mut value)?.insert("event".to_string(), Value::String(event.to_string()));
+        let expected = event != "unknown";
+        require(schema_accepts(&value)? == expected, format!("schema event {event}"))?;
+        require(model_accepts(&value)? == expected, format!("model event {event}"))?;
+    }
+    Ok(())
+}
+
+#[test]
+fn evidence_repository_binding_matches_schema() -> Result<(), String> {
+    for repository in ["perl-lsp-swarm", "perl-lsp", "unrelated"] {
+        for (kind, suffix) in [
+            ("github_issue", "issues/1"),
+            ("github_issue_comment", "issues/1#issuecomment-2"),
+            ("github_pull", "pull/1"),
+            ("github_review", "pull/1#pullrequestreview-2"),
+            ("github_check", "actions/runs/1/job/2"),
+            ("repository_blob", ""),
+            ("repository_receipt", ""),
+        ] {
+            let reference = if suffix.is_empty() {
+                format!(
+                    "repo:EffortlessMetrics/{repository}:fixtures/example.json@{}",
+                    "a".repeat(40)
+                )
+            } else {
+                format!("https://github.com/EffortlessMetrics/{repository}/{suffix}")
+            };
+            let mut value = fixture_value()?;
+            let proof = value
+                .pointer_mut("/blockers/0/proof")
+                .and_then(Value::as_object_mut)
+                .ok_or_else(|| "missing blocker fixture".to_string())?;
+            proof.insert("kind".to_string(), Value::String(kind.to_string()));
+            proof.insert("ref".to_string(), Value::String(reference));
+            let expected = repository != "unrelated";
+            require(schema_accepts(&value)? == expected, format!("schema {repository}/{kind}"))?;
+            require(model_accepts(&value)? == expected, format!("model {repository}/{kind}"))?;
+        }
+    }
+    let mut value = fixture_value()?;
+    let proof = value
+        .pointer_mut("/blockers/0/proof")
+        .and_then(Value::as_object_mut)
+        .ok_or_else(|| "missing blocker fixture".to_string())?;
+    proof.insert("kind".to_string(), Value::String("repository_blob".to_string()));
+    proof.insert(
+        "ref".to_string(),
+        Value::String(format!("repo:fixtures/example.json@{}", "a".repeat(40))),
+    );
+    require(
+        !schema_accepts(&value)? && !model_accepts(&value)?,
+        "unbound repository reference accepted",
+    )
 }
