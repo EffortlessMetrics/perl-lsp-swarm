@@ -1155,6 +1155,88 @@ impl Second {
     Ok(())
 }
 
+/// A file is dropped from the scan only when its module ownership is
+/// *exclusively* test-gated. One `#[cfg(test)] mod shared;` used to be enough
+/// to drop it outright, so a file an ordinary `mod shared;` also includes lost
+/// its production sends silently -- the fail-open this gate exists to refuse.
+/// The send below compiles into production through the ungated declaration.
+#[test]
+fn a_file_an_ordinary_module_also_includes_is_not_dropped_as_test_gated()
+-> Result<(), Box<dyn std::error::Error>> {
+    let dir = tempfile::tempdir()?;
+    let runtime = dir.path().join("src").join("runtime");
+    std::fs::create_dir_all(runtime.join("owner"))?;
+    // One declaration gates the file; the other includes it in production.
+    std::fs::write(
+        runtime.join("owner.rs"),
+        r"
+#[cfg(test)]
+mod shared;
+mod shared;
+",
+    )?;
+    std::fs::write(
+        runtime.join("owner").join("shared.rs"),
+        r#"
+impl Server {
+    fn emit(&self) -> io::Result<()> {
+        self.send_request(id, "window/showDocument", params)
+    }
+}
+"#,
+    )?;
+
+    let constants = BTreeMap::new();
+    let (emitted, _ambiguous, findings) = scan_emission(dir.path(), "src", &constants)?;
+
+    assert!(
+        emitted.contains_key("window/showDocument"),
+        "a file an ordinary module also includes stays in the scan, so its \
+         production sends are attributed: {emitted:?}"
+    );
+    assert!(findings.is_empty(), "retaining a shared file is not itself a finding: {findings:?}");
+    Ok(())
+}
+
+/// The opposite-direction control for the rule above: with no ordinary
+/// declaration naming it, the same file is owned exclusively by the gated
+/// module and must still be dropped. Without this pair, "retain when shared"
+/// could be satisfied by never dropping anything at all.
+#[test]
+fn a_file_only_a_gated_module_declares_is_still_dropped() -> Result<(), Box<dyn std::error::Error>>
+{
+    let dir = tempfile::tempdir()?;
+    let runtime = dir.path().join("src").join("runtime");
+    std::fs::create_dir_all(runtime.join("owner"))?;
+    std::fs::write(
+        runtime.join("owner.rs"),
+        r"
+#[cfg(test)]
+mod shared;
+",
+    )?;
+    std::fs::write(
+        runtime.join("owner").join("shared.rs"),
+        r#"
+impl Server {
+    fn exercise(&self) -> io::Result<()> {
+        self.send_request(id, "test-only/never-sent", params)
+    }
+}
+"#,
+    )?;
+
+    let constants = BTreeMap::new();
+    let (emitted, _ambiguous, findings) = scan_emission(dir.path(), "src", &constants)?;
+
+    assert!(
+        !emitted.contains_key("test-only/never-sent"),
+        "exclusive test ownership still drops the file: {emitted:?}"
+    );
+    assert!(findings.is_empty(), "dropping a gated file is not a finding: {findings:?}");
+    Ok(())
+}
+
 /// `#[cfg(test)] mod tests;` leaves its code in another file, and that file,
 /// parsed alone, shows no sign of having been gated. Skipping by filename could
 /// not recover it: `tests.rs` does not end in `_tests.rs`, so a send there was

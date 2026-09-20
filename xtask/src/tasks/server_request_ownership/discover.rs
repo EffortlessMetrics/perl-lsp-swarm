@@ -544,6 +544,12 @@ pub(super) fn scan_emission(
     // alike -- so the declarations are resolved to the paths they name. What a
     // gated file itself declares is gated too, hence the fixpoint.
     let mut test_gated: BTreeSet<PathBuf> = BTreeSet::new();
+    // A file one module gates is not thereby test-only: another, ordinary
+    // module can include the same file, and then its sends are production
+    // sends. Gating alone would drop it from the scan and hide them, so the
+    // production declarations are collected too and ownership must be
+    // *exclusively* test-gated before a file leaves the denominator.
+    let mut production_declared: BTreeSet<PathBuf> = BTreeSet::new();
     let mut unresolvable: BTreeSet<PathBuf> = BTreeSet::new();
     loop {
         let mut grew = false;
@@ -554,19 +560,33 @@ pub(super) fn scan_emission(
             for item in &parsed.items {
                 let syn::Item::Mod(item) = item else { continue };
                 // An inline module's body is already skipped by the visitor.
-                if item.content.is_some() || !(inherited || is_test_gated(&item.attrs)) {
+                if item.content.is_some() {
                     continue;
                 }
+                let gated = inherited || is_test_gated(&item.attrs);
                 let candidates = match declared_path(path, &item.attrs) {
                     Some(Ok(declared)) => vec![declared],
                     Some(Err(())) => {
-                        unresolvable.insert(path.clone());
+                        // Only a gated declaration hides test code behind an
+                        // unresolvable `#[path]`; a production one names a file
+                        // the scan already reads on its own.
+                        if gated {
+                            unresolvable.insert(path.clone());
+                        }
                         continue;
                     }
                     None => module_paths(path, &item.ident.to_string()),
                 };
                 for candidate in candidates {
-                    if candidate.is_file() && test_gated.insert(candidate) {
+                    if !candidate.is_file() {
+                        continue;
+                    }
+                    let inserted = if gated {
+                        test_gated.insert(candidate)
+                    } else {
+                        production_declared.insert(candidate)
+                    };
+                    if inserted {
                         grew = true;
                     }
                 }
@@ -599,7 +619,10 @@ pub(super) fn scan_emission(
         // resolved from the `#[cfg(test)] mod name;` that declares the file,
         // not guessed from the filename: a `_tests.rs` suffix skipped files
         // nothing had gated, and missed gated ones spelled any other way.
-        if test_gated.contains(&path) {
+        // Exclusive ownership is required: a file an ordinary module also
+        // includes stays in the scan, because its sends compile into
+        // production however some other module gates it.
+        if test_gated.contains(&path) && !production_declared.contains(&path) {
             continue;
         }
         let relative = slash_relative(repo_root, &path);
