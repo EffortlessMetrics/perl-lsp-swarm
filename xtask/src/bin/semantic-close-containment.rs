@@ -1026,10 +1026,14 @@ fn failed_row(
 /// is exactly the case the split exists to keep off the pull request.
 ///
 /// The one repository where a 404 does establish absence is the subject's own.
-/// This validator runs in that repository with its own read token, so a 404
-/// there is the repository answering that the issue is not present, not
-/// declining to say. Nothing else is probed: establishing visibility for a
-/// foreign repository would mean asking about a private resource.
+/// This validator runs in that repository under a token the workflow grants
+/// `issues: read`, so a 404 there is the repository answering that the issue
+/// is not present, not declining to say. That permission is the whole of the
+/// authority for this branch, so it is pinned by
+/// `semantic_close_containment_keeps_the_issue_read_its_404_rule_depends_on`
+/// in `xtask/tests/quality_ci_wiring_policy.rs`; drop it and a same-repository
+/// 404 stops meaning absence. Nothing else is probed: establishing visibility
+/// for a foreign repository would mean asking about a private resource.
 fn classify_gh_failure(
     stderr: &str,
     detail: String,
