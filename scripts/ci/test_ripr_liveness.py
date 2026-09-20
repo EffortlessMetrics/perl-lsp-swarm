@@ -43,6 +43,7 @@ def run(
     head_sha: str = "2698f3026226d52c7dcbc47d3dacf53e08465f75",
     head_branch: str = "claude/project-thread-1itw8h",
     event: str = "pull_request",
+    head_repository: str = "EffortlessMetrics/perl-lsp-swarm",
 ) -> dict:
     return {
         "id": run_id,
@@ -51,6 +52,7 @@ def run(
         "created_at": created_at,
         "head_sha": head_sha,
         "head_branch": head_branch,
+        "head_repository": head_repository,
         "pull_requests": [] if pulls is None else pulls,
         "job_count": job_count,
     }
@@ -214,16 +216,24 @@ class ClassificationTests(unittest.TestCase):
 class ForkAndCoercionTests(unittest.TestCase):
     def test_two_fork_runs_sharing_a_branch_name_are_not_one_group(self) -> None:
         """The API withholds `pull_requests` for a fork PR; a branch name is
-        not a substitute. `patch-1` is the commonest branch name there is."""
+        not a substitute. `patch-1` is the commonest branch name there is, so
+        the head repository has to carry the identity."""
         report = liveness.classify_snapshot(
             snapshot(
-                run(200, created_at="2026-09-20T04:00:00Z", head_branch="patch-1", pulls=[]),
+                run(
+                    200,
+                    created_at="2026-09-20T04:00:00Z",
+                    head_branch="patch-1",
+                    head_repository="alice/perl-lsp-swarm",
+                    pulls=[],
+                ),
                 run(
                     100,
                     status="in_progress",
                     created_at="2026-09-20T03:30:00Z",
                     job_count=4,
                     head_branch="patch-1",
+                    head_repository="bob/perl-lsp-swarm",
                     pulls=[],
                 ),
             )
@@ -233,6 +243,67 @@ class ForkAndCoercionTests(unittest.TestCase):
         self.assertEqual(finding["run_id"], 200)
         self.assertEqual(finding["classification"], liveness.INFRA_NO_PROOF)
         self.assertIsNone(finding["predecessor_run_id"])
+
+    def test_one_fork_pull_requests_own_predecessor_is_still_found(self) -> None:
+        """The other direction, and the one that costs a false red.
+
+        Both runs of a single fork pull request come back with no
+        `pull_requests`, so comparing only the number rejects the real
+        predecessor and reports the second push as `infra-no-proof` for
+        queueing behind the first. Head repository plus branch identifies it.
+        """
+        report = liveness.classify_snapshot(
+            snapshot(
+                run(
+                    200,
+                    created_at="2026-09-20T04:00:00Z",
+                    head_branch="patch-1",
+                    head_repository="alice/perl-lsp-swarm",
+                    pulls=[],
+                ),
+                run(
+                    100,
+                    status="in_progress",
+                    created_at="2026-09-20T03:30:00Z",
+                    job_count=4,
+                    head_branch="patch-1",
+                    head_repository="alice/perl-lsp-swarm",
+                    pulls=[],
+                ),
+            )
+        )
+        self.assertEqual(len(report["findings"]), 1)
+        finding = report["findings"][0]
+        self.assertEqual(finding["run_id"], 200)
+        self.assertEqual(finding["classification"], liveness.SERIALISED)
+        self.assertEqual(finding["predecessor_run_id"], 100)
+        self.assertEqual(finding["conclusion"], "neutral")
+
+    def test_a_fork_run_with_no_head_repository_matches_nothing(self) -> None:
+        """An unidentifiable run must not match; an honest `infra-no-proof`
+        naming no predecessor beats silently suppressing a real stall."""
+        report = liveness.classify_snapshot(
+            snapshot(
+                run(
+                    200,
+                    created_at="2026-09-20T04:00:00Z",
+                    head_branch="patch-1",
+                    head_repository="",
+                    pulls=[],
+                ),
+                run(
+                    100,
+                    status="in_progress",
+                    created_at="2026-09-20T03:30:00Z",
+                    job_count=4,
+                    head_branch="patch-1",
+                    head_repository="",
+                    pulls=[],
+                ),
+            )
+        )
+        self.assertEqual(report["findings"][0]["classification"], liveness.INFRA_NO_PROOF)
+        self.assertIsNone(report["findings"][0]["predecessor_run_id"])
 
     def test_a_push_run_never_groups_with_a_pull_request_run(self) -> None:
         report = liveness.classify_snapshot(

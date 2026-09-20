@@ -69,6 +69,7 @@ jobs:
           # minutes, so anything older than this page has long since resolved.
           gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/ripr.yml/runs?per_page=100" \
             --jq '[.workflow_runs[] | {id, status, event, created_at, head_sha, head_branch,
+                   head_repository: .head_repository.full_name,
                    pull_requests: [.pull_requests[]?.number]}]' \
             > target/ripr/liveness/runs.json
 
@@ -141,18 +142,23 @@ jobs:
               The cron fires every 15 minutes and a stall lasts as long as it
               lasts, so without this a two-hour stall leaves eight identical
               check runs on one pull request.
+
+              Paginated deliberately. The endpoint defaults to 30 results and
+              `gh api` follows `next` links only under `--paginate`, while the
+              very head this reporter was built for carried 74 check runs -- so
+              a single page could easily miss an id posted an hour ago and
+              re-post it on every fire. `--paginate` with `--jq` emits one id
+              per line across all pages rather than one JSON document.
               """
               out = subprocess.run(
-                  ["gh", "api", f"repos/{repo}/commits/{head_sha}/check-runs",
-                   "--jq", "[.check_runs[] | .external_id]"],
+                  ["gh", "api", "--paginate",
+                   f"repos/{repo}/commits/{head_sha}/check-runs?per_page=100",
+                   "--jq", ".check_runs[].external_id"],
                   capture_output=True, text=True, check=False,
               )
               if out.returncode != 0:
                   return False  # unreadable: post rather than stay silent
-              try:
-                  return external_id in json.loads(out.stdout or "[]")
-              except ValueError:
-                  return False
+              return external_id in out.stdout.split()
 
           for finding in findings:
               conclusion = finding["conclusion"]

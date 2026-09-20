@@ -109,25 +109,50 @@ def groups_by_pull_request(run: dict[str, Any]) -> bool:
     return run.get("event") in PULL_REQUEST_EVENTS
 
 
+def fork_identity(run: dict[str, Any]) -> tuple[str, str] | None:
+    """The (head repository, head branch) pair identifying a fork's pull request.
+
+    Used only when the API withheld ``pull_requests``, which it does for a fork
+    pull request. The branch name alone is not an identity — two unrelated
+    forks both push ``patch-1`` — but the branch inside a named head repository
+    is: GitHub allows one open pull request per head repository and branch, so
+    two runs agreeing on both belong to the same pull request and therefore to
+    the same concurrency group. ``None`` when either half is missing, which
+    keeps an unidentifiable run from matching anything.
+    """
+    repository = run.get("head_repository")
+    branch = run.get("head_branch")
+    if isinstance(repository, str) and repository and isinstance(branch, str) and branch:
+        return (repository, branch)
+    return None
+
+
 def same_concurrency_group(left: dict[str, Any], right: dict[str, Any]) -> bool:
     """Whether two runs would contend for the same ``concurrency`` group.
 
-    A pull-request run whose number the API withheld has an **unknown** group,
-    and unknown is reported as no match. That is the safe direction: a false
-    non-match costs at most an honest ``infra-no-proof`` naming no predecessor,
-    while a false match silently reclassifies a genuinely stuck run as an
-    explained wait — suppressing exactly the finding this exists to surface.
-    Two fork pull requests sharing a branch name (``patch-1``, ``fix``) would
-    otherwise have matched each other.
+    Grouping follows the event, because ``ripr.yml``'s group expression does.
+    Two pull-request runs match on a shared pull request number when the API
+    supplied one, and otherwise on head repository plus head branch — the fork
+    case, where ``pull_requests`` comes back empty.
+
+    Both halves of that fallback are load-bearing. Dropping the repository
+    matches two unrelated forks that happen to share a branch name, which
+    silently reclassifies a genuinely stuck run as an explained wait.
+    Dropping the fallback entirely — comparing nothing at all when the number
+    is absent — rejects a fork pull request's own predecessor, so its second
+    push is reported ``infra-no-proof`` for queueing behind its first, exactly
+    the false red this reporter exists to avoid. A run that offers neither
+    identity matches nothing.
     """
     left_by_pr, right_by_pr = groups_by_pull_request(left), groups_by_pull_request(right)
     if left_by_pr != right_by_pr:
         return False
     if left_by_pr:
         left_pulls, right_pulls = pull_numbers(left), pull_numbers(right)
-        if not left_pulls or not right_pulls:
-            return False
-        return bool(set(left_pulls) & set(right_pulls))
+        if left_pulls and right_pulls:
+            return bool(set(left_pulls) & set(right_pulls))
+        left_fork, right_fork = fork_identity(left), fork_identity(right)
+        return left_fork is not None and left_fork == right_fork
     branch = left.get("head_branch")
     return bool(branch) and branch == right.get("head_branch")
 
@@ -276,6 +301,7 @@ def classify_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
                 "head_branch": run.get("head_branch"),
                 "pull_requests": pull_numbers(run),
                 "event": run.get("event"),
+                "head_repository": run.get("head_repository"),
                 "status": run.get("status"),
                 "job_count": run.get("job_count"),
                 "waited_minutes": waited_minutes,
