@@ -112,7 +112,8 @@ JSON Schema 2020-12 cannot relate two string fields, so one contract row is a
 | SPP-C27 (command name names the executable) | relates `command_name` to the final segment of `executable_path` | the Rust validator |
 | traversal segments after a valid prefix | the published path pattern anchors the first segment only | the Rust validator |
 | SPP-C20 (candidate set ascending, unique by path, contains the winner) | ordering and cross-element comparison | the Rust validator; schema `uniqueItems` compares whole objects, so two rows with one path and different digests pass it |
-| SPP-C23, SPP-C25, SPP-C28 (every cross-document binding) | JSON Schema validates one document at a time | the Rust validator, **and only when the related documents are supplied together** |
+| SPP-C28 (the winner and its candidate-set row carry one identity) | cross-element comparison between an object and a sibling array element of the same document | the Rust validator, on **any** invocation that supplies a fresh-process observation |
+| SPP-C23, SPP-C25 (every cross-document binding) | JSON Schema validates one document at a time | the Rust validator, **and only when the related documents are supplied together** |
 
 This is stated in the schema's own `entry_value` description with a
 `NOT SCHEMA-ENFORCED` marker, and pinned by
