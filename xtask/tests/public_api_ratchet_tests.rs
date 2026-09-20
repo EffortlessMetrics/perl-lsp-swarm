@@ -441,6 +441,25 @@ fn public_api_check_script_has_correct_fail_semantics() -> Result<(), Box<dyn st
     Ok(())
 }
 
+#[test]
+fn public_api_filter_normalizes_only_io_reexport_paths() -> Result<(), Box<dyn std::error::Error>> {
+    let root = project_root();
+    let justfile = fs::read_to_string(root.join("justfile"))?;
+    let filter = justfile
+        .split("_public-api-filter raw out:")
+        .nth(1)
+        .ok_or("Could not find _public-api-filter recipe")?
+        .split("\n# Check public API surface")
+        .next()
+        .ok_or("Could not delimit _public-api-filter recipe")?;
+
+    assert!(filter.contains("core::io::(write::|error::)?"));
+    assert!(filter.contains("alloc::io::buf_read::"));
+    assert!(filter.contains("std::io::"));
+    assert!(filter.contains("grep -E"));
+    Ok(())
+}
+
 /// Test H (edge case): the ratchet list is the single authority (#14607)
 ///
 /// This test verifies that the crate set is derived, not restated:

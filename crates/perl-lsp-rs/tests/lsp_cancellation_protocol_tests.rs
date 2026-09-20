@@ -268,6 +268,17 @@ fn test_enhanced_cancel_request_with_provider_context_ac1() -> Result<(), Box<dy
     Ok(())
 }
 
+/// A RequestCancelled error carrying the enhanced provider-context payload.
+fn is_enhanced_cancel_error(response: &Value) -> bool {
+    let Some(error) = response.get("error") else {
+        return false;
+    };
+    if error.get("code").and_then(Value::as_i64) != Some(-32800) {
+        return false;
+    }
+    error.get("data").and_then(|data| data.get("provider")).is_some()
+}
+
 /// Tests feature spec: LSP_CANCELLATION_PROTOCOL.md#provider-integration-schema
 /// AC:1 - Multiple LSP provider cancellation validation with enhanced context
 #[test]
@@ -1711,6 +1722,12 @@ fn run_type_hierarchy_cancellation_test(
         .into());
     }
     Ok(())
+}
+
+/// Any RequestCancelled error, with or without the enhanced payload.
+fn is_cancel_error(response: &Value) -> bool {
+    response.get("error").and_then(|error| error.get("code")).and_then(Value::as_i64)
+        == Some(-32800)
 }
 
 fn validate_request_cancelled(

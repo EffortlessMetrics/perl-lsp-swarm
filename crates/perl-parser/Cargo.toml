@@ -107,6 +107,8 @@ rstest = "0.26.1"
 perl-corpus = { workspace = true }
 perl-lsp-rs-core = { workspace = true }
 perl-test-generators = { workspace = true }
+# Compile-time trait-bound contracts for tests/incremental_state_read_only_authority.rs (#13774).
+static_assertions.workspace = true
 
 [[bench]]
 name = "parser_benchmark"

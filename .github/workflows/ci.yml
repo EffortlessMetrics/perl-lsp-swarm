@@ -341,7 +341,15 @@ jobs:
           cargo run -p xtask --locked -- ci-scope \
             --subject "$RUNNER_TEMP/ci-subject.json" \
             --format json > "$RUNNER_TEMP/ci-scope.json"
-          windows_runner=$(jq -r 'if .platform_overrides.windows_runner == null then true else .platform_overrides.windows_runner end' "$RUNNER_TEMP/ci-scope.json")
+          schema_version=$(jq -r '.schema_version' "$RUNNER_TEMP/ci-scope.json")
+          if [ "$schema_version" != "2" ]; then
+            echo "::error::ci-scope schema_version=$schema_version, expected 2 (producer/consumer out of sync)"
+            exit 1
+          fi
+          if ! windows_runner=$(jq -r 'if (.platform_overrides | has("windows_runner") | not) then error("missing field: .platform_overrides.windows_runner") elif .platform_overrides.windows_runner == null then error("null field: .platform_overrides.windows_runner") else .platform_overrides.windows_runner end' "$RUNNER_TEMP/ci-scope.json"); then
+            echo "::error::ci-scope is missing .platform_overrides.windows_runner (refusing null->true default)"
+            exit 1
+          fi
           windows_test_crates=$(jq -r '.platform_overrides.windows_test_crates[]? | "-p \(.)"' "$RUNNER_TEMP/ci-scope.json" | paste -sd' ' -)
           case "$windows_runner" in
             true|false) ;;
@@ -739,8 +747,17 @@ jobs:
   pr-smoke:
     name: PR Smoke (Fast Feedback, advisory)
     runs-on: ubuntu-24.04
-    # Leave setup headroom plus enough room for the inner 45m watchdog to return
+    # Leave setup headroom plus enough room for the inner 60m watchdog to return
     # its status and for the always-run receipt/telemetry steps to finish.
+    # #15915: unit_routed_full alone budgets 1500s with one timeout retry
+    # (up to 50m worst case) plus 6-16m cold-cache compile and sibling pr-fast
+    # gates; the former 45m bound killed healthy runs (exit 124) with all
+    # sub-gates green. 60m covers the observed healthy upper bound with
+    # headroom while staying inside the 75m GitHub job envelope (15m left for
+    # setup plus always-run receipt/telemetry). unit_routed_full stays in the
+    # pr-fast envelope because no required merge-gate shard executes the
+    # scope-aware --tests proof (shards run --lib only); splitting it out
+    # without a new required lane would drop required coverage.
     timeout-minutes: 75
     # Advisory: a pr-fast flake must not present as a hard red on an otherwise
     # green PR. The deterministic base (CI Gate shards + the two required lanes)
@@ -909,12 +926,12 @@ jobs:
           set +e
           # The target directory is selected before Warm xtask so gate commands reuse that build.
           # Gate receipts intentionally stay at target/receipts for upload steps.
-          echo "PR-fast timeout policy: GitHub job 75m, outer runner watchdog 45m, per-gate timeouts recorded in target/receipts/receipt.json"
-          timeout --signal=TERM --kill-after=60s 2700s "$CARGO_TARGET_DIR/debug/xtask" gates --tier pr-fast --subject target/receipts/ci-subject.json --receipt
+          echo "PR-fast timeout policy: GitHub job 75m, outer runner watchdog 60m, per-gate timeouts recorded in target/receipts/receipt.json"
+          timeout --signal=TERM --kill-after=60s 3600s "$CARGO_TARGET_DIR/debug/xtask" gates --tier pr-fast --subject target/receipts/ci-subject.json --receipt
           status=$?
           case "$status" in
             124)
-              echo "::error::PR-fast hit the 45m runner watchdog before xtask produced a final receipt"
+              echo "::error::PR-fast hit the 60m runner watchdog before xtask produced a final receipt"
               ;;
             137|143)
               echo "::error::PR-fast was cancelled by the runner or process group (exit $status)"
@@ -965,6 +982,47 @@ jobs:
             target/receipts/logs/*.log
           if-no-files-found: warn
           retention-days: 7
+
+      - name: Summarize PR-fast gate failures
+        if: always()
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          receipt = Path("target/receipts/receipt.json")
+          summary = Path(os.environ["GITHUB_STEP_SUMMARY"])
+          lines = ["### PR Smoke gate summary", ""]
+          if not receipt.is_file():
+              lines.append("- Receipt: unavailable (the PR-fast runner did not produce a final receipt.)")
+          else:
+              try:
+                  data = json.loads(receipt.read_text(encoding="utf-8"))
+              except (OSError, json.JSONDecodeError) as error:
+                  lines.append(f"- Receipt: unreadable ({error})")
+              else:
+                  gates = data.get("gates", [])
+                  failures = [
+                      gate for gate in gates
+                      if gate.get("status") not in ("pass", "passed", "success")
+                  ]
+                  lines.append(f"- Receipt: `{receipt}`")
+                  if failures:
+                      lines.append("")
+                      lines.append("| Gate | Status | Exit |")
+                      lines.append("| --- | --- | ---: |")
+                      for gate in failures:
+                          lines.append(
+                              f"| `{gate.get('gate_name', 'unknown')}` | "
+                              f"`{gate.get('status', 'unknown')}` | "
+                              f"`{gate.get('exit_code', 'unknown')}` |"
+                          )
+                  else:
+                      lines.append("- Non-success gates: none recorded.")
+          summary.write_text("\n".join(lines) + "\n", encoding="utf-8")
+          PY
 
       - name: Convert PR-fast receipt to JUnit
         if: always()
@@ -1059,7 +1117,7 @@ jobs:
             # The cheapest control remains first for fast diagnosis, but the
             # shard runner now records every independent member before it
             # returns the aggregate failure verdict.
-            gates: docs_agents_contract_workflows msrv_authority_sync compiler_concept_ledger compiler_proof_policy compiler_concept_proof compiler_performance_receipt_contract kubernetes_dap_profiles postfix_capability_closure release_trust_invariants docs_build adr_link_check non_rust_inventory_check must_context_check lint_policy v2_bundle_sync nested_lock_check version_sync agent_ledgers_validate
+            gates: docs_agents_contract_workflows msrv_authority_sync compiler_concept_ledger compiler_proof_policy compiler_concept_proof compiler_performance_receipt_contract kubernetes_dap_profiles postfix_capability_closure release_trust_invariants docs_build adr_link_check non_rust_inventory_check must_context_check lint_policy v2_bundle_sync nested_lock_check doctest_contract_proof doctest_enforcement version_sync agent_ledgers_validate
     permissions:
       contents: read
     # Run on every PR push and on push to main/master
@@ -1699,7 +1757,12 @@ jobs:
           else:
               lines.append("- Receipt unavailable.")
 
-          summary.write_text("\n".join(lines) + "\n", encoding="utf-8")
+          rendered = "\n".join(lines) + "\n"
+          summary.write_text(rendered, encoding="utf-8")
+          # Mirror the receipt summary into stdout so the fields appear in the
+          # job-log tail when GITHUB_STEP_SUMMARY or artifact downloads are
+          # inaccessible (#16026).
+          print(rendered)
           PY
 
       - name: Fail UX regression gate on test failures
@@ -1716,8 +1779,12 @@ jobs:
     # cancelled inside the emacs docs contract step at the 15m ceiling with
     # the compile step itself green (jobs 98281594104, 98291003739,
     # 98300685210); 25m restores measured headroom for the contracts.
+    # 2026-09-19: job 105961871648 (#15953 head 474b2b5d4d) cancelled inside
+    # the Dead-code API ledger contract step at the 25m ceiling with the
+    # compile step itself green in 13m15s; 35m restores measured headroom
+    # for the grown contract tail.
     # Same shape as #5425: raise the knob when runners/base outgrow it.
-    timeout-minutes: 25
+    timeout-minutes: 35
     needs: [draft-pr-check, preflight-latest-check]
     if: needs.draft-pr-check.outputs.run_ci == 'true' && needs.preflight-latest-check.outputs.is_latest == 'true'
     steps:
