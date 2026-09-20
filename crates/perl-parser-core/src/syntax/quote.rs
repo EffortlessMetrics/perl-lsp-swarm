@@ -322,7 +322,7 @@ fn extract_delimited_content_strict(text: &str, open: char, close: char) -> (Str
         }
 
         match ch {
-            '\\' => {
+            '\\' if open != '\\' => {
                 body.push(ch);
                 escaped = true;
             }
@@ -1167,6 +1167,31 @@ pub(crate) fn parse_quote_operator_content_strict(s: &str, operator: &str) -> Op
 #[cfg(test)]
 mod shared_scanner_invariants {
     use super::*;
+
+    #[test]
+    fn backslash_delimiter_closure_and_remainder() -> Result<(), String> {
+        for (text, expected_body, expected_rest, expected_closed) in [
+            (r"\abc\tail", "abc", "tail", true),
+            (r"\\tail", "", "tail", true),
+            (r"\a\\b\", "a", r"\b\", true),
+            (r"\abc", "abc", "", false),
+        ] {
+            let (body, rest, closed) = extract_delimited_content_strict(text, '\\', '\\');
+            if body != expected_body || rest != expected_rest || closed != expected_closed {
+                return Err(format!("wrong backslash scan: {body:?}, {rest:?}, {closed}"));
+            }
+        }
+        for operator in ["q", "qq", "qw"] {
+            for suffix in [r"\abc\junk", r"\a\\b\", r"\abc"] {
+                if parse_quote_operator_content_strict(&format!("{operator}{suffix}"), operator)
+                    .is_some()
+                {
+                    return Err("strict scanner accepted trailing or missing closure".into());
+                }
+            }
+        }
+        Ok(())
+    }
 
     /// Delimiter/body shapes exercised by the substitution, transliteration and
     /// regex extractors.
