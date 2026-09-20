@@ -293,8 +293,16 @@ fn declaring_scope(path: &Path) -> Option<(PathBuf, String)> {
 /// `#[path = "…"]` between the two is a live shape in this repository — so the
 /// walk back accepts those and stops at the first line that is neither, which
 /// is the previous item.
+///
+/// An attribute may span lines via bracket-balanced continuations (see
+/// `parse_cfg_attrs`). The walk treats a multi-line attribute as a single
+/// unit: continuation lines are skipped and the test-only predicate is
+/// applied to the joined attribute text, so the parent-declaration path
+/// and `first_cfg_test_line_number` cannot disagree on the same construct
+/// (#16281).
 fn module_declaration_is_test_only(parent_file: &Path, stem: &str) -> Option<bool> {
     let lines = read_lines(parent_file).ok()?;
+    let attrs = parse_cfg_attrs(&lines);
     let mut declared = None;
 
     for (index, line) in lines.iter().enumerate() {
@@ -302,14 +310,44 @@ fn module_declaration_is_test_only(parent_file: &Path, stem: &str) -> Option<boo
             continue;
         }
         declared = Some(false);
-        for previous in lines[..index].iter().rev() {
-            if is_test_only_cfg_attribute(previous) {
-                return Some(true);
+        // Walk back, one attribute at a time.
+        let mut i = index;
+        loop {
+            if i == 0 {
+                break;
             }
-            let trimmed = previous.trim_start();
-            if trimmed.starts_with("#[") || trimmed.is_empty() {
+            i -= 1;
+            let trimmed = lines[i].trim_start();
+            if trimmed.is_empty() {
                 continue;
             }
+            if trimmed.starts_with("#[") {
+                if let Some(attr) = attrs.iter().find(|a| a.start_line == i) {
+                    if attr.is_test_only_cfg() {
+                        return Some(true);
+                    }
+                    // Skip past this attribute's start so the next iteration
+                    // lands before the attribute (handling multi-line).
+                    i = attr.start_line;
+                    continue;
+                }
+                // A continuation line of a multi-line attribute whose start
+                // lies further back; the next outer iteration will skip past it.
+                continue;
+            }
+            // Not a `#[` line. It may still be a continuation line of a
+            // multi-line attribute whose start lies further up and whose
+            // closing `]` lands here, or it may be a non-attribute code line.
+            // Distinguish the two via the parsed attribute ranges (#16281):
+            // if any attribute covers `i`, this line is inside that attribute.
+            if let Some(attr) = attrs.iter().find(|a| a.start_line < i && i <= a.end_line) {
+                if attr.is_test_only_cfg() {
+                    return Some(true);
+                }
+                i = attr.start_line;
+                continue;
+            }
+            // Non-attribute, non-blank line: we've left the attribute list.
             break;
         }
     }
@@ -317,20 +355,125 @@ fn module_declaration_is_test_only(parent_file: &Path, stem: &str) -> Option<boo
     declared
 }
 
-/// Whether `line` is a `cfg` attribute that makes the item below it test-only.
+/// A single Rust attribute parsed from a (possibly multi-line) source.
 ///
-/// Plain `#[cfg(test)]`, and `#[cfg(all(test, …))]` because `test` is a required
-/// conjunct there and is false in a production build —
-/// `crates/perl-lsp-rs/src/runtime/mod.rs:46` declares a module that way.
-/// Deliberately not `#[cfg(any(test, feature = "…"))]`, which *is* compiled into
-/// a production build when the feature is on. These are the same three rulings
-/// [`first_cfg_test_line_number`] applies to an inline boundary, so the two
-/// paths cannot classify the same Rust construct differently.
-fn is_test_only_cfg_attribute(line: &str) -> bool {
-    let trimmed = line.trim_start();
-    trimmed.starts_with("#[cfg(test)]")
-        || trimmed.starts_with("#[cfg(all(test,")
-        || trimmed.starts_with("#[cfg(all(test)")
+/// Attributes may span lines via bracket-balanced continuations — see
+/// `crates/perl-corpus/src/loading/sectioned_identity.rs:65` for a live
+/// multi-line `#[cfg(all(...))]` attribute in this repository. `text` is
+/// the joined, whitespace-normalized content of the attribute, beginning
+/// at its `#[` and ending at its closing `]`; the predicate does not need
+/// to know how many lines the source spanned.
+///
+/// This is the canonical reader shared by [`first_cfg_test_line_number`]
+/// and the parent-declaration guard in `module_declaration_is_test_only`,
+/// so the two paths cannot disagree on the same Rust construct (#16281).
+#[derive(Debug, Clone)]
+struct CfgAttr {
+    /// 0-based line index where this attribute begins (carries `#[`).
+    start_line: usize,
+    /// 0-based line index where this attribute ends (carries the closing `]`).
+    end_line: usize,
+    /// Joined text with internal newlines and runs of whitespace collapsed to a single space.
+    text: String,
+}
+
+impl CfgAttr {
+    /// Whether this attribute is a test-only `cfg` guard.
+    ///
+    /// Plain `#[cfg(test)]`, `#[cfg(all(test, …))]`, and `#[cfg(all(test))]`
+    /// are all test-only because `test` is a required conjunct in `all(…)`
+    /// and is false in production builds. Deliberately not
+    /// `#[cfg(any(test, feature = "…"))]`, which compiles into production
+    /// builds when the feature is on.
+    ///
+    /// These are the same three rulings `first_cfg_test_line_number` applies
+    /// to an inline boundary, so the two paths cannot classify the same
+    /// Rust construct differently.
+    fn is_test_only_cfg(&self) -> bool {
+        let t = self.text.trim_start();
+        t.starts_with("#[cfg(test)]")
+            || t.starts_with("#[cfg(all(test,")
+            || t.starts_with("#[cfg(all(test)]")
+    }
+
+    /// Whether this attribute is the `#[cfg(all(test, …))]` form, the variant
+    /// that needs a lookahead-for-`mod` in `first_cfg_test_line_number`
+    /// because a lone `#[cfg(all(test, not(target_arch = "wasm32")))] use …`
+    /// near the top of a file is not a test boundary.
+    fn is_all_test(&self) -> bool {
+        let t = self.text.trim_start();
+        t.starts_with("#[cfg(all(test,") || t.starts_with("#[cfg(all(test)]")
+    }
+}
+
+/// Parse every `#[…]` attribute out of `lines`, returning one entry per attribute.
+///
+/// Multi-line attributes are joined into a single `CfgAttr` whose `text` has
+/// internal newlines and runs of whitespace collapsed to a single space, so
+/// [`CfgAttr::is_test_only_cfg`] is format-agnostic. Bracket depth is the
+/// only signal used: `#[` opens, `]` closes. The corpus has no cfg attribute
+/// that contains a string literal with a stray `]`, and no `cfg(any(test, ...))`
+/// rule that the predicate needs to distinguish at the parser level.
+fn parse_cfg_attrs(lines: &[String]) -> Vec<CfgAttr> {
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < lines.len() {
+        let trimmed = lines[i].trim_start();
+        if !trimmed.starts_with("#[") {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        let mut depth: i32 = 0;
+        loop {
+            if i >= lines.len() {
+                break;
+            }
+            for ch in lines[i].chars() {
+                match ch {
+                    '[' => depth += 1,
+                    ']' => depth -= 1,
+                    _ => {}
+                }
+            }
+            if depth == 0 {
+                break;
+            }
+            i += 1;
+        }
+        // The closing `]` was on line `i`. Capture through `i` inclusive,
+        // then advance past the attribute for the next iteration.
+        let end = i;
+        let text = join_cfg_attr_text(&lines[start..=end]);
+        out.push(CfgAttr { start_line: start, end_line: end, text });
+        i = end + 1;
+    }
+    out
+}
+
+/// Join the lines of one `#[…]` attribute into a single normalized string.
+///
+/// Whitespace runs (including newlines) collapse to single spaces, and
+/// spaces immediately inside `(`/`[` or before `)`/`]` are dropped, so a
+/// multi-line `#[cfg(all(\n    test,\n))]` collapses to the same form as
+/// a single-line `#[cfg(all(test,))]`. This is what lets
+/// [`CfgAttr::is_test_only_cfg`] stay prefix-only and not branch on the
+/// attribute's source layout (#16281).
+fn join_cfg_attr_text(lines: &[String]) -> String {
+    let raw: String = lines.iter().flat_map(|l| l.split_whitespace()).collect::<Vec<_>>().join(" ");
+    let chars: Vec<char> = raw.chars().collect();
+    let mut out = String::with_capacity(raw.len());
+    for (i, &c) in chars.iter().enumerate() {
+        if c == ' ' {
+            let prev = if i > 0 { chars[i - 1] } else { '\0' };
+            let next = chars.get(i + 1).copied().unwrap_or('\0');
+            if matches!(prev, '(' | '[') || matches!(next, ')' | ']') {
+                continue;
+            }
+        }
+        out.push(c);
+    }
+    out
 }
 
 /// Whether `line` is exactly the declaration `mod <stem>;`, with any visibility.
@@ -373,36 +516,39 @@ pub(crate) fn first_cfg_test_line_number(path: &Path) -> Result<usize> {
     //
     // #[cfg(any(test, feature = "…"))] is intentionally NOT matched because such items
     // are compiled into production builds when the feature is active.
-    let cfg_test_plain_re = Regex::new(r"^\s*#\[cfg\(test\)\]")?;
-    let cfg_all_test_re = Regex::new(r"^\s*#\[cfg\(all\(test[,\)]")?;
-    let attr_re = Regex::new(r"^\s*#\[")?;
+    //
+    // Multi-line attributes are handled by the same predicate via parse_cfg_attrs,
+    // so a multi-line `#[cfg(all(test, any(...)))]` followed by `mod tests { ... }`
+    // is recognised as a boundary at the attribute's first line (#16281).
+    let attrs = parse_cfg_attrs(&contents);
     let mod_re = Regex::new(r"^\s*(?:pub\s+)?mod\s+")?;
-    for (idx, line) in contents.iter().enumerate() {
-        if cfg_test_plain_re.is_match(line) {
-            return Ok(idx + 1);
+    for attr in &attrs {
+        if !attr.is_test_only_cfg() {
+            continue;
         }
-        if cfg_all_test_re.is_match(line) {
-            // Only treat #[cfg(all(test, ...))] as a boundary when the next
-            // non-blank, non-attribute line is a `mod` declaration.
-            let mut j = idx + 1;
-            loop {
-                if j >= contents.len() {
-                    break;
-                }
-                let next = &contents[j];
-                if next.trim().is_empty() {
-                    j += 1;
-                    continue;
-                }
-                if attr_re.is_match(next) {
-                    j += 1;
-                    continue;
-                }
-                if mod_re.is_match(next) {
-                    return Ok(idx + 1);
-                }
+        if !attr.is_all_test() {
+            // Plain #[cfg(test)]: unconditional boundary at the attribute's first line.
+            return Ok(attr.start_line + 1);
+        }
+        // #[cfg(all(test, …))]: require a `mod` declaration to follow.
+        let mut j = attr.end_line + 1;
+        loop {
+            if j >= contents.len() {
                 break;
             }
+            let next = &contents[j];
+            if next.trim().is_empty() {
+                j += 1;
+                continue;
+            }
+            if next.trim_start().starts_with("#[") {
+                j += 1;
+                continue;
+            }
+            if mod_re.is_match(next) {
+                return Ok(attr.start_line + 1);
+            }
+            break;
         }
     }
     Ok(usize::MAX)
@@ -4541,6 +4687,186 @@ mod tests {
         // #[cfg(test)] is at line 3; that is the boundary, not the `mod` line.
         assert_eq!(first_cfg_test_line_number(&tmp)?, 3);
         let _ = std::fs::remove_file(&tmp);
+        Ok(())
+    }
+
+    // ── multi-line cfg attribute fixtures (#16281) ──────────────────────────
+
+    fn write_multiline_cfg_test_rs(name: &str, source: &str) -> Result<std::path::PathBuf> {
+        let tmp = std::env::temp_dir().join(name);
+        std::fs::write(&tmp, source)?;
+        Ok(tmp)
+    }
+
+    #[test]
+    fn parse_cfg_attrs_joins_multiline_attribute_into_one_entry() {
+        // The fixture matches `crates/perl-corpus/src/loading/sectioned_identity.rs:65`:
+        // a `#[cfg(all(\n  test,\n  any(...)\n))]` attribute spans 17 lines and
+        // closes on line 81. The parser must collapse it into a single entry whose
+        // `start_line` carries `#[` and whose `end_line` carries the closing `]`.
+        // The body of `mod tests { ... }` is left empty so the test only sees
+        // one attribute, not also the `#[test]` inside.
+        let lines: Vec<String> = [
+            "fn prod() {}\n",
+            "\n",
+            "#[cfg(all(\n",
+            "    test,\n",
+            "    any(\n",
+            "        windows,\n",
+            "    )\n",
+            ")]\n",
+            "mod tests {\n",
+            "}\n",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        let attrs = parse_cfg_attrs(&lines);
+        assert_eq!(attrs.len(), 1, "the cfg attribute and nothing else");
+        let attr = &attrs[0];
+        assert_eq!(attr.start_line, 2, "the `#[cfg(all(` opens on line 2 (0-based)");
+        assert_eq!(attr.end_line, 7, "the closing `)]` lands on line 7 (0-based)");
+        assert!(attr.is_test_only_cfg(), "the joined text must still classify as test-only");
+        assert!(attr.is_all_test(), "the joined text must classify as the `all(test, ...)` form");
+        // The whitespace-normalized `text` must collapse the line breaks and
+        // strip the spaces inside `(`/`)` so the prefix checks in
+        // `is_test_only_cfg` see a single-line shape.
+        assert!(attr.text.starts_with("#[cfg(all(test,"), "leading text was {:?}", attr.text);
+        // And the `#[test]` from the previous draft of this fixture must NOT
+        // be in scope: it lived on a line inside `mod tests`, which the parser
+        // does not skip here because we are feeding it raw lines, not a typed
+        // AST. If a future change makes the parser AST-aware, this assertion
+        // and the empty body above should be reconsidered together.
+    }
+
+    #[test]
+    fn parse_cfg_attrs_handles_interleaved_single_and_multi_line() {
+        // Two attributes: a single-line `#[cfg(test)]` at line 0, and a
+        // multi-line `#[cfg(all(test, ...))]` at line 3. The parser must
+        // emit two entries with disjoint line ranges and correct predicates.
+        let lines: Vec<String> = [
+            "#[cfg(test)]\n",
+            "mod a;\n",
+            "\n",
+            "#[cfg(all(\n",
+            "    test,\n",
+            "    feature = \"x\",\n",
+            ")]\n",
+            "mod b;\n",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        let attrs = parse_cfg_attrs(&lines);
+        assert_eq!(attrs.len(), 2);
+        assert_eq!(attrs[0].start_line, 0);
+        assert_eq!(attrs[0].end_line, 0);
+        assert!(attrs[0].is_test_only_cfg());
+        assert!(!attrs[0].is_all_test(), "plain #[cfg(test)] is not the all(test,...) form");
+        assert_eq!(attrs[1].start_line, 3);
+        assert_eq!(attrs[1].end_line, 6);
+        assert!(attrs[1].is_test_only_cfg());
+        assert!(attrs[1].is_all_test());
+    }
+
+    #[test]
+    fn cfg_test_line_number_multiline_cfg_all_test_followed_by_mod() -> Result<()> {
+        // Live fixture from `crates/perl-corpus/src/loading/sectioned_identity.rs:65`:
+        // a `#[cfg(all(test, any(...)))]` attribute spanning 17 lines, immediately
+        // followed by `mod tests { ... }`. The boundary is the attribute's first
+        // line, NOT the `mod` line, and the prior heuristic missed it entirely
+        // because it only matched single-line `#[cfg(...)]` (#16281).
+        let src = "fn prod() {}\n\n\
+                   #[cfg(all(\n\
+                   \x20\x20\x20\x20test,\n\
+                   \x20\x20\x20\x20any(\n\
+                   \x20\x20\x20\x20\x20\x20\x20\x20windows,\n\
+                   \x20\x20\x20\x20\x20\x20\x20\x20target_os = \"linux\",\n\
+                   \x20\x20\x20\x20)\n\
+                   ))]\n\
+                   mod tests {\n    #[test]\n    fn it() {}\n}\n";
+        let tmp = write_multiline_cfg_test_rs("pch_test_multiline_cfg.rs", src)?;
+        // Attribute opens on line 3 (1-based); that is the boundary.
+        assert_eq!(first_cfg_test_line_number(&tmp)?, 3);
+        let _ = std::fs::remove_file(&tmp);
+        Ok(())
+    }
+
+    #[test]
+    fn cfg_test_line_number_multiline_any_test_feature_is_not_a_boundary() -> Result<()> {
+        // `#[cfg(any(test, feature = "x"))]` is intentionally NOT a test boundary:
+        // when the feature is on the module compiles into production builds.
+        // A multi-line `any(...)` form must classify the same way as the
+        // single-line form (#16281 invariant).
+        let src = "fn prod() {}\n\n\
+                   #[cfg(any(\n\
+                   \x20\x20\x20\x20test,\n\
+                   \x20\x20\x20\x20feature = \"probe\",\n\
+                   ))]\n\
+                   mod tests {\n    #[test]\n    fn it() {}\n}\n";
+        let tmp = write_multiline_cfg_test_rs("pch_test_multiline_any.rs", src)?;
+        assert_eq!(
+            first_cfg_test_line_number(&tmp)?,
+            usize::MAX,
+            "any(test, feature = ...) must not produce a boundary"
+        );
+        let _ = std::fs::remove_file(&tmp);
+        Ok(())
+    }
+
+    #[test]
+    fn module_declaration_is_test_only_handles_multiline_cfg_guard() -> Result<()> {
+        // The parent-declaration path must agree with `first_cfg_test_line_number`
+        // on a multi-line `#[cfg(all(test, ...))]` guard. The issue (#16281)
+        // was that the old `is_test_only_cfg_attribute` line helper returned
+        // false on every continuation line, so the walk-back broke on the line
+        // immediately after `#[cfg(all(`, leaving the parent classified as
+        // unguarded. The new parser-driven walk must recognise the joined
+        // attribute as test-only and return `Some(true)`.
+        let root = cfg_test_fixture("multiline_guard")?;
+        let module_dir = root.join("lifecycle");
+        std::fs::create_dir_all(&module_dir)?;
+        std::fs::write(
+            module_dir.join("mod.rs"),
+            "#[cfg(all(\n    test,\n    feature = \"x\",\n)]\nmod census;\n",
+        )?;
+        let child = module_dir.join("census.rs");
+        std::fs::write(&child, "fn f() {}\n")?;
+
+        assert!(
+            is_cfg_test_module_file(&child),
+            "a multi-line `#[cfg(all(test, feature = ...))]` guard must be recognised"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+        Ok(())
+    }
+
+    #[test]
+    fn module_declaration_is_test_only_rejects_multiline_any_test_feature() -> Result<()> {
+        // Negative control for the parent-declaration path. `#[cfg(any(test,
+        // feature = "..."))]` compiles into production builds when the feature
+        // is on, so the file is NOT test-only — even though a literal reading
+        // of the joined attribute text would still see `test` inside it. The
+        // predicate must reject `any(...)` on every layout (#16281 invariant).
+        let root = cfg_test_fixture("multiline_any_guard")?;
+        let module_dir = root.join("lifecycle");
+        std::fs::create_dir_all(&module_dir)?;
+        std::fs::write(
+            module_dir.join("mod.rs"),
+            "#[cfg(any(\n    test,\n    feature = \"probe\",\n)]\nmod census;\n",
+        )?;
+        let child = module_dir.join("census.rs");
+        std::fs::write(&child, "fn f() { let _ = x.expect(\"boom\"); }\n")?;
+
+        assert!(
+            !is_cfg_test_module_file(&child),
+            "any(test, feature = ...) must not exempt the file from production scans"
+        );
+        // And the inline boundary reader must agree: no boundary inside the file.
+        assert_eq!(first_cfg_test_line_number(&child)?, usize::MAX);
+
+        let _ = std::fs::remove_dir_all(&root);
         Ok(())
     }
 
