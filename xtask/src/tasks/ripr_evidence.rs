@@ -3164,15 +3164,40 @@ impl DeclarationSeamCollector {
             self.lines.insert(line);
         }
     }
+
+    /// Run [`NonLiteralExprProbe`] over one item and report whether it found
+    /// anything. The closure names which `visit_item_*` to enter, so every
+    /// declaration kind is screened by the same predicate.
+    fn carries_an_expression(visit: impl FnOnce(&mut NonLiteralExprProbe)) -> bool {
+        let mut probe = NonLiteralExprProbe::default();
+        visit(&mut probe);
+        probe.found
+    }
 }
 
-/// A `const`/`static` initializer that executes nothing: a bare literal.
+/// Whether an item contains any expression other than a bare literal.
 ///
-/// A call, a closure, a macro, or a path to another const are all rejected —
-/// each is a node the call graph can carry, so `no_static_path` on one of them
-/// is a claim this filter has no basis to overturn.
-fn initializer_is_literal(expr: &syn::Expr) -> bool {
-    matches!(expr, syn::Expr::Lit(_))
+/// This is the predicate that keeps the filter honest, and it is deliberately
+/// blunt. A `const fn` call is legal in an enum discriminant (`A = compute()`),
+/// in a const-generic default (`struct S<const N: usize = compute()>`), and in
+/// an array length, so "this item kind has no function body" is not the same
+/// claim as "no line of this item carries a call". Anything that is not a
+/// literal — a call, a closure, a macro, a path to another const, even `1 + 1`
+/// — leaves the whole item in the blocking basis. Const evaluation is not a
+/// reason to treat a call token as absent.
+#[derive(Default)]
+struct NonLiteralExprProbe {
+    found: bool,
+}
+
+impl<'ast> Visit<'ast> for NonLiteralExprProbe {
+    fn visit_expr(&mut self, expr: &'ast syn::Expr) {
+        if matches!(expr, syn::Expr::Lit(_)) {
+            // A literal has no subexpression worth descending into.
+            return;
+        }
+        self.found = true;
+    }
 }
 
 impl<'ast> Visit<'ast> for DeclarationSeamCollector {
@@ -3195,29 +3220,37 @@ impl<'ast> Visit<'ast> for DeclarationSeamCollector {
     }
 
     fn visit_item_enum(&mut self, item: &'ast syn::ItemEnum) {
-        self.mark(&item.attrs, item.span());
+        if !Self::carries_an_expression(|probe| probe.visit_item_enum(item)) {
+            self.mark(&item.attrs, item.span());
+        }
     }
 
     fn visit_item_struct(&mut self, item: &'ast syn::ItemStruct) {
-        self.mark(&item.attrs, item.span());
+        if !Self::carries_an_expression(|probe| probe.visit_item_struct(item)) {
+            self.mark(&item.attrs, item.span());
+        }
     }
 
     fn visit_item_union(&mut self, item: &'ast syn::ItemUnion) {
-        self.mark(&item.attrs, item.span());
+        if !Self::carries_an_expression(|probe| probe.visit_item_union(item)) {
+            self.mark(&item.attrs, item.span());
+        }
     }
 
     fn visit_item_type(&mut self, item: &'ast syn::ItemType) {
-        self.mark(&item.attrs, item.span());
+        if !Self::carries_an_expression(|probe| probe.visit_item_type(item)) {
+            self.mark(&item.attrs, item.span());
+        }
     }
 
     fn visit_item_const(&mut self, item: &'ast syn::ItemConst) {
-        if initializer_is_literal(&item.expr) {
+        if !Self::carries_an_expression(|probe| probe.visit_item_const(item)) {
             self.mark(&item.attrs, item.span());
         }
     }
 
     fn visit_item_static(&mut self, item: &'ast syn::ItemStatic) {
-        if initializer_is_literal(&item.expr) {
+        if !Self::carries_an_expression(|probe| probe.visit_item_static(item)) {
             self.mark(&item.attrs, item.span());
         }
     }
@@ -4335,6 +4368,17 @@ fn fallback_seam_decision(
     if ripr_finding_path(finding).is_some_and(|path| {
         classify_non_production_at_line(production_surface, &path, finding_line).is_some()
     }) {
+        return FallbackSeamDecision::Ignore;
+    }
+    // #16077: the same predicate the blocking count applies. Without it the two
+    // surfaces disagree — a seam the gate no longer counts would still occupy
+    // one of the FALLBACK_GUIDANCE_LIMIT slots and could crowd out the
+    // executable seam that is actually keeping the gate red.
+    if canonical == "no_static_path"
+        && ripr_finding_path(finding).is_some_and(|path| {
+            is_declaration_seam_at_line(production_surface, &path, finding_line)
+        })
+    {
         return FallbackSeamDecision::Ignore;
     }
     if let Some(attribution) = attribution
@@ -6934,6 +6978,14 @@ pub mod nested {
         INNER
     }
 }
+pub enum Computed {
+    First = 1,
+    Second = compute() as isize,
+}
+pub struct Plain {
+    pub items: Vec<u8>,
+}
+pub type Derived = [u8; 8];
 "##;
         let marked = declaration_seam_lines(source);
 
@@ -6949,6 +7001,23 @@ pub mod nested {
         for line in [5, 13, 14, 15, 16, 17, 18, 19, 20, 21, 23, 24, 25] {
             if marked.contains(&line) {
                 return Err(eyre!("line {line} carries executable code but was marked"));
+            }
+        }
+        // A `const fn` call is legal in an enum discriminant, so "an enum has no
+        // method bodies" does not mean "no line of this enum carries a call".
+        // The whole item stays blocking, discriminant line included.
+        for line in [27, 28, 29, 30] {
+            if marked.contains(&line) {
+                return Err(eyre!(
+                    "line {line} belongs to an enum with a computed discriminant but was marked"
+                ));
+            }
+        }
+        // Literal-only declarations on the same footing still mark, so the
+        // screen is not simply rejecting every type declaration.
+        for line in [31, 32, 33, 34] {
+            if !marked.contains(&line) {
+                return Err(eyre!("line {line} is a literal-only declaration but was not marked"));
             }
         }
         if !declaration_seam_lines("pub const BROKEN: bool = ;").is_empty() {
@@ -7028,6 +7097,61 @@ const fn compute() -> bool {
                 unfiltered.no_static_path,
                 unfiltered.declaration_seam_excluded
             ));
+        }
+        Ok(())
+    }
+
+    /// #16077: the blocking count and the degraded fallback guidance must apply
+    /// the same predicate. `fallback_seam_decision` emits at most
+    /// `FALLBACK_GUIDANCE_LIMIT` entries, so a seam the count no longer blocks
+    /// on would otherwise occupy a slot and could crowd out the executable seam
+    /// that is actually keeping the gate red.
+    #[test]
+    fn fallback_guidance_shares_the_declaration_seam_filter() -> Result<()> {
+        let source = r##"pub const SERVER_SUPPORT: bool = true;
+pub const DERIVED: bool = compute();
+const fn compute() -> bool {
+    true
+}
+"##;
+        let mut surface = ProductionSurface::from_parts("/ws", &["src/lib.rs"]);
+        surface
+            .declaration_seam_lines
+            .insert("src/lib.rs".to_string(), declaration_seam_lines(source));
+
+        let filtered = json!({
+            "classification": "no_static_path",
+            "seam": { "file": "src/lib.rs", "line": 1 }
+        });
+        if !matches!(
+            fallback_seam_decision(&filtered, &no_suppressions(), None, None, Some(&surface)),
+            FallbackSeamDecision::Ignore
+        ) {
+            return Err(eyre!("fallback guidance still emitted a filtered declaration seam"));
+        }
+
+        // The executable seam the guidance exists to surface must survive.
+        let executable = json!({
+            "classification": "no_static_path",
+            "seam": { "file": "src/lib.rs", "line": 4 }
+        });
+        if matches!(
+            fallback_seam_decision(&executable, &no_suppressions(), None, None, Some(&surface)),
+            FallbackSeamDecision::Ignore
+        ) {
+            return Err(eyre!("fallback guidance dropped a seam inside a function body"));
+        }
+
+        // Same declaration line, different classification: still guidance-worthy.
+        let other_class = json!({
+            "classification": "reachable_unrevealed",
+            "seam": { "file": "src/lib.rs", "line": 1 }
+        });
+        if matches!(
+            fallback_seam_decision(&other_class, &no_suppressions(), None, None, Some(&surface)),
+            FallbackSeamDecision::Ignore
+        ) {
+            return Err(eyre!("fallback guidance dropped a non-no_static_path finding"));
         }
         Ok(())
     }
