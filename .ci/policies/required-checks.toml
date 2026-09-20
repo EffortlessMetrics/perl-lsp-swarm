@@ -19,15 +19,16 @@ contract_role = "required-workflow-shape"
 
   # This gate has no `push` trigger, so it produces no verdict on `main`. A
   # lane that is red at merge stays red silently, because nothing re-measures
-  # it on the branch it was merged into. That is a real gap, not a shape this
-  # workflow needs; closing it is a separate decision about CI cost on every
-  # main push, so it is recorded here as a remainder rather than fixed in
-  # passing.
+  # it on the branch it was merged into. Measured on #16168: this context is
+  # carried by 0 of the last 60 landed commits. That is a real gap, not a
+  # shape this workflow needs; closing it is a separate decision about CI cost
+  # on every main push, so it is recorded here as a remainder rather than
+  # fixed in passing.
   [[check.exemption]]
   clause = "push-targets-master"
   status = "remainder"
   reason = "No push trigger, so the routed Rust aggregate never runs on main and has no baseline there."
-  tracking = "16167"
+  tracking = "16168"
 
 [[check]]
 name = "ripr+ New Gap Gate"
