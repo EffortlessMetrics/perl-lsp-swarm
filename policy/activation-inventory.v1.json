@@ -49,8 +49,8 @@
       "rule": "gate-policy-gates",
       "authority": ".ci/gate-policy.yaml",
       "emits": "gate",
-      "considered": 92,
-      "emitted": 92,
+      "considered": 94,
+      "emitted": 94,
       "not_seeded_reason": "every entry under gates: is emitted; nothing is filtered"
     },
     {
@@ -3040,6 +3040,33 @@
       "notes": "Clippy --all-targets on the known-clean staged cohort (37/48 crates): required within the pr_fast runner for test/bench/example code in these crates (#11736)"
     },
     {
+      "surface_id": "gate:code_action_generation_ledger",
+      "class": "gate",
+      "class_authority": {
+        "kind": "derived",
+        "authority": ".ci/gate-policy.yaml",
+        "rule": "gate-policy-gates"
+      },
+      "semantic_authority": ".ci/gate-policy.yaml#code_action_generation_ledger",
+      "consumers": [],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": ".ci/gate-policy.yaml",
+        "detail": "tier = \"merge_gate\"; required = true"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": ".ci/gate-policy.yaml"
+      },
+      "owner": "release/ci",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "Validate policy/code-action-generation-ledger.toml against current code_actions.rs production anchors, stage order, and parity fixtures"
+    },
+    {
       "surface_id": "gate:common_corpus_clean",
       "class": "gate",
       "class_authority": {
@@ -3200,6 +3227,33 @@
         "state": "not_evaluated"
       },
       "notes": "Validate contracts/compiler/perl_compiler_proof_policy.v1.toml against the concept ledger and its generated status doc"
+    },
+    {
+      "surface_id": "gate:completion_candidate_ledger",
+      "class": "gate",
+      "class_authority": {
+        "kind": "derived",
+        "authority": ".ci/gate-policy.yaml",
+        "rule": "gate-policy-gates"
+      },
+      "semantic_authority": ".ci/gate-policy.yaml#completion_candidate_ledger",
+      "consumers": [],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": ".ci/gate-policy.yaml",
+        "detail": "tier = \"merge_gate\"; required = true"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": ".ci/gate-policy.yaml"
+      },
+      "owner": "release/ci",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "Reconcile policy/completion-candidate-producers.toml against the live completion surface: every producer rowed, no forbidden disposition, no post-finalizer append, and the audit digest plus generated projection still bound to current source"
     },
     {
       "surface_id": "gate:conflict_markers_staged",

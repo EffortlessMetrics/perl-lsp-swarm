@@ -64,7 +64,7 @@ fn expect_override_violation(
 /// Re-measured once the deriver stopped panicking (#16159). These numbers
 /// were unverifiable for as long as `derive_all` aborted on a char boundary,
 /// so the committed artifact and these constants both fell behind the
-/// authorities. Every row of the 170 -> 175 delta is accounted for below; none
+/// authorities. Every row of the 170 -> 177 delta is accounted for below; none
 /// of it is a relaxed ratchet, and nothing was removed.
 const EXPECTED_CLASS_COUNTS: &[(&str, usize)] = &[
     ("product", 16),
@@ -74,7 +74,7 @@ const EXPECTED_CLASS_COUNTS: &[(&str, usize)] = &[
     ("lab", 21),
     ("oracle", 1),
     ("benchmark", 15),
-    ("gate", 92),
+    ("gate", 94),
 ];
 
 /// Pin derivation receipts independently of class counts so a rule that
@@ -82,13 +82,14 @@ const EXPECTED_CLASS_COUNTS: &[(&str, usize)] = &[
 const EXPECTED_DERIVATION: &[(&str, usize, usize)] = &[
     ("features-product", 129, 16),
     ("features-preview", 129, 2),
-    // 87/87 -> 92/92. The committed artifact already held 88, so one of these
+    // 87/87 -> 94/94. The committed artifact already held 88, so one of these
     // predates the last write; the other four entered .ci/gate-policy.yaml on
     // 2026-09-19: doctest_contract_proof and doctest_enforcement in 405ab14ff
     // (#15645), ci_subject_digest_oracle and unit_control_plane_bins in
     // 406261b3e (#15895) -- the same commit that last wrote the inventory
-    // without them.
-    ("gate-policy-gates", 92, 92),
+    // without them. Merging main forward added two more: completion_candidate_ledger
+    // in c02237eda (#16102) and code_action_generation_ledger in 3752ae836 (#15946).
+    ("gate-policy-gates", 94, 94),
     ("cargo-bench-targets", 15, 15),
     // 79/26 -> 80/27: `perl-lsp-rs-core/test-instrumentation`, declared in
     // crates/perl-lsp-rs-core/Cargo.toml by 234574a74 (#14272).
