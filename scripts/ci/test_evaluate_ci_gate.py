@@ -7,6 +7,7 @@ import importlib.util
 import io
 import json
 import os
+import subprocess
 import re
 import sys
 import unittest
@@ -696,6 +697,207 @@ class AggregateWiringTests(unittest.TestCase):
         self.assertIn('enforcement = "neither"', row)
         self.assertIn("#12911", row)
         self.assertNotIn("required-promotion", row)
+
+
+class ReplacementRunFilterTests(unittest.TestCase):
+    """Response-fixture controls for `scripts/ci/replacement_run_filter.jq`.
+
+    Review on #16186 found the lookup "chooses the first same-workflow run for
+    the SHA without checking event, PR association, or whether it is newer",
+    and asked for "negative fixture controls for historical and unrelated
+    runs". These run the real `jq` binary against the real filter file — the
+    same file the workflow passes to `jq -f` — so the controls cannot drift
+    away from the thing they control.
+
+    The API response shape below is not invented. It is the shape measured
+    from `GET /actions/workflows/ci.yml/runs` on 2026-09-20: a `pull_request`
+    run carries `pull_requests: [{"number": 16186}]`, a `push` run on the same
+    workflow carries `pull_requests: []`.
+    """
+
+    FILTER = ROOT / "scripts/ci/replacement_run_filter.jq"
+    PR = 16186
+    SINCE = "2026-09-20T12:20:57Z"
+
+    def _select(self, runs: list[dict]) -> str:
+        completed = subprocess.run(
+            [
+                "jq",
+                "-r",
+                "--argjson",
+                "pr",
+                str(self.PR),
+                "--arg",
+                "since",
+                self.SINCE,
+                "-f",
+                str(self.FILTER),
+            ],
+            input=json.dumps({"workflow_runs": runs}),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(
+            0, completed.returncode, f"jq failed: {completed.stderr}"
+        )
+        return completed.stdout.strip()
+
+    @staticmethod
+    def _run(
+        run_id: int,
+        *,
+        event: str = "pull_request",
+        prs: list[int] | None = (),
+        created_at: str = "2026-09-20T12:33:45Z",
+    ) -> dict:
+        run: dict = {"id": run_id, "event": event, "created_at": created_at}
+        if prs is None:
+            run["pull_requests"] = None
+        else:
+            run["pull_requests"] = [
+                {"number": n} for n in (prs if prs else [16186])
+            ]
+        return run
+
+    def test_the_filter_file_is_the_one_the_workflow_runs(self) -> None:
+        """No second copy of the program text anywhere."""
+        block = _merge_gate_block()
+        self.assertIn("-f scripts/ci/replacement_run_filter.jq", block)
+        self.assertTrue(self.FILTER.is_file())
+
+    def test_a_genuine_replacement_is_selected(self) -> None:
+        """The positive control. Without it every negative below is vacuous."""
+        self.assertEqual("35510973644", self._select([self._run(35510973644)]))
+
+    def test_a_historical_run_on_the_same_sha_is_not_a_replacement(self) -> None:
+        """Review's word. The same tree can have been tested before this run.
+
+        A branch reset, a revert or a cherry-pick can put an old SHA back at
+        the head of a pull request, and a run from before this one is evidence
+        about a candidate this one has already superseded, not about its
+        successor.
+        """
+        for created_at in (
+            "2026-09-20T12:20:56Z",  # one second before
+            "2026-09-20T12:20:57Z",  # the same second: not demonstrably newer
+            "2026-09-19T23:59:59Z",  # the day before
+            "2019-01-01T00:00:00Z",
+        ):
+            with self.subTest(created_at=created_at):
+                self.assertEqual(
+                    "", self._select([self._run(999, created_at=created_at)])
+                )
+
+    def test_a_run_of_another_pull_request_is_not_a_replacement(self) -> None:
+        """A commit can be the head of more than one pull request."""
+        self.assertEqual("", self._select([self._run(999, prs=[16087])]))
+        self.assertEqual(
+            "", self._select([self._run(999, prs=[16095, 16107])])
+        )
+
+    def test_a_run_of_no_pull_request_is_not_a_replacement(self) -> None:
+        """Measured: a `push` run on the same workflow carries `[]`.
+
+        The `event` check and the association check are both here on purpose,
+        and this proves neither is load-bearing alone: a push run is rejected
+        by event, and a pull-request run with no association is rejected by
+        association.
+        """
+        push = {
+            "id": 999,
+            "event": "push",
+            "created_at": "2026-09-20T12:33:45Z",
+            "pull_requests": [],
+        }
+        self.assertEqual("", self._select([push]))
+
+        unassociated = dict(push, event="pull_request")
+        self.assertEqual("", self._select([unassociated]))
+
+        self.assertEqual("", self._select([self._run(999, prs=None)]))
+
+        missing_field = {
+            "id": 999,
+            "event": "pull_request",
+            "created_at": "2026-09-20T12:33:45Z",
+        }
+        self.assertEqual("", self._select([missing_field]))
+
+    def test_a_dispatched_run_is_not_a_replacement(self) -> None:
+        """#16061: a `workflow_dispatch` success does not satisfy the gate.
+
+        The same reasoning applies here. A hand-dispatched run on the newer
+        head is not what the pull request's own lane will report.
+        """
+        for event in ("workflow_dispatch", "schedule", "merge_group", "push"):
+            with self.subTest(event=event):
+                self.assertEqual(
+                    "", self._select([self._run(999, event=event)])
+                )
+
+    def test_the_newest_qualifying_run_is_taken(self) -> None:
+        """The endpoint returns newest first; `first` must respect that order.
+
+        Asserted against a response carrying disqualified runs on both sides
+        of the one that qualifies, so passing by position alone is not enough.
+        """
+        response = [
+            self._run(1, event="push", created_at="2026-09-20T12:40:00Z"),
+            self._run(2, created_at="2026-09-20T12:35:00Z"),
+            self._run(3, created_at="2026-09-20T12:34:00Z"),
+            self._run(4, created_at="2026-09-20T12:00:00Z"),
+        ]
+        self.assertEqual("2", self._select(response))
+
+    def test_an_empty_or_absent_run_list_selects_nothing(self) -> None:
+        """Nothing found must print nothing, not `null` or an error."""
+        self.assertEqual("", self._select([]))
+        completed = subprocess.run(
+            ["jq", "-r", "--argjson", "pr", str(self.PR), "--arg", "since",
+             self.SINCE, "-f", str(self.FILTER)],
+            input="{}",
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(0, completed.returncode, completed.stderr)
+        self.assertEqual("", completed.stdout.strip())
+
+    def test_the_arguments_are_arguments_and_not_interpolated_text(self) -> None:
+        """The workflow must not build the jq program out of shell variables.
+
+        `PR_NUMBER` comes from the event payload. It is shape-checked before
+        use, but passing it as a jq argument means the shape check is not the
+        only thing standing between it and the program text.
+        """
+        block = _merge_gate_block()
+        self.assertIn('--argjson pr "${PR_NUMBER}"', block)
+        self.assertIn('--arg since "${created}"', block)
+        self.assertNotIn("index(${PR_NUMBER})", block)
+
+    def test_the_workflow_shape_checks_both_new_inputs(self) -> None:
+        """Neither new value may reach `jq` unvalidated."""
+        block = _merge_gate_block()
+        self.assertIn('"${PR_NUMBER}" =~ ^[0-9]+$', block)
+        self.assertIn('"${created}" =~ ^[0-9T:Z-]+$', block)
+        invocation = block.index("-f scripts/ci/replacement_run_filter.jq")
+        for guard in ('"${PR_NUMBER}" =~', '"${created}" =~'):
+            self.assertLess(block.index(guard), invocation)
+
+    def test_the_lookup_narrows_the_event_server_side_too(self) -> None:
+        """Belt and braces, and it also bounds the page the filter must scan."""
+        block = _merge_gate_block()
+        self.assertIn("event=pull_request", block)
+
+        # And the page must be wide enough for the filter to have something to
+        # filter. `per_page=1` plus a disqualified run ordered first would hide
+        # the qualifying run entirely, which is the defect this filter exists
+        # to prevent, reintroduced one layer down.
+        page = re.search(r"per_page=(\d+)", block)
+        self.assertIsNotNone(page)
+        self.assertGreaterEqual(int(page.group(1)), 10)
+
 
 
 if __name__ == "__main__":

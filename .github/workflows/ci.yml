@@ -1566,8 +1566,12 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
-      # Evidence that a newer candidate replaced the one this run tested, which
-      # is the only thing that makes forgiving a cancelled aggregate safe.
+      # Evidence that a newer candidate replaced the one this run tested. It
+      # no longer changes the gate's colour — every non-success path exits 1 —
+      # only which sentence the reader is handed, which is what #16087 asked
+      # for. That does not make a wrong answer cheap: a message naming a run
+      # that is not proving this candidate is the same defect with more
+      # confidence behind it.
       #
       # This job used to gate that on `cancelled()`, and a live run falsified
       # it. Run 35507473500 was concurrency-cancelled by a push, every
@@ -1618,6 +1622,7 @@ jobs:
           run_json="$(gh api "repos/${REPOSITORY}/actions/runs/${RUN_ID}" 2>/dev/null || true)"
           tested="$(printf '%s' "$run_json" | jq -r '.head_sha // empty' 2>/dev/null || true)"
           workflow_id="$(printf '%s' "$run_json" | jq -r '.workflow_id // empty' 2>/dev/null || true)"
+          created="$(printf '%s' "$run_json" | jq -r '.created_at // empty' 2>/dev/null || true)"
           latest="$(gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}" --jq '.head.sha' 2>/dev/null || true)"
 
           # The replacement run's identity, not merely the fact that the head
@@ -1626,14 +1631,27 @@ jobs:
           # demonstrable newer run, so it is looked up and its id bound.
           # Queried only once the head has actually moved, so this run can
           # never find itself.
+          #
+          # The endpoint constrains workflow and head SHA. Event, pull-request
+          # association and chronology it does not, and a review finding on
+          # #16186 named all three: without them "the evidence claim remains
+          # too strong". `scripts/ci/replacement_run_filter.jq` applies them,
+          # and `test_evaluate_ci_gate.py` runs that same file against
+          # response fixtures, so the two cannot drift.
           replacement=""
           if [[ "${latest}" =~ ^[0-9a-f]{40}$ ]] \
             && [[ "${tested}" =~ ^[0-9a-f]{40}$ ]] \
             && [[ "${latest}" != "${tested}" ]] \
-            && [[ "${workflow_id}" =~ ^[0-9]+$ ]]; then
+            && [[ "${workflow_id}" =~ ^[0-9]+$ ]] \
+            && [[ "${PR_NUMBER}" =~ ^[0-9]+$ ]] \
+            && [[ "${created}" =~ ^[0-9T:Z-]+$ ]]; then
+            # Arguments are passed as jq arguments, never interpolated into the
+            # program text, so neither value can alter what the filter does.
             replacement="$(gh api \
-              "repos/${REPOSITORY}/actions/workflows/${workflow_id}/runs?head_sha=${latest}&per_page=1" \
-              --jq '.workflow_runs[0].id // empty' 2>/dev/null || true)"
+              "repos/${REPOSITORY}/actions/workflows/${workflow_id}/runs?head_sha=${latest}&event=pull_request&per_page=30" \
+              2>/dev/null \
+              | jq -r --argjson pr "${PR_NUMBER}" --arg since "${created}" \
+                  -f scripts/ci/replacement_run_filter.jq 2>/dev/null || true)"
           fi
 
           # Only well-formed values are exported. `gh` writes nothing to stdout
