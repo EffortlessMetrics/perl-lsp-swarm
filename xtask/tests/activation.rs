@@ -757,7 +757,17 @@ fn every_test_api_row_records_which_signal_classified_it() -> TestResult {
     // 13/13 -> 14/13: the one added row, `perl-lsp-rs-core/test-instrumentation`,
     // is name-classified. The usage side is unchanged, so the corrected deriver
     // reads the same cfg sites as the committed artifact records.
-    assert_eq!((by_name, by_usage), (14, 13), "test_api signal split drifted");
+    // Returned rather than asserted: the arm above already reports a missing
+    // signal note as an error, and a split that drifted is the same kind of
+    // finding about the same inventory. A panic here would report it through a
+    // different channel than the row-level failure it sits beside.
+    if (by_name, by_usage) != (14, 13) {
+        return Err(format!(
+            "test_api signal split drifted: expected 14 by name and 13 by usage, \
+             read {by_name} by name and {by_usage} by usage"
+        )
+        .into());
+    }
     Ok(())
 }
 
