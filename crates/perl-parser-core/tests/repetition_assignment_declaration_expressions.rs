@@ -340,6 +340,53 @@ fn trivia_separated_declaration_x_equals_is_never_normalized() -> Result<(), Str
 }
 
 #[test]
+fn broken_foreach_header_does_not_poison_later_repetition() -> Result<(), String> {
+    // A broken iterator header must not poison the iterator-context flag:
+    // the header error is diagnosed, the flag is restored, and a later
+    // valid list declaration still grows its `x=` tail with the follower
+    // statement surviving. Both `foreach` and `for` spellings route through
+    // the guarded sites.
+    for (source, error_at) in [
+        ("foreach my ($x $y); my ($a, $b) x= 3; $w = 1;", 15),
+        ("for my ($x $y); my ($a, $b) x= 3; $w = 1;", 11),
+    ] {
+        let output = Parser::new(source).parse_with_recovery();
+        if !matches!(
+            output.diagnostics.as_slice(),
+            [
+                ParseError::SyntaxError { message, location },
+                ParseError::UnexpectedToken { expected, found, location: location2 },
+            ] if message == "Expected comma or closing parenthesis in variable list"
+                && *location == error_at
+                && expected == "statement"
+                && found == "identifier"
+                && *location2 == error_at
+        ) {
+            return Err(format!(
+                "expected the bad-header diagnostics at {error_at}, got {:?}",
+                output.diagnostics
+            ));
+        }
+        let assignment = find_assignment(&output.ast, "x=").ok_or_else(|| {
+            format!("poisoned flag dropped the later x= tail:\n{}", output.ast.to_sexp())
+        })?;
+        let NodeKind::Assignment { lhs, rhs, .. } = &assignment.kind else {
+            return Err(format!("expected Assignment, got {:?}", assignment.kind));
+        };
+        if find_variable_declaration(lhs).is_none() {
+            return Err(format!("later x= lhs lost declaration topology: {:?}", lhs.kind));
+        }
+        if !matches!(&rhs.kind, NodeKind::Number { value } if value == "3") {
+            return Err(format!("expected numeric later x= rhs, got {:?}", rhs.kind));
+        }
+        if find_assignment(&output.ast, "=").is_none() {
+            return Err(format!("follower statement did not survive:\n{}", output.ast.to_sexp()));
+        }
+    }
+    Ok(())
+}
+
+#[test]
 fn loop_headers_reject_declaration_repetition_tail() -> Result<(), String> {
     // `foreach` iterator targets are not assignment expressions: they must
     // never grow an `x=` tail even though they parse through the same
