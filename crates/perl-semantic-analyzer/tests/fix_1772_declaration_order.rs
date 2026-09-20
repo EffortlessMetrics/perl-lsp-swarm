@@ -10,12 +10,11 @@
 //! Visibility is deferred, but the two children are still visited in *runtime*
 //! order (condition, then statement), because capture state and initialization
 //! genuinely depend on evaluation order — see
-//! `modifier_children_are_analyzed_in_runtime_order`. `our` is not deferred and
-//! is therefore reported by its own condition; that pre-existing source-order
-//! alias gap is #15048 and is pinned by
-//! `our_in_a_modifier_statement_is_a_known_source_order_gap` rather than being
-//! papered over by inverting the four runtime facts.
-//!
+//! `modifier_children_are_analyzed_in_runtime_order`. `our` is not deferred, and
+//! its package alias is now visible to both modifier children: the modifier
+//! pre-pass installs each `our` alias at the modifier scope level before the
+//! condition is analyzed, so `our $x = 1 if $x;` resolves the condition's `$x`
+//! against the alias instead of reporting it undeclared (#15048).
 //! The current mirror and boundary controls were checked with Perl 5.42.0;
 //! the older forward-use controls below retain their recorded 5.38.2 oracle.
 
@@ -214,23 +213,71 @@ fn completed_modifier_installs_lexicals() -> TestResult {
     Ok(())
 }
 
-/// Known gap, pinned so it is visible rather than silent: `our` is not deferred (it aliases a
-/// package variable), but the condition is analyzed before the statement, so the alias is not
-/// yet in hand when the condition is checked.
+/// `our` aliases a package variable that already exists at parse time, so the
+/// alias is visible to both modifier children regardless of runtime order
+/// (#15048). The pre-pass installs the alias before the condition runs, so the
+/// condition's `$x` resolves to the same alias the statement declares.
 ///
-/// Oracle, perl 5.38.2: `use strict; our $x = 1 if $x;` → `-e syntax OK`, so this diagnostic
-/// is a false positive.
-///
-/// This is a pre-existing source-order alias gap that `origin/main` shares — it is not
-/// introduced here, and it is tracked as #15048. It is deliberately NOT fixed by visiting the
-/// statement first: doing that inverts four runtime-order facts (both capture-state
-/// directions and both initialization directions), which the rows below pin. Trading four
-/// regressions for one false positive is the wrong direction.
-///
-/// When #15048 lands, this row flips to `false` and moves back into the test above.
+/// Oracle, perl 5.38.2: `use strict; our $x = 1 if $x;` → `-e syntax OK`.
 #[test]
-fn our_in_a_modifier_statement_is_a_known_source_order_gap() -> TestResult {
-    check_visibility("use strict; our $x = 1 if $x;", "$x", true)?;
+fn our_alias_is_visible_across_modifier_children() -> TestResult {
+    check_visibility("use strict; our $x = 1 if $x;", "$x", false)?;
+    Ok(())
+}
+
+/// The other modifier keywords and a list-form declaration preserve the same
+/// fix. The pre-pass walks both children; nothing in this set should regress
+/// the runtime-order guarantees pinned by
+/// `modifier_children_are_analyzed_in_runtime_order`.
+#[test]
+fn our_alias_pre_pass_covers_every_modifier_and_list_form() -> TestResult {
+    for modifier in ["if", "unless", "while", "until"] {
+        check_visibility(&format!("use strict; our $x = 1 {modifier} $x;"), "$x", false)?;
+    }
+    check_visibility("use strict; our($x, $y) = (1, 2) if $x + $y;", "$x", false)?;
+    check_visibility("use strict; our($x, $y) = (1, 2) if $x + $y;", "$y", false)?;
+    Ok(())
+}
+
+/// An `our` declared inside an inner block belongs to that block's scope and
+/// shadows the outer `our` alias. The shadowing diagnostic is preserved; the
+/// pre-pass does not flatten the inner block's bindings into the modifier
+/// scope.
+#[test]
+fn our_alias_in_nested_block_shadows_outer_alias() -> TestResult {
+    let issues = scope_issues("use strict;\nour $x = 1 if do { our $x; 1 };\n")?;
+    if !issues.iter().any(|i| i.kind == IssueKind::VariableShadowing) {
+        return Err(format!(
+            "expected VariableShadowing for the inner our $x inside the do block; got {issues:?}"
+        )
+        .into());
+    }
+    // The condition's `$x` resolves against the outer alias — no UndeclaredVariable.
+    if issues.iter().any(|i| i.kind == IssueKind::UndeclaredVariable) {
+        return Err(format!(
+            "the condition's $x must resolve to the outer our alias; got {issues:?}"
+        )
+        .into());
+    }
+    Ok(())
+}
+
+/// A re-declaration in a sibling statement-modifier condition is still
+/// caught by `VariableRedeclaration` semantics — the pre-pass marker only
+/// suppresses the diagnostic when the redeclaration is at the same offset
+/// (i.e. the same source declaration). Cross-declaration re-declarations
+/// still emit their original diagnostic.
+#[test]
+fn our_alias_duplicate_in_same_modifier_emits_no_redeclaration_for_same_source() -> TestResult {
+    let issues = scope_issues("use strict; our $x = 1 if our $x = 1;")?;
+    let redeclaration_count =
+        issues.iter().filter(|i| i.kind == IssueKind::VariableRedeclaration).count();
+    if redeclaration_count != 0 {
+        return Err(format!(
+            "expected no VariableRedeclaration for same-offset our in a modifier, got {redeclaration_count}: {issues:?}"
+        )
+        .into());
+    }
     Ok(())
 }
 

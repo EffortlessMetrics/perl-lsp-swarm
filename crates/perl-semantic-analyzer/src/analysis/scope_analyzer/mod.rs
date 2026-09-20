@@ -200,6 +200,13 @@ pub(super) struct Scope {
     parent: Option<Rc<Scope>>,
     /// Whether a regex match operation (`=~`, `m//`, `s///`) has been seen in this scope.
     has_regex_match: Cell<bool>,
+    /// `our` aliases pre-registered by the modifier prelude (#15048).
+    /// Maps the storage key (`$main::x`) to the declaration offset.
+    /// The pre-pass installs these into `variables` for visibility so a
+    /// condition that runs before its statement can resolve the alias; the
+    /// matching normal-analysis declaration at the same offset then sees the
+    /// pre-pass marker and suppresses the redeclaration diagnostic.
+    pre_passed_our_aliases: RefCell<FxHashMap<String, usize>>,
 }
 
 impl Scope {
@@ -213,6 +220,7 @@ impl Scope {
             deferring_declarations: Cell::new(false),
             parent: None,
             has_regex_match: Cell::new(false),
+            pre_passed_our_aliases: RefCell::new(FxHashMap::default()),
         }
     }
 
@@ -226,7 +234,43 @@ impl Scope {
             deferring_declarations: Cell::new(false),
             parent: Some(parent),
             has_regex_match: Cell::new(false),
+            pre_passed_our_aliases: RefCell::new(FxHashMap::default()),
         }
+    }
+
+    /// Install an `our` alias into the scope's `variables` map and record the
+    /// (qualified_name, offset) pair in `pre_passed_our_aliases` so the
+    /// matching normal-analysis declaration at the same offset can suppress
+    /// its redeclaration diagnostic (#15048).
+    ///
+    /// Unlike `declare_variable_parts`, this does not emit diagnostics or
+    /// update `binding_history` — those are the normal analysis's
+    /// responsibility.  The pre-pass exists solely to make the alias visible
+    /// across the modifier's children before the condition is analyzed.
+    fn pre_pass_register_our_alias(
+        &self,
+        sigil: &str,
+        qualified_name: &str,
+        offset: usize,
+        is_initialized: bool,
+    ) {
+        let idx = sigil_to_index(sigil);
+        let variable = Rc::new(Variable {
+            declaration_offset: offset,
+            is_used: RefCell::new(true), // `our` aliases count as used
+            is_our: true,
+            is_initialized: RefCell::new(is_initialized),
+        });
+        let mut vars = self.variables.borrow_mut();
+        let inner = vars[idx].get_or_insert_with(FxHashMap::default);
+        inner.insert(qualified_name.to_string(), variable);
+        drop(vars);
+        self.pre_passed_our_aliases.borrow_mut().insert(qualified_name.to_string(), offset);
+    }
+
+    /// Returns the pre-passed `our` offset for `qualified_name`, if any.
+    fn pre_passed_our_offset(&self, qualified_name: &str) -> Option<usize> {
+        self.pre_passed_our_aliases.borrow().get(qualified_name).copied()
     }
 
     /// Returns true if this scope or any ancestor scope has seen a regex match operation.
@@ -263,13 +307,20 @@ impl Scope {
             .and_then(|map| map.get(name))
             .map(|var| var.declaration_offset);
 
+        // (#15048) If the StatementModifier prelude pre-registered this
+        // `our` alias at the same offset, the matching normal-analysis
+        // declaration is the same source, not a re-declaration.  Treat it
+        // as a no-op for diagnostic purposes.
+        let pre_passed_same_offset = is_our && self.pre_passed_our_offset(name) == Some(offset);
+
         // (#15056) The "later" binding that survives is the *textually later*
         // declaration, not necessarily the most recently analyzed one.
         // Statement modifiers like `my $x if my $x = 2;` analyze the condition
         // first (so the condition is "first installed") even though the
         // condition is textually after the statement. The textually later
         // binding must win so subsequent reads resolve to it.
-        let redeclaration = already_visible_offset.is_some() || already_pending_offset.is_some();
+        let redeclaration = (already_visible_offset.is_some() || already_pending_offset.is_some())
+            && !pre_passed_same_offset;
         let textually_later = match (already_visible_offset, already_pending_offset) {
             (Some(visible), Some(pending)) => offset > visible.max(pending),
             (Some(visible), None) => offset > visible,
@@ -831,6 +882,79 @@ impl ScopeAnalyzer {
         issues
     }
 
+    /// Pre-register `our` aliases found anywhere in `node` into `scope`
+    /// (#15048).  The traversal stops at scope-creating constructs — those
+    /// own their own `our` aliases and must not leak them into the modifier
+    /// scope.  Visible aliases installed here make a condition that runs
+    /// before its statement resolve correctly, e.g. `our $x = 1 if $x;`.
+    fn pre_register_our_aliases_in_subtree<'a>(
+        &self,
+        node: &'a Node,
+        scope: &Rc<Scope>,
+        context: &AnalysisContext<'a>,
+    ) {
+        match &node.kind {
+            // Scope-creating nodes own their own `our` aliases; do not
+            // surface them across the modifier scope.
+            NodeKind::Block { .. }
+            | NodeKind::PhaseBlock { .. }
+            | NodeKind::For { .. }
+            | NodeKind::Foreach { .. }
+            | NodeKind::Subroutine { .. }
+            | NodeKind::Method { .. }
+            | NodeKind::Class { .. }
+            | NodeKind::Try { .. }
+            | NodeKind::Package { .. } => {}
+
+            NodeKind::VariableDeclaration { declarator, variable, initializer, .. }
+                if declarator == "our" =>
+            {
+                let extracted = self.extract_variable_name(variable);
+                let (sigil, var_name_part) = extracted.parts();
+                if let Some(qualified_name) = self.package_variable_name(var_name_part, context) {
+                    scope.pre_pass_register_our_alias(
+                        sigil,
+                        &qualified_name,
+                        variable.location.start,
+                        initializer.is_some(),
+                    );
+                }
+                // Continue descending so `our` aliases inside the initializer
+                // (e.g. `our $x = our $y = 1`) also pre-register at this scope.
+                for child in node.children() {
+                    self.pre_register_our_aliases_in_subtree(child, scope, context);
+                }
+            }
+
+            NodeKind::VariableListDeclaration { declarator, variables, initializer, .. }
+                if declarator == "our" =>
+            {
+                for variable in variables {
+                    let extracted = self.extract_variable_name(variable);
+                    let (sigil, var_name_part) = extracted.parts();
+                    if let Some(qualified_name) = self.package_variable_name(var_name_part, context)
+                    {
+                        scope.pre_pass_register_our_alias(
+                            sigil,
+                            &qualified_name,
+                            variable.location.start,
+                            initializer.is_some(),
+                        );
+                    }
+                }
+                for child in node.children() {
+                    self.pre_register_our_aliases_in_subtree(child, scope, context);
+                }
+            }
+
+            _ => {
+                for child in node.children() {
+                    self.pre_register_our_aliases_in_subtree(child, scope, context);
+                }
+            }
+        }
+    }
+
     pub(super) fn analyze_node<'a>(
         &self,
         node: &'a Node,
@@ -1156,11 +1280,17 @@ impl ScopeAnalyzer {
                 //   initialization  `my $x; $x = 1 if $x;`  the condition reads $x uninitialized
                 //                   `my $x; print $x if ($x = 1);`  the condition initializes it
                 //
-                // Visiting the statement first inverts all four. Note this is deliberately
-                // *not* symmetric with the declaration rule: `our` is not deferred, so
-                // `our $x = 1 if $x;` still reports its condition as undeclared. That is a
-                // pre-existing source-order alias gap, unchanged by this arm, tracked as
-                // #15048 — it is not worth inverting four runtime facts to paper over.
+                // Visiting the statement first inverts all four. The one exception is `our`
+                // aliases (#15048): `our` aliases a package variable that already exists at
+                // parse time, so the alias is visible to both children regardless of
+                // runtime order.  Pre-register `our` aliases from both children at the
+                // modifier scope level (without descending into nested scopes — their inner
+                // blocks own their own aliases) so the condition can resolve the alias
+                // before its statement runs.  The matching normal-analysis declaration
+                // observes `pre_passed_our_offset` and skips its redeclaration diagnostic.
+                self.pre_register_our_aliases_in_subtree(condition, scope, context);
+                self.pre_register_our_aliases_in_subtree(statement, scope, context);
+
                 let already_deferred = scope.deferring_declarations.replace(true);
                 ancestors.push(node);
                 self.analyze_node(condition, scope, ancestors, issues, context);
