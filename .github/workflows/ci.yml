@@ -1001,117 +1001,16 @@ jobs:
       - name: Summarize PR-fast gate failures
         if: always()
         shell: bash
-        run: |
-          python3 - <<'PY'
-          import json
-          import os
-          import uuid
-          from pathlib import Path
-
-          # Statuses meaning a gate ran and did not pass. A short-circuiting
-          # required gate marks every remaining planned gate `skip`
-          # (xtask/src/tasks/gates.rs), and those never ran, so they belong in the
-          # table but must not be annotated as failures.
-          BLOCKING_STATUSES = ("fail", "timeout", "error")
-
-          receipt = Path("target/receipts/receipt.json")
-          summary = Path(os.environ["GITHUB_STEP_SUMMARY"])
-          lines = ["### PR Smoke gate summary", ""]
-          failing = []
-          receipt_problem = None
-          if not receipt.is_file():
-              lines.append("- Receipt: unavailable (the PR-fast runner did not produce a final receipt.)")
-              receipt_problem = "the PR-fast runner did not produce a final receipt"
-          else:
-              try:
-                  data = json.loads(receipt.read_text(encoding="utf-8"))
-              except (OSError, json.JSONDecodeError) as error:
-                  lines.append(f"- Receipt: unreadable ({error})")
-                  receipt_problem = f"receipt unreadable: {error}"
-              else:
-                  gates = data.get("gates", [])
-                  failures = [
-                      gate for gate in gates
-                      if gate.get("status") not in ("pass", "passed", "success")
-                  ]
-                  lines.append(f"- Receipt: `{receipt}`")
-                  if failures:
-                      lines.append("")
-                      lines.append("| Gate | Status | Exit |")
-                      lines.append("| --- | --- | ---: |")
-                      for gate in failures:
-                          name = gate.get("gate_name", "unknown")
-                          status = gate.get("status", "unknown")
-                          exit_code = gate.get("exit_code", "unknown")
-                          lines.append(
-                              f"| `{name}` | `{status}` | `{exit_code}` |"
-                          )
-                          if status in BLOCKING_STATUSES:
-                              failing.append((name, f"status {status}, exit {exit_code}"))
-                  else:
-                      lines.append("- Non-success gates: none recorded.")
-          rendered = "\n".join(lines) + "\n"
-          summary.write_text(rendered, encoding="utf-8")
-
-          # GITHUB_STEP_SUMMARY is not served by the REST API, so on its own this
-          # table is unreadable to anyone diagnosing the red through the API
-          # (#15492): no job-log tail can surface it either, because nothing here
-          # previously reached stdout. Mirror it to stdout -- the same remedy
-          # #16026 applied to the UX regression receipt below -- and additionally
-          # publish one annotation per failing gate, reachable via
-          # GET /repos/{owner}/{repo}/check-runs/{id}/annotations even when the
-          # job-log archive download is not.
-          #
-          # `rendered` carries gate names straight out of the receipt, and nothing
-          # validates that file before this step reads it. Suspend workflow-command
-          # parsing across the mirror so a crafted name containing a newline and a
-          # `::` directive is printed rather than executed. The token is random per
-          # run: a fixed one could be reproduced by the very content being fenced.
-          stop_token = f"pr-fast-summary-{uuid.uuid4().hex}"
-          print(f"::stop-commands::{stop_token}")
-          print(rendered)
-          print(f"::{stop_token}::")
-
-          def _esc_data(text):
-              return (
-                  str(text)
-                  .replace("%", "%25")
-                  .replace("\r", "%0D")
-                  .replace("\n", "%0A")
-              )
-
-          def _esc_prop(text):
-              # A property value additionally treats ':' and ',' as delimiters, so a
-              # gate name containing either would truncate `title` and inject a
-              # further property.
-              return _esc_data(text).replace(":", "%3A").replace(",", "%2C")
-
-          # GitHub publishes at most ten annotations of a level per check run:
-          # measured on this repository, `Workflow Trigger Lint` records one
-          # RECORDED_LEGACY_PROVENANCE_DEBT per pinned action and the tree carries 23,
-          # yet its check run exposes exactly 10. One annotation per failing gate
-          # would therefore drop the tail on a bad enough receipt -- reintroducing,
-          # for the worst runs, the unreadability this step exists to remove. Keep
-          # the first nine one-per-gate and fold the remainder into the tenth, so
-          # every failing gate name still reaches the annotations API.
-          MAX_ANNOTATIONS = 10
-          if len(failing) <= MAX_ANNOTATIONS:
-              annotations = list(failing)
-          else:
-              annotations = list(failing[: MAX_ANNOTATIONS - 1])
-              rest = failing[MAX_ANNOTATIONS - 1 :]
-              annotations.append(
-                  (
-                      f"{len(rest)} further failing gates",
-                      "; ".join(f"{n} ({d})" for n, d in rest),
-                  )
-              )
-
-          for name, detail in annotations:
-              print(f"::error title=pr-fast gate {_esc_prop(name)}::{_esc_data(detail)}")
-          if receipt_problem is not None:
-              print(f"::warning title=pr-fast receipt::{_esc_data(receipt_problem)}")
-          PY
+        # Renders the gate table into GITHUB_STEP_SUMMARY, mirrors it to stdout
+        # for the job-log tail, and publishes one `::error` annotation per
+        # failing gate so the check-runs API can name the gate without the
+        # artifact download (#15492). The logic lives in a script rather than
+        # inline here because four of its branches -- the `skip` exclusion, the
+        # workflow-command escaping, the `::stop-commands::` fence and the
+        # ten-annotation fold -- are only falsifiable from a test harness:
+        # scripts/ci/test_summarize_pr_fast_gates.py, run by
+        # .github/workflows/ci-gate-self-tests.yml.
+        run: python3 scripts/ci/summarize_pr_fast_gates.py
 
       - name: Convert PR-fast receipt to JUnit
         if: always()
