@@ -636,6 +636,15 @@ enum Commands {
         /// additions guard).
         #[arg(long, default_value_t = 1000)]
         large_staged_threshold: u32,
+
+        /// Additional branch names that count as the canonical base for
+        /// the root-checkout health check. The default is empty: a real
+        /// branch named, say, `master` is no longer silently accepted as
+        /// the canonical base. Operators who genuinely use a non-`main`
+        /// canonical branch (e.g., a `master` upstream) must add it here
+        /// explicitly (#15083). May be repeated.
+        #[arg(long = "canonical-base-alternative", value_name = "BRANCH")]
+        canonical_base_alternatives: Vec<String>,
     },
 
     /// Build project with various configurations
@@ -889,6 +898,24 @@ enum Commands {
         /// Validate the generated summary instead of rewriting it.
         #[arg(long)]
         check: bool,
+    },
+
+    /// Report the RIPR suppression ledger's own lifecycle dates against today.
+    ///
+    /// Advisory: writes an artifact and always exits 0 on a readable ledger.
+    RiprSuppressionAudit {
+        /// RIPR suppression policy path.
+        #[arg(long, default_value = "policy/ripr-suppressions.toml")]
+        suppressions: PathBuf,
+        /// Markdown report path, suitable for $GITHUB_STEP_SUMMARY.
+        #[arg(long, default_value = "target/ripr/suppressions/lifecycle-audit.md")]
+        out: PathBuf,
+        /// Machine-readable report path.
+        #[arg(long, default_value = "target/ripr/suppressions/lifecycle-audit.json")]
+        json: PathBuf,
+        /// Also print the report to stdout.
+        #[arg(long)]
+        print: bool,
     },
 
     /// Render non-blocking GitHub warning annotations from comments[] guidance only.
@@ -6099,6 +6126,9 @@ fn run_cli(cli: Cli) -> Result<()> {
             )
         }
         Commands::RiprPrSummary { check } => ripr_evidence::ripr_pr_summary(check),
+        Commands::RiprSuppressionAudit { suppressions, out, json, print } => {
+            ripr_evidence::ripr_suppression_audit(&suppressions, &out, &json, print)
+        }
         Commands::RiprAnnotations { comments, out, check } => {
             ripr_evidence::ripr_annotations(&comments, &out, check)
         }
@@ -7427,6 +7457,7 @@ fn run_cli(cli: Cli) -> Result<()> {
             floor_gb,
             floor_pct,
             large_staged_threshold,
+            canonical_base_alternatives,
         } => writer_admission::run(writer_admission::AdmissionConfig {
             branch,
             base,
@@ -7438,6 +7469,7 @@ fn run_cli(cli: Cli) -> Result<()> {
             floor_gb,
             floor_pct,
             large_staged_threshold,
+            canonical_base_alternatives,
         }),
         Commands::TargetedChecks { base, mode } => targeted_checks::run(base, mode),
         Commands::ResolvePackageName { crate_dir } => {

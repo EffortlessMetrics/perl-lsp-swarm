@@ -934,6 +934,14 @@ def evaluate_governed_row(
             continue
         covering.append(packet)
     if not covering:
+        # Distinguish "no packets supplied" (no packet source configured at this
+        # invocation — evidence could not be established) from "packets supplied
+        # but none covered this row" (review genuinely absent for the surface).
+        # The first is a wiring gap and must read as NOT_PROVEN_GITHUB so a red
+        # row that says "review missing" stops claiming a review was attempted.
+        # See issue #16100.
+        if not packets:
+            return NOT_PROVEN_GITHUB
         return FAIL_REVIEW_MISSING
 
     row_result = covering[0]["verdict"]
@@ -1699,9 +1707,12 @@ def self_test() -> int:
         expect("not_applicable", receipt["result"], PASS_NOT_APPLICABLE)
         expect("self_describing_schema_token", receipt["schema_version"], SCHEMA)
 
-        # 2. Governed change without a packet fails typed-missing, bound to the exact head.
+        # 2. Governed change with no packet supplied reports NOT_PROVEN_GITHUB
+        #    (evidence could not be established — the packet source is not yet
+        #    wired by the workflow). This is the fix for #16100: a row whose
+        #    proposition was never attempted cannot read as a typed missing.
         receipt = evaluate(make_inputs(["src/authority/catalog.rs"], []))
-        expect("missing_packet", receipt["result"], FAIL_REVIEW_MISSING)
+        expect("no_packets_unspecified", receipt["result"], NOT_PROVEN_GITHUB)
         expect("exact_head_bound", receipt["evaluated_head_sha"], head)
         expect(
             "governed_row_recorded",
@@ -1715,6 +1726,26 @@ def self_test() -> int:
         second = evaluate(make_inputs(["src/authority/catalog.rs"], [good]))
         expect("determinism", render_receipt(first), render_receipt(second))
         expect("current_review_pass", first["result"], PASS_CURRENT_REVIEW)
+
+        # 3a. Packets supplied but none cover the governed row is a real
+        #     review-absence (FAIL_REVIEW_MISSING), distinct from #2 above
+        #     which is a wiring gap (NOT_PROVEN_GITHUB). Regression coverage
+        #     for #16100: the verdict distinguishes "no packets supplied"
+        #     from "supplied packets miss the surface".
+        off_surface = packet_body("semantic_close_authority", head)
+        off_surface["subject"]["changed"]["authorities"] = [
+            {"ref": "close.contract", "subject": "docs/agents/CLOSE_PROOF_POLICY.md"}
+        ]
+        expect(
+            "packets_supplied_but_uncovered",
+            evaluate(
+                make_inputs(
+                    ["src/authority/catalog.rs"],
+                    [write_packet("off-surface.json", off_surface)],
+                )
+            )["result"],
+            FAIL_REVIEW_MISSING,
+        )
 
         # 4. A packet bound to the previous head never looks valid.
         stale = write_packet("stale.json", packet_body("semantic_close_authority", stale_head))
