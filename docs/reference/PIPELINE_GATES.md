@@ -179,10 +179,10 @@ Gate 4 triangulates three axes. A PR that clears only one axis does not pass Gat
 
 **Purpose**: Verify the live required PR checks are green. Not a label from an earlier push — the real branch-protection state.
 
-**Exit condition**: Live CI (`statusCheckRollup`) reports both required checks green for the PR's current revision, and the branch rules allow the merge. This keeps the merge decision tied to the live PR revision without making a branch-SHA comparison a separate merge gate. The `ci-green` label records that green-ci confirmed this, but the live signal is authoritative, not the label — see [LIVE_SIGNALS_VS_LABELS.md](LIVE_SIGNALS_VS_LABELS.md).
+**Exit condition**: Live CI (`statusCheckRollup`) reports all five required checks green for the PR's current revision, and the branch rules allow the merge. This keeps the merge decision tied to the live PR revision without making a branch-SHA comparison a separate merge gate. The `ci-green` label records that green-ci confirmed this, but the live signal is authoritative, not the label — see [LIVE_SIGNALS_VS_LABELS.md](LIVE_SIGNALS_VS_LABELS.md).
 
 The advisory M4b agent-capability gate is a front-door hygiene check, not one
-of the two required merge contexts. Its router keeps untrusted fork and bot
+of the five required merge contexts. Its router keeps untrusted fork and bot
 pull requests on `ubuntu-24.04`, sends trusted work to the labeled
 `workflow-nano` self-hosted lane when capacity is observed, and records an
 explicit hosted fallback for missing token, API, or capacity. A failure from
