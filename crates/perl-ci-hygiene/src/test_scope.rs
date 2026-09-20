@@ -175,8 +175,16 @@ fn module_edges(path: &Path, lines: &[String]) -> Vec<ModuleEdge> {
             .and_then(|rest| rest.split_once("\")"))
             .map(|(path, _)| path)
         {
-            let included = file_dir.join(target);
-            if included.is_file() {
+            // Canonicalized for the same reason `module_files` canonicalizes:
+            // the graph is keyed on canonical paths. An include spelled
+            // `live/../shared.rs` would otherwise enter the production set
+            // under a `PathBuf` that never equals the gated alias's canonical
+            // spelling of the same file, so phase 3's `difference` would not
+            // let production win the tie and would exclude a file the compiler
+            // builds. One file, two spellings, opposite verdicts.
+            if let Ok(included) = file_dir.join(target).canonicalize()
+                && included.is_file()
+            {
                 edges.push(ModuleEdge { files: vec![included], gated: false });
             }
             gated = false;
@@ -700,6 +708,29 @@ mod tests {
         assert!(
             !found.contains(&shared),
             "an include! reaches it in production, so a gated alias cannot exclude it"
+        );
+        Ok(())
+    }
+
+    /// The same file named two ways: production reaches it through an
+    /// `include!` spelled with a `..` hop, and a gated `#[path]` alias names
+    /// it directly. Production has to win that tie, which it can only do if
+    /// both spellings reduce to one identity.
+    #[test]
+    fn an_include_spelled_with_a_parent_hop_still_overrides_a_gated_alias() -> Result<()> {
+        let tree = Tree::new("include-altspelling")?;
+        let root = tree.write(
+            "lib.rs",
+            "mod engine;\n#[cfg(test)]\n#[path = \"engine/shared.rs\"]\nmod under_test;\n",
+        )?;
+        let engine = tree.write("engine/mod.rs", "include!(\"live/../shared.rs\");\n")?;
+        let shared = tree.write("engine/shared.rs", "fn f() { x.expect(\"boom\"); }\n")?;
+        tree.write("engine/live/placeholder.rs", "// keeps `live/` on disk\n")?;
+
+        let found = test_only_source_files(&[root, engine, shared.clone()])?;
+        assert!(
+            !found.contains(&shared),
+            "`live/../shared.rs` and `shared.rs` are one file; the production include must override the gated alias"
         );
         Ok(())
     }
