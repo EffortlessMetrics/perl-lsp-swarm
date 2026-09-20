@@ -27,6 +27,7 @@ mod cli;
 mod commands;
 mod git_hooks;
 mod process;
+mod test_scope;
 
 use crate::cli::{Cli, CliCommand};
 use crate::commands::panic_test::{check_panic_test, check_panic_test_with_registry};
@@ -2414,10 +2415,21 @@ fn cmd_check_unsafe_prod(repo_root: &Path) -> Result<i32> {
     let mut all_matches: Vec<String> = Vec::new();
     let mut bare_unsafe: Vec<String> = Vec::new();
 
-    for path in walk_rust_source_files_for_ci_checks(repo_root)? {
-        let rel = display_path(repo_root, &path);
-        let lines = read_lines(&path)?;
-        let test_start = first_cfg_test_line_number(&path).unwrap_or(usize::MAX);
+    let sources = walk_rust_source_files_for_ci_checks(repo_root)?;
+    // A file whose `#[cfg(test)]` sits on the parent's `mod` declaration carries
+    // no such line itself, so the per-file scan below would read every line of it
+    // as production. That is where the 14 phantom `expect` sites in
+    // final_surface_census.rs came from, and what kept #13838 open for three
+    // weeks over a module that has never been in a non-test build.
+    let test_only = crate::test_scope::test_only_source_files(&sources)?;
+
+    for path in sources.iter() {
+        if test_only.contains(path) {
+            continue;
+        }
+        let rel = display_path(repo_root, path);
+        let lines = read_lines(path)?;
+        let test_start = first_cfg_test_line_number(path).unwrap_or(usize::MAX);
         for (idx, line) in lines.iter().enumerate() {
             let line_no = idx + 1;
             if line_no >= test_start {
@@ -2576,10 +2588,21 @@ fn cmd_check_unwraps_prod(repo_root: &Path) -> Result<i32> {
     let mut unwrap_offenders = Vec::new();
     let mut panic_offenders = Vec::new();
 
-    for path in walk_rust_source_files_for_ci_checks(repo_root)? {
-        let rel = display_path(repo_root, &path);
-        let lines = read_lines(&path)?;
-        let test_start = first_cfg_test_line_number(&path).unwrap_or(usize::MAX);
+    let sources = walk_rust_source_files_for_ci_checks(repo_root)?;
+    // A file whose `#[cfg(test)]` sits on the parent's `mod` declaration carries
+    // no such line itself, so the per-file scan below would read every line of it
+    // as production. That is where the 14 phantom `expect` sites in
+    // final_surface_census.rs came from, and what kept #13838 open for three
+    // weeks over a module that has never been in a non-test build.
+    let test_only = crate::test_scope::test_only_source_files(&sources)?;
+
+    for path in sources.iter() {
+        if test_only.contains(path) {
+            continue;
+        }
+        let rel = display_path(repo_root, path);
+        let lines = read_lines(path)?;
+        let test_start = first_cfg_test_line_number(path).unwrap_or(usize::MAX);
         for (index, line) in lines.iter().enumerate() {
             let line_no = index + 1;
             if line_no >= test_start {
