@@ -3385,6 +3385,25 @@ impl<'ast> Visit<'ast> for DeclarationSeamCollector {
             self.mark_by_attrs(&item.attrs, item.span());
             return;
         }
+        // An inline module's own attributes were skipped: only the bodiless
+        // branch probed them, and this branch recursed straight past. A child
+        // declaration then marked the line on its own, so
+        // `#[generate_runtime_path] mod m { struct S; }` read as a seam although
+        // the macro may put code on that line (#16077 review).
+        //
+        // The span is the header, not `item.span()`: the item's span runs to the
+        // closing brace, so marking that executable would bury every seam the
+        // module legitimately contains. `mod` and its name are the last header
+        // tokens before the body, and an unreadable attribute can only reach the
+        // lines they and the attribute occupy.
+        let unreadable = Self::carries_an_expression(|probe| {
+            for attr in &item.attrs {
+                probe.visit_attribute(attr);
+            }
+        });
+        if unreadable {
+            self.mark_executable(&item.attrs, item.ident.span());
+        }
         syn::visit::visit_item_mod(self, item);
     }
 
@@ -7402,6 +7421,44 @@ pub type Derived = [u8; 8];
                      item and must stay in the blocking basis: {marked:?}"
                 );
             }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn declaration_seam_lines_probes_attributes_on_inline_modules() -> Result<()> {
+        // Only the bodiless branch of the module visitor probed attributes; a
+        // module with a body recursed straight past its own. A child
+        // declaration then marked the line by itself, so an attribute macro on
+        // the module cleared a line it may well put code on.
+        let source = concat!(
+            "mod plain { struct A; }\n",
+            "#[generate_runtime_path] mod wrapped { struct B; }\n",
+            "#[generate_runtime_path]\n",
+            "mod split {\n",
+            "    struct C;\n",
+            "}\n",
+        );
+        let marked = declaration_seam_lines(source);
+        if !marked.contains(&1) {
+            bail!("a plain inline module carries nothing and must stay marked: {marked:?}");
+        }
+        if marked.contains(&2) {
+            bail!(
+                "line 2 shares a line with an unreadable attribute on an inline \
+                 module and must stay in the blocking basis: {marked:?}"
+            );
+        }
+        // Lines 3 and 4 carry no assertion on purpose: nothing marks a module
+        // header either way, so a claim about them would pass whatever the
+        // visitor does. `split` earns its place on line 5 instead — it is the
+        // multi-line form, so a header span widened to the whole item would
+        // swallow the declaration inside the body and show up there.
+        if !marked.contains(&5) {
+            bail!(
+                "a declaration inside the body is out of the header's reach and \
+                 must stay marked: {marked:?}"
+            );
         }
         Ok(())
     }
