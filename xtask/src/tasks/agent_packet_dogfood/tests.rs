@@ -6,6 +6,7 @@
 //! validator rejects each mutant class instead of rendering plausible prose.
 
 use super::*;
+use color_eyre::eyre::{ContextCompat, ensure};
 use serde_json::json;
 
 const TREE_SHA_PLACEHOLDER: &str =
@@ -47,15 +48,15 @@ const EXPECTED_INVALID: &[(&str, &str)] = &[
 ];
 
 fn sample_event(seq: u64, kind: &str, payload: Value) -> Value {
-    let mut record = json!({
+    let record = json!({
         "seq": seq,
         "kind": kind,
         "payload": payload,
         "digest": "0",
+        "at_ms": seq * 10,
     });
     // Stamp computes over {domain, seq, kind, at_ms?, payload}; give the
     // placeholder a fixed at_ms so stamps stay reproducible across edits.
-    record["at_ms"] = json!(seq * 10);
     record
 }
 
@@ -105,22 +106,23 @@ fn base_manifest() -> Value {
     })
 }
 
-fn stamped(base: Value) -> Value {
+fn stamped(base: Value) -> Result<Value> {
     let mut doc = base;
-    stamp_manifest(&mut doc).expect("stamp succeeds");
-    doc
+    stamp_manifest(&mut doc).context("stamp succeeds")?;
+    Ok(doc)
 }
 
 /// Mutate `doc` at pointer with `f`, returning violations of the mutant.
-fn mutant<F: FnOnce(&mut Value)>(base: Value, f: F) -> Vec<Violation> {
-    let mut doc = stamped(base);
-    f(&mut doc);
-    validate_manifest(&doc)
+fn mutant<F: FnOnce(&mut Value) -> Result<()>>(base: Value, f: F) -> Result<Vec<Violation>> {
+    let mut doc = stamped(base)?;
+    f(&mut doc)?;
+    Ok(validate_manifest(&doc))
 }
 
-fn assert_contains(violations: &[Violation], expected: &str) {
+fn assert_contains(violations: &[Violation], expected: &str) -> Result<()> {
     let codes = violation_codes(violations);
-    assert!(codes.contains(&expected), "expected reason code {expected}, got {codes:?}");
+    ensure!(codes.contains(&expected), "expected reason code {expected}, got {codes:?}");
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -128,208 +130,295 @@ fn assert_contains(violations: &[Violation], expected: &str) {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn negative_missing_packet_digest_fails_closed() {
+fn negative_missing_packet_digest_fails_closed() -> Result<()> {
     let violations = mutant(base_manifest(), |doc| {
-        doc["identity"].as_object_mut().unwrap().remove("packet_digest");
-    });
-    assert_contains(&violations, "missing_identity_field");
+        doc.pointer_mut("/identity")
+            .context("missing fixture path /identity")?
+            .as_object_mut()
+            .context("required fixture value missing")?
+            .remove("packet_digest");
+        Ok(())
+    })?;
+    assert_contains(&violations, "missing_identity_field")?;
+    Ok(())
 }
 
 #[test]
-fn negative_missing_subject_metadata_fails_closed() {
+fn negative_missing_subject_metadata_fails_closed() -> Result<()> {
     let violations = mutant(base_manifest(), |doc| {
-        doc.as_object_mut().unwrap().remove("subject");
-    });
-    assert_contains(&violations, "missing_subject");
+        doc.as_object_mut().context("required fixture value missing")?.remove("subject");
+        Ok(())
+    })?;
+    assert_contains(&violations, "missing_subject")?;
+    Ok(())
 }
 
 #[test]
-fn negative_missing_model_identity_fails_closed() {
+fn negative_missing_model_identity_fails_closed() -> Result<()> {
     let violations = mutant(base_manifest(), |doc| {
-        doc["subject"].as_object_mut().unwrap().remove("model");
-    });
-    assert_contains(&violations, "missing_subject_field");
+        doc.pointer_mut("/subject")
+            .context("missing fixture path /subject")?
+            .as_object_mut()
+            .context("required fixture value missing")?
+            .remove("model");
+        Ok(())
+    })?;
+    assert_contains(&violations, "missing_subject_field")?;
+    Ok(())
 }
 
 #[test]
-fn negative_dropped_scope_ceiling_fails_closed() {
+fn negative_dropped_scope_ceiling_fails_closed() -> Result<()> {
     let dropped = mutant(base_manifest(), |doc| {
-        doc["subject"]["permissions"].as_object_mut().unwrap().remove("ceiling");
-    });
-    assert_contains(&dropped, "missing_scope_ceiling");
+        doc.pointer_mut("/subject/permissions")
+            .context("missing fixture path /subject/permissions")?
+            .as_object_mut()
+            .context("required fixture value missing")?
+            .remove("ceiling");
+        Ok(())
+    })?;
+    assert_contains(&dropped, "missing_scope_ceiling")?;
 
     let emptied = mutant(base_manifest(), |doc| {
-        doc["subject"]["permissions"]["ceiling"] = json!([]);
-    });
-    assert_contains(&emptied, "missing_scope_ceiling");
+        *doc.pointer_mut("/subject/permissions/ceiling")
+            .context("missing fixture path /subject/permissions/ceiling")? = json!([]);
+        Ok(())
+    })?;
+    assert_contains(&emptied, "missing_scope_ceiling")?;
 
     let no_permissions_at_all = mutant(base_manifest(), |doc| {
-        doc["subject"].as_object_mut().unwrap().remove("permissions");
-    });
-    assert_contains(&no_permissions_at_all, "missing_scope_ceiling");
+        doc.pointer_mut("/subject")
+            .context("missing fixture path /subject")?
+            .as_object_mut()
+            .context("required fixture value missing")?
+            .remove("permissions");
+        Ok(())
+    })?;
+    assert_contains(&no_permissions_at_all, "missing_scope_ceiling")?;
+    Ok(())
 }
 
 #[test]
-fn negative_tampered_event_payload_mid_run_fails_closed() {
+fn negative_tampered_event_payload_mid_run_fails_closed() -> Result<()> {
     let violations = mutant(base_manifest(), |doc| {
-        doc["events"][1]["payload"]["op"] = json!("didOpen-tampered-after-stamping");
-    });
-    assert_contains(&violations, "record_digest_mismatch");
+        *doc.pointer_mut("/events/1/payload/op")
+            .context("missing fixture path /events/1/payload/op")? =
+            json!("didOpen-tampered-after-stamping");
+        Ok(())
+    })?;
+    assert_contains(&violations, "record_digest_mismatch")?;
+    Ok(())
 }
 
 #[test]
-fn negative_tampered_packet_envelope_mid_run_fails_closed() {
+fn negative_tampered_packet_envelope_mid_run_fails_closed() -> Result<()> {
     // Records restamp cleanly but the envelope recorded in the manifest was
     // captured before an attacker reordered the observable history: the
     // recomputed envelope must diverge from identity.packet_digest.
     let violations = mutant(base_manifest(), |doc| {
-        doc["events"][0].as_object_mut().unwrap().insert("kind".to_string(), json!("error"));
-        let events = doc["events"].as_array().unwrap();
-        let result_digests = vec![Some(doc["results"][0]["digest"].as_str().unwrap().to_string())];
-        let run_id = doc["run_id"].as_str().unwrap().to_string();
+        doc.pointer_mut("/events/0")
+            .context("missing fixture path /events/0")?
+            .as_object_mut()
+            .context("required fixture value missing")?
+            .insert("kind".to_string(), json!("error"));
+        let events = (*doc.pointer("/events").unwrap_or(&Value::Null))
+            .as_array()
+            .context("required fixture value missing")?;
+        let result_digests = vec![Some(
+            (*doc.pointer("/results/0/digest").unwrap_or(&Value::Null))
+                .as_str()
+                .context("required fixture value missing")?
+                .to_string(),
+        )];
+        let run_id = (*doc.pointer("/run_id").unwrap_or(&Value::Null))
+            .as_str()
+            .context("required fixture value missing")?
+            .to_string();
         let mut recomputed_events = Vec::new();
         for event in events {
             recomputed_events.push(Some(
-                record_digest(event.as_object().unwrap()).expect("record fields present"),
+                record_digest(event.as_object().context("required fixture value missing")?)
+                    .context("record fields present")?,
             ));
         }
-        let identity = doc["identity"].as_object().expect("identity object");
+        let identity = (*doc.pointer("/identity").unwrap_or(&Value::Null))
+            .as_object()
+            .context("identity object")?;
         let honest_envelope = envelope_digest(
             &envelope_identity(identity),
-            &doc["subject"],
+            doc.pointer("/subject").unwrap_or(&Value::Null),
             &run_id,
             "completed",
             &recomputed_events,
             &result_digests,
-            &doc["human_intervention"],
+            doc.pointer("/human_intervention").unwrap_or(&Value::Null),
         );
-        doc["identity"]["packet_digest"] = json!(honest_envelope);
+        *doc.pointer_mut("/identity/packet_digest")
+            .context("missing fixture path /identity/packet_digest")? = json!(honest_envelope);
         // Now mutate what the envelope covers WITHOUT restamping again:
-        doc["disposition"] = json!("refused");
-    });
-    assert_contains(&violations, "packet_digest_mismatch");
+        *doc.pointer_mut("/disposition").context("missing fixture path /disposition")? =
+            json!("refused");
+        Ok(())
+    })?;
+    assert_contains(&violations, "packet_digest_mismatch")?;
+    Ok(())
 }
 
 #[test]
-fn negative_tampered_subject_ceiling_mid_run_fails_closed() {
+fn negative_tampered_subject_ceiling_mid_run_fails_closed() -> Result<()> {
     // The envelope binds the complete subject metadata: widening the
     // permission scope ceiling after stamping must invalidate the packet.
     let violations = mutant(base_manifest(), |doc| {
-        doc["subject"]["permissions"]["ceiling"] =
+        *doc.pointer_mut("/subject/permissions/ceiling")
+            .context("missing fixture path /subject/permissions/ceiling")? =
             json!(["workspace:read", "workspace:write", "network:any"]);
-    });
-    assert_contains(&violations, "packet_digest_mismatch");
+        Ok(())
+    })?;
+    assert_contains(&violations, "packet_digest_mismatch")?;
+    Ok(())
 }
 
 #[test]
-fn negative_tampered_tree_sha_mid_run_fails_closed() {
+fn negative_tampered_tree_sha_mid_run_fails_closed() -> Result<()> {
     // The envelope binds packet/tree/spec identity: swapping the source tree
     // after stamping must invalidate the packet.
     let violations = mutant(base_manifest(), |doc| {
-        doc["identity"]["tree_sha"] =
+        *doc.pointer_mut("/identity/tree_sha")
+            .context("missing fixture path /identity/tree_sha")? =
             json!("3333333333333333333333333333333333333333333333333333333333333333");
-    });
-    assert_contains(&violations, "packet_digest_mismatch");
+        Ok(())
+    })?;
+    assert_contains(&violations, "packet_digest_mismatch")?;
+    Ok(())
 }
 
 #[test]
-fn negative_tampered_model_identity_mid_run_fails_closed() {
+fn negative_tampered_model_identity_mid_run_fails_closed() -> Result<()> {
     let violations = mutant(base_manifest(), |doc| {
-        doc["subject"]["model"]["id"] = json!("shadow-model-y");
-    });
-    assert_contains(&violations, "packet_digest_mismatch");
+        *doc.pointer_mut("/subject/model/id")
+            .context("missing fixture path /subject/model/id")? = json!("shadow-model-y");
+        Ok(())
+    })?;
+    assert_contains(&violations, "packet_digest_mismatch")?;
+    Ok(())
 }
 
 #[test]
-fn negative_tampered_intervention_is_bound_to_packet_digest() {
+fn negative_tampered_intervention_is_bound_to_packet_digest() -> Result<()> {
     let violations = mutant(base_manifest(), |doc| {
-        doc["human_intervention"][0]["reason"] = json!("operator approved a different scope");
-    });
-    assert_contains(&violations, "packet_digest_mismatch");
+        *doc.pointer_mut("/human_intervention/0/reason")
+            .context("missing fixture path /human_intervention/0/reason")? =
+            json!("operator approved a different scope");
+        Ok(())
+    })?;
+    assert_contains(&violations, "packet_digest_mismatch")?;
+    Ok(())
 }
 
 #[test]
-fn negative_unsorted_event_sequences_fail_closed() {
+fn negative_unsorted_event_sequences_fail_closed() -> Result<()> {
     let violations = mutant(base_manifest(), |doc| {
-        doc["events"][2]["seq"] = json!(5);
-    });
-    assert_contains(&violations, "event_seq_not_contiguous");
+        *doc.pointer_mut("/events/2/seq").context("missing fixture path /events/2/seq")? = json!(5);
+        Ok(())
+    })?;
+    assert_contains(&violations, "event_seq_not_contiguous")?;
+    Ok(())
 }
 
 #[test]
-fn negative_result_sequence_must_be_contiguous() {
+fn negative_result_sequence_must_be_contiguous() -> Result<()> {
     // Result records carry their own sequence space and their own reason
     // code: a consumer reading the code alone can tell which space failed.
     let violations = mutant(base_manifest(), |doc| {
-        doc["results"][0]["seq"] = json!(7);
-    });
-    assert_contains(&violations, "result_seq_not_contiguous");
+        *doc.pointer_mut("/results/0/seq").context("missing fixture path /results/0/seq")? =
+            json!(7);
+        Ok(())
+    })?;
+    assert_contains(&violations, "result_seq_not_contiguous")?;
+    Ok(())
 }
 
 #[test]
-fn negative_empty_required_events_fail_closed() {
+fn negative_empty_required_events_fail_closed() -> Result<()> {
     // `events: []` is a purported observable run with no observations: it
     // contradicts the schema's minItems: 1 and must fail closed.
     let violations = mutant(base_manifest(), |doc| {
-        doc["events"] = json!([]);
-    });
-    assert_contains(&violations, "missing_events");
+        *doc.pointer_mut("/events").context("missing fixture path /events")? = json!([]);
+        Ok(())
+    })?;
+    assert_contains(&violations, "missing_events")?;
+    Ok(())
 }
 
 #[test]
-fn negative_present_non_array_results_fail_closed() {
+fn negative_present_non_array_results_fail_closed() -> Result<()> {
     // A present `results` field with a non-array value must not pass as an
     // absent optional field.
     let violations = mutant(base_manifest(), |doc| {
-        doc["results"] = json!({"seq": 0});
-    });
-    assert_contains(&violations, "not_an_object");
+        *doc.pointer_mut("/results").context("missing fixture path /results")? = json!({"seq": 0});
+        Ok(())
+    })?;
+    assert_contains(&violations, "not_an_object")?;
 
     let non_array_events = mutant(base_manifest(), |doc| {
-        doc["events"] = json!({"seq": 0});
-    });
-    assert_contains(&non_array_events, "not_an_object");
+        *doc.pointer_mut("/events").context("missing fixture path /events")? = json!({"seq": 0});
+        Ok(())
+    })?;
+    assert_contains(&non_array_events, "not_an_object")?;
+    Ok(())
 }
 
 #[test]
-fn negative_oversized_excerpt_fails_closed() {
+fn negative_oversized_excerpt_fails_closed() -> Result<()> {
     let huge = "x".repeat(MAX_RECORD_BYTES * 3);
     let violations = mutant(base_manifest(), |doc| {
-        doc["events"][0]["payload"] = json!({"log": huge});
-    });
-    assert_contains(&violations, "retention_bound_exceeded");
+        *doc.pointer_mut("/events/0/payload")
+            .context("missing fixture path /events/0/payload")? = json!({"log": huge});
+        Ok(())
+    })?;
+    assert_contains(&violations, "retention_bound_exceeded")?;
+    Ok(())
 }
 
 #[test]
-fn negative_credential_in_payload_fails_closed() {
+fn negative_credential_in_payload_fails_closed() -> Result<()> {
     for leaked in ["api_key=hunter2", "-----BEGIN OPENSSH PRIVATE KEY-----"] {
         let violations = mutant(base_manifest(), |doc| {
-            doc["events"][0]["payload"] = json!({"note": leaked});
-        });
-        assert_contains(&violations, "credential_in_payload");
+            *doc.pointer_mut("/events/0/payload")
+                .context("missing fixture path /events/0/payload")? = json!({"note": leaked});
+            Ok(())
+        })?;
+        assert_contains(&violations, "credential_in_payload")?;
     }
+    Ok(())
 }
 
 #[test]
-fn negative_credential_outside_payload_fails_closed() {
+fn negative_credential_outside_payload_fails_closed() -> Result<()> {
     // Hygiene scans the complete retained document: a credential in allowed
     // metadata no longer survives stamping or validation.
     let violations = mutant(base_manifest(), |doc| {
-        doc["metadata"] = json!({"debug": "api_key=hunter2"});
-    });
-    assert_contains(&violations, "credential_in_payload");
+        *doc.pointer_mut("/metadata").context("missing fixture path /metadata")? =
+            json!({"debug": "api_key=hunter2"});
+        Ok(())
+    })?;
+    assert_contains(&violations, "credential_in_payload")?;
+    Ok(())
 }
 
 #[test]
-fn negative_metadata_must_match_the_schema_object_boundary() {
+fn negative_metadata_must_match_the_schema_object_boundary() -> Result<()> {
     let violations = mutant(base_manifest(), |doc| {
-        doc["metadata"] = json!("caller metadata");
-    });
-    assert_contains(&violations, "not_an_object");
+        *doc.pointer_mut("/metadata").context("missing fixture path /metadata")? =
+            json!("caller metadata");
+        Ok(())
+    })?;
+    assert_contains(&violations, "not_an_object")?;
+    Ok(())
 }
 
 #[test]
-fn negative_structured_credential_key_fails_closed() {
+fn negative_structured_credential_key_fails_closed() -> Result<()> {
     for key in [
         "api_key",
         "accessToken",
@@ -347,14 +436,17 @@ fn negative_structured_credential_key_fails_closed() {
         "private/key",
     ] {
         let violations = mutant(base_manifest(), |doc| {
-            doc["metadata"] = json!({"nested": [{ key: "hunter2" }]});
-        });
-        assert_contains(&violations, "credential_in_payload");
+            *doc.pointer_mut("/metadata").context("missing fixture path /metadata")? =
+                json!({"nested": [{ key: "hunter2" }]});
+            Ok(())
+        })?;
+        assert_contains(&violations, "credential_in_payload")?;
     }
+    Ok(())
 }
 
 #[test]
-fn normalized_credential_keys_require_segment_boundaries() {
+fn normalized_credential_keys_require_segment_boundaries() -> Result<()> {
     for key in [
         "tokenValue",
         "clientSecretValue",
@@ -364,33 +456,43 @@ fn normalized_credential_keys_require_segment_boundaries() {
         "api/key",
         "API.Key",
     ] {
-        assert!(is_credential_key(key), "{key} must be rejected as a credential key");
+        ensure!(is_credential_key(key), "{key} must be rejected as a credential key");
     }
     for key in ["tokenized", "secretary", "credentialish"] {
-        assert!(!is_credential_key(key), "{key} is not a credential-key segment");
+        ensure!(!is_credential_key(key), "{key} is not a credential-key segment");
     }
+    Ok(())
 }
 
 #[test]
-fn negative_missing_model_revision_fails_closed() {
+fn negative_missing_model_revision_fails_closed() -> Result<()> {
     let violations = mutant(base_manifest(), |doc| {
-        doc["subject"]["model"].as_object_mut().unwrap().remove("revision");
-    });
-    assert_contains(&violations, "missing_subject_field");
+        doc.pointer_mut("/subject/model")
+            .context("missing fixture path /subject/model")?
+            .as_object_mut()
+            .context("required fixture value missing")?
+            .remove("revision");
+        Ok(())
+    })?;
+    assert_contains(&violations, "missing_subject_field")?;
+    Ok(())
 }
 
 #[test]
-fn negative_present_model_revision_must_be_non_empty_string() {
+fn negative_present_model_revision_must_be_non_empty_string() -> Result<()> {
     for revision in [json!(""), json!(42), Value::Null] {
         let violations = mutant(base_manifest(), |doc| {
-            doc["subject"]["model"]["revision"] = revision;
-        });
-        assert_contains(&violations, "malformed_subject_field");
+            *doc.pointer_mut("/subject/model/revision")
+                .context("missing fixture path /subject/model/revision")? = revision;
+            Ok(())
+        })?;
+        assert_contains(&violations, "malformed_subject_field")?;
     }
+    Ok(())
 }
 
 #[test]
-fn negative_machine_local_path_in_payload_fails_closed() {
+fn negative_machine_local_path_in_payload_fails_closed() -> Result<()> {
     for leaked in [
         "C:\\Users\\dev\\secret.log",
         "F:\\Temp\\raw-dump.txt",
@@ -416,16 +518,19 @@ fn negative_machine_local_path_in_payload_fails_closed() {
         "%USERPROFILE%\\notes.md",
     ] {
         let violations = mutant(base_manifest(), |doc| {
-            doc["events"][0]["payload"] = json!({"path_note": leaked});
-        });
-        assert_contains(&violations, "local_path_in_payload");
+            *doc.pointer_mut("/events/0/payload")
+                .context("missing fixture path /events/0/payload")? = json!({"path_note": leaked});
+            Ok(())
+        })?;
+        assert_contains(&violations, "local_path_in_payload")?;
     }
+    Ok(())
 }
 
 #[test]
-fn positive_uri_text_is_not_misclassified_as_a_drive_path() {
+fn positive_uri_text_is_not_misclassified_as_a_drive_path() -> Result<()> {
     let violations = mutant(base_manifest(), |doc| {
-        doc["metadata"] = json!({
+        *doc.pointer_mut("/metadata").context("missing fixture path /metadata")? = json!({
             "documentation": "https://example.test/perl-lsp",
             "endpoint": "http://localhost:3000/status",
             "drive_like_url": "https://example.test/C:/tmp",
@@ -433,52 +538,67 @@ fn positive_uri_text_is_not_misclassified_as_a_drive_path() {
             "traversal_like_url": "https://example.test/../docs",
             "protocol_relative_drive_like_url": "//example.test/C:/tmp",
         });
-    });
-    assert!(
+        Ok(())
+    })?;
+    ensure!(
         !violations.iter().any(|violation| violation.code == "local_path_in_payload"),
         "URI text must not trigger a local-path violation: {violations:?}"
     );
+    Ok(())
 }
 
 #[test]
-fn negative_uri_boundary_does_not_exempt_a_following_local_path() {
+fn negative_uri_boundary_does_not_exempt_a_following_local_path() -> Result<()> {
     let violations = mutant(base_manifest(), |doc| {
-        doc["events"][0]["payload"] = json!({
+        *doc.pointer_mut("/events/0/payload")
+            .context("missing fixture path /events/0/payload")? = json!({
             "message": "https://example.test/docs /tmp/secret"
         });
-    });
-    assert_contains(&violations, "local_path_in_payload");
+        Ok(())
+    })?;
+    assert_contains(&violations, "local_path_in_payload")?;
+    Ok(())
 }
 
 #[test]
-fn negative_protocol_relative_url_boundary_is_not_a_path_exemption() {
+fn negative_protocol_relative_url_boundary_is_not_a_path_exemption() -> Result<()> {
     let violations = mutant(base_manifest(), |doc| {
-        doc["events"][0]["payload"] = json!({
+        *doc.pointer_mut("/events/0/payload")
+            .context("missing fixture path /events/0/payload")? = json!({
             "message": "//example.test/docs C:/tmp"
         });
-    });
-    assert_contains(&violations, "local_path_in_payload");
+        Ok(())
+    })?;
+    assert_contains(&violations, "local_path_in_payload")?;
+    Ok(())
 }
 
 #[test]
-fn negative_posix_detector_ignores_division_text() {
+fn negative_posix_detector_ignores_division_text() -> Result<()> {
     for message in ["ratio / 2", "ratio /2", "text: /v1"] {
         let violations = mutant(base_manifest(), |doc| {
-            doc["events"][0]["payload"] = json!({"message": message});
-        });
-        assert!(
+            *doc.pointer_mut("/events/0/payload")
+                .context("missing fixture path /events/0/payload")? = json!({"message": message});
+            Ok(())
+        })?;
+        ensure!(
             !violation_codes(&violations).contains(&"local_path_in_payload"),
             "ordinary prose token was classified as a local path: {message:?}"
         );
     }
+    Ok(())
 }
 
 #[test]
-fn negative_posix_detector_rejects_labeled_absolute_paths() {
+fn negative_posix_detector_rejects_labeled_absolute_paths() -> Result<()> {
     let violations = mutant(base_manifest(), |doc| {
-        doc["events"][0]["payload"] = json!({"message": "path: /opt/perl-lsp/config.json"});
-    });
-    assert_contains(&violations, "local_path_in_payload");
+        *doc.pointer_mut("/events/0/payload")
+            .context("missing fixture path /events/0/payload")? =
+            json!({"message": "path: /opt/perl-lsp/config.json"});
+        Ok(())
+    })?;
+    assert_contains(&violations, "local_path_in_payload")?;
+    Ok(())
 }
 
 #[test]
@@ -508,37 +628,53 @@ fn repeated_member_names_in_distinct_objects_remain_valid() -> Result<()> {
 }
 
 #[test]
-fn negative_machine_local_path_outside_payload_fails_closed() {
+fn negative_machine_local_path_outside_payload_fails_closed() -> Result<()> {
     // Subject identity strings are part of the retained document too.
     let violations = mutant(base_manifest(), |doc| {
-        doc["subject"]["tool"]["name"] = json!("/home/dev/perl-lsp-xtask");
-    });
-    assert_contains(&violations, "local_path_in_payload");
+        *doc.pointer_mut("/subject/tool/name")
+            .context("missing fixture path /subject/tool/name")? =
+            json!("/home/dev/perl-lsp-xtask");
+        Ok(())
+    })?;
+    assert_contains(&violations, "local_path_in_payload")?;
+    Ok(())
 }
 
 #[test]
-fn negative_caller_controlled_diagnostic_path_is_not_echoed() {
+fn negative_caller_controlled_diagnostic_path_is_not_echoed() -> Result<()> {
     let leaked = "C:/Users/dev/api_key=hunter2";
     let violations = mutant(base_manifest(), |doc| {
-        doc.as_object_mut().unwrap().insert(leaked.to_string(), json!(true));
-    });
-    assert_contains(&violations, "unknown_field");
+        doc.as_object_mut()
+            .context("required fixture value missing")?
+            .insert(leaked.to_string(), json!(true));
+        Ok(())
+    })?;
+    assert_contains(&violations, "unknown_field")?;
     let details = violations.iter().map(|violation| violation.detail.as_str()).collect::<Vec<_>>();
-    assert!(details.iter().all(|detail| !detail.contains(leaked)));
+    ensure!(
+        details.iter().all(|detail| !detail.contains(leaked)),
+        "test condition failed: {}",
+        stringify!(details.iter().all(|detail| !detail.contains(leaked)))
+    );
+    Ok(())
 }
 
 #[test]
-fn negative_chain_of_thought_in_payload_fails_closed() {
+fn negative_chain_of_thought_in_payload_fails_closed() -> Result<()> {
     for key in ["thinking", "chain_of_thought", "scratchpad"] {
         let violations = mutant(base_manifest(), |doc| {
-            doc["events"][0]["payload"] = json!({ key: "hidden reasoning text" });
-        });
-        assert_contains(&violations, "cot_key_in_payload");
+            *doc.pointer_mut("/events/0/payload")
+                .context("missing fixture path /events/0/payload")? =
+                json!({ key: "hidden reasoning text" });
+            Ok(())
+        })?;
+        assert_contains(&violations, "cot_key_in_payload")?;
     }
+    Ok(())
 }
 
 #[test]
-fn negative_chain_of_thought_keys_are_normalized_across_metadata_and_payload() {
+fn negative_chain_of_thought_keys_are_normalized_across_metadata_and_payload() -> Result<()> {
     for (location, key) in [
         ("metadata", "chain_of_thought"),
         ("metadata", "chainOfThought"),
@@ -547,79 +683,104 @@ fn negative_chain_of_thought_keys_are_normalized_across_metadata_and_payload() {
     ] {
         let violations = mutant(base_manifest(), |doc| {
             if location == "metadata" {
-                doc["metadata"] = json!({key: "hidden reasoning text"});
+                *doc.pointer_mut("/metadata").context("missing fixture path /metadata")? =
+                    json!({key: "hidden reasoning text"});
             } else {
-                doc["events"][0]["payload"] = json!({key: "hidden reasoning text"});
+                *doc.pointer_mut("/events/0/payload")
+                    .context("missing fixture path /events/0/payload")? =
+                    json!({key: "hidden reasoning text"});
             }
-        });
-        assert_contains(&violations, "cot_key_in_payload");
+            Ok(())
+        })?;
+        assert_contains(&violations, "cot_key_in_payload")?;
     }
+    Ok(())
 }
 
 #[test]
-fn negative_nested_chain_of_thought_key_fails_closed() {
+fn negative_nested_chain_of_thought_key_fails_closed() -> Result<()> {
     // The chain-of-thought key guard recurses: a prohibited key below the
     // payload's outer object (through objects and arrays) is still rejected.
     let violations = mutant(base_manifest(), |doc| {
-        doc["events"][0]["payload"] =
+        *doc.pointer_mut("/events/0/payload")
+            .context("missing fixture path /events/0/payload")? =
             json!({"nested": {"deep": [{"thinking": "secret reasoning"}]}});
-    });
-    assert_contains(&violations, "cot_key_in_payload");
+        Ok(())
+    })?;
+    assert_contains(&violations, "cot_key_in_payload")?;
+    Ok(())
 }
 
 #[test]
-fn negative_malformed_packet_digest_fails_closed() {
+fn negative_malformed_packet_digest_fails_closed() -> Result<()> {
     // The digest charset is strict lowercase hex: g-z (or uppercase) is
     // malformed, not a plausible digest.
     let violations = mutant(base_manifest(), |doc| {
-        doc["identity"]["packet_digest"] = json!("g".repeat(64));
-    });
-    assert_contains(&violations, "malformed_digest");
+        *doc.pointer_mut("/identity/packet_digest")
+            .context("missing fixture path /identity/packet_digest")? = json!("g".repeat(64));
+        Ok(())
+    })?;
+    assert_contains(&violations, "malformed_digest")?;
+    Ok(())
 }
 
 #[test]
-fn negative_unknown_root_field_domain_widening_fails_closed() {
+fn negative_unknown_root_field_domain_widening_fails_closed() -> Result<()> {
     let violations = mutant(base_manifest(), |doc| {
         doc.as_object_mut()
-            .unwrap()
+            .context("required fixture value missing")?
             .insert("distribution_overlay".to_string(), json!({"extra": true}));
-    });
-    assert_contains(&violations, "unknown_field");
+        Ok(())
+    })?;
+    assert_contains(&violations, "unknown_field")?;
+    Ok(())
 }
 
 #[test]
-fn negative_mutable_live_state_embedded_fails_closed() {
+fn negative_mutable_live_state_embedded_fails_closed() -> Result<()> {
     let violations = mutant(base_manifest(), |doc| {
-        doc["metadata"]
+        doc.pointer_mut("/metadata")
+            .context("missing fixture path /metadata")?
             .as_object_mut()
-            .unwrap()
+            .context("required fixture value missing")?
             .insert("lease".to_string(), json!({"owner": "runtime"}));
-    });
-    assert_contains(&violations, "mutable_state_embedded");
+        Ok(())
+    })?;
+    assert_contains(&violations, "mutable_state_embedded")?;
+    Ok(())
 }
 
 #[test]
-fn negative_camel_case_mutable_live_state_embedded_fails_closed() {
+fn negative_camel_case_mutable_live_state_embedded_fails_closed() -> Result<()> {
     let violations = mutant(base_manifest(), |doc| {
-        doc["metadata"] = json!({"wakeEvent": "checks complete", "leaseOwner": "agent"});
-    });
-    assert_contains(&violations, "mutable_state_embedded");
+        *doc.pointer_mut("/metadata").context("missing fixture path /metadata")? =
+            json!({"wakeEvent": "checks complete", "leaseOwner": "agent"});
+        Ok(())
+    })?;
+    assert_contains(&violations, "mutable_state_embedded")?;
+    Ok(())
 }
 
 #[test]
-fn negative_unknown_disposition_fails_closed() {
+fn negative_unknown_disposition_fails_closed() -> Result<()> {
     let violations = mutant(base_manifest(), |doc| {
-        doc["disposition"] = json!("auto_merged");
-    });
-    assert_contains(&violations, "unknown_disposition");
+        *doc.pointer_mut("/disposition").context("missing fixture path /disposition")? =
+            json!("auto_merged");
+        Ok(())
+    })?;
+    assert_contains(&violations, "unknown_disposition")?;
+    Ok(())
 }
 
 #[test]
-fn negative_dangling_intervention_reference_fails_closed() {
+fn negative_dangling_intervention_reference_fails_closed() -> Result<()> {
     let violations = mutant(base_manifest(), |doc| {
-        doc["human_intervention"][0]["before_seq"] = json!(99);
-    });
-    assert_contains(&violations, "intervention_seq_unknown");
+        *doc.pointer_mut("/human_intervention/0/before_seq")
+            .context("missing fixture path /human_intervention/0/before_seq")? = json!(99);
+        Ok(())
+    })?;
+    assert_contains(&violations, "intervention_seq_unknown")?;
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -627,61 +788,82 @@ fn negative_dangling_intervention_reference_fails_closed() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn stamp_requires_semantic_envelope_inputs() {
+fn stamp_requires_semantic_envelope_inputs() -> Result<()> {
     let mut without_identity = base_manifest();
-    without_identity.as_object_mut().unwrap().remove("identity");
-    assert!(stamp_manifest(&mut without_identity).is_err(), "missing identity must error");
+    without_identity.as_object_mut().context("required fixture value missing")?.remove("identity");
+    ensure!(stamp_manifest(&mut without_identity).is_err(), "missing identity must error");
 
     let mut without_run_id = base_manifest();
-    without_run_id.as_object_mut().unwrap().remove("run_id");
-    assert!(stamp_manifest(&mut without_run_id).is_err(), "missing run_id must error");
+    without_run_id.as_object_mut().context("required fixture value missing")?.remove("run_id");
+    ensure!(stamp_manifest(&mut without_run_id).is_err(), "missing run_id must error");
 
     let mut without_disposition = base_manifest();
-    without_disposition.as_object_mut().unwrap().remove("disposition");
-    assert!(stamp_manifest(&mut without_disposition).is_err(), "missing disposition must error");
+    without_disposition
+        .as_object_mut()
+        .context("required fixture value missing")?
+        .remove("disposition");
+    ensure!(stamp_manifest(&mut without_disposition).is_err(), "missing disposition must error");
 
     let mut without_subject = base_manifest();
-    without_subject.as_object_mut().unwrap().remove("subject");
-    assert!(stamp_manifest(&mut without_subject).is_err(), "missing subject must error");
+    without_subject.as_object_mut().context("required fixture value missing")?.remove("subject");
+    ensure!(stamp_manifest(&mut without_subject).is_err(), "missing subject must error");
 
     let mut non_array_events = base_manifest();
-    non_array_events["events"] = json!("not-an-array");
-    assert!(stamp_manifest(&mut non_array_events).is_err(), "non-array events must error");
+    *non_array_events.pointer_mut("/events").context("missing fixture path /events")? =
+        json!("not-an-array");
+    ensure!(stamp_manifest(&mut non_array_events).is_err(), "non-array events must error");
 
     let mut non_array_results = base_manifest();
-    non_array_results["results"] = json!({"oops": true});
-    assert!(stamp_manifest(&mut non_array_results).is_err(), "non-array results must error");
+    *non_array_results.pointer_mut("/results").context("missing fixture path /results")? =
+        json!({"oops": true});
+    ensure!(stamp_manifest(&mut non_array_results).is_err(), "non-array results must error");
 
     // A document that failed to stamp carries no fabricated digest.
     let before = without_identity.clone();
     let mut after = without_identity;
     let _ = stamp_manifest(&mut after);
-    assert_eq!(
-        after["identity"].get("packet_digest"),
-        before["identity"].get("packet_digest"),
+    ensure!(
+        ((*after.pointer("/identity").unwrap_or(&Value::Null)).get("packet_digest"))
+            == ((*before.pointer("/identity").unwrap_or(&Value::Null)).get("packet_digest")),
         "a failed stamp must not write a packet digest"
     );
+    Ok(())
 }
 
 #[test]
-fn stamp_rejects_unsafe_manifests_before_mutating_them() {
+fn stamp_rejects_unsafe_manifests_before_mutating_them() -> Result<()> {
     let mut credential_manifest = base_manifest();
-    credential_manifest["metadata"] = json!({"accessToken": "should-not-persist"});
+    *credential_manifest.pointer_mut("/metadata").context("missing fixture path /metadata")? =
+        json!({"accessToken": "should-not-persist"});
     let credential_before = credential_manifest.clone();
-    assert!(
+    ensure!(
         stamp_manifest(&mut credential_manifest).is_err(),
         "credential-bearing metadata must fail closed before stamping"
     );
-    assert_eq!(credential_manifest, credential_before);
+    ensure!(
+        (credential_manifest) == (credential_before),
+        "test condition failed: {}",
+        stringify!((credential_manifest) == (credential_before))
+    );
 
     let mut missing_revision = base_manifest();
-    missing_revision["subject"]["model"].as_object_mut().unwrap().remove("revision");
+    missing_revision
+        .pointer_mut("/subject/model")
+        .context("missing fixture path /subject/model")?
+        .as_object_mut()
+        .context("required fixture value missing")?
+        .remove("revision");
     let missing_revision_before = missing_revision.clone();
-    assert!(
+    ensure!(
         stamp_manifest(&mut missing_revision).is_err(),
         "missing model revision must fail closed before stamping"
     );
-    assert_eq!(missing_revision, missing_revision_before);
+    ensure!(
+        (missing_revision) == (missing_revision_before),
+        "test condition failed: {}",
+        stringify!((missing_revision) == (missing_revision_before))
+    );
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -689,9 +871,9 @@ fn stamp_rejects_unsafe_manifests_before_mutating_them() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn positive_well_formed_synthetic_packets_validate() {
-    let completed = stamped(base_manifest());
-    assert!(
+fn positive_well_formed_synthetic_packets_validate() -> Result<()> {
+    let completed = stamped(base_manifest())?;
+    ensure!(
         validate_manifest(&completed).is_empty(),
         "stamped completed packet must satisfy the closed core: {:?}",
         violation_codes(&validate_manifest(&completed))
@@ -699,109 +881,147 @@ fn positive_well_formed_synthetic_packets_validate() {
 
     // A refused transfer run with zero results still validates.
     let mut refused = base_manifest();
-    refused["disposition"] = json!("transferred");
-    refused["run_id"] = json!("synthetic-refused-transfer-002");
-    refused.as_object_mut().unwrap().remove("results");
-    let refused = stamped(refused);
-    assert!(
+    *refused.pointer_mut("/disposition").context("missing fixture path /disposition")? =
+        json!("transferred");
+    *refused.pointer_mut("/run_id").context("missing fixture path /run_id")? =
+        json!("synthetic-refused-transfer-002");
+    refused.as_object_mut().context("required fixture value missing")?.remove("results");
+    let refused = stamped(refused)?;
+    ensure!(
         validate_manifest(&refused).is_empty(),
         "stamped transferred packet must satisfy the closed core: {:?}",
         violation_codes(&validate_manifest(&refused))
     );
+    Ok(())
 }
 
 #[test]
-fn digests_recompute_stably_and_diverge_on_content_change() {
-    let doc = stamped(base_manifest());
-    let first = record_digest(doc["events"][0].as_object().unwrap()).expect("fields present");
-    let second = record_digest(doc["events"][0].as_object().unwrap()).expect("fields present");
-    assert_eq!(first, second, "recomputed digest must be stable");
-    assert!(is_lowercase_sha256_hex(&first), "digests are strict lowercase 64-hex");
+fn digests_recompute_stably_and_diverge_on_content_change() -> Result<()> {
+    let doc = stamped(base_manifest())?;
+    let first = record_digest(
+        (*doc.pointer("/events/0").unwrap_or(&Value::Null))
+            .as_object()
+            .context("required fixture value missing")?,
+    )
+    .context("fields present")?;
+    let second = record_digest(
+        (*doc.pointer("/events/0").unwrap_or(&Value::Null))
+            .as_object()
+            .context("required fixture value missing")?,
+    )
+    .context("fields present")?;
+    ensure!((first) == (second), "recomputed digest must be stable");
+    ensure!(is_lowercase_sha256_hex(&first), "digests are strict lowercase 64-hex");
 
     let mut changed = doc.clone();
-    changed["events"][0]["payload"]["note"] = json!("different observation");
-    let third =
-        record_digest(changed["events"][0].as_object_mut().unwrap()).expect("fields present");
-    assert_ne!(first, third, "content change must change the digest");
+    *changed
+        .pointer_mut("/events/0/payload/note")
+        .context("missing fixture path /events/0/payload/note")? = json!("different observation");
+    let third = record_digest(
+        changed
+            .pointer_mut("/events/0")
+            .context("missing fixture path /events/0")?
+            .as_object_mut()
+            .context("required fixture value missing")?,
+    )
+    .context("fields present")?;
+    ensure!((first) != (third), "content change must change the digest");
+    Ok(())
 }
 
 #[test]
-fn digest_charset_is_strict_lowercase_hex() {
-    assert!(is_lowercase_sha256_hex(&"0123456789abcdef".repeat(4)));
-    assert!(is_lowercase_sha256_hex(&"a".repeat(64)));
-    assert!(!is_lowercase_sha256_hex(&"g".repeat(64)), "g-z are not hex");
-    assert!(!is_lowercase_sha256_hex(&"A".repeat(64)), "uppercase is not canonical");
-    assert!(!is_lowercase_sha256_hex(&format!("{}g", "a".repeat(63))), "64 chars, non-hex tail");
-    assert!(!is_lowercase_sha256_hex("abcd"), "wrong length");
+fn digest_charset_is_strict_lowercase_hex() -> Result<()> {
+    ensure!(
+        is_lowercase_sha256_hex(&"0123456789abcdef".repeat(4)),
+        "test condition failed: {}",
+        stringify!(is_lowercase_sha256_hex(&"0123456789abcdef".repeat(4)))
+    );
+    ensure!(
+        is_lowercase_sha256_hex(&"a".repeat(64)),
+        "test condition failed: {}",
+        stringify!(is_lowercase_sha256_hex(&"a".repeat(64)))
+    );
+    ensure!(!is_lowercase_sha256_hex(&"g".repeat(64)), "g-z are not hex");
+    ensure!(!is_lowercase_sha256_hex(&"A".repeat(64)), "uppercase is not canonical");
+    ensure!(!is_lowercase_sha256_hex(&format!("{}g", "a".repeat(63))), "64 chars, non-hex tail");
+    ensure!(!is_lowercase_sha256_hex("abcd"), "wrong length");
+    Ok(())
 }
 
 #[test]
-fn canonical_form_is_key_order_insensitive_array_order_sensitive() {
+fn canonical_form_is_key_order_insensitive_array_order_sensitive() -> Result<()> {
     let inserted_one_way = json!({"b": 1, "a": {"z": 2, "y": [3, 4]}});
     let inserted_other_way = json!({"a": {"y": [3, 4], "z": 2}, "b": 1});
-    assert_eq!(
-        canonical_form(&inserted_one_way),
-        canonical_form(&inserted_other_way),
+    ensure!(
+        (canonical_form(&inserted_one_way)) == (canonical_form(&inserted_other_way)),
         "equal documents must hash equally regardless of key insertion order"
     );
 
     let ascending = json!({"arr": [1, 2]});
     let descending = json!({"arr": [2, 1]});
-    assert_ne!(
-        canonical_form(&ascending),
-        canonical_form(&descending),
+    ensure!(
+        (canonical_form(&ascending)) != (canonical_form(&descending)),
         "array element order stays semantic input"
     );
+    Ok(())
 }
 
 #[test]
-fn record_digest_is_key_order_insensitive() {
+fn record_digest_is_key_order_insensitive() -> Result<()> {
     let insertion_one: Map<String, Value> =
         json!({"seq": 0, "kind": "observation", "at_ms": 0, "payload": {"x": 1, "y": 2}})
             .as_object()
-            .expect("object")
+            .context("object")?
             .clone();
     let insertion_other: Map<String, Value> =
         json!({"payload": {"y": 2, "x": 1}, "at_ms": 0, "kind": "observation", "seq": 0})
             .as_object()
-            .expect("object")
+            .context("object")?
             .clone();
-    assert_eq!(
-        record_digest(&insertion_one),
-        record_digest(&insertion_other),
+    ensure!(
+        (record_digest(&insertion_one)) == (record_digest(&insertion_other)),
         "record digests must not depend on object key insertion order"
     );
+    Ok(())
 }
 
 #[test]
-fn stamping_is_idempotent() {
-    let once = stamped(base_manifest());
+fn stamping_is_idempotent() -> Result<()> {
+    let once = stamped(base_manifest())?;
     let mut twice = once.clone();
-    stamp_manifest(&mut twice).expect("re-stamp succeeds");
-    assert_eq!(canonical_form(&once), canonical_form(&twice));
+    stamp_manifest(&mut twice).context("re-stamp succeeds")?;
+    ensure!(
+        (canonical_form(&once)) == (canonical_form(&twice)),
+        "test condition failed: {}",
+        stringify!((canonical_form(&once)) == (canonical_form(&twice)))
+    );
+    Ok(())
 }
 
 #[test]
-fn metadata_is_non_semantic_for_the_integrity_envelope() {
+fn metadata_is_non_semantic_for_the_integrity_envelope() -> Result<()> {
     let mut enriched = base_manifest();
-    enriched["metadata"] = json!({
+    *enriched.pointer_mut("/metadata").context("missing fixture path /metadata")? = json!({
         "generated_at_utc": "2026-08-27T00:00:00Z",
         "extra_caller_note": {"nested": [1, 2, 3]},
     });
-    let enriched = stamped(enriched);
-    let plain = stamped(base_manifest());
-    assert_eq!(
-        enriched["identity"]["packet_digest"], plain["identity"]["packet_digest"],
+    let enriched = stamped(enriched)?;
+    let plain = stamped(base_manifest())?;
+    ensure!(
+        (*enriched.pointer("/identity/packet_digest").unwrap_or(&Value::Null))
+            == (*plain.pointer("/identity/packet_digest").unwrap_or(&Value::Null)),
         "metadata must not enter the canonical integrity envelope"
     );
+    Ok(())
 }
 
 #[test]
-fn advisory_report_ordering_is_content_sorted_not_enumeration_sorted() {
+fn advisory_report_ordering_is_content_sorted_not_enumeration_sorted() -> Result<()> {
     let mut entries = Vec::new();
     for index in 0..4 {
         let mut doc = base_manifest();
-        doc["run_id"] = json!(format!("synthetic-run-{index:03}"));
+        *doc.pointer_mut("/run_id").context("missing fixture path /run_id")? =
+            json!(format!("synthetic-run-{index:03}"));
         entries.push((format!("zz-source-{index}.json"), doc));
     }
     let forward = collect_rows(&entries);
@@ -811,108 +1031,180 @@ fn advisory_report_ordering_is_content_sorted_not_enumeration_sorted() {
     let forward_rendered = render_report(&forward, DogfoodReportFormat::Markdown);
     let reverse_rendered =
         render_report(&collect_rows(&reversed_entries), DogfoodReportFormat::Markdown);
-    assert_eq!(
-        forward_rendered, reverse_rendered,
+    ensure!(
+        (forward_rendered) == (reverse_rendered),
         "report must be sorted by content, not caller enumeration order"
     );
     let second_rendered = render_report(&forward, DogfoodReportFormat::Markdown);
-    assert_eq!(forward_rendered, second_rendered, "rendering must be deterministic");
+    ensure!((forward_rendered) == (second_rendered), "rendering must be deterministic");
 
     let json_forward = render_report(&forward, DogfoodReportFormat::Json);
-    let parsed: Value = serde_json::from_str(&json_forward).expect("valid JSON report");
-    assert_eq!(parsed["report"], json!("agent-packet-dogfood.core.report.v1"));
-    let runs = parsed["runs"].as_array().expect("runs array");
+    let parsed: Value = serde_json::from_str(&json_forward).context("valid JSON report")?;
+    ensure!(
+        (*parsed.pointer("/report").unwrap_or(&Value::Null))
+            == (json!("agent-packet-dogfood.core.report.v1")),
+        "test condition failed: {}",
+        stringify!(
+            (*parsed.pointer("/report").unwrap_or(&Value::Null))
+                == (json!("agent-packet-dogfood.core.report.v1"))
+        )
+    );
+    let runs =
+        (*parsed.pointer("/runs").unwrap_or(&Value::Null)).as_array().context("runs array")?;
     let ids: Vec<&str> =
         runs.iter().filter_map(|r| r.get("run_id").and_then(Value::as_str)).collect();
     let mut sorted_ids = ids.clone();
     sorted_ids.sort();
-    assert_eq!(ids, sorted_ids, "JSON projection lists runs in sorted order");
+    ensure!((ids) == (sorted_ids), "JSON projection lists runs in sorted order");
+    Ok(())
 }
 
 #[test]
-fn invalid_runs_render_as_invalid_without_panicking() {
+fn invalid_runs_render_as_invalid_without_panicking() -> Result<()> {
     let mut broken = base_manifest();
-    broken.as_object_mut().unwrap().remove("subject");
+    broken.as_object_mut().context("required fixture value missing")?.remove("subject");
     let rows = collect_rows(vec![("broken.json".to_string(), broken)].as_slice());
-    assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].validity, "invalid");
+    ensure!((rows.len()) == (1), "test condition failed: {}", stringify!((rows.len()) == (1)));
+    ensure!(
+        (rows.first().context("missing report row")?.validity) == ("invalid"),
+        "test condition failed: {}",
+        stringify!((rows.first().context("missing report row")?.validity) == ("invalid"))
+    );
+    Ok(())
 }
 
 #[test]
-fn invalid_run_id_is_redacted_from_rendered_reports() {
-    let mut invalid = stamped(base_manifest());
-    invalid["run_id"] = json!("api_key=hunter2");
+fn invalid_run_id_is_redacted_from_rendered_reports() -> Result<()> {
+    let mut invalid = stamped(base_manifest())?;
+    *invalid.pointer_mut("/run_id").context("missing fixture path /run_id")? =
+        json!("api_key=hunter2");
     let rows = collect_rows(vec![("invalid.json".to_string(), invalid)].as_slice());
     let markdown = render_report(&rows, DogfoodReportFormat::Markdown);
     let json = render_report(&rows, DogfoodReportFormat::Json);
-    assert!(!markdown.contains("api_key=hunter2"), "invalid run_id leaked in markdown report");
-    assert!(!json.contains("api_key=hunter2"), "invalid run_id leaked in JSON report");
-    assert!(markdown.contains("<redacted-invalid-run-id>"));
-    assert!(json.contains("<redacted-invalid-run-id>"));
+    ensure!(!markdown.contains("api_key=hunter2"), "invalid run_id leaked in markdown report");
+    ensure!(!json.contains("api_key=hunter2"), "invalid run_id leaked in JSON report");
+    ensure!(
+        markdown.contains("<redacted-invalid-run-id>"),
+        "test condition failed: {}",
+        stringify!(markdown.contains("<redacted-invalid-run-id>"))
+    );
+    ensure!(
+        json.contains("<redacted-invalid-run-id>"),
+        "test condition failed: {}",
+        stringify!(json.contains("<redacted-invalid-run-id>"))
+    );
+    Ok(())
 }
 
 #[test]
-fn invalid_disposition_is_redacted_while_valid_disposition_is_preserved() {
-    let valid = stamped(base_manifest());
-    let mut invalid = stamped(base_manifest());
-    invalid["disposition"] = json!("api_key=hunter2");
+fn invalid_disposition_is_redacted_while_valid_disposition_is_preserved() -> Result<()> {
+    let valid = stamped(base_manifest())?;
+    let mut invalid = stamped(base_manifest())?;
+    *invalid.pointer_mut("/disposition").context("missing fixture path /disposition")? =
+        json!("api_key=hunter2");
     let entries = vec![("valid.json".to_string(), valid), ("invalid.json".to_string(), invalid)];
     let rows = collect_rows(&entries);
     let markdown = render_report(&rows, DogfoodReportFormat::Markdown);
     let json = render_report(&rows, DogfoodReportFormat::Json);
 
-    assert!(!markdown.contains("api_key=hunter2"), "invalid disposition leaked in markdown report");
-    assert!(!json.contains("api_key=hunter2"), "invalid disposition leaked in JSON report");
-    assert!(
+    ensure!(!markdown.contains("api_key=hunter2"), "invalid disposition leaked in markdown report");
+    ensure!(!json.contains("api_key=hunter2"), "invalid disposition leaked in JSON report");
+    ensure!(
         markdown.contains("| completed | valid |"),
         "valid disposition changed in markdown report"
     );
 
-    let report: Value = serde_json::from_str(&json).expect("valid JSON report");
-    let runs = report["runs"].as_array().expect("runs array");
-    assert!(
-        runs.iter().any(|run| { run["disposition"] == "completed" && run["validity"] == "valid" })
+    let report: Value = serde_json::from_str(&json).context("valid JSON report")?;
+    let runs =
+        (*report.pointer("/runs").unwrap_or(&Value::Null)).as_array().context("runs array")?;
+    ensure!(
+        runs.iter().any(|run| {
+            (*run.pointer("/disposition").unwrap_or(&Value::Null)) == "completed"
+                && (*run.pointer("/validity").unwrap_or(&Value::Null)) == "valid"
+        }),
+        "test condition failed: {}",
+        stringify!(runs.iter().any(|run| {
+            (*run.pointer("/disposition").unwrap_or(&Value::Null)) == "completed"
+                && (*run.pointer("/validity").unwrap_or(&Value::Null)) == "valid"
+        }))
     );
-    assert!(runs.iter().any(|run| {
-        run["disposition"] == "<redacted-invalid-disposition>" && run["validity"] == "invalid"
-    }));
+    ensure!(
+        runs.iter().any(|run| {
+            (*run.pointer("/disposition").unwrap_or(&Value::Null))
+                == "<redacted-invalid-disposition>"
+                && (*run.pointer("/validity").unwrap_or(&Value::Null)) == "invalid"
+        }),
+        "test condition failed: {}",
+        stringify!(runs.iter().any(|run| {
+            (*run.pointer("/disposition").unwrap_or(&Value::Null))
+                == "<redacted-invalid-disposition>"
+                && (*run.pointer("/validity").unwrap_or(&Value::Null)) == "invalid"
+        }))
+    );
+    Ok(())
 }
 
 #[test]
-fn every_closed_disposition_is_preserved_in_both_report_projections() {
+fn every_closed_disposition_is_preserved_in_both_report_projections() -> Result<()> {
     for disposition in DISPOSITIONS {
         let mut doc = base_manifest();
-        doc["disposition"] = json!(*disposition);
-        let doc = stamped(doc);
+        *doc.pointer_mut("/disposition").context("missing fixture path /disposition")? =
+            json!(*disposition);
+        let doc = stamped(doc)?;
         let entries = vec![(format!("{disposition}.json"), doc)];
         let rows = collect_rows(&entries);
 
-        assert!(rows[0].violations.is_empty(), "{disposition} must remain valid");
+        ensure!(
+            rows.first().context("missing report row")?.violations.is_empty(),
+            "{disposition} must remain valid"
+        );
         let markdown = render_report(&rows, DogfoodReportFormat::Markdown);
-        assert!(
+        ensure!(
             markdown.contains(&format!("| {disposition} | valid |")),
             "Markdown report must preserve {disposition}: {markdown}"
         );
 
         let json = render_report(&rows, DogfoodReportFormat::Json);
-        let report: Value = serde_json::from_str(&json).expect("JSON report is valid");
-        assert_eq!(report["runs"][0]["disposition"], json!(*disposition));
-        assert_eq!(report["runs"][0]["validity"], json!("valid"));
+        let report: Value = serde_json::from_str(&json).context("JSON report is valid")?;
+        ensure!(
+            (*report.pointer("/runs/0/disposition").unwrap_or(&Value::Null))
+                == (json!(*disposition)),
+            "test condition failed: {}",
+            stringify!(
+                (*report.pointer("/runs/0/disposition").unwrap_or(&Value::Null))
+                    == (json!(*disposition))
+            )
+        );
+        ensure!(
+            (*report.pointer("/runs/0/validity").unwrap_or(&Value::Null)) == (json!("valid")),
+            "test condition failed: {}",
+            stringify!(
+                (*report.pointer("/runs/0/validity").unwrap_or(&Value::Null)) == (json!("valid"))
+            )
+        );
     }
+    Ok(())
 }
 
 #[test]
-fn unknown_disposition_violation_does_not_retain_the_untrusted_value() {
+fn unknown_disposition_violation_does_not_retain_the_untrusted_value() -> Result<()> {
     let leaked = "api_key=hunter2";
     let violations = mutant(base_manifest(), |doc| {
-        doc["disposition"] = json!(leaked);
-    });
+        *doc.pointer_mut("/disposition").context("missing fixture path /disposition")? =
+            json!(leaked);
+        Ok(())
+    })?;
     let violation = violations
         .iter()
         .find(|violation| violation.code == "unknown_disposition")
-        .expect("unknown disposition must be reported");
-    assert!(!violation.detail.contains(leaked), "validator detail leaked {leaked}");
-    assert_eq!(violation.detail, "manifest: unknown disposition (value redacted)");
+        .context("unknown disposition must be reported")?;
+    ensure!(!violation.detail.contains(leaked), "validator detail leaked {leaked}");
+    ensure!(
+        (violation.detail) == ("manifest: unknown disposition (value redacted)"),
+        "test condition failed: {}",
+        stringify!((violation.detail) == ("manifest: unknown disposition (value redacted)"))
+    );
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -920,30 +1212,31 @@ fn unknown_disposition_violation_does_not_retain_the_untrusted_value() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn committed_schema_pins_module_vocabulary() {
-    let root = project_root().expect("project root resolves");
-    let violations = validate_schema_file(&root).expect("schema readable");
-    assert!(
+fn committed_schema_pins_module_vocabulary() -> Result<()> {
+    let root = project_root().context("project root resolves")?;
+    let violations = validate_schema_file(&root).context("schema readable")?;
+    ensure!(
         violations.is_empty(),
         "committed schema drifted from the pinned closed vocabulary: {violations:?}"
     );
+    Ok(())
 }
 
 #[test]
-fn every_pinned_mutant_has_a_committed_fixture_with_matching_expectation() {
-    let root = project_root().expect("project root resolves");
+fn every_pinned_mutant_has_a_committed_fixture_with_matching_expectation() -> Result<()> {
+    let root = project_root().context("project root resolves")?;
     let expected_path = root.join(FIXTURE_DIR).join(INVALID_DIR).join("expected_errors.json");
     let expected: Value = serde_json::from_str(
         &std::fs::read_to_string(&expected_path)
             .with_context(|| format!("reading {}", expected_path.display()))
-            .expect("expected_errors.json readable"),
+            .context("expected_errors.json readable")?,
     )
-    .expect("expected_errors.json parses");
-    let map = expected.as_object().expect("object map");
+    .context("expected_errors.json parses")?;
+    let map = expected.as_object().context("object map")?;
 
     for (name, code) in EXPECTED_INVALID {
         let path = root.join(FIXTURE_DIR).join(INVALID_DIR).join(name);
-        assert!(
+        ensure!(
             path.exists(),
             "mutant fixture {} is committed (red-first: matrix complete before rules land)",
             path.display()
@@ -951,44 +1244,45 @@ fn every_pinned_mutant_has_a_committed_fixture_with_matching_expectation() {
         let actual = map
             .get(*name)
             .and_then(Value::as_str)
-            .unwrap_or_else(|| panic!("{name} is listed in expected_errors.json"));
-        assert_eq!(actual, *code, "{name} expectation stays aligned with the pinned vocabulary");
-        let doc = load_manifest(&path).expect("fixture parses").1;
-        assert!(
+            .ok_or_else(|| color_eyre::eyre::eyre!("{name} is listed in expected_errors.json"))?;
+        ensure!((actual) == (*code), "{name} expectation stays aligned with the pinned vocabulary");
+        let doc = load_manifest(&path).context("fixture parses")?.1;
+        ensure!(
             doc.get("schema").and_then(Value::as_str) == Some(SCHEMA_NAME),
             "{name} declares the shared core schema name"
         );
     }
+    Ok(())
 }
 
 #[test]
-fn expected_errors_file_is_exactly_the_pinned_matrix() {
-    let root = project_root().expect("project root resolves");
+fn expected_errors_file_is_exactly_the_pinned_matrix() -> Result<()> {
+    let root = project_root().context("project root resolves")?;
     let expected_path = root.join(FIXTURE_DIR).join(INVALID_DIR).join("expected_errors.json");
     let expected: Value = serde_json::from_str(
-        &std::fs::read_to_string(&expected_path).expect("expected_errors.json readable"),
+        &std::fs::read_to_string(&expected_path).context("expected_errors.json readable")?,
     )
-    .expect("expected_errors.json parses");
-    let map = expected.as_object().expect("object map");
-    assert_eq!(
-        map.len(),
-        EXPECTED_INVALID.len(),
+    .context("expected_errors.json parses")?;
+    let map = expected.as_object().context("object map")?;
+    ensure!(
+        (map.len()) == (EXPECTED_INVALID.len()),
         "expected_errors.json must pin exactly the committed matrix"
     );
     for name in map.keys() {
-        assert!(
+        ensure!(
             EXPECTED_INVALID.iter().any(|(pinned, _)| pinned == name),
             "expected_errors.json entry {name} is not pinned in EXPECTED_INVALID"
         );
     }
+    Ok(())
 }
 
 #[test]
-fn invalid_directory_is_exactly_the_pinned_matrix() {
-    let root = project_root().expect("project root resolves");
+fn invalid_directory_is_exactly_the_pinned_matrix() -> Result<()> {
+    let root = project_root().context("project root resolves")?;
     let invalid_dir = root.join(FIXTURE_DIR).join(INVALID_DIR);
     let mut on_disk: Vec<String> = std::fs::read_dir(&invalid_dir)
-        .expect("invalid fixture dir readable")
+        .context("invalid fixture dir readable")?
         .filter_map(|entry| entry.ok())
         .map(|entry| entry.file_name().to_string_lossy().to_string())
         .filter(|name| name != "expected_errors.json")
@@ -997,17 +1291,18 @@ fn invalid_directory_is_exactly_the_pinned_matrix() {
     let mut pinned: Vec<String> =
         EXPECTED_INVALID.iter().map(|(name, _)| (*name).to_string()).collect();
     pinned.sort();
-    assert_eq!(on_disk, pinned, "every committed mutant fixture must be pinned, and vice versa");
+    ensure!((on_disk) == (pinned), "every committed mutant fixture must be pinned, and vice versa");
+    Ok(())
 }
 
 #[test]
-fn committed_valid_fixtures_validate_and_match_their_golden_reports() {
-    let root = project_root().expect("project root resolves");
+fn committed_valid_fixtures_validate_and_match_their_golden_reports() -> Result<()> {
+    let root = project_root().context("project root resolves")?;
     let fixture_dir = root.join(FIXTURE_DIR);
     let mut entries = Vec::new();
     for name in VALID_FIXTURES {
-        let (source, doc) = load_manifest(&fixture_dir.join(name)).expect("fixture parses");
-        assert!(
+        let (source, doc) = load_manifest(&fixture_dir.join(name)).context("fixture parses")?;
+        ensure!(
             validate_manifest(&doc).is_empty(),
             "{name} must validate: {:?}",
             violation_codes(&validate_manifest(&doc))
@@ -1021,7 +1316,8 @@ fn committed_valid_fixtures_validate_and_match_their_golden_reports() {
         let path = fixture_dir
             .join(GOLDEN_DIR)
             .join(format!("agent_packet_dogfood_core.advisory.{extension}"));
-        let golden = std::fs::read_to_string(&path).expect("golden vector readable");
-        assert_eq!(golden, render_report(&rows, format), "{} drifted", path.display());
+        let golden = std::fs::read_to_string(&path).context("golden vector readable")?;
+        ensure!((golden) == (render_report(&rows, format)), "{} drifted", path.display());
     }
+    Ok(())
 }

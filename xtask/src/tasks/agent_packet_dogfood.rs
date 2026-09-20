@@ -849,7 +849,6 @@ fn contains_forbidden_mutable_state(value: &Value, where_: &str, violations: &mu
 /// Validate one bounded record (event or result). Returns Ok(recomputed
 /// digest) when all structural rules held, even on digest mismatch, so the
 /// caller can still attempt envelope comparison.
-#[allow(clippy::too_many_arguments)]
 fn validate_record(
     record: &Map<String, Value>,
     where_: &str,
