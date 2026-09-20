@@ -232,8 +232,10 @@ fn validate_cli_does_not_echo_caller_controlled_manifest_paths() -> Result<()> {
     let temp = tempfile::tempdir()?;
     let leaked = "api_key=hunter2";
     let mut invalid = fixture_document()?;
-    *invalid.pointer_mut("/metadata").context("missing fixture path /metadata")? =
-        json!({"api_key": "hunter2"});
+    invalid
+        .as_object_mut()
+        .context("fixture must be an object")?
+        .insert("metadata".to_owned(), json!({"api_key": "hunter2"}));
     let path = write_document(&temp, "api_key=hunter2.json", invalid)?;
     let output = Command::cargo_bin("xtask")?
         .args(["agent-dogfood", "validate", "--manifest"])

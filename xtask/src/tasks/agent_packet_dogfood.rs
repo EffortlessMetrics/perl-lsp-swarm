@@ -1383,6 +1383,7 @@ struct RunRow {
     violations: Vec<Violation>,
 }
 
+#[cfg(test)]
 fn load_manifest(path: &Path) -> Result<(String, Value)> {
     let text = fs::read_to_string(path).context("failed to read caller-supplied manifest")?;
     let doc: Value =
@@ -1463,6 +1464,7 @@ fn collect_row(source: &str, doc: &Value, raw_scan: Option<&RawManifestScan>) ->
     }
 }
 
+#[cfg(test)]
 fn collect_rows(entries: &[(String, Value)]) -> Vec<RunRow> {
     entries.iter().map(|(source, doc)| collect_row(source, doc, None)).collect()
 }
