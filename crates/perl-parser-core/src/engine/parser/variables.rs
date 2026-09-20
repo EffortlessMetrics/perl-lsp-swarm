@@ -74,6 +74,31 @@ impl<'a> Parser<'a> {
                 || self.previous_position(),
                 |node| node.location.end.max(self.previous_position()),
             );
+            // Contextual repetition assignment (`my ($x, $y) x= 3`) never
+            // reaches the `=` initializer above: `x=` arrives as
+            // `Identifier("x")` + `Assign`. Route the declaration through the
+            // shared assignment seam so it becomes the LHS of one `x=`
+            // assignment (#13486). The `Identifier` gate keeps symbolic
+            // operators on their existing path: the seam consumes nothing
+            // unless it recognizes an adjacent `x=`. `foreach` iterator
+            // targets are not assignment expressions, so they never grow an
+            // `x=` tail here; C-style `for` initializers stay eligible.
+            if initializer.is_none()
+                && !self.in_foreach_iterator
+                && self.peek_kind() == Some(TokenKind::Identifier)
+                && let Some((op, op_start)) = self.consume_assignment_operator()?
+            {
+                let decl = self.charge_node(
+                    NodeKind::VariableListDeclaration {
+                        declarator,
+                        variables,
+                        attributes,
+                        initializer,
+                    },
+                    SourceLocation { start, end },
+                )?;
+                return self.finish_declaration_repetition_assignment(decl, op, op_start);
+            }
             let node = self.charge_node(
                 NodeKind::VariableListDeclaration {
                     declarator,

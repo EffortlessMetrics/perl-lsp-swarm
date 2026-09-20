@@ -522,6 +522,37 @@ impl<'a> Parser<'a> {
         )
     }
 
+    /// Fold a just-parsed declaration into the repetition assignment the
+    /// shared seam has already recognized.
+    ///
+    /// Both declaration-specific exits that bypass ordinary assignment
+    /// parsing (the statement-level list branch and the call-argument
+    /// declaration expression) share this finisher so the span rule (LHS
+    /// keeps the declaration span, the assignment spans through the RHS),
+    /// missing-RHS recovery, and right-associative RHS have one authority
+    /// (#13486). Callers own the `Identifier` gate: only invoke after
+    /// `consume_assignment_operator` returns `Some`, which keeps symbolic
+    /// operators on their existing path.
+    fn finish_declaration_repetition_assignment(
+        &mut self,
+        decl: Node,
+        op: &str,
+        op_start: usize,
+    ) -> ParseResult<Node> {
+        let rhs = if let Some(missing) = self.recover_missing_infix_rhs(op_start) {
+            missing
+        } else {
+            self.parse_assignment()?
+        };
+        let start = decl.location.start;
+        let end = rhs.location.end;
+
+        self.charge_node(
+            NodeKind::Assignment { lhs: Box::new(decl), rhs: Box::new(rhs), op: op.to_string() },
+            SourceLocation { start, end },
+        )
+    }
+
     fn is_explicit_sub_sigil_argument_start(&mut self) -> bool {
         matches!(self.peek_kind(), Some(TokenKind::SubSigil | TokenKind::BitwiseAnd))
             && self.tokens.peek_second().is_ok_and(|token| {
