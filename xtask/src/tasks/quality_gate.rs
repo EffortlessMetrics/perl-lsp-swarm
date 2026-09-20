@@ -100,6 +100,10 @@ pub struct QualityGateArgs {
     pub patch_coverage: Option<f64>,
     pub ripr_base: String,
     pub ripr_head: String,
+    /// Commit the repo-wide total-debt receipt may be bound to instead of the
+    /// head, for `enforce-new-ripr` only. Normally the merge base the pull
+    /// request is measured against. `None` keeps the receipt head-bound.
+    pub ripr_baseline_commit: Option<String>,
     pub receipt: PathBuf,
     pub summary: PathBuf,
     pub check: bool,
@@ -481,7 +485,18 @@ fn evaluate_new_ripr(
     args: &QualityGateArgs,
     overlay: Option<&LifecycleOverlay>,
 ) -> Result<GateEvaluation> {
-    let ripr = read_ripr_plus_receipt(&args.ripr_receipt, head);
+    // #16126: this gate blocks on `ripr_pr`, the diff-scoped receipt. The
+    // repo-wide receipt below is a freshness proof of total debt and its count
+    // is never compared to anything here, so it need not be rebuilt on the
+    // head. `evaluate_final` is the mode that does compare it, and stays
+    // head-bound.
+    let mut accepted = vec![head];
+    if let Some(baseline) = args.ripr_baseline_commit.as_deref()
+        && !baseline.is_empty()
+    {
+        accepted.push(baseline);
+    }
+    let ripr = read_ripr_plus_receipt_bound(&args.ripr_receipt, &accepted);
     let ripr_pr = read_ripr_pr_receipt(&args.ripr_pr_receipt, head);
     let review = read_review_guidance_receipt(&args.review_receipt, head);
     let exceptions = read_exception_policy(args, today(), overlay);
@@ -559,6 +574,12 @@ fn evaluate_new_ripr(
             "receipt": display_path(&args.ripr_receipt),
             "receipt_head": ripr.receipt_head,
             "expected_head": head,
+            // Which commit the total-debt proof is actually bound to. The head
+            // when the receipt was rebuilt here, otherwise the merge base the
+            // pull request is measured against (#16126). Recorded so a reader
+            // of this receipt never has to assume.
+            "bound_to": ripr.bound_to,
+            "accepted_baseline_commit": args.ripr_baseline_commit,
             "unresolved": ripr.unresolved,
         },
         "ripr_pr": {
@@ -620,6 +641,11 @@ struct CoverageReceipt {
 struct RiprPlusReceipt {
     status: String,
     receipt_head: Option<String>,
+    /// Which of the accepted commits the receipt actually proved, when
+    /// `status` is `present`. Recorded so the emitted receipt names the
+    /// commit the total-debt proof is bound to rather than leaving a reader
+    /// to assume it was the head.
+    bound_to: Option<String>,
     unresolved: Option<u64>,
     recommended_first_clusters: Vec<Value>,
 }
@@ -1233,16 +1259,34 @@ fn read_json_receipt(path: &Path) -> JsonReceipt {
 }
 
 fn read_ripr_plus_receipt(path: &Path, expected_head: &str) -> RiprPlusReceipt {
+    read_ripr_plus_receipt_bound(path, &[expected_head])
+}
+
+/// Read the repo-wide RIPR+ total-debt receipt, accepting a binding to any one
+/// of `accepted`.
+///
+/// `enforce-new-ripr` blocks on the *diff-scoped* PR receipt; this receipt's
+/// count is recorded and never compared to anything (#16126). What the gate
+/// needs from it is proof that current total debt was measured, so the gate may
+/// accept a receipt bound to the merge base the pull request is measured
+/// against instead of one rebuilt on the head, which costs ~31 minutes a run.
+///
+/// The caller names every acceptable commit exactly. This is never a
+/// "recent enough" match: a receipt bound to some other commit stays `stale`,
+/// and `stale` blocks, so a head with no reachable proof cannot read as proved.
+fn read_ripr_plus_receipt_bound(path: &Path, accepted: &[&str]) -> RiprPlusReceipt {
     match read_json_receipt(path) {
         JsonReceipt::Missing => RiprPlusReceipt {
             status: "missing".to_string(),
             receipt_head: None,
+            bound_to: None,
             unresolved: None,
             recommended_first_clusters: Vec::new(),
         },
         JsonReceipt::Invalid => RiprPlusReceipt {
             status: "invalid".to_string(),
             receipt_head: None,
+            bound_to: None,
             unresolved: None,
             recommended_first_clusters: Vec::new(),
         },
@@ -1253,13 +1297,17 @@ fn read_ripr_plus_receipt(path: &Path, expected_head: &str) -> RiprPlusReceipt {
                 return RiprPlusReceipt {
                     status: "invalid_schema".to_string(),
                     receipt_head: None,
+                    bound_to: None,
                     unresolved: None,
                     recommended_first_clusters: Vec::new(),
                 };
             }
             let receipt_head = payload.get("head").and_then(Value::as_str).map(ToOwned::to_owned);
-            let status =
-                if receipt_head.as_deref() == Some(expected_head) { "present" } else { "stale" };
+            let bound_to = receipt_head
+                .as_deref()
+                .filter(|head| accepted.contains(head))
+                .map(ToOwned::to_owned);
+            let status = if bound_to.is_some() { "present" } else { "stale" };
             let recommended_first_clusters = payload
                 .get("recommended_first_clusters")
                 .and_then(Value::as_array)
@@ -1268,6 +1316,7 @@ fn read_ripr_plus_receipt(path: &Path, expected_head: &str) -> RiprPlusReceipt {
             RiprPlusReceipt {
                 status: status.to_string(),
                 receipt_head,
+                bound_to,
                 unresolved: payload.get("unresolved").and_then(Value::as_u64),
                 recommended_first_clusters,
             }
@@ -3691,6 +3740,177 @@ mod tests {
         Ok(path)
     }
 
+    /// A repo-wide receipt bound to `commit`, plus the other inputs the
+    /// new-gap gate reads. Written locally rather than through
+    /// `write_gate_inputs` so these tests isolate the receipt *binding* from
+    /// the gap count, which is a separate question with its own tests.
+    fn write_binding_inputs(dir: &Path, head: &str, receipt_commit: &str) -> Result<()> {
+        fs::write(
+            dir.join("ripr-plus.json"),
+            json!({ "schema_version": 2, "head": receipt_commit, "unresolved": 5685 }).to_string(),
+        )?;
+        fs::write(
+            dir.join("repo-exposure.json"),
+            json!({
+                "schema_version": "0.1",
+                "head_sha": head,
+                "base": "origin/main",
+                "base_sha": "merge-base-sha",
+                "summary": { "severe_gaps": 0, "reachable_unrevealed": 0, "no_static_path": 0 }
+            })
+            .to_string(),
+        )?;
+        fs::write(
+            dir.join("comments.json"),
+            json!({
+                "schema_version": "0.1",
+                "head_sha": head,
+                "status": "advisory",
+                "comments": [],
+                "summary_only": [],
+                "suppressed": [],
+                "warnings": []
+            })
+            .to_string(),
+        )?;
+        Ok(())
+    }
+
+    /// #16126. `enforce-new-ripr` blocks on the diff-scoped `ripr_pr` receipt;
+    /// the repo-wide receipt is a freshness proof whose count this mode never
+    /// compares to anything. Rebuilding it on the head costs ~31 minutes a run,
+    /// so the gate accepts one bound to the merge base when the caller names
+    /// that commit exactly.
+    #[test]
+    fn a_named_baseline_commit_satisfies_the_new_gap_gate() -> Result<()> {
+        let dir = tempdir()?;
+        let head = "head-sha";
+        let base = "merge-base-sha";
+        // The receipt was produced on the merge base, not on this head.
+        write_binding_inputs(dir.path(), head, base)?;
+
+        let mut args = new_ripr_args(dir.path())?;
+        args.ripr_baseline_commit = Some(base.to_string());
+        let evaluation = evaluate_new_ripr(head, &args, None)?;
+
+        assert_eq!(evaluation.receipt.pointer("/ripr_plus/status"), Some(&json!("present")));
+        assert_eq!(
+            evaluation.receipt.pointer("/ripr_plus/bound_to"),
+            Some(&json!(base)),
+            "the receipt must name the commit the proof is bound to, not leave it assumed"
+        );
+        assert_eq!(
+            gap_action(&evaluation, "ripr_receipt_not_current"),
+            json!(null),
+            "a receipt bound to the named merge base is current total-debt proof"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn the_head_binding_still_works_and_is_recorded_as_the_head() -> Result<()> {
+        let dir = tempdir()?;
+        let head = "head-sha";
+        write_binding_inputs(dir.path(), head, head)?;
+
+        let args = new_ripr_args(dir.path())?;
+        let evaluation = evaluate_new_ripr(head, &args, None)?;
+
+        assert_eq!(evaluation.receipt.pointer("/ripr_plus/status"), Some(&json!("present")));
+        assert_eq!(evaluation.receipt.pointer("/ripr_plus/bound_to"), Some(&json!(head)));
+        assert_eq!(gap_action(&evaluation, "ripr_receipt_not_current"), json!(null));
+        Ok(())
+    }
+
+    /// The load-bearing half. The realistic wrong implementation is a binding
+    /// that accepts any reasonably recent receipt; every dated-field defect in
+    /// this repository started that way. A head with no reachable proof must
+    /// not read as proved, so each of these stays `stale`, and `stale` blocks.
+    #[test]
+    fn an_unnamed_or_mismatched_baseline_blocks_rather_than_passing() -> Result<()> {
+        let head = "head-sha";
+        let base = "merge-base-sha";
+
+        let cases: [(&str, Option<String>); 3] = [
+            ("no baseline named at all", None),
+            ("an empty baseline must not widen the binding", Some(String::new())),
+            ("a baseline that is not the receipt's commit", Some("some-other-sha".to_string())),
+        ];
+
+        for (label, baseline) in cases {
+            let dir = tempdir()?;
+            write_binding_inputs(dir.path(), head, base)?;
+
+            let mut args = new_ripr_args(dir.path())?;
+            args.ripr_baseline_commit = baseline;
+            let evaluation = evaluate_new_ripr(head, &args, None)?;
+
+            assert_eq!(
+                evaluation.receipt.pointer("/ripr_plus/status"),
+                Some(&json!("stale")),
+                "{label}"
+            );
+            assert_eq!(
+                evaluation.receipt.pointer("/ripr_plus/bound_to"),
+                Some(&json!(null)),
+                "{label}: nothing was proved, so nothing is bound"
+            );
+            assert_eq!(
+                gap_action(&evaluation, "ripr_receipt_not_current").get("blocking"),
+                Some(&json!(true)),
+                "{label}: a head with no reachable proof must not pass"
+            );
+            assert!(evaluation.failed, "{label}");
+        }
+        Ok(())
+    }
+
+    /// The non-regression that matters. `evaluate_final` is the mode that does
+    /// compare the repo-wide total to zero (`ripr_total_unresolved_action`), so
+    /// its proof must stay bound to the head even when a baseline is named.
+    /// Widening it here would weaken a gate this change never intended to touch.
+    #[test]
+    fn the_total_debt_mode_stays_head_bound_even_when_a_baseline_is_named() -> Result<()> {
+        let dir = tempdir()?;
+        let head = "head-sha";
+        let base = "merge-base-sha";
+        write_binding_inputs(dir.path(), head, base)?;
+
+        // `evaluate_final` also reads coverage inputs that the new-gap mode
+        // does not; supply the minimum so the run reaches the binding check
+        // rather than erroring before it.
+        fs::write(
+            dir.path().join("codecov.yml"),
+            "coverage:\n  status:\n    patch:\n      default:\n        target: 95%\n        threshold: 0%\n",
+        )?;
+        fs::write(
+            dir.path().join("coverage.json"),
+            json!({
+                "schema_version": 1,
+                "head": head,
+                "scope": "workspace",
+                "coverage": { "patch": 99.0, "project": 94.0 }
+            })
+            .to_string(),
+        )?;
+
+        let mut args = new_ripr_args(dir.path())?;
+        args.mode = QualityGateMode::Enforce;
+        args.ripr_baseline_commit = Some(base.to_string());
+        let evaluation = evaluate_final(head, &args, None)?;
+
+        assert_eq!(
+            evaluation.receipt.pointer("/ripr_plus/status"),
+            Some(&json!("stale")),
+            "enforce mode compares the repo-wide total, so it must prove it on the head"
+        );
+        assert_eq!(
+            gap_action(&evaluation, "ripr_receipt_not_current").get("blocking"),
+            Some(&json!(true))
+        );
+        Ok(())
+    }
+
     fn new_ripr_args(dir: &Path) -> Result<QualityGateArgs> {
         Ok(QualityGateArgs {
             mode: QualityGateMode::EnforceNewRipr,
@@ -3703,6 +3923,7 @@ mod tests {
             patch_coverage: None,
             ripr_base: "origin/main".to_string(),
             ripr_head: "HEAD".to_string(),
+            ripr_baseline_commit: None,
             receipt: dir.join("quality-gate.json"),
             summary: dir.join("quality-gate.md"),
             check: false,
@@ -4102,6 +4323,7 @@ mod tests {
             patch_coverage: None,
             ripr_base: "origin/main".to_string(),
             ripr_head: "HEAD".to_string(),
+            ripr_baseline_commit: None,
             receipt: dir.path().join("quality-gate.json"),
             summary: dir.path().join("quality-gate.md"),
             check: false,
