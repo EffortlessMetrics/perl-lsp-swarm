@@ -58,7 +58,7 @@
 use crate::tasks::ci_metrics::SCHEMA_VERSION as CI_BASELINE_SCHEMA_VERSION;
 use crate::utils::project_root;
 use chrono::Utc;
-use color_eyre::eyre::{eyre, Context, Result};
+use color_eyre::eyre::{Context, Result, eyre};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
