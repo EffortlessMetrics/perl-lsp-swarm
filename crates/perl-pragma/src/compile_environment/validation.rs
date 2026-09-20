@@ -163,7 +163,7 @@ impl<'a> Context<'a> {
         }
         Ok(())
     }
-    fn facet<T>(&mut self, value: &mut Facet<T>) -> Result<(), SchemaError> {
+    pub(super) fn facet<T>(&mut self, value: &mut Facet<T>) -> Result<(), SchemaError> {
         self.origins(&mut value.origins)?;
         if value.outcome == Outcome::Exact {
             if value.value.is_none()
@@ -229,7 +229,10 @@ impl<'a> Context<'a> {
         }
         Ok(())
     }
-    fn boundaries(&mut self, values: &mut [BoundaryReference]) -> Result<(), SchemaError> {
+    pub(super) fn boundaries(
+        &mut self,
+        values: &mut [BoundaryReference],
+    ) -> Result<(), SchemaError> {
         count(values.len(), MAX_REFERENCES, "boundary references")?;
         values.sort_by(|a, b| a.id.cmp(&b.id));
         for pair in values.windows(2) {
