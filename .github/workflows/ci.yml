@@ -11,7 +11,7 @@ permissions:
 jobs:
   contabo-proof:
     name: Contabo Proof (Primary)
-    uses: EffortlessMetrics/em-ci-workflows/.github/workflows/rust.yml@33b78e885ffc90798a08e93bfe08bd91c47b0999
+    uses: EffortlessMetrics/em-ci-workflows/.github/workflows/rust.yml@73f6a600f8c46ebc7f013ae3f8d17006a1b24fa7
     with:
       profile: standard
       script: .ci/rust-standard-proof.sh
