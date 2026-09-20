@@ -2181,22 +2181,17 @@ jobs:
       # unit_routed_full, which is advisory and scope-aware, so it is silent
       # unless a diff happens to select xtask. The suite sat 21 passed / 42
       # failed on main while every required check stayed green (#16159).
+      # The suite covers inventory drift as well as deriver behaviour:
+      # `committed_inventory_matches_fresh_generation` calls
+      # `activation::check_drift`, which regenerates in memory and byte-compares
+      # against the committed artifact -- the same function `cargo xtask
+      # activation generate` calls. Measured: injecting a gate into
+      # `.ci/gate-policy.yaml` without regenerating gives 62 passed, 1 failed,
+      # that test. So no separate drift step is needed, and this job is the
+      # right surface for both, being the required check that still runs when
+      # only `.ci/` changes and no crate is selected.
       - name: Activation inventory suite (required merge surface)
         run: cargo test -p xtask --test activation --locked -- --nocapture
-
-      # The suite proves the deriver agrees with itself; this proves the
-      # committed artifact still agrees with the authorities it projects. The
-      # two fail for different reasons, so neither substitutes for the other: a
-      # deriver regression reds the suite, while a gate added to
-      # `.ci/gate-policy.yaml` or a cargo feature added to a manifest without
-      # `cargo xtask activation generate --write` reds only this. That second
-      # case is why it belongs here rather than on a Rust-scoped lane --
-      # compile-all-targets is the required merge surface that still runs when
-      # only `.ci/` changes. The drift is not hypothetical: the committed
-      # artifact reached 170 rows against a live derivation of 177 while the
-      # deriver panicked before emitting anything, so the suite could not see it.
-      - name: Activation inventory drift gate (required merge surface)
-        run: cargo run --locked -p xtask -- activation generate
 
   lsp-memory-smoke:
     name: LSP Memory Smoke
