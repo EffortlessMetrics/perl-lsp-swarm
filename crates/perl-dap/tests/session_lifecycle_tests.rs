@@ -592,15 +592,12 @@ fn test_session_lifecycle_launch_nonexistent_program() {
     initialize_adapter(&mut adapter);
 
     // Authority-backed launches require an absolute `program` path (#8656);
-    // anchor the nonexistent path under a real absolute directory so the
-    // launch reaches the file-existence check this test asserts on every
-    // platform (a bare `/nonexistent/...` is not absolute on Windows).
-    let nonexistent = std::env::temp_dir()
-        .join("perl_dap_nonexistent_9f3c2e1a")
-        .join("script.pl")
-        .to_str()
-        .map(str::to_string)
-        .unwrap_or_default();
+    // anchor the nonexistent path inside a unique retained temp directory so
+    // nonexistence is guaranteed regardless of machine state and the launch
+    // reaches the file-existence check this test asserts on every platform
+    // (a bare `/nonexistent/...` is not absolute on Windows).
+    let dir = must(tempfile::tempdir());
+    let nonexistent = dir.path().join("script.pl").to_str().map(str::to_string).unwrap_or_default();
     let args = json!({
         "program": nonexistent,
         "args": [],
