@@ -83,7 +83,7 @@ impl<'a> Parser<'a> {
             let mut right = if self.goto_starts_control_flow() {
                 self.parse_goto()?
             } else {
-                self.parse_word_not_expr()?
+                self.parse_assignment()?
             };
             right = self.collect_comma_fat_arrow_continuation(right)?;
 
@@ -125,23 +125,33 @@ impl<'a> Parser<'a> {
                 .unwrap_or(true)
     }
 
-    /// Parse word not expression - handles 'not' operator
+    /// Parse word `not` through its canonical operand boundary (#13932).
+    /// Bare operands include assignment/comma but stop before and/or/xor;
+    /// explicit parentheses close the operand before following infix operators.
     fn parse_word_not_expr(&mut self) -> ParseResult<Node> {
         self.with_recursion_guard(|s| {
-            if s.peek_kind() == Some(TokenKind::WordNot) {
+            if s.peek_kind() == Some(TokenKind::WordNot) && !s.is_keyword_before_fat_arrow() {
                 let op_token = s.advance_token()?;
                 let start = op_token.start();
-                let operand = if s.goto_starts_control_flow() {
-                    s.parse_goto()?
+                let operand = if let Some(missing) = s.recover_missing_infix_rhs(start) {
+                    missing
+                } else if s.peek_kind() == Some(TokenKind::LeftParen) {
+                    s.parse_primary()?
                 } else {
-                    s.parse_word_not_expr()?
+                    let first = if s.goto_starts_control_flow() {
+                        s.parse_goto()?
+                    } else {
+                        s.parse_assignment()?
+                    };
+                    s.collect_comma_fat_arrow_continuation(first)?
                 };
                 let end = operand.location.end;
 
-                return s.charge_node(
+                let expr = s.charge_node(
                     NodeKind::Unary { op: op_token.text.to_string(), operand: Box::new(operand) },
                     SourceLocation { start, end },
-                );
+                )?;
+                return s.parse_postfix_chain(expr);
             }
 
             // The right side of a word operator should be a full expression
@@ -207,10 +217,10 @@ impl<'a> Parser<'a> {
                 );
             }
 
-            // Check if we have a 'not' operator first
-            if kind == TokenKind::WordNot {
-                return self.parse_word_not_expr();
-            }
+            // NOTE (#13932 reconstruction): no early `not` dispatch here.
+            // Word `not` enters through parse_unary so the levels above
+            // still run after `parse_word_not_expr` returns. The
+            // `parse_unary` WordNot arm remains the single entry point.
         }
 
         // Handle 'return' as an expression in expression context
@@ -226,8 +236,6 @@ impl<'a> Parser<'a> {
             // The RHS can be a 'not' expression, or missing (recovery)
             let rhs = if let Some(missing) = self.recover_missing_infix_rhs(op_start) {
                 missing
-            } else if self.peek_kind() == Some(TokenKind::WordNot) {
-                self.parse_word_not_expr()?
             } else {
                 self.parse_assignment_with_ternary_tail(collect_else_list)?
             };
@@ -1047,7 +1055,7 @@ impl<'a> Parser<'a> {
     ///
     /// Kept local to this seam: filehandle, block, list, and recovery contexts have
     /// different legal starts. Do not reuse this as a global expression-starter
-    /// predicate. Angle-bracket terms, word `not`, and yada-yada `...` remain
+    /// predicate. Angle-bracket terms and yada-yada `...` remain
     /// outside this supported operand set. Magic constants use Identifier.
     fn ordinary_binary_repetition_rhs(kind: TokenKind, text: &str) -> RepetitionRhsDisposition {
         let supported = match kind {
@@ -1067,6 +1075,7 @@ impl<'a> Parser<'a> {
             // `when` is a bareword/call while this operand is still expected.
             | TokenKind::When
             | TokenKind::Not
+            | TokenKind::WordNot
             | TokenKind::Minus
             | TokenKind::Plus
             | TokenKind::Increment
