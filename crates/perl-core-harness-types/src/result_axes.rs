@@ -3007,13 +3007,19 @@ mod tests {
                 ));
             }
         }
-        assert_eq!(checked, 2500, "the rule table must cover the whole axis product");
-        assert!(
-            mismatches.is_empty(),
-            "the constructor and the independent rule table disagree on {} combination(s):\n{}",
-            mismatches.len(),
-            mismatches.join("\n")
-        );
+        if checked != 2500 {
+            return Err(
+                format!("the rule table covered {checked} combinations, expected 2500").into()
+            );
+        }
+        if !mismatches.is_empty() {
+            return Err(format!(
+                "the constructor and the independent rule table disagree on {} combination(s):\n{}",
+                mismatches.len(),
+                mismatches.join("\n")
+            )
+            .into());
+        }
         Ok(())
     }
 
@@ -3048,14 +3054,18 @@ mod tests {
                 ));
             }
         }
-        assert_eq!(checked, 2500, "the rule table must cover the whole axis product");
-        assert!(
-            mismatches.is_empty(),
-            "the published schema and the independent rule table disagree on {} \
-             combination(s):\n{}",
-            mismatches.len(),
-            mismatches.join("\n")
-        );
+        if checked != 2500 {
+            return Err(
+                format!("the rule table covered {checked} combinations, expected 2500").into()
+            );
+        }
+        if !mismatches.is_empty() {
+            return Err(format!(
+                "the published schema and the independent rule table disagree on {} combination(s):\n{}",
+                mismatches.len(),
+                mismatches.join("\n")
+            ).into());
+        }
         Ok(())
     }
 
@@ -3079,7 +3089,8 @@ mod tests {
     ///
     /// Total: 6 + 24 + 115 + 115 + 23 = 283 accepted of 2500.
     #[test]
-    fn the_rule_table_is_total_and_matches_hand_computed_acceptance() {
+    fn the_rule_table_is_total_and_matches_hand_computed_acceptance()
+    -> Result<(), Box<dyn std::error::Error>> {
         let mut checked = 0usize;
         let mut accepted = 0usize;
         let mut accepted_by_support: BTreeMap<&'static str, usize> = BTreeMap::new();
@@ -3091,13 +3102,33 @@ mod tests {
                 *accepted_by_support.entry(support.as_str()).or_insert(0) += 1;
             }
         }
-        assert_eq!(checked, 2500, "the rule table must cover the whole axis product");
-        assert_eq!(accepted, 283, "hand-computed accepted combinations");
-        assert_eq!(accepted_by_support.get("general"), Some(&6));
-        assert_eq!(accepted_by_support.get("partial"), Some(&24));
-        assert_eq!(accepted_by_support.get("blocked"), Some(&115));
-        assert_eq!(accepted_by_support.get("not_assessed"), Some(&115));
-        assert_eq!(accepted_by_support.get("unavailable"), Some(&23));
+        if checked != 2500 {
+            return Err(
+                format!("the rule table covered {checked} combinations, expected 2500").into()
+            );
+        }
+        if accepted != 283 {
+            return Err(format!(
+                "hand-computed accepted combinations: expected 283, got {accepted}"
+            )
+            .into());
+        }
+        for (support, expected) in [
+            ("general", 6),
+            ("partial", 24),
+            ("blocked", 115),
+            ("not_assessed", 115),
+            ("unavailable", 23),
+        ] {
+            let actual = accepted_by_support.get(support).copied().unwrap_or(0);
+            if actual != expected {
+                return Err(format!(
+                    "{support} accepted combinations: expected {expected}, got {actual}"
+                )
+                .into());
+            }
+        }
+        Ok(())
     }
 
     #[test]
