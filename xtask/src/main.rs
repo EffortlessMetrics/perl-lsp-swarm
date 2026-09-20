@@ -911,6 +911,23 @@ enum Commands {
         check: bool,
     },
 
+    /// Render each non-success gate's failing tests, panic location and repro
+    /// command from a merge-gate shard summary and its per-gate logs.
+    GateFailureDigest {
+        /// Shard summary written by scripts/ci/run_gate_shard.py.
+        #[arg(long)]
+        summary: PathBuf,
+        /// Directory holding <gate>.log for each executed gate.
+        #[arg(long, default_value = "target/receipts/logs")]
+        logs: PathBuf,
+        /// Markdown destination; replaced, never appended to.
+        #[arg(long, default_value = "target/receipts/gate-failure-digest.md")]
+        out: PathBuf,
+        /// Also print the digest to stdout.
+        #[arg(long)]
+        print: bool,
+    },
+
     /// Report the RIPR suppression ledger's own lifecycle dates against today.
     ///
     /// Advisory: writes an artifact and always exits 0 on a readable ledger.
