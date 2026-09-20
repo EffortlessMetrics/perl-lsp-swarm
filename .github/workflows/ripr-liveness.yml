@@ -1,0 +1,153 @@
+# ripr liveness — report a ripr run that has scheduled no jobs.
+#
+# `ripr.yml` serialises per pull request (`concurrency: ripr-<pr>` with
+# `cancel-in-progress: false`, deliberately, so a newer head queues behind an
+# active analysis rather than cancelling it). A queued run schedules no jobs at
+# all, and GitHub posts a check run only for a scheduled job, so the required
+# context `ripr+ New Gap Gate` is not red and not pending on that head: it is
+# absent. Branch protection renders that the same way it renders a check that
+# is still running.
+#
+# Measured 2026-09-20: run 35487554523 (PR #16083) sat `pending` with zero jobs
+# for 47 minutes while 74 other check runs reported on that head.
+#
+# This workflow posts an advisory `ripr+ liveness` check so the silence is
+# visible. It deliberately does NOT post under the required context's own name:
+# writing that name from here could change whether a pull request is mergeable,
+# and a check run this workflow left behind could outlive the real one. The
+# classifier can never emit a `success` conclusion.
+
+name: ripr liveness
+
+on:
+  schedule:
+    # Every 15 minutes. The floor below is 10, so a run that crosses it is
+    # reported within one further interval.
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+    inputs:
+      floor_minutes:
+        description: 'Minutes with no scheduled job before a run is reported'
+        required: false
+        default: '10'
+        type: string
+
+concurrency:
+  group: ripr-liveness
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  report:
+    name: ripr liveness
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+      # Posting the advisory check run. Never under a required context's name.
+      checks: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Snapshot ripr runs
+        id: snapshot
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FLOOR_MINUTES: ${{ inputs.floor_minutes || '10' }}
+        run: |
+          set -euo pipefail
+          mkdir -p target/ripr/liveness
+
+          # One page is ample: ripr runs are serialised per PR and the floor is
+          # minutes, so anything older than this page has long since resolved.
+          gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/ripr.yml/runs?per_page=100" \
+            --jq '[.workflow_runs[] | {id, status, created_at, head_sha, head_branch,
+                   pull_requests: [.pull_requests[]?.number]}]' \
+            > target/ripr/liveness/runs.json
+
+          # Only a run that has scheduled nothing needs its job count read, so
+          # the per-run call is bounded to the candidates.
+          python3 - <<'PY'
+          import json, os, subprocess, datetime
+
+          repo = os.environ["GITHUB_REPOSITORY"]
+          runs = json.load(open("target/ripr/liveness/runs.json"))
+          unstarted = {"queued", "pending", "waiting", "requested"}
+          for run in runs:
+              if run.get("status") in unstarted:
+                  out = subprocess.run(
+                      ["gh", "api", f"repos/{repo}/actions/runs/{run['id']}/jobs",
+                       "--jq", ".total_count"],
+                      capture_output=True, text=True, check=False,
+                  )
+                  run["job_count"] = int(out.stdout.strip() or 0) if out.returncode == 0 else None
+              else:
+                  run["job_count"] = 1
+
+          snapshot = {
+              "as_of": datetime.datetime.now(datetime.timezone.utc)
+                  .replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+              "floor_minutes": int(os.environ["FLOOR_MINUTES"]),
+              "runs": runs,
+          }
+          json.dump(snapshot, open("target/ripr/liveness/snapshot.json", "w"), indent=2)
+          PY
+
+      - name: Classify
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/ci/ripr_liveness.py \
+            --snapshot target/ripr/liveness/snapshot.json \
+            --out target/ripr/liveness/report.md \
+            --json target/ripr/liveness/report.json \
+            --print
+          cat target/ripr/liveness/report.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Post advisory check runs
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os, subprocess, sys
+
+          repo = os.environ["GITHUB_REPOSITORY"]
+          report = json.load(open("target/ripr/liveness/report.json"))
+          findings = report.get("findings", [])
+          if not findings:
+              print("no ripr run is waiting past the floor")
+              sys.exit(0)
+
+          for finding in findings:
+              conclusion = finding["conclusion"]
+              # The classifier can never say success; refuse anyway rather than
+              # trust an upstream change not to.
+              if conclusion == "success":
+                  raise SystemExit("refusing to post a success conclusion from the liveness reporter")
+              payload = {
+                  "name": "ripr+ liveness",
+                  "head_sha": finding["head_sha"],
+                  "status": "completed",
+                  "conclusion": conclusion,
+                  "output": {
+                      "title": finding["check_title"],
+                      "summary": finding["check_summary"],
+                  },
+              }
+              result = subprocess.run(
+                  ["gh", "api", "--method", "POST", f"repos/{repo}/check-runs",
+                   "--input", "-"],
+                  input=json.dumps(payload), capture_output=True, text=True, check=False,
+              )
+              status = "posted" if result.returncode == 0 else f"failed: {result.stderr.strip()}"
+              print(f"{finding['head_sha']} {finding['classification']}: {status}")
+          PY

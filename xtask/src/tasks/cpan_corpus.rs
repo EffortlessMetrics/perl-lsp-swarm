@@ -1180,11 +1180,15 @@ Some other line";
     fn test_run_command_with_timeout_captures_stderr() -> Result<()> {
         let mut cmd = Command::new("perl");
         cmd.args(["-e", "print STDERR qq(warn\\n);"]);
+        cmd.env("LC_ALL", "C");
+        cmd.env("LC_CTYPE", "C");
+        cmd.env("LANG", "C");
 
         let result = run_command_with_timeout(cmd, Duration::from_secs(2))?;
         assert!(!result.timed_out);
         assert!(result.output.status.success());
-        assert_eq!(String::from_utf8_lossy(&result.output.stderr), "warn\n");
+        let stderr = String::from_utf8_lossy(&result.output.stderr).replace("\r\n", "\n");
+        assert_eq!(stderr, "warn\n");
         Ok(())
     }
 

@@ -2,11 +2,10 @@
 //!
 //! Handles didOpen, didChange, didClose, didSave notifications.
 //!
-//! We advertise `TextDocumentSyncKind::Incremental` (2): the client sends
-//! range-based text edits which are applied to the in-memory Rope via
-//! [`apply_changes`].  After applying the edits the *entire* document is
-//! reparsed — incremental *parsing* is future work.  The sync kind is about
-//! how document text is transferred, not the parsing strategy.
+//! v0.18 advertises `TextDocumentSyncKind::Full` (1): the client sends complete
+//! document text. Ranged incremental transfer is not the supported envelope.
+//! After an accepted replacement the *entire* document is reparsed — incremental
+//! *parsing* remains future work and is independent of the transfer kind.
 
 #[cfg(test)]
 use super::*;
@@ -28,8 +27,6 @@ mod lifecycle;
 mod srp_helpers;
 mod symbols;
 use document_state::{empty_state, minimal_state, minimal_state_from_rope};
-#[cfg(feature = "incremental")]
-use srp_helpers::build_incremental_edit_set;
 use srp_helpers::{is_embedded_template_uri, is_perl_language_id};
 
 /// Last path segment of a document URI (bounded to 64 chars), used as the
@@ -53,54 +50,58 @@ impl LspServer {
         params: Option<&Value>,
     ) -> Result<(), JsonRpcError> {
         let params = params.ok_or_else(|| invalid_params("Missing didChange parameters"))?;
-        perl_lsp_rs_core::protocol::schema::validate_did_change_content_changes(params).map_err(
-            |error| {
-                let change_index = error
-                    .path
-                    .split_once("contentChanges[")
-                    .and_then(|(_, suffix)| suffix.split_once(']'))
-                    .and_then(|(index, _)| index.parse::<usize>().ok());
-                let raw_uri = params.pointer("/textDocument/uri").and_then(Value::as_str);
-                let valid_uri = raw_uri
-                    .map(|uri| self.normalize_uri_key(uri))
-                    .filter(|uri| crate::security::validate_document_uri(uri).is_ok());
+        if let Err(error) =
+            perl_lsp_rs_core::protocol::schema::validate_did_change_content_changes(params)
+        {
+            let change_index = error
+                .path
+                .split_once("contentChanges[")
+                .and_then(|(_, suffix)| suffix.split_once(']'))
+                .and_then(|(index, _)| index.parse::<usize>().ok());
+            let raw_uri = params.pointer("/textDocument/uri").and_then(Value::as_str);
+            let valid_uri = raw_uri
+                .map(|uri| self.normalize_uri_key(uri))
+                .filter(|uri| crate::security::validate_document_uri(uri).is_ok());
 
-                if valid_uri.is_some()
-                    && let Some(uri) = raw_uri
-                {
-                    self.cancel_document_streams_for_change(
-                        uri,
-                        params.pointer("/textDocument/version").and_then(Value::as_i64),
-                        false,
-                    );
-                }
+            if valid_uri.is_some()
+                && let Some(uri) = raw_uri
+            {
+                self.cancel_document_streams_for_change(
+                    uri,
+                    params.pointer("/textDocument/version").and_then(Value::as_i64),
+                    false,
+                );
+            }
 
-                match (change_index, valid_uri.as_deref()) {
-                    (Some(change_index), Some(uri)) => tracing::error!(
-                        change_index,
-                        error_category = "invalid_content_change",
-                        uri,
-                        "Rejected malformed didChange content change"
-                    ),
-                    (Some(change_index), None) => tracing::error!(
-                        change_index,
-                        error_category = "invalid_content_change",
-                        "Rejected malformed didChange content change"
-                    ),
-                    (None, Some(uri)) => tracing::error!(
-                        error_category = "invalid_content_change",
-                        uri,
-                        "Rejected malformed didChange content change batch"
-                    ),
-                    (None, None) => tracing::error!(
-                        error_category = "invalid_content_change",
-                        "Rejected malformed didChange content change batch"
-                    ),
-                }
+            match (change_index, valid_uri.as_deref()) {
+                (Some(change_index), Some(uri)) => tracing::error!(
+                    change_index,
+                    error_category = "invalid_content_change",
+                    uri,
+                    "Rejected malformed didChange content change"
+                ),
+                (Some(change_index), None) => tracing::error!(
+                    change_index,
+                    error_category = "invalid_content_change",
+                    "Rejected malformed didChange content change"
+                ),
+                (None, Some(uri)) => tracing::error!(
+                    error_category = "invalid_content_change",
+                    uri,
+                    "Rejected malformed didChange content change batch"
+                ),
+                (None, None) => tracing::error!(
+                    error_category = "invalid_content_change",
+                    "Rejected malformed didChange content change batch"
+                ),
+            }
 
-                invalid_params(&format!("Invalid didChange parameters: {error}"))
-            },
-        )
+            // Full-document envelope: didChange is a notification. Outer and
+            // member `contentChanges` failures fail-close last-good facts
+            // instead of returning InvalidParams that cannot reach the client.
+            return Ok(());
+        }
+        Ok(())
     }
 
     fn cancel_document_streams_for_change(
@@ -737,38 +738,21 @@ impl LspServer {
                 params.pointer("/textDocument/version").and_then(|v| v.as_i64());
             let incoming_version = incoming_version_i64.and_then(|v| i32::try_from(v).ok());
 
-            // Deserialize the complete change batch before any document cache,
-            // generation, or readiness side effect. A malformed member
-            // must reject the notification as one unit instead of applying a
-            // valid prefix and leaving the document/version partially advanced.
-            let changes = params
-                .get("contentChanges")
-                .and_then(Value::as_array)
-                .ok_or_else(|| invalid_params("Missing required parameter: contentChanges"))?;
-            let lsp_changes = changes
-                .iter()
-                .enumerate()
-                .map(|(i, change)| {
-                    <lsp_types::TextDocumentContentChangeEvent as serde::Deserialize>::deserialize(
-                        change,
-                    )
-                    .map_err(|_| {
-                        tracing::error!(
-                            change_index = i,
-                            uri = %uri,
-                            error_category = "invalid_content_change",
-                            "Rejected malformed textDocument/didChange content change"
-                        );
-                        invalid_params("Malformed textDocument/didChange content change")
-                    })
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-
             // Stop output based on the editor's predecessor even if the later
             // line bound rejects this buffer. Saves also cancel same-version work.
             self.cancel_document_streams_for_change(uri, incoming_version_i64, allow_same_version);
 
-            if let Some(changes) = params["contentChanges"].as_array() {
+            let missing_changes: [Value; 0] = [];
+            let changes = match params.get("contentChanges") {
+                Some(Value::Array(items)) => items.as_slice(),
+                _ => {
+                    tracing::warn!(
+                        "didChange contentChanges missing or not an array for {uri}; treating as Full-sync violation"
+                    );
+                    &missing_changes
+                }
+            };
+            {
                 // Phase-1 latency instrumentation (opt-in via PERL_LSP_TIMING).
                 // Instrumentation only — no behavior change to the mutation path.
                 let timing_on = crate::runtime::timing::is_enabled();
@@ -791,6 +775,7 @@ impl LspServer {
                     return Ok(());
                 }
 
+                let document_was_open = existing_doc.is_some();
                 let mut doc_state =
                     existing_doc.unwrap_or_else(|| empty_state(incoming_version.unwrap_or(0)));
 
@@ -814,42 +799,167 @@ impl LspServer {
                 // handling of non-conforming clients in tests/custom integrations.
                 let version =
                     incoming_version.unwrap_or_else(|| doc_state.version.saturating_add(1));
+                // Infer didOpen's template parse policy from the last publication,
+                // not from `current_parsed()`. A Full-sync violation fail-closes
+                // current facts (`None`) without meaning “this template was
+                // intentionally skipped,” which would strand a previously parsed
+                // Perl-mode `.ep`/`.tt` document after recovery.
                 let skip_template_parse = is_embedded_template_uri(uri)
                     && doc_state
-                        .current_parsed()
+                        .latest_parsed()
                         .map(|s| s.degradation_tier())
                         .unwrap_or(DegradationTier::Minimal)
                         == DegradationTier::Minimal;
 
-                // Apply incremental changes with UTF-16 aware mapping
-                use crate::textdoc::{Doc, PosEnc, apply_changes};
-                let mut doc = Doc { rope: doc_state.rope.clone(), version };
+                let admission =
+                    super::v0_18_text_sync_envelope::admit_full_document_changes(changes);
+                // An admitted full replacement that cannot be stored is still a
+                // synchronization loss: didChange is a notification, so
+                // InvalidParams never reaches the client. Keep last-good text
+                // as evidence and fail-close current answers until a later
+                // acceptable full replacement, reopen, or restart.
+                let admitted_or_unavailable = match admission {
+                    super::v0_18_text_sync_envelope::FullDocumentAdmission::Accepted {
+                        replacements,
+                    } => {
+                        let text = super::v0_18_text_sync_envelope::final_full_replacement_text(
+                            &replacements,
+                        )
+                        .unwrap_or("")
+                        .to_string();
+                        match crate::security::validate_buffer_line_lengths(&text) {
+                            Ok(()) => Ok(text),
+                            Err(err) => {
+                                tracing::warn!(
+                                    "Admitted full replacement for {uri} exceeds per-line buffer bound ({err}); last-good text was not mutated"
+                                );
+                                Err((
+                                    "admitted full replacement exceeds per-line buffer bound",
+                                    None,
+                                    None,
+                                ))
+                            }
+                        }
+                    }
+                    super::v0_18_text_sync_envelope::FullDocumentAdmission::Violation {
+                        reason,
+                        change_index,
+                    } => Err((
+                        reason,
+                        change_index,
+                        Some(super::v0_18_text_sync_envelope::INVALID_CONTENT_CHANGE),
+                    )),
+                };
+                let text = match admitted_or_unavailable {
+                    Ok(text) => text,
+                    Err((reason, change_index, error_category)) => {
+                        if !document_was_open {
+                            tracing::warn!(
+                                "Ignoring unsupported didChange for unopened document {}: {reason}",
+                                uri
+                            );
+                            return Ok(());
+                        }
+                        // Exact-process redaction (`lsp_text_sync_redaction`) requires
+                        // URI context plus a stable category and member index, and
+                        // forbids echoing member payloads in this event.
+                        match (change_index, error_category) {
+                            (Some(change_index), Some(error_category)) => tracing::warn!(
+                                uri = %uri,
+                                change_index,
+                                error_category,
+                                "{reason}; last-good text was not mutated"
+                            ),
+                            (None, Some(error_category)) => tracing::warn!(
+                                uri = %uri,
+                                error_category,
+                                "{reason}; last-good text was not mutated"
+                            ),
+                            (_, None) => tracing::warn!(
+                                "Full-sync unavailable for {uri}: {reason}; last-good text was not mutated"
+                            ),
+                        }
+                        if let Some(observed) = incoming_version {
+                            doc_state.observe_change_version(observed);
+                        }
+                        doc_state.mark_full_sync_required();
+                        let desync_gen = doc_state.current_generation();
+                        // Supersede predecessor parser-core readiness: generation
+                        // advanced, but no replacement parse will run for this
+                        // ticket. UnavailableTerminal is the honest current fact.
+                        self.install_active_document_pending(
+                            &normalized_uri,
+                            uri,
+                            &doc_state.generation,
+                            desync_gen,
+                        );
+                        self.mark_active_document_parser_accepted(
+                            &normalized_uri,
+                            &doc_state.generation,
+                            desync_gen,
+                            crate::runtime::readiness::ParserAcceptanceClass::Failed,
+                            Some("full_sync_required".to_string()),
+                        );
+                        let symbols_identity = SymbolsIdentity::for_document(
+                            &normalized_uri,
+                            &doc_state.generation,
+                            desync_gen,
+                        );
+                        let identity = PushDiagnosticIdentity::for_document(
+                            &normalized_uri,
+                            &doc_state.generation,
+                            desync_gen,
+                            self.workspace_identity_generation.load(Ordering::SeqCst),
+                        )
+                        .with_folder_config_generation(
+                            self.project_config_generation_for_uri(&normalized_uri),
+                        );
+                        documents.insert(normalized_uri.clone(), doc_state);
+                        drop(documents);
+                        let _outcome = self.commit_push_diagnostics(
+                            &identity,
+                            json!({
+                                "uri": uri,
+                                "diagnostics": []
+                            }),
+                            PushDiagnosticsDisposition::Clear,
+                        );
+                        self.clear_document_symbols_for_identity(&symbols_identity);
+                        return Ok(());
+                    }
+                };
 
-                // Build incremental edits from the OLD source BEFORE mutating the rope.
-                // UTF-16 line/char → byte conversion must use the pre-change line index.
-                #[cfg(feature = "incremental")]
-                let incremental_edits_opt: Option<
-                    perl_parser::incremental::incremental_edit::IncrementalEditSet,
-                > = build_incremental_edit_set(&doc_state.rope, &lsp_changes);
+                // An admitted full replacement is the declared recovery path.
+                doc_state.clear_full_sync_required();
 
-                // Apply changes with UTF-16 encoding (as advertised in initialize)
+                // Increment generation counter for this change
+                let next_gen = doc_state.generation.fetch_add(1, Ordering::SeqCst).wrapping_add(1);
+                let target_version = version;
+
+                // Pending readiness for the exact replacement generation,
+                // installed before any parse work for it begins (#11675).
+                // Supersedes the prior generation's readiness by construction.
+                self.install_active_document_pending(
+                    &normalized_uri,
+                    uri,
+                    &doc_state.generation,
+                    next_gen,
+                );
+
+                use crate::textdoc::Doc;
                 let t_apply_start = std::time::Instant::now();
-                apply_changes(&mut doc, &lsp_changes, PosEnc::Utf16);
+                let doc = Doc { rope: ropey::Rope::from_str(&text), version };
                 let apply_changes_ms = crate::runtime::timing::elapsed_ms(t_apply_start);
 
                 let t_rope_start = std::time::Instant::now();
-                let text = doc.rope.to_string();
                 let text_arc: std::sync::Arc<str> = std::sync::Arc::from(text.as_str());
                 let rope_to_string_ms = crate::runtime::timing::elapsed_ms(t_rope_start);
                 tracing::debug!("Document changed: {} (version {})", uri, version);
 
-                // The text-sync sink owns the parser-robustness bound for the
-                // resulting buffer. Check after applying both ranged and full
-                // replacements, before any document state is committed. The
-                // didSave text-reconciliation path reuses this lifecycle.
-                if let Err(err) = crate::security::validate_buffer_line_lengths(&text) {
-                    return Err(invalid_params(&err.to_string()));
-                }
+                #[cfg(feature = "incremental")]
+                let incremental_edits_opt: Option<
+                    perl_parser::incremental::incremental_edit::IncrementalEditSet,
+                > = None;
 
                 // The candidate is private until the line bound passes. Keep the
                 // document lock so validation and these effects use the same
@@ -858,17 +968,6 @@ impl LspServer {
                 // stateless (freshness is keyed by content/state fingerprint),
                 // and the orchestrator's per-file violation cache was removed
                 // with the old analyzer plumbing (#9062).
-
-                let next_gen = doc_state.generation.fetch_add(1, Ordering::SeqCst).wrapping_add(1);
-                let target_version = version;
-
-                // Publish pending readiness before parsing the accepted generation.
-                self.install_active_document_pending(
-                    &normalized_uri,
-                    uri,
-                    &doc_state.generation,
-                    next_gen,
-                );
 
                 // Keep template documents that were intentionally skipped on didOpen
                 // in no-parse mode across subsequent didChange notifications.

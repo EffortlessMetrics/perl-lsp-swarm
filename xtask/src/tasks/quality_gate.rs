@@ -495,7 +495,7 @@ fn evaluate_new_ripr(
         next_actions.push(ripr_pr_receipt_action(&ripr_pr, head, args));
     }
     let review_receipt_blocks_without_new_gaps =
-        matches!(review.status.as_str(), "missing" | "invalid" | "stale");
+        matches!(review.status.as_str(), "missing" | "invalid" | "invalid_schema" | "stale");
     if review_receipt_blocks_without_new_gaps {
         next_actions.push(ripr_review_receipt_action(&review, head, args));
     }
@@ -1124,6 +1124,25 @@ fn quality_exception_receipt_entry(
     })
 }
 
+/// Producer wire contract for the coverage receipt: `quality_baseline.rs`
+/// emits `"schema_version": 1` (numeric). The gate refuses any other
+/// envelope version so a semantic producer bump cannot be silently ingested
+/// as fresh evidence (#15353).
+const COVERAGE_RECEIPT_SCHEMA_VERSION: u64 = 1;
+/// Producer wire contract for the repo-wide RIPR+ receipt:
+/// `ripr_evidence.rs` emits `"schema_version": 2` (numeric) for the
+/// `ripr_plus_baseline` envelope (#15354).
+const RIPR_PLUS_RECEIPT_SCHEMA_VERSION: u64 = 2;
+/// Producer wire contract for the diff-scoped RIPR PR receipt:
+/// `ripr_evidence.rs` emits `"schema_version": "0.1"` (string) for the
+/// `pr_evidence` envelope (#15354).
+const RIPR_PR_RECEIPT_SCHEMA_VERSION: &str = "0.1";
+/// Producer wire contract for the RIPR review-guidance receipt:
+/// `ripr_evidence.rs` pins `"schema_version": "0.1"` on every review-comments
+/// emit path (clean, degraded, and the ripr packet validator), so the gate
+/// can fail closed on the same value (#15355).
+const REVIEW_GUIDANCE_RECEIPT_SCHEMA_VERSION: &str = "0.1";
+
 fn read_coverage_receipt(path: &Path, expected_head: &str) -> CoverageReceipt {
     let Ok(raw) = fs::read_to_string(path) else {
         return CoverageReceipt {
@@ -1151,6 +1170,22 @@ fn read_coverage_receipt(path: &Path, expected_head: &str) -> CoverageReceipt {
             recommended_project_clusters: Vec::new(),
         };
     };
+
+    if payload.get("schema_version").and_then(Value::as_u64)
+        != Some(COVERAGE_RECEIPT_SCHEMA_VERSION)
+    {
+        return CoverageReceipt {
+            status: "invalid_schema".to_string(),
+            receipt_head: None,
+            lcov: None,
+            patch: None,
+            project: None,
+            scope: None,
+            patch_files: Vec::new(),
+            top_files: Vec::new(),
+            recommended_project_clusters: Vec::new(),
+        };
+    }
 
     let receipt_head = payload.get("head").and_then(Value::as_str).map(ToOwned::to_owned);
     let status = if receipt_head.as_deref() == Some(expected_head) { "present" } else { "stale" };
@@ -1212,6 +1247,16 @@ fn read_ripr_plus_receipt(path: &Path, expected_head: &str) -> RiprPlusReceipt {
             recommended_first_clusters: Vec::new(),
         },
         JsonReceipt::Present(payload) => {
+            if payload.get("schema_version").and_then(Value::as_u64)
+                != Some(RIPR_PLUS_RECEIPT_SCHEMA_VERSION)
+            {
+                return RiprPlusReceipt {
+                    status: "invalid_schema".to_string(),
+                    receipt_head: None,
+                    unresolved: None,
+                    recommended_first_clusters: Vec::new(),
+                };
+            }
             let receipt_head = payload.get("head").and_then(Value::as_str).map(ToOwned::to_owned);
             let status =
                 if receipt_head.as_deref() == Some(expected_head) { "present" } else { "stale" };
@@ -1305,6 +1350,18 @@ fn read_ripr_pr_receipt(path: &Path, expected_head: &str) -> RiprPrReceipt {
             non_production_excluded: None,
         },
         JsonReceipt::Present(payload) => {
+            if payload.get("schema_version").and_then(Value::as_str)
+                != Some(RIPR_PR_RECEIPT_SCHEMA_VERSION)
+            {
+                return RiprPrReceipt {
+                    status: "invalid_schema".to_string(),
+                    receipt_head_sha: None,
+                    base: None,
+                    base_sha: None,
+                    new_unresolved: None,
+                    non_production_excluded: None,
+                };
+            }
             let receipt_head_sha =
                 payload.get("head_sha").and_then(Value::as_str).map(ToOwned::to_owned);
             let status = if receipt_head_sha.as_deref() == Some(expected_head) {
@@ -1353,6 +1410,22 @@ fn read_review_guidance_receipt(path: &Path, expected_head: &str) -> ReviewGuida
             unavailable_reason: None,
         },
         JsonReceipt::Present(payload) => {
+            if payload.get("schema_version").and_then(Value::as_str)
+                != Some(REVIEW_GUIDANCE_RECEIPT_SCHEMA_VERSION)
+            {
+                return ReviewGuidanceReceipt {
+                    status: "invalid_schema".to_string(),
+                    receipt_head_sha: None,
+                    base: None,
+                    base_sha: None,
+                    production_files_considered: None,
+                    changed_production_files: None,
+                    top_gaps: Vec::new(),
+                    static_limitation_gaps: Vec::new(),
+                    suppressed_gap_ids: BTreeSet::new(),
+                    unavailable_reason: None,
+                };
+            }
             let receipt_head_sha =
                 payload.get("head_sha").and_then(Value::as_str).map(ToOwned::to_owned);
             let production_files_considered = payload
@@ -2663,6 +2736,7 @@ mod tests {
         write_text(
             &path,
             &render_json(&json!({
+                "schema_version": 1,
                 "head": head,
                 "scope": "workspace",
                 "coverage": {
@@ -2704,6 +2778,172 @@ mod tests {
     }
 
     #[test]
+    fn coverage_receipt_refuses_missing_and_wrong_schema_version() -> Result<()> {
+        let dir = tempdir()?;
+        let head = "schema-head";
+
+        let missing = dir.path().join("coverage-missing.json");
+        write_text(
+            &missing,
+            &render_json(&json!({
+                "head": head,
+                "scope": "workspace",
+                "coverage": { "patch": 99.0, "project": 94.0 }
+            }))?,
+        )?;
+        assert_eq!(read_coverage_receipt(&missing, head).status, "invalid_schema");
+
+        let wrong = dir.path().join("coverage-wrong.json");
+        write_text(
+            &wrong,
+            &render_json(&json!({
+                "schema_version": 2,
+                "head": head,
+                "scope": "workspace",
+                "coverage": { "patch": 99.0, "project": 94.0 }
+            }))?,
+        )?;
+        let receipt = read_coverage_receipt(&wrong, head);
+        assert_eq!(receipt.status, "invalid_schema");
+        assert_eq!(
+            receipt.receipt_head, None,
+            "an unvalidated envelope must not be classified against the expected head"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn ripr_plus_receipt_refuses_missing_and_wrong_schema_version() -> Result<()> {
+        let dir = tempdir()?;
+        let head = "schema-head";
+
+        let missing = dir.path().join("ripr-plus-missing.json");
+        write_text(&missing, &render_json(&json!({ "head": head, "unresolved": 0 }))?)?;
+        assert_eq!(read_ripr_plus_receipt(&missing, head).status, "invalid_schema");
+
+        let wrong = dir.path().join("ripr-plus-wrong.json");
+        write_text(
+            &wrong,
+            &render_json(&json!({ "schema_version": 3, "head": head, "unresolved": 0 }))?,
+        )?;
+        assert_eq!(read_ripr_plus_receipt(&wrong, head).status, "invalid_schema");
+        Ok(())
+    }
+
+    #[test]
+    fn ripr_pr_receipt_refuses_missing_and_wrong_schema_version() -> Result<()> {
+        let dir = tempdir()?;
+        let head = "schema-head";
+
+        let missing = dir.path().join("repo-exposure-missing.json");
+        write_text(
+            &missing,
+            &json!({
+                "head_sha": head,
+                "base": "origin/main",
+                "base_sha": "base-sha",
+                "summary": { "severe_gaps": 1 }
+            })
+            .to_string(),
+        )?;
+        assert_eq!(read_ripr_pr_receipt(&missing, head).status, "invalid_schema");
+
+        let wrong = dir.path().join("repo-exposure-wrong.json");
+        write_text(
+            &wrong,
+            &json!({
+                "schema_version": "0.2",
+                "head_sha": head,
+                "base": "origin/main",
+                "base_sha": "base-sha",
+                "summary": { "severe_gaps": 1 }
+            })
+            .to_string(),
+        )?;
+        assert_eq!(read_ripr_pr_receipt(&wrong, head).status, "invalid_schema");
+        Ok(())
+    }
+
+    #[test]
+    fn review_guidance_receipt_refuses_missing_and_wrong_schema_version() -> Result<()> {
+        let dir = tempdir()?;
+        let head = "schema-head";
+
+        let missing = dir.path().join("comments-missing.json");
+        write_text(
+            &missing,
+            &json!({
+                "head_sha": head,
+                "status": "advisory",
+                "comments": [],
+                "summary_only": [],
+                "suppressed": [],
+                "warnings": []
+            })
+            .to_string(),
+        )?;
+        assert_eq!(read_review_guidance_receipt(&missing, head).status, "invalid_schema");
+
+        let wrong = dir.path().join("comments-wrong.json");
+        write_text(
+            &wrong,
+            &json!({
+                "schema_version": "0.2",
+                "head_sha": head,
+                "status": "advisory",
+                "comments": [],
+                "summary_only": [],
+                "suppressed": [],
+                "warnings": []
+            })
+            .to_string(),
+        )?;
+        let receipt = read_review_guidance_receipt(&wrong, head);
+        assert_eq!(receipt.status, "invalid_schema");
+        assert_eq!(receipt.top_gaps, Vec::<Value>::new());
+        Ok(())
+    }
+
+    #[test]
+    fn new_ripr_gate_blocks_on_invalid_schema_review_receipt() -> Result<()> {
+        let dir = tempdir()?;
+        let head = "schema-head";
+        write_gate_inputs(
+            dir.path(),
+            head,
+            &json!({
+                "schema_version": "9.9",
+                "head_sha": head,
+                "status": "advisory",
+                "comments": [],
+                "summary_only": [],
+                "suppressed": [],
+                "warnings": []
+            }),
+        )?;
+        let args = new_ripr_args(dir.path())?;
+
+        let evaluation = evaluate_new_ripr(head, &args, None)?;
+
+        assert!(evaluation.failed);
+        let actions = evaluation
+            .receipt
+            .get("next_actions")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        assert!(
+            actions.iter().any(|action| {
+                action.get("kind").and_then(Value::as_str)
+                    == Some("ripr_review_receipt_not_current")
+                    && action.get("reason").and_then(Value::as_str) == Some("invalid_schema")
+            }),
+            "an invalid_schema review receipt must block the new-gap gate: {actions:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn current_head_reads_repository_head() -> Result<()> {
         let dir = tempdir()?;
         run_git(dir.path(), &["init"])?;
@@ -2726,6 +2966,7 @@ mod tests {
         write_text(
             &path,
             &render_json(&json!({
+                "schema_version": 2,
                 "head": head,
                 "unresolved": 3,
                 "recommended_first_clusters": [
@@ -3022,6 +3263,7 @@ mod tests {
         fs::write(
             dir.path().join("comments.json"),
             json!({
+                "schema_version": "0.1",
                 "head_sha": head,
                 "status": "advisory",
                 "comments": [
@@ -3284,11 +3526,12 @@ mod tests {
         let head = "review-head";
         fs::write(
             dir.path().join("ripr-plus.json"),
-            json!({ "head": head, "unresolved": 0 }).to_string(),
+            json!({ "schema_version": 2, "head": head, "unresolved": 0 }).to_string(),
         )?;
         fs::write(
             dir.path().join("repo-exposure.json"),
             json!({
+                "schema_version": "0.1",
                 "head_sha": head,
                 "base": "origin/main",
                 "base_sha": "base-A",
@@ -3299,6 +3542,7 @@ mod tests {
         fs::write(
             dir.path().join("comments.json"),
             json!({
+                "schema_version": "0.1",
                 "head_sha": head,
                 "base": "origin/other",
                 "base_sha": "base-B",
@@ -3363,11 +3607,12 @@ mod tests {
         let head = "review-head";
         fs::write(
             dir.path().join("ripr-plus.json"),
-            json!({ "head": head, "unresolved": 0 }).to_string(),
+            json!({ "schema_version": 2, "head": head, "unresolved": 0 }).to_string(),
         )?;
         fs::write(
             dir.path().join("repo-exposure.json"),
             json!({
+                "schema_version": "0.1",
                 "head_sha": head,
                 "base": "origin/main",
                 "base_sha": "base-A",
@@ -3378,6 +3623,7 @@ mod tests {
         fs::write(
             dir.path().join("comments.json"),
             json!({
+                "schema_version": "0.1",
                 "head_sha": head,
                 "base": "origin/main",
                 "base_sha": "base-A",
@@ -3467,11 +3713,12 @@ mod tests {
     fn write_gate_inputs(dir: &Path, head: &str, review_packet: &Value) -> Result<()> {
         fs::write(
             dir.join("ripr-plus.json"),
-            json!({ "head": head, "unresolved": 0 }).to_string(),
+            json!({ "schema_version": 2, "head": head, "unresolved": 0 }).to_string(),
         )?;
         fs::write(
             dir.join("repo-exposure.json"),
             json!({
+                "schema_version": "0.1",
                 "head_sha": head,
                 "base": "origin/main",
                 "base_sha": "base-sha",
@@ -3501,6 +3748,7 @@ mod tests {
         fs::write(
             dir.path().join("comments.json"),
             json!({
+                "schema_version": "0.1",
                 "head_sha": head,
                 "status": "incomplete",
                 "comments": [],
@@ -3531,6 +3779,7 @@ mod tests {
             dir.path(),
             head,
             &json!({
+                "schema_version": "0.1",
                 "head_sha": head,
                 "status": "incomplete",
                 "comments": [],
@@ -3582,11 +3831,12 @@ mod tests {
         let head = "review-head";
         fs::write(
             dir.path().join("ripr-plus.json"),
-            json!({ "head": head, "unresolved": 0 }).to_string(),
+            json!({ "schema_version": 2, "head": head, "unresolved": 0 }).to_string(),
         )?;
         fs::write(
             dir.path().join("repo-exposure.json"),
             json!({
+                "schema_version": "0.1",
                 "head_sha": head,
                 "base": "origin/main",
                 "base_sha": "base-sha",
@@ -3602,6 +3852,7 @@ mod tests {
         fs::write(
             dir.path().join("comments.json"),
             json!({
+                "schema_version": "0.1",
                 "head_sha": head,
                 "status": "present",
                 "comments": [],
@@ -3635,6 +3886,7 @@ mod tests {
             dir.path(),
             head,
             &json!({
+                "schema_version": "0.1",
                 "head_sha": head,
                 "status": "error",
                 "comments": [],

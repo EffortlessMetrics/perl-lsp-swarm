@@ -237,7 +237,7 @@ Rolls up multiple gate receipts into one control-plane summary.
 ```json
 {
   "check": "aggregator",
-  "schema_version": "1",
+  "schema_version": 1,
   "event": "pull_request",
   "verdict": "pass",
   "classification": "unknown",
