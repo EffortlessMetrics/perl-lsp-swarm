@@ -1132,7 +1132,7 @@ jobs:
             # The cheapest control remains first for fast diagnosis, but the
             # shard runner now records every independent member before it
             # returns the aggregate failure verdict.
-            gates: docs_agents_contract_workflows msrv_authority_sync compiler_concept_ledger compiler_proof_policy compiler_concept_proof compiler_performance_receipt_contract kubernetes_dap_profiles postfix_capability_closure release_trust_invariants docs_build adr_link_check non_rust_inventory_check must_context_check lint_policy v2_bundle_sync nested_lock_check doctest_contract_proof doctest_enforcement version_sync agent_ledgers_validate code_action_generation_ledger
+            gates: docs_agents_contract_workflows msrv_authority_sync compiler_concept_ledger compiler_proof_policy compiler_concept_proof compiler_performance_receipt_contract kubernetes_dap_profiles postfix_capability_closure release_trust_invariants docs_build adr_link_check non_rust_inventory_check completion_candidate_ledger must_context_check lint_policy v2_bundle_sync nested_lock_check doctest_contract_proof doctest_enforcement version_sync agent_ledgers_validate code_action_generation_ledger
     permissions:
       contents: read
     # Run on every PR push and on push to main/master
@@ -2073,6 +2073,20 @@ jobs:
         run: |
           cargo test -p xtask --bin xtask --locked -- --nocapture dead_code_api_ledger
           cargo test -p perl-parser --test dead_code_api_compat --locked -- --nocapture
+
+      # #16101: identical reasoning to the contracts above. This suite is the
+      # only executable proof that the two required contexts mirror a
+      # conclusion from their own bound integration rather than from whichever
+      # aggregator posted last. It executes the real `Evaluate routed result`
+      # shell block through real `jq` with a shimmed `gh`, so it is what catches
+      # a regression in the app-id binding, in the newest-attempt ordering, or
+      # in the self-exclusion that stops the mirror reading its own in-progress
+      # check. The merge gate runs `cargo test --workspace --lib`, which builds
+      # no `tests/` target, and no workflow named this one — so as authored the
+      # contract could compile and never execute while a draft-run snapshot
+      # silently overwrote a green required check.
+      - name: Required-context mirror contract (required merge surface)
+        run: cargo test -p xtask --test workflow_draft_snapshot_supersession --locked -- --nocapture
 
   lsp-memory-smoke:
     name: LSP Memory Smoke
