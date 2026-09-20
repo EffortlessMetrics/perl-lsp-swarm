@@ -260,3 +260,18 @@ report. These establish validator and CLI behavior, not installed execution.
 Actual installed receipts and accepted evidence adapters remain under the owners
 listed above. The earlier command block records the planned proof; scoped Clippy
 actually included the repository-authorized missing-docs allowance.
+
+### Preparation inventory completeness correction
+
+PR review identified that preparation evidence could cover a self-selected subset
+of same-target inventory artifacts. Preparation now compares its declared IDs
+with every artifact in the closed supplied inventory whose target equals the
+preparation target. Universal VSIX artifacts remain outside native-target rows;
+this preserves the existing explicit universal selection contract.
+
+The added fallible regression removes each server, DAP and target-specific VSIX
+from both a preparation row and its evidence, for both native platforms. It failed
+against the original implementation with `invalid bundle accepted`; all 11 shared
+v2 tests passed after the exact-set repair, including the existing universal-VSIX
+positive. This corrects bundle consistency only; installed qualification is still
+NOT_PROVEN and independent topology/evidence authority is still required.

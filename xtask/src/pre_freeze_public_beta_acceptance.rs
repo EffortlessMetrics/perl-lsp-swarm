@@ -638,7 +638,15 @@ pub fn validate_v2(
         status(prep.status, &prep.reason)?;
         validator.statuses.push(prep.status);
         ensure!(!prep.artifact_ids.is_empty(), "preparation artifacts missing");
-        keys(prep.artifact_ids.iter().map(String::as_str))?;
+        let declared = keys(prep.artifact_ids.iter().map(String::as_str))?;
+        let applicable = keys(
+            packet
+                .artifacts
+                .iter()
+                .filter(|artifact| artifact.target == prep.target)
+                .map(|artifact| artifact.id.as_str()),
+        )?;
+        ensure!(declared == applicable, "preparation artifact denominator mismatch");
         for id in &prep.artifact_ids {
             ensure!(
                 validator

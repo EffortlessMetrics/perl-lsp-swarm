@@ -466,3 +466,25 @@ fn exact_versions_and_shared_universal_vsix_are_explicit() -> Result<()> {
         .vsix = vec!["windows-x64".into()];
     rejected(&p, &r)
 }
+
+#[test]
+fn preparation_requires_every_same_target_artifact() -> Result<()> {
+    let (packet, requirements) = fixture();
+    validate_v2(&packet, &requirements)?;
+    for target in ["linux-x64", "windows-x64"] {
+        for role in ["server", "dap", "vsix"] {
+            let mut incomplete = packet.clone();
+            let prep = incomplete
+                .preparation
+                .iter_mut()
+                .find(|prep| prep.target == target)
+                .context("preparation fixture")?;
+            prep.artifact_ids.retain(|id| !id.ends_with(role));
+            for evidence in &mut prep.evidence {
+                evidence.artifact_ids = prep.artifact_ids.clone();
+            }
+            rejected(&incomplete, &requirements)?;
+        }
+    }
+    Ok(())
+}
