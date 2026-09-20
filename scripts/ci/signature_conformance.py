@@ -13,11 +13,15 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[2]
 MATRIX = ROOT / '.ci/signature-conformance/cases.json'
-SCHEMA = 'signature-oracle-receipt/v1'
+SCHEMA = 'signature-oracle-receipt/v2'
 LIMIT = 65536
 
 def digest(data):
     return hashlib.sha256(data).hexdigest()
+
+def text_digest(data):
+    """Hash repository text with CRLF normalized to LF; preserve all other bytes."""
+    return digest(data.replace(b'\r\n', b'\n'))
 
 def version(text):
     if not re.fullmatch(r'5\.\d+(?:\.\d+)?', text):
@@ -54,7 +58,7 @@ def load_matrix(path=MATRIX):
                     a, b = field['span']
                     if not ps <= a < b <= pe or source[a:b].decode('utf-8') != field['text']:
                         raise ValueError(row['id'] + ': invalid ' + role + ' geometry')
-    return matrix, digest(raw)
+    return matrix, text_digest(raw)
 
 def execute(command, timeout=3):
     # Fixtures contain no process creation; the owned direct child is killed and reaped.
@@ -126,7 +130,7 @@ def run(perl, expected_version=None):
     version(actual_version)
     if expected_version is not None and version(actual_version) != version(expected_version):
         raise ValueError('NOT_PROVEN: selected and actual version differ')
-    receipt = {'schema': SCHEMA, 'matrix_sha256': matrix_digest, 'runner_sha256': digest(Path(__file__).read_bytes()), 'executable': executable, 'executable_sha256': digest(Path(executable).read_bytes()), 'identity': identity, 'version': actual_version, 'required_version': '.'.join(map(str, version(actual_version))) in matrix['required_versions'], 'rows': []}
+    receipt = {'schema': SCHEMA, 'matrix_sha256': matrix_digest, 'runner_sha256': text_digest(Path(__file__).read_bytes()), 'executable': executable, 'executable_sha256': digest(Path(executable).read_bytes()), 'identity': identity, 'version': actual_version, 'required_version': '.'.join(map(str, version(actual_version))) in matrix['required_versions'], 'rows': []}
     with tempfile.TemporaryDirectory(prefix='signature-conformance-') as directory:
         for row in matrix['cases']:
             path = Path(directory) / 'fixture.pl'
@@ -142,7 +146,7 @@ def validate_receipts(receipts, required=None):
     matrix, matrix_digest = load_matrix()
     seen = set()
     for receipt in receipts:
-        if receipt.get('schema') != SCHEMA or receipt.get('matrix_sha256') != matrix_digest or receipt.get('runner_sha256') != digest(Path(__file__).read_bytes()):
+        if receipt.get('schema') != SCHEMA or receipt.get('matrix_sha256') != matrix_digest or receipt.get('runner_sha256') != text_digest(Path(__file__).read_bytes()):
             raise ValueError('stale or wrong-subject receipt')
         identity = receipt.get('identity', {})
         if identity.get('status') != 'completed' or type(identity.get('exit')) is not int or identity.get('exit') != 0 or identity.get('stdout', '').strip() != receipt['version']:

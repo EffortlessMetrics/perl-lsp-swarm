@@ -79,3 +79,10 @@ diagnostics do not reject clean syntax, while error nodes do. Any typed terminal
 stop is retained as `NOT_PROVEN`, never evidence that a negative fixture was
 correctly rejected. Named binding/requiredness and absent defaults are compared
 explicitly. Ordinary controls mutate actual parse outputs and named AST fields.
+
+Oracle receipt schema `signature-oracle-receipt/v2` hashes matrix and runner
+repository text after replacing CRLF with LF. All other bytes remain significant.
+This makes Git line-ending conversion portable without ignoring content changes.
+Executable SHA-256 remains byte-exact; fixture source hashes also remain exact.
+Version-1 receipts are not silently reinterpreted: retain their original evidence,
+then rerun the bounded oracle to produce current version-2 receipts.

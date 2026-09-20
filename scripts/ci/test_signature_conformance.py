@@ -48,6 +48,30 @@ class SignatureConformanceTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'invalid native disposition'):
                 oracle.check_native_report(path, 0)
 
+    def test_text_subject_identity_normalizes_only_line_endings(self):
+        matrix_lf = oracle.MATRIX.read_bytes().replace(b'\r\n', b'\n')
+        runner_lf = Path(oracle.__file__).read_bytes().replace(b'\r\n', b'\n')
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'cases.json'
+            for data in (matrix_lf, matrix_lf.replace(b'\n', b'\r\n')):
+                path.write_bytes(data)
+                self.assertEqual(self.digest, oracle.load_matrix(path)[1])
+            path.write_bytes(matrix_lf + b' ')
+            self.assertNotEqual(self.digest, oracle.load_matrix(path)[1])
+        self.assertEqual(oracle.text_digest(runner_lf), oracle.text_digest(runner_lf.replace(b'\n', b'\r\n')))
+        self.assertNotEqual(oracle.text_digest(runner_lf), oracle.text_digest(runner_lf + b'# changed'))
+        self.assertNotEqual(oracle.digest(b'binary\r\n'), oracle.digest(b'binary\n'))
+        receipt = {'schema': oracle.SCHEMA, 'matrix_sha256': oracle.text_digest(matrix_lf), 'runner_sha256': oracle.text_digest(runner_lf), 'version': '5.36.0', 'identity': self.completed('5.36.0'), 'executable': '/test-only/perl', 'executable_sha256': '0'*64, 'rows': []}
+        with self.assertRaisesRegex(ValueError, 'missing or duplicate'):
+            oracle.validate_receipts([receipt])
+        for key, changed in [('matrix_sha256', matrix_lf + b' '), ('runner_sha256', runner_lf + b'# changed')]:
+            bad = copy.deepcopy(receipt); bad[key] = oracle.text_digest(changed)
+            with self.assertRaisesRegex(ValueError, 'stale'):
+                oracle.validate_receipts([bad])
+        receipt['schema'] = 'signature-oracle-receipt/v1'
+        with self.assertRaisesRegex(ValueError, 'stale'):
+            oracle.validate_receipts([receipt])
+
     def test_compile_and_runtime_discriminate(self):
         row = self.fixture('default_assign')
         self.assertEqual([], oracle.assess(row, '5.36.0', self.completed(), self.completed('1|undef|0|2')))
@@ -77,7 +101,7 @@ class SignatureConformanceTests(unittest.TestCase):
 
     def test_receipts_reject_missing_stale_and_version_mismatch(self):
         with self.assertRaisesRegex(ValueError, 'missing versions'): oracle.validate_receipts([])
-        receipt = {'schema': oracle.SCHEMA, 'matrix_sha256': self.digest, 'runner_sha256': oracle.digest(Path(oracle.__file__).read_bytes()), 'version': '5.36.0', 'identity': self.completed('5.36.0'), 'executable': '/test-only/perl', 'executable_sha256': '0'*64, 'rows': []}
+        receipt = {'schema': oracle.SCHEMA, 'matrix_sha256': self.digest, 'runner_sha256': oracle.text_digest(Path(oracle.__file__).read_bytes()), 'version': '5.36.0', 'identity': self.completed('5.36.0'), 'executable': '/test-only/perl', 'executable_sha256': '0'*64, 'rows': []}
         with self.assertRaisesRegex(ValueError, 'missing or duplicate'): oracle.validate_receipts([receipt])
         bad = copy.deepcopy(receipt); bad['matrix_sha256'] = 'old'
         with self.assertRaisesRegex(ValueError, 'stale'): oracle.validate_receipts([bad])
@@ -96,7 +120,7 @@ class SignatureConformanceTests(unittest.TestCase):
         row = self.fixture('named_array')
         for code in (None, True, '1', -1, 0xC0000005):
             self.assertTrue(oracle.assess(row, '5.44.0', self.completed(code=code), None))
-        receipt = {'schema': oracle.SCHEMA, 'matrix_sha256': self.digest, 'runner_sha256': oracle.digest(Path(oracle.__file__).read_bytes()), 'version': '5.44.0', 'identity': self.completed('5.44.0'), 'rows': []}
+        receipt = {'schema': oracle.SCHEMA, 'matrix_sha256': self.digest, 'runner_sha256': oracle.text_digest(Path(oracle.__file__).read_bytes()), 'version': '5.44.0', 'identity': self.completed('5.44.0'), 'rows': []}
         with self.assertRaisesRegex(ValueError, 'executable identity'):
             oracle.validate_receipts([receipt], required=['5.44'])
 
