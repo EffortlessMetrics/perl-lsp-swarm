@@ -127,7 +127,7 @@ fn trim_run_trailer(block: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use color_eyre::eyre::Result;
+    use color_eyre::eyre::{Result, ensure, eyre};
 
     const TWO_FAILURES: &str = "\
 running 3 tests
@@ -156,17 +156,31 @@ failures:
 test result: FAILED. 1 passed; 2 failed; 0 ignored
 ";
 
+    /// Fallible element access. `xs[i]` panics, which the fallible-test policy
+    /// excludes; this carries the same proposition as an error naming the
+    /// observed length, so a shape regression reports itself instead of
+    /// unwinding.
+    fn at<'a, T>(xs: &'a [T], index: usize, what: &str) -> Result<&'a T> {
+        xs.get(index)
+            .ok_or_else(|| eyre!("{what}: wanted element {index}, but only {} exist", xs.len()))
+    }
+
     #[test]
     fn each_block_stops_at_the_next_header() -> Result<()> {
         let blocks = failure_blocks(TWO_FAILURES);
 
-        assert_eq!(blocks.len(), 2);
-        assert_eq!(blocks[0].0, "suite::alpha");
-        assert!(blocks[0].1.contains("left: 2"));
-        assert!(
-            !blocks[0].1.contains("deadline expired"),
+        ensure!(blocks.len() == 2, "both failure blocks must be found, got {}", blocks.len());
+        let alpha = at(&blocks, 0, "failure_blocks")?;
+        ensure!(alpha.0 == "suite::alpha", "the first block's own name, got {:?}", alpha.0);
+        ensure!(
+            alpha.1.contains("left: 2"),
+            "alpha's own assertion text is missing: {:?}",
+            alpha.1
+        );
+        ensure!(
+            !alpha.1.contains("deadline expired"),
             "alpha's block must not reach into gamma's: {:?}",
-            blocks[0].1
+            alpha.1
         );
         Ok(())
     }
@@ -175,13 +189,16 @@ test result: FAILED. 1 passed; 2 failed; 0 ignored
     fn the_last_block_stops_before_the_run_trailer() -> Result<()> {
         let blocks = failure_blocks(TWO_FAILURES);
 
-        let gamma = blocks[1].1;
-        assert!(gamma.contains("deadline expired after 5s"));
-        assert!(
+        let gamma = at(&blocks, 1, "failure_blocks")?.1;
+        ensure!(
+            gamma.contains("deadline expired after 5s"),
+            "gamma's own failure text is missing: {gamma:?}"
+        );
+        ensure!(
             !gamma.contains("test result: FAILED"),
             "the last block inherited cargo's run trailer: {gamma:?}"
         );
-        assert!(
+        ensure!(
             !gamma.contains("    suite::alpha"),
             "the last block inherited the failures list: {gamma:?}"
         );
@@ -192,8 +209,16 @@ test result: FAILED. 1 passed; 2 failed; 0 ignored
     fn a_panic_location_is_read_from_its_own_block() -> Result<()> {
         let blocks = failure_blocks(TWO_FAILURES);
 
-        assert_eq!(panic_location(blocks[0].1).as_deref(), Some("crates/thing/src/lib.rs:42:9"));
-        assert_eq!(panic_location(blocks[1].1).as_deref(), Some("crates/other/src/run.rs:7:5"));
+        let first = panic_location(at(&blocks, 0, "failure_blocks")?.1);
+        let second = panic_location(at(&blocks, 1, "failure_blocks")?.1);
+        ensure!(
+            first.as_deref() == Some("crates/thing/src/lib.rs:42:9"),
+            "the first block's own panic location, got {first:?}"
+        );
+        ensure!(
+            second.as_deref() == Some("crates/other/src/run.rs:7:5"),
+            "the second block's own panic location, got {second:?}"
+        );
         Ok(())
     }
 
@@ -201,15 +226,21 @@ test result: FAILED. 1 passed; 2 failed; 0 ignored
     fn a_block_without_a_panic_reports_no_location() -> Result<()> {
         let blocks = failure_blocks("---- suite::quiet stdout ----\nno panic here\n");
 
-        assert_eq!(panic_location(blocks[0].1), None);
+        let located = panic_location(at(&blocks, 0, "failure_blocks")?.1);
+        ensure!(
+            located.is_none(),
+            "a block with no panic must report no location, got {located:?}"
+        );
         Ok(())
     }
 
     #[test]
     fn failed_lines_name_every_failing_test_once() -> Result<()> {
-        assert_eq!(
-            failing_test_names(TWO_FAILURES),
-            vec!["suite::alpha".to_string(), "suite::gamma".to_string()]
+        let names = failing_test_names(TWO_FAILURES);
+
+        ensure!(
+            names == vec!["suite::alpha".to_string(), "suite::gamma".to_string()],
+            "every failing test exactly once, in log order, got {names:?}"
         );
         Ok(())
     }
@@ -218,8 +249,16 @@ test result: FAILED. 1 passed; 2 failed; 0 ignored
     fn a_log_with_no_failures_yields_nothing() -> Result<()> {
         let clean = "running 2 tests\ntest a ... ok\ntest b ... ok\n\ntest result: ok.\n";
 
-        assert!(failure_blocks(clean).is_empty());
-        assert!(failing_test_names(clean).is_empty());
+        ensure!(
+            failure_blocks(clean).is_empty(),
+            "a clean log has no failure blocks, got {:?}",
+            failure_blocks(clean)
+        );
+        ensure!(
+            failing_test_names(clean).is_empty(),
+            "a clean log names no failing test, got {:?}",
+            failing_test_names(clean)
+        );
         Ok(())
     }
 
@@ -230,7 +269,11 @@ test result: FAILED. 1 passed; 2 failed; 0 ignored
     fn the_legacy_quoted_panic_format_still_yields_a_location() -> Result<()> {
         let block = "thread 'x' panicked at 'assertion failed: a == b', src/lib.rs:9:1\n";
 
-        assert_eq!(panic_location(block).as_deref(), Some("src/lib.rs:9:1"));
+        let located = panic_location(block);
+        ensure!(
+            located.as_deref() == Some("src/lib.rs:9:1"),
+            "the pre-1.73 format must still yield a location, got {located:?}"
+        );
         Ok(())
     }
 
@@ -248,11 +291,24 @@ test result: FAILED. 1 passed; 2 failed; 0 ignored
             "assertion failed: false\n",
         );
 
-        assert_eq!(failing_test_names(raw), vec!["src/lib.rs - documented (line 2)"]);
+        let names = failing_test_names(raw);
+        ensure!(
+            names == vec!["src/lib.rs - documented (line 2)"],
+            "the doctest name must be read whole, got {names:?}"
+        );
         let blocks = failure_blocks(raw);
-        assert_eq!(blocks.len(), 1);
-        assert_eq!(blocks[0].0, "src/lib.rs - documented (line 2)");
-        assert_eq!(panic_location(blocks[0].1).as_deref(), Some("src/lib.rs:4:1"));
+        ensure!(blocks.len() == 1, "one failure block, got {}", blocks.len());
+        let block = at(&blocks, 0, "failure_blocks")?;
+        ensure!(
+            block.0 == "src/lib.rs - documented (line 2)",
+            "the block carries the whole name too, got {:?}",
+            block.0
+        );
+        let located = panic_location(block.1);
+        ensure!(
+            located.as_deref() == Some("src/lib.rs:4:1"),
+            "the doctest's panic location, got {located:?}"
+        );
         Ok(())
     }
 
@@ -262,9 +318,14 @@ test result: FAILED. 1 passed; 2 failed; 0 ignored
 
         let blocks = failure_blocks(raw);
 
-        assert_eq!(blocks.len(), 1);
-        assert!(blocks[0].1.contains("first"));
-        assert!(!blocks[0].1.contains("second"));
+        ensure!(
+            blocks.len() == 1,
+            "a repeated header must not open a second block, got {}",
+            blocks.len()
+        );
+        let block = at(&blocks, 0, "failure_blocks")?;
+        ensure!(block.1.contains("first"), "the first occurrence must be kept: {:?}", block.1);
+        ensure!(!block.1.contains("second"), "the later occurrence must not be: {:?}", block.1);
         Ok(())
     }
 
@@ -277,31 +338,36 @@ test result: FAILED. 1 passed; 2 failed; 0 ignored
     /// failure does not reproduce locally, which is strictly worse than being
     /// told no test was named.
     #[test]
-    fn prose_mentioning_a_test_is_not_a_failing_test_name() {
+    fn prose_mentioning_a_test_is_not_a_failing_test_name() -> Result<()> {
         for line in [
             "[ux] completion test for module Foo::Bar ... FAILED",
             "  latest test of the hover path ... FAILED",
             "note: the test crates/x/README.md - usage (line 4) ... FAILED",
             "warning: a doctest src/lib.rs - f (line 9) ... FAILED",
         ] {
-            assert!(
+            ensure!(
                 failing_test_names(line).is_empty(),
-                "prose was read as a failing test name: {line:?}"
+                "prose was read as a failing test name: {line:?} yielded {:?}",
+                failing_test_names(line)
             );
         }
+        Ok(())
     }
 
     /// The doctest win the widened capture bought must survive the anchoring.
     #[test]
-    fn an_anchored_capture_still_takes_a_whole_doctest_name() {
-        assert_eq!(
-            failing_test_names("test src/lib.rs - item::path (line 12) ... FAILED"),
-            vec!["src/lib.rs - item::path (line 12)".to_string()]
+    fn an_anchored_capture_still_takes_a_whole_doctest_name() -> Result<()> {
+        let doctest = failing_test_names("test src/lib.rs - item::path (line 12) ... FAILED");
+        ensure!(
+            doctest == vec!["src/lib.rs - item::path (line 12)".to_string()],
+            "an anchored capture must still take the whole doctest name, got {doctest:?}"
         );
-        assert_eq!(
-            failing_test_names("test suite::case ... FAILED"),
-            vec!["suite::case".to_string()]
+        let plain = failing_test_names("test suite::case ... FAILED");
+        ensure!(
+            plain == vec!["suite::case".to_string()],
+            "an ordinary status line must still yield its name, got {plain:?}"
         );
+        Ok(())
     }
 
     /// A progress writer rewriting a line in place leaves a bare carriage
@@ -309,10 +375,12 @@ test result: FAILED. 1 passed; 2 failed; 0 ignored
     /// then arrive as one physical line; anchoring alone would read the whole
     /// thing as a name, or miss it entirely.
     #[test]
-    fn a_bare_carriage_return_separates_two_status_lines() {
-        assert_eq!(
-            failing_test_names("test a::b ... ok\rtest c::d ... FAILED"),
-            vec!["c::d".to_string()]
+    fn a_bare_carriage_return_separates_two_status_lines() -> Result<()> {
+        let names = failing_test_names("test a::b ... ok\rtest c::d ... FAILED");
+        ensure!(
+            names == vec!["c::d".to_string()],
+            "a bare carriage return must separate the two status lines, got {names:?}"
         );
+        Ok(())
     }
 }

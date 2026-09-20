@@ -503,7 +503,7 @@ fn render_failing_tests(out: &mut String, failure: &GateFailure) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use color_eyre::eyre::Result;
+    use color_eyre::eyre::{Result, ensure, eyre};
     use serde_json::json;
 
     const ASSERTION_LOG: &str = "\
@@ -547,6 +547,27 @@ test result: FAILED. 1 passed; 1 failed; 0 ignored
         Ok(())
     }
 
+    /// Fallible element access. `xs[i]` panics, which the fallible-test policy
+    /// excludes; this carries the same proposition as an error naming the
+    /// observed length, so a shape regression reports itself instead of
+    /// unwinding.
+    fn at<'a, T>(xs: &'a [T], index: usize, what: &str) -> Result<&'a T> {
+        xs.get(index)
+            .ok_or_else(|| eyre!("{what}: wanted element {index}, but only {} exist", xs.len()))
+    }
+
+    /// Every needle must appear in the rendered digest. One proposition per
+    /// needle, each naming itself and the whole rendering on failure.
+    fn must_carry(markdown: &str, needles: &[&str]) -> Result<()> {
+        for needle in needles {
+            ensure!(
+                markdown.contains(needle),
+                "the digest must carry {needle:?}, got:\n{markdown}"
+            );
+        }
+        Ok(())
+    }
+
     /// The whole point: a reader learns the test, the file and line, and the
     /// command, without opening the job log.
     #[test]
@@ -563,12 +584,20 @@ test result: FAILED. 1 passed; 1 failed; 0 ignored
         let failures = collect_failures(&summary, temp.path());
         let markdown = render(&summary, &failures);
 
-        assert_eq!(failures.len(), 1, "the successful gate must not appear");
-        assert!(markdown.contains("`parser::ranges::byte_offsets_round_trip`"));
-        assert!(markdown.contains("crates/perl-parser-core/src/ranges.rs:118:9"));
-        assert!(markdown.contains("utf-16 offset drifted"));
-        assert!(markdown.contains("cargo test -p perl-parser-core --locked --lib"));
-        Ok(())
+        ensure!(
+            failures.len() == 1,
+            "the successful gate must not appear, got {} failures",
+            failures.len()
+        );
+        must_carry(
+            &markdown,
+            &[
+                "`parser::ranges::byte_offsets_round_trip`",
+                "crates/perl-parser-core/src/ranges.rs:118:9",
+                "utf-16 offset drifted",
+                "cargo test -p perl-parser-core --locked --lib",
+            ],
+        )
     }
 
     /// One test's panic location must never be reported against another's
@@ -602,23 +631,36 @@ test result: FAILED. 0 passed; 2 failed
         }));
 
         let failures = collect_failures(&summary, temp.path());
-        let tests = &failures[0].failing_tests;
+        let tests = &at(&failures, 0, "collect_failures")?.failing_tests;
 
-        assert_eq!(tests.len(), 2);
-        assert_eq!(tests[0].name, "lsp::hover::renders_pod");
-        assert_eq!(
-            tests[0].panic_location.as_deref(),
-            Some("crates/perl-lsp-rs/src/hover.rs:10:1")
+        ensure!(tests.len() == 2, "both failing tests must be recovered, got {}", tests.len());
+        let hover = at(tests, 0, "failing_tests")?;
+        let completion = at(tests, 1, "failing_tests")?;
+        ensure!(
+            hover.name == "lsp::hover::renders_pod",
+            "the first block's own test name, got {:?}",
+            hover.name
         );
-        assert_eq!(tests[1].name, "lsp::completion::offers_methods");
-        assert_eq!(
-            tests[1].panic_location.as_deref(),
-            Some("crates/perl-lsp-rs/src/completion.rs:88:5")
+        ensure!(
+            hover.panic_location.as_deref() == Some("crates/perl-lsp-rs/src/hover.rs:10:1"),
+            "hover's own panic location, got {:?}",
+            hover.panic_location
         );
-        assert!(
-            !tests[0].excerpt.iter().any(|line| line.contains("items.is_empty")),
+        ensure!(
+            completion.name == "lsp::completion::offers_methods",
+            "the second block's own test name, got {:?}",
+            completion.name
+        );
+        ensure!(
+            completion.panic_location.as_deref()
+                == Some("crates/perl-lsp-rs/src/completion.rs:88:5"),
+            "completion's own panic location, got {:?}",
+            completion.panic_location
+        );
+        ensure!(
+            !hover.excerpt.iter().any(|line| line.contains("items.is_empty")),
             "hover's excerpt reached into completion's block: {:?}",
-            tests[0].excerpt
+            hover.excerpt
         );
         Ok(())
     }
@@ -639,11 +681,20 @@ test result: FAILED. 0 passed; 2 failed
         let failures = collect_failures(&summary, temp.path());
         let markdown = render(&summary, &failures);
 
-        assert!(failures[0].log_unavailable.is_some());
-        assert!(markdown.contains("No test output is available"));
-        assert!(markdown.contains("missing evidence, not a clean run"));
-        assert!(markdown.contains("could not be read"));
-        assert!(
+        let gate = at(&failures, 0, "collect_failures")?;
+        ensure!(
+            gate.log_unavailable.is_some(),
+            "a log that could not be read must be recorded as unavailable"
+        );
+        must_carry(
+            &markdown,
+            &[
+                "No test output is available",
+                "missing evidence, not a clean run",
+                "could not be read",
+            ],
+        )?;
+        ensure!(
             !markdown.contains("names no failing test"),
             "a missing log must not be reported through the no-test-name branch"
         );
@@ -666,14 +717,12 @@ test result: FAILED. 0 passed; 2 failed
 
         let markdown = render(&summary, &collect_failures(&summary, temp.path()));
 
-        assert!(markdown.contains("names no failing test"));
-        assert!(markdown.contains("not established"));
-        assert!(
+        must_carry(&markdown, &["names no failing test", "not established"])?;
+        ensure!(
             !markdown.contains("did not fail on an assertion"),
             "the digest must not claim a cause the parser cannot observe"
         );
-        assert!(markdown.contains("cargo clippy --workspace -- -D warnings"));
-        Ok(())
+        must_carry(&markdown, &["cargo clippy --workspace -- -D warnings"])
     }
 
     /// The discriminating control for the above. This log *is* an assertion
@@ -702,16 +751,15 @@ test result: FAILED. 0 passed; 2 failed
         let failures = collect_failures(&summary, temp.path());
         let markdown = render(&summary, &failures);
 
-        assert!(
-            failures[0].failing_tests.is_empty(),
+        ensure!(
+            at(&failures, 0, "collect_failures")?.failing_tests.is_empty(),
             "no libtest marker is present, so no name can be recovered"
         );
-        assert!(
+        ensure!(
             !markdown.contains("did not fail on an assertion"),
             "this log is an assertion failure; claiming otherwise inverts the truth"
         );
-        assert!(markdown.contains("not established"));
-        Ok(())
+        must_carry(&markdown, &["not established"])
     }
 
     /// A gate that never started carries the runner's own reason. Reporting it
@@ -729,9 +777,7 @@ test result: FAILED. 0 passed; 2 failed
 
         let markdown = render(&summary, &collect_failures(&summary, temp.path()));
 
-        assert!(markdown.contains("not_proven"));
-        assert!(markdown.contains("waiting for dependency result(s): fmt_gate"));
-        Ok(())
+        must_carry(&markdown, &["not_proven", "waiting for dependency result(s): fmt_gate"])
     }
 
     /// PR Smoke writes an `xtask gates` receipt, not a shard summary, and had
@@ -758,12 +804,25 @@ test result: FAILED. 0 passed; 2 failed
         let failures = collect_failures(&receipt, &temp.path().join("logs"));
         let markdown = render(&receipt, &failures);
 
-        assert_eq!(failures.len(), 1);
-        assert_eq!(failures[0].result, "failed");
-        assert!(markdown.contains("`parser::ranges::byte_offsets_round_trip`"));
-        assert!(markdown.contains("crates/perl-parser-core/src/ranges.rs:118:9"));
-        assert!(markdown.contains("cargo test -p perl-parser-core --locked"));
-        Ok(())
+        ensure!(
+            failures.len() == 1,
+            "the passed gate must not appear, got {} failures",
+            failures.len()
+        );
+        let failed = at(&failures, 0, "collect_failures")?;
+        ensure!(
+            failed.result == "failed",
+            "the receipt's own status word must be carried, got {:?}",
+            failed.result
+        );
+        must_carry(
+            &markdown,
+            &[
+                "`parser::ranges::byte_offsets_round_trip`",
+                "crates/perl-parser-core/src/ranges.rs:118:9",
+                "cargo test -p perl-parser-core --locked",
+            ],
+        )
     }
 
     /// The two producers put the head and the gate count in different places,
@@ -794,11 +853,11 @@ test result: FAILED. 0 passed; 2 failed
         let failures = collect_failures(&receipt, &temp.path().join("logs"));
         let markdown = render(&receipt, &failures);
 
-        assert!(
+        ensure!(
             markdown.contains("0ea6ef4"),
             "the header must name the receipt's own head, got:\n{markdown}"
         );
-        assert!(
+        ensure!(
             !markdown.contains("Subject `unknown`"),
             "`metadata.git_sha_short` is present, so the subject is not unknown, got:\n{markdown}"
         );
@@ -818,7 +877,7 @@ test result: FAILED. 0 passed; 2 failed
 
         let markdown = render(&receipt, &[]);
 
-        assert!(
+        ensure!(
             markdown.contains("23 selected gate(s) succeeded"),
             "a clean run must report the gates it actually ran, got:\n{markdown}"
         );
@@ -843,9 +902,19 @@ test result: FAILED. 0 passed; 2 failed
 
         let failures = collect_failures(&summary, temp.path());
 
-        assert_eq!(failures.len(), 2, "skipped is not a failure; the other two are");
-        assert_eq!(failures[0].result, "timeout");
-        assert_eq!(failures[1].result, "instrument_failure");
+        ensure!(
+            failures.len() == 2,
+            "skipped is not a failure; the other two are, got {} failures",
+            failures.len()
+        );
+        let first = at(&failures, 0, "collect_failures")?;
+        let second = at(&failures, 1, "collect_failures")?;
+        ensure!(first.result == "timeout", "the first unrecognised status, got {:?}", first.result);
+        ensure!(
+            second.result == "instrument_failure",
+            "the second unrecognised status, got {:?}",
+            second.result
+        );
         Ok(())
     }
 
@@ -874,11 +943,14 @@ test result: FAILED. 0 passed; 2 failed
         let failures = collect_failures(&receipt, temp.path());
         let markdown = render(&receipt, &failures);
 
-        assert!(failures[0].log_unavailable.is_some());
-        assert!(markdown.contains("gone::tests::still_named"));
-        assert!(markdown.contains("src/gone.rs:3"));
-        assert!(markdown.contains("assertion failed: value.is_some()"));
-        Ok(())
+        ensure!(
+            at(&failures, 0, "collect_failures")?.log_unavailable.is_some(),
+            "the log is genuinely absent, so it must be recorded as unavailable"
+        );
+        must_carry(
+            &markdown,
+            &["gone::tests::still_named", "src/gone.rs:3", "assertion failed: value.is_some()"],
+        )
     }
 
     /// A backtrace is the least useful and longest part of a failure block.
@@ -910,11 +982,13 @@ note: run with `RUST_BACKTRACE=full` for a verbose backtrace
 
         let markdown = render(&summary, &collect_failures(&summary, temp.path()));
 
-        assert!(markdown.contains("assertion `left == right` failed"));
-        assert!(markdown.contains("left: 0"));
-        assert!(!markdown.contains("stack backtrace"));
-        assert!(!markdown.contains("rust_begin_unwind"));
-        assert!(!markdown.contains("RUST_BACKTRACE"));
+        must_carry(&markdown, &["assertion `left == right` failed", "left: 0"])?;
+        for banned in ["stack backtrace", "rust_begin_unwind", "RUST_BACKTRACE"] {
+            ensure!(
+                !markdown.contains(banned),
+                "the excerpt carried {banned:?} into the summary, got:\n{markdown}"
+            );
+        }
         Ok(())
     }
 
@@ -934,13 +1008,15 @@ note: run with `RUST_BACKTRACE=full` for a verbose backtrace
 
         let failures = collect_failures(&summary, temp.path());
 
-        assert_eq!(failures.len(), 1);
-        assert_eq!(
-            failures[0].message.as_deref(),
-            Some("Execution error: No such file or directory (os error 2)")
+        ensure!(failures.len() == 1, "the error gate is one failure, got {}", failures.len());
+        let gate = at(&failures, 0, "collect_failures")?;
+        ensure!(
+            gate.message.as_deref()
+                == Some("Execution error: No such file or directory (os error 2)"),
+            "`output_summary` must become the failure's message, got {:?}",
+            gate.message
         );
-        assert!(render(&summary, &failures).contains("No such file or directory"));
-        Ok(())
+        must_carry(&render(&summary, &failures), &["No such file or directory"])
     }
 
     /// An assertion over markdown can carry a fence of its own, which would
@@ -965,8 +1041,14 @@ note: run with `RUST_BACKTRACE=full` for a verbose backtrace
 
         let rendered = render(&summary, &collect_failures(&summary, temp.path()));
 
-        assert!(rendered.contains("````text"), "the fence must outgrow the excerpt's own");
-        assert!(rendered.contains("```perl"), "the excerpt itself is still shown verbatim");
+        ensure!(
+            rendered.contains("````text"),
+            "the fence must outgrow the excerpt's own, got:\n{rendered}"
+        );
+        ensure!(
+            rendered.contains("```perl"),
+            "the excerpt itself is still shown verbatim, got:\n{rendered}"
+        );
         Ok(())
     }
 
@@ -980,8 +1062,11 @@ note: run with `RUST_BACKTRACE=full` for a verbose backtrace
 
         let markdown = render(&summary, &collect_failures(&summary, Path::new("/nonexistent")));
 
-        assert!(markdown.contains("Every one of the 1 selected gate(s) succeeded"));
-        assert!(!markdown.contains("Reproduce"));
+        must_carry(&markdown, &["Every one of the 1 selected gate(s) succeeded"])?;
+        ensure!(
+            !markdown.contains("Reproduce"),
+            "a clean shard has nothing to reproduce, got:\n{markdown}"
+        );
         Ok(())
     }
 
@@ -1002,10 +1087,11 @@ note: run with `RUST_BACKTRACE=full` for a verbose backtrace
 
         let markdown = render(&summary, &collect_failures(&summary, temp.path()));
 
-        assert!(markdown.contains("suite::case_0"));
-        assert!(markdown.contains("suite::case_9"));
-        assert!(!markdown.contains("suite::case_24"));
-        assert!(markdown.contains("…and 15 more"));
+        must_carry(&markdown, &["suite::case_0", "suite::case_9", "…and 15 more"])?;
+        ensure!(
+            !markdown.contains("suite::case_24"),
+            "the list must be elided, not rendered whole, got:\n{markdown}"
+        );
         Ok(())
     }
 
@@ -1041,14 +1127,14 @@ note: run with `RUST_BACKTRACE=full` for a verbose backtrace
         })?;
 
         let written = fs::read_to_string(&out)?;
-        assert!(
+        ensure!(
             !written.contains("### CI Gate shard: parser_stack"),
             "a digest restored from another run's cached target/ must not ride \
-             into this run's summary"
+             into this run's summary, got:\n{written}"
         );
-        assert!(
+        ensure!(
             written.contains("Every one of the 1 selected gate(s) succeeded"),
-            "this run's own digest must still be written"
+            "this run's own digest must still be written, got:\n{written}"
         );
         Ok(())
     }
