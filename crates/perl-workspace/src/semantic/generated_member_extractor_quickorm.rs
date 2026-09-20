@@ -88,7 +88,7 @@ fn is_quickorm_module(module: &str) -> bool {
     module == "DBIx::QuickORM"
 }
 
-use super::generated_member_extractor::{NameCandidate, normalize_symbol_name, stable_id};
+use super::generated_member_extractor_core::{NameCandidate, normalize_symbol_name, stable_id};
 
 #[derive(Debug, Clone, Default)]
 struct QuickOrmWalkCtx {

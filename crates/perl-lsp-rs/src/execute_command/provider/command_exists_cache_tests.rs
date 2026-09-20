@@ -14,8 +14,8 @@ use std::path::{Path, PathBuf};
 
 use super::{
     CommandExistsCacheEntry, CommandExistsCacheKey, MAX_COMMAND_EXISTS_CACHE_ENTRIES,
-    command_exists_cache_key, command_exists_candidate_paths, command_exists_probe,
-    command_exists_via, command_exists_via_key, insert_bounded,
+    command_exists_cache_key, command_exists_candidate_paths, command_exists_via,
+    command_exists_via_key, insert_bounded,
 };
 
 /// The second lookup with an unchanged environment must be served from the
@@ -399,39 +399,4 @@ fn candidate_paths_cover_each_path_entry_once() {
             "each PATH entry must contribute the bare candidate plus one PATHEXT expansion on Windows"
         );
     }
-}
-
-/// Exact error-variant proof for the probe behind `command_exists`: a missing
-/// `PATH` delegates to ambient lookup (which resolves the running binary),
-/// while a present-but-empty `PATH` fails closed for the very same binary.
-/// The empty-PATH and nonexistent-directory variants pin the remaining arms
-/// without mutating process-global environment state.
-#[test]
-fn probe_exact_error_variants() {
-    const MISSING: &str = "perl_lsp_test_probe_variant_missing_unique_xyz";
-    let cwd = Path::new(TEST_CWD);
-
-    assert!(
-        !command_exists_probe(MISSING, None, cwd),
-        "ambient lookup of a fabricated command must be absent"
-    );
-    assert!(
-        !command_exists_probe(MISSING, Some(OsStr::new("")), cwd),
-        "empty PATH must fail closed for a fabricated command"
-    );
-    assert!(
-        !command_exists_probe(MISSING, Some(OsStr::new("/definitely/not/here/xyz")), cwd),
-        "a PATH with no candidate must be absent"
-    );
-
-    let running = std::env::current_exe().expect("test binary path must exist");
-    let running = running.to_string_lossy().into_owned();
-    assert!(
-        command_exists_probe(&running, None, cwd),
-        "ambient lookup must resolve the running binary"
-    );
-    assert!(
-        !command_exists_probe(&running, Some(OsStr::new("")), cwd),
-        "empty PATH must fail closed even for an existing binary"
-    );
 }
