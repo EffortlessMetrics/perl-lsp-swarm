@@ -197,7 +197,12 @@ fn attribute_end(rest: &str) -> Option<usize> {
         match ch {
             '[' => depth += 1,
             ']' => {
-                depth -= 1;
+                // The `#[` guard above means the first `[` precedes every `]`,
+                // so `depth` is never zero here. Saying that with `checked_sub`
+                // rather than a comment keeps the arithmetic total: a closing
+                // bracket with nothing open is malformed input, and malformed
+                // input yields "no attribute here", not a panic in a checker.
+                depth = depth.checked_sub(1)?;
                 if depth == 0 {
                     return Some(index);
                 }
