@@ -444,18 +444,26 @@ fn scenario_from_test_name(test: &str) -> Option<String> {
 /// wins outright, because a wait that expired decided nothing — one level up.
 ///
 /// That precedence does not transfer between tests, though: one test's expired
-/// wait says nothing about another test's assertion over two real values. So a
-/// proven budget decides the run only when no failing test carries positive
-/// evidence that the change itself is the subject, which is exactly the other
-/// two evidence-backed modes.
+/// wait says nothing about any other test's failure. So the budget decides the
+/// run only when EVERY failing test is a proven expired budget.
+///
+/// Requiring all of them, rather than merely the absence of a contrary verdict,
+/// is deliberate. `Unknown` and `AssertionOnAbsentObservation` are the modes
+/// `mode_is_evidence_backed` declines to back, and an unresolved co-failure is
+/// not evidence of a flake — it is the absence of evidence. Letting one test's
+/// deadline marker speak for it would transfer exactly the precedence the
+/// paragraph above denies, and would take `update_baseline` away from a real
+/// baseline failure that happened to run beside a slow probe.
+///
+/// The ambiguous cases therefore keep whatever the whole-log scan already gave
+/// them. That scan is unreliable, which is the defect behind #16205, but this
+/// claim is only that proven budget evidence should beat it. Widening the claim
+/// to cases the evidence cannot settle would be guessing with more steps.
 fn run_failure_class(failing_tests: &[UxFailingTest], raw: &str) -> UxFailureClass {
-    let change_is_the_subject = failing_tests
-        .iter()
-        .any(|test| matches!(test.mode, UxFailureMode::AssertionFailed | UxFailureMode::Panic));
-    let expired_budget =
-        failing_tests.iter().any(|test| test.mode == UxFailureMode::BudgetExceeded);
+    let every_failure_is_an_expired_budget = !failing_tests.is_empty()
+        && failing_tests.iter().all(|test| test.mode == UxFailureMode::BudgetExceeded);
 
-    if expired_budget && !change_is_the_subject {
+    if every_failure_is_an_expired_budget {
         UxFailureClass::Timeout
     } else {
         infer_failure_class(&classification_input(raw))
@@ -1119,6 +1127,44 @@ test result: FAILED. 0 passed; 1 failed";
         assert_eq!(
             receipt.merge_action, "triage_timeout",
             "update_baseline is the forbidden remedy this test exists to prevent"
+        );
+    }
+
+    #[test]
+    fn an_unresolved_co_failure_keeps_the_budget_from_deciding_the_run() {
+        // Devin Review on #16244. An unresolved failure is the ABSENCE of
+        // evidence, not evidence of a flake, so one test's deadline marker must
+        // not speak for it. Here test B is a real baseline failure whose block
+        // carries no marker this classifier will read; if the budget in test A
+        // decided the run, B would lose `update_baseline` for having run beside
+        // a slow probe.
+        let log = "failures:\n\n\
+---- ux_latency_raw_rpc::hover stdout ----\n\
+wait ended: deadline expired after 5000ms with the stream still live\n\
+\n\
+---- ux_scenario_31_snapshot::workspace_symbols stdout ----\n\
+baseline snapshot mismatch for workspace_symbols\n\
+\n\
+failures:\n\
+    ux_latency_raw_rpc::hover\n\
+    ux_scenario_31_snapshot::workspace_symbols\n\
+\n\
+test result: FAILED. 0 passed; 2 failed";
+
+        let receipt = classify(log, None);
+        assert_eq!(receipt.failing_tests[0].mode, UxFailureMode::BudgetExceeded);
+        assert!(
+            !receipt.failing_tests[1].discriminated,
+            "the second block carries no evidence this classifier backs"
+        );
+        assert_ne!(
+            receipt.failure_class,
+            UxFailureClass::Timeout,
+            "an unresolved co-failure must stop the budget deciding the whole run"
+        );
+        assert_ne!(
+            receipt.merge_action, "triage_timeout",
+            "and must not take update_baseline away from a real baseline failure"
         );
     }
 
