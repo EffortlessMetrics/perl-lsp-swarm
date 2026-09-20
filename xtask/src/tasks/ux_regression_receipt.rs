@@ -4,7 +4,7 @@ use std::sync::LazyLock;
 
 use chrono::Utc;
 use color_eyre::eyre::{Context, Result};
-use perl_lsp_ux_tests::taxonomy::{UxComponent, UxFailureClass, UxRoute, route_for_failure_class};
+use perl_lsp_ux_tests::taxonomy::{route_for_failure_class, UxComponent, UxFailureClass, UxRoute};
 use regex::Regex;
 use serde::Serialize;
 
@@ -14,10 +14,16 @@ static FAILED_TEST_RE: LazyLock<Regex> = LazyLock::new(|| {
 });
 // Matches both pre-1.73 format ("panicked at 'msg', path:row:col") and
 // post-1.73 format ("panicked at path:row:col:") where the location appears
-// directly after "panicked at " without a quoted message.
+// directly after "panicked at " without a quoted message. The first character
+// class accepts a letter (relative paths like `crates/...`), `.` (`./`-relative
+// paths), or `/` (absolute paths) so panics whose frame is outside the
+// workspace root — a dependency's own `unwrap`, a `registry/src/...` frame, or
+// any build whose `CARGO_MANIFEST_DIR` is not a prefix of the compiled file —
+// are still captured. The `[^:\s]` and `[^:]*` segments already forbid
+// whitespace and inner `:`, which keeps the leading class narrow.
 #[allow(clippy::expect_used, reason = "static LazyLock regex with known-good pattern")]
 static PANIC_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"panicked at (?:'[^']*',\s*)?([a-zA-Z][^:\s][^:]*:\d+:\d+)")
+    Regex::new(r"panicked at (?:'[^']*',\s*)?([a-zA-Z./][^:\s][^:]*:\d+:\d+)")
         .expect("panic regex must compile")
 });
 
@@ -426,7 +432,11 @@ fn classification_input(raw: &str) -> String {
 
 fn scenario_from_test_name(test: &str) -> Option<String> {
     let scenario = test.split("::").next()?;
-    if scenario.starts_with("ux_scenario_") { Some(format!("{scenario}.rs")) } else { None }
+    if scenario.starts_with("ux_scenario_") {
+        Some(format!("{scenario}.rs"))
+    } else {
+        None
+    }
 }
 
 fn infer_failure_class(raw: &str) -> UxFailureClass {
@@ -483,7 +493,11 @@ fn looks_like_scenario_14_provider_regression(lower: &str) -> bool {
 
 fn workflow_from_test_name(test: &str) -> Option<String> {
     let workflow = test.split("::").nth(1)?;
-    if workflow.is_empty() { None } else { Some(workflow.to_string()) }
+    if workflow.is_empty() {
+        None
+    } else {
+        Some(workflow.to_string())
+    }
 }
 
 #[cfg(test)]
@@ -813,6 +827,76 @@ test result: FAILED. 0 passed; 1 failed";
         let line = "thread 'test' panicked at crates/perl-lsp-rs/src/lib.rs:42:8:";
         let cap = PANIC_RE.captures(line).expect("should match modern panic format");
         assert_eq!(&cap[1], "crates/perl-lsp-rs/src/lib.rs:42:8");
+    }
+
+    #[test]
+    fn panic_re_matches_absolute_path_panic() {
+        // Absolute Unix-style paths are what rustc prints when the panicking
+        // frame is not under the workspace root (a dependency's own `unwrap`, a
+        // `registry/src/...` frame, or any build whose `CARGO_MANIFEST_DIR` is
+        // not a prefix of the compiled file). The first-character class used to
+        // be `[a-zA-Z]`, so these lines never matched and `panic_location` was
+        // silently absent — exactly the missing-evidence bug #16147 names.
+        let line = "thread 'x' panicked at /home/runner/work/perl-lsp-swarm/xtask/src/a.rs:7:1:";
+        let cap = PANIC_RE.captures(line).expect("absolute path panic must match");
+        assert_eq!(&cap[1], "/home/runner/work/perl-lsp-swarm/xtask/src/a.rs:7:1");
+    }
+
+    #[test]
+    fn panic_re_matches_dot_relative_path_panic() {
+        // `./`-relative paths appear from some toolchain and vendoring
+        // configurations. Like the absolute case above, the old regex refused
+        // to match because `.` is not a letter.
+        let line = "thread 'x' panicked at ./xtask/src/a.rs:7:1:";
+        let cap = PANIC_RE.captures(line).expect("dot-relative path panic must match");
+        assert_eq!(&cap[1], "./xtask/src/a.rs:7:1");
+    }
+
+    #[test]
+    fn panic_re_matches_cargo_registry_panic() {
+        // The case the digest fails hardest on is a panic inside a
+        // dependency, which is exactly where the reader has the least context
+        // to diagnose from the test name alone. The registry path lives under
+        // an absolute prefix (`/root/.cargo/...`) so the old `[a-zA-Z]` anchor
+        // rejected it on the leading `/`.
+        let line = "thread 'x' panicked at /root/.cargo/registry/src/index/foo-1.0/src/lib.rs:3:4:";
+        let cap = PANIC_RE.captures(line).expect("cargo registry path panic must match");
+        assert_eq!(&cap[1], "/root/.cargo/registry/src/index/foo-1.0/src/lib.rs:3:4");
+    }
+
+    #[test]
+    fn panic_re_classify_extracts_panic_location_from_absolute_path() {
+        // End-to-end: a whole log carrying a panic in a dependency frame must
+        // surface the absolute path through `panic_location` on the receipt.
+        // This is the discriminating proof #16147 requires at the call-site
+        // boundary, not just at the regex level.
+        let log = "running 1 test\n\
+test ux_scenario_19_diagnostics_lifecycle::scenario_19_diagnostics_clear_after_fix ... FAILED\n\
+thread 'x' panicked at /home/runner/work/perl-lsp-swarm/xtask/src/a.rs:7:1:\n\
+boom\n\
+test result: FAILED. 0 passed; 1 failed";
+        let receipt = classify(log, Some("abs-sha".to_string()));
+        assert_eq!(
+            receipt.panic_location.as_deref(),
+            Some("/home/runner/work/perl-lsp-swarm/xtask/src/a.rs:7:1"),
+            "panic_location must surface the absolute path through classify()"
+        );
+    }
+
+    #[test]
+    fn panic_re_first_character_anchor_still_excludes_arbitrary_text() {
+        // The first-character class `[a-zA-Z./]` keeps the old anchor's
+        // narrowness: a leading space, a leading digit, or a leading `-` still
+        // cannot start a captured location. This protects against the failure
+        // mode the issue warns about — letting the regex swallow any prose
+        // after `panicked at`. Whitespace, digits, and `-` all stay excluded.
+        for line in [
+            "thread 'x' panicked at  something happened: 100:200",
+            "thread 'x' panicked at 9lives/src/lib.rs:42:8:",
+            "thread 'x' panicked at -/weird/path.rs:42:8:",
+        ] {
+            assert!(PANIC_RE.captures(line).is_none(), "leading {line:?} must not match, but did");
+        }
     }
 
     // =========================================================================
