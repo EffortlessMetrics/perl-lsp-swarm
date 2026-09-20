@@ -496,6 +496,18 @@ fn scenario_from_test_name(test: &str) -> Option<String> {
 /// paragraph above denies, and would take `update_baseline` away from a real
 /// baseline failure that happened to run beside a slow probe.
 ///
+/// One ambiguous case is not left alone, because its remedy is actively unsafe.
+/// `BaselineDrift` routes to `update_baseline`, which tells a reader to accept the
+/// observed value as the new expectation. A test that panicked produced no observed
+/// value, so there is nothing to accept, and following that instruction would widen
+/// a budget or rewrite a snapshot on the strength of a crash. When the failing tests
+/// show a crash and no comparison at all (`no_failing_test_compared_anything`), the
+/// baseline verdict is therefore withdrawn in favour of `Unknown`, which routes to
+/// `Triage`. That is deliberately not a claim about what did go wrong — naming the
+/// right class for a panic is the open taxonomy question in #16103 — only that this
+/// run cannot be answered with a baseline. `blocking` does not read the class, so
+/// the gate still fails the run either way.
+///
 /// The ambiguous cases therefore keep whatever the whole-log scan already gave
 /// them. That scan is unreliable, which is the defect behind #16205, but this
 /// claim is only that proven budget evidence should beat it. Widening the claim
@@ -505,10 +517,42 @@ fn run_failure_class(failing_tests: &[UxFailingTest], raw: &str) -> UxFailureCla
         && failing_tests.iter().all(|test| test.mode == UxFailureMode::BudgetExceeded);
 
     if every_failure_is_an_expired_budget {
-        UxFailureClass::Timeout
-    } else {
-        infer_failure_class(&classification_input(raw))
+        return UxFailureClass::Timeout;
     }
+
+    let scanned = infer_failure_class(&classification_input(raw));
+
+    if scanned == UxFailureClass::BaselineDrift && no_failing_test_compared_anything(failing_tests)
+    {
+        return UxFailureClass::Unknown;
+    }
+
+    scanned
+}
+
+/// True when a crash, and nothing that compared a value, is all the failing tests
+/// show.
+///
+/// A baseline or snapshot failure is an assertion: two values were produced and one
+/// was rejected. `classify_failure_mode` records an assertion in a block as
+/// `AssertionFailed` or `AssertionOnAbsentObservation`, and reaches `Panic` only
+/// after finding no assertion line at all; `Unknown` means the block carried
+/// neither. So when every failing test is `Panic` or `Unknown` and at least one
+/// panicked, no failing test performed a comparison, and the word that produced
+/// `BaselineDrift` came from somewhere in the log that did not fail.
+///
+/// The converse is why any other co-failure leaves the class alone: an
+/// `AssertionFailed` beside a panic may well be the baseline comparison the class
+/// names, and taking `update_baseline` away from it would be the mirror of the
+/// defect this guards. `BudgetExceeded` returns at the deadline marker without
+/// reading further, so a block classified that way is not known to be free of an
+/// assertion either. Absence of evidence does not become evidence here any more
+/// than it does one level down.
+fn no_failing_test_compared_anything(failing_tests: &[UxFailingTest]) -> bool {
+    failing_tests.iter().any(|test| test.mode == UxFailureMode::Panic)
+        && failing_tests
+            .iter()
+            .all(|test| matches!(test.mode, UxFailureMode::Panic | UxFailureMode::Unknown))
 }
 
 fn infer_failure_class(raw: &str) -> UxFailureClass {
@@ -1417,6 +1461,99 @@ test result: FAILED. 0 passed; 1 failed; timed out after 60s";
         assert_eq!(
             receipt.schema_version, 2,
             "consumers pinned to version 1 keep every field they already read"
+        );
+    }
+
+    // ── #16103: a crash is never answered with a baseline remedy ───────────
+    //
+    // `update_baseline` tells a reader to accept the observed value as the new
+    // expectation. A panicking test produced no observed value. These pin the
+    // guard and, just as importantly, its limit.
+
+    /// One failing test, which panicked with no assertion anywhere in its block,
+    /// while the word that drives `BaselineDrift` sits in a cargo status line that
+    /// has nothing to do with the failure. This is the shape the gate published on
+    /// job 106147516331.
+    const PANIC_WITH_INCIDENTAL_BASELINE_LOG: &str = "   Compiling perl-lsp-ux-baselines v0.1.0\n\
+running 1 test\n\
+test ux_latency_document_symbols_returns_real_process_shape ... FAILED\n\
+\n\
+failures:\n\
+\n\
+---- ux_latency_document_symbols_returns_real_process_shape stdout ----\n\
+thread 'ux_latency_document_symbols_returns_real_process_shape' (6514) panicked at crates/perl-lsp-ux-tests/tests/ux_latency_raw_rpc.rs:331:5:\n\
+called `Option::unwrap()` on a `None` value\n\
+\n\
+failures:\n\
+    ux_latency_document_symbols_returns_real_process_shape\n\
+\n\
+test result: FAILED. 0 passed; 1 failed; 0 ignored";
+
+    #[test]
+    fn a_crash_is_never_answered_with_a_baseline_remedy() {
+        let receipt = classify(PANIC_WITH_INCIDENTAL_BASELINE_LOG, None);
+
+        assert_eq!(
+            receipt.failing_tests.len(),
+            1,
+            "the fixture has exactly one failing test, and it panicked"
+        );
+        assert_eq!(receipt.failing_tests[0].mode, UxFailureMode::Panic);
+
+        assert_ne!(
+            receipt.merge_action, "update_baseline",
+            "there is no observed value to accept as a new baseline: the test crashed"
+        );
+        assert!(
+            matches!(receipt.failure_class, UxFailureClass::Unknown),
+            "the baseline verdict is withdrawn, not replaced with another guess"
+        );
+        assert_eq!(receipt.route, UxRoute::Triage, "a crash with no comparison goes to a human");
+        assert_eq!(receipt.merge_action, "triage");
+        assert!(receipt.blocking, "withdrawing the class must not soften the gate");
+        assert!(
+            receipt.human_summary.contains("panicked"),
+            "the reader still gets the evidence that decided it: {}",
+            receipt.human_summary
+        );
+    }
+
+    /// The same incidental word, but now one failing test really did compare two
+    /// values. That assertion may be the baseline comparison the class names, so
+    /// the class must survive.
+    const BASELINE_ASSERTION_BESIDE_A_PANIC_LOG: &str = "   Compiling perl-lsp-ux-baselines v0.1.0\n\
+running 2 tests\n\
+test ux_latency_raw_rpc::ux_latency_hover_within_baseline ... FAILED\n\
+test ux_latency_raw_rpc::ux_latency_document_symbols_returns_real_process_shape ... FAILED\n\
+\n\
+failures:\n\
+\n\
+---- ux_latency_raw_rpc::ux_latency_hover_within_baseline stdout ----\n\
+thread 'main' panicked at crates/perl-lsp-ux-tests/tests/ux_latency_raw_rpc.rs:212:5:\n\
+assertion `left <= right` failed: hover exceeded its recorded baseline\n\
+  left: 910\n\
+ right: 400\n\
+\n\
+---- ux_latency_raw_rpc::ux_latency_document_symbols_returns_real_process_shape stdout ----\n\
+thread 'main' panicked at crates/perl-lsp-ux-tests/tests/ux_latency_raw_rpc.rs:331:5:\n\
+called `Option::unwrap()` on a `None` value\n\
+\n\
+test result: FAILED. 0 passed; 2 failed; 0 ignored";
+
+    #[test]
+    fn a_real_baseline_assertion_beside_a_crash_keeps_its_remedy() {
+        let receipt = classify(BASELINE_ASSERTION_BESIDE_A_PANIC_LOG, None);
+
+        assert_eq!(receipt.failing_tests[0].mode, UxFailureMode::AssertionFailed);
+        assert_eq!(receipt.failing_tests[1].mode, UxFailureMode::Panic);
+
+        assert!(
+            matches!(receipt.failure_class, UxFailureClass::BaselineDrift),
+            "a block that compared two real values is exactly what the class is for"
+        );
+        assert_eq!(
+            receipt.merge_action, "update_baseline",
+            "the guard withdraws an unsupported verdict; it must not withdraw a supported one"
         );
     }
 }
