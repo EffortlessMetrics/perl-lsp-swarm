@@ -183,10 +183,23 @@ if [ "$SINGLE_CRATE_ALL_UNDER_CRATES" = true ] && [ "$SINGLE_CRATE_COUNT" = "1" 
     echo "Single-crate push (${SINGLE_CRATE_DIR} -> ${SINGLE_CRATE_NAME}) — running targeted gate"
     echo "   (Skip with: git push --no-verify)"
     echo ""
+    # --all-targets on clippy, because the tier is meant to narrow SCOPE (one
+    # crate instead of the workspace), not target selection. Cargo's default
+    # selection is lib + bins, so without it this gate cannot see tests/,
+    # benches/ or examples/ at all -- while every workspace recipe in the
+    # justfile and the clippy_tests_kernel CI cohort do pass --all-targets.
+    # That gap is not hypothetical: the #14549 regression was a duplicated
+    # #![deny(clippy::map_err_ignore)] in crates/perl-workspace-core/tests/,
+    # a file this tier never compiled, so it reached main and reddened the
+    # kernel gate for every PR.
+    #
+    # --locked so a gate run cannot quietly rewrite Cargo.lock, which CI then
+    # rejects. Deliberately NOT --all-targets on cargo test: that flag drops
+    # doctests, which the current invocation does run.
     run_single_crate_gate() {
         cargo fmt -p "$SINGLE_CRATE_NAME" -- --check && \
-        cargo clippy -p "$SINGLE_CRATE_NAME" -- -D warnings && \
-        cargo test -p "$SINGLE_CRATE_NAME"
+        cargo clippy -p "$SINGLE_CRATE_NAME" --all-targets --locked -- -D warnings && \
+        cargo test -p "$SINGLE_CRATE_NAME" --locked
     }
     GATE_LOG="$(mktemp -t perl-lsp-prepush.XXXXXX.log 2>/dev/null || mktemp)"
     trap 'rm -f "$GATE_LOG"' EXIT
