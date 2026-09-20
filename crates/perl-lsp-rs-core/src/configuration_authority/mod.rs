@@ -17,6 +17,8 @@
 use serde::{Deserialize, Serialize};
 
 pub(crate) mod capability;
+#[cfg(test)]
+mod high_risk;
 mod catalog;
 
 pub(crate) use catalog::CONFIGURATION_AUTHORITY;
