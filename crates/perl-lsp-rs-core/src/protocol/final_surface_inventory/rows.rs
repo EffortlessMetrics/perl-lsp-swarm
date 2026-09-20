@@ -635,13 +635,13 @@ fn mutation_rows() -> Vec<SurfaceRow> {
         SurfaceRow {
             additional_owned_pointers: super::NO_POINTERS,
             client_capability_inputs: &[
-                "general.positionEncodings (classified; utf-16 selected or initialize fails)",
+                "general.positionEncodings (classified into the accepted session contract)",
             ],
             ..mut_row(
                 "mut.handle_initialize.positionEncodingPin",
                 "positionEncoding",
                 &["general.positionEncodings"],
-                "v0.18 UTF-16-only envelope (#8129); see compat.protocol.positionEncodingUtf16Pin",
+                "wire encoding and sync kind written from the immutable accepted text-sync session contract (#9378); see compat.protocol.positionEncodingUtf16Pin",
             )
         },
         SurfaceRow {
@@ -1200,13 +1200,13 @@ fn compatibility_rows() -> Vec<SurfaceRow> {
         ),
         compat(
             "compat.protocol.positionEncodingUtf16Pin",
-            "positionEncoding always advertised utf-16; well-formed lists that omit utf-16 accept via mandatory UTF-16 fallback",
+            "positionEncoding always advertised utf-16; offers without utf-16 use mandatory fallback",
             RT_INIT,
             &["general.positionEncodings"],
-            "v0.18 full-document UTF-16 envelope (#8129); initialize offer classification",
-            "every client that omits utf-16 from a nonempty general.positionEncodings list",
-            "v0.18 stores and advertises utf-16 only; UTF-8/UTF-32 wire support is not claimed",
-            "#1690/#9282 end-to-end encoding activation remains open and is not this envelope",
+            "accepted text-sync session contract in handle_initialize (#9378); position authority #2298",
+            "every client whose valid positionEncodings offer excludes utf-16",
+            "the v0.18 envelope (#8129 full_document_utf16) owns one immutable FULL + UTF-16 session contract: absent/empty offers default to utf-16, offers containing utf-16 select it, and a valid nonempty offer without utf-16 selects mandatory UTF-16 fallback",
+            "#9380/#9383 own the later full-replacement and range-refusal leaves; #8129 keeps the release claim ceiling",
         ),
         compat(
             "compat.negotiated.clientInputsWithoutAdvertisementSeam",

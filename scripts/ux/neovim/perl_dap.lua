@@ -8,7 +8,9 @@ return {
   adapter = {
     type = 'executable',
     command = 'perl-dap',
-    args = {},
+    -- The editor-owned workspace boundary is startup authority; launch.json
+    -- remains unable to widen it.
+    args = { '--trusted-root', '${workspaceFolder}' },
     options = {
       source_filetype = 'perl',
       detached = false,
