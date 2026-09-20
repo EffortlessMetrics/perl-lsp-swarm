@@ -8,6 +8,18 @@
 //! workflow. Asserting on the YAML text still passes when a comparison is
 //! inverted, so these tests extract the real `run:` block and execute it under
 //! Actions bash semantics with `gh` shimmed.
+//!
+//! Unix-only by construction. The shim is a bash script written to a file named
+//! `gh` with no extension, made executable through `PermissionsExt`, and put on
+//! `PATH` with a colon separator. None of those three reach a Windows host: the
+//! separator is `;`, `PATHEXT` will not resolve an extensionless file, and the
+//! mode bit has no effect. Gating only the import would leave a target that
+//! compiles and cannot work, so the whole target is gated, as
+//! `release_artifact_size_smoke_script.rs` gates itself for the same reason.
+//! `cargo test -p xtask --all-targets` stays usable on other hosts, and the
+//! shell under proof loses no coverage: every lane of both gates is linux,
+//! hosted or self-hosted (#16105 review).
+#![cfg(unix)]
 
 use std::{
     fs,
