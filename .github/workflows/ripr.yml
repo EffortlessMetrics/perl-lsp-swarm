@@ -246,6 +246,19 @@ jobs:
       # cache action at all. A write failure is counted, not propagated (ripr
       # analysis/facts/build.rs:48-51), so an unwritable or absent mount
       # degrades to today's cold behaviour rather than failing the gate.
+      #
+      # #16209: docs/ci/cache-policy.md's writer-authority rule asks every
+      # writer this lane can reach to name an explicit event/ref/data-authority
+      # decision. route-ripr already excludes fork PRs and bot PRs from this
+      # runner pool (self-hosted has no secrets for them), so every run that
+      # reaches ripr-selfhosted is the same trusted-pr context CARGO_HOME and
+      # SCCACHE_DIR already write to unconditionally -- the runner pool
+      # membership is the authority boundary, not a per-run save-if. This mount
+      # is set (not just declared) at the "Run ripr evidence and gate" step
+      # below and passed into the container via -e/-v. Lifetime: it persists on
+      # host disk across runs like CARGO_HOME/SCCACHE_DIR (no automatic TTL);
+      # it is not the per-run scratch under /mnt/ci-scratch that the orphan
+      # reaper below sweeps at >2h.
       RIPR_CACHE_DIR: /mnt/ci-cache/ripr-facts
       CARGO_BUILD_JOBS: "12"
       CARGO_INCREMENTAL: "0"
@@ -330,7 +343,7 @@ jobs:
             echo "::error::Self-hosted preflight failed after cleanup. Failover job will run on GitHub-hosted."
             exit 1
           fi
-          mkdir -p "$TMPDIR" "$CARGO_TARGET_DIR" "$CARGO_HOME" "$SCCACHE_DIR"
+          mkdir -p "$TMPDIR" "$CARGO_TARGET_DIR" "$CARGO_HOME" "$SCCACHE_DIR" "$RIPR_CACHE_DIR"
 
       - name: Run ripr evidence and gate (Docker)
         shell: bash
@@ -350,6 +363,7 @@ jobs:
             -e SCCACHE_DIR=/sccache \
             -e SCCACHE_CACHE_SIZE="$SCCACHE_CACHE_SIZE" \
             -e RUSTC_WRAPPER=/usr/local/cargo/bin/sccache \
+            -e RIPR_CACHE_DIR=/ripr-facts \
             -e CARGO_INCREMENTAL="$CARGO_INCREMENTAL" \
             -e CARGO_BUILD_JOBS="$CARGO_BUILD_JOBS" \
             -e CARGO_TARGET_DIR=/target \
@@ -360,6 +374,7 @@ jobs:
             -v "$RIPR_FRESHNESS_HANDOFF:/freshness" \
             -v "$CARGO_HOME:/cargo-home" \
             -v "$SCCACHE_DIR:/sccache" \
+            -v "$RIPR_CACHE_DIR:/ripr-facts" \
             -v "$CARGO_TARGET_DIR:/target" \
             -v "$TMPDIR:/tmp/jobtmp" \
             -w /workspace \

@@ -30,6 +30,18 @@ FACT_CACHE_DECLARATION = (
 )
 FACT_CACHE_PATH = "path: ${{ runner.temp }}/" + FACT_CACHE_DIRNAME
 SELFHOSTED_CACHE_DIR = "RIPR_CACHE_DIR: /mnt/ci-cache/" + FACT_CACHE_DIRNAME
+# #16209: the job-level RIPR_CACHE_DIR above is a host-side declaration only.
+# docker does not inherit arbitrary host environment variables, so the
+# analysis container needs its own explicit forward plus a bind mount to the
+# same host directory -- without both, the container falls back to its
+# workspace-local default and loses the cache during per-run cleanup.
+SELFHOSTED_CONTAINER_CACHE_DIR = "/ripr-facts"
+SELFHOSTED_CACHE_FORWARD_LINE = (
+    "            -e RIPR_CACHE_DIR=" + SELFHOSTED_CONTAINER_CACHE_DIR + " \\\n"
+)
+SELFHOSTED_CACHE_MOUNT_LINE = (
+    '            -v "$RIPR_CACHE_DIR:' + SELFHOSTED_CONTAINER_CACHE_DIR + '" \\\n'
+)
 HOSTED_FACT_CACHE_JOBS = ("ripr-github", "ripr-fallback", "seed-cache")
 CANONICAL_REFS = "github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main'"
 SAVE_GUARD = (
@@ -267,6 +279,7 @@ def validate_fact_cache_path_agreement(source: list[str]) -> None:
     # outside the per-run checkout.
     if SELFHOSTED_CACHE_DIR not in "\n".join(block(source, "ripr-selfhosted", 2)):
         raise AssertionError("the self-hosted lane lost its durable fact cache path")
+    validate_selfhosted_container_boundary(source)
     # The mistake this rule exists to catch, made while writing this change:
     # `runner` is a step-level context, and no other job-level `env:` in this
     # repository reaches for it.
@@ -276,6 +289,28 @@ def validate_fact_cache_path_agreement(source: list[str]) -> None:
             if (line.startswith(" " * 6) and not line.startswith(" " * 7)
                     and "runner." in line and not stripped.startswith(("#", "-"))):
                 raise AssertionError(f"{job} uses the runner context in a job-level field")
+
+
+def validate_selfhosted_container_boundary(source: list[str]) -> None:
+    """#16209: the job-level env is not a container-visible one.
+
+    `RIPR_CACHE_DIR` set in the job's `env:` block only sets a host-side shell
+    variable. `docker run` does not inherit arbitrary host environment
+    variables into the container, so the analysis container needs its own
+    explicit `-e RIPR_CACHE_DIR=...` forward *and* a `-v` bind mount to the
+    same host directory the job-level env names -- either one missing means
+    every ripr command inside the container reads/writes its workspace-local
+    default instead, which is deleted by the next run's workspace cleanup.
+    """
+    job_text = "\n".join(block(source, "ripr-selfhosted", 2))
+    if SELFHOSTED_CACHE_FORWARD_LINE not in job_text:
+        raise AssertionError(
+            "self-hosted docker run does not forward RIPR_CACHE_DIR into the container"
+        )
+    if SELFHOSTED_CACHE_MOUNT_LINE not in job_text:
+        raise AssertionError(
+            "self-hosted docker run does not mount the host fact-cache directory"
+        )
 
 
 class RiprCacheAuthorityTests(unittest.TestCase):
@@ -321,6 +356,15 @@ class RiprCacheAuthorityTests(unittest.TestCase):
         self.assertIn("save-if: ${{ false }}", "\n".join(cache_steps(block(self.source, "ripr-github", 2))[0]))
         self.assertIn("save-if: ${{ false }}", "\n".join(cache_steps(block(self.source, "ripr-fallback", 2))[0]))
         self.assertIn(f"save-if: ${{{{ {SAVE_GUARD} }}}}", "\n".join(steps[-1]))
+
+    def test_selfhosted_container_receives_forwarded_cache_and_mount(self) -> None:
+        job_text = "\n".join(block(self.source, "ripr-selfhosted", 2))
+        self.assertIn(SELFHOSTED_CACHE_FORWARD_LINE, job_text)
+        self.assertIn(SELFHOSTED_CACHE_MOUNT_LINE, job_text)
+        # forwarded env and mount must name the same container path so the
+        # process ripr runs actually reads from where the mount lands.
+        self.assertIn(SELFHOSTED_CONTAINER_CACHE_DIR, SELFHOSTED_CACHE_FORWARD_LINE)
+        self.assertIn(SELFHOSTED_CONTAINER_CACHE_DIR, SELFHOSTED_CACHE_MOUNT_LINE)
 
     def test_negative_controls_do_not_authorize_saves(self) -> None:
         seed_condition = field(block(self.source, "seed-cache", 2), "if", 4) or ""
@@ -427,6 +471,15 @@ class RiprCacheAuthorityTests(unittest.TestCase):
         )
         mutations["self-hosted lane loses its durable fact cache path"] = text.replace(
             SELFHOSTED_CACHE_DIR, "RIPR_CACHE_DIR: target/ripr/cache", 1
+        )
+        # #16209: the job-level declaration alone is not enough -- docker run
+        # must also forward the env var and mount the host directory into the
+        # container, or the container silently uses its own default cache.
+        mutations["self-hosted container never receives the forwarded cache env"] = text.replace(
+            SELFHOSTED_CACHE_FORWARD_LINE, "", 1
+        )
+        mutations["self-hosted container never receives the cache mount"] = text.replace(
+            SELFHOSTED_CACHE_MOUNT_LINE, "", 1
         )
         mutations["fact-cache writer inherits instead of stating its guard"] = text.replace(
             seed_text,
