@@ -2381,10 +2381,20 @@ _public-api-filter raw out:
     set -euo pipefail
     # grep exits 1 on no matches; an empty result is classified as
     # INSTRUMENT-FAIL by the caller, so tolerate the exit code here.
+    # The leading context is a closed whitelist of ASCII delimiters, not an
+    # exclusion of identifier characters. `[^A-Za-z0-9_:]` looked equivalent
+    # and was not: a Rust identifier may contain any XID_Continue character,
+    # so `alloc` preceded by a Unicode letter presented that letter as a
+    # separator and the fold rewrote a user-owned path. Enumerating what may
+    # precede a path cannot acquire that hole as Unicode identifiers appear,
+    # and needs no locale to decide what an identifier character is. A
+    # delimiter missing from this set costs a visible phantom diff, never a
+    # silently hidden rename -- the failure direction a both-sides fold has
+    # to choose (#16119).
     grep -E '^(pub |(#\[[^]]*\][[:space:]]*)+pub )' "{{raw}}" \
         | sed -E \
-            -e 's#(^|[^A-Za-z0-9_:])core::io::(write::|error::)?#\1std::io::#g' \
-            -e 's#(^|[^A-Za-z0-9_:])alloc::io::(buf_read::|read::)?#\1std::io::#g' \
+            -e 's#(^|[ <([&,=?])core::io::(write::|error::)?#\1std::io::#g' \
+            -e 's#(^|[ <([&,=?])alloc::io::(buf_read::|read::)?#\1std::io::#g' \
         > "{{out}}" || true
 
 # Check public API surface of the ratcheted crates against committed baselines

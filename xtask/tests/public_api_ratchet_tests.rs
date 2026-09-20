@@ -493,8 +493,16 @@ fn filter_sed_expressions() -> Result<Vec<String>, Box<dyn std::error::Error>> {
         };
         exprs.push(expr.0.to_string());
     }
-    if exprs.is_empty() {
-        return Err("no -e substitutions found in _public-api-filter".into());
+    // A parse that silently found fewer expressions than the recipe carries
+    // would leave the lookalike cases below vacuously green: sed with no
+    // substitution echoes its input, which is exactly what they assert. Pin
+    // the count so a reformatted recipe fails loudly here instead.
+    if exprs.len() != 2 {
+        return Err(format!(
+            "expected 2 -e substitutions in _public-api-filter, parsed {}: {exprs:?}",
+            exprs.len()
+        )
+        .into());
     }
     Ok(exprs)
 }
@@ -531,6 +539,23 @@ fn the_io_fold_leaves_user_owned_lookalike_paths_alone() -> Result<(), Box<dyn s
         ("pub fn c(x: bar_core::io::Sink)", "pub fn c(x: bar_core::io::Sink)"),
         // A user-owned module actually named `alloc`, reached through a path.
         ("pub fn e(x: crate::alloc::io::Thing)", "pub fn e(x: crate::alloc::io::Thing)"),
+        // A Rust identifier may contain any XID_Continue character, so an
+        // exclusion set written over ASCII (`[^A-Za-z0-9_:]`) presented a
+        // Unicode letter as a separator and folded a user-owned path. The
+        // anchor is a closed ASCII delimiter whitelist for this reason, which
+        // also keeps the answer independent of the shell's locale (#16119).
+        ("pub fn f(x: \u{3b1}alloc::io::Thing)", "pub fn f(x: \u{3b1}alloc::io::Thing)"),
+        ("pub fn g(x: \u{3a9}core::io::error::Sink)", "pub fn g(x: \u{3a9}core::io::error::Sink)"),
+        // Positions that must still fold, so the whitelist is not so narrow
+        // that it stops doing its job: generic argument, tuple element after a
+        // comma, behind a reference, and after `-> `.
+        ("pub fn h(x: Vec<core::io::error::Error>)", "pub fn h(x: Vec<std::io::Error>)"),
+        (
+            "pub fn i(x: (core::io::error::Error, alloc::io::read::Read))",
+            "pub fn i(x: (std::io::Error, std::io::Read))",
+        ),
+        ("pub fn j(x: &core::io::error::Error)", "pub fn j(x: &std::io::Error)"),
+        ("pub fn k() -> core::io::error::Result<()>", "pub fn k() -> std::io::Result<()>"),
     ];
 
     for (input, expected) in cases {
@@ -559,6 +584,87 @@ fn the_io_fold_leaves_user_owned_lookalike_paths_alone() -> Result<(), Box<dyn s
             got.trim_end(),
             expected,
             "the io fold rewrote a path it must not touch (#16117)"
+        );
+    }
+    Ok(())
+}
+
+/// Run the recipe's own `sed` expressions over one line, as the filter would.
+fn apply_io_fold(line: &str) -> Result<String, Box<dyn std::error::Error>> {
+    let exprs = filter_sed_expressions()?;
+    let mut command = Command::new("sed");
+    command.arg("-E");
+    for expr in &exprs {
+        command.arg("-e").arg(expr);
+    }
+    let mut child =
+        command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
+    child
+        .stdin
+        .as_mut()
+        .ok_or("sed stdin unavailable")?
+        .write_all(format!("{line}\n").as_bytes())?;
+    let output = child.wait_with_output()?;
+    if !output.status.success() {
+        return Err(
+            format!("sed failed on {line:?}: {}", String::from_utf8_lossy(&output.stderr)).into()
+        );
+    }
+    Ok(String::from_utf8(output.stdout)?.trim_end().to_string())
+}
+
+/// Folding both sides must not cost the gate its ability to see a real change.
+///
+/// The lookalike test above proves the filter leaves the wrong paths alone.
+/// This proves the converse, and it is the one that carries the claim: two
+/// surfaces that differ for a reason a reviewer would care about must still
+/// differ after both sides are folded. A fold that normalized such a pair to
+/// equality would be a silently weakened ratchet, which is precisely the risk
+/// `#16117` takes on by folding the stored side as well as the generated one.
+#[test]
+fn the_io_fold_still_discriminates_a_real_rename() -> Result<(), Box<dyn std::error::Error>> {
+    // (what the baseline holds, what the current surface renders, what changed)
+    let pairs = [
+        // The type identifier changed; only the module path is foldable.
+        (
+            "pub fn f() -> core::io::error::Result<()>",
+            "pub fn f() -> core::io::error::Error",
+            "Result -> Error",
+        ),
+        // A user-owned module renamed across the fold's own vocabulary. This is
+        // the case the lookalike anchor exists to keep visible.
+        (
+            "pub fn g(x: &perl_lsp_rs_core::foo_alloc::io::Thing)",
+            "pub fn g(x: &perl_lsp_rs_core::foo_std::io::Thing)",
+            "foo_alloc -> foo_std",
+        ),
+        // The same rename one module up, behind a Unicode identifier prefix.
+        // This is the pair the previous `[^A-Za-z0-9_:]` anchor collapsed:
+        // it read `\u{3b1}` as a separator, folded the baseline side to
+        // `\u{3b1}std::io::Thing`, and met a current side already spelled
+        // that way -- equal text, and a real rename of a user-owned module
+        // gone from the diff. Under an ASCII delimiter whitelist neither side
+        // folds and the two spellings stay distinguishable.
+        (
+            "pub fn h(x: \u{3b1}alloc::io::Thing)",
+            "pub fn h(x: \u{3b1}std::io::Thing)",
+            "\u{3b1}alloc -> \u{3b1}std",
+        ),
+        // Arity change around an otherwise foldable path.
+        (
+            "pub fn i(x: core::io::error::Error)",
+            "pub fn i(x: core::io::error::Error, y: u8)",
+            "parameter added",
+        ),
+    ];
+
+    for (baseline, current, what_changed) in pairs {
+        let folded_baseline = apply_io_fold(baseline)?;
+        let folded_current = apply_io_fold(current)?;
+        assert_ne!(
+            folded_baseline, folded_current,
+            "folding both sides hid a real API change ({what_changed}): {baseline:?} and \
+             {current:?} both normalized to {folded_baseline:?} (#16119)"
         );
     }
     Ok(())
