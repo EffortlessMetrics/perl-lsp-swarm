@@ -140,6 +140,10 @@ struct Variable {
     is_used: RefCell<bool>,
     is_our: bool,
     is_initialized: RefCell<bool>,
+    /// True only for the synthetic bindings installed by the statement-modifier
+    /// pre-pass (#15048). A real declaration that finds nothing but its own
+    /// placeholder in the map is seeing *itself*, not a prior declaration.
+    is_pre_pass_placeholder: bool,
 }
 
 /// Convert a Perl sigil to an array index for fast variable lookup.
@@ -229,6 +233,40 @@ impl Scope {
         }
     }
 
+    /// Install a *placeholder* `our` alias into the scope's `variables` map so
+    /// the modifier condition can resolve the alias before the statement runs
+    /// (#15048).
+    ///
+    /// Unlike `declare_variable_parts`, this emits no diagnostics and records
+    /// no binding history — the normal analysis still owns those. The
+    /// placeholder is deliberately marked `is_initialized: false`: the
+    /// guarded initializer has not executed when the condition runs, so a
+    /// condition-side read of a not-yet-assigned alias must still be reported
+    /// as uninitialized. A real declaration that later reaches this scope
+    /// replaces its own placeholder (see `declare_variable_parts`).
+    ///
+    /// An existing binding for the name is preserved: the placeholder must
+    /// never overwrite a genuine declaration's metadata.
+    fn pre_pass_register_our_alias(&self, sigil: &str, qualified_name: &str, offset: usize) {
+        let idx = sigil_to_index(sigil);
+        let mut vars = self.variables.borrow_mut();
+        let inner = vars[idx].get_or_insert_with(FxHashMap::default);
+        if inner.contains_key(qualified_name) {
+            // Preserve the existing binding — placeholder or real (#15048).
+            return;
+        }
+        inner.insert(
+            qualified_name.to_string(),
+            Rc::new(Variable {
+                declaration_offset: offset,
+                is_used: RefCell::new(true), // `our` aliases count as used
+                is_our: true,
+                is_initialized: RefCell::new(false),
+                is_pre_pass_placeholder: true,
+            }),
+        );
+    }
+
     /// Returns true if this scope or any ancestor scope has seen a regex match operation.
     fn regex_match_in_scope(&self) -> bool {
         if self.has_regex_match.get() {
@@ -248,9 +286,12 @@ impl Scope {
         let idx = sigil_to_index(sigil);
 
         // First check if already declared in this scope
-        let already_visible_offset = {
+        let (already_visible_offset, visible_is_placeholder) = {
             let vars = self.variables.borrow();
-            vars[idx].as_ref().and_then(|map| map.get(name)).map(|var| var.declaration_offset)
+            match vars[idx].as_ref().and_then(|map| map.get(name)) {
+                Some(var) => (Some(var.declaration_offset), var.is_pre_pass_placeholder),
+                None => (None, false),
+            }
         };
 
         // Pending declarations still own declaration metadata and participate
@@ -263,13 +304,26 @@ impl Scope {
             .and_then(|map| map.get(name))
             .map(|var| var.declaration_offset);
 
+        // (#15048) A statement-modifier pre-pass installs a *placeholder* for
+        // the statement's `our` alias so the condition can resolve it before
+        // the statement runs. When the real declaration finds nothing but its
+        // own placeholder at its own offset, it is seeing itself — not a prior
+        // declaration — so no redeclaration is reported and the placeholder
+        // must be replaced by the real binding below. A placeholder at a
+        // *different* offset (a sibling declaration of the same name) is a
+        // genuine duplicate and keeps the normal redeclaration diagnostic, so
+        // duplicates inside one modifier behave like the same form outside one.
+        let matched_own_placeholder =
+            is_our && visible_is_placeholder && already_visible_offset == Some(offset);
+
         // (#15056) The "later" binding that survives is the *textually later*
         // declaration, not necessarily the most recently analyzed one.
         // Statement modifiers like `my $x if my $x = 2;` analyze the condition
         // first (so the condition is "first installed") even though the
         // condition is textually after the statement. The textually later
         // binding must win so subsequent reads resolve to it.
-        let redeclaration = already_visible_offset.is_some() || already_pending_offset.is_some();
+        let redeclaration = (already_visible_offset.is_some() || already_pending_offset.is_some())
+            && !matched_own_placeholder;
         let textually_later = match (already_visible_offset, already_pending_offset) {
             (Some(visible), Some(pending)) => offset > visible.max(pending),
             (Some(visible), None) => offset > visible,
@@ -289,6 +343,7 @@ impl Scope {
             is_used: RefCell::new(is_our), // 'our' variables are considered used
             is_our,
             is_initialized: RefCell::new(is_initialized),
+            is_pre_pass_placeholder: false,
         });
         if self.deferring_declarations.get() && !is_our {
             if (textually_later || already_pending_offset.is_none())
@@ -305,7 +360,9 @@ impl Scope {
                     .push(variable);
             }
         } else {
-            if textually_later || already_visible_offset.is_none() {
+            // A real declaration replaces its own pre-pass placeholder so the
+            // binding carries the real initialization state (#15048).
+            if textually_later || already_visible_offset.is_none() || matched_own_placeholder {
                 let mut vars = self.variables.borrow_mut();
                 let inner = vars[idx].get_or_insert_with(FxHashMap::default);
                 inner.insert(name.to_string(), variable.clone());
@@ -831,6 +888,80 @@ impl ScopeAnalyzer {
         issues
     }
 
+    /// Pre-register `our` aliases found in a modifier *statement* into `scope`
+    /// (#15048).  The traversal stops at scope-creating constructs — those
+    /// own their own `our` aliases and must not leak them into the modifier
+    /// scope.  Visible placeholders installed here make a condition that runs
+    /// before its statement resolve correctly, e.g. `our $x = 1 if $x;`.
+    ///
+    /// Deliberately *not* called for the condition child: an `our` declared
+    /// inside the condition takes effect at its own source position, so an
+    /// earlier use in the same condition must stay undeclared — Perl rejects
+    /// `use strict; 1 if $x && (our $x = 1);`.
+    fn pre_register_our_aliases_in_subtree<'a>(
+        &self,
+        node: &'a Node,
+        scope: &Rc<Scope>,
+        context: &AnalysisContext<'a>,
+    ) {
+        match &node.kind {
+            // Scope-creating nodes own their own `our` aliases; do not
+            // surface them across the modifier scope.
+            NodeKind::Block { .. }
+            | NodeKind::PhaseBlock { .. }
+            | NodeKind::For { .. }
+            | NodeKind::Foreach { .. }
+            | NodeKind::Subroutine { .. }
+            | NodeKind::Method { .. }
+            | NodeKind::Class { .. }
+            | NodeKind::Try { .. }
+            | NodeKind::Package { .. } => {}
+
+            NodeKind::VariableDeclaration { declarator, variable, .. } if declarator == "our" => {
+                let extracted = self.extract_variable_name(variable);
+                let (sigil, var_name_part) = extracted.parts();
+                if let Some(qualified_name) = self.package_variable_name(var_name_part, context) {
+                    scope.pre_pass_register_our_alias(
+                        sigil,
+                        &qualified_name,
+                        variable.location.start,
+                    );
+                }
+                // Continue descending so `our` aliases inside the initializer
+                // (e.g. `our $x = our $y = 1`) also pre-register at this scope.
+                for child in node.children() {
+                    self.pre_register_our_aliases_in_subtree(child, scope, context);
+                }
+            }
+
+            NodeKind::VariableListDeclaration { declarator, variables, .. }
+                if declarator == "our" =>
+            {
+                for variable in variables {
+                    let extracted = self.extract_variable_name(variable);
+                    let (sigil, var_name_part) = extracted.parts();
+                    if let Some(qualified_name) = self.package_variable_name(var_name_part, context)
+                    {
+                        scope.pre_pass_register_our_alias(
+                            sigil,
+                            &qualified_name,
+                            variable.location.start,
+                        );
+                    }
+                }
+                for child in node.children() {
+                    self.pre_register_our_aliases_in_subtree(child, scope, context);
+                }
+            }
+
+            _ => {
+                for child in node.children() {
+                    self.pre_register_our_aliases_in_subtree(child, scope, context);
+                }
+            }
+        }
+    }
+
     pub(super) fn analyze_node<'a>(
         &self,
         node: &'a Node,
@@ -1156,11 +1287,21 @@ impl ScopeAnalyzer {
                 //   initialization  `my $x; $x = 1 if $x;`  the condition reads $x uninitialized
                 //                   `my $x; print $x if ($x = 1);`  the condition initializes it
                 //
-                // Visiting the statement first inverts all four. Note this is deliberately
-                // *not* symmetric with the declaration rule: `our` is not deferred, so
-                // `our $x = 1 if $x;` still reports its condition as undeclared. That is a
-                // pre-existing source-order alias gap, unchanged by this arm, tracked as
-                // #15048 — it is not worth inverting four runtime facts to paper over.
+                // Visiting the statement first inverts all four. The one exception is `our`
+                // aliases (#15048): `our` aliases a package variable that already exists at
+                // parse time, but compile-time `our` visibility still starts at the
+                // declaration's own source position. So only *statement-side* `our`
+                // declarations are pre-registered as placeholders at the modifier scope
+                // level — the statement is textually before the whole condition, so its
+                // aliases are visible to the condition (`our $x = 1 if $x;` is accepted).
+                // An `our` inside the condition takes effect too late for earlier
+                // condition uses (`1 if $x && (our $x = 1);` is rejected) and must not be
+                // pre-registered; it still registers normally as the condition is walked
+                // in source order. Nested scopes are skipped — their inner blocks own
+                // their own aliases. A real declaration that later reaches this scope
+                // replaces its own placeholder (see `declare_variable_parts`).
+                self.pre_register_our_aliases_in_subtree(statement, scope, context);
+
                 let already_deferred = scope.deferring_declarations.replace(true);
                 ancestors.push(node);
                 self.analyze_node(condition, scope, ancestors, issues, context);
