@@ -735,8 +735,9 @@ fn parse_quote_like_literal(source: &str) -> Option<(&str, QuoteLikeForm, &str)>
     let first = *bytes.first()?;
 
     let (operator_len, form) = match first {
-        b'\'' => (1usize, QuoteLikeForm::SingleQuoted),
-        b'"' => (1usize, QuoteLikeForm::DoubleQuoted),
+        // Plain quotes are the opening delimiter, with no operator prefix.
+        b'\'' => (0usize, QuoteLikeForm::SingleQuoted),
+        b'"' => (0usize, QuoteLikeForm::DoubleQuoted),
         b'`' => return None,
         b'q' => {
             let next = *bytes.get(1)?;
