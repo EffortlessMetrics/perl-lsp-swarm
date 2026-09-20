@@ -77,12 +77,16 @@ fn push_declared_module_files(path: &Path, line: &str, files: &mut Vec<PathBuf>)
 
 /// One `mod <name>;` declaration, resolved to the file(s) it can name.
 ///
-/// `gated` is true only for a bare `#[cfg(test)]` directly above the
-/// declaration. Every other predicate — `cfg(all(test, …))`,
-/// `cfg(any(test, feature = "…"))` — leaves the edge ungated, which keeps the
-/// module in production scope. That is the safe direction: the cost is a
-/// checker scanning a few extra lines, where the opposite error hides a real
-/// site.
+/// `gated` is true when an attribute directly above the declaration carries a
+/// `cfg` predicate that cannot hold outside a test build — `cfg(test)` itself,
+/// or an `all(…)` with such a predicate among its conjuncts. A predicate that
+/// can hold in a production build, `cfg(any(test, feature = "…"))` among them,
+/// leaves the edge ungated and the module in production scope.
+///
+/// Gating is safe here and would not be safe in a pre-filter over the file
+/// list, because phase 3 of [`test_only_source_files`] lets any production
+/// declaration reaching the same file win the tie. A file excluded before that
+/// phase runs never reaches the rule that would have protected it.
 #[derive(Debug)]
 struct ModuleEdge {
     files: Vec<PathBuf>,
@@ -140,7 +144,7 @@ fn module_edges(path: &Path, lines: &[String]) -> Vec<ModuleEdge> {
             let Some(attr) = rest.get(..=end) else {
                 break;
             };
-            gated |= attr == "#[cfg(test)]";
+            gated |= attribute_is_a_test_gate(attr);
             if let Some(value) =
                 attr.strip_prefix("#[path = \"").and_then(|value| value.strip_suffix("\"]"))
             {
@@ -221,6 +225,76 @@ fn module_edges(path: &Path, lines: &[String]) -> Vec<ModuleEdge> {
         redirect = None;
     }
     edges
+}
+
+/// Whether `attr` is a `cfg` attribute whose predicate cannot hold outside a
+/// test build.
+fn attribute_is_a_test_gate(attr: &str) -> bool {
+    attr.strip_prefix("#[cfg(")
+        .and_then(|rest| rest.strip_suffix(")]"))
+        .is_some_and(predicate_is_test_only)
+}
+
+/// Whether a `cfg` predicate can only hold when `test` is set.
+///
+/// `test` itself qualifies. So does `all(…)` with a qualifying conjunct: every
+/// conjunct of an `all` must hold, so one that cannot hold outside a test build
+/// makes the whole predicate unsatisfiable outside one.
+///
+/// `any(…)` never qualifies — it holds when a single arm does, and an arm like
+/// `feature = "workspace"` holds in a production build. `not(…)` never
+/// qualifies either, and `not(test)` is the opposite claim.
+///
+/// `#[cfg(all(test, feature = "workspace"))]` at
+/// `crates/perl-lsp-rs/src/runtime/mod.rs:46` is the live instance. Reading it
+/// as production put a module no production build compiles back into scope,
+/// which is what #16251's own resolver got right and this one did not.
+fn predicate_is_test_only(predicate: &str) -> bool {
+    let predicate = predicate.trim();
+    if predicate == "test" {
+        return true;
+    }
+    let Some(inner) = predicate.strip_prefix("all(").and_then(|rest| rest.strip_suffix(')')) else {
+        return false;
+    };
+    conjuncts(inner).iter().any(|arm| predicate_is_test_only(arm))
+}
+
+/// `inner` split on the commas that separate one predicate from the next.
+///
+/// Splits at parenthesis depth zero only, and skips commas inside a string
+/// literal, so `all(test, feature = "a,b")` is two conjuncts rather than three.
+fn conjuncts(inner: &str) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let mut depth = 0usize;
+    let mut in_string = false;
+    let mut start = 0usize;
+    let mut previous = '\0';
+    for (index, ch) in inner.char_indices() {
+        if in_string {
+            if ch == '"' && previous != '\\' {
+                in_string = false;
+            }
+        } else {
+            match ch {
+                '"' => in_string = true,
+                '(' => depth += 1,
+                ')' => depth = depth.saturating_sub(1),
+                ',' if depth == 0 => {
+                    if let Some(part) = inner.get(start..index) {
+                        parts.push(part);
+                    }
+                    start = index + 1;
+                }
+                _ => {}
+            }
+        }
+        previous = ch;
+    }
+    if let Some(part) = inner.get(start..) {
+        parts.push(part);
+    }
+    parts
 }
 
 /// The end index of the attribute starting at the head of `rest`, if there is
@@ -604,6 +678,84 @@ mod tests {
         ensure!(
             !found.contains(&census),
             "a feature-gated module is compiled into production when the feature is on; found {found:?}"
+        );
+        Ok(())
+    }
+
+    /// `all(test, …)` cannot hold outside a test build, so the module it
+    /// guards is test-only. Carried over from #16251's `is_cfg_test_module_file`,
+    /// which read this correctly where this module did not, before that
+    /// resolver was removed as duplicate authority. The live instance is
+    /// `crates/perl-lsp-rs/src/runtime/mod.rs:46`.
+    #[test]
+    fn a_conjunction_requiring_test_gates_the_module_it_guards() -> Result<()> {
+        let tree = Tree::new("all-test")?;
+        let root = tree.write(
+            "lib.rs",
+            "#[cfg(all(test, feature = \"workspace\"))]\nmod scan_gate_observation;\n",
+        )?;
+        let child = tree.write("scan_gate_observation.rs", "fn f() { x.expect(\"boom\"); }\n")?;
+
+        let found = test_only_source_files(&[root, child.clone()])?;
+        ensure!(
+            found.contains(&child),
+            "all(test, …) requires test, so no production build compiles this; found {found:?}"
+        );
+        Ok(())
+    }
+
+    /// The opposite direction, so the conjunction rule cannot be satisfied by
+    /// matching the word `test` anywhere in a predicate.
+    #[test]
+    fn a_disjunction_offering_test_does_not_gate_the_module() -> Result<()> {
+        let tree = Tree::new("any-test")?;
+        let root =
+            tree.write("lib.rs", "#[cfg(any(test, feature = \"workspace\"))]\nmod census;\n")?;
+        let child = tree.write("census.rs", "fn f() { x.expect(\"boom\"); }\n")?;
+
+        let found = test_only_source_files(&[root, child.clone()])?;
+        ensure!(
+            !found.contains(&child),
+            "any(test, feature) holds with the feature alone, so this is production; found {found:?}"
+        );
+        Ok(())
+    }
+
+    /// A negation naming `test` is the opposite claim, and a conjunct that
+    /// merely contains one is not one.
+    #[test]
+    fn a_negated_or_nested_predicate_is_read_for_what_it_means() -> Result<()> {
+        ensure!(predicate_is_test_only("test"), "the bare predicate gates");
+        ensure!(
+            predicate_is_test_only("all(feature = \"a\", all(test, feature = \"b\"))"),
+            "a conjunction nested inside a conjunction still requires test"
+        );
+        ensure!(!predicate_is_test_only("not(test)"), "not(test) is production only");
+        ensure!(
+            !predicate_is_test_only("all(not(test), feature = \"a\")"),
+            "a conjunct that negates test does not gate"
+        );
+        ensure!(
+            !predicate_is_test_only("all(feature = \"tested\")"),
+            "a feature whose name contains test is not the test predicate"
+        );
+        ensure!(
+            !predicate_is_test_only("any(all(test, feature = \"a\"), feature = \"b\")"),
+            "a disjunction is satisfiable by its other arm"
+        );
+        Ok(())
+    }
+
+    /// A comma inside a string literal does not start a new conjunct.
+    #[test]
+    fn a_comma_inside_a_feature_name_does_not_split_the_predicate() -> Result<()> {
+        ensure!(
+            predicate_is_test_only("all(test, feature = \"a,b\")"),
+            "the literal carries the comma; the conjunction is still two arms"
+        );
+        ensure!(
+            !predicate_is_test_only("all(feature = \"a,test\")"),
+            "a comma inside a literal must not manufacture a bare test conjunct"
         );
         Ok(())
     }
