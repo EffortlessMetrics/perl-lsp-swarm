@@ -172,6 +172,40 @@ fn resolve(index: &WorkspaceIndex, byte_offset: u32) -> Result<ResolveAtOutcome,
         .ok_or_else(|| "semantic queries open for an indexed uri".to_owned())
 }
 
+// Fallible proposition helpers.
+//
+// Every proposition in this file is stated through one of these rather than
+// through `assert!`/`assert_eq!`, so a failure returns `Err` instead of
+// unwinding. The operands are taken by reference and rendered into the failure
+// exactly as `assert_eq!` renders them, so nothing is lost from the diagnostic.
+
+/// Fallible equality proposition, carrying both compared values.
+fn eq<L, R>(left: &L, right: &R, claim: impl std::fmt::Display) -> Result<(), String>
+where
+    L: PartialEq<R> + std::fmt::Debug + ?Sized,
+    R: std::fmt::Debug + ?Sized,
+{
+    if left == right {
+        Ok(())
+    } else {
+        Err(format!("{claim}\n  left:  {left:?}\n  right: {right:?}"))
+    }
+}
+
+/// Fallible inequality proposition, carrying the value both sides shared.
+fn ne<L, R>(left: &L, right: &R, claim: impl std::fmt::Display) -> Result<(), String>
+where
+    L: PartialEq<R> + std::fmt::Debug + ?Sized,
+    R: std::fmt::Debug + ?Sized,
+{
+    if left == right { Err(format!("{claim}\n  both sides: {left:?}")) } else { Ok(()) }
+}
+
+/// Fallible boolean proposition.
+fn require(held: bool, claim: impl std::fmt::Display) -> Result<(), String> {
+    if held { Ok(()) } else { Err(claim.to_string()) }
+}
+
 /// Guards every other test in this file: if the fixture stopped resolving, the
 /// negative controls below would pass vacuously.
 #[test]
@@ -185,11 +219,11 @@ fn the_fixture_actually_resolves_identities() -> Result<(), String> {
         ("sibling declaration", sibling_declaration()?),
     ] {
         let outcome = resolve(&index, offset)?;
-        assert_eq!(
-            outcome.stage(),
-            "exact",
-            "{label} must resolve exactly or the negative controls are vacuous"
-        );
+        eq(
+            &outcome.stage(),
+            &"exact",
+            format!("{label} must resolve exactly or the negative controls are vacuous"),
+        )?;
     }
     Ok(())
 }
@@ -200,11 +234,11 @@ fn the_fixture_actually_resolves_identities() -> Result<(), String> {
 fn one_accepted_view_yields_one_generation_basis() -> Result<(), String> {
     let index = indexed()?;
 
-    assert_eq!(
-        accepted_generation_basis(&index, URI),
-        accepted_generation_basis(&index, URI),
-        "both providers must build the identical basis from one accepted view"
-    );
+    eq(
+        &accepted_generation_basis(&index, URI),
+        &accepted_generation_basis(&index, URI),
+        "both providers must build the identical basis from one accepted view",
+    )?;
     Ok(())
 }
 
@@ -218,15 +252,19 @@ fn definition_and_references_capture_the_same_subject_and_basis() -> Result<(), 
     let as_definition = resolve(&index, outer_read()?)?;
     let as_references = resolve(&index, outer_read()?)?;
 
-    assert_eq!(as_definition.stage(), as_references.stage());
-    assert!(
+    eq(
+        &as_definition.stage(),
+        &as_references.stage(),
+        "as_definition.stage() == as_references.stage()",
+    )?;
+    require(
         as_definition.shares_subject_with(&as_references),
-        "two resolutions of one cursor must name one subject"
-    );
-    assert!(
+        "two resolutions of one cursor must name one subject",
+    )?;
+    require(
         as_definition.shares_generation_with(&as_references),
-        "two resolutions of one request must share one generation basis"
-    );
+        "two resolutions of one request must share one generation basis",
+    )?;
     Ok(())
 }
 
@@ -253,19 +291,22 @@ fn shadowed_lexicals_resolve_to_three_distinct_identities() -> Result<(), String
     let mut unique = entities.clone();
     unique.sort_unstable();
     unique.dedup();
-    assert_eq!(
-        unique.len(),
-        3,
-        "three distinct lexical bindings must not collapse to one identity, got {entities:?}"
-    );
+    eq(
+        &unique.len(),
+        &3,
+        format!(
+            "three distinct lexical bindings must not collapse to one identity, got {entities:?}"
+        ),
+    )?;
 
     // And the spelling really is shared, so the distinction cannot have come
     // from the name.
     for outcome in [&outer, &inner, &sibling] {
-        assert_eq!(
-            outcome.exact().map(|resolved| resolved.canonical_name.as_str()),
-            Some("$value")
-        );
+        eq(
+            &outcome.exact().map(|resolved| resolved.canonical_name.as_str()),
+            &Some("$value"),
+            "outcome.exact().map(|resolved| resolved.canonical_name.as_str()) == Some(\"$value\")",
+        )?;
     }
     Ok(())
 }
@@ -280,16 +321,16 @@ fn a_read_binds_to_its_own_declaration_not_the_nearest_spelling() -> Result<(), 
     let outer = resolve(&index, outer_declaration()?)?;
     let inner = resolve(&index, inner_declaration()?)?;
 
-    assert_eq!(
-        read.bound_entity_id(),
-        outer.bound_entity_id(),
-        "the read must bind to the declaration that governs its scope"
-    );
-    assert_ne!(
-        read.bound_entity_id(),
-        inner.bound_entity_id(),
-        "proximity in the file must not decide the binding"
-    );
+    eq(
+        &read.bound_entity_id(),
+        &outer.bound_entity_id(),
+        "the read must bind to the declaration that governs its scope",
+    )?;
+    ne(
+        &read.bound_entity_id(),
+        &inner.bound_entity_id(),
+        "proximity in the file must not decide the binding",
+    )?;
     Ok(())
 }
 
@@ -302,13 +343,26 @@ fn one_entity_can_carry_several_occurrence_roles() -> Result<(), String> {
     let declaration = resolve(&index, outer_declaration()?)?;
     let read = resolve(&index, outer_read()?)?;
 
-    assert_eq!(declaration.bound_entity_id(), read.bound_entity_id());
-    assert_ne!(
-        declaration.exact().map(|resolved| resolved.occurrence_id),
-        read.exact().map(|resolved| resolved.occurrence_id)
-    );
-    assert_eq!(declaration.exact().map(|resolved| resolved.role), Some(OccurrenceKind::Definition));
-    assert_eq!(read.exact().map(|resolved| resolved.role), Some(OccurrenceKind::Read));
+    eq(
+        &declaration.bound_entity_id(),
+        &read.bound_entity_id(),
+        "declaration.bound_entity_id() == read.bound_entity_id()",
+    )?;
+    ne(
+        &declaration.exact().map(|resolved| resolved.occurrence_id),
+        &read.exact().map(|resolved| resolved.occurrence_id),
+        "declaration.exact().map(|resolved| resolved.occurrence_id) != read.exact().map(|resolved| resolved.occurrence_id)",
+    )?;
+    eq(
+        &declaration.exact().map(|resolved| resolved.role),
+        &Some(OccurrenceKind::Definition),
+        "declaration.exact().map(|resolved| resolved.role) == Some(OccurrenceKind::Definition)",
+    )?;
+    eq(
+        &read.exact().map(|resolved| resolved.role),
+        &Some(OccurrenceKind::Read),
+        "read.exact().map(|resolved| resolved.role) == Some(OccurrenceKind::Read)",
+    )?;
     Ok(())
 }
 
@@ -322,9 +376,13 @@ fn a_cursor_with_no_occurrence_is_never_exact() -> Result<(), String> {
 
     let outcome = resolve(&index, offset)?;
 
-    assert!(outcome.exact().is_none(), "expected no identity, got {outcome:?}");
-    assert_eq!(outcome.stage(), "unavailable");
-    assert_eq!(outcome.reason(), Some("no_occurrence_at_position"));
+    require(outcome.exact().is_none(), format!("expected no identity, got {outcome:?}"))?;
+    eq(&outcome.stage(), &"unavailable", "outcome.stage() == \"unavailable\"")?;
+    eq(
+        &outcome.reason(),
+        &Some("no_occurrence_at_position"),
+        "outcome.reason() == Some(\"no_occurrence_at_position\")",
+    )?;
     Ok(())
 }
 
@@ -335,7 +393,10 @@ fn an_offset_past_end_of_source_is_never_exact() -> Result<(), String> {
     let past_end = u32::try_from(SHADOWED_LEXICALS.len() + 4_096)
         .map_err(|error| format!("past-end offset fits in u32: {error}"))?;
 
-    assert!(resolve(&index, past_end)?.exact().is_none());
+    require(
+        resolve(&index, past_end)?.exact().is_none(),
+        "resolve(&index, past_end)?.exact().is_none()",
+    )?;
     Ok(())
 }
 
@@ -348,12 +409,17 @@ fn an_unindexed_uri_yields_an_explicit_unknown_document_generation() -> Result<(
     let known = accepted_generation_basis(&index, URI);
     let unknown = accepted_generation_basis(&index, "file:///workspace/Absent.pm");
 
-    assert!(!unknown.is_known(), "an unseen uri must not claim a known basis");
-    assert_ne!(known.document_generation, unknown.document_generation);
-    assert_eq!(
-        known.workspace_generation, unknown.workspace_generation,
-        "the workspace half of the basis is a property of the view, not the uri"
-    );
+    require(!unknown.is_known(), "an unseen uri must not claim a known basis")?;
+    ne(
+        &known.document_generation,
+        &unknown.document_generation,
+        "known.document_generation != unknown.document_generation",
+    )?;
+    eq(
+        &known.workspace_generation,
+        &unknown.workspace_generation,
+        "the workspace half of the basis is a property of the view, not the uri",
+    )?;
     Ok(())
 }
 
@@ -372,7 +438,7 @@ fn a_stale_view_produces_no_identity() -> Result<(), String> {
         })
         .ok_or_else(|| "semantic queries open for an indexed uri".to_owned())?;
 
-    assert_eq!(outcome.stage(), "stale");
-    assert!(outcome.exact().is_none());
+    eq(&outcome.stage(), &"stale", "outcome.stage() == \"stale\"")?;
+    require(outcome.exact().is_none(), "outcome.exact().is_none()")?;
     Ok(())
 }
