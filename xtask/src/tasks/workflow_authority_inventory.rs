@@ -744,7 +744,7 @@ jobs:
     }
 
     #[test]
-    fn live_droid_records_oidc_write() -> Result<()> {
+    fn live_droid_records_no_oidc_write() -> Result<()> {
         let row = live_row("droid.yml")?;
         let kinds = live_kinds(&row);
         assert!(
