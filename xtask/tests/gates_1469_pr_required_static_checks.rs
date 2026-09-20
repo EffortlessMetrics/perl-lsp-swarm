@@ -228,7 +228,13 @@ fn gate_clippy_full_not_in_merge_gate() -> Result<(), Box<dyn std::error::Error>
     Ok(())
 }
 
-/// TEST: GitHub Actions workflow matrix includes compile_all_targets in merge-gate-shards
+/// TEST: the merge-gate-shards matrix must NOT duplicate compile_all_targets
+/// (issue #15638). The dedicated required `check-all-targets` job owns
+/// workspace-wide compilation; the shard copy ran the same ~19-minute command a
+/// second time on the same tree and deterministically timed out against the
+/// shard's shared budget while the standalone job passed on the identical
+/// commit. This contract pins the de-duplication so the duplicate cannot
+/// silently return.
 #[test]
 fn ci_workflow_includes_compile_all_targets_in_matrix() -> Result<(), Box<dyn std::error::Error>> {
     let root = project_root();
@@ -245,11 +251,51 @@ fn ci_workflow_includes_compile_all_targets_in_matrix() -> Result<(), Box<dyn st
     // Use the "merge-gate:" aggregate job as the upper boundary of the shards section.
     // Fall back to searching the whole remaining file if not present.
     let next_job = rest.find("\nmerge-gate:").unwrap_or(rest.len());
-    let shards_section = &rest[..next_job];
+
+    // The contract binds the shard matrix, not the prose around it: collect
+    // only the `gates:` rows so an explanatory comment cannot pass or fail the
+    // check for the wrong reason.
+    let shard_gates: String = rest[..next_job]
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("gates: "))
+        .collect::<Vec<_>>()
+        .join(" ");
 
     assert!(
-        shards_section.contains("compile_all_targets"),
-        "merge-gate-shards matrix must include compile_all_targets (red until builder adds to ci.yml)"
+        !shard_gates.split_whitespace().any(|gate| gate == "compile_all_targets"),
+        "merge-gate-shards matrix must not duplicate compile_all_targets (#15638): the \
+         dedicated required `check-all-targets` job owns workspace-wide compilation, and \
+         the shard copy deterministically times out against the shard's shared budget"
+    );
+
+    // The ownership side of the contract: the standalone required job must
+    // still exist and run `just check-all-targets`, so removing the shard copy
+    // never removes the coverage.
+    let job_start = must_some(workflow.find("\n  check-all-targets:"));
+    let job_rest = &workflow[job_start..];
+    // A top-level job key sits at exactly two spaces followed by a YAML
+    // identifier and a colon; job-body lines are indented at least four, and a
+    // bare `  # comment` or blank line at job level is not a job boundary, so
+    // match the key shape instead of any two-space line.
+    let job_end = job_rest[1..]
+        .match_indices('\n')
+        .map(|(offset, _)| offset + 1)
+        .find(|&offset| {
+            let line = job_rest[1 + offset..].trim_end();
+            line.starts_with("  ")
+                && !line.starts_with("   ")
+                && !line.trim_start().starts_with('#')
+                && line[2..].ends_with(':')
+                && line[2..]
+                    .trim_end_matches(':')
+                    .chars()
+                    .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
+        })
+        .unwrap_or(job_rest.len());
+    let job_section = &job_rest[..job_end];
+    assert!(
+        job_section.contains("just check-all-targets"),
+        "the dedicated `check-all-targets` job must remain the compile_all_targets owner"
     );
 
     Ok(())
@@ -311,13 +357,13 @@ fn ci_workflow_runs_unit_routed_full_in_pr_smoke() -> Result<(), Box<dyn std::er
         "pr-smoke job timeout must leave room for the inner watchdog and always-run receipt steps"
     );
     assert!(
-        pr_smoke_job.contains("PR-fast timeout policy: GitHub job 75m, outer runner watchdog 45m"),
+        pr_smoke_job.contains("PR-fast timeout policy: GitHub job 75m, outer runner watchdog 60m"),
         "pr-smoke log message must document the active watchdog policy"
     );
     // The watchdog invocation is asserted by its durable parts rather than as one
     // literal line: the binary path spelling is incidental (it moved from
     // `./target/debug/xtask` to `"$CARGO_TARGET_DIR/debug/xtask"` in #4912), while the
-    // signal, grace period, 2700s ceiling, tier, base, and --receipt are the contract.
+    // signal, grace period, 3600s ceiling, tier, base, and --receipt are the contract.
     let watchdog_line = pr_smoke_job
         .lines()
         .map(str::trim)
@@ -327,7 +373,7 @@ fn ci_workflow_runs_unit_routed_full_in_pr_smoke() -> Result<(), Box<dyn std::er
     for required in [
         "--signal=TERM",
         "--kill-after=60s",
-        "2700s",
+        "3600s",
         "/debug/xtask",
         "gates --tier pr-fast",
         "--subject target/receipts/ci-subject.json",

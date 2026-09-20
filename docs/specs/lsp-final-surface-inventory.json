@@ -1507,7 +1507,7 @@
         "BuildFlags (ga-lock | production | all census profiles)"
       ],
       "disposition": "static",
-      "runtime_route_owner": "textDocument/didChange (Full=1 reparse)",
+      "runtime_route_owner": "textDocument/didChange (Full=1 complete document transfer)",
       "evidence_owner": "features.toml#lsp.text_document_sync; lifecycle tests text_document_sync_advertises_full_sync_and_open_close",
       "competing_paths": [],
       "target_issue": "#9665",

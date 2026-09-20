@@ -540,6 +540,12 @@ impl super::super::LspServer {
 
     /// Accept the session contract exactly once. A second acceptance attempt
     /// is a typed internal failure — the accepted contract is never replaced.
+    ///
+    /// Acceptance also publishes the session-owned active position-encoding
+    /// context (`position_encoding.rs`, #8534) inside the same step: the
+    /// serving gate and the coordinate authority go live together, so no
+    /// request can observe an accepted session without its encoding
+    /// authority, and a failed acceptance publishes nothing.
     pub(crate) fn accept_text_sync_session(
         &self,
         contract: TextSyncSessionContract,
@@ -553,6 +559,8 @@ impl super::super::LspServer {
             ));
         }
         *session = Some(AcceptedTextSyncSession::new(contract, response_digest));
+        drop(session);
+        self.publish_position_encoding_session_context();
         Ok(())
     }
 }

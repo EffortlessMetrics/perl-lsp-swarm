@@ -279,6 +279,14 @@ pub enum VariableKind {
     Lexical,
     /// Package / stash variable.
     Package,
+    /// Per-object `field` of a Perl 5.38+ `class`, in scope at this reference.
+    ///
+    /// A field is neither: its storage is per instance, not a pad slot and not
+    /// a stash slot. Answering `Lexical` would assert downstream that a field
+    /// *is* an ordinary lexical binding, and answering `Package` would send a
+    /// field read to the package stash. Naming it keeps both claims out of the
+    /// fact layer (#13817).
+    Field,
 }
 
 /// A variable reference node.
@@ -568,6 +576,34 @@ pub enum HirExpr {
         value: Option<HirExprId>,
     },
 
+    /// Structured `try` / `catch` / `finally` exception region (#15567).
+    ///
+    /// Each region is a real block, so statements inside it reach body HIR and
+    /// PIR-A instead of collapsing into one childless argument. Before this
+    /// variant existed `NodeKind::Try` fell into the generic call-like fallback
+    /// and produced `Call { args: [Opaque{Block}, …] }`, which both discarded
+    /// every nested statement and misreported the construct as a call.
+    ///
+    /// # Known representational limit
+    ///
+    /// This variant models the *regions* and the catch *binding*. It does not
+    /// model exceptional control flow: which operations can throw, handler
+    /// selection among several `catch` blocks, or the guarantee that `finally`
+    /// runs on every exit path. A consumer must not read a lowered `Try` as a
+    /// complete exception CFG. The exceptional edge taxonomy is tracked by
+    /// #6661.
+    Try {
+        /// The `try` block.
+        body: HirBlockId,
+        /// `catch` handlers in source order. Perl's core `try`/`catch` admits
+        /// one handler, but the parser accepts several (including
+        /// `Error.pm`-style `catch Class with { … }`), so order is preserved
+        /// rather than collapsed.
+        catch_handlers: Vec<HirCatchHandler>,
+        /// The `finally` block, when present.
+        finally_block: Option<HirBlockId>,
+    },
+
     /// Function/method call expression (first-pass model).
     ///
     /// Arguments that are individually lowerable carry explicit IDs; everything
@@ -650,6 +686,20 @@ pub enum HirExpr {
         /// The AST node kind name for diagnostics.
         ast_kind: String,
     },
+}
+
+/// One `catch` handler of a [`HirExpr::Try`] region (#15567).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HirCatchHandler {
+    /// Exception binding introduced by `catch ($e)`, lowered as a write place
+    /// exactly like [`HirExpr::Loop`]'s `iterator_binding`, and anchored at the
+    /// variable's own token range rather than the whole `catch (…)` header.
+    ///
+    /// `None` for the bare `catch { … }` form and for `Error.pm`-style
+    /// `catch Class with { … }`, neither of which introduces a binding.
+    pub binding: Option<HirExprId>,
+    /// The handler block.
+    pub block: HirBlockId,
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -1337,7 +1387,9 @@ fn named_variable_from_node(node: &Node) -> Option<(&str, String)> {
     match &node.kind {
         NodeKind::Variable { sigil, name } => Some((sigil.as_str(), name.clone())),
         NodeKind::VariableWithAttributes { variable, .. } => named_variable_from_node(variable),
-        NodeKind::Typeglob { name } if is_direct_typeglob_name(name) => Some(("*", name.clone())),
+        NodeKind::Typeglob { name, .. } if is_direct_typeglob_name(name) => {
+            Some(("*", name.clone()))
+        }
         _ => None,
     }
 }
@@ -1370,7 +1422,7 @@ fn is_direct_typeglob_name(name: &str) -> bool {
 fn declared_base_variable(node: &Node) -> Option<(&str, String, &Node)> {
     match &node.kind {
         NodeKind::Variable { sigil, name } => Some((sigil.as_str(), name.clone(), node)),
-        NodeKind::Typeglob { name } if is_direct_typeglob_name(name) => {
+        NodeKind::Typeglob { name, .. } if is_direct_typeglob_name(name) => {
             Some(("*", name.clone(), node))
         }
         NodeKind::VariableWithAttributes { variable, .. } => declared_base_variable(variable),

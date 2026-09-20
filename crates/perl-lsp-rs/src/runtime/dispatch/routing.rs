@@ -711,7 +711,7 @@ mod tests {
         Ok(())
     }
 
-    /// ripr seam `fe813eac7a1c99cf`: `!initialize_requested && method != "shutdown"`.
+    /// ripr seam `fe813eac7a1c99cf`: `!initialization_accepted && method != "shutdown"`.
     #[test]
     fn ripr_seam_proof_route_request_before_initialize_rejects_non_shutdown()
     -> Result<(), Box<dyn std::error::Error>> {

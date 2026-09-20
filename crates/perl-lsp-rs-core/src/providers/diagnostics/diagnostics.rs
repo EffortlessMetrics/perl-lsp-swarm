@@ -3,12 +3,10 @@
 //! This module provides the core diagnostic generation functionality.
 
 use std::path::Path;
+use std::sync::Arc;
 
-use perl_parser_core::Node;
 use perl_parser_core::error::ParseError;
-use perl_pragma::PragmaTracker;
-use perl_semantic_analyzer::scope_analyzer::ScopeAnalyzer;
-use perl_semantic_analyzer::symbol::SymbolExtractor;
+use perl_parser_core::{Node, RegexAnalysisTable};
 use perl_semantic_facts::{
     DefinitionCandidate, EntityFact, EntityId, FileId, OccurrenceFact, RenamePlan, SafeDeletePlan,
     ScopeId, VisibleSymbol,
@@ -16,6 +14,7 @@ use perl_semantic_facts::{
 use perl_workspace::semantic::queries::{DynamicCallableEvidence, QueryContext, SemanticQueries};
 
 use super::dedup::deduplicate_diagnostics;
+use super::document_analysis::DocumentDiagnosticAnalysis;
 use super::lints::common_mistakes::check_common_mistakes;
 use super::lints::deprecated::check_deprecated_syntax;
 use super::lints::duplicate_hash_keys::check_duplicate_hash_keys;
@@ -30,14 +29,15 @@ use super::lints::package_subroutine::{
 use super::lints::pod_coverage::check_pod_coverage;
 use super::lints::printf_format::check_printf_format;
 use super::lints::role_conflicts::check_role_conflicts;
-use super::lints::security::check_security;
+use super::lints::security::check_security_with_canonical_regex;
 use super::lints::source_filter::check_source_filter_risk;
-use super::lints::strict_warnings::check_strict_warnings;
+use super::lints::strict_warnings::check_strict_warnings_with_pragma_map;
 use super::lints::unreachable_code::check_unreachable_code;
 use super::lints::unused_imports::check_unused_imports;
-use super::lints::version_compat::check_version_compat_with_project_version;
+use super::lints::version_compat::check_version_compat_with_pragma_map;
 use super::parse_errors::{parse_error_code, parse_error_severity};
-use super::scope::scope_issues_to_diagnostics_with_semantics;
+use super::regex_canonical::project_canonical_regex_diagnostics;
+use super::scope::scope_issues_to_diagnostics_with_semantics_ref;
 
 // ── NullSemanticQueries ──
 
@@ -120,7 +120,15 @@ pub use perl_diagnostics::codes::{DiagnosticCode, DiagnosticSeverity};
 ///
 /// Analyzes Perl source code and generates diagnostic messages for
 /// parse errors, scope issues, and lint warnings.
-pub struct DiagnosticsProvider;
+pub struct DiagnosticsProvider {
+    /// Parser-retained canonical regex analysis for the document this provider
+    /// will be asked about, when the caller holds one (#7024).
+    ///
+    /// A provider is constructed per document per publish, so this is document
+    /// state, not shared state. It is `Arc` because the same retained table is
+    /// owned by the document snapshot and must not be cloned per publish.
+    regex_analysis: Option<Arc<RegexAnalysisTable>>,
+}
 
 impl Default for DiagnosticsProvider {
     fn default() -> Self {
@@ -135,7 +143,36 @@ impl DiagnosticsProvider {
     /// methods; it is not stored on the provider to avoid an extra full-document
     /// allocation on every diagnostic publish (#5053).
     pub fn new() -> Self {
-        Self
+        Self { regex_analysis: None }
+    }
+
+    /// Publish regex findings from the parser-retained canonical analysis (#7024).
+    ///
+    /// `table` must be the analysis retained for the exact source that will be
+    /// passed to the `get_diagnostics*` call. The provider re-checks that itself
+    /// through [`RegexAnalysisTable::source_matches`] and silently declines a table
+    /// that does not match, so a snapshot that raced an edit degrades to the
+    /// compatibility path instead of publishing findings at stale offsets.
+    ///
+    /// Without a table the provider keeps its previous behavior exactly: regex
+    /// findings arrive only as parser errors and as the AST-flag embedded-code lint.
+    #[must_use]
+    pub fn with_regex_analysis(mut self, table: Arc<RegexAnalysisTable>) -> Self {
+        self.regex_analysis = Some(table);
+        self
+    }
+
+    /// The retained analysis for `source`, or `None` when it is absent or stale.
+    ///
+    /// The table is bound to the text the *parser* saw, which is the document's
+    /// code slice: everything before `__DATA__` / `__END__`. Comparing against the
+    /// full document would decline every table for a document with a data section,
+    /// silently dropping canonical regex diagnostics from a common Perl idiom.
+    /// The code slice is a prefix, so every retained offset stays valid against the
+    /// full text.
+    fn canonical_regex_analysis(&self, source: &str) -> Option<&RegexAnalysisTable> {
+        let code = perl_lexer::code_slice(source);
+        self.regex_analysis.as_deref().filter(|table| table.source_matches(code))
     }
 
     /// Generate diagnostics for the given AST
@@ -185,6 +222,7 @@ impl DiagnosticsProvider {
             None,
             FileId(0),
             &NullSemanticQueries,
+            None,
         )
     }
 
@@ -211,6 +249,46 @@ impl DiagnosticsProvider {
             project_version,
             FileId(0),
             &NullSemanticQueries,
+            None,
+        )
+    }
+
+    /// Identical to [`Self::get_diagnostics_with_path`], but consumes a
+    /// generation-owned [`DocumentDiagnosticAnalysis`] built by the caller
+    /// instead of rebuilding the pragma/scope/symbol passes inline (#7286).
+    ///
+    /// Pass `analysis: Some(a)` when the caller already owns a
+    /// `DocumentDiagnosticAnalysis` for this exact `ast` and `source` (e.g.
+    /// from `ParsedSnapshot::diagnostic_analysis`). When
+    /// `a.matches(ast, source)` is false — a different tree, a different
+    /// source, or both — or `analysis` is `None`, this falls back to building
+    /// a local analysis from `ast`/`source` exactly as
+    /// [`Self::get_diagnostics_with_path`] does today — a stale or mismatched
+    /// prebuilt analysis is never trusted and never changes the result.
+    #[allow(clippy::too_many_arguments)]
+    pub fn get_diagnostics_with_path_with_analysis(
+        &self,
+        ast: &std::sync::Arc<Node>,
+        parse_errors: &[ParseError],
+        source: &str,
+        module_resolver: Option<&dyn Fn(&str, usize) -> bool>,
+        module_search_paths: &[String],
+        source_path: Option<&Path>,
+        project_version: Option<&str>,
+        analysis: Option<&DocumentDiagnosticAnalysis>,
+    ) -> Vec<Diagnostic> {
+        self.get_diagnostics_with_path_and_semantics_impl(
+            ast,
+            parse_errors,
+            source,
+            module_resolver,
+            module_search_paths,
+            None,
+            source_path,
+            project_version,
+            FileId(0),
+            &NullSemanticQueries,
+            analysis,
         )
     }
 
@@ -261,6 +339,38 @@ impl DiagnosticsProvider {
             project_version,
             FileId(0),
             &NullSemanticQueries,
+            None,
+        )
+    }
+
+    /// Identical to [`Self::get_diagnostics_with_search_context`], but
+    /// consumes a prebuilt [`DocumentDiagnosticAnalysis`] — see
+    /// [`Self::get_diagnostics_with_path_with_analysis`] for the freshness
+    /// contract.
+    #[allow(clippy::too_many_arguments)]
+    pub fn get_diagnostics_with_search_context_with_analysis(
+        &self,
+        ast: &std::sync::Arc<Node>,
+        parse_errors: &[ParseError],
+        source: &str,
+        module_resolver: Option<&dyn Fn(&str, usize) -> bool>,
+        module_search_context: &[ModuleSearchPathDisplay],
+        source_path: Option<&Path>,
+        project_version: Option<&str>,
+        analysis: Option<&DocumentDiagnosticAnalysis>,
+    ) -> Vec<Diagnostic> {
+        self.get_diagnostics_with_path_and_semantics_impl(
+            ast,
+            parse_errors,
+            source,
+            module_resolver,
+            &[],
+            Some(module_search_context),
+            source_path,
+            project_version,
+            FileId(0),
+            &NullSemanticQueries,
+            analysis,
         )
     }
 
@@ -297,6 +407,7 @@ impl DiagnosticsProvider {
             None,
             file_id,
             semantic_queries,
+            None,
         )
     }
 
@@ -325,6 +436,40 @@ impl DiagnosticsProvider {
             project_version,
             file_id,
             semantic_queries,
+            None,
+        )
+    }
+
+    /// Identical to [`Self::get_diagnostics_with_path_and_semantics`], but
+    /// consumes a prebuilt [`DocumentDiagnosticAnalysis`] — see
+    /// [`Self::get_diagnostics_with_path_with_analysis`] for the freshness
+    /// contract.
+    #[allow(clippy::too_many_arguments)]
+    pub fn get_diagnostics_with_path_and_semantics_with_analysis<Q: SemanticQueries>(
+        &self,
+        ast: &std::sync::Arc<Node>,
+        parse_errors: &[ParseError],
+        source: &str,
+        module_resolver: Option<&dyn Fn(&str, usize) -> bool>,
+        module_search_paths: &[String],
+        source_path: Option<&Path>,
+        file_id: FileId,
+        semantic_queries: &Q,
+        project_version: Option<&str>,
+        analysis: Option<&DocumentDiagnosticAnalysis>,
+    ) -> Vec<Diagnostic> {
+        self.get_diagnostics_with_path_and_semantics_impl(
+            ast,
+            parse_errors,
+            source,
+            module_resolver,
+            module_search_paths,
+            None,
+            source_path,
+            project_version,
+            file_id,
+            semantic_queries,
+            analysis,
         )
     }
 
@@ -384,13 +529,48 @@ impl DiagnosticsProvider {
             project_version,
             file_id,
             semantic_queries,
+            None,
+        )
+    }
+
+    /// Identical to [`Self::get_diagnostics_with_search_context_and_semantics`],
+    /// but consumes a prebuilt [`DocumentDiagnosticAnalysis`] — see
+    /// [`Self::get_diagnostics_with_path_with_analysis`] for the freshness
+    /// contract.
+    #[allow(clippy::too_many_arguments)]
+    pub fn get_diagnostics_with_search_context_and_semantics_with_analysis<Q: SemanticQueries>(
+        &self,
+        ast: &std::sync::Arc<Node>,
+        parse_errors: &[ParseError],
+        source: &str,
+        module_resolver: Option<&dyn Fn(&str, usize) -> bool>,
+        module_search_context: &[ModuleSearchPathDisplay],
+        source_path: Option<&Path>,
+        file_id: FileId,
+        semantic_queries: &Q,
+        project_version: Option<&str>,
+        analysis: Option<&DocumentDiagnosticAnalysis>,
+    ) -> Vec<Diagnostic> {
+        self.get_diagnostics_with_path_and_semantics_impl(
+            ast,
+            parse_errors,
+            source,
+            module_resolver,
+            &[],
+            Some(module_search_context),
+            source_path,
+            project_version,
+            file_id,
+            semantic_queries,
+            analysis,
         )
     }
 
     /// Shared implementation for both public `get_diagnostics_with_path*` variants.
     ///
     /// All diagnostic generation lives here; the public wrappers differ only in
-    /// which `SemanticQueries` implementation and `FileId` they supply.
+    /// which `SemanticQueries` implementation and `FileId` they supply, and
+    /// whether they hand in a prebuilt `analysis`.
     #[allow(clippy::too_many_arguments)]
     fn get_diagnostics_with_path_and_semantics_impl<Q: SemanticQueries>(
         &self,
@@ -404,6 +584,7 @@ impl DiagnosticsProvider {
         project_version: Option<&str>,
         file_id: FileId,
         semantic_queries: &Q,
+        analysis: Option<&DocumentDiagnosticAnalysis>,
     ) -> Vec<Diagnostic> {
         let mut diagnostics = Vec::new();
         let source_len = source.len();
@@ -468,6 +649,33 @@ impl DiagnosticsProvider {
             });
         }
 
+        // Canonical regex findings (#7024), published *outside* the blocking-parse-error
+        // gate below.
+        //
+        // That gate exists because a salvaged AST makes semantic lints produce cascading
+        // false positives (#5089). This is not a semantic lint: the retained table is
+        // parser-owned geometry for the exact source, computed during the parse that
+        // produced these very errors, and it is already declined outright when it does
+        // not match the source. A syntax error elsewhere in the file does not make the
+        // bytes of a regex body less certain.
+        //
+        // Gating it was a regression rather than a design choice. Before retention, a
+        // backtracking risk arrived as a parser `Advisory` and was published in the loop
+        // above, which runs ahead of the gate — so it survived a blocking error. The
+        // session suppresses that legacy scan at the source, so with the projection
+        // inside the gate the finding vanished for any file carrying an unrelated
+        // syntax error. Measured on `my $re = qr/(a+)+b/;` plus an unclosed brace: the
+        // compatibility path published the risk and the canonical path published
+        // nothing. `a_backtracking_risk_survives_an_unrelated_blocking_parse_error`
+        // pins it.
+        let embedded_code_spans = match self.canonical_regex_analysis(source) {
+            Some(table) => {
+                diagnostics.extend(project_canonical_regex_diagnostics(table));
+                super::regex_canonical::embedded_code_spans(table)
+            }
+            None => Vec::new(),
+        };
+
         // Skip lint/scope analysis when there are blocking parse errors —
         // the salvaged AST is unreliable and produces cascading false
         // positives. Only parse-error diagnostics are shown in this case.
@@ -476,12 +684,30 @@ impl DiagnosticsProvider {
         let has_blocking_parse_error = parse_errors.iter().any(suppresses_semantic_analysis);
 
         if !has_blocking_parse_error {
-            // Run scope analysis to detect undeclared/unused/shadowing issues.
-            let pragma_map = PragmaTracker::build(ast);
-            let scope_analyzer = ScopeAnalyzer::new();
-            let scope_issues = scope_analyzer.analyze(ast, source, &pragma_map);
-            diagnostics.extend(scope_issues_to_diagnostics_with_semantics(
-                scope_issues,
+            // Reuse a caller-supplied, generation-owned analysis when it
+            // actually describes this `source`; otherwise build one locally.
+            // This is the fail-safe half of the #7286 contract: a stale or
+            // mismatched prebuilt analysis is never trusted, and this branch
+            // makes the two paths (prebuilt vs. locally built) produce
+            // byte-for-byte identical facts, so which path runs never changes
+            // the returned diagnostics.
+            let built_analysis;
+            let analysis: &DocumentDiagnosticAnalysis = match analysis {
+                Some(a) if a.matches(ast, source) => a,
+                _ => {
+                    built_analysis = DocumentDiagnosticAnalysis::build(ast, source);
+                    &built_analysis
+                }
+            };
+
+            // Scope-analysis issues detected for undeclared/unused/shadowing
+            // variables. Read straight out of the shared analysis: the
+            // borrowing form exists precisely so a generation-owned issue list
+            // is not deep-cloned (two `String`s per issue) on every
+            // evaluation, which is the cost sharing the analysis is meant to
+            // remove rather than relocate.
+            diagnostics.extend(scope_issues_to_diagnostics_with_semantics_ref(
+                analysis.scope_issues(),
                 file_id,
                 semantic_queries,
             ));
@@ -491,10 +717,10 @@ impl DiagnosticsProvider {
             diagnostics.extend(heredoc_diags);
 
             // Run lint checks
-            check_strict_warnings(ast, &mut diagnostics);
+            check_strict_warnings_with_pragma_map(ast, analysis.pragma_map(), &mut diagnostics);
             check_deprecated_syntax(ast, &mut diagnostics);
-            let symbol_table = SymbolExtractor::new_with_source(source).extract(ast);
-            check_common_mistakes(ast, &symbol_table, &mut diagnostics);
+            let symbol_table = analysis.symbol_table();
+            check_common_mistakes(ast, symbol_table, &mut diagnostics);
             check_printf_format(ast, &mut diagnostics);
 
             // Package and subroutine diagnostics (PL200, PL201, PL300)
@@ -507,16 +733,19 @@ impl DiagnosticsProvider {
             // the resolver returns empty and the lint degrades to same-file analysis.
             check_role_conflicts(
                 ast,
-                &symbol_table,
+                symbol_table,
                 &|role| semantic_queries.transitive_role_methods(role),
                 &mut diagnostics,
             );
-            check_goto_labels(ast, &symbol_table, &mut diagnostics);
-            check_loop_control_labels(ast, &symbol_table, &mut diagnostics);
+            check_goto_labels(ast, symbol_table, &mut diagnostics);
+            check_loop_control_labels(ast, symbol_table, &mut diagnostics);
             check_source_filter_risk(ast, &mut diagnostics);
 
-            // Security anti-pattern detection (string eval, two-arg open, backtick exec)
-            check_security(ast, &mut diagnostics);
+            // Security anti-pattern detection (string eval, two-arg open, backtick exec).
+            // The AST-flag embedded-code lint stays silent wherever the canonical
+            // projection above already covered the same span, so one finding is not
+            // published twice under two identities.
+            check_security_with_canonical_regex(ast, &mut diagnostics, &embedded_code_spans);
             check_ffi_checklib(ast, &mut diagnostics);
             check_eval_error_flow(ast, &mut diagnostics);
 
@@ -527,9 +756,13 @@ impl DiagnosticsProvider {
             check_pod_coverage(ast, source, &mut diagnostics);
 
             // Version compatibility lint (PL900)
-            check_version_compat_with_project_version(
+            // Both contracts hold here: the folder-owned project-version
+            // fallback main added, and this generation's shared pragma timeline
+            // (#7286) instead of a fourth rebuild of it.
+            check_version_compat_with_pragma_map(
                 ast,
                 source,
+                analysis.pragma_map(),
                 &mut diagnostics,
                 project_version,
             );
@@ -580,8 +813,30 @@ impl DiagnosticsProvider {
 /// a hard blocker silently deleted every lint and scope warning in the file for a
 /// single missing paren. Structured recovery keeps the tree; the unrecoverable
 /// variants do not.
-fn suppresses_semantic_analysis(error: &ParseError) -> bool {
+pub(super) fn suppresses_semantic_analysis(error: &ParseError) -> bool {
     error.blocks_clean_parse() && !matches!(error, ParseError::Recovered { .. })
+}
+
+/// Whether this error set is the one that makes the provider skip its
+/// scope/lint/semantic stack — the exact condition branched on above.
+///
+/// Proof-only, and exported for one reason: #7286's malformed-document
+/// contracts live in `perl-lsp-rs`, where a fixture asserting "the analysis
+/// still reaches the critic stage on a blocking parse error" is vacuous unless
+/// its source really does produce a blocking error. The v3 parser's recovery
+/// makes that impossible to read off the source text — an unbalanced brace may
+/// come back as `Recovered`, which deliberately does *not* suppress — so the
+/// premise has to be measured, and measured with this predicate rather than a
+/// re-derivation of it that could drift.
+///
+/// Gated exactly like the native-critic counters: compiled for this crate's
+/// tests and for a downstream crate that opts in with `test-instrumentation`,
+/// never in a production build, so proof-only observability does not become
+/// supported public API.
+#[cfg(any(test, feature = "test-instrumentation"))]
+#[must_use]
+pub fn parse_errors_suppress_semantic_analysis(errors: &[ParseError]) -> bool {
+    errors.iter().any(suppresses_semantic_analysis)
 }
 
 fn suppress_unused_imports_for_missing_modules(diagnostics: &mut Vec<Diagnostic>) {

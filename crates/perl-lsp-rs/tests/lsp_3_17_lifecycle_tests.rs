@@ -315,7 +315,7 @@ fn test_initialize_contract_3_17() -> TestResult {
     if let Some(encoding) = capabilities.get("positionEncoding") {
         assert!(encoding.is_string());
         let enc = encoding.as_str().ok_or("encoding not a string")?;
-        assert!(["utf-8", "utf-16", "utf-32"].contains(&enc));
+        assert_eq!(enc, "utf-16", "v0.18 advertises UTF-16 only, got {enc}");
     }
 
     // Check server info
@@ -597,6 +597,27 @@ fn initialize_malformed_parent_first_then_valid_second_is_invalid_request() -> T
             served.err().ok_or("rejected malformed-parent initialize must remain non-serving")?;
         assert!(error.contains("-32002"), "connection must remain non-serving: {error}");
     }
+    Ok(())
+}
+
+#[test]
+fn utf8_only_position_encodings_accept_initialize_via_utf16_fallback() -> TestResult {
+    let mut harness = LspHarness::new();
+    let result = harness.initialize(Some(json!({
+        "general": {
+            "positionEncodings": ["utf-8"]
+        }
+    })))?;
+
+    let encoding = result
+        .get("capabilities")
+        .and_then(|v| v.get("positionEncoding"))
+        .and_then(|v| v.as_str())
+        .ok_or("positionEncoding not found or not string")?;
+    assert_eq!(
+        encoding, "utf-16",
+        "utf-8-only initialize must still advertise utf-16 via mandatory fallback"
+    );
     Ok(())
 }
 

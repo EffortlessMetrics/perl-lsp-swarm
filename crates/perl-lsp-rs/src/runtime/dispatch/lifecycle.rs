@@ -98,9 +98,7 @@ impl LspServer {
     }
 
     pub(super) fn auto_initialize_for_compat(&self, method: &str) {
-        if self.initialize_requested.load(Ordering::Acquire)
-            && !self.initialized.load(Ordering::Acquire)
-        {
+        if self.initialization_accepted() && !self.initialized.load(Ordering::Acquire) {
             tracing::warn!(
                 method,
                 "Client skipped initialized notification; auto-initializing for compatibility"
@@ -135,6 +133,7 @@ impl LspServer {
 
         // Clear any pending cancelled requests on shutdown
         self.cancelled.lock().clear();
+        self.clear_position_encoding_session_context();
         // Destroy the session-keyed resolve authenticator so every envelope
         // from this session becomes unverifiable (#8342).
         self.teardown_resolve_session();
@@ -210,7 +209,14 @@ impl LspServer {
 
     /// Handle initialized notification
     pub(crate) fn handle_initialized_dispatch(&self) -> Result<Option<Value>, JsonRpcError> {
-        if !self.initialize_requested.load(Ordering::Acquire) {
+        // The -32002 guard keys on the accepted-session authority: an
+        // `initialized` notification is only in-lifecycle once initialize has
+        // ACCEPTED. A rejected first initialize consumed its one-shot attempt
+        // but never opened the session, so a later `initialized` is still
+        // ServerNotInitialized — refusing here also keeps the post-`initialized`
+        // configuration pull (`routing.rs`) from running on a rejected
+        // connection.
+        if !self.initialization_accepted() {
             return Err(JsonRpcError {
                 code: -32002, // ServerNotInitialized per LSP spec
                 message: "Server not initialized".to_string(),
@@ -337,10 +343,12 @@ mod tests {
             "compat completion must refuse without an accepted text-sync contract"
         );
 
-        // When — explicit `initialized` notification
-        server.handle_initialized_dispatch().map_err(|e| {
-            format!("the -32002/-32600 guards hold; completion is what is gated: {e}")
-        })?;
+        // When — explicit `initialized` notification. The -32002 guard keys
+        // on the accepted-session authority, so a consumed-but-unaccepted
+        // connection is refused outright (ServerNotInitialized), matching the
+        // routing-layer expectation for a rejected first initialize.
+        let err = server.handle_initialized_dispatch().map_err(|e| e.code).unwrap_err();
+        assert_eq!(err, -32002, "initialized without an accepted contract is ServerNotInitialized");
 
         // Then
         assert!(
@@ -365,6 +373,10 @@ mod tests {
         server
             .handle_initialized_dispatch()
             .map_err(|e| format!("initialized notification should succeed: {e}"))?;
+        assert!(
+            server.position_encoding_session_context().is_some(),
+            "successful initialize must publish active coordinate context"
+        );
 
         // When
         let response = server
@@ -376,6 +388,10 @@ mod tests {
         assert!(
             server.shutdown_received.load(Ordering::Acquire),
             "shutdown_received must be set (exit will use code 0)"
+        );
+        assert!(
+            server.position_encoding_session_context().is_none(),
+            "shutdown must invalidate the active coordinate context"
         );
         Ok(())
     }
@@ -593,11 +609,10 @@ mod tests {
         }
 
         fn initialized_notification(&mut self) -> Result<(), i32> {
-            if !self.initialize_requested {
-                return Err(-32002);
-            }
+            // `initialized` is in-lifecycle only once initialize has ACCEPTED;
+            // a consumed-but-rejected attempt still yields -32002.
             if !self.accepted_session {
-                return Ok(());
+                return Err(-32002);
             }
             if self.initialized {
                 return Err(-32600);
@@ -635,9 +650,12 @@ mod tests {
             return Err(format!("malformed initialize returned {}", rejection.code));
         }
 
-        server
-            .handle_initialized_dispatch()
-            .map_err(|error| format!("completion must remain a no-op: {error}"))?;
+        let completion = server.handle_initialized_dispatch();
+        if completion.err().map(|error| error.code) != Some(-32002) {
+            return Err(
+                "initialized after a rejected initialize must be ServerNotInitialized".to_string()
+            );
+        }
         if server.is_initialized() || server.accepted_text_sync_session().is_some() {
             return Err("rejected initialize gained lifecycle authority".to_string());
         }
