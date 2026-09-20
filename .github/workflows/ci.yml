@@ -1005,7 +1005,14 @@ jobs:
           python3 - <<'PY'
           import json
           import os
+          import uuid
           from pathlib import Path
+
+          # Statuses meaning a gate ran and did not pass. A short-circuiting
+          # required gate marks every remaining planned gate `skip`
+          # (xtask/src/tasks/gates.rs), and those never ran, so they belong in the
+          # table but must not be annotated as failures.
+          BLOCKING_STATUSES = ("fail", "timeout", "error")
 
           receipt = Path("target/receipts/receipt.json")
           summary = Path(os.environ["GITHUB_STEP_SUMMARY"])
@@ -1039,7 +1046,8 @@ jobs:
                           lines.append(
                               f"| `{name}` | `{status}` | `{exit_code}` |"
                           )
-                          failing.append((name, f"status {status}, exit {exit_code}"))
+                          if status in BLOCKING_STATUSES:
+                              failing.append((name, f"status {status}, exit {exit_code}"))
                   else:
                       lines.append("- Non-success gates: none recorded.")
           rendered = "\n".join(lines) + "\n"
@@ -1053,15 +1061,30 @@ jobs:
           # publish one annotation per failing gate, reachable via
           # GET /repos/{owner}/{repo}/check-runs/{id}/annotations even when the
           # job-log archive download is not.
+          #
+          # `rendered` carries gate names straight out of the receipt, and nothing
+          # validates that file before this step reads it. Suspend workflow-command
+          # parsing across the mirror so a crafted name containing a newline and a
+          # `::` directive is printed rather than executed. The token is random per
+          # run: a fixed one could be reproduced by the very content being fenced.
+          stop_token = f"pr-fast-summary-{uuid.uuid4().hex}"
+          print(f"::stop-commands::{stop_token}")
           print(rendered)
+          print(f"::{stop_token}::")
 
-          def _esc(text):
+          def _esc_data(text):
               return (
                   str(text)
                   .replace("%", "%25")
                   .replace("\r", "%0D")
                   .replace("\n", "%0A")
               )
+
+          def _esc_prop(text):
+              # A property value additionally treats ':' and ',' as delimiters, so a
+              # gate name containing either would truncate `title` and inject a
+              # further property.
+              return _esc_data(text).replace(":", "%3A").replace(",", "%2C")
 
           # GitHub publishes at most ten annotations of a level per check run:
           # measured on this repository, `Workflow Trigger Lint` records one
@@ -1085,9 +1108,9 @@ jobs:
               )
 
           for name, detail in annotations:
-              print(f"::error title=pr-fast gate {_esc(name)}::{_esc(detail)}")
+              print(f"::error title=pr-fast gate {_esc_prop(name)}::{_esc_data(detail)}")
           if receipt_problem is not None:
-              print(f"::warning title=pr-fast receipt::{_esc(receipt_problem)}")
+              print(f"::warning title=pr-fast receipt::{_esc_data(receipt_problem)}")
           PY
 
       - name: Convert PR-fast receipt to JUnit
