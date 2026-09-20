@@ -232,21 +232,61 @@ fn module_edges(path: &Path, lines: &[String]) -> Vec<ModuleEdge> {
 /// The file `#[path = "…"]` redirects a declaration to, or `None` when `attr`
 /// is some other attribute.
 ///
-/// Whitespace around `=` is optional in Rust, so `#[path="cases/lifecycle.rs"]`
-/// names the same file as the spaced spelling. Reading only one of them sends
-/// the declaration back to its plain module name, which resolves to a different
-/// file or to none — and a gated declaration that lands on the wrong file
-/// classifies that file as test-only. The repository happens to write all 221 of
-/// its `#[path]` attributes with spaces today, so this is the parser agreeing
-/// with the language rather than with the current tree.
+/// Reading only one spelling sends the declaration back to its plain module
+/// name, which resolves to a different file or to none — and a gated
+/// declaration that lands on the wrong file classifies that file as test-only.
+///
+/// Which spellings can actually reach here is a question about this repository,
+/// not about Rust, because `cargo fmt --check` is a gate. Measured against
+/// rustfmt: it rewrites `#[path="x.rs"]` to the spaced form and `#[ cfg(test) ]`
+/// to the tight one, so neither survives the gate — but it leaves
+/// `#[path = r"y.rs"]` exactly as written. **The raw literal is the one
+/// residual spelling a committed file can carry**, so it is the one that
+/// matters; the whitespace tolerance below is consistency, not necessity.
 fn path_attribute_target(attr: &str) -> Option<&str> {
-    attr.strip_prefix("#[path")?
+    let value = attr
+        .strip_prefix("#[")?
+        .trim_start()
+        .strip_prefix("path")?
         .trim_start()
         .strip_prefix('=')?
-        .trim_start()
-        .strip_prefix('"')?
-        .split_once('"')
-        .map(|(target, _)| target)
+        .trim_start();
+    string_literal_text(value)
+}
+
+/// The text inside the Rust string literal at the head of `value`.
+///
+/// `attribute_end` finds an attribute's extent by counting brackets without
+/// reading string literals, so a path containing `]` would already have been
+/// truncated before it got here. That is pathological for a file name and is
+/// left alone deliberately: widening the bracket scan is a change to every
+/// attribute, not to this one.
+fn string_literal_text(value: &str) -> Option<&str> {
+    if let Some(raw) = value.strip_prefix('r') {
+        let after_hashes = raw.trim_start_matches('#');
+        let hash_count = raw.len().checked_sub(after_hashes.len())?;
+        let body = after_hashes.strip_prefix('"')?;
+        let mut closing = String::with_capacity(hash_count + 1);
+        closing.push('"');
+        for _ in 0..hash_count {
+            closing.push('#');
+        }
+        return body.find(&closing).and_then(|end| body.get(..end));
+    }
+
+    // A plain literal can escape its own quote, so the closing one is the first
+    // unescaped `"` rather than the first `"`.
+    let body = value.strip_prefix('"')?;
+    let mut escaped = false;
+    for (index, character) in body.char_indices() {
+        match character {
+            _ if escaped => escaped = false,
+            '\\' => escaped = true,
+            '"' => return body.get(..index),
+            _ => {}
+        }
+    }
+    None
 }
 
 /// Whether `attr` is a `cfg` attribute whose predicate cannot hold outside a
@@ -685,6 +725,35 @@ mod tests {
 
         let found = test_only_source_files(&[root, assertions.clone()])?;
         ensure!(found.contains(&assertions), "the redirected file is test-only; found {found:?}");
+        Ok(())
+    }
+
+    /// The spelling the repository's format gate cannot rewrite away. rustfmt
+    /// normalises `#[path="x.rs"]` and `#[ cfg(test) ]`, so neither reaches a
+    /// committed file; it leaves a raw literal exactly as written, so this is
+    /// the one form a scanner has to read for itself.
+    #[test]
+    fn a_raw_string_path_attribute_names_the_same_file() -> Result<()> {
+        let tree = Tree::new("raw-path")?;
+        let root =
+            tree.write("lib.rs", "#[cfg(test)]\n#[path = r\"shared.rs\"]\nmod under_test;\n")?;
+        let shared = tree.write("shared.rs", "fn f() { x.unwrap(); }\n")?;
+
+        let found = test_only_source_files(&[root, shared.clone()])?;
+        ensure!(found.contains(&shared), "a raw literal redirects like a plain one");
+        Ok(())
+    }
+
+    /// A hashed raw literal closes on `"#`, not on the first quote.
+    #[test]
+    fn a_hashed_raw_path_attribute_reads_to_its_own_terminator() -> Result<()> {
+        let tree = Tree::new("hashed-raw-path")?;
+        let root =
+            tree.write("lib.rs", "#[cfg(test)]\n#[path = r#\"shared.rs\"#]\nmod under_test;\n")?;
+        let shared = tree.write("shared.rs", "fn f() { x.unwrap(); }\n")?;
+
+        let found = test_only_source_files(&[root, shared.clone()])?;
+        ensure!(found.contains(&shared), "r#\"…\"# names the same file");
         Ok(())
     }
 
