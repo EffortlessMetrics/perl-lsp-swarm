@@ -1896,7 +1896,24 @@ fn contains_explicit_exclusion(text: &str) -> bool {
 fn contains_partial_boundary(text: &str) -> bool {
     let lower = text.to_ascii_lowercase();
     (contains_word(&lower, "phase") && contains_word(&lower, "only"))
-        || contains_word(&lower, "partial")
+        || [
+            "partial delivery",
+            "partial fix",
+            "partial implementation",
+            "partial change",
+            "partial scope",
+            "partial support",
+            "partial coverage",
+            "partial address",
+            "only partially",
+            "partially addresses",
+            "partially implements",
+            "partially covers",
+            "partially fixes",
+            "partially supports",
+        ]
+        .iter()
+        .any(|marker| lower.contains(marker))
         || lower.contains("slice only")
         || lower.contains("bounded slice")
 }
@@ -2592,6 +2609,22 @@ mod tests {
         assert_eq!(report.rows[1].issue_number, 2);
         assert_eq!(report.rows[1].code, ResultCode::PassNoHighConfidenceContradiction);
         Ok(())
+    }
+
+    #[test]
+    fn partial_subject_matter_is_not_treated_as_partial_delivery() {
+        assert!(!contains_partial_boundary(
+            "The issue explains why this is never a partial one; the complete change is delivered."
+        ));
+    }
+
+    #[test]
+    fn partial_delivery_language_remains_a_boundary_failure() {
+        assert!(contains_partial_boundary(
+            "This PR partially addresses the issue and leaves the remaining callers for follow-up."
+        ));
+        assert!(contains_partial_boundary("This is a partial implementation."));
+        assert!(contains_partial_boundary("This is a bounded slice only."));
     }
 
     #[test]
