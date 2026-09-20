@@ -2427,6 +2427,20 @@ fn ripr_finding_line(finding: &Value) -> Option<u64> {
         .filter(|line| *line > 0)
 }
 
+/// Source text a RIPR probe reports for the line it points at (`probe.expression`
+/// on 0.5.x/0.10.x, `seam.expression` on 0.9.x). A finding without one cannot be
+/// anchored to head text and is never filtered on that basis.
+fn ripr_finding_expression(finding: &Value) -> Option<String> {
+    ["probe", "seam"]
+        .into_iter()
+        .find_map(|key| finding.get(key).and_then(|node| node.get("expression")))
+        .or_else(|| finding.get("expression"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .map(ToOwned::to_owned)
+}
+
 /// Where a finding's path sits in the head revision of the change.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum HeadPathState {
@@ -2460,18 +2474,53 @@ struct HeadLineExtents {
     present: BTreeMap<String, usize>,
     /// Repo-relative paths the change removes.
     removed: BTreeSet<String>,
+    /// Repo-relative path -> the head revision's lines, for anchoring a probe's
+    /// expression to the line it reports (#6260 residual, see
+    /// `probe_expression_is_absent_near`). Absent for a path means the anchor
+    /// check cannot run and the finding stays counted.
+    head_lines: BTreeMap<String, Vec<String>>,
+}
+
+/// How far, in lines either side of the reported line, a probe's expression may
+/// sit in the head revision and still count as anchored there. ripr reports a
+/// head-side probe on its own line; the window only absorbs off-by-a-few line
+/// attribution around multi-line statements.
+const HEAD_ANCHOR_WINDOW: usize = 3;
+
+/// Largest head-revision blob whose lines are retained for probe anchoring.
+/// `from_committed_diff` reads every changed path's head text; without a cap a
+/// large generated asset alongside real code can exhaust the hosted lane's
+/// memory and kill the required check. Blobs over the cap get no entry, so
+/// their findings resolve to `Unknown` and stay counted — fail-closed, never
+/// dropped. Override with [`MAX_HEAD_BLOB_BYTES_ENV`] where a lane's memory
+/// budget genuinely differs.
+const MAX_HEAD_BLOB_BYTES: u64 = 8 * 1024 * 1024;
+/// Environment override for [`MAX_HEAD_BLOB_BYTES`], as a byte count.
+const MAX_HEAD_BLOB_BYTES_ENV: &str = "RIPR_MAX_HEAD_BLOB_BYTES";
+
+/// A probe-expression or head line that carries no identifying text: a lone
+/// delimiter or separator run (`}`, `});`, `];`, …). Either side of the
+/// anchor comparison being such a line makes the match vacuous — any nearby
+/// unrelated block end anchors a deleted finding and keeps it counted even
+/// though none of its substantive text exists at head.
+fn is_low_information_line(text: &str) -> bool {
+    !text.is_empty()
+        && text.chars().all(|c| matches!(c, '(' | ')' | '{' | '}' | '[' | ']' | ';' | ',' | ':'))
 }
 
 impl HeadLineExtents {
     fn from_committed_diff(repo: &Path, diff: &CommittedDiffReceipt) -> Self {
         let mut present = BTreeMap::new();
         let mut removed = BTreeSet::new();
+        let mut head_lines = BTreeMap::new();
         for entry in &diff.entries {
             if let Some(new_path) = entry.new_path.as_deref() {
-                // An unreadable blob yields no entry, so its findings resolve to
-                // `Unknown` and stay counted.
-                if let Some(lines) = head_file_line_count(repo, &diff.head_sha, new_path) {
-                    present.insert(normalize_repo_relative_path(new_path), lines);
+                // An unreadable or oversized blob yields no entry, so its
+                // findings resolve to `Unknown` and stay counted.
+                if let Some(lines) = head_file_lines(repo, &diff.head_sha, new_path) {
+                    let path = normalize_repo_relative_path(new_path);
+                    present.insert(path.clone(), lines.len());
+                    head_lines.insert(path, lines);
                 }
             }
             // Removal is read from the status code, never inferred from "has an old
@@ -2488,7 +2537,7 @@ impl HeadLineExtents {
         }
         // A path some other entry adds back still exists at head and keeps its extent.
         removed.retain(|path| !present.contains_key(path));
-        Self { present, removed }
+        Self { present, removed, head_lines }
     }
 
     fn resolve(&self, raw_path: &str) -> HeadPathState {
@@ -2524,16 +2573,112 @@ impl HeadLineExtents {
             return false;
         };
         match self.resolve(&path) {
-            HeadPathState::Present(lines) => line > lines as u64,
+            HeadPathState::Present(lines) => {
+                line > lines as u64 || self.probe_expression_is_absent_near(&path, line, finding)
+            }
             HeadPathState::Removed => true,
             HeadPathState::Unknown => false,
         }
     }
+
+    /// The #6260 residual: `ripr check --diff` also emits probes for lines the
+    /// change *deletes*, anchored at the head line where the deletion happened.
+    /// When that anchor is inside the head file's extent, the line-count check
+    /// above cannot tell it from a head-side probe, and the gate counts a gap no
+    /// test can ever reach (the deleted code is gone) while the guidance pass
+    /// correctly names no seam for it.
+    ///
+    /// A head-side probe always carries the head line's own text as its
+    /// expression, so the discriminator is textual: the finding is outside the
+    /// head revision only when it carries a non-empty expression, the head
+    /// file's lines are known, and no non-empty line within
+    /// [`HEAD_ANCHOR_WINDOW`] of the reported line contains, or is contained
+    /// by, any substantive line of that expression. A lone delimiter on either
+    /// side (`}`, `});`, …) matches any nearby unrelated block end, so such
+    /// lines never anchor on their own; an expression with no substantive line
+    /// at all stays counted. Every other undecidable case (no expression, no
+    /// head text, an expression that does anchor nearby) stays counted: the
+    /// filter never takes the fail-open direction.
+    fn probe_expression_is_absent_near(&self, path: &str, line: u64, finding: &Value) -> bool {
+        let Some(expression) = ripr_finding_expression(finding) else {
+            return false;
+        };
+        let expression_lines =
+            expression.lines().map(str::trim).filter(|text| !text.is_empty()).collect::<Vec<_>>();
+        if expression_lines.is_empty() {
+            return false;
+        }
+        if !expression_lines.iter().any(|expr| !is_low_information_line(expr)) {
+            return false;
+        }
+        let Some(head_lines) = self.head_lines_for(path) else {
+            return false;
+        };
+        let Some(index) = usize::try_from(line).ok().and_then(|line| line.checked_sub(1)) else {
+            return false;
+        };
+        if index >= head_lines.len() {
+            return false;
+        }
+        let start = index.saturating_sub(HEAD_ANCHOR_WINDOW);
+        let end = index.saturating_add(HEAD_ANCHOR_WINDOW).min(head_lines.len() - 1);
+        let anchored = head_lines[start..=end]
+            .iter()
+            .map(|text| text.trim())
+            .filter(|text| !text.is_empty() && !is_low_information_line(text))
+            .any(|head| {
+                expression_lines.iter().any(|expr| {
+                    !is_low_information_line(expr) && (head.contains(expr) || expr.contains(head))
+                })
+            });
+        !anchored
+    }
+
+    /// Head-revision lines for a finding path, resolved like [`Self::resolve`]:
+    /// an exact normalized key, else a unique repo-relative suffix match.
+    fn head_lines_for(&self, raw_path: &str) -> Option<&[String]> {
+        let normalized = normalize_repo_relative_path(raw_path);
+        if let Some(lines) = self.head_lines.get(&normalized) {
+            return Some(lines.as_slice());
+        }
+        let candidates = self
+            .head_lines
+            .iter()
+            .filter(|(path, _)| path_suffix_matches(&normalized, path))
+            .map(|(_, lines)| lines.as_slice())
+            .collect::<Vec<_>>();
+        match candidates.as_slice() {
+            [lines] => Some(lines),
+            _ => None,
+        }
+    }
 }
 
-fn head_file_line_count(repo: &Path, head_sha: &str, path: &str) -> Option<usize> {
+fn max_head_blob_bytes() -> u64 {
+    std::env::var(MAX_HEAD_BLOB_BYTES_ENV)
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(MAX_HEAD_BLOB_BYTES)
+}
+
+fn head_file_lines(repo: &Path, head_sha: &str, path: &str) -> Option<Vec<String>> {
     let spec = format!("{head_sha}:{path}");
-    run_git_output(repo, &["show", spec.as_str()]).ok().map(|blob| blob.lines().count())
+    // Stat before reading: `git show` materializes the whole blob, and a
+    // multi-hundred-megabyte generated asset would otherwise sit in memory as
+    // per-line Strings until the receipt finishes streaming. Over the cap the
+    // blob gets no entry and its findings stay counted (fail-closed).
+    let size = run_git_output(repo, &["cat-file", "-s", spec.as_str()])
+        .ok()?
+        .trim()
+        .parse::<u64>()
+        .ok()?;
+    if size > max_head_blob_bytes() {
+        return None;
+    }
+    run_git_output(repo, &["show", spec.as_str()])
+        .ok()
+        .map(|blob| blob.lines().map(ToOwned::to_owned).collect())
 }
 
 fn normalize_repo_relative_path(path: &str) -> String {
@@ -8132,6 +8277,140 @@ paths = ["archive/["]
         )
     }
 
+    /// #6260 residual, from the `raw-check.json` of run 34732444951 on #14958: ten
+    /// `no_static_path` probes carrying the text of a function the change deleted
+    /// (`if let Some(folder_uri) = folder_uri {` and friends), all anchored at
+    /// `inc_context/mod.rs:357`, a doc-comment line that exists at head. The
+    /// line-count check alone counted them; the guidance pass named no seam at
+    /// 357. Head-side probes on the same head keep their own line's text as the
+    /// expression and must stay counted, as must anything the anchor check cannot
+    /// decide.
+    #[test]
+    fn deleted_line_findings_anchored_inside_head_extents_do_not_count() -> Result<()> {
+        let path = "crates/perl-lsp-rs/src/runtime/lifecycle/inc_context/mod.rs";
+        let head = [
+            "impl LspServer {",
+            "    pub(crate) fn assemble(&self) -> Option<Context> {",
+            "        let mut folders = self.workspace_folders.lock();",
+            "        Some(Context { root, folder_uri })",
+            "    }",
+            "",
+            "    /// Read the startup roots and snapshot from the already-locked stored owner.",
+            "    /// Never reselect the owner after capturing the other context settings.",
+            "    fn system_inc_for_context(",
+            "        config: &mut WorkspaceConfig,",
+            "        access: SystemIncAccess,",
+            "    ) -> (Vec<PathBuf>, SystemIncProbeSnapshot) {",
+            "        config.peek_system_inc()",
+            "    }",
+            "}",
+        ];
+        let probe = |line: u64, expression: Option<&str>| {
+            let mut probe = json!({ "path": path, "line": line });
+            if let Some(expression) = expression {
+                probe["expression"] = json!(expression);
+            }
+            json!({ "classification": "no_static_path", "kind": "call_deletion", "probe": probe })
+        };
+        let check_value = json!({
+            "summary": { "weakly_exposed": 0, "reachable_unrevealed": 0, "no_static_path": 7 },
+            "findings": [
+                // Deleted code anchored on the doc comment at 7: nothing near it.
+                probe(7, Some("if let Some(folder_uri) = folder_uri {")),
+                probe(7, Some("return folder.effective_workspace_config.get_system_inc().to_vec();")),
+                // Deleted code whose text survives elsewhere in the file (line 3),
+                // but not within the anchor window of the reported line.
+                probe(7, Some("let mut folders = self.workspace_folders.lock();")),
+                // Head-side probe on its own line: counted.
+                probe(13, Some("config.peek_system_inc()")),
+                // Head-side probe attributed a couple of lines off a multi-line
+                // statement: still anchored within the window, counted.
+                probe(9, Some("access: SystemIncAccess,")),
+                // No expression: the anchor check cannot decide, counted.
+                probe(7, None),
+                // Expression text longer than the head line it wraps: counted.
+                probe(4, Some("Some(Context { root, folder_uri })\n    }")),
+            ]
+        });
+        let extents = HeadLineExtents {
+            present: BTreeMap::from([(path.to_string(), head.len())]),
+            removed: BTreeSet::new(),
+            head_lines: BTreeMap::from([(
+                path.to_string(),
+                head.iter().map(|line| (*line).to_string()).collect(),
+            )]),
+        };
+
+        let packet = packet_with_extents(&check_value, &no_suppressions(), &extents);
+
+        assert_eq!(packet.pointer("/summary/no_static_path"), Some(&json!(4)));
+        assert_eq!(packet.pointer("/summary/severe_gaps"), Some(&json!(4)));
+        assert_eq!(packet.pointer("/summary/outside_head_revision"), Some(&json!(3)));
+        assert_eq!(packet.pointer("/summary/suppressed_by_policy"), Some(&json!(0)));
+
+        // Without head text the anchor check is inert and the old behavior holds:
+        // every in-extent probe counts.
+        let blind = HeadLineExtents { head_lines: BTreeMap::new(), ..extents };
+        let packet = packet_with_extents(&check_value, &no_suppressions(), &blind);
+        assert_eq!(packet.pointer("/summary/no_static_path"), Some(&json!(7)));
+        assert_eq!(packet.pointer("/summary/outside_head_revision"), Some(&json!(0)));
+        Ok(())
+    }
+
+    /// A deleted multi-line expression whose only near-head match is a lone
+    /// delimiter: the substantive line is gone from head, but an unrelated
+    /// `}` within the anchor window used to keep the finding counted,
+    /// recreating an unsatisfiable gate. Low-information lines never anchor on
+    /// their own. An expression of nothing but delimiters stays counted: with
+    /// no substantive text the check cannot decide, and the filter never takes
+    /// the fail-open direction.
+    #[test]
+    fn deleted_expression_anchored_only_by_delimiter_does_not_count() -> Result<()> {
+        let path = "src/deleted.rs";
+        let head = [
+            "fn keep() {",
+            "    let retained = 1;",
+            "}",
+            "",
+            "fn other() {",
+            "    let x = 2;",
+            "}",
+        ];
+        let probe = |line: u64, expression: Option<&str>| {
+            let mut probe = json!({ "path": path, "line": line });
+            if let Some(expression) = expression {
+                probe["expression"] = json!(expression);
+            }
+            json!({ "classification": "no_static_path", "kind": "call_deletion", "probe": probe })
+        };
+        let check_value = json!({
+            "summary": { "weakly_exposed": 0, "reachable_unrevealed": 0, "no_static_path": 3 },
+            "findings": [
+                // Substantive line gone; only the trailing `}` matches head
+                // line 3 or 7 within the window: absent, not counted.
+                probe(5, Some("let removed = compute();\n}")),
+                // Substantive line survives at head line 6: anchored, counted.
+                probe(5, Some("let x = 2;\n}")),
+                // Nothing but delimiters: undecidable, stays counted.
+                probe(5, Some("}\n});")),
+            ]
+        });
+        let extents = HeadLineExtents {
+            present: BTreeMap::from([(path.to_string(), head.len())]),
+            removed: BTreeSet::new(),
+            head_lines: BTreeMap::from([(
+                path.to_string(),
+                head.iter().map(|line| (*line).to_string()).collect(),
+            )]),
+        };
+
+        let packet = packet_with_extents(&check_value, &no_suppressions(), &extents);
+
+        assert_eq!(packet.pointer("/summary/no_static_path"), Some(&json!(2)));
+        assert_eq!(packet.pointer("/summary/outside_head_revision"), Some(&json!(1)));
+        Ok(())
+    }
+
     /// #6260 reproduction, from the `raw-check.json` of run 31273961774 on #6161:
     /// two `no_static_path` probes at `check_version_sync.rs:29`, a line the change
     /// deletes — the file is 13 lines long at head. No test can cover a line that no
@@ -8159,6 +8438,7 @@ paths = ["archive/["]
                 13usize,
             )]),
             removed: BTreeSet::new(),
+            head_lines: BTreeMap::new(),
         };
 
         let packet = packet_with_extents(&check_value, &no_suppressions(), &extents);
@@ -8196,6 +8476,7 @@ paths = ["archive/["]
                 13usize,
             )]),
             removed: BTreeSet::new(),
+            head_lines: BTreeMap::new(),
         };
 
         let packet = packet_with_extents(&check_value, &no_suppressions(), &extents);
@@ -8223,6 +8504,7 @@ paths = ["archive/["]
         let extents = HeadLineExtents {
             present: BTreeMap::new(),
             removed: BTreeSet::from(["crates/perl-lsp-rs/src/removed.rs".to_string()]),
+            head_lines: BTreeMap::new(),
         };
 
         let packet = packet_with_extents(&check_value, &no_suppressions(), &extents);
@@ -8256,6 +8538,7 @@ paths = ["archive/["]
                 13usize,
             )]),
             removed: BTreeSet::new(),
+            head_lines: BTreeMap::new(),
         };
 
         let packet = packet_with_extents(&check_value, &no_suppressions(), &extents);
@@ -8290,6 +8573,7 @@ paths = ["archive/["]
         let extents = HeadLineExtents {
             present: BTreeMap::from([("archive/old.rs".to_string(), 4usize)]),
             removed: BTreeSet::new(),
+            head_lines: BTreeMap::new(),
         };
 
         let packet = packet_with_extents(&check_value, &suppressions, &extents);
@@ -9016,6 +9300,7 @@ paths = ["archive/["]
                 13usize,
             )]),
             removed: BTreeSet::new(),
+            head_lines: BTreeMap::new(),
         };
 
         assert_eq!(
@@ -12141,6 +12426,7 @@ esac
                 13usize,
             )]),
             removed: BTreeSet::new(),
+            head_lines: BTreeMap::new(),
         };
         assert_streaming_receipt_matches_dom(payload, Some(&extents), &no_suppressions())
     }
