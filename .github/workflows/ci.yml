@@ -973,6 +973,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # target/ is restored from a shared cache (#12085), so anything
+          # already at this path belongs to another run, not this one.
+          rm -f target/receipts/pr-fast-failure-digest.md
           if [ ! -f target/receipts/receipt.json ]; then
             echo "no PR-fast receipt; nothing to explain"
             exit 0
@@ -1251,6 +1254,7 @@ jobs:
           # overwrite the failure status.
           rm -rf target/receipts/shards target/receipts/shard-summaries \
             target/receipts/logs target/receipts/artifacts \
+            target/receipts/gate-failure-digest.md \
             target/policy/non-rust-inventory.md \
             target/policy/non-rust-inventory.json \
             || { echo "::error::cannot clear cache-restored target/receipts surfaces (#12085); refusing to run the shard over possibly stale logs/artifacts"; exit 1; }
