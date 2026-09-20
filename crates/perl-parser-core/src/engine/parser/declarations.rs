@@ -1596,12 +1596,17 @@ impl<'a> Parser<'a> {
         // Handle bare arguments (no parentheses)
         if matches!(
             self.peek_kind(),
-            Some(TokenKind::String | TokenKind::Identifier | TokenKind::StringCompare)
+            Some(
+                TokenKind::String
+                    | TokenKind::Identifier
+                    | TokenKind::StringCompare
+                    | TokenKind::QuoteWords
+            )
         ) && !matches!(
             self.peek_kind(),
             Some(TokenKind::Semicolon) | Some(TokenKind::Eof) | None
         ) {
-            // Parse bare arguments like: no warnings 'void'
+            // Parse bare arguments like: no warnings 'void' or qw(uninitialized numeric)
             loop {
                 // Check for qw BEFORE the match to avoid it being consumed as a generic identifier
                 if let Ok(tok) = self.tokens.peek()
@@ -1633,6 +1638,14 @@ impl<'a> Parser<'a> {
                     }
 
                 match self.peek_kind() {
+                    Some(TokenKind::QuoteWords) => {
+                        let token = self.consume_token()?;
+                        let words = quote_parser::parse_qw_words_strict(&token.text).ok_or_else(|| {
+                            ParseError::syntax("Unclosed qw delimiter in no arguments", token.start())
+                        })?;
+                        // Retain the existing directive compatibility representation.
+                        args.push(format!("qw({})", words.join(" ")));
+                    }
                     Some(TokenKind::String) => {
                         args.push(self.consume_token()?.text.to_string());
 
