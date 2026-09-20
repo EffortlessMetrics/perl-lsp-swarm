@@ -112,7 +112,7 @@ jobs:
             # job-level (ci.yml excludes `labeled`; workflow-level paths
             # filters leave required contexts unreported), manual label
             # widening remains on ci-nightly.yml pull_request(labeled).
-            api_scope="$(PR_NUMBER="${pr_number}" REPOSITORY="${GITHUB_REPOSITORY}" \
+            api_scope="$(PR_NUMBER="${pr_number}" REPOSITORY="${GITHUB_REPOSITORY}" GH_TOKEN="${GITHUB_TOKEN}" \
             python3 - "${changed_files[@]}" <<'PY'
           import json
           import os
@@ -122,6 +122,7 @@ jobs:
 
           repo = os.environ["REPOSITORY"]
           pr_number = os.environ["PR_NUMBER"]
+          gh_token = os.environ.get("GH_TOKEN", "")
 
           # #2266 scope authority: the committed baselines themselves. Any crate whose
           # public items flow into a facade baseline via re-export (perl-lsp-rs-core,
@@ -200,10 +201,10 @@ jobs:
                       f"https://api.github.com/repos/{repo}/pulls/{pr_number}/files"
                       f"?per_page=100&page={page}"
                   )
-                  request = urllib.request.Request(
-                      url,
-                      headers={"Accept": "application/vnd.github+json"},
-                  )
+                  headers = {"Accept": "application/vnd.github+json"}
+                  if gh_token:
+                      headers["Authorization"] = "Bearer " + gh_token
+                  request = urllib.request.Request(url, headers=headers)
                   with urllib.request.urlopen(request, timeout=30) as response:
                       batch = json.load(response)
                   if not isinstance(batch, list):
@@ -215,9 +216,10 @@ jobs:
                       break
                   page += 1
           except Exception as exc:
-              # No-token API probe can be rate limited on shared runner egress. Fall
-              # back to the local two-dot diff scan; that over-approximates scope right
-              # after base-tip movement but never under-reports an affected PR.
+              # Unauthenticated or rate-limited API probe on shared runner egress.
+              # Fall back to the local two-dot diff scan; that over-approximates
+              # scope right after base-tip movement but never under-reports an
+              # affected PR.
               print(
                   f"::warning::Could not list PR files ({exc}); using changed-file fallback",
                   file=sys.stderr,
