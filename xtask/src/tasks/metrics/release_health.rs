@@ -58,7 +58,7 @@
 use crate::tasks::ci_metrics::SCHEMA_VERSION as CI_BASELINE_SCHEMA_VERSION;
 use crate::utils::project_root;
 use chrono::Utc;
-use color_eyre::eyre::{Context, Result, eyre};
+use color_eyre::eyre::{Context, Result, ensure, eyre};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -693,7 +693,7 @@ technical_debt:
     fn read_ci_baseline_absent_file_is_none() -> Result<()> {
         let tmp = TempDir::new()?;
         let baseline = read_ci_baseline(tmp.path())?;
-        assert!(baseline.is_none(), "absent baseline file must degrade to None, got {baseline:?}");
+        ensure!(baseline.is_none(), "absent baseline file must degrade to None, got {baseline:?}");
         Ok(())
     }
 
@@ -711,7 +711,7 @@ technical_debt:
         for key in
             ["schema_version", "generated_at", "branch", "days_analyzed", "workflows", "summary"]
         {
-            assert!(
+            ensure!(
                 parsed.get(key).is_some(),
                 "producer envelope lost `{key}` — envelope fields move in lockstep with consumers (#15369)"
             );
@@ -723,11 +723,13 @@ technical_debt:
             .ok_or_else(|| eyre!("producer report must be accepted, not treated as absent"))?;
         let summary =
             file.summary.ok_or_else(|| eyre!("producer summary must survive the round-trip"))?;
-        assert_eq!(summary.total_runs, 42);
-        assert_eq!(summary.total_billable_minutes, 137);
-        assert_eq!(
-            file.sample_completeness.as_deref(),
-            Some("complete"),
+        ensure!(summary.total_runs == 42, "total_runs must round-trip as 42");
+        ensure!(
+            summary.total_billable_minutes == 137,
+            "total_billable_minutes must round-trip as 137"
+        );
+        ensure!(
+            file.sample_completeness.as_deref() == Some("complete"),
             "completeness flag must round-trip through the consumer's envelope"
         );
         Ok(())
