@@ -212,7 +212,7 @@ fn authored_matrix_and_comparator_reject_wrong_geometry() -> R {
 }
 
 #[test]
-#[ignore = "explicit conformance report; known production mismatches are not a pass"]
+#[ignore = "explicit conformance report (#8912); known production mismatches are not a pass"]
 fn native_signature_conformance_report() -> R {
     let rows: Vec<_> = cases()?.iter().map(observe).collect::<Result<_, _>>()?;
     let mismatches =
