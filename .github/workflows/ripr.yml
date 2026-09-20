@@ -1272,6 +1272,13 @@ jobs:
           # would always be "no proof". Everything else fails closed — a
           # selection that is absent, pending or non-success prints nothing and
           # the caller treats that as NOT_PROVEN.
+          #
+          # A queued attempt has no `started_at` at all. Coercing that to ""
+          # would sort it before every timestamp and let an older success win,
+          # so the absent value is coerced to a far-future one instead: an
+          # attempt that has not started is newer than every attempt that has,
+          # it therefore wins the ordering, and the `status != "completed"`
+          # branch below turns that into no proof rather than a stale pass.
           published_conclusion() {
             gh api -X GET \
               -H "Accept: application/vnd.github+json" \
@@ -1283,7 +1290,7 @@ jobs:
                      | select((.app.id // -1) == (env.REQUIRED_CHECK_APP_ID | tonumber))
                      | select(((.details_url // "")
                                | contains("/actions/runs/" + env.GITHUB_RUN_ID + "/")) | not)]
-                    | max_by([(.started_at // ""), .id])
+                    | max_by([(.started_at // "9999-12-31T23:59:59Z"), .id])
                     | if . == null then empty
                       elif .status != "completed" then empty
                       else (.conclusion // empty) end'

@@ -146,10 +146,18 @@ impl CheckRunFixture {
 
     fn to_json(&self) -> String {
         format!(
-            r#"{{"id":{id},"app":{{"id":{app}}},"started_at":"{started}","status":"{status}","conclusion":{conclusion},"details_url":"https://github.com/EffortlessMetrics/perl-lsp-swarm/actions/runs/{run}/job/{id}"}}"#,
+            r#"{{"id":{id},"app":{{"id":{app}}},"started_at":{started},"status":"{status}","conclusion":{conclusion},"details_url":"https://github.com/EffortlessMetrics/perl-lsp-swarm/actions/runs/{run}/job/{id}"}}"#,
             id = self.id,
             app = self.app_id,
-            started = self.started_at,
+            // An empty `started_at` serialises as JSON `null`, which is what
+            // the API reports for a queued attempt that has not started. The
+            // ordering has to keep failing closed on that, so the fixture has
+            // to be able to express it (#16101 review).
+            started = if self.started_at.is_empty() {
+                "null".to_string()
+            } else {
+                format!("\"{}\"", self.started_at)
+            },
             status = self.status,
             conclusion = if self.conclusion.is_empty() {
                 "null".to_string()
@@ -475,6 +483,28 @@ fn assert_mirror_selection(gate: Gate) -> Result<()> {
     if run.code == 0 || !run.verdict_is(gate, "superseded-no-proof") {
         bail!(
             "{}: the latest attempt by start time owns the verdict: {}",
+            gate.workflow,
+            run.stdout
+        );
+    }
+
+    // A queued newer attempt reports `started_at: null`. Ordering that as ""
+    // would sort it behind every timestamp and let the older success win, so
+    // the stale draft run would exit green over proof that has not started.
+    let newer_queued = CheckRunFixture::published("").with(|run| {
+        run.id = 106_028_700_002;
+        run.started_at = "";
+        run.status = "queued";
+    });
+    let run = evaluate(
+        gate,
+        "skipped",
+        "true",
+        GhShim::with_runs(Some("false"), vec![older_success.clone(), newer_queued]),
+    )?;
+    if run.code == 0 || !run.verdict_is(gate, "superseded-no-proof") {
+        bail!(
+            "{}: a queued newer attempt with no start time must outrank an older success: {}",
             gate.workflow,
             run.stdout
         );
