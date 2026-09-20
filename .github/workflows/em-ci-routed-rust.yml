@@ -844,6 +844,10 @@ jobs:
       - name: Evaluate routed result
         shell: bash
         env:
+          GH_TOKEN: ${{ github.token }}
+          CHECK_NAME: Perl LSP Rust Small Result
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           IS_DRAFT_PR: ${{ github.event_name == 'pull_request' && github.event.pull_request.draft == true }}
           ROUTE_RESULT: ${{ needs.route-rust-small.result }}
           ROUTER_TARGET: ${{ needs.route-rust-small.outputs.target }}
@@ -881,10 +885,67 @@ jobs:
             echo "- fallback_result: \`${FALLBACK_RESULT:-}\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
+          # IS_DRAFT_PR is the webhook's snapshot of the pull request, taken
+          # when this run was created. Marking a pull request ready does not
+          # cancel a run already in flight: the concurrency policy above
+          # cancels only when a new head arrives, deliberately, and
+          # `workflow_trigger_lint` enforces that. So this aggregator can
+          # evaluate a draft snapshot minutes after the pull request stopped
+          # being a draft, and it can land after the aggregator of the run
+          # that actually produced proof.
+          #
+          # Measured on #16094, head c9bf380f4: the run that executed the lane
+          # posted `Perl LSP Rust Small Result` success at 04:55:33; the
+          # superseded draft run posted draft-no-proof at 04:56:05 and left a
+          # head with real, passing proof blocked (#16101).
+          #
+          # So re-read the live draft state before claiming draft-no-proof.
+          # When the pull request is no longer a draft this run has no verdict
+          # of its own to assert — its lane was skipped for a state that no
+          # longer exists — so it mirrors what the run that produces proof for
+          # this head has already published, and otherwise defers to it. Any
+          # read failure keeps the existing fail-closed draft verdict.
+          live_draft_state() {
+            gh api \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "repos/${GITHUB_REPOSITORY:-}/pulls/${PR_NUMBER:-}" \
+              --jq '.draft'
+          }
+
+          # The newest conclusion another run has already published for this
+          # check on this head. This job's own check run is still in progress,
+          # so the completed filter cannot match it. The check name carries
+          # spaces, so it goes through `-f` rather than into the path.
+          published_conclusion() {
+            gh api -X GET \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "repos/${GITHUB_REPOSITORY:-}/commits/${HEAD_SHA:-}/check-runs" \
+              -f "check_name=${CHECK_NAME:-}" \
+              -F per_page=100 \
+              --jq '[.check_runs[] | select(.status == "completed")]
+                    | sort_by(.completed_at) | last | .conclusion // empty'
+          }
+
           # Draft routing saves work but produces no required-check proof.
           # Preserve existing non-draft skipped routing.
           if [ "$ROUTE_RESULT" = "skipped" ]; then
             if [ "${IS_DRAFT_PR:-false}" = "true" ]; then
+              draft_now="$(live_draft_state || true)"
+              if [ "$draft_now" = "false" ]; then
+                published="$(published_conclusion || true)"
+                echo "RUST_SMALL_GATE_VERDICT=superseded-draft-snapshot"
+                echo "- verdict: superseded-draft-snapshot (published: \`${published:-none}\`)" >> "$GITHUB_STEP_SUMMARY"
+                case "$published" in
+                  failure | timed_out | action_required)
+                    echo "::error::This run carries a stale draft snapshot; the run that produced proof for ${HEAD_SHA:-} reported ${published}."
+                    exit 1
+                    ;;
+                esac
+                echo "::notice::This run carries a stale draft snapshot for a pull request that is no longer a draft; deferring to the run that produces proof for ${HEAD_SHA:-} (published: ${published:-none})."
+                exit 0
+              fi
               echo "RUST_SMALL_GATE_VERDICT=draft-no-proof"
               echo "::error::Rust Small draft route skipped: NOT_PROVEN; no analysis was executed."
               echo "- verdict: draft-no-proof (NOT_PROVEN)" >> "$GITHUB_STEP_SUMMARY"
