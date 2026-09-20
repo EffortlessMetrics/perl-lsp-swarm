@@ -4,9 +4,9 @@
 //! This suite uses a compact BDD-style helper so each test describes intent in
 //! Given/When/Then language and avoids duplicated harness boilerplate.
 
-use anyhow::Result;
-use perl_lsp_ux_tests::binary_available;
+use anyhow::{Result, anyhow};
 use perl_lsp_ux_tests::{ScenarioConfig, UxHarness};
+use perl_lsp_ux_tests::{binary_available, missing_binary_skip};
 use serde_json::Value;
 use std::time::Duration;
 
@@ -99,19 +99,18 @@ fn entry_start_line(entry: &Value) -> Option<u64> {
 ///
 /// Derived from the fixture rather than hard-coded so the expectation cannot
 /// drift away from the source it describes.
-fn expected_increment_decl_line() -> u64 {
+fn expected_increment_decl_line() -> Result<u64> {
     CROSS_FILE_MODULE
         .lines()
         .position(|line| line.trim_start().starts_with("sub increment"))
         .map(|line| line as u64)
-        .expect("CROSS_FILE_MODULE fixture must declare `sub increment`")
+        .ok_or_else(|| anyhow!("CROSS_FILE_MODULE fixture must declare `sub increment`"))
 }
 
 #[test]
 fn scenario_10_definition_same_file_call_site_resolves() -> Result<()> {
     if !binary_available() {
-        eprintln!("SKIP scenario_10: perl-lsp binary not found");
-        return Ok(());
+        return Err(missing_binary_skip().into());
     }
 
     let scenario = DefinitionScenario::single_file()?;
@@ -153,8 +152,7 @@ fn scenario_10_definition_same_file_call_site_resolves() -> Result<()> {
 #[test]
 fn scenario_10_definition_cross_file_module_symbol_points_to_module() -> Result<()> {
     if !binary_available() {
-        eprintln!("SKIP scenario_10: perl-lsp binary not found");
-        return Ok(());
+        return Err(missing_binary_skip().into());
     }
 
     let scenario = DefinitionScenario::single_file()?;
@@ -199,7 +197,7 @@ fn scenario_10_definition_cross_file_module_symbol_points_to_module() -> Result<
     // in Counter.pm. Resolving `Counter->increment` to the top of the module is
     // module resolution wearing method resolution's clothes: it satisfies a
     // file-only assertion while giving the user the wrong destination.
-    let decl_line = expected_increment_decl_line();
+    let decl_line = expected_increment_decl_line()?;
     let points_to_declaration = definitions.iter().any(|entry| {
         entry_uri(entry).map(|uri| uri.ends_with("Counter.pm")).unwrap_or(false)
             && entry_start_line(entry) == Some(decl_line)
@@ -229,8 +227,7 @@ fn scenario_10_definition_cross_file_module_symbol_points_to_module() -> Result<
 #[test]
 fn scenario_10_definition_unknown_position_is_stable() -> Result<()> {
     if !binary_available() {
-        eprintln!("SKIP scenario_10: perl-lsp binary not found");
-        return Ok(());
+        return Err(missing_binary_skip().into());
     }
 
     let scenario = DefinitionScenario::single_file()?;
