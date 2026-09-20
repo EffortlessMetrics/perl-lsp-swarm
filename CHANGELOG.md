@@ -167,6 +167,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+#### Parser
+
+- **`no` directives now own bare `qw(...)` arguments.** The bare-argument match
+  arm in `parse_no` (`crates/perl-parser-core/src/engine/parser/declarations.rs`)
+  only admitted `String | Identifier | StringCompare`, so the canonical
+  `TokenKind::QuoteWords` produced by the lexer for `qw(...)` was not consumed
+  and surfaced as a sibling word-list expression statement between the
+  directive and the following declaration. `no warnings qw(uninitialized
+  numeric); my $x = 1;` previously parsed as three top-level statements
+  (`No(args=[])`, a sibling array literal, the declaration); it now parses as
+  two (`No(args=["qw(uninitialized numeric)"])`, the declaration). The fix
+  mirrors `parse_use`'s `QuoteWords` admission, also adds `QuoteSingle`,
+  `QuoteDouble`, and leading-`Minus` (`-flag`) arms, and reuses the existing
+  `strip_qw_comments` legacy path for adjacent forms while preserving
+  user-visible spacing for spaced `qw (...)` forms (#16143).
+
 #### LSP integration
 
 - **"Find All References" no longer silently degrades for its default request

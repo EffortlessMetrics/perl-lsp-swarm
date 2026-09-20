@@ -1593,10 +1593,26 @@ impl<'a> Parser<'a> {
         // Parse optional arguments list
         let mut args = Vec::new();
 
-        // Handle bare arguments (no parentheses)
+        // Handle bare arguments (no parentheses).
+        //
+        // #16143: the previous match arm only admitted String / Identifier /
+        // StringCompare, so the canonical `TokenKind::QuoteWords` produced by the
+        // lexer for `qw(...)` fell through and surfaced as a sibling word-list
+        // expression statement between `no` and the following declaration.
+        // Mirror `parse_use`'s admission so `no warnings qw(uninitialized numeric);`
+        // keeps both argument words inside the No node and yields two top-level
+        // statements (No, declaration), not three.
         if matches!(
             self.peek_kind(),
-            Some(TokenKind::String | TokenKind::Identifier | TokenKind::StringCompare)
+            Some(
+                TokenKind::String
+                    | TokenKind::Identifier
+                    | TokenKind::StringCompare
+                    | TokenKind::QuoteWords
+                    | TokenKind::QuoteSingle
+                    | TokenKind::QuoteDouble
+                    | TokenKind::Minus,
+            )
         ) && !matches!(
             self.peek_kind(),
             Some(TokenKind::Semicolon) | Some(TokenKind::Eof) | None
@@ -1686,6 +1702,97 @@ impl<'a> Parser<'a> {
                             _ => {
                                 // No separator; continue to terminator check
                             }
+                        }
+                    }
+                    Some(TokenKind::QuoteSingle | TokenKind::QuoteDouble) => {
+                        // Handle `q{...}` / `qq{...}` in `no` import lists,
+                        // mirroring `parse_use`. Preserve the original quoted
+                        // body verbatim so caller consumers see the canonical
+                        // token text rather than a re-encoded form.
+                        args.push(self.consume_token()?.text.to_string());
+
+                        match self.peek_kind() {
+                            Some(TokenKind::Comma) => {
+                                self.consume_token()?;
+                            }
+                            Some(TokenKind::FatArrow) => {
+                                self.consume_token()?;
+                                self.consume_use_import_value(&mut args)?;
+                            }
+                            _ => {}
+                        }
+                    }
+                    Some(TokenKind::QuoteWords) => {
+                        // #16143: the lexer canonicalises `qw(...)` into one
+                        // `TokenKind::QuoteWords` token. Mirror `parse_use` so
+                        // `no warnings qw(uninitialized numeric);` keeps the
+                        // list inside the No node instead of leaking it as a
+                        // sibling word-list expression statement.
+                        //
+                        // Reformat as `qw(WORDS)` for consistency with
+                        // DeclarationProvider; preserve optional whitespace
+                        // between `qw` and its delimiter so we do not strip
+                        // user-visible spacing; honour the legacy
+                        // `strip_qw_comments` only for adjacent forms.
+                        let qw_token = self.consume_token()?;
+                        let text: &str = qw_token.text.as_ref();
+                        let had_space_before_delimiter = text
+                            .strip_prefix("qw")
+                            .is_some_and(|suffix| suffix.chars().next().is_some_and(char::is_whitespace));
+                        if let Some(content) = text
+                            .strip_prefix("qw")
+                            .map(str::trim_start)
+                            .and_then(|s| {
+                                if s.starts_with('(') && s.ends_with(')') {
+                                    Some(&s[1..s.len() - 1])
+                                } else if s.starts_with('[') && s.ends_with(']') {
+                                    Some(&s[1..s.len() - 1])
+                                } else if s.starts_with('{') && s.ends_with('}') {
+                                    Some(&s[1..s.len() - 1])
+                                } else if s.starts_with('<') && s.ends_with('>') {
+                                    Some(&s[1..s.len() - 1])
+                                } else {
+                                    None
+                                }
+                            })
+                        {
+                            let cleaned = if had_space_before_delimiter {
+                                content.to_string()
+                            } else {
+                                strip_qw_comments(content)
+                            };
+                            let words: Vec<&str> = cleaned.split_whitespace().collect();
+                            let qw_str = format!("qw({})", words.join(" "));
+                            args.push(qw_str);
+                        } else {
+                            // Fallback: keep the whole token text rather than
+                            // dropping its closing delimiter boundary.
+                            args.push(qw_token.text.to_string());
+                        }
+
+                        match self.peek_kind() {
+                            Some(TokenKind::Comma) => {
+                                self.consume_token()?;
+                            }
+                            Some(TokenKind::FatArrow) => {
+                                self.consume_token()?;
+                                self.consume_use_import_value(&mut args)?;
+                            }
+                            _ => {}
+                        }
+                    }
+                    Some(TokenKind::Minus) => {
+                        // Handle `-strict` and similar leading-minus flags.
+                        let minus = self.consume_token()?;
+                        if self.peek_kind() == Some(TokenKind::Identifier) {
+                            let flag = self.consume_token()?;
+                            args.push(format!("-{}", flag.text));
+                            if self.peek_kind() == Some(TokenKind::FatArrow) {
+                                self.consume_token()?;
+                                self.consume_use_import_value(&mut args)?;
+                            }
+                        } else {
+                            args.push(minus.text.to_string());
                         }
                     }
                     Some(TokenKind::Comma) => {
