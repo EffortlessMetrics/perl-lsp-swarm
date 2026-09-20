@@ -21,8 +21,11 @@ use perl_lsp_ux_tests::taxonomy::UxCiTier;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::process::{Command, Stdio};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use crate::utils;
 
@@ -54,6 +57,214 @@ fn truncate(text: &str) -> String {
     format!("{}… (truncated)", &text[..end])
 }
 
+/// How often the parent checks a running child against its ceilings.
+const POLL_INTERVAL: Duration = Duration::from_millis(50);
+
+/// Wall-clock and output ceilings for one discovery subprocess.
+///
+/// `Command::output` waits for EOF on both pipes with no deadline and no
+/// ceiling, so a child that hangs or spews forever stops discovery from ever
+/// reaching a typed outcome — the in-progress tombstone would stay in place
+/// indefinitely. Every bound below is set far above any observed healthy run so
+/// that it only catches a genuinely stuck or runaway child, never a slow or
+/// loaded machine.
+#[derive(Clone, Copy)]
+struct RunBound {
+    wall: Duration,
+    stdout_limit: usize,
+    stderr_limit: usize,
+}
+
+impl RunBound {
+    /// `cargo test --no-run` compiles the whole UX target set — minutes warm,
+    /// considerably longer cold — and emits a JSON message per unit.
+    const COMPILE: Self = Self {
+        wall: Duration::from_hours(1),
+        stdout_limit: 256 * 1024 * 1024,
+        stderr_limit: 64 * 1024 * 1024,
+    };
+    /// `--list` enumerates cases that are already built and returns promptly. A
+    /// listing still running after minutes is not listing.
+    const LIST: Self = Self {
+        wall: Duration::from_mins(5),
+        stdout_limit: 64 * 1024 * 1024,
+        stderr_limit: 8 * 1024 * 1024,
+    };
+    /// `git` and `rustc` subject probes answer immediately or not at all.
+    const PROBE: Self = Self {
+        wall: Duration::from_mins(1),
+        stdout_limit: 8 * 1024 * 1024,
+        stderr_limit: 1024 * 1024,
+    };
+}
+
+/// A completed bounded run.
+struct BoundedOutput {
+    status: std::process::ExitStatus,
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
+}
+
+/// Why a bounded run produced no usable result.
+enum RunRefused {
+    /// The child could not be started. Callers map this to their own typed
+    /// invocation failure, preserving the pre-bound behaviour exactly.
+    Spawn(std::io::Error),
+    /// The wall-clock ceiling elapsed with the child still running.
+    TimedOut { wall: Duration, reaped: bool },
+    /// A stream exceeded its retention ceiling.
+    Overflowed { stream: &'static str, limit: usize, reaped: bool },
+    /// The child could not be waited on.
+    Wait(std::io::Error),
+}
+
+impl RunRefused {
+    /// Render the reason carried by [`UxDiscoveryFailure::InstrumentFailure`].
+    ///
+    /// Whether the child was reaped is reported rather than assumed: a kill that
+    /// itself fails leaves a process behind, and triage needs to know which
+    /// happened.
+    fn reason(&self, source: &str) -> String {
+        match self {
+            Self::Spawn(error) => format!("`{source}` could not be started: {error}"),
+            Self::TimedOut { wall, reaped } => format!(
+                "`{source}` exceeded its {}s ceiling and was terminated ({}); \
+                 discovery cannot derive a result from an unfinished command",
+                wall.as_secs(),
+                if *reaped { "child reaped" } else { "child could not be reaped" }
+            ),
+            Self::Overflowed { stream, limit, reaped } => format!(
+                "`{source}` wrote more than {limit} bytes to {stream} and was terminated ({}); \
+                 a truncated stream cannot be trusted to list every case",
+                if *reaped { "child reaped" } else { "child could not be reaped" }
+            ),
+            Self::Wait(error) => format!("`{source}` could not be waited on: {error}"),
+        }
+    }
+}
+
+/// Drain a child stream to EOF, retaining at most `limit` bytes.
+///
+/// Draining deliberately continues past the ceiling: if the reader stopped, the
+/// child would block on a full pipe while the parent was still deciding to kill
+/// it. The retained prefix is *discarded* on overflow rather than truncated,
+/// because a short identity-bearing stream would yield a short case list — the
+/// silent-shrinkage outcome this module exists to make impossible.
+fn drain_bounded<R: std::io::Read + Send + 'static>(
+    mut stream: R,
+    limit: usize,
+    overflowed: Arc<AtomicBool>,
+) -> thread::JoinHandle<Vec<u8>> {
+    thread::spawn(move || {
+        let mut retained: Vec<u8> = Vec::new();
+        let mut buf = [0_u8; 8192];
+        loop {
+            match stream.read(&mut buf) {
+                Ok(0) | Err(_) => break,
+                Ok(read) => {
+                    if overflowed.load(Ordering::Relaxed) {
+                        continue;
+                    }
+                    if retained.len().saturating_add(read) > limit {
+                        overflowed.store(true, Ordering::Relaxed);
+                        retained = Vec::new();
+                    } else {
+                        retained.extend_from_slice(&buf[..read]);
+                    }
+                }
+            }
+        }
+        retained
+    })
+}
+
+/// Run one child under a wall-clock and per-stream output ceiling.
+///
+/// Both pipes are drained concurrently, so neither can deadlock the other, and
+/// the child is killed and reaped when either ceiling trips.
+fn run_bounded(command: &mut Command, bound: RunBound) -> Result<BoundedOutput, RunRefused> {
+    let mut child = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(RunRefused::Spawn)?;
+
+    let stdout_over = Arc::new(AtomicBool::new(false));
+    let stderr_over = Arc::new(AtomicBool::new(false));
+    let stdout_reader = child
+        .stdout
+        .take()
+        .map(|stream| drain_bounded(stream, bound.stdout_limit, Arc::clone(&stdout_over)));
+    let stderr_reader = child
+        .stderr
+        .take()
+        .map(|stream| drain_bounded(stream, bound.stderr_limit, Arc::clone(&stderr_over)));
+
+    let started = Instant::now();
+    let mut exited: Option<std::process::ExitStatus> = None;
+    let mut refusal: Option<RunRefused> = None;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                exited = Some(status);
+                break;
+            }
+            Ok(None) => {}
+            Err(error) => {
+                refusal = Some(RunRefused::Wait(error));
+                break;
+            }
+        }
+        if stdout_over.load(Ordering::Relaxed) {
+            refusal = Some(RunRefused::Overflowed {
+                stream: "stdout",
+                limit: bound.stdout_limit,
+                reaped: false,
+            });
+            break;
+        }
+        if stderr_over.load(Ordering::Relaxed) {
+            refusal = Some(RunRefused::Overflowed {
+                stream: "stderr",
+                limit: bound.stderr_limit,
+                reaped: false,
+            });
+            break;
+        }
+        if started.elapsed() >= bound.wall {
+            refusal = Some(RunRefused::TimedOut { wall: bound.wall, reaped: false });
+            break;
+        }
+        thread::sleep(POLL_INTERVAL);
+    }
+
+    // Kill before joining: the readers only reach EOF once the child's pipes
+    // close, which a hung child will never do on its own.
+    let reaped = match refusal {
+        Some(_) => child.kill().is_ok() && child.wait().is_ok(),
+        None => true,
+    };
+    let stdout = stdout_reader.and_then(|handle| handle.join().ok()).unwrap_or_default();
+    let stderr = stderr_reader.and_then(|handle| handle.join().ok()).unwrap_or_default();
+
+    match (exited, refusal) {
+        (Some(status), _) => Ok(BoundedOutput { status, stdout, stderr }),
+        (None, Some(RunRefused::TimedOut { wall, .. })) => {
+            Err(RunRefused::TimedOut { wall, reaped })
+        }
+        (None, Some(RunRefused::Overflowed { stream, limit, .. })) => {
+            Err(RunRefused::Overflowed { stream, limit, reaped })
+        }
+        (None, Some(other)) => Err(other),
+        // `exited` and `refusal` are set on every loop exit, so this is
+        // unreachable; reported rather than panicked on.
+        (None, None) => Err(RunRefused::Wait(std::io::Error::other(
+            "bounded run ended without an exit status or a refusal",
+        ))),
+    }
+}
+
 /// Decode stdout that case and target identity are derived from.
 ///
 /// Strict on purpose. `from_utf8_lossy` would substitute U+FFFD for invalid
@@ -81,14 +292,22 @@ impl UxDiscoveryCommands for SystemDiscoveryCommands {
         let (program, args) = argv.split_first().ok_or_else(|| {
             UxDiscoveryFailure::InstrumentFailure { reason: "empty compile argv".to_string() }
         })?;
-        let output =
-            Command::new(program).args(args).current_dir(&self.workspace_root).output().map_err(
-                |error| UxDiscoveryFailure::CargoInvocationFailed {
-                    argv: argv.to_vec(),
-                    status: None,
-                    detail: error.to_string(),
-                },
-            )?;
+        let output = run_bounded(
+            Command::new(program).args(args).current_dir(&self.workspace_root),
+            RunBound::COMPILE,
+        )
+        .map_err(|refused| match refused {
+            // A child that never started is the same fact it was before the run
+            // gained a ceiling, so it keeps its established typed failure.
+            RunRefused::Spawn(error) => UxDiscoveryFailure::CargoInvocationFailed {
+                argv: argv.to_vec(),
+                status: None,
+                detail: error.to_string(),
+            },
+            bounded => UxDiscoveryFailure::InstrumentFailure {
+                reason: bounded.reason("cargo test --no-run"),
+            },
+        })?;
         if !output.status.success() {
             return Err(UxDiscoveryFailure::CargoInvocationFailed {
                 argv: argv.to_vec(),
@@ -110,16 +329,21 @@ impl UxDiscoveryCommands for SystemDiscoveryCommands {
         let invoked: Vec<String> = std::iter::once(executable.to_string_lossy().into_owned())
             .chain(argv.iter().cloned())
             .collect();
-        let output = Command::new(executable)
-            .args(argv)
-            .current_dir(&self.workspace_root)
-            .output()
-            .map_err(|error| UxDiscoveryFailure::ListCommandFailed {
+        let output = run_bounded(
+            Command::new(executable).args(argv).current_dir(&self.workspace_root),
+            RunBound::LIST,
+        )
+        .map_err(|refused| match refused {
+            RunRefused::Spawn(error) => UxDiscoveryFailure::ListCommandFailed {
                 target: target_identity.to_string(),
                 argv: invoked.clone(),
                 status: None,
                 detail: error.to_string(),
-            })?;
+            },
+            bounded => UxDiscoveryFailure::InstrumentFailure {
+                reason: bounded.reason(&format!("{target_identity} --list")),
+            },
+        })?;
         if !output.status.success() {
             return Err(UxDiscoveryFailure::ListCommandFailed {
                 target: target_identity.to_string(),
@@ -155,7 +379,7 @@ impl UxDiscoveryCommands for SystemDiscoveryCommands {
 /// fabricated default.
 fn probe(root: &Path, program: &str, args: &[&str]) -> Option<String> {
     let label = format!("{program} {}", args.join(" "));
-    match Command::new(program).args(args).current_dir(root).output() {
+    match run_bounded(Command::new(program).args(args).current_dir(root), RunBound::PROBE) {
         Ok(output) if output.status.success() => {
             Some(String::from_utf8_lossy(&output.stdout).into_owned())
         }
@@ -173,8 +397,10 @@ fn probe(root: &Path, program: &str, args: &[&str]) -> Option<String> {
             );
             None
         }
-        Err(error) => {
-            report_probe_failure(&label, &error.to_string());
+        Err(refused) => {
+            // A probe that hung is a different fact from one that was missing,
+            // and the ceiling is what makes the difference reportable at all.
+            report_probe_failure(&label, &refused.reason(&label));
             None
         }
     }
@@ -602,6 +828,133 @@ mod tests {
     };
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    /// A ceiling loose enough that only the behaviour under test can trip it.
+    fn generous_bound() -> RunBound {
+        RunBound {
+            wall: Duration::from_secs(30),
+            stdout_limit: 8 * 1024 * 1024,
+            stderr_limit: 8 * 1024 * 1024,
+        }
+    }
+
+    #[test]
+    fn a_hung_child_is_terminated_rather_than_awaited_forever() {
+        // The wrong implementation is `Command::output`, which waits for EOF on
+        // both pipes with no deadline: this child never reaches one, so before
+        // the ceiling existed discovery hung here and the in-progress tombstone
+        // stayed in place with no typed outcome.
+        let bound = RunBound { wall: Duration::from_millis(300), ..generous_bound() };
+        let started = Instant::now();
+        let outcome = run_bounded(Command::new("sleep").arg("30"), bound);
+        let elapsed = started.elapsed();
+
+        match outcome {
+            Err(RunRefused::TimedOut { wall, reaped }) => {
+                assert_eq!(wall, Duration::from_millis(300));
+                assert!(reaped, "a child terminated at its ceiling must also be reaped");
+            }
+            Err(other) => {
+                panic!("expected a timeout, got: {}", other.reason("sleep 30"))
+            }
+            Ok(_) => panic!("`sleep 30` cannot complete inside a 300ms ceiling"),
+        }
+        assert!(
+            elapsed < Duration::from_secs(10),
+            "the ceiling must end the run promptly, took {elapsed:?}"
+        );
+    }
+
+    #[test]
+    fn a_runaway_stream_fails_closed_rather_than_yielding_a_truncated_listing() {
+        // Truncating would be the dangerous outcome: a short identity-bearing
+        // stream parses as a short case list, which is exactly the silently
+        // smaller denominator this module exists to prevent.
+        let bound = RunBound { stdout_limit: 4096, ..generous_bound() };
+        let outcome =
+            run_bounded(Command::new("sh").arg("-c").arg("while :; do echo runaway; done"), bound);
+
+        match outcome {
+            Err(RunRefused::Overflowed { stream, limit, reaped }) => {
+                assert_eq!(stream, "stdout");
+                assert_eq!(limit, 4096);
+                assert!(reaped, "a child terminated at its ceiling must also be reaped");
+            }
+            Err(other) => {
+                panic!("expected an overflow, got: {}", other.reason("runaway"))
+            }
+            Ok(output) => panic!(
+                "an unbounded writer must not report success; retained {} bytes",
+                output.stdout.len()
+            ),
+        }
+    }
+
+    #[test]
+    fn a_well_behaved_child_still_returns_its_whole_output_and_status() -> TestResult {
+        // Opposite direction: the ceiling must not change what a healthy run
+        // reports, including a non-zero exit and interleaved stderr.
+        let outcome = run_bounded(
+            Command::new("sh").arg("-c").arg("printf out; printf err >&2; exit 3"),
+            generous_bound(),
+        );
+        let output = match outcome {
+            Ok(output) => output,
+            Err(refused) => return Err(refused.reason("well-behaved child").into()),
+        };
+        assert!(!output.status.success());
+        assert_eq!(output.status.code(), Some(3));
+        assert_eq!(output.stdout, b"out");
+        assert_eq!(output.stderr, b"err");
+        Ok(())
+    }
+
+    #[test]
+    fn both_streams_drain_concurrently_so_neither_pipe_deadlocks_the_other() -> TestResult {
+        // Each stream gets well past a 64 KiB pipe buffer. A reader that drained
+        // only one would block forever once the other filled, so this would hang
+        // rather than fail — the reason both are drained on their own threads.
+        let script = "i=0; while [ $i -lt 4000 ]; do \
+                      echo stdout-padding-line-wide-enough-to-fill-the-pipe-buffer; \
+                      echo stderr-padding-line-wide-enough-to-fill-the-pipe-buffer >&2; \
+                      i=$((i+1)); done";
+        let outcome = run_bounded(Command::new("sh").arg("-c").arg(script), generous_bound());
+        let output = match outcome {
+            Ok(output) => output,
+            Err(refused) => return Err(refused.reason("both streams").into()),
+        };
+        assert!(output.status.success());
+        assert!(
+            output.stdout.len() > 64 * 1024,
+            "stdout must exceed one pipe buffer, got {}",
+            output.stdout.len()
+        );
+        assert!(
+            output.stderr.len() > 64 * 1024,
+            "stderr must exceed one pipe buffer, got {}",
+            output.stderr.len()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_ceiling_failure_names_the_command_and_the_limit_it_exceeded() {
+        let timed_out =
+            RunRefused::TimedOut { wall: Duration::from_secs(42), reaped: true }.reason("cargo x");
+        assert!(timed_out.contains("cargo x"), "{timed_out}");
+        assert!(timed_out.contains("42s"), "{timed_out}");
+        assert!(timed_out.contains("child reaped"), "{timed_out}");
+
+        let leaked =
+            RunRefused::TimedOut { wall: Duration::from_secs(1), reaped: false }.reason("cargo x");
+        assert!(leaked.contains("could not be reaped"), "{leaked}");
+
+        let overflowed =
+            RunRefused::Overflowed { stream: "stdout", limit: 7, reaped: true }.reason("t --list");
+        assert!(overflowed.contains("t --list"), "{overflowed}");
+        assert!(overflowed.contains('7'), "{overflowed}");
+        assert!(overflowed.contains("stdout"), "{overflowed}");
+    }
 
     /// Command source that always fails the Cargo step.
     struct FailingCommands;
