@@ -914,7 +914,7 @@
     {
       "reexport_id": "rx:parser-core-root",
       "path": "perl_parser_core::ast_v2",
-      "site": "crates/perl-parser-core/src/lib.rs:101",
+      "site": "crates/perl-parser-core/src/lib.rs:104",
       "exposes": "whole package",
       "consumer_id": "c:parser-core-root-reexport",
       "compatibility_obligation": "Root-level alias of the engine path; independently removable and independently breaking."
@@ -922,7 +922,7 @@
     {
       "reexport_id": "rx:parser-core-types",
       "path": "perl_parser_core::{DiagnosticId, MissingKind}",
-      "site": "crates/perl-parser-core/src/lib.rs:97",
+      "site": "crates/perl-parser-core/src/lib.rs:100",
       "exposes": "DiagnosticId, MissingKind",
       "consumer_id": "c:parser-core-root-reexport",
       "compatibility_obligation": "Two v2 types are public API of perl-parser-core under unqualified names. A consumer using perl_parser_core::MissingKind has no textual dependency on perl-ast-v2 at all, so a token scan of external code would not find it."
@@ -1294,14 +1294,14 @@
     {
       "surface_id": "ps:workspace-dependency",
       "surface": "workspace_dependency",
-      "site": "Cargo.toml:241",
+      "site": "Cargo.toml:246",
       "current_status": "path + version 0.17.0, so workspace consumers resolve the local path while the published version stays declared",
       "owner": "#7398"
     },
     {
       "surface_id": "ps:publish-allowlist",
       "surface": "publish_allowlist",
-      "site": "Cargo.toml:134",
+      "site": "Cargo.toml:139",
       "current_status": "Tier 1b publish-allowlisted crate",
       "owner": "release tooling"
     },

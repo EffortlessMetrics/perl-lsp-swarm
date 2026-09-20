@@ -4406,6 +4406,12 @@ mod tests {
             .to_string();
 
         let server = Arc::new(LspServer::new());
+        // Diagnostics only ever run inside an initialized session, so give the
+        // fixture the coordinate authority initialize would have published
+        // (same premise as the diagnostics fixtures). Publishing directly
+        // rather than calling handle_initialize keeps the workspace-folder and
+        // project-config premises of this test untouched.
+        server.publish_position_encoding_session_context();
         server.workspace_folders.lock().push(
             super::WorkspaceFolderState::new(old_root.clone())
                 .with_path(old_dir.path().to_path_buf()),

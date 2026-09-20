@@ -123,7 +123,7 @@ const V2_CRATE_PATH: &str = "perl_ast_v2";
 /// together with the manifest bytes; patching around it silently is exactly what
 /// the pin exists to prevent.
 pub const PINNED_CANONICAL_DIGEST: &str =
-    "D2497905363A9632B63B5266E8A43934F17FEFF2C7566206705EA84868D30239";
+    "7EF12A5C709A0F56B6042A168237CC22B1327FC970E0EF48D12A80D936E79F6D";
 
 // ---------------------------------------------------------------------------
 // Code-owned v1 vocabularies. A cardinality check lets a repinned manifest
@@ -1724,7 +1724,7 @@ fn contains_token(text: &str, token: &str) -> bool {
 }
 
 /// Two v2 types are public API of `perl-parser-core` under unqualified names
-/// (`crates/perl-parser-core/src/lib.rs:97`). A consumer reaching them that way
+/// (`crates/perl-parser-core/src/lib.rs:100`). A consumer reaching them that way
 /// writes `perl_parser_core::DiagnosticId` and names none of the four tokens
 /// above, so a token scan alone silently drops it.
 ///
