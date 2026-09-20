@@ -335,7 +335,7 @@ fn status(value: Status, reason: &Option<String>) -> Result<()> {
     if let Some(reason) = reason {
         nonempty(reason)?;
     }
-    if value != Status::Pass {
+    if matches!(value, Status::Limited | Status::NotProven) {
         nonempty(reason.as_deref().context("non-pass reason required")?)?;
     }
     Ok(())

@@ -275,3 +275,7 @@ against the original implementation with `invalid bundle accepted`; all 11 share
 v2 tests passed after the exact-set repair, including the existing universal-VSIX
 positive. This corrects bundle consistency only; installed qualification is still
 NOT_PROVEN and independent topology/evidence authority is still required.
+
+### Status-contract correction
+
+`blocked` may carry a null reason in a cell, observation, preparation row, or mechanism. `limited` and `not_proven` still require nonempty reasons. Refusal and claim-withdrawal propositions retain their separate mandatory reason requirement. The focused regression failed against the old shared status helper and passes after narrowing its reason requirement; actual CLI controls preserve `blocked` and installed `not_proven` independently.

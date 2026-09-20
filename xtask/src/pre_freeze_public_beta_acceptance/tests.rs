@@ -488,3 +488,88 @@ fn preparation_requires_every_same_target_artifact() -> Result<()> {
     }
     Ok(())
 }
+
+fn set_status_without_reason(packet: &mut PacketV2, surface: &str, status: Status) -> Result<()> {
+    let (target_status, reason) = match surface {
+        "cell" => {
+            let value = cell(packet)?;
+            (&mut value.status, &mut value.reason)
+        }
+        "observation" => {
+            (&mut packet.first_ten_minutes.status, &mut packet.first_ten_minutes.reason)
+        }
+        "preparation" => {
+            let value = packet.preparation.first_mut().context("preparation")?;
+            (&mut value.status, &mut value.reason)
+        }
+        "mechanism" => {
+            let value = packet.mechanisms.first_mut().context("mechanism")?;
+            (&mut value.status, &mut value.reason)
+        }
+        _ => anyhow::bail!("unknown status surface: {surface}"),
+    };
+    *target_status = status;
+    *reason = None;
+    Ok(())
+}
+
+#[test]
+fn blocked_without_reason_is_a_valid_blocked_recommendation_on_every_surface() -> Result<()> {
+    let (base, requirements) = fixture();
+    validate_v2(&base, &requirements)?;
+    for surface in ["cell", "observation", "preparation", "mechanism"] {
+        let mut packet = base.clone();
+        set_status_without_reason(&mut packet, surface, Status::Blocked)?;
+        packet.freeze_recommendation = Recommendation::Blocked;
+        let report = validate_v2(&packet, &requirements)
+            .with_context(|| format!("blocked without reason rejected on {surface}"))?;
+        ensure!(
+            report.bundle_recommendation == Recommendation::Blocked,
+            "lost blocked status on {surface}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn limited_and_not_proven_still_require_reasons_on_every_surface() -> Result<()> {
+    let (base, requirements) = fixture();
+    for status in [Status::Limited, Status::NotProven] {
+        for surface in ["cell", "observation", "preparation", "mechanism"] {
+            let mut packet = base.clone();
+            set_status_without_reason(&mut packet, surface, status)?;
+            packet.freeze_recommendation = Recommendation::NotProven;
+            rejected(&packet, &requirements)?;
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn blocked_refusals_and_withdrawals_still_require_proposition_reasons() -> Result<()> {
+    let (base, requirements) = fixture();
+    for proposition in [Proposition::SafeRefusal, Proposition::ClaimWithdrawn] {
+        let mut packet = base.clone();
+        packet.freeze_recommendation = Recommendation::Blocked;
+        let value = row(&mut packet)?
+            .cells
+            .iter_mut()
+            .find(|value| value.id == "retained_test_entry")
+            .context("retained test cell")?;
+        value.status = Status::Blocked;
+        value.proposition = proposition;
+        value.reason = Some("synthetic accepted-claim obligation".into());
+        ensure!(
+            validate_v2(&packet, &requirements)?.bundle_recommendation == Recommendation::Blocked,
+            "valid blocked proposition"
+        );
+        row(&mut packet)?
+            .cells
+            .iter_mut()
+            .find(|value| value.id == "retained_test_entry")
+            .context("retained test cell")?
+            .reason = None;
+        rejected(&packet, &requirements)?;
+    }
+    Ok(())
+}
