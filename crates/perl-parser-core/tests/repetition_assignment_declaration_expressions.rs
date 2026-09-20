@@ -250,6 +250,19 @@ fn trivia_separated_declaration_x_equals_is_never_normalized() -> Result<(), Str
 }
 
 #[test]
+fn loop_headers_reject_declaration_repetition_tail() -> Result<(), String> {
+    // Loop headers are not assignment expressions: a `foreach` iterator
+    // target must never grow an `x=` tail even though it parses through the
+    // same list-declaration branch.
+    let source = "foreach my ($x, $y) x= 3 (@items) {}";
+    let output = Parser::new(source).parse_with_recovery();
+    if find_assignment(&output.ast, "x=").is_some() {
+        return Err(format!("foreach iterator target grew an x= tail:\n{}", output.ast.to_sexp()));
+    }
+    Ok(())
+}
+
+#[test]
 fn call_argument_declaration_recovers_missing_repetition_rhs() -> Result<(), String> {
     let source = "f(my $v x=);";
     let output = Parser::new(source).parse_with_recovery();
