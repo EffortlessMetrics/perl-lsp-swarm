@@ -339,6 +339,7 @@ pub fn ensure_fresh_output_root(out_root: &Path) -> Result<()> {
 /// The typed outcome of one host run. The receipt is written for every run
 /// that reached the process stage, including failed ones; absence of a
 /// receipt means the run never launched.
+#[derive(Debug)]
 pub struct HostRunOutcome {
     pub receipt_path: PathBuf,
     pub result: ObservationResult,
@@ -351,6 +352,7 @@ pub struct HostRunOutcome {
 /// host, client, or candidate is never a skipped green run.
 pub fn host_run_from_cli(
     repo_root: &Path,
+    api_version: &str,
     subject_id: &str,
     vim_executable: PathBuf,
     vim_lsp_checkout: PathBuf,
@@ -358,6 +360,7 @@ pub fn host_run_from_cli(
     out_root: PathBuf,
     timeout_ms: u64,
 ) -> Result<HostRunOutcome> {
+    crate::editor_client_compat::ensure_api_version(api_version)?;
     let subject = VimClientSubject::from_id(subject_id)?;
     let _ = subject;
     for (label, path) in [
@@ -810,4 +813,58 @@ pub fn outcome_journey(
         ),
     });
     cells
+}
+
+#[cfg(test)]
+mod api_version_pin_tests {
+    use super::*;
+
+    /// Negative control (#15340): an unknown `--api-version` is refused
+    /// fail-closed before the subject id, paths, or host are ever touched.
+    #[test]
+    fn unknown_api_version_is_refused_before_any_work() -> anyhow::Result<()> {
+        let error = super::host_run_from_cli(
+            Path::new("."),
+            "editor_client_compat.v999",
+            "diagnostics-baseline",
+            PathBuf::from("not-absolute"),
+            PathBuf::from("not-absolute"),
+            PathBuf::from("not-absolute"),
+            PathBuf::from("not-absolute"),
+            1,
+        )
+        .err()
+        .ok_or_else(|| anyhow::anyhow!("unknown envelope version must be refused"))?;
+        let message = error.to_string();
+        assert!(
+            message.contains("unsupported editor_client_compat envelope version")
+                && message.contains("editor_client_compat.v999"),
+            "refusal must name the rejected version, got: {message}"
+        );
+        Ok(())
+    }
+
+    /// The current envelope version clears the pin and reaches the next
+    /// validation gate — never the version refusal.
+    #[test]
+    fn current_api_version_clears_the_pin() -> anyhow::Result<()> {
+        let error = super::host_run_from_cli(
+            Path::new("."),
+            crate::editor_client_compat::SCHEMA_VERSION,
+            "diagnostics-baseline",
+            PathBuf::from("not-absolute"),
+            PathBuf::from("not-absolute"),
+            PathBuf::from("not-absolute"),
+            PathBuf::from("not-absolute"),
+            1,
+        )
+        .err()
+        .ok_or_else(|| anyhow::anyhow!("invalid inputs must still be refused"))?;
+        let message = error.to_string();
+        assert!(
+            !message.contains("unsupported editor_client_compat envelope version"),
+            "current version must pass the pin, got: {message}"
+        );
+        Ok(())
+    }
 }
