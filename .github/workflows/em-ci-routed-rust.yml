@@ -17,6 +17,11 @@ on:
     branches: [main]
     types: [opened, synchronize, reopened, ready_for_review]
   merge_group:
+  # #16168: the required `Perl LSP Rust Small Result` context previously reported only
+  # on PR and merge-queue heads and never on a landed commit, so no run ever verified
+  # what actually sits on main. Landed main commits now carry their own baseline run.
+  push:
+    branches: [main, master]
 
 permissions:
   actions: read
@@ -24,8 +29,12 @@ permissions:
   contents: read
   pull-requests: read
 
+# #16168: push runs group per commit SHA. A shared refs/heads/main group with
+# cancel-in-progress: false lets each newly queued main-push run cancel the previously
+# pending one; per-SHA groups give every landed commit its own run. PR synchronize keeps
+# cancel-in-progress (#16141/#16187 cover why that flag stays off elsewhere).
 concurrency:
-  group: em-ci-routed-rust-${{ github.repository }}-${{ github.event.pull_request.number || github.ref }}
+  group: em-ci-routed-rust-${{ github.repository }}-${{ github.event.pull_request.number || github.event_name == 'push' && github.sha || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' && github.event.action == 'synchronize' }}
 
 env:
