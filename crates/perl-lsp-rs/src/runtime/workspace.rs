@@ -292,11 +292,13 @@ impl Drop for IndexingGuard {
 /// thread perform this read-only membership check, never a value read, so
 /// it creates no path to concurrent pointer dereference *through this
 /// type*. The wrapping mutex does **not** generally prevent those pointers
-/// from being aliased across threads -- `navigation.rs` and `completion.rs`
-/// clone a `DocumentState` under the documents lock, drop the guard, and
-/// then read `ParsedSnapshot::parent_map` off-lock (the #3396 pattern) -- but
-/// that aliasing is out of scope for this type because `OpenDocumentsHandle`
-/// never touches the pointers at all.
+/// from being aliased across threads -- `navigation.rs` clones a
+/// `DocumentState` under the documents lock, drops the guard, and then reads
+/// `ParsedSnapshot::parent_map` off-lock (the #3396 pattern, at
+/// `navigation.rs:1219-1220`); `completion.rs` clones and analyses off-lock
+/// the same way, though it reads `parsed.ast()` rather than `parent_map`.
+/// Either way that aliasing is out of scope for this type, because
+/// `OpenDocumentsHandle` never touches the pointers at all.
 ///
 /// The `Send` obligation covers this handle's own destructor too: dropping
 /// the last live `Arc<Mutex<HashMap<String, DocumentState>>>` reference
@@ -343,8 +345,8 @@ unsafe impl Send for OpenDocumentsHandle {}
 // handle across threads gives every thread a read-only key-membership check
 // and no path to concurrent pointer access *through this type*. This does
 // not rely on the mutex serialising raw-pointer aliasing more broadly --
-// it does not (see the off-lock `parent_map` reads in `navigation.rs` /
-// `completion.rs`) -- because this type never reaches the pointers at all.
+// it does not (see the off-lock `parent_map` read at `navigation.rs:1220`)
+// -- because this type never reaches the pointers at all.
 unsafe impl Sync for OpenDocumentsHandle {}
 
 #[cfg(feature = "workspace")]
