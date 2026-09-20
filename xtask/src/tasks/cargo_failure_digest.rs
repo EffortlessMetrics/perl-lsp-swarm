@@ -132,20 +132,55 @@ pub fn run(config: GateFailureDigestConfig) -> Result<()> {
 /// treating an unrecognised status as success would hide exactly the states
 /// that are hardest to diagnose.
 fn collect_failures(summary: &Value, logs: &Path) -> Vec<GateFailure> {
-    let Some(gates) = summary.get("gates").and_then(Value::as_array) else {
+    let Some(gates) = gate_rows(summary) else {
         return Vec::new();
     };
-    gates.iter().filter(|gate| !is_success(gate)).map(|gate| gate_failure(gate, logs)).collect()
+    // A gate that never ran is not a failure to explain — it has no log, and
+    // rendering one produces a confident "the log could not be read" paragraph
+    // about a gate that was correctly skipped. It is counted separately by
+    // `render` instead, which is where it belongs: in the claim, not in the
+    // diagnosis.
+    gates
+        .iter()
+        .filter(|gate| !is_success(gate) && !is_not_proven(gate))
+        .map(|gate| gate_failure(gate, logs))
+        .collect()
+}
+
+/// The `gates` array, or `None` when the document did not carry one.
+///
+/// The distinction is the whole point: an empty failure list because every
+/// gate passed and an empty failure list because the shape was never read are
+/// the same value, and only one of them justifies saying so. `render` asks
+/// this before it claims anything. The other producer of this file guards the
+/// same way (`scripts/ci/run_gate_shard.py` refuses a document whose `gates`
+/// is not a list), so the consumer matching it is the contract, not caution.
+fn gate_rows(summary: &Value) -> Option<&Vec<Value>> {
+    summary.get("gates").and_then(Value::as_array)
 }
 
 fn is_success(gate: &Value) -> bool {
-    let status = gate
-        .get("result")
+    matches!(gate_status(gate).as_str(), "success" | "passed" | "pass")
+}
+
+/// A gate that did not run: short-circuited behind a failed required gate, or
+/// quarantined by policy.
+///
+/// `gates.rs` writes `status: "skip"` for both, with `output_summary: "not
+/// run: short-circuited by failed required gate '<name>'"` for the first. A
+/// row that never executed proves nothing, so counting it as a success lets a
+/// digest report that nineteen of twenty gates passed when sixteen of them
+/// never started — the one claim a reader of a red job must not be given.
+fn is_not_proven(gate: &Value) -> bool {
+    matches!(gate_status(gate).as_str(), "skipped" | "skip")
+}
+
+fn gate_status(gate: &Value) -> String {
+    gate.get("result")
         .or_else(|| gate.get("status"))
         .and_then(Value::as_str)
         .unwrap_or_default()
-        .to_ascii_lowercase();
-    matches!(status.as_str(), "success" | "passed" | "pass" | "skipped" | "skip")
+        .to_ascii_lowercase()
 }
 
 fn gate_failure(gate: &Value, logs: &Path) -> GateFailure {
@@ -310,13 +345,52 @@ fn render(summary: &Value, failures: &[GateFailure]) -> String {
 
     let mut out = String::new();
     out.push_str("\n### Why the gate failed\n\n");
+
+    // No readable `gates` array is not "nothing failed". Saying so under this
+    // heading, on a job that is red, is the one output worse than the log this
+    // digest replaces.
+    let Some(rows) = gate_rows(summary) else {
+        let _ = writeln!(
+            out,
+            "The shard summary for `{subject}` carried no readable `gates` array, so this \
+             digest cannot say which gate failed or whether any did. That is missing \
+             evidence, not a clean run — read the job log."
+        );
+        return out;
+    };
+
+    let not_proven = rows.iter().filter(|gate| is_not_proven(gate)).count();
     if failures.is_empty() {
-        let _ =
-            writeln!(out, "Every one of the {shard} selected gate(s) succeeded on `{subject}`.");
+        let succeeded = rows.iter().filter(|gate| is_success(gate)).count();
+        if not_proven == 0 {
+            let _ = writeln!(
+                out,
+                "Every one of the {shard} selected gate(s) succeeded on `{subject}`."
+            );
+        } else {
+            let _ = writeln!(
+                out,
+                "No gate failed on `{subject}`, but only {succeeded} of {shard} selected \
+                 gate(s) actually ran: {not_proven} were skipped (short-circuited behind a \
+                 failed required gate, or quarantined by policy) and prove nothing."
+            );
+        }
         return out;
     }
 
-    let _ = writeln!(out, "Subject `{subject}`, {} non-success gate(s).\n", failures.len());
+    let skipped_note = if not_proven == 0 {
+        String::new()
+    } else {
+        format!(
+            " A further {not_proven} gate(s) never ran — short-circuited behind a failed \
+             required gate, or quarantined — and are not evidence either way."
+        )
+    };
+    let _ = writeln!(
+        out,
+        "Subject `{subject}`, {} non-success gate(s).{skipped_note}\n",
+        failures.len()
+    );
 
     for failure in failures {
         let exit = failure.exit_code.map(|code| format!(", exit {code}")).unwrap_or_default();

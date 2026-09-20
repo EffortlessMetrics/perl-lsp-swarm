@@ -25,8 +25,19 @@ use regex::Regex;
 // (`src/lib.rs - item::path (line 12)`), and a pattern that stopped at the
 // first one matched nothing at all for the whole line — silently reporting a
 // failing doctest gate as having no failing test.
+//
+// Widening the capture makes anchoring mandatory. libtest prints a status line
+// and nothing else on it, but a log also carries test stdout and tool prose,
+// and an unanchored `(.+?)` turns any line mentioning `test` before a
+// ` ... FAILED` into a name: `[ux] completion test for module Foo ... FAILED`
+// yielded `for module Foo`. That is worse than yielding nothing, because the
+// caller renders it into a paste-ready `cargo test <filter>` command, and a
+// filter matching no test exits 0 — the reader pastes it, sees green, and
+// concludes the CI failure does not reproduce. Anchored to a whole line, the
+// name must be the only thing between `test` and the marker.
 static FAILED_TEST_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"test\s+(.+?)\s+\.\.\.\s+FAILED").expect("failed test regex must compile")
+    Regex::new(r"^\s*test\s+([^\r\n]+?)\s+\.\.\.\s+FAILED\s*$")
+        .expect("failed test regex must compile")
 });
 
 // Matches both pre-1.73 format ("panicked at 'msg', path:row:col") and
@@ -79,7 +90,11 @@ pub fn failure_blocks(raw: &str) -> Vec<(String, &str)> {
 /// is the fallback that keeps such a test from going unnamed.
 pub fn failing_test_names(raw: &str) -> Vec<String> {
     let mut names: Vec<String> = Vec::new();
-    for line in raw.lines() {
+    // `str::lines` splits on `\n` only, and CI logs carry bare `\r` where a
+    // progress writer rewrote a line in place. Two logical status lines then
+    // arrive as one physical line, and an anchored pattern sees neither. Split
+    // on the carriage return too, so each status line is anchored on its own.
+    for line in raw.lines().flat_map(|line| line.split('\r')) {
         let Some(name) = FAILED_TEST_RE.captures(line).and_then(|capture| capture.get(1)) else {
             continue;
         };
@@ -251,5 +266,53 @@ test result: FAILED. 1 passed; 2 failed; 0 ignored
         assert!(blocks[0].1.contains("first"));
         assert!(!blocks[0].1.contains("second"));
         Ok(())
+    }
+
+    /// A widened name capture has to be anchored to a whole status line, or
+    /// prose mentioning `test` before a ` ... FAILED` becomes a test name.
+    ///
+    /// This is not a cosmetic nit: the caller renders the name into a
+    /// paste-ready `cargo test <filter>` command, and a filter matching no
+    /// test exits 0. A reader who pastes it sees green and concludes the CI
+    /// failure does not reproduce locally, which is strictly worse than being
+    /// told no test was named.
+    #[test]
+    fn prose_mentioning_a_test_is_not_a_failing_test_name() {
+        for line in [
+            "[ux] completion test for module Foo::Bar ... FAILED",
+            "  latest test of the hover path ... FAILED",
+            "note: the test crates/x/README.md - usage (line 4) ... FAILED",
+            "warning: a doctest src/lib.rs - f (line 9) ... FAILED",
+        ] {
+            assert!(
+                failing_test_names(line).is_empty(),
+                "prose was read as a failing test name: {line:?}"
+            );
+        }
+    }
+
+    /// The doctest win the widened capture bought must survive the anchoring.
+    #[test]
+    fn an_anchored_capture_still_takes_a_whole_doctest_name() {
+        assert_eq!(
+            failing_test_names("test src/lib.rs - item::path (line 12) ... FAILED"),
+            vec!["src/lib.rs - item::path (line 12)".to_string()]
+        );
+        assert_eq!(
+            failing_test_names("test suite::case ... FAILED"),
+            vec!["suite::case".to_string()]
+        );
+    }
+
+    /// A progress writer rewriting a line in place leaves a bare carriage
+    /// return, which `str::lines` does not split on. Two logical status lines
+    /// then arrive as one physical line; anchoring alone would read the whole
+    /// thing as a name, or miss it entirely.
+    #[test]
+    fn a_bare_carriage_return_separates_two_status_lines() {
+        assert_eq!(
+            failing_test_names("test a::b ... ok\rtest c::d ... FAILED"),
+            vec!["c::d".to_string()]
+        );
     }
 }
