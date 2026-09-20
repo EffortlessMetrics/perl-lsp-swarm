@@ -153,6 +153,38 @@ const CANCEL_PROBE_READ: Duration = Duration::from_secs(2);
 /// [`CANCEL_PROBE_ATTEMPTS`]. Disconnects and malformed frames fail
 /// immediately. `cancel_context` is carried in the `$/cancelRequest` params
 /// when non-null.
+/// How one same-id response settles a cancellation probe.
+enum ProbeVerdict {
+    /// The server answered the pending id with RequestCancelled (-32800): the
+    /// durable invariant the probe exists to observe.
+    Cancelled,
+    /// The request completed with a successful result before its cancellation
+    /// landed; the narrow legitimate race, so the probe retries with a fresh id.
+    CompletedEarly,
+    /// The id was answered with an error other than RequestCancelled. That is a
+    /// protocol defect, not a race: retrying would let a later cancellation hide
+    /// it, so the probe fails immediately.
+    WrongError(Value),
+}
+
+/// Classify one same-id response for [`probe_pending_request_cancellation`].
+///
+/// Only a successful result is retriable. Every error response whose code is not
+/// -32800 — including error objects without a numeric code — is a defect, never
+/// a retryable race.
+fn classify_probe_response(response: &Value) -> ProbeVerdict {
+    match response.get("error") {
+        Some(error) => {
+            if error.get("code").and_then(Value::as_i64) == Some(-32800) {
+                ProbeVerdict::Cancelled
+            } else {
+                ProbeVerdict::WrongError(error.clone())
+            }
+        }
+        None => ProbeVerdict::CompletedEarly,
+    }
+}
+
 fn probe_pending_request_cancellation(
     fixture: &mut CancellationTestFixture,
     base_request_id: i64,
@@ -188,16 +220,18 @@ fn probe_pending_request_cancellation(
         match read_response_matching_outcome(&fixture.server, &json!(request_id), CANCEL_PROBE_READ)
         {
             ReadResponseOutcome::Response(response) => {
-                let cancelled = response
-                    .get("error")
-                    .and_then(|error| error.get("code"))
-                    .and_then(Value::as_i64)
-                    == Some(-32800);
-                if cancelled {
-                    return Ok(response);
+                match classify_probe_response(&response) {
+                    ProbeVerdict::Cancelled => return Ok(response),
+                    // The request completed before its cancellation landed;
+                    // retry with a fresh id.
+                    ProbeVerdict::CompletedEarly => {}
+                    ProbeVerdict::WrongError(error) => {
+                        return Err(std::io::Error::other(format!(
+                            "{method} probe: request answered with unexpected error {error} instead of a result or RequestCancelled"
+                        ))
+                        .into());
+                    }
                 }
-                // The request completed before its cancellation landed;
-                // retry with a fresh id.
             }
             ReadResponseOutcome::TimedOut => {}
             ReadResponseOutcome::Disconnected => {
@@ -219,6 +253,36 @@ fn probe_pending_request_cancellation(
         "{method} was not answered with RequestCancelled (-32800) within {CANCEL_PROBE_ATTEMPTS} request+cancellation probes"
     ))
     .into())
+}
+
+/// Scripted control for the probe's retry boundary: a wrong error code on the
+/// probed id is a protocol defect that must fail the probe, not a race the next
+/// probe may absorb — only a completed result or no same-id answer may retry.
+#[test]
+fn test_probe_classification_fails_wrong_error_and_retries_only_results(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let cancelled = json!({
+        "jsonrpc": "2.0", "id": 7,
+        "error": { "code": -32800, "message": "Request cancelled" }
+    });
+    assert!(matches!(classify_probe_response(&cancelled), ProbeVerdict::Cancelled));
+
+    let completed = json!({"jsonrpc": "2.0", "id": 7, "result": {"items": []}});
+    assert!(matches!(classify_probe_response(&completed), ProbeVerdict::CompletedEarly));
+
+    // Wrong-error-then-cancellation: if the loop retried this response, a later
+    // -32800 on a fresh id would mask it. The verdict must be a hard failure.
+    let wrong_code = json!({
+        "jsonrpc": "2.0", "id": 7,
+        "error": { "code": -32601, "message": "Method not found" }
+    });
+    assert!(matches!(classify_probe_response(&wrong_code), ProbeVerdict::WrongError(_)));
+
+    // An error object without a numeric code is still an error, not a result.
+    let codeless_error =
+        json!({"jsonrpc": "2.0", "id": 7, "error": {"message": "unspecified failure"}});
+    assert!(matches!(classify_probe_response(&codeless_error), ProbeVerdict::WrongError(_)));
+    Ok(())
 }
 
 // ============================================================================
