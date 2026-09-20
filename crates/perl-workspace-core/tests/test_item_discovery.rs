@@ -4,7 +4,6 @@
 //! These tests exercise the producer against parser-backed subtest walking and
 //! the generation/publication contract. They do not cut over code lenses, Test
 //! Explorer, runner execution, or TAP.
-
 #![expect(
     clippy::unwrap_used,
     clippy::expect_used,

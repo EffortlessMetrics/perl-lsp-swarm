@@ -92,6 +92,21 @@ All notable changes to the Perl Language Server extension will be documented in 
 
 ### Fixed
 
+- **A coexistence conflict caused by one global setting is no longer repeated
+  for every workspace root.** The advisory evaluates one host-wide pass plus
+  one pass per workspace folder, and each folder pass re-read the same global
+  and workspace settings. Because a finding's suppression identity includes
+  its scope and folder name, a single condition — for example the native
+  critic running alongside an installed Perl Navigator, which is the default
+  configuration — was reported once host-wide and again under every root:
+  twice in a single-root window and N+1 times across N roots. "Disable for
+  this exact conflict" then dismissed only one of those identities, so the
+  same advisory returned on the next window and could not be cleared in one
+  action. A conflict already established host-wide is now reported once, at
+  user scope; a folder still reports a conflict it genuinely establishes
+  itself, such as a real folder override or a folder-local `.perltidyrc`.
+  (#16000)
+
 - **Extension activation no longer blocks on language-server startup.** UI and
   commands now register and activation returns immediately while the language
   client's startup tail completes in the background, instead of blocking
