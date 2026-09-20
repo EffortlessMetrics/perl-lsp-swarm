@@ -17,6 +17,8 @@ on:
     branches: [main]
     types: [opened, synchronize, reopened, ready_for_review]
   merge_group:
+  push:
+    branches: [main]
 
 permissions:
   actions: read
@@ -25,7 +27,7 @@ permissions:
   pull-requests: read
 
 concurrency:
-  group: em-ci-routed-rust-${{ github.repository }}-${{ github.event.pull_request.number || github.ref }}
+  group: em-ci-routed-rust-${{ github.repository }}-${{ github.event.pull_request.number || (github.event_name == 'push' && github.sha || github.ref) }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' && github.event.action == 'synchronize' }}
 
 env:
