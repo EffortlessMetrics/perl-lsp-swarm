@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib.util
 import json
 import os
@@ -136,6 +137,8 @@ def valid_packet(
 class ReleaseBuildIdentityTests(unittest.TestCase):
     def test_mapped_topology_requires_explicit_offline_opt_in(self) -> None:
         topology = json.loads((REPO_ROOT / "fixtures/rc_vsix_binding/valid.topology.v4.json").read_text())
+        schema_path = "schemas/release_topology.v4.schema.json"
+        topology["sources"][schema_path]["sha256"] = hashlib.sha256((REPO_ROOT / schema_path).read_bytes()).hexdigest()
         args = dict(release_version=topology["release"], source_revision=topology["prepared_swarm_sha"], target=topology["binary_targets"][0]["target"])
         with self.assertRaisesRegex(subject.BuildIdentityError, "schema"):
             subject.validate_topology(topology, **args)

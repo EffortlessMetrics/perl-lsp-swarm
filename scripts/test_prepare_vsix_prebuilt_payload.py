@@ -53,6 +53,8 @@ class PrebuiltPayloadAdapterTests(unittest.TestCase):
         if mapped:
             topology["binary_targets"][0]["runner"] = "windows-2022" if windows else "ubuntu-22.04"
             selected = json.loads((Path(__file__).parents[1] / "fixtures/rc_vsix_binding/valid.topology.v4.json").read_text())
+            schema_path = "schemas/release_topology.v4.schema.json"
+            selected["sources"][schema_path]["sha256"] = digest((Path(__file__).parents[1] / schema_path).read_bytes())
             selected.update(release=version, workspace_version=version, frozen_product_sha="b" * 40, prepared_swarm_sha=SOURCE, binary_targets=topology["binary_targets"])
             selected["vsix"].update(candidate_id="candidate-1", publisher="EffortlessMetrics", name="perl-lsp-rs", asset_name=f"perl-lsp-rs-0.19.7-{version}.vsix")
             topology = selected

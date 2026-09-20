@@ -64,7 +64,7 @@
     },
     "schemas/release_topology.v4.schema.json": {
       "path": "schemas/release_topology.v4.schema.json",
-      "sha256": "9b5c1cd646371485f42af872274da6d89dcdc3b09e4b6a9af43e228c8a93727f"
+      "sha256": "d2fbd8e0b827840296b83bd4eebeaf7d7855e19db39605a685a8283aeaa03815"
     }
   },
   "checksum_assets": [

@@ -308,12 +308,17 @@ export function buildVsixCandidatePayloadManifest(
   }
   if (schema === 'vsix_candidate_payload.v2') {
     const numeric = '(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)';
-    if (!new RegExp(`^${numeric}$`).test(input.extension.version) ||
-        !new RegExp(`^${numeric}-rc\\.[1-9][0-9]*$`).test(input.candidate.release) ||
-        input.extension.version.trim() !== input.extension.version ||
-        input.candidate.release.trim() !== input.candidate.release ||
-        input.preRelease !== true || input.extension.sourceSha !== input.candidate.sourceSha) {
-      throw new Error('Mapped RC payload requires numeric extension version, full RC, prerelease and one prepared source.');
+    if (
+      !new RegExp(`^${numeric}$`).test(input.extension.version) ||
+      !new RegExp(`^${numeric}-rc\\.[1-9][0-9]*$`).test(input.candidate.release) ||
+      input.extension.version.trim() !== input.extension.version ||
+      input.candidate.release.trim() !== input.candidate.release ||
+      input.preRelease !== true ||
+      input.extension.sourceSha !== input.candidate.sourceSha
+    ) {
+      throw new Error(
+        'Mapped RC payload requires numeric extension version, full RC, prerelease and one prepared source.',
+      );
     }
   } else if (input.preRelease !== undefined) {
     throw new Error('Explicit prerelease mapping requires VSIX payload v2.');

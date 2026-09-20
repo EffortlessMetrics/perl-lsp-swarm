@@ -18,16 +18,24 @@ test('mapped payload v2 preserves the full RC and independent numeric extension'
   const projection = rows().find((row) => row.packageMode === 'universal_managed');
   if (!projection) throw new Error('missing universal fixture');
   const input = manifestInput({
-    schema: 'vsix_candidate_payload.v2', preRelease: true, projection,
+    schema: 'vsix_candidate_payload.v2',
+    preRelease: true,
+    projection,
     extension: { id: 'fixture.extension', version: '0.19.7', sourceSha },
     candidate: { id: 'candidate-rc-seven', release: '0.18.0-rc.7', sourceSha },
-    server: undefined, dap: undefined,
+    server: undefined,
+    dap: undefined,
   });
   const output = buildVsixCandidatePayloadManifest(input);
   expect(output.schema).toBe('vsix_candidate_payload.v2');
   expect(output.candidate.release).toBe('0.18.0-rc.7');
   expect(output.extension.version).toBe('0.19.7');
-  const schema = JSON.parse(fs.readFileSync(path.join(__dirname, '../../../schemas/vsix_candidate_payload.v2.schema.json'), 'utf8'));
+  const schema = JSON.parse(
+    fs.readFileSync(
+      path.join(__dirname, '../../../schemas/vsix_candidate_payload.v2.schema.json'),
+      'utf8',
+    ),
+  );
   expect(new Ajv2020().compile(schema)(output)).toBe(true);
   for (const changed of [
     { ...input, preRelease: false },
@@ -35,8 +43,11 @@ test('mapped payload v2 preserves the full RC and independent numeric extension'
     { ...input, extension: { ...input.extension, version: '0.19.7\n' } },
     { ...input, candidate: { ...input.candidate, release: '0.18.0' } },
     { ...input, candidate: { ...input.candidate, sourceSha: 'c'.repeat(40) } },
-  ]) expect(() => buildVsixCandidatePayloadManifest(changed)).toThrow();
-  expect(buildVsixCandidatePayloadManifest(manifestInput()).schema).toBe('vsix_candidate_payload.v1');
+  ])
+    expect(() => buildVsixCandidatePayloadManifest(changed)).toThrow();
+  expect(buildVsixCandidatePayloadManifest(manifestInput()).schema).toBe(
+    'vsix_candidate_payload.v1',
+  );
 });
 
 function topologyRow(
