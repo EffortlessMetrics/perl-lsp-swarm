@@ -261,9 +261,12 @@ fn parse_output_budget_usage_tracked() -> Result<(), Box<dyn std::error::Error>>
     let mut parser = Parser::new("my $x = ;");
     let output = parser.parse_with_recovery();
 
-    // Live tracker: depth was recorded and unwound. Diagnostic charging is B02.
+    // Live tracker: depth was recorded and unwound, and the admitted core
+    // dimensions now carry the work this operation actually performed (#8786).
     assert_eq!(output.budget_usage.current_depth, 0);
     assert!(output.budget_usage.max_depth_reached > 0);
-    assert_eq!(output.budget_usage.errors_emitted, 0);
+    assert_eq!(output.budget_usage.errors_emitted, output.diagnostics.len());
+    assert!(output.budget_usage.tokens_consumed > 0);
+    assert!(output.budget_usage.nodes_constructed > 0);
     Ok(())
 }

@@ -777,6 +777,16 @@ jobs:
     env:
       CARGO_PROFILE_DEV_DEBUG: line-tables-only
       CARGO_PROFILE_TEST_DEBUG: line-tables-only
+      # #15528: one stable, cache-aligned target dir. The former per-run
+      # `pr-smoke-${run_id}-${run_attempt}` path (unique per run and attempt)
+      # made every run a full cold build, so the 45m watchdog reliably killed
+      # the tier mid-compile. `target` is exactly the tree the rust-cache step
+      # below restores and saves, so the lane warms like every other ci.yml
+      # job. The #11943 bounds still hold: line-tables-only debuginfo above,
+      # plus the preflight/post-run disk guards, which probe this same
+      # filesystem (hosted `df` shows /mnt on /dev/root, so the old /mnt
+      # redirection was capacity-neutral; it only guaranteed a cold tree).
+      CARGO_TARGET_DIR: target
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -803,30 +813,34 @@ jobs:
         with:
           tool: just
 
+      # #15528: dedicated cache family for this lane. The shared `ci-gate-`
+      # entry is seeded by the merge-gate shards at full debuginfo, whose dep
+      # artifacts never fingerprint-match this lane's line-tables-only env, and
+      # both jobs saving under one key would nondeterministically overwrite
+      # each other's newest main entry. A stable shared key (no lockfile hash —
+      # rust-cache already folds the lockfile into its internal keying,
+      # docs/ci/cache-policy.md) lets the push-to-main run of this job seed
+      # matching line-tables-only artifacts that PR and merge-group runs
+      # restore. Save authority is unchanged: candidate events restore only.
       - name: Cache cargo dependencies
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
         with:
           cache-on-failure: true
           cache-all-crates: true
-          shared-key: ci-gate-${{ hashFiles('Cargo.lock') }}
+          shared-key: pr-smoke
           save-if: ${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' }}
 
-      - name: Select PR Smoke Cargo target
+      # #15528 hardening: the dedicated cache family restores the whole
+      # target/ tree of the seeding main run, including receipts. Clear them so
+      # a run killed by the watchdog can never upload a stale receipt that
+      # reads as this run's verdict (same hygiene as the shard job's "Clear
+      # restored inventory evidence").
+      - name: Clear restored PR-fast receipts
         shell: bash
-        env:
-          PR_SMOKE_RUN_ID: ${{ github.run_id }}
-          PR_SMOKE_RUN_ATTEMPT: ${{ github.run_attempt }}
         run: |
           set -euo pipefail
-          if [ -d /mnt ] && sudo mkdir -p /mnt/perl-lsp-swarm && sudo chown "$USER" /mnt/perl-lsp-swarm; then
-            target_dir="/mnt/perl-lsp-swarm/pr-smoke-${PR_SMOKE_RUN_ID}-${PR_SMOKE_RUN_ATTEMPT}"
-          else
-            target_dir="${RUNNER_TEMP:-$PWD/target}/cargo-target/pr-smoke-${PR_SMOKE_RUN_ID}-${PR_SMOKE_RUN_ATTEMPT}"
-          fi
-          mkdir -p "$target_dir"
-          echo "CARGO_TARGET_DIR=$target_dir" >> "$GITHUB_ENV"
-          echo "PR-fast CARGO_TARGET_DIR=$target_dir"
-          df -h . "$target_dir" || true
+          rm -rf target/receipts
+          mkdir -p target/receipts/logs
 
       # The digest step below runs under `always()`, so it must never find a
       # receipt this run did not write. `target/` is restored from a shared
@@ -943,7 +957,8 @@ jobs:
       - name: Run PR-fast via shared xtask gate runner
         run: |
           set +e
-          # The target directory is selected before Warm xtask so gate commands reuse that build.
+          # Gate commands reuse the shared CARGO_TARGET_DIR=target build warmed
+          # by "Warm xtask" and the cache restore above (#15528).
           # Gate receipts intentionally stay at target/receipts for upload steps.
           echo "PR-fast timeout policy: GitHub job 75m, outer runner watchdog 60m, per-gate timeouts recorded in target/receipts/receipt.json"
           timeout --signal=TERM --kill-after=60s 3600s "$CARGO_TARGET_DIR/debug/xtask" gates --tier pr-fast --subject target/receipts/ci-subject.json --receipt
@@ -1159,7 +1174,7 @@ jobs:
             # The cheapest control remains first for fast diagnosis, but the
             # shard runner now records every independent member before it
             # returns the aggregate failure verdict.
-            gates: docs_agents_contract_workflows msrv_authority_sync compiler_concept_ledger compiler_proof_policy compiler_concept_proof compiler_performance_receipt_contract kubernetes_dap_profiles postfix_capability_closure release_trust_invariants docs_build adr_link_check non_rust_inventory_check must_context_check lint_policy v2_bundle_sync nested_lock_check doctest_contract_proof doctest_enforcement version_sync agent_ledgers_validate
+            gates: docs_agents_contract_workflows msrv_authority_sync compiler_concept_ledger compiler_proof_policy compiler_concept_proof compiler_performance_receipt_contract kubernetes_dap_profiles postfix_capability_closure release_trust_invariants docs_build adr_link_check non_rust_inventory_check must_context_check lint_policy v2_bundle_sync nested_lock_check doctest_contract_proof doctest_enforcement version_sync agent_ledgers_validate code_action_generation_ledger
     permissions:
       contents: read
     # Run on every PR push and on push to main/master

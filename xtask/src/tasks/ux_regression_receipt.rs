@@ -15,6 +15,20 @@ use crate::tasks::cargo_failure_blocks::{failing_test_names, failure_blocks, pan
 // See crates/perl-lsp-ux-tests/src/observation.rs.
 const DEADLINE_MARKER: &str = "deadline expired after";
 
+// libtest prints one result line per test, unconditionally, and cargo tees the
+// whole run into the log the class is read from. A test that passed contributes
+// exactly that one line — its own name — because its stdout is captured. Those
+// names are not evidence about the test that failed, and they decided the class:
+// the single UX test function whose name contains `baseline` passes on every run,
+// which routed unrelated failures to `update_baseline` (#16103). libtest spells a
+// pass `ok` and a skip `ignored` in lower case and a failure `FAILED` in upper, so
+// the failing test's own line survives this filter.
+#[allow(clippy::expect_used, reason = "static LazyLock regex with known-good pattern")]
+static PASSING_TEST_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^\s*test\s+\S+\s+\.\.\.\s+(?:ok|ignored)\b")
+        .expect("passing test regex must compile")
+});
+
 #[derive(Debug, Clone)]
 pub struct UxRegressionReceiptConfig {
     pub input: PathBuf,
@@ -338,6 +352,12 @@ const fn mode_is_evidence_backed(mode: UxFailureMode) -> bool {
     }
 }
 
+/// The text `infer_failure_class` is allowed to read.
+///
+/// Two kinds of line are removed because they describe something other than the
+/// failure: a scenario's own diagnostic detail block, and the result line of a test
+/// that passed or was skipped. Both are present on every run and neither says
+/// anything about why this run failed.
 fn classification_input(raw: &str) -> String {
     let mut in_detail = false;
     let mut retained = Vec::new();
@@ -347,7 +367,7 @@ fn classification_input(raw: &str) -> String {
             in_detail = true;
         } else if trimmed == "UX_SCENARIO_DETAIL_END" {
             in_detail = false;
-        } else if !in_detail {
+        } else if !in_detail && !PASSING_TEST_RE.is_match(line) {
             retained.push(line);
         }
     }
@@ -540,6 +560,45 @@ mod tests {
             "BaselineDrift routes to BaselineUpdate"
         );
         assert_eq!(receipt.merge_action, "update_baseline");
+    }
+
+    #[test]
+    fn classify_ignores_the_names_of_tests_that_passed() {
+        // `just ux-tests` tees one `test <name> ... ok` line per passing test into the
+        // same log the class is read from. Exactly one UX test function name in the
+        // workspace contains the substring `baseline`, and it passes:
+        // crates/perl-lsp-ux-tests/tests/ux_scenario_20_real_workspace_providers.rs.
+        // Its presence routed an unrelated failure to `update_baseline` — an
+        // instruction to move a number for a test that carries none (#16103).
+        let log = "running 2 tests\ntest scenario_20_completion_module_prefix_surfaces_real_baseline_app_hard_assert ... ok\ntest ux_latency_workspace_symbols_sees_open_document_symbols ... FAILED\n\nfailures:\n\n---- ux_latency_workspace_symbols_sees_open_document_symbols stdout ----\nassertion failed: workspace symbols missing alpha\n\ntest result: FAILED. 1 passed; 1 failed";
+        let receipt = classify(log, Some("sha-passing-name".to_string()));
+        assert!(
+            !matches!(receipt.failure_class, UxFailureClass::BaselineDrift),
+            "a passing test's name must not decide the failing test's class, got {:?}",
+            receipt.failure_class
+        );
+        assert_ne!(
+            receipt.merge_action, "update_baseline",
+            "the receipt must not tell the next reader to update a baseline the failing test does not have"
+        );
+        assert!(
+            matches!(receipt.failure_class, UxFailureClass::ProviderRegression),
+            "the bare assertion in the failing test's own block is the evidence, got {:?}",
+            receipt.failure_class
+        );
+    }
+
+    #[test]
+    fn classify_keeps_the_failing_test_own_result_line_as_evidence() {
+        // The line that reports the *failing* test is its own evidence and must
+        // survive the filter, or a class keyed on the test's name stops working.
+        let log = "running 1 test\ntest scenario_10_hover_baseline_snapshot ... FAILED\nleft != right\ntest result: FAILED. 0 passed; 1 failed";
+        let receipt = classify(log, Some("sha-failing-name".to_string()));
+        assert!(
+            matches!(receipt.failure_class, UxFailureClass::BaselineDrift),
+            "the failing test's own name is evidence and must still classify, got {:?}",
+            receipt.failure_class
+        );
     }
 
     #[test]
