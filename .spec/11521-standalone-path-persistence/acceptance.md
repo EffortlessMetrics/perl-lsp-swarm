@@ -183,7 +183,7 @@ New, additive only. No existing public surface changes.
 
 | Layer | Command | Count |
 |---|---|---|
-| Checked validator battery | `cargo test -p xtask --example standalone_path_persistence --locked` | 54 |
+| Checked validator battery | `cargo test -p xtask --example standalone_path_persistence --locked` | 58 |
 | Schema-only parity harness | `python -m unittest scripts.ci.test_standalone_path_contract_schemas` | 44 |
 | Fixtures | `fixtures/experience/install_path_persistence/` | 27 (19 positive, 8 committed-invalid) |
 
