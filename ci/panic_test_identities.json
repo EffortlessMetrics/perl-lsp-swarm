@@ -80,7 +80,7 @@
       "normalized_snippet": ".unwrap_or_else(|error| panic!(\"disabled must serialize: {error}\"));",
       "selector_identity": "invocation:391a9f260a6a96de:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-lsp-rs-core/src/config/critic_state.rs",
@@ -89,7 +89,7 @@
       "normalized_snippet": "panic!(\"accepted state must serialize: {error}\");",
       "selector_identity": "invocation:9e42aecf5a7a23f8:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-lsp-rs-core/src/config/critic_state.rs",
@@ -98,7 +98,7 @@
       "normalized_snippet": "panic!(\"canonical representation must deserialize: {error}\");",
       "selector_identity": "invocation:de2b82bbd0d8b804:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-lsp-rs-core/src/config/critic_state.rs",
@@ -107,7 +107,7 @@
       "normalized_snippet": "panic!(\"disabled state must not expose a native policy object\")",
       "selector_identity": "invocation:55024bd7ba4c64b6:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-lsp-rs-core/src/configuration_authority/checked.rs",
@@ -116,7 +116,7 @@
       "normalized_snippet": "let field = authority_by_id(id).unwrap_or_else(|| panic!(\"missing authority row {id}\"));",
       "selector_identity": "invocation:9d15281f9d6d02e4:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-lsp-rs-core/src/configuration_authority/mod.rs",
@@ -125,7 +125,7 @@
       "normalized_snippet": ".unwrap_or_else(|| panic!(\"missing ai.effective_enabled\"));",
       "selector_identity": "invocation:355eb1b6edf24398:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-lsp-rs-core/src/configuration_authority/mod.rs",
@@ -134,7 +134,7 @@
       "normalized_snippet": "let field = authority_by_id(id).unwrap_or_else(|| panic!(\"missing {id}\"));",
       "selector_identity": "invocation:80b2cb58e934d64f:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-lsp-rs-core/src/configuration_authority/mod.rs",
@@ -143,7 +143,7 @@
       "normalized_snippet": "let field = authority_by_id(id).unwrap_or_else(|| panic!(\"missing {id}\"));",
       "selector_identity": "invocation:80b2cb58e934d64f:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-lsp-rs-core/src/configuration_authority/mod.rs",
@@ -152,7 +152,7 @@
       "normalized_snippet": "let body = body.split_once(\"\\n}\").unwrap_or_else(|| panic!(\"unterminated {struct_name}\")).0;",
       "selector_identity": "invocation:7b1a7d1d119073f8:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-lsp-rs-core/src/configuration_authority/mod.rs",
@@ -161,7 +161,7 @@
       "normalized_snippet": "let body = source.split_once(&marker).unwrap_or_else(|| panic!(\"missing {struct_name}\")).1;",
       "selector_identity": "invocation:f6ce999c2e807a9b:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-lsp-rs-core/src/protocol/capabilities.rs",
@@ -170,7 +170,7 @@
       "normalized_snippet": "other => panic!(\"expected CodeActionProviderCapability::Options, got {other:?}\"),",
       "selector_identity": "invocation:f1d18438aa488814:occurrence:1",
       "accepted_reason": "Intentional capability-structure assertion diagnostic in LSP protocol pin test; panics when the server builds the wrong capability variant or the variant does not match the required advertised shape.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-lsp-rs-core/src/protocol/capabilities.rs",
@@ -179,7 +179,7 @@
       "normalized_snippet": "other => panic!(\"expected CodeActionProviderCapability::Options, got {other:?}\"),",
       "selector_identity": "invocation:f1d18438aa488814:occurrence:1",
       "accepted_reason": "Intentional capability-structure assertion diagnostic in LSP protocol pin test; panics when the server builds the wrong capability variant or the variant does not match the required advertised shape.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-lsp-rs-core/src/protocol/capabilities.rs",
@@ -188,7 +188,7 @@
       "normalized_snippet": "other => panic!( \"documentSymbolProvider must be Some(true) when document_symbol is enabled, \\ got {other:?}\" ),",
       "selector_identity": "invocation:32c47ff326522f9a:occurrence:1",
       "accepted_reason": "Intentional capability-structure assertion diagnostic in LSP protocol pin test; panics when the server builds the wrong capability variant or the variant does not match the required advertised shape.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-lsp-rs-core/src/protocol/capabilities.rs",
@@ -197,7 +197,7 @@
       "normalized_snippet": "panic!( \"documentSymbolProvider must be true when document_symbol is enabled, \\ not false\" );",
       "selector_identity": "invocation:23b043b4cfa4f4c0:occurrence:1",
       "accepted_reason": "Intentional capability-structure assertion diagnostic in LSP protocol pin test; panics when the server builds the wrong capability variant or the variant does not match the required advertised shape.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-lsp-rs-core/src/protocol/capabilities.rs",
@@ -206,7 +206,7 @@
       "normalized_snippet": "other => panic!( \"expected SemanticTokensServerCapabilities::SemanticTokensOptions, got {other:?}\" ),",
       "selector_identity": "invocation:817273e04338d1a7:occurrence:1",
       "accepted_reason": "Intentional capability-structure assertion diagnostic in LSP protocol pin test; panics when the server builds the wrong capability variant or the variant does not match the required advertised shape.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-lsp-rs-core/src/protocol/capabilities.rs",
@@ -215,7 +215,7 @@
       "normalized_snippet": "other => panic!( \"expected SemanticTokensServerCapabilities::SemanticTokensOptions, got {other:?}\" ),",
       "selector_identity": "invocation:817273e04338d1a7:occurrence:1",
       "accepted_reason": "Intentional capability-structure assertion diagnostic in LSP protocol pin test; panics when the server builds the wrong capability variant or the variant does not match the required advertised shape.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-lsp-rs-core/src/protocol/capabilities.rs",
@@ -224,7 +224,7 @@
       "normalized_snippet": "other => panic!(\"expected TextDocumentSyncCapability::Options, got {other:?}\"),",
       "selector_identity": "invocation:6cafbb2df5d77115:occurrence:1",
       "accepted_reason": "Intentional capability-structure assertion diagnostic in LSP protocol pin test; panics when the server builds the wrong capability variant or the variant does not match the required advertised shape.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-lsp-rs-core/src/protocol/capabilities.rs",
@@ -233,7 +233,7 @@
       "normalized_snippet": "panic!( \"expected workspaceSymbolProvider to use the Options variant (with \\ resolveProvider), not the simple boolean variant, when \\ workspace_symbol_resolve is enabled\" );",
       "selector_identity": "invocation:192d81fed2a20e08:occurrence:1",
       "accepted_reason": "Intentional capability-structure assertion diagnostic in LSP protocol pin test; panics when the server builds the wrong capability variant or the variant does not match the required advertised shape.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-lsp-rs-core/src/protocol/capabilities.rs",
@@ -242,7 +242,7 @@
       "normalized_snippet": "panic!( \"workspaceSymbolProvider must be advertised when workspace_symbol_resolve \\ is enabled\" );",
       "selector_identity": "invocation:f08a319190540d26:occurrence:1",
       "accepted_reason": "Intentional capability-structure assertion diagnostic in LSP protocol pin test; panics when the server builds the wrong capability variant or the variant does not match the required advertised shape.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-lsp-rs-core/src/protocol/document_version.rs",
@@ -251,7 +251,7 @@
       "normalized_snippet": "panic!(\"expected Explicit\");",
       "selector_identity": "invocation:05d3a6b9d07bdf4f:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-lsp-rs-core/src/protocol/document_version.rs",
@@ -260,7 +260,7 @@
       "normalized_snippet": "panic!(\"expected Explicit\");",
       "selector_identity": "invocation:05d3a6b9d07bdf4f:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-lsp-rs-core/src/protocol/final_surface_inventory/rows.rs",
@@ -269,7 +269,7 @@
       "normalized_snippet": "panic!(\"compatibility row {} must carry a boundary\", row.surface_id)",
       "selector_identity": "invocation:ee1e6ca3c493c000:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-lsp-rs-core/src/protocol/final_surface_inventory/tests.rs",
@@ -314,7 +314,7 @@
       "normalized_snippet": ".unwrap_or_else(|| panic!(\"data-flow PL404 must carry an observation: {dataflow:?}\"));",
       "selector_identity": "invocation:3f529ec3ca6aa014:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-lsp-rs-core/src/providers/diagnostics/lints/common_mistakes.rs",
@@ -323,7 +323,7 @@
       "normalized_snippet": "panic!(\"literal undef PL404 must carry an observation: {literal:?}\")",
       "selector_identity": "invocation:946c6a3fb589b86a:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-lsp-rs-core/src/providers/diagnostics/lints/common_mistakes.rs",
@@ -332,7 +332,7 @@
       "normalized_snippet": ".unwrap_or_else(|| panic!(\"PL404 must be emitted for {source}\"));",
       "selector_identity": "invocation:52a81ac43cf7596f:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-lsp-rs-core/src/providers/diagnostics/lints/common_mistakes.rs",
@@ -341,7 +341,7 @@
       "normalized_snippet": ".unwrap_or_else(|| panic!(\"PL404 must carry an observation: {diags:?}\"));",
       "selector_identity": "invocation:eacbc2082dffb197:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-lsp-rs-core/src/providers/diagnostics/lints/common_mistakes.rs",
@@ -350,7 +350,7 @@
       "normalized_snippet": ".unwrap_or_else(|| panic!(\"PL404 must carry an ordinary suggestion\"));",
       "selector_identity": "invocation:afb265e1ad5f90c0:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-lsp-rs-core/src/providers/diagnostics/lints/common_mistakes.rs",
@@ -359,7 +359,7 @@
       "normalized_snippet": "panic!(\"PL404 must carry an observation: {diags:?}\")",
       "selector_identity": "invocation:5d3ee786868537fc:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-lsp-rs-core/src/providers/diagnostics/lints/security.rs",
@@ -368,7 +368,7 @@
       "normalized_snippet": ".unwrap_or_else(|| panic!(\"{code} must carry a critic observation: {diags:?}\"));",
       "selector_identity": "invocation:bee988b494918490:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-lsp-rs-core/src/providers/diagnostics/lints/security.rs",
@@ -377,7 +377,7 @@
       "normalized_snippet": ".unwrap_or_else(|| panic!(\"backtick must carry an observation: {diags:?}\"));",
       "selector_identity": "invocation:6808b4eb4bb43b11:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-lsp-rs-core/src/providers/diagnostics/lints/security.rs",
@@ -386,7 +386,7 @@
       "normalized_snippet": ".unwrap_or_else(|| panic!(\"{code} must be emitted for {source}\"));",
       "selector_identity": "invocation:ef32d0afae7bddf2:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-lsp-rs-core/src/providers/diagnostics/lints/security.rs",
@@ -395,7 +395,7 @@
       "normalized_snippet": ".unwrap_or_else(|| panic!(\"{code} must carry a critic observation: {diags:?}\"));",
       "selector_identity": "invocation:bee988b494918490:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-lsp-rs-core/src/providers/diagnostics/lints/security.rs",
@@ -404,7 +404,7 @@
       "normalized_snippet": ".unwrap_or_else(|| panic!(\"{code} must carry an ordinary suggestion\"));",
       "selector_identity": "invocation:2dc74bd444ef3fff:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-lsp-rs-core/src/providers/inline_completion/prepared_context.rs",
@@ -422,7 +422,7 @@
       "normalized_snippet": "panic!(\"no `${name}` variable token found in source: {source:?}\");",
       "selector_identity": "invocation:e386df44afef8864:occurrence:1",
       "accepted_reason": "Intentional test-helper diagnostic; panics when no semantic token matching the named variable is found in the computed output, which means the test fixture did not produce the token under inspection.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-lsp-rs-core/src/semantic_snapshot.rs",
@@ -431,7 +431,7 @@
       "normalized_snippet": ".unwrap_or_else(|e| panic!(\"{state:?} must be constructible: {e}\"));",
       "selector_identity": "invocation:6834d13717db2bc0:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-lsp-rs-core/src/semantic_snapshot.rs",
@@ -440,7 +440,7 @@
       "normalized_snippet": ".unwrap_or_else(|e| panic!(\"{state:?} must round-trip: {e}\\n{json}\"));",
       "selector_identity": "invocation:5d2fd50d7bed4d58:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-lsp-rs-core/tests/perllsp_settings_schema_tests.rs",
@@ -629,7 +629,7 @@
       "normalized_snippet": "panic!(\"production source {} must be readable: {error}\", path.display())",
       "selector_identity": "invocation:defe604a8b7be3e8:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-lsp-rs/tests/critic_normalization_wiring_tests.rs",
@@ -638,7 +638,7 @@
       "normalized_snippet": ".unwrap_or_else(|| panic!(\"transport dedup must remain defined for non-migrated pairs\"));",
       "selector_identity": "invocation:2459a5294051548b:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-lsp-rs/tests/critic_normalization_wiring_tests.rs",
@@ -647,7 +647,7 @@
       "normalized_snippet": "panic!(\"production source {} must be readable: {error}\", path.display())",
       "selector_identity": "invocation:defe604a8b7be3e8:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-lsp-rs/tests/lsp4ij_installer_topology_tests.rs",
@@ -2006,7 +2006,7 @@
       "normalized_snippet": "let raw = fs::read_to_string(path).unwrap_or_else(|err| panic!(\"read receipt: {err}\"));",
       "selector_identity": "invocation:ab2897b9b8b1cf2c:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "xtask/src/tasks/lsp_smoke_atomic.rs",
@@ -2015,7 +2015,7 @@
       "normalized_snippet": "serde_json::from_str(&raw).unwrap_or_else(|err| panic!(\"parse receipt: {err}\"))",
       "selector_identity": "invocation:74f332f70586c2ea:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "xtask/src/tasks/module_train_live_tests.rs",
@@ -2033,7 +2033,7 @@
       "normalized_snippet": "Ok(true) => panic!(\"all-zeros SHA should not be an ancestor\"),",
       "selector_identity": "invocation:20110db351542216:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "xtask/src/tasks/train_edge_contract.rs",
@@ -2042,7 +2042,7 @@
       "normalized_snippet": "None => panic!(\"profile {profile} must resolve\"),",
       "selector_identity": "invocation:84564de3785a8a9a:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "xtask/src/tasks/update_status/lsp.rs",
@@ -2753,7 +2753,7 @@
       "normalized_snippet": "panic!(\"perl is available; the harness must not report the mechanism unmeasured\");",
       "selector_identity": "invocation:a77a95500e29f1d8:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-dap/src/reload/measurement.rs",
@@ -2762,7 +2762,7 @@
       "normalized_snippet": "panic!(\"perl is available but the harness declined to run for {mechanism:?}\");",
       "selector_identity": "invocation:820e1114d211a7d4:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-dap/src/reload/measurement.rs",
@@ -2771,7 +2771,7 @@
       "normalized_snippet": "panic!(\"live measurement failed for {mechanism:?}: {error}\")",
       "selector_identity": "invocation:5d15a5f52460f06e:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-dap/src/reload/measurement.rs",
@@ -2780,7 +2780,7 @@
       "normalized_snippet": "panic!( \"live measurement disagrees with the frozen record for {mechanism:?}: {error:?}\" )",
       "selector_identity": "invocation:e5ccb119bd100307:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-dap/src/reload/measurement.rs",
@@ -2789,7 +2789,7 @@
       "normalized_snippet": "panic!(\"perl is available but the harness declined to run\");",
       "selector_identity": "invocation:db0a0003aa5e59c1:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-dap/src/debug_adapter/execution.rs",
@@ -3023,7 +3023,7 @@
       "normalized_snippet": "route_disposition_inputs(authority).unwrap_or_else(|error| panic!(\"{error}\"));",
       "selector_identity": "invocation:d43eec1e0162210c:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "xtask/src/tasks/gates/planning_types.rs",
@@ -3032,7 +3032,7 @@
       "normalized_snippet": "other => panic!(\"expected quarantined outcome, got {other:?}\"),",
       "selector_identity": "invocation:49198566f6e65666:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "xtask/src/tasks/gates/planning_types.rs",
@@ -3041,7 +3041,7 @@
       "normalized_snippet": "other => panic!(\"expected error outcome, got {other:?}\"),",
       "selector_identity": "invocation:e3e08719853d8dfc:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "xtask/src/tasks/gates/planning_types.rs",
@@ -3050,7 +3050,7 @@
       "normalized_snippet": "other => panic!(\"expected error outcome, got {other:?}\"),",
       "selector_identity": "invocation:e3e08719853d8dfc:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "xtask/src/tasks/gates/planning_types.rs",
@@ -3059,7 +3059,7 @@
       "normalized_snippet": "other => panic!(\"expected typed error outcome, got {other:?}\"),",
       "selector_identity": "invocation:6106d21e91ee92b0:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "xtask/src/tasks/gates/planning_types.rs",
@@ -3068,7 +3068,7 @@
       "normalized_snippet": ".unwrap_or_else(|error| panic!(\"authority projects: {error}\"));",
       "selector_identity": "invocation:f4bc9b08eed82b48:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "xtask/src/tasks/metrics/parser_accuracy.rs",
@@ -3086,7 +3086,7 @@
       "normalized_snippet": ".unwrap_or_else(|| panic!(\"interpolated prepare must be flagged as PL607: {diags:?}\"));",
       "selector_identity": "invocation:58896686da31eee9:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "xtask/tests/branch_deletion_admission.rs",
@@ -3131,7 +3131,7 @@
       "normalized_snippet": "panic!(\"`$&` match text in SQL must be flagged as PL607: {diags:?}\")",
       "selector_identity": "invocation:288a8026a09d3545:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-lsp-rs-core/src/providers/diagnostics/lints/security.rs",
@@ -3140,7 +3140,7 @@
       "normalized_snippet": "panic!(\"`` $` `` pre-match text in SQL must be flagged as PL607: {diags:?}\")",
       "selector_identity": "invocation:7872b73c02a8cf47:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-lsp-rs-core/src/providers/diagnostics/lints/security.rs",
@@ -3149,7 +3149,7 @@
       "normalized_snippet": "panic!(\"`$'` post-match text in SQL must be flagged as PL607: {diags:?}\")",
       "selector_identity": "invocation:9320150ca5679517:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-lsp-rs-core/src/providers/diagnostics/lints/security.rs",
@@ -3158,7 +3158,7 @@
       "normalized_snippet": "panic!(\"`$+` capture text in SQL must be flagged as PL607: {diags:?}\")",
       "selector_identity": "invocation:1d579b7ef990bd57:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-dap/src/backend/native_perldb.rs",
@@ -3383,7 +3383,7 @@
       "normalized_snippet": ".unwrap_or_else(|error| panic!(\"failed to read {rel}: {error}\"));",
       "selector_identity": "invocation:7af66160d02dcdd8:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "xtask/src/tasks/native_neovim_train/tests.rs",
@@ -3392,7 +3392,7 @@
       "normalized_snippet": "serde_json::from_str(&bytes).unwrap_or_else(|error| panic!(\"invalid JSON in {rel}: {error}\"))",
       "selector_identity": "invocation:15c5f0f1f1598787:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "xtask/src/tasks/native_neovim_train/tests.rs",
@@ -3401,7 +3401,7 @@
       "normalized_snippet": "panic!(\"core profile present\");",
       "selector_identity": "invocation:d3c1f0b3252c2b36:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "xtask/src/tasks/check_tautology/detect.rs",
@@ -3464,7 +3464,7 @@
       "normalized_snippet": "Err(error) => panic!(\"surface construction refused: {error}\"),",
       "selector_identity": "invocation:42013e9d2c24b3d9:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-lsp-rs-core/src/protocol/effective_surface/tests.rs",
@@ -3473,7 +3473,7 @@
       "normalized_snippet": "other => panic!(\"expected downgraded-to-planned-dynamic, got {other:?}\"),",
       "selector_identity": "invocation:ba7ce4cefeb79ca4:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-lsp-rs-core/src/protocol/effective_surface/tests.rs",
@@ -3482,7 +3482,7 @@
       "normalized_snippet": "other => panic!(\"expected watcher registration with relative patterns, got {other:?}\"),",
       "selector_identity": "invocation:1b9f3f2f758cdec6:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-lsp-rs-core/src/semantic_construction.rs",
@@ -3518,7 +3518,7 @@
       "normalized_snippet": "other => panic!(\"expected digest-only evidence, got {other:?}\"),",
       "selector_identity": "invocation:cc52f20ad70e4644:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-lsp-rs-core/src/configuration_observation.rs",
@@ -3527,7 +3527,7 @@
       "normalized_snippet": "other => panic!(\"expected digest-only evidence, got {other:?}\"),",
       "selector_identity": "invocation:cc52f20ad70e4644:occurrence:2",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-lsp-rs/src/runtime/language/completion.rs",
@@ -3608,7 +3608,7 @@
       "normalized_snippet": "other => panic!(\"expected PeerReported from a peer success:false, got {other:?}\"),",
       "selector_identity": "invocation:597da1e9c968eb1e:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-dap/tests/external_peer_conformance.rs",
@@ -3617,7 +3617,7 @@
       "normalized_snippet": "other => panic!(\"a crossed command must not be reported as an outcome, got {other:?}\"),",
       "selector_identity": "invocation:47992d21a405fc9c:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "xtask/tests/vim_host_freshness_contract.rs",
@@ -3662,7 +3662,7 @@
       "normalized_snippet": ".unwrap_or_else(|| panic!(\"{shell} completions\"));",
       "selector_identity": "invocation:4c2ec5d811ae65ac:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-lsp-rs-core/src/runtime/launcher/checking_guidance.rs",
@@ -3671,7 +3671,7 @@
       "normalized_snippet": ".unwrap_or_else(|| panic!(\"{shell} completions\"));",
       "selector_identity": "invocation:4c2ec5d811ae65ac:occurrence:2",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-core-harness/src/invocation_trace/adapter.rs",
@@ -3689,7 +3689,7 @@
       "normalized_snippet": "other => panic!(\"expected PeerReported, got {other:?}\"),",
       "selector_identity": "invocation:b15b64657f975ced:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-lsp-rs-core/src/protocol/error_inventory.rs",
@@ -3698,7 +3698,7 @@
       "normalized_snippet": ".unwrap_or_else(|| panic!(\"{name} must remain inventoried\"))",
       "selector_identity": "invocation:5f85dc9c186e5877:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-lsp-ux-tests/tests/quarantine_registry_contract.rs",
@@ -3779,7 +3779,7 @@
       "normalized_snippet": ".unwrap_or_else(|| panic!(\"{accessor} must stay defined in capabilities.rs\"));",
       "selector_identity": "invocation:db4ae179308bf545:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-lsp-ux-tests/tests/ux_scenario_13_document_symbols.rs",
