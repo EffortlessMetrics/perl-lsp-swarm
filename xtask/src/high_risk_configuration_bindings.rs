@@ -262,6 +262,33 @@ struct StorageUse<'a> {
     writes: bool,
     reads: bool,
 }
+
+// matches! accepts a pattern, not an expression list. Consume the complete
+// grammar so malformed macro tokens cannot establish storage evidence.
+struct MatchesInput {
+    expression: syn::Expr,
+    guard: Option<syn::Expr>,
+}
+impl syn::parse::Parse for MatchesInput {
+    fn parse(input: syn::parse::ParseStream<'_>) -> syn::Result<Self> {
+        let expression = input.parse()?;
+        input.parse::<syn::Token![,]>()?;
+        syn::Pat::parse_multi_with_leading_vert(input)?;
+        let guard = if input.peek(syn::Token![if]) {
+            input.parse::<syn::Token![if]>()?;
+            Some(input.parse()?)
+        } else {
+            None
+        };
+        if input.peek(syn::Token![,]) {
+            input.parse::<syn::Token![,]>()?;
+        }
+        if !input.is_empty() {
+            return Err(input.error("unexpected matches! tokens"));
+        }
+        Ok(Self { expression, guard })
+    }
+}
 impl<'ast> Visit<'ast> for StorageUse<'_> {
     fn visit_expr_assign(&mut self, node: &'ast syn::ExprAssign) {
         if matches!(node.left.as_ref(), syn::Expr::Field(field) if matches!(&field.member, syn::Member::Named(name) if name == self.member))
@@ -283,15 +310,12 @@ impl<'ast> Visit<'ast> for StorageUse<'_> {
         visit::visit_expr_field(self, node);
     }
     fn visit_expr_macro(&mut self, node: &'ast syn::ExprMacro) {
-        if node.mac.path.is_ident("matches") {
-            use syn::parse::Parser;
-            if let Ok(arguments) =
-                syn::punctuated::Punctuated::<syn::Expr, syn::Token![,]>::parse_terminated
-                    .parse2(node.mac.tokens.clone())
-            {
-                for expression in &arguments {
-                    self.visit_expr(expression);
-                }
+        if node.mac.path.is_ident("matches")
+            && let Ok(arguments) = syn::parse2::<MatchesInput>(node.mac.tokens.clone())
+        {
+            self.visit_expr(&arguments.expression);
+            if let Some(guard) = &arguments.guard {
+                self.visit_expr(guard);
             }
         }
     }
@@ -463,8 +487,9 @@ fn docs_coverage(text: &str, projection: &Projection) -> CheckResult {
 pub fn check(root: &Path, typescript: Option<&Path>) -> CheckResult {
     let projection: Projection = serde_json::from_str(&fs::read_to_string(root.join(PROJECTION))?)?;
     model::validate(&projection)?;
-    let package: serde_json::Value =
-        serde_json::from_str(&fs::read_to_string(root.join("vscode-extension/package.json"))?)?;
+    let package: serde_json::Value = serde_json::from_str(&fs::read_to_string(
+        root.join("vscode-extension").join("package.json"),
+    )?)?;
     let configurations = package
         .pointer("/contributes/configuration")
         .and_then(serde_json::Value::as_array)
@@ -477,12 +502,12 @@ pub fn check(root: &Path, typescript: Option<&Path>) -> CheckResult {
         }
     }
     docs_coverage(
-        &fs::read_to_string(root.join("docs/reference/CONFIGURATION_SCHEMA.md"))?,
+        &fs::read_to_string(root.join("docs").join("reference").join("CONFIGURATION_SCHEMA.md"))?,
         &projection,
     )?;
     schema_coverage(
         &serde_json::from_str(&fs::read_to_string(
-            root.join("schemas/perllsp-settings.schema.json"),
+            root.join("schemas").join("perllsp-settings.schema.json"),
         )?)?,
         &projection,
     )?;
@@ -497,7 +522,7 @@ pub fn check(root: &Path, typescript: Option<&Path>) -> CheckResult {
         let compiler = typescript
             .ok_or("TypeScript compiler module path required for client adapter witnesses")?;
         let status = std::process::Command::new("node")
-            .arg(root.join("scripts/ci/check_high_risk_client_bindings.cjs"))
+            .arg(root.join("scripts").join("ci").join("check_high_risk_client_bindings.cjs"))
             .arg(root)
             .arg(compiler)
             .status()?;
@@ -581,6 +606,10 @@ mod tests {
         for source in [
             "#[cfg(all(test, unix))] fn consume(){ run(config.engine); }",
             "fn consume(){ #[cfg(any(test, feature=\"fixture\"))] { run(config.engine); } }",
+            // Eligibility deliberately excludes every test-dependent shape;
+            // ignoring all not(...) lists would admit double-negated test code.
+            "#[cfg(not(test))] fn consume(){ run(config.engine); }",
+            "#[cfg(not(not(test)))] fn consume(){ run(config.engine); }",
         ] {
             if check_witness(source, &consumer).is_ok() {
                 return Err("compound test gate satisfied production binding".into());
@@ -675,13 +704,52 @@ mod tests {
     }
 
     #[test]
+    fn matches_storage_reads_parse_patterns_and_guards_without_accepting_residue() -> CheckResult {
+        fn reads(source: &str) -> CheckResult<bool> {
+            let expression = syn::parse_str::<syn::Expr>(source)?;
+            let mut usage = StorageUse { member: "engine", writes: false, reads: false };
+            usage.visit_expr(&expression);
+            Ok(usage.reads)
+        }
+        for source in [
+            "matches!(config.engine, _)",
+            "matches!(config.engine, Some(_))",
+            "matches!(config.engine, Some(value @ 1..=3) | None,)",
+            "matches!(config.engine, | Some(_) | None)",
+            "matches!(other, Some(value) if config.engine.accepts(value),)",
+        ] {
+            if !reads(source)? {
+                return Err(format!("valid matches! read missed: {source}").into());
+            }
+            let without_read = source.replace("config.engine", "default_engine");
+            if reads(&format!("{without_read} /* config.engine */"))? {
+                return Err("comment supplied missing macro storage read".into());
+            }
+        }
+        for source in [
+            "matches!(other, Some(engine))",
+            "matches!(config.engine, Some(_) trailing)",
+            "matches!(config.engine, Some(_) if)",
+            "matches!(config.engine, Some(_), extra)",
+        ] {
+            if reads(source)? {
+                return Err(format!(
+                    "pattern binding or malformed macro supplied storage read: {source}"
+                )
+                .into());
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
     fn new_schema_field_requires_a_runtime_or_retirement_disposition() -> CheckResult {
         let root =
             Path::new(env!("CARGO_MANIFEST_DIR")).parent().ok_or("missing repository root")?;
         let projection: Projection =
             serde_json::from_str(&fs::read_to_string(root.join(PROJECTION))?)?;
         let mut schema: serde_json::Value = serde_json::from_str(&fs::read_to_string(
-            root.join("schemas/perllsp-settings.schema.json"),
+            root.join("schemas").join("perllsp-settings.schema.json"),
         )?)?;
         schema_coverage(&schema, &projection)?;
         schema
