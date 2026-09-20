@@ -44,6 +44,7 @@ def run(
     head_branch: str = "claude/project-thread-1itw8h",
     event: str = "pull_request",
     head_repository: str = "EffortlessMetrics/perl-lsp-swarm",
+    base_refs: list[str] | None = None,
 ) -> dict:
     return {
         "id": run_id,
@@ -54,6 +55,7 @@ def run(
         "head_branch": head_branch,
         "head_repository": head_repository,
         "pull_requests": [] if pulls is None else pulls,
+        "base_refs": [] if base_refs is None else base_refs,
         "job_count": job_count,
     }
 
@@ -260,6 +262,118 @@ class ForkAndCoercionTests(unittest.TestCase):
                     head_branch="patch-1",
                     head_repository="alice/perl-lsp-swarm",
                     pulls=[],
+                    base_refs=["main"],
+                ),
+                run(
+                    100,
+                    status="in_progress",
+                    created_at="2026-09-20T03:30:00Z",
+                    job_count=4,
+                    head_branch="patch-1",
+                    head_repository="alice/perl-lsp-swarm",
+                    pulls=[],
+                    base_refs=["main"],
+                ),
+            )
+        )
+        self.assertEqual(len(report["findings"]), 1)
+        finding = report["findings"][0]
+        self.assertEqual(finding["run_id"], 200)
+        self.assertEqual(finding["classification"], liveness.SERIALISED)
+        self.assertEqual(finding["predecessor_run_id"], 100)
+        self.assertEqual(finding["conclusion"], "neutral")
+
+    def test_one_fork_branch_with_two_bases_is_two_groups(self) -> None:
+        """The correction #16109 review found.
+
+        GitHub allows one open pull request per head **and base** pair, so a
+        single fork branch can carry two at once -- one onto `main`, one onto
+        `master`, both of which this repository's workflows accept. They have
+        different numbers, so `ripr-<pr>` puts them in different concurrency
+        groups and neither can be holding the other's slot.
+
+        Matching on head repository plus branch alone explained the stalled
+        run with the other pull request's run, which is the silent failure:
+        a genuinely dead gate reported as an explained wait. With the base in
+        the identity the stall is reported.
+        """
+        report = liveness.classify_snapshot(
+            snapshot(
+                run(
+                    200,
+                    created_at="2026-09-20T04:00:00Z",
+                    head_branch="patch-1",
+                    head_repository="alice/perl-lsp-swarm",
+                    pulls=[],
+                    base_refs=["main"],
+                ),
+                run(
+                    100,
+                    status="in_progress",
+                    created_at="2026-09-20T03:30:00Z",
+                    job_count=4,
+                    head_branch="patch-1",
+                    head_repository="alice/perl-lsp-swarm",
+                    pulls=[],
+                    base_refs=["master"],
+                ),
+            )
+        )
+        self.assertEqual(len(report["findings"]), 1)
+        finding = report["findings"][0]
+        self.assertEqual(finding["run_id"], 200)
+        self.assertEqual(finding["classification"], liveness.INFRA_NO_PROOF)
+        self.assertIsNone(finding["predecessor_run_id"])
+
+    def test_two_numbered_runs_on_one_branch_do_not_match_across_numbers(self) -> None:
+        """Once the number is known it decides, and it decides against.
+
+        The snapshot resolves the number for a run the API left bare, so the
+        fallback is a last resort rather than the normal path. Two runs that
+        agree on head repository and branch but carry different numbers are
+        two pull requests, whatever else they share.
+        """
+        report = liveness.classify_snapshot(
+            snapshot(
+                run(
+                    200,
+                    created_at="2026-09-20T04:00:00Z",
+                    head_branch="patch-1",
+                    head_repository="alice/perl-lsp-swarm",
+                    pulls=[4242],
+                ),
+                run(
+                    100,
+                    status="in_progress",
+                    created_at="2026-09-20T03:30:00Z",
+                    job_count=4,
+                    head_branch="patch-1",
+                    head_repository="alice/perl-lsp-swarm",
+                    pulls=[4243],
+                ),
+            )
+        )
+        self.assertEqual(len(report["findings"]), 1)
+        finding = report["findings"][0]
+        self.assertEqual(finding["run_id"], 200)
+        self.assertEqual(finding["classification"], liveness.INFRA_NO_PROOF)
+
+    def test_an_unresolvable_base_matches_nothing(self) -> None:
+        """No number and no base is no identity, and no identity matches.
+
+        The resolution call can fail. When it does the run is reported rather
+        than silently grouped with whatever shares its branch name: a false
+        `infra-no-proof` on an advisory check is visible and correctable, a
+        suppressed one is neither.
+        """
+        report = liveness.classify_snapshot(
+            snapshot(
+                run(
+                    200,
+                    created_at="2026-09-20T04:00:00Z",
+                    head_branch="patch-1",
+                    head_repository="alice/perl-lsp-swarm",
+                    pulls=[],
                 ),
                 run(
                     100,
@@ -273,11 +387,38 @@ class ForkAndCoercionTests(unittest.TestCase):
             )
         )
         self.assertEqual(len(report["findings"]), 1)
-        finding = report["findings"][0]
-        self.assertEqual(finding["run_id"], 200)
-        self.assertEqual(finding["classification"], liveness.SERIALISED)
-        self.assertEqual(finding["predecessor_run_id"], 100)
-        self.assertEqual(finding["conclusion"], "neutral")
+        self.assertEqual(report["findings"][0]["classification"], liveness.INFRA_NO_PROOF)
+
+    def test_an_ambiguous_base_set_is_not_an_identity(self) -> None:
+        """Two bases for one head is the ambiguity, not a value to pick from."""
+        self.assertIsNone(
+            liveness.fork_identity(
+                run(1, head_repository="alice/x", head_branch="patch-1",
+                    base_refs=["main", "master"])
+            )
+        )
+        self.assertEqual(
+            liveness.fork_identity(
+                run(1, head_repository="alice/x", head_branch="patch-1", base_refs=["main"])
+            ),
+            ("alice/x", "patch-1", "main"),
+        )
+
+
+class ResolvedPullsTests(unittest.TestCase):
+    def test_a_failed_read_is_unreadable_not_empty(self) -> None:
+        self.assertIsNone(liveness.resolved_pulls_from_api(1, "[]"))
+        self.assertIsNone(liveness.resolved_pulls_from_api(0, None))
+        self.assertIsNone(liveness.resolved_pulls_from_api(0, "not json"))
+        self.assertIsNone(liveness.resolved_pulls_from_api(0, '{"number": 1}'))
+
+    def test_a_list_of_objects_is_an_answer(self) -> None:
+        self.assertEqual(liveness.resolved_pulls_from_api(0, "[]"), [])
+        self.assertEqual(
+            liveness.resolved_pulls_from_api(0, '[{"number": 7, "base": "main"}, 3]'),
+            [{"number": 7, "base": "main"}],
+        )
+
 
     def test_a_fork_run_with_no_head_repository_matches_nothing(self) -> None:
         """An unidentifiable run must not match; an honest `infra-no-proof`

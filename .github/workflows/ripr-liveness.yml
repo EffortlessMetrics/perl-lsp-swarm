@@ -98,6 +98,29 @@ jobs:
               else:
                   run["job_count"] = 1
 
+              # The API withholds `pull_requests` for a fork pull request, and
+              # `ripr.yml` groups on the number. Resolve it from the head
+              # commit rather than inferring identity from head repository and
+              # branch: one fork branch can carry two open pull requests at
+              # once, one onto `main` and one onto `master`, and those are two
+              # numbers and so two concurrency groups (#16109 review).
+              if not run.get("pull_requests"):
+                  out = subprocess.run(
+                      ["gh", "api", f"repos/{repo}/commits/{run['head_sha']}/pulls",
+                       "--jq", "[.[] | {number, base: .base.ref}]"],
+                      capture_output=True, text=True, check=False,
+                  )
+                  resolved = liveness.resolved_pulls_from_api(out.returncode, out.stdout)
+                  if resolved is not None:
+                      run["pull_requests"] = [
+                          entry["number"] for entry in resolved
+                          if isinstance(entry.get("number"), int)
+                      ]
+                      run["base_refs"] = sorted({
+                          entry["base"] for entry in resolved
+                          if isinstance(entry.get("base"), str) and entry.get("base")
+                      })
+
           snapshot = {
               "as_of": datetime.datetime.now(datetime.timezone.utc)
                   .replace(microsecond=0).isoformat().replace("+00:00", "Z"),

@@ -109,40 +109,94 @@ def groups_by_pull_request(run: dict[str, Any]) -> bool:
     return run.get("event") in PULL_REQUEST_EVENTS
 
 
-def fork_identity(run: dict[str, Any]) -> tuple[str, str] | None:
-    """The (head repository, head branch) pair identifying a fork's pull request.
+def base_ref(run: dict[str, Any]) -> str | None:
+    """The single base branch this run's pull request targets, if known.
 
-    Used only when the API withheld ``pull_requests``, which it does for a fork
-    pull request. The branch name alone is not an identity — two unrelated
-    forks both push ``patch-1`` — but the branch inside a named head repository
-    is: GitHub allows one open pull request per head repository and branch, so
-    two runs agreeing on both belong to the same pull request and therefore to
-    the same concurrency group. ``None`` when either half is missing, which
-    keeps an unidentifiable run from matching anything.
+    Filled by the snapshot from a resolution call; absent when the run offered
+    a number directly (no resolution needed) or when resolution failed. More
+    than one base means the head is shared by several pull requests, which is
+    the very ambiguity the caller must not paper over, so that reads as
+    unknown rather than as a pick.
+    """
+    refs = run.get("base_refs")
+    if isinstance(refs, list) and len(refs) == 1 and isinstance(refs[0], str) and refs[0]:
+        return refs[0]
+    return None
+
+
+def fork_identity(run: dict[str, Any]) -> tuple[str, str, str] | None:
+    """The (head repository, head branch, base ref) triple identifying a fork's
+    pull request.
+
+    Used only when neither the API nor the resolution call supplied a number.
+    Branch alone is not an identity -- two unrelated forks both push
+    ``patch-1``. Head repository plus branch is not one either, which is the
+    correction #16109 review found: GitHub allows one open pull request per
+    head **and base** pair, so a single fork branch can carry two open pull
+    requests at once, one onto ``main`` and one onto ``master``. This
+    repository's workflows support both, and those two pull requests have
+    different numbers and therefore different ``ripr-<pr>`` concurrency
+    groups. Matching them would explain one pull request's stall with the
+    other's run and suppress a real ``infra-no-proof``.
+
+    All three halves are required. ``None`` when any is missing, which keeps an
+    unidentifiable run from matching anything -- the loud failure, an explained
+    wait that should have been reported, rather than the silent one.
     """
     repository = run.get("head_repository")
     branch = run.get("head_branch")
-    if isinstance(repository, str) and repository and isinstance(branch, str) and branch:
-        return (repository, branch)
+    base = base_ref(run)
+    if (
+        isinstance(repository, str)
+        and repository
+        and isinstance(branch, str)
+        and branch
+        and base
+    ):
+        return (repository, branch, base)
     return None
+
+
+def resolved_pulls_from_api(returncode: int, stdout: str | None) -> list[dict[str, Any]] | None:
+    """Pull requests a ``gh api /commits/<sha>/pulls`` read established.
+
+    ``None`` means the read failed or did not parse, which leaves the run
+    without a resolved identity and so matching nothing. Only a list of
+    objects is an answer; anything else is unreadable rather than an empty
+    result, because reading a garbled body as "no pull requests" would turn a
+    resolvable run into an unidentifiable one.
+    """
+    if returncode != 0 or stdout is None:
+        return None
+    try:
+        parsed = json.loads(stdout)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(parsed, list):
+        return None
+    return [entry for entry in parsed if isinstance(entry, dict)]
 
 
 def same_concurrency_group(left: dict[str, Any], right: dict[str, Any]) -> bool:
     """Whether two runs would contend for the same ``concurrency`` group.
 
-    Grouping follows the event, because ``ripr.yml``'s group expression does.
-    Two pull-request runs match on a shared pull request number when the API
-    supplied one, and otherwise on head repository plus head branch — the fork
-    case, where ``pull_requests`` comes back empty.
+    Grouping follows the event, because ``ripr.yml``'s group expression does:
+    ``ripr-<pr>`` for a pull-request run. The number is therefore the identity,
+    and everything below is about recovering it when the API withheld it, which
+    it does for a fork pull request.
 
-    Both halves of that fallback are load-bearing. Dropping the repository
-    matches two unrelated forks that happen to share a branch name, which
-    silently reclassifies a genuinely stuck run as an explained wait.
-    Dropping the fallback entirely — comparing nothing at all when the number
-    is absent — rejects a fork pull request's own predecessor, so its second
-    push is reported ``infra-no-proof`` for queueing behind its first, exactly
-    the false red this reporter exists to avoid. A run that offers neither
-    identity matches nothing.
+    Two pull-request runs match on a shared number whenever both have one —
+    supplied by the API, or filled in by the snapshot's resolution call. Only
+    when neither has a number does the ``fork_identity`` triple apply, and it
+    requires the base ref precisely because head repository plus branch is not
+    an identity: one fork branch can carry two open pull requests at once, one
+    onto ``main`` and one onto ``master``, with two different numbers and two
+    different concurrency groups.
+
+    A run that offers no identity matches nothing. That is the deliberate
+    direction: an unmatched run is reported ``infra-no-proof`` when it was
+    merely queued, which is a visible false red on an advisory check, whereas a
+    wrong match explains a genuinely dead gate away and nobody ever sees it.
     """
     left_by_pr, right_by_pr = groups_by_pull_request(left), groups_by_pull_request(right)
     if left_by_pr != right_by_pr:
