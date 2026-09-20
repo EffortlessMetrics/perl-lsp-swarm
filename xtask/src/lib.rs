@@ -68,3 +68,4 @@ pub mod writer_preflight;
 
 #[cfg(test)]
 mod test_support;
+pub mod pre_freeze_public_beta_acceptance;
