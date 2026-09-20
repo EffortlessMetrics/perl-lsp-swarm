@@ -405,6 +405,110 @@ class ForkAndCoercionTests(unittest.TestCase):
         )
 
 
+class PredecessorTests(unittest.TestCase):
+    def test_a_queued_sibling_that_has_jobs_is_a_predecessor(self) -> None:
+        """A run claims its concurrency group on admission, not at first job
+        start. A sibling whose jobs exist but are all waiting on a busy runner
+        pool reads `queued` and is holding the group. Requiring `in_progress`
+        reported the newest head as a failure during exactly the runner
+        backlog that caused the wait.
+        """
+        report = liveness.classify_snapshot(
+            snapshot(
+                run(200, created_at="2026-09-20T04:00:00Z", pulls=[16099]),
+                run(
+                    100,
+                    status="queued",
+                    created_at="2026-09-20T03:30:00Z",
+                    job_count=4,
+                    pulls=[16099],
+                ),
+            )
+        )
+        self.assertEqual(len(report["findings"]), 1)
+        finding = report["findings"][0]
+        self.assertEqual(finding["run_id"], 200)
+        self.assertEqual(finding["classification"], liveness.SERIALISED)
+        self.assertEqual(finding["predecessor_run_id"], 100)
+
+    def test_a_sibling_with_no_jobs_still_explains_nothing(self) -> None:
+        """The other half of the same predicate: a sibling that has scheduled
+        nothing either is not holding anything for anyone.
+        """
+        report = liveness.classify_snapshot(
+            snapshot(
+                run(200, created_at="2026-09-20T04:00:00Z", pulls=[16099]),
+                run(
+                    100,
+                    status="queued",
+                    created_at="2026-09-20T03:30:00Z",
+                    job_count=0,
+                    pulls=[16099],
+                ),
+            )
+        )
+        findings = {finding["run_id"]: finding for finding in report["findings"]}
+        self.assertEqual(findings[200]["classification"], liveness.INFRA_NO_PROOF)
+        self.assertIsNone(findings[200]["predecessor_run_id"])
+
+    def test_a_newer_run_is_not_a_predecessor(self) -> None:
+        """`predecessor` is the word the posted title and summary use --
+        "queued behind an earlier run". Without the ordering, a genuinely dead
+        run reclassifies to an explained wait the moment its own replacement
+        starts, naming a successor that reports on a different head and will
+        never produce proof for this one. That is a real `infra-no-proof`
+        suppressed by a false `serialised`.
+        """
+        report = liveness.classify_snapshot(
+            snapshot(
+                run(100, created_at="2026-09-20T04:00:00Z", pulls=[16099]),
+                run(
+                    200,
+                    status="in_progress",
+                    created_at="2026-09-20T04:10:00Z",
+                    job_count=4,
+                    pulls=[16099],
+                ),
+            )
+        )
+        self.assertEqual(len(report["findings"]), 1)
+        finding = report["findings"][0]
+        self.assertEqual(finding["run_id"], 100)
+        self.assertEqual(finding["classification"], liveness.INFRA_NO_PROOF)
+        self.assertIsNone(finding["predecessor_run_id"])
+
+    def test_one_known_number_decides_against_a_bare_run(self) -> None:
+        """The fallback is for when neither side has a number. One side
+        knowing its own is enough to decide, and it decides against: a run
+        carrying a number the other does not share is a different pull
+        request, whatever branch they agree on.
+        """
+        report = liveness.classify_snapshot(
+            snapshot(
+                run(
+                    200,
+                    created_at="2026-09-20T04:00:00Z",
+                    head_branch="patch-1",
+                    head_repository="alice/perl-lsp-swarm",
+                    pulls=[],
+                    base_refs=["main"],
+                ),
+                run(
+                    100,
+                    status="in_progress",
+                    created_at="2026-09-20T03:30:00Z",
+                    job_count=4,
+                    head_branch="patch-1",
+                    head_repository="alice/perl-lsp-swarm",
+                    pulls=[16099],
+                    base_refs=["main"],
+                ),
+            )
+        )
+        self.assertEqual(len(report["findings"]), 1)
+        self.assertEqual(report["findings"][0]["classification"], liveness.INFRA_NO_PROOF)
+
+
 class ResolvedPullsTests(unittest.TestCase):
     def test_a_failed_read_is_unreadable_not_empty(self) -> None:
         self.assertIsNone(liveness.resolved_pulls_from_api(1, "[]"))

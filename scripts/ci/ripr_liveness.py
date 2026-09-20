@@ -203,7 +203,11 @@ def same_concurrency_group(left: dict[str, Any], right: dict[str, Any]) -> bool:
         return False
     if left_by_pr:
         left_pulls, right_pulls = pull_numbers(left), pull_numbers(right)
-        if left_pulls and right_pulls:
+        # One side knowing its number is enough to decide, and it decides
+        # against: a run with a number that the other does not share is a
+        # different pull request. The fallback is for when neither side has
+        # one, which is the only case its safety argument covers.
+        if left_pulls or right_pulls:
             return bool(set(left_pulls) & set(right_pulls))
         left_fork, right_fork = fork_identity(left), fork_identity(right)
         return left_fork is not None and left_fork == right_fork
@@ -212,19 +216,36 @@ def same_concurrency_group(left: dict[str, Any], right: dict[str, Any]) -> bool:
 
 
 def predecessor_for(run: dict[str, Any], runs: list[dict[str, Any]]) -> int | None:
-    """The newest started run holding this run's concurrency group.
+    """The newest earlier run holding this run's concurrency group.
 
-    Only a run that actually started can be occupying the group; a sibling that
-    is itself queued explains nothing.
+    A run claims its concurrency group on admission, not at first job start,
+    so ``in_progress`` is too narrow a test: a run whose jobs exist but are
+    all waiting on a busy runner pool reads ``queued`` and is holding the
+    group regardless. Requiring ``in_progress`` reported the newest head as
+    ``infra-no-proof`` during exactly the runner backlog that causes the wait
+    (#16109 review). What distinguishes a holder from a sibling that explains
+    nothing is whether it has any job at all, which the snapshot already
+    reads.
+
+    The candidate must also be older than this run. ``predecessor`` is the
+    word used in the posted title and summary -- "queued behind an earlier
+    run" -- and without the ordering a genuinely dead run reclassifies to an
+    explained wait the moment its *replacement* starts, naming a successor
+    that reports on a different head and will never produce proof for this
+    one.
     """
     run_id = run.get("id")
+    if not isinstance(run_id, int):
+        return None
     candidates = [
-        candidate.get("id")
+        candidate_id
         for candidate in runs
-        if candidate.get("id") != run_id
-        and candidate.get("status") == "in_progress"
+        if isinstance(candidate_id := candidate.get("id"), int)
+        and candidate_id < run_id
+        and candidate.get("status") != "completed"
+        and isinstance(candidate.get("job_count"), int)
+        and candidate.get("job_count", 0) > 0
         and same_concurrency_group(run, candidate)
-        and isinstance(candidate.get("id"), int)
     ]
     return max(candidates) if candidates else None
 

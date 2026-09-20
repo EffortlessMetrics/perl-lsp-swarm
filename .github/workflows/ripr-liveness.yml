@@ -98,6 +98,11 @@ jobs:
               else:
                   run["job_count"] = 1
 
+              # A completed run can neither be a candidate nor hold a group,
+              # so it needs no identity and no call spent on one.
+              if run.get("status") == "completed":
+                  continue
+
               # The API withholds `pull_requests` for a fork pull request, and
               # `ripr.yml` groups on the number. Resolve it from the head
               # commit rather than inferring identity from head repository and
@@ -166,16 +171,24 @@ jobs:
               lasts, so without this a two-hour stall leaves eight identical
               check runs on one pull request.
 
-              Paginated deliberately. The endpoint defaults to 30 results and
-              `gh api` follows `next` links only under `--paginate`, while the
-              very head this reporter was built for carried 74 check runs -- so
-              a single page could easily miss an id posted an hour ago and
-              re-post it on every fire. `--paginate` with `--jq` emits one id
-              per line across all pages rather than one JSON document.
+              `filter=all` and `--paginate` are both load-bearing, and the
+              first is the one that bites at two entries rather than at a
+              hundred. The endpoint's `filter` defaults to `latest`, which
+              returns only the most recent check run *per name* -- and every
+              post here carries the single name `ripr+ liveness`, so the
+              default answers "is this the newest liveness id" when the
+              question is "has this id been posted at all". A run that flips
+              between `infra-no-proof` and `serialised_behind_predecessor` as
+              its predecessor starts and finishes alternates between two ids,
+              and under the default each flip looks unposted and re-posts,
+              forever. `--paginate` then matters past 100 distinct check
+              names, which this repository's heads do reach -- 74 names, but
+              83 rows on one head measured. `--paginate` with `--jq` emits
+              one id per line across all pages rather than one JSON document.
               """
               out = subprocess.run(
                   ["gh", "api", "--paginate",
-                   f"repos/{repo}/commits/{head_sha}/check-runs?per_page=100",
+                   f"repos/{repo}/commits/{head_sha}/check-runs?filter=all&per_page=100",
                    "--jq", ".check_runs[].external_id"],
                   capture_output=True, text=True, check=False,
               )
