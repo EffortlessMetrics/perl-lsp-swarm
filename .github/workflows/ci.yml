@@ -1001,43 +1001,16 @@ jobs:
       - name: Summarize PR-fast gate failures
         if: always()
         shell: bash
-        run: |
-          python3 - <<'PY'
-          import json
-          import os
-          from pathlib import Path
-
-          receipt = Path("target/receipts/receipt.json")
-          summary = Path(os.environ["GITHUB_STEP_SUMMARY"])
-          lines = ["### PR Smoke gate summary", ""]
-          if not receipt.is_file():
-              lines.append("- Receipt: unavailable (the PR-fast runner did not produce a final receipt.)")
-          else:
-              try:
-                  data = json.loads(receipt.read_text(encoding="utf-8"))
-              except (OSError, json.JSONDecodeError) as error:
-                  lines.append(f"- Receipt: unreadable ({error})")
-              else:
-                  gates = data.get("gates", [])
-                  failures = [
-                      gate for gate in gates
-                      if gate.get("status") not in ("pass", "passed", "success")
-                  ]
-                  lines.append(f"- Receipt: `{receipt}`")
-                  if failures:
-                      lines.append("")
-                      lines.append("| Gate | Status | Exit |")
-                      lines.append("| --- | --- | ---: |")
-                      for gate in failures:
-                          lines.append(
-                              f"| `{gate.get('gate_name', 'unknown')}` | "
-                              f"`{gate.get('status', 'unknown')}` | "
-                              f"`{gate.get('exit_code', 'unknown')}` |"
-                          )
-                  else:
-                      lines.append("- Non-success gates: none recorded.")
-          summary.write_text("\n".join(lines) + "\n", encoding="utf-8")
-          PY
+        # Renders the gate table into GITHUB_STEP_SUMMARY, mirrors it to stdout
+        # for the job-log tail, and publishes one `::error` annotation per
+        # failing gate so the check-runs API can name the gate without the
+        # artifact download (#15492). The logic lives in a script rather than
+        # inline here because four of its branches -- the `skip` exclusion, the
+        # workflow-command escaping, the `::stop-commands::` fence and the
+        # ten-annotation fold -- are only falsifiable from a test harness:
+        # scripts/ci/test_summarize_pr_fast_gates.py, run by
+        # .github/workflows/ci-gate-self-tests.yml.
+        run: python3 scripts/ci/summarize_pr_fast_gates.py
 
       - name: Convert PR-fast receipt to JUnit
         if: always()

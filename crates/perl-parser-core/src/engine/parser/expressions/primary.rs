@@ -777,6 +777,10 @@ impl<'a> Parser<'a> {
 
                             let token = self.advance_token()?;
                             let start = token.start();
+                            let has_parens = self.peek_kind() == Some(TokenKind::LeftParen);
+                            if has_parens {
+                                self.consume_token()?;
+                            }
                             let variable = if matches!(
                                 self.peek_kind(),
                                 Some(
@@ -788,7 +792,7 @@ impl<'a> Parser<'a> {
                             ) {
                                 Box::new(self.parse_variable_declaration()?)
                             } else {
-                                Box::new(self.parse_assignment()?)
+                                Box::new(self.parse_assignment_before_separator()?)
                             };
                             // Accept comma or fat arrow between variable and
                             // package — Perl treats `=>` as a synonym for `,`.
@@ -806,16 +810,24 @@ impl<'a> Parser<'a> {
                                     ));
                                 }
                             }
-                            let package = Box::new(self.parse_assignment()?);
+                            let package = Box::new(self.parse_assignment_before_separator()?);
                             let mut args = vec![];
                             while matches!(
                                 self.peek_kind(),
                                 Some(TokenKind::Comma | TokenKind::FatArrow)
                             ) {
                                 self.consume_token()?;
-                                args.push(self.parse_assignment()?);
+                                if has_parens && self.peek_kind() == Some(TokenKind::RightParen) {
+                                    break;
+                                }
+                                args.push(self.parse_assignment_before_separator()?);
                             }
-                            let end = self.previous_position();
+                            // Some operands consume tokens directly, so their AST end is authoritative.
+                            let mut end = args.last().map_or(package.location.end, |arg| arg.location.end);
+                            if has_parens {
+                                self.expect_closing_delimiter(TokenKind::RightParen)?;
+                                end = end.max(self.previous_position());
+                            }
                             self.charge_node(
                                 NodeKind::Tie { variable, package, args },
                                 SourceLocation { start, end },

@@ -22,6 +22,30 @@
 use perl_position_tracking::LineIndex;
 use thiserror::Error;
 
+/// Invalid core-Perl signature parameter form, independent of recovery strategy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InvalidSignatureParameterKind {
+    /// The colon marker was attached to an array or hash rather than a scalar.
+    NamedAggregate,
+    /// An array or hash slurpy parameter carried a default expression.
+    SlurpyDefault,
+    /// A default operator had no following expression before the boundary.
+    MissingDefaultExpression,
+}
+
+/// The ordering boundary crossed by a classified signature parameter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InvalidSignatureOrderingKind {
+    /// A required positional scalar follows an optional positional scalar.
+    MandatoryAfterOptional,
+    /// A positional scalar follows the start of the named parameter region.
+    PositionalAfterNamed,
+    /// A required named scalar follows an optional positional scalar.
+    RequiredNamedAfterOptional,
+    /// A classified parameter follows the terminal slurpy parameter.
+    ParameterAfterSlurpy,
+}
+
 #[derive(Debug, Clone)]
 /// Rich error context with source line and fix suggestions
 #[non_exhaustive]
@@ -678,6 +702,24 @@ pub enum ParseError {
         location: usize,
     },
 
+    /// A rejected parameter with an exact, parser-owned half-open source range.
+    #[error("Invalid signature parameter ({kind:?}) at {range:?}")]
+    InvalidSignatureParameter {
+        /// The independently classified parameter-form defect.
+        kind: InvalidSignatureParameterKind,
+        /// Complete parameter range, or known prefix for a missing expression.
+        range: perl_ast::SourceLocation,
+    },
+
+    /// An ordering violation on a retained, classified signature parameter.
+    #[error("Invalid signature ordering ({kind:?}) at {range:?}")]
+    InvalidSignatureOrdering {
+        /// The ordering rule crossed by this parameter.
+        kind: InvalidSignatureOrderingKind,
+        /// The complete offending parameter's half-open byte range.
+        range: perl_ast::SourceLocation,
+    },
+
     /// A block follows a do-while condition: `do { ... } while (cond) { ... }`
     ///
     /// Real Perl rejects this construct outright (`syntax error near ") {"`),
@@ -855,6 +897,8 @@ impl ErrorClass for ParseError {
             Self::UnexpectedEof
             | Self::UnexpectedToken { .. }
             | Self::SyntaxError { .. }
+            | Self::InvalidSignatureParameter { .. }
+            | Self::InvalidSignatureOrdering { .. }
             | Self::DoWhileTrailingBlock { .. }
             | Self::LexerError { .. }
             | Self::InvalidNumber { .. }
@@ -1582,6 +1626,8 @@ impl ParseError {
         match self {
             ParseError::UnexpectedToken { location, .. } => Some(*location),
             ParseError::SyntaxError { location, .. } => Some(*location),
+            ParseError::InvalidSignatureParameter { range, .. }
+            | ParseError::InvalidSignatureOrdering { range, .. } => Some(range.start),
             ParseError::Advisory { location, .. } => Some(*location),
             ParseError::Recovered { location, .. } => Some(*location),
             // Anchored at the declaration whose collection was refused, so
@@ -1668,6 +1714,10 @@ impl ParseError {
         // choose its diagnostic-anchor before the crate can compile.
         match self {
             Self::UnexpectedEof => ParseDiagnosticAnchor::EndOfInput,
+            Self::InvalidSignatureParameter { range, .. }
+            | Self::InvalidSignatureOrdering { range, .. } => {
+                ParseDiagnosticAnchor::Exact(range.start)
+            }
             Self::UnexpectedToken { location, .. }
             | Self::SyntaxError { location, .. }
             | Self::DoWhileTrailingBlock { location }

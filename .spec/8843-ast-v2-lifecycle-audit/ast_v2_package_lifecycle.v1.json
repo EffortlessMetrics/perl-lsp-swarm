@@ -1322,7 +1322,7 @@
     {
       "surface_id": "ps:panic-baseline",
       "surface": "policy_baseline",
-      "site": "policy/allow.toml:1642",
+      "site": "policy/allow.toml:1625",
       "current_status": "per-crate panic-macro baseline floor over crates/perl-ast-v2/src/**/*.rs",
       "owner": "repository panic policy"
     },
