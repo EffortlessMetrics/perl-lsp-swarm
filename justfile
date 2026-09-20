@@ -2383,8 +2383,8 @@ _public-api-filter raw out:
     # INSTRUMENT-FAIL by the caller, so tolerate the exit code here.
     grep -E '^(pub |(#\[[^]]*\][[:space:]]*)+pub )' "{{raw}}" \
         | sed -E \
-            -e 's#core::io::(write::|error::)?#std::io::#g' \
-            -e 's#alloc::io::(buf_read::|read::)?#std::io::#g' \
+            -e 's#(^|[^A-Za-z0-9_:])core::io::(write::|error::)?#\1std::io::#g' \
+            -e 's#(^|[^A-Za-z0-9_:])alloc::io::(buf_read::|read::)?#\1std::io::#g' \
         > "{{out}}" || true
 
 # Check public API surface of the ratcheted crates against committed baselines

@@ -16,7 +16,9 @@
 
 use std::collections::BTreeSet;
 use std::fs;
+use std::io::Write;
 use std::path::PathBuf;
+use std::process::{Command, Stdio};
 
 #[test]
 fn nightly_reports_require_successful_nonempty_baseline() -> Result<(), Box<dyn std::error::Error>>
@@ -465,6 +467,100 @@ fn public_api_filter_normalizes_only_io_reexport_paths() -> Result<(), Box<dyn s
     );
     assert!(filter.contains("std::io::"));
     assert!(filter.contains("grep -E"));
+    Ok(())
+}
+
+/// Extract the `-e '<expr>'` substitutions from the shared filter recipe, in
+/// order, so a behavioural test runs the recipe's own expressions rather than a
+/// copy of them that can drift.
+fn filter_sed_expressions() -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    let justfile = fs::read_to_string(project_root().join("justfile"))?;
+    let recipe = justfile
+        .split("_public-api-filter raw out:")
+        .nth(1)
+        .ok_or("Could not find _public-api-filter recipe")?
+        .split("\n# Check public API surface")
+        .next()
+        .ok_or("Could not delimit _public-api-filter recipe")?;
+
+    let mut exprs = Vec::new();
+    for line in recipe.lines() {
+        let Some(rest) = line.trim().strip_prefix("-e '") else {
+            continue;
+        };
+        let Some(expr) = rest.rsplit_once('\'') else {
+            continue;
+        };
+        exprs.push(expr.0.to_string());
+    }
+    if exprs.is_empty() {
+        return Err("no -e substitutions found in _public-api-filter".into());
+    }
+    Ok(exprs)
+}
+
+/// The io fold must only rewrite an external-crate path, never a user-owned one
+/// that merely ends in `core` or `alloc`.
+///
+/// `#16117` put this filter on **both** sides of the diff, which is what makes
+/// an over-broad match dangerous rather than merely untidy: before, a genuine
+/// rename of `perl_lsp_rs_core::foo_alloc::io::Thing` to
+/// `perl_lsp_rs_core::foo_std::io::Thing` still diffed, because only the
+/// generated side was rewritten. With both sides folded, an unanchored
+/// substitution normalizes the two spellings to identical text and the rename
+/// walks past the ratchet unseen — the one thing this gate exists to stop.
+///
+/// The check runs the recipe's own `sed` expressions, so it measures behaviour
+/// rather than spelling and cannot pass against a differently-written regex
+/// with the same hole.
+#[test]
+fn the_io_fold_leaves_user_owned_lookalike_paths_alone() -> Result<(), Box<dyn std::error::Error>> {
+    let exprs = filter_sed_expressions()?;
+
+    // Each case is a public-API line the filter would see, paired with what it
+    // must read after folding.
+    let cases = [
+        // Genuine external-crate re-exports: these are the ones to fold.
+        ("pub fn b(x: &mut dyn alloc::io::read::Read)", "pub fn b(x: &mut dyn std::io::Read)"),
+        ("pub fn d(x: core::io::error::Error)", "pub fn d(x: std::io::Error)"),
+        // A user-owned module whose name ends in `alloc` or `core`.
+        (
+            "pub fn a(x: &perl_lsp_rs_core::foo_alloc::io::Thing)",
+            "pub fn a(x: &perl_lsp_rs_core::foo_alloc::io::Thing)",
+        ),
+        ("pub fn c(x: bar_core::io::Sink)", "pub fn c(x: bar_core::io::Sink)"),
+        // A user-owned module actually named `alloc`, reached through a path.
+        ("pub fn e(x: crate::alloc::io::Thing)", "pub fn e(x: crate::alloc::io::Thing)"),
+    ];
+
+    for (input, expected) in cases {
+        let mut command = Command::new("sed");
+        command.arg("-E");
+        for expr in &exprs {
+            command.arg("-e").arg(expr);
+        }
+        let mut child =
+            command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
+        child
+            .stdin
+            .as_mut()
+            .ok_or("sed stdin unavailable")?
+            .write_all(format!("{input}\n").as_bytes())?;
+        let output = child.wait_with_output()?;
+        if !output.status.success() {
+            return Err(format!(
+                "sed failed on {input:?}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            )
+            .into());
+        }
+        let got = String::from_utf8(output.stdout)?;
+        assert_eq!(
+            got.trim_end(),
+            expected,
+            "the io fold rewrote a path it must not touch (#16117)"
+        );
+    }
     Ok(())
 }
 
