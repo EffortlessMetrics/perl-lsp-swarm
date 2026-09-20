@@ -1274,6 +1274,26 @@ mod tests {
         );
     }
 
+    /// Fallible equality for the termination controls: reports both operands so
+    /// a regression names what it produced, not merely that it disagreed.
+    ///
+    /// These controls return `TestResult`, so a predicate failure belongs in the
+    /// error channel rather than in a panic (review 5260800437).
+    fn termination_is(observed: Termination, expected: Termination, because: &str) -> TestResult {
+        if observed == expected {
+            return Ok(());
+        }
+        Err(format!("{because}: expected {expected:?}, observed {observed:?}").into())
+    }
+
+    /// Fallible predicate for the wording controls, carrying the rendered text.
+    fn reason_withholds(rendered: &str, forbidden: &str, because: &str) -> TestResult {
+        if !rendered.contains(forbidden) {
+            return Ok(());
+        }
+        Err(format!("{because}: {rendered:?} must not contain {forbidden:?}").into())
+    }
+
     #[test]
     fn a_failed_kill_classifies_an_exited_child_without_claiming_a_termination() -> TestResult {
         // Review found this branch returning `Reaped`, which `describe` renders
@@ -1281,39 +1301,32 @@ mod tests {
         // touched. A live process cannot drive it — Unix `Child::kill` returns
         // `Ok` on a cached exit status, so an already-reaped child accepts a
         // kill — so the classification is its own seam and gets driven from the
-        // observed wait result instead. Both directions, so neither can pass by
-        // always answering the same variant.
+        // observed wait result instead. All three directions, so none can pass
+        // by always answering the same variant.
         let exited = Command::new("true").spawn()?.wait()?;
-        assert_eq!(
+        termination_is(
             classify_failed_kill(&Ok(Some(exited))),
             Termination::ExitedOnItsOwn,
-            "a kill that failed terminated nothing, so an exit it then observes \
-             is the child's own"
-        );
-        assert_eq!(
+            "a kill that failed terminated nothing, so an exit it then observes is the child's own",
+        )?;
+        termination_is(
             classify_failed_kill(&Ok(None)),
             Termination::NotSignalled,
-            "a child still running after a failed kill was never signalled"
-        );
-        assert_eq!(
+            "a child still running after a failed kill was never signalled",
+        )?;
+        termination_is(
             classify_failed_kill(&Err(std::io::Error::other("wait failed"))),
             Termination::NotSignalled,
-            "an unreadable wait cannot establish an exit, so it must not claim one"
-        );
+            "an unreadable wait cannot establish an exit, so it must not claim one",
+        )?;
 
-        // Reverting the mapping to `Reaped` fails the first assertion above,
-        // which is what this control exists to guarantee.
-        for (outcome, forbidden) in [
-            (classify_failed_kill(&Ok(Some(exited))), "was terminated"),
-            (classify_failed_kill(&Ok(None)), "was terminated"),
-        ] {
+        // Reverting the mapping to `Reaped` fails the first check above, which is
+        // what this control exists to guarantee.
+        for outcome in [classify_failed_kill(&Ok(Some(exited))), classify_failed_kill(&Ok(None))] {
             let rendered =
                 RunRefused::TimedOut { wall: Duration::from_secs(1), termination: outcome }
                     .reason("cargo x");
-            assert!(
-                !rendered.contains(forbidden),
-                "a failed kill must never render {forbidden:?}: {rendered}"
-            );
+            reason_withholds(&rendered, "was terminated", "a failed kill is not a termination")?;
         }
         Ok(())
     }
@@ -1324,21 +1337,22 @@ mod tests {
         // child this operation really does signal and collect is the only case
         // allowed to report `Reaped`.
         let mut live = Command::new("sleep").arg("30").spawn()?;
-        assert_eq!(
+        termination_is(
             reap_bounded(&mut live),
             Termination::Reaped,
-            "a child this operation signalled and collected is genuinely reaped"
-        );
+            "a child this operation signalled and collected is genuinely reaped",
+        )?;
 
         // Pins the platform premise that makes the failed-kill branch
         // unreachable. If this ever fails, that branch has become reachable and
         // deserves a live control of its own rather than the seam alone.
         let mut gone = Command::new("true").spawn()?;
         gone.wait()?;
-        assert!(
-            gone.kill().is_ok(),
-            "Unix `Child::kill` is expected to succeed on a cached exit status"
-        );
+        if gone.kill().is_err() {
+            return Err("Unix `Child::kill` is expected to succeed on a cached exit status; \
+                        the failed-kill branch has become reachable and needs a live control"
+                .into());
+        }
         Ok(())
     }
 
