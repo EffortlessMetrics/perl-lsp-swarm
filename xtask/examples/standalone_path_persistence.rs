@@ -431,14 +431,20 @@ fn is_under_root(child: &str, root: &str) -> bool {
         return false;
     }
     let trimmed_root = root.trim_end_matches(separator);
+    // `trimmed_root.len()` is a byte offset into `child` and need not fall on a
+    // character boundary, so take the prefix through the checked accessor rather
+    // than indexing. A Unicode path is something to judge, never something to
+    // panic on; `get` yielding Some also makes the split below boundary-safe.
+    let Some(prefix) = child.get(..trimmed_root.len()) else {
+        return false;
+    };
     // Windows and UNC paths are case-insensitive, so two spellings of one
     // directory are one directory; refusing them would reject a legitimate
     // document rather than catch a laundering attempt. POSIX stays exact.
     let prefix_matches = if separator == '\\' {
-        child.len() > trimmed_root.len()
-            && child[..trimmed_root.len()].eq_ignore_ascii_case(trimmed_root)
+        prefix.eq_ignore_ascii_case(trimmed_root)
     } else {
-        child.starts_with(trimmed_root)
+        prefix == trimmed_root
     };
     if !prefix_matches {
         return false;
@@ -2553,6 +2559,32 @@ mod tests {
         })?;
         validate_plan(&matching).map_err(|error| {
             color_eyre::eyre::eyre!("a multi-byte name is not invalid: {error}")
+        })?;
+        Ok(())
+    }
+
+    /// The same byte-offset class in install-root containment. A root whose byte
+    /// length lands inside a multi-byte segment of the candidate path must be
+    /// judged, not panicked on.
+    #[test]
+    fn unicode_root_containment_refuses_instead_of_panicking() -> Result<()> {
+        // root "C:\\a" is 4 bytes; the candidate's 4th byte is inside "\u{1F600}".
+        let plan: ContractResult<PathPlan> =
+            mutated("plan_windows_registry_user_path.json", |value| {
+                value["environment"]["install_root"]["path"] = json!("C:\\a");
+                value["subject"]["executable_path"] = json!("C:\\\u{1F600}\\perllsp.exe");
+            });
+        expect_rejected(plan.and_then(|plan| validate_plan(&plan)), "is not under install root")?;
+
+        // A Unicode segment genuinely under the root is still accepted, so the
+        // guard does not turn every non-ASCII path into a refusal.
+        let nested: PathPlan = mutated("plan_windows_registry_user_path.json", |value| {
+            value["subject"]["executable_path"] = json!(
+                "C:\\Users\\operator\\AppData\\Local\\perl-lsp\\\u{65E5}\u{672C}\\perllsp.exe"
+            );
+        })?;
+        validate_plan(&nested).map_err(|error| {
+            color_eyre::eyre::eyre!("a Unicode segment under the root is valid: {error}")
         })?;
         Ok(())
     }
