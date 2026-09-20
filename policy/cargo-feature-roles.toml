@@ -338,6 +338,15 @@ owner = "#8409"
 consumers = ["cfg_gated", "propagated"]
 
 [[feature]]
+crate = "perl-lsp-rs-core"
+name = "test-instrumentation"
+role = "test_only"
+owner = "#8409"
+consumers = ["cfg_gated"]
+migration = "Rename or retire under #8411; Cargo features must not encode roadmap or test status."
+note = "Proof-only instrumentation for the native-critic rebuild counter (#7286). Declared empty and off by default; all 14 gates are `#[cfg(any(test, feature = \"test-instrumentation\"))]`. perl-lsp-rs enables it on the dependency so its tests can observe a stage its own `#[cfg(test)]` cannot reach across the crate boundary, which is a dependency-declaration edge rather than a feature edge and so records no propagated signal."
+
+[[feature]]
 crate = "perl-lsp-ux-tests"
 name = "integration-test"
 role = "test_only"
