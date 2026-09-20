@@ -485,19 +485,26 @@ fn evaluate_new_ripr(
     args: &QualityGateArgs,
     overlay: Option<&LifecycleOverlay>,
 ) -> Result<GateEvaluation> {
+    let ripr_pr = read_ripr_pr_receipt(&args.ripr_pr_receipt, head);
     // #16126: this gate blocks on `ripr_pr`, the diff-scoped receipt. The
     // repo-wide receipt below is a freshness proof of total debt and its count
     // is never compared to anything here, so it need not be rebuilt on the
     // head. `evaluate_final` is the mode that does compare it, and stays
     // head-bound.
+    //
+    // A named baseline is accepted only when the diff-scoped receipt says the
+    // diff was measured from that same commit. The caller naming a commit is
+    // not evidence that the commit is this pull request's merge base, so the
+    // gate verifies the claim against `ripr_pr.base_sha` rather than trusting
+    // it. A missing `base_sha` -- which includes every case where the
+    // diff-scoped receipt is itself absent or stale -- accepts no baseline, so
+    // the repo-wide receipt falls back to head-bound and a base-bound one reads
+    // `stale`, which blocks.
     let mut accepted = vec![head];
-    if let Some(baseline) = args.ripr_baseline_commit.as_deref()
-        && !baseline.is_empty()
-    {
+    if let Some(baseline) = accepted_baseline_commit(args, &ripr_pr) {
         accepted.push(baseline);
     }
     let ripr = read_ripr_plus_receipt_bound(&args.ripr_receipt, &accepted);
-    let ripr_pr = read_ripr_pr_receipt(&args.ripr_pr_receipt, head);
     let review = read_review_guidance_receipt(&args.review_receipt, head);
     let exceptions = read_exception_policy(args, today(), overlay);
     let mut next_actions = Vec::new();
@@ -1256,6 +1263,23 @@ fn read_json_receipt(path: &Path) -> JsonReceipt {
         Ok(value) => JsonReceipt::Present(value),
         Err(_) => JsonReceipt::Invalid,
     }
+}
+
+/// The commit, other than the head, whose repo-wide total-debt receipt this
+/// evaluation may accept (#16126).
+///
+/// Returns `Some` only when the caller named a non-empty commit *and* the
+/// diff-scoped receipt records that same commit as the base it measured the
+/// diff from. Both halves are required: the flag alone proves only that the
+/// caller repeated a commit, and an unrelated total-debt proof would otherwise
+/// satisfy freshness for a diff measured from somewhere else.
+fn accepted_baseline_commit<'a>(
+    args: &'a QualityGateArgs,
+    ripr_pr: &RiprPrReceipt,
+) -> Option<&'a str> {
+    let baseline = args.ripr_baseline_commit.as_deref().filter(|c| !c.is_empty())?;
+    let measured_base = ripr_pr.base_sha.as_deref().filter(|c| !c.is_empty())?;
+    (baseline == measured_base).then_some(baseline)
 }
 
 fn read_ripr_plus_receipt(path: &Path, expected_head: &str) -> RiprPlusReceipt {
@@ -2670,6 +2694,14 @@ fn quality_gate_command(args: &QualityGateArgs, check: bool, patch: Option<f64>)
                 args.ripr_base,
                 args.ripr_head
             ));
+            // Without this the published repair command evaluates a different
+            // binding than the run that emitted it, and re-running it would
+            // report the accepted receipt as stale (#16126).
+            if let Some(baseline) = args.ripr_baseline_commit.as_deref()
+                && !baseline.is_empty()
+            {
+                command.push_str(&format!(" --ripr-baseline-commit {baseline}"));
+            }
         }
     }
     command.push_str(&format!(
@@ -3745,21 +3777,34 @@ mod tests {
     /// `write_gate_inputs` so these tests isolate the receipt *binding* from
     /// the gap count, which is a separate question with its own tests.
     fn write_binding_inputs(dir: &Path, head: &str, receipt_commit: &str) -> Result<()> {
+        write_binding_inputs_measured_from(dir, head, receipt_commit, Some("merge-base-sha"))
+    }
+
+    /// As `write_binding_inputs`, but `measured_base` is the commit the
+    /// diff-scoped receipt says it measured the diff from -- the fact the gate
+    /// checks a named baseline against. `None` omits `base_sha` entirely.
+    fn write_binding_inputs_measured_from(
+        dir: &Path,
+        head: &str,
+        receipt_commit: &str,
+        measured_base: Option<&str>,
+    ) -> Result<()> {
         fs::write(
             dir.join("ripr-plus.json"),
             json!({ "schema_version": 2, "head": receipt_commit, "unresolved": 5685 }).to_string(),
         )?;
-        fs::write(
-            dir.join("repo-exposure.json"),
-            json!({
-                "schema_version": "0.1",
-                "head_sha": head,
-                "base": "origin/main",
-                "base_sha": "merge-base-sha",
-                "summary": { "severe_gaps": 0, "reachable_unrevealed": 0, "no_static_path": 0 }
-            })
-            .to_string(),
-        )?;
+        let mut pr_receipt = json!({
+            "schema_version": "0.1",
+            "head_sha": head,
+            "base": "origin/main",
+            "summary": { "severe_gaps": 0, "reachable_unrevealed": 0, "no_static_path": 0 }
+        });
+        if let Some(base_sha) = measured_base
+            && let Some(map) = pr_receipt.as_object_mut()
+        {
+            map.insert("base_sha".to_string(), json!(base_sha));
+        }
+        fs::write(dir.join("repo-exposure.json"), pr_receipt.to_string())?;
         fs::write(
             dir.join("comments.json"),
             json!({
@@ -3907,6 +3952,85 @@ mod tests {
         assert_eq!(
             gap_action(&evaluation, "ripr_receipt_not_current").get("blocking"),
             Some(&json!(true))
+        );
+        Ok(())
+    }
+
+    /// #16126, after review. Naming a commit is not evidence that the commit
+    /// is this pull request's merge base. Without this check an unrelated
+    /// total-debt proof satisfies freshness for a diff measured from somewhere
+    /// else, purely because the caller echoed the proof's own commit back.
+    /// The diff-scoped receipt already records the base it measured from, so
+    /// the gate verifies the claim instead of trusting it.
+    #[test]
+    fn a_baseline_that_is_not_the_measured_base_blocks_even_when_it_matches_the_receipt()
+    -> Result<()> {
+        let head = "head-sha";
+        let unrelated = "unrelated-commit";
+
+        let cases: [(&str, Option<&str>); 2] = [
+            ("the diff was measured from a different base", Some("merge-base-sha")),
+            ("the diff-scoped receipt records no base at all", None),
+        ];
+
+        for (label, measured_base) in cases {
+            let dir = tempdir()?;
+            // The repo-wide receipt really is bound to `unrelated`, and the
+            // caller really does name `unrelated`. Only the cross-check
+            // against the measured base separates this from the good case.
+            write_binding_inputs_measured_from(dir.path(), head, unrelated, measured_base)?;
+
+            let mut args = new_ripr_args(dir.path())?;
+            args.ripr_baseline_commit = Some(unrelated.to_string());
+            let evaluation = evaluate_new_ripr(head, &args, None)?;
+
+            assert_eq!(
+                evaluation.receipt.pointer("/ripr_plus/status"),
+                Some(&json!("stale")),
+                "{label}"
+            );
+            assert_eq!(
+                gap_action(&evaluation, "ripr_receipt_not_current").get("blocking"),
+                Some(&json!(true)),
+                "{label}: a proof of some other tree is not this diff's total-debt proof"
+            );
+            assert!(evaluation.failed, "{label}");
+        }
+        Ok(())
+    }
+
+    /// The published repair commands must evaluate the same binding as the run
+    /// that emitted them. Dropping the flag would have a reader reproduce a
+    /// `stale` verdict for a receipt the gate accepted, and chase a blocker
+    /// that does not exist.
+    #[test]
+    fn the_repair_command_carries_the_baseline_binding() -> Result<()> {
+        let dir = tempdir()?;
+        let mut args = new_ripr_args(dir.path())?;
+
+        assert!(
+            !quality_gate_command(&args, false, None).contains("--ripr-baseline-commit"),
+            "no baseline named, so none is rendered"
+        );
+
+        args.ripr_baseline_commit = Some(String::new());
+        assert!(
+            !quality_gate_command(&args, false, None).contains("--ripr-baseline-commit"),
+            "an empty baseline changes no binding, so it renders nothing"
+        );
+
+        args.ripr_baseline_commit = Some("merge-base-sha".to_string());
+        for check in [false, true] {
+            let rendered = quality_gate_command(&args, check, None);
+            assert!(rendered.contains("--ripr-baseline-commit merge-base-sha"), "{rendered}");
+            assert_eq!(rendered.ends_with(" --check"), check, "{rendered}");
+        }
+
+        // The mode that stays head-bound must not advertise the option.
+        args.mode = QualityGateMode::Enforce;
+        assert!(
+            !quality_gate_command(&args, false, None).contains("--ripr-baseline-commit"),
+            "enforce mode compares the total on the head, so the option is not its contract"
         );
         Ok(())
     }
