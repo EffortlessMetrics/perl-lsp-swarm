@@ -50,6 +50,7 @@ def registry(rows: list[dict[str, object]], **overrides: object) -> object:
         authority={
             "build_combinations": "#3790",
             "product_maturity": "#6731",
+            "public_compatibility": "#8097",
         },
         rows=rows,
     )
@@ -459,6 +460,11 @@ class NegativeControlTests(unittest.TestCase):
         errors = validator.validate(registry([], authority={}), {})
         self.assert_rejects(errors, "build_combinations")
         self.assert_rejects(errors, "product_maturity")
+        errors = validator.validate(
+            registry([], authority={"build_combinations": "#3790", "product_maturity": "#6731"}),
+            {},
+        )
+        self.assert_rejects(errors, "public_compatibility")
 
     def test_wrong_schema_version_fails(self) -> None:
         errors = validator.validate(registry([], schema_version=99), {})

@@ -841,7 +841,7 @@ def validate(
             f"expected {list(CONSUMER_SIGNALS)}, found "
             f"{list(registry.consumer_signals)}"
         )
-    for required in ("build_combinations", "product_maturity"):
+    for required in ("build_combinations", "product_maturity", "public_compatibility"):
         if required not in registry.authority:
             errors.append(
                 f"[authority] must name the separate {required} authority "
