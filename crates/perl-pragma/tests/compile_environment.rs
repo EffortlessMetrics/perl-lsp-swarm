@@ -911,3 +911,81 @@ fn clean_old_adjacent_delta_forms_are_unsupported_in_both_orders() -> TestResult
     }
     Ok(())
 }
+
+fn sized_builtins(
+    target: usize,
+    empty_size: usize,
+) -> Result<Vec<NamedFact>, Box<dyn std::error::Error>> {
+    let mut facts = (0..3000).map(|i| named(&format!("{i:04}"))).collect::<Result<Vec<_>, _>>()?;
+    let initial = empty_size + serde_json::to_vec(&facts)?.len() - 2;
+    let mut remaining = target.checked_sub(initial).ok_or("fixture exceeds target")?;
+    for fact in &mut facts {
+        let added = remaining.min(MAX_NAME_BYTES - fact.name.len());
+        fact.name.push_str(&"x".repeat(added));
+        remaining -= added;
+    }
+    require(remaining == 0, "fixture cannot reach target within valid names")?;
+    Ok(facts)
+}
+
+#[test]
+fn state_payload_cap_excludes_digest_framing() -> TestResult {
+    for size in [MAX_SNAPSHOT_BYTES - 1, MAX_SNAPSHOT_BYTES, MAX_SNAPSHOT_BYTES + 1] {
+        let mut draft = fixture()?;
+        draft.builtins = exact(vec![])?;
+        let empty_size = serde_json::to_vec(&draft)?.len();
+        draft.builtins = exact(sized_builtins(size, empty_size)?)?;
+        let payload = serde_json::to_vec(&draft)?;
+        require(payload.len() == size, "state payload not exact requested size")?;
+        let result = CompileEnvironmentState::admit(draft.clone());
+        if size > MAX_SNAPSHOT_BYTES {
+            require(
+                matches!(result, Err(SchemaError::Limited("snapshot bytes"))),
+                "oversized state admitted",
+            )?;
+        } else {
+            let state = result?;
+            require(state.to_json()?.len() == size, "state output size changed")?;
+            let expected = ContentDigest::of_bytes(&serde_json::to_vec(&(
+                "compile_environment_state.v1",
+                state.draft(),
+            ))?);
+            require(state.digest()? == expected, "state framed digest changed")?;
+            require(
+                CompileEnvironmentState::read(payload.as_slice())?.digest()? == expected,
+                "state wire boundary rejected",
+            )?;
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn transition_payload_cap_excludes_digest_framing() -> TestResult {
+    for size in [MAX_SNAPSHOT_BYTES - 1, MAX_SNAPSHOT_BYTES, MAX_SNAPSHOT_BYTES + 1] {
+        let mut draft = transition()?;
+        draft.delta = vec![Delta::Builtins(exact(vec![])?)];
+        draft.affects = vec![FactClass::Builtins];
+        let empty_size = serde_json::to_vec(&draft)?.len();
+        draft.delta = vec![Delta::Builtins(exact(sized_builtins(size, empty_size)?)?)];
+        require(
+            serde_json::to_vec(&draft)?.len() == size,
+            "transition payload not exact requested size",
+        )?;
+        let result = CompileEnvironmentTransition::admit(draft);
+        if size > MAX_SNAPSHOT_BYTES {
+            require(
+                matches!(result, Err(SchemaError::Limited("snapshot bytes"))),
+                "oversized transition admitted",
+            )?;
+        } else {
+            let transition = result?;
+            let expected = ContentDigest::of_bytes(&serde_json::to_vec(&(
+                "compile_environment_transition.v1",
+                transition.draft(),
+            ))?);
+            require(transition.digest()? == expected, "transition framed digest changed")?;
+        }
+    }
+    Ok(())
+}

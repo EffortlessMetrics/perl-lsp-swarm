@@ -41,7 +41,24 @@ pub(super) fn canonical(
     value: &impl Serialize,
     limit: usize,
 ) -> Result<Vec<u8>, SchemaError> {
-    encode(&(domain, value), limit)
+    let payload = encode(value, limit)?;
+    let domain =
+        serde_json::to_vec(domain).map_err(|error| SchemaError::Instrument(error.to_string()))?;
+    let capacity = payload
+        .len()
+        .checked_add(domain.len())
+        .and_then(|size| size.checked_add(3))
+        .ok_or_else(|| SchemaError::Instrument("digest framing size overflow".into()))?;
+    let mut framed = Vec::new();
+    framed
+        .try_reserve_exact(capacity)
+        .map_err(|error| SchemaError::Instrument(error.to_string()))?;
+    framed.push(b'[');
+    framed.extend_from_slice(&domain);
+    framed.push(b',');
+    framed.extend_from_slice(&payload);
+    framed.push(b']');
+    Ok(framed)
 }
 pub(super) fn read<T: DeserializeOwned>(
     mut reader: impl Read,
