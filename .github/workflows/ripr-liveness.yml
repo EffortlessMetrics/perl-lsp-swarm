@@ -109,22 +109,21 @@ jobs:
               # branch: one fork branch can carry two open pull requests at
               # once, one onto `main` and one onto `master`, and those are two
               # numbers and so two concurrency groups (#16109 review).
+              #
+              # What the endpoint answers and what the snapshot needs are not
+              # the same question -- it reports every pull request containing
+              # the commit, not the one that triggered this run -- so reading
+              # its payload into an identity is a decision, and it lives in
+              # the tested module rather than here.
               if not run.get("pull_requests"):
                   out = subprocess.run(
                       ["gh", "api", f"repos/{repo}/commits/{run['head_sha']}/pulls",
                        "--jq", "[.[] | {number, base: .base.ref}]"],
                       capture_output=True, text=True, check=False,
                   )
-                  resolved = liveness.resolved_pulls_from_api(out.returncode, out.stdout)
-                  if resolved is not None:
-                      run["pull_requests"] = [
-                          entry["number"] for entry in resolved
-                          if isinstance(entry.get("number"), int)
-                      ]
-                      run["base_refs"] = sorted({
-                          entry["base"] for entry in resolved
-                          if isinstance(entry.get("base"), str) and entry.get("base")
-                      })
+                  liveness.apply_resolved_identity(
+                      run, liveness.resolved_pulls_from_api(out.returncode, out.stdout)
+                  )
 
           snapshot = {
               "as_of": datetime.datetime.now(datetime.timezone.utc)

@@ -177,6 +177,58 @@ def resolved_pulls_from_api(returncode: int, stdout: str | None) -> list[dict[st
     return [entry for entry in parsed if isinstance(entry, dict)]
 
 
+def apply_resolved_identity(run: dict[str, Any], resolved: list[dict[str, Any]] | None) -> None:
+    """Record on ``run`` what a ``/commits/<sha>/pulls`` read established.
+
+    This lives here rather than in the workflow because it decides a posted
+    check run, and because the defect it exists to prevent is only visible
+    across the seam: the endpoint answers "which pull requests contain this
+    commit", and the snapshot needs "which pull request triggered this run".
+    Those differ, and writing every returned number onto the run silently
+    converts the first into the second (#16109 review).
+
+    A head reached by **several** pull requests establishes no identity at
+    all. It is not a number to match on and not a base to fall back to: the
+    head is genuinely shared, and which of those pull requests this run
+    belongs to is exactly what the read failed to settle. Recording the whole
+    set instead made two runs triggered by *different* pull requests match on
+    a non-empty intersection, and the intersection was tested before the base
+    refs were ever consulted, so the base could not rescue it.
+
+    Marked ambiguous rather than left bare, because bare means "no number
+    known" and would fall through to the ``fork_identity`` triple — which
+    would then match these two runs on head repository and branch, the very
+    collision this is closing.
+    """
+    if resolved is None:
+        return
+    numbers = sorted({
+        entry["number"] for entry in resolved if isinstance(entry.get("number"), int)
+    })
+    if len(numbers) > 1:
+        run["ambiguous_identity"] = True
+        return
+    if not numbers:
+        return
+    run["pull_requests"] = numbers
+    bases = sorted({
+        entry["base"] for entry in resolved
+        if isinstance(entry.get("base"), str) and entry.get("base")
+    })
+    if bases:
+        run["base_refs"] = bases
+
+
+def has_ambiguous_identity(run: dict[str, Any]) -> bool:
+    """Whether this run's pull request was never narrowed to one.
+
+    Either the resolution call found the head on several pull requests, or the
+    API's own array carried more than one. Both mean the triggering number is
+    unknown, and an unknown number must match nothing.
+    """
+    return run.get("ambiguous_identity") is True or len(pull_numbers(run)) > 1
+
+
 def same_concurrency_group(left: dict[str, Any], right: dict[str, Any]) -> bool:
     """Whether two runs would contend for the same ``concurrency`` group.
 
@@ -197,11 +249,19 @@ def same_concurrency_group(left: dict[str, Any], right: dict[str, Any]) -> bool:
     direction: an unmatched run is reported ``infra-no-proof`` when it was
     merely queued, which is a visible false red on an advisory check, whereas a
     wrong match explains a genuinely dead gate away and nobody ever sees it.
+
+    An **ambiguous** identity is not a weak identity, it is none: a head on
+    two pull requests yields two numbers, and a set intersection would call
+    two runs from two different pull requests a match. That check is refused
+    before either the number or the fork triple is consulted, because both
+    would accept it.
     """
     left_by_pr, right_by_pr = groups_by_pull_request(left), groups_by_pull_request(right)
     if left_by_pr != right_by_pr:
         return False
     if left_by_pr:
+        if has_ambiguous_identity(left) or has_ambiguous_identity(right):
+            return False
         left_pulls, right_pulls = pull_numbers(left), pull_numbers(right)
         # One side knowing its number is enough to decide, and it decides
         # against: a run with a number that the other does not share is a

@@ -524,6 +524,79 @@ class ResolvedPullsTests(unittest.TestCase):
         )
 
 
+class EndpointResolutionToGroupingTests(unittest.TestCase):
+    """Fixtures spanning the whole seam: a `/commits/<sha>/pulls` payload as the
+    endpoint would return it, through `apply_resolved_identity`, into
+    `same_concurrency_group`.
+
+    Hand-built singleton `pulls=[n]` lists cannot exercise this path -- they
+    start on the far side of the decision under test, which is what let the
+    collision survive the previous round (#16109 review).
+    """
+
+    SHARED_HEAD = "S" * 40
+    # One fork commit, two open pull requests: PR4242 onto main, PR4243 onto
+    # master. The endpoint returns both associations for the one head.
+    ENDPOINT_BODY = '[{"number": 4242, "base": "main"}, {"number": 4243, "base": "master"}]'
+
+    def _resolve(self, body: str, **kwargs) -> dict:
+        """A run as the snapshot step would leave it after the resolution call."""
+        candidate = run(kwargs.pop("run_id"), head_sha=self.SHARED_HEAD, **kwargs)
+        candidate["pull_requests"] = []
+        candidate["base_refs"] = []
+        liveness.apply_resolved_identity(
+            candidate, liveness.resolved_pulls_from_api(0, body)
+        )
+        return candidate
+
+    def test_one_head_on_two_pull_requests_is_not_an_identity(self) -> None:
+        resolved = self._resolve(self.ENDPOINT_BODY, run_id=1)
+        self.assertTrue(liveness.has_ambiguous_identity(resolved))
+        self.assertEqual(liveness.pull_numbers(resolved), [])
+        self.assertIsNone(liveness.fork_identity(resolved))
+
+    def test_two_runs_on_one_shared_head_do_not_share_a_group(self) -> None:
+        """The finding itself. Both runs resolve the same head to the same two
+        numbers, so a set intersection calls them a match -- and the base refs
+        that would have separated them are never reached."""
+        earlier = self._resolve(self.ENDPOINT_BODY, run_id=1, status="in_progress", job_count=3)
+        later = self._resolve(self.ENDPOINT_BODY, run_id=2)
+        self.assertFalse(liveness.same_concurrency_group(later, earlier))
+        self.assertIsNone(liveness.predecessor_for(later, [earlier, later]))
+
+    def test_an_unambiguous_resolution_still_groups(self) -> None:
+        """The control: the fix must not make every resolved fork run
+        unmatchable, which would pass the test above for the wrong reason."""
+        body = '[{"number": 4242, "base": "main"}]'
+        earlier = self._resolve(body, run_id=1, status="in_progress", job_count=3)
+        later = self._resolve(body, run_id=2)
+        self.assertEqual(liveness.pull_numbers(later), [4242])
+        self.assertTrue(liveness.same_concurrency_group(later, earlier))
+        self.assertEqual(liveness.predecessor_for(later, [earlier, later]), 1)
+
+    def test_two_different_heads_resolving_to_one_number_each_still_separate(self) -> None:
+        body_a = '[{"number": 4242, "base": "main"}]'
+        body_b = '[{"number": 4243, "base": "master"}]'
+        left = self._resolve(body_a, run_id=1, status="in_progress", job_count=3)
+        right = self._resolve(body_b, run_id=2)
+        self.assertFalse(liveness.same_concurrency_group(right, left))
+
+    def test_an_unreadable_resolution_records_nothing(self) -> None:
+        candidate = run(1, head_sha=self.SHARED_HEAD)
+        candidate["pull_requests"] = []
+        liveness.apply_resolved_identity(candidate, liveness.resolved_pulls_from_api(1, "[]"))
+        self.assertEqual(liveness.pull_numbers(candidate), [])
+        self.assertFalse(liveness.has_ambiguous_identity(candidate))
+
+    def test_a_multi_number_api_array_is_ambiguous_too(self) -> None:
+        """The other source of the same shape: the runs listing itself can
+        carry more than one number, and that is no more an identity than a
+        multi-result resolution is."""
+        self.assertTrue(liveness.has_ambiguous_identity(run(1, pulls=[4242, 4243])))
+        self.assertFalse(liveness.has_ambiguous_identity(run(1, pulls=[4242])))
+
+
+
     def test_a_fork_run_with_no_head_repository_matches_nothing(self) -> None:
         """An unidentifiable run must not match; an honest `infra-no-proof`
         naming no predecessor beats silently suppressing a real stall."""
