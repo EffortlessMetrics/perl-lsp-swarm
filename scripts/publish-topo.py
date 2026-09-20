@@ -106,6 +106,47 @@ def derive_publish_list(meta: dict) -> list[str]:
     return sorted(names)
 
 
+def build_publish_dependency_graph(packages: list[dict]) -> dict[str, set[str]]:
+    """Build the publish graph using the repository's dev-dependency policy.
+
+    Normal and build dependencies are always retained.  Dev dependencies are
+    retained across SCC boundaries, but intra-SCC dev edges are omitted so the
+    test-only cycle does not make publication ordering impossible.
+    """
+    package_names = {package["name"] for package in packages}
+    normal_deps: dict[str, set[str]] = defaultdict(set)
+    dev_deps: dict[str, set[str]] = defaultdict(set)
+    for package in packages:
+        name = package["name"]
+        for dependency in package.get("dependencies", []):
+            if dependency.get("source") is not None:
+                continue
+            if dependency["name"] not in package_names:
+                continue
+            if dependency.get("kind") == "dev":
+                dev_deps[name].add(dependency["name"])
+            else:
+                normal_deps[name].add(dependency["name"])
+
+    full_graph = {
+        name: normal_deps[name] | dev_deps[name] for name in package_names
+    }
+    sccs = tarjan_sccs(full_graph, sorted(package_names))
+    node_to_scc = {
+        node: index for index, scc in enumerate(sccs) for node in scc
+    }
+
+    dependencies: dict[str, set[str]] = {}
+    for name in package_names:
+        dependencies[name] = set(normal_deps[name])
+        dependencies[name].update(
+            dependency
+            for dependency in dev_deps[name]
+            if node_to_scc[dependency] != node_to_scc[name]
+        )
+    return dependencies
+
+
 def check_allowlist_drift(meta: dict) -> tuple[set[str], set[str]]:
     """
     Compare the hand-maintained allowlist against the metadata-derived list.
@@ -155,35 +196,7 @@ def compute_publish_order(
         if pkg["id"] in workspace_members:
             packages[pkg["name"]] = pkg
 
-    # Build separate normal and dev dependency graphs (only internal deps).
-    normal_deps: dict[str, set[str]] = defaultdict(set)
-    dev_deps: dict[str, set[str]] = defaultdict(set)
-    for name, pkg in packages.items():
-        for dep in pkg["dependencies"]:
-            if dep["name"] not in packages:
-                continue
-            if dep.get("kind") == "dev":
-                dev_deps[name].add(dep["name"])
-            else:
-                normal_deps[name].add(dep["name"])
-
-    # Tarjan SCC on the full graph (normal + dev edges).
-    full_graph = {name: normal_deps[name] | dev_deps[name] for name in packages}
-    sccs = tarjan_sccs(full_graph, list(packages.keys()))
-    node_to_scc: dict[str, int] = {}
-    for i, scc in enumerate(sccs):
-        for node in scc:
-            node_to_scc[node] = i
-
-    # Build final dep graph: normal edges always included; dev edges only
-    # when they cross SCC boundaries (intra-SCC dev edges are dropped to
-    # break cycles).
-    deps: dict[str, set[str]] = {}
-    for name in packages:
-        deps[name] = set(normal_deps[name])
-        for dep in dev_deps[name]:
-            if node_to_scc.get(dep) != node_to_scc.get(name):
-                deps[name].add(dep)
+    deps = build_publish_dependency_graph(list(packages.values()))
 
     # Topological sort (Kahn algorithm).
     in_degree = {name: len(d) for name, d in deps.items()}

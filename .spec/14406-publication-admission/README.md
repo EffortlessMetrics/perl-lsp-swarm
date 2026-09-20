@@ -195,3 +195,62 @@ trusted private-candidate adapter, consuming canonical topology and terminal-man
 validators plus landed #14923 composition, then actual mandatory predecessor wiring.
 The complete reconstruction ruling remains the merge boundary.
 Independent review separated prerelease-false from unknown skip-field rejection. Removing only the packet prerelease guard causes the focused regression to fail; restoring production returns all eleven controls to passing. This mutation establishes that specific discriminator, not graph or publication qualification.
+
+## Authorized private-byte adapter, second preparation step
+
+Root decision [5751253711](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/14406#issuecomment-5751253711)
+authorizes exact-file canonical integration from main465880221, not full-main merge
+or graph activation. `canonical-ports.json` records all16 exact source blobs;
+`bash_binary.py` is the retained topology-test import dependency. Existing canonical
+tests remain byte-for-byte with their inherited assertion debt; these ports and
+file-ownership receipts are not approval of those exceptions or a cleanup claim.
+
+`scripts/ci/release_private_candidate.py::validate_private_candidate` receives a
+candidate directory, the candidate and independently expected closed subject packet,
+exact policy bytes, and `TopologyContext` (independently pinned frozen/prepared roots,
+captured frozen topology bytes and independently expected digest). It captures only
+regular candidate files into a unique temporary copy, then gives that same copy to
+canonical `check_outputs`. It binds actual terminal/inventory bytes, uses prepared
+SHA for terminal build/tag identity, requires producer head to match that SHA, calls
+actual topology admission with the separate frozen SHA and both source roots, and
+joins canonical selected targets to actual archive and evidence target sets.
+
+The adapter returns concrete byte digests and an immutable local comparison. It
+removes only the canonical-topology/terminal-byte missing obligations. Qualification
+remains permanently `not_proven`: complete VSIX, policy source authentication,
+producer/artifact authentication, predecessor graph, externally isolated worker
+provenance and immutable-tag authority remain absent. The tag validator is ported
+and its controls retained but no live ruleset/ref collector is invented. Open VSX
+still refuses; unlanded #16207/#16230 code is not imported.
+
+Execution precondition is external: only independently reviewed/pinned source roots
+in a credential-free isolated worker. Canonical topology admission executes the
+source publication helper and acquires Git/Cargo metadata. Clearing environment
+variables alone is not filesystem credential isolation. No boolean or fabricated
+status establishes this precondition. Local tests execute only the reviewed canonical
+helper in owned fixture roots; Git/Cargo metadata acquisition is mocked, while
+schema, source-transition, topology, archive/member, checksum, SBOM and terminal
+validation run as implemented. No installed executable or publisher runs.
+
+Eight adapter tests cover a valid constructed private candidate, seven actual
+same-length byte-corruption cases (archive/checksum/SBOM/receipt/manifest/inventory/
+topology), prepared source drift, frozen/policy byte identity, prepared-versus-frozen
+build identity, single captured candidate usage, and omission of a genuine canonical
+topology-selected target. The last control requires its specific denominator refusal,
+so malformed topology cannot falsely satisfy it. Fixture-only metadata acquisition
+and v1 topology coverage do not establish real Cargo output, all v2/v3 paths, provider
+provenance or hosted isolation. Retained canonical tests are separate regression proof.
+
+Corrections during local proof: stripped process environment initially hid the
+installed JSON Schema package; the launcher explicitly supplies its already-installed
+site directory without forwarding credential environment variables. The first Git
+fixture returned prepared SHA for both roots and was corrected to distinguish roots.
+The added two-target fixture initially omitted its matching downstream target row;
+correcting that canonical fixture reached the intended archive-denominator rejection.
+These were fixture/instrument repairs, not weakened production validation.
+
+Next graph dependency remains actual isolated pre-eligibility producer wiring plus
+accepted #14923 composition and authenticated artifact/policy context. This adapter
+is not permission to merge the partial carrier or run its obsolete retained graph.
+
+Independent adapter review corrected a masked negative: prepared-versus-frozen now changes both expected prepared SHA and producer head, and requires the canonical terminal validator's source-identity rejection. Root and child symbolic-link/junction refusal branches have deterministic controls; removing only root-junction rejection fails the control, and exact restoration passes. These mocked path-predicate controls prove refusal logic, not native detection or filesystem isolation. The updated eight adapter tests pass; the earlier 49 other focused canonical/leaf/gate tests remain unchanged proof, for 57 distinct tests across the two runs. Broad corruption controls establish rejection without attributing each rejection to a unique internal validator.

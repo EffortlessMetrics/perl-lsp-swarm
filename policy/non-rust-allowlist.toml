@@ -4007,3 +4007,237 @@ reason = "Issue #14406 approved pure RC permission and exact-subject leaf; no pu
 covered_by = ["python -B -m unittest discover -s scripts/ci -p test_release_publication_admission.py"]
 created = "2026-09-20"
 review_after = "2026-12-20"
+
+[[allow]]
+id = "non-rust-14406-canonical-adapter-1"
+path = "scripts/generate_release_topology.py"
+kind = "release_tooling"
+language = "python"
+surface = "release"
+classification = "tooling"
+owner = "release/ci"
+reason = "Issue #14406 pinned canonical validator closure and private-byte adapter; no publisher activation or source-exception approval."
+covered_by = ["python -B -m unittest discover -s scripts/ci -p test_release_private_candidate.py"]
+created = "2026-09-20"
+review_after = "2026-12-20"
+
+[[allow]]
+id = "non-rust-14406-canonical-adapter-2"
+path = "scripts/release_topology_json.py"
+kind = "release_tooling"
+language = "python"
+surface = "release"
+classification = "tooling"
+owner = "release/ci"
+reason = "Issue #14406 pinned canonical validator closure and private-byte adapter; no publisher activation or source-exception approval."
+covered_by = ["python -B -m unittest discover -s scripts/ci -p test_release_private_candidate.py"]
+created = "2026-09-20"
+review_after = "2026-12-20"
+
+[[allow]]
+id = "non-rust-14406-canonical-adapter-3"
+path = "scripts/release_subject_projection.py"
+kind = "release_tooling"
+language = "python"
+surface = "release"
+classification = "tooling"
+owner = "release/ci"
+reason = "Issue #14406 pinned canonical validator closure and private-byte adapter; no publisher activation or source-exception approval."
+covered_by = ["python -B -m unittest discover -s scripts/ci -p test_release_private_candidate.py"]
+created = "2026-09-20"
+review_after = "2026-12-20"
+
+[[allow]]
+id = "non-rust-14406-canonical-adapter-4"
+path = "scripts/publish-topo.py"
+kind = "release_tooling"
+language = "python"
+surface = "release"
+classification = "tooling"
+owner = "release/ci"
+reason = "Issue #14406 pinned canonical validator closure and private-byte adapter; no publisher activation or source-exception approval."
+covered_by = ["python -B -m unittest discover -s scripts/ci -p test_release_private_candidate.py"]
+created = "2026-09-20"
+review_after = "2026-12-20"
+
+[[allow]]
+id = "non-rust-14406-canonical-adapter-5"
+path = "scripts/release_terminal_manifest.py"
+kind = "release_tooling"
+language = "python"
+surface = "release"
+classification = "tooling"
+owner = "release/ci"
+reason = "Issue #14406 pinned canonical validator closure and private-byte adapter; no publisher activation or source-exception approval."
+covered_by = ["python -B -m unittest discover -s scripts/ci -p test_release_private_candidate.py"]
+created = "2026-09-20"
+review_after = "2026-12-20"
+
+[[allow]]
+id = "non-rust-14406-canonical-adapter-6"
+path = "scripts/release_archive_members.py"
+kind = "release_tooling"
+language = "python"
+surface = "release"
+classification = "tooling"
+owner = "release/ci"
+reason = "Issue #14406 pinned canonical validator closure and private-byte adapter; no publisher activation or source-exception approval."
+covered_by = ["python -B -m unittest discover -s scripts/ci -p test_release_private_candidate.py"]
+created = "2026-09-20"
+review_after = "2026-12-20"
+
+[[allow]]
+id = "non-rust-14406-canonical-adapter-7"
+path = "scripts/release_tag_authority.py"
+kind = "release_tooling"
+language = "python"
+surface = "release"
+classification = "tooling"
+owner = "release/ci"
+reason = "Issue #14406 pinned canonical validator closure and private-byte adapter; no publisher activation or source-exception approval."
+covered_by = ["python -B -m unittest discover -s scripts/ci -p test_release_private_candidate.py"]
+created = "2026-09-20"
+review_after = "2026-12-20"
+
+[[allow]]
+id = "non-rust-14406-canonical-adapter-8"
+path = "scripts/requirements-release.txt"
+kind = "release_tooling"
+language = "text"
+surface = "release"
+classification = "tooling"
+owner = "release/ci"
+reason = "Issue #14406 pinned canonical validator closure and private-byte adapter; no publisher activation or source-exception approval."
+covered_by = ["python -B -m unittest discover -s scripts/ci -p test_release_private_candidate.py"]
+created = "2026-09-20"
+review_after = "2026-12-20"
+
+[[allow]]
+id = "non-rust-14406-canonical-adapter-9"
+path = "scripts/test_generate_release_topology.py"
+kind = "release_tooling"
+language = "python"
+surface = "release"
+classification = "tooling"
+owner = "release/ci"
+reason = "Issue #14406 pinned canonical validator closure and private-byte adapter; no publisher activation or source-exception approval."
+covered_by = ["python -B -m unittest discover -s scripts/ci -p test_release_private_candidate.py"]
+created = "2026-09-20"
+review_after = "2026-12-20"
+
+[[allow]]
+id = "non-rust-14406-canonical-adapter-10"
+path = "scripts/test_release_terminal_manifest.py"
+kind = "release_tooling"
+language = "python"
+surface = "release"
+classification = "tooling"
+owner = "release/ci"
+reason = "Issue #14406 pinned canonical validator closure and private-byte adapter; no publisher activation or source-exception approval."
+covered_by = ["python -B -m unittest discover -s scripts/ci -p test_release_private_candidate.py"]
+created = "2026-09-20"
+review_after = "2026-12-20"
+
+[[allow]]
+id = "non-rust-14406-canonical-adapter-11"
+path = "scripts/test_release_tag_authority.py"
+kind = "release_tooling"
+language = "python"
+surface = "release"
+classification = "tooling"
+owner = "release/ci"
+reason = "Issue #14406 pinned canonical validator closure and private-byte adapter; no publisher activation or source-exception approval."
+covered_by = ["python -B -m unittest discover -s scripts/ci -p test_release_private_candidate.py"]
+created = "2026-09-20"
+review_after = "2026-12-20"
+
+[[allow]]
+id = "non-rust-14406-canonical-adapter-12"
+path = "scripts/test_release_topology_json.py"
+kind = "release_tooling"
+language = "python"
+surface = "release"
+classification = "tooling"
+owner = "release/ci"
+reason = "Issue #14406 pinned canonical validator closure and private-byte adapter; no publisher activation or source-exception approval."
+covered_by = ["python -B -m unittest discover -s scripts/ci -p test_release_private_candidate.py"]
+created = "2026-09-20"
+review_after = "2026-12-20"
+
+[[allow]]
+id = "non-rust-14406-canonical-adapter-13"
+path = "schemas/release_topology.v1.schema.json"
+kind = "release_tooling"
+language = "json"
+surface = "release"
+classification = "tooling"
+owner = "release/ci"
+reason = "Issue #14406 pinned canonical validator closure and private-byte adapter; no publisher activation or source-exception approval."
+covered_by = ["python -B -m unittest discover -s scripts/ci -p test_release_private_candidate.py"]
+created = "2026-09-20"
+review_after = "2026-12-20"
+
+[[allow]]
+id = "non-rust-14406-canonical-adapter-14"
+path = "schemas/release_topology.v2.schema.json"
+kind = "release_tooling"
+language = "json"
+surface = "release"
+classification = "tooling"
+owner = "release/ci"
+reason = "Issue #14406 pinned canonical validator closure and private-byte adapter; no publisher activation or source-exception approval."
+covered_by = ["python -B -m unittest discover -s scripts/ci -p test_release_private_candidate.py"]
+created = "2026-09-20"
+review_after = "2026-12-20"
+
+[[allow]]
+id = "non-rust-14406-canonical-adapter-15"
+path = "schemas/release_topology.v3.schema.json"
+kind = "release_tooling"
+language = "json"
+surface = "release"
+classification = "tooling"
+owner = "release/ci"
+reason = "Issue #14406 pinned canonical validator closure and private-byte adapter; no publisher activation or source-exception approval."
+covered_by = ["python -B -m unittest discover -s scripts/ci -p test_release_private_candidate.py"]
+created = "2026-09-20"
+review_after = "2026-12-20"
+
+[[allow]]
+id = "non-rust-14406-canonical-adapter-16"
+path = "scripts/bash_binary.py"
+kind = "release_tooling"
+language = "python"
+surface = "release"
+classification = "tooling"
+owner = "release/ci"
+reason = "Issue #14406 pinned canonical validator closure and private-byte adapter; no publisher activation or source-exception approval."
+covered_by = ["python -B -m unittest discover -s scripts/ci -p test_release_private_candidate.py"]
+created = "2026-09-20"
+review_after = "2026-12-20"
+
+[[allow]]
+id = "non-rust-14406-canonical-adapter-17"
+path = "scripts/ci/release_private_candidate.py"
+kind = "release_tooling"
+language = "python"
+surface = "release"
+classification = "tooling"
+owner = "release/ci"
+reason = "Issue #14406 pinned canonical validator closure and private-byte adapter; no publisher activation or source-exception approval."
+covered_by = ["python -B -m unittest discover -s scripts/ci -p test_release_private_candidate.py"]
+created = "2026-09-20"
+review_after = "2026-12-20"
+
+[[allow]]
+id = "non-rust-14406-canonical-adapter-18"
+path = "scripts/ci/test_release_private_candidate.py"
+kind = "release_tooling"
+language = "python"
+surface = "release"
+classification = "tooling"
+owner = "release/ci"
+reason = "Issue #14406 pinned canonical validator closure and private-byte adapter; no publisher activation or source-exception approval."
+covered_by = ["python -B -m unittest discover -s scripts/ci -p test_release_private_candidate.py"]
+created = "2026-09-20"
+review_after = "2026-12-20"

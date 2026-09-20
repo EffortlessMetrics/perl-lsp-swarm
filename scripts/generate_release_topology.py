@@ -10,26 +10,44 @@ downstream archive contract does not enumerate).
 from __future__ import annotations
 
 import argparse
+import ast
 import hashlib
 import json
 import re
 import subprocess
 import sys
 import tomllib
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
+if __package__:
+    from .release_topology_json import load_topology_json
+    from .release_subject_projection import topology_subject_projection
+else:
+    from release_topology_json import load_topology_json
+    from release_subject_projection import topology_subject_projection
+
 
 SCHEMA = 1
+SCHEMA_RELATIVE_PATH = "schemas/release_topology.v1.schema.json"
+SCHEMA_PATH = Path(__file__).resolve().parents[1] / "schemas/release_topology.v1.schema.json"
 PRIMARY_CHANNELS = ["github_release", "crates_io", "vscode_marketplace", "open_vsx"]
+VERSION_DERIVED_SOURCE_PATHS = {
+    "Cargo.toml",
+    "Cargo.lock",
+    "vscode-extension/package.json",
+}
 SOURCE_PATHS = [
     "Cargo.toml",
     "Cargo.lock",
+    SCHEMA_RELATIVE_PATH,
     ".github/workflows/release.yml",
     "vscode-extension/package.json",
     "docs/reference/downstream-dap-integrations.json",
     "vscode-extension/src/downloader.ts",
     "scripts/inject-sha-assets.sh",
+    "scripts/publish-topo.py",
 ]
 TARGET_RE = re.compile(
     r"(?ms)^\s*- target:\s*(?P<target>[A-Za-z0-9_-]+)\s*$"
@@ -39,6 +57,87 @@ TARGET_RE = re.compile(
 
 class TopologyError(ValueError):
     """A release topology input is missing, stale, or inconsistent."""
+
+
+def publish_dependency_graph(
+    packages: list[dict[str, Any]], root: Path | None = None
+) -> dict[str, set[str]]:
+    """Use the shared publication graph policy rather than a second SCC implementation."""
+    helper_path = (
+        root or Path(__file__).resolve().parents[1]
+    ) / "scripts" / "publish-topo.py"
+    try:
+        source = helper_path.read_bytes()
+    except OSError as error:
+        raise TopologyError(f"cannot read publish graph helper: {helper_path}: {error}") from error
+    try:
+        code = compile(source, str(helper_path), "exec")
+    except (SyntaxError, UnicodeError) as error:
+        raise TopologyError(f"cannot compile publish graph helper: {helper_path}: {error}") from error
+    namespace: dict[str, Any] = {"__name__": "publish_topo", "__file__": str(helper_path)}
+    exec(code, namespace)
+    builder = namespace.get("build_publish_dependency_graph")
+    if not callable(builder):
+        raise TopologyError(f"publish graph helper has no callable builder: {helper_path}")
+    return builder(packages)
+
+
+def topology_schema_version(value: Any) -> int:
+    # JSON Schema accepts integral numbers such as 1.0. Preserve that v1
+    # behavior, while refusing Python's bool/int equality and unknown versions.
+    if type(value) not in (int, float) or value not in (1, 2, 3):
+        raise TopologyError("release topology schema must be 1, 2 or 3")
+    return int(value)
+
+
+def schema_relative_path(version: Any) -> str:
+    return f"schemas/release_topology.v{topology_schema_version(version)}.schema.json"
+
+
+def schema_validate(manifest: dict[str, Any], root: Path | None = None) -> None:
+    """Validate the complete manifest against the checked-in JSON schema.
+
+    The release and rolling-observation workflows install the pinned validator
+    requirements before invoking this script.  Keeping the dependency
+    explicit avoids silently falling back to a partial hand-written validator.
+    """
+    relative = schema_relative_path(manifest.get("schema"))
+    try:
+        import jsonschema
+    except ImportError as error:
+        raise TopologyError(
+            "JSON-schema validation requires the pinned release requirements; "
+            "install scripts/requirements-release.txt"
+        ) from error
+    try:
+        schema_path = (root or SCHEMA_PATH.parents[1]) / relative
+        schema = json.loads(schema_path.read_text(encoding="utf-8"))
+        validator_type = jsonschema.validators.validator_for(schema)
+        validator_type.check_schema(schema)
+        validator = validator_type(schema)
+    except (OSError, json.JSONDecodeError, jsonschema.SchemaError) as error:
+        raise TopologyError(f"release topology schema is invalid: {error}") from error
+    errors = sorted(
+        validator.iter_errors(manifest),
+        key=lambda error: (tuple(str(part) for part in error.absolute_path), error.message),
+    )
+    if errors:
+        details = "; ".join(
+            f"{'.'.join(str(part) for part in error.absolute_path) or '<root>'}: {error.message}"
+            for error in errors
+        )
+        raise TopologyError(f"manifest schema validation failed: {details}")
+    if root is not None:
+        sources = manifest.get("sources")
+        source = (
+            sources.get(relative, {})
+            if isinstance(sources, dict)
+            else {}
+        )
+        if not isinstance(source, dict) or source.get("sha256") != sha256(
+            root / relative
+        ):
+            raise TopologyError("schema source hash is stale")
 
 
 def sha256(path: Path) -> str:
@@ -80,7 +179,7 @@ def cargo_metadata(root: Path) -> dict[str, Any]:
     return value
 
 
-def derive_crates(metadata: dict[str, Any]) -> list[dict[str, Any]]:
+def derive_crates(metadata: dict[str, Any], root: Path | None = None) -> list[dict[str, Any]]:
     packages = {package["id"]: package for package in metadata.get("packages", [])}
     member_ids = metadata.get("workspace_members", [])
     members = [packages[member_id] for member_id in member_ids if member_id in packages]
@@ -110,14 +209,11 @@ def derive_crates(metadata: dict[str, Any]) -> list[dict[str, Any]]:
             f"missing={sorted(publishable - allowed)}, extra={sorted(allowed - publishable)}"
         )
 
-    dependencies: dict[str, set[str]] = {}
-    for name in allowed:
-        package = by_name[name]
-        dependencies[name] = {
-            dependency["name"]
-            for dependency in package.get("dependencies", [])
-            if dependency.get("name") in allowed and dependency.get("source") is None
-        }
+    dependencies = publish_dependency_graph(list(by_name.values()), root)
+    dependencies = {
+        name: deps & allowed for name, deps in dependencies.items() if name in allowed
+    }
+    publish_dependencies = {name: set(deps) for name, deps in dependencies.items()}
     ready = sorted(name for name, deps in dependencies.items() if not deps)
     order: list[str] = []
     while ready:
@@ -147,14 +243,7 @@ def derive_crates(metadata: dict[str, Any]) -> list[dict[str, Any]]:
                 "package_path": package_path,
                 "version": package["version"],
                 "publish_order": publish_order[name],
-                "internal_dependencies": sorted(
-                    dependency
-                    for dependency in (
-                        item["name"]
-                        for item in package.get("dependencies", [])
-                        if item.get("name") in allowed and item.get("source") is None
-                    )
-                ),
+                "internal_dependencies": sorted(publish_dependencies[name]),
             }
         )
     return entries
@@ -222,14 +311,988 @@ def derive_targets(release_text: str, release: str) -> list[dict[str, Any]]:
     return targets
 
 
-def source_hashes(root: Path) -> dict[str, str]:
+def checksum_candidate_steps(release_text: str) -> list[str]:
+    """Bind the recognized producer to its supported GitHub job environment.
+
+    This intentionally recognizes the checked-in mapping layout, not general
+    YAML, inherited run configuration, or conditional workflow execution.
+    """
+    lines = release_text.splitlines()
+    top_keys = [line.split(":", 1)[0] for line in lines if line and not line[0].isspace() and not line.startswith("#")]
+    if (
+        any(key not in {"name", "on", "concurrency", "permissions", "env", "jobs"} for key in top_keys)
+        or len(top_keys) != len(set(top_keys))
+        or lines.count("jobs:") != 1
+    ):
+        raise TopologyError("checksum producer has unsupported workflow execution context")
+    if "env" in top_keys:
+        if "env:" not in lines:
+            raise TopologyError("checksum producer has unsupported workflow environment")
+        env_start = lines.index("env:") + 1
+        env_end = next((index for index in range(env_start, len(lines)) if lines[index] and not lines[index][0].isspace() and not lines[index].startswith("#")), len(lines))
+        environment = [line for line in lines[env_start:env_end] if line.strip() and not line.lstrip().startswith("#")]
+        if sorted(environment) != ["  CARGO_TERM_COLOR: always", "  RUST_BACKTRACE: 1"]:
+            raise TopologyError("checksum producer has unsupported workflow environment")
+    jobs_start = lines.index("jobs:")
+    jobs_end = next((index for index in range(jobs_start + 1, len(lines)) if lines[index] and not lines[index][0].isspace() and not lines[index].startswith("#")), len(lines))
+    jobs = lines[jobs_start + 1:jobs_end]
+    starts = [index for index, line in enumerate(jobs) if line == "  candidate:"]
+    if len(starts) != 1:
+        raise TopologyError("checksum producer requires exactly one candidate job")
+    start = starts[0]
+    end = next((index for index in range(start + 1, len(jobs)) if jobs[index].strip() and len(jobs[index]) - len(jobs[index].lstrip()) <= 2), len(jobs))
+    candidate = jobs[start + 1:end]
+    fields = [line for line in candidate if line.strip() and not line.lstrip().startswith("#") and len(line) - len(line.lstrip()) == 4]
+    keys = [line.strip().split(":", 1)[0] for line in fields]
+    allowed = {"name", "needs", "runs-on", "timeout-minutes", "permissions", "steps"}
+    if len(keys) != len(set(keys)) or any(key not in allowed for key in keys):
+        raise TopologyError("checksum producer has unsupported candidate execution context")
+    if "    needs: [build, release-metadata]" not in fields or "    runs-on: ubuntu-24.04" not in fields or "    steps:" not in fields:
+        raise TopologyError("checksum producer requires candidate build dependencies, Linux runner and steps")
+    step_start = candidate.index("    steps:") + 1
+    step_end = next((index for index in range(step_start, len(candidate)) if candidate[index].strip() and len(candidate[index]) - len(candidate[index].lstrip()) <= 4), len(candidate))
+    steps = candidate[step_start:step_end]
+    producer_starts = [index for index, line in enumerate(steps) if line == "      - name: Generate consolidated SHA256SUMS"]
+    if len(producer_starts) != 1:
+        raise TopologyError("checksum producer requires exactly one candidate step")
+    # This complete ordered prelude owns the producer's inputs and environment.
+    # Any extra or changed command must be reviewed before v2 can describe it.
+    expected_prefix = '''      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # stable (master)
+        with:
+          toolchain: stable
+
+      - name: Download release archive artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: perllsp-*
+          path: artifacts
+
+      - name: Download exact build identity evidence
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: release-build-identity-*
+          path: candidate/evidence
+
+      - name: Display structure of downloaded files
+        run: ls -R artifacts
+
+'''
+    if [line for line in steps[:producer_starts[0]] if line.strip()] != [
+        line for line in expected_prefix.splitlines() if line.strip()
+    ]:
+        raise TopologyError("checksum producer candidate prefix is not recognized")
+    return steps
+
+
+def consolidated_checksum_producer(release_text: str) -> str:
+    """Recognize the bounded archive-copy/checksum producer, without executing it.
+
+    This is a closed source-shape contract, not a Bash interpreter. A changed
+    producer must be reviewed with its execution oracle before v2 can project it.
+    The duplicate-name guard, destination, coverage and hash pipeline all matter.
+    """
+    if sum(line.strip() == "- name: Generate consolidated SHA256SUMS" for line in release_text.splitlines()) != 1:
+        raise TopologyError("release workflow must contain exactly one consolidated checksum producer")
+    lines = checksum_candidate_steps(release_text)
+    starts = [
+        index for index, line in enumerate(lines)
+        if line == "      - name: Generate consolidated SHA256SUMS"
+    ]
+    if len(starts) != 1:
+        raise TopologyError("release workflow must contain exactly one consolidated checksum producer")
+    start = starts[0]
+    indent = len(lines[start]) - len(lines[start].lstrip())
+    step = []
+    for line in lines[start + 1:]:
+        if line.strip() and len(line) - len(line.lstrip()) <= indent:
+            break
+        if line.strip():
+            step.append(line)
+    if (
+        not step or step[0] != " " * (indent + 2) + "run: |"
+        or any(not line.startswith(" " * (indent + 4)) for line in step[1:])
+    ):
+        raise TopologyError("consolidated checksum producer has an unsupported step shape")
+    body = "\n".join(line[indent + 4:] for line in step[1:]) + "\n"
+    expected = r'''set -euo pipefail
+mkdir -p candidate/dist
+declare -A ARCHIVE_NAMES=()
+while IFS= read -r -d '' archive; do
+  name=$(basename "$archive")
+  if [ -n "${ARCHIVE_NAMES[$name]:-}" ]; then
+    printf '::error::Duplicate archive filename: %s\n' "$name"
+    exit 1
+  fi
+  ARCHIVE_NAMES[$name]=1
+  cp "$archive" candidate/dist/
+done < <(find artifacts -type f \( -name '*.tar.gz' -o -name '*.zip' \) -print0)
+cd candidate/dist
+find . -maxdepth 1 -type f \( -name '*.tar.gz' -o -name '*.zip' \) -print0 | \
+  sort -z | \
+  xargs -0 sha256sum | sed 's|  \./|  |' > SHA256SUMS
+cat SHA256SUMS
+'''
+    # Shell indentation carries no meaning here; compare every command,
+    # including loop bodies, rather than checking isolated token presence.
+    if [line.strip() for line in body.splitlines()] != [
+        line.strip() for line in expected.splitlines()
+    ]:
+        raise TopologyError("consolidated checksum producer command shape is not recognized")
+    return body
+
+
+def derive_checksum_assets(
+    release_text: str, targets: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    consolidated_checksum_producer(release_text)
+    return [{
+        "asset_name": "SHA256SUMS",
+        "algorithm": "sha256",
+        "channel": "github_release",
+        "archive_targets": sorted(target["target"] for target in targets),
+    }]
+
+
+def normalized_producer_ast(value: Any) -> Any:
+    """Keep semantic AST fields stable across Python's empty type-parameter addition."""
+    if isinstance(value, ast.AST):
+        return [type(value).__name__, {
+            name: normalized_producer_ast(field)
+            for name, field in ast.iter_fields(value)
+            if not (name == "type_params" and field == [])
+        }]
+    if isinstance(value, list):
+        return [normalized_producer_ast(item) for item in value]
+    if isinstance(value, bytes):
+        return {"bytes": value.hex()}
+    if value is Ellipsis:
+        return {"ellipsis": True}
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    raise TopologyError(f"unsupported producer AST value: {type(value).__name__}")
+
+
+def validate_sbom_release_selection(release_text: str) -> None:
+    """Admit the source asset-selection edge, not publisher execution or authority."""
+    lines = release_text.splitlines()
+    if lines.count("jobs:") != 1:
+        raise TopologyError("subject producer requires one top-level jobs mapping")
+    jobs_start = lines.index("jobs:") + 1
+    jobs_end = next((index for index in range(jobs_start, len(lines))
+                     if lines[index] and not lines[index][0].isspace()
+                     and not lines[index].startswith("#")), len(lines))
+    lines = lines[jobs_start:jobs_end]
+    if lines.count("  publish-release:") != 1:
+        raise TopologyError("subject producer requires one publish-release job")
+    start = lines.index("  publish-release:") + 1
+    end = next((index for index in range(start, len(lines))
+                if lines[index].strip() and not lines[index].lstrip().startswith("#")
+                and len(lines[index]) - len(lines[index].lstrip()) <= 2), len(lines))
+    job = lines[start:end]
+    marker = "      - name: Create GitHub Release from terminal candidate"
+    if job.count("    steps:") != 1 or lines.count(marker) != 1 or marker not in job:
+        raise TopologyError("subject producer requires one GitHub release selection step")
+    steps_start = job.index("    steps:") + 1
+    steps_end = next((index for index in range(steps_start, len(job))
+                      if job[index].strip() and not job[index].lstrip().startswith("#")
+                      and len(job[index]) - len(job[index].lstrip()) <= 4), len(job))
+    job = job[steps_start:steps_end]
+    if marker not in job:
+        raise TopologyError("subject producer release selection must be in the steps list")
+    step_start = job.index(marker)
+    step_end = next((index for index in range(step_start + 1, len(job))
+                     if job[index].strip() and not job[index].lstrip().startswith("#")
+                     and len(job[index]) - len(job[index].lstrip()) <= 6), len(job))
+    expected = '''      - name: Create GitHub Release from terminal candidate
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
+        with:
+          files: candidate/dist/*
+          body_path: candidate/release_notes.md
+          draft: false
+          prerelease: ${{ needs.release-metadata.outputs.prerelease == 'true' }}
+          tag_name: ${{ needs.release-metadata.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          generate_release_notes: false
+          fail_on_unmatched_files: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+'''
+    actual = [line for line in job[step_start:step_end] if line.strip() and not line.lstrip().startswith("#")]
+    if actual != expected.splitlines():
+        raise TopologyError("subject producer GitHub release asset selection is not recognized")
+
+
+def derive_subject_projection(release_text: str, root: Path) -> dict[str, Any]:
+    """Admit the reviewed producer shape without executing producer code.
+
+    The AST identities cover the shared projection and terminal producer module,
+    not its transitive imports. Unsupported semantic
+    producer changes require review before this selected schema can describe them.
+    """
+    expected_identities = {
+        "release_subject_projection.py": "30d16c63d6ee4e9778c55bbd31a796749d32035cb089711aca8b813e7163952c",
+        "release_terminal_manifest.py": "88c0b127ffd227e8a2d44c2bc12c83fb5162006a53c31d0486f37ba126c250d5",
+    }
+    for name, expected_identity in expected_identities.items():
+        for directory in (root / "scripts", Path(__file__).resolve().parent):
+            try:
+                tree = ast.parse((directory / name).read_text(encoding="utf-8"))
+            except (OSError, UnicodeDecodeError, SyntaxError) as error:
+                raise TopologyError(f"cannot inspect subject producer {name}: {error}") from error
+            identity = hashlib.sha256(json.dumps(normalized_producer_ast(tree), sort_keys=True).encode()).hexdigest()
+            if identity != expected_identity:
+                raise TopologyError(f"unsupported subject producer AST: {name}")
+    steps = checksum_candidate_steps(release_text)
+    start = next((index for index, line in enumerate(steps)
+                  if line == "      - name: Verify release archives ship the DAP binary"), None)
+    expected = r'''      - name: Verify release archives ship the DAP binary
+        env:
+          VERSION: ${{ needs.release-metadata.outputs.version }}
+        run: |
+          set -euo pipefail
+          cargo xtask release artifact-check \
+            --dist candidate/dist \
+            --version "$VERSION"
+
+      - name: Verify curated release notes exist
+        id: release_notes_preflight
+        env:
+          TAG: ${{ needs.release-metadata.outputs.tag }}
+        run: |
+          set -euo pipefail
+          NOTE_FILE="docs/releases/${TAG}.md"
+          if [ ! -f "$NOTE_FILE" ]; then
+            printf '::error file=%s::Curated release notes missing for %s. See RELEASE.md "Release History Updates" — every release must ship docs/releases/%s.md before tagging.\n' "$NOTE_FILE" "$TAG" "$TAG"
+            exit 1
+          fi
+          printf 'note_file=%s\n' "$NOTE_FILE" >> "$GITHUB_OUTPUT"
+          printf 'Found curated release notes: %s\n' "$NOTE_FILE"
+
+      - name: Generate release notes from docs/releases/<tag>.md
+        id: release_notes
+        env:
+          TAG: ${{ needs.release-metadata.outputs.tag }}
+        run: |
+          set -euo pipefail
+          cargo xtask release-notes --tag "$TAG" --output release_notes.md
+          echo "--- release_notes.md ---"
+          cat release_notes.md
+          echo "--- /release_notes.md ---"
+
+      - name: Install cargo-sbom (preflight)
+        run: |
+          set -euo pipefail
+          cargo install cargo-sbom --version 0.9.1 --locked
+
+      - name: Generate and validate nonempty SPDX SBOM
+        run: |
+          set -euo pipefail
+          cargo sbom --output-format spdx_json_2_3 > candidate/dist/sbom-spdx.json
+          test -s candidate/dist/sbom-spdx.json
+
+      - name: Build terminal artifact manifest
+        env:
+          SOURCE_SHA: ${{ github.sha }}
+          TAG: ${{ needs.release-metadata.outputs.tag }}
+        run: |
+          set -euo pipefail
+          cp release_notes.md candidate/release_notes.md
+          python3 scripts/release_terminal_manifest.py \
+            --candidate candidate \
+            --source-sha "$SOURCE_SHA" \
+            --tag "$TAG"
+          python3 scripts/release_terminal_manifest.py \
+            --candidate candidate \
+            --source-sha "$SOURCE_SHA" \
+            --tag "$TAG" \
+            --check
+
+      - name: Attest exact terminal candidate subjects
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-checksums: candidate/attestation-subjects.sha256
+
+      - name: Upload terminal candidate
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-terminal-candidate
+          path: candidate
+          if-no-files-found: error
+          retention-days: 7
+'''
+    meaningful = lambda lines: [line for line in lines if line.strip() and not line.lstrip().startswith("#")]
+    if start is None or meaningful(steps[start:]) != meaningful(expected.splitlines()):
+        raise TopologyError("subject producer candidate suffix is not recognized")
+    checksum_start = steps.index("      - name: Generate consolidated SHA256SUMS")
+    intervening_steps = [line for line in steps[checksum_start:start] if line.startswith("      - ")]
+    if intervening_steps != ["      - name: Generate consolidated SHA256SUMS"]:
+        raise TopologyError("subject producer has unexpected intervening steps")
+    consolidated_checksum_producer(release_text)
+    validate_sbom_release_selection(release_text)
+    return topology_subject_projection()
+
+
+def workspace_member_manifest_paths(
+    metadata: dict[str, Any], root: Path
+) -> list[str]:
+    packages = {
+        package["id"]: package
+        for package in metadata.get("packages", [])
+        if isinstance(package, dict) and isinstance(package.get("id"), str)
+    }
+    paths: list[str] = []
+    for member_id in metadata.get("workspace_members", []):
+        package = packages.get(member_id)
+        if package is None or not isinstance(package.get("manifest_path"), str):
+            raise TopologyError(f"workspace member metadata is incomplete: {member_id}")
+        try:
+            relative = (
+                Path(package["manifest_path"])
+                .resolve()
+                .relative_to(root.resolve())
+                .as_posix()
+            )
+        except ValueError as error:
+            raise TopologyError(
+                f"workspace member manifest escapes checkout: {package['manifest_path']}"
+            ) from error
+        if relative not in paths:
+            paths.append(relative)
+    return paths
+
+
+def source_paths(
+    crates: list[dict[str, Any]], workspace_manifests: list[str] | None = None,
+    schema_version: int = SCHEMA,
+) -> list[str]:
+    paths = [
+        schema_relative_path(schema_version) if path == SCHEMA_RELATIVE_PATH else path
+        for path in SOURCE_PATHS
+    ]
+    if schema_version == 3:
+        paths.extend(["scripts/release_subject_projection.py", "scripts/release_terminal_manifest.py"])
+    manifests = workspace_manifests
+    if manifests is None:
+        manifests = []
+        for crate in crates:
+            package_path = crate.get("package_path")
+            if not isinstance(package_path, str):
+                raise TopologyError("published crate package_path must be a string")
+            package = Path(package_path)
+            if package.is_absolute() or ".." in package.parts:
+                raise TopologyError(
+                    f"published crate package_path escapes checkout: {package_path}"
+                )
+            manifests.append((package / "Cargo.toml").as_posix())
+    for manifest in manifests:
+        if manifest not in paths:
+            paths.append(manifest)
+    return paths
+
+
+def workspace_inherited_package_names(
+    root: Path, workspace_manifests: list[str]
+) -> dict[str, str]:
+    inherited: dict[str, str] = {}
+    for relative in workspace_manifests:
+        try:
+            value = tomllib.loads((root / relative).read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
+            raise TopologyError(f"cannot read workspace manifest {relative}: {error}") from error
+        package = value.get("package", {})
+        name = package.get("name") if isinstance(package, dict) else None
+        version = package.get("version") if isinstance(package, dict) else None
+        if isinstance(name, str) and isinstance(version, dict) and version == {"workspace": True}:
+            inherited[name] = relative
+    return inherited
+
+
+def source_hashes_for_paths(root: Path, paths: list[str]) -> dict[str, str]:
     result: dict[str, str] = {}
-    for relative in SOURCE_PATHS:
+    for relative in paths:
         path = root / relative
         if not path.is_file():
             raise TopologyError(f"topology source is missing: {relative}")
         result[relative] = sha256(path)
     return result
+
+
+def ensure_committed_topology_inputs(root: Path, paths: list[str]) -> None:
+    """Require every topology input to be tracked and clean in its checkout.
+
+    Release output manifests are intentionally outside this set and may remain
+    untracked.  Git performs the comparison through its configured filters, so
+    a checkout with a harmless working-tree newline conversion is handled the
+    same way as every other committed file.
+    """
+    tracked = subprocess.run(
+        ["git", "ls-files", "--error-unmatch", "--", *paths],
+        cwd=root,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if tracked.returncode not in (0, 1):
+        detail = tracked.stderr.strip() or "git ls-files failed"
+        raise TopologyError(f"cannot inspect tracked topology inputs: {detail}")
+    tracked_paths = set(tracked.stdout.splitlines())
+    missing = sorted(set(paths) - tracked_paths)
+    if missing:
+        raise TopologyError(
+            "topology inputs are not tracked: " + ", ".join(missing)
+        )
+    for label, extra in (("unstaged", []), ("staged", ["--cached"])):
+        result = subprocess.run(
+            ["git", "diff", "--quiet", *extra, "--", *paths],
+            cwd=root,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 1:
+            raise TopologyError(f"topology input has {label} changes")
+        if result.returncode != 0:
+            detail = result.stderr.strip() or "git diff failed"
+            raise TopologyError(f"cannot inspect {label} topology inputs: {detail}")
+
+
+def load_manifest(path: Path) -> dict[str, Any]:
+    try:
+        value = load_topology_json(path.read_text(encoding="utf-8"), supported_versions=(1, 2, 3))
+    except (OSError, ValueError) as error:
+        raise TopologyError(f"cannot read frozen topology {path}: {error}") from error
+    if not isinstance(value, dict):
+        raise TopologyError("frozen topology must be a JSON object")
+    return value
+
+
+def load_frozen_authority(
+    path: Path, expected_digest: str | None
+) -> tuple[dict[str, Any], str]:
+    if expected_digest is None or not re.fullmatch(r"[0-9a-f]{64}", expected_digest):
+        raise TopologyError(
+            "prepared validation requires a lowercase 64-hex frozen topology digest"
+        )
+    try:
+        raw = path.read_bytes()
+    except OSError as error:
+        raise TopologyError(f"cannot read frozen topology {path}: {error}") from error
+    actual_digest = hashlib.sha256(raw).hexdigest()
+    if actual_digest != expected_digest:
+        raise TopologyError(
+            "frozen topology digest differs from --frozen-topology-sha256"
+        )
+    try:
+        value = load_topology_json(raw, supported_versions=(1, 2, 3))
+    except ValueError as error:
+        raise TopologyError(f"cannot parse frozen topology {path}: {error}") from error
+    if not isinstance(value, dict):
+        raise TopologyError("frozen topology must be a JSON object")
+    return value, actual_digest
+
+
+def immutable_projection(manifest: dict[str, Any]) -> dict[str, Any]:
+    """Return the product-subject portion that preparation must preserve.
+
+    Version-bearing labels are deliberately removed because preparation may
+    derive new package, archive, and VSIX identities. Source hashes are
+    checked separately against normalized source bytes.
+    All other membership, ordering, target, install, and channel fields remain
+    load-bearing.
+    """
+    projected = deepcopy(manifest)
+    projected.pop("release", None)
+    projected.pop("workspace_version", None)
+    projected.pop("prepared_swarm_sha", None)
+    projected["frozen_product_sha"] = "<frozen-product>"
+    for crate in projected.get("published_crates", []):
+        if isinstance(crate, dict):
+            crate.pop("version", None)
+    for target in projected.get("binary_targets", []):
+        if isinstance(target, dict):
+            target.pop("archive_name", None)
+    vsix = projected.get("vsix")
+    if isinstance(vsix, dict):
+        vsix.pop("version", None)
+        vsix.pop("asset_name", None)
+    return projected
+
+
+def version_derived_source_paths(published_paths: set[str]) -> set[str]:
+    return VERSION_DERIVED_SOURCE_PATHS | published_paths
+
+
+def normalized_source_value(
+    root: Path,
+    relative: str,
+    release: str,
+    published_names: set[str],
+    published_paths: set[str],
+    workspace_inherited_names: set[str] | None = None,
+) -> Any:
+    path = root / relative
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as error:
+        raise TopologyError(f"cannot read source {relative}: {error}") from error
+    if (
+        relative == "Cargo.toml"
+        or relative in published_paths
+        or Path(relative).name == "Cargo.toml"
+    ):
+        try:
+            value = tomllib.loads(text)
+        except tomllib.TOMLDecodeError as error:
+            raise TopologyError(f"cannot parse source {relative}: {error}") from error
+        version_names = published_names | (workspace_inherited_names or set())
+        if relative == "Cargo.toml":
+            workspace = value.get("workspace", {})
+            if not isinstance(workspace, dict):
+                raise TopologyError("Cargo.toml [workspace] must be a table")
+            package = workspace.get("package", {})
+            if isinstance(package, dict) and package.get("version") == release:
+                package["version"] = "<version>"
+            dependencies = workspace.get("dependencies", {})
+            if not isinstance(dependencies, dict):
+                raise TopologyError("workspace.dependencies must be a table")
+        else:
+            package = value.get("package", {})
+            if (
+                isinstance(package, dict)
+                and package.get("name") in published_names
+                and package.get("version") == release
+            ):
+                package["version"] = "<version>"
+            for section in ("dependencies", "dev-dependencies", "build-dependencies"):
+                table = value.get(section, {})
+                if not isinstance(table, dict):
+                    raise TopologyError(f"{relative} [{section}] must be a table")
+                for name, dependency in table.items():
+                    if (
+                        name in version_names
+                        and isinstance(dependency, dict)
+                        and (
+                            dependency.get("path") is not None
+                            or dependency.get("workspace") is True
+                        )
+                        and dependency.get("version") == release
+                    ):
+                        dependency["version"] = "<version>"
+        if relative == "Cargo.toml":
+            for name, dependency in dependencies.items():
+                if (
+                    name in version_names
+                    and isinstance(dependency, dict)
+                    and (
+                        dependency.get("path") is not None
+                        or dependency.get("workspace") is True
+                    )
+                    and dependency.get("version") == release
+                ):
+                    dependency["version"] = "<version>"
+        return value
+    if relative == "Cargo.lock":
+        try:
+            value = tomllib.loads(text)
+        except tomllib.TOMLDecodeError as error:
+            raise TopologyError(f"cannot parse source {relative}: {error}") from error
+        lock_version_names = published_names | (workspace_inherited_names or set())
+        for package in value.get("package", []):
+            if (
+                isinstance(package, dict)
+                and package.get("name") in lock_version_names
+                and package.get("source") is None
+                and package.get("version") == release
+            ):
+                package["version"] = "<version>"
+        return value
+    if relative == "vscode-extension/package.json":
+        value = json.loads(text)
+        if isinstance(value, dict) and value.get("version") == release:
+            value["version"] = "<version>"
+        return value
+    return text
+
+
+def validate_source_transition(
+    frozen: dict[str, Any],
+    prepared: dict[str, Any],
+    frozen_root: Path,
+    prepared_root: Path,
+) -> None:
+    frozen_sources = frozen.get("sources")
+    prepared_sources = prepared.get("sources")
+    if not isinstance(frozen_sources, dict) or not isinstance(prepared_sources, dict):
+        raise TopologyError("frozen/prepared source inventories must be objects")
+    if set(frozen_sources) != set(prepared_sources):
+        raise TopologyError("prepared topology changes the source path set")
+    if git_head(frozen_root) != frozen.get("frozen_product_sha"):
+        raise TopologyError("frozen topology does not identify the supplied frozen checkout")
+    published_names = {
+        entry.get("name")
+        for entry in frozen.get("published_crates", [])
+        if isinstance(entry, dict) and isinstance(entry.get("name"), str)
+    }
+    published_paths = {
+        (Path(entry["package_path"]) / "Cargo.toml").as_posix()
+        for entry in frozen.get("published_crates", [])
+        if isinstance(entry, dict) and isinstance(entry.get("package_path"), str)
+    }
+    ensure_committed_topology_inputs(frozen_root, sorted(frozen_sources))
+    ensure_committed_topology_inputs(prepared_root, sorted(prepared_sources))
+    workspace_manifests = sorted(
+        relative
+        for relative in frozen_sources
+        if relative != "Cargo.toml" and Path(relative).name == "Cargo.toml"
+    )
+    frozen_inherited = workspace_inherited_package_names(
+        frozen_root, workspace_manifests
+    )
+    prepared_inherited = workspace_inherited_package_names(
+        prepared_root, workspace_manifests
+    )
+    if frozen_inherited != prepared_inherited:
+        raise TopologyError(
+            "prepared source changed workspace-inherited package membership"
+        )
+    version_sources = version_derived_source_paths(
+        published_paths | set(workspace_manifests)
+    )
+    frozen_release = frozen.get("release")
+    prepared_release = prepared.get("release")
+    if not isinstance(frozen_release, str) or not isinstance(prepared_release, str):
+        raise TopologyError("frozen/prepared release identities must be strings")
+    for relative in sorted(frozen_sources):
+        frozen_source = frozen_sources[relative]
+        prepared_source = prepared_sources[relative]
+        if not isinstance(frozen_source, dict) or not isinstance(prepared_source, dict):
+            raise TopologyError(f"source inventory entry is not an object: {relative}")
+        frozen_path = frozen_root / relative
+        prepared_path = prepared_root / relative
+        if not frozen_path.is_file() or not prepared_path.is_file():
+            raise TopologyError(f"prepared source is missing: {relative}")
+        if sha256(frozen_path) != frozen_source.get("sha256"):
+            raise TopologyError(f"frozen source hash is stale: {relative}")
+        if sha256(prepared_path) != prepared_source.get("sha256"):
+            raise TopologyError(f"prepared source hash is stale: {relative}")
+        if relative not in version_sources:
+            if frozen_path.read_bytes() != prepared_path.read_bytes():
+                raise TopologyError(
+                    f"prepared source changed outside version metadata: {relative}"
+                )
+            continue
+        if normalized_source_value(
+            frozen_root,
+            relative,
+            frozen_release,
+            published_names,
+            published_paths,
+            set(frozen_inherited),
+        ) != normalized_source_value(
+            prepared_root,
+            relative,
+            prepared_release,
+            published_names,
+            published_paths,
+            set(frozen_inherited),
+        ):
+            raise TopologyError(
+                f"prepared source changed outside version metadata: {relative}"
+            )
+
+
+def validate_prepared_projection(
+    frozen: dict[str, Any],
+    prepared: dict[str, Any],
+    frozen_digest: str,
+    frozen_topology_path: Path,
+    frozen_root: Path,
+    prepared_root: Path,
+) -> None:
+    authoritative, actual_digest = load_frozen_authority(frozen_topology_path, frozen_digest)
+    if authoritative != frozen or actual_digest != frozen_digest:
+        raise TopologyError("frozen topology authority bytes do not match supplied baseline")
+    schema_validate(frozen, frozen_root)
+    schema_validate(prepared, prepared_root)
+    if topology_schema_version(frozen.get("schema")) != topology_schema_version(
+        prepared.get("schema")
+    ):
+        raise TopologyError("frozen/prepared topology schema versions must match")
+    if frozen.get("prepared_swarm_sha") is not None:
+        raise TopologyError("frozen topology must not already bind prepared_swarm_sha")
+    if frozen.get("frozen_product_sha") != prepared.get("frozen_product_sha"):
+        raise TopologyError("prepared topology does not retain frozen_product_sha")
+    validate_source_transition(frozen, prepared, frozen_root, prepared_root)
+    frozen_subjects = deepcopy(frozen)
+    prepared_subjects = deepcopy(prepared)
+    frozen_subjects.pop("sources", None)
+    prepared_subjects.pop("sources", None)
+    if immutable_projection(frozen_subjects) != immutable_projection(prepared_subjects):
+        raise TopologyError(
+            "prepared topology changes an immutable frozen product subject "
+            f"(frozen digest {frozen_digest})"
+        )
+
+
+# Characters whose preceding token leaves the parser in a position where the
+# next `/` must be a regex literal rather than division: assignment,
+# open/close delimiters, statement separators, type annotations, the `=>`
+# arrow, the unary/binary operators that do not permit division, and the
+# power/bitwise operators.  The closing delimiters `)]}` ALSO permit a regex
+# (the postfix-`/` shorthand is not used by the managed downloader, but we
+# keep the conservative rule for symmetry with TypeScript's own lexer).
+_REGEX_STARTER_CHARS = frozenset("=([,;{}?:!&|~+-*/%<>^")
+
+
+def _first_identifier(needle: str) -> str | None:
+    """Return the first TypeScript identifier in ``needle``, or ``None``.
+
+    Used by ``_has_executable_substring`` to anchor the position check at a
+    chunk of the needle that is not part of a string literal.  String
+    literals are masked by ``_mask_typescript_non_code`` (positions of the
+    quote characters and the literal body are blanked to spaces), so a
+    full-string equality check would reject matches whose string literal
+    appears in real code.  Verifying that the leading identifier sits in
+    executable source is enough to confirm the rest of the needle lives in
+    code.
+    """
+    i = 0
+    while i < len(needle):
+        ch = needle[i]
+        if ch.isalpha() or ch == "_" or ch == "$":
+            j = i
+            while j < len(needle) and (needle[j].isalnum() or needle[j] in "_$"):
+                j += 1
+            return needle[i:j]
+        i += 1
+    return None
+
+
+def _has_executable_substring(source: str, executable_source: str, needle: str) -> bool:
+    """True when ``needle`` appears in ``source`` AND the leading identifier
+    of the match sits in executable code (a comment or regex literal does
+    not count).
+
+    Position-aware counterpart to ``needle in source``.  The raw source is
+    searched for ``needle``; for each match the leading identifier's
+    position in the masked source is verified.  String literals are masked
+    by ``_mask_typescript_non_code`` so the substring may not be
+    byte-identical at that position; checking the leading identifier is
+    sufficient because identifiers cannot appear inside comments, regex
+    literals, or string literals.
+    """
+    if not needle:
+        return False
+    anchor = _first_identifier(needle)
+    if not anchor:
+        # Fall back to a literal check if the needle has no identifier.
+        for match in re.finditer(re.escape(needle), source):
+            if (
+                executable_source[match.start() : match.start() + len(needle)]
+                == needle
+            ):
+                return True
+        return False
+    for match in re.finditer(re.escape(needle), source):
+        anchor_pos = match.start() + needle.index(anchor)
+        if executable_source[anchor_pos : anchor_pos + len(anchor)] == anchor:
+            return True
+    return False
+
+
+def _mask_typescript_non_code(
+    source: str, mask_template_literal_bodies: bool = False
+) -> str:
+    """Blank TypeScript non-code positions while preserving line numbers.
+
+    TypeScript has four non-code lexical forms that, if left intact, would
+    let a comment or non-code string satisfy a target-derivation scan:
+
+      1. line comments    ``// ...``
+      2. block comments   ``/* ... */``
+      3. string literals  ``'...'`` and ``"..."``
+      4. regex literals   ``/.../[flags]``
+
+    Template literals (``\\`...\\```) are masked only when
+    ``mask_template_literal_bodies`` is True.  The default pass keeps the
+    template literal body verbatim because the Linux check uses the
+    production substring ``${archPrefix}-unknown-linux-${libc}`` inside the
+    template literal as its authority.  When the identifier-side check
+    needs to be strict (e.g. ``return WINDOWS_X64_TARGET`` must not be
+    satisfied by ``\\`return WINDOWS_X64_TARGET\\```) the caller asks for a
+    second pass that blanks template literal bodies too.
+
+    Regex literals are lexically ambiguous with division (``/``), so they
+    need a small character-based lexer.  ``/`` opens a regex literal only
+    when the lexer is in a term position: start of input, after an operator
+    or punctuation that disallows division, or after a newline.  After an
+    identifier, number, string, template, or closing bracket the ``/`` is
+    division and is left intact.  Unterminated literals fail closed by
+    treating the rest of the line as code rather than silently admitting a
+    partial match.
+    """
+    out: list[str] = []
+    i = 0
+    n = len(source)
+    # True at start-of-input and after newline/operator/punctuation that
+    # cannot terminate a value-producing expression.  An identifier, number,
+    # closing bracket, string, or template resets it to False.
+    expect_term = True
+
+    while i < n:
+        c = source[i]
+        # Whitespace: pass through, newline resets expect_term so the next
+        # token starts an expression position.
+        if c.isspace():
+            if c == "\n":
+                expect_term = True
+            out.append(c)
+            i += 1
+            continue
+        # Line comment: // ... \n
+        if c == "/" and i + 1 < n and source[i + 1] == "/":
+            j = i
+            while j < n and source[j] != "\n":
+                j += 1
+            out.append(" " * (j - i))
+            i = j
+            continue
+        # Block comment: /* ... */  (preserve newlines so line numbers match)
+        if c == "/" and i + 1 < n and source[i + 1] == "*":
+            end = source.find("*/", i + 2)
+            j = n if end == -1 else end + 2
+            chunk = source[i:j]
+            out.append("".join("\n" if ch == "\n" else " " for ch in chunk))
+            i = j
+            continue
+        # String literal: '...' or "..."  MASKED so that pseudo-returns of the
+        # form ``'return WINDOWS_X64_TARGET'`` or ``"return 'x86_64-pc-
+        # windows-msvc'"`` cannot satisfy the Windows check below.  Windows
+        # does its own ``re.finditer`` over the raw source and then re-checks
+        # each match against this masked source to confirm it lives in
+        # executable code; a string-literal pseudo-return is masked, so the
+        # position check fails and the target is not admitted.
+        if c in ("'", '"'):
+            quote = c
+            j = i + 1
+            while j < n:
+                if source[j] == "\\" and j + 1 < n:
+                    j += 2
+                    continue
+                if source[j] == quote:
+                    j += 1
+                    break
+                if source[j] == "\n":
+                    # Unterminated string: stop at the newline (fail closed).
+                    break
+                j += 1
+            chunk = source[i:j]
+            out.append("".join("\n" if ch == "\n" else " " for ch in chunk))
+            expect_term = False  # a string is a complete expression term
+            i = j
+            continue
+        # Template literal: `...`  Two masks exist:
+        #
+        # * The Linux-construction substring (``${archPrefix}-unknown-linux-
+        #   ${libc}``) is the production authority, so the template literal
+        #   body MUST be visible in the mask returned to
+        #   ``derive_downloader_targets``.  ``_has_executable_substring`` is
+        #   called with this mask to confirm the template literal sits in
+        #   executable code.
+        # * The Windows-construction identifier check (``return
+        #   WINDOWS_X64_TARGET``) must not admit a template-literal pseudo-
+        #   return like `` `return WINDOWS_X64_TARGET` ``.  The mask used by
+        #   that check (built by ``_mask_typescript_identifier_unsafe``)
+        #   blanks template literal bodies as well.
+        #
+        # The default branch here is the "linux-visible" pass: append the
+        # template literal verbatim.  ``_mask_typescript_identifier_unsafe``
+        # replaces this branch with a blanked-body pass for callers that
+        # need to verify identifiers.
+        if c == "`":
+            j = i + 1
+            while j < n:
+                if source[j] == "\\" and j + 1 < n:
+                    j += 2
+                    continue
+                if source[j] == "`":
+                    j += 1
+                    break
+                j += 1
+            chunk = source[i:j]
+            if mask_template_literal_bodies:
+                out.append(
+                    "".join("\n" if ch == "\n" else " " for ch in chunk)
+                )
+            else:
+                out.append(chunk)
+            expect_term = False
+            i = j
+            continue
+        # Regex literal: /.../[flags]  (only in term position)
+        if c == "/" and expect_term:
+            j = i + 1
+            in_class = False
+            consumed_any = False
+            while j < n:
+                ch = source[j]
+                if ch == "\\" and j + 1 < n:
+                    j += 2
+                    consumed_any = True
+                    continue
+                if ch == "[":
+                    in_class = True
+                elif ch == "]" and in_class:
+                    in_class = False
+                elif ch == "/" and not in_class:
+                    j += 1
+                    break
+                if ch == "\n":
+                    # Unterminated regex on this line; treat as a stray
+                    # division operator and stop consuming.
+                    j = i + 1
+                    break
+                consumed_any = True
+                j += 1
+            # Consume valid regex flags: g, i, m, s, u, y, d.
+            while j < n and source[j] in "gimsuy":
+                j += 1
+            if consumed_any and j > i + 1:
+                chunk = source[i:j]
+                out.append("".join("\n" if ch == "\n" else " " for ch in chunk))
+                expect_term = False
+                i = j
+                continue
+            # Otherwise fall through: this was a stray `/` (division or junk)
+        # Identifier or keyword: pass through, then no term expected next.
+        if c.isalpha() or c == "_" or c == "$":
+            j = i
+            while j < n and (source[j].isalnum() or source[j] in "_$"):
+                j += 1
+            out.append(source[i:j])
+            expect_term = False
+            i = j
+            continue
+        # Number: pass through
+        if c.isdigit():
+            j = i
+            while j < n and (source[j].isalnum() or source[j] in "._"):
+                j += 1
+            out.append(source[i:j])
+            expect_term = False
+            i = j
+            continue
+        # Operators / punctuation
+        out.append(c)
+        expect_term = c in _REGEX_STARTER_CHARS
+        i += 1
+    return "".join(out)
 
 
 def derive_downloader_targets(source: str, workflow_targets: set[str]) -> set[str]:
@@ -242,21 +1305,61 @@ def derive_downloader_targets(source: str, workflow_targets: set[str]) -> set[st
     architecture/libc construction.
     """
     managed: set[str] = set()
+    executable_source = _mask_typescript_non_code(source)
+    # ``identifier_unsafe_source`` blanks template literal bodies in
+    # addition to comments / string literals / regex literals.  The Windows
+    # ``constant_return`` check matches ``return WINDOWS_X64_TARGET``; a
+    # template literal like `` `return WINDOWS_X64_TARGET` `` must not
+    # satisfy that check, so the search runs against the stricter mask.
+    identifier_unsafe_source = _mask_typescript_non_code(
+        source, mask_template_literal_bodies=True
+    )
 
-    if "aarch64-apple-darwin" in source:
+    # Darwin targets must be admitted from a position-aware check that anchors on
+    # a token outside the string literal.  The downloader constructs both
+    # darwin targets in a single ternary, ``return arch === 'arm64' ?
+    # 'aarch64-apple-darwin' : 'x86_64-apple-darwin';``.  The first identifier
+    # in that needle is ``arch`` — an unquoted identifier — so the
+    # position-of-identifier check passes when the ternary is in real code
+    # and fails when the ternary is in a comment or regex literal.  Commented
+    # macOS target branches are therefore rejected while real darwin code is
+    # accepted.
+    darwin_ternary = (
+        "return arch === 'arm64' ? 'aarch64-apple-darwin' : 'x86_64-apple-darwin'"
+    )
+    if _has_executable_substring(source, executable_source, darwin_ternary):
         managed.add("aarch64-apple-darwin")
-    if "x86_64-apple-darwin" in source:
         managed.add("x86_64-apple-darwin")
-    if "return 'x86_64-pc-windows-msvc'" in source:
-        managed.add("x86_64-pc-windows-msvc")
-    if "return 'aarch64-pc-windows-msvc'" in source:
-        managed.add("aarch64-pc-windows-msvc")
+    for constant, target in (
+        ("WINDOWS_X64_TARGET", "x86_64-pc-windows-msvc"),
+        ("WINDOWS_ARM64_TARGET", "aarch64-pc-windows-msvc"),
+    ):
+        literal_return = False
+        for match in re.finditer(rf"return\s+(['\"]){re.escape(target)}\1", source):
+            if executable_source[match.start() : match.start() + len("return")] == "return":
+                literal_return = True
+                break
+        constant_return = (
+            re.search(rf"return\s+{constant}\b", identifier_unsafe_source) is not None
+        )
+        declared_target = False
+        for match in re.finditer(
+            rf"\b{constant}\s*=\s*(['\"]){re.escape(target)}\1", source
+        ):
+            if executable_source[match.start() : match.start() + len(constant)] == constant:
+                declared_target = True
+                break
+        if literal_return or (declared_target and constant_return):
+            managed.add(target)
 
-    constructs_linux_targets = (
-        "return `${archPrefix}-unknown-linux-${libc}`" in source
-        and "archPrefix = arch === 'arm64' ? 'aarch64' : 'x86_64'" in source
-        and "value === 'gnu'" in source
-        and "value === 'musl'" in source
+    constructs_linux_targets = all(
+        _has_executable_substring(source, executable_source, needle)
+        for needle in (
+            "return `${archPrefix}-unknown-linux-${libc}`",
+            "archPrefix = arch === 'arm64' ? 'aarch64' : 'x86_64'",
+            "value === 'gnu'",
+            "value === 'musl'",
+        )
     )
     if constructs_linux_targets:
         managed.update(
@@ -274,11 +1377,24 @@ def build_manifest(
     release: str,
     frozen_product_sha: str,
     prepared_swarm_sha: str | None = None,
+    frozen_topology: dict[str, Any] | None = None,
+    frozen_topology_digest: str | None = None,
+    frozen_topology_path: Path | None = None,
+    frozen_root: Path | None = None,
+    *,
+    schema_version: int = SCHEMA,
 ) -> dict[str, Any]:
+    schema_version = topology_schema_version(schema_version)
+    if frozen_topology is not None:
+        schema_validate(frozen_topology, frozen_root)
+    if frozen_topology is not None and prepared_swarm_sha is None:
+        raise TopologyError(
+            "frozen topology authority is only valid for prepared validation"
+        )
     if not re.fullmatch(r"[0-9a-f]{40}", frozen_product_sha):
         raise TopologyError("frozen_product_sha must be a full lowercase commit SHA")
     current_sha = git_head(root)
-    if current_sha != frozen_product_sha:
+    if prepared_swarm_sha is None and current_sha != frozen_product_sha:
         raise TopologyError(
             "frozen_product_sha must identify the exact checkout being inventoried"
         )
@@ -287,9 +1403,22 @@ def build_manifest(
             raise TopologyError(
                 "prepared_swarm_sha must be a full lowercase commit SHA"
             )
+        if prepared_swarm_sha == frozen_product_sha:
+            raise TopologyError(
+                "prepared_swarm_sha must differ from frozen_product_sha for a prepared topology"
+            )
         if prepared_swarm_sha != current_sha:
             raise TopologyError(
                 "prepared_swarm_sha must identify the exact prepared checkout"
+            )
+        if (
+            frozen_topology is None
+            or frozen_topology_digest is None
+            or frozen_topology_path is None
+            or frozen_root is None
+        ):
+            raise TopologyError(
+                "prepared topology requires explicit frozen topology bytes, digest, and checkout"
             )
     metadata = cargo_metadata(root)
     cargo_manifest = tomllib.loads((root / "Cargo.toml").read_text(encoding="utf-8"))
@@ -332,13 +1461,17 @@ def build_manifest(
         raise TopologyError(
             f"VSIX version {package.get('version')} does not match {release}"
         )
-    crates = derive_crates(metadata)
+    crates = derive_crates(metadata, root)
+    workspace_manifests = workspace_member_manifest_paths(metadata, root)
     for entry in crates:
         entry["package_path"] = (
             Path(entry["package_path"]).resolve().relative_to(root.resolve()).as_posix()
         )
+    ensure_committed_topology_inputs(
+        root, source_paths(crates, workspace_manifests, schema_version)
+    )
     manifest = {
-        "schema": SCHEMA,
+        "schema": schema_version,
         "release": release,
         "track": "public-beta",
         "frozen_product_sha": frozen_product_sha,
@@ -359,22 +1492,53 @@ def build_manifest(
         "secondary_channels": {"docker": "required", "homebrew": "deferred"},
         "sources": {
             relative: {"path": relative, "sha256": digest}
-            for relative, digest in source_hashes(root).items()
+            for relative, digest in source_hashes_for_paths(
+                root, source_paths(crates, workspace_manifests, schema_version)
+            ).items()
         },
     }
+    if schema_version in (2, 3):
+        manifest["checksum_assets"] = derive_checksum_assets(workflow, targets)
+    if schema_version == 3:
+        manifest["subject_projection"] = derive_subject_projection(workflow, root)
+    if frozen_topology is not None:
+        if frozen_topology_digest is None:
+            raise TopologyError("frozen topology digest is missing")
+        validate_prepared_projection(
+            frozen_topology,
+            manifest,
+            frozen_topology_digest,
+            frozen_topology_path,
+            frozen_root,
+            root,
+        )
     return manifest
 
 
 def validate_manifest(
-    manifest: dict[str, Any], root: Path, expected_sha: str | None = None
+    manifest: dict[str, Any],
+    root: Path,
+    expected_sha: str | None = None,
+    expected_prepared_sha: str | None = None,
+    frozen_topology: dict[str, Any] | None = None,
+    frozen_topology_digest: str | None = None,
+    frozen_topology_path: Path | None = None,
+    frozen_root: Path | None = None,
 ) -> None:
-    if manifest.get("schema") != SCHEMA:
-        raise TopologyError("manifest schema must be 1")
+    schema_validate(manifest, root)
+    if frozen_topology is not None:
+        schema_validate(frozen_topology, frozen_root)
+    if frozen_topology is not None and expected_prepared_sha is None:
+        raise TopologyError(
+            "frozen topology authority is only valid for prepared validation"
+        )
+    schema_version = topology_schema_version(manifest.get("schema"))
     if expected_sha is not None and manifest.get("frozen_product_sha") != expected_sha:
         raise TopologyError(
             "manifest frozen_product_sha differs from the reviewed candidate SHA"
         )
-    if expected_sha is not None and git_head(root) != expected_sha:
+    current_sha = git_head(root)
+    if expected_prepared_sha is None and expected_sha is not None and current_sha != expected_sha:
         raise TopologyError(
             "reviewed candidate SHA is not the exact checkout being validated"
         )
@@ -386,15 +1550,54 @@ def validate_manifest(
             raise TopologyError(
                 "prepared_swarm_sha must be a full lowercase commit SHA"
             )
-        if prepared_swarm_sha != git_head(root):
+        if prepared_swarm_sha == manifest.get("frozen_product_sha"):
+            raise TopologyError(
+                "prepared_swarm_sha must differ from frozen_product_sha"
+            )
+        if expected_prepared_sha is None:
+            raise TopologyError(
+                "prepared_swarm_sha requires an explicit prepared validation authority"
+            )
+        if prepared_swarm_sha != current_sha:
             raise TopologyError(
                 "prepared_swarm_sha must identify the exact checkout being validated"
             )
+    elif current_sha != manifest.get("frozen_product_sha"):
+        raise TopologyError(
+            "frozen_product_sha must identify the exact checkout being validated"
+        )
+    if expected_prepared_sha is not None:
+        if prepared_swarm_sha != expected_prepared_sha:
+            raise TopologyError(
+                "manifest prepared_swarm_sha differs from the reviewed prepared SHA"
+            )
+        if prepared_swarm_sha == expected_sha:
+            raise TopologyError(
+                "prepared_swarm_sha must differ from frozen_product_sha"
+            )
+        if (
+            frozen_topology is None
+            or frozen_topology_digest is None
+            or frozen_topology_path is None
+            or frozen_root is None
+        ):
+            raise TopologyError(
+                "prepared validation requires explicit frozen topology bytes, digest, and checkout"
+            )
+        validate_prepared_projection(
+            frozen_topology,
+            manifest,
+            frozen_topology_digest,
+            frozen_topology_path,
+            frozen_root,
+            root,
+        )
     release = manifest.get("release")
     if not isinstance(release, str):
         raise TopologyError("manifest release is missing")
     metadata = cargo_metadata(root)
-    expected_crates = derive_crates(metadata)
+    expected_crates = derive_crates(metadata, root)
+    workspace_manifests = workspace_member_manifest_paths(metadata, root)
     for entry in expected_crates:
         entry["package_path"] = (
             Path(entry["package_path"]).resolve().relative_to(root.resolve()).as_posix()
@@ -402,6 +1605,9 @@ def validate_manifest(
     crates = manifest.get("published_crates")
     if not isinstance(crates, list) or manifest.get("crate_count") != len(crates):
         raise TopologyError("crate_count must be derived from published_crates")
+    ensure_committed_topology_inputs(
+        root, source_paths(crates, workspace_manifests, schema_version)
+    )
     if crates != expected_crates:
         raise TopologyError("published_crates does not match current Cargo metadata")
     orders = [entry.get("publish_order") for entry in crates]
@@ -434,6 +1640,12 @@ def validate_manifest(
     expected_targets = derive_targets(workflow, release)
     if targets != expected_targets:
         raise TopologyError("binary_targets does not match the release workflow")
+    if schema_version in (2, 3) and manifest.get("checksum_assets") != derive_checksum_assets(
+        workflow, expected_targets
+    ):
+        raise TopologyError("checksum_assets does not match the public archive checksum inventory")
+    if schema_version == 3 and manifest.get("subject_projection") != derive_subject_projection(workflow, root):
+        raise TopologyError("subject_projection does not match the terminal producer")
     downstream = json.loads(
         (root / "docs/reference/downstream-dap-integrations.json").read_text()
     )
@@ -476,13 +1688,15 @@ def validate_manifest(
     sources = manifest.get("sources")
     if not isinstance(sources, dict):
         raise TopologyError("sources must be an object")
-    expected_source_paths = set(SOURCE_PATHS)
-    source_paths = set(sources)
-    if source_paths != expected_source_paths:
+    expected_source_paths = set(
+        source_paths(expected_crates, workspace_manifests, schema_version)
+    )
+    manifest_source_paths = set(sources)
+    if manifest_source_paths != expected_source_paths:
         raise TopologyError(
             "source hash set does not match the topology source set: "
-            f"missing={sorted(expected_source_paths - source_paths)}, "
-            f"extra={sorted(source_paths - expected_source_paths)}"
+            f"missing={sorted(expected_source_paths - manifest_source_paths)}, "
+            f"extra={sorted(manifest_source_paths - expected_source_paths)}"
         )
     for relative, source in sources.items():
         if not isinstance(source, dict):
@@ -499,27 +1713,99 @@ def validate_manifest(
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
+        "--schema-version", type=int, choices=(1, 2, 3), default=SCHEMA,
+        help="topology contract to generate or check (default: 1; checksums require 2)",
+    )
+    parser.add_argument(
         "--release", required=True, help="candidate version, e.g. 0.18.0"
     )
     parser.add_argument("--frozen-product-sha", required=True)
     parser.add_argument("--prepared-swarm-sha")
+    parser.add_argument(
+        "--frozen-topology",
+        type=Path,
+        help="exact reviewed frozen topology JSON (required for prepared validation)",
+    )
+    parser.add_argument(
+        "--frozen-topology-sha256",
+        help="SHA-256 digest of --frozen-topology (required for prepared validation)",
+    )
+    parser.add_argument(
+        "--frozen-root",
+        type=Path,
+        help="exact frozen checkout F (required for prepared validation)",
+    )
+    parser.add_argument(
+        "--root",
+        type=Path,
+        help="checkout to inventory (defaults to the script's repository)",
+    )
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument(
         "--check", action="store_true", help="validate an existing output"
     )
     args = parser.parse_args()
-    root = Path(__file__).resolve().parents[1]
+    root = (args.root or Path(__file__).resolve().parents[1]).resolve()
     try:
+        if args.frozen_topology is None and (
+            args.frozen_topology_sha256 is not None or args.frozen_root is not None
+        ):
+            raise TopologyError(
+                "frozen topology auxiliary arguments require --frozen-topology"
+            )
         if args.check:
-            manifest = json.loads(args.output.read_text(encoding="utf-8"))
+            manifest = load_manifest(args.output)
+            schema_validate(manifest, root)
+            if topology_schema_version(manifest.get("schema")) != args.schema_version:
+                raise TopologyError("manifest schema differs from --schema-version")
+            frozen_topology = None
+            frozen_digest = None
+            if args.frozen_topology is not None:
+                frozen_topology, frozen_digest = load_frozen_authority(
+                    args.frozen_topology, args.frozen_topology_sha256
+                )
+                schema_validate(frozen_topology, args.frozen_root or root)
             if manifest.get("release") != args.release:
                 raise TopologyError("manifest release differs from --release")
-            validate_manifest(manifest, root, args.frozen_product_sha)
-        else:
-            manifest = build_manifest(
-                root, args.release, args.frozen_product_sha, args.prepared_swarm_sha
+            validate_manifest(
+                manifest,
+                root,
+                args.frozen_product_sha,
+                args.prepared_swarm_sha,
+                frozen_topology,
+                frozen_digest,
+                args.frozen_topology,
+                args.frozen_root,
             )
-            validate_manifest(manifest, root, args.frozen_product_sha)
+        else:
+            frozen_topology = None
+            frozen_digest = None
+            if args.frozen_topology is not None:
+                frozen_topology, frozen_digest = load_frozen_authority(
+                    args.frozen_topology, args.frozen_topology_sha256
+                )
+                schema_validate(frozen_topology, args.frozen_root or root)
+            manifest = build_manifest(
+                root,
+                args.release,
+                args.frozen_product_sha,
+                args.prepared_swarm_sha,
+                frozen_topology,
+                frozen_digest,
+                args.frozen_topology,
+                args.frozen_root,
+                schema_version=args.schema_version,
+            )
+            validate_manifest(
+                manifest,
+                root,
+                args.frozen_product_sha,
+                args.prepared_swarm_sha,
+                frozen_topology,
+                frozen_digest,
+                args.frozen_topology,
+                args.frozen_root,
+            )
             args.output.write_text(
                 json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
             )
