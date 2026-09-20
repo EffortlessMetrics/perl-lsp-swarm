@@ -6,7 +6,7 @@
 //! [`crate::packet::build_ripr_facts_packet`].
 
 use crate::packet::build_ripr_facts_packet;
-use crate::request::{validate_ripr_facts_path, RiprFactsRequest, EXPECTED_RIPR_FACTS_SCHEMA};
+use crate::request::{EXPECTED_RIPR_FACTS_SCHEMA, RiprFactsRequest, validate_ripr_facts_path};
 
 const DEFAULT_FACT_CLASSES: &str = "files,owners,changes,tests,oracles,relations,dynamic_boundaries,verify_commands,limitations,provenance";
 const DEFAULT_OUT: &str = "target/ripr/reports/perl-facts.json";
@@ -725,8 +725,8 @@ mod tests {
     }
 
     #[test]
-    fn ripr_facts_cli_reads_diff_relative_to_process_cwd_not_root(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn ripr_facts_cli_reads_diff_relative_to_process_cwd_not_root()
+    -> Result<(), Box<dyn std::error::Error>> {
         let base = format!("target/ripr-facts-cli-cwd-diff-{}", std::process::id());
         let root = format!("{base}/workspace");
         let _ = std::fs::remove_dir_all(&base);
