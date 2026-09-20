@@ -1138,6 +1138,21 @@ pub fn parse_qw_words(s: &str) -> Option<Vec<String>> {
     Some(inner.split_whitespace().map(str::to_string).collect())
 }
 
+/// Parse a complete qw token, including tokens adapted from lexer errors.
+/// Preserve the compatibility word spelling, but require an unescaped, balanced closer.
+pub(crate) fn parse_qw_words_strict(s: &str) -> Option<Vec<String>> {
+    let (open, content) = quote_operator_open_and_content(s, "qw")?;
+    // `content` is the original suffix after the opener; recover that opener's
+    // byte offset so the shared strict scanner owns escape and nesting rules.
+    let start = s.len().checked_sub(content.len())?.checked_sub(open.len_utf8())?;
+    let (body, rest, closed) =
+        extract_delimited_content_strict(s.get(start..)?, open, get_closing_delimiter(open));
+    if !closed || !rest.is_empty() {
+        return None;
+    }
+    Some(body.split_whitespace().map(str::to_string).collect())
+}
+
 // ============================================================================
 // shared_scanner_invariants — pins the contracts the shared quote-scanning
 // helpers must keep, so a future edit to one cannot silently diverge from the

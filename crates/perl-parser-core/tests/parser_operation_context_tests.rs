@@ -211,15 +211,34 @@ fn parser_context_is_not_the_production_tracker() {
 }
 
 #[test]
-fn uncharged_dimensions_stay_zero_on_recovered_parse() {
+fn core_dimensions_are_charged_and_deferred_dimensions_stay_zero() {
+    // B01 (#8757) left token/node/diagnostic charging to B02 (#8786), which
+    // has now landed: the admitted core dimensions must report real work.
+    // Recovery scanning and recovery attempts remain #7074's dimensions and
+    // must still be zero, so this test also pins the scope boundary.
     let output = parse_recovery("my $x = ;");
     assert_recovered_completion(&output);
-    assert_eq!(
-        output.budget_usage.errors_emitted, 0,
-        "token/node/diagnostic charging is B02 / #8786"
+
+    assert!(
+        output.budget_usage.errors_emitted > 0,
+        "a recovered parse retains diagnostics, so the charged count must be non-zero"
     );
-    assert_eq!(output.budget_usage.tokens_skipped, 0);
-    assert_eq!(output.budget_usage.recoveries_attempted, 0);
+    assert_eq!(
+        output.budget_usage.errors_emitted,
+        output.diagnostics.len(),
+        "charged diagnostics must agree with the retained vector when the budget is not spent"
+    );
+    assert!(output.budget_usage.tokens_consumed > 0, "parsing consumed tokens");
+    assert!(output.budget_usage.nodes_constructed > 0, "parsing constructed nodes");
+
+    assert_eq!(
+        output.budget_usage.tokens_skipped, 0,
+        "recovery-skip charging is #7074, not an admitted B02 core dimension"
+    );
+    assert_eq!(
+        output.budget_usage.recoveries_attempted, 0,
+        "recovery-attempt charging is #7074, not an admitted B02 core dimension"
+    );
 }
 
 #[test]
