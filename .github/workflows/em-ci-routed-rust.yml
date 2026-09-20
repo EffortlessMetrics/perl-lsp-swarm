@@ -934,17 +934,24 @@ jobs:
             if [ "${IS_DRAFT_PR:-false}" = "true" ]; then
               draft_now="$(live_draft_state || true)"
               if [ "$draft_now" = "false" ]; then
+                # Mirror only an authoritative success. Anything else — a
+                # failure, a cancellation, or nothing published yet — is
+                # missing or contradictory evidence, which AGENTS.md makes
+                # NOT_PROVEN, so it stays non-successful and the run that
+                # produces proof overwrites it. Publishing success on an empty
+                # read would let a stale run leave a green required check on a
+                # head that was never analyzed.
                 published="$(published_conclusion || true)"
-                echo "RUST_SMALL_GATE_VERDICT=superseded-draft-snapshot"
-                echo "- verdict: superseded-draft-snapshot (published: \`${published:-none}\`)" >> "$GITHUB_STEP_SUMMARY"
-                case "$published" in
-                  failure | timed_out | action_required)
-                    echo "::error::This run carries a stale draft snapshot; the run that produced proof for ${HEAD_SHA:-} reported ${published}."
-                    exit 1
-                    ;;
-                esac
-                echo "::notice::This run carries a stale draft snapshot for a pull request that is no longer a draft; deferring to the run that produces proof for ${HEAD_SHA:-} (published: ${published:-none})."
-                exit 0
+                if [ "$published" = "success" ]; then
+                  echo "RUST_SMALL_GATE_VERDICT=superseded-draft-snapshot"
+                  echo "- verdict: superseded-draft-snapshot (mirroring published success)" >> "$GITHUB_STEP_SUMMARY"
+                  echo "::notice::This run carries a stale draft snapshot for a pull request that is no longer a draft; mirroring the success already published for ${HEAD_SHA:-}."
+                  exit 0
+                fi
+                echo "RUST_SMALL_GATE_VERDICT=superseded-no-proof"
+                echo "- verdict: superseded-no-proof (NOT_PROVEN; published: \`${published:-none}\`)" >> "$GITHUB_STEP_SUMMARY"
+                echo "::error::This run carries a stale draft snapshot and no passing proof has been published for ${HEAD_SHA:-} (published: ${published:-none}); the run that analyzes this head owns the verdict."
+                exit 1
               fi
               echo "RUST_SMALL_GATE_VERDICT=draft-no-proof"
               echo "::error::Rust Small draft route skipped: NOT_PROVEN; no analysis was executed."

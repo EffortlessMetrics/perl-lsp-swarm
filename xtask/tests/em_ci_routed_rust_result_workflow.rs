@@ -167,11 +167,13 @@ fn evaluate(route_result: &str, is_draft: &str, shim: GhShim<'_>) -> Result<Eval
     })
 }
 
-/// The defect measured on #16094: a run created while the pull request was a
-/// draft finishes after it is ready, and its stale snapshot must not claim a
-/// verdict. Against the pre-#16101 block this exits 1 with `draft-no-proof`.
+/// The defect measured on #16094: the run that executed the lane published a
+/// success, and a run created while the pull request was still a draft then
+/// finished and replaced it. The stale run now mirrors that success instead of
+/// overwriting it. Against the pre-#16101 block this exits 1 with
+/// `draft-no-proof`.
 #[test]
-fn a_stale_draft_snapshot_defers_instead_of_failing_a_ready_pull_request() -> Result<()> {
+fn a_stale_draft_snapshot_mirrors_a_published_success() -> Result<()> {
     let run = evaluate(
         "skipped",
         "true",
@@ -179,7 +181,7 @@ fn a_stale_draft_snapshot_defers_instead_of_failing_a_ready_pull_request() -> Re
     )?;
     assert_eq!(
         run.code, 0,
-        "a superseded draft snapshot must not red a ready pull request: {}",
+        "a superseded draft snapshot must not red a head that already passed: {}",
         run.stdout
     );
     assert!(
@@ -195,11 +197,11 @@ fn a_stale_draft_snapshot_defers_instead_of_failing_a_ready_pull_request() -> Re
     Ok(())
 }
 
-/// Deferring must not become a way to publish a pass over someone else's red.
-/// Ordering between the two runs is not guaranteed, so when the run that
-/// produced proof has already failed, the stale one mirrors that failure.
+/// Only an authoritative success is mirrored. Ordering between the two runs is
+/// not guaranteed in either direction, so the stale run must never overwrite a
+/// published red with a green.
 #[test]
-fn a_stale_draft_snapshot_mirrors_a_published_failure() -> Result<()> {
+fn a_stale_draft_snapshot_does_not_pass_over_a_published_failure() -> Result<()> {
     let run = evaluate(
         "skipped",
         "true",
@@ -211,23 +213,61 @@ fn a_stale_draft_snapshot_mirrors_a_published_failure() -> Result<()> {
         run.stdout
     );
     assert!(
-        run.stdout.contains("reported failure"),
-        "the error must name what it is mirroring: {}",
+        run.stdout.contains("RUST_SMALL_GATE_VERDICT=superseded-no-proof"),
+        "the verdict must stay NOT_PROVEN: {}",
         run.stdout
     );
     Ok(())
 }
 
-/// Nothing has published yet: the run that produces proof will post after us,
-/// so deferring is safe and is what keeps a ready pull request from going red.
+/// A cancelled sibling reached no verdict, so it is not proof either. This is
+/// the case that made the first draft of this fix unsound: `cancelled` fell
+/// through a three-value failure test and published success.
 #[test]
-fn a_stale_draft_snapshot_defers_when_no_conclusion_has_been_published() -> Result<()> {
+fn a_stale_draft_snapshot_does_not_pass_over_a_cancelled_run() -> Result<()> {
+    let run = evaluate(
+        "skipped",
+        "true",
+        GhShim { live_draft: Some("false"), published: Some("cancelled") },
+    )?;
+    assert_eq!(
+        run.code, 1,
+        "a cancelled sibling is the absence of evidence, not a pass: {}",
+        run.stdout
+    );
+    assert!(
+        run.stdout.contains("RUST_SMALL_GATE_VERDICT=superseded-no-proof"),
+        "the verdict must stay NOT_PROVEN: {}",
+        run.stdout
+    );
+    Ok(())
+}
+
+/// An unreadable published conclusion is missing evidence, which AGENTS.md
+/// makes NOT_PROVEN; it must not become a pass.
+#[test]
+fn an_unreadable_published_conclusion_stays_not_proven() -> Result<()> {
+    let run = evaluate("skipped", "true", GhShim { live_draft: Some("false"), published: None })?;
+    assert_eq!(run.code, 1, "a failed read must not publish success: {}", run.stdout);
+    assert!(
+        run.stdout.contains("RUST_SMALL_GATE_VERDICT=superseded-no-proof"),
+        "the verdict must stay NOT_PROVEN: {}",
+        run.stdout
+    );
+    Ok(())
+}
+
+/// Nothing has published yet. Passing here would put a green required check on
+/// a head nothing has analyzed, so the run stays red and the run that does the
+/// analysis overwrites it.
+#[test]
+fn a_stale_draft_snapshot_stays_red_when_nothing_has_been_published() -> Result<()> {
     let run =
         evaluate("skipped", "true", GhShim { live_draft: Some("false"), published: Some("") })?;
-    assert_eq!(run.code, 0, "deferring must be the default: {}", run.stdout);
+    assert_eq!(run.code, 1, "an unproven head must not be published green: {}", run.stdout);
     assert!(
-        run.summary.contains("published: `none`"),
-        "the summary must record that nothing was published yet: {}",
+        run.summary.contains("superseded-no-proof (NOT_PROVEN; published: `none`)"),
+        "the summary must record why it is not proven: {}",
         run.summary
     );
     Ok(())
