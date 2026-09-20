@@ -4761,6 +4761,321 @@
       "selector_identity": "invocation:c8b0de3adde0da60:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
       "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/src/engine/parser/error_recovery_tests.rs",
+      "enclosing_test_or_function": "test_15750_bare_double_sigil_emits_error_and_recovers",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"expected Program node, got: {}\", ast.to_sexp());",
+      "selector_identity": "invocation:96e0ff0f27312e7c:occurrence:1",
+      "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/tests/command_line_argv_decoding.rs",
+      "enclosing_test_or_function": "perl",
+      "macro_family": "panic!",
+      "normalized_snippet": "Err(error) => panic!(\"expected {full:?} to decode, got {error}\"),",
+      "selector_identity": "invocation:ee73fe577458911e:occurrence:1",
+      "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/tests/command_line_argv_decoding.rs",
+      "enclosing_test_or_function": "perl_error",
+      "macro_family": "panic!",
+      "normalized_snippet": "Ok(invocation) => panic!(\"expected {full:?} to be refused, decoded {invocation:?}\"),",
+      "selector_identity": "invocation:f9ce8c4d5187a7af:occurrence:1",
+      "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/tests/command_line_argv_decoding.rs",
+      "enclosing_test_or_function": "find_fact",
+      "macro_family": "panic!",
+      "normalized_snippet": "None => panic!(\"expected fact {wanted:?}, have {:?}\", facts(invocation)),",
+      "selector_identity": "invocation:db21ee28a0dcee26:occurrence:1",
+      "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/tests/command_line_argv_decoding.rs",
+      "enclosing_test_or_function": "spans_locate_their_values",
+      "macro_family": "panic!",
+      "normalized_snippet": "None => panic!(\"span {span:?} names argument {} of {argv:?}\", span.argument_index),",
+      "selector_identity": "invocation:fec4b8a06951fdb7:occurrence:1",
+      "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/tests/command_line_argv_decoding.rs",
+      "enclosing_test_or_function": "a_non_ascii_switch_letter_is_refused_without_splitting_a_character",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"expected an unrecognized-switch refusal, got {other:?}\"),",
+      "selector_identity": "invocation:b725c87449580b37:occurrence:1",
+      "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/tests/command_line_argv_decoding.rs",
+      "enclosing_test_or_function": "non_ascii_fragments_survive_decoding_with_byte_accurate_spans",
+      "macro_family": "panic!",
+      "normalized_snippet": "Err(error) => panic!(\"expected {argv:?} to decode, got {error}\"),",
+      "selector_identity": "invocation:7be9113c0ae13c53:occurrence:1",
+      "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/tests/command_line_argv_decoding.rs",
+      "enclosing_test_or_function": "uppercase_hex_marker_is_not_accepted_and_numeric_module_components_are_plain",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"expected a module import\");",
+      "selector_identity": "invocation:e74e2b293aa7b663:occurrence:1",
+      "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/tests/command_line_argv_decoding.rs",
+      "enclosing_test_or_function": "module_imports_decode_form_negation_and_import_arguments",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"expected a module import\");",
+      "selector_identity": "invocation:e74e2b293aa7b663:occurrence:1",
+      "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/tests/command_line_argv_decoding.rs",
+      "enclosing_test_or_function": "module_imports_decode_form_negation_and_import_arguments",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"expected a module import\");",
+      "selector_identity": "invocation:e74e2b293aa7b663:occurrence:2",
+      "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/tests/command_line_argv_decoding.rs",
+      "enclosing_test_or_function": "import_arguments_are_split_from_the_module_at_the_first_equals",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"expected a module import\");",
+      "selector_identity": "invocation:e74e2b293aa7b663:occurrence:1",
+      "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/tests/command_line_argv_decoding.rs",
+      "enclosing_test_or_function": "a_module_expression_that_is_not_a_module_name_is_reported_as_ambiguous",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"expected a module import\");",
+      "selector_identity": "invocation:e74e2b293aa7b663:occurrence:1",
+      "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/tests/command_line_argv_decoding.rs",
+      "enclosing_test_or_function": "a_module_expression_that_is_not_a_module_name_is_reported_as_ambiguous",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"expected a module import\");",
+      "selector_identity": "invocation:e74e2b293aa7b663:occurrence:2",
+      "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/tests/command_line_argv_decoding.rs",
+      "enclosing_test_or_function": "a_module_expression_that_is_not_a_module_name_is_reported_as_ambiguous",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"expected a module import\");",
+      "selector_identity": "invocation:e74e2b293aa7b663:occurrence:3",
+      "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/tests/command_line_argv_decoding.rs",
+      "enclosing_test_or_function": "a_module_expression_that_is_not_a_module_name_is_reported_as_ambiguous",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"expected a module import\");",
+      "selector_identity": "invocation:e74e2b293aa7b663:occurrence:4",
+      "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/tests/command_line_argv_decoding.rs",
+      "enclosing_test_or_function": "a_non_ascii_module_name_is_reported_as_undecidable_rather_than_guessed",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"expected a module import for {module}\");",
+      "selector_identity": "invocation:09e3cfc99ce7ae0e:occurrence:1",
+      "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/tests/command_line_argv_decoding.rs",
+      "enclosing_test_or_function": "a_non_ascii_module_name_is_reported_as_undecidable_rather_than_guessed",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"expected a module import for {expression}\");",
+      "selector_identity": "invocation:679dca06b72ea9cc:occurrence:1",
+      "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/tests/command_line_argv_decoding.rs",
+      "enclosing_test_or_function": "a_non_ascii_module_name_is_reported_as_undecidable_rather_than_guessed",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"expected a module import for {module}\");",
+      "selector_identity": "invocation:09e3cfc99ce7ae0e:occurrence:2",
+      "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/tests/command_line_argv_decoding.rs",
+      "enclosing_test_or_function": "a_non_ascii_module_name_is_reported_as_undecidable_rather_than_guessed",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"expected a module import\");",
+      "selector_identity": "invocation:e74e2b293aa7b663:occurrence:1",
+      "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/tests/command_line_argv_decoding.rs",
+      "enclosing_test_or_function": "lowercase_module_switch_still_imports_with_explicit_arguments",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"expected a module import for {argv}\");",
+      "selector_identity": "invocation:b02bfe8a312a9974:occurrence:1",
+      "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/tests/command_line_argv_decoding.rs",
+      "enclosing_test_or_function": "lowercase_module_switch_still_imports_with_explicit_arguments",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"expected a module import\");",
+      "selector_identity": "invocation:e74e2b293aa7b663:occurrence:1",
+      "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/tests/command_line_argv_decoding.rs",
+      "enclosing_test_or_function": "an_argument_that_is_not_a_module_name_claims_no_method_call",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"expected a module import for {argv}\");",
+      "selector_identity": "invocation:b02bfe8a312a9974:occurrence:1",
+      "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/tests/command_line_argv_decoding.rs",
+      "enclosing_test_or_function": "an_argument_that_is_not_a_module_name_claims_no_method_call",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"expected a module import\");",
+      "selector_identity": "invocation:e74e2b293aa7b663:occurrence:1",
+      "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/tests/command_line_argv_decoding.rs",
+      "enclosing_test_or_function": "module_names_perl_refuses_at_option_parsing_are_refused",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"expected a module import\");",
+      "selector_identity": "invocation:e74e2b293aa7b663:occurrence:1",
+      "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/tests/command_line_argv_decoding.rs",
+      "enclosing_test_or_function": "the_legacy_apostrophe_is_a_package_separator_not_arbitrary_code",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"expected a module import\");",
+      "selector_identity": "invocation:e74e2b293aa7b663:occurrence:1",
+      "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/tests/command_line_argv_decoding.rs",
+      "enclosing_test_or_function": "the_legacy_apostrophe_is_a_package_separator_not_arbitrary_code",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"expected a module import\");",
+      "selector_identity": "invocation:e74e2b293aa7b663:occurrence:2",
+      "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/tests/command_line_argv_decoding.rs",
+      "enclosing_test_or_function": "the_legacy_apostrophe_is_a_package_separator_not_arbitrary_code",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"expected a module import\");",
+      "selector_identity": "invocation:e74e2b293aa7b663:occurrence:3",
+      "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/tests/command_line_argv_decoding.rs",
+      "enclosing_test_or_function": "the_lead_declaration_decides_whether_argv_zero_is_the_interpreter",
+      "macro_family": "panic!",
+      "normalized_snippet": "Err(error) => panic!(\"expected a switches-only argv to decode, got {error}\"),",
+      "selector_identity": "invocation:693e5c4efed60494:occurrence:1",
+      "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/tests/command_line_argv_decoding.rs",
+      "enclosing_test_or_function": "the_lead_declaration_decides_whether_argv_zero_is_the_interpreter",
+      "macro_family": "panic!",
+      "normalized_snippet": "Err(error) => panic!(\"an empty switches-only argv is legal, got {error}\"),",
+      "selector_identity": "invocation:fe92a7463126bb5d:occurrence:1",
+      "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/tests/command_line_argv_decoding.rs",
+      "enclosing_test_or_function": "every_decoded_value_is_located_by_its_span",
+      "macro_family": "panic!",
+      "normalized_snippet": "Err(error) => panic!(\"expected {argv:?} to decode, got {error}\"),",
+      "selector_identity": "invocation:7be9113c0ae13c53:occurrence:1",
+      "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/tests/hir_pir_try_regions.rs",
+      "enclosing_test_or_function": "subroutine_body",
+      "macro_family": "panic!",
+      "normalized_snippet": ".unwrap_or_else(|| panic!(\"expected a subroutine body, got {} bodies\", file.bodies.len()))",
+      "selector_identity": "invocation:b49e90a1d4d949b1:occurrence:1",
+      "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/tests/hir_pir_try_regions.rs",
+      "enclosing_test_or_function": "try_expr",
+      "macro_family": "panic!",
+      "normalized_snippet": ".unwrap_or_else(|| panic!(\"no HirExpr::Try in body; exprs = {:?}\", collect_kinds(body)));",
+      "selector_identity": "invocation:b7616fabba6afb7a:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/tests/hir_pir_try_regions.rs",
+      "enclosing_test_or_function": "block_stmts",
+      "macro_family": "panic!",
+      "normalized_snippet": ".unwrap_or_else(|| panic!(\"block {block:?} missing from arena\"))",
+      "selector_identity": "invocation:f223d3e7527a713e:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/tests/hir_pir_try_regions.rs",
+      "enclosing_test_or_function": "catch_binding_is_a_source_exact_write_place",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"catch binding must lower to a Variable place, got {:?}\", body.exprs.get(binding.0))",
+      "selector_identity": "invocation:f6d4307622d51898:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/tests/hir_pir_try_regions.rs",
+      "enclosing_test_or_function": "catch_binding_shadows_an_outer_lexical_of_the_same_name",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!( \"no binding for $e at byte {start}; bindings = {:?}\", graph.bindings.iter().map(|b| (&b.name, b.range.start)).collect::<Vec<_>>() )",
+      "selector_identity": "invocation:b9a46c54aa6b64e7:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
     }
   ]
 }
