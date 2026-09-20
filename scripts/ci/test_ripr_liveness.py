@@ -42,10 +42,12 @@ def run(
     pulls: list[int] | None = None,
     head_sha: str = "2698f3026226d52c7dcbc47d3dacf53e08465f75",
     head_branch: str = "claude/project-thread-1itw8h",
+    event: str = "pull_request",
 ) -> dict:
     return {
         "id": run_id,
         "status": status,
+        "event": event,
         "created_at": created_at,
         "head_sha": head_sha,
         "head_branch": head_branch,
@@ -131,13 +133,14 @@ class ClassificationTests(unittest.TestCase):
         """With no pull request the group falls back to the ref."""
         report = liveness.classify_snapshot(
             snapshot(
-                run(200, created_at="2026-09-20T04:00:00Z", head_branch="main"),
+                run(200, created_at="2026-09-20T04:00:00Z", head_branch="main", event="push"),
                 run(
                     100,
                     status="in_progress",
                     created_at="2026-09-20T03:30:00Z",
                     job_count=4,
                     head_branch="main",
+                    event="push",
                 ),
             )
         )
@@ -206,6 +209,60 @@ class ClassificationTests(unittest.TestCase):
             {"as_of": "2026-09-20T04:35:00Z", "runs": [run(200, pulls=[16083])]}
         )
         self.assertEqual(report["floor_minutes"], liveness.DEFAULT_FLOOR_MINUTES)
+
+
+class ForkAndCoercionTests(unittest.TestCase):
+    def test_two_fork_runs_sharing_a_branch_name_are_not_one_group(self) -> None:
+        """The API withholds `pull_requests` for a fork PR; a branch name is
+        not a substitute. `patch-1` is the commonest branch name there is."""
+        report = liveness.classify_snapshot(
+            snapshot(
+                run(200, created_at="2026-09-20T04:00:00Z", head_branch="patch-1", pulls=[]),
+                run(
+                    100,
+                    status="in_progress",
+                    created_at="2026-09-20T03:30:00Z",
+                    job_count=4,
+                    head_branch="patch-1",
+                    pulls=[],
+                ),
+            )
+        )
+        self.assertEqual(len(report["findings"]), 1)
+        finding = report["findings"][0]
+        self.assertEqual(finding["run_id"], 200)
+        self.assertEqual(finding["classification"], liveness.INFRA_NO_PROOF)
+        self.assertIsNone(finding["predecessor_run_id"])
+
+    def test_a_push_run_never_groups_with_a_pull_request_run(self) -> None:
+        report = liveness.classify_snapshot(
+            snapshot(
+                run(200, created_at="2026-09-20T04:00:00Z", head_branch="main", event="push"),
+                run(
+                    100,
+                    status="in_progress",
+                    created_at="2026-09-20T03:30:00Z",
+                    job_count=4,
+                    head_branch="main",
+                    pulls=[16083],
+                ),
+            )
+        )
+        self.assertEqual(report["findings"][0]["classification"], liveness.INFRA_NO_PROOF)
+
+    def test_a_blank_body_is_unreadable_rather_than_a_confirmed_zero(self) -> None:
+        """A successful call returning nothing must not become a posted
+        failure on a healthy run."""
+        self.assertIsNone(liveness.job_count_from_api(0, ""))
+        self.assertIsNone(liveness.job_count_from_api(0, "   \n"))
+        self.assertIsNone(liveness.job_count_from_api(0, "null"))
+        self.assertIsNone(liveness.job_count_from_api(0, "not a number"))
+        self.assertIsNone(liveness.job_count_from_api(1, "4"))
+        self.assertIsNone(liveness.job_count_from_api(0, None))
+
+    def test_a_readable_count_is_taken_at_face_value(self) -> None:
+        self.assertEqual(liveness.job_count_from_api(0, "0"), 0)
+        self.assertEqual(liveness.job_count_from_api(0, " 7\n"), 7)
 
 
 class SafetyTests(unittest.TestCase):
