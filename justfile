@@ -2379,7 +2379,11 @@ _public-api-filter raw out:
     set -euo pipefail
     # grep exits 1 on no matches; an empty result is classified as
     # INSTRUMENT-FAIL by the caller, so tolerate the exit code here.
-    grep -E '^(pub |(#\[[^]]*\][[:space:]]*)+pub )' "{{raw}}" > "{{out}}" || true
+    grep -E '^(pub |(#\[[^]]*\][[:space:]]*)+pub )' "{{raw}}" \
+        | sed -E \
+            -e 's#core::io::(write::|error::)?#std::io::#g' \
+            -e 's#alloc::io::buf_read::#std::io::#g' \
+        > "{{out}}" || true
 
 # Check public API surface of the ratcheted crates against committed baselines
 public-api-check:
