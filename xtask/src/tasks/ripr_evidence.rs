@@ -228,7 +228,10 @@ pub fn ripr_annotations(comments: &str, out: &str, check: bool) -> Result<()> {
         } else if generated.text.is_empty() {
             println!("RIPR annotations: no comments[] guidance to emit.");
         } else {
-            print!("{}", generated.text);
+            println!(
+                "RIPR annotations generated: {} workflow command(s) written to {out}.",
+                generated.text.lines().count()
+            );
         }
         println!("Wrote {out}");
     }
