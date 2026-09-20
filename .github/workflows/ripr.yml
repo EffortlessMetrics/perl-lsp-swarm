@@ -75,13 +75,100 @@ jobs:
       (github.event.pull_request.draft != true || github.event_name != 'pull_request') &&
       github.event_name != 'schedule' &&
       (github.event_name != 'workflow_dispatch' || inputs.seed_cache != true)
+    permissions:
+      contents: read
+      # #16141: read this pull request's live head, so a run carrying an
+      # already-superseded snapshot can decline to start an analysis of it.
+      pull-requests: read
     outputs:
-      target: ${{ steps.route.outputs.target }}
-      reason: ${{ steps.route.outputs.reason }}
-      fallback_allowed: ${{ steps.route.outputs.fallback_allowed }}
+      # `Check head freshness` only writes outputs when it finds this run's
+      # snapshot superseded, and `Decide target runner` does not run when it
+      # did. Exactly one of the two speaks, and an unset output is empty, so
+      # `||` selects the one that did.
+      target: ${{ steps.freshness.outputs.target || steps.route.outputs.target }}
+      reason: ${{ steps.freshness.outputs.reason || steps.route.outputs.reason }}
+      fallback_allowed: ${{ steps.freshness.outputs.fallback_allowed || steps.route.outputs.fallback_allowed }}
     steps:
+      # #16141: a run whose snapshot of the pull request head is no longer the
+      # live head cannot produce a verdict anyone will merge. A check run
+      # attaches to the SHA its run was triggered for and branch protection
+      # evaluates the current head only, so the ~60 minutes of analysis this run
+      # is about to spend lands on a commit no gate consults.
+      #
+      # `cancel-in-progress` is false here by design (#5460): an active analysis
+      # must not be terminated into a false red. This step is the other half of
+      # that distinction -- declining to *start* one for a head that is already
+      # stale, before any lane runs and before anything is published to the
+      # required context. Measured over 2026-09-20 06:07-16:26Z: 108 of the 216
+      # ripr runs that produced a verdict analyzed a head the pull request had
+      # already replaced, 6,045 runner-minutes across 51 pull requests.
+      #
+      # Fail OPEN on every uncertainty. Declaring supersession wrongly would
+      # skip analysis for the head that actually merges and leave the required
+      # context unsatisfied on it -- the failure this work exists to avoid, and
+      # strictly worse than the waste it removes. Only a successful read that
+      # disagrees with the snapshot routes `superseded`.
+      - name: Check head freshness
+        id: freshness
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          SNAPSHOT_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          note() {
+            echo "head_freshness=$1"
+            {
+              echo "### ripr Head Freshness"
+              echo ""
+              echo "- head_freshness: \`$1\`"
+              echo "- snapshot_head: \`${SNAPSHOT_HEAD_SHA:-<none>}\`"
+              echo "- live_head: \`${2:-<unread>}\`"
+            } >> "$GITHUB_STEP_SUMMARY"
+          }
+
+          if [ -z "${PR_NUMBER:-}" ] || [ -z "${SNAPSHOT_HEAD_SHA:-}" ]; then
+            note "unknown-no-pr-head" ""
+            exit 0
+          fi
+
+          if ! live_head="$(gh api \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" --jq '.head.sha')"; then
+            note "unreadable-live-head" ""
+            exit 0
+          fi
+
+          # A truncated, empty, or non-sha body is an unanswered question, not a
+          # disagreement. Routing `superseded` on one would skip the live head's
+          # own analysis. Matched in bash rather than through a pipe: `grep -q`
+          # exits on its first match, and pipefail would then report the SIGPIPE
+          # as a failed read for exactly the shas that are valid.
+          if ! [[ "$live_head" =~ ^[0-9a-f]{40}$ ]]; then
+            note "unreadable-live-head" "$live_head"
+            exit 0
+          fi
+
+          if [ "$live_head" = "$SNAPSHOT_HEAD_SHA" ]; then
+            note "current" "$live_head"
+            exit 0
+          fi
+
+          {
+            echo "target=superseded"
+            echo "reason=head_superseded"
+            echo "fallback_allowed=false"
+          } >> "$GITHUB_OUTPUT"
+          note "superseded" "$live_head"
+          echo "::notice::ripr head superseded: this run analyzes ${SNAPSHOT_HEAD_SHA}, the pull request head is now ${live_head}. No lane will start; the run for the current head owns that head's verdict."
+
       - name: Decide target runner
         id: route
+        if: steps.freshness.outputs.target == ''
         env:
           GH_TOKEN: ${{ secrets.EM_RUNNER_READ_TOKEN }}
           ORG: EffortlessMetrics
@@ -1534,6 +1621,29 @@ jobs:
           if [ "$ROUTE_RESULT" != "success" ]; then
             echo "RIPR_GATE_VERDICT=router-not-success"
             echo "::error::ripr router did not complete successfully: $ROUTE_RESULT"
+            exit 1
+          fi
+
+          # Head supersession (#16141). `Check head freshness` in route-ripr
+          # compares this run's snapshot of the pull request head against the
+          # live head before any lane starts, and routes `superseded` when they
+          # disagree. No lane ran, so no proof exists for this SHA and the gate
+          # is NOT_PROVEN -- the same rule the draft-snapshot and cancelled-lane
+          # branches apply.
+          #
+          # Failing closed here costs nothing and is the only safe direction. A
+          # check run attaches to the SHA its run was triggered for and branch
+          # protection reads the pull request's current head only, so this red
+          # lands on a commit no gate consults, while the run for the live head
+          # publishes that head's verdict. A pass would instead leave a
+          # required-context success sitting on an unanalyzed commit, which a
+          # later force-push back to it would make live. A wrong red is
+          # recovered by the next run for that head; a wrong success on a
+          # required context is not superseded by any later failure.
+          if [ "${ROUTER_TARGET:-}" = "superseded" ]; then
+            echo "RIPR_GATE_VERDICT=superseded-head-no-proof"
+            echo "::error::ripr head superseded -- the pull request moved off ${HEAD_SHA:-the analyzed head} before analysis started, so no proof was produced for it. This is NOT a new RIPR gap; the run for the current head owns that head's verdict."
+            echo "- verdict: superseded-head-no-proof (NOT_PROVEN)" >> "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
 
