@@ -2,6 +2,75 @@
 use perl_parser_core::{Node, NodeKind, Parser, RecoverySalvageClass, RecoverySalvageProfile};
 use std::error::Error;
 type R = Result<(), Box<dyn Error>>;
+
+#[test]
+fn missing_default_before_invocant_colon_preserves_method_8915() -> R {
+    fn method(node: &Node) -> Option<&Node> {
+        if matches!(&node.kind, NodeKind::Method { name, .. } if name == "f") {
+            return Some(node);
+        }
+        node.children().into_iter().find_map(method)
+    }
+    // Existing parser dialect recovery, not a claim that core Perl admits invocant colons.
+    for operator in ["=", "//=", "||="] {
+        let source = format!(
+            "# λ\nuse feature 'signatures';\nmethod f ($self {operator} : $arg) {{ $arg }}\nmy $after = 7;"
+        );
+        let output = Parser::new(&source).parse_with_recovery();
+        if output.stop_cause().is_some() {
+            return Err("colon recovery terminated".into());
+        }
+        let NodeKind::Method { signature: Some(signature), body, .. } =
+            &method(&output.ast).ok_or("lost method")?.kind
+        else {
+            return Err("lost method header".into());
+        };
+        let NodeKind::Signature { parameters } = &signature.kind else {
+            return Err("lost signature".into());
+        };
+        if parameters.len() != 2 {
+            return Err("lost later parameter".into());
+        }
+        let first = parameters.first().ok_or("lost first parameter")?;
+        let expected = format!("$self {operator}");
+        let NodeKind::Error { partial: Some(partial), found: Some(found), .. } = &first.kind else {
+            return Err("missing default did not retain partial/token".into());
+        };
+        variable_identity(partial, "$", "self")?;
+        if text(&source, first)? != expected
+            || text(&source, partial)? != "$self"
+            || found.text.as_ref() != operator
+            || found.end() != first.location.end
+            || found.start() != first.location.end - operator.len()
+        {
+            return Err("wrong missing-default geometry".into());
+        }
+        if output.diagnostics.len() != 1
+            || !matches!(output.diagnostics.first(), Some(perl_parser_core::ParseError::InvalidSignatureParameter { kind: perl_parser_core::InvalidSignatureParameterKind::MissingDefaultExpression, range }) if *range == first.location)
+        {
+            return Err(format!("wrong colon diagnostic: {:?}", output.diagnostics).into());
+        }
+        let next = parameters.get(1).ok_or("lost arg")?;
+        let NodeKind::MandatoryParameter { variable } = &next.kind else {
+            return Err("wrong arg kind".into());
+        };
+        variable_identity(variable, "$", "arg")?;
+        let arg_start = source.find(": $arg").ok_or("fixture arg")? + 2;
+        if next.location.start != arg_start
+            || next.location.end != arg_start + 4
+            || variable.location != next.location
+            || text(&source, body)? != "{ $arg }"
+        {
+            return Err("lost arg/body extent".into());
+        }
+        let after = after_declaration(&output.ast).ok_or("lost following declaration")?;
+        if !matches!(&after.kind, NodeKind::VariableDeclaration { initializer: Some(value), .. } if matches!(&value.kind, NodeKind::Number { value } if value == "7"))
+        {
+            return Err("changed following declaration".into());
+        }
+    }
+    Ok(())
+}
 fn callable(node: &Node) -> Option<&Node> {
     if matches!(&node.kind, NodeKind::Subroutine { name: Some(name), .. } if name == "f") {
         return Some(node);
