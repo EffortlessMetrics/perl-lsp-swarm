@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "owner_issue": 15503,
-  "reason": "Issue #15503 records the migration-registry historical-era slice of #7837: era bounds become a comparable closed grammar, genuinely overlapping eras are rejected, and row selection is disambiguated by the registry envelope's own source_public_release, failing closed when no era at the value's scope covers it. After #15494 landed, the exact binaryless Linux combined package measures out/extension.js at 1687306 bytes, a declared +5118-byte size-only transition from the accepted #15494 base. No packaged file is added, removed, or renamed.",
-  "base_baseline_file_sha256": "18b0841c20e13679581d5e63fd0de300dc0d435852f63e422b6454e84b87c360",
-  "candidate_baseline_file_sha256": "4975456bf6937f17c1ebdb1d947103ebd3773cf2d455f5b2aa2475aa551b249a",
-  "base_inventory_sha256": "40c1690a3bf0175ee2dcfff78f4d6a72ff5d64322285cc5c2ed0fd91a7936442",
-  "candidate_inventory_sha256": "d45b4db58d565d8473bdbac8140ebaec65dec3624ae2151f2a82b4bdef7db9f1"
+  "owner_issue": 16000,
+  "reason": "Issue #16000 candidate-bound ratchet under the #6889 transition contract: a deliberate size-only growth caused by this candidate's own tracked source changes, not packaging drift. vscode-extension/src/coexistenceAdvisory.ts and vscode-extension/src/coexistenceRegistry.ts add the host-wide conflict-identity collapse, and vscode-extension/CHANGELOG.md records it. Measured transition: changelog.md 23221 to 24219 (+998), out/extension.js 1696041 to 1697570 (+1529), total 1876288 to 1878815 (+2527); total_files unchanged at 29; no file added, removed, or renamed; classification size_only; behavior_safe. Both deltas reproduce from tracked source: local CHANGELOG.md grows 22428 to 23426 (+998, the same delta the packaged changelog shows above its constant 793-byte packaging overhead) and a local `npm run bundle` produces out/extension.js at exactly 1697570 bytes, byte-identical to the windows-latest measurement in job 105971381324 of run 35470835293 at 3c7445af1e2ff9b953b58f96847c6577978c5e30. The declared base digests equal the accepted candidate digests of the preceding #6889 re-baseline ed01630d, so the ratchet chain is continuous.",
+  "base_baseline_file_sha256": "68410631ff794c5ce32e28c310645316898e0b7f79f7fd85910fcb59a79f4530",
+  "candidate_baseline_file_sha256": "565b1d93a8bd261d0a509f9f6d29d13a65f4a1cdc7e2a5bd9cda0eceb53ea8b0",
+  "base_inventory_sha256": "896b3f738662ab34991fc07b499033eb647fbaf2c1d8b39d2b46bae3cbc3df3a",
+  "candidate_inventory_sha256": "50ddecd73db59133834017ecffade73ff755eb54260693d37348c1c781835484"
 }

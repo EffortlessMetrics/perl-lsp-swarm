@@ -897,6 +897,7 @@ mod thread_identity_tests {
     use super::super::session::DebugSession;
     use super::super::variable_cache::VariableCache;
     use super::*;
+    use crate::reload::RuntimeModuleGenerationClock;
     use std::collections::HashMap;
     use std::sync::mpsc::sync_channel;
 
@@ -912,9 +913,10 @@ mod thread_identity_tests {
             thread_id,
             debuggee_cwd: std::path::PathBuf::from("."),
             last_resume_mode: ResumeMode::Unknown,
-            initial_stop_pending: false,
             entry_stop_pending: false,
+            initial_stop_pending: false,
             stopped_generation: 0,
+            module_generation: RuntimeModuleGenerationClock::new(),
         }
     }
 
@@ -1099,7 +1101,7 @@ mod thread_identity_tests {
             response_of(adapter.handle_continue(1, 1, Some(json!({"threadId": 1}))), "continue");
         assert!(success);
         match rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap() {
-            DapMessage::Event { event, body: Some(body), .. } => {
+            (DapMessage::Event { event, body: Some(body), .. }, _) => {
                 assert_eq!(event, "continued");
                 assert_eq!(body["threadId"], 1, "event id must equal the live context id");
             }

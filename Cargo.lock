@@ -1717,6 +1717,7 @@ name = "perl-core-harness-types"
 version = "0.17.0"
 dependencies = [
  "clap",
+ "jsonschema",
  "serde",
  "serde_json",
 ]
@@ -1888,6 +1889,7 @@ dependencies = [
  "perl-pod",
  "perl-position-tracking",
  "perl-ripr-facts",
+ "perl-semantic-analyzer",
  "perl-semantic-facts",
  "perl-source-identity",
  "perl-subprocess-runtime",
@@ -1935,6 +1937,7 @@ dependencies = [
  "perl-parser-core",
  "perl-position-tracking",
  "perl-pragma",
+ "perl-regex",
  "perl-semantic-analyzer",
  "perl-semantic-facts",
  "perl-source-identity",
@@ -1984,9 +1987,19 @@ dependencies = [
  "perl-workspace",
  "proptest",
  "regex",
+ "serde",
+ "serde_json",
  "tempfile",
  "unicode-ident",
  "url",
+]
+
+[[package]]
+name = "perl-operation-trace"
+version = "0.17.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -2018,6 +2031,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serial_test",
+ "static_assertions",
  "tempfile",
  "thiserror",
  "tracing",
@@ -2124,6 +2138,8 @@ version = "0.17.0"
 dependencies = [
  "perl-test-must",
  "proptest",
+ "serde",
+ "serde_json",
  "thiserror",
 ]
 
@@ -4216,6 +4232,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml_ng",
+ "serial_test",
  "sha1",
  "sha2",
  "similar 3.2.0",
