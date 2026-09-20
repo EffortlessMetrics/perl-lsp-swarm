@@ -3200,16 +3200,18 @@ mod tests {
     /// whole negative-control suite going quietly unexercised the next time the
     /// completion surface moves.
     #[test]
-    fn the_axis_fixture_does_not_depend_on_committed_digest_currency() {
+    fn the_axis_fixture_does_not_depend_on_committed_digest_currency() -> Result<()> {
         let (ledger, discovered) = fixture();
-        assert_eq!(
-            ledger.source_digest, discovered.source_digest,
-            "the shared fixture must rebind `source_digest` to current discovery; otherwise a \
-             stale committed digest short-circuits `validate` and masks every row-level \
-             falsifier below"
-        );
+        if ledger.source_digest != discovered.source_digest {
+            bail!(
+                "the shared fixture must rebind `source_digest` to current discovery; otherwise a \
+                 stale committed digest short-circuits `validate` and masks every row-level \
+                 falsifier below"
+            );
+        }
         validate(&ledger, &discovered)
-            .expect("the shared fixture is valid before any single axis is corrupted");
+            .context("the shared fixture is valid before any single axis is corrupted")?;
+        Ok(())
     }
 
     fn refuses(ledger: &Ledger, discovered: &Discovered, expected: &str) {
