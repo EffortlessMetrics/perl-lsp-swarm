@@ -748,8 +748,8 @@ jobs:
         let row = live_row("droid.yml")?;
         let kinds = live_kinds(&row);
         assert!(
-            kinds.contains(&CredentialDerivationKind::OidcIdTokenWrite),
-            "droid.yml grants id-token: write: {kinds:?}"
+            !kinds.contains(&CredentialDerivationKind::OidcIdTokenWrite),
+            "droid.yml no longer grants id-token: write: {kinds:?}"
         );
         assert!(
             kinds.contains(&CredentialDerivationKind::EnvInjectedToken),
