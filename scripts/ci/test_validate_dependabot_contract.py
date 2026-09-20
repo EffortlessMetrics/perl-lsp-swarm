@@ -434,14 +434,15 @@ class NegativeControlTests(unittest.TestCase):
 
     def test_echo_prefixed_run_commands_are_not_wiring(self) -> None:
         workflow = (ROOT / POLICY_WORKFLOW).read_text(encoding="utf-8")
+        # Replace every lane copy: a routed workflow legitimately repeats the
+        # contract commands once per lane, and an echo prefix must unwire all
+        # of them for the negative control to hold.
         mutated = workflow.replace(
             "          python3 scripts/ci/test_validate_dependabot_contract.py\n",
             "          echo python3 scripts/ci/test_validate_dependabot_contract.py\n",
-            1,
         ).replace(
             "          python3 scripts/ci/validate_dependabot_contract.py --repo-root .\n",
             "          echo python3 scripts/ci/validate_dependabot_contract.py --repo-root .\n",
-            1,
         )
         ids = _ids(inspect_workflow_wiring(mutated))
         self.assertIn("workflow-tests-unwired", ids)

@@ -75,7 +75,28 @@ compatibility_apis = ["index_file", "index_file_str", "index_file_with_generatio
 # pre-existing `index_file` fixtures in the same test module. Outside the
 # #11305 banned prefix (`crates/perl-lsp-rs/src/runtime/text_sync`).
 # By API: index_file +1.
-compatibility_baseline = 694
+# The #13120 QuickORM work adds canonical index-initial callers and no
+# compatibility calls of its own.
+# Growth 694 -> 710 by #15575 (squash e398c6419; #812 inherited-method
+# canonical-graph alias map, same-root transplant of #12353). Explicit
+# attribution of every added call site, all from one reviewed squash-merged PR
+# (checker-equivalent pickaxe scan over e4cdf8278..origin/main: exactly one
+# commit touches a compatibility call line, net +16, base e4cdf8278 = 694):
+#   crates/perl-workspace/src/workspace/workspace_index.rs 148 -> 164 (+16
+#   `.index_file(` calls), all inside the `#[cfg(test)]` module, seeding
+#   parent/child package sources as initial on-disk fixtures for the
+#   inherited-identity tests (shared identity, override precedence, ambiguity
+#   refusal, full ancestor chain, dispatch-ref gating, cross-consumer span).
+# Fixture-only: `index_file` is the documented thin alias of
+# `index_initial_file`, the file is an already-ledgered caller identity under
+# the `crates/perl-workspace/src` owner row, and the path is outside the
+# #11305 banned prefix. No production caller was added.
+# By API: index_file +16.
+# The structural gap (PR CI validates the PR head tree, so a green PR can push
+# post-merge main over this baseline; #11916) recurs here: #15575 landed green
+# and the drift surfaced on #15937. Filing #15937 also asks maintainers to own
+# a companion check that catches drift at the introducing PR.
+compatibility_baseline = 710
 
 # Structural recurrence control (#11305): files under these prefixes must
 # never call compatibility source APIs at all -- live commits go through
@@ -100,6 +121,7 @@ caller_paths = [
   "crates/perl-lsp-rs-core/src/providers/navigation/references_shadow.rs",
   "crates/perl-lsp-rs-core/tests/detect_dead_code_mid_surrogate_position.rs",
   "crates/perl-lsp-rs-core/tests/dynamic_callable_integration_tests.rs",
+  "crates/perl-lsp-rs-core/tests/quickorm_completion_tests.rs",
   "crates/perl-lsp-rs-core/tests/role_conflict_cross_file_wiring_tests.rs",
   "crates/perl-lsp-rs/src/features/workspace_rename.rs",
   "crates/perl-lsp-rs/src/runtime/dispatch/workspace/file_preflight.rs",
@@ -127,6 +149,7 @@ caller_paths = [
   "crates/perl-parser/src/refactor/scoped_rename_tests.rs",
   "crates/perl-parser/src/refactor/workspace_refactor.rs",
   "crates/perl-parser/src/refactor/workspace_rename.rs",
+  "crates/perl-parser/tests/dead_code_api_compat.rs",
   "crates/perl-parser/tests/dead_code_detector.rs",
   "crates/perl-parser/tests/index_lifecycle_tests.rs",
   "crates/perl-parser/tests/lsp_cancellation_mutation_hardening.rs",
@@ -152,6 +175,8 @@ caller_paths = [
   "crates/perl-workspace/tests/legacy_public_api_regression_tests.rs",
   "crates/perl-workspace/tests/memory_leak_regression.rs",
   "crates/perl-workspace/tests/memory_profiling_test.rs",
+  "crates/perl-workspace/tests/quickorm_generated_member.rs",
+  "crates/perl-workspace/tests/quickorm_workspace_receipt.rs",
   "crates/perl-workspace/tests/semantic_real_workspace_baseline.rs",
   "crates/perl-workspace/tests/short_query_workspace_symbols_bdd.rs",
   "crates/perl-workspace/tests/surface_workspace_parity.rs",

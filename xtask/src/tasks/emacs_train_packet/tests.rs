@@ -15,7 +15,10 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use color_eyre::eyre::{Context, Result};
 use serde_json::{Value, json};
 
-use super::test_support::{disposition_record, specs_ledger, write_json, write_text};
+use super::test_support::{
+    disposition_record, disposition_record_for, parse_specs_ledger, specs_ledger,
+    write_canonical_specs_ledger, write_json, write_text,
+};
 use super::*;
 use crate::tasks::agent_implementation_packet::PacketProjection;
 use crate::tasks::emacs_train_context::digest::title_fingerprint;
@@ -73,7 +76,7 @@ fn make_node(node_id: &str, issue: u64, role: &str, disposition: &str) -> Value 
         "chain": {"home": "emacs-support", "controller": "CTRL"},
         "one_pr_outcome": "fixture bounded outcome for the packet adapter",
         "authority_before": "none",
-        "authority_after": "fixture authority after",
+        "authority_after": format!("fixture authority after {node_id}"),
         "buildable": true,
         "dependencies": [],
         "claim_ceiling": "fixture ceiling; no Emacs packet schema, no model invocation",
@@ -83,7 +86,7 @@ fn make_node(node_id: &str, issue: u64, role: &str, disposition: &str) -> Value 
             "stack_relation": "none"
         },
         "consumed_authorities": ["#10872", "#10881"],
-        "allowed_components": [],
+        "allowed_components": [format!("fixture.adapter.{node_id}")],
         "forbidden_adjacent_owners": ["leaf execution (covered trains)"],
         "spec": {
             "disposition": disposition,
@@ -122,7 +125,7 @@ fn make_node(node_id: &str, issue: u64, role: &str, disposition: &str) -> Value 
             "stop": "stop before invocation, mutation or scheduling"
         },
         "successors": [],
-        "identity_fields": [],
+        "identity_fields": ["node_id"],
         "limitations": ["fixture limitation"]
     })
 }
@@ -241,7 +244,21 @@ fn load_fixture_inputs(
     mapping_nodes: &[Value],
     ledger_records: &[Value],
 ) -> Result<AdapterInputs> {
-    write_json(root, MANIFEST_RELATIVE_PATH, &make_manifest(manifest_nodes))?;
+    load_fixture_inputs_with_manifest(root, manifest_nodes, |_| {}, mapping_nodes, ledger_records)
+}
+
+/// Variant that lets a test adjust the manifest document (e.g. declare an
+/// external authority) before the engine loads it.
+fn load_fixture_inputs_with_manifest(
+    root: &Path,
+    manifest_nodes: &[Value],
+    mutate_manifest: impl FnOnce(&mut Value),
+    mapping_nodes: &[Value],
+    ledger_records: &[Value],
+) -> Result<AdapterInputs> {
+    let mut manifest = make_manifest(manifest_nodes);
+    mutate_manifest(&mut manifest);
+    write_json(root, MANIFEST_RELATIVE_PATH, &manifest)?;
     write_json(
         root,
         LEDGER_RELATIVE_PATH,
@@ -269,7 +286,12 @@ fn load_fixture_inputs(
     }
     write_text(root, "tests/adapter_contract.rs", "#[test] fn fixture_packet_law() {}\n")?;
     write_json(root, MAPPING_RELATIVE_PATH, &make_mapping(mapping_nodes))?;
-    write_json(root, SPECS_LEDGER_RELATIVE_PATH, &specs_ledger(ledger_records))?;
+    // The E02 ledger must be written through the canonical serializer: the
+    // adapter gate enforces the L12 canonical-bytes law on the exact bytes.
+    write_canonical_specs_ledger(
+        root,
+        &parse_specs_ledger(ledger_records).with_context(|| "building the fixture E02 ledger")?,
+    )?;
     let engine = load_inputs_with_git(root, Some(fixture_git()))
         .with_context(|| "loading fixture engine inputs")?;
     complete_adapter_inputs(root, engine)
@@ -584,7 +606,10 @@ fn missing_spec_disposition_fails_the_load_with_the_exact_node() -> Result<()> {
     };
     let rendered = format!("{failure:#}");
     assert!(rendered.contains(SPECS_LEDGER_RELATIVE_PATH), "{rendered}");
-    assert!(rendered.contains("does not cover manifest node SUB (#9001)"), "{rendered}");
+    // The full E02 gate surfaces the law violation: the denominator law names
+    // the exact node that carries no compiled disposition.
+    assert!(rendered.contains("L02-denominator [SUB]"), "{rendered}");
+    assert!(rendered.contains("no compiled disposition"), "{rendered}");
     Ok(())
 }
 
@@ -595,7 +620,7 @@ fn controller_node_never_receives_a_coding_packet() -> Result<()> {
         &root,
         &[make_node("CTRL", 9005, "controller", "CONTROLLER_NO_CODING_SPEC")],
         &[mapped_node_entry("CTRL", true)],
-        &[disposition_record("CTRL", 9005, "CONTROLLER_NO_CODING_SPEC")],
+        &[disposition_record_for("CTRL", 9005, "controller", "CONTROLLER_NO_CODING_SPEC", None)],
     )?;
     for profile in ["coding_agent_bounded", "coding_agent_strong"] {
         let refusal = compose_builder_packet(&root, &inputs, "CTRL", profile, None)
@@ -625,9 +650,16 @@ fn external_hard_dependency_refuses_rather_than_assuming_currency() -> Result<()
     node["dependencies"] = json!([
         {"target": "#9999", "class": "hard", "provenance": "fixture"}
     ]);
-    let inputs = load_fixture_inputs(
+    // The E02 manifest laws require every dependency target to resolve: the
+    // external authority is declared, so the manifest itself is valid and the
+    // *adapter* must refuse because nothing supplied observes it as current.
+    let inputs = load_fixture_inputs_with_manifest(
         &root,
         &[node],
+        |manifest| {
+            manifest["external_authorities"] =
+                json!([{"id": "#9999", "subject": "fixture external authority"}]);
+        },
         &[mapped_node_entry("SUB", true)],
         &[disposition_record("SUB", 9001, "ISSUE_PLAN_SUFFICIENT")],
     )?;
@@ -646,7 +678,13 @@ fn blocking_disposition_refuses_coding() -> Result<()> {
         &root,
         &[make_node("SUB", 9001, "implementation", "NOT_PROVEN")],
         &[mapped_node_entry("SUB", true)],
-        &[disposition_record("SUB", 9001, "NOT_PROVEN")],
+        &[disposition_record_for(
+            "SUB",
+            9001,
+            "implementation",
+            "NOT_PROVEN",
+            Some("fixture reviewed exit reason"),
+        )],
     )?;
     let refusal = compose_builder_packet(&root, &inputs, "SUB", "coding_agent_bounded", None)
         .expect_err("a NOT_PROVEN disposition must refuse a coding packet");
@@ -965,7 +1003,7 @@ fn spec_only_hard_dependency_does_not_count_as_landed() -> Result<()> {
         &[mapped_node_entry("SUB", true), unmapped_node_entry("DEP")],
         &[
             disposition_record("SUB", 9001, "ISSUE_PLAN_SUFFICIENT"),
-            disposition_record("DEP", 9101, "ISSUE_PLAN_SUFFICIENT"),
+            disposition_record_for("DEP", 9101, "stable_contract", "ISSUE_PLAN_SUFFICIENT", None),
         ],
     )?;
     let refusal = compose_builder_packet(&root, &inputs, "SUB", "coding_agent_bounded", None)
@@ -979,7 +1017,9 @@ fn spec_only_hard_dependency_does_not_count_as_landed() -> Result<()> {
 fn landed_contract_hard_dependency_admits_the_packet() -> Result<()> {
     let root = fixture_tree("landed-dep")?;
     let mut dep = make_node("DEP", 9101, "implementation", "EXISTING_CONTRACT_SUFFICIENT");
-    dep["train_role"] = json!("stable_contract");
+    // A landed contract exits the train: the historical role is the only role
+    // whose E02 vocabulary carries EXISTING_CONTRACT_SUFFICIENT.
+    dep["train_role"] = json!("historical");
     dep["successors"] = json!(["SUB"]);
     let mut sub = make_node("SUB", 9001, "implementation", "ISSUE_PLAN_SUFFICIENT");
     sub["dependencies"] = json!([{"target": "DEP", "class": "hard", "provenance": "fixture"}]);
@@ -989,7 +1029,7 @@ fn landed_contract_hard_dependency_admits_the_packet() -> Result<()> {
         &[mapped_node_entry("SUB", true), mapped_node_entry("DEP", true)],
         &[
             disposition_record("SUB", 9001, "ISSUE_PLAN_SUFFICIENT"),
-            disposition_record("DEP", 9101, "EXISTING_CONTRACT_SUFFICIENT"),
+            disposition_record_for("DEP", 9101, "historical", "EXISTING_CONTRACT_SUFFICIENT", None),
         ],
     )?;
     let live = observed_vacant();
@@ -1002,26 +1042,59 @@ fn landed_contract_hard_dependency_admits_the_packet() -> Result<()> {
 #[test]
 fn duplicate_or_mismatched_ledger_records_fail_the_load() -> Result<()> {
     let root = fixture_tree("dup-ledger")?;
-    let mut inputs = load_fixture_inputs(
+    // The base tree passes the full E02 gate before the hand-edit.
+    load_fixture_inputs(
         &root,
         &[make_node("SUB", 9001, "implementation", "ISSUE_PLAN_SUFFICIENT")],
         &[mapped_node_entry("SUB", true)],
         &[disposition_record("SUB", 9001, "ISSUE_PLAN_SUFFICIENT")],
     )?;
     // A second, stale record for the same node must not be silently trusted.
-    inputs.specs.records.push(inputs.specs.records[0].clone());
-    let ledger_bytes = serde_json::to_vec(&inputs.specs)?;
-    write_json(
-        &root,
-        SPECS_LEDGER_RELATIVE_PATH,
-        &serde_json::from_slice::<Value>(&ledger_bytes)?,
-    )?;
+    // The hand-edited ledger is rewritten through the canonical serializer so
+    // the only law it breaks is L03-exactly-one.
+    let mut ledger =
+        parse_specs_ledger(&[disposition_record("SUB", 9001, "ISSUE_PLAN_SUFFICIENT")])?;
+    ledger.records.push(ledger.records[0].clone());
+    write_canonical_specs_ledger(&root, &ledger)?;
     let engine = load_inputs_with_git(&root, Some(fixture_git()))?;
     let failure = match complete_adapter_inputs(&root, engine) {
         Err(failure) => failure,
         Ok(_) => panic!("duplicate E02 records must fail the adapter load"),
     };
-    assert!(format!("{failure:#}").contains("duplicate records"));
+    let rendered = format!("{failure:#}");
+    assert!(rendered.contains("duplicate record for one node"), "{rendered}");
+    Ok(())
+}
+
+#[test]
+fn stale_hand_edited_disposition_fails_the_full_e02_gate() -> Result<()> {
+    let root = fixture_tree("stale-disposition")?;
+    // The structural read the adapter ran before #15842 accepts this ledger:
+    // schema/version hold, no duplicates, the record matches the manifest
+    // node's issue, and the denominator is covered. Coding-profile admission
+    // nevertheless flowed from its dispositions, so a hand-edited
+    // manifest-provenance record that disagrees with the manifest-embedded
+    // disposition could silently change which profiles a node admits. The
+    // full E02 gate refuses it (L10) instead.
+    load_fixture_inputs(
+        &root,
+        &[make_node("SUB", 9001, "implementation", "ISSUE_PLAN_SUFFICIENT")],
+        &[mapped_node_entry("SUB", true)],
+        &[disposition_record("SUB", 9001, "ISSUE_PLAN_SUFFICIENT")],
+    )?;
+    let ledger =
+        parse_specs_ledger(&[disposition_record("SUB", 9001, "EXISTING_CONTRACT_SUFFICIENT")])?;
+    write_canonical_specs_ledger(&root, &ledger)?;
+    let engine = load_inputs_with_git(&root, Some(fixture_git()))?;
+    let failure = match complete_adapter_inputs(&root, engine) {
+        Err(failure) => failure,
+        Ok(_) => {
+            panic!("a stale manifest-provenance disposition must fail the adapter load")
+        }
+    };
+    let rendered = format!("{failure:#}");
+    assert!(rendered.contains("L10-provenance [SUB]"), "{rendered}");
+    assert!(rendered.contains("re-adjudicate explicitly"), "{rendered}");
     Ok(())
 }
 
@@ -1216,7 +1289,7 @@ fn a_resolvable_dependency_context_is_not_landing_evidence() -> Result<()> {
         &[mapped_node_entry("SUB", true), mapped_node_entry("DEP", true)],
         &[
             disposition_record("SUB", 9001, "ISSUE_PLAN_SUFFICIENT"),
-            disposition_record("DEP", 9101, "ISSUE_PLAN_SUFFICIENT"),
+            disposition_record_for("DEP", 9101, "stable_contract", "ISSUE_PLAN_SUFFICIENT", None),
         ],
     )?;
     let refusal = compose_builder_packet(&root, &inputs, "SUB", "coding_agent_bounded", None)
@@ -1242,7 +1315,7 @@ fn a_resolvable_dependency_context_is_not_landing_evidence() -> Result<()> {
             {
                 let mut dep =
                     make_node("DEP", 9101, "implementation", "EXISTING_CONTRACT_SUFFICIENT");
-                dep["train_role"] = json!("stable_contract");
+                dep["train_role"] = json!("historical");
                 dep["successors"] = json!(["SUB"]);
                 dep
             },
@@ -1250,7 +1323,7 @@ fn a_resolvable_dependency_context_is_not_landing_evidence() -> Result<()> {
         &[mapped_node_entry("SUB", true), mapped_node_entry("DEP", true)],
         &[
             disposition_record("SUB", 9001, "ISSUE_PLAN_SUFFICIENT"),
-            disposition_record("DEP", 9101, "EXISTING_CONTRACT_SUFFICIENT"),
+            disposition_record_for("DEP", 9101, "historical", "EXISTING_CONTRACT_SUFFICIENT", None),
         ],
     )?;
     compose_builder_packet(

@@ -1309,6 +1309,19 @@ const PROOF_LEVEL_NEGATIVE_POLARITY_MARKERS: [&str; 21] = [
     "aren't needed",
 ];
 
+// #15463: the marker list above enumerates three negation verbs (change,
+// require, need). The CP00-PROOF-LEVEL-CONTRADICTION rule needs to recognize
+// negative phrasings of *any* verb that introduce a proof-level term — e.g.
+// "does not manufacture installed proof". Rather than grow the list forever,
+// clause-scoped negation tokens ("not", "never", "no", "cannot", "n't") are
+// detected structurally within the segment the term lives in. `n't` uses a
+// substring match because the leading letter is alphanumeric ("isn't" →
+// before the apostrophe is 's'); the other four use word-boundary matching so
+// substrings like "noted", "another", "snowfall" do not disarm a genuine
+// requirement.
+const NEGATION_TOKEN_WORDS: [&str; 4] = ["not", "never", "no", "cannot"];
+const NEGATION_TOKEN_SUBSTRING: &str = "n't";
+
 const PROOF_LEVEL_REQUIREMENT_PREDICATES: [&str; 6] =
     ["required", "requires", "require", "must", "needed", "needs"];
 
@@ -1481,12 +1494,66 @@ fn earliest_polarity_signal(text: &str) -> Option<PolaritySignal> {
             replace_earlier_signal(&mut best, index, PolaritySignal::Negative);
         }
     }
+    if let Some(index) = earliest_negation_token_index(text) {
+        replace_earlier_signal(&mut best, index, PolaritySignal::Negative);
+    }
     for predicate in PROOF_LEVEL_REQUIREMENT_PREDICATES {
-        if let Some(index) = first_word_index(text, predicate) {
+        if let Some(index) = first_word_index_unless_negated(text, predicate) {
             replace_earlier_signal(&mut best, index, PolaritySignal::Require);
         }
     }
     best.map(|(_, signal)| signal)
+}
+
+/// Returns the earliest byte index of any clause-scoped negation token in
+/// `text`, or `None` if none is present. See [`NEGATION_TOKEN_WORDS`] and
+/// [`NEGATION_TOKEN_SUBSTRING`] for the rationale.
+fn earliest_negation_token_index(text: &str) -> Option<usize> {
+    let mut best: Option<usize> = None;
+    for token in NEGATION_TOKEN_WORDS {
+        if let Some(index) = first_word_index(text, token) {
+            best = Some(best.map_or(index, |current| current.min(index)));
+        }
+    }
+    if let Some(index) = text.find(NEGATION_TOKEN_SUBSTRING) {
+        best = Some(best.map_or(index, |current| current.min(index)));
+    }
+    best
+}
+
+/// Returns the index of the first whole-word occurrence of `word` in `text`
+/// that is *not* immediately followed by a clause-scoped negation token.
+///
+/// The CP00 requirement predicates (must, required, needed, …) are otherwise
+/// legitimate Require signals, but a modal like "must" inside a "must not X"
+/// phrase is part of a negative construction, not a positive one. Without
+/// this guard, `Mapping must not manufacture public proof` would arm the rule
+/// on the bare "must" predicate at byte offset 7 even though the structural
+/// "not" at offset 12 should win (#15463).
+fn first_word_index_unless_negated(text: &str, word: &str) -> Option<usize> {
+    word_match_indices(text, word)
+        .into_iter()
+        .find(|index| !is_immediately_followed_by_negation(text, *index, word.len()))
+}
+
+/// True when the text following `word` (of length `word_len` starting at
+/// `index`) opens with a negation token after any leading whitespace. Covers
+/// `must not X`, `required not`, `mustn't X` (no space), and the broader
+/// `not / never / no / cannot / n't` vocabulary.
+fn is_immediately_followed_by_negation(text: &str, index: usize, word_len: usize) -> bool {
+    let after = text.get(index + word_len..).unwrap_or("");
+    let trimmed = after.trim_start();
+    for neg in NEGATION_TOKEN_WORDS {
+        if let Some(rest) = trimmed.strip_prefix(neg)
+            && (rest.is_empty()
+                || !rest.chars().next().is_some_and(|character| {
+                    character.is_ascii_alphanumeric() && character != '\''
+                }))
+        {
+            return true;
+        }
+    }
+    trimmed.starts_with(NEGATION_TOKEN_SUBSTRING)
 }
 
 fn replace_earlier_signal(
@@ -1829,7 +1896,24 @@ fn contains_explicit_exclusion(text: &str) -> bool {
 fn contains_partial_boundary(text: &str) -> bool {
     let lower = text.to_ascii_lowercase();
     (contains_word(&lower, "phase") && contains_word(&lower, "only"))
-        || contains_word(&lower, "partial")
+        || [
+            "partial delivery",
+            "partial fix",
+            "partial implementation",
+            "partial change",
+            "partial scope",
+            "partial support",
+            "partial coverage",
+            "partial address",
+            "only partially",
+            "partially addresses",
+            "partially implements",
+            "partially covers",
+            "partially fixes",
+            "partially supports",
+        ]
+        .iter()
+        .any(|marker| lower.contains(marker))
         || lower.contains("slice only")
         || lower.contains("bounded slice")
 }
@@ -2210,7 +2294,7 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
-    const FIXTURES: [(&str, &str); 25] = [
+    const FIXTURES: [(&str, &str); 26] = [
         (
             "valid-explicit-subject-inventory-14633",
             include_str!(concat!(
@@ -2279,6 +2363,13 @@ mod tests {
             include_str!(concat!(
                 env!("CARGO_MANIFEST_DIR"),
                 "/../.ci/semantic-close-containment/fixtures/valid-proof-level-hyphenated-compound-source-release.json"
+            )),
+        ),
+        (
+            "valid-proof-level-does-not-manufacture-10831",
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../.ci/semantic-close-containment/fixtures/valid-proof-level-does-not-manufacture-10831.json"
             )),
         ),
         (
@@ -2518,6 +2609,22 @@ mod tests {
         assert_eq!(report.rows[1].issue_number, 2);
         assert_eq!(report.rows[1].code, ResultCode::PassNoHighConfidenceContradiction);
         Ok(())
+    }
+
+    #[test]
+    fn partial_subject_matter_is_not_treated_as_partial_delivery() {
+        assert!(!contains_partial_boundary(
+            "The issue explains why this is never a partial one; the complete change is delivered."
+        ));
+    }
+
+    #[test]
+    fn partial_delivery_language_remains_a_boundary_failure() {
+        assert!(contains_partial_boundary(
+            "This PR partially addresses the issue and leaves the remaining callers for follow-up."
+        ));
+        assert!(contains_partial_boundary("This is a partial implementation."));
+        assert!(contains_partial_boundary("This is a bounded slice only."));
     }
 
     #[test]
@@ -2923,6 +3030,154 @@ mod tests {
             "The public constructor remains unchanged and installed proof is required.",
             "installed"
         ));
+    }
+
+    // #15463: the marker list above enumerates only three negation verbs
+    // (change / require / need). Acceptance text that introduces a proof-level
+    // term with any other negation verb ("does not manufacture", "does not
+    // assert", "does not establish", "does not prove", "does not claim",
+    // "does not guarantee") must still disarm CP00. The structural
+    // clause-scoped negation tokens (not / never / no / cannot / n't) make
+    // every verb a negative phrasing without enumerating each.
+
+    #[test]
+    fn proof_level_does_not_manufacture_arms_disarm_installed() -> Result<()> {
+        // #10831 / #15458 reproducer: the issue names `installed proof` in a
+        // list whose leading clause says "Mapping does not manufacture …". A
+        // PR that excludes installed proof must not be told to downgrade its
+        // relation because it agrees with the issue's own negative phrasing.
+        let pr =
+            "## Claim Boundary\nInstalled evidence is explicitly out of scope.\n\nCloses #10831\n";
+        let issue = "## Acceptance\nMapping does not manufacture currentness, publication, installed proof, or support.\n";
+        assert!(
+            !proof_level_from_bodies(issue, pr)?,
+            "an issue that frames installed proof inside a 'does not manufacture' clause must disarm CP00"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn proof_level_structural_negation_disarms_other_verbs() -> Result<()> {
+        // The verb list is intentionally open: any verb following a negation
+        // token disarms the same way. Each row is an independent issue/PR pair
+        // sharing the same shape: an Acceptance clause that names the term
+        // under a negative verb, and a PR that excludes the term.
+        let pr = "## Claim Boundary\nPublic evidence is explicitly out of scope.\n\nCloses #1\n";
+        for issue in [
+            "## Acceptance\nMapping does not assert currentness, publication, public proof, or support.\n",
+            "## Acceptance\nMapping does not prove currentness, publication, public proof, or support.\n",
+            "## Acceptance\nMapping does not establish currentness, publication, public proof, or support.\n",
+            "## Acceptance\nMapping does not claim currentness, publication, public proof, or support.\n",
+            "## Acceptance\nMapping does not guarantee currentness, publication, public proof, or support.\n",
+            "## Acceptance\nMapping cannot manufacture currentness, publication, public proof, or support.\n",
+            "## Acceptance\nMapping will not manufacture currentness, publication, public proof, or support.\n",
+            "## Acceptance\nMapping must not manufacture currentness, publication, public proof, or support.\n",
+            "## Acceptance\nMapping never manufactures currentness, publication, public proof, or support.\n",
+            "## Acceptance\nMapping doesn't manufacture currentness, publication, public proof, or support.\n",
+        ] {
+            assert!(
+                !proof_level_from_bodies(issue, pr)?,
+                "structural negation failed to disarm public for {issue:?}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn proof_level_required_predicate_wins_when_negation_is_in_a_different_clause() -> Result<()> {
+        // Regression: a bare 'not' in a *different* clause from the term must
+        // not disarm a genuine requirement. The clause-scoping already splits
+        // the segments at " and " / " but "; structural negation operates on
+        // the segment, so an unrelated segment's 'not' must not bleed in.
+        let issue = "## Acceptance\nPublic proof is required while the helper is not used here.\n";
+        let pr = "## Claim Boundary\nPublic evidence is explicitly out of scope.\n\nCloses #1\n";
+        assert!(
+            proof_level_from_bodies(issue, pr)?,
+            "an earlier required clause must still arm when a later clause only carries bare 'not'"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn proof_level_modal_must_not_x_disarms_for_any_x() -> Result<()> {
+        // A predicate word like "must" that is *immediately* followed by a
+        // negation token is no longer a Require signal. This complements the
+        // "must not change" / "must not be changed" markers — every other
+        // verb in a "must not X" phrase now disarms without enumeration.
+        let pr = "## Claim Boundary\nPublic evidence is explicitly out of scope.\n\nCloses #1\n";
+        for issue in [
+            "## Acceptance\nPublic proof must not be manufactured here.\n",
+            "## Acceptance\nMapping must not assert public proof.\n",
+            "## Acceptance\nMapping mustn't claim public proof.\n",
+            "## Acceptance\nRequired public proof must not be a goal.\n",
+        ] {
+            assert!(
+                !proof_level_from_bodies(issue, pr)?,
+                "must-not-X phrasing must disarm CP00 for {issue:?}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn proof_level_modal_must_alone_still_arms() -> Result<()> {
+        // Negative control: the predicate-unless-negated guard must not
+        // disable bare "must" when there is no following negation.
+        let issue = "## Acceptance\nPublic proof must be present.\n";
+        let pr = "## Claim Boundary\nPublic evidence is explicitly out of scope.\n\nCloses #1\n";
+        assert!(
+            proof_level_from_bodies(issue, pr)?,
+            "a bare 'must' predicate with no following negation must still arm"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn proof_level_substring_words_do_not_disarm_unrelated_noted_nothing() -> Result<()> {
+        // Word-boundary correctness: 'noted', 'nothing', 'another', 'snowfall'
+        // all contain a 'not' or 'no' substring that must NOT disarm a real
+        // requirement. Only whole-word tokens with ASCII-alphanumeric
+        // boundaries count.
+        let issue = "## Acceptance\nAnother requirement, nothing more, is needed: installed proof is required.\n";
+        let pr = "## Claim Boundary\nInstalled evidence is explicitly out of scope.\n\nCloses #1\n";
+        assert!(
+            proof_level_from_bodies(issue, pr)?,
+            "substrings like 'noted', 'nothing', 'another' must not disarm a genuine requirement"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn proof_level_cannot_token_matches_even_when_not_is_substring() {
+        // 'cannot' contains 'not' as a substring but its preceding character
+        // ('n') is alphanumeric — so word-boundary matching rejects 'not' as
+        // a whole word here. The structural detector must catch 'cannot'
+        // explicitly so a phrase like 'Mapping cannot proceed' still disarms
+        // the term it is bound to.
+        assert!(
+            earliest_negation_token_index("Mapping cannot proceed with public proof.").is_some()
+        );
+        // Sanity: a word that merely contains 'not' as a non-word substring
+        // must NOT trip the detector.
+        assert_eq!(earliest_negation_token_index("The noted item is required."), None);
+        assert_eq!(earliest_negation_token_index("Another story is required."), None);
+        assert_eq!(earliest_negation_token_index("Nothing to add is required."), None);
+    }
+
+    #[test]
+    fn proof_level_nt_substring_matches_even_when_preceded_by_alphanumeric() {
+        // "isn't", "doesn't", "didn't" all have 'n' immediately before the
+        // apostrophe. Word-boundary matching rejects 'n't' as a whole word
+        // there. The substring detector must catch it.
+        assert!(earliest_negation_token_index("Mapping isn't public proof.").is_some());
+        assert!(
+            earliest_negation_token_index("Mapping doesn't manufacture public proof.").is_some()
+        );
+        // Sanity: the apostrophe itself without a preceding 'n' should still
+        // match — "we'll" is not a negation, but "doesn't" is. The detector
+        // is intentionally liberal about "'t" placement to mirror the way
+        // English contractions form.
+        assert!(earliest_negation_token_index("Mapping doesn't claim installed proof.").is_some());
     }
 
     #[test]

@@ -44,19 +44,20 @@ use tasks::{
     ci_scope, clean, clippy_cost_measure, code_action_generation_ledger, command_evidence, compare,
     compat_inventory, compiler_lexical_cutline, compiler_performance_receipt,
     compiler_upstream_status, completion_candidates, corpus_audit, count_ratchet, cpan_corpus,
-    critic_rule_proof, dead_code, debt_report, dependency_hygiene, dev, devex_docs, devex_doctor,
-    devex_plan, doc, doc_claims, e2e_validate, edge_cases, emacs_train_context, emacs_train_packet,
-    emacs_train_specs, features, finalize_check, fix_forward, fmt, forbid_fatal_constructs,
-    forensics, gate_receipts, gates, generated_files, github, github_preflight, github_review,
-    goals, hardening, hook_checks, ignored_tests, incremental_proof, inject_sha_assets,
-    inline_completion_quality, inline_completion_smoke, install_surface_check, integration_proof,
-    intent_diff_gate, issue_controllers, issue_plan, layer_check, lsp_318_claims, lsp_318_matrix,
-    lsp_ux_smoke, memory_trends, merge_ready, methodology_gate, metrics, module_train,
-    module_train_live, native_critic, native_format, native_neovim_train, native_product_surface,
-    native_tooling, oneliner_capability_matrix, oracle_fixture_manifest, oracle_receipt_schema,
-    oracle_runner, parse_rust, parser_corpus_sweep, parser_matrix, parser_ratchet,
-    perl_core_harness, perl_corpus_train, perl_kwalitee, populate_book, pre_push_plan,
-    prep_crates_io_launch, product_health_rail_contract, product_health_status,
+    critic_rule_proof, dead_code, dead_code_api_ledger, debt_report, dependency_hygiene, dev,
+    devex_docs, devex_doctor, devex_plan, doc, doc_claims, e2e_validate, edge_cases,
+    emacs_train_context, emacs_train_packet, emacs_train_specs, features, finalize_check,
+    fix_forward, fmt, forbid_fatal_constructs, forensics, gate_receipts, gates, generated_files,
+    github, github_preflight, github_review, goals, hardening, hook_checks, htmx_catalog_drift,
+    ignored_tests, incremental_proof, inject_sha_assets, inline_completion_quality,
+    inline_completion_smoke, install_surface_check, integration_proof, intent_diff_gate,
+    issue_controllers, issue_plan, kwalitee_namespace_inventory, layer_check, lsp_318_claims,
+    lsp_318_matrix, lsp_ux_smoke, memory_trends, merge_ready, methodology_gate, metrics,
+    module_train, module_train_live, native_critic, native_format, native_neovim_train,
+    native_product_surface, native_tooling, oneliner_capability_matrix, oracle_fixture_manifest,
+    oracle_receipt_schema, oracle_runner, parse_rust, parser_corpus_sweep, parser_matrix,
+    parser_ratchet, perl_core_harness, perl_corpus_train, perl_kwalitee, populate_book,
+    pre_push_plan, prep_crates_io_launch, product_health_rail_contract, product_health_status,
     protocol_type_substrate_matrix, provider_confidence_matrix, provider_promotion_ledger,
     publication_facts, publish, publish_closure, publish_manifest_check, publish_receipts,
     quality_baseline, quality_gate, queue_health, queue_snapshot, quickorm_api_matrix, receipts,
@@ -64,12 +65,12 @@ use tasks::{
     release_trust_invariants, release_turnkey, repo_hygiene, repository_topology, ripr_evidence,
     rust_small_proof, seam_diff, semantic_inline_next_edit, semantic_inline_receipts,
     semantic_scorecard, semantic_shadow_compare, semantic_token_classes, session_receipt,
-    shadow_parity, srp_microcrates, supported_editor_inline_smoke, swarm_agent_roster,
-    swarm_summary, sync_release_docs, targeted_checks, test, test_lsp, train_edge_contract,
-    unwired_scan, update_homebrew, update_status, ux_regression_receipt, ux_scorecard,
-    validate_workspace_exclusions, workflow_authority_inventory, workflow_policy_lint,
-    workflow_trigger_lint, workspace_symbol_classes, worktree_allocator, worktrees,
-    writer_admission,
+    shadow_parity, srp_microcrates, standalone_diagnostics, supported_editor_inline_smoke,
+    swarm_agent_roster, swarm_summary, sync_release_docs, targeted_checks, test, test_lsp,
+    train_edge_contract, unwired_scan, update_homebrew, update_status, ux_regression_receipt,
+    ux_scorecard, validate_workspace_exclusions, workflow_authority_inventory,
+    workflow_policy_lint, workflow_trigger_lint, workspace_symbol_classes, worktree_allocator,
+    worktrees, writer_admission,
 };
 #[cfg(feature = "parser-tasks")]
 use tasks::{bindings, compare_parsers, highlight};
@@ -157,6 +158,15 @@ enum Commands {
     /// parity corpus against current source (#9188).
     CheckCodeActionGenerationLedger,
 
+    /// Validate the `perl_parser::dead_code` API disposition ledger against
+    /// current module source, the public-API baseline, its compatibility
+    /// corpus, the consumer inventory and the generated projection (#9777).
+    CheckDeadCodeApiLedger {
+        /// Regenerate the Markdown projection from the ledger before checking.
+        #[arg(long)]
+        write: bool,
+    },
+
     /// Validate declared differential real-Perl oracle fixtures.
     CheckOracleFixtureManifest,
 
@@ -178,6 +188,14 @@ enum Commands {
         /// Operation to run against the manifest.
         #[command(subcommand)]
         command: tasks::compiler_lexical_cutline::CompilerLexicalCutlineSubcommand,
+    },
+
+    /// Check, explain, and project the standalone diagnostic reason/action
+    /// registry (`standalone_diagnostics.v1`, #11493).
+    StandaloneDiagnostics {
+        /// Operation to run against the registry.
+        #[command(subcommand)]
+        command: tasks::standalone_diagnostics::StandaloneDiagnosticsSubcommand,
     },
 
     /// Validate the versioned critic rule-proof manifest, live fixture
@@ -401,6 +419,22 @@ enum Commands {
         check: bool,
     },
 
+    /// Reconcile `policy/kwalitee-namespace-inventory.toml` against every live
+    /// `perl-kwalitee` / `perl_kwalitee` reference and report unresolved active
+    /// counts by migration target (#8752).
+    #[command(name = "kwalitee-inventory")]
+    KwaliteeInventory {
+        /// Reconcile references and add a confirmation line on success.
+        #[arg(long)]
+        check: bool,
+        /// Print entry skeletons with current line hashes instead of checking.
+        #[arg(long, conflicts_with = "check")]
+        scaffold: bool,
+        /// Evaluate a different repository tree (for hermetic tests).
+        #[arg(long)]
+        root: Option<PathBuf>,
+    },
+
     /// Reconcile `policy/completion-candidate-producers.toml` against the live
     /// `textDocument/completion` candidate producers and hold the finalizer
     /// route closed (#10949).
@@ -602,6 +636,15 @@ enum Commands {
         /// additions guard).
         #[arg(long, default_value_t = 1000)]
         large_staged_threshold: u32,
+
+        /// Additional branch names that count as the canonical base for
+        /// the root-checkout health check. The default is empty: a real
+        /// branch named, say, `master` is no longer silently accepted as
+        /// the canonical base. Operators who genuinely use a non-`main`
+        /// canonical branch (e.g., a `master` upstream) must add it here
+        /// explicitly (#15083). May be repeated.
+        #[arg(long = "canonical-base-alternative", value_name = "BRANCH")]
+        canonical_base_alternatives: Vec<String>,
     },
 
     /// Build project with various configurations
@@ -855,6 +898,24 @@ enum Commands {
         /// Validate the generated summary instead of rewriting it.
         #[arg(long)]
         check: bool,
+    },
+
+    /// Report the RIPR suppression ledger's own lifecycle dates against today.
+    ///
+    /// Advisory: writes an artifact and always exits 0 on a readable ledger.
+    RiprSuppressionAudit {
+        /// RIPR suppression policy path.
+        #[arg(long, default_value = "policy/ripr-suppressions.toml")]
+        suppressions: PathBuf,
+        /// Markdown report path, suitable for $GITHUB_STEP_SUMMARY.
+        #[arg(long, default_value = "target/ripr/suppressions/lifecycle-audit.md")]
+        out: PathBuf,
+        /// Machine-readable report path.
+        #[arg(long, default_value = "target/ripr/suppressions/lifecycle-audit.json")]
+        json: PathBuf,
+        /// Also print the report to stdout.
+        #[arg(long)]
+        print: bool,
     },
 
     /// Render non-blocking GitHub warning annotations from comments[] guidance only.
@@ -1297,8 +1358,11 @@ enum Commands {
 
     /// Measure CI baseline from recent workflow runs.
     CiBaseline {
-        /// Branch to analyze.
-        #[arg(short, long, default_value = "master")]
+        /// Branch to analyze. When empty, the repository's default branch is
+        /// derived from `gh repo view --json defaultBranchRef` instead of
+        /// assuming a hard-coded name (which silently returned zero rows on
+        /// the `main` branch).
+        #[arg(short, long, default_value = "")]
         branch: String,
 
         /// Number of days to analyze.
@@ -1371,6 +1435,40 @@ enum Commands {
         /// Bounded semantic receipt path.
         #[arg(long)]
         receipt: PathBuf,
+        /// Repository root override for hermetic fixtures.
+        #[arg(long)]
+        root: Option<PathBuf>,
+    },
+
+    /// Materialize a deterministic trusted-base PR integration subject (#14512).
+    CiSubjectMaterialize {
+        /// Event kind (`pull_request`, `pull_request_target`, `push`,
+        /// `merge_group`, `workflow_dispatch`, or `explicit`). Defaults to
+        /// `GITHUB_EVENT_NAME`, then `explicit`.
+        #[arg(long)]
+        event_name: Option<String>,
+        /// GitHub event JSON. Defaults to `GITHUB_EVENT_PATH`.
+        #[arg(long)]
+        event_path: Option<PathBuf>,
+        /// Expected owner/name. Defaults to `GITHUB_REPOSITORY`.
+        #[arg(long)]
+        repository: Option<String>,
+        /// Exact GitHub workflow SHA. Defaults to `GITHUB_SHA`.
+        #[arg(long)]
+        github_sha: Option<String>,
+        /// Exact base SHA for explicit/workflow-dispatch subjects.
+        #[arg(long)]
+        base_sha: Option<String>,
+        /// Exact head SHA for explicit/workflow-dispatch subjects.
+        #[arg(long)]
+        head_sha: Option<String>,
+        /// Materialization receipt path. Written for both pass and fail.
+        #[arg(long)]
+        receipt: PathBuf,
+        /// GitHub environment file that receives `SUBJECT_SHA` and
+        /// `SUBJECT_TREE_SHA` on success.
+        #[arg(long)]
+        env_file: Option<PathBuf>,
         /// Repository root override for hermetic fixtures.
         #[arg(long)]
         root: Option<PathBuf>,
@@ -2223,6 +2321,18 @@ enum Commands {
     MergeReady {
         #[command(subcommand)]
         command: MergeReadyCommand,
+    },
+
+    /// Report htmx catalog drift against a local copy of the htmx reference.
+    ///
+    /// Maintainer command. Nothing in this repository fetches the reference
+    /// document; obtain it deliberately and pass its path. Exits non-zero when
+    /// the committed catalog and the supplied reference disagree.
+    HtmxCatalogDrift {
+        /// Path to a local copy of `www/content/reference.md` from the htmx
+        /// repository, at the release whose catalog you want to compare against.
+        #[arg(long)]
+        reference: PathBuf,
     },
 
     /// Track ignored tests and enforce gate policy
@@ -5283,6 +5393,26 @@ enum UxScorecardOutputFormat {
 
 fn main() -> Result<()> {
     color_eyre::install()?;
+    // The 236-variant `Commands` derive makes clap's parse matcher overflow the
+    // 1 MB Windows main-thread stack in debug builds (STATUS_STACK_OVERFLOW,
+    // #15918); Linux's 8 MB default hides it. Run the CLI on a worker thread
+    // with an explicit 64 MiB stack — cross-platform, no CLI surface change.
+    const CLI_STACK_SIZE: usize = 64 * 1024 * 1024;
+    let worker = std::thread::Builder::new()
+        .name("xtask-cli".to_owned())
+        .stack_size(CLI_STACK_SIZE)
+        .spawn(run_cli_main);
+    match worker {
+        Ok(handle) => match handle.join() {
+            Ok(result) => result,
+            // Propagate a panic from the CLI thread with its original payload.
+            Err(payload) => std::panic::resume_unwind(payload),
+        },
+        Err(error) => Err(eyre!("failed to spawn xtask CLI thread: {error}")),
+    }
+}
+
+fn run_cli_main() -> Result<()> {
     run_cli(Cli::parse())
 }
 
@@ -5326,9 +5456,11 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::CheckActiveGoalManifest => active_goal_manifest::run(),
         Commands::CheckProviderPromotionLedger => provider_promotion_ledger::run(),
         Commands::CheckCodeActionGenerationLedger => code_action_generation_ledger::run(),
+        Commands::CheckDeadCodeApiLedger { write } => dead_code_api_ledger::run(write),
         Commands::CheckOracleFixtureManifest => oracle_fixture_manifest::run(),
         Commands::Activation { command } => activation::run(command),
         Commands::CompilerLexicalCutline { command } => compiler_lexical_cutline::run(command),
+        Commands::StandaloneDiagnostics { command } => standalone_diagnostics::run(command),
         Commands::CriticRuleProof { command } => critic_rule_proof::run(command),
         Commands::ReleaseTrustInvariants { command } => release_trust_invariants::run(command),
         Commands::CheckOracleReceiptSchema => oracle_receipt_schema::run(),
@@ -5779,6 +5911,9 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::OnelinerCapabilityMatrix { check } => oneliner_capability_matrix::run(check),
         Commands::RepoTopology { check } => repository_topology::run(check),
         Commands::CompatInventory { check } => compat_inventory::run(check),
+        Commands::KwaliteeInventory { check, scaffold, root } => {
+            kwalitee_namespace_inventory::run(check, scaffold, root)
+        }
         Commands::CompletionCandidates { command } => completion_candidates::run(command),
         Commands::GenerateProtocolTypeSubstrateMatrix { check } => {
             protocol_type_substrate_matrix::run(check)
@@ -5973,6 +6108,9 @@ fn run_cli(cli: Cli) -> Result<()> {
             )
         }
         Commands::RiprPrSummary { check } => ripr_evidence::ripr_pr_summary(check),
+        Commands::RiprSuppressionAudit { suppressions, out, json, print } => {
+            ripr_evidence::ripr_suppression_audit(&suppressions, &out, &json, print)
+        }
         Commands::RiprAnnotations { comments, out, check } => {
             ripr_evidence::ripr_annotations(&comments, &out, check)
         }
@@ -6242,6 +6380,27 @@ fn run_cli(cli: Cli) -> Result<()> {
             base_sha,
             head_sha,
             receipt,
+            root,
+        }),
+        Commands::CiSubjectMaterialize {
+            event_name,
+            event_path,
+            repository,
+            github_sha,
+            base_sha,
+            head_sha,
+            receipt,
+            env_file,
+            root,
+        } => tasks::ci_subject_materializer::run(tasks::ci_subject_materializer::Config {
+            event_name,
+            event_path,
+            repository,
+            github_sha,
+            base_sha,
+            head_sha,
+            receipt,
+            env_file,
             root,
         }),
         Commands::CiContract { base, head, subject, receipt, summary } => {
@@ -6926,6 +7085,7 @@ fn run_cli(cli: Cli) -> Result<()> {
             }
             MergeReadyCommand::Verify { pr, fixture } => merge_ready::verify(pr, fixture),
         },
+        Commands::HtmxCatalogDrift { reference } => htmx_catalog_drift::run(&reference),
         Commands::IgnoredTests { update, check, check_issue_refs, verbose } => {
             ignored_tests::run(update, check, check_issue_refs, verbose)
         }
@@ -7273,6 +7433,7 @@ fn run_cli(cli: Cli) -> Result<()> {
             floor_gb,
             floor_pct,
             large_staged_threshold,
+            canonical_base_alternatives,
         } => writer_admission::run(writer_admission::AdmissionConfig {
             branch,
             base,
@@ -7284,6 +7445,7 @@ fn run_cli(cli: Cli) -> Result<()> {
             floor_gb,
             floor_pct,
             large_staged_threshold,
+            canonical_base_alternatives,
         }),
         Commands::TargetedChecks { base, mode } => targeted_checks::run(base, mode),
         Commands::ResolvePackageName { crate_dir } => {

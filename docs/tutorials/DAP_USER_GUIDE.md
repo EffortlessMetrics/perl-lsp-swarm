@@ -49,6 +49,16 @@ Create `.vscode/launch.json` in your workspace:
 Set breakpoints in a `.pl`, `.pm`, or `.t` file, choose the configuration, and
 start debugging from VS Code.
 
+## Startup Authority
+
+`perl-dap` debugs only inside an explicitly trusted workspace. VS Code passes
+your open workspace folder as `--trusted-root` automatically; Sublime does the
+same from its project folders. A bare `perl-dap --stdio` started without
+authority refuses every `launch` fail-closed — this is the boundary, not a
+bug. `launch.json` data (`cwd`, `workspaceRoot`) can narrow the trusted root
+for one launch but can never create or widen it: keep the workspace folder
+open rather than pointing `cwd` elsewhere and expecting authority to follow.
+
 ## Attach To A Running Process
 
 DAP `attach` is a protocol request to an adapter the editor already launched.

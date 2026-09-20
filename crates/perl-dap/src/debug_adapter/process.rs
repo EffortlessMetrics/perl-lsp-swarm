@@ -4,7 +4,8 @@ use super::logpoint::{DrainStep, LogpointDrain, LogpointStep, PendingLogpoint};
 use super::{
     Arc, BufRead, BufReader, Child, DEBUG_SESSION_TERMINATE_WAIT_MS, DapEvent, DapMessage,
     DebugAdapter, DebugSession, DebugState, DisconnectArguments, Duration,
-    EngineBreakpointHitOutcome, Instant, Mutex, Read, RestartArguments, ResumeMode, Source,
+    EngineBreakpointHitOutcome, Instant, LAUNCH_REFUSED_NO_AUTHORITY_MESSAGE,
+    LAUNCH_REFUSED_NO_BOUNDARY_MESSAGE, Mutex, Read, RestartArguments, ResumeMode, Source,
     StackFrame, Stdio, TcpAttachConfig, TcpAttachSession, TerminateArguments, TerminationState,
     Value, Write, ansi_escape_re, catalog_has_feature, context_re, die_suffix_re, error_re,
     exception_re, json, lock_or_recover, module_path_to_name, prompt_re, security, stack_frame_re,
@@ -43,6 +44,162 @@ fn emit_event_safe(
 }
 
 const SCOPE_FRAME_ID_MAX: u64 = 99_999;
+
+enum AttachSubject {
+    Tcp,
+    ProcessId,
+    Invalid(String),
+    Ambiguous(String),
+}
+
+/// Read one debugger record, accepting either a newline or a prompt-only
+/// record. perl5db may leave `DB<N>` unterminated while it waits for the next
+/// command; `read_line` would block forever in that state and prevent the
+/// reader from associating a native context with its prompt.
+fn read_debugger_record<R: Read>(
+    reader: &mut BufReader<R>,
+    line: &mut String,
+    allow_unterminated_prompt: bool,
+) -> std::io::Result<usize> {
+    let mut bytes = Vec::new();
+    loop {
+        let byte = match reader.fill_buf() {
+            Ok(buffer) => buffer.first().copied(),
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error),
+        };
+        let Some(byte) = byte else {
+            break;
+        };
+        reader.consume(1);
+        bytes.push(byte);
+        if byte == b'\n' {
+            break;
+        }
+        if allow_unterminated_prompt && byte == b'>' && is_strict_prompt_candidate(&bytes) {
+            // If the buffered stream already contains more non-whitespace text,
+            // this is an ordinary output line beginning with a prompt-shaped
+            // token, not a prompt-only record.
+            let buffered = reader.buffer();
+            if let Some(padding_length) = prompt_buffer_padding_length(buffered) {
+                if let Some(padding) = buffered.get(..padding_length) {
+                    bytes.extend_from_slice(padding);
+                    reader.consume(padding.len());
+                }
+                break;
+            }
+        }
+    }
+    line.clear();
+    let length = bytes.len();
+    let text = String::from_utf8(bytes)
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+    line.push_str(&text);
+    Ok(length)
+}
+
+/// Return the complete prompt padding already buffered after a strict prompt.
+///
+/// A terminal control sequence may be split across reads. In that case the
+/// prompt is still a complete nonblocking record, so leave the incomplete
+/// suffix for the next record rather than waiting for more bytes. A producer
+/// that splits an ANSI suffix across records is inherently ambiguous; callers
+/// retain each observed byte in order.
+fn prompt_buffer_padding_length(buffered: &[u8]) -> Option<usize> {
+    let mut index = 0;
+    while index < buffered.len() {
+        let byte = buffered.get(index).copied()?;
+        match byte {
+            b'\r' | b'\n' => return Some(index + 1),
+            byte if byte.is_ascii_whitespace() => index += 1,
+            0x1b => {
+                let Some(remaining) = buffered.get(index + 1..) else {
+                    return Some(index);
+                };
+                let Some(first) = remaining.first() else {
+                    return Some(index);
+                };
+                if *first != b'[' {
+                    return None;
+                }
+                let Some(end) = remaining.get(1..).and_then(|parameters| {
+                    parameters.iter().position(|byte| (0x40..=0x7e).contains(byte))
+                }) else {
+                    return Some(index);
+                };
+                index += end + 3;
+            }
+            _ => return None,
+        }
+    }
+    Some(index)
+}
+
+/// Length of the perl5db prompt at the start of `text`, in bytes, or `None`
+/// when `text` does not begin with one (after optional indentation).
+///
+/// Accepts the shapes perl5db actually renders: the bare `DB<4>`, the nested
+/// `DB<<2>>` (repeated angle brackets balanced between opener and closer),
+/// and the threaded `[3] DB<4>` form that `PERL5DB_THREADED`/`-dt` produces
+/// (#15220 review). The record path requires the balanced close so an
+/// in-progress nested prompt is never split mid-record; the text path uses
+/// the same balanced scan, which for the bare form stops at the first `>`.
+fn perl5db_prompt_len(text: &str) -> Option<usize> {
+    let bytes = text.as_bytes();
+    let mut index = 0;
+    while bytes.get(index) == Some(&b' ') {
+        index += 1;
+    }
+    if bytes.get(index) == Some(&b'[') {
+        let close = bytes[index + 1..].iter().position(|byte| *byte == b']')?;
+        let tid = &text[index + 1..index + 1 + close];
+        if tid.is_empty() || !tid.bytes().all(|byte| byte.is_ascii_digit()) {
+            return None;
+        }
+        index += close + 2;
+        while bytes.get(index) == Some(&b' ') {
+            index += 1;
+        }
+    }
+    if !text[index..].starts_with("DB<") {
+        return None;
+    }
+    index += "DB<".len();
+    let opens = 1 + bytes[index..].iter().take_while(|byte| **byte == b'<').count();
+    index += opens - 1;
+    let digits_start = index;
+    while bytes.get(index).is_some_and(|byte| byte.is_ascii_digit()) {
+        index += 1;
+    }
+    if index == digits_start {
+        return None;
+    }
+    let closes = bytes[index..].iter().take_while(|byte| **byte == b'>').count();
+    if closes != opens {
+        return None;
+    }
+    Some(index + closes)
+}
+
+fn is_strict_prompt_candidate(bytes: &[u8]) -> bool {
+    // Prompt records are tiny; bounding this inspection keeps a long source
+    // line from repeatedly decoding and scanning its full prefix.
+    if bytes.len() > 128 {
+        return false;
+    }
+    let Ok(candidate) = std::str::from_utf8(bytes) else {
+        return false;
+    };
+    let without_ansi = ansi_escape_re()
+        .map(|re| re.replace_all(candidate, "").into_owned())
+        .unwrap_or_else(|| candidate.to_string());
+    let prompt = without_ansi.trim();
+    perl5db_prompt_len(prompt).is_some_and(|len| len == prompt.len())
+}
+
+fn has_prompt_prefix(text: &str) -> bool {
+    perl5db_prompt_len(text).is_some()
+}
 
 /// Wall-clock budget for one perl5db capability probe. A cold interpreter
 /// start answers well inside this on every supported platform; reaching the
@@ -84,6 +241,33 @@ enum DebuggerCapabilityProbe {
     /// Spawn failure, observation failure, or deadline: the probe could not
     /// measure anything, so there is no verdict to report or cache.
     Inconclusive,
+}
+
+/// Discriminated result of a bounded wait on a [`Child`] (#15740).
+///
+/// The previous boolean return conflated three different cleanup states
+/// (exited, still running, poll error) and gave callers no way to
+/// distinguish resource scheduling from a process that is genuinely
+/// stuck. The enum exposes the diagnostic information needed to retry
+/// confidently and to report which cleanup path actually fired.
+///
+/// The diagnostic payloads on [`ChildExitOutcome::StillRunning`] and
+/// [`ChildExitOutcome::PollError`] are read by the bounded-cleanup test
+/// cluster to distinguish OS errors from resource scheduling from
+/// oracle misprediction. They are kept on the lib type so callers can
+/// escalate to a retry path without re-implementing the poll loop.
+#[allow(dead_code)]
+#[derive(Debug)]
+pub(super) enum ChildExitOutcome {
+    /// `try_wait` observed a recorded exit within the bounded wait.
+    Exited,
+    /// The deadline elapsed with the child still recorded as running.
+    /// Carries the poll count and elapsed wait for diagnosis and for
+    /// bounded retry.
+    StillRunning { polls: u32, elapsed: Duration },
+    /// `try_wait` returned an OS error (the handle is no longer
+    /// pollable, typically because another thread reaped the child).
+    PollError { error: std::io::Error, polls: u32, elapsed: Duration },
 }
 
 /// Read one probe pipe to EOF on a dedicated thread, delivering its decoded
@@ -391,54 +575,138 @@ impl DebugAdapter {
             // self-validating and defeats the workspace check entirely.
             let user_cwd = args.get("cwd").and_then(|c| c.as_str()).map(PathBuf::from);
 
-            // Determine the workspace boundary for this launch.
+            // Launch-authority admission (#8656).
             //
-            // The server-configured root (set once via `set_workspace_root`,
-            // typically from `DapConfig.workspace_root` at server construction)
-            // is the source of truth. A launch-args `workspaceRoot` may NARROW
-            // that boundary but must never WIDEN it — otherwise a malicious or
-            // misconfigured client could hand itself a broader root than the
-            // server allows. If no server root is configured, a launch-args
-            // `workspaceRoot` is accepted as the boundary for this launch (there
-            // is nothing to widen relative to).
+            // Tier 1 — explicit authority: when the startup configuration
+            // resolved a launch authority, it is the only source of
+            // launch-path authority. Workspace-bound authority admits the
+            // `program` only inside a trusted root and lets a launch-args
+            // `workspaceRoot` only NARROW one; an explicitly unbounded
+            // authority admits any program and never synthesizes a boundary
+            // from launch arguments.
             //
-            // If neither is present, validation is skipped entirely (see the
-            // `None` handling in `launch_debugger`) — this preserves current
-            // behavior for existing users, since `DapConfig.workspace_root` is
-            // not yet populated from any CLI/editor-supplied source (tracked
-            // separately in #5345; that fail-open gap is intentionally out of
-            // scope for this fix).
-            let server_root =
-                lock_or_recover(&self.workspace_root, "debug_adapter.workspace_root").clone();
+            // Tier 2 — legacy single-root contract: an adapter (or server)
+            // started without authority inputs keeps the historical
+            // narrowing-only `workspace_root` boundary. Its two historical
+            // fail-open paths are retired here: launch arguments can no
+            // longer CREATE the boundary, and a launch with neither
+            // authority nor a configured boundary is refused instead of
+            // running unvalidated.
             let launch_root_arg =
                 args.get("workspaceRoot").and_then(|w| w.as_str()).map(PathBuf::from);
-
-            let effective_root = match (server_root, launch_root_arg) {
-                (Some(server), Some(launch)) => match security::validate_path(&launch, &server) {
-                    Ok(narrowed) => Some(narrowed),
-                    Err(e) => {
+            let authority_installed = self.has_launch_authority();
+            // Authority admission and process spawning must validate the same
+            // path. A relative program would otherwise be resolved against
+            // one directory for admission and a potentially different cwd
+            // when Perl is spawned. Require callers to provide an absolute
+            // path for authority-backed launches until a single launch-local
+            // path resolver is threaded through the entire transaction.
+            if authority_installed && !program.trim().is_empty() && Path::new(program).is_relative()
+            {
+                return DapMessage::Response {
+                    seq,
+                    request_seq,
+                    success: false,
+                    command: "launch".to_string(),
+                    body: None,
+                    message: Some(
+                        "authority-backed launches require an absolute `program` path so the admitted path and executed path cannot diverge"
+                            .to_string(),
+                    ),
+                };
+            }
+            let narrowed_root = if authority_installed {
+                let admission = self.admit_launch_against_authority(
+                    if program.trim().is_empty() { None } else { Some(Path::new(program)) },
+                    launch_root_arg.as_deref(),
+                );
+                match admission {
+                    Ok(narrowed) => narrowed,
+                    Err(message) => {
                         return DapMessage::Response {
                             seq,
                             request_seq,
                             success: false,
                             command: "launch".to_string(),
                             body: None,
-                            message: Some(format!(
-                                "The launch 'workspaceRoot' ('{}') is outside your workspace \
-                                     folder and cannot widen the server-configured boundary. \
-                                     Details: {}",
-                                launch.display(),
-                                e
-                            )),
+                            message: Some(message),
                         };
                     }
-                },
-                (Some(server), None) => Some(server),
-                (None, Some(launch)) => Some(launch),
-                (None, None) => None,
+                }
+            } else {
+                let server_root =
+                    lock_or_recover(&self.workspace_root, "debug_adapter.workspace_root").clone();
+                match (server_root, launch_root_arg.clone()) {
+                    (Some(server), Some(launch)) => {
+                        match security::validate_path(&launch, &server) {
+                            Ok(narrowed) => Some(narrowed),
+                            Err(e) => {
+                                return DapMessage::Response {
+                                    seq,
+                                    request_seq,
+                                    success: false,
+                                    command: "launch".to_string(),
+                                    body: None,
+                                    message: Some(format!(
+                                        "The launch 'workspaceRoot' ('{}') is outside your \
+                                             workspace folder and cannot widen the \
+                                             server-configured boundary. Details: {}",
+                                        launch.display(),
+                                        e
+                                    )),
+                                };
+                            }
+                        }
+                    }
+                    (Some(server), None) => Some(server),
+                    (None, Some(_)) => {
+                        return DapMessage::Response {
+                            seq,
+                            request_seq,
+                            success: false,
+                            command: "launch".to_string(),
+                            body: None,
+                            message: Some(LAUNCH_REFUSED_NO_AUTHORITY_MESSAGE.to_string()),
+                        };
+                    }
+                    (None, None) => {
+                        return DapMessage::Response {
+                            seq,
+                            request_seq,
+                            success: false,
+                            command: "launch".to_string(),
+                            body: None,
+                            message: Some(LAUNCH_REFUSED_NO_BOUNDARY_MESSAGE.to_string()),
+                        };
+                    }
+                }
             };
 
-            if let Some(root) = effective_root {
+            // Keep the defense-in-depth workspace boundary aligned with the
+            // authority decision for the spawn window (restored below, so a
+            // request's narrowing never constrains a later launch):
+            // the narrowed root when launch args narrow one, else the
+            // trusted root that admitted the program. A preset legacy root
+            // must not second-guess an admission it did not make, and an
+            // explicitly unbounded authority sets no boundary at all, so a
+            // stale or preset legacy root is cleared for the window instead
+            // of refusing an admitted program in the spawner below.
+            let previous_workspace_root =
+                lock_or_recover(&self.workspace_root, "debug_adapter.workspace_root").clone();
+            if authority_installed {
+                if self.launch_authority_is_unbounded() {
+                    *lock_or_recover(&self.workspace_root, "debug_adapter.workspace_root") = None;
+                } else if let Some(root) = narrowed_root.or_else(|| {
+                    if program.trim().is_empty() {
+                        None
+                    } else {
+                        self.authority_root_for_program(Path::new(program))
+                    }
+                }) {
+                    *lock_or_recover(&self.workspace_root, "debug_adapter.workspace_root") =
+                        Some(root);
+                }
+            } else if let Some(root) = narrowed_root {
                 *lock_or_recover(&self.workspace_root, "debug_adapter.workspace_root") = Some(root);
             }
 
@@ -474,7 +742,7 @@ impl DebugAdapter {
                 .unwrap_or_default();
 
             // Launch Perl debugger
-            match self.launch_debugger(
+            let launch_result = self.launch_debugger(
                 program,
                 &perl_interpreter,
                 perl_args,
@@ -482,15 +750,28 @@ impl DebugAdapter {
                 env_overrides,
                 user_cwd,
                 debuggee_timeout_secs,
-            ) {
-                Ok(_) => {
-                    // #15637: no eager `stopped(reason=entry)` here. At this
-                    // point the session is still `Running` with no frame
-                    // authority, so an entry event would announce a stop the
-                    // very next `stackTrace` cannot observe (empty frames).
-                    // The session is created with `entry_stop_pending` set and
-                    // the output reader emits exactly one `stopped(reason=entry)`
-                    // from the first real debugger suspension instead.
+            );
+            // A request's narrowing is a launch-local effective boundary;
+            // never let it constrain a later launch on the same adapter.
+            *lock_or_recover(&self.workspace_root, "debug_adapter.workspace_root") =
+                previous_workspace_root;
+
+            match launch_result {
+                // The output reader owns the first debugger context and frame snapshot.
+                // It publishes the entry stop after that snapshot is installed; emitting
+                // here races a client's immediate stackTrace request with the reader.
+                // #15637: at this point the session is still `Running` with no frame
+                // authority, so an eager entry event would announce a stop the very
+                // next `stackTrace` cannot observe (empty frames). The session is
+                // created with `entry_stop_pending` set and the output reader emits
+                // exactly one `stopped(reason=entry)` from the authoritative
+                // suspension instead.
+                Ok(_thread_id) => {
+                    // Failed attempts must not consume an authority session
+                    // generation. Begin it only after validation and spawn
+                    // have succeeded.
+                    let _ = self.begin_authority_session();
+
                     DapMessage::Response {
                         seq,
                         request_seq,
@@ -788,6 +1069,10 @@ impl DebugAdapter {
             );
         }
 
+        // #15538: make the session child a process-group leader on Unix so
+        // every terminate path can reach its descendants.
+        crate::process_tree::prepare_owned_command(&mut cmd);
+
         match cmd.spawn() {
             Ok(mut child) => {
                 // Only advance the session generation once spawning has succeeded. A rejected
@@ -809,8 +1094,8 @@ impl DebugAdapter {
                     thread_id,
                     debuggee_cwd: debuggee_cwd.clone(),
                     last_resume_mode: ResumeMode::Unknown,
-                    initial_stop_pending: !stop_on_entry,
                     entry_stop_pending: stop_on_entry,
+                    initial_stop_pending: !stop_on_entry,
                     stopped_generation: 0,
                     module_generation: RuntimeModuleGenerationClock::new(),
                 };
@@ -1012,6 +1297,10 @@ impl DebugAdapter {
         // resolves and compiles perl5db.pl, so this cannot flip the verdict —
         // and if that ever stopped being true, the probe would now observe it.
         apply_windows_debugger_transport_env(&mut cmd);
+        // #15538: the bounded probe paths below must reach descendants, not
+        // only the direct child. On Unix this makes the probe a
+        // process-group leader.
+        crate::process_tree::prepare_owned_command(&mut cmd);
 
         let mut child = match cmd.spawn() {
             Ok(child) => child,
@@ -1043,9 +1332,8 @@ impl DebugAdapter {
                     thread::sleep(DEBUGGER_PROBE_POLL_INTERVAL);
                 }
                 Err(e) => {
-                    // Instrument failure: kill what we spawned and skip.
-                    let _ = child.kill();
-                    let _ = child.wait();
+                    // Instrument failure: kill the whole owned tree and skip.
+                    let _ = crate::process_tree::terminate_tree_and_reap(&mut child);
                     tracing::warn!(
                         "perl5db capability probe of '{perl_interpreter}' could not be \
                          observed (will attempt the launch anyway): {e}"
@@ -1057,10 +1345,10 @@ impl DebugAdapter {
 
         let Some(status) = status else {
             // Deadline reached with no exit: the probe is inconclusive, not a
-            // capability verdict. Kill the child so nothing outlives the
-            // probe, then keep the launch-continue disposition.
-            let _ = child.kill();
-            let _ = child.wait();
+            // capability verdict. Kill the whole owned tree (#15538) so
+            // nothing outlives the probe, then keep the launch-continue
+            // disposition.
+            let _ = crate::process_tree::terminate_tree_and_reap(&mut child);
             tracing::warn!(
                 "perl5db capability probe of '{perl_interpreter}' exceeded its \
                  {} budget (will attempt the launch anyway)",
@@ -1326,6 +1614,17 @@ impl DebugAdapter {
             let mut current_file = String::new();
             let mut current_func = String::new();
             let mut current_line = 0;
+            let mut native_context_file = String::new();
+            let mut native_context_func = String::new();
+            let mut native_context_line = 0;
+            // Diagnostic and stack-fallback locations are useful for later
+            // stops, but only perl5db's native context line authorizes the
+            // pending initial entry stop.
+            // An unterminated `DB<N>` is only a prompt when it immediately
+            // follows a native context in the current stop sequence. Keeping
+            // this expectation per stop prevents a debuggee's delayed
+            // `DB<N>`-shaped output from becoming a phantom stop.
+            let mut native_context_pending_prompt = false;
             let mut _debugger_ready = false;
             // Most recent `error_re` message line (`<text> at FILE line N`). An
             // uncaught die arrives as that message line followed by the bare
@@ -1345,7 +1644,7 @@ impl DebugAdapter {
 
             loop {
                 line.clear();
-                match reader.read_line(&mut line) {
+                match read_debugger_record(&mut reader, &mut line, native_context_pending_prompt) {
                     Ok(0) => {
                         tracing::debug!("Perl debugger process terminated");
                         // Settle every pending framed operation first (#8564):
@@ -1397,6 +1696,14 @@ impl DebugAdapter {
                         } else {
                             text.clone()
                         };
+                        let prompt_has_native_context =
+                            native_context_pending_prompt && has_prompt_prefix(&sanitized_text);
+                        if prompt_has_native_context {
+                            // Consume the per-stop authority before logpoint and
+                            // drain early-continue paths. A coalesced prompt plus
+                            // DAPLPV payload is still the prompt for this stop.
+                            native_context_pending_prompt = false;
+                        }
                         // The logpoint protocol carries payload bytes, so it reads the
                         // delimiter-stripped line rather than the whitespace-trimmed
                         // one every other consumer below uses.
@@ -1589,6 +1896,8 @@ impl DebugAdapter {
 
                         // Enhanced context information parsing with multiple patterns
                         let mut context_updated = false;
+                        let mut native_context_updated = false;
+                        let mut native_context_has_source = false;
                         // Whether THIS line is the perl5db die/warn-handler suffix
                         // (` at FILE line N.`) — the stream signal that the
                         // debugger's `__DIE__` handler observed an uncaught `die`.
@@ -1598,18 +1907,46 @@ impl DebugAdapter {
                         if let Some(re) = context_re()
                             && let Some(caps) = re.captures(&analysis_text)
                         {
+                            native_context_updated = true;
                             if let Some(func) = caps.name("func") {
                                 current_func = func.as_str().to_string();
                                 context_updated = true;
                             }
-                            if let Some(file) = caps.name("file").or_else(|| caps.name("file2")) {
+                            let has_file_capture = if let Some(file) =
+                                caps.name("file").or_else(|| caps.name("file2"))
+                            {
                                 current_file = file.as_str().to_string();
                                 context_updated = true;
-                            }
-                            if let Some(line_num) = caps.name("line").or_else(|| caps.name("line2"))
+                                true
+                            } else {
+                                false
+                            };
+                            let has_line_capture = if let Some(line_num) =
+                                caps.name("line").or_else(|| caps.name("line2"))
                             {
                                 current_line = line_num.as_str().parse::<i32>().unwrap_or(0);
                                 context_updated = true;
+                                true
+                            } else {
+                                false
+                            };
+                            native_context_has_source = has_file_capture
+                                && has_line_capture
+                                && !current_file.is_empty()
+                                && current_line > 0;
+                        }
+
+                        if native_context_updated {
+                            if native_context_has_source {
+                                native_context_file = current_file.clone();
+                                native_context_func = current_func.clone();
+                                native_context_line = current_line;
+                                native_context_pending_prompt = true;
+                            } else {
+                                native_context_pending_prompt = false;
+                                native_context_file.clear();
+                                native_context_func.clear();
+                                native_context_line = 0;
                             }
                         }
 
@@ -1746,7 +2083,10 @@ impl DebugAdapter {
                                     }
                                     let was_running = matches!(s.state, DebugState::Running);
                                     let current_frame_id = current_stopped_frame_id(s, was_running);
-                                    if !current_file.is_empty() && current_line > 0 {
+                                    if !current_file.is_empty()
+                                        && current_line > 0
+                                        && (!s.entry_stop_pending || native_context_has_source)
+                                    {
                                         s.stack_frames = vec![StackFrame {
                                             id: current_frame_id,
                                             name: if current_func.is_empty() {
@@ -1773,23 +2113,7 @@ impl DebugAdapter {
                                         s.stack_frame_arguments.clear();
                                     }
 
-                                    if was_running && s.entry_stop_pending {
-                                        // #15637: a `stopOnEntry` launch owes the
-                                        // client its entry stop only from the
-                                        // first real debugger suspension. The
-                                        // context line above just established the
-                                        // stopped frame authority for exactly
-                                        // that suspension, so publish the entry
-                                        // stop from here and consume the pending
-                                        // reason — a later stop must report its
-                                        // own cause, and exactly one entry stop
-                                        // may ever be emitted per session.
-                                        s.state = DebugState::Stopped;
-                                        s.last_resume_mode = ResumeMode::Unknown;
-                                        s.entry_stop_pending = false;
-                                        should_emit_stopped = true;
-                                        stop_reason = "entry".to_string();
-                                    } else if was_running
+                                    if was_running
                                         && s.initial_stop_pending
                                         && matches!(s.last_resume_mode, ResumeMode::Unknown)
                                     {
@@ -1801,8 +2125,27 @@ impl DebugAdapter {
                                         s.state = DebugState::Stopped;
                                         s.last_resume_mode = ResumeMode::Unknown;
                                         continue;
-                                    } else if was_running {
-                                        should_emit_stopped = true;
+                                    }
+
+                                    if was_running {
+                                        let has_source_frame =
+                                            !current_file.is_empty() && current_line > 0;
+                                        let has_authoritative_source_frame =
+                                            native_context_has_source && has_source_frame;
+                                        let entry_stop =
+                                            s.entry_stop_pending && has_authoritative_source_frame;
+                                        // A context-shaped line can be debuggee output (for
+                                        // example from BEGIN) rather than perl5db's current
+                                        // location. Keep the pending entry authority until the
+                                        // following prompt, which is the debugger's ordered
+                                        // completion marker for this context. Normal running
+                                        // contexts still install their frame immediately.
+                                        if entry_stop {
+                                            s.state = DebugState::Running;
+                                            should_emit_stopped = false;
+                                        } else {
+                                            should_emit_stopped = !s.entry_stop_pending;
+                                        }
                                         let resume_mode = s.last_resume_mode.clone();
 
                                         let breakpoint_outcome = if matches!(
@@ -1825,7 +2168,17 @@ impl DebugAdapter {
                                         hit_breakpoint_ids =
                                             breakpoint_outcome.hit_breakpoint_ids.clone();
 
-                                        if exception_match || warning_match {
+                                        if s.entry_stop_pending && !has_authoritative_source_frame {
+                                            // Do not publish an entry stop with a fabricated
+                                            // <unknown>:1 frame. Keep the request pending until
+                                            // the reader observes an actual source context.
+                                            s.state = DebugState::Running;
+                                        } else if entry_stop {
+                                            // Entry is emitted by the prompt branch after the
+                                            // context has reached the debugger's ordered
+                                            // completion marker.
+                                            s.state = DebugState::Running;
+                                        } else if exception_match || warning_match {
                                             stop_reason = "exception".to_string();
                                             s.state = DebugState::Stopped;
                                         } else if breakpoint_outcome.matched {
@@ -1986,9 +2339,13 @@ impl DebugAdapter {
                         }
 
                         // Detect debugger prompt (stopped state) with enhanced pattern matching
-                        if prompt_re().is_some_and(|re| re.is_match(&sanitized_text)) {
+                        if prompt_re().is_some_and(|re| re.is_match(&sanitized_text))
+                            || prompt_has_native_context
+                        {
                             _debugger_ready = true;
-                            let (thread_id, prompt_stops_entry) = {
+                            let mut stop_reason = "step".to_string();
+                            let mut should_emit_stopped = false;
+                            let thread_id = {
                                 let Ok(mut guard) = session.lock() else {
                                     tracing::warn!(
                                         "Failed to lock session when processing debugger prompt"
@@ -1996,6 +2353,19 @@ impl DebugAdapter {
                                     continue;
                                 };
                                 if let Some(ref mut s) = *guard {
+                                    let was_running = matches!(s.state, DebugState::Running);
+                                    let (prompt_file, prompt_func, prompt_line) = if s
+                                        .entry_stop_pending
+                                        && prompt_has_native_context
+                                    {
+                                        (
+                                            native_context_file.clone(),
+                                            native_context_func.clone(),
+                                            native_context_line,
+                                        )
+                                    } else {
+                                        (current_file.clone(), current_func.clone(), current_line)
+                                    };
                                     // A prompt can be observed after the context
                                     if operation_broker.current_session_generation()
                                         != broker_session_generation
@@ -2007,32 +2377,44 @@ impl DebugAdapter {
                                     // parseable context. Preserve the existing
                                     // generation in the former case and advance
                                     // it in the latter; never reset the frame id
-                                    // to the historical constant 1.
+                                    // to the historical constant 1. The entry
+                                    // deferral leaves the state `Running` while
+                                    // waiting for the prompt, but its context
+                                    // already established this suspension's
+                                    // generation — a prompt carrying that native
+                                    // context must reuse it rather than advance
+                                    // a second time.
+                                    let context_established_suspension = prompt_has_native_context;
                                     let current_frame_id = current_stopped_frame_id(
                                         s,
-                                        matches!(s.state, DebugState::Running),
+                                        matches!(s.state, DebugState::Running)
+                                            && !context_established_suspension,
                                     );
+                                    let has_source_frame =
+                                        !prompt_file.is_empty() && prompt_line > 0;
+                                    let can_admit_source_frame = has_source_frame
+                                        && (!s.entry_stop_pending || prompt_has_native_context);
                                     // Create stack frame with enhanced context validation
-                                    if !current_file.is_empty() && current_line > 0 {
+                                    if can_admit_source_frame {
                                         let frame = StackFrame {
                                             id: current_frame_id,
-                                            name: if current_func.is_empty() {
+                                            name: if prompt_func.is_empty() {
                                                 "main".to_string()
                                             } else {
-                                                current_func.clone()
+                                                prompt_func.clone()
                                             },
                                             source: Source {
                                                 name: Some(
-                                                    std::path::Path::new(&current_file)
+                                                    std::path::Path::new(&prompt_file)
                                                         .file_name()
                                                         .and_then(|n| n.to_str())
-                                                        .unwrap_or(&current_file)
+                                                        .unwrap_or(&prompt_file)
                                                         .to_string(),
                                                 ),
-                                                path: current_file.clone(),
+                                                path: prompt_file.clone(),
                                                 source_reference: None,
                                             },
-                                            line: current_line,
+                                            line: prompt_line,
                                             column: 1,
                                             end_line: None,
                                             end_column: None,
@@ -2040,7 +2422,12 @@ impl DebugAdapter {
                                         s.stack_frames = vec![frame];
                                         s.stack_frame_arguments.clear();
                                     } else {
-                                        // Provide a fallback frame for when we don't have perfect context
+                                        // Provide a fallback frame for when we don't have perfect
+                                        // context. With a pending entry stop the fallback is
+                                        // admitted too: #15637's prompt-only bootstrap consumes
+                                        // the pending reason so the client is never left
+                                        // waiting, and the prompt stop must remain
+                                        // `stackTrace`-answerable.
                                         let frame = StackFrame {
                                             id: current_frame_id,
                                             name: "main".to_string(),
@@ -2057,31 +2444,50 @@ impl DebugAdapter {
                                         s.stack_frames = vec![frame];
                                         s.stack_frame_arguments.clear();
                                     }
-                                    s.state = DebugState::Stopped;
-                                    // #15637: a prompt can be the first observed
-                                    // authority for the entry suspension (context
-                                    // output may never parse). Consume a pending
-                                    // entry reason here so the first prompt stop
-                                    // still honors a `stopOnEntry` launch exactly
-                                    // once; later prompts report `step` as before.
-                                    let prompt_stops_entry = s.entry_stop_pending;
-                                    s.entry_stop_pending = false;
-                                    (s.thread_id, prompt_stops_entry)
+                                    if was_running
+                                        && matches!(s.last_resume_mode, ResumeMode::RunToBreakpoint)
+                                        && !s.entry_stop_pending
+                                    {
+                                        // RunToBreakpoint is already driving the debugger with
+                                        // the original `c`.  Its implicit context is followed by
+                                        // a prompt before the requested breakpoint; that prompt
+                                        // is not a new step stop and must not queue another
+                                        // resume command.  A real breakpoint context transitions
+                                        // the session to Stopped in the context branch, so this
+                                        // guard only covers the implicit prompt. A pending
+                                        // entry stop takes precedence and is published below.
+                                        s.state = DebugState::Running;
+                                    } else if was_running || s.entry_stop_pending {
+                                        // #15637: a prompt can be the first observed authority
+                                        // for the entry suspension (context output may never
+                                        // parse). #15220 orders the entry publication after a
+                                        // fresh native context when one exists; either way the
+                                        // pending reason is consumed exactly once so the client
+                                        // is never left waiting, and later prompts report
+                                        // `step` as before.
+                                        let entry_stop = s.entry_stop_pending;
+                                        s.entry_stop_pending = false;
+                                        s.state = DebugState::Stopped;
+                                        should_emit_stopped = true;
+                                        if entry_stop {
+                                            stop_reason = "entry".to_string();
+                                        }
+                                    }
+                                    s.thread_id
                                 } else {
                                     continue;
                                 }
                             };
 
                             // Send stopped event with robust error handling
-                            let prompt_stop_reason =
-                                if prompt_stops_entry { "entry" } else { "step" };
-                            if let Some(ref sender) = sender
+                            if should_emit_stopped
+                                && let Some(ref sender) = sender
                                 && !emit_event_safe(
                                     sender,
                                     &seq,
                                     "stopped",
                                     Some(json!({
-                                        "reason": prompt_stop_reason,
+                                        "reason": stop_reason,
                                         "threadId": thread_id,
                                         "allThreadsStopped": true
                                     })),
@@ -2289,63 +2695,10 @@ impl DebugAdapter {
         });
     }
 
-    /// Verify that a target process exists and is accessible before attaching.
-    ///
-    /// Returns `Ok(true)` if the process is verified to exist and is signalable,
-    /// `Ok(false)` if the process exists but is owned by a different user (warned
-    /// but allowed to proceed), or `Err(msg)` if the process does not exist or
-    /// cannot be queried.
-    fn verify_attach_target(pid: u32) -> Result<bool, String> {
-        #[cfg(unix)]
-        {
-            use nix::errno::Errno;
-            let nix_pid = Pid::from_raw(pid as i32);
-            // Signal 0 (None) checks process existence without actually sending a signal.
-            match signal::kill(nix_pid, None) {
-                Ok(()) => Ok(true),
-                Err(Errno::EPERM) => {
-                    tracing::warn!(
-                        pid,
-                        "Attach target exists but is owned by a different user (EPERM); \
-                         proceeding with limited capabilities"
-                    );
-                    Ok(false)
-                }
-                Err(Errno::ESRCH) => Err(format!("Process {pid} does not exist (no such process)")),
-                Err(e) => Err(format!("Cannot verify process {pid}: {e}")),
-            }
-        }
-        #[cfg(windows)]
-        {
-            use winapi::um::handleapi::CloseHandle;
-            use winapi::um::processthreadsapi::OpenProcess;
-            use winapi::um::winnt::PROCESS_QUERY_LIMITED_INFORMATION;
-
-            // SAFETY: OpenProcess is a standard Win32 API.  We request only
-            // query-limited information, which is a read-only access right.
-            // The handle is closed immediately after the existence check.
-            let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
-            if handle.is_null() {
-                return Err(format!(
-                    "Process {pid} does not exist or is not accessible (OpenProcess failed)"
-                ));
-            }
-            // SAFETY: CloseHandle on a valid process handle is always safe.
-            unsafe { CloseHandle(handle) };
-            Ok(true)
-        }
-        #[cfg(not(any(unix, windows)))]
-        {
-            let _ = pid;
-            Err("Process verification not supported on this platform".to_string())
-        }
-    }
-
     /// Handle attach request
     ///
-    /// Attaches to a running Perl process. Supports two modes:
-    /// 1. TCP attachment - Connect to Perl::LanguageServer DAP via host:port
-    /// 2. Process ID attachment - Signal-control mode for local Perl process
+    /// Attaches to a running Perl debugger transport. Supports one mode:
+    /// TCP attachment - connect to the debugger's DAP listener via `host:port`.
     ///
     /// For TCP attachment, the arguments should contain:
     /// - `host`: Hostname or IP address (default: "localhost")
@@ -2354,10 +2707,12 @@ impl DebugAdapter {
     ///
     /// # Current Implementation
     ///
-    /// TCP attachment is implemented with socket support.
-    /// Process ID attachment is implemented in signal-control mode (pause/continue
-    /// signaling and thread identity), with limited stack/evaluate capabilities
-    /// unless a debugger transport is active.
+    /// TCP attachment is implemented with socket support. Process ID
+    /// (signal-control) attachment is refused fail-closed (#8109): verifying
+    /// that a process exists and holding signal control never established a
+    /// debugger transport or observed a stop transition, so the previous
+    /// successful attach response with synthetic `stopped(attach)`/`entry`
+    /// events represented a session the adapter did not own.
     pub(super) fn handle_attach(
         &self,
         seq: i64,
@@ -2366,43 +2721,14 @@ impl DebugAdapter {
     ) -> DapMessage {
         // Parse attach arguments
         if let Some(args) = arguments {
-            let process_id =
-                args.get("processId").and_then(|p| p.as_u64()).map(Self::u64_to_u32_saturating);
-
-            // PID attachment mode: best-effort process control without requiring TCP shim transport.
-            if let Some(pid) = process_id {
-                if pid == 0 {
-                    return DapMessage::Response {
-                        seq,
-                        request_seq,
-                        success: false,
-                        command: "attach".to_string(),
-                        body: None,
-                        message: Some("processId must be greater than zero".to_string()),
-                    };
-                }
-
-                // Verify the target process exists before attaching (#4638).
-                if let Err(msg) = Self::verify_attach_target(pid) {
-                    return DapMessage::Response {
-                        seq,
-                        request_seq,
-                        success: false,
-                        command: "attach".to_string(),
-                        body: None,
-                        message: Some(msg),
-                    };
-                }
-
-                // Reset existing process/tcp attachment state before switching to PID mode.
-                self.begin_session_generation();
-                // Debuggee replacement invalidates the reload family's
-                // session identities (#10102, R03): a PID attach is a
-                // replacement session like launch/TCP attach, so the prior
-                // reload epoch, negotiation, subjects, and operation
-                // identities must not survive it.
-                self.reset_reload_route_for_replacement_session();
-                if !self.clear_active_session_state() {
+            match Self::classify_attach_subject(&args) {
+                AttachSubject::ProcessId => {
+                    // #8109: a syntactically valid processId is refused before
+                    // any target inspection, session mutation, signal, or event
+                    // emission. Process existence plus signal control is not a
+                    // stopped debugger session. Re-enable requires a real
+                    // debugger transport with a behavior-backed attach journey
+                    // (#6684 real-session matrix owns that proof).
                     return DapMessage::Response {
                         seq,
                         request_seq,
@@ -2410,155 +2736,109 @@ impl DebugAdapter {
                         command: "attach".to_string(),
                         body: None,
                         message: Some(
-                            "Cannot attach while an earlier debugger process cleanup remains unconfirmed"
+                            "Attaching by processId is not supported. Use TCP attach with host \
+                             and port instead."
                                 .to_string(),
                         ),
                     };
                 }
-
-                if let Ok(mut guard) = self.attached_pid.lock() {
-                    *guard = Some(pid);
-                    drop(guard);
-                    self.admit_terminal_lifecycle();
+                AttachSubject::Tcp => {}
+                AttachSubject::Invalid(message) | AttachSubject::Ambiguous(message) => {
+                    return DapMessage::Response {
+                        seq,
+                        request_seq,
+                        success: false,
+                        command: "attach".to_string(),
+                        body: None,
+                        message: Some(message),
+                    };
                 }
+            }
 
-                let stop_on_entry =
-                    args.get("stopOnEntry").and_then(|s| s.as_bool()).unwrap_or(false);
-                let thread_id = Self::i64_to_i32_saturating(i64::from(pid));
-
-                // Always emit the "attach" stopped event to signal the client that the
-                // debugger is connected and paused.
-                self.send_event(
-                    "stopped",
-                    Some(json!({
-                        "reason": "attach",
-                        "threadId": thread_id,
-                        "allThreadsStopped": true
-                    })),
-                );
-
-                // When stopOnEntry is requested, emit an additional "entry" stopped event
-                // so the IDE pauses at the first available program location.
-                if stop_on_entry {
-                    self.send_event(
-                        "stopped",
-                        Some(json!({
-                            "reason": "entry",
-                            "threadId": thread_id,
-                            "allThreadsStopped": true,
-                            "description": "Paused on entry"
-                        })),
-                    );
-                }
-
-                tracing::info!(
-                    pid,
-                    stop_on_entry,
-                    "Attach request: Process ID attachment (signal-control mode)"
-                );
-
-                DapMessage::Response {
+            // Extract host and port for TCP attachment.
+            let host = args.get("host").and_then(|h| h.as_str()).unwrap_or("localhost");
+            let normalized_host = host.trim();
+            let raw_port = args.get("port").and_then(|p| p.as_u64()).unwrap_or(13603);
+            if raw_port > 65535 {
+                return DapMessage::Response {
                     seq,
                     request_seq,
-                    success: true,
+                    success: false,
                     command: "attach".to_string(),
-                    body: Some(json!({
-                        "threadId": thread_id,
-                        "processId": pid,
-                        "mode": "processId"
-                    })),
+                    body: None,
+                    message: Some(format!("Port {raw_port} out of range (must be 1-65535)")),
+                };
+            }
+            let port = raw_port as u16;
+            let timeout = args
+                .get("timeout")
+                .or_else(|| args.get("timeoutMs"))
+                .and_then(|t| t.as_u64())
+                .map(Self::u64_to_u32_saturating);
+            let stop_on_entry = args.get("stopOnEntry").and_then(|s| s.as_bool()).unwrap_or(false);
+
+            // TCP attachment mode (IMPLEMENTED)
+            let mut config = TcpAttachConfig::new(normalized_host.to_string(), port);
+            if let Some(t) = timeout {
+                config = config.with_timeout(t);
+            }
+
+            if let Err(error) = config.validate_timeout_bounds() {
+                return DapMessage::Response {
+                    seq,
+                    request_seq,
+                    success: false,
+                    command: "attach".to_string(),
+                    body: None,
+                    message: Some(error.to_string()),
+                };
+            }
+
+            if stop_on_entry {
+                return DapMessage::Response {
+                    seq,
+                    request_seq,
+                    success: false,
+                    command: "attach".to_string(),
+                    body: None,
                     message: Some(
-                        "Attached in signal-control mode. Stack/evaluate are limited without a \
-                         debugger transport."
+                        "TCP attach does not support stopOnEntry=true. Set stopOnEntry=false and \
+                             configure the debugger peer to pause if needed"
                             .to_string(),
                     ),
-                }
-            } else {
-                // Extract host and port for TCP attachment.
-                let host = args.get("host").and_then(|h| h.as_str()).unwrap_or("localhost");
-                let normalized_host = host.trim();
-                let raw_port = args.get("port").and_then(|p| p.as_u64()).unwrap_or(13603);
-                if raw_port > 65535 {
-                    return DapMessage::Response {
-                        seq,
-                        request_seq,
-                        success: false,
-                        command: "attach".to_string(),
-                        body: None,
-                        message: Some(format!("Port {raw_port} out of range (must be 1-65535)")),
-                    };
-                }
-                let port = raw_port as u16;
-                let timeout = args
-                    .get("timeout")
-                    .or_else(|| args.get("timeoutMs"))
-                    .and_then(|t| t.as_u64())
-                    .map(Self::u64_to_u32_saturating);
-                let stop_on_entry =
-                    args.get("stopOnEntry").and_then(|s| s.as_bool()).unwrap_or(false);
+                };
+            }
 
-                // TCP attachment mode (IMPLEMENTED)
-                let mut config = TcpAttachConfig::new(normalized_host.to_string(), port);
-                if let Some(t) = timeout {
-                    config = config.with_timeout(t);
-                }
+            // Create TCP attach session
+            let mut session = TcpAttachSession::new();
 
-                if let Err(error) = config.validate_timeout_bounds() {
-                    return DapMessage::Response {
-                        seq,
-                        request_seq,
-                        success: false,
-                        command: "attach".to_string(),
-                        body: None,
-                        message: Some(error.to_string()),
-                    };
-                }
+            // Set up the bounded event channel for TCP events (#9521)
+            let (tx, rx) = sync_channel::<DapEvent>(TCP_ATTACH_EVENT_CAPACITY);
+            session.set_event_sender(tx);
 
-                if stop_on_entry {
-                    return DapMessage::Response {
-                        seq,
-                        request_seq,
-                        success: false,
-                        command: "attach".to_string(),
-                        body: None,
-                        message: Some(
-                            "TCP attach does not support stopOnEntry=true. Set stopOnEntry=false and \
-                             configure the debugger peer to pause if needed"
-                                .to_string(),
-                        ),
-                    };
-                }
+            // Attempt to connect (validate is called inside connect,
+            // which also pins the resolved addresses for DNS-rebinding
+            // defense #5257)
+            match session.connect(&mut config) {
+                Ok(()) => {
+                    if let Err(e) = session.start_reader() {
+                        tracing::error!(error = %e, "Failed to start TCP reader");
+                        return DapMessage::Response {
+                            seq,
+                            request_seq,
+                            success: false,
+                            command: "attach".to_string(),
+                            body: None,
+                            message: Some(format!("Failed to start TCP reader: {}", e)),
+                        };
+                    }
 
-                // Create TCP attach session
-                let mut session = TcpAttachSession::new();
-
-                // Set up the bounded event channel for TCP events (#9521)
-                let (tx, rx) = sync_channel::<DapEvent>(TCP_ATTACH_EVENT_CAPACITY);
-                session.set_event_sender(tx);
-
-                // Attempt to connect (validate is called inside connect,
-                // which also pins the resolved addresses for DNS-rebinding
-                // defense #5257)
-                match session.connect(&mut config) {
-                    Ok(()) => {
-                        if let Err(e) = session.start_reader() {
-                            tracing::error!(error = %e, "Failed to start TCP reader");
-                            return DapMessage::Response {
-                                seq,
-                                request_seq,
-                                success: false,
-                                command: "attach".to_string(),
-                                body: None,
-                                message: Some(format!("Failed to start TCP reader: {}", e)),
-                            };
-                        }
-
-                        // The TCP session is fully connected and has a reader before it becomes
-                        // the active session, so a failed attach does not invalidate an existing
-                        // session's generation.
-                        if !self.prepare_replacement_session() {
-                            let _ = session.disconnect();
-                            return DapMessage::Response {
+                    // The TCP session is fully connected and has a reader before it becomes
+                    // the active session, so a failed attach does not invalidate an existing
+                    // session's generation.
+                    if !self.prepare_replacement_session() {
+                        let _ = session.disconnect();
+                        return DapMessage::Response {
                                 seq,
                                 request_seq,
                                 success: false,
@@ -2569,66 +2849,65 @@ impl DebugAdapter {
                                         .to_string(),
                                 ),
                             };
-                        }
-                        // Store session
-                        if let Ok(mut guard) = self.tcp_session.lock() {
-                            *guard = Some(session);
-                            drop(guard);
-                            self.admit_terminal_lifecycle();
-                        }
-                        self.operation_broker.open_session();
-
-                        // Start the generation-aware forwarder for TCP events.
-                        // Events are published only while the attach's session
-                        // generation is current; a replacement attach,
-                        // termination, or disconnect discards the dead
-                        // generation's queued events before DAP publication
-                        // (#9521).
-                        let seq_counter = self.seq.clone();
-                        let event_sender = self.event_sender.clone();
-                        let termination_state = self.termination_state.clone();
-                        let event_drain = self.event_drain.clone();
-                        let session_generation = self.current_session_generation();
-                        spawn_tcp_attach_event_forwarder(
-                            rx,
-                            event_sender,
-                            seq_counter,
-                            termination_state,
-                            session_generation,
-                            event_drain,
-                        );
-
-                        tracing::info!(host, port, stop_on_entry, "TCP attach successful");
-
-                        DapMessage::Response {
-                            seq,
-                            request_seq,
-                            success: true,
-                            command: "attach".to_string(),
-                            body: None,
-                            message: None,
-                        }
                     }
-                    Err(e) => DapMessage::Response {
+                    // Store session
+                    if let Ok(mut guard) = self.tcp_session.lock() {
+                        *guard = Some(session);
+                        drop(guard);
+                        self.admit_terminal_lifecycle();
+                    }
+                    self.operation_broker.open_session();
+
+                    // Start the generation-aware forwarder for TCP events.
+                    // Events are published only while the attach's session
+                    // generation is current; a replacement attach,
+                    // termination, or disconnect discards the dead
+                    // generation's queued events before DAP publication
+                    // (#9521).
+                    let seq_counter = self.seq.clone();
+                    let event_sender = self.event_sender.clone();
+                    let termination_state = self.termination_state.clone();
+                    let event_drain = self.event_drain.clone();
+                    let session_generation = self.current_session_generation();
+                    spawn_tcp_attach_event_forwarder(
+                        rx,
+                        event_sender,
+                        seq_counter,
+                        termination_state,
+                        session_generation,
+                        event_drain,
+                    );
+
+                    tracing::info!(host, port, stop_on_entry, "TCP attach successful");
+
+                    DapMessage::Response {
                         seq,
                         request_seq,
-                        success: false,
+                        success: true,
                         command: "attach".to_string(),
                         body: None,
-                        message: Some(format!(
-                            "Cannot attach to Perl debugger at {}:{} ({}ms timeout): {}. \
+                        message: None,
+                    }
+                }
+                Err(e) => DapMessage::Response {
+                    seq,
+                    request_seq,
+                    success: false,
+                    command: "attach".to_string(),
+                    body: None,
+                    message: Some(format!(
+                        "Cannot attach to Perl debugger at {}:{} ({}ms timeout): {}. \
                              Make sure the Perl process was started with \
                              'PERLDB_OPTS=\"RemotePort={}:{}\"' \
                              and is still running before attaching.",
-                            config.host,
-                            config.port,
-                            config.timeout_ms.unwrap_or(30000),
-                            e,
-                            config.host,
-                            config.port,
-                        )),
-                    },
-                }
+                        config.host,
+                        config.port,
+                        config.timeout_ms.unwrap_or(30000),
+                        e,
+                        config.host,
+                        config.port,
+                    )),
+                },
             }
         } else {
             // No arguments provided
@@ -2639,12 +2918,58 @@ impl DebugAdapter {
                 command: "attach".to_string(),
                 body: None,
                 message: Some(
-                    "Missing attach arguments. Provide either 'processId' for process attachment \
-                     or 'host' and 'port' for TCP attachment."
+                    "Missing attach arguments. Provide 'host' and 'port' for TCP attachment; \
+                     attaching by processId is not supported."
                         .to_string(),
                 ),
             }
         }
+    }
+
+    /// Classify the attach subject without inspecting the target.
+    ///
+    /// A missing or explicit `null` value leaves the request on the TCP path.
+    /// Malformed, zero, and out-of-range values are invalid input; only a
+    /// positive in-range integer reaches the capability-first unsupported
+    /// response for native PID attach (#8109).
+    fn classify_attach_subject(args: &Value) -> AttachSubject {
+        let process_id = match Self::parse_process_id(args) {
+            Ok(process_id) => process_id,
+            Err(message) => return AttachSubject::Invalid(message),
+        };
+        if process_id.is_some() {
+            let has_tcp_subject = ["host", "port"]
+                .iter()
+                .any(|key| args.get(*key).is_some_and(|value| !value.is_null()));
+            if has_tcp_subject {
+                return AttachSubject::Ambiguous(
+                    "Ambiguous attach: processId cannot be combined with explicit host or port"
+                        .to_string(),
+                );
+            }
+            return AttachSubject::ProcessId;
+        }
+        AttachSubject::Tcp
+    }
+
+    fn parse_process_id(args: &Value) -> Result<Option<u32>, String> {
+        let Some(value) = args.get("processId") else {
+            return Ok(None);
+        };
+        if value.is_null() {
+            return Ok(None);
+        }
+
+        let raw = value.as_u64().ok_or_else(|| {
+            "Invalid processId: expected a positive integer in the range 1-4294967295".to_string()
+        })?;
+        let pid = u32::try_from(raw).map_err(|_| {
+            "Invalid processId: expected a positive integer in the range 1-4294967295".to_string()
+        })?;
+        if pid == 0 {
+            return Err("Invalid processId: value must be greater than zero".to_string());
+        }
+        Ok(Some(pid))
     }
 
     /// Clear active process session, TCP session, and PID-attach mode state.
@@ -2815,29 +3140,59 @@ impl DebugAdapter {
         Self::clear_active_session_state_with_state(session, tcp_session, attached_pid);
     }
 
-    pub(super) fn wait_for_child_exit(process: &mut Child, timeout: Duration) -> bool {
+    /// Bounded wait for a child to exit, returning the discriminated
+    /// outcome. Production callers that only need the boolean keep using
+    /// [`Self::wait_for_child_exit`]; this entrypoint is the basis for
+    /// diagnostic tests that need to tell OS errors from resource
+    /// scheduling from oracle misprediction (#15740).
+    pub(super) fn wait_for_child_exit_with_outcome(
+        process: &mut Child,
+        timeout: Duration,
+    ) -> ChildExitOutcome {
+        let start = Instant::now();
+        let mut polls: u32 = 0;
+
         if let Ok(Some(_)) = process.try_wait() {
-            return true;
+            return ChildExitOutcome::Exited;
         }
 
         let deadline = Instant::now() + timeout;
         while Instant::now() < deadline {
             match process.try_wait() {
-                Ok(Some(_)) => return true,
-                Ok(None) => thread::sleep(Duration::from_millis(25)),
+                Ok(Some(_)) => return ChildExitOutcome::Exited,
+                Ok(None) => {
+                    polls += 1;
+                    thread::sleep(Duration::from_millis(25));
+                }
                 Err(e) => {
                     tracing::warn!(error = %e, "Failed to poll debug session process");
-                    return false;
+                    return ChildExitOutcome::PollError {
+                        error: e,
+                        polls,
+                        elapsed: start.elapsed(),
+                    };
                 }
             }
         }
 
-        false
+        ChildExitOutcome::StillRunning { polls, elapsed: start.elapsed() }
     }
 
-    pub(super) fn terminate_child_process(process: &mut Child) -> bool {
-        if Self::wait_for_child_exit(process, Duration::from_millis(0)) {
-            return true;
+    #[allow(dead_code)] // exposed for the bounded-cleanup test cluster (#15740)
+    pub(super) fn wait_for_child_exit(process: &mut Child, timeout: Duration) -> bool {
+        matches!(Self::wait_for_child_exit_with_outcome(process, timeout), ChildExitOutcome::Exited)
+    }
+
+    /// Bounded kill-and-reap of a child, returning the discriminated
+    /// outcome (#15740). The Unix branch attempts a graceful SIGTERM
+    /// before the cross-platform `Child::kill` fallback; Windows has no
+    /// SIGTERM equivalent and proceeds directly to `Child::kill` (which
+    /// resolves to `TerminateProcess`).
+    pub(super) fn terminate_child_process_with_outcome(process: &mut Child) -> ChildExitOutcome {
+        if let outcome @ ChildExitOutcome::Exited =
+            Self::wait_for_child_exit_with_outcome(process, Duration::from_millis(0))
+        {
+            return outcome;
         }
 
         #[cfg(unix)]
@@ -2845,11 +3200,17 @@ impl DebugAdapter {
             let pid = process.id();
             match signal::kill(Pid::from_raw(Self::u32_to_i32_saturating(pid)), Signal::SIGTERM) {
                 Ok(()) => {
-                    if Self::wait_for_child_exit(
-                        process,
-                        Duration::from_millis(DEBUG_SESSION_TERMINATE_WAIT_MS),
-                    ) {
-                        return true;
+                    if let outcome @ ChildExitOutcome::Exited =
+                        Self::wait_for_child_exit_with_outcome(
+                            process,
+                            Duration::from_millis(DEBUG_SESSION_TERMINATE_WAIT_MS),
+                        )
+                    {
+                        // #15538: the direct child exited gracefully, but the
+                        // group it led can still hold descendants (a pager or
+                        // readline helper under `perl -d`).
+                        crate::process_tree::terminate_descendants(process);
+                        return outcome;
                     }
                 }
                 Err(e) => {
@@ -2858,10 +3219,21 @@ impl DebugAdapter {
             }
         }
 
+        // #15538: reach descendants before the direct child dies — on
+        // Windows by walking the live parent→child tree from this child, on
+        // Unix by killing the process group it leads.
+        crate::process_tree::terminate_descendants(process);
         if let Err(e) = process.kill() {
-            tracing::warn!(error = %e, "Failed to terminate process");
+            tracing::warn!(pid = process.id(), error = %e, "Failed to terminate process");
         }
-        Self::wait_for_child_exit(process, Duration::from_millis(DEBUG_SESSION_TERMINATE_WAIT_MS))
+        Self::wait_for_child_exit_with_outcome(
+            process,
+            Duration::from_millis(DEBUG_SESSION_TERMINATE_WAIT_MS),
+        )
+    }
+
+    pub(super) fn terminate_child_process(process: &mut Child) -> bool {
+        matches!(Self::terminate_child_process_with_outcome(process), ChildExitOutcome::Exited)
     }
 
     /// Handle disconnect request
@@ -3043,12 +3415,13 @@ impl DebugAdapter {
                 // The implicit startup pause already corresponds to an
                 // acknowledged breakpoint. Publish it without sending `c`.
             } else if stop_on_entry {
-                // #15637: the entry stop is emitted by the output reader at the
-                // first real debugger suspension, so by configurationDone time it
-                // may already have been published — or the reader may still be
-                // waiting for the bootstrap output. List the current source
-                // location so the debugger re-reports it either way and the
-                // reader can observe an authoritative frame for the entry stop.
+                // #15637: the entry stop is emitted by the output reader after
+                // ordered native context and prompt evidence, so by
+                // configurationDone time it may already have been published — or
+                // the reader may still be waiting for the bootstrap output.
+                // List the current source location so the debugger re-reports
+                // it either way and the reader can observe an authoritative
+                // frame for the entry stop.
                 let _ = stdin.write_all(b"l\n");
                 let _ = stdin.flush();
             } else {
@@ -3434,13 +3807,13 @@ fn deliver_reserved_terminated_event(
         if state.generation != generation {
             return false;
         }
-        match sender.try_send(message) {
+        match sender.try_send((message, super::sync_utils::current_drain_epoch())) {
             Ok(()) => {
                 state.terminal_committed = true;
                 return true;
             }
             Err(std::sync::mpsc::TrySendError::Disconnected(_)) => return false,
-            Err(std::sync::mpsc::TrySendError::Full(returned)) => message = returned,
+            Err(std::sync::mpsc::TrySendError::Full(returned)) => message = returned.0,
         }
         drop(state);
         thread::sleep(super::sync_utils::GENERATION_GUARD_PARK);
@@ -3451,19 +3824,148 @@ fn deliver_reserved_terminated_event(
 mod tests {
     use super::super::sync_utils::EventDrainLatch;
     use super::super::sync_utils::EventSender;
-    use super::{DapMessage, Duration, Instant, PathBuf, Stdio, Value, json, thread};
     use super::{
-        DebugAdapter, DebugState, current_stopped_frame_id, detect_perl_info,
+        BufReader, DebugAdapter, DebugState, current_stopped_frame_id, detect_perl_info,
         emit_terminated_event, format_perl_spawn_error, has_probe_success_marker,
-        is_valid_perl_interpreter, lock_or_recover, reserve_terminated_event,
-        terminated_delivery_is_current,
+        has_prompt_prefix, is_strict_prompt_candidate, is_valid_perl_interpreter, lock_or_recover,
+        read_debugger_record, reserve_terminated_event, terminated_delivery_is_current,
     };
+    use super::{DapMessage, Duration, Instant, PathBuf, Stdio, Value, json, thread};
     use crate::reload::RuntimeModuleGenerationClock;
+    use crate::security::launch_authority::{
+        LaunchAuthority, LaunchAuthoritySource, LaunchAuthorityStartup, UnboundedAcknowledgement,
+    };
     use crate::tcp_attach::DapEvent;
     use perl_test_must::must_some_with;
     use std::collections::HashMap;
     use std::sync::mpsc::{TryRecvError, sync_channel};
     use std::sync::{Arc, Mutex};
+
+    fn workspace_bound_authority(root: &std::path::Path) -> LaunchAuthority {
+        LaunchAuthority::resolve(&LaunchAuthorityStartup {
+            trusted_roots: vec![root.to_path_buf()],
+            allow_unbounded: None,
+        })
+        .expect("test authority resolution")
+    }
+
+    fn unbounded_test_authority() -> LaunchAuthority {
+        LaunchAuthority::resolve(&LaunchAuthorityStartup {
+            trusted_roots: Vec::new(),
+            allow_unbounded: Some(UnboundedAcknowledgement::new(
+                LaunchAuthoritySource::CommandLine,
+                "test session",
+            )),
+        })
+        .expect("test authority resolution")
+    }
+
+    fn launch_failure_message(response: super::DapMessage) -> Option<String> {
+        match response {
+            super::DapMessage::Response { success, message, .. } if !success => message,
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn launch_without_startup_authority_fails_closed() {
+        let mut adapter = DebugAdapter::new();
+        let _ = adapter.handle_initialize(1, 1, None);
+        let response =
+            adapter.handle_launch(2, 2, Some(serde_json::json!({ "program": "script.pl" })));
+        let message = launch_failure_message(response)
+            .expect("a launch without startup authority must be refused");
+        assert!(
+            message.contains("no startup launch authority"),
+            "refusal should explain the missing authority; got: {message:?}"
+        );
+    }
+
+    #[test]
+    fn workspace_bound_authority_refuses_program_outside_trusted_roots() {
+        let root = tempfile::tempdir().expect("temp root");
+        let mut adapter = DebugAdapter::new();
+        adapter.set_launch_authority(workspace_bound_authority(root.path()));
+        let _ = adapter.handle_initialize(1, 1, None);
+
+        let outside = tempfile::tempdir().expect("outside temp root");
+        let outside_script = outside.path().join("outside.pl");
+        std::fs::write(&outside_script, b"print 1;").expect("script");
+
+        let response = adapter.handle_launch(
+            2,
+            2,
+            Some(serde_json::json!({ "program": outside_script.display().to_string() })),
+        );
+        let message = launch_failure_message(response)
+            .expect("a program outside every trusted root must be refused");
+        assert!(
+            message.contains("trusted root"),
+            "refusal should mention the trusted-root boundary; got: {message:?}"
+        );
+    }
+
+    #[test]
+    fn launch_args_workspace_root_cannot_create_authority() {
+        let root = tempfile::tempdir().expect("temp root");
+        let mut adapter = DebugAdapter::new();
+        adapter.set_launch_authority(workspace_bound_authority(root.path()));
+        let _ = adapter.handle_initialize(1, 1, None);
+
+        let outside = tempfile::tempdir().expect("outside temp root");
+        let script = outside.path().join("script.pl");
+        std::fs::write(&script, b"print 1;").expect("script");
+
+        // A launch-args workspaceRoot outside the trusted roots must be
+        // refused instead of becoming the launch boundary.
+        let response = adapter.handle_launch(
+            2,
+            2,
+            Some(serde_json::json!({
+                "program": script.display().to_string(),
+                "workspaceRoot": outside.path().display().to_string(),
+            })),
+        );
+        let message = launch_failure_message(response)
+            .expect("a launch-args workspaceRoot cannot create authority");
+        assert!(
+            message.contains("trusted root"),
+            "refusal should mention the trusted-root boundary; got: {message:?}"
+        );
+    }
+
+    #[test]
+    fn explicitly_unbounded_authority_is_recorded_and_admits_paths() {
+        let adapter = DebugAdapter::new();
+        let authority = unbounded_test_authority();
+        let receipt = authority.receipt();
+        assert_eq!(receipt.mode, "explicit_unbounded");
+        assert!(receipt.acknowledgement_identity.is_some());
+        adapter.set_launch_authority(authority);
+        let _ = adapter.handle_initialize(1, 1, None);
+
+        // Admission succeeds and a session generation begins.
+        assert!(adapter.begin_authority_session().is_some());
+    }
+
+    #[test]
+    fn launch_authority_can_only_be_installed_once() {
+        let first_root = tempfile::tempdir().expect("first temp root");
+        let second_root = tempfile::tempdir().expect("second temp root");
+        let adapter = DebugAdapter::new();
+
+        adapter.set_launch_authority(workspace_bound_authority(first_root.path()));
+        adapter.set_launch_authority(workspace_bound_authority(second_root.path()));
+
+        let (_, receipt) =
+            adapter.begin_authority_session().expect("first authority must remain installed");
+        let first = LaunchAuthority::resolve(&LaunchAuthorityStartup {
+            trusted_roots: vec![first_root.path().to_path_buf()],
+            allow_unbounded: None,
+        })
+        .expect("first authority resolution");
+        assert_eq!(receipt.authority_identity, first.receipt().authority_identity);
+    }
 
     #[test]
     fn failed_child_cleanup_retains_owner_until_retry() -> Result<(), String> {
@@ -3607,6 +4109,1219 @@ mod tests {
             return Err("next suspension reused the previous frame id".to_string());
         }
 
+        Ok(())
+    }
+
+    /// The real output reader must publish one stop when a context line is
+    /// followed by the prompt for that same suspension. The prompt is an
+    /// ordered completion marker for the debugger's context, not a second
+    /// suspension.
+    #[cfg(unix)]
+    #[test]
+    fn output_reader_context_then_prompt_publishes_one_stop() -> Result<(), String> {
+        use super::{DapMessage, DebugSession, ResumeMode, VariableCache, lock_or_recover};
+        use std::path::PathBuf;
+        use std::process::{Command, Stdio};
+        use std::sync::atomic::Ordering;
+        use std::sync::mpsc::{RecvTimeoutError, sync_channel};
+        use std::time::Duration;
+
+        let (sender, receiver) = sync_channel(32);
+        let mut adapter = DebugAdapter::new();
+        adapter.set_event_sender(sender);
+        adapter.initialized.store(true, Ordering::Release);
+
+        let child = Command::new("sh")
+            .args([
+                "-c",
+                "printf 'main::(/tmp/dap-entry-frame-fixture.pl:3):\\tmy $entry = 1;\\n\\033[4m  DB<1> \\033[24m\\033[1m\\033[0m\\033[0m3==>\\tmy $entry = 1;\\nDB<1>\\nENTRY_READER_DONE\\n' >&2; sleep 1",
+            ])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|error| format!("failed to spawn reader fixture: {error}"))?;
+
+        *lock_or_recover(&adapter.session, "test.session") = Some(DebugSession {
+            process: child,
+            state: DebugState::Running,
+            stack_frames: Vec::new(),
+            stack_frame_arguments: HashMap::new(),
+            variable_cache: VariableCache::default(),
+            thread_id: 1,
+            debuggee_cwd: PathBuf::from("/tmp"),
+            last_resume_mode: ResumeMode::Unknown,
+            entry_stop_pending: true,
+            initial_stop_pending: false,
+            stopped_generation: 0,
+            module_generation: RuntimeModuleGenerationClock::new(),
+        });
+        adapter.start_output_reader(PathBuf::from("/tmp"));
+
+        let mut stopped = 0;
+        let mut listing_outputs = 0;
+        let mut saw_completion_marker = false;
+        let mut saw_terminated = false;
+        while !saw_completion_marker || !saw_terminated {
+            match receiver.recv_timeout(Duration::from_secs(3)) {
+                Ok((DapMessage::Event { event, body, .. }, _)) if event == "stopped" => {
+                    stopped += 1;
+                    if stopped > 1 {
+                        return Err("context plus prompt emitted duplicate stopped events".into());
+                    }
+                    let reason = body
+                        .as_ref()
+                        .and_then(|value| value.get("reason"))
+                        .and_then(|value| value.as_str());
+                    if reason != Some("entry") {
+                        return Err(format!("expected entry stop, got {reason:?}"));
+                    }
+                }
+                Ok((DapMessage::Event { event, body, .. }, _)) if event == "output" => {
+                    if body
+                        .as_ref()
+                        .and_then(|value| value.get("output"))
+                        .and_then(|value| value.as_str())
+                        .is_some_and(|output| output.contains("3==>\tmy $entry = 1;"))
+                    {
+                        listing_outputs += 1;
+                    }
+                    if body
+                        .as_ref()
+                        .and_then(|value| value.get("output"))
+                        .and_then(|value| value.as_str())
+                        .is_some_and(|output| output.contains("ENTRY_READER_DONE"))
+                    {
+                        saw_completion_marker = true;
+                    }
+                }
+                Ok((DapMessage::Event { event, .. }, _)) if event == "terminated" => {
+                    saw_terminated = true;
+                }
+                Ok(_) => {}
+                Err(RecvTimeoutError::Timeout) => {
+                    return Err("reader fixture did not reach its completion marker".into());
+                }
+                Err(RecvTimeoutError::Disconnected) => {
+                    return Err("reader event channel disconnected before completion".into());
+                }
+            }
+        }
+
+        if stopped != 1 {
+            return Err(format!("expected exactly one entry stop, got {stopped}"));
+        }
+        if listing_outputs != 1 {
+            return Err(format!("expected one preserved queued listing, got {listing_outputs}"));
+        }
+        Ok(())
+    }
+
+    /// A RunToBreakpoint request first reports perl5db's implicit context and
+    /// prompt before reaching the requested breakpoint.  The implicit prompt
+    /// must not become a fabricated step stop or consume the request's resume
+    /// intent; the later breakpoint prompt must publish exactly one stop.
+    #[cfg(unix)]
+    #[test]
+    fn output_reader_run_to_breakpoint_ignores_implicit_prompt() -> Result<(), String> {
+        use super::{DapMessage, DebugSession, ResumeMode, VariableCache, lock_or_recover};
+        use crate::protocol::{SetBreakpointsArguments, Source, SourceBreakpoint};
+        use std::io::Write;
+        use std::path::PathBuf;
+        use std::process::{Command, Stdio};
+        use std::sync::atomic::Ordering;
+        use std::sync::mpsc::{RecvTimeoutError, sync_channel};
+        use std::time::Duration;
+        use tempfile::NamedTempFile;
+
+        let mut source_file = NamedTempFile::with_suffix(".pl")
+            .map_err(|error| format!("failed to create breakpoint fixture: {error}"))?;
+        source_file
+            .write_all(
+                b"#!/usr/bin/perl\nmy $implicit = 1;\nmy $x = 2;\nmy $y = 3;\nprint $x + $y;\n",
+            )
+            .map_err(|error| format!("failed to write breakpoint fixture: {error}"))?;
+        source_file
+            .flush()
+            .map_err(|error| format!("failed to flush breakpoint fixture: {error}"))?;
+        let source_path = source_file.path().to_string_lossy().into_owned();
+
+        let (sender, receiver) = sync_channel(64);
+        let mut adapter = DebugAdapter::new();
+        adapter.set_event_sender(sender);
+        adapter.initialized.store(true, Ordering::Release);
+        let configured = adapter.breakpoints.set_breakpoints(&SetBreakpointsArguments {
+            source: Source {
+                path: Some(source_path.to_string()),
+                name: Some("dap-run-to-breakpoint-fixture.pl".to_string()),
+            },
+            breakpoints: Some(vec![SourceBreakpoint {
+                line: 5,
+                column: None,
+                condition: None,
+                hit_condition: None,
+                log_message: None,
+            }]),
+            source_modified: None,
+        });
+        if configured.len() != 1
+            || !configured.first().is_some_and(|breakpoint| breakpoint.verified)
+        {
+            return Err(format!("failed to configure fixture breakpoint: {configured:?}"));
+        }
+        let source_digest = perl_source_identity::ContentDigest::of_bytes(
+            &std::fs::read(&source_path)
+                .map_err(|error| format!("failed to read breakpoint fixture: {error}"))?,
+        )
+        .to_string();
+        if !adapter.breakpoints.mark_engine_installed(1, &source_path, 5, 0, source_digest) {
+            return Err("failed to acknowledge fixture breakpoint installation".into());
+        }
+
+        let script = "printf 'main::(%s:1):\\timplicit\\nDB<1>\\nIMPLICIT_DONE\\n' \"$1\" >&2; read -r release; if [ -n \"$release\" ]; then printf 'UNEXPECTED_COMMAND:%s\\n' \"$release\" >&2; exit 1; fi; printf 'main::(%s:5):\\tactual\\nDB<2>\\nACTUAL_DONE\\n' \"$1\" >&2";
+        let child = Command::new("sh")
+            .args(["-c", script, "dap-run-to-breakpoint-fixture", &source_path])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|error| format!("failed to spawn RunToBreakpoint fixture: {error}"))?;
+
+        *lock_or_recover(&adapter.session, "test.session") = Some(DebugSession {
+            process: child,
+            state: DebugState::Running,
+            stack_frames: Vec::new(),
+            stack_frame_arguments: HashMap::new(),
+            variable_cache: VariableCache::default(),
+            thread_id: 1,
+            debuggee_cwd: PathBuf::from("/tmp"),
+            last_resume_mode: ResumeMode::RunToBreakpoint,
+            entry_stop_pending: false,
+            initial_stop_pending: false,
+            stopped_generation: 0,
+            module_generation: RuntimeModuleGenerationClock::new(),
+        });
+        adapter.start_output_reader(PathBuf::from("/tmp"));
+
+        let mut saw_implicit = false;
+        let mut released = false;
+        let mut stopped = 0;
+        let mut saw_actual = false;
+        let mut saw_terminated = false;
+        while !saw_actual || !saw_terminated {
+            match receiver.recv_timeout(Duration::from_secs(3)) {
+                Ok((DapMessage::Event { event, body, .. }, _)) if event == "output" => {
+                    let output = body
+                        .as_ref()
+                        .and_then(|value| value.get("output"))
+                        .and_then(|value| value.as_str())
+                        .unwrap_or_default();
+                    if output.contains("IMPLICIT_DONE") {
+                        saw_implicit = true;
+                        if !released {
+                            let mut guard = lock_or_recover(&adapter.session, "test.session");
+                            let session = guard.as_mut().ok_or("reader cleared session")?;
+                            let stdin = session
+                                .process
+                                .stdin
+                                .as_mut()
+                                .ok_or("RunToBreakpoint fixture stdin missing")?;
+                            stdin
+                                .write_all(b"\n")
+                                .map_err(|error| format!("failed to release fixture: {error}"))?;
+                            stdin.flush().map_err(|error| {
+                                format!("failed to flush fixture release: {error}")
+                            })?;
+                            released = true;
+                        }
+                    }
+                    if output.contains("ACTUAL_DONE") {
+                        saw_actual = true;
+                    }
+                    if output.contains("UNEXPECTED_COMMAND:") {
+                        return Err(format!(
+                            "fixture observed an unexpected resume command: {output:?}"
+                        ));
+                    }
+                }
+                Ok((DapMessage::Event { event, body, .. }, _)) if event == "stopped" => {
+                    stopped += 1;
+                    let reason = body
+                        .as_ref()
+                        .and_then(|value| value.get("reason"))
+                        .and_then(|value| value.as_str());
+                    if !saw_implicit {
+                        return Err(format!(
+                            "implicit RunToBreakpoint prompt stopped early: {body:?}"
+                        ));
+                    }
+                    if reason != Some("breakpoint") {
+                        return Err(format!("expected breakpoint stop, got {reason:?}"));
+                    }
+                    // The fixture exits after ACTUAL_DONE. Under shard load the
+                    // reader may reap it between the stopped event and this read;
+                    // distinguish that from a session whose frames were never
+                    // published instead of collapsing both into one diagnosis.
+                    let deadline = Instant::now() + Duration::from_secs(5);
+                    let frame =
+                        loop {
+                            {
+                                let guard = lock_or_recover(&adapter.session, "test.session");
+                                match guard.as_ref() {
+                                    None => return Err(
+                                        "session was reaped before the breakpoint frame was read"
+                                            .into(),
+                                    ),
+                                    Some(session) => {
+                                        if let Some(frame) = session.stack_frames.first() {
+                                            break frame.clone();
+                                        }
+                                    }
+                                }
+                            }
+                            if Instant::now() >= deadline {
+                                return Err("breakpoint frame never published".into());
+                            }
+                            thread::sleep(Duration::from_millis(2));
+                        };
+                    if frame.source.path != source_path || frame.line != 5 {
+                        return Err(format!(
+                            "breakpoint frame mismatch: path={}, line={}",
+                            frame.source.path, frame.line
+                        ));
+                    }
+                }
+                Ok((DapMessage::Event { event, .. }, _)) if event == "terminated" => {
+                    saw_terminated = true;
+                }
+                Ok(_) => {}
+                Err(RecvTimeoutError::Timeout) => {
+                    return Err("RunToBreakpoint fixture timed out".into());
+                }
+                Err(RecvTimeoutError::Disconnected) => {
+                    return Err("RunToBreakpoint event channel disconnected".into());
+                }
+            }
+        }
+
+        if !saw_implicit || !saw_actual || stopped != 1 {
+            return Err(format!(
+                "expected implicit barrier, actual barrier, and one breakpoint stop; implicit={saw_implicit}, actual={saw_actual}, stopped={stopped}"
+            ));
+        }
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn output_reader_fake_context_without_prompt_is_rejected() -> Result<(), String> {
+        use super::{DapMessage, DebugSession, ResumeMode, VariableCache, lock_or_recover};
+        use std::path::PathBuf;
+        use std::process::{Command, Stdio};
+        use std::sync::atomic::Ordering;
+        use std::sync::mpsc::{RecvTimeoutError, sync_channel};
+        use std::time::Duration;
+
+        let (sender, receiver) = sync_channel(32);
+        let mut adapter = DebugAdapter::new();
+        adapter.set_event_sender(sender);
+        adapter.initialized.store(true, Ordering::Release);
+        let child = Command::new("sh")
+            .args([
+                "-c",
+                "printf 'main::(/tmp/begin.pl:1):\\tprint BEGIN\\nFAKE_DONE\\n' >&2; sleep 1",
+            ])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|error| format!("failed to spawn reader fixture: {error}"))?;
+        *lock_or_recover(&adapter.session, "test.session") = Some(DebugSession {
+            process: child,
+            state: DebugState::Running,
+            stack_frames: Vec::new(),
+            stack_frame_arguments: HashMap::new(),
+            variable_cache: VariableCache::default(),
+            thread_id: 1,
+            debuggee_cwd: PathBuf::from("/tmp"),
+            last_resume_mode: ResumeMode::Unknown,
+            entry_stop_pending: true,
+            initial_stop_pending: false,
+            stopped_generation: 0,
+            module_generation: RuntimeModuleGenerationClock::new(),
+        });
+        adapter.start_output_reader(PathBuf::from("/tmp"));
+        loop {
+            match receiver.recv_timeout(Duration::from_secs(3)) {
+                Ok((DapMessage::Event { event, .. }, _)) if event == "stopped" => {
+                    return Err("context-shaped output published entry before prompt".into());
+                }
+                Ok((DapMessage::Event { event, body, .. }, _)) if event == "output" => {
+                    if body
+                        .as_ref()
+                        .and_then(|value| value.get("output"))
+                        .and_then(|value| value.as_str())
+                        .is_some_and(|output| output.contains("FAKE_DONE"))
+                    {
+                        return Ok(());
+                    }
+                }
+                Ok(_) => {}
+                Err(RecvTimeoutError::Timeout) => return Err("fake fixture timed out".into()),
+                Err(RecvTimeoutError::Disconnected) => return Err("reader disconnected".into()),
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn output_reader_does_not_stop_on_delayed_prompt_prefix() -> Result<(), String> {
+        use super::{DapMessage, DebugSession, ResumeMode, VariableCache, lock_or_recover};
+        use std::io::Write;
+        use std::path::PathBuf;
+        use std::process::{Command, Stdio};
+        use std::sync::atomic::Ordering;
+        use std::sync::mpsc::{RecvTimeoutError, sync_channel};
+        use std::time::Duration;
+
+        let (sender, receiver) = sync_channel(32);
+        let mut adapter = DebugAdapter::new();
+        adapter.set_event_sender(sender);
+        adapter.initialized.store(true, Ordering::Release);
+        let mut child = Command::new("sh")
+            .args([
+                "-c",
+                "printf 'DB<12>' >&2; printf 'PREFIX_READY\\n'; read release; printf ' ordinary output\\nPREFIX_DONE\\n' >&2",
+            ])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|error| format!("failed to spawn delayed-prefix fixture: {error}"))?;
+        let stdout = child.stdout.take().ok_or("delayed-prefix fixture stdout missing")?;
+        let (ready_sender, ready_receiver) = sync_channel(1);
+        std::thread::spawn(move || {
+            let mut ready = BufReader::new(stdout);
+            let mut marker = String::new();
+            let result = std::io::BufRead::read_line(&mut ready, &mut marker)
+                .map(|_| marker)
+                .map_err(|error| error.to_string());
+            let _ = ready_sender.send(result);
+        });
+        *lock_or_recover(&adapter.session, "test.session") = Some(DebugSession {
+            process: child,
+            state: DebugState::Running,
+            stack_frames: Vec::new(),
+            stack_frame_arguments: HashMap::new(),
+            variable_cache: VariableCache::default(),
+            thread_id: 1,
+            debuggee_cwd: PathBuf::from("/tmp"),
+            last_resume_mode: ResumeMode::Unknown,
+            entry_stop_pending: false,
+            initial_stop_pending: false,
+            stopped_generation: 0,
+            module_generation: RuntimeModuleGenerationClock::new(),
+        });
+        adapter.start_output_reader(PathBuf::from("/tmp"));
+        let marker = ready_receiver
+            .recv_timeout(Duration::from_secs(2))
+            .map_err(|error| format!("delayed-prefix fixture did not signal readiness: {error}"))?
+            .map_err(|error| format!("delayed-prefix readiness read failed: {error}"))?;
+        if marker != "PREFIX_READY\n" {
+            return Err(format!("unexpected delayed-prefix readiness marker: {marker:?}"));
+        }
+        {
+            let mut guard = lock_or_recover(&adapter.session, "test.session");
+            let session = guard.as_mut().ok_or("reader cleared test session")?;
+            let stdin =
+                session.process.stdin.as_mut().ok_or("delayed-prefix fixture stdin missing")?;
+            stdin
+                .write_all(b"\n")
+                .map_err(|error| format!("failed to release fixture: {error}"))?;
+            stdin.flush().map_err(|error| format!("failed to flush fixture release: {error}"))?;
+        }
+        loop {
+            match receiver.recv_timeout(Duration::from_secs(3)) {
+                Ok((DapMessage::Event { event, body, .. }, _)) if event == "stopped" => {
+                    return Err(format!("delayed prompt prefix fabricated a stop: {body:?}"));
+                }
+                Ok((DapMessage::Event { event, body, .. }, _)) if event == "output" => {
+                    let output = body
+                        .as_ref()
+                        .and_then(|value| value.get("output"))
+                        .and_then(|value| value.as_str())
+                        .unwrap_or_default();
+                    if output.contains("PREFIX_DONE") {
+                        return Ok(());
+                    }
+                }
+                Ok(_) => {}
+                Err(RecvTimeoutError::Timeout) => {
+                    return Err("delayed-prefix fixture timed out".into());
+                }
+                Err(RecvTimeoutError::Disconnected) => {
+                    return Err("delayed-prefix reader disconnected".into());
+                }
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn output_reader_entry_uses_latest_native_context_after_warning() -> Result<(), String> {
+        use super::{DapMessage, DebugSession, ResumeMode, VariableCache, lock_or_recover};
+        use std::path::PathBuf;
+        use std::process::{Command, Stdio};
+        use std::sync::atomic::Ordering;
+        use std::sync::mpsc::{RecvTimeoutError, sync_channel};
+        use std::time::Duration;
+
+        let (sender, receiver) = sync_channel(32);
+        let mut adapter = DebugAdapter::new();
+        adapter.set_event_sender(sender);
+        adapter.initialized.store(true, Ordering::Release);
+        *lock_or_recover(&adapter.exception_break_on_warn, "test.break_on_warn") = true;
+        let child = Command::new("sh")
+            .args([
+                "-c",
+                "printf 'main::(/tmp/begin.pl:1):\\tprint BEGIN\\nmain::(/tmp/real.pl:4):\\tmy $entry = 1;\\ncompile warning at /tmp/warn.pl line 9.\\nDB<1>' >&2; read release",
+            ])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|error| format!("failed to spawn context fixture: {error}"))?;
+        *lock_or_recover(&adapter.session, "test.session") = Some(DebugSession {
+            process: child,
+            state: DebugState::Running,
+            stack_frames: Vec::new(),
+            stack_frame_arguments: HashMap::new(),
+            variable_cache: VariableCache::default(),
+            thread_id: 1,
+            debuggee_cwd: PathBuf::from("/tmp"),
+            last_resume_mode: ResumeMode::Unknown,
+            entry_stop_pending: true,
+            initial_stop_pending: false,
+            stopped_generation: 0,
+            module_generation: RuntimeModuleGenerationClock::new(),
+        });
+        adapter.start_output_reader(PathBuf::from("/tmp"));
+        let mut observed = Vec::new();
+        loop {
+            match receiver.recv_timeout(Duration::from_secs(3)) {
+                Ok((DapMessage::Event { event, body, .. }, _)) if event == "stopped" => {
+                    let reason = body
+                        .as_ref()
+                        .and_then(|value| value.get("reason"))
+                        .and_then(|value| value.as_str());
+                    if reason != Some("entry") {
+                        return Err(format!("expected entry stop, got {reason:?}"));
+                    }
+                    let guard = lock_or_recover(&adapter.session, "test.session");
+                    let session = guard.as_ref().ok_or("reader cleared test session")?;
+                    let frame = session.stack_frames.first().ok_or("entry frame missing")?;
+                    if frame.source.path != "/tmp/real.pl" || frame.line != 4 {
+                        return Err(format!(
+                            "warning location replaced native entry frame: path={}, line={}",
+                            frame.source.path, frame.line
+                        ));
+                    }
+                    return Ok(());
+                }
+                Ok((DapMessage::Event { event, body, .. }, _)) => {
+                    observed.push(format!("{event}:{body:?}"));
+                }
+                Ok(other) => observed.push(format!("message:{other:?}")),
+                Err(RecvTimeoutError::Timeout) => {
+                    return Err(format!("context fixture timed out: {observed:?}"));
+                }
+                Err(RecvTimeoutError::Disconnected) => return Err("reader disconnected".into()),
+            }
+        }
+    }
+
+    #[test]
+    fn debugger_record_reader_preserves_prompt_shaped_output() -> Result<(), String> {
+        use std::io::Cursor;
+
+        let mut reader = BufReader::new(Cursor::new(b"DB<1> ordinary output\nDB<2>"));
+        let mut line = String::new();
+        let first = read_debugger_record(&mut reader, &mut line, true)
+            .map_err(|error| format!("failed to read ordinary output: {error}"))?;
+        if first == 0 || line != "DB<1> ordinary output\n" {
+            return Err(format!("prompt-shaped output was split: bytes={first}, line={line:?}"));
+        }
+        let second = read_debugger_record(&mut reader, &mut line, true)
+            .map_err(|error| format!("failed to read prompt record: {error}"))?;
+        if second == 0 || line != "DB<2>" {
+            return Err(format!(
+                "prompt-only record was not preserved: bytes={second}, line={line:?}"
+            ));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn prompt_prefix_authority_covers_coalesced_logpoint_payloads() -> Result<(), String> {
+        if !has_prompt_prefix("  DB<4> DAPLPV:x\t42") {
+            return Err("coalesced prompt prefix was not recognized".into());
+        }
+        if has_prompt_prefix("debuggee text DB<4> DAPLPV:x\t42") {
+            return Err("embedded prompt token was treated as a prefix".into());
+        }
+        if has_prompt_prefix("DB<incomplete") {
+            return Err("incomplete prompt prefix was accepted".into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn prompt_prefix_grammar_accepts_threaded_and_nested_perl5db_prompts() -> Result<(), String> {
+        // PERL5DB_THREADED renders `[tid] DB<N>` (launch.json env overrides
+        // can enable it), and nested debugger levels render `DB<<N>>` — the
+        // shared grammar must admit both or the reader stalls on the
+        // suspension prompt (#15220 review).
+        if !has_prompt_prefix("[3] DB<4> DAPLPV:x\t42") {
+            return Err("threaded prompt prefix was not recognized".into());
+        }
+        if !has_prompt_prefix("[12]DB<1>") {
+            return Err("threaded prompt without separator was not recognized".into());
+        }
+        if !has_prompt_prefix("DB<<2>> DAPLPV:x") {
+            return Err("nested prompt prefix was not recognized".into());
+        }
+        if !is_strict_prompt_candidate(b"  [3] DB<4>") {
+            return Err("threaded prompt record candidate was not recognized".into());
+        }
+        if !is_strict_prompt_candidate(b"DB<<2>>") {
+            return Err("nested prompt record candidate was not recognized".into());
+        }
+        // An in-progress nested close must not split the record mid-prompt:
+        // at the first '>' the balanced close has not arrived yet.
+        if is_strict_prompt_candidate(b"DB<<2>") {
+            return Err("unbalanced nested prompt candidate was accepted".into());
+        }
+        if has_prompt_prefix("[tid] DB<4>") {
+            return Err("non-numeric thread id was accepted".into());
+        }
+        if has_prompt_prefix("[3] DB<d>") {
+            return Err("non-numeric command number was accepted".into());
+        }
+        if has_prompt_prefix("DB<<2> DAPLPV:x") {
+            return Err("unbalanced nested prompt prefix was accepted".into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn debugger_record_reader_does_not_frame_delayed_prompt_prefix() -> Result<(), String> {
+        use std::io::Read as IoRead;
+        use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
+        use std::time::Duration;
+
+        struct DelayedPromptPrefix {
+            release: Receiver<()>,
+            ready: SyncSender<()>,
+            first_read: bool,
+        }
+
+        impl IoRead for DelayedPromptPrefix {
+            fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+                if self.first_read {
+                    self.first_read = false;
+                    buffer
+                        .get_mut(..6)
+                        .ok_or_else(|| std::io::Error::other("reader buffer too small"))?
+                        .copy_from_slice(b"DB<12>");
+                    self.ready
+                        .send(())
+                        .map_err(|_| std::io::Error::other("reader readiness receiver closed"))?;
+                    return Ok(6);
+                }
+                self.release
+                    .recv()
+                    .map_err(|_| std::io::Error::other("delayed prompt release sender closed"))?;
+                buffer
+                    .get_mut(..17)
+                    .ok_or_else(|| std::io::Error::other("reader buffer too small"))?
+                    .copy_from_slice(b" ordinary output\n");
+                Ok(17)
+            }
+        }
+
+        let (release_sender, release_receiver) = sync_channel(0);
+        let (ready_sender, ready_receiver) = sync_channel(0);
+        let (result_sender, result_receiver) = sync_channel(1);
+        let reader = std::thread::spawn(move || {
+            let input = DelayedPromptPrefix {
+                release: release_receiver,
+                ready: ready_sender,
+                first_read: true,
+            };
+            let mut reader = BufReader::new(input);
+            let mut line = String::new();
+            let result = read_debugger_record(&mut reader, &mut line, false).map(|_| line);
+            let _ = result_sender.send(result);
+        });
+
+        ready_receiver
+            .recv_timeout(Duration::from_secs(2))
+            .map_err(|error| format!("delayed prefix fixture did not start: {error}"))?;
+        let premature = !matches!(result_receiver.try_recv(), Err(TryRecvError::Empty));
+        release_sender.send(()).map_err(|_| "delayed prompt release failed".to_string())?;
+        let result = result_receiver
+            .recv_timeout(Duration::from_secs(2))
+            .map_err(|error| format!("delayed prompt fixture did not complete: {error}"))?
+            .map_err(|error| format!("delayed prompt fixture read failed: {error}"))?;
+        reader.join().map_err(|_| "delayed prompt reader panicked".to_string())?;
+        if premature {
+            return Err("delayed DB prompt prefix was framed before its suffix".into());
+        }
+        if result != "DB<12> ordinary output\n" {
+            return Err(format!("delayed prompt prefix was misframed as {result:?}"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn debugger_record_reader_rejects_bare_prompt_and_invalid_utf8() -> Result<(), String> {
+        use std::io::Cursor;
+
+        let mut bare = BufReader::new(Cursor::new(b"DB\n"));
+        let mut line = String::new();
+        read_debugger_record(&mut bare, &mut line, false)
+            .map_err(|error| format!("failed to read bare DB output: {error}"))?;
+        if line != "DB\n" {
+            return Err(format!("bare DB output was misclassified: {line:?}"));
+        }
+
+        let mut invalid = BufReader::new(Cursor::new(vec![0xff, b'\n']));
+        match read_debugger_record(&mut invalid, &mut line, false) {
+            Err(error) if error.kind() == std::io::ErrorKind::InvalidData => {
+                let source = match error
+                    .get_ref()
+                    .and_then(|value| value.downcast_ref::<std::string::FromUtf8Error>())
+                {
+                    Some(source) => source,
+                    None => return Err("invalid UTF-8 cause was not preserved".into()),
+                };
+                if source.as_bytes() != [0xff, b'\n']
+                    || source.utf8_error().valid_up_to() != 0
+                    || source.utf8_error().error_len() != Some(1)
+                {
+                    return Err(format!("invalid UTF-8 cause was changed: {source}"));
+                }
+                Ok(())
+            }
+            Ok(_) => Err("invalid UTF-8 was accepted".into()),
+            Err(error) => Err(format!("invalid UTF-8 returned wrong error: {error}")),
+        }
+    }
+
+    #[test]
+    fn debugger_record_reader_preserves_underlying_read_error() -> Result<(), String> {
+        use std::io::Read;
+
+        #[derive(Debug)]
+        struct ReadSentinel;
+        impl std::fmt::Display for ReadSentinel {
+            fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("fixture read failed")
+            }
+        }
+        impl std::error::Error for ReadSentinel {}
+
+        struct FailingReader;
+        impl Read for FailingReader {
+            fn read(&mut self, _buffer: &mut [u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::other(ReadSentinel))
+            }
+        }
+
+        let mut reader = BufReader::new(FailingReader);
+        let mut line = String::new();
+        let error = match read_debugger_record(&mut reader, &mut line, false) {
+            Ok(_) => return Err("underlying read error was swallowed".into()),
+            Err(error) => error,
+        };
+        if error.kind() != std::io::ErrorKind::Other
+            || error.to_string() != "fixture read failed"
+            || error.raw_os_error().is_some()
+            || error.get_ref().and_then(|value| value.downcast_ref::<ReadSentinel>()).is_none()
+        {
+            return Err(format!("underlying read error was changed: {error}"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn debugger_record_reader_retries_interrupted_read() -> Result<(), String> {
+        use std::io::Read;
+
+        struct InterruptedThenSuccess {
+            interrupted: bool,
+        }
+        impl Read for InterruptedThenSuccess {
+            fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+                if self.interrupted {
+                    self.interrupted = false;
+                    return Err(std::io::Error::from(std::io::ErrorKind::Interrupted));
+                }
+                let bytes = b"DB<1>\n";
+                let destination = buffer
+                    .get_mut(..bytes.len())
+                    .ok_or_else(|| std::io::Error::other("reader buffer too small"))?;
+                destination.copy_from_slice(bytes);
+                Ok(bytes.len())
+            }
+        }
+
+        let mut reader = BufReader::new(InterruptedThenSuccess { interrupted: true });
+        let mut line = String::new();
+        read_debugger_record(&mut reader, &mut line, false)
+            .map_err(|error| format!("interrupted read was not retried: {error}"))?;
+        if line != "DB<1>\n" {
+            return Err(format!("retry returned wrong record: {line:?}"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn debugger_record_reader_stops_before_padding_and_next_marker() -> Result<(), String> {
+        use std::io::Cursor;
+
+        let mut reader = BufReader::new(Cursor::new(b"DB<3> \nDB<4>"));
+        let mut line = String::new();
+        read_debugger_record(&mut reader, &mut line, true)
+            .map_err(|error| format!("failed to read padded prompt: {error}"))?;
+        if line != "DB<3> \n" {
+            return Err(format!("padded prompt was not framed: {line:?}"));
+        }
+        read_debugger_record(&mut reader, &mut line, true)
+            .map_err(|error| format!("failed to read next prompt: {error}"))?;
+        if line != "DB<4>" {
+            return Err(format!("next prompt was not preserved: {line:?}"));
+        }
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn debugger_record_reader_returns_live_unterminated_prompt() -> Result<(), String> {
+        use std::process::{Command, Stdio};
+        use std::sync::mpsc::sync_channel;
+        use std::time::Duration;
+
+        let mut child = Command::new("sh")
+            .args(["-c", "printf 'DB<9>'; read release"])
+            .stdout(Stdio::piped())
+            .stdin(Stdio::piped())
+            .spawn()
+            .map_err(|error| format!("failed to spawn prompt fixture: {error}"))?;
+        let stdout = child.stdout.take().ok_or("prompt fixture has no stdout")?;
+        let (sender, receiver) = sync_channel(1);
+        let reader = std::thread::spawn(move || {
+            let mut reader = BufReader::new(stdout);
+            let mut line = String::new();
+            let result = read_debugger_record(&mut reader, &mut line, true).map(|_| line);
+            let _ = sender.send(result);
+        });
+        let outcome = receiver
+            .recv_timeout(Duration::from_secs(2))
+            .map_err(|error| format!("unterminated prompt did not frame: {error}"))
+            .and_then(|result| {
+                result.map_err(|error| format!("unterminated prompt read failed: {error}"))
+            });
+        let _ = child.kill();
+        let _ = child.wait();
+        let joined = reader.join().map_err(|_| "prompt reader thread panicked".to_string());
+        let result = outcome?;
+        joined?;
+        if result != "DB<9>" {
+            return Err(format!("unterminated prompt framed as {result:?}"));
+        }
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn debugger_record_reader_returns_live_ansi_prompt() -> Result<(), String> {
+        use std::process::{Command, Stdio};
+        use std::sync::mpsc::sync_channel;
+        use std::time::Duration;
+
+        let mut child = Command::new("sh")
+            .args(["-c", "printf '\\033[0mDB<10>\\033[0m'; read release"])
+            .stdout(Stdio::piped())
+            .stdin(Stdio::piped())
+            .spawn()
+            .map_err(|error| format!("failed to spawn ANSI prompt fixture: {error}"))?;
+        let stdout = child.stdout.take().ok_or("ANSI prompt fixture has no stdout")?;
+        let (sender, receiver) = sync_channel(1);
+        let reader = std::thread::spawn(move || {
+            let mut reader = BufReader::new(stdout);
+            let mut line = String::new();
+            let result = read_debugger_record(&mut reader, &mut line, true).map(|_| line);
+            let _ = sender.send(result);
+        });
+        let outcome = receiver
+            .recv_timeout(Duration::from_secs(2))
+            .map_err(|error| format!("ANSI prompt did not frame: {error}"))
+            .and_then(|result| result.map_err(|error| format!("ANSI prompt read failed: {error}")));
+        let _ = child.kill();
+        let _ = child.wait();
+        let joined = reader.join().map_err(|_| "ANSI prompt reader thread panicked".to_string());
+        let result = outcome?;
+        joined?;
+        if result != "\u{1b}[0mDB<10>\u{1b}[0m" {
+            return Err(format!("ANSI prompt bytes were not preserved: {result:?}"));
+        }
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn debugger_record_reader_does_not_wait_for_split_ansi_suffix() -> Result<(), String> {
+        use std::process::{Command, Stdio};
+        use std::sync::mpsc::sync_channel;
+        use std::time::Duration;
+
+        let mut child = Command::new("sh")
+            .args(["-c", "printf 'DB<11>\\033['; read release"])
+            .stdout(Stdio::piped())
+            .stdin(Stdio::piped())
+            .spawn()
+            .map_err(|error| format!("failed to spawn split ANSI fixture: {error}"))?;
+        let stdout = child.stdout.take().ok_or("split ANSI fixture has no stdout")?;
+        let (sender, receiver) = sync_channel(1);
+        let reader = std::thread::spawn(move || {
+            let mut reader = BufReader::new(stdout);
+            let mut line = String::new();
+            let result = read_debugger_record(&mut reader, &mut line, true).map(|_| line);
+            let _ = sender.send(result);
+        });
+        let outcome = receiver
+            .recv_timeout(Duration::from_secs(2))
+            .map_err(|error| format!("split ANSI prompt waited for its suffix: {error}"))
+            .and_then(|result| {
+                result.map_err(|error| format!("split ANSI prompt read failed: {error}"))
+            });
+        let _ = child.kill();
+        let _ = child.wait();
+        let joined = reader.join().map_err(|_| "split ANSI reader panicked".to_string());
+        let result = outcome?;
+        joined?;
+        if result != "DB<11>" {
+            return Err(format!("split ANSI prompt was not framed promptly: {result:?}"));
+        }
+        Ok(())
+    }
+
+    /// A diagnostic location can precede perl5db's first native context. It
+    /// must not consume stopOnEntry or become the initial frame authority.
+    #[cfg(unix)]
+    #[test]
+    fn output_reader_waits_for_native_context_after_warning() -> Result<(), String> {
+        use super::{DapMessage, DebugSession, ResumeMode, VariableCache, lock_or_recover};
+        use std::io::Write;
+        use std::path::PathBuf;
+        use std::process::{Command, Stdio};
+        use std::sync::atomic::Ordering;
+        use std::sync::mpsc::{RecvTimeoutError, sync_channel};
+        use std::time::Duration;
+
+        let (sender, receiver) = sync_channel(32);
+        let mut adapter = DebugAdapter::new();
+        adapter.set_event_sender(sender);
+        adapter.initialized.store(true, Ordering::Release);
+        *lock_or_recover(&adapter.exception_break_on_warn, "test.break_on_warn") = true;
+
+        let child = Command::new("sh")
+            .args([
+                "-c",
+                "printf 'compile warning at /tmp/dap-entry-frame-fixture.pl line 3.\\nWARNING_BEFORE_CONTEXT\\n' >&2; read release; printf 'main::(/tmp/dap-entry-frame-fixture.pl:4):\\nDB<1>\\nENTRY_WARNING_DONE\\n' >&2; sleep 1",
+            ])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|error| format!("failed to spawn warning fixture: {error}"))?;
+
+        *lock_or_recover(&adapter.session, "test.session") = Some(DebugSession {
+            process: child,
+            state: DebugState::Running,
+            stack_frames: Vec::new(),
+            stack_frame_arguments: HashMap::new(),
+            variable_cache: VariableCache::default(),
+            thread_id: 1,
+            debuggee_cwd: PathBuf::from("/tmp"),
+            last_resume_mode: ResumeMode::Unknown,
+            entry_stop_pending: true,
+            initial_stop_pending: false,
+            stopped_generation: 0,
+            module_generation: RuntimeModuleGenerationClock::new(),
+        });
+        adapter.start_output_reader(PathBuf::from("/tmp"));
+
+        let mut stopped_line = None;
+        let mut released = false;
+        let mut saw_completion_marker = false;
+        let mut saw_terminated = false;
+        while !saw_completion_marker || !saw_terminated {
+            match receiver.recv_timeout(Duration::from_secs(3)) {
+                Ok((DapMessage::Event { event, body, .. }, _)) if event == "stopped" => {
+                    if !released {
+                        return Err("warning consumed entry stop before native context".into());
+                    }
+                    if stopped_line.is_some() {
+                        return Err("warning/context fixture emitted duplicate stops".into());
+                    }
+                    let reason = body
+                        .as_ref()
+                        .and_then(|value| value.get("reason"))
+                        .and_then(|value| value.as_str())
+                        .ok_or("warning/context stop did not contain a reason")?;
+                    if reason != "entry" {
+                        return Err(format!("warning/context stopped for {reason}, not entry"));
+                    }
+                    let session = lock_or_recover(&adapter.session, "test.session");
+                    let frame = session
+                        .as_ref()
+                        .and_then(|value| value.stack_frames.first())
+                        .ok_or("entry stop did not install a source frame")?;
+                    stopped_line = Some(frame.line);
+                }
+                Ok((DapMessage::Event { event, body, .. }, _)) if event == "output" => {
+                    let output = body
+                        .as_ref()
+                        .and_then(|value| value.get("output"))
+                        .and_then(|value| value.as_str())
+                        .unwrap_or_default();
+                    if output.contains("WARNING_BEFORE_CONTEXT") && !released {
+                        if stopped_line.is_some() {
+                            return Err("warning consumed entry stop before native context".into());
+                        }
+                        let mut session = lock_or_recover(&adapter.session, "test.session");
+                        let child_stdin = session
+                            .as_mut()
+                            .and_then(|value| value.process.stdin.as_mut())
+                            .ok_or("warning fixture stdin unavailable")?;
+                        child_stdin
+                            .write_all(b"release\n")
+                            .map_err(|error| format!("release warning fixture: {error}"))?;
+                        released = true;
+                    }
+                    if output.contains("ENTRY_WARNING_DONE") {
+                        saw_completion_marker = true;
+                    }
+                }
+                Ok((DapMessage::Event { event, .. }, _)) if event == "terminated" => {
+                    saw_terminated = true;
+                }
+                Ok(_) => {}
+                Err(RecvTimeoutError::Timeout) => {
+                    return Err("warning fixture did not reach its completion marker".into());
+                }
+                Err(RecvTimeoutError::Disconnected) => {
+                    return Err("warning fixture event channel disconnected".into());
+                }
+            }
+        }
+
+        if stopped_line != Some(4) {
+            return Err(format!("warning location consumed entry frame: {stopped_line:?}"));
+        }
+        Ok(())
+    }
+
+    /// A zero line or a prompt without any source context must not fabricate a
+    /// bogus source location. #15637's landed prompt-only bootstrap fallback
+    /// still consumes the pending entry reason exactly once so the client is
+    /// never left waiting; the prompt stop then carries the `<unknown>:1`
+    /// fallback frame instead of the invalid context, and the session is
+    /// `Stopped` and `stackTrace`-answerable.
+    #[cfg(unix)]
+    #[test]
+    fn output_reader_prompt_only_bootstrap_publishes_one_fallback_entry_stop() -> Result<(), String>
+    {
+        use super::{DapMessage, DebugSession, ResumeMode, VariableCache, lock_or_recover};
+        use std::io::Write;
+        use std::path::PathBuf;
+        use std::process::{Command, Stdio};
+        use std::sync::atomic::Ordering;
+        use std::sync::mpsc::{RecvTimeoutError, sync_channel};
+        use std::time::Duration;
+
+        let cases = [
+            (
+                "zero-line source context",
+                "main::(/tmp/dap-entry-frame-zero.pl:0):\nDB<1>\nENTRY_ZERO_DONE\n",
+            ),
+            (
+                "zero-line source context followed by warning",
+                "main::(/tmp/dap-entry-frame-zero.pl:0):\ncompile warning at /tmp/warn.pl line 9.\nDB<1>\nENTRY_ZERO_WARNING_DONE\n",
+            ),
+            ("missing source context", "DB<1>\nENTRY_UNKNOWN_DONE\n"),
+        ];
+
+        for (label, output) in cases {
+            let (sender, receiver) = sync_channel(32);
+            let mut adapter = DebugAdapter::new();
+            adapter.set_event_sender(sender);
+            adapter.initialized.store(true, Ordering::Release);
+
+            let script = format!("printf '%s' '{}' >&2; IFS= read -r _", output);
+            let child = Command::new("sh")
+                .args(["-c", &script])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .map_err(|error| format!("{label}: failed to spawn reader fixture: {error}"))?;
+
+            *lock_or_recover(&adapter.session, "test.session") = Some(DebugSession {
+                process: child,
+                state: DebugState::Running,
+                stack_frames: Vec::new(),
+                stack_frame_arguments: HashMap::new(),
+                variable_cache: VariableCache::default(),
+                thread_id: 1,
+                debuggee_cwd: PathBuf::from("/tmp"),
+                last_resume_mode: ResumeMode::Unknown,
+                entry_stop_pending: true,
+                initial_stop_pending: false,
+                stopped_generation: 0,
+                module_generation: RuntimeModuleGenerationClock::new(),
+            });
+            adapter.start_output_reader(PathBuf::from("/tmp"));
+
+            let case_result = (|| -> Result<(), String> {
+                let marker = output
+                    .lines()
+                    .last()
+                    .ok_or_else(|| format!("{label}: fixture marker is missing"))?;
+                let mut saw_marker = false;
+                let mut stopped_events = Vec::new();
+                while !saw_marker {
+                    match receiver.recv_timeout(Duration::from_secs(3)) {
+                        Ok((DapMessage::Event { event, body, .. }, _)) if event == "stopped" => {
+                            let reason = body
+                                .as_ref()
+                                .and_then(|value| value.get("reason"))
+                                .and_then(Value::as_str)
+                                .unwrap_or("unknown")
+                                .to_string();
+                            stopped_events.push(reason);
+                        }
+                        Ok((DapMessage::Event { event, body, .. }, _)) if event == "output" => {
+                            if body
+                                .as_ref()
+                                .and_then(|value| value.get("output"))
+                                .and_then(|value| value.as_str())
+                                .is_some_and(|text| text.contains(marker))
+                            {
+                                saw_marker = true;
+                            }
+                        }
+                        Ok(_) => {}
+                        Err(RecvTimeoutError::Timeout) => {
+                            return Err(format!(
+                                "{label}: reader did not reach its completion marker"
+                            ));
+                        }
+                        Err(RecvTimeoutError::Disconnected) => {
+                            return Err(format!("{label}: reader event channel disconnected"));
+                        }
+                    }
+                }
+
+                // #15637's prompt-only fallback: the pending entry reason is
+                // consumed exactly once at the first prompt, even when no valid
+                // source context was observed.
+                if stopped_events.len() != 1 || stopped_events[0] != "entry" {
+                    return Err(format!(
+                        "{label}: prompt-only bootstrap must publish exactly one entry stop, got {stopped_events:?}"
+                    ));
+                }
+
+                let guard = adapter
+                    .session
+                    .lock()
+                    .map_err(|_| format!("{label}: session lock poisoned"))?;
+                let session = guard
+                    .as_ref()
+                    .ok_or_else(|| format!("{label}: session cleared before fixture inspection"))?;
+                if !matches!(session.state, DebugState::Stopped) {
+                    return Err(format!(
+                        "{label}: published entry stop left session in state {:?}",
+                        session.state
+                    ));
+                }
+                let frame = session.stack_frames.first().ok_or_else(|| {
+                    format!("{label}: entry stop published without any stack frame")
+                })?;
+                if frame.source.path != "<unknown>" || frame.line != 1 {
+                    return Err(format!(
+                        "{label}: invalid source context fabricated a bogus frame {:?}:{}",
+                        frame.source.path, frame.line
+                    ));
+                }
+                Ok(())
+            })();
+
+            let release_result = (|| -> Result<(), String> {
+                let mut guard = adapter
+                    .session
+                    .lock()
+                    .map_err(|_| format!("{label}: session lock poisoned before release"))?;
+                let session = guard
+                    .as_mut()
+                    .ok_or_else(|| format!("{label}: session cleared before fixture release"))?;
+                let stdin = session
+                    .process
+                    .stdin
+                    .as_mut()
+                    .ok_or_else(|| format!("{label}: fixture stdin unavailable"))?;
+                stdin
+                    .write_all(b"\n")
+                    .map_err(|error| format!("{label}: fixture release failed: {error}"))?;
+                stdin
+                    .flush()
+                    .map_err(|error| format!("{label}: fixture release flush failed: {error}"))?;
+                Ok(())
+            })();
+
+            let mut saw_terminated = false;
+            let mut termination_error = None;
+            while !saw_terminated {
+                match receiver.recv_timeout(Duration::from_secs(3)) {
+                    Ok((DapMessage::Event { event, .. }, _)) if event == "stopped" => {
+                        termination_error = Some(format!(
+                            "{label}: unexpected stopped event after invalid source context"
+                        ));
+                        break;
+                    }
+                    Ok((DapMessage::Event { event, .. }, _)) if event == "terminated" => {
+                        saw_terminated = true;
+                    }
+                    Ok(_) => {}
+                    Err(RecvTimeoutError::Timeout) => {
+                        termination_error = Some(format!("{label}: reader did not terminate"));
+                        break;
+                    }
+                    Err(RecvTimeoutError::Disconnected) => {
+                        termination_error =
+                            Some(format!("{label}: reader disconnected before termination"));
+                        break;
+                    }
+                }
+            }
+            if let Some(error) =
+                case_result.err().or_else(|| release_result.err()).or(termination_error)
+            {
+                return Err(error);
+            }
+        }
         Ok(())
     }
 
@@ -3779,7 +5494,7 @@ mod tests {
 
         let message = receiver.try_recv().map_err(|error| error.to_string())?;
         match message {
-            super::DapMessage::Event { event, body, .. } => {
+            (super::DapMessage::Event { event, body, .. }, _) => {
                 let reason = body
                     .as_ref()
                     .and_then(|value| value.get("reason"))
@@ -3820,7 +5535,7 @@ mod tests {
                 return Err("current async terminal source did not emit".to_string());
             }
             match receiver.try_recv().map_err(|error| error.to_string())? {
-                DapMessage::Event { event, .. } if event == "terminated" => {}
+                (DapMessage::Event { event, .. }, _) if event == "terminated" => {}
                 other => return Err(format!("expected natural terminal event, got {other:?}")),
             }
             if fail_cleanup {
@@ -3864,7 +5579,7 @@ mod tests {
                     other => return Err(format!("disconnect failed: {other:?}")),
                 }
                 if let Some(message) = receiver.try_iter().find(|message| {
-                    matches!(message, DapMessage::Event { event, .. } if event == "terminated")
+                    matches!(message, (DapMessage::Event { event, .. }, _) if event == "terminated")
                 }) {
                     return Err(format!("disconnect duplicated async completion: {message:?}"));
                 }
@@ -3879,7 +5594,10 @@ mod tests {
     ) -> Result<(), String> {
         let (outbound, received) = sync_channel(1);
         outbound
-            .send(DapMessage::Event { seq: 0, event: "queue_filler".to_string(), body: None })
+            .send((
+                DapMessage::Event { seq: 0, event: "queue_filler".to_string(), body: None },
+                super::super::sync_utils::current_drain_epoch(),
+            ))
             .map_err(|error| error.to_string())?;
         let mut adapter = DebugAdapter::new();
         adapter.set_event_sender(outbound.clone());
@@ -3937,7 +5655,7 @@ mod tests {
         let mut response = None;
         while Instant::now() < deadline {
             if let Ok(message) = received.recv_timeout(Duration::from_millis(10))
-                && matches!(&message, DapMessage::Event { event, .. } if event == "terminated")
+                && matches!(&message, (DapMessage::Event { event, .. }, _) if event == "terminated")
             {
                 terminal_events.push(message);
             }
@@ -3947,7 +5665,7 @@ mod tests {
             }
         }
         terminal_events.extend(received.try_iter().filter(
-            |message| matches!(message, DapMessage::Event { event, .. } if event == "terminated"),
+            |message| matches!(message, (DapMessage::Event { event, .. }, _) if event == "terminated"),
         ));
         rescue.store(true, std::sync::atomic::Ordering::SeqCst);
         drop(received);
@@ -3968,7 +5686,7 @@ mod tests {
             return Err(format!("expected exactly one terminal event, got {terminal_events:?}"));
         }
         if terminal_events.iter().any(|message| {
-            matches!(message, DapMessage::Event { body: Some(body), .. }
+            matches!(message, (DapMessage::Event { body: Some(body), .. }, _)
                 if body.get("reason").and_then(Value::as_str) == Some("old_async_completion"))
         }) {
             return Err("retired async event escaped into the client terminal response".to_string());
@@ -4014,7 +5732,7 @@ mod tests {
         }
         let response = adapter.handle_request(1, "disconnect", None);
         let terminal_count = receiver.try_iter().filter(|message| {
-            matches!(message, DapMessage::Event { event, .. } if event == "terminated")
+            matches!(message, (DapMessage::Event { event, .. }, _) if event == "terminated")
         }).count();
         if reported_delivery {
             return Err("stale enqueue was reported as delivered".to_string());
@@ -4124,7 +5842,7 @@ mod tests {
 
         // Exactly one event reached the channel: the current generation's.
         match receiver.try_recv() {
-            Ok(super::DapMessage::Event { event, body, .. }) => {
+            Ok((super::DapMessage::Event { event, body, .. }, _)) => {
                 if event != "terminated"
                     || body.as_ref().and_then(|v| v.get("reason")).and_then(|v| v.as_str())
                         != Some("current_generation")
@@ -4728,6 +6446,23 @@ mod tests {
 
         let mut adapter = DebugAdapter::new();
 
+        // Install an explicitly unbounded startup authority (#8656): this
+        // test targets the Perl-spawn error path, not boundary validation.
+        // Without an authority the launch is refused before any Perl check.
+        let authority = crate::security::launch_authority::LaunchAuthority::resolve(
+            &crate::security::launch_authority::LaunchAuthorityStartup {
+                trusted_roots: Vec::new(),
+                allow_unbounded: Some(
+                    crate::security::launch_authority::UnboundedAcknowledgement::new(
+                        crate::security::launch_authority::LaunchAuthoritySource::CommandLine,
+                        "test: reach the Perl spawn error path",
+                    ),
+                ),
+            },
+        )
+        .map_err(|e| format!("authority resolution failed: {e}"))?;
+        adapter.set_launch_authority(authority);
+
         // Initialize first (required by state machine validation)
         let _ = adapter.handle_initialize(1, 1, None);
 
@@ -4895,32 +6630,102 @@ mod tests {
         assert!(!adapter.send_continue_signal(0));
     }
 
-    /// `terminate_child_process` attempts graceful shutdown before force-kill on Windows.
+    /// `terminate_child_process` cleanly stops a spawned process on Windows (#15740).
     ///
-    /// Regression for #4639 defect #3: the old Windows path skipped the graceful
-    /// first step and killed outright. This test spawns a short-lived process and
-    /// verifies `terminate_child_process` returns `true` (the process exited),
-    /// exercising the graceful-shutdown code path.
+    /// The Windows path has no SIGTERM equivalent: `Child::kill` resolves to
+    /// `TerminateProcess` and is followed by a bounded reap. The previous
+    /// boolean assertion conflated the three possible failure modes (kill
+    /// error, bounded-timeout, polling error), so an intermittent failure
+    /// could not distinguish resource scheduling from oracle misprediction.
+    ///
+    /// This test uses a generous test-local wait bound, captures the PID,
+    /// the kill return, and the reap outcome + elapsed timing, and reaps
+    /// the spawned child on every test exit path (including the failure
+    /// path) so the test never abandons a live child. The boolean wrapper
+    /// `terminate_child_process` is preserved; the diagnostic information
+    /// flows through `terminate_child_process_with_outcome`.
     #[test]
     #[cfg(windows)]
     fn terminate_child_process_graceful_shutdown_on_windows() -> Result<(), String> {
         use std::process::Command;
+        use std::time::Instant;
 
-        // Spawn a process that sleeps briefly. The key assertion is that
-        // terminate_child_process returns true (the process was terminated).
-        let mut child = Command::new("cmd")
-            .args(["/c", "ping -n 30 127.0.0.1 > nul"])
-            .spawn()
-            .map_err(|e| format!("Failed to spawn test process: {e}"))?;
+        // Generous test-local reap bound. Production uses
+        // DEBUG_SESSION_TERMINATE_WAIT_MS (250ms), which can race with
+        // AV/DLP on a contended Windows runner and produce the
+        // intermittent false-cleanup verdict this issue tracks.
+        const TEST_REAP_BOUND: Duration = Duration::from_secs(5);
 
-        let result = DebugAdapter::terminate_child_process(&mut child);
-        if !result {
-            return Err("terminate_child_process should succeed on Windows".to_string());
+        struct TestChild {
+            inner: std::process::Child,
+            pid: u32,
+            spawn_at: Instant,
         }
-        // Verify the process is actually gone.
-        match child.try_wait() {
+
+        // Drop-time guard: ensure the spawned test child is reaped even if
+        // an assertion below bails out via `?`. We never use global
+        // process termination — only the owned handle — so an unrelated
+        // session on the host cannot be harmed.
+        impl Drop for TestChild {
+            fn drop(&mut self) {
+                // Best-effort kill and bounded wait. We do not assert
+                // success here: a process that already exited is the
+                // common case and is exactly what we want.
+                let _ = self.inner.kill();
+                let _ = DebugAdapter::wait_for_child_exit(&mut self.inner, Duration::from_secs(5));
+            }
+        }
+
+        let mut owned = TestChild {
+            inner: Command::new("cmd")
+                .args(["/c", "ping -n 30 127.0.0.1 > nul"])
+                .spawn()
+                .map_err(|e| format!("Failed to spawn test process: {e}"))?,
+            pid: 0, // overwritten below
+            spawn_at: Instant::now(),
+        };
+        owned.pid = owned.inner.id();
+        let pid = owned.pid;
+
+        // Issue a bounded reap that mirrors the production terminate path
+        // (kill + bounded wait), but with a test-local bound wide enough
+        // to absorb Windows scheduler jitter. We record timing so a future
+        // regression points at the actual elapsed budget instead of just
+        // "failed".
+        let kill_at = Instant::now();
+        let kill_result = owned.inner.kill();
+        let kill_elapsed = kill_at.elapsed();
+        let reap_outcome =
+            DebugAdapter::wait_for_child_exit_with_outcome(&mut owned.inner, TEST_REAP_BOUND);
+
+        let reap_verdict = match &reap_outcome {
+            super::ChildExitOutcome::Exited => Ok(()),
+            super::ChildExitOutcome::StillRunning { polls, elapsed } => Err(format!(
+                "pid={pid}: child still running after kill (kill_err={kill_result:?}, \
+                 kill_elapsed={kill_elapsed:?}, reap_elapsed={elapsed:?}, polls={polls}, \
+                 bound={TEST_REAP_BOUND:?}); this is the intermittent bounded-timeout \
+                 failure #15740 tracks — resource scheduling or AV/DLP, not a bug in the \
+                 reap loop itself"
+            )),
+            super::ChildExitOutcome::PollError { error, polls, elapsed } => Err(format!(
+                "pid={pid}: try_wait returned OS error during reap (error={error}, \
+                 kill_err={kill_result:?}, kill_elapsed={kill_elapsed:?}, \
+                 reap_elapsed={elapsed:?}, polls={polls}); handle may have been reaped \
+                 elsewhere or closed"
+            )),
+        };
+        reap_verdict?;
+
+        // Verify the process is actually gone via a fresh try_wait — a
+        // second observation guards against a stale outcome.
+        match owned.inner.try_wait() {
             Ok(Some(_)) => Ok(()),
-            Ok(None) => Err("process still running after terminate_child_process".to_string()),
+            Ok(None) => Err(format!(
+                "pid={pid}: reap_outcome reported Exited but try_wait still sees the \
+                 child running; reap_outcome={reap_outcome:?}, \
+                 total_elapsed={spawn_at_elapsed:?}",
+                spawn_at_elapsed = owned.spawn_at.elapsed(),
+            )),
             Err(e) => Err(format!("error polling process after terminate: {e}")),
         }
     }
@@ -4947,6 +6752,102 @@ mod tests {
             Ok(Some(_)) => Ok(()),
             Ok(None) => Err("process still running after terminate_child_process".to_string()),
             Err(e) => Err(format!("error polling process after terminate: {e}")),
+        }
+    }
+
+    /// `terminate_child_process_with_outcome` lets a later retry reap the
+    /// same owned child after an initial bounded-timeout (#15740).
+    ///
+    /// The boolean wrapper lost this information. The outcome variant
+    /// must surface `StillRunning` so production code can decide whether
+    /// to retry, escalate, or surface a diagnostic — and a retry on the
+    /// same `Child` handle must succeed without re-spawning.
+    #[test]
+    #[cfg(windows)]
+    fn terminate_child_outcome_retry_reaps_after_initial_timeout() -> Result<(), String> {
+        use std::process::Command;
+        use std::time::Instant;
+
+        const FIRST_BOUND: Duration = Duration::from_millis(1); // forces StillRunning
+        const RETRY_BOUND: Duration = Duration::from_secs(5);
+
+        struct TestChild(std::process::Child);
+        impl Drop for TestChild {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = DebugAdapter::wait_for_child_exit(&mut self.0, Duration::from_secs(5));
+            }
+        }
+
+        let mut owned = TestChild(
+            Command::new("cmd")
+                .args(["/c", "ping -n 30 127.0.0.1 > nul"])
+                .spawn()
+                .map_err(|e| format!("Failed to spawn test process: {e}"))?,
+        );
+
+        // First reap: deliberately too short to observe the exit. This
+        // returns StillRunning, proving the discriminator works.
+        let first = DebugAdapter::wait_for_child_exit_with_outcome(&mut owned.0, FIRST_BOUND);
+        assert!(
+            matches!(first, super::ChildExitOutcome::StillRunning { .. }),
+            "expected StillRunning on a 1ms bound; got {first:?}"
+        );
+
+        // Now kill and retry. The retry must observe the exit without
+        // abandoning the owned handle.
+        let kill_at = Instant::now();
+        if let Err(e) = owned.0.kill() {
+            return Err(format!("kill failed before retry: {e}"));
+        }
+        let retry = DebugAdapter::wait_for_child_exit_with_outcome(&mut owned.0, RETRY_BOUND);
+        let retry_elapsed = kill_at.elapsed();
+        match retry {
+            super::ChildExitOutcome::Exited => Ok(()),
+            super::ChildExitOutcome::StillRunning { polls, elapsed } => Err(format!(
+                "retry reap still timed out after kill (polls={polls}, elapsed={elapsed:?}, \
+                 total_since_kill={retry_elapsed:?}, retry_bound={RETRY_BOUND:?})"
+            )),
+            super::ChildExitOutcome::PollError { error, polls, elapsed } => Err(format!(
+                "retry reap observed OS error (error={error}, polls={polls}, elapsed={elapsed:?})"
+            )),
+        }
+    }
+
+    /// `wait_for_child_exit_with_outcome` distinguishes a bounded-timeout
+    /// from an OS poll error (#15740). On a healthy host with an
+    /// already-exited child the result must be `Exited`, not `PollError`
+    /// or `StillRunning`.
+    #[test]
+    fn wait_for_child_exit_outcome_reports_exited_for_finished_child() -> Result<(), String> {
+        use std::process::Command;
+        use std::time::Duration;
+
+        let mut child = if cfg!(windows) {
+            Command::new("cmd")
+                .args(["/c", "exit"])
+                .spawn()
+                .map_err(|e| format!("Failed to spawn: {e}"))?
+        } else {
+            Command::new("true").spawn().map_err(|e| format!("Failed to spawn: {e}"))?
+        };
+
+        // Generous bound: process-start latency under AV/load spikes
+        // exceeds any constant sleep (#12791).
+        if !DebugAdapter::wait_for_child_exit(&mut child, Duration::from_secs(10)) {
+            return Err(
+                "child did not exit within 10s; host process latency pathological".to_string()
+            );
+        }
+
+        let outcome =
+            DebugAdapter::wait_for_child_exit_with_outcome(&mut child, Duration::from_millis(1));
+        match outcome {
+            super::ChildExitOutcome::Exited => Ok(()),
+            other => Err(format!(
+                "expected Exited for a finished child; got {other:?} — the discriminator must \
+                 not promote an already-finished child to StillRunning or PollError"
+            )),
         }
     }
 
@@ -4979,6 +6880,153 @@ mod tests {
         if !result {
             return Err("terminate_child_process should return true for an already-exited process"
                 .to_string());
+        }
+        Ok(())
+    }
+
+    /// Discriminator for the zero-wait fast path in
+    /// `terminate_child_process_with_outcome`: an already-exited child must
+    /// surface the `Exited` variant itself, not merely a truthy boolean
+    /// (#15740, ripr gap 4f054749).
+    #[test]
+    fn terminate_child_process_with_outcome_boundary_discriminator() -> Result<(), String> {
+        use std::process::Command;
+
+        // Spawn a process that exits immediately.
+        #[cfg(windows)]
+        let mut child = Command::new("cmd")
+            .args(["/c", "exit"])
+            .spawn()
+            .map_err(|e| format!("Failed to spawn: {e}"))?;
+        #[cfg(not(windows))]
+        let mut child =
+            Command::new("true").spawn().map_err(|e| format!("Failed to spawn: {e}"))?;
+
+        // Deterministic precondition: the child has exited before terminate runs.
+        if !DebugAdapter::wait_for_child_exit(&mut child, std::time::Duration::from_secs(10)) {
+            return Err(
+                "child did not exit within 10s; host process latency pathological".to_string()
+            );
+        }
+        let outcome = DebugAdapter::terminate_child_process_with_outcome(&mut child);
+        if !matches!(outcome, super::ChildExitOutcome::Exited) {
+            return Err(format!("zero-wait fast path must discriminate Exited, got {outcome:?}"));
+        }
+        Ok(())
+    }
+
+    /// Direct zero-wait probe discriminator for the fast-path seam in
+    /// `terminate_child_process_with_outcome`: the probe itself must
+    /// report `Exited` for an already-exited child at
+    /// `Duration::from_millis(0)` — the exact input the fast path
+    /// discriminates on (#15740, ripr gaps 4f054749/41a2480a/41b34a0a).
+    #[test]
+    fn zero_wait_outcome_probe_reports_exited_for_exited_child() -> Result<(), String> {
+        use std::process::Command;
+
+        // Spawn a process that exits immediately.
+        #[cfg(windows)]
+        let mut child = Command::new("cmd")
+            .args(["/c", "exit"])
+            .spawn()
+            .map_err(|e| format!("Failed to spawn: {e}"))?;
+        #[cfg(not(windows))]
+        let mut child =
+            Command::new("true").spawn().map_err(|e| format!("Failed to spawn: {e}"))?;
+
+        // Deterministic precondition: the child has exited before probing.
+        if !DebugAdapter::wait_for_child_exit(&mut child, Duration::from_secs(10)) {
+            return Err(
+                "child did not exit within 10s; host process latency pathological".to_string()
+            );
+        }
+        let outcome =
+            DebugAdapter::wait_for_child_exit_with_outcome(&mut child, Duration::from_millis(0));
+        if !matches!(outcome, super::ChildExitOutcome::Exited) {
+            return Err(format!(
+                "zero-wait probe must report Exited for an exited child, got {outcome:?}"
+            ));
+        }
+        Ok(())
+    }
+
+    /// Call-presence observer for the fast-path seam in
+    /// `terminate_child_process_with_outcome`: a live child must be observed
+    /// by the zero-wait call as not-exited (fast path rejected) and then
+    /// reaped through the kill path, surfacing `Exited` (#15740,
+    /// ripr gaps 41a2480a/41b34a0a).
+    #[test]
+    fn terminate_child_process_with_outcome_call_presence_observer() -> Result<(), String> {
+        use std::process::{Command, Stdio};
+
+        // Spawn a long-running child that outlives the zero-wait probe.
+        #[cfg(windows)]
+        let mut child = Command::new("ping")
+            .args(["-n", "30", "127.0.0.1"])
+            .stdout(Stdio::null())
+            .spawn()
+            .map_err(|e| format!("Failed to spawn: {e}"))?;
+        #[cfg(not(windows))]
+        let mut child = Command::new("sleep")
+            .arg("30")
+            .stdout(Stdio::null())
+            .spawn()
+            .map_err(|e| format!("Failed to spawn: {e}"))?;
+
+        let outcome = DebugAdapter::terminate_child_process_with_outcome(&mut child);
+        if !matches!(outcome, super::ChildExitOutcome::Exited) {
+            return Err(format!(
+                "live child must be reaped through the kill path as Exited, got {outcome:?}"
+            ));
+        }
+        Ok(())
+    }
+
+    /// Exact error-variant test for the `PollError` arm of the outcome
+    /// ladder: when the OS has already reaped the child behind the
+    /// `Child` handle's back, `try_wait` reports an OS error instead of
+    /// an exit, and the zero-wait probe must surface `PollError` rather
+    /// than hanging or misreporting `Exited` (#15740,
+    /// ripr gap e389be4dd785a892).
+    ///
+    /// Unix-only: `Child::wait` caches the status so a second `try_wait`
+    /// cannot fail; only a raw `waitpid` reaps without Rust knowing
+    /// (subsequent `try_wait` deterministically returns `ECHILD`).
+    /// Windows keeps reporting the cached exit status instead.
+    /// The nonzero timeout matters: a zero timeout skips the poll loop
+    /// entirely, while one loop turn reaches the `Err` arm that reports
+    /// `PollError`.
+    #[cfg(unix)]
+    #[test]
+    fn wait_outcome_poll_error_after_reap_reports_poll_error() -> Result<(), String> {
+        use std::os::unix::process::ExitStatusExt;
+        use std::process::Command;
+
+        let mut child =
+            Command::new("true").spawn().map_err(|e| format!("Failed to spawn: {e}"))?;
+        // Raw blocking reap behind the `Child` handle's back: Rust never
+        // learns the exit status, so the probe's `try_wait` hits ECHILD.
+        let pid = child.id();
+        let mut status: libc::c_int = 0;
+        // SAFETY: pid names our own just-spawned child; blocking waitpid
+        // returns only once it is reaped.
+        let reaped = unsafe { libc::waitpid(pid as libc::pid_t, &mut status, 0) };
+        if reaped < 0 {
+            return Err(format!(
+                "raw waitpid failed to reap fixture child: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+        let exit_status = <std::process::ExitStatus as ExitStatusExt>::from_raw(status);
+        if !exit_status.success() {
+            return Err("fixture `true` must exit successfully".to_string());
+        }
+        let outcome = DebugAdapter::wait_for_child_exit_with_outcome(
+            &mut child,
+            std::time::Duration::from_millis(250),
+        );
+        if !matches!(outcome, super::ChildExitOutcome::PollError { .. }) {
+            return Err(format!("raw-reaped child must surface PollError, got {outcome:?}"));
         }
         Ok(())
     }
@@ -5045,8 +7093,8 @@ mod tests {
             thread_id: 1,
             debuggee_cwd: std::path::PathBuf::from("."),
             last_resume_mode: ResumeMode::Unknown,
-            initial_stop_pending: false,
             entry_stop_pending: false,
+            initial_stop_pending: false,
             stopped_generation: 0,
             module_generation: RuntimeModuleGenerationClock::new(),
         };
@@ -5060,7 +7108,7 @@ mod tests {
         let mut found_timeout = false;
         while std::time::Instant::now() < deadline {
             match receiver.recv_timeout(Duration::from_secs(1)) {
-                Ok(super::DapMessage::Event { event, body, .. }) => {
+                Ok((super::DapMessage::Event { event, body, .. }, _)) => {
                     if event == "terminated" {
                         let reason =
                             body.as_ref().and_then(|v| v.get("reason")).and_then(|v| v.as_str());
@@ -5402,7 +7450,13 @@ mod tests {
         mode: &str,
         entry_stop_pending: bool,
         initial_stop_pending: bool,
-    ) -> Result<(Arc<DebugAdapter>, std::sync::mpsc::Receiver<DapMessage>), String> {
+    ) -> Result<
+        (
+            Arc<DebugAdapter>,
+            std::sync::mpsc::Receiver<super::super::sync_utils::DapMessageWithEpoch>,
+        ),
+        String,
+    > {
         use super::{DebugSession, ResumeMode, VariableCache};
 
         let child = spawn_entry_stop_fixture_child(mode)?;
@@ -5434,7 +7488,7 @@ mod tests {
 
     /// Collect `stopped` reasons until `deadline`, failing if the wait errors.
     fn stopped_reasons_within(
-        receiver: &std::sync::mpsc::Receiver<DapMessage>,
+        receiver: &std::sync::mpsc::Receiver<super::super::sync_utils::DapMessageWithEpoch>,
         window: Duration,
     ) -> Result<Vec<String>, String> {
         let deadline = Instant::now() + window;
@@ -5445,7 +7499,7 @@ mod tests {
                 return Ok(reasons);
             }
             match receiver.recv_timeout(remaining) {
-                Ok(DapMessage::Event { event, body, .. }) => {
+                Ok((DapMessage::Event { event, body, .. }, _)) => {
                     if event == "stopped" {
                         reasons.push(
                             body.as_ref()
@@ -5467,7 +7521,7 @@ mod tests {
 
     /// Wait for the first `stopped` event and return its reason.
     fn first_stopped_reason(
-        receiver: &std::sync::mpsc::Receiver<DapMessage>,
+        receiver: &std::sync::mpsc::Receiver<super::super::sync_utils::DapMessageWithEpoch>,
     ) -> Result<String, String> {
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
@@ -5476,7 +7530,7 @@ mod tests {
                 return Err("no stopped event arrived within 5s".to_string());
             }
             match receiver.recv_timeout(remaining) {
-                Ok(DapMessage::Event { event, body, .. }) => {
+                Ok((DapMessage::Event { event, body, .. }, _)) => {
                     if event == "stopped" {
                         return Ok(body
                             .as_ref()
@@ -5629,7 +7683,7 @@ mod tests {
                 return Err("no terminal event arrived after debugger EOF".to_string());
             }
             match receiver.recv_timeout(remaining) {
-                Ok(DapMessage::Event { event, body, .. }) => {
+                Ok((DapMessage::Event { event, body, .. }, _)) => {
                     if event == "stopped" {
                         let reason = body
                             .as_ref()
@@ -5691,11 +7745,14 @@ mod tests {
         // (e.g. the old pre-kill `terminated` emission) would hang forever here.
         let (sender, _receiver) = sync_channel(1);
         sender
-            .send(super::DapMessage::Event {
-                seq: 0,
-                event: "output".to_string(),
-                body: Some(serde_json::json!({"category": "stdout", "output": "filler\n"})),
-            })
+            .send((
+                super::DapMessage::Event {
+                    seq: 0,
+                    event: "output".to_string(),
+                    body: Some(serde_json::json!({"category": "stdout", "output": "filler\n"})),
+                },
+                super::super::sync_utils::current_drain_epoch(),
+            ))
             .map_err(|_| "failed to prefill the outbound queue".to_string())?;
 
         let mut adapter = DebugAdapter::new();
@@ -5724,8 +7781,8 @@ mod tests {
             thread_id: 1,
             debuggee_cwd: std::path::PathBuf::from("."),
             last_resume_mode: ResumeMode::Unknown,
-            initial_stop_pending: false,
             entry_stop_pending: false,
+            initial_stop_pending: false,
             stopped_generation: 0,
             module_generation: RuntimeModuleGenerationClock::new(),
         };
@@ -5871,5 +7928,92 @@ mod tests {
             }
             other => Err(format!("expected Response from handle_launch; got {other:?}")),
         }
+    }
+
+    #[test]
+    fn parse_process_id_refuses_zero_with_exact_error_variant() -> Result<(), String> {
+        let error = DebugAdapter::parse_process_id(&json!({ "processId": 0 }))
+            .err()
+            .ok_or("pid zero was accepted by the attach subject classifier")?;
+        let expected = "Invalid processId: value must be greater than zero";
+        if error != expected {
+            return Err(format!("pid zero refusal was {error:?}, expected {expected:?}"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn parse_process_id_refuses_malformed_and_oversized_with_exact_variants() -> Result<(), String>
+    {
+        let expected = "Invalid processId: expected a positive integer in the range 1-4294967295";
+        for subject in [json!({ "processId": "4242" }), json!({ "processId": 4_294_967_296_u64 })] {
+            let error = DebugAdapter::parse_process_id(&subject)
+                .err()
+                .ok_or("invalid processId was accepted by the attach subject classifier")?;
+            if error != expected {
+                return Err(format!(
+                    "invalid processId refusal was {error:?}, expected {expected:?}"
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn handle_attach_pid_only_call_observes_unsupported_refusal_without_session_mutation()
+    -> Result<(), String> {
+        let adapter = DebugAdapter::new();
+        let response = adapter.handle_attach(7, 9, Some(json!({ "processId": 4242 })));
+        let (success, command, message) = match &response {
+            super::DapMessage::Response { success, command, message, .. } => {
+                (*success, command.clone(), message.clone())
+            }
+            other => return Err(format!("expected Response from handle_attach; got {other:?}")),
+        };
+        if success || command != "attach" {
+            return Err("pid-only attach response was not an attach refusal".to_string());
+        }
+        let expected = "Attaching by processId is not supported. Use TCP attach with host \
+                        and port instead.";
+        if message.as_deref() != Some(expected) {
+            return Err(format!("pid-only refusal message was {message:?}, expected {expected:?}"));
+        }
+        let seeded = adapter.session.lock().map_err(|_| "session lock poisoned")?.is_some();
+        if seeded {
+            return Err("pid-only refusal mutated modeled session state".to_string());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn handle_attach_ambiguous_call_observes_typed_ambiguity_before_tcp_connection()
+    -> Result<(), String> {
+        let adapter = DebugAdapter::new();
+        let response = adapter.handle_attach(
+            8,
+            10,
+            Some(json!({ "processId": 4242, "host": "127.0.0.1", "port": 13603 })),
+        );
+        let (success, command, message) = match &response {
+            super::DapMessage::Response { success, command, message, .. } => {
+                (*success, command.clone(), message.clone())
+            }
+            other => return Err(format!("expected Response from handle_attach; got {other:?}")),
+        };
+        if success || command != "attach" {
+            return Err("ambiguous attach response was not an attach refusal".to_string());
+        }
+        let expected = "Ambiguous attach: processId cannot be combined with explicit host or port";
+        if message.as_deref() != Some(expected) {
+            return Err(format!(
+                "ambiguous refusal message was {message:?}, expected {expected:?}"
+            ));
+        }
+        let tcp_seeded =
+            adapter.tcp_session.lock().map_err(|_| "tcp session lock poisoned")?.is_some();
+        if tcp_seeded {
+            return Err("ambiguous refusal created a TCP session".to_string());
+        }
+        Ok(())
     }
 }
