@@ -183,6 +183,17 @@ impl<'a> Parser<'a> {
 
     /// Parse assignment expression
     fn parse_assignment(&mut self) -> ParseResult<Node> {
+        self.parse_assignment_with_ternary_tail(true)
+    }
+
+    /// Parse an operand whose caller owns following comma/fat-arrow separators.
+    /// Only the unparenthesized ternary else tail inherits this boundary; the
+    /// colon-delimited then branch and nested groups establish their own context.
+    fn parse_assignment_before_separator(&mut self) -> ParseResult<Node> {
+        self.parse_assignment_with_ternary_tail(false)
+    }
+
+    fn parse_assignment_with_ternary_tail(&mut self, collect_else_list: bool) -> ParseResult<Node> {
         if let Some(kind) = self.peek_kind() {
             if matches!(
                 kind,
@@ -209,7 +220,7 @@ impl<'a> Parser<'a> {
             return self.parse_return_expr();
         }
 
-        let mut expr = self.parse_ternary()?;
+        let mut expr = self.parse_ternary_with_tail(collect_else_list)?;
 
         if let Some((op, op_start)) = self.consume_assignment_operator()? {
             // The RHS can be a 'not' expression, or missing (recovery)
@@ -218,7 +229,7 @@ impl<'a> Parser<'a> {
             } else if self.peek_kind() == Some(TokenKind::WordNot) {
                 self.parse_word_not_expr()?
             } else {
-                self.parse_assignment()?
+                self.parse_assignment_with_ternary_tail(collect_else_list)?
             };
             let start = expr.location.start;
             let end = rhs.location.end;
@@ -247,6 +258,10 @@ impl<'a> Parser<'a> {
     /// chained ternaries (`$a ? $b : $c ? $d : $e`) are right-associative
     /// without accidentally capturing a surrounding assignment.
     fn parse_ternary(&mut self) -> ParseResult<Node> {
+        self.parse_ternary_with_tail(true)
+    }
+
+    fn parse_ternary_with_tail(&mut self, collect_else_list: bool) -> ParseResult<Node> {
         let mut expr = self.parse_range()?;
 
         if self.peek_kind() == Some(TokenKind::Question) {
@@ -260,9 +275,13 @@ impl<'a> Parser<'a> {
             // trailing fat-arrow / comma continuation stopping before `:`.
             let then_expr = self.collect_fat_arrow_ternary_branch(then_expr)?;
             self.expect(TokenKind::Colon)?;
-            let else_expr = self.parse_ternary()?;
+            let else_expr = self.parse_ternary_with_tail(collect_else_list)?;
             // Likewise for the else-branch.
-            let else_expr = self.collect_fat_arrow_ternary_branch(else_expr)?;
+            let else_expr = if collect_else_list {
+                self.collect_fat_arrow_ternary_branch(else_expr)?
+            } else {
+                else_expr
+            };
 
             let start = expr.location.start;
             let end = else_expr.location.end;
@@ -338,8 +357,10 @@ impl<'a> Parser<'a> {
             // Auto-quote a bare identifier before =>
             if let NodeKind::Identifier { ref name } = elements[0].kind {
                 let loc = elements[0].location;
-                elements[0] =
-                    self.charge_node(NodeKind::String { value: name.clone(), interpolated: false }, loc)?;
+                elements[0] = self.charge_node(
+                    NodeKind::String { value: name.clone(), interpolated: false },
+                    loc,
+                )?;
             }
             self.advance_token()?; // consume =>
             if !matches!(
@@ -930,7 +951,10 @@ impl<'a> Parser<'a> {
         }
 
         let end = operands.last().map_or(start, |n| n.location.end);
-        self.charge_node(NodeKind::ChainedComparison { operands, ops }, SourceLocation { start, end })
+        self.charge_node(
+            NodeKind::ChainedComparison { operands, ops },
+            SourceLocation { start, end },
+        )
     }
 
     /// Parse shift expression
