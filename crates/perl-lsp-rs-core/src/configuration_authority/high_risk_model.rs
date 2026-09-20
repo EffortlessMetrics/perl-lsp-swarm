@@ -72,6 +72,56 @@ fn obligation(value: &Obligation, projection: &Projection) -> CheckResult {
         _ => Err("unproved or missing result/configuration-generation binding".into()),
     }
 }
+
+#[cfg(test)]
+mod obligation_tests {
+    use super::*;
+
+    #[test]
+    fn structurally_bound_obligation_requires_an_existing_witness_and_exact_owner() -> CheckResult {
+        let projection = Projection {
+            schema_version: "high_risk_configuration_bindings.v1".into(),
+            witnesses: BTreeMap::from([(
+                "observed-result".into(),
+                Witness {
+                    path: "fixture.rs".into(),
+                    function: "consume".into(),
+                    expression: "consume(config.engine)".into(),
+                },
+            )]),
+            rows: Vec::new(),
+            remaining_low_risk: Vec::new(),
+        };
+        let bound = Obligation {
+            owner: "#10801".into(),
+            status: "structurally_bound".into(),
+            witness: Some("observed-result".into()),
+        };
+        obligation(&bound, &projection)?;
+        for witness in [None, Some("missing-result".into())] {
+            let changed = Obligation { witness, ..bound.clone() };
+            if obligation(&changed, &projection).is_ok() {
+                return Err("structural obligation accepted an absent or unknown witness".into());
+            }
+        }
+        for owner in ["", "10801", "#", "#10801-extra", "#１０８０１"] {
+            let changed = Obligation { owner: owner.into(), ..bound.clone() };
+            if obligation(&changed, &projection).is_ok() {
+                return Err(format!("structural obligation accepted invalid owner: {owner}").into());
+            }
+        }
+        let unresolved = Obligation { status: "unresolved".into(), witness: None, ..bound.clone() };
+        obligation(&unresolved, &projection)?;
+        for status in ["unresolved", "unknown"] {
+            let changed = Obligation { status: status.into(), ..bound.clone() };
+            if obligation(&changed, &projection).is_ok() {
+                return Err(format!("witness accepted under incompatible status: {status}").into());
+            }
+        }
+        Ok(())
+    }
+}
+
 pub(crate) fn high_risk(id: &str) -> bool {
     id.starts_with("ai.")
         || id.starts_with("critic.")

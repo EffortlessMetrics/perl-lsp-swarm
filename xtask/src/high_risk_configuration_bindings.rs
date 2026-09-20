@@ -643,6 +643,187 @@ pub fn check(root: &Path, typescript: Option<&Path>) -> CheckResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn type_identity_and_unrelated_assignment_places_remain_distinct() -> CheckResult {
+        for (source, expected) in [
+            ("Config", Some("Config")),
+            ("module::Config", Some("module::Config")),
+            ("&Config", None),
+            ("(Config, Other)", None),
+        ] {
+            let ty = syn::parse_str::<syn::Type>(source)?;
+            if type_name(&ty).as_deref() != expected {
+                return Err(format!("incorrect type identity: {source}").into());
+            }
+        }
+        for source in ["other = value", "_ = value"] {
+            let expression = syn::parse_str::<syn::Expr>(source)?;
+            let mut usage = StorageUse { member: "engine", writes: false, reads: false };
+            usage.visit_expr(&expression);
+            if usage.writes || usage.reads {
+                return Err(format!("unrelated assignment claimed storage: {source}").into());
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn serde_binding_requires_deserialize_and_ignores_unrelated_items() -> CheckResult {
+        let field = Witness {
+            path: "fixture.rs".into(),
+            function: "@serde-field:Config.engine".into(),
+            expression: "String".into(),
+        };
+        let source = "fn unrelated() {} struct Other { engine: String } #[derive(serde::Deserialize)] struct Config { engine: String }";
+        check_witness(source, &field)?;
+        for changed in [
+            source.replace("#[derive(serde::Deserialize)]", ""),
+            source.replace("serde::Deserialize", "serde::Serialize"),
+            source.replace("struct Config", "struct Missing"),
+        ] {
+            if check_witness(&changed, &field).is_ok() {
+                return Err("serde binding accepted absent owner or Deserialize".into());
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn coupled_expression_requires_exactly_one_occurrence() -> CheckResult {
+        let witness = Witness {
+            path: "fixture.rs".into(),
+            function: "consume".into(),
+            expression: "run(config.engine)".into(),
+        };
+        check_witness("fn consume() { run(config.engine); }", &witness)?;
+        for source in [
+            "fn consume() { run(other); }",
+            "fn consume() { run(config.engine); run(config.engine); }",
+        ] {
+            if check_witness(source, &witness).is_ok() {
+                return Err("accepted zero or duplicate coupled expressions".into());
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn storage_join_requires_both_declared_writer_and_consumer() -> CheckResult {
+        let mut projection: Projection = serde_json::from_str(include_str!(
+            "../../fixtures/configuration_authority/high_risk_bindings.v1.json"
+        ))?;
+        let mut row = projection
+            .rows
+            .iter()
+            .find(|row| row.kind == "active")
+            .ok_or("missing active fixture row")?
+            .clone();
+        row.rust_field = "Config.engine".into();
+        row.writers = vec!["writer".into()];
+        row.consumers = vec!["consumer".into()];
+        for (id, expression) in
+            [("writer", "config.engine = value"), ("consumer", "run(config.engine)")]
+        {
+            projection.witnesses.insert(
+                id.into(),
+                Witness {
+                    path: "fixture.rs".into(),
+                    function: id.into(),
+                    expression: expression.into(),
+                },
+            );
+        }
+        check_storage_join(&row, &projection)?;
+        for (id, expression) in
+            [("writer", "config.other = value"), ("consumer", "run(config.other)")]
+        {
+            let mut changed = projection.clone();
+            changed.witnesses.get_mut(id).ok_or("missing joined fixture witness")?.expression =
+                expression.into();
+            if check_storage_join(&row, &changed).is_ok() {
+                return Err(format!("accepted missing storage {id}").into());
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn schema_coverage_requires_the_exact_present_source_projection() -> CheckResult {
+        let mut projection: Projection = serde_json::from_str(include_str!(
+            "../../fixtures/configuration_authority/high_risk_bindings.v1.json"
+        ))?;
+        let pointer = "/properties/perl/properties/formatting/properties/nested/properties/engine";
+        let row = projection.rows.first_mut().ok_or("missing fixture row")?;
+        row.projections.push(model::ProjectionField {
+            path: "schemas/perllsp-settings.schema.json".into(),
+            pointer: pointer.into(),
+            present: true,
+        });
+        let source = serde_json::json!({"properties":{"perl":{"properties":{
+            "formatting":{"properties":{"nested":{"properties":{"engine":{"type":"string"}}}}}}
+        }}});
+        schema_coverage(&source, &projection)?;
+        for change in ["path", "pointer", "presence", "missing"] {
+            let mut changed = projection.clone();
+            let fields = &mut changed.rows.first_mut().ok_or("missing fixture row")?.projections;
+            if change == "missing" {
+                fields.retain(|field| field.pointer != pointer);
+            } else {
+                let field = fields
+                    .iter_mut()
+                    .find(|field| field.pointer == pointer)
+                    .ok_or("missing nested projection")?;
+                match change {
+                    "path" => field.path = "another-schema.json".into(),
+                    "pointer" => field.pointer = format!("{pointer}/other"),
+                    "presence" => field.present = false,
+                    _ => return Err("unknown fixture change".into()),
+                }
+            }
+            if schema_coverage(&source, &changed).is_ok() {
+                return Err(format!("accepted mismatched schema projection: {change}").into());
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn low_risk_schema_fields_require_explicit_ownership_in_the_right_family() -> CheckResult {
+        let projection: Projection = serde_json::from_str(include_str!(
+            "../../fixtures/configuration_authority/high_risk_bindings.v1.json"
+        ))?;
+        for (family, key, expected) in [
+            ("workspace", "discoveryExtensions", "workspace.discovery_extra_extensions"),
+            ("workspace", "discoverySkippedDirs", "workspace.discovery_extra_skipped_dirs"),
+            ("formatting", "maximumLineLength", "formatting.maximum_line_length"),
+            ("formatting", "indentColumns", "formatting.indent_columns"),
+            ("formatting", "tabs", "formatting.tabs"),
+            ("formatting", "openingBraceOnNewLine", "formatting.opening_brace_on_new_line"),
+            ("formatting", "cuddledElse", "formatting.cuddled_else"),
+            ("formatting", "spaceAfterKeyword", "formatting.space_after_keyword"),
+            ("formatting", "addTrailingCommas", "formatting.add_trailing_commas"),
+            ("formatting", "verticalAlignment", "formatting.vertical_alignment"),
+            ("formatting", "blockCommentIndentation", "formatting.block_comment_indentation"),
+        ] {
+            if low_risk_schema_id(family, key) != Some(expected)
+                || low_risk_schema_id("limits", key).is_some()
+                || low_risk_schema_id(family, "unknownField").is_some()
+            {
+                return Err(format!("incorrect low-risk mapping: {family}.{key}").into());
+            }
+            let source = serde_json::json!({"properties":{"perl":{"properties":{
+                (family):{"properties":{(key):{"type":"string"}}}
+            }}}});
+            schema_coverage(&source, &projection)?;
+            let mut missing = projection.clone();
+            missing.remaining_low_risk.retain(|id| id != expected);
+            if schema_coverage(&source, &missing).is_ok() {
+                return Err(format!("accepted unowned low-risk field: {expected}").into());
+            }
+        }
+        Ok(())
+    }
+
     fn witness() -> Witness {
         Witness {
             path: "fixture.rs".into(),
@@ -781,6 +962,21 @@ mod tests {
         ] {
             if docs_coverage(heading, &projection).is_ok() {
                 return Err(format!("unowned or resurrected docs field accepted: {heading}").into());
+            }
+        }
+        for (kind, disposition) in
+            [("active", "remove_false_contract"), ("removed", "runtime_backed")]
+        {
+            let mut changed = projection.clone();
+            let runner = changed
+                .rows
+                .iter_mut()
+                .find(|row| row.id == "testRunner.command")
+                .ok_or("missing runner fixture row")?;
+            runner.kind = kind.into();
+            runner.disposition = disposition.into();
+            if docs_coverage("#### `perl.testRunner.command` (removed)", &changed).is_ok() {
+                return Err("runner retirement accepted wrong kind or disposition".into());
             }
         }
         let mut missing = projection.clone();
