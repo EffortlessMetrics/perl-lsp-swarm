@@ -189,6 +189,100 @@ fn is_excluded_test_path(path: &Path) -> bool {
 
     false
 }
+/// Whether this whole file is a test-only module because its parent says so.
+///
+/// [`first_cfg_test_line_number`] reads one file and finds an *inline* boundary.
+/// A module whose entire file is test code carries no inline attribute — the
+/// `#[cfg(test)]` sits on the parent's `mod` declaration, as at
+/// `crates/perl-lsp-rs/src/runtime/lifecycle/mod.rs:52`. Without this check the
+/// production scanners read "no boundary in this file" as "no test code in this
+/// file" and count every line as production (#16248).
+///
+/// Both module layouts resolve to the same parent: `dir/foo.rs` and
+/// `dir/foo/mod.rs` are each declared by `mod foo;` in `dir/mod.rs`, in the
+/// `dir.rs` beside it, or — for a module at the crate root — in `lib.rs` or
+/// `main.rs`.
+fn is_cfg_test_module_file(path: &Path) -> bool {
+    let (parent_dir, stem) = if path.file_name() == Some(OsStr::new("mod.rs")) {
+        let Some(module_dir) = path.parent() else { return false };
+        let Some(stem) = module_dir.file_name().and_then(|name| name.to_str()) else {
+            return false;
+        };
+        let Some(parent_dir) = module_dir.parent() else { return false };
+        (parent_dir, stem)
+    } else {
+        let Some(parent_dir) = path.parent() else { return false };
+        let Some(stem) = path.file_stem().and_then(|name| name.to_str()) else { return false };
+        (parent_dir, stem)
+    };
+
+    [
+        parent_dir.join("mod.rs"),
+        parent_dir.with_extension("rs"),
+        parent_dir.join("lib.rs"),
+        parent_dir.join("main.rs"),
+    ]
+    .iter()
+    .any(|candidate| declares_module_under_cfg_test(candidate, stem))
+}
+
+/// Whether `parent_file` declares `mod <stem>;` under a `#[cfg(test)]` guard.
+///
+/// Only plain `#[cfg(test)]` counts, matching [`first_cfg_test_line_number`]'s
+/// rule: `#[cfg(any(test, feature = "…"))]` compiles into production builds when
+/// the feature is on, so a module guarded that way is production code.
+///
+/// The guard need not be the line immediately above. Rust allows other
+/// attributes and blank lines between an item's attributes and the item, so the
+/// walk back accepts those and stops at the first line that is neither — which
+/// is the previous item, and means this declaration has no guard of its own.
+fn declares_module_under_cfg_test(parent_file: &Path, stem: &str) -> bool {
+    let Ok(lines) = read_lines(parent_file) else { return false };
+
+    for (index, line) in lines.iter().enumerate() {
+        if !is_module_declaration(line, stem) {
+            continue;
+        }
+        for previous in lines[..index].iter().rev() {
+            let trimmed = previous.trim_start();
+            if trimmed.starts_with("#[cfg(test)]") {
+                return true;
+            }
+            if trimmed.starts_with("#[") || trimmed.is_empty() {
+                continue;
+            }
+            break;
+        }
+    }
+
+    false
+}
+
+/// Whether `line` is exactly the declaration `mod <stem>;`, with any visibility.
+///
+/// Deliberately not a regex: the stem is interpolated, and a per-file compiled
+/// pattern buys nothing over these string splits.
+fn is_module_declaration(line: &str, stem: &str) -> bool {
+    let mut rest = line.trim_start();
+
+    if let Some(after_pub) = rest.strip_prefix("pub") {
+        // `pub` must be its own token, so that `public_mod` is not read as a
+        // visibility marker followed by junk.
+        if let Some(scope) = after_pub.strip_prefix('(') {
+            let Some(close) = scope.find(')') else { return false };
+            rest = scope[close + 1..].trim_start();
+        } else if after_pub.starts_with(char::is_whitespace) {
+            rest = after_pub.trim_start();
+        }
+    }
+
+    let Some(after_mod) = rest.strip_prefix("mod") else { return false };
+    if !after_mod.starts_with(char::is_whitespace) {
+        return false;
+    }
+    let Some(after_name) = after_mod.trim_start().strip_prefix(stem) else { return false };
+    after_name.trim_start().starts_with(';')
+}
 
 pub(crate) fn first_cfg_test_line_number(path: &Path) -> Result<usize> {
     let contents = read_lines(path)?;
@@ -2565,6 +2659,7 @@ pub(crate) fn walk_rust_source_files_for_ci_checks(repo_root: &Path) -> Result<V
     let files = walk_rs_files(&repo_root.join("crates"))
         .into_iter()
         .filter(|path| !is_excluded_test_path(path))
+        .filter(|path| !is_cfg_test_module_file(path))
         .collect();
     Ok(files)
 }
@@ -3978,6 +4073,175 @@ mod tests {
              Violations found in:\n  {}",
             violations.join("\n  ")
         );
+    }
+
+    // ── parent-declared #[cfg(test)] module tests (#16248) ─────────────────────
+
+    /// Builds a throwaway tree and returns its root. Named per test so parallel
+    /// runs cannot collide, and removed first so a previous run's leftovers
+    /// cannot decide the result.
+    fn cfg_test_fixture(name: &str) -> Result<PathBuf> {
+        let root = std::env::temp_dir().join(format!("pch_cfg_test_module_{name}"));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root)?;
+        Ok(root)
+    }
+
+    #[test]
+    fn a_module_its_parent_guards_is_not_production() -> Result<()> {
+        // The #16248 case, in miniature: the child file carries no attribute of
+        // its own, so reading it alone says "no test code here".
+        let root = cfg_test_fixture("guarded")?;
+        let module_dir = root.join("lifecycle");
+        std::fs::create_dir_all(&module_dir)?;
+        std::fs::write(
+            &module_dir.join("mod.rs"),
+            "mod capabilities;\n#[cfg(test)]\nmod census;\n",
+        )?;
+        let child = module_dir.join("census.rs");
+        std::fs::write(&child, "fn f() { let _ = x.expect(\"boom\"); }\n")?;
+
+        assert_eq!(first_cfg_test_line_number(&child)?, usize::MAX, "no inline boundary");
+        assert!(is_cfg_test_module_file(&child), "the parent's guard must be found");
+
+        let _ = std::fs::remove_dir_all(&root);
+        Ok(())
+    }
+
+    #[test]
+    fn an_unguarded_sibling_declaration_stays_production() -> Result<()> {
+        // The load-bearing negative. `mod census;` sits directly under another
+        // module's #[cfg(test)]; the walk back must stop at that declaration and
+        // not inherit its guard, or this fix becomes a way to hide production code.
+        let root = cfg_test_fixture("unguarded_sibling")?;
+        let module_dir = root.join("lifecycle");
+        std::fs::create_dir_all(&module_dir)?;
+        std::fs::write(
+            &module_dir.join("mod.rs"),
+            "#[cfg(test)]\nmod parity_tests;\nmod census;\n",
+        )?;
+        let child = module_dir.join("census.rs");
+        std::fs::write(&child, "fn f() {}\n")?;
+
+        assert!(!is_cfg_test_module_file(&child), "an unguarded module is production");
+
+        let _ = std::fs::remove_dir_all(&root);
+        Ok(())
+    }
+
+    #[test]
+    fn a_feature_gated_module_stays_production() -> Result<()> {
+        // #[cfg(any(test, feature = "…"))] compiles into production builds when
+        // the feature is on, so it is not a test boundary. Same rule
+        // first_cfg_test_line_number applies inside a file.
+        let root = cfg_test_fixture("feature_gated")?;
+        let module_dir = root.join("lifecycle");
+        std::fs::create_dir_all(&module_dir)?;
+        std::fs::write(
+            &module_dir.join("mod.rs"),
+            "#[cfg(any(test, feature = \"probe\"))]\nmod census;\n",
+        )?;
+        let child = module_dir.join("census.rs");
+        std::fs::write(&child, "fn f() {}\n")?;
+
+        assert!(!is_cfg_test_module_file(&child), "a feature-gated module is production");
+
+        let _ = std::fs::remove_dir_all(&root);
+        Ok(())
+    }
+
+    #[test]
+    fn a_guard_separated_by_another_attribute_is_still_found() -> Result<()> {
+        let root = cfg_test_fixture("attrs_between")?;
+        let module_dir = root.join("lifecycle");
+        std::fs::create_dir_all(&module_dir)?;
+        std::fs::write(
+            &module_dir.join("mod.rs"),
+            "#[cfg(test)]\n#[allow(clippy::too_many_lines)]\n\npub(crate) mod census;\n",
+        )?;
+        let child = module_dir.join("census.rs");
+        std::fs::write(&child, "fn f() {}\n")?;
+
+        assert!(is_cfg_test_module_file(&child), "attributes and blanks may sit between");
+
+        let _ = std::fs::remove_dir_all(&root);
+        Ok(())
+    }
+
+    #[test]
+    fn the_declaration_is_resolved_through_all_three_parent_layouts() -> Result<()> {
+        let root = cfg_test_fixture("layouts")?;
+
+        // dir.rs beside dir/, declaring dir/census.rs
+        let sibling_dir = root.join("runtime");
+        std::fs::create_dir_all(&sibling_dir)?;
+        std::fs::write(&root.join("runtime.rs"), "#[cfg(test)]\nmod census;\n")?;
+        let via_sibling = sibling_dir.join("census.rs");
+        std::fs::write(&via_sibling, "fn f() {}\n")?;
+        assert!(is_cfg_test_module_file(&via_sibling), "dir.rs beside dir/");
+
+        // dir/mod.rs declaring dir/census/mod.rs
+        let nested = root.join("engine").join("census");
+        std::fs::create_dir_all(&nested)?;
+        std::fs::write(&root.join("engine").join("mod.rs"), "#[cfg(test)]\nmod census;\n")?;
+        let via_nested = nested.join("mod.rs");
+        std::fs::write(&via_nested, "fn f() {}\n")?;
+        assert!(is_cfg_test_module_file(&via_nested), "a directory module's own mod.rs");
+
+        // src/lib.rs declaring src/census.rs
+        let crate_src = root.join("src");
+        std::fs::create_dir_all(&crate_src)?;
+        std::fs::write(&crate_src.join("lib.rs"), "#[cfg(test)]\nmod census;\n")?;
+        let via_lib = crate_src.join("census.rs");
+        std::fs::write(&via_lib, "fn f() {}\n")?;
+        assert!(is_cfg_test_module_file(&via_lib), "a module at the crate root");
+
+        let _ = std::fs::remove_dir_all(&root);
+        Ok(())
+    }
+
+    #[test]
+    fn a_longer_module_name_does_not_match_a_shorter_declaration() -> Result<()> {
+        // `mod census_tests;` must not answer for `census.rs`, and `mod census;`
+        // must not answer for `census_tests.rs`.
+        let root = cfg_test_fixture("prefix")?;
+        let module_dir = root.join("lifecycle");
+        std::fs::create_dir_all(&module_dir)?;
+        std::fs::write(
+            &module_dir.join("mod.rs"),
+            "#[cfg(test)]\nmod census_extra;\nmod census;\n",
+        )?;
+        let child = module_dir.join("census.rs");
+        std::fs::write(&child, "fn f() {}\n")?;
+
+        assert!(!is_cfg_test_module_file(&child), "a prefix match is not a declaration");
+
+        let _ = std::fs::remove_dir_all(&root);
+        Ok(())
+    }
+
+    #[test]
+    fn the_production_walk_skips_a_parent_guarded_module() -> Result<()> {
+        // The seam the four scanners actually consume.
+        let root = cfg_test_fixture("walk")?;
+        let module_dir = root.join("crates").join("demo").join("src").join("lifecycle");
+        std::fs::create_dir_all(&module_dir)?;
+        std::fs::write(&module_dir.join("mod.rs"), "#[cfg(test)]\nmod census;\nmod real;\n")?;
+        std::fs::write(&module_dir.join("census.rs"), "fn f() {}\n")?;
+        std::fs::write(&module_dir.join("real.rs"), "fn f() {}\n")?;
+
+        let walked = walk_rust_source_files_for_ci_checks(&root)?;
+        assert!(
+            !walked.iter().any(|path| path.ends_with("census.rs")),
+            "the guarded module must not be scanned as production"
+        );
+        assert!(
+            walked.iter().any(|path| path.ends_with("real.rs")),
+            "its unguarded sibling must still be scanned"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+        Ok(())
     }
 
     // ── first_cfg_test_line_number tests (#2894) ───────────────────────────────
