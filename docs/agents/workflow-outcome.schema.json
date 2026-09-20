@@ -5,6 +5,7 @@
   "description": "Schema for one outcome row in the workflow-outcomes ledger. Each row records the result of one workflow execution. The ledger is append-only: rows are added after each workflow run; existing rows are never edited.",
   "type": "object",
   "required": [
+    "schema_version",
     "date",
     "workflow_type",
     "repo",
@@ -22,6 +23,11 @@
     "cleanup_done"
   ],
   "properties": {
+    "schema_version": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Row envelope; the validator pins this to 1."
+    },
     "date": {
       "type": "string",
       "description": "ISO 8601 date the workflow ran (YYYY-MM-DD).",
@@ -110,6 +116,7 @@
   "additionalProperties": false,
   "examples": [
     {
+      "schema_version": 1,
       "date": "2026-06-05",
       "workflow_type": "release-blocker-triage",
       "repo": "perl-lsp-swarm",

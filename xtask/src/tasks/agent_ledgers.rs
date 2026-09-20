@@ -16,7 +16,10 @@
 //! Rows are decoded into typed `#[serde(deny_unknown_fields)]` structs, so unknown
 //! fields and wrong types are rejected structurally, then checked for the semantic
 //! rules their contract adds (enum vocabularies, non-empty strings, ISO dates, and
-//! the conditional `close_proof` requirement).
+//! the conditional `close_proof` requirement). Every row also carries a required
+//! `schema_version` envelope (`u32`, pinned to [`EXPECTED_SCHEMA_VERSION`]); a row
+//! without the envelope, or declaring a version this validator does not understand,
+//! fails closed with the record named.
 //!
 //! # Registered schemas
 //!
@@ -155,6 +158,13 @@ const VALID_UB_CLASSIFICATIONS: &[&str] =
 /// Valid values for the ub-review `value` field.
 const VALID_UB_VALUES: &[&str] = &["high", "medium", "low", "n/a"];
 
+/// The row-envelope version this validator understands.
+///
+/// Family discipline (#15990): `schema_version` is a required `u32` on every
+/// `agent_*` record, currently `1`. A ledger row must carry it; any other value is
+/// a record this validator does not understand and fails closed.
+const EXPECTED_SCHEMA_VERSION: u32 = 1;
+
 /// Accept an absent field, but reject an explicit JSON `null`.
 ///
 /// `serde` resolves both a missing key and an explicit `null` to `None` for
@@ -211,6 +221,7 @@ struct LandingProofReceipt {
 #[serde(deny_unknown_fields)]
 #[allow(dead_code)]
 struct PrTriageRow {
+    schema_version: u32,
     pr: String,
     title: String,
     classification: String,
@@ -238,14 +249,15 @@ struct PrTriageRow {
 
 /// One workflow outcome row.
 ///
-/// Conforms to `docs/agents/workflow-outcome.schema.json`: the 15 required
-/// properties plus optional `notes`, with `additionalProperties: false`. Counters are
+/// Conforms to `docs/agents/workflow-outcome.schema.json`: the 16 required
+/// properties (including the `schema_version` envelope) plus optional `notes`, with `additionalProperties: false`. Counters are
 /// unsigned so the schema's `minimum: 0` holds by construction — their declared type
 /// *is* their rule, so they need no further check.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[allow(dead_code)]
 struct WorkflowOutcomeRow {
+    schema_version: u32,
     date: String,
     workflow_type: String,
     repo: String,
@@ -274,6 +286,7 @@ struct WorkflowOutcomeRow {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct UbReviewCalibrationRow {
+    schema_version: u32,
     date: String,
     /// Required but nullable. Typed as `Value` rather than `Option<u64>` because
     /// serde resolves a *missing* `Option` field to `None`, which would let the key
@@ -542,13 +555,19 @@ fn validate_line(
     }
 
     let messages = match schema {
-        LedgerSchemaId::PrTriageV1 => decode_and_check::<PrTriageRow>(parsed, check_pr_triage),
-        LedgerSchemaId::WorkflowOutcomeV1 => {
-            decode_and_check::<WorkflowOutcomeRow>(parsed, check_workflow_outcome)
+        LedgerSchemaId::PrTriageV1 => {
+            decode_and_check::<PrTriageRow>(parsed, "pr-triage.v1", check_pr_triage)
         }
-        LedgerSchemaId::UbReviewCalibrationV1 => {
-            decode_and_check::<UbReviewCalibrationRow>(parsed, check_ub_review_calibration)
-        }
+        LedgerSchemaId::WorkflowOutcomeV1 => decode_and_check::<WorkflowOutcomeRow>(
+            parsed,
+            "workflow-outcome.v1",
+            check_workflow_outcome,
+        ),
+        LedgerSchemaId::UbReviewCalibrationV1 => decode_and_check::<UbReviewCalibrationRow>(
+            parsed,
+            "ub-review-calibration.v1",
+            check_ub_review_calibration,
+        ),
     };
 
     into_errors(messages)
@@ -569,20 +588,38 @@ pub(crate) fn validate_pr_triage_row(line: &str) -> Vec<String> {
 
 /// Decode one row into its typed contract, then apply that contract's semantic rules.
 ///
-/// Structural failures (unknown field, wrong type, missing field) come from serde and
-/// stop the row; semantic rules only run against a well-formed row.
-fn decode_and_check<T>(value: Value, check: fn(&T) -> Vec<String>) -> Vec<String>
+/// Structural failures (unknown field, wrong type, missing field, missing or
+/// unsupported `schema_version` envelope) come from serde and stop the row, named
+/// by record; semantic rules only run against a well-formed row.
+fn decode_and_check<T>(
+    value: Value,
+    record: &'static str,
+    check: fn(&T) -> Vec<String>,
+) -> Vec<String>
 where
     T: serde::de::DeserializeOwned,
 {
     match serde_json::from_value::<T>(value) {
         Ok(row) => check(&row),
-        Err(e) => vec![e.to_string()],
+        Err(e) => vec![format!("{record} row: {e}")],
     }
+}
+
+/// The envelope-version rule every row contract shares.
+///
+/// A row declaring a version this validator does not understand is a record from
+/// the future (or a foreign family) and fails closed, naming the record.
+fn check_schema_version(row_version: u32, record: &str) -> Option<String> {
+    (row_version != EXPECTED_SCHEMA_VERSION).then(|| {
+        format!("{record} row schema_version must be {EXPECTED_SCHEMA_VERSION}, got {row_version}")
+    })
 }
 
 fn check_pr_triage(row: &PrTriageRow) -> Vec<String> {
     let mut errors = Vec::new();
+    if let Some(e) = check_schema_version(row.schema_version, "pr-triage.v1") {
+        errors.push(e);
+    }
 
     for (field, value) in [("pr", &row.pr), ("title", &row.title)] {
         if value.trim().is_empty() {
@@ -729,6 +766,9 @@ fn check_structured_close_proof(proof: &StructuredCloseProof) -> Vec<String> {
 
 fn check_workflow_outcome(row: &WorkflowOutcomeRow) -> Vec<String> {
     let mut errors = Vec::new();
+    if let Some(e) = check_schema_version(row.schema_version, "workflow-outcome.v1") {
+        errors.push(e);
+    }
 
     if !is_iso_date(&row.date) {
         errors.push(format!(
@@ -752,6 +792,9 @@ fn check_workflow_outcome(row: &WorkflowOutcomeRow) -> Vec<String> {
 
 fn check_ub_review_calibration(row: &UbReviewCalibrationRow) -> Vec<String> {
     let mut errors = Vec::new();
+    if let Some(e) = check_schema_version(row.schema_version, "ub-review-calibration.v1") {
+        errors.push(e);
+    }
 
     match &row.pr {
         Value::Null => {}
@@ -863,15 +906,15 @@ mod tests {
     const WORKFLOW_HEADER: &str = "#!ledger-schema: workflow-outcome.v1";
 
     fn valid_row() -> &'static str {
-        r#"{"pr":"1234","title":"fix: thing","classification":"unclassified","confidence":"medium","evidence":[],"cleanup_done":false,"known_gaps":[]}"#
+        r#"{"schema_version":1,"pr":"1234","title":"fix: thing","classification":"unclassified","confidence":"medium","evidence":[],"cleanup_done":false,"known_gaps":[]}"#
     }
 
     fn valid_workflow_row() -> &'static str {
-        r#"{"date":"2026-06-05","workflow_type":"issue-triage","repo":"perl-lsp-swarm","agents_used":3,"model_mix":{"haiku":3},"items_processed":9,"merged":0,"closed_with_proof":1,"deferred":2,"false_closes_prevented":0,"ci_failures_diagnosed":0,"upstream_gaps_filed":0,"builders_dispatched":0,"known_gaps":[],"cleanup_done":true}"#
+        r#"{"schema_version":1,"date":"2026-06-05","workflow_type":"issue-triage","repo":"perl-lsp-swarm","agents_used":3,"model_mix":{"haiku":3},"items_processed":9,"merged":0,"closed_with_proof":1,"deferred":2,"false_closes_prevented":0,"ci_failures_diagnosed":0,"upstream_gaps_filed":0,"builders_dispatched":0,"known_gaps":[],"cleanup_done":true}"#
     }
 
     fn valid_ub_row() -> &'static str {
-        r#"{"date":"2026-06-05","pr":1243,"runner":"gh-hosted","profile":"bun-ub-v0","classification":"true-positive","category":"proof-gap/docs-drift","value":"high","evidence":"sensor caught a fabricated breakdown","action_taken":"author corrected before merge"}"#
+        r#"{"schema_version":1,"date":"2026-06-05","pr":1243,"runner":"gh-hosted","profile":"bun-ub-v0","classification":"true-positive","category":"proof-gap/docs-drift","value":"high","evidence":"sensor caught a fabricated breakdown","action_taken":"author corrected before merge"}"#
     }
 
     /// Validate one in-memory ledger file under `pr-triage.v1`.
@@ -1039,7 +1082,34 @@ mod tests {
         Ok(())
     }
 
-    /// The F8 defect: a wrong-typed value used to pass the "present and non-empty"
+    // ----- F2: schema_version envelope ---------------------------------------
+
+    /// A row without the envelope is refused, and the error names the record.
+    #[test]
+    fn test_missing_schema_version_envelope_is_rejected() -> Result<()> {
+        let line = r#"{"date":"2026-06-05","workflow_type":"issue-triage","repo":"perl-lsp-swarm","agents_used":3,"model_mix":{"haiku":3},"items_processed":9,"merged":0,"closed_with_proof":1,"deferred":2,"false_closes_prevented":0,"ci_failures_diagnosed":0,"upstream_gaps_filed":0,"builders_dispatched":0,"known_gaps":[],"cleanup_done":true}"#;
+        let errs = validate_line(line, "t.jsonl", 1, LedgerSchemaId::WorkflowOutcomeV1);
+        ensure!(!errs.is_empty(), "missing envelope must be refused");
+        let msg = &errs[0].message;
+        ensure!(msg.contains("missing field `schema_version`"), "got: {msg}");
+        ensure!(msg.contains("workflow-outcome.v1"), "error must name the record: {msg}");
+        Ok(())
+    }
+
+    /// A row declaring a version this validator does not understand fails closed.
+    #[test]
+    fn test_future_schema_version_fails_closed() -> Result<()> {
+        let line =
+            valid_workflow_row().replacen(r#"{"schema_version":1,"#, r#"{"schema_version":2,"#, 1);
+        let errs = validate_line(&line, "t.jsonl", 1, LedgerSchemaId::WorkflowOutcomeV1);
+        ensure!(
+            errs.iter().any(|e| e.message.contains("schema_version must be 1, got 2")),
+            "got: {errs:?}"
+        );
+        Ok(())
+    }
+
+    /// The F8 defect: a wrong-typed value used to pass the "present and non-empty
     /// check through a catch-all arm.
     #[test]
     fn test_non_string_scalar_fields_are_rejected() -> Result<()> {
@@ -1092,15 +1162,15 @@ mod tests {
         for (missing, line) in [
             (
                 "pr",
-                r#"{"title":"t","classification":"unclassified","confidence":"low","evidence":[],"cleanup_done":false,"known_gaps":[]}"#,
+                r#"{"schema_version":1,"title":"t","classification":"unclassified","confidence":"low","evidence":[],"cleanup_done":false,"known_gaps":[]}"#,
             ),
             (
                 "cleanup_done",
-                r#"{"pr":"1","title":"t","classification":"unclassified","confidence":"low","evidence":[],"known_gaps":[]}"#,
+                r#"{"schema_version":1,"pr":"1","title":"t","classification":"unclassified","confidence":"low","evidence":[],"known_gaps":[]}"#,
             ),
             (
                 "known_gaps",
-                r#"{"pr":"1","title":"t","classification":"unclassified","confidence":"low","evidence":[],"cleanup_done":false}"#,
+                r#"{"schema_version":1,"pr":"1","title":"t","classification":"unclassified","confidence":"low","evidence":[],"cleanup_done":false}"#,
             ),
         ] {
             let msg = first_msg(line);
@@ -1112,7 +1182,7 @@ mod tests {
     /// The optional generator-provided fields `pr_ledger` emits must still decode.
     #[test]
     fn test_pr_ledger_generator_row_is_accepted() -> Result<()> {
-        let line = r#"{"pr":"1234","title":"fix: thing","surface_guess":"xtask","classification":"unclassified","confidence":"low","evidence":[],"cleanup_done":false,"known_gaps":[],"is_draft":false,"mergeable":"MERGEABLE","head_ref":"feat/1234-thing","author":"EffortlessSteven"}"#;
+        let line = r#"{"schema_version":1,"pr":"1234","title":"fix: thing","surface_guess":"xtask","classification":"unclassified","confidence":"low","evidence":[],"cleanup_done":false,"known_gaps":[],"is_draft":false,"mergeable":"MERGEABLE","head_ref":"feat/1234-thing","author":"EffortlessSteven"}"#;
         let errs = line_errors(line);
         ensure!(errs.is_empty(), "generator row rejected: {errs:?}");
         Ok(())
@@ -1120,14 +1190,14 @@ mod tests {
 
     #[test]
     fn test_workflow_outcome_rejects_unknown_field_and_wrong_types() -> Result<()> {
-        let unknown = r#"{"date":"2026-06-05","workflow_type":"t","repo":"r","agents_used":1,"model_mix":{},"items_processed":1,"merged":0,"closed_with_proof":0,"deferred":0,"false_closes_prevented":0,"ci_failures_diagnosed":0,"upstream_gaps_filed":0,"builders_dispatched":0,"known_gaps":[],"cleanup_done":true,"extra":1}"#;
+        let unknown = r#"{"schema_version":1,"date":"2026-06-05","workflow_type":"t","repo":"r","agents_used":1,"model_mix":{},"items_processed":1,"merged":0,"closed_with_proof":0,"deferred":0,"false_closes_prevented":0,"ci_failures_diagnosed":0,"upstream_gaps_filed":0,"builders_dispatched":0,"known_gaps":[],"cleanup_done":true,"extra":1}"#;
         let errs = validate_line(unknown, "t.jsonl", 1, LedgerSchemaId::WorkflowOutcomeV1);
         ensure!(
             errs.first().is_some_and(|e| e.message.contains("unknown field")),
             "expected unknown-field rejection, got {errs:?}"
         );
 
-        let negative = r#"{"date":"2026-06-05","workflow_type":"t","repo":"r","agents_used":-1,"model_mix":{},"items_processed":1,"merged":0,"closed_with_proof":0,"deferred":0,"false_closes_prevented":0,"ci_failures_diagnosed":0,"upstream_gaps_filed":0,"builders_dispatched":0,"known_gaps":[],"cleanup_done":true}"#;
+        let negative = r#"{"schema_version":1,"date":"2026-06-05","workflow_type":"t","repo":"r","agents_used":-1,"model_mix":{},"items_processed":1,"merged":0,"closed_with_proof":0,"deferred":0,"false_closes_prevented":0,"ci_failures_diagnosed":0,"upstream_gaps_filed":0,"builders_dispatched":0,"known_gaps":[],"cleanup_done":true}"#;
         ensure!(
             !validate_line(negative, "t.jsonl", 1, LedgerSchemaId::WorkflowOutcomeV1).is_empty(),
             "negative counter accepted"
@@ -1223,7 +1293,7 @@ mod tests {
     fn test_gated_classifications_accept_a_structured_close_proof() -> Result<()> {
         for classification in CLOSE_PROOF_REQUIRED {
             let line = format!(
-                r#"{{"pr":"42","title":"chore: drop","classification":"{classification}","confidence":"high","evidence":["landing proof"],"cleanup_done":true,"known_gaps":[],"close_proof":{STRUCTURED_CLOSE_PROOF}}}"#
+                r#"{{"schema_version":1,"pr":"42","title":"chore: drop","classification":"{classification}","confidence":"high","evidence":["landing proof"],"cleanup_done":true,"known_gaps":[],"close_proof":{STRUCTURED_CLOSE_PROOF}}}"#
             );
             let errs = line_errors(&line);
             ensure!(errs.is_empty(), "{classification}: structured proof rejected: {errs:?}");
@@ -1241,7 +1311,7 @@ mod tests {
     fn test_gated_classifications_reject_prose_close_proof() -> Result<()> {
         for classification in CLOSE_PROOF_REQUIRED {
             let line = format!(
-                r#"{{"pr":"42","title":"chore: drop","classification":"{classification}","confidence":"high","evidence":[],"cleanup_done":true,"known_gaps":[],"close_proof":"abc1234 is ancestor of main"}}"#
+                r#"{{"schema_version":1,"pr":"42","title":"chore: drop","classification":"{classification}","confidence":"high","evidence":[],"cleanup_done":true,"known_gaps":[],"close_proof":"abc1234 is ancestor of main"}}"#
             );
             let msg = first_msg(&line);
             ensure!(
@@ -1255,7 +1325,7 @@ mod tests {
     /// An ungated row may still carry a prose note; only closes are gated.
     #[test]
     fn test_ungated_classification_accepts_prose_close_proof() -> Result<()> {
-        let line = r#"{"pr":"7","title":"t","classification":"deferred","confidence":"low","evidence":[],"cleanup_done":false,"known_gaps":[],"close_proof":"context for a later wave"}"#;
+        let line = r#"{"schema_version":1,"pr":"7","title":"t","classification":"deferred","confidence":"low","evidence":[],"cleanup_done":false,"known_gaps":[],"close_proof":"context for a later wave"}"#;
         ensure!(line_errors(line).is_empty(), "got: {:?}", line_errors(line));
         Ok(())
     }
@@ -1265,7 +1335,7 @@ mod tests {
     fn test_close_proof_is_required_and_non_empty() -> Result<()> {
         for classification in CLOSE_PROOF_REQUIRED {
             let missing = format!(
-                r#"{{"pr":"1","title":"t","classification":"{classification}","confidence":"high","evidence":[],"cleanup_done":false,"known_gaps":[]}}"#
+                r#"{{"schema_version":1,"pr":"1","title":"t","classification":"{classification}","confidence":"high","evidence":[],"cleanup_done":false,"known_gaps":[]}}"#
             );
             ensure!(
                 first_msg(&missing).contains("requires `close_proof`"),
@@ -1273,7 +1343,7 @@ mod tests {
             );
 
             let empty = format!(
-                r#"{{"pr":"1","title":"t","classification":"{classification}","confidence":"high","evidence":[],"cleanup_done":false,"known_gaps":[],"close_proof":"  "}}"#
+                r#"{{"schema_version":1,"pr":"1","title":"t","classification":"{classification}","confidence":"high","evidence":[],"cleanup_done":false,"known_gaps":[],"close_proof":"  "}}"#
             );
             ensure!(
                 first_msg(&empty).contains("`close_proof` must not be empty"),
@@ -1281,7 +1351,7 @@ mod tests {
             );
 
             let null = format!(
-                r#"{{"pr":"1","title":"t","classification":"{classification}","confidence":"high","evidence":[],"cleanup_done":false,"known_gaps":[],"close_proof":null}}"#
+                r#"{{"schema_version":1,"pr":"1","title":"t","classification":"{classification}","confidence":"high","evidence":[],"cleanup_done":false,"known_gaps":[],"close_proof":null}}"#
             );
             ensure!(!line_errors(&null).is_empty(), "{classification}: null close_proof accepted");
         }
@@ -1305,7 +1375,7 @@ mod tests {
     #[test]
     fn test_empty_title_field() -> Result<()> {
         let msg = first_msg(
-            r#"{"pr":"1","title":"  ","classification":"unclassified","confidence":"low","evidence":[],"cleanup_done":false,"known_gaps":[]}"#,
+            r#"{"schema_version":1,"pr":"1","title":"  ","classification":"unclassified","confidence":"low","evidence":[],"cleanup_done":false,"known_gaps":[]}"#,
         );
         ensure!(msg.contains("must not be empty"), "got: {msg}");
         Ok(())
@@ -1314,7 +1384,7 @@ mod tests {
     #[test]
     fn test_unknown_classification() -> Result<()> {
         let msg = first_msg(
-            r#"{"pr":"1","title":"t","classification":"not-a-thing","confidence":"low","evidence":[],"cleanup_done":false,"known_gaps":[]}"#,
+            r#"{"schema_version":1,"pr":"1","title":"t","classification":"not-a-thing","confidence":"low","evidence":[],"cleanup_done":false,"known_gaps":[]}"#,
         );
         ensure!(msg.contains("unknown classification"), "got: {msg}");
         Ok(())
@@ -1323,7 +1393,7 @@ mod tests {
     #[test]
     fn test_unknown_confidence() -> Result<()> {
         let msg = first_msg(
-            r#"{"pr":"1","title":"t","classification":"unclassified","confidence":"super-high","evidence":[],"cleanup_done":false,"known_gaps":[]}"#,
+            r#"{"schema_version":1,"pr":"1","title":"t","classification":"unclassified","confidence":"super-high","evidence":[],"cleanup_done":false,"known_gaps":[]}"#,
         );
         ensure!(msg.contains("unknown confidence"), "got: {msg}");
         Ok(())
@@ -1331,7 +1401,7 @@ mod tests {
 
     #[test]
     fn test_multiple_errors_on_same_line() -> Result<()> {
-        let line = r#"{"pr":"1","title":"t","classification":"bogus","confidence":"nope","evidence":[],"cleanup_done":false,"known_gaps":[]}"#;
+        let line = r#"{"schema_version":1,"pr":"1","title":"t","classification":"bogus","confidence":"nope","evidence":[],"cleanup_done":false,"known_gaps":[]}"#;
         ensure!(
             line_errors(line).len() >= 2,
             "expected multiple errors, got: {:?}",
@@ -1561,7 +1631,7 @@ mod tests {
 
         let row_with = |proof: &str| {
             format!(
-                r#"{{"pr":"1","title":"t","classification":"close-superseded","confidence":"high","evidence":[],"cleanup_done":false,"known_gaps":[],"close_proof":{proof}}}"#
+                r#"{{"schema_version":1,"pr":"1","title":"t","classification":"close-superseded","confidence":"high","evidence":[],"cleanup_done":false,"known_gaps":[],"close_proof":{proof}}}"#
             )
         };
 
@@ -1618,7 +1688,7 @@ mod tests {
 
     #[test]
     fn test_close_proof_of_wrong_json_type_is_rejected() -> Result<()> {
-        let line = r#"{"pr":"1","title":"t","classification":"close-superseded","confidence":"high","evidence":[],"cleanup_done":false,"known_gaps":[],"close_proof":42}"#;
+        let line = r#"{"schema_version":1,"pr":"1","title":"t","classification":"close-superseded","confidence":"high","evidence":[],"cleanup_done":false,"known_gaps":[],"close_proof":42}"#;
         let msg = first_msg(line);
         ensure!(msg.contains("must be a string or a structured close-proof object"), "got: {msg}");
         Ok(())
@@ -1645,13 +1715,13 @@ mod tests {
 
         for field in ["surface_guess", "mergeable", "head_ref", "author", "is_draft"] {
             let line = format!(
-                r#"{{"pr":"1","title":"t","classification":"unclassified","confidence":"low","evidence":[],"cleanup_done":false,"known_gaps":[],"{field}":null}}"#
+                r#"{{"schema_version":1,"pr":"1","title":"t","classification":"unclassified","confidence":"low","evidence":[],"cleanup_done":false,"known_gaps":[],"{field}":null}}"#
             );
             ensure!(!line_errors(&line).is_empty(), "`{field}: null` accepted");
         }
 
         // An explicit null close_proof is reported as null, not as absence.
-        let null_proof = r#"{"pr":"1","title":"t","classification":"close-superseded","confidence":"high","evidence":[],"cleanup_done":false,"known_gaps":[],"close_proof":null}"#;
+        let null_proof = r#"{"schema_version":1,"pr":"1","title":"t","classification":"close-superseded","confidence":"high","evidence":[],"cleanup_done":false,"known_gaps":[],"close_proof":null}"#;
         ensure!(first_msg(null_proof).contains("non-null"), "got: {}", first_msg(null_proof));
         Ok(())
     }
@@ -1706,7 +1776,10 @@ mod tests {
             head_ref: "feat/1234-thing".to_string(),
             author: "EffortlessSteven".to_string(),
         };
-        let line = serde_json::to_string(&generated)?;
+        // The validator requires the `schema_version` envelope (#15990). The
+        // generator-side field is owned by the #15557 row-authority ruling, so
+        // this mirror test injects the envelope at the serialization boundary.
+        let line = serde_json::to_string(&generated)?.replacen("{", "{\"schema_version\":1,", 1);
         let errs = line_errors(&line);
         ensure!(errs.is_empty(), "pr_ledger::LedgerRow rejected by pr-triage.v1: {errs:?}");
         Ok(())
@@ -1875,7 +1948,7 @@ mod tests {
     #[test]
     fn test_workflow_outcome_counter_fields_decode_to_exact_values() -> Result<()> {
         let row: WorkflowOutcomeRow = serde_json::from_str(
-            r#"{"date":"2026-06-05","workflow_type":"issue-triage","repo":"perl-lsp-swarm","agents_used":37,"model_mix":{"haiku":30,"sonnet":7},"items_processed":154,"merged":4,"closed_with_proof":10,"deferred":116,"false_closes_prevented":3,"ci_failures_diagnosed":2,"upstream_gaps_filed":1,"builders_dispatched":5,"known_gaps":[],"cleanup_done":true}"#,
+            r#"{"schema_version":1,"date":"2026-06-05","workflow_type":"issue-triage","repo":"perl-lsp-swarm","agents_used":37,"model_mix":{"haiku":30,"sonnet":7},"items_processed":154,"merged":4,"closed_with_proof":10,"deferred":116,"false_closes_prevented":3,"ci_failures_diagnosed":2,"upstream_gaps_filed":1,"builders_dispatched":5,"known_gaps":[],"cleanup_done":true}"#,
         )
         .with_context(|| "counter-field fixture row must decode")?;
         assert_eq!(row.agents_used, 37);
@@ -1896,7 +1969,7 @@ mod tests {
     #[test]
     fn test_workflow_outcome_line_error_metadata_is_exact() {
         let errs = validate_line(
-            r#"{"date":"junk","workflow_type":"w","repo":"r","agents_used":1,"model_mix":{},"items_processed":1,"merged":0,"closed_with_proof":0,"deferred":0,"false_closes_prevented":0,"ci_failures_diagnosed":0,"upstream_gaps_filed":0,"builders_dispatched":0,"known_gaps":[],"cleanup_done":true}"#,
+            r#"{"schema_version":1,"date":"junk","workflow_type":"w","repo":"r","agents_used":1,"model_mix":{},"items_processed":1,"merged":0,"closed_with_proof":0,"deferred":0,"false_closes_prevented":0,"ci_failures_diagnosed":0,"upstream_gaps_filed":0,"builders_dispatched":0,"known_gaps":[],"cleanup_done":true}"#,
             "w.jsonl",
             7,
             LedgerSchemaId::WorkflowOutcomeV1,
@@ -1913,7 +1986,7 @@ mod tests {
     #[test]
     fn test_ub_review_line_error_metadata_is_exact() {
         let errs = validate_line(
-            r#"{"date":"2026-06-05","pr":null,"runner":"r","profile":"p","classification":"bogus","category":"c","value":"high","evidence":"e","action_taken":"a"}"#,
+            r#"{"schema_version":1,"date":"2026-06-05","pr":null,"runner":"r","profile":"p","classification":"bogus","category":"c","value":"high","evidence":"e","action_taken":"a"}"#,
             "u.jsonl",
             11,
             LedgerSchemaId::UbReviewCalibrationV1,
@@ -1950,7 +2023,7 @@ mod tests {
     #[test]
     fn test_pr_triage_vocabulary_error_values_are_exact() {
         let errs = line_errors(
-            r#"{"pr":"1","title":"t","classification":"bogus","confidence":"cosmic","evidence":[],"cleanup_done":false,"known_gaps":[]}"#,
+            r#"{"schema_version":1,"pr":"1","title":"t","classification":"bogus","confidence":"cosmic","evidence":[],"cleanup_done":false,"known_gaps":[]}"#,
         );
         assert_eq!(errs.len(), 2);
         assert_eq!(
