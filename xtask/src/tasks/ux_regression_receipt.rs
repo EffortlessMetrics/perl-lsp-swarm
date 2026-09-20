@@ -4,7 +4,7 @@ use std::sync::LazyLock;
 
 use chrono::Utc;
 use color_eyre::eyre::{Context, Result};
-use perl_lsp_ux_tests::taxonomy::{route_for_failure_class, UxComponent, UxFailureClass, UxRoute};
+use perl_lsp_ux_tests::taxonomy::{UxComponent, UxFailureClass, UxRoute, route_for_failure_class};
 use regex::Regex;
 use serde::Serialize;
 
@@ -432,11 +432,7 @@ fn classification_input(raw: &str) -> String {
 
 fn scenario_from_test_name(test: &str) -> Option<String> {
     let scenario = test.split("::").next()?;
-    if scenario.starts_with("ux_scenario_") {
-        Some(format!("{scenario}.rs"))
-    } else {
-        None
-    }
+    if scenario.starts_with("ux_scenario_") { Some(format!("{scenario}.rs")) } else { None }
 }
 
 fn infer_failure_class(raw: &str) -> UxFailureClass {
@@ -493,11 +489,7 @@ fn looks_like_scenario_14_provider_regression(lower: &str) -> bool {
 
 fn workflow_from_test_name(test: &str) -> Option<String> {
     let workflow = test.split("::").nth(1)?;
-    if workflow.is_empty() {
-        None
-    } else {
-        Some(workflow.to_string())
-    }
+    if workflow.is_empty() { None } else { Some(workflow.to_string()) }
 }
 
 #[cfg(test)]
