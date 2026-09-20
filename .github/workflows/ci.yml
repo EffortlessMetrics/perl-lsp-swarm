@@ -820,6 +820,25 @@ jobs:
           echo "PR-fast CARGO_TARGET_DIR=$target_dir"
           df -h . "$target_dir" || true
 
+      # The digest step below runs under `always()`, so it must never find a
+      # receipt this run did not write. `target/` is restored from a shared
+      # rust-cache (#12085), and `xtask gates` writes `receipt.json` only after
+      # the whole plan returns -- so any failure before that point (a degraded
+      # runner caught by the guard below, a timeout, a failed warm build) would
+      # otherwise leave an unrelated SHA's receipt in place for the digest to
+      # publish as this run's failure, `first_failure` and all. Rendering the
+      # wrong test as the cause is worse than rendering nothing, which is the
+      # whole premise of the digest. Cleared here, ahead of everything that can
+      # fail, rather than inside the step that produces them.
+      - name: Clear cache-restored PR-fast receipt surfaces (#12085)
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf target/receipts/receipt.json target/receipts/logs \
+            target/receipts/pr-fast-failure-digest.md \
+            || { echo "::error::cannot clear cache-restored PR-fast receipt surfaces (#12085); refusing to run over a possibly stale receipt"; exit 1; }
+          mkdir -p target/receipts
+
       # #11943 visible arm (pre-build): refuse to start the tier on a runner
       # whose free headroom is below the measured worst-case need, naming the
       # path in an explicit resource-exhaustion diagnostic. A degraded runner
@@ -1150,6 +1169,22 @@ jobs:
           cache-all-crates: true
           shared-key: ci-gate-${{ hashFiles('Cargo.lock') }}
           save-if: ${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' }}
+
+      # Same reasoning as the PR-fast clearance above: the `Explain gate
+      # failures` step runs under `always()`, while the sweep that clears these
+      # surfaces lives inside the shard-running step much further down. A
+      # failure during setup therefore skips that sweep and still reaches the
+      # digest, which would render cache-restored shard summaries and logs from
+      # an unrelated SHA. The in-step sweep stays as the authority for the
+      # uploaded artifact; this one exists so the digest cannot read a stale
+      # input when the run never got that far.
+      - name: Clear cache-restored shard receipt surfaces (#12085)
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf target/receipts/shards target/receipts/shard-summaries \
+            target/receipts/logs target/receipts/gate-failure-digest.md \
+            || { echo "::error::cannot clear cache-restored shard receipt surfaces (#12085); refusing to run over possibly stale logs"; exit 1; }
 
       - name: Clear restored inventory evidence
         id: inventory-clean

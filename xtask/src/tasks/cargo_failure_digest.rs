@@ -270,13 +270,43 @@ fn excerpt(block: &str) -> Vec<String> {
         .collect()
 }
 
-fn render(summary: &Value, failures: &[GateFailure]) -> String {
-    let shard = summary
+/// The head this receipt describes, across both producers' shapes.
+///
+/// `run_gate_shard.py` writes `subject_sha` at the top level; `xtask gates`
+/// has no such field and records the head under `metadata.git_sha_short` /
+/// `metadata.git_sha`. Reading only the first left every PR-fast digest
+/// headed "Subject `unknown`" -- a digest that exists to make a failure
+/// legible must not mislabel which commit failed.
+fn subject_of(summary: &Value) -> &str {
+    summary
+        .get("subject_sha")
+        .and_then(Value::as_str)
+        .or_else(|| summary.pointer("/metadata/git_sha_short").and_then(Value::as_str))
+        .or_else(|| summary.pointer("/metadata/git_sha").and_then(Value::as_str))
+        .unwrap_or("unknown")
+}
+
+/// How many gates this receipt covers, across both producers' shapes.
+///
+/// `selected_gates` is the shard summary's; `xtask gates` carries the count at
+/// `summary.total_gates`. Falling back to the `gates` array keeps the number
+/// honest if neither header is present. Reading only the first made a clean
+/// PR-fast run report that all **zero** selected gates succeeded.
+fn gate_count(summary: &Value) -> usize {
+    summary
         .get("selected_gates")
         .and_then(Value::as_array)
-        .map(|gates| gates.len())
-        .unwrap_or_default();
-    let subject = summary.get("subject_sha").and_then(Value::as_str).unwrap_or("unknown");
+        .map(Vec::len)
+        .or_else(|| {
+            summary.pointer("/summary/total_gates").and_then(Value::as_u64).map(|n| n as usize)
+        })
+        .or_else(|| summary.get("gates").and_then(Value::as_array).map(Vec::len))
+        .unwrap_or_default()
+}
+
+fn render(summary: &Value, failures: &[GateFailure]) -> String {
+    let shard = gate_count(summary);
+    let subject = subject_of(summary);
 
     let mut out = String::new();
     out.push_str("\n### Why the gate failed\n\n");
@@ -600,6 +630,65 @@ test result: FAILED. 0 passed; 2 failed
         assert!(markdown.contains("`parser::ranges::byte_offsets_round_trip`"));
         assert!(markdown.contains("crates/perl-parser-core/src/ranges.rs:118:9"));
         assert!(markdown.contains("cargo test -p perl-parser-core --locked"));
+        Ok(())
+    }
+
+    /// The two producers put the head and the gate count in different places,
+    /// and reading only the shard summary's names silently mislabels every
+    /// PR-fast digest: `Subject unknown`, and on a clean run "every one of the
+    /// 0 selected gate(s) succeeded". A digest that exists to make a failure
+    /// legible must not be confidently wrong about which commit it describes.
+    #[test]
+    fn an_xtask_gates_receipt_header_names_its_own_subject_and_count() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        write_log(&temp.path().join("logs"), "test_gate", ASSERTION_LOG)?;
+        // The `xtask gates` shape: no `subject_sha`, no `selected_gates`.
+        let receipt = json!({
+            "schema_version": "2",
+            "metadata": {"git_sha": "0ea6ef4430e0d453d608e992dd8bcfdecf9daedf", "git_sha_short": "0ea6ef4"},
+            "summary": {"total_gates": 23},
+            "gates": [
+                {
+                    "gate_name": "test_gate",
+                    "status": "failed",
+                    "exit_code": 101,
+                    "command": "cargo test -p perl-parser-core --locked",
+                    "log_path": "logs/test_gate.log",
+                },
+            ],
+        });
+
+        let failures = collect_failures(&receipt, &temp.path().join("logs"));
+        let markdown = render(&receipt, &failures);
+
+        assert!(
+            markdown.contains("0ea6ef4"),
+            "the header must name the receipt's own head, got:\n{markdown}"
+        );
+        assert!(
+            !markdown.contains("Subject `unknown`"),
+            "`metadata.git_sha_short` is present, so the subject is not unknown, got:\n{markdown}"
+        );
+        Ok(())
+    }
+
+    /// The clean-run wording carries the count, so the same schema gap made a
+    /// successful PR-fast run claim that all zero gates passed.
+    #[test]
+    fn a_clean_xtask_gates_receipt_reports_its_real_gate_count() -> Result<()> {
+        let receipt = json!({
+            "schema_version": "2",
+            "metadata": {"git_sha_short": "0ea6ef4"},
+            "summary": {"total_gates": 23},
+            "gates": [{"gate_name": "fmt_gate", "status": "passed", "command": "cargo fmt"}],
+        });
+
+        let markdown = render(&receipt, &[]);
+
+        assert!(
+            markdown.contains("23 selected gate(s) succeeded"),
+            "a clean run must report the gates it actually ran, got:\n{markdown}"
+        );
         Ok(())
     }
 

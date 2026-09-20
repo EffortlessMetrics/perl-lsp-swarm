@@ -2,7 +2,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use chrono::Utc;
-use color_eyre::eyre::{Context, Result};
+use color_eyre::eyre::{Context, Result, eyre};
 use perl_lsp_ux_tests::taxonomy::{UxComponent, UxFailureClass, UxRoute, route_for_failure_class};
 use serde::Serialize;
 
@@ -147,13 +147,35 @@ fn classify_with_exit_status(
     let failing_tests = discriminate_failing_tests(raw);
 
     let canonical_repro = first_failing_test.as_ref().map(|name| {
-        format!("cargo test -p perl-lsp-ux-tests {name} -- --test-threads=1 --nocapture")
+        // The filter is quoted because the shared reader now returns doctest
+        // names whole, and a doctest's name carries spaces and parentheses
+        // (`src/lib.rs - item::path (line 12)`). Unquoted, bash rejects the
+        // command at the `(`, and a name with only spaces is silently split
+        // across `cargo test`'s single [TESTNAME] positional. A repro line
+        // that cannot be pasted is the failure this receipt exists to remove.
+        let filter = shell_quote(name);
+        if is_doctest_name(name) {
+            // `cargo test <filter>` never matches a doctest; only --doc runs
+            // them. A syntactically valid command that selects nothing would
+            // be a worse answer than none.
+            format!("cargo test -p perl-lsp-ux-tests --doc {filter} -- --nocapture")
+        } else {
+            format!("cargo test -p perl-lsp-ux-tests {filter} -- --test-threads=1 --nocapture")
+        }
     });
 
-    let friendly_repro = first_failing_test.as_ref().map(|name| {
+    let friendly_repro = first_failing_test.as_ref().and_then(|name| {
+        // The shorthand splits on `::` to reach the bare function name, which
+        // a doctest name does not have -- `src/lib.rs - a::b (line 3)` would
+        // yield `b (line 3)`. `just ux-tests` cannot run a doctest anyway, so
+        // offer no shorthand rather than a wrong one; the canonical command
+        // above is the answer for that case.
+        if is_doctest_name(name) {
+            return None;
+        }
         // Extract just the test function name (after ::) for the shorthand command.
         let short = name.split("::").last().unwrap_or(name);
-        format!("just ux-tests {short}")
+        Some(format!("just ux-tests {short}"))
     });
 
     let route = route_for_failure_class(failure_class);
@@ -392,6 +414,23 @@ fn looks_like_scenario_14_provider_regression(lower: &str) -> bool {
 fn workflow_from_test_name(test: &str) -> Option<String> {
     let workflow = test.split("::").nth(1)?;
     if workflow.is_empty() { None } else { Some(workflow.to_string()) }
+}
+
+/// Whether cargo named this a doctest rather than a test function.
+///
+/// Cargo renders a doctest as `<path> - <item path> (line <n>)`; a test
+/// function is a plain `::`-separated path with no spaces. The space before
+/// the dash is what separates the two shapes, since an item path can itself
+/// contain `::` and digits.
+fn is_doctest_name(name: &str) -> bool {
+    name.contains(" - ") && name.ends_with(')') && name.contains("(line ")
+}
+
+/// POSIX single-quoting, so a filter with spaces or parentheses survives being
+/// pasted into a shell. A literal `'` closes the quote, escapes itself, and
+/// reopens -- the standard `'\''` dance.
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', r"'\''"))
 }
 
 #[cfg(test)]
@@ -673,6 +712,62 @@ test result: FAILED. 0 passed; 1 failed";
             );
         }
 
+        Ok(())
+    }
+
+    /// A doctest name carries spaces and parentheses, so an unquoted filter
+    /// produces a command bash rejects at the `(` -- and `cargo test` without
+    /// `--doc` would select nothing even if it parsed. Both are worse than no
+    /// repro line, because the reader pastes it and believes the result.
+    #[test]
+    fn a_doctest_repro_is_quoted_and_selects_doctests() -> Result<()> {
+        let name = "src/lib.rs - perl_lsp_ux::render (line 12)";
+        let log = format!(
+            "running 1 test\n\
+             test {name} ... FAILED\n\
+             assertion failed: left == right\n\
+             test result: FAILED. 0 passed; 1 failed"
+        );
+
+        let receipt = classify(&log, Some("deadbeef".to_string()));
+        let canonical =
+            receipt.canonical_repro.as_deref().ok_or_else(|| eyre!("canonical_repro missing"))?;
+
+        assert!(
+            canonical.contains(&format!("'{name}'")),
+            "the doctest filter must be shell-quoted whole, got: {canonical}"
+        );
+        assert!(
+            canonical.contains("--doc"),
+            "a doctest repro must pass --doc or it selects nothing, got: {canonical}"
+        );
+        assert!(
+            receipt.friendly_repro.is_none(),
+            "`just ux-tests` cannot run a doctest, so offer no shorthand rather than a wrong one, \
+             got: {:?}",
+            receipt.friendly_repro
+        );
+        Ok(())
+    }
+
+    /// A test function name keeps the un-suffixed form, and the quoting does
+    /// not change which test it selects.
+    #[test]
+    fn a_plain_test_repro_stays_a_plain_cargo_test() -> Result<()> {
+        let name = "ux_scenario_01_startup::start_server";
+        let log = format!(
+            "running 1 test\n\
+             test {name} ... FAILED\n\
+             test result: FAILED. 0 passed; 1 failed"
+        );
+
+        let receipt = classify(&log, Some("deadbeef".to_string()));
+        let canonical =
+            receipt.canonical_repro.as_deref().ok_or_else(|| eyre!("canonical_repro missing"))?;
+
+        assert!(!canonical.contains("--doc"), "not a doctest, got: {canonical}");
+        assert!(canonical.contains(&format!("'{name}'")), "got: {canonical}");
+        assert!(receipt.friendly_repro.is_some(), "a test function keeps its shorthand");
         Ok(())
     }
 
