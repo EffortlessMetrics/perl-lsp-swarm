@@ -219,9 +219,7 @@ fn fixture(toml_text: &str) -> TomlValue {
 
 fn valid_workflow_path(path: &str) -> bool {
     path.starts_with(".github/workflows/")
-        && Path::new(path)
-            .components()
-            .all(|component| !matches!(component, Component::ParentDir))
+        && Path::new(path).components().all(|component| !matches!(component, Component::ParentDir))
 }
 
 const WELL_FORMED_ROW: &str = r#"
