@@ -3969,24 +3969,18 @@ removal_criteria = "Remove when #13238 lands the exact installed-name state that
 # -----------------------------------------------------------------------------
 # host_work_status pure domain (WIP-01 of #11664): whole-module no_static_path.
 #
-# PR #11995 adds xtask/src/host_work_status/ as a pure typed domain with no
-# production consumer by design: the module is reachable from tests only until
-# #11666 wires the live read-only observation command. ripr 0.10.x reports 134
-# no_static_path seams (0 reachable_unrevealed) across the six module files —
-# almost entirely non-executable declarations (pub struct fields, enum variant
-# fields, constant constructors) plus closed-vocabulary match arms whose
-# activation the diff-scoped tracer cannot connect to the covering tests in
-# the module's own tests.rs. This is the ripr#1428/#1429 static-tracing class;
-# the gate's own guidance (ripr#1429 class) says to state this in the PR
-# instead of adding proof theatre. Coverage evidence: 34 focused tests in
-# xtask/src/host_work_status/tests.rs (cargo test -p xtask --bins --locked
-# host_work_status) exercise every classifier, adapter, aggregation law, and
-# negative falsifier (F1-F18, plus F1b/F3b/F13b/F14b-e/F15b-d review
-# falsifiers); serde byte-equality and insertion-order-permutation tests pin
-# the aggregate identity. Suppression is narrow: exactly the six module files,
-# classification no_static_path only. Remove when #11666 gives the module a
-# production entry point (then RIPR can trace activation through the command)
-# or when ripr#1428/#1429 are fixed upstream.
+# PR #11995 stages a pure typed domain without a production consumer until
+# #11666 wires the live read-only observation command. Its original RIPR report
+# recorded 134 no_static_path seams across the six files below. That historical
+# count is not a current-revision receipt or a claim that every seam is covered.
+# The reported tracing limitation concerns declarations and closed-vocabulary
+# domain code whose activation is not connected to its tests by the instrument
+# (ripr#1428/#1429). Focused tests exercise classifiers, adapters, aggregation,
+# identity and negative controls; test counts alone do not prove every seam.
+# Current execution and instrument results belong in the revision's proof.
+# This suppression remains limited to the six files and no_static_path class.
+# Remove at production-consumer cutover or instrument repair; narrow it if
+# unrelated behavior is introduced. No reachable_unrevealed gap is suppressed.
 # -----------------------------------------------------------------------------
 [[suppress]]
 id = "ripr-suppress-host-work-status-pure-domain"
@@ -4002,7 +3996,7 @@ paths = [
 classification = ["no_static_path"]
 owner = "proof-lane"
 issue = "#11664"
-reason = "PR #11995 (WIP-01 of #11664) adds the pure typed host-work-status domain with no production consumer by design until #11666 lands the live read-only command. ripr 0.10.x reports 134 no_static_path seams (reachable_unrevealed = 0) across the six module files, dominated by non-executable declarations (pub struct fields, enum variant fields, constructors) and closed-vocabulary match arms whose activation the diff-scoped tracer cannot connect to the covering tests. All seams are exercised by 34 focused tests in the module's own tests.rs (classifiers, adapters, aggregation laws, F1-F18 negative falsifiers plus review falsifiers F1b/F3b/F13b/F14b-e/F15b-d, serde byte-equality and insertion-order-permutation identity tests). Same ripr#1428/#1429 static-tracing class as sibling suppressions. Remove when #11666 provides a production entry point or ripr#1428/#1429 are fixed upstream."
+reason = "PR #11995 stages the pure typed host-work-status domain without a production consumer until #11666. The original report identified no_static_path seams in declarations and closed-vocabulary domain code that the instrument did not connect to test activation (ripr#1428/#1429). Historical seam/test counts are not current proof or all-seam coverage. Focused classifier, adapter, aggregation, identity and negative controls provide bounded behavioral evidence; the reviewed revision must carry its execution and instrument results separately. Limit this exception to the six named files and no_static_path classification; remove with the production entry point or upstream tracing repair."
 created = "2026-09-17"
 review_after = "2026-10-17"
 expires = "2026-12-31"
