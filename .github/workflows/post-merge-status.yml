@@ -545,6 +545,7 @@ jobs:
         # old condition alone would dispatch CI after a refused publication.
         if: >-
           steps.freshness.outputs.publish == 'true' &&
+          steps.create-pr.outputs.pull-request-number != '' &&
           steps.create-pr.outputs.pull-request-number != '0'
         env:
           GH_TOKEN: ${{ github.token }}
@@ -690,4 +691,3 @@ jobs:
 
           print(f"superseded {closed} stale proposal PR(s); default-branch tip {tip}")
           PY
-

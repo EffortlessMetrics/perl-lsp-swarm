@@ -20,6 +20,7 @@ Covered discriminating cases (from issue #15351's test list):
 from __future__ import annotations
 
 import json
+import hashlib
 import re
 import subprocess
 import tempfile
@@ -54,6 +55,10 @@ async function runScenario(sc) {
   const prHandler = (table) => (params) => {
     calls.push('pulls.get:' + JSON.stringify(params));
     pullsGetCalls += 1;
+    const expectedNumber = table.expectedNumber || (table.pr && table.pr.number);
+    if (params.pull_number !== expectedNumber) {
+      throw Object.assign(new Error('unexpected pull number'), { status: 400 });
+    }
     if (pullsGetCalls === 2 && table.reread) { return { data: table.reread }; }
     return { data: table.pr };
   };
@@ -197,7 +202,7 @@ def base_scenarios() -> list[dict]:
             "name": "pr_event_exact_payload_passes",
             "event": "pull_request_target",
             "payload": {"pull_request": pr_payload()},
-            "table": {"pr": pr_payload()},
+            "table": {"pr": pr_payload(), "expectedNumber": 1200},
         },
         {
             "name": "dispatch_exact_pair_passes",
@@ -355,7 +360,10 @@ def test_inline_script_behavior() -> None:
     ok = results["dispatch_exact_pair_passes"]
     assert ok["outputs"]["pr_number"] == "1200"
     assert ok["outputs"]["head_sha"] == SHA
-    assert re.fullmatch(r"[0-9a-f]{64}", ok["outputs"]["title_sha256"])
+    expected_title_digest = hashlib.sha256(
+        pr_payload()["title"].encode("utf-8")
+    ).hexdigest()
+    assert ok["outputs"]["title_sha256"] == expected_title_digest
     assert ok["outputs"]["disposition"] == "real-issue-reference"
 
     # The placeholder transaction recorded its obligation before passing.
