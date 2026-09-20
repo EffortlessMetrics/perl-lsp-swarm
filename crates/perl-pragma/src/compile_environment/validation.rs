@@ -1,5 +1,5 @@
 use super::{
-    AuthorityPort, Binding, Boundary, Delta, EncodingState, Facet, FactClass, LocaleState,
+    AuthorityPort, Binding, BoundaryReference, Delta, EncodingState, Facet, FactClass, LocaleState,
     MAX_BUILTINS, MAX_CUSTOM_NAMES, MAX_DELTA_ENTRIES, MAX_NAME_BYTES, MAX_REFERENCES, NamedFact,
     Origin, Outcome, PortRole, SchemaError, SemanticScopeIdentity, SemanticSourceAnchor,
     SemanticSourceOrderIdentity, SemanticSubjectGeneration, StateDraft, TransitionDraft,
@@ -16,7 +16,7 @@ fn invalid(message: &str) -> SchemaError {
 pub(super) fn count(actual: usize, limit: usize, name: &'static str) -> Result<(), SchemaError> {
     if actual > limit { Err(SchemaError::Limited(name)) } else { Ok(()) }
 }
-fn name(value: &str) -> Result<(), SchemaError> {
+pub(super) fn name(value: &str) -> Result<(), SchemaError> {
     count(value.len(), MAX_NAME_BYTES, "name bytes")?;
     if value.trim().is_empty() {
         return Err(invalid("empty identity/name"));
@@ -51,7 +51,7 @@ fn subject(value: &SemanticSubjectGeneration) -> Result<(), SchemaError> {
     ))?;
     Ok(())
 }
-fn anchor(value: &SemanticSourceAnchor) -> Result<(), SchemaError> {
+pub(super) fn anchor(value: &SemanticSourceAnchor) -> Result<(), SchemaError> {
     name(value.anchor_digest())?;
     semantic(SemanticSourceAnchor::new(
         value.anchor_role(),
@@ -60,12 +60,12 @@ fn anchor(value: &SemanticSourceAnchor) -> Result<(), SchemaError> {
     ))?;
     Ok(())
 }
-fn order(value: &SemanticSourceOrderIdentity) -> Result<(), SchemaError> {
+pub(super) fn order(value: &SemanticSourceOrderIdentity) -> Result<(), SchemaError> {
     name(value.context_digest())?;
     semantic(SemanticSourceOrderIdentity::new(value.context_ordinal(), value.context_digest()))?;
     Ok(())
 }
-fn binding(value: &Binding) -> Result<(), SchemaError> {
+pub(super) fn binding(value: &Binding) -> Result<(), SchemaError> {
     subject(&value.semantic)?;
     name(&value.compiler_generation)?;
     if !value.source.schema_version.is_supported() {
@@ -87,7 +87,7 @@ fn binding(value: &Binding) -> Result<(), SchemaError> {
     }
     Ok(())
 }
-fn scope(value: &SemanticScopeIdentity, binding: &Binding) -> Result<(), SchemaError> {
+pub(super) fn scope(value: &SemanticScopeIdentity, binding: &Binding) -> Result<(), SchemaError> {
     subject(value.subject())?;
     if value.subject() != &binding.semantic {
         return Err(invalid("scope subject mismatch"));
@@ -124,12 +124,19 @@ fn scope(value: &SemanticScopeIdentity, binding: &Binding) -> Result<(), SchemaE
     semantic(value.validate())?;
     Ok(())
 }
-struct Context<'a> {
+pub(super) struct Context<'a> {
     binding: &'a Binding,
     exact_scope: bool,
     origins: BTreeMap<String, Origin>,
 }
-impl Context<'_> {
+impl<'a> Context<'a> {
+    pub(super) fn new(binding: &'a Binding, scope: &SemanticScopeIdentity) -> Self {
+        Self {
+            binding,
+            exact_scope: scope.recovery() == SemanticScopeRecovery::Exact,
+            origins: BTreeMap::new(),
+        }
+    }
     fn origin(&mut self, value: &Origin) -> Result<(), SchemaError> {
         name(&value.id)?;
         anchor(&value.anchor)?;
@@ -143,7 +150,7 @@ impl Context<'_> {
         }
         Ok(())
     }
-    fn origins(&mut self, values: &mut [Origin]) -> Result<(), SchemaError> {
+    pub(super) fn origins(&mut self, values: &mut [Origin]) -> Result<(), SchemaError> {
         count(values.len(), MAX_REFERENCES, "provenance references")?;
         values.sort_by(|a, b| a.id.cmp(&b.id));
         for pair in values.windows(2) {
@@ -174,7 +181,7 @@ impl Context<'_> {
         }
         Ok(())
     }
-    fn port(
+    pub(super) fn port(
         &mut self,
         value: &mut Facet<AuthorityPort>,
         role: PortRole,
@@ -222,7 +229,7 @@ impl Context<'_> {
         }
         Ok(())
     }
-    fn boundaries(&mut self, values: &mut [Boundary]) -> Result<(), SchemaError> {
+    fn boundaries(&mut self, values: &mut [BoundaryReference]) -> Result<(), SchemaError> {
         count(values.len(), MAX_REFERENCES, "boundary references")?;
         values.sort_by(|a, b| a.id.cmp(&b.id));
         for pair in values.windows(2) {
@@ -231,7 +238,31 @@ impl Context<'_> {
             }
         }
         for value in values {
-            name(&value.id)?;
+            binding(&value.binding)?;
+            if value.binding != *self.binding {
+                return Err(invalid("boundary reference source/profile/compiler mismatch"));
+            }
+            if value.pending_authority && value.disposition.outcome() == Outcome::Exact {
+                return Err(invalid("pending boundary reference cannot be exact"));
+            }
+            if value.disposition.outcome() == Outcome::Exact
+                && value.affects.contains(&FactClass::AllFacts)
+            {
+                return Err(invalid("unbounded boundary reference cannot be exact"));
+            }
+            if let Some(port) = &value.authority.value
+                && port.contract != "compile_effect_boundary.v1"
+            {
+                return Err(invalid("boundary reference contract mismatch"));
+            }
+            if value.authority.outcome != value.disposition.outcome() {
+                return Err(invalid("boundary reference disposition upgrade"));
+            }
+            if let Some(port) = &value.authority.value
+                && port.payload != value.id
+            {
+                return Err(invalid("boundary reference digest mismatch"));
+            }
             classes(&mut value.affects)?;
             self.port(&mut value.authority, PortRole::Boundary)?;
         }
@@ -277,7 +308,7 @@ fn strings(values: &mut [String], limit: usize) -> Result<(), SchemaError> {
     }
     Ok(())
 }
-fn classes(values: &mut [FactClass]) -> Result<(), SchemaError> {
+pub(super) fn classes(values: &mut [FactClass]) -> Result<(), SchemaError> {
     if values.is_empty() {
         return Err(invalid("empty affected fact classes"));
     }

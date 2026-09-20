@@ -1318,6 +1318,7 @@ pub fn perl_parser_core::syntax::heredoc::PendingHeredoc::fmt(&self, f: &mut cor
 pub fn perl_parser_core::heredoc_collector::collect_all(src: &[u8], offset: usize, pending: alloc::collections::vec_deque::VecDeque<perl_parser_core::syntax::heredoc::PendingHeredoc>) -> perl_parser_core::syntax::heredoc::CollectionResult
 pub fn perl_parser_core::heredoc_collector::collect_at_declaration_offsets(src: &[u8], pending: alloc::collections::vec_deque::VecDeque<perl_parser_core::syntax::heredoc::PendingHeredoc>) -> perl_parser_core::syntax::heredoc::CollectionResult
 pub mod perl_parser_core::hir
+pub use perl_parser_core::hir::CompileEffectSourceKind
 pub mod perl_parser_core::hir::disposition
 pub enum perl_parser_core::hir::disposition::LegacyCategory
 pub perl_parser_core::hir::disposition::LegacyCategory::DynamicBoundary
@@ -1474,25 +1475,6 @@ pub fn perl_parser_core::hir::CompileEffectKind::clone(&self) -> perl_parser_cor
 pub fn perl_parser_core::hir::CompileEffectKind::eq(&self, other: &perl_parser_core::hir::CompileEffectKind) -> bool
 pub fn perl_parser_core::hir::CompileEffectKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_parser_core::hir::CompileEffectKind::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
-#[non_exhaustive] pub enum perl_parser_core::hir::CompileEffectSourceKind
-pub perl_parser_core::hir::CompileEffectSourceKind::Assignment
-pub perl_parser_core::hir::CompileEffectSourceKind::CompileEnvironment
-pub perl_parser_core::hir::CompileEffectSourceKind::MethodDecl
-pub perl_parser_core::hir::CompileEffectSourceKind::NoDirective
-pub perl_parser_core::hir::CompileEffectSourceKind::PackageDecl
-pub perl_parser_core::hir::CompileEffectSourceKind::PhaseBlock
-pub perl_parser_core::hir::CompileEffectSourceKind::RequireDirective
-pub perl_parser_core::hir::CompileEffectSourceKind::ScopeGraph
-pub perl_parser_core::hir::CompileEffectSourceKind::StashGraph
-pub perl_parser_core::hir::CompileEffectSourceKind::SubDecl
-pub perl_parser_core::hir::CompileEffectSourceKind::SymbolicReferenceDeref
-pub perl_parser_core::hir::CompileEffectSourceKind::TypeglobAssignment
-pub perl_parser_core::hir::CompileEffectSourceKind::UseDirective
-pub perl_parser_core::hir::CompileEffectSourceKind::VariableDecl
-pub fn perl_parser_core::hir::CompileEffectSourceKind::clone(&self) -> perl_parser_core::hir::CompileEffectSourceKind
-pub fn perl_parser_core::hir::CompileEffectSourceKind::eq(&self, other: &perl_parser_core::hir::CompileEffectSourceKind) -> bool
-pub fn perl_parser_core::hir::CompileEffectSourceKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub fn perl_parser_core::hir::CompileEffectSourceKind::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
 #[non_exhaustive] pub enum perl_parser_core::hir::CompileEnvironmentBoundaryKind
 pub perl_parser_core::hir::CompileEnvironmentBoundaryKind::DynamicIncRoot
 pub perl_parser_core::hir::CompileEnvironmentBoundaryKind::DynamicPragmaArgs
@@ -2117,7 +2099,7 @@ pub perl_parser_core::hir::CompileEffect::range: perl_position_tracking::span::S
 pub perl_parser_core::hir::CompileEffect::scope_id: core::option::Option<perl_parser_core::hir::HirScopeId>
 pub perl_parser_core::hir::CompileEffect::source_hash: core::option::Option<alloc::string::String>
 pub perl_parser_core::hir::CompileEffect::source_item: core::option::Option<perl_parser_core::hir::HirId>
-pub perl_parser_core::hir::CompileEffect::source_kind: perl_parser_core::hir::CompileEffectSourceKind
+pub perl_parser_core::hir::CompileEffect::source_kind: perl_semantic_facts::compile_effect_source::CompileEffectSourceKind
 pub fn perl_parser_core::hir::CompileEffect::clone(&self) -> perl_parser_core::hir::CompileEffect
 pub fn perl_parser_core::hir::CompileEffect::eq(&self, other: &perl_parser_core::hir::CompileEffect) -> bool
 pub fn perl_parser_core::hir::CompileEffect::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
