@@ -58,7 +58,7 @@
 use crate::tasks::ci_metrics::SCHEMA_VERSION as CI_BASELINE_SCHEMA_VERSION;
 use crate::utils::project_root;
 use chrono::Utc;
-use color_eyre::eyre::{Context, Result, eyre};
+use color_eyre::eyre::{eyre, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -722,10 +722,9 @@ technical_debt:
             tmp.path(),
             r#"{"total_runs": 7, "total_billable_minutes": 11, "overall_success_rate_percent": 88.5}"#,
         )?;
-        let parsed = read_ci_baseline(tmp.path())
-            .expect("consumer must read the file at the canonical contract path")
-            .expect("present baseline must parse and pass the envelope check");
-        let summary = parsed.summary.expect("summary must round-trip");
+        let parsed = read_ci_baseline(tmp.path())?
+            .ok_or_else(|| eyre!("consumer must read the file at the canonical contract path"))?;
+        let summary = parsed.summary.ok_or_else(|| eyre!("summary must round-trip"))?;
         assert_eq!(summary.total_runs, 7);
         assert_eq!(summary.total_billable_minutes, 11);
         Ok(())
