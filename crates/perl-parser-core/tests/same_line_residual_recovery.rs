@@ -373,6 +373,151 @@ fn contextual_repetition_stops_preserve_valid_and_unsupported_boundaries() -> Re
 }
 
 #[test]
+fn missing_repetition_before_continuations_preserves_the_outer_owner() -> Result<(), String> {
+    for tail in [
+        "if", "unless", "while", "until", "for", "foreach", ",", "=>", "and", "or", "xor", "&&",
+        "||",
+    ] {
+        let source = format!("\"x\" x {tail} 1; print \"after\";");
+        if perl_compile_accepts(&source)? == Some(true) {
+            return Err(format!("Perl accepted invalid missing operand: {source:?}"));
+        }
+        let output = Parser::new(&source).parse_with_recovery();
+        if !matches!(
+            output.diagnostics.as_slice(),
+            [ParseError::Recovered {
+                site: RecoverySite::InfixRhs,
+                kind: RecoveryKind::MissingOperand,
+                location: 4,
+            }]
+        ) {
+            return Err(format!(
+                "expected missing operand before {tail}: {} {:?}",
+                output.ast.to_sexp(),
+                output.diagnostics
+            ));
+        }
+        let NodeKind::Program { statements } = &output.ast.kind else {
+            return Err("lost recovered program".to_string());
+        };
+        let first = statements.first().ok_or("lost recovered statement")?;
+        let recovered = match (tail, &first.kind) {
+            (
+                "if" | "unless" | "while" | "until" | "for" | "foreach",
+                NodeKind::StatementModifier { modifier, statement, condition },
+            ) if modifier == tail
+                && matches!(&condition.kind, NodeKind::Number { value } if value == "1") =>
+            {
+                match &statement.kind {
+                    NodeKind::ExpressionStatement { expression } => Some(expression.as_ref()),
+                    _ => None,
+                }
+            }
+            (_, NodeKind::ExpressionStatement { expression }) => match (tail, &expression.kind) {
+                (",", NodeKind::ArrayLiteral { elements }) if elements.len() == 2 => {
+                    elements.first()
+                }
+                ("=>", NodeKind::HashLiteral { pairs }) if pairs.len() == 1 => {
+                    pairs.first().map(|(key, _)| key)
+                }
+                ("and" | "or" | "xor" | "&&" | "||", NodeKind::Binary { op, left, right })
+                    if op == tail
+                        && matches!(&right.kind, NodeKind::Number { value } if value == "1") =>
+                {
+                    Some(left.as_ref())
+                }
+                _ => None,
+            },
+            _ => None,
+        };
+        if statements.len() != 2
+            || !matches!(recovered.map(|node| &node.kind), Some(NodeKind::Binary { op, right, .. }) if op == "x" && matches!(right.kind, NodeKind::MissingExpression))
+            || !matches!(statements.get(1).map(|node| &node.kind), Some(NodeKind::ExpressionStatement { expression })
+                if matches!(&expression.kind, NodeKind::FunctionCall { name, args } if name == "print" && args.len() == 1
+                    && args.first().is_some_and(|arg| source.get(arg.location.start..arg.location.end) == Some("\"after\""))))
+        {
+            return Err(format!("lost {tail} owner or suffix: {}", output.ast.to_sexp()));
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn possible_repetition_terms_are_not_mislabeled_missing() -> Result<(), String> {
+    for source in [
+        "\"x\" x if => 1;",
+        "\"x\" x while => 1;",
+        "\"x\" x or => 1;",
+        "\"x\" x and => 1;",
+        "\"x\" x not 1;",
+        "\"x\" x !1;",
+        "\"x\" x /1/;",
+        "\"x\" x //;",
+    ] {
+        if perl_compile_accepts(source)? == Some(false) {
+            return Err(format!("Perl rejected operand ambiguity control: {source:?}"));
+        }
+        let output = Parser::new(source).parse_with_recovery();
+        if output.diagnostics.iter().any(|error| {
+            // Existing unsupported-term diagnostics at `not` or `//` are
+            // separate work; do not invent an absent operand at `x` itself.
+            matches!(
+                error,
+                ParseError::Recovered { kind: RecoveryKind::MissingOperand, location: 4, .. }
+            )
+        }) {
+            return Err(format!(
+                "possible term was falsely classified missing: {source:?} {:?}",
+                output.diagnostics
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn repetition_keeps_named_sub_recovery_and_anonymous_sub_operand() -> Result<(), String> {
+    for (source, named) in [
+        ("\"x\" x sub named {}; print \"after\";", true),
+        ("\"x\" x sub {}; print \"after\";", false),
+    ] {
+        if perl_compile_accepts(source)? == Some(named) {
+            return Err(format!("unexpected Perl sub operand verdict: {source:?}"));
+        }
+        let output = Parser::new(source).parse_with_recovery();
+        let expression = first_expression(&output.ast).ok_or("lost repetition")?;
+        let NodeKind::Binary { op, right, .. } = &expression.kind else {
+            return Err(format!("lost repetition: {}", output.ast.to_sexp()));
+        };
+        if op != "x"
+            || if named {
+                !matches!(right.kind, NodeKind::MissingExpression)
+                    || !output.diagnostics.iter().any(|error| {
+                        matches!(
+                            error,
+                            ParseError::Recovered {
+                                site: RecoverySite::InfixRhs,
+                                kind: RecoveryKind::MissingOperand,
+                                location: 4
+                            }
+                        )
+                    })
+            } else {
+                !matches!(&right.kind, NodeKind::Subroutine { name: None, .. })
+                    || !output.diagnostics.is_empty()
+            }
+        {
+            return Err(format!(
+                "changed sub operand ownership: {} {:?}",
+                output.ast.to_sexp(),
+                output.diagnostics
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[test]
 fn command_line_ne_wrapper_is_not_same_line_residue() -> Result<(), String> {
     let source = "-ne print;";
     assert_valid_case(source);

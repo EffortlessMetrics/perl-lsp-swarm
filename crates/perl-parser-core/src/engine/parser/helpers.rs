@@ -926,13 +926,18 @@ impl<'a> Parser<'a> {
         if !self.is_infix_rhs_absent() {
             return None;
         }
+        Some(self.record_missing_infix_rhs(op_pos))
+    }
+
+    /// Record an absent operand after its grammar owner has identified the boundary.
+    fn record_missing_infix_rhs(&mut self, op_pos: usize) -> Node {
         self.errors.push(ParseError::Recovered {
             site: RecoverySite::InfixRhs,
             kind: RecoveryKind::MissingOperand,
             location: op_pos,
         });
         let pos = op_pos;
-        Some(Node::new(NodeKind::MissingExpression, SourceLocation { start: pos, end: pos }))
+        Node::new(NodeKind::MissingExpression, SourceLocation { start: pos, end: pos })
     }
 
     /// Expect a closing delimiter, recovering gracefully if missing.

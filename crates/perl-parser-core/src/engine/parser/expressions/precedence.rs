@@ -1101,17 +1101,28 @@ impl<'a> Parser<'a> {
     fn repetition_rhs_disposition(&mut self) -> ParseResult<RepetitionRhsDisposition> {
         let operator_end = self.tokens.peek()?.end();
         let next = self.tokens.peek_second()?;
-        Ok(match next.kind() {
-            TokenKind::Assign if next.start() == operator_end => {
-                RepetitionRhsDisposition::AssignmentContinuation
-            }
+        let kind = next.kind();
+        let adjacent = next.start() == operator_end;
+        let ordinary = Self::ordinary_binary_repetition_rhs(kind, next.text.as_ref());
+        let word_follower = Self::is_stmt_modifier_kind(kind)
+            || matches!(kind, TokenKind::WordAnd | TokenKind::WordOr | TokenKind::WordXor);
+        // Keywords before => are autoquoted terms, not outer continuations.
+        if word_follower && self.tokens.peek_third()?.kind() == TokenKind::FatArrow {
+            return Ok(RepetitionRhsDisposition::UnsupportedOperand);
+        }
+        Ok(match kind {
+            TokenKind::Assign if adjacent => RepetitionRhsDisposition::AssignmentContinuation,
             TokenKind::Assign => RepetitionRhsDisposition::InvalidOperand,
-            TokenKind::Eof
-            | TokenKind::Semicolon
-            | TokenKind::RightParen
-            | TokenKind::RightBracket
-            | TokenKind::RightBrace => RepetitionRhsDisposition::MissingOperand,
-            kind => Self::ordinary_binary_repetition_rhs(kind, next.text.as_ref()),
+            kind if kind.is_recovery_boundary()
+                || word_follower
+                || matches!(
+                    kind,
+                    TokenKind::Comma | TokenKind::FatArrow | TokenKind::And | TokenKind::Or
+                ) =>
+            {
+                RepetitionRhsDisposition::MissingOperand
+            }
+            _ => ordinary,
         })
     }
 
@@ -1185,12 +1196,13 @@ impl<'a> Parser<'a> {
                     let op_token = self.tokens.next()?;
                     // Use parse_power() so that `a x b**c` parses as `a x (b**c)`.
                     // Exponentiation binds more tightly than repetition in Perl.
-                    let right =
-                        if let Some(missing) = self.recover_missing_infix_rhs(op_token.start()) {
-                            missing
-                        } else {
-                            self.parse_power()?
-                        };
+                    let right = if disposition == RepetitionRhsDisposition::MissingOperand {
+                        self.record_missing_infix_rhs(op_token.start())
+                    } else if let Some(missing) = self.recover_missing_infix_rhs(op_token.start()) {
+                        missing
+                    } else {
+                        self.parse_power()?
+                    };
                     let start = expr.location.start;
                     let end = right.location.end;
 

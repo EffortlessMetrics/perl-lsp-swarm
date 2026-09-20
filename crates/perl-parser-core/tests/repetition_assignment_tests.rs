@@ -295,10 +295,8 @@ fn repetition_assignment_preserves_x_call_boundary() -> Result<(), String> {
 fn repetition_assignment_documents_malformed_operator_boundaries() -> Result<(), String> {
     // `x==` and `x=>` lex as the ordinary `==` binary operator and `=>` fat
     // comma; the repetition-assignment operator must not absorb either
-    // boundary into `x=`. The parser does not reject these sources: it
-    // accepts them with the ordinary-operator shapes pinned below. Renaming
-    // or changing the assertions to rejection requires a separate parser
-    // decision, not a test-only change.
+    // boundary into `x=`. A fat comma leaves repetition without an operand;
+    // preserve that typed recovery rather than splitting off an autoquoted x.
     for source in ["$value x== 3;", "$value x=> 3;"] {
         let mut parser = Parser::new(source);
         let result = parser.parse();
@@ -308,10 +306,25 @@ fn repetition_assignment_documents_malformed_operator_boundaries() -> Result<(),
         if find_assignment(&ast, "x=").is_some() {
             return Err(format!("malformed boundary must not normalize to x=:\n{}", ast.to_sexp()));
         }
-        let expected =
-            if source.contains("x==") { "(binary_==" } else { "(hash (key (string (value x)))" };
+        let expected = if source.contains("x==") { "(binary_==" } else { "(binary_x" };
         if !sexp.contains(expected) {
             return Err(format!("malformed boundary lost expected AST {expected:?}:\n{sexp}"));
+        }
+        if source.contains("x=>") {
+            let output = Parser::new(source).parse_with_recovery();
+            if !matches!(
+                output.diagnostics.as_slice(),
+                [ParseError::Recovered {
+                    site: RecoverySite::InfixRhs,
+                    kind: RecoveryKind::MissingOperand,
+                    location: 7,
+                }]
+            ) {
+                return Err(format!(
+                    "expected repetition recovery before fat comma: {:?}",
+                    output.diagnostics
+                ));
+            }
         }
     }
     Ok(())
