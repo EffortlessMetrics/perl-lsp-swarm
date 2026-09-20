@@ -1063,7 +1063,28 @@ jobs:
                   .replace("\n", "%0A")
               )
 
-          for name, detail in failing:
+          # GitHub publishes at most ten annotations of a level per check run:
+          # measured on this repository, `Workflow Trigger Lint` records one
+          # RECORDED_LEGACY_PROVENANCE_DEBT per pinned action and the tree carries 23,
+          # yet its check run exposes exactly 10. One annotation per failing gate
+          # would therefore drop the tail on a bad enough receipt -- reintroducing,
+          # for the worst runs, the unreadability this step exists to remove. Keep
+          # the first nine one-per-gate and fold the remainder into the tenth, so
+          # every failing gate name still reaches the annotations API.
+          MAX_ANNOTATIONS = 10
+          if len(failing) <= MAX_ANNOTATIONS:
+              annotations = list(failing)
+          else:
+              annotations = list(failing[: MAX_ANNOTATIONS - 1])
+              rest = failing[MAX_ANNOTATIONS - 1 :]
+              annotations.append(
+                  (
+                      f"{len(rest)} further failing gates",
+                      "; ".join(f"{n} ({d})" for n, d in rest),
+                  )
+              )
+
+          for name, detail in annotations:
               print(f"::error title=pr-fast gate {_esc(name)}::{_esc(detail)}")
           if receipt_problem is not None:
               print(f"::warning title=pr-fast receipt::{_esc(receipt_problem)}")
