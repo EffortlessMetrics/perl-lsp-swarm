@@ -1,7 +1,7 @@
 //! Public token and native AST proof for #13930. Perl 5.44 is the external oracle.
 use perl_parser_core::{
-    Node, NodeKind, ParseBudget, Parser, ParserConfigIdentity, RecoverySalvageClass,
-    RecoverySalvageProfile, TokenKind, TokenStream,
+    Node, NodeKind, ParseBudget, ParseCoreDimension, ParseError, ParseStopCause, Parser,
+    ParserConfigIdentity, RecoverySalvageClass, RecoverySalvageProfile, TokenKind, TokenStream,
 };
 
 type R = Result<(), Box<dyn std::error::Error>>;
@@ -169,18 +169,46 @@ fn missing_closer_preserves_declaration_and_remains_nonclean() -> R {
 
 #[test]
 fn angle_repetition_respects_token_budget() -> R {
-    let source = "my $value = \"x\" x <STDIN>; my $after = 7;";
+    // String, contextual x, and the real '<' are the three consumed tokens.
+    // The lexer-owned malformed scan then records its exact boundary before
+    // the parser refuses the still-unconsumed semicolon. This cannot pass by
+    // stopping before the angle route, unlike the former declaration limit 2.
+    let source = "\"x\" x <STDIN; my $after = 7;";
     let mut budget = ParseBudget::unlimited();
-    budget.max_tokens_consumed = 2;
+    budget.max_tokens_consumed = 3;
     let output = Parser::with_production_config(
         source,
         ParserConfigIdentity::production_default().with_budget(budget),
     )
     .parse_with_recovery();
     check(
-        output.stop_cause().is_some() && output.budget_usage.tokens_consumed <= 2,
-        "token budget bypassed",
-    )
+        output.stop_cause()
+            == Some(ParseStopCause::CoreBudgetExhausted {
+                dimension: ParseCoreDimension::TokensConsumed,
+                limit: 3,
+                usage: 3,
+            })
+            && output.budget_usage.tokens_consumed == 3,
+        "wrong typed token refusal",
+    )?;
+    check(
+        output.diagnostics.iter().any(|error| {
+            matches!(
+                error,
+                ParseError::AngleScan {
+                    error: perl_lexer::LexerError::UnterminatedAngle { position: 6, recovery: 12 }
+                }
+            )
+        }),
+        "budget control never reached malformed angle scan",
+    )?;
+    let mut suffix = Vec::new();
+    nodes(
+        &output.ast,
+        &|kind| matches!(kind, NodeKind::Variable { name, .. } if name == "after"),
+        &mut suffix,
+    );
+    check(suffix.is_empty(), "terminal budget consumed following declaration")
 }
 
 #[test]
@@ -210,21 +238,28 @@ fn public_lexer_and_parser_token_observations() -> R {
         "\"x\" x <STDIN; my $after = 7;",
         "\"x\" x <<EOF;\n3\nEOF\n",
     ] {
-        println!("SOURCE {source:?}");
+        let angle_boundary = source.starts_with("\"x\" x <");
+        let mut raw_boundary_seen = false;
+        let mut parser_boundary_seen = false;
+        let mut shift_seen = false;
         let mut lexer = perl_lexer::PerlLexer::new(source);
         let mut raw_count = 0;
         while let Some(token) = lexer.next_token() {
             raw_count += 1;
             check(raw_count <= source.len() + 1, "raw lexer failed to progress")?;
-            println!("LEX {:?} {:?} {}..{}", token.token_type, token.text, token.start, token.end);
-            if source.starts_with("\"x\" x <") && token.start == 6 {
+
+            if angle_boundary && token.start == 6 {
+                raw_boundary_seen = true;
                 if source.starts_with("\"x\" x <<") {
                     check(
-                        token.text == "<<EOF" && token.end == 11,
+                        token.text.as_ref() == "<<EOF" && token.end == 11,
                         "heredoc raw boundary changed",
                     )?;
                 } else {
-                    check(token.text == "<" && token.end == 7, "angle raw boundary changed")?;
+                    check(
+                        token.text.as_ref() == "<" && token.end == 7,
+                        "angle raw boundary changed",
+                    )?;
                     check(
                         matches!(&token.token_type, perl_lexer::TokenType::Operator(op) if op.as_ref() == "<"),
                         "angle raw kind changed",
@@ -235,14 +270,15 @@ fn public_lexer_and_parser_token_observations() -> R {
         let mut stream = TokenStream::new(source);
         for index in 0..=source.len() + 1 {
             let token = stream.next()?;
-            println!(
-                "PARSE {:?} {:?} {}..{}",
-                token.kind(),
-                token.text,
-                token.start(),
-                token.end()
-            );
-            if source.starts_with("\"x\" x <") && token.start() == 6 {
+            if source == "$a x $b << $c;" && token.start() == 8 {
+                check(
+                    token.kind() == TokenKind::LeftShift && token.end() == 10,
+                    "shift identity changed",
+                )?;
+                shift_seen = true;
+            }
+            if angle_boundary && token.start() == 6 {
+                parser_boundary_seen = true;
                 let (kind, end) = if source.starts_with("\"x\" x <<") {
                     (TokenKind::HeredocStart, 11)
                 } else {
@@ -259,6 +295,11 @@ fn public_lexer_and_parser_token_observations() -> R {
             check(index <= source.len(), "parser token stream failed to progress")?;
         }
         check(raw_count != 0, "vacuous raw lexer observation")?;
+        check(
+            !angle_boundary || (raw_boundary_seen && parser_boundary_seen),
+            "missing required angle/heredoc boundary witness",
+        )?;
+        check(source != "$a x $b << $c;" || shift_seen, "missing shift boundary witness")?;
     }
     Ok(())
 }
