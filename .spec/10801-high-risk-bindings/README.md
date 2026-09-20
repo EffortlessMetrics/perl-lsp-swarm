@@ -34,6 +34,12 @@ AST snapshots deliberately make changes to the selected expression reviewable.
 They are source identity checks, not a Rust/TypeScript type checker, whole-program
 dataflow proof, runtime containment test, or proof that a referenced issue landed.
 Compiler/parser failure is missing evidence and fails the command.
+Test-dependent attributes conservatively exclude expressions, local initializers
+and let-else branches, match arms, and struct field values from production
+witness traversal; this is not compiler-resolved conditional compilation.
+Documented high-risk field headings require an existing binding. Known low-risk
+headings must remain in the explicit remainder, and retired runner headings must
+name a removed row and carry the explicit `(removed)` suffix.
 
 ## Unresolved obligations
 

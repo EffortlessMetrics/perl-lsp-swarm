@@ -96,16 +96,69 @@ struct ExpressionMatch<'a> {
     count: usize,
 }
 impl<'ast> Visit<'ast> for ExpressionMatch<'_> {
+    fn visit_local(&mut self, node: &'ast syn::Local) {
+        if !test_only(&node.attrs) {
+            visit::visit_local(self, node);
+        }
+    }
+    fn visit_arm(&mut self, node: &'ast syn::Arm) {
+        if !test_only(&node.attrs) {
+            visit::visit_arm(self, node);
+        }
+    }
+    fn visit_field_value(&mut self, node: &'ast syn::FieldValue) {
+        if !test_only(&node.attrs) {
+            visit::visit_field_value(self, node);
+        }
+    }
+    fn visit_stmt_macro(&mut self, node: &'ast syn::StmtMacro) {
+        if !test_only(&node.attrs) {
+            visit::visit_stmt_macro(self, node);
+        }
+    }
     fn visit_expr(&mut self, expression: &'ast syn::Expr) {
         let attrs: &[syn::Attribute] = match expression {
-            syn::Expr::Block(node) => &node.attrs,
-            syn::Expr::If(node) => &node.attrs,
-            syn::Expr::Call(node) => &node.attrs,
-            syn::Expr::MethodCall(node) => &node.attrs,
+            syn::Expr::Array(node) => &node.attrs,
             syn::Expr::Assign(node) => &node.attrs,
+            syn::Expr::Async(node) => &node.attrs,
+            syn::Expr::Await(node) => &node.attrs,
+            syn::Expr::Binary(node) => &node.attrs,
+            syn::Expr::Block(node) => &node.attrs,
+            syn::Expr::Break(node) => &node.attrs,
+            syn::Expr::Call(node) => &node.attrs,
+            syn::Expr::Cast(node) => &node.attrs,
+            syn::Expr::Closure(node) => &node.attrs,
+            syn::Expr::Const(node) => &node.attrs,
+            syn::Expr::Continue(node) => &node.attrs,
+            syn::Expr::Field(node) => &node.attrs,
+            syn::Expr::ForLoop(node) => &node.attrs,
+            syn::Expr::Group(node) => &node.attrs,
+            syn::Expr::If(node) => &node.attrs,
+            syn::Expr::Index(node) => &node.attrs,
+            syn::Expr::Infer(node) => &node.attrs,
+            syn::Expr::Let(node) => &node.attrs,
+            syn::Expr::Lit(node) => &node.attrs,
+            syn::Expr::Loop(node) => &node.attrs,
             syn::Expr::Macro(node) => &node.attrs,
             syn::Expr::Match(node) => &node.attrs,
-            _ => &[],
+            syn::Expr::MethodCall(node) => &node.attrs,
+            syn::Expr::Paren(node) => &node.attrs,
+            syn::Expr::Path(node) => &node.attrs,
+            syn::Expr::Range(node) => &node.attrs,
+            syn::Expr::RawAddr(node) => &node.attrs,
+            syn::Expr::Reference(node) => &node.attrs,
+            syn::Expr::Repeat(node) => &node.attrs,
+            syn::Expr::Return(node) => &node.attrs,
+            syn::Expr::Struct(node) => &node.attrs,
+            syn::Expr::Try(node) => &node.attrs,
+            syn::Expr::TryBlock(node) => &node.attrs,
+            syn::Expr::Tuple(node) => &node.attrs,
+            syn::Expr::Unary(node) => &node.attrs,
+            syn::Expr::Unsafe(node) => &node.attrs,
+            syn::Expr::While(node) => &node.attrs,
+            syn::Expr::Yield(node) => &node.attrs,
+            // Unparsed or future syntax cannot establish a production binding.
+            _ => return,
         };
         if test_only(attrs) {
             return;
@@ -284,6 +337,23 @@ impl<'ast> Visit<'ast> for RemovedKey<'_> {
     fn visit_item(&mut self, _: &'ast syn::Item) {}
 }
 
+fn low_risk_schema_id(family: &str, key: &str) -> Option<&'static str> {
+    match (family, key) {
+        ("workspace", "discoveryExtensions") => Some("workspace.discovery_extra_extensions"),
+        ("workspace", "discoverySkippedDirs") => Some("workspace.discovery_extra_skipped_dirs"),
+        ("formatting", "maximumLineLength") => Some("formatting.maximum_line_length"),
+        ("formatting", "indentColumns") => Some("formatting.indent_columns"),
+        ("formatting", "tabs") => Some("formatting.tabs"),
+        ("formatting", "openingBraceOnNewLine") => Some("formatting.opening_brace_on_new_line"),
+        ("formatting", "cuddledElse") => Some("formatting.cuddled_else"),
+        ("formatting", "spaceAfterKeyword") => Some("formatting.space_after_keyword"),
+        ("formatting", "addTrailingCommas") => Some("formatting.add_trailing_commas"),
+        ("formatting", "verticalAlignment") => Some("formatting.vertical_alignment"),
+        ("formatting", "blockCommentIndentation") => Some("formatting.block_comment_indentation"),
+        _ => None,
+    }
+}
+
 fn schema_coverage(document: &serde_json::Value, projection: &Projection) -> CheckResult {
     fn visit(
         value: &serde_json::Value,
@@ -294,28 +364,7 @@ fn schema_coverage(document: &serde_json::Value, projection: &Projection) -> Che
         if let Some(properties) = value.get("properties").and_then(serde_json::Value::as_object) {
             for (key, child) in properties {
                 let next = format!("{pointer}/properties/{key}");
-                let low_risk = match (family, key.as_str()) {
-                    ("workspace", "discoveryExtensions") => {
-                        Some("workspace.discovery_extra_extensions")
-                    }
-                    ("workspace", "discoverySkippedDirs") => {
-                        Some("workspace.discovery_extra_skipped_dirs")
-                    }
-                    ("formatting", "maximumLineLength") => Some("formatting.maximum_line_length"),
-                    ("formatting", "indentColumns") => Some("formatting.indent_columns"),
-                    ("formatting", "tabs") => Some("formatting.tabs"),
-                    ("formatting", "openingBraceOnNewLine") => {
-                        Some("formatting.opening_brace_on_new_line")
-                    }
-                    ("formatting", "cuddledElse") => Some("formatting.cuddled_else"),
-                    ("formatting", "spaceAfterKeyword") => Some("formatting.space_after_keyword"),
-                    ("formatting", "addTrailingCommas") => Some("formatting.add_trailing_commas"),
-                    ("formatting", "verticalAlignment") => Some("formatting.vertical_alignment"),
-                    ("formatting", "blockCommentIndentation") => {
-                        Some("formatting.block_comment_indentation")
-                    }
-                    _ => None,
-                };
+                let low_risk = low_risk_schema_id(family, key);
                 if let Some(id) = low_risk {
                     if !projection.remaining_low_risk.iter().any(|remaining| remaining == id) {
                         return Err(format!("unowned low-risk schema field {id}").into());
@@ -360,7 +409,42 @@ fn docs_coverage(text: &str, projection: &Projection) -> CheckResult {
         let Some((family, _)) = setting.split_once('.') else {
             continue;
         };
-        if !matches!(family, "aiCompletion" | "critic" | "limits" | "workspace") {
+        if !matches!(
+            family,
+            "aiCompletion"
+                | "critic"
+                | "perlcritic"
+                | "limits"
+                | "formatting"
+                | "workspace"
+                | "testRunner"
+        ) {
+            continue;
+        }
+        let (_, key) = setting.split_once('.').ok_or("missing documented field")?;
+        if let Some(low_risk) = low_risk_schema_id(family, key) {
+            if !projection.remaining_low_risk.iter().any(|id| id == low_risk) {
+                return Err(
+                    format!("documented low-risk field lacks explicit remainder: {id}").into()
+                );
+            }
+            continue;
+        }
+        if family == "testRunner" {
+            let explicitly_removed =
+                rest.split_once('`').is_some_and(|(_, suffix)| suffix.trim() == "(removed)");
+            if !explicitly_removed
+                || !projection.rows.iter().any(|row| {
+                    row.id == setting
+                        && row.kind == "removed"
+                        && row.disposition == "remove_false_contract"
+                })
+            {
+                return Err(format!(
+                    "documented runner field is not an explicit owned retirement: {id}"
+                )
+                .into());
+            }
             continue;
         }
         let pointer =
@@ -514,6 +598,78 @@ mod tests {
             if check_witness(&changed, &field).is_ok() {
                 return Err("serde container mapping drift accepted".into());
             }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_gated_initializers_arms_and_field_values_are_not_production_bindings() -> CheckResult {
+        let witness = Witness {
+            path: "fixture.rs".into(),
+            function: "consume".into(),
+            expression: "run(config.engine)".into(),
+        };
+        for body in [
+            "ATTR let value = run(config.engine);",
+            "ATTR let Some(value) = input else { run(config.engine); return; };",
+            "match input { ATTR Some(_) => run(config.engine), _ => (), }",
+            "let value = Record { ATTR field: run(config.engine) };",
+            "ATTR return run(config.engine);",
+            "ATTR loop { run(config.engine); break; }",
+            "ATTR while ready { run(config.engine); }",
+            "ATTR for value in values { run(config.engine); }",
+            "ATTR async { run(config.engine); };",
+            "ATTR unsafe { run(config.engine); }",
+        ] {
+            let positive = format!("fn consume() {{ {} }}", body.replace("ATTR", ""));
+            check_witness(&positive, &witness)?;
+            for attribute in
+                ["#[cfg(test)]", "#[cfg(all(test, unix))]", "#[cfg_attr(test, allow(unused))]"]
+            {
+                let changed = format!(
+                    "fn consume() {{ {} }}\n// run(config.engine)\nfn elsewhere() {{ run(config.engine); }}",
+                    body.replace("ATTR", attribute)
+                );
+                if check_witness(&changed, &witness).is_ok() {
+                    return Err(format!("test-gated binding accepted: {body} {attribute}").into());
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn documented_high_risk_families_and_explicit_low_risk_retirements_are_checked() -> CheckResult
+    {
+        let root =
+            Path::new(env!("CARGO_MANIFEST_DIR")).parent().ok_or("missing repository root")?;
+        let projection: Projection =
+            serde_json::from_str(&fs::read_to_string(root.join(PROJECTION))?)?;
+        for heading in [
+            "#### `perl.formatting.engine`",
+            "#### `perl.perlcritic.enabled`",
+            "#### `perl.formatting.indentColumns`",
+            "#### `perl.workspace.discoveryExtensions`",
+            "#### `perl.testRunner.command` (removed)",
+            "#### `perl.testRunner.args` (removed)",
+        ] {
+            docs_coverage(heading, &projection)?;
+        }
+        for heading in [
+            "#### `perl.formatting.unboundNewField`",
+            "#### `perl.perlcritic.unboundNewField`",
+            "#### `perl.testRunner.unboundNewField` (removed)",
+            "#### `perl.testRunner.command`",
+            "#### `perl.testRunner.args`",
+        ] {
+            if docs_coverage(heading, &projection).is_ok() {
+                return Err(format!("unowned or resurrected docs field accepted: {heading}").into());
+            }
+        }
+        let mut missing = projection.clone();
+        missing.remaining_low_risk.retain(|id| id != "formatting.indent_columns");
+        if docs_coverage("#### `perl.formatting.indentColumns`", &missing).is_ok() {
+            return Err("unowned low-risk docs field accepted".into());
         }
         Ok(())
     }
