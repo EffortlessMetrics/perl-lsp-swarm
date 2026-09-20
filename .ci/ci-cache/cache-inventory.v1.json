@@ -729,10 +729,10 @@
       "cached_paths": [],
       "key_dimensions": {
         "key": null,
-        "shared_key": "ci-gate-${{ hashFiles('Cargo.lock') }}",
+        "shared_key": "pr-smoke",
         "restore_keys": null
       },
-      "key_authority": "mixed",
+      "key_authority": "trusted",
       "cached_byte_provenance": "trusted_tree",
       "artifact_provenance": null,
       "writer_disposition": "trusted_guarded",
