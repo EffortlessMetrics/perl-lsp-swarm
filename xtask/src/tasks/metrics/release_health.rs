@@ -58,7 +58,7 @@
 use crate::tasks::build_timing::SCHEMA_VERSION as BUILD_TIMING_RECEIPT_SCHEMA_VERSION;
 use crate::utils::project_root;
 use chrono::Utc;
-use color_eyre::eyre::{Context, Result, eyre};
+use color_eyre::eyre::{Context, Result, ensure, eyre};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -533,7 +533,7 @@ mod tests {
         let err = read_dev_loop_durations(tmp.path())
             .err()
             .ok_or_else(|| eyre!("expected schema version rejection"))?;
-        assert!(err.to_string().contains("schema version mismatch"), "{err}");
+        ensure!(err.to_string().contains("schema version mismatch"), "{err}");
         Ok(())
     }
 
@@ -543,7 +543,7 @@ mod tests {
     fn read_dev_loop_durations_refuses_missing_schema_version() -> Result<()> {
         let tmp = TempDir::new()?;
         write_raw_receipt(tmp.path(), r#"{"measurements": {}}"#)?;
-        assert!(
+        ensure!(
             read_dev_loop_durations(tmp.path()).is_err(),
             "receipt without schema_version must fail closed"
         );
