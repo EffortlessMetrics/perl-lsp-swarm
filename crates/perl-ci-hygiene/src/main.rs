@@ -145,6 +145,7 @@ fn run() -> Result<i32> {
                 check_serial_test(&repo_root)?
             }
         }
+        CliCommand::CheckDoctestEnforcement => commands::doctest_enforcement::check(&repo_root)?,
         CliCommand::CheckPrintInLib => check_print_in_lib(&repo_root)?,
         CliCommand::CheckRegexStatic => check_regex_static(&repo_root)?,
         CliCommand::QuickCheck => cmd_quick_check(&repo_root)?,

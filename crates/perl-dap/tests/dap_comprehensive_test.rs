@@ -5,7 +5,7 @@
 use perl_dap::debug_adapter::DapMessageWithEpoch;
 use perl_dap::{DapMessage, DebugAdapter};
 use perl_lsp_rs_core::config::PerlOracleEnv;
-use perl_tdd_support::{must, must_some};
+use perl_tdd_support::{must, must_some, must_with};
 use serde_json::json;
 use std::fs::write;
 use std::sync::mpsc::{Receiver, sync_channel};
@@ -49,6 +49,7 @@ fn create_test_script(
 #[test]
 fn test_dap_initialize() {
     let mut adapter = DebugAdapter::new();
+    crate::install_unbounded_test_authority(&adapter);
     let (tx, _rx) = sync_channel(64);
     adapter.set_event_sender(tx);
 
@@ -104,6 +105,7 @@ fn test_dap_initialize() {
 #[test]
 fn test_dap_launch_with_invalid_program() {
     let mut adapter = DebugAdapter::new();
+    crate::install_unbounded_test_authority(&adapter);
     let (tx, _rx) = sync_channel(64);
     adapter.set_event_sender(tx);
 
@@ -131,6 +133,7 @@ fn test_dap_launch_with_invalid_program() {
 #[test]
 fn test_dap_launch_missing_arguments() {
     let mut adapter = DebugAdapter::new();
+    crate::install_unbounded_test_authority(&adapter);
     let (tx, _rx) = sync_channel(64);
     adapter.set_event_sender(tx);
 
@@ -153,6 +156,7 @@ fn test_dap_launch_missing_arguments() {
 #[test]
 fn test_dap_breakpoints_no_session() {
     let mut adapter = DebugAdapter::new();
+    crate::install_unbounded_test_authority(&adapter);
 
     let bp_args = json!({
         "source": {"path": "/tmp/test.pl"},
@@ -189,6 +193,7 @@ fn test_dap_inline_values() -> TestResult {
     write(&script_path, "my $x = 1;\nmy $y = $x + 2;\nmy $z = $y + 3;\n")?;
 
     let mut adapter = DebugAdapter::new();
+    crate::install_unbounded_test_authority(&adapter);
     let response = adapter.handle_request(
         1,
         "inlineValues",
@@ -222,6 +227,7 @@ fn test_dap_inline_values() -> TestResult {
 #[test]
 fn test_dap_breakpoints_missing_source() -> Result<(), Box<dyn std::error::Error>> {
     let mut adapter = DebugAdapter::new();
+    crate::install_unbounded_test_authority(&adapter);
 
     let bp_args = json!({
         "breakpoints": [{"line": 5}]
@@ -243,6 +249,7 @@ fn test_dap_breakpoints_missing_source() -> Result<(), Box<dyn std::error::Error
 #[test]
 fn test_dap_breakpoints_invalid_line() {
     let mut adapter = DebugAdapter::new();
+    crate::install_unbounded_test_authority(&adapter);
 
     let bp_args = json!({
         "source": {"path": "/tmp/test.pl"},
@@ -276,6 +283,7 @@ fn test_dap_breakpoints_invalid_line() {
 #[test]
 fn test_dap_set_exception_breakpoints() -> TestResult {
     let mut adapter = DebugAdapter::new();
+    crate::install_unbounded_test_authority(&adapter);
 
     let response = adapter.handle_request(
         1,
@@ -312,6 +320,7 @@ fn test_dap_set_function_breakpoints_validation() -> TestResult {
     // across previously-valid and previously-invalid shapes is the
     // discrimination that the gate runs ahead of the validation loop.
     let mut adapter = DebugAdapter::new();
+    crate::install_unbounded_test_authority(&adapter);
 
     let response = adapter.handle_request(
         1,
@@ -346,6 +355,7 @@ fn test_dap_set_function_breakpoints_validation() -> TestResult {
 #[test]
 fn test_dap_evaluate_empty_expression() {
     let mut adapter = DebugAdapter::new();
+    crate::install_unbounded_test_authority(&adapter);
 
     let eval_args = json!({
         "expression": ""
@@ -366,6 +376,7 @@ fn test_dap_evaluate_empty_expression() {
 #[test]
 fn test_dap_evaluate_no_session() {
     let mut adapter = DebugAdapter::new();
+    crate::install_unbounded_test_authority(&adapter);
 
     let eval_args = json!({
         "expression": "$x + 1"
@@ -386,6 +397,7 @@ fn test_dap_evaluate_no_session() {
 #[test]
 fn test_dap_threads_no_session() {
     let mut adapter = DebugAdapter::new();
+    crate::install_unbounded_test_authority(&adapter);
 
     let response = adapter.handle_request(1, "threads", None);
 
@@ -405,6 +417,7 @@ fn test_dap_threads_no_session() {
 #[test]
 fn test_dap_stacktrace_no_session() {
     let mut adapter = DebugAdapter::new();
+    crate::install_unbounded_test_authority(&adapter);
 
     let response = adapter.handle_request(1, "stackTrace", Some(json!({"threadId": 1})));
 
@@ -426,6 +439,7 @@ fn test_dap_stacktrace_no_session() {
 #[test]
 fn test_dap_pause_no_session() {
     let mut adapter = DebugAdapter::new();
+    crate::install_unbounded_test_authority(&adapter);
 
     let response = adapter.handle_request(1, "pause", None);
 
@@ -446,6 +460,7 @@ fn test_dap_pause_no_session() {
 #[test]
 fn test_dap_disconnect_cleans_up_session() {
     let mut adapter = DebugAdapter::new();
+    crate::install_unbounded_test_authority(&adapter);
     let (tx, _rx) = sync_channel(64);
     adapter.set_event_sender(tx);
 
@@ -464,6 +479,7 @@ fn test_dap_disconnect_cleans_up_session() {
 #[test]
 fn test_dap_unknown_command() {
     let mut adapter = DebugAdapter::new();
+    crate::install_unbounded_test_authority(&adapter);
 
     let response = adapter.handle_request(1, "unknownCommand", None);
 
@@ -480,6 +496,7 @@ fn test_dap_unknown_command() {
 #[test]
 fn test_dap_variables_missing_reference() {
     let mut adapter = DebugAdapter::new();
+    crate::install_unbounded_test_authority(&adapter);
 
     let response = adapter.handle_request(1, "variables", None);
 
@@ -496,6 +513,7 @@ fn test_dap_variables_missing_reference() {
 #[test]
 fn test_dap_variables_default_scope() {
     let mut adapter = DebugAdapter::new();
+    crate::install_unbounded_test_authority(&adapter);
 
     let var_args = json!({
         "variablesReference": 11
@@ -532,6 +550,7 @@ fn test_dap_variables_default_scope() {
 #[test]
 fn test_dap_scopes_missing_frame() {
     let mut adapter = DebugAdapter::new();
+    crate::install_unbounded_test_authority(&adapter);
 
     let response = adapter.handle_request(1, "scopes", None);
 
@@ -548,6 +567,7 @@ fn test_dap_scopes_missing_frame() {
 #[test]
 fn test_dap_scopes_noncurrent_frame_returns_empty() {
     let mut adapter = DebugAdapter::new();
+    crate::install_unbounded_test_authority(&adapter);
 
     let scope_args = json!({
         "frameId": 1
@@ -574,6 +594,7 @@ fn test_dap_scopes_noncurrent_frame_returns_empty() {
 #[test]
 fn test_sequence_number_increment() {
     let mut adapter = DebugAdapter::new();
+    crate::install_unbounded_test_authority(&adapter);
 
     // Test that sequence numbers increment properly by making multiple requests
     let _response1 = adapter.handle_request(1, "initialize", None);
@@ -608,6 +629,7 @@ print "Result: $result\n";
         "created DAP lifecycle script must stay on disk while its TempDir is held"
     );
     let mut adapter = DebugAdapter::new();
+    crate::install_unbounded_test_authority(&adapter);
     let (tx, rx) = sync_channel(64);
     adapter.set_event_sender(tx);
 
@@ -706,4 +728,26 @@ print "Result: $result\n";
 
     eprintln!("DAP lifecycle test completed successfully");
     Ok(())
+}
+
+/// Install an explicitly unbounded startup authority (#8656).
+///
+/// These tests exercise debugging workflows, not the launch-authority
+/// contract. Without an installed authority every launch is refused, so each
+/// adapter opts into unbounded mode with a visible test acknowledgement.
+fn install_unbounded_test_authority(adapter: &perl_dap::DebugAdapter) {
+    use perl_dap::{
+        LaunchAuthority, LaunchAuthoritySource, LaunchAuthorityStartup, UnboundedAcknowledgement,
+    };
+    let authority = must_with(
+        LaunchAuthority::resolve(&LaunchAuthorityStartup {
+            trusted_roots: Vec::new(),
+            allow_unbounded: Some(UnboundedAcknowledgement::new(
+                LaunchAuthoritySource::CommandLine,
+                "test: unbounded session",
+            )),
+        }),
+        "test authority resolution",
+    );
+    adapter.set_launch_authority(authority);
 }
