@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Fixed
+body: "Keep print-filehandle heredoc prose out of local-sub discovery and preserve later slash disambiguation. Pending heredoc bodies now take precedence over POD/comment skipping at the header newline."
+time: 2026-09-20T00:00:00Z
+custom:
+  PR: "16169"
+  Slug: print-filehandle-heredoc-opacity
+  Breaking: "no"
