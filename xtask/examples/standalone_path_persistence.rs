@@ -683,10 +683,18 @@ pub fn validate_plan(plan: &PathPlan) -> ContractResult<()> {
     // would ever resolve.
     let names_the_command = match environment.platform {
         Platform::WindowsNative => {
-            let stem = match file_name.len().checked_sub(4) {
-                Some(cut) if file_name[cut..].eq_ignore_ascii_case(".exe") => &file_name[..cut],
-                _ => file_name,
-            };
+            // `len() - 4` is a byte offset, not a character offset: for a name
+            // whose tail is multi-byte UTF-8 it can land inside a codepoint, and
+            // indexing there would panic. A malformed-looking name must produce
+            // the typed refusal below, never a crash, so take the tail through
+            // the checked accessor — `get` yields None on a non-boundary, and a
+            // boundary that did yield Some is safe to split on.
+            let stem = file_name
+                .len()
+                .checked_sub(4)
+                .and_then(|cut| file_name.get(cut..).map(|tail| (cut, tail)))
+                .filter(|(_, tail)| tail.eq_ignore_ascii_case(".exe"))
+                .map_or(file_name, |(cut, _)| &file_name[..cut]);
             stem.eq_ignore_ascii_case(&subject.command_name)
         }
         Platform::Posix | Platform::Wsl => file_name == subject.command_name,
@@ -2516,6 +2524,50 @@ mod tests {
         })?;
         validate_plan(&plan).map_err(|error| {
             color_eyre::eyre::eyre!("windows lookup is case-insensitive: {error}")
+        })?;
+        Ok(())
+    }
+
+    /// A multi-byte tail must reach the typed refusal, not a panic. `len() - 4`
+    /// can land inside a codepoint, and path validation accepts non-ASCII, so
+    /// this is reachable from a well-formed document.
+    #[test]
+    fn a_unicode_filename_tail_refuses_instead_of_panicking() -> Result<()> {
+        // "\u{1F600}x" is five bytes; len - 4 = 1 lands on a continuation byte.
+        let plan: ContractResult<PathPlan> =
+            mutated("plan_windows_registry_user_path.json", |value| {
+                value["subject"]["executable_path"] =
+                    json!("C:\\Users\\operator\\AppData\\Local\\perl-lsp\\\u{1F600}x");
+            });
+        expect_rejected(
+            plan.and_then(|plan| validate_plan(&plan)),
+            "does not name the executable",
+        )?;
+
+        // Same tail, and now the command name matches it exactly: still no panic,
+        // and the document is accepted on its merits rather than by accident.
+        let matching: PathPlan = mutated("plan_windows_registry_user_path.json", |value| {
+            value["subject"]["executable_path"] =
+                json!("C:\\Users\\operator\\AppData\\Local\\perl-lsp\\\u{1F600}x");
+            value["subject"]["command_name"] = json!("\u{1F600}x");
+        })?;
+        validate_plan(&matching).map_err(|error| {
+            color_eyre::eyre::eyre!("a multi-byte name is not invalid: {error}")
+        })?;
+        Ok(())
+    }
+
+    /// A genuine Unicode name ending in `.exe` still strips correctly: the
+    /// boundary guard must not break the case it was protecting.
+    #[test]
+    fn a_unicode_name_ending_in_exe_still_strips_on_windows() -> Result<()> {
+        let plan: PathPlan = mutated("plan_windows_registry_user_path.json", |value| {
+            value["subject"]["executable_path"] =
+                json!("C:\\Users\\operator\\AppData\\Local\\perl-lsp\\\u{65E5}\u{672C}.exe");
+            value["subject"]["command_name"] = json!("\u{65E5}\u{672C}");
+        })?;
+        validate_plan(&plan).map_err(|error| {
+            color_eyre::eyre::eyre!("a Unicode stem before `.exe` must still strip: {error}")
         })?;
         Ok(())
     }
