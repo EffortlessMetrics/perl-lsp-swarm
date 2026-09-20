@@ -70,7 +70,7 @@ fn included_path(line: &str) -> Option<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use color_eyre::eyre::Result;
+    use color_eyre::eyre::{Result, ensure};
     use std::path::PathBuf;
 
     #[test]
@@ -154,7 +154,10 @@ mod tests {
         let root =
             CrateRoot::new("included", Some("fn main() {\n    include!(\"catalog.rs\");\n}\n"))?;
         let catalog = root.write("catalog.rs", "// spliced into the build script\n")?;
-        assert!(is_excluded_for_print_check(&catalog));
+        ensure!(
+            is_excluded_for_print_check(&catalog),
+            "a file spliced into the build script is build-script source"
+        );
         Ok(())
     }
 
@@ -163,7 +166,10 @@ mod tests {
         let root =
             CrateRoot::new("sibling", Some("fn main() {\n    include!(\"catalog.rs\");\n}\n"))?;
         let other = root.write("other.rs", "// ordinary source\n")?;
-        assert!(!is_excluded_for_print_check(&other));
+        ensure!(
+            !is_excluded_for_print_check(&other),
+            "a sibling the build script never includes stays library source"
+        );
         Ok(())
     }
 
@@ -171,7 +177,10 @@ mod tests {
     fn a_crate_without_a_build_script_excludes_nothing() -> Result<()> {
         let root = CrateRoot::new("nobuild", None)?;
         let catalog = root.write("catalog.rs", "// ordinary source\n")?;
-        assert!(!is_excluded_for_print_check(&catalog));
+        ensure!(
+            !is_excluded_for_print_check(&catalog),
+            "without a build script there is nothing to be included by"
+        );
         Ok(())
     }
 
@@ -184,7 +193,10 @@ mod tests {
             Some("fn main() {\n    include!(concat!(env!(\"OUT_DIR\"), \"/gen.rs\"));\n}\n"),
         )?;
         let generated = root.write("gen.rs", "// generated\n")?;
-        assert!(!is_excluded_for_print_check(&generated));
+        ensure!(
+            !is_excluded_for_print_check(&generated),
+            "a computed include path is not resolved into a real exclusion"
+        );
         Ok(())
     }
 

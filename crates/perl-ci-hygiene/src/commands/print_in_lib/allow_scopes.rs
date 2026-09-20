@@ -65,20 +65,56 @@ fn scan_line(line: &str) -> LineScan {
     LineScan { depth_delta, code, unsupported }
 }
 
-/// Whether the line opens a raw string (`r"…"` or `r#"…"#`).
+/// Whether the line opens a raw string (`r"…"`, `r#"…"#`, `r##"…"##`, …).
 ///
-/// The `r` has to begin a token. Without that check `stderr"` reads as a raw
+/// Rust puts no limit on the run of `#` between the `r` and the quote, so a
+/// fixed one-hash check answered `false` for every deeper form and let it
+/// through to a bracket scanner that cannot read it. This counts the whole run.
+///
+/// The `b` and `c` prefixes take the same raw variant (`br#"…"#`, `cr#"…"#`)
+/// and are recognised for the same reason: admitting more forms only ever
+/// refuses more attributes, which is the safe direction here.
+///
+/// The prefix has to begin a token. Without that check `stderr"` reads as a raw
 /// string opener, which refused an ordinary wrapped attribute whose reason
 /// clause happened to end in `r`.
+///
+/// The scan walks characters and carries the previous one rather than slicing
+/// by byte offset, so there is no index into the middle of a multi-byte
+/// character for a non-ASCII reason clause to land on.
 fn starts_raw_string(line: &str) -> bool {
-    line.match_indices('r').any(|(index, _)| {
-        let before_is_boundary = line[..index]
-            .chars()
-            .next_back()
-            .is_none_or(|ch| !ch.is_ascii_alphanumeric() && ch != '_');
-        let after = &line[index + 1..];
-        before_is_boundary && (after.starts_with('"') || after.starts_with("#\""))
-    })
+    let mut previous: Option<char> = None;
+    let mut chars = line.chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        let begins_token =
+            previous.is_none_or(|prior| !prior.is_ascii_alphanumeric() && prior != '_');
+        previous = Some(ch);
+        if !begins_token {
+            continue;
+        }
+
+        let mut lookahead = chars.clone();
+        let mut marker = ch;
+        if matches!(ch, 'b' | 'c') {
+            let Some(next) = lookahead.next() else {
+                continue;
+            };
+            marker = next;
+        }
+        if marker != 'r' {
+            continue;
+        }
+
+        while lookahead.peek() == Some(&'#') {
+            lookahead.next();
+        }
+        if lookahead.peek() == Some(&'"') {
+            return true;
+        }
+    }
+
+    false
 }
 
 /// An attribute currently being read, possibly across several lines.
@@ -496,6 +532,81 @@ mod tests {
                 == vec![false],
             "a reason clause whose text ends in `r` still opts out"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn a_raw_string_reason_is_refused_at_every_delimiter_depth() -> Result<()> {
+        // Rust puts no limit on the run of `#` between the `r` and the quote.
+        // A fixed one-hash check answered `false` for every deeper form, so
+        // the lines the refusal above promises to catch reached the bracket
+        // scanner anyway -- the promise held at depth 0 and 1 and nowhere else.
+        for hashes in 0..4 {
+            let fence = "#".repeat(hashes);
+            let line = format!(
+                r#"#[expect(clippy::print_stdout, reason = r{fence}"renders [rows]"{fence})]"#
+            );
+            ensure!(
+                joined(&[line.as_str()]).is_empty(),
+                "a raw string at delimiter depth {hashes} must not opt out"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a_byte_or_c_string_raw_prefix_is_refused_at_depth_too() -> Result<()> {
+        // `br#"…"#` and `cr#"…"#` are the same unmodelled form wearing a
+        // prefix, and they carry the same arbitrary delimiter run.
+        for prefix in ["br", "cr"] {
+            for hashes in 0..3 {
+                let fence = "#".repeat(hashes);
+                let line = format!(
+                    r#"#[expect(clippy::print_stdout, reason = {prefix}{fence}"renders [rows]"{fence})]"#
+                );
+                ensure!(
+                    joined(&[line.as_str()]).is_empty(),
+                    "a `{prefix}` raw string at depth {hashes} must not opt out"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a_hash_run_that_no_quote_closes_is_not_a_raw_string() -> Result<()> {
+        // The paired half of the depth controls, and the reason counting the
+        // run is safe: the count still has to end at a quote. A scanner that
+        // stopped at the run would read an issue reference in a reason clause
+        // as an opener and refuse ordinary source -- the over-refusing
+        // direction of the same defect.
+        for hashes in 1..4 {
+            let fence = "#".repeat(hashes);
+            let line =
+                format!(r#"#[expect(clippy::print_stderr, reason = "see r{fence}16232 [rows]")]"#);
+            ensure!(
+                joined(&[line.as_str()]) == vec![false],
+                "a `#` run of {hashes} that no quote follows still opts out"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a_raw_prefix_inside_a_word_is_not_an_opener_at_any_depth() -> Result<()> {
+        // The token-boundary rule has to survive the deeper forms as well:
+        // `substr##"` carries a real delimiter run and a real quote, and is
+        // still an identifier followed by a string, not a raw string.
+        for hashes in 0..4 {
+            let fence = "#".repeat(hashes);
+            for word in ["substr", "verb", "sync"] {
+                let line = format!(r#"{word}{fence}"x""#);
+                ensure!(
+                    !starts_raw_string(&line),
+                    "`{word}` with a run of {hashes} is an identifier, not a raw string"
+                );
+            }
+        }
         Ok(())
     }
 
