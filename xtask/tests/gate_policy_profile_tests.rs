@@ -186,7 +186,108 @@ fn routed_integration_test_gate_has_cold_ci_headroom() -> Result<(), Box<dyn std
     Ok(())
 }
 
-/// Contract guard for issue #5934: `unit_parser_stack_full` must remain a required
+/// #14458 pr_fast leg for the four healthy `required-features = ["test-helpers"]`
+/// perl-dap targets. The merge-gate leg of `unit_dap_support_full` (#14334)
+/// already binds those targets via `dap_helper_command_error`, so the pr_fast
+/// sibling must satisfy the same selector contract — `--features test-helpers`,
+/// `-p perl-dap`, and exactly one `--test <target>` per named target — plus a
+/// `rust_package_scoped` planning pin to `perl-dap` so the gate only runs when
+/// ci-scope touches that crate (and a regression in any of the four tests can
+/// no longer sail through pr_fast).
+#[test]
+fn routed_integration_dap_test_helpers_gate_binds_all_helper_targets_in_pr_fast()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = project_root();
+    let content = fs::read_to_string(root.join(".ci/gate-policy.yaml"))?;
+    let parsed: GatePolicyDoc = serde_yaml_ng::from_str(&content)?;
+
+    let gate = parsed
+        .gates
+        .into_iter()
+        .find(|gate| gate.name == "unit_routed_full_dap_test_helpers")
+        .ok_or("missing unit_routed_full_dap_test_helpers gate (#14458 regression: pr_fast leg added by this fix)")?;
+
+    assert_eq!(
+        gate.tier, "pr_fast",
+        "unit_routed_full_dap_test_helpers must stay in pr_fast (#14458 sibling of unit_routed_full)"
+    );
+    assert!(
+        gate.required,
+        "unit_routed_full_dap_test_helpers must stay PR-blocking once added"
+    );
+    let planning = gate
+        .planning
+        .as_ref()
+        .ok_or("unit_routed_full_dap_test_helpers must declare a planning block")?;
+    assert_eq!(
+        planning.role.as_str(),
+        "rust_package_scoped",
+        "unit_routed_full_dap_test_helpers must keep its scope bounded to perl-dap only (#14458)"
+    );
+    assert_eq!(
+        planning.packages,
+        vec!["perl-dap".to_string()],
+        "unit_routed_full_dap_test_helpers must run only when ci-scope touches perl-dap"
+    );
+
+    // The sibling does not chain a `&&` separator — it IS the four-target leg,
+    // hoisted into its own gate. Verify the absence of a separator first so a
+    // future "and run the broad --tests too" mutation gets caught here even
+    // when the rest of the selector contract would still pass.
+    let tokens: Vec<&str> = gate.command.split_whitespace().collect();
+    assert!(
+        !tokens.contains(&"&&") && !tokens.contains(&";") && !tokens.contains(&"||"),
+        "unit_routed_full_dap_test_helpers is a single cargo invocation; \
+         a chained separator would re-introduce the silent-pass failure mode \
+         (#14458)"
+    );
+
+    if let Some(error) = dap_helper_command_error(&gate.command) {
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, error).into());
+    }
+
+    // Falsifier parity with the merge-gate test: removing any one target, the
+    // --features selector, or widening the target set must all be caught here.
+    for target in DAP_HELPER_TARGETS {
+        let mutated = gate.command.replacen(&format!(" --test {target}"), "", 1);
+        assert!(
+            dap_helper_command_error(&mutated).is_some(),
+            "removing {target} from the pr_fast leg must fail the policy contract"
+        );
+    }
+    let missing_feature = gate.command.replace("--features test-helpers", "--features default");
+    assert!(dap_helper_command_error(&missing_feature).is_some());
+    Ok(())
+}
+
+#[test]
+fn routed_integration_test_command_does_not_silently_drop_dap_test_helpers()
+-> Result<(), Box<dyn std::error::Error>> {
+    // #14458: assert the pr_fast scope-aware gate does NOT carry the new
+    // `--features test-helpers` leg inline, so the silent-drop pattern
+    // documented in #14333/#14334 cannot re-enter through a `cargo test --tests`
+    // string that looks healthy. The dedicated pr_fast sibling carries the
+    // four healthy targets; `unit_routed_full` continues to run the broad
+    // `--tests` for any diff-touched crate and remains the only place
+    // `cargo test --locked --tests {package_args}` appears in pr_fast.
+    let root = project_root();
+    let content = fs::read_to_string(root.join(".ci/gate-policy.yaml"))?;
+    let parsed: GatePolicyDoc = serde_yaml_ng::from_str(&content)?;
+    let routed = parsed
+        .gates
+        .iter()
+        .find(|gate| gate.name == "unit_routed_full")
+        .ok_or("missing unit_routed_full gate")?;
+    assert!(
+        !routed.command.contains("test-helpers"),
+        "unit_routed_full must not carry test-helpers inline (#14458 sibling owns that contract)"
+    );
+    assert!(
+        !routed.command.contains("--test eval_ref_cache_miss_resume_tests"),
+        "unit_routed_full must not pin a perl-dap --test selector (#14458 sibling owns the four)"
+    );
+    Ok(())
+}
 /// merge_gate tier gate that is not quarantined.
 ///
 /// This gate covers lib tests for perl-parser, perl-lexer, and perl-parser-core —
