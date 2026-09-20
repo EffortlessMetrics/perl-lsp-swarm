@@ -52,6 +52,12 @@
 //! against the masked view, which also fixes the pre-existing single-line form
 //! of that false positive.
 //!
+//! The same origin check decides builtin from lookalike, and only the builtin
+//! is diagnosed. A package qualifier other than `CORE::` names another
+//! function, and a `->` names a method: both are user-defined code, so neither
+//! is reported. The arrow is tested as `->` rather than a trailing `>`, which
+//! keeps `(k => eval '...')` — a fat comma introducing the real builtin.
+//!
 //! Known residual, unchanged by this decision: the *detector patterns* treat a
 //! left-shift `<<` as a heredoc marker. That imprecision is pre-existing on
 //! single lines and is a property of the `<<` token test, not of the newline

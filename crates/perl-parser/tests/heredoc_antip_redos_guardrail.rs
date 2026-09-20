@@ -547,6 +547,30 @@ fn antip_eval_keyword_is_not_matched_as_an_identifier_suffix() {
         !has_eval_string("CORE::GLOBAL::eval 'print <<EOF;';\n"),
         "CORE::GLOBAL::eval is a user override, not the builtin"
     );
+
+    // A method call names user-defined code, so it belongs with `Foo::eval`
+    // too. The backward path scan stops at `>` and leaves an empty qualifier,
+    // which would otherwise fall through to "builtin". Perl requires parens
+    // for a method call's arguments, so `->eval '...'` is not valid source;
+    // these shapes reach the detector as half-typed or unparseable text, which
+    // is exactly what a lint over raw source sees in an editor buffer.
+    assert!(!has_eval_string("$obj->eval 'print <<EOF;';\n"), "object method eval");
+    assert!(!has_eval_string("Foo->eval 'print <<EOF;';\n"), "class method eval");
+    assert!(
+        !has_eval_string("$obj->eval 'print <<\"E\";\nbody\nE\n';\n"),
+        "multi-line object method eval"
+    );
+    // The arrow may be spaced off the name, which puts whitespace rather than
+    // `>` at the end of the scanned prefix.
+    assert!(!has_eval_string("$obj -> eval 'print <<EOF;';\n"), "spaced arrow method eval");
+    assert!(!has_eval_string("Foo::Bar->eval 'print <<EOF;';\n"), "qualified class method eval");
+
+    // A fat comma also ends in `>` but introduces the builtin in argument
+    // position. Rejecting on a bare trailing `>` would lose this true positive.
+    assert!(
+        has_eval_string("my %h = (k => eval 'print <<EOF;');\n"),
+        "eval after a fat comma is the builtin and must still be reported"
+    );
 }
 
 #[test]

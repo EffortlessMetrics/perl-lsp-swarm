@@ -943,6 +943,15 @@ fn eval_match_is_builtin(scan_code: &str, start: usize) -> bool {
         .find(|(_, ch)| !(ch.is_alphanumeric() || *ch == '_' || *ch == ':'))
         .map_or(0, |(idx, ch)| idx + ch.len_utf8());
 
+    // A method call names user-defined code rather than the builtin, the same
+    // case as `Foo::eval` below. The path scan stops at `>`, leaving an empty
+    // qualifier that would otherwise read as the bare builtin, so the arrow is
+    // rejected here. Matching on `->` rather than a trailing `>` keeps the fat
+    // comma in `(k => eval '...')`, which introduces the real builtin.
+    if prefix[..path_start].trim_end().ends_with("->") {
+        return false;
+    }
+
     match prefix[path_start..].strip_suffix("::") {
         None => true,
         Some(qualifier) => qualifier == "CORE",
