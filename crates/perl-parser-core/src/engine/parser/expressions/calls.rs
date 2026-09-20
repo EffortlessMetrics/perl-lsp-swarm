@@ -669,21 +669,7 @@ impl<'a> Parser<'a> {
         if self.peek_kind() == Some(TokenKind::Identifier)
             && let Some((op, op_start)) = self.consume_assignment_operator()?
         {
-            let rhs = if let Some(missing) = self.recover_missing_infix_rhs(op_start) {
-                missing
-            } else {
-                self.parse_assignment()?
-            };
-            let start = decl.location.start;
-            let end = rhs.location.end;
-            return Ok(Node::new(
-                NodeKind::Assignment {
-                    lhs: Box::new(decl),
-                    rhs: Box::new(rhs),
-                    op: op.to_string(),
-                },
-                SourceLocation { start, end },
-            ));
+            return self.finish_declaration_repetition_assignment(decl, op, op_start);
         }
         self.parse_below_assignment_with(decl)
     }

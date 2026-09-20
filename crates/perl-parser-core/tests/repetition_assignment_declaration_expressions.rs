@@ -81,6 +81,14 @@ fn list_declaration_accepts_repetition_assignment() -> Result<(), String> {
     if source_slice(source, assignment)? != "my ($x, $y) x= 3" {
         return Err(format!("unexpected full assignment span: {:?}", assignment.location));
     }
+    // A trailing comma still belongs to the surrounding comma expression,
+    // not to the repetition RHS.
+    let trailing = "my ($x, $y) x= 3, $z;";
+    assert_clean_parse(trailing);
+    let trailing_ast = parse(trailing);
+    if find_assignment(&trailing_ast, "x=").is_none() {
+        return Err(format!("trailing comma lost declaration x=:\n{}", trailing_ast.to_sexp()));
+    }
     Ok(())
 }
 

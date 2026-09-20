@@ -94,20 +94,7 @@ impl<'a> Parser<'a> {
                     },
                     SourceLocation { start, end },
                 )?;
-                let rhs = if let Some(missing) = self.recover_missing_infix_rhs(op_start) {
-                    missing
-                } else {
-                    self.parse_assignment()?
-                };
-                let assign_end = rhs.location.end;
-                return self.charge_node(
-                    NodeKind::Assignment {
-                        lhs: Box::new(decl),
-                        rhs: Box::new(rhs),
-                        op: op.to_string(),
-                    },
-                    SourceLocation { start, end: assign_end },
-                );
+                return self.finish_declaration_repetition_assignment(decl, op, op_start);
             }
             let node = self.charge_node(
                 NodeKind::VariableListDeclaration {
