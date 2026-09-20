@@ -133,25 +133,62 @@ impl<'a> Parser<'a> {
             if s.peek_kind() == Some(TokenKind::WordNot) && !s.is_keyword_before_fat_arrow() {
                 let op_token = s.advance_token()?;
                 let start = op_token.start();
+                // Simple-group `)` end when the operand took the parenthesized
+                // path below; the group returns the inner location.
+                let mut closer_end = None;
                 let operand = if let Some(missing) = s.recover_missing_infix_rhs(start) {
                     missing
                 } else if s.peek_kind() == Some(TokenKind::LeftParen) {
-                    s.parse_primary()?
+                    let inner = s.parse_primary()?;
+                    // FC-WORD-NOT-SPAN-CLOSER: the group consumes `)` through
+                    // the tracked closer path, so the previous position is the
+                    // closing delimiter end the inner location omits. On the
+                    // inserted-closer recovery path nothing was consumed and
+                    // the max below keeps the inner end.
+                    closer_end = Some(s.previous_position());
+                    inner
                 } else {
-                    let first = if s.goto_starts_control_flow() {
+                    // A parenthesized inner operand must ride the full
+                    // descent: after it returns, the climb back through the
+                    // additive levels still runs inside this operand
+                    // (`not not ($n) + 1` keeps `+ 1` inside the outer `not`,
+                    // while `not ($n) + 1` does not). A bare inner operand
+                    // already ran every level, so the climb is a no-op.
+                    let inner_is_bare = !matches!(
+                        s.tokens.peek_second().ok().map(|token| token.kind()),
+                        Some(TokenKind::LeftParen)
+                    );
+                    let first = if s.peek_kind() == Some(TokenKind::WordNot)
+                        && !s.is_keyword_before_fat_arrow()
+                        && inner_is_bare
+                    {
+                        // FC-WORD-NOT-NEST-DEPTH: nested bare `not` recurses
+                        // directly — one production-depth frame per operator,
+                        // as before — instead of riding parse_assignment back
+                        // down through the power/unary guards (~3 frames per
+                        // `not`, which tripped the 128-frame budget at ~50
+                        // prefixes that Perl accepts).
+                        s.parse_word_not_expr()?
+                    } else if s.goto_starts_control_flow() {
                         s.parse_goto()?
                     } else {
                         s.parse_assignment()?
                     };
                     s.collect_comma_fat_arrow_continuation(first)?
                 };
-                let end = operand.location.end;
+                let end = match closer_end {
+                    Some(closer) => operand.location.end.max(closer),
+                    None => operand.location.end,
+                };
 
                 let expr = s.charge_node(
                     NodeKind::Unary { op: op_token.text.to_string(), operand: Box::new(operand) },
                     SourceLocation { start, end },
                 )?;
-                return s.parse_postfix_chain(expr);
+                // FC-WORD-NOT-POSTFIX-OVERADMIT: only `->` chains may continue
+                // a `not` result (`not($x)->foo`); direct `[]`/`{}`/`++`/`--`
+                // are Perl syntax errors and stay for statement recovery.
+                return s.parse_arrow_chain(expr);
             }
 
             // The right side of a word operator should be a full expression
@@ -204,23 +241,22 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_assignment_with_ternary_tail(&mut self, collect_else_list: bool) -> ParseResult<Node> {
-        if let Some(kind) = self.peek_kind() {
-            if matches!(
+        // NOTE (#13932 reconstruction): no early `not` dispatch here.
+        // Word `not` enters through parse_unary so the levels above
+        // still run after `parse_word_not_expr` returns. The
+        // `parse_unary` WordNot arm remains the single entry point.
+        if let Some(kind) = self.peek_kind()
+            && matches!(
                 kind,
                 TokenKind::WordNot | TokenKind::WordAnd | TokenKind::WordOr | TokenKind::WordXor
-            ) && self.is_keyword_before_fat_arrow()
-            {
-                let token = self.advance_token()?;
-                return self.charge_node(
-                    NodeKind::Identifier { name: token.text.to_string() },
-                    SourceLocation { start: token.start(), end: token.end() },
-                );
-            }
-
-            // NOTE (#13932 reconstruction): no early `not` dispatch here.
-            // Word `not` enters through parse_unary so the levels above
-            // still run after `parse_word_not_expr` returns. The
-            // `parse_unary` WordNot arm remains the single entry point.
+            )
+            && self.is_keyword_before_fat_arrow()
+        {
+            let token = self.advance_token()?;
+            return self.charge_node(
+                NodeKind::Identifier { name: token.text.to_string() },
+                SourceLocation { start: token.start(), end: token.end() },
+            );
         }
 
         // Handle 'return' as an expression in expression context

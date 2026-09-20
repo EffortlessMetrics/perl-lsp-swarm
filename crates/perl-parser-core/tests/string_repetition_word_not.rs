@@ -147,6 +147,79 @@ fn canonical_not_boundary_without_repetition() -> Result<(), String> {
     Ok(())
 }
 
+#[test]
+fn word_not_rejects_direct_postfix_continuations() -> Result<(), String> {
+    // FC-WORD-NOT-POSTFIX-OVERADMIT. Oracle: perl 5.38.2 `-c` rejects each of
+    // these (`not($n)[0]` → syntax error near `)[`; `not($n)++` → "Can't
+    // modify not in postincrement"), so none may parse clean.
+    for source in
+        ["not($n)[0];", "not($n)++;", "not($n){k};", "$s x not($n)[0];", "$s x not($n)++;"]
+    {
+        let output = Parser::new(source).parse_with_recovery();
+        if output.diagnostics.is_empty() {
+            return Err(format!(
+                "admitted invalid postfix after word not: {source:?} {}",
+                output.ast.to_sexp()
+            ));
+        }
+    }
+    // Arrow chains on a parenthesized `not` result stay valid (oracle: syntax OK).
+    for source in ["not($n)->foo;", "not($n)->[0];", "$s x not($n)->foo;"] {
+        clean(source)?;
+    }
+    Ok(())
+}
+
+fn find_word_not(node: &Node) -> Option<&Node> {
+    if matches!(&node.kind, NodeKind::Unary { op, .. } if op == "not") {
+        return Some(node);
+    }
+    node.children().into_iter().find_map(find_word_not)
+}
+
+#[test]
+fn nested_bare_word_not_scales_past_fifty() -> Result<(), String> {
+    // FC-WORD-NOT-NEST-DEPTH. Perl accepts 50 nested bare `not` operators, so
+    // the parser must too; the 128-frame budget still trips at 130 prefixes
+    // (pinned by `word_not_depth_130_hits_limit` in guard_bypass_regression).
+    let source = format!("{}1;", "not ".repeat(50));
+    let ast = clean(&source)?;
+    let mut depth = 0;
+    let mut node = expression(&ast)?;
+    while let NodeKind::Unary { operand, .. } = &node.kind {
+        depth += 1;
+        node = operand;
+    }
+    if depth != 50 {
+        return Err(format!("expected 50 nested nots, found {depth}: {}", ast.to_sexp()));
+    }
+    if !matches!(&node.kind, NodeKind::Number { value } if value == "1") {
+        return Err(format!("lost innermost operand: {}", ast.to_sexp()));
+    }
+    Ok(())
+}
+
+#[test]
+fn parenthesized_word_not_span_includes_closer() -> Result<(), String> {
+    // FC-WORD-NOT-SPAN-CLOSER. The simple-group path consumes `)` but returns
+    // the inner location; the `not` span must still cover the closer.
+    for (source, expected) in [
+        ("$s x not($n) + 1;", "not($n)"),
+        ("not(($n));", "not(($n))"),
+        ("$s x not ($n) + 1;", "not ($n)"),
+    ] {
+        let ast = clean(source)?;
+        let not = find_word_not(&ast).ok_or_else(|| format!("lost word not: {}", ast.to_sexp()))?;
+        if source.get(not.location.start..not.location.end) != Some(expected) {
+            return Err(format!(
+                "wrong word-not span for {source:?}: expected {expected:?}, got {:?}",
+                not.location
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn has_repetition(node: &Node) -> bool {
     matches!(&node.kind, NodeKind::Binary { op, .. } if op == "x")
         || node.children().into_iter().any(has_repetition)
