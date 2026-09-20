@@ -245,10 +245,12 @@ fn walk_direct_statement(
             // bare hash literal because the table-name argument begins with a
             // quote-like operator the parser does not parse as a literal.
             // Recover the builder shape when the immediately previous direct
-            // statement was a bareword `table`/`view` identifier and this
-            // statement is a single-pair `HashLiteral`.
+            // statement was a bareword `table`/`view` identifier, this
+            // statement is a single-pair `HashLiteral`, and only trivia
+            // separates the two statements in source.
             if let NodeKind::HashLiteral { pairs } = &expression.kind
-                && let Some(builder_keyword) = previous_table_or_view_identifier(previous)
+                && let Some(builder_keyword) =
+                    previous_table_or_view_identifier(previous, node, source)
             {
                 handle_hash_literal_builder_call(
                     pairs,
@@ -618,7 +620,11 @@ fn static_table_name_anchor<'a>(node: &'a Node, source: Option<&str>) -> Option<
 /// The parser emits this two-statement shape for `table q(NAME) => BODY`
 /// because it cannot disambiguate the quote-like operator from a hash
 /// literal context.
-fn previous_table_or_view_identifier(previous: Option<&Node>) -> Option<String> {
+fn previous_table_or_view_identifier(
+    previous: Option<&Node>,
+    current: &Node,
+    source: Option<&str>,
+) -> Option<String> {
     let previous = previous?;
     let NodeKind::ExpressionStatement { expression } = &previous.kind else {
         return None;
@@ -626,7 +632,29 @@ fn previous_table_or_view_identifier(previous: Option<&Node>) -> Option<String> 
     let NodeKind::Identifier { name } = &expression.kind else {
         return None;
     };
-    matches!(name.as_str(), "table" | "view").then(|| name.clone())
+    if !matches!(name.as_str(), "table" | "view") {
+        return None;
+    }
+    // Source adjacency: the recovered `table KEY => BODY` shape is only a
+    // continuation of the previous statement when nothing but trivia sits
+    // between them. `table; q(users) => sub {};` is two statements — a bare
+    // identifier followed by an unrelated hash — and must not recover, consume
+    // authority, or invalidate a prior fact. Blind input (no source or
+    // unorderable ranges) rejects the same way: recovery without adjacency
+    // evidence is a guess, and guesses do not emit table facts.
+    let text = source?;
+    let gap = text.get(previous.location.end..current.location.start)?;
+    if gap_is_trivia(gap) { Some(name.clone()) } else { None }
+}
+
+/// Trivia between two statements: whitespace and `#`-to-end-of-line comments
+/// only. Any other token — notably a `;` statement terminator — means the
+/// statements are not adjacent.
+fn gap_is_trivia(gap: &str) -> bool {
+    gap.split('\n').all(|line| {
+        let code = line.split('#').next().unwrap_or_default();
+        code.trim().is_empty()
+    })
 }
 
 /// Apply the QuickORM table-package fact rules to a `HashLiteral` recovered

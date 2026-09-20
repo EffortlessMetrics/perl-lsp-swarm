@@ -1407,3 +1407,44 @@ table users => sub {};
     assert!(facts.is_empty());
     Ok(())
 }
+
+#[test]
+fn semicolon_terminated_bareword_does_not_recover_hash_builder()
+-> Result<(), Box<dyn std::error::Error>> {
+    // `table; q(users) => sub {};` is two statements — a bare identifier
+    // followed by an unrelated hash — not the recovered `table KEY => BODY`
+    // shape. Recovery must require source adjacency (trivia only between the
+    // statements) or it consumes authority and emits/invalidates table facts
+    // on any `table;` + hash coincidence (#15964 review).
+    let facts = generated_facts_from_source(
+        r#"
+package MyApp::Schema::User;
+use DBIx::QuickORM type => 'table';
+table; q(users) => sub {};
+1;
+"#,
+    )?;
+
+    assert!(
+        !canonical_names(&facts).contains(&"MyApp::Schema::User::qorm_table"),
+        "a semicolon-terminated bareword must not recover a hash builder"
+    );
+    Ok(())
+}
+
+#[test]
+fn adjacent_bareword_still_recovers_quote_like_builder() -> Result<(), Box<dyn std::error::Error>> {
+    // Positive control: with only trivia between the bareword and the hash,
+    // recovery still applies.
+    let facts = generated_facts_from_source(
+        r#"
+package MyApp::Schema::User;
+use DBIx::QuickORM type => 'table';
+table q(users) => sub {};
+1;
+"#,
+    )?;
+
+    assert_eq!(canonical_names(&facts), vec!["MyApp::Schema::User::qorm_table"]);
+    Ok(())
+}
