@@ -5122,33 +5122,69 @@ fn run_output(cmd: &str, args: &[String]) -> Result<String> {
     String::from_utf8(stdout_bytes).with_context(|| format!("{cmd} stdout was not UTF-8"))
 }
 
+/// `run_output` with a wall-clock timeout. Both child streams are regular
+/// files for the same reason as there (#12569) — and one more: this loop only
+/// polls `try_wait`, so a piped child that writes more than the pipe buffer
+/// blocks on the write and can never exit. The timeout then becomes the only
+/// way out, which is how `ripr-review-comments` lanes burned tens of minutes
+/// before an external SIGTERM on diffs whose output exceeded the buffer.
 fn run_output_with_timeout(cmd: &str, args: &[String], timeout: Duration) -> Result<String> {
+    let stdout_file =
+        tempfile::NamedTempFile::new().context("failed to create command stdout file")?;
+    let stderr_file =
+        tempfile::NamedTempFile::new().context("failed to create command stderr file")?;
     let mut child = Command::new(cmd)
         .args(args)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stdout(Stdio::from(stdout_file.reopen().context("failed to reopen command stdout file")?))
+        .stderr(Stdio::from(stderr_file.reopen().context("failed to reopen command stderr file")?))
         .spawn()
         .with_context(|| format!("failed to run {cmd}"))?;
     let started = Instant::now();
-    loop {
-        if child.try_wait().with_context(|| format!("failed to poll {cmd}"))?.is_some() {
-            let output =
-                child.wait_with_output().with_context(|| format!("failed to collect {cmd}"))?;
-            return output_to_string(cmd, output);
+    let status = loop {
+        if let Some(status) = child.try_wait().with_context(|| format!("failed to poll {cmd}"))? {
+            break status;
         }
         if started.elapsed() >= timeout {
             let _ = child.kill();
-            let output =
-                child.wait_with_output().with_context(|| format!("failed to collect {cmd}"))?;
+            let _ = child.wait();
             bail!(
                 "{cmd} timed out after {}s\nstdout:\n{}\nstderr:\n{}",
                 timeout.as_secs(),
-                String::from_utf8_lossy(&output.stdout).trim(),
-                String::from_utf8_lossy(&output.stderr).trim()
+                String::from_utf8_lossy(&read_output_excerpt(&stdout_file)?).trim(),
+                String::from_utf8_lossy(&read_output_excerpt(&stderr_file)?).trim()
             );
         }
         std::thread::sleep(Duration::from_millis(200));
+    };
+    let mut stdout_bytes = Vec::new();
+    stdout_file
+        .reopen()
+        .with_context(|| format!("failed to reopen {cmd} stdout file"))?
+        .read_to_end(&mut stdout_bytes)
+        .with_context(|| format!("failed to read {cmd} stdout file"))?;
+    if !status.success() {
+        bail!(
+            "{cmd} failed with status {}\nstdout:\n{}\nstderr:\n{}",
+            status,
+            String::from_utf8_lossy(&stdout_bytes).trim(),
+            String::from_utf8_lossy(&read_output_excerpt(&stderr_file)?).trim()
+        );
     }
+    String::from_utf8(stdout_bytes).with_context(|| format!("{cmd} stdout was not UTF-8"))
+}
+
+/// Reads the first `MAX_RIPR_STDERR_BYTES` of a captured stream file for a
+/// diagnostic message. The full payload stays on disk in the tempfile; error
+/// text only needs an excerpt, and a runaway child may have written far more
+/// than a message should carry.
+fn read_output_excerpt(file: &tempfile::NamedTempFile) -> Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    file.reopen()
+        .context("failed to reopen captured output file")?
+        .take(MAX_RIPR_STDERR_BYTES as u64)
+        .read_to_end(&mut bytes)
+        .context("failed to read captured output file")?;
+    Ok(bytes)
 }
 
 fn output_to_string(cmd: &str, output: std::process::Output) -> Result<String> {
@@ -11188,6 +11224,108 @@ esac
             result.bytes().all(|b| b == b'x'),
             "Output must consist entirely of 'x' bytes — got unexpected content"
         );
+        Ok(())
+    }
+
+    /// Helper child that writes `byte_count` ASCII `x` bytes to stderr and then
+    /// a small `ok` payload to stdout — the shape that deadlocked the old
+    /// piped `run_output_with_timeout` transport.
+    fn write_noisy_stderr_script(dir: &Path, byte_count: usize) -> Result<PathBuf> {
+        let source = dir.join("noisy_stderr.rs");
+        fs::write(
+            &source,
+            format!(
+                "use std::io::Write;\n\
+                 fn main() {{\n\
+                     let noise = vec![b'x'; {byte_count}];\n\
+                     if let Err(error) = std::io::stderr().write_all(&noise) {{\n\
+                         eprintln!(\"{{error}}\");\n\
+                         std::process::exit(1);\n\
+                     }}\n\
+                     if let Err(error) = std::io::stdout().write_all(b\"ok\\n\") {{\n\
+                         eprintln!(\"{{error}}\");\n\
+                         std::process::exit(1);\n\
+                     }}\n\
+                 }}\n"
+            ),
+        )?;
+        #[cfg(windows)]
+        let binary = dir.join("noisy_stderr.exe");
+        #[cfg(not(windows))]
+        let binary = dir.join("noisy_stderr");
+        let output = Command::new("rustc")
+            .arg(&source)
+            .arg("-o")
+            .arg(&binary)
+            .output()
+            .context("failed to compile noisy-stderr test helper")?;
+        if !output.status.success() {
+            bail!(
+                "failed to compile noisy-stderr test helper:\n{}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+        }
+        Ok(binary)
+    }
+
+    #[test]
+    fn run_output_with_timeout_reads_large_stdout_from_file() -> Result<()> {
+        // The timeout variant must use the same file transport as run_output:
+        // a piped child that out-writes the pipe buffer deadlocks against a
+        // poll loop that never drains it.
+        const TARGET_BYTES: usize = 2 * 1024 * 1024;
+
+        let tmp = tempfile::tempdir()?;
+        let script = write_large_output_script(tmp.path(), TARGET_BYTES)?;
+
+        let result =
+            run_output_with_timeout(&script.display().to_string(), &[], Duration::from_secs(120))?;
+
+        assert_eq!(
+            result.len(),
+            TARGET_BYTES,
+            "Expected exactly {TARGET_BYTES} bytes, captured {}",
+            result.len()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn run_output_with_timeout_survives_large_stderr() -> Result<()> {
+        // Regression guard for the review-comments lane hang: the child writes
+        // well past the pipe buffer on stderr while producing a small stdout
+        // result. With pipes this deadlocked until the timeout or an external
+        // SIGTERM; with file transport it returns immediately.
+        let tmp = tempfile::tempdir()?;
+        let script = write_noisy_stderr_script(tmp.path(), 4 * MAX_RIPR_STDERR_BYTES)?;
+
+        let result =
+            run_output_with_timeout(&script.display().to_string(), &[], Duration::from_secs(120))?;
+
+        assert_eq!(result.trim(), "ok", "stdout result must be captured verbatim");
+        Ok(())
+    }
+
+    #[test]
+    fn run_output_with_timeout_reports_failure_status() -> Result<()> {
+        #[cfg(not(windows))]
+        {
+            let tmp = tempfile::tempdir()?;
+            let fail = tmp.path().join("fail.sh");
+            fs::write(&fail, "#!/bin/sh\nprintf 'detailed error' >&2\nexit 2\n")?;
+            use std::os::unix::fs::PermissionsExt;
+            {
+                let mut p = fs::metadata(&fail)?.permissions();
+                p.set_mode(0o755);
+                fs::set_permissions(&fail, p)?;
+            }
+            let err =
+                run_output_with_timeout(&fail.display().to_string(), &[], Duration::from_secs(60))
+                    .unwrap_err();
+            let msg = format!("{err:#}");
+            assert!(msg.contains("detailed error"), "stderr must appear in error: {msg}");
+            assert!(msg.contains("status"), "exit status must appear in error: {msg}");
+        }
         Ok(())
     }
 
