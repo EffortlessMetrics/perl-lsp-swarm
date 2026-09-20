@@ -22,6 +22,8 @@
 #[path = "mod.rs"]
 mod declared;
 
+pub(crate) use declared::capability;
+
 pub(crate) use declared::{
     ConfigConsumer, ConfigOwner, ConfigScope, ConfigSensitivity, ConfigSource, ConfigValidation,
     ConfigValueKind, EvidencePolicy, FieldAuthority, InvalidValueFallback, InvalidationClass,

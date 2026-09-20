@@ -172,6 +172,12 @@ pub(super) fn is_package_qualified_not_core(s: &str, op_start: usize) -> bool {
 /// This rejects dangerous operations when `allowSideEffects` is false, but it
 /// does not provide interpreter isolation or OS sandboxing.
 ///
+/// The refusals below name `allowSideEffects` as the recovery, which is only
+/// reachable from the `repl` context since #9385. They stay context-free here so
+/// this function remains pure; `eval::trust::retarget_side_effect_hint` rewrites
+/// the hint at the adapter seam for read-oriented contexts, where following that
+/// advice would hit a second refusal.
+///
 /// AC10.2: Safe evaluation mode validates expressions don't have side effects
 ///
 /// This function uses a pre-compiled regex for performance and includes
