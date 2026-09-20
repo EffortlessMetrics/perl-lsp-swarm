@@ -6,7 +6,7 @@
 //! operator to tag/publish, or writes a `release/` directory — these tests
 //! fail.
 
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use assert_cmd::cargo::cargo_bin_cmd;
 
 #[test]
@@ -17,41 +17,34 @@ fn release_prepare_refuses_fail_closed_without_mutation() -> Result<()> {
         .current_dir(tmp.path())
         .output()?;
 
-    assert!(
-        !output.status.success(),
-        "retired front door must exit non-zero; stdout: {} stderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
+    if output.status.success() {
+        return Err(anyhow!(
+            "retired front door unexpectedly exited zero; stdout: {} stderr: {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
 
     let combined = format!(
         "{}{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-    assert!(
-        combined.contains("release-turnkey"),
-        "refusal must route to the canonical path; got: {combined}"
-    );
-    assert!(combined.contains("#15392"), "refusal must cite the ruling; got: {combined}");
-    assert!(
-        !combined.contains("Tests passed"),
-        "no proof may be claimed by the retired surface; got: {combined}"
-    );
-    assert!(
-        !combined.contains("Release preparation complete"),
-        "no completion may be claimed by the retired surface; got: {combined}"
-    );
-    assert!(
-        !combined.contains("git tag") && !combined.contains("publish-crates"),
-        "retired surface must not issue tag/publish directions; got: {combined}"
-    );
-    assert!(!tmp.path().join("release").exists(), "refusal must perform zero filesystem mutation");
-    assert_eq!(
-        std::fs::read_dir(tmp.path())?.count(),
-        0,
-        "refusal must leave the working directory untouched"
-    );
+    if !combined.contains("release-turnkey") {
+        return Err(anyhow!("refusal omitted canonical route: {combined}"));
+    }
+    if !combined.contains("#15392") {
+        return Err(anyhow!("refusal omitted ruling reference: {combined}"));
+    }
+    if combined.contains("Tests passed") || combined.contains("Release preparation complete") {
+        return Err(anyhow!("retired surface claimed proof or completion: {combined}"));
+    }
+    if combined.contains("git tag") || combined.contains("publish-crates") {
+        return Err(anyhow!("retired surface issued tag/publish directions: {combined}"));
+    }
+    if tmp.path().join("release").exists() || std::fs::read_dir(tmp.path())?.count() != 0 {
+        return Err(anyhow!("refusal mutated the working directory"));
+    }
 
     Ok(())
 }
@@ -66,14 +59,17 @@ fn release_prepare_confirmation_flag_cannot_bypass_refusal() -> Result<()> {
         .current_dir(tmp.path())
         .output()?;
 
-    assert!(!output.status.success(), "refusal must not depend on the confirmation flag");
+    if output.status.success() {
+        return Err(anyhow!("refusal unexpectedly depended on the confirmation flag"));
+    }
     let combined = format!(
         "{}{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-    assert!(combined.contains("fail-closed"), "got: {combined}");
-    assert!(!tmp.path().join("release").exists());
+    if !combined.contains("fail-closed") || tmp.path().join("release").exists() {
+        return Err(anyhow!("confirmation-free refusal was incomplete: {combined}"));
+    }
 
     Ok(())
 }
