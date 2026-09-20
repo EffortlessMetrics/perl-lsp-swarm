@@ -685,7 +685,7 @@ mod tests {
     fn surface_exclusion_matches_root_components_and_prefixes_only() {
         let excluded = ["target/**", ".wt-*", "generated/**"];
         assert!(surface_excluded("target", "target", &excluded, true));
-        assert!(!surface_excluded("target", "target/file", &excluded, false));
+        assert!(surface_excluded("target", "target/file", &excluded, false));
         assert!(!surface_excluded("target", "crates/x/target", &excluded, true));
         assert!(surface_excluded(".wt-1234", ".wt-1234/sub/file", &excluded, true));
         assert!(!surface_excluded(".wt-1234", ".wt-1234/file", &excluded, false));
