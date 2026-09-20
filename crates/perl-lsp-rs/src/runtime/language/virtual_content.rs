@@ -75,19 +75,40 @@ fn is_valid_virtual_content_uri(uri: &str) -> bool {
 impl LspServer {
     fn fetch_virtual_content(&self, uri: &str) -> Option<String> {
         if let Some(target) = PerlDocumentationTarget::from_perldoc_uri(uri) {
-            self.fetch_workspace_perldoc(&target)
-                .or_else(|| {
-                    let workspace_config = self.workspace_config.lock().clone();
-                    fetch_perldoc(target.name(), &workspace_config)
-                })
-                .map(|content| enrich_core_pragma_perldoc(target.name(), content))
+            let topology_generation =
+                self.workspace_topology_generation.load(std::sync::atomic::Ordering::SeqCst);
+            if !self.workspace_topology_stable.load(std::sync::atomic::Ordering::SeqCst) {
+                return None;
+            }
+            let workspace_content = self.fetch_workspace_perldoc(&target);
+            let content = workspace_content.or_else(|| {
+                let workspace_config = self.workspace_config.lock().clone();
+                fetch_perldoc(target.name(), &workspace_config)
+            })?;
+            if self.workspace_topology_generation.load(std::sync::atomic::Ordering::SeqCst)
+                != topology_generation
+                || !self.workspace_topology_stable.load(std::sync::atomic::Ordering::SeqCst)
+            {
+                return None;
+            }
+            Some(enrich_core_pragma_perldoc(target.name(), content))
         } else {
             None
         }
     }
 
     fn fetch_workspace_perldoc(&self, target: &PerlDocumentationTarget) -> Option<String> {
-        if self.root_path.lock().is_none() && self.workspace_folders.lock().is_empty() {
+        // Sample each authority independently; never hold `root_path` while
+        // acquiring `workspace_folders` (diagnostic publication uses the
+        // opposite order while validating an accepted subject).
+        let topology_generation =
+            self.workspace_topology_generation.load(std::sync::atomic::Ordering::SeqCst);
+        if !self.workspace_topology_stable.load(std::sync::atomic::Ordering::SeqCst) {
+            return None;
+        }
+        let has_root = self.root_path.lock().is_some();
+        let workspace_folders_empty = self.workspace_folders.lock().is_empty();
+        if !has_root && workspace_folders_empty {
             return None;
         }
 
@@ -100,6 +121,16 @@ impl LspServer {
                 return None;
             }
         };
+        if self.workspace_topology_generation.load(std::sync::atomic::Ordering::SeqCst)
+            != topology_generation
+            || !self.workspace_topology_stable.load(std::sync::atomic::Ordering::SeqCst)
+        {
+            tracing::debug!(
+                module = module_name,
+                "Discarding virtual content after workspace topology change"
+            );
+            return None;
+        }
         let pod = perl_pod::extract_pod(&source);
         let related_links = workspace_pod_related_perldoc_uris(module_name, &source);
 
@@ -224,6 +255,16 @@ fn collect_simple_pod_module_links(line: &str, current_module: &str, uris: &mut 
     }
 }
 
+/// Classify perldoc stdout as documentation content or unavailable.
+///
+/// Returns `false` when the output is empty, whitespace-only, or begins with a
+/// "No documentation found" notice that some `perldoc` implementations
+/// (notably `perldoc.bat` on Windows) emit to stdout on exit-0.
+fn is_useful_perldoc_output(content: &str) -> bool {
+    let trimmed = content.trim();
+    !trimmed.is_empty() && !trimmed.starts_with("No documentation found")
+}
+
 /// Fetch Perl documentation using perldoc
 #[cfg(not(target_arch = "wasm32"))]
 fn fetch_perldoc(module: &str, config: &WorkspaceConfig) -> Option<String> {
@@ -247,6 +288,7 @@ fn fetch_perldoc(module: &str, config: &WorkspaceConfig) -> Option<String> {
         String::from_utf8(output.stdout)
             .map_err(|e| tracing::warn!(module, error = %e, "Invalid UTF-8 in perldoc output"))
             .ok()
+            .filter(|content| is_useful_perldoc_output(content))
     } else {
         None
     }
@@ -265,6 +307,137 @@ mod tests {
     use std::fs;
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn write_fake_perldoc_fixture(
+        temp: &tempfile::TempDir,
+    ) -> Result<std::path::PathBuf, Box<dyn std::error::Error>> {
+        let perl_name = if cfg!(windows) { "perl.exe" } else { "perl" };
+        let perldoc_name = if cfg!(windows) { "perldoc.bat" } else { "perldoc" };
+        let perl_path = temp.path().join(perl_name);
+        let perldoc_path = temp.path().join(perldoc_name);
+
+        // The marker makes PerlOracleEnv resolve the fixture as the configured
+        // toolchain's perldoc sibling; the production route executes perldoc.
+        fs::write(&perl_path, b"")?;
+        let script = if cfg!(windows) {
+            "@echo off\r\nif /I \"%~3\"==\"Fake::Empty\" exit /b 0\r\nif /I \"%~3\"==\"Fake::Missing\" (\r\n  echo No documentation found for Fake::Missing.\r\n  exit /b 0\r\n)\r\necho NAME\r\necho     Fake::Documented\r\n"
+        } else {
+            "#!/bin/sh\ncase \"$3\" in\n  Fake::Empty) exit 0 ;;\n  Fake::Missing) printf '%s\\n' 'No documentation found for Fake::Missing.'; exit 0 ;;\nesac\nprintf '%s\\n' 'NAME' '    Fake::Documented'\n"
+        };
+        fs::write(&perldoc_path, script)?;
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut permissions = fs::metadata(&perldoc_path)?.permissions();
+            permissions.set_mode(0o755);
+            fs::set_permissions(&perldoc_path, permissions)?;
+        }
+
+        Ok(perl_path)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn write_blocking_perldoc_fixture(
+        temp: &tempfile::TempDir,
+    ) -> Result<
+        (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf),
+        Box<dyn std::error::Error>,
+    > {
+        let perl_name = if cfg!(windows) { "perl.exe" } else { "perl" };
+        let perldoc_name = if cfg!(windows) { "perldoc.bat" } else { "perldoc" };
+        let perl_path = temp.path().join(perl_name);
+        let perldoc_path = temp.path().join(perldoc_name);
+        let started = temp.path().join("perldoc-started");
+        let release = temp.path().join("perldoc-release");
+
+        fs::write(&perl_path, b"")?;
+        let script = if cfg!(windows) {
+            format!(
+                "@echo off\r\n> \"{}\" echo started\r\n:wait\r\nif exist \"{}\" goto done\r\n>nul ping -n 2 127.0.0.1\r\ngoto wait\r\n:done\r\necho NAME\r\necho     Fake::Documented\r\n",
+                started.display(),
+                release.display(),
+            )
+        } else {
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' started > '{}'\nwhile [ ! -f '{}' ]; do sleep 0.01; done\nprintf '%s\\n' NAME '    Fake::Documented'\n",
+                started.display(),
+                release.display(),
+            )
+        };
+        fs::write(&perldoc_path, script)?;
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut permissions = fs::metadata(&perldoc_path)?.permissions();
+            permissions.set_mode(0o755);
+            fs::set_permissions(&perldoc_path, permissions)?;
+        }
+
+        Ok((perl_path, started, release))
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn parser_fetch_perldoc_request_path_filters_fixture_output() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let perl_path = write_fake_perldoc_fixture(&temp)?;
+        let mut config = WorkspaceConfig::default();
+        config.perl_path = Some(perl_path.to_string_lossy().into_owned());
+        let server = LspServer::new();
+        *server.workspace_config.lock() = config;
+
+        for module in ["Fake::Empty", "Fake::Missing"] {
+            let uri = format!("perldoc://{module}");
+            let error = server
+                .handle_text_document_content(Some(json!({ "uri": uri })))
+                .err()
+                .ok_or("unavailable perldoc output must not become a document response")?;
+            assert!(
+                error.message.contains("content not found"),
+                "unexpected unavailable response for {module}: {}",
+                error.message
+            );
+        }
+
+        let result = server
+            .handle_text_document_content(Some(json!({ "uri": "perldoc://Fake::Documented" })))?
+            .ok_or("real perldoc fixture output should become a document response")?;
+        let text = result.get("text").and_then(Value::as_str).ok_or("expected document text")?;
+        assert!(text.contains("Fake::Documented"), "real documentation response was lost: {text}");
+        Ok(())
+    }
+
+    #[test]
+    fn parser_fetch_perldoc_classifies_empty_stdout_as_unavailable() {
+        assert!(!is_useful_perldoc_output(""), "empty stdout must be classified as unavailable");
+        assert!(
+            !is_useful_perldoc_output("   "),
+            "whitespace-only stdout must be classified as unavailable"
+        );
+        assert!(
+            !is_useful_perldoc_output("\n\n"),
+            "newline-only stdout must be classified as unavailable"
+        );
+    }
+
+    #[test]
+    fn parser_fetch_perldoc_classifies_no_doc_notice_as_unavailable() {
+        assert!(
+            !is_useful_perldoc_output("No documentation found for NonExistent.\n"),
+            "perldoc.bat exit-0 no-doc notice must be classified as unavailable"
+        );
+        assert!(
+            !is_useful_perldoc_output("No documentation found.\n"),
+            "short no-doc notice must be classified as unavailable"
+        );
+        assert!(
+            is_useful_perldoc_output("NAME\n    strict\n"),
+            "real documentation content must be classified as available"
+        );
+    }
 
     #[test]
     fn parser_fetch_perldoc_strict() {
@@ -301,16 +474,19 @@ mod tests {
     }
 
     #[test]
-    fn text_document_content_invalid_params_name_method_and_field() {
+    fn text_document_content_invalid_params_name_method_and_field()
+    -> Result<(), Box<dyn std::error::Error>> {
         let err = LspServer::new()
             .handle_text_document_content(None)
-            .expect_err("missing virtual document params must be rejected");
+            .err()
+            .ok_or("missing virtual document params must be rejected")?;
 
         assert_eq!(err.code, crate::protocol::INVALID_PARAMS);
         assert_eq!(
             err.message,
             "workspace/textDocumentContent: missing required parameter 'params'"
         );
+        Ok(())
     }
 
     #[test]
@@ -430,6 +606,95 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn parser_virtual_content_rejects_unstable_workspace_before_system_fallback() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let perl_path = write_fake_perldoc_fixture(&temp)?;
+        let workspace = temp.path().join("workspace");
+        fs::create_dir_all(&workspace)?;
+        let workspace_uri =
+            url::Url::from_directory_path(&workspace).map_err(|_| "workspace URI")?;
+        let server = LspServer::new();
+        *server.workspace_folders.lock() = vec![
+            crate::runtime::workspace_folder::WorkspaceFolderState::new(workspace_uri.to_string())
+                .with_path(workspace),
+        ];
+        {
+            let mut config = server.workspace_config.lock();
+            config.perl_path = Some(perl_path.to_string_lossy().into_owned());
+        }
+        server.workspace_topology_stable.store(false, std::sync::atomic::Ordering::SeqCst);
+
+        let error = server
+            .handle_text_document_content(Some(json!({ "uri": "perldoc://Fake::Documented" })))
+            .err()
+            .ok_or("unstable workspace content must not fall back to system perldoc")?;
+        if !error.message.contains("content not found") {
+            return Err(format!("unexpected unstable workspace error: {}", error.message).into());
+        }
+        server.workspace_topology_stable.store(true, std::sync::atomic::Ordering::SeqCst);
+        let recovered = server
+            .handle_text_document_content(Some(json!({ "uri": "perldoc://Fake::Documented" })))?
+            .ok_or("stable workspace recovery must return fixture documentation")?;
+        let text = recovered
+            .get("text")
+            .and_then(Value::as_str)
+            .ok_or("recovered documentation must contain text")?;
+        if !text.contains("Fake::Documented") {
+            return Err("stable workspace recovery returned the wrong documentation".into());
+        }
+        Ok(())
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn parser_virtual_content_rechecks_topology_after_system_fallback() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let (perl_path, started, release) = write_blocking_perldoc_fixture(&temp)?;
+        let workspace = temp.path().join("workspace");
+        fs::create_dir_all(&workspace)?;
+        let workspace_uri =
+            url::Url::from_directory_path(&workspace).map_err(|_| "workspace URI")?;
+        let server = std::sync::Arc::new(LspServer::new());
+        *server.workspace_folders.lock() = vec![
+            crate::runtime::workspace_folder::WorkspaceFolderState::new(workspace_uri.to_string())
+                .with_path(workspace),
+        ];
+        server.workspace_config.lock().perl_path = Some(perl_path.to_string_lossy().into_owned());
+
+        let worker_server = std::sync::Arc::clone(&server);
+        let worker = std::thread::spawn(move || -> std::io::Result<bool> {
+            for _ in 0..500 {
+                if started.exists() {
+                    worker_server
+                        .workspace_topology_generation
+                        .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    worker_server
+                        .workspace_topology_stable
+                        .store(false, std::sync::atomic::Ordering::SeqCst);
+                    fs::write(&release, b"release")?;
+                    return Ok(true);
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            fs::write(&release, b"release")?;
+            Ok(false)
+        });
+
+        let result = server.handle_text_document_content(Some(json!({
+            "uri": "perldoc://Fake::Documented"
+        })));
+        if !worker.join().map_err(|_| "topology barrier worker panicked")?? {
+            return Err("blocking perldoc fixture never started".into());
+        }
+        let error = result.err().ok_or("fallback content crossed a topology transition")?;
+        if !error.message.contains("content not found") {
+            return Err(format!("unexpected topology barrier error: {}", error.message).into());
+        }
+        Ok(())
+    }
+
     #[test]
     fn parser_fetch_workspace_perldoc_ignores_missing_workspace_module() -> TestResult {
         let temp = tempfile::tempdir()?;
@@ -488,6 +753,45 @@ mod tests {
 
         assert!(text.contains("Workspace virtual perldoc"));
         assert!(text.contains("Local::Doc - local docs"));
+        Ok(())
+    }
+
+    #[test]
+    fn parser_workspace_text_document_content_preserves_invalid_pod_commands() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let root = temp.path().join("workspace");
+        let module_dir = root.join("lib").join("Local");
+        fs::create_dir_all(&module_dir)?;
+        fs::write(
+            module_dir.join("Doc.pm"),
+            "package Local::Doc;\n\n=head1 DESCRIPTION\n\nBefore invalid directives.\n=cut!\n=head10 not a heading\n=heаd1 not a heading\nAfter invalid directives.\n\n=cut\n\n1;\n",
+        )?;
+
+        let server = LspServer::new();
+        let workspace_uri =
+            url::Url::from_directory_path(&root).map_err(|_| "failed to create workspace URI")?;
+        *server.workspace_folders.lock() = vec![
+            crate::runtime::workspace_folder::WorkspaceFolderState::new(workspace_uri.to_string())
+                .with_path(root),
+        ];
+        {
+            let mut config = server.workspace_config.lock();
+            config.include_paths = vec!["lib".to_string()];
+            config.use_perl5lib = false;
+            config.use_system_inc = false;
+        }
+
+        let result = server
+            .handle_text_document_content(Some(json!({ "uri": "perldoc://Local::Doc" })))?
+            .ok_or("expected workspace textDocumentContent result")?;
+        let text = result.get("text").and_then(Value::as_str).ok_or("expected text result")?;
+
+        assert!(
+            text.contains(
+                "DESCRIPTION\nBefore invalid directives.\n=cut!\n=head10 not a heading\n=heаd1 not a heading\nAfter invalid directives."
+            ),
+            "invalid commands must remain documentation in the real LSP virtual-content response: {text}"
+        );
         Ok(())
     }
 

@@ -1,0 +1,200 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://effortlessmetrics.github.io/perl-lsp/schemas/binary_identity_protocol.v1.schema.json",
+  "title": "perl-lsp binary identity protocol v1 response",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "feature_version",
+    "server",
+    "expected_extension",
+    "server_instance_id",
+    "environment_snapshot_id",
+    "compatibility",
+    "reasons",
+    "redacted"
+  ],
+  "properties": {
+    "feature_version": { "const": 1 },
+    "server": { "$ref": "#/$defs/binaryIdentity" },
+    "dap": { "$ref": "#/$defs/binaryIdentity" },
+    "expected_extension": { "$ref": "#/$defs/extensionIdentity" },
+    "server_instance_id": { "$ref": "#/$defs/boundedToken" },
+    "environment_snapshot_id": { "$ref": "#/$defs/boundedToken" },
+    "compatibility": {
+      "enum": [
+        "exact_match",
+        "compatible_partial",
+        "mismatch",
+        "unsupported",
+        "stale",
+        "not_proven"
+      ]
+    },
+    "reasons": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 64,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/reasonToken" }
+    },
+    "redacted": { "type": "boolean", "description": "true when NO field was removed or replaced: the payload is copy-safe. false means at least one field was redacted and must not be trusted verbatim." },
+    "limitations": {
+      "type": "array",
+      "maxItems": 64,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/reasonToken" }
+    }
+  },
+  "$defs": {
+    "reasonToken": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[a-z0-9_]+$"
+    },
+    "boundedToken": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9._:@+\\-]+$"
+    },
+    "version": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[A-Za-z0-9.+\\-]+$",
+      "description": "A validated version, or the literal redaction sentinel written when the incoming value failed validation.",
+      "anyOf": [
+        { "pattern": "^[A-Za-z0-9.+\\-]+$" },
+        { "const": "not_proven" }
+      ]
+    },
+    "target": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9_.-]*-[A-Za-z0-9_.-]+$"
+    },
+    "sha40": {
+      "type": "string",
+      "pattern": "^[0-9A-Fa-f]{40}$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9A-Fa-f]{64}$"
+    },
+    "extensionId": {
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9_-]+(?:\\.[A-Za-z0-9_-]+)+$",
+      "description": "A validated extension id, or the literal redaction sentinel written when the incoming value failed validation.",
+      "anyOf": [
+        { "pattern": "^[A-Za-z0-9_-]+(?:\\.[A-Za-z0-9_-]+)+$" },
+        { "const": "not_proven" }
+      ]
+    },
+    "artifactRole": {
+      "enum": ["managed", "user_supplied", "package_install", "archive", "unknown"]
+    },
+    "extensionIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "publisher",
+        "package_name",
+        "id",
+        "version",
+        "binary_artifact_role",
+        "authority_identity"
+      ],
+      "properties": {
+        "publisher": { "$ref": "#/$defs/boundedToken" },
+        "package_name": { "$ref": "#/$defs/boundedToken" },
+        "id": { "$ref": "#/$defs/extensionId" },
+        "version": { "$ref": "#/$defs/version" },
+        "candidate_identity": { "$ref": "#/$defs/boundedToken" },
+        "target": { "$ref": "#/$defs/target" },
+        "package_sha256": { "$ref": "#/$defs/sha256" },
+        "server_sha256": { "$ref": "#/$defs/sha256" },
+        "dap_sha256": { "$ref": "#/$defs/sha256" },
+        "binary_artifact_role": { "$ref": "#/$defs/artifactRole" },
+        "authority_identity": { "$ref": "#/$defs/boundedToken" }
+      }
+    },
+    "binaryIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "product",
+        "binary",
+        "build",
+        "artifact",
+        "compatibility"
+      ],
+      "properties": {
+        "schema_version": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "product": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["name", "public_repository", "development_repository"],
+          "properties": {
+            "name": { "type": "string", "minLength": 1, "maxLength": 64 },
+            "public_repository": { "type": "string", "minLength": 1, "maxLength": 128 },
+            "development_repository": { "type": "string", "minLength": 1, "maxLength": 128 }
+          }
+        },
+        "binary": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["executable", "cargo_package", "role", "version"],
+          "properties": {
+            "executable": { "$ref": "#/$defs/boundedToken" },
+            "cargo_package": { "$ref": "#/$defs/boundedToken" },
+            "role": { "enum": ["server", "dap"] },
+            "version": { "$ref": "#/$defs/version" }
+          }
+        },
+        "build": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["identity_state"],
+          "properties": {
+            "source_revision": { "$ref": "#/$defs/sha40" },
+            "source_tree_digest": { "$ref": "#/$defs/sha256" },
+            "target": { "$ref": "#/$defs/target" },
+            "profile": { "$ref": "#/$defs/boundedToken" },
+            "identity_state": { "enum": ["exact", "partial", "not_proven"] }
+          }
+        },
+        "artifact": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["role"],
+          "properties": {
+            "role": { "$ref": "#/$defs/artifactRole" },
+            "digest": { "$ref": "#/$defs/sha256" },
+            "candidate_identity": { "$ref": "#/$defs/boundedToken" }
+          }
+        },
+        "compatibility": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["expected_product_identity_version", "dap_posture"],
+          "properties": {
+            "expected_product_identity_version": { "type": "integer", "minimum": 1 },
+            "dap_posture": { "$ref": "#/$defs/boundedToken" }
+          }
+        },
+        "limitations": {
+          "type": "array",
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/reasonToken" }
+        }
+      }
+    }
+  }
+}

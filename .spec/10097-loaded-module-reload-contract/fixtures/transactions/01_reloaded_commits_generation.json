@@ -1,0 +1,9 @@
+{
+  "name": "reloaded_commits_generation",
+  "fixture_class": "terminal success; the runtime-module generation advances",
+  "phase": "commit_generation",
+  "outcome": { "kind": "reloaded" },
+  "expected_generation_effect": "advance",
+  "expected_phase_valid": true,
+  "expected_clean_projection": true
+}

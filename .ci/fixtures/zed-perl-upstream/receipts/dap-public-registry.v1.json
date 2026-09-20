@@ -1,0 +1,188 @@
+{
+  "adapter": {
+    "adapter_id": "perl-dap",
+    "binary_route": "managed_public_artifact",
+    "binary_sha256": null,
+    "process_argv": null,
+    "process_path": null,
+    "version_output": null
+  },
+  "asset_evidence": {
+    "aggregate_receipt": {
+      "relative_path": ".ci/fixtures/zed-perl-upstream/receipts/dap-asset-windows-x86_64.v1.json",
+      "result": "pass",
+      "sha256": "sha256:137764e80c7a745f0b5b7263de9b2c1721aa08a6f55afceb48e1a5d00ad90e10",
+      "stage": "public_perl_dap_asset"
+    },
+    "contract": {
+      "relative_path": ".ci/fixtures/zed-perl-upstream/perl-dap-managed-downloads.v1.json",
+      "sha256": "sha256:420308d64d3e57f888caa7cd43c7f5eebbda2284e36bf70617c128749a7bbd03"
+    },
+    "selected_target": {
+      "architecture": "x86_64",
+      "archive_member": "perllsp-0.17.0-x86_64-pc-windows-msvc/perl-dap.exe",
+      "asset_archive_type": "zip",
+      "asset_id": 460503633,
+      "asset_name": "perllsp-0.17.0-x86_64-pc-windows-msvc.zip",
+      "asset_sha256": "sha256:679cd43780d36cb2a980a42804905d24d2c76b0a3e2deaa3cd344daece87f7dd",
+      "installed_path": "perl-dap-managed-0.17.0-x86_64-pc-windows-msvc/perllsp-0.17.0-x86_64-pc-windows-msvc/perl-dap.exe",
+      "member_sha256": "sha256:5b888c17f34198234c401441f1bc8cf4317154abad2ae7eccff37225e0102db4",
+      "os": "windows",
+      "release_id": 345992952,
+      "release_producer": "github-actions[bot]",
+      "release_repository": "EffortlessMetrics/perl-lsp",
+      "release_tag": "v0.17.0",
+      "release_version": "0.17.0",
+      "target": "x86_64-pc-windows-msvc"
+    }
+  },
+  "claim_boundary": {
+    "all_platforms": "not_proven",
+    "dap_support_projection": "not_proven",
+    "lsp_support_rows": "unchanged"
+  },
+  "cleanup": {
+    "adapter_orphans": null,
+    "debuggee_orphans": null
+  },
+  "configuration": {
+    "config_sha256": null,
+    "driver_sha256": null,
+    "instrument_sha256": null
+  },
+  "currentness": {
+    "invalidators": [
+      "#9516 contract or aggregate receipt digest change",
+      "DU01 registry acceptance manifest recording a merged-and-released subject",
+      "a committed exact-source receipt recording a pass"
+    ]
+  },
+  "discriminators": {
+    "wrong_root_same_basename_rejected": null
+  },
+  "extension": {
+    "install_route": "official_registry",
+    "manifest_version": null,
+    "package_identity": null,
+    "upstream_commit": null
+  },
+  "gates": {
+    "blockers": [
+      "#9486 has no current exact-source real Zed DAP receipt",
+      "the official zed-industries/extensions registry does not yet serve the DAP-capable existing perl entry (DM02 pending; the DU01 acceptance manifest records no merged-and-released subject)",
+      "#9483 routing/final-check authority is not current"
+    ],
+    "exact_source_zed_dap_receipt": "absent",
+    "extension_upstream_release": "absent",
+    "matching_host_asset_receipt": "current",
+    "official_registry_entry": "absent",
+    "released_zed_build": "absent",
+    "routing_final_check_authority": "absent"
+  },
+  "journey": {
+    "adapter_process_identity": {
+      "evidence": null,
+      "result": "not_proven"
+    },
+    "adapter_selection": {
+      "evidence": null,
+      "result": "not_proven"
+    },
+    "breakpoint_verified": {
+      "evidence": null,
+      "result": "not_proven"
+    },
+    "cleanup_bounded": {
+      "evidence": null,
+      "result": "not_proven"
+    },
+    "continue_step": {
+      "evidence": null,
+      "result": "not_proven"
+    },
+    "fixture_open": {
+      "evidence": null,
+      "result": "not_proven"
+    },
+    "frame_source_identity": {
+      "evidence": null,
+      "result": "not_proven"
+    },
+    "initialize_launch": {
+      "evidence": null,
+      "result": "not_proven"
+    },
+    "managed_resolution": {
+      "evidence": null,
+      "result": "not_proven"
+    },
+    "restart_reuse": {
+      "evidence": null,
+      "result": "not_proven"
+    },
+    "scopes_variables": {
+      "evidence": null,
+      "result": "not_proven"
+    },
+    "stopped_event": {
+      "evidence": null,
+      "result": "not_proven"
+    },
+    "terminate_disconnect": {
+      "evidence": null,
+      "result": "not_proven"
+    },
+    "zed_host_identity": {
+      "evidence": null,
+      "result": "not_proven"
+    }
+  },
+  "limitations": [
+    "The official-registry journey has not run: no released official registry entry serves the DAP-capable perl extension yet.",
+    "The linux/macOS rows of the bound #9516 aggregate receipt stay managed_extracted_not_executed; those matching-host executions are owned by the #9516 closeout residual, not by this stage.",
+    "This receipt consumes the checked #9516 contract and aggregate receipt; it does not re-derive public asset selection, digests, or the recorded Windows member divergence (#9485 and #7980 own those)."
+  ],
+  "managed_cache": {
+    "after": null,
+    "before": null,
+    "restart": null
+  },
+  "observed_at": "2026-08-24T12:00:00Z",
+  "platform": {
+    "architecture": null,
+    "os": null
+  },
+  "profile": {
+    "development_extension_absent": null,
+    "explicit_debugger_binary_override_absent": null,
+    "fork_or_copied_extension_absent": null,
+    "other_perl_debugger_selected_absent": null,
+    "path_candidate_satisfying_managed_row_absent": null,
+    "prior_managed_perl_dap_cache_absent": null,
+    "prior_public_extension_state_absent": null,
+    "relabeled_receipt_absent": null
+  },
+  "registry": {
+    "entry": null,
+    "extension_commit": null,
+    "extension_version": null,
+    "released_build": null,
+    "repository": null,
+    "submodule_path": null,
+    "upstream_branch": null
+  },
+  "result": "blocked_external",
+  "schema_version": "zed_perl_dap_public_registry_receipt.v1",
+  "stage": "public_registry_install",
+  "workspace": {
+    "fixture_id": null,
+    "fixture_sha256": null,
+    "root_identity": null
+  },
+  "zed": {
+    "build": null,
+    "channel": null,
+    "product": "Zed",
+    "version": null
+  }
+}

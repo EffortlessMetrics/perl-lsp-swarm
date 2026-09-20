@@ -7,13 +7,14 @@ use support::lsp_harness::LspHarness;
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
 #[test]
-fn initialize_static_advertises_inline_completion_when_dynamic_not_supported() -> TestResult {
+fn initialize_omits_inline_completion_when_client_does_not_declare_support() -> TestResult {
     let mut harness = LspHarness::new();
     let init = harness.initialize(Some(json!({
         "textDocument": {}
     })))?;
 
-    assert_eq!(init.pointer("/capabilities/inlineCompletionProvider"), Some(&json!({})));
+    assert!(init.pointer("/capabilities/inlineCompletionProvider").is_none());
+    assert!(init.pointer("/capabilities/experimental/perlInlineCompletionStream").is_none());
     assert_no_inline_completion_registration(harness.drain_server_requests(200));
     Ok(())
 }

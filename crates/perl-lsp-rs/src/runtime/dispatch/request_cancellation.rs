@@ -25,7 +25,7 @@ pub(super) fn handle_cancel_notification(server: &LspServer, request: &JsonRpcRe
                 tracing::warn!(latency = ?latency, "Cancellation latency exceeded 50ms");
             }
         }
-        server.cancel_mark(&typed_id);
+        server.mark_cancelled_if_pending(&typed_id);
     }
 
     true
@@ -54,19 +54,19 @@ pub(super) fn register_request_cancellation(
     let cleanup_context =
         ProviderCleanupContext::new(request.method.clone(), request.params.clone());
 
-    if let Err(e) = GLOBAL_CANCELLATION_REGISTRY.register_token(token) {
-        tracing::trace!(error = %e, "cancellation: failed to register token");
+    if let Err(error) = GLOBAL_CANCELLATION_REGISTRY.register_token(token) {
+        tracing::trace!(%error, "cancellation: failed to register token");
     }
-    if let Err(e) = GLOBAL_CANCELLATION_REGISTRY.register_cleanup(&typed_id, cleanup_context) {
-        tracing::trace!(error = %e, "cancellation: failed to register cleanup");
+    if let Err(error) = GLOBAL_CANCELLATION_REGISTRY.register_cleanup(&typed_id, cleanup_context) {
+        tracing::trace!(%error, "cancellation: failed to register cleanup");
     }
 
     if GLOBAL_CANCELLATION_REGISTRY.is_cancelled(&typed_id) {
         if let Some(token) = GLOBAL_CANCELLATION_REGISTRY.get_token(&typed_id) {
             let cleanup_context = GLOBAL_CANCELLATION_REGISTRY
                 .cancel_request(&typed_id)
-                .map_err(|e| {
-                    tracing::trace!(error = %e, "cancellation: failed to cancel request (early)");
+                .map_err(|error| {
+                    tracing::trace!(%error, "cancellation: failed to cancel request (early)");
                 })
                 .ok()
                 .flatten();
@@ -94,6 +94,9 @@ fn method_supports_cancellation(method: &str) -> bool {
             | "textDocument/documentSymbol"
             | "textDocument/codeAction"
             | "textDocument/formatting"
+            | "textDocument/rangeFormatting"
+            | "textDocument/rangesFormatting"
+            | "textDocument/onTypeFormatting"
             | "textDocument/rename"
             | "workspace/symbol"
             | "callHierarchy/incomingCalls"
@@ -116,8 +119,8 @@ pub(super) fn finalize_cancellation_state(request_id: Option<&Value>) -> Option<
     {
         let cleanup_context = GLOBAL_CANCELLATION_REGISTRY
             .cancel_request(&typed_id)
-            .map_err(|e| {
-                tracing::trace!(error = %e, "cancellation: failed to cancel request (post-dispatch)");
+            .map_err(|error| {
+                tracing::trace!(%error, "cancellation: failed to cancel request (post-dispatch)");
             })
             .ok()
             .flatten();
@@ -131,16 +134,81 @@ pub(super) fn finalize_cancellation_state(request_id: Option<&Value>) -> Option<
 
 #[cfg(test)]
 mod tests {
-    use super::method_supports_cancellation;
+    use super::{
+        JsonRpcRequest, LspServer, Value, handle_cancel_notification, method_supports_cancellation,
+        register_request_cancellation,
+    };
+    use serde_json::json;
+
+    fn cancellation_request(id: Value) -> JsonRpcRequest {
+        JsonRpcRequest {
+            _jsonrpc: "2.0".to_string(),
+            id: None,
+            method: "$/cancelRequest".to_string(),
+            params: Some(json!({ "id": id })),
+        }
+    }
+
+    fn hover_request() -> JsonRpcRequest {
+        JsonRpcRequest {
+            _jsonrpc: "2.0".to_string(),
+            id: None,
+            method: "textDocument/hover".to_string(),
+            params: Some(json!({})),
+        }
+    }
 
     #[test]
-    fn type_hierarchy_methods_are_registered_for_cancellation()
+    fn scheduler_pending_cancel_survives_pre_registration_and_settlement()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        let numeric = Value::from(71003_i64);
+        let string = Value::from("71003");
+        crate::cancellation::GLOBAL_CANCELLATION_REGISTRY
+            .remove_request(&crate::protocol::JsonRpcId::Integer(71003));
+        crate::cancellation::GLOBAL_CANCELLATION_REGISTRY
+            .remove_request(&crate::protocol::JsonRpcId::String("71003".to_string()));
+
+        server.mark_request_pending(&crate::protocol::JsonRpcId::Integer(71003));
+        if !handle_cancel_notification(&server, &cancellation_request(numeric.clone())) {
+            return Err("cancel notification was not handled".into());
+        }
+        let cancelled = register_request_cancellation(&server, Some(&numeric), &hover_request())
+            .ok_or("pending cancellation was not observed before token registration")?;
+        if cancelled.error.as_ref().map(|error| error.code) != Some(-32800) {
+            return Err("pending cancellation did not produce request-cancelled".into());
+        }
+
+        if !handle_cancel_notification(&server, &cancellation_request(string.clone())) {
+            return Err("string cancel notification was not handled".into());
+        }
+        if register_request_cancellation(&server, Some(&string), &hover_request()).is_some() {
+            return Err("unrelated string ID was incorrectly cancelled".into());
+        }
+        crate::cancellation::GLOBAL_CANCELLATION_REGISTRY
+            .remove_request(&crate::protocol::JsonRpcId::String("71003".to_string()));
+
+        server.clear_request_pending(&crate::protocol::JsonRpcId::Integer(71003));
+        if register_request_cancellation(&server, Some(&numeric), &hover_request()).is_some() {
+            return Err("settled numeric ID retained cancellation state".into());
+        }
+        crate::cancellation::GLOBAL_CANCELLATION_REGISTRY
+            .remove_request(&crate::protocol::JsonRpcId::Integer(71003));
+        Ok(())
+    }
+
+    #[test]
+    fn hierarchy_and_formatting_methods_are_registered_for_cancellation()
     -> Result<(), Box<dyn std::error::Error>> {
         for method in [
             "textDocument/prepareTypeHierarchy",
             "typeHierarchy/prepare",
             "typeHierarchy/supertypes",
             "typeHierarchy/subtypes",
+            "textDocument/formatting",
+            "textDocument/rangeFormatting",
+            "textDocument/rangesFormatting",
+            "textDocument/onTypeFormatting",
         ] {
             if !method_supports_cancellation(method) {
                 return Err(std::io::Error::other(format!(

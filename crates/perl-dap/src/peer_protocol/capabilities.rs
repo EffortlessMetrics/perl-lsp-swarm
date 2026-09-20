@@ -1,5 +1,7 @@
 //! Capability sets exchanged in the `peer/hello` handshake.
 
+#[cfg(test)]
+use perl_tdd_support::must;
 use serde::{Deserialize, Serialize};
 
 use crate::backend::capabilities::{ControlMode, DebugBackendCapabilities};
@@ -48,6 +50,26 @@ pub struct PeerReportedCapabilities {
     /// Peer can report breakable lines in a source.
     #[serde(default)]
     pub can_report_breakable_lines: bool,
+    /// Peer can report a machine-readable `cause` on a `success: false`
+    /// response (#14582).
+    ///
+    /// Unlike the flags above, this does not gate a *request*: it declares that
+    /// the peer speaks the [`PeerFailureCause`] vocabulary when it declines. The
+    /// host honours [`PeerResponse::cause`] only from a peer that advertised
+    /// this, so a `cause` field belonging to some other protocol dialect cannot
+    /// silently steer host triage. A peer that does not advertise it is not
+    /// degraded — its failures classify exactly as they did before the field
+    /// existed.
+    ///
+    /// This is deliberately absent from
+    /// [`Self::to_backend_capabilities`]: [`DebugBackendCapabilities`] feeds DAP
+    /// `supportsX` advertisement, and reporting a failure cause is not a DAP
+    /// capability. Adding it there would advertise nothing an editor can use.
+    ///
+    /// [`PeerFailureCause`]: crate::peer_protocol::message::PeerFailureCause
+    /// [`PeerResponse::cause`]: crate::peer_protocol::message::PeerResponse::cause
+    #[serde(default)]
+    pub can_report_failure_cause: bool,
     /// The control mode the peer wants to operate under.
     #[serde(default)]
     pub control_mode: ControlMode,
@@ -115,8 +137,7 @@ mod tests {
     #[test]
     fn minimal_peer_report_deserializes_with_defaults() {
         // A peer that only reports stops sends an almost-empty capability map.
-        let caps: PeerReportedCapabilities =
-            serde_json::from_str("{}").expect("deserialize empty caps");
+        let caps: PeerReportedCapabilities = must(serde_json::from_str("{}"));
         assert!(!caps.can_continue);
         assert!(!caps.can_evaluate);
         assert_eq!(caps.control_mode, ControlMode::Mirror);
@@ -178,6 +199,42 @@ mod tests {
         let b2 = step_only.to_backend_capabilities();
         assert!(!b2.continue_execution, "continue must not be invented from can_step");
         assert!(b2.stepping);
+    }
+
+    /// A peer built before #14582 sends no such key, and must read as "cannot".
+    #[test]
+    fn failure_cause_reporting_is_off_for_a_peer_that_never_mentions_it() {
+        let caps: PeerReportedCapabilities = must(serde_json::from_str("{}"));
+        assert!(!caps.can_report_failure_cause);
+
+        let declared: PeerReportedCapabilities =
+            must(serde_json::from_str(r#"{"canReportFailureCause":true}"#));
+        assert!(declared.can_report_failure_cause, "camelCase key must bind the flag");
+    }
+
+    /// Negative control on the DAP surface.
+    ///
+    /// `can_report_failure_cause` is a peer-protocol capability about how the
+    /// host *classifies* a failure. It must not leak into
+    /// [`DebugBackendCapabilities`], which feeds DAP `supportsX` advertisement —
+    /// there is no editor-facing promise here, and inventing one would advertise
+    /// a capability no editor can consume.
+    #[test]
+    fn failure_cause_reporting_does_not_move_the_dap_capability_view() {
+        let silent = PeerReportedCapabilities {
+            can_set_breakpoints: true,
+            can_evaluate: true,
+            can_list_stack: true,
+            can_report_failure_cause: false,
+            ..Default::default()
+        };
+        let declared = PeerReportedCapabilities { can_report_failure_cause: true, ..silent };
+
+        assert_eq!(
+            silent.to_backend_capabilities(),
+            declared.to_backend_capabilities(),
+            "advertising a failure cause must not widen any DAP capability"
+        );
     }
 
     #[test]

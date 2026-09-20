@@ -18,6 +18,7 @@
 //! - `conditional_pragma_target` edge cases: empty encoding arg, feature with no args,
 //!   invalid strict/version/encoding tails, `unless` normalization, and sparse builtin args
 //! - `conditional_target_tail_is_valid` for `builtin` with all-empty args
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
 use perl_ast::SourceLocation;
 use perl_ast::ast::{Node, NodeKind};

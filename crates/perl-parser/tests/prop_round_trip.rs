@@ -29,10 +29,7 @@ fn extract_shape(node: &Node) -> Vec<String> {
 fn extract_shape_rec(node: &Node, out: &mut Vec<String>) {
     use NodeKind::*;
 
-    // Get variant name
-    let s = format!("{:?}", node.kind);
-    let name = s.split(['(', '{']).next().map_or_else(|| s.clone(), |n| n.to_string());
-    out.push(name);
+    out.push(node.kind.kind_name().to_string());
 
     match &node.kind {
         Program { statements } => {
@@ -161,8 +158,8 @@ fn check_spans_rec(node: &Node, source_len: usize, errors: &mut Vec<String>) {
     if node.location.end > source_len + 10 {
         // Allow small overruns from trailing newlines
         errors.push(format!(
-            "Node {:?} has span end {} beyond source length {}",
-            format!("{:?}", node.kind).split(['(', '{']).next().unwrap_or("Unknown"),
+            "Node {} has span end {} beyond source length {}",
+            node.kind.kind_name(),
             node.location.end,
             source_len
         ));
@@ -436,8 +433,8 @@ proptest! {
         if let Ok(ast) = parser.parse() {
             prop_assert!(
                 matches!(ast.kind, NodeKind::Program { .. }),
-                "Root node should be Program, got: {:?}",
-                format!("{:?}", ast.kind).split(['(', '{']).next()
+                "Root node should be Program, got: {}",
+                ast.kind.kind_name()
             );
         }
     }

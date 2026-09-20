@@ -243,14 +243,14 @@ fn test_on_type_formatting_brace() -> Result<(), Box<dyn std::error::Error>> {
         }),
     );
 
-    // Check if we got edits (might be null if no formatting needed)
-    if let Some(edits) = response["result"].as_array() {
-        // If edits are returned, they should be valid TextEdit objects
-        for edit in edits {
-            assert!(edit.get("range").is_some(), "Edit should have a range");
-            assert!(edit.get("newText").is_some(), "Edit should have newText");
-        }
-    }
+    assert_eq!(
+        response["error"]["code"], -32601,
+        "withdrawn on-type formatting must refuse with MethodNotFound"
+    );
+    assert!(
+        response["result"].is_null(),
+        "withdrawn on-type formatting must not return an edit result"
+    );
     Ok(())
 }
 
@@ -295,21 +295,14 @@ fn test_on_type_formatting_newline() -> Result<(), Box<dyn std::error::Error>> {
         }),
     );
 
-    // Check if we got edits
-    if let Some(edits) = response["result"].as_array() {
-        // Newline formatting might add indentation
-        for edit in edits {
-            assert!(edit.get("range").is_some(), "Edit should have a range");
-            let new_text = edit["newText"].as_str().unwrap_or("");
-            // Check if indentation was added (should match the previous line)
-            if !new_text.is_empty() {
-                assert!(
-                    new_text.chars().all(|c| c == ' ' || c == '\t'),
-                    "Newline formatting should only add whitespace"
-                );
-            }
-        }
-    }
+    assert_eq!(
+        response["error"]["code"], -32601,
+        "withdrawn on-type formatting must refuse with MethodNotFound"
+    );
+    assert!(
+        response["result"].is_null(),
+        "withdrawn on-type formatting must not return an edit result"
+    );
     Ok(())
 }
 
@@ -464,7 +457,12 @@ fn test_document_links_windows_path_with_space() -> Result<(), Box<dyn std::erro
 
     // Simulate a file living in a folder with a space; we don't need the file to exist.
     let uri = "file:///C:/Temp/Perl%20LSP%20Demo/main.pl";
-    let text = r#"require "lib\\Thing.pm";"#;
+    // A quoted non-.pm require is the file-link form: it resolves by joining
+    // the Windows-style relative path against the document URI. Quoted .pm
+    // requires are module links by contract (they resolve through module
+    // lookup / MetaCPAN, not path join), so they cannot prove URI-space
+    // preservation here.
+    let text = r#"require "lib\Thing.pl";"#;
 
     // Open doc
     send_notification(
@@ -510,7 +508,7 @@ fn test_document_links_windows_path_with_space() -> Result<(), Box<dyn std::erro
 
     // Percent-encoded space must be preserved; path join must be forward-slash normalized
     assert!(
-        target.ends_with("C:/Temp/Perl%20LSP%20Demo/lib/Thing.pm"),
+        target.ends_with("C:/Temp/Perl%20LSP%20Demo/lib/Thing.pl"),
         "unexpected target: {target}"
     );
     Ok(())

@@ -1,0 +1,37 @@
+{
+  "schema_version": "zed_managed_asset_receipt.v1",
+  "result": "not_run",
+  "observed_at": null,
+  "contract": {
+    "relative_path": ".ci/fixtures/zed-perl-upstream/managed-downloads.v1.json",
+    "sha256": null,
+    "schema_version": "zed_perllsp_managed_downloads.v1"
+  },
+  "release": {
+    "repository": "EffortlessMetrics/perl-lsp",
+    "id": null,
+    "tag": null,
+    "version": null,
+    "prerelease": null,
+    "draft": null,
+    "published_at": null
+  },
+  "verifier": {
+    "os": null,
+    "version": null,
+    "architecture": null,
+    "python": null
+  },
+  "targets": [],
+  "limitations": [
+    "Template only. No asset has been downloaded or executed.",
+    "Asset execution does not prove behavior inside Zed or official-registry installation."
+  ],
+  "claim_boundary": {
+    "asset_bytes": "not_run",
+    "archive_layout": "not_run",
+    "host_process": "not_run",
+    "actual_zed": "not_proven",
+    "public_registry": "not_proven"
+  }
+}

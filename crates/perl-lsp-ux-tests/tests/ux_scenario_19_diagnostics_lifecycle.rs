@@ -6,147 +6,213 @@
 //! This scenario covers an editor-critical UX flow: a user introduces a parse
 //! error, sees diagnostics, fixes the file, and expects diagnostics to clear.
 //!
-//! # Robustness note
+//! # Explicit-clear contract
 //!
-//! LSP servers may clear diagnostics in two ways:
-//! 1. Explicit empty `textDocument/publishDiagnostics` (empty array).
-//! 2. Silently — no notification after fix.
+//! For this push-diagnostics client profile, the repaired state requires an
+//! explicit `textDocument/publishDiagnostics` replacement for the repaired
+//! document version with an empty diagnostic list. Silence is not an
+//! alternate success path: diagnostics that an editor already retained from
+//! the broken source stay on screen unless the server replaces them.
 //!
-//! The test accepts either: it drains the pre-fix event queue, waits for any
-//! stale in-flight broken-content results to arrive and be absorbed, then
-//! checks whether the server sends an explicit empty notification or remains
-//! silent (silence = cleared) within the post-settle window.
+//! Accepted pass shape (all required):
 //!
-//! # Race condition history
+//! 1. broken version 1 publishes non-empty diagnostics;
+//! 2. the repaired version-2 change is sent;
+//! 3. the latest version-2 publication for the URI is empty before the
+//!    bounded deadline.
 //!
-//! The core challenge is that the LSP server runs diagnostics asynchronously.
-//! After `textDocument/didChange` is sent with the fixed content, the server
-//! may still be mid-analysis on the broken content, and those stale results
-//! can arrive in the event queue after the fix is sent.
+//! Negative controls enforced by the oracle:
 //!
-//! Solution: a two-phase drain around the fix:
-//!   Phase 1 (pre-fix):  drain + short settle to absorb events buffered before
-//!                        `change_file_full` is called.
-//!   Phase 2 (post-fix): a longer settle + drain immediately after
-//!                        `change_file_full` to absorb stale in-flight results
-//!                        from an analysis that was already running when the
-//!                        fix arrived. Only then enter the clean-window check.
+//! - stale version-1 publications and unversioned publications remain
+//!   visible in the event stream but can never satisfy version 2;
+//! - a future version (larger than 2) cannot satisfy version 2;
+//! - a transient non-empty version-2 frame does not clear: the *latest*
+//!   version-2 publication must be empty, so a late regression replaces an
+//!   earlier empty frame and fails the barrier;
+//! - silence, queue drain, and fixed sleeps cannot construct a pass.
+//!
+//! # Buffer-only repair discriminator
+//!
+//! The backing file stays broken for the whole scenario. The fixed content
+//! travels only over `textDocument/didChange`, so the repaired result also
+//! exercises open-buffer authority: disk fallback cannot satisfy the empty
+//! version-2 publication because the disk sentinel remains broken.
 
-use perl_lsp_ux_tests::binary_available;
-use perl_lsp_ux_tests::{LspEvent, ScenarioConfig, UxHarness};
+use anyhow::Context;
+use perl_lsp_ux_tests::{LspEvent, ScenarioConfig, UxHarness, binary_available};
+use serde_json::Value;
 use std::time::Duration;
 
+const FILE: &str = "live.pl";
 const BROKEN_SOURCE: &str = "use strict;\nuse warnings;\nmy $x = ;\n";
 const FIXED_SOURCE: &str = "use strict;\nuse warnings;\nmy $x = 1;\nprint $x;\n";
-const FIXED_VERSION: i64 = 2;
+const FIXED_VERSION: i32 = 2;
+
+/// One `publishDiagnostics` observation for the scenario URI.
+#[derive(Clone, Debug)]
+struct DiagnosticObservation {
+    version: Option<i64>,
+    diagnostics: Vec<Value>,
+}
+
+/// Latest publication for the exact repaired version, if any.
+///
+/// Stale, unversioned, and future-versioned publications are visible in the
+/// event stream but can never satisfy the repaired-version barrier.
+fn latest_for_version<'a>(
+    observations: &'a [DiagnosticObservation],
+    version: i64,
+) -> Option<&'a DiagnosticObservation> {
+    observations.iter().rev().find(|observation| observation.version == Some(version))
+}
+
+/// Explicit-clear barrier: the latest publication for the repaired version
+/// must exist and be empty.
+///
+/// Taking the *latest* frame (rather than any frame) is what makes a
+/// transient non-empty repaired publication fail-safe: an early empty frame
+/// followed by a non-empty regression does not clear.
+fn latest_cleared_for_version<'a>(
+    observations: &'a [DiagnosticObservation],
+    version: i64,
+) -> Option<&'a DiagnosticObservation> {
+    latest_for_version(observations, version)
+        .filter(|observation| observation.diagnostics.is_empty())
+}
+
+/// Drain pending server events, keeping only diagnostics for `uri`.
+fn observe_uri_diagnostics(
+    harness: &UxHarness,
+    uri: &str,
+    observations: &mut Vec<DiagnosticObservation>,
+) {
+    for event in harness.collect_notifications() {
+        if let LspEvent::Diagnostics { uri: event_uri, version, diagnostics } = event
+            && event_uri == uri
+        {
+            observations.push(DiagnosticObservation { version, diagnostics });
+        }
+    }
+}
 
 /// Verifies the diagnostics edit lifecycle:
-///   1. Broken content → diagnostics appear.
-///   2. Fixed content → diagnostics clear (either explicitly or by silence).
+///   1. Broken content → non-empty diagnostics.
+///   2. Buffer-only repaired change → explicit empty version-2 publication.
 #[test]
-fn scenario_19_diagnostics_clear_after_fix() {
+fn scenario_19_diagnostics_clear_after_fix() -> anyhow::Result<()> {
     if !binary_available() {
         eprintln!("SKIP scenario_19_diagnostics_clear_after_fix: perl-lsp binary not found");
-        return;
+        return Ok(());
     }
 
     let harness = UxHarness::new(
         ScenarioConfig { timeout: Duration::from_secs(15), ..Default::default() }
-            .with_file("live.pl", BROKEN_SOURCE),
+            .with_file(FILE, BROKEN_SOURCE),
     )
-    .expect("Failed to create UX harness");
+    .context("Failed to create UX harness")?;
 
     // Given: a workspace file opened with a syntax error.
-    harness.open_file("live.pl", BROKEN_SOURCE).expect("didOpen should succeed");
+    harness.open_file(FILE, BROKEN_SOURCE).context("didOpen should succeed")?;
+    let uri = harness.workspace.uri(FILE);
 
     // When: diagnostics are first published for the broken content.
-    let diagnostics = harness.wait_for_diagnostics("live.pl", Duration::from_secs(5));
+    let broken_diagnostics = harness.wait_for_diagnostics(FILE, Duration::from_secs(5));
     assert!(
-        !diagnostics.is_empty(),
+        !broken_diagnostics.is_empty(),
         "Expected diagnostics for broken source, but none were published."
     );
 
-    // Phase 1 drain (pre-fix): remove events that have already arrived and any
-    // that arrive during a brief settle window. This covers the common case where
-    // the initial broken-content analysis is still delivering follow-up batches
-    // (e.g., separate perltidy and perlcritic passes).
-    harness.collect_notifications();
-    std::thread::sleep(Duration::from_millis(400));
-    harness.collect_notifications();
+    // Drain any follow-up broken-content batches (perltidy/perlcritic passes)
+    // into the observation log before the repair.
+    let mut observations: Vec<DiagnosticObservation> = Vec::new();
+    observe_uri_diagnostics(&harness, &uri, &mut observations);
 
-    // When: the user fixes the file via a full-document didChange.
-    harness.change_file_full("live.pl", FIXED_SOURCE).expect("didChange should succeed");
+    // When: the user fixes the file via a full-document didChange that only
+    // touches the editor buffer. The backing file stays broken on purpose so
+    // disk fallback cannot construct the repaired result.
+    harness
+        .client
+        .did_change_full(&uri, FIXED_VERSION, FIXED_SOURCE)
+        .context("didChange should succeed")?;
 
-    // Phase 2 drain (post-fix): give any in-flight analysis of the BROKEN content
-    // time to complete and deliver its results, then drain those stale events.
-    // The server may have been mid-analysis when didChange arrived; those stale
-    // results can arrive up to ~500 ms after the fix is sent. Draining after this
-    // settle ensures the clean-window check below only sees events triggered by
-    // the fixed content.
-    std::thread::sleep(Duration::from_millis(600));
-    harness.collect_notifications();
+    let disk_source = std::fs::read_to_string(harness.workspace.path(FILE))
+        .context("scenario workspace file should remain readable")?;
+    assert_eq!(
+        disk_source, BROKEN_SOURCE,
+        "test setup must keep the repaired editor buffer distinct from the backing file"
+    );
 
-    // Then: diagnostics eventually clear. Two acceptable outcomes:
-    //   (a) Server sends explicit publishDiagnostics with empty array → cleared.
-    //   (b) No new non-empty notification arrives within the clean window → silence
-    //       means the server analysed the fixed content and found no errors.
-    //
-    // Diagnostics carry the text document version. If stale broken-content
-    // diagnostics still arrive in this window, they are ignored when their
-    // version proves they belong to the previous document state.
-    let uri = harness.workspace.uri("live.pl");
-    let deadline = std::time::Instant::now() + Duration::from_secs(4);
-
-    let mut post_settle_events: Vec<LspEvent> = Vec::new();
+    // Then: the server must explicitly replace the repaired generation's
+    // diagnostics with an empty list before the deadline. Silence never
+    // clears, stale/unversioned frames never satisfy version 2, and a
+    // terminal non-empty version-2 publication fails.
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
     let mut cleared = false;
-
     while std::time::Instant::now() < deadline {
-        post_settle_events.extend(harness.collect_notifications());
-
-        // Walk in reverse to find the latest diagnostic event for this URI.
-        for ev in post_settle_events.iter().rev() {
-            if let LspEvent::Diagnostics { uri: event_uri, version, diagnostics } = ev {
-                if event_uri == &uri {
-                    if version.is_some_and(|value| value < FIXED_VERSION) {
-                        continue;
-                    }
-                    if diagnostics.is_empty() {
-                        cleared = true;
-                    }
-                    break; // latest diagnostic state found — stop scanning
-                }
-            }
-        }
-
-        if cleared {
+        observe_uri_diagnostics(&harness, &uri, &mut observations);
+        if latest_cleared_for_version(&observations, i64::from(FIXED_VERSION)).is_some() {
+            cleared = true;
             break;
         }
-
         std::thread::sleep(Duration::from_millis(100));
-    }
-
-    // Accept silence: no new non-empty events arrived in the post-settle window.
-    if !cleared {
-        let has_new_errors = post_settle_events.iter().any(|ev| {
-            matches!(
-                ev,
-                LspEvent::Diagnostics {
-                    uri: event_uri,
-                    version,
-                    diagnostics,
-                } if event_uri == &uri
-                    && !diagnostics.is_empty()
-                    && !version.is_some_and(|value| value < FIXED_VERSION)
-            )
-        });
-        cleared = !has_new_errors;
     }
 
     assert!(
         cleared,
-        "Expected diagnostics to clear (or no new errors) after fixing the file; \
-         post-settle events: {:?}",
-        post_settle_events
+        "Expected an explicit empty publishDiagnostics replacement for version {FIXED_VERSION}; \
+         silence, stale, unversioned, and non-empty repaired frames cannot clear. \
+         Observations: {observations:?}"
     );
     harness.assert_no_crash();
+    Ok(())
+}
+
+#[cfg(test)]
+mod oracle_unit_tests {
+    use super::{DiagnosticObservation, latest_cleared_for_version, latest_for_version};
+    use serde_json::{Value, json};
+
+    fn observation(version: Option<i64>, diagnostics: Vec<Value>) -> DiagnosticObservation {
+        DiagnosticObservation { version, diagnostics }
+    }
+
+    #[test]
+    fn stale_and_unversioned_publications_cannot_satisfy_repaired_version() {
+        let observations = vec![observation(Some(1), Vec::new()), observation(None, Vec::new())];
+        assert!(latest_for_version(&observations, 2).is_none());
+        assert!(latest_cleared_for_version(&observations, 2).is_none());
+    }
+
+    #[test]
+    fn unrequested_future_publication_cannot_satisfy_repaired_version() {
+        let observations = vec![
+            observation(Some(1), vec![json!({"message": "stale"})]),
+            observation(Some(3), Vec::new()),
+        ];
+
+        assert!(latest_for_version(&observations, 2).is_none());
+        assert!(latest_cleared_for_version(&observations, 2).is_none());
+    }
+
+    #[test]
+    fn latest_current_publication_is_authoritative() {
+        // An empty frame followed by a non-empty regression does not clear:
+        // the editor state is what the latest publication says it is.
+        let regressed = vec![
+            observation(Some(2), Vec::new()),
+            observation(Some(2), vec![json!({"message": "late current regression"})]),
+        ];
+        assert!(latest_cleared_for_version(&regressed, 2).is_none());
+
+        // A transient non-empty repaired frame followed by an explicit empty
+        // replacement satisfies the barrier.
+        let transient_then_cleared = vec![
+            observation(Some(2), vec![json!({"message": "residual"})]),
+            observation(Some(2), Vec::new()),
+        ];
+        let cleared = latest_cleared_for_version(&transient_then_cleared, 2)
+            .expect("the later empty replacement satisfies the barrier");
+        assert_eq!(cleared.version, Some(2));
+        assert!(cleared.diagnostics.is_empty());
+    }
 }

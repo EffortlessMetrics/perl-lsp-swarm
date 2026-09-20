@@ -424,10 +424,8 @@ impl InlayHintsProvider {
                 self.visit_node(lhs, hints, range);
                 self.visit_node(rhs, hints, range);
             }
-            NodeKind::Return { value } => {
-                if let Some(v) = value {
-                    self.visit_node(v, hints, range);
-                }
+            NodeKind::Return { value: Some(v) } => {
+                self.visit_node(v, hints, range);
             }
             _ => {}
         }

@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 /// the start of the line — unambiguous and cheap to compute. The LSP boundary
 /// converts to UTF-16 when it needs to; the substrate never does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SourceRange {
     /// Inclusive start byte offset into the file.
     pub start_byte: u32,

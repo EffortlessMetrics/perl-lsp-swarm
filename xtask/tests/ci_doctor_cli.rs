@@ -1,5 +1,8 @@
 // CI doctor integration test — eprintln! used for diagnostic output.
 #![allow(clippy::print_stderr, clippy::print_stdout)]
+// `expect()` carries the assertion message on CLI invocation and output
+// decoding. The workspace-wide deny is a production-code rule.
+#![allow(clippy::expect_used)]
 use assert_cmd::cargo::cargo_bin_cmd;
 
 /// Verify `cargo xtask ci doctor` exits 0 in a normal environment.

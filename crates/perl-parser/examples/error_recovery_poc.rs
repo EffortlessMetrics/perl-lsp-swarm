@@ -86,7 +86,7 @@ impl<'a> RecoveryParser<'a> {
         // Try to parse as a complete statement
         let mut line_parser = Parser::new(line);
         if let Ok(node) = line_parser.parse()
-            && let NodeKind::Program { mut statements } = node.kind
+            && let NodeKind::Program { mut statements } = node.into_parts().0
         {
             return statements.pop();
         }
@@ -96,7 +96,7 @@ impl<'a> RecoveryParser<'a> {
             let with_semi = format!("{};", trimmed);
             let mut semi_parser = Parser::new(&with_semi);
             if let Ok(node) = semi_parser.parse()
-                && let NodeKind::Program { mut statements } = node.kind
+                && let NodeKind::Program { mut statements } = node.into_parts().0
             {
                 self.errors.push(ParseError::syntax("Missing semicolon", line.len()));
                 return statements.pop();

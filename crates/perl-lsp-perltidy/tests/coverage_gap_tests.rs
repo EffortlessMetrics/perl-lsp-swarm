@@ -1,3 +1,4 @@
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 /// Tests targeting previously uncovered functions and branches in
 /// `perl-lsp-perltidy` (both `lib.rs` and `native.rs`).
 ///
@@ -57,12 +58,12 @@ fn text_range_whole_document_multi_line() {
 }
 
 #[test]
-fn text_range_whole_document_trailing_newline_last_line_is_final_content_line() {
-    // Rust's str::lines() does not yield an empty line after a trailing newline,
-    // so "ab\n" has one line "ab" at index 0 with character offset 2.
+fn text_range_whole_document_trailing_newline_ends_on_final_empty_line() {
+    // A terminal separator creates a final empty line (#8048): "ab\n"
+    // reaches true EOF at line 1, not the end of content line zero.
     let range = TextRange::whole_document("ab\n");
     assert_eq!(range.start, TextPosition::new(0, 0));
-    assert_eq!(range.end, TextPosition::new(0, 2));
+    assert_eq!(range.end, TextPosition::new(1, 0));
 }
 
 // ── TextEdit ─────────────────────────────────────────────────────────────────
@@ -216,7 +217,6 @@ fn format_doc_indent_indents_parts_at_next_level() {
 fn formatter_mode_serde_roundtrip() -> Result<(), Box<dyn std::error::Error>> {
     for (mode, expected_json) in [
         (FormatterMode::Native, "\"native\""),
-        (FormatterMode::Compat, "\"compat\""),
         (FormatterMode::ExternalLegacy, "\"external-legacy\""),
         (FormatterMode::Off, "\"off\""),
     ] {
@@ -301,13 +301,13 @@ fn keyword_spacing_serde_roundtrip() -> Result<(), Box<dyn std::error::Error>> {
 
 #[test]
 fn native_formatter_insert_final_newline_on_crlf_source() {
-    // FinalNewline::Insert must strip ALL trailing CR/LF chars, then add \n.
+    // FinalNewline::Insert preserves the CRLF convention of the source.
     let formatter = NativeFormatter::new();
     let config = FormatConfig { final_newline: FinalNewline::Insert, ..FormatConfig::default() };
     let source = "my $x = 1;\r\n";
     let result = formatter.format_document(source, &config);
-    // After insert: stripped "\r\n", then one "\n" appended.
-    assert_eq!(result.formatted, "my $x = 1;\n");
+    // After insert: stripped "\r\n", then one "\r\n" appended.
+    assert_eq!(result.formatted, "my $x = 1;\r\n");
 }
 
 #[test]

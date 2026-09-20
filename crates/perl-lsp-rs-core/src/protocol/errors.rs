@@ -10,6 +10,7 @@ use serde_json::{Value, json};
 /// Provides a typed interface over the raw `i32` error code constants.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(i32)]
+#[non_exhaustive]
 pub enum ErrorCode {
     /// Parse error — invalid JSON received.
     ParseError = -32700,

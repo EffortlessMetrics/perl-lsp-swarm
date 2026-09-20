@@ -1,6 +1,5 @@
 //! Comprehensive integration tests for LSP features
 
-#![allow(clippy::collapsible_if)]
 // Integration tests print diagnostic output for CI troubleshooting; this is
 // not the LSP server's stdio transport, so print_stdout/print_stderr don't
 // apply the way they do to production code.
@@ -62,7 +61,7 @@ fn test_lsp_initialization() -> TestResult {
     );
     assert_eq!(
         capabilities["capabilities"]["completionProvider"]["triggerCharacters"],
-        json!(["$", "@", "%", "-", ">", ":", "/", "\\", "\"", "'"])
+        json!(["$", "@", "%", "-", ">", ":", ".", "/", "\\", "\"", "'"])
     );
     assert_eq!(capabilities["capabilities"]["hoverProvider"], true);
     // workspaceSymbolProvider can be either bool or object with resolveProvider
@@ -213,19 +212,18 @@ sub TestPackage::test_method {
 
     let lenses_array = lenses.as_array().ok_or("Expected lenses array")?;
 
-    // Code lenses may be empty if parsing failed or no test functions found
-    // Just check that we got a valid array response
-    assert!(lenses_array.is_empty() || !lenses_array.is_empty());
+    // A valid array response is already proven by the `is_array` assertion above;
+    // the count itself is not constrained (lenses may legitimately be empty when
+    // no test functions are found).
 
     // Check shebang lens is first
     if !lenses_array.is_empty() {
         let first_lens = &lenses_array[0];
-        if let Some(cmd) = first_lens.get("command") {
-            if let Some(title) = cmd.get("title") {
-                if title.as_str() == Some("▶ Run Script") {
-                    assert_eq!(cmd["command"], "perl.runScript");
-                }
-            }
+        if let Some(cmd) = first_lens.get("command")
+            && let Some(title) = cmd.get("title")
+            && title.as_str() == Some("▶ Run Script")
+        {
+            assert_eq!(cmd["command"], "perl.runScript");
         }
     }
     Ok(())

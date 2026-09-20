@@ -191,7 +191,15 @@ impl TestServerBuilder {
                 );
             } else {
                 return Err(format!(
-                    "TestServerBuilder: Initialize failed after retry: {init_response:#}"
+                    "TestServerBuilder: Initialize failed after retry: {init_response:#}\n\n\
+                     A `test harness timeout` here usually means the `perllsp` server binary \
+                     was not available and had to be compiled inside the {init_timeout:?} \
+                     initialize deadline, which a cold build cannot meet. It does NOT mean \
+                     the feature under test is broken.\n\
+                     Fix: build the server first with `cargo build -p perllsp --bin perllsp`, \
+                     or point PERL_LSP_BIN at an existing binary. Note that `perllsp` lives \
+                     in a different package than these tests, so `cargo test -p perl-lsp-rs` \
+                     does not build it on its own."
                 ));
             }
         }
@@ -592,10 +600,10 @@ pub mod semantic {
         let lines: Vec<&str> = code.lines().collect();
 
         // Try preferred line first
-        if preferred_line < lines.len() {
-            if let Some(col) = lines[preferred_line].find(needle) {
-                return Some((preferred_line as u32, col as u32));
-            }
+        if preferred_line < lines.len()
+            && let Some(col) = lines[preferred_line].find(needle)
+        {
+            return Some((preferred_line as u32, col as u32));
         }
 
         // Search nearby lines (±2 lines from preferred)

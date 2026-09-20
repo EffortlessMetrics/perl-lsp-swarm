@@ -1,4 +1,5 @@
 //! Tests for phase-1 `SymbolRef` extraction.
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
 use perl_ast::{GotoTargetForm, Node, NodeKind, SourceLocation};
 use perl_symbol::VarKind;
@@ -50,6 +51,34 @@ fn declaration_target_is_not_treated_as_reference() -> Result<()> {
     let refs = extract_symbol_refs(&program);
     assert_eq!(refs.len(), 1);
     assert_eq!(refs[0].name, "y");
+    Ok(())
+}
+
+#[test]
+fn localized_typeglob_alias_emits_both_boundary_names() -> Result<()> {
+    let lhs = Node::new(NodeKind::Typeglob { name: "ALIAS".to_string(), body: None }, loc(7, 13));
+    let rhs = Node::new(NodeKind::Typeglob { name: "STDERR".to_string(), body: None }, loc(16, 23));
+    let alias = Node::new(
+        NodeKind::Assignment { lhs: Box::new(lhs), rhs: Box::new(rhs), op: "=".to_string() },
+        loc(7, 23),
+    );
+    let declaration = Node::new(
+        NodeKind::VariableDeclaration {
+            declarator: "local".to_string(),
+            variable: Box::new(alias),
+            attributes: vec![],
+            initializer: None,
+        },
+        loc(0, 24),
+    );
+    let program = Node::new(NodeKind::Program { statements: vec![declaration] }, loc(0, 24));
+
+    let refs = extract_symbol_refs(&program);
+    assert_eq!(refs.len(), 2);
+    assert_eq!(refs[0].kind, SymbolRefKind::TypeglobReference);
+    assert_eq!(refs[0].name, "ALIAS");
+    assert_eq!(refs[1].kind, SymbolRefKind::TypeglobReference);
+    assert_eq!(refs[1].name, "STDERR");
     Ok(())
 }
 
@@ -416,7 +445,7 @@ fn non_ampersand_call_targets_stay_call_refs() -> Result<()> {
 
 #[test]
 fn typeglob_alias_boundary_is_classified() -> Result<()> {
-    let typeglob = Node::new(NodeKind::Typeglob { name: "foo".to_string() }, loc(0, 4));
+    let typeglob = Node::new(NodeKind::Typeglob { name: "foo".to_string(), body: None }, loc(0, 4));
     let program = Node::new(NodeKind::Program { statements: vec![typeglob] }, loc(0, 4));
 
     let refs = extract_symbol_refs(&program);
@@ -429,7 +458,7 @@ fn typeglob_alias_boundary_is_classified() -> Result<()> {
 
 #[test]
 fn typeglob_assignment_keeps_rhs_coderef_reference() -> Result<()> {
-    let lhs = Node::new(NodeKind::Typeglob { name: "alias".to_string() }, loc(0, 6));
+    let lhs = Node::new(NodeKind::Typeglob { name: "alias".to_string(), body: None }, loc(0, 6));
     let rhs_target =
         Node::new(NodeKind::FunctionCall { name: "target".to_string(), args: vec![] }, loc(10, 17));
     let rhs = Node::new(
@@ -528,7 +557,8 @@ fn signature_parameters_are_not_emitted_as_refs() -> Result<()> {
 fn dynamic_typeglob_brace_name_is_not_emitted_as_static_symbol() -> Result<()> {
     // Simulate the AST shape the parser produces for `*{$var} = \&func;`.
     // The LHS typeglob carries the brace-delimited text as its name.
-    let typeglob = Node::new(NodeKind::Typeglob { name: "{$var}".to_string() }, loc(0, 8));
+    let typeglob =
+        Node::new(NodeKind::Typeglob { name: "{$var}".to_string(), body: None }, loc(0, 8));
     let program = Node::new(NodeKind::Program { statements: vec![typeglob] }, loc(0, 8));
 
     let refs = extract_symbol_refs(&program);
@@ -547,7 +577,7 @@ fn dynamic_typeglob_brace_name_is_not_emitted_as_static_symbol() -> Result<()> {
 /// Guard: static typeglob `*foo` is unaffected by the dynamic-name check.
 #[test]
 fn static_typeglob_is_still_emitted_after_dynamic_fix() -> Result<()> {
-    let typeglob = Node::new(NodeKind::Typeglob { name: "foo".to_string() }, loc(0, 4));
+    let typeglob = Node::new(NodeKind::Typeglob { name: "foo".to_string(), body: None }, loc(0, 4));
     let program = Node::new(NodeKind::Program { statements: vec![typeglob] }, loc(0, 4));
 
     let refs = extract_symbol_refs(&program);
@@ -561,15 +591,18 @@ fn static_typeglob_is_still_emitted_after_dynamic_fix() -> Result<()> {
 
 #[test]
 fn qualified_coderef_targets_preserve_full_symbol_identity() -> Result<()> {
+    // `goto &Package::method` is 21 bytes; the `&Package::method` target is 16.
+    // The coderef classifier recognises the parser's ampersand form by span
+    // length (name + 1), so a 17-byte target span is an ordinary call.
     let goto_package = Node::new(
         NodeKind::Goto {
             target: Box::new(Node::new(
                 NodeKind::FunctionCall { name: "Package::method".to_string(), args: vec![] },
-                loc(5, 22),
+                loc(5, 21),
             )),
             form: GotoTargetForm::Sub,
         },
-        loc(0, 22),
+        loc(0, 21),
     );
     let backslash_qualified = Node::new(
         NodeKind::Unary {

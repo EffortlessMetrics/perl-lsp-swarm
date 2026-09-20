@@ -26,7 +26,7 @@ The canonical source of truth for all features is `features.toml` at the root of
 
 - `id` - Stable identifier (e.g., `lsp.completion`)
 - `area` - Grouping (`text_document`, `workspace`, `window`, `debug`, `protocol`)
-- `maturity` - Readiness level (currently all `ga` = generally available)
+- `maturity` - Readiness level; entries may be planned, preview, ga, or production
 - `advertised` - Whether the server announces the capability during `initialize`
 
 Profile selection happens at **startup**. The server announces its capabilities to the editor during the LSP `initialize` handshake, so the profile cannot be changed while the server is running.
@@ -46,7 +46,7 @@ The conservative profile. It enables a stable subset of features that excludes `
 - Situations where inline value display causes issues with your editor client
 
 **Notably enabled vs. production:**
-- `lsp.formatting` and `lsp.range_formatting` are on by default (no perltidy check)
+- `lsp.formatting` remains on by default (no perltidy check); withdrawn range and on-type formatting routes remain absent
 
 **Notably disabled vs. production:**
 - `lsp.inline_value` is gated out
@@ -65,7 +65,7 @@ The default profile for normal runtime operation. This is what the server uses u
 
 **What changes vs. ga-lock:**
 - `lsp.inline_value` is enabled (DAP debugging shows inline variable values)
-- `lsp.formatting` and `lsp.range_formatting` use the native formatter by default; explicit external Perltidy compatibility mode is opt-in
+- `lsp.formatting` uses the native formatter by default; explicit external Perltidy compatibility mode is opt-in. Withdrawn range and on-type formatting routes remain absent
 
 ---
 
@@ -73,7 +73,7 @@ The default profile for normal runtime operation. This is what the server uses u
 
 **CLI token:** `all`
 
-Every in-tree capability is enabled. This profile is primarily intended for test matrices, BDD reporting, and snapshot verification. It enables `lsp.formatting` and `lsp.range_formatting` unconditionally regardless of whether Perltidy is installed.
+Every eligible in-tree capability is enabled. Withdrawn or unproven routes remain absent from the live capability projection. This profile is primarily intended for test matrices, BDD reporting, and snapshot verification. It enables `lsp.formatting` unconditionally regardless of whether Perltidy is installed.
 
 **When to use:**
 - Automated test environments where you want full capability coverage
@@ -146,14 +146,29 @@ require('lspconfig').perl_lsp.setup({
 In `languages.toml`:
 
 ```toml
-[[language]]
-name = "perl"
-language-servers = ["perl-lsp"]
-
-[language-server.perl-lsp]
+[language-server.perllsp]
 command = "perllsp"
 args = ["--stdio", "--feature-profile", "production"]
+
+[[language]]
+name = "perl"
+language-servers = ["perllsp"]
+roots = [".perl-lsp.toml", "Makefile.PL", "Build.PL", "cpanfile", "dist.ini"]
+file-types = [
+  "pl",
+  "pm",
+  "t",
+  "psgi",
+  { glob = "latexmkrc" },
+  { glob = ".latexmkrc" },
+]
+shebangs = ["perl"]
 ```
+
+This narrows Helix's combined `perl` entry to reviewed Perl 5 file families so
+Raku/NQP/P6 files do not launch the Perl 5 server. See
+[`docs/examples/helix/languages.toml`](../examples/helix/languages.toml) for the
+checked base registration.
 
 ### Emacs (via eglot)
 
@@ -166,17 +181,19 @@ args = ["--stdio", "--feature-profile", "production"]
 
 ## Runtime Feature Gating: Native Formatting
 
-Formatting capabilities (`lsp.formatting`, `lsp.range_formatting`,
-`lsp.on_type_formatting`) are backed by the native formatter by default. The
-server no longer removes document/range formatting just because Perltidy is not
-available on `PATH`; Perltidy only matters when explicit external compatibility
-mode is selected.
+Full-document formatting (`lsp.formatting`) is backed by the native formatter by
+default. The range and on-type formatting routes are withdrawn from live
+capabilities pending their respective contracts. Well-formed requests to those
+withdrawn methods return the standard `MethodNotFound` refusal; malformed
+requests may be rejected earlier as `InvalidParams`. The server no longer removes
+full-document formatting just because Perltidy is not available on `PATH`;
+Perltidy only matters when explicit external compatibility mode is selected.
 
 | Profile | No Perltidy | Perltidy present |
 |---------|-------------|------------------|
-| `ga-lock` | Formatting enabled (static) | Formatting enabled |
-| `production` | Formatting enabled | Formatting enabled |
-| `all` | Formatting enabled (static) | Formatting enabled |
+| `ga-lock` | Full-document formatting enabled; range/on-type withdrawn | Full-document formatting enabled; range/on-type withdrawn |
+| `production` | Full-document formatting enabled; range/on-type withdrawn | Full-document formatting enabled; range/on-type withdrawn |
+| `all` | Full-document formatting enabled; range/on-type withdrawn | Full-document formatting enabled; range/on-type withdrawn |
 
 In `production` mode without Perltidy the server still starts and advertises
 native formatting. If explicit external Perltidy compatibility mode is selected,
@@ -225,7 +242,7 @@ The JSON output includes:
 
 ## Feature Catalog and Compliance
 
-The compliance percentage reported by the server reflects how many features the active profile advertises as a fraction of all `advertised = true` entries in the catalog.
+The active profile's grid percentage is calculated as **advertised trackable features divided by trackable features**. A feature is trackable only when it is not planned and its catalog row has `counts_in_coverage = true`; that flag controls both the numerator and denominator. This is a grid/navigation metric showing the profile's advertised feature projection, not behavior evidence, a compliance verdict, or status authority.
 
 Profile compliance is monotonic: `all >= production >= ga-lock`.
 
@@ -239,7 +256,8 @@ perllsp --features-json --feature-profile all
 perllsp --health
 ```
 
-The `features.toml` file is the canonical definition. The Rust code in `perl-lsp-feature-contracts` generates type-safe bindings from it at compile time.
+The `features.toml` file is the canonical definition. `perl-lsp-rs-core` reads it
+through `feature_catalog.rs` and generates type-safe bindings at compile time.
 
 ---
 
@@ -262,8 +280,8 @@ The table below summarizes which features each profile enables. "Dynamic" means 
 | `lsp.code_action` | yes | yes | yes |
 | `lsp.code_lens` | yes | yes | yes |
 | `lsp.formatting` | yes | dynamic | yes |
-| `lsp.range_formatting` | yes | dynamic | yes |
-| `lsp.on_type_formatting` | yes | yes | yes |
+| `lsp.range_formatting` | no | no | no |
+| `lsp.on_type_formatting` | no | no | no |
 | `lsp.rename` | yes | yes | yes |
 | `lsp.document_link` | yes | yes | yes |
 | `lsp.folding_range` | yes | yes | yes |
@@ -288,32 +306,34 @@ DAP features (`dap.*`) are not gated by profile selection and are always present
 
 ## Architecture Overview
 
-The feature governance system is split across several microcrates to keep concerns separate:
+The feature governance system is organized as modules in `perl-lsp-rs-core`:
 
-| Crate | Responsibility |
+| Module | Responsibility |
 |---|---|
-| `perl-lsp-feature-ids` | Raw `&'static str` constants for every feature ID |
-| `perl-lsp-feature-contracts` | `FeatureProfileKind` enum, `FeatureProfileSpec` metadata, alias table |
-| `perl-lsp-feature-flags` | `BuildFlags` and `AdvertisedFeatures` structs; static profile shapes |
-| `perl-lsp-feature-profile` | Token normalization (trimming, case, underscore/hyphen) |
-| `perl-lsp-feature-policy` | `FeatureProfile` runtime enum; bridges profile to flags and advertised IDs |
-| `perl-lsp-feature-profile-cli` | CLI argument parsing; structured error with supported-token list |
-| `perl-lsp-feature-grid` | JSON grid rendering for BDD and tooling output |
-| `perl-lsp-feature-governance` | Facade re-exporting all of the above under one stable API |
+| `feature_catalog` | Catalog parsing, validation, and generated source rendering |
+| `features::ids` | Stable feature identifiers |
+| `features::contracts` | Generated catalog rows and profile contracts |
+| `features::flags` | Build flags and advertised feature projections |
+| `features::profile` / `features::profile_cli` | Profile normalization and CLI parsing |
+| `features::policy` | Runtime profile selection and advertised IDs |
+| `features::grid` | JSON grid rendering for BDD and tooling output |
+| `governance` | Stable facade over the core feature modules |
 
 The data flow at startup:
 
 ```
 CLI --feature-profile <token>
-    -> parse_feature_profile_arg()          [perl-lsp-feature-profile-cli]
-    -> FeatureProfile::from_kind()          [perl-lsp-feature-policy]
-    -> FeatureProfile::runtime_flags()      [perl-lsp-feature-policy]
-    -> BuildFlags                           [perl-lsp-feature-flags]
-    -> AdvertisedFeatures                   [perl-lsp-feature-flags]
+    -> parse_feature_profile_arg()          [features::profile_cli]
+    -> FeatureProfile::from_kind()          [features::policy]
+    -> FeatureProfile::runtime_flags()      [features::policy]
+    -> BuildFlags                           [features::flags]
+    -> AdvertisedFeatures                   [features::flags]
     -> ServerCapabilities in initialize     [perl-lsp runtime]
 ```
 
-The `features.toml` file feeds into `perl-lsp-feature-contracts` at build time via a build script that generates Rust types, keeping the catalog as the single source of truth for both runtime behavior and documentation tooling.
+The `features.toml` file feeds into `perl-lsp-rs-core` at build time via its build
+script, keeping the catalog as the single source of truth for runtime behavior and
+documentation tooling.
 
 ---
 

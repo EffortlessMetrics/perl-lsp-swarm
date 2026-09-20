@@ -93,7 +93,11 @@ impl<'a> TextEditHelpers<'a> {
         0
     }
 
-    /// Find where imports should be inserted.
+    /// Find where imports would be inserted after leading pragmas and imports.
+    ///
+    /// This public helper is retained for API compatibility, but no production
+    /// missing-import route uses it. Import edits remain withdrawn until they
+    /// have exact candidate planning and package-aware authorization.
     #[must_use]
     pub fn find_import_insert_position(&self) -> usize {
         let mut pos = self.find_pragma_insert_position();

@@ -15,15 +15,16 @@
 //! # Example
 //!
 //! ```rust
-//! use perl_dap_stack::{StackFrame, Source, PerlStackParser};
+//! use perl_dap::stack::PerlStackParser;
 //!
 //! let mut parser = PerlStackParser::new();
 //! let output = "  #0  main::foo at /path/script.pl line 42";
 //!
-//! if let Some(frame) = parser.parse_frame(output, 0) {
-//!     assert_eq!(frame.name, "main::foo");
-//!     assert_eq!(frame.line, 42);
-//! }
+//! let frame = parser
+//!     .parse_frame(output, 0)
+//!     .expect("a standard perl5db frame line should parse");
+//! assert_eq!(frame.name, "main::foo");
+//! assert_eq!(frame.line, 42);
 //! ```
 
 mod classifier;
@@ -31,7 +32,7 @@ mod parser;
 mod visibility;
 
 pub use classifier::{FrameCategory, FrameClassifier, PerlFrameClassifier};
-pub use parser::{PerlStackParser, StackParseError};
+pub use parser::{FixedOriginStackParseError, PerlStackParser, StackParseError};
 pub use visibility::{
     filter_user_visible_frames, is_internal_frame, is_internal_frame_name_and_path,
 };

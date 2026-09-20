@@ -1,0 +1,9 @@
+LSP-perllsp is installed as an exact-source package candidate.
+
+Enable semantic highlighting in Preferences: LSP Settings with:
+
+    "semantic_highlighting": true
+
+The package manages a pinned, verified perllsp binary by default. Set
+`server_path` in Preferences: LSP-perllsp Settings only when testing an explicit
+local build. Portable project configuration belongs in `.perl-lsp.toml`.

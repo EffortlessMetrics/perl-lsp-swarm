@@ -27,6 +27,7 @@ export interface LanguageClientStartupMetricsSnapshot {
   lifecycle_state: string;
   binary_resolution_status: StartupPhaseStatus;
   binary_resolution_source: BinaryResolutionSource;
+  binary_resolution_path: string | null;
   binary_resolution_ms: number | null;
   server_start_status: StartupPhaseStatus;
   server_start_ms: number | null;
@@ -46,6 +47,7 @@ export class LanguageClientStartupMetrics {
   private lifecycleState = 'stopped';
   private binaryResolutionStatus: StartupPhaseStatus = 'idle';
   private binaryResolutionSource: BinaryResolutionSource = 'unknown';
+  private binaryResolutionPath: string | null = null;
   private binaryResolutionStartedAt: number | undefined;
   private binaryResolutionMs: number | null = null;
   private serverStartStatus: StartupPhaseStatus = 'idle';
@@ -79,6 +81,7 @@ export class LanguageClientStartupMetrics {
     this.markMilestone('binary_resolution_started');
     this.binaryResolutionStatus = 'running';
     this.binaryResolutionSource = 'unknown';
+    this.binaryResolutionPath = null;
     this.binaryResolutionStartedAt = performance.now();
     this.binaryResolutionMs = null;
   }
@@ -86,10 +89,12 @@ export class LanguageClientStartupMetrics {
   public finishBinaryResolution(
     status: Exclude<StartupPhaseStatus, 'idle' | 'running'>,
     source: BinaryResolutionSource = 'unknown',
+    resolvedPath: string | null = null,
   ): void {
     this.markMilestone('binary_resolution_completed');
     this.binaryResolutionStatus = status;
     this.binaryResolutionSource = source;
+    this.binaryResolutionPath = resolvedPath;
     this.binaryResolutionMs = this.elapsedSince(this.binaryResolutionStartedAt);
     this.binaryResolutionStartedAt = undefined;
   }
@@ -135,6 +140,7 @@ export class LanguageClientStartupMetrics {
       lifecycle_state: this.lifecycleState,
       binary_resolution_status: this.binaryResolutionStatus,
       binary_resolution_source: this.binaryResolutionSource,
+      binary_resolution_path: this.binaryResolutionPath,
       binary_resolution_ms: this.binaryResolutionMs,
       server_start_status: this.serverStartStatus,
       server_start_ms: this.serverStartMs,

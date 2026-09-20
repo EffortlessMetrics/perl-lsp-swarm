@@ -8,15 +8,44 @@
 //!
 //! It intentionally does **not** parse Perl, implement LSP providers, or own workspace
 //! storage backends.
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
 use serde::{Deserialize, Serialize};
 
 mod envelope;
+pub mod framework;
+/// Concrete registry-backed framework adapters built on the SDK.
+pub mod framework_adapters;
+/// Canonical framework handler relation shared by the route and hook fact
+/// families (#8924).
+pub mod handler;
+/// Canonical framework hook fact family (#8924).
+pub mod hook;
+/// Dependency-neutral versioned contracts for interprocedural composition
+/// (#12672).
+pub mod interprocedural;
+/// Transport-neutral reachability operation, work-budget, and
+/// terminal-outcome contract (#11553).
+pub mod reachability_operation;
+/// Canonical framework route fact family (#8918).
+pub mod route;
+/// Transport-neutral stable semantic identity and ownership contract (#12121).
+pub mod semantic_identity;
+/// Transport-neutral semantic query outcomes and completeness requirements
+/// (#8911).
+pub mod semantic_query;
+/// Provider-neutral ordered structural access-hop contract (#13619).
+pub mod structural_access;
 
 pub use envelope::*;
+pub use handler::*;
+pub use hook::*;
+pub use route::*;
+pub use semantic_query::*;
 
 macro_rules! id_newtype {
     ($name:ident) => {
+        #[doc = concat!("Strongly-typed `u64` identifier newtype (`", stringify!($name), "`).")]
         #[derive(
             Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
         )]
@@ -32,73 +61,131 @@ id_newtype!(OccurrenceId);
 id_newtype!(EdgeId);
 id_newtype!(DiagnosticId);
 
+/// Classification of an entity in the semantic fact graph.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum EntityKind {
+    /// A Perl package (`package Foo;`).
     Package,
+    /// A class (Moo/Moose/native `class`).
     Class,
+    /// A role (Moo::Role/Moose::Role/Role::Tiny).
     Role,
+    /// A named subroutine (`sub foo {...}`).
     Subroutine,
+    /// A method declared inside a class or role.
     Method,
+    /// A lexical or package variable.
     Variable,
+    /// A constant declaration (`use constant`, constant subs).
     Constant,
+    /// A class/role field or attribute declaration (`has`).
     Field,
+    /// A statement label (`LABEL:`).
     Label,
+    /// A `format` declaration.
     Format,
+    /// A module (file) entity in the semantic graph.
     Module,
+    /// A framework-synthesized member (e.g. an accessor from `has`).
     GeneratedMember,
+    /// A symbol belonging to code outside the workspace.
     ExternalSymbol,
+    /// The entity kind could not be determined.
     Unknown,
 }
 
+/// Classification of an occurrence (a use of a symbol at a source site).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum OccurrenceKind {
+    /// The site defines an entity.
     Definition,
+    /// A plain symbol reference.
     Reference,
+    /// A read of a variable's value.
     Read,
+    /// A write (assignment) to a variable.
     Write,
+    /// A subroutine call.
     Call,
+    /// A method call through an invocant (`$obj->method`).
     MethodCall,
+    /// A static class-method call (`Class->method`).
     StaticMethodCall,
+    /// A coderef reference (`\&sub`, `$coderef->()`).
     CoderefReference,
+    /// A typeglob reference (`*glob`).
     TypeglobReference,
+    /// A symbol brought in by an import.
     Import,
+    /// A symbol published by an export declaration.
     Export,
+    /// An inheritance relationship site (`use parent`, `@ISA`).
     Inheritance,
+    /// A role composition site (`with 'Role'`).
     RoleComposition,
+    /// A use of a framework-generated member.
     GeneratedUse,
+    /// A use site behind a dynamic boundary (string eval, symbolic deref).
     DynamicBoundary,
 }
 
+/// Classification of a directed relationship between two entities.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum EdgeKind {
+    /// The source entity defines the target.
     Defines,
+    /// The source entity references the target.
     References,
+    /// The source reads the target variable.
     Reads,
+    /// The source writes the target variable.
     Writes,
+    /// The source calls the target subroutine.
     Calls,
+    /// The source imports the target module.
     ImportsModule,
+    /// The source imports the target symbol.
     ImportsSymbol,
+    /// The source exports the target symbol.
     ExportsSymbol,
+    /// The source exports the target named group/tag.
     ExportsGroup,
+    /// The source inherits from the target.
     Inherits,
+    /// The source composes the target role.
     ComposesRole,
+    /// The source is a member of the target (e.g. method of a package).
     MemberOf,
+    /// The source was generated from the target declaration.
     GeneratedFrom,
+    /// The source is a typeglob alias of the target.
     AliasOf,
+    /// The source depends on the target module.
     DependsOn,
+    /// The edge crosses a dynamic boundary and may be incomplete.
     DynamicBoundary,
 }
 
+/// How a fact was derived, ordered from exact source evidence to fallback.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum Provenance {
+    /// Read directly from an exact parse-tree shape.
     ExactAst,
+    /// Read from a desugared but equivalent form of the source syntax.
     DesugaredAst,
+    /// Synthesized by the semantic analyzer layer.
     SemanticAnalyzer,
+    /// Synthesized by a framework adapter (e.g. generated accessors).
     FrameworkSynthesis,
+    /// Inferred from import/export analysis.
     ImportExportInference,
+    /// Inferred from pragma or `use`-statement analysis.
     PragmaInference,
+    /// Inferred by a name-based heuristic; not source-exact.
     NameHeuristic,
+    /// Produced by a search-based fallback after stronger sources failed.
     SearchFallback,
+    /// Established only across a dynamic boundary; imprecision is explicit.
     DynamicBoundary,
     /// Exact `require Module; Module->import(literal list)` pattern where all
     /// import arguments are literal strings or `qw(...)` words — no variables,
@@ -107,66 +194,111 @@ pub enum Provenance {
     LiteralRequireImport,
 }
 
+/// Confidence grade attached to a fact.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum Confidence {
+    /// Evidence supports the fact without known gaps.
     High,
+    /// Evidence is incomplete or partially inferred.
     Medium,
+    /// Weak or heuristic evidence.
     Low,
 }
 
+/// A source range with its stable anchor identity.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AnchorFact {
+    /// Unique identifier for this anchor.
     pub id: AnchorId,
+    /// File the anchored range points into.
     pub file_id: FileId,
+    /// Start of the anchored range in bytes.
     pub span_start_byte: u32,
+    /// End of the anchored range in bytes.
     pub span_end_byte: u32,
+    /// Scope enclosing the anchored range, when known.
     pub scope_id: Option<ScopeId>,
+    /// How this anchor was derived.
     pub provenance: Provenance,
+    /// Confidence in this anchor.
     pub confidence: Confidence,
 }
 
+/// A named semantic entity (package, sub, variable, ...) with its definition.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EntityFact {
+    /// Unique identifier for this entity.
     pub id: EntityId,
+    /// Classification of the entity.
     pub kind: EntityKind,
+    /// Fully qualified canonical name of the entity.
     pub canonical_name: String,
+    /// Definition-site anchor, when known.
     pub anchor_id: Option<AnchorId>,
+    /// Scope enclosing the entity, when known.
     pub scope_id: Option<ScopeId>,
+    /// How this fact was derived.
     pub provenance: Provenance,
+    /// Confidence in this fact.
     pub confidence: Confidence,
 }
 
+/// A single use of a symbol at a source site.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OccurrenceFact {
+    /// Unique identifier for this occurrence.
     pub id: OccurrenceId,
+    /// Classification of the occurrence.
     pub kind: OccurrenceKind,
+    /// Resolved target entity, when known.
     pub entity_id: Option<EntityId>,
+    /// Source anchor of the occurrence site.
     pub anchor_id: AnchorId,
+    /// Scope enclosing the occurrence, when known.
     pub scope_id: Option<ScopeId>,
+    /// How this occurrence was derived.
     pub provenance: Provenance,
+    /// Confidence in this occurrence.
     pub confidence: Confidence,
 }
 
+/// A directed relationship between two entities.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EdgeFact {
+    /// Unique identifier for this edge.
     pub id: EdgeId,
+    /// Classification of the relationship.
     pub kind: EdgeKind,
+    /// Source entity of the edge.
     pub from_entity_id: EntityId,
+    /// Target entity of the edge.
     pub to_entity_id: EntityId,
+    /// Occurrence that produced this edge, when known.
     pub via_occurrence_id: Option<OccurrenceId>,
+    /// How this edge was derived.
     pub provenance: Provenance,
+    /// Confidence in this edge.
     pub confidence: Confidence,
 }
 
+/// A diagnostic produced by an analysis layer, with its source anchors.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DiagnosticFact {
+    /// Unique identifier for this diagnostic.
     pub id: DiagnosticId,
+    /// Stable diagnostic code, when known.
     pub code: Option<String>,
+    /// Human-readable diagnostic message.
     pub message: String,
+    /// Primary source anchor of the diagnostic.
     pub primary_anchor_id: AnchorId,
+    /// Additional related source anchors.
     pub related_anchor_ids: Vec<AnchorId>,
+    /// Scope the diagnostic belongs to, when known.
     pub scope_id: Option<ScopeId>,
+    /// How this diagnostic was derived.
     pub provenance: Provenance,
+    /// Confidence in this diagnostic.
     pub confidence: Confidence,
 }
 
@@ -226,15 +358,24 @@ pub struct ImportSpec {
     pub span_start_byte: Option<u32>,
 }
 
+/// Syntactic import shape observed at an import site.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ImportKind {
+    /// `use Module ...;`
     Use,
+    /// `use Module ();` — explicit empty import list.
     UseEmpty,
+    /// `use Module qw(...);` with an explicit symbol list.
     UseExplicitList,
+    /// `use Module ':tag';` with a named import tag.
     UseTag,
+    /// `require Module;`
     Require,
+    /// `require Module; Module->import(...);`
     RequireThenImport,
+    /// `use constant ...;`
     UseConstant,
+    /// `require $expr;` — module name computed at runtime.
     DynamicRequire,
     /// A `Class->import(...)` method call — not a `use` statement.
     ///
@@ -245,13 +386,25 @@ pub enum ImportKind {
     ManualImport,
 }
 
+/// Symbol selection policy represented at an import site.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ImportSymbols {
+    /// Default imports (`@EXPORT`), as in `use Module;` with no list.
     Default,
+    /// No symbols imported, as in `use Module ();`.
     None,
+    /// Explicit symbol list, as in `use Module qw(name);`.
     Explicit(Vec<String>),
+    /// Named import tags, as in `use Module ':tag';`.
     Tags(Vec<String>),
-    Mixed { tags: Vec<String>, names: Vec<String> },
+    /// Both named tags and explicit names in one import.
+    Mixed {
+        /// Named import tags requested.
+        tags: Vec<String>,
+        /// Explicitly named symbols requested.
+        names: Vec<String>,
+    },
+    /// Arguments could not be statically resolved.
     Dynamic,
 }
 
@@ -344,16 +497,26 @@ impl VisibleSymbolContext {
     }
 }
 
+/// How a symbol became visible at a query point.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum VisibleSymbolSource {
+    /// Declared lexically at or above the query point (`my`, `our`, `state`).
     LocalLexical,
+    /// Defined in the same package.
     LocalPackage,
+    /// Brought in by an explicit import list.
     ExplicitImport,
+    /// Brought in via the module's default exports.
     DefaultExport,
+    /// Brought in via a named export tag.
     ExportTag,
+    /// A constant visible at the query point.
     Constant,
+    /// A framework-generated member.
     Generated,
+    /// Defined outside the workspace.
     External,
+    /// Visibility crosses a dynamic boundary and cannot be classified.
     DynamicUnknown,
 }
 
@@ -367,11 +530,17 @@ pub enum VisibleSymbolSource {
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum DefinitionRank {
+    /// The reference spelled the fully qualified name exactly.
     ExactQualified,
+    /// The candidate is defined in the same package as the reference.
     SamePackage,
+    /// The candidate is reached through an explicit import at the reference.
     ExplicitImport,
+    /// The candidate is reached through a default export.
     DefaultExport,
+    /// The candidate was found by workspace-wide search.
     WorkspaceCandidate,
+    /// The candidate matched by a name heuristic only.
     Heuristic,
 }
 
@@ -382,11 +551,23 @@ pub enum DefinitionRank {
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DefinitionRankReason {
+    /// The reference spelled the fully qualified name.
     ExactQualifiedName,
+    /// The candidate shares the reference's package.
     SamePackage,
-    ExplicitImport { module: String },
-    DefaultExport { module: String },
+    /// The reference site imports the name from the given module.
+    ExplicitImport {
+        /// Module the name was imported from.
+        module: String,
+    },
+    /// The name is a default export of the given module.
+    DefaultExport {
+        /// Module whose default export supplies the name.
+        module: String,
+    },
+    /// The candidate came from the workspace symbol index.
     WorkspaceSymbol,
+    /// The candidate matched by name similarity only.
     HeuristicNameMatch,
 }
 
@@ -468,6 +649,14 @@ pub struct ReferenceEdge {
     /// File containing the reference.
     pub file_id: FileId,
     /// Bare or qualified symbol key used at the reference site.
+    ///
+    /// This is display/lookup spelling, not target identity: it carries the
+    /// canonical name when the producer could derive one, and is empty when it
+    /// could not. Target identity lives in
+    /// [`target_candidates`](Self::target_candidates), which may name a
+    /// resolved entity even when no spelling was derived. Producers must not
+    /// synthesize a placeholder name for an unresolved occurrence
+    /// (perl-lsp-swarm#8083).
     pub symbol_key: String,
     /// Zero, one, or many candidate target entities.
     pub target_candidates: Vec<EntityId>,
@@ -680,15 +869,25 @@ pub enum ValueShape {
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum ProviderSurface {
+    /// Diagnostics provider.
     Diagnostics,
+    /// Completion provider.
     Completion,
+    /// Hover provider.
     Hover,
+    /// Definition provider.
     Definition,
+    /// References provider.
     References,
+    /// Rename provider.
     Rename,
+    /// Safe-delete provider.
     SafeDelete,
+    /// Workspace-symbols provider.
     WorkspaceSymbols,
+    /// Document-symbols provider.
     DocumentSymbols,
+    /// Semantic-tokens provider.
     SemanticTokens,
 }
 
@@ -718,9 +917,13 @@ pub enum ProviderFactSourceKind {
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum ProviderFactFreshness {
+    /// The source was fresh for this request.
     Fresh,
+    /// The source was stale relative to this request.
     Stale,
+    /// Freshness could not be determined.
     Unknown,
+    /// Freshness does not apply to this source.
     NotApplicable,
 }
 

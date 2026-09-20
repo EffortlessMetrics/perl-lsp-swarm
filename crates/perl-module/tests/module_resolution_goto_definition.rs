@@ -8,7 +8,7 @@
 //! 3. Parent/base module resolution (`use parent 'Base::Class'`)
 //! 4. Graceful not-found handling (no crash)
 
-use perl_module::resolution::{ModuleUriResolution, resolve_module_path, resolve_module_uri};
+use perl_module::{ModuleUriResolution, resolve_module_path, resolve_module_uri};
 use std::path::PathBuf;
 use std::time::Duration;
 

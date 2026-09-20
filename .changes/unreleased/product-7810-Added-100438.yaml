@@ -1,0 +1,9 @@
+project: product
+component: Editor behavior
+kind: Added
+body: Added a fail-closed real Vim plus vim-lsp interoperability journey for the canonical perllsp client path.
+time: 2026-08-13T10:04:38Z
+custom:
+  PR: "7810"
+  Slug: vim-vim-lsp-actual-client
+  Breaking: "no"

@@ -25,7 +25,7 @@ use indicatif::{ProgressBar, ProgressStyle};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::{BufRead, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::thread;
@@ -37,8 +37,11 @@ use crate::tasks::ci_scope::{self, ScopeOutput};
 use crate::tasks::git_context::git_stdout_with_worktree_fallback;
 use crate::utils::project_root;
 
+pub mod disposition;
 mod first_failure;
 mod planning_types;
+pub mod route_profile;
+mod routed_result_adapter;
 
 pub use first_failure::{is_cargo_test_command, parse_first_failure};
 
@@ -163,6 +166,14 @@ pub struct GateDefinition {
     pub matrix: Option<serde_yaml_ng::Value>,
     #[serde(default)]
     pub planning: Option<GatePlanningConfig>,
+    /// Policy-typed early exit (#13698): when this required gate ends in a
+    /// blocking status (fail/timeout/error), the runner records every remaining
+    /// planned gate as a typed `skip` row ("saved work") and stops before them.
+    /// The gate itself stays required and blocking, so the run is still red and
+    /// the receipt is still produced. Distinct from the CLI `--fail-fast` flag,
+    /// whose run-wide semantics this field does not touch.
+    #[serde(default)]
+    pub short_circuit: bool,
 }
 
 #[allow(dead_code)]
@@ -216,11 +227,19 @@ pub struct FlakePolicy {
     pub max_retries: u32,
     pub auto_quarantine_threshold: u32,
     pub quarantine_duration_days: u32,
+    /// Declared source of truth for quarantined items; consumed by the
+    /// `gate_disposition.v1` resolver (#10176) instead of a hardcoded path.
+    #[serde(default)]
+    pub debt_ledger_path: Option<String>,
     #[serde(default)]
     pub quarantined_gates: Vec<QuarantinedGate>,
     #[serde(default)]
     pub known_flaky_patterns: Vec<FlakyPattern>,
 }
+
+/// Hard safety ceiling for automatic gate retries. The checked-in flake
+/// policy may tighten this limit, but cannot raise it without a code review.
+const MAX_GATE_RETRIES: u32 = 2;
 
 #[allow(dead_code)]
 #[derive(Debug, Clone, Deserialize)]
@@ -249,6 +268,11 @@ pub struct AuditConfig {
 // =============================================================================
 // Receipt Schema (from .ci/receipt.schema.json)
 // =============================================================================
+
+/// Schema version emitted by the `gates` producer. Must match the consumer's
+/// expected value in `ci_explain::SUPPORTED_SCHEMA_VERSION`; a mismatch causes
+/// every freshly-emitted receipt to be rejected at load time (#15337).
+pub const GATES_RECEIPT_SCHEMA_VERSION: &str = "gates.v1";
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Receipt {
@@ -435,6 +459,10 @@ pub struct EnvironmentInfo {
     pub ci_provider: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ci_run_id: Option<String>,
+    /// Provider retry attempt for the same CI run id. Together with
+    /// `ci_run_id` and the receipt subject SHA this distinguishes reruns.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ci_run_attempt: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ci_run_url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -484,6 +512,14 @@ pub struct GateResult {
     /// First failing test details for `cargo test`-class gates that exit non-zero.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub first_failure: Option<FirstFailure>,
+    /// Whether the runner observed this gate's command actually start.
+    /// In-process dispatches always start their closure; the shell path
+    /// knows whether the child spawned before a failure. Consumed by the
+    /// routed adapter (#9156, review thread FC-ADAPTER-ERROR-FLATTEN) so a
+    /// post-start `error` is never published as never-started; it is a
+    /// runner fact, not a receipt contract field, so it is not serialized.
+    #[serde(default, skip_serializing)]
+    pub command_started: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
@@ -508,6 +544,26 @@ pub struct GateMetrics {
     pub memory_peak_mb: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub files_checked: Option<u32>,
+    /// For `cargo test`-class gates: `Some(true)` when the log shows the
+    /// standard test-binary marker (`running N tests` or a `test result:`
+    /// summary line), `Some(false)` when the command was a cargo test but no
+    /// such marker was ever produced (compile-only budget spent — the shape
+    /// #11797 asks the receipt to make explicit), `None` for non-test gates.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub test_execution_reached: Option<bool>,
+    /// Per-attempt reach evidence for cargo test gates. Attempt ordinals make
+    /// missing or duplicate rows invalid; `None` means the full attempt log
+    /// could not be read and therefore must not be reported as compile-only.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub test_execution_reached_attempts: Vec<TestExecutionAttemptEvidence>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+pub struct TestExecutionAttemptEvidence {
+    pub attempt: u32,
+    /// `Some(true)` reached libtest, `Some(false)` is a measured compile-only
+    /// attempt, and `None` is instrumentation-unknown.
+    pub test_execution_reached: Option<bool>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -600,18 +656,34 @@ pub struct MetricChange {
 /// Configuration for the gate runner
 pub struct GateRunnerConfig {
     pub tier: GateTier,
+    pub gate_policy: Option<PathBuf>,
     pub gate_filter: Option<String>,
     pub base_ref: Option<String>,
+    /// Optional immutable CI subject receipt for scope-aware planning.
+    pub subject: Option<PathBuf>,
     pub output_format: OutputFormat,
     pub emit_receipt: bool,
     pub receipt_path: Option<PathBuf>,
     pub diff_baseline: Option<PathBuf>,
     pub list_only: bool,
+    /// Explain the typed profile expansion and governed gate denominator
+    /// (`ci_route_profile.v1`, issue #10178) instead of running gates.
+    pub explain_denominator: bool,
+    /// Explain the typed gate lifecycle disposition authority
+    /// (`gate_disposition.v1`, issue #10176) instead of running gates.
+    pub explain_disposition: bool,
     pub fail_fast: bool,
     /// For future parallel execution support
     #[allow(dead_code)]
     pub parallel: bool,
     pub verbose: bool,
+    /// Optional published `ci_route_plan.v1` (#10179). When set, the runner
+    /// consumes and validates the canonical plan/row identity before any
+    /// execution and emits one normalized, durably published
+    /// `routed_gate_result.v1` (#9156) per executed planned `run` row under
+    /// `target/receipts/routed-results/`. Unset keeps legacy behavior so
+    /// current workflow topology is unchanged.
+    pub route_plan_path: Option<PathBuf>,
     /// Explicit opt-in that this run inspects the STAGED tree (`git
     /// write-tree`), never the working tree (issue #3786). Required for
     /// `GateTier::Commit` — see `run()`'s early validation — so an agent
@@ -624,16 +696,21 @@ impl Default for GateRunnerConfig {
     fn default() -> Self {
         Self {
             tier: GateTier::MergeGate,
+            gate_policy: None,
             gate_filter: None,
             base_ref: None,
+            subject: None,
             output_format: OutputFormat::Human,
             emit_receipt: false,
             receipt_path: None,
             diff_baseline: None,
             list_only: false,
+            explain_denominator: false,
+            explain_disposition: false,
             fail_fast: false,
             parallel: false,
             verbose: false,
+            route_plan_path: None,
             staged: false,
         }
     }
@@ -645,7 +722,11 @@ pub fn run(config: GateRunnerConfig) -> Result<()> {
     std::env::set_current_dir(&root).context("Failed to change to project root")?;
 
     // Load gate policy
-    let policy_path = root.join(".ci/gate-policy.yaml");
+    let policy_path = config
+        .gate_policy
+        .clone()
+        .map(|path| if path.is_absolute() { path } else { root.join(path) })
+        .unwrap_or_else(|| root.join(".ci/gate-policy.yaml"));
     let policy = load_policy_for_inspection(&policy_path)?;
 
     // Commit-tier checks are only correct against the exact staged tree
@@ -661,6 +742,30 @@ pub fn run(config: GateRunnerConfig) -> Result<()> {
     if config.list_only {
         let gates = filter_gates(&policy, &config)?;
         return list_gates(&gates, &policy);
+    }
+
+    // Explain mode prints the typed profile expansion (`ci_route_profile.v1`,
+    // issue #10178): the requested profile's included native tiers, the
+    // complete governed denominator, and the accounted exclusions. Like
+    // `--list`, this never executes a gate. It expands the *selected*
+    // policy — `--gate-policy <path>` is honored, never silently replaced
+    // by the checked-in default.
+    if config.explain_denominator {
+        let profile = route_profile::RequestedProfile::from_gate_tier(&config.tier);
+        let mut expansion = route_profile::expand(&policy, profile, config.gate_filter.as_deref());
+        expansion.policy_source_path = policy_path.display().to_string();
+        println!("{}", expansion.format_explanation());
+        return Ok(());
+    }
+
+    // Explain mode prints the typed lifecycle disposition authority
+    // (`gate_disposition.v1`, issue #10176): for every governed gate, the
+    // current lifecycle, resolution, and the closed reason any row is
+    // expired or invalid. Like `--list`, this never executes a gate.
+    if config.explain_disposition {
+        let authority = disposition::resolve_with_policy_path(&root, &policy_path)?;
+        println!("{}", authority.format_explanation());
+        return Ok(());
     }
 
     // Build the executable plan. PR-fast uses the shared xtask runner plus
@@ -705,7 +810,31 @@ pub(crate) fn load_policy_for_inspection(path: &Path) -> Result<GatePolicy> {
         .with_context(|| format!("Failed to read gate policy from {}", path.display()))?;
     let policy: GatePolicy = serde_yaml_ng::from_str(&content)
         .with_context(|| format!("Failed to parse gate policy from {}", path.display()))?;
+    validate_retry_policy(&policy)?;
     Ok(policy)
+}
+
+fn validate_retry_policy(policy: &GatePolicy) -> Result<()> {
+    let configured_limit =
+        policy.flake_policy.as_ref().map_or(MAX_GATE_RETRIES, |flake| flake.max_retries);
+    if configured_limit > MAX_GATE_RETRIES {
+        bail!(
+            "flake_policy.max_retries {} exceeds the supported safety ceiling {}",
+            configured_limit,
+            MAX_GATE_RETRIES
+        );
+    }
+    for gate in &policy.gates {
+        if gate.retry_count > configured_limit {
+            bail!(
+                "gate '{}' retry_count {} exceeds flake_policy.max_retries {}",
+                gate.name,
+                gate.retry_count,
+                configured_limit
+            );
+        }
+    }
+    Ok(())
 }
 
 /// Filter gates based on tier and gate name filter
@@ -828,13 +957,15 @@ fn selects_commit_tier_gate(policy: &GatePolicy, config: &GateRunnerConfig) -> R
 /// tier). `--tier nightly` is *not* one of these paths — `NIGHTLY_EXTRA_TIERS`
 /// is `merge_gate` + `nightly` only, deliberately excluding `commit` — see
 /// [`selects_commit_tier_gate`], the single source of truth this function
-/// defers to. `--list` is exempt: it never executes a gate. `None` means the
-/// run may proceed.
+/// defers to. `--list`, `--explain-denominator`, and `--explain-disposition`
+/// are exempt: none ever executes a gate.
+/// executes a gate. `None` means the run may proceed.
 fn staged_guard_violation(
     policy: &GatePolicy,
     config: &GateRunnerConfig,
 ) -> Result<Option<String>> {
-    if config.staged || config.list_only {
+    if config.staged || config.list_only || config.explain_denominator || config.explain_disposition
+    {
         return Ok(None);
     }
     if !selects_commit_tier_gate(policy, config)? {
@@ -865,7 +996,16 @@ fn resolve_staged_tree_oid(root: &Path, config: &GateRunnerConfig) -> Result<Opt
 }
 
 fn plan_gates(root: &Path, policy: &GatePolicy, config: &GateRunnerConfig) -> Result<GatePlan> {
-    let base = config.base_ref.clone().unwrap_or_else(|| select_scope_base(root));
+    let subject_scope = config
+        .subject
+        .as_deref()
+        .map(|path| ci_scope::scope_from_subject(root, path))
+        .transpose()?;
+    let base = subject_scope
+        .as_ref()
+        .map(|scope| scope.base.clone())
+        .or_else(|| config.base_ref.clone())
+        .unwrap_or_else(|| select_scope_base(root));
     let staged_tree_oid = resolve_staged_tree_oid(root, config)?;
 
     if config.gate_filter.is_some() {
@@ -885,7 +1025,12 @@ fn plan_gates(root: &Path, policy: &GatePolicy, config: &GateRunnerConfig) -> Re
             staged_tree_oid,
         )),
         GateTier::PrFast => {
-            let mut plan = plan_pr_fast_gates(root, gates_for_tier(policy, "pr_fast"), base)?;
+            let mut plan = plan_pr_fast_gates(
+                root,
+                gates_for_tier(policy, "pr_fast"),
+                base,
+                subject_scope.clone(),
+            )?;
             // `plan_pr_fast_gates` always returns `staged_tree_oid: None` (it
             // has no reason to know about `--staged` on its own) — every
             // arm here must re-thread it, otherwise `--tier nightly
@@ -895,21 +1040,32 @@ fn plan_gates(root: &Path, policy: &GatePolicy, config: &GateRunnerConfig) -> Re
             Ok(plan)
         }
         GateTier::MergeGate => {
-            let mut plan = plan_pr_fast_gates(root, gates_for_tier(policy, "pr_fast"), base)?;
+            let mut plan = plan_pr_fast_gates(
+                root,
+                gates_for_tier(policy, "pr_fast"),
+                base,
+                subject_scope.clone(),
+            )?;
             plan.tier = GateTier::MergeGate;
             extend_plan_with_static_tiers(&mut plan, policy, MERGE_GATE_EXTRA_TIERS);
             plan.staged_tree_oid = staged_tree_oid;
             Ok(plan)
         }
         GateTier::Nightly => {
-            let mut plan = plan_pr_fast_gates(root, gates_for_tier(policy, "pr_fast"), base)?;
+            let mut plan = plan_pr_fast_gates(
+                root,
+                gates_for_tier(policy, "pr_fast"),
+                base,
+                subject_scope.clone(),
+            )?;
             plan.tier = GateTier::Nightly;
             extend_plan_with_static_tiers(&mut plan, policy, NIGHTLY_EXTRA_TIERS);
             plan.staged_tree_oid = staged_tree_oid;
             Ok(plan)
         }
         GateTier::All => {
-            let mut plan = plan_pr_fast_gates(root, gates_for_tier(policy, "pr_fast"), base)?;
+            let mut plan =
+                plan_pr_fast_gates(root, gates_for_tier(policy, "pr_fast"), base, subject_scope)?;
             plan.tier = GateTier::All;
             extend_plan_with_non_pr_fast_static_gates(&mut plan, policy);
             plan.staged_tree_oid = staged_tree_oid;
@@ -975,8 +1131,17 @@ fn static_gate(gate: GateDefinition) -> PlannedGate {
 }
 
 /// Plan PR-fast from policy planning roles plus ci-scope output.
-fn plan_pr_fast_gates(root: &Path, gates: Vec<GateDefinition>, base: String) -> Result<GatePlan> {
-    let scope = match compute_scope_output(root, &base) {
+fn plan_pr_fast_gates(
+    root: &Path,
+    gates: Vec<GateDefinition>,
+    base: String,
+    subject_scope: Option<ScopeOutput>,
+) -> Result<GatePlan> {
+    let scope_result = match subject_scope {
+        Some(scope) => Ok(scope),
+        None => compute_scope_output(root, &base),
+    };
+    let scope = match scope_result {
         Ok(scope) => scope,
         Err(err) => {
             let reason =
@@ -1392,6 +1557,116 @@ fn run_gate_plan(
     let log_dir = root.join("target/receipts/logs");
     fs::create_dir_all(&log_dir).context("Failed to create log directory")?;
 
+    // #9156: consume and validate the canonical plan/row identity BEFORE any
+    // gate executes — subject, selection symmetry, and row execution
+    // identity are bound to this invocation here — then emit exactly one
+    // normalized result per planned `run` row. Unset keeps legacy behavior
+    // (topology unchanged).
+    let routed_gate_plan = config
+        .route_plan_path
+        .as_deref()
+        .map(|plan_path| -> Result<(xtask::ci_route_plan::CiRoutePlanV1, PathBuf)> {
+            let compiled = routed_result_adapter::load_compiled_plan(plan_path)?;
+            // A commit-tier run requires --staged with a staged index, which
+            // the route plan's clean-tree binding refuses — the two contracts
+            // cannot both hold, so routed commit runs are refused explicitly
+            // instead of being silently restricted to a trivial empty index
+            // (review thread FC-STAGED-CLEAN-TREE).
+            if matches!(config.tier, GateTier::Commit) {
+                bail!(
+                    "--route-plan does not support --tier commit: commit tier requires --staged \
+                     with a staged index, which the route plan's clean-tree binding refuses; \
+                     run commit tier without --route-plan"
+                );
+            }
+            let actual_head_sha = cmd!("git", "rev-parse", "HEAD")
+                .dir(&root)
+                .read()
+                .map_err(|error| eyre!("resolving HEAD to bind the route plan subject: {error}"))?
+                .trim()
+                .to_string();
+            routed_result_adapter::ensure_plan_subject_matches_invocation(
+                &compiled,
+                &actual_head_sha,
+            )?;
+            let subject_path = config.subject.as_deref().ok_or_else(|| {
+                eyre!(
+                    "--route-plan requires --subject so the complete immutable subject \
+                     digest can be rebound before execution"
+                )
+            })?;
+            routed_result_adapter::ensure_plan_subject_matches_receipt(
+                &compiled,
+                subject_path,
+                &root,
+            )?;
+            let tracked_status =
+                cmd!("git", "status", "--porcelain=v1").dir(&root).read().map_err(|error| {
+                    eyre!("checking the execution tree for route-plan binding: {error}")
+                })?;
+            routed_result_adapter::ensure_execution_tree_is_clean(&tracked_status)?;
+            let selected_gates: Vec<&GateDefinition> =
+                plan.selected.iter().map(|planned| &planned.gate).collect();
+            routed_result_adapter::ensure_plan_covers_selection(
+                &compiled,
+                &selected_gates,
+                config.verbose,
+            )?;
+            // Resolve the runner's actual selection base exactly the way
+            // `plan_gates` resolves it (subject scope, then --base, then the
+            // ambient scope default), and require the plan to match it
+            // unconditionally: skipping the comparison when --base is absent
+            // would let a foreign-base plan publish under selection
+            // authority that did not govern the run (review threads P1
+            // timing / FC-SELECTION-BASE-OPTIONAL-SKIP).
+            let subject_scope_for_base = config
+                .subject
+                .as_deref()
+                .map(|path| ci_scope::scope_from_subject(&root, path))
+                .transpose()?;
+            let selection_base = subject_scope_for_base
+                .as_ref()
+                .map(|scope| scope.base.clone())
+                .or_else(|| config.base_ref.clone())
+                .unwrap_or_else(|| select_scope_base(&root));
+            let resolved_base = cmd!(
+                "git",
+                "rev-parse",
+                "--verify",
+                format!("{selection_base}^{{commit}}")
+            )
+            .dir(&root)
+            .read()
+            .map(|sha| sha.trim().to_string())
+            .map_err(|error| {
+                eyre!(
+                    "resolving the selection base {selection_base} to bind the route plan: {error}"
+                )
+            })?;
+            routed_result_adapter::ensure_plan_authority_matches_invocation(
+                &compiled,
+                &config.tier,
+                &resolved_base,
+                |revision| {
+                    cmd!("git", "rev-parse", "--verify", format!("{revision}^{{commit}}"))
+                        .dir(&root)
+                        .stderr_null()
+                        .read()
+                        .ok()
+                        .map(|sha| sha.trim().to_string())
+                },
+            )?;
+            let output_dir = root.join(routed_result_adapter::ROUTED_RESULTS_DIR);
+            fs::create_dir_all(&output_dir).context("Failed to create routed-results directory")?;
+            Ok((compiled, output_dir))
+        })
+        .transpose()?;
+    let routed_hosted_identity = if routed_gate_plan.is_some() {
+        routed_result_adapter::collect_hosted_identity()?
+    } else {
+        None
+    };
+
     // Run each gate
     let mut results: Vec<GateResult> = Vec::new();
     let mut tier_summaries: HashMap<String, TierSummary> = HashMap::new();
@@ -1411,6 +1686,13 @@ fn run_gate_plan(
 
     for (idx, planned_gate) in plan.selected.iter().enumerate() {
         let gate = &planned_gate.gate;
+        if routed_gate_plan.is_some() {
+            let status =
+                cmd!("git", "status", "--porcelain=v1").dir(&root).read().map_err(|error| {
+                    eyre!("checking the execution tree before the next route-plan gate: {error}")
+                })?;
+            routed_result_adapter::ensure_execution_tree_is_clean(&status)?;
+        }
         emit_gate_begin(gate);
         if let Some(ref pb) = spinner {
             pb.set_position(idx as u64);
@@ -1420,6 +1702,24 @@ fn run_gate_plan(
         let result =
             run_single_gate(gate, policy, &log_dir, config, plan.staged_tree_oid.as_deref())?;
         emit_gate_end(gate, &result);
+
+        // One executed planned `run` row -> one normalized result (#9156).
+        // A quarantined gate is selected but never executes, so it has no
+        // planned run row and no result to attribute.
+        if let Some((compiled, output_dir)) = &routed_gate_plan
+            && !routed_result_adapter::is_quarantine_skipped(gate, config.verbose)
+        {
+            routed_result_adapter::emit_planned_run_row_result(
+                compiled,
+                gate,
+                &result,
+                &root,
+                &root.join("target/receipts"),
+                output_dir,
+                routed_hosted_identity.clone(),
+            )
+            .with_context(|| format!("normalized routed-gate result failed for {}", gate.name))?;
+        }
 
         // Update tier summary
         let tier_summary = tier_summaries.entry(gate.tier.clone()).or_default();
@@ -1455,6 +1755,67 @@ fn run_gate_plan(
                 pb.finish_with_message("Gate failed, stopping (fail-fast mode)");
             }
             results.push(result);
+            break;
+        }
+
+        // Policy-typed short-circuit (#13698): a failed required gate that
+        // declares `short_circuit: true` stops the remaining plan, because no
+        // later gate can change the run's red disposition — the remaining work
+        // is recorded as typed skip rows (saved work) instead of vanishing from
+        // the receipt. Receipts, logs, and the blocking failure are all still
+        // produced; nothing becomes advisory and no timeout moved.
+        //
+        // Scoped to pr_fast plans (#14409 review): merge-gate and nightly
+        // plans inherit the focused pr_fast gates, but their remaining tiers
+        // are the independent backstop evidence for those runs, so a focused
+        // pr_fast failure must let them execute instead of retiring them as
+        // skip rows.
+        if plan.tier == GateTier::PrFast
+            && gate.short_circuit
+            && is_blocking_gate_status(&result.status)
+            && gate.required
+        {
+            // The failing gate keeps its plan-order receipt row first; the
+            // remaining planned gates follow as typed saved-work rows.
+            results.push(result);
+            let saved_count = plan.selected.len() - idx - 1;
+            for remaining in &plan.selected[idx + 1..] {
+                let skip_result = GateResult {
+                    gate_name: remaining.gate.name.clone(),
+                    tier: remaining.gate.tier.clone(),
+                    status: "skip".to_string(),
+                    required: Some(remaining.gate.required),
+                    duration_ms: 0,
+                    command: remaining.gate.command.clone(),
+                    exit_code: None,
+                    output_summary: Some(format!(
+                        "not run: short-circuited by failed required gate '{}'",
+                        gate.name
+                    )),
+                    log_path: None,
+                    metrics: None,
+                    artifacts: None,
+                    first_failure: None,
+                    // The retired gate's command never started (#13698).
+                    command_started: false,
+                };
+                let tier_summary = tier_summaries.entry(skip_result.tier.clone()).or_default();
+                tier_summary.total += 1;
+                tier_summary.skipped += 1;
+                if let Some(ref pb) = spinner {
+                    pb.println(format!(
+                        "[{:>4}] {} (short-circuited)",
+                        "SKIP", skip_result.gate_name
+                    ));
+                }
+                results.push(skip_result);
+            }
+            if let Some(ref pb) = spinner {
+                pb.finish_with_message(format!(
+                    "Gate {} failed; short-circuited {} remaining gate(s)",
+                    gate.name, saved_count
+                ));
+            }
             break;
         }
 
@@ -1496,7 +1857,7 @@ fn run_gate_plan(
     let agent_receipt = Some(build_agent_receipt(&root, &results, plan));
 
     Ok(Receipt {
-        schema_version: "1.0.0".to_string(),
+        schema_version: GATES_RECEIPT_SCHEMA_VERSION.to_string(),
         metadata,
         gates: results,
         summary,
@@ -1905,6 +2266,7 @@ fn run_single_gate(
             metrics: None,
             artifacts: None,
             first_failure: None,
+            command_started: false,
         });
     }
 
@@ -1954,16 +2316,13 @@ fn run_single_gate(
     }
 
     if command
-        == "cargo build --release -p perl-lsp-rs --bin perl-lsp --locked && cargo xtask smoke inline-completion --binary target/release/perl-lsp"
+        == "cargo build --release -p perllsp --bin perllsp --locked && cargo xtask smoke inline-completion --binary target/release/perllsp"
     {
         return run_internal_xtask_gate(gate, &log_path, command, start, || {
-            cmd(
-                "cargo",
-                ["build", "--release", "-p", "perl-lsp-rs", "--bin", "perl-lsp", "--locked"],
-            )
-            .run()
-            .context("Failed to build release perl-lsp binary for inline-completion smoke")?;
-            super::inline_completion_smoke::run(PathBuf::from("target/release/perl-lsp"))
+            cmd("cargo", ["build", "--release", "-p", "perllsp", "--bin", "perllsp", "--locked"])
+                .run()
+                .context("Failed to build release perllsp binary for inline-completion smoke")?;
+            super::inline_completion_smoke::run(PathBuf::from("target/release/perllsp"))
         });
     }
 
@@ -1992,7 +2351,14 @@ fn run_single_gate(
         });
     }
 
-    let execution = run_shell_command_with_timeout(command, &log_path, timeout_secs);
+    let execution = run_shell_command_with_retries(
+        command,
+        &log_path,
+        timeout_secs,
+        gate.retry_count,
+        policy.flake_policy.as_ref().map_or(MAX_GATE_RETRIES, |flake| flake.max_retries),
+        &gate.name,
+    );
     let duration_ms = start.elapsed().as_millis() as u64;
 
     match execution {
@@ -2008,12 +2374,33 @@ fn run_single_gate(
             // Extract output summary (last 10 lines or error message)
             let output_summary = extract_output_summary(&execution.stdout, 10);
 
-            // Parse metrics if this is a test gate
-            let metrics = if gate.tags.contains(&"test".to_string()) {
+            // Parse metrics if this is a test gate. Whether the test binary
+            // was reached (#11797) is orthogonal to whether the summary was
+            // parseable: a compile-timeout for a cargo test command produces
+            // no summary at all but still deserves an explicit false in the
+            // receipt so a reviewer can tell it from an intra-test hang.
+            let mut metrics = if gate.tags.contains(&"test".to_string()) {
                 parse_test_metrics(&execution.stdout)
             } else {
                 None
             };
+            // Scan the gate's full on-disk log rather than the retained
+            // stdout tail: `read_gate_output` keeps only the last 4 MiB, so
+            // an early `running N tests` preamble can scroll out of the tail
+            // before an intra-test hang produces any summary footer, which
+            // would misclassify the hang as a compile-only overrun.
+            if let Some(reached) = execution
+                .test_execution_reached_attempts
+                .last()
+                .and_then(|evidence| evidence.test_execution_reached)
+            {
+                metrics.get_or_insert_with(GateMetrics::default).test_execution_reached =
+                    Some(reached);
+            }
+            if !execution.test_execution_reached_attempts.is_empty() {
+                metrics.get_or_insert_with(GateMetrics::default).test_execution_reached_attempts =
+                    execution.test_execution_reached_attempts.clone();
+            }
 
             // For failing cargo test gates, extract the first failure details
             let first_failure = if status == "fail" && is_cargo_test_command(command) {
@@ -2039,10 +2426,24 @@ fn run_single_gate(
                     Some(gate.artifacts.clone())
                 },
                 first_failure,
+                command_started: true,
             })
         }
         Err(e) => {
             let duration_ms = start.elapsed().as_millis() as u64;
+            let metrics = if e.test_execution_reached_attempts.is_empty() {
+                None
+            } else {
+                let test_execution_reached = e
+                    .test_execution_reached_attempts
+                    .last()
+                    .and_then(|evidence| evidence.test_execution_reached);
+                Some(GateMetrics {
+                    test_execution_reached,
+                    test_execution_reached_attempts: e.test_execution_reached_attempts.clone(),
+                    ..GateMetrics::default()
+                })
+            };
             Ok(GateResult {
                 gate_name: gate.name.clone(),
                 tier: gate.tier.clone(),
@@ -2052,40 +2453,268 @@ fn run_single_gate(
                 command: command.to_string(),
                 exit_code: None,
                 output_summary: Some(format!("Execution error: {}", e)),
-                log_path: None,
-                metrics: None,
+                log_path: log_path.exists().then(|| format!("logs/{}.log", gate.name)),
+                metrics,
                 artifacts: None,
                 first_failure: None,
+                // The shell failure carries whether the child spawned before
+                // the failure, so a post-start error is never published as
+                // never-started (review thread FC-ADAPTER-ERROR-FLATTEN).
+                command_started: e.child_started,
             })
         }
     }
 }
 
-struct ShellExecutionResult {
-    stdout: String,
-    exit_code: i32,
-    timed_out: bool,
+#[derive(Debug)]
+pub(crate) struct ShellExecutionResult {
+    pub(crate) stdout: String,
+    pub(crate) exit_code: i32,
+    pub(crate) timed_out: bool,
+    pub(crate) test_execution_reached_attempts: Vec<TestExecutionAttemptEvidence>,
+}
+
+#[derive(Debug)]
+struct ShellExecutionFailure {
+    message: String,
+    test_execution_reached_attempts: Vec<TestExecutionAttemptEvidence>,
+    /// Whether the child process spawned before the failure: pre-spawn
+    /// configuration or spawn errors never started the command, while
+    /// post-spawn wait/trailer failures did (review thread
+    /// FC-ADAPTER-ERROR-FLATTEN).
+    child_started: bool,
+}
+
+impl ShellExecutionFailure {
+    fn new(
+        error: GateShellError,
+        test_execution_reached_attempts: Vec<TestExecutionAttemptEvidence>,
+    ) -> Self {
+        Self {
+            message: format!("{:#}", error.report),
+            test_execution_reached_attempts,
+            child_started: error.child_started,
+        }
+    }
+
+    fn message(message: String) -> Self {
+        Self { message, test_execution_reached_attempts: Vec::new(), child_started: false }
+    }
+}
+
+impl std::fmt::Display for ShellExecutionFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+/// Run a gate command, retrying only when an attempt is killed by the
+/// watchdog (`timed_out`), up to `retry_count` additional attempts.
+///
+/// Why timeouts only, and why this is not masking (#10023): the four
+/// observed race-family gates (`unit_lsp_full` 420s, `unit_parser_stack_full`
+/// 180s, `inline_completion_registration`/`core` 150s, `unit_dap_support_full`
+/// 300s) all failed with exit 124 at the exact budget while their captured
+/// logs held compiler warnings and zero test output — the budget was
+/// consumed by a cold-cache dependency rebuild, not by a test. Genuine test
+/// hangs remain bounded by the in-test ceilings (e.g. the parse-worker
+/// barrier's 1-minute labeled assert, #3812), so a watchdog timeout retried
+/// once is a compile-overrun remedy, not a hang hider. A non-zero test
+/// exit (`fail`) is never retried — a real assertion failure must stay red.
+///
+/// Each attempt truncates the gate log; when more than one attempt ran, a
+/// trailer records the attempt count and the receipt retains bounded per-attempt
+/// test-binary reach evidence so earlier compile-only attempts are not erased.
+fn run_shell_command_with_retries(
+    command: &str,
+    log_path: &Path,
+    timeout_secs: u64,
+    retry_count: u32,
+    configured_retry_limit: u32,
+    gate_name: &str,
+) -> std::result::Result<ShellExecutionResult, ShellExecutionFailure> {
+    if configured_retry_limit > MAX_GATE_RETRIES {
+        return Err(ShellExecutionFailure::message(format!(
+            "configured retry limit {configured_retry_limit} exceeds supported safety ceiling {MAX_GATE_RETRIES}"
+        )));
+    }
+    if retry_count > configured_retry_limit {
+        return Err(ShellExecutionFailure::message(format!(
+            "gate {gate_name} retry_count {retry_count} exceeds configured limit {configured_retry_limit}"
+        )));
+    }
+    let total_attempts = retry_count.checked_add(1).ok_or_else(|| {
+        ShellExecutionFailure::message(format!(
+            "gate {gate_name} retry_count overflows the attempt count"
+        ))
+    })?;
+    let mut attempt = 1u32;
+    let mut timeouts_seen = 0u32;
+    let mut test_execution_reached_attempts = Vec::new();
+    loop {
+        let mut execution = run_shell_command_with_timeout(command, log_path, timeout_secs)
+            .map_err(|error| {
+                ShellExecutionFailure::new(error, test_execution_reached_attempts.clone())
+            })?;
+        if is_cargo_test_command(command) {
+            test_execution_reached_attempts
+                .push(attempt_reach_evidence(attempt, command, log_path));
+        }
+        if execution.timed_out {
+            timeouts_seen += 1;
+            let trailer = append_retry_trailer(
+                log_path,
+                gate_name,
+                attempt,
+                total_attempts,
+                "watchdog timeout",
+            )
+            .map_err(|error| ShellExecutionFailure {
+                message: format!("{error:#}"),
+                test_execution_reached_attempts: test_execution_reached_attempts.clone(),
+                // The command executed (it timed out); only its log trailer
+                // write failed (review thread FC-ADAPTER-ERROR-FLATTEN).
+                child_started: true,
+            })?;
+            execution.stdout.push_str(&trailer);
+            if attempt < total_attempts {
+                eprintln!(
+                    "gate {gate_name} timed out after {timeout_secs}s on attempt {attempt}; \
+                     retrying ({}/{total_attempts})",
+                    attempt + 1
+                );
+                attempt += 1;
+                continue;
+            }
+        } else if timeouts_seen > 0 {
+            // `run_shell_command_with_timeout` reads the log back as `stdout`
+            // before this trailer exists, so mirror it into the returned
+            // stdout — the receipt's output summary must show the retry. The
+            // label reflects the FINAL attempt's own outcome: a nonzero exit
+            // after an earlier timeout is still a failure, never "passed".
+            let outcome = if execution.exit_code == 0 {
+                "passed after earlier watchdog timeout(s)".to_string()
+            } else {
+                format!("exited {} after earlier watchdog timeout(s)", execution.exit_code)
+            };
+            let trailer =
+                append_retry_trailer(log_path, gate_name, attempt, total_attempts, &outcome)
+                    .map_err(|error| ShellExecutionFailure {
+                        message: format!("{error:#}"),
+                        test_execution_reached_attempts: test_execution_reached_attempts.clone(),
+                        // The command executed; only its log trailer write
+                        // failed (review thread FC-ADAPTER-ERROR-FLATTEN).
+                        child_started: true,
+                    })?;
+            execution.stdout.push_str(&trailer);
+        }
+        execution.test_execution_reached_attempts = test_execution_reached_attempts;
+        return Ok(execution);
+    }
+}
+
+fn attempt_reach_evidence(
+    attempt: u32,
+    command: &str,
+    log_path: &Path,
+) -> TestExecutionAttemptEvidence {
+    let test_execution_reached = log_reaches_test_execution(command, log_path).ok().flatten();
+    TestExecutionAttemptEvidence { attempt, test_execution_reached }
+}
+
+/// Append an attempt trailer to the gate log. Each fresh attempt truncates
+/// the file, so the trailer on the FINAL attempt's log is the only durable
+/// record of the retry history that produced it.
+fn append_retry_trailer(
+    log_path: &Path,
+    gate_name: &str,
+    attempt: u32,
+    total_attempts: u32,
+    outcome: &str,
+) -> Result<String> {
+    use std::io::Write as _;
+    let mut file = fs::OpenOptions::new().append(true).open(log_path).with_context(|| {
+        format!("Failed to open gate log for retry trailer: {}", log_path.display())
+    })?;
+    let trailer =
+        format!("\n==== gate {gate_name} attempt {attempt}/{total_attempts}: {outcome} ====\n");
+    file.write_all(trailer.as_bytes()).context("Failed to write gate log retry trailer")?;
+    Ok(trailer)
 }
 
 const MAX_GATE_OUTPUT_BYTES: u64 = 4 * 1024 * 1024;
 
-fn run_shell_command_with_timeout(
+/// Run one shell command under the watchdog, truncating-and-reading the log.
+///
+/// `pub(crate)` so the `lsp_smoke` atomic child harness (#8063) reuses the
+/// exact per-child timeout semantics the gate runner enforces (GNU `timeout`
+/// wrapping plus the Rust watchdog backstop) instead of a second, drifting
+/// implementation.
+/// Shell execution failure carrying whether the child process had spawned
+/// when the error occurred: pre-spawn errors (log setup, spawn) never
+/// started the command, post-spawn errors (wait) did. The routed adapter
+/// binds this start state so a post-start `error` is never published as
+/// never-started (review thread FC-ADAPTER-ERROR-FLATTEN).
+#[derive(Debug)]
+pub(crate) struct GateShellError {
+    pub(crate) report: color_eyre::Report,
+    pub(crate) child_started: bool,
+}
+
+impl From<GateShellError> for color_eyre::Report {
+    fn from(error: GateShellError) -> Self {
+        error.report
+    }
+}
+
+impl std::fmt::Display for GateShellError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "{:#}", self.report)
+    }
+}
+
+pub(crate) fn run_shell_command_with_timeout(
     command: &str,
     log_path: &Path,
     timeout_secs: u64,
-) -> Result<ShellExecutionResult> {
+) -> Result<ShellExecutionResult, GateShellError> {
+    run_shell_command_with_timeout_in(command, log_path, timeout_secs, None)
+}
+
+/// [`run_shell_command_with_timeout`] with an optional working directory for
+/// the spawned shell (#8063): behavior children execute the prebuilt test
+/// binary from the package directory cargo would have used, so direct
+/// execution stays environment-equivalent to `cargo test`.
+pub(crate) fn run_shell_command_with_timeout_in(
+    command: &str,
+    log_path: &Path,
+    timeout_secs: u64,
+    current_dir: Option<&Path>,
+) -> Result<ShellExecutionResult, GateShellError> {
+    // Everything before a successful spawn is a pre-start error: the command
+    // never ran.
+    let child_started = false;
     let log_file = fs::File::create(log_path)
-        .with_context(|| format!("Failed to create log file: {}", log_path.display()))?;
+        .with_context(|| format!("Failed to create log file: {}", log_path.display()))
+        .map_err(|report| GateShellError { report, child_started })?;
     let log_file_err = log_file
         .try_clone()
-        .with_context(|| format!("Failed to clone log file handle: {}", log_path.display()))?;
+        .with_context(|| format!("Failed to clone log file handle: {}", log_path.display()))
+        .map_err(|report| GateShellError { report, child_started })?;
 
-    let mut child = shell_command_process(command, timeout_secs)
+    let mut process = shell_command_process(command, timeout_secs);
+    if let Some(dir) = current_dir {
+        process.current_dir(dir);
+    }
+    let mut child = process
         .stdout(Stdio::from(log_file))
         .stderr(Stdio::from(log_file_err))
         .spawn()
-        .with_context(|| format!("Failed to spawn gate command: {command}"))?;
+        .with_context(|| format!("Failed to spawn gate command: {command}"))
+        .map_err(|report| GateShellError { report, child_started })?;
 
+    // From here on the child exists: any failure is post-start.
+    let child_started = true;
     let start = Instant::now();
     let mut last_heartbeat = start;
     let timeout = shell_command_watchdog_timeout(timeout_secs);
@@ -2095,7 +2724,11 @@ fn run_shell_command_with_timeout(
     // wait() a second time (which would be a double-wait and returns an error
     // on Windows). Synthetic exit code 124 follows the GNU timeout(1) convention.
     let (watchdog_timed_out, exit_code) = loop {
-        if let Some(status) = child.try_wait().context("Failed waiting on gate process")? {
+        if let Some(status) = child
+            .try_wait()
+            .context("Failed waiting on gate process")
+            .map_err(|report| GateShellError { report, child_started })?
+        {
             break (false, status.code().unwrap_or(-1));
         }
         if start.elapsed() >= timeout {
@@ -2125,7 +2758,12 @@ fn run_shell_command_with_timeout(
 
     let stdout = read_gate_output(log_path);
 
-    Ok(ShellExecutionResult { stdout, exit_code, timed_out })
+    Ok(ShellExecutionResult {
+        stdout,
+        exit_code,
+        timed_out,
+        test_execution_reached_attempts: Vec::new(),
+    })
 }
 
 fn read_gate_output(log_path: &Path) -> String {
@@ -2196,6 +2834,17 @@ fn shell_command_process(command: &str, timeout_secs: u64) -> Command {
 
 #[cfg(windows)]
 fn terminate_shell_command(child: &mut Child) {
+    // Kill the whole tree: the gate command runs under `cmd /C`, whose
+    // cargo/rustc grandchildren survive a plain kill() of the shell and keep
+    // holding target/ locks a retry attempt would then contend with
+    // (#11825 review). taskkill /T walks the descendants; /F forces.
+    let pid = child.id().to_string();
+    Command::new("taskkill")
+        .args(["/PID", &pid, "/T", "/F"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .ok();
     child.kill().ok();
 }
 
@@ -2214,8 +2863,11 @@ fn shell_command_watchdog_timeout(timeout_secs: u64) -> Duration {
 }
 
 #[cfg(not(windows))]
+const SHELL_WATCHDOG_GRACE_SECONDS: u64 = 75;
+
+#[cfg(not(windows))]
 fn shell_command_watchdog_timeout(timeout_secs: u64) -> Duration {
-    Duration::from_secs(timeout_secs.saturating_add(75))
+    Duration::from_secs(timeout_secs.saturating_add(SHELL_WATCHDOG_GRACE_SECONDS))
 }
 
 fn run_internal_xtask_gate(
@@ -2250,6 +2902,9 @@ fn run_internal_xtask_gate(
         metrics: None,
         artifacts: if gate.artifacts.is_empty() { None } else { Some(gate.artifacts.clone()) },
         first_failure: None,
+        // The in-process closure ran: even a "fail" or "error" outcome here
+        // is post-start activity (review thread FC-ADAPTER-ERROR-FLATTEN).
+        command_started: true,
     })
 }
 
@@ -2310,6 +2965,10 @@ fn run_internal_commit_check(
         metrics: None,
         artifacts: if gate.artifacts.is_empty() { None } else { Some(gate.artifacts.clone()) },
         first_failure: None,
+        // The in-process closure ran: even an "error" outcome here (render
+        // failure, check error) is post-start activity (review thread
+        // FC-ADAPTER-ERROR-FLATTEN).
+        command_started: true,
     })
 }
 
@@ -2414,6 +3073,10 @@ fn collect_metadata(timestamp: DateTime<Utc>) -> Result<ReceiptMetadata> {
     };
 
     let ci_run_id = std::env::var("GITHUB_RUN_ID").ok();
+    let ci_run_attempt = std::env::var("GITHUB_RUN_ATTEMPT")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .filter(|attempt| *attempt > 0);
 
     let ci_run_url = ci_run_id.as_ref().and_then(|run_id| {
         std::env::var("GITHUB_REPOSITORY")
@@ -2448,6 +3111,7 @@ fn collect_metadata(timestamp: DateTime<Utc>) -> Result<ReceiptMetadata> {
             env_type,
             ci_provider,
             ci_run_id,
+            ci_run_attempt,
             ci_run_url,
             pr_number,
             nix_shell: Some(nix_shell),
@@ -2496,6 +3160,98 @@ fn parse_test_metrics(output: &str) -> Option<GateMetrics> {
         }
     }
     None
+}
+
+/// For a `cargo test`-class gate, report whether the captured log ever
+/// crossed from compilation into test-binary execution. Returns `Some(true)`
+/// when a `running N tests` marker or a `test result:` summary line is
+/// present, `Some(false)` when the command was a cargo test invocation but
+/// neither marker appears (the compile-overrun signature #11797 asks the
+/// receipt to distinguish from a real test failure), and `None` when the
+/// gate was not a cargo test invocation and the distinction does not apply.
+///
+/// The string variant scans exactly the output it is handed; the receipt
+/// wires `log_reaches_test_execution` first so the verdict covers the full
+/// final-attempt log rather than its retained tail. When retries ran, this
+/// reflects the final recorded attempt: each retry truncates the gate log,
+/// The companion `test_execution_reached_attempts` metric retains the bounded
+/// in-order evidence for every attempt.
+///
+/// The "running N tests" line is the libtest harness's own preamble printed
+/// once the linked test binary starts executing; a compile timeout — even
+/// one whose Cargo output includes an unrelated occurrence of the word
+/// "running" — will not produce that line. `test result:` is the harness
+/// footer; either marker alone proves the binary was reached.
+///
+/// The receipt path streams the full log through [`log_reaches_test_execution`];
+/// this string variant is retained for unit tests of the in-memory scan.
+#[cfg(test)]
+fn parse_test_execution_reached(command: &str, output: &str) -> Option<bool> {
+    if !is_cargo_test_command(command) {
+        return None;
+    }
+    Some(output.lines().any(is_test_binary_execution_marker))
+}
+
+/// `parse_test_execution_reached` against a gate's complete on-disk log.
+///
+/// The retained stdout handed to the string variant is truncated to the last
+/// [`MAX_GATE_OUTPUT_BYTES`] by `read_gate_output`; a libtest preamble that
+/// scrolled past that boundary before a hang would otherwise be reported as
+/// `Some(false)` (compile-only overrun) even though the binary ran. This
+/// streams the whole file line by line so the verdict never depends on how
+/// much output followed the marker. Read failures are errors rather than
+/// `false`: missing instrumentation cannot become compile-only evidence.
+fn log_reaches_test_execution(command: &str, log_path: &Path) -> Result<Option<bool>> {
+    if !is_cargo_test_command(command) {
+        return Ok(None);
+    }
+    let file = fs::File::open(log_path)
+        .with_context(|| format!("Failed to open gate log {}", log_path.display()))?;
+    let reader = std::io::BufReader::new(file);
+    // Gate logs can contain arbitrary subprocess bytes. Invalid UTF-8 lines
+    // are skipped without ending the scan, but actual I/O failure leaves the
+    // attempt unknown.
+    for line in reader.lines() {
+        match line {
+            Ok(line) if is_test_binary_execution_marker(&line) => return Ok(Some(true)),
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::InvalidData => {}
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!("Failed while scanning gate log {}", log_path.display())
+                });
+            }
+        }
+    }
+    Ok(Some(false))
+}
+
+/// A single line from cargo test output that proves the libtest binary
+/// began executing: either the harness preamble `running N tests` (any
+/// non-negative N, including 0 for empty binaries) or the summary footer
+/// `test result:`.
+fn is_test_binary_execution_marker(line: &str) -> bool {
+    let trimmed = line.trim();
+    if let Some(rest) = trimmed.strip_prefix("running") {
+        // Require whitespace after `running`, then an integer and the exact
+        // libtest noun. This accepts repeated spaces/tabs while rejecting
+        // near-misses such as `running 4 testing` or `running4 tests`.
+        if !rest.chars().next().is_some_and(char::is_whitespace) {
+            return false;
+        }
+        let mut fields = rest.split_whitespace();
+        let Some(count_token) = fields.next() else {
+            return false;
+        };
+        let Some(test_token) = fields.next() else {
+            return false;
+        };
+        return count_token.chars().all(|c| c.is_ascii_digit())
+            && matches!(test_token, "test" | "tests")
+            && fields.next().is_none();
+    }
+    trimmed.starts_with("test result:")
 }
 
 fn extract_number(line: &str, suffix: &str) -> Option<u32> {
@@ -2636,6 +3392,7 @@ fn output_summary(receipt: &Receipt) -> Result<()> {
 
 /// Write receipt to file
 fn write_receipt(receipt: &Receipt, path: &PathBuf) -> Result<()> {
+    validate_attempt_histories(receipt)?;
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -2651,7 +3408,49 @@ fn load_receipt(path: &PathBuf) -> Result<Receipt> {
         .with_context(|| format!("Failed to read baseline receipt from {}", path.display()))?;
     let receipt: Receipt = serde_json::from_str(&content)
         .with_context(|| format!("Failed to parse baseline receipt from {}", path.display()))?;
+    validate_attempt_histories(&receipt)?;
     Ok(receipt)
+}
+
+fn validate_attempt_histories(receipt: &Receipt) -> Result<()> {
+    for gate in &receipt.gates {
+        let Some(metrics) = &gate.metrics else {
+            continue;
+        };
+        if metrics.test_execution_reached_attempts.len() > (MAX_GATE_RETRIES + 1) as usize {
+            bail!(
+                "gate '{}' has {} attempt-evidence rows; maximum is {}",
+                gate.gate_name,
+                metrics.test_execution_reached_attempts.len(),
+                MAX_GATE_RETRIES + 1
+            );
+        }
+        for (index, evidence) in metrics.test_execution_reached_attempts.iter().enumerate() {
+            let expected = u32::try_from(index)
+                .ok()
+                .and_then(|value| value.checked_add(1))
+                .ok_or_else(|| eyre!("attempt-evidence index overflow"))?;
+            if evidence.attempt != expected {
+                bail!(
+                    "gate '{}' attempt-evidence row {} declares attempt {}; ordinals must be contiguous from 1",
+                    gate.gate_name,
+                    expected,
+                    evidence.attempt
+                );
+            }
+        }
+        if let Some(final_attempt) = metrics.test_execution_reached_attempts.last()
+            && metrics.test_execution_reached != final_attempt.test_execution_reached
+        {
+            bail!(
+                "gate '{}' legacy final-attempt evidence {:?} contradicts typed final row {:?}",
+                gate.gate_name,
+                metrics.test_execution_reached,
+                final_attempt.test_execution_reached
+            );
+        }
+    }
+    Ok(())
 }
 
 /// Compare two receipts and generate diff
@@ -2927,22 +3726,29 @@ mod tests {
     use std::path::Path;
     use std::process::Command;
 
-    use tempfile::tempdir;
+    use perl_tdd_support::{must_err_with, must_some_with, must_with};
+    use serde::Serialize;
+    use serde::de::DeserializeOwned;
+    use tempfile::{TempDir, tempdir};
+
+    use color_eyre::eyre::{Context, Result, bail};
 
     use super::{
         DiffResult, FirstFailure, GateDefinition, GateMetrics, GatePlanningConfig,
         GatePlanningRole, GatePolicy, GateResult, GateRunnerConfig, GateTier, GlobalSettings,
-        MAX_GATE_OUTPUT_BYTES, MetricChange, OutputFormat, PackageTargetIndex, Receipt,
-        VERSION_SYNC_GATE_COMMAND, blocking_failure_gate_names, build_agent_receipt,
-        build_pr_fast_plan_from_scope, build_pr_fast_plan_from_scope_with_targets,
-        commit_advisories, compare_receipts, determine_overall_status,
-        extend_plan_with_non_pr_fast_static_gates, extend_plan_with_static_tiers,
-        extract_output_summary, failure_guidance, filter_gates, is_blocking_gate_status,
-        is_cargo_test_command, is_latest_commit, load_policy_for_inspection, load_receipt,
-        output_diff, parse_first_failure, parse_test_metrics, plan_gates, read_gate_output,
-        run_internal_commit_check, run_internal_xtask_gate, run_shell_command_with_timeout,
-        run_single_gate, selects_commit_tier_gate, staged_guard_violation, static_gate_plan,
-        write_receipt,
+        MAX_GATE_OUTPUT_BYTES, MAX_GATE_RETRIES, MetricChange, OutputFormat, PackageTargetIndex,
+        Receipt, TestExecutionAttemptEvidence, VERSION_SYNC_GATE_COMMAND, attempt_reach_evidence,
+        blocking_failure_gate_names, build_agent_receipt, build_pr_fast_plan_from_scope,
+        build_pr_fast_plan_from_scope_with_targets, commit_advisories, compare_receipts,
+        determine_overall_status, extend_plan_with_non_pr_fast_static_gates,
+        extend_plan_with_static_tiers, extract_output_summary, failure_guidance, filter_gates,
+        is_blocking_gate_status, is_cargo_test_command, is_latest_commit,
+        load_policy_for_inspection, load_receipt, log_reaches_test_execution, output_diff,
+        parse_first_failure, parse_test_execution_reached, parse_test_metrics, plan_gates,
+        read_gate_output, run_gate_plan, run_internal_commit_check, run_internal_xtask_gate,
+        run_shell_command_with_retries, run_shell_command_with_timeout, run_single_gate,
+        selects_commit_tier_gate, shell_command_watchdog_timeout, staged_guard_violation,
+        static_gate_plan, validate_attempt_histories, write_receipt,
     };
     use crate::tasks::ci_scope::{
         ArchWidener, DirectCrate, HeavyLaneEntry, LaneDecisions, LaneEntry, PlatformOverrides,
@@ -2964,6 +3770,7 @@ mod tests {
             metrics: None,
             artifacts: None,
             first_failure: None,
+            command_started: status != "skip",
         }
     }
 
@@ -2982,6 +3789,7 @@ mod tests {
             artifacts: Vec::new(),
             matrix: None,
             planning: Some(GatePlanningConfig { role, packages: Vec::new() }),
+            short_circuit: false,
         }
     }
 
@@ -3008,6 +3816,41 @@ mod tests {
             flake_policy: None,
             audit: None,
         }
+    }
+
+    #[track_caller]
+    fn write_gate_log(path: &Path, contents: impl AsRef<[u8]>, context: &str) {
+        must_with(std::fs::write(path, contents), context);
+    }
+
+    #[track_caller]
+    fn required_test_metrics(output: &str) -> GateMetrics {
+        must_some_with(parse_test_metrics(output), "cargo test summary should parse")
+    }
+
+    #[track_caller]
+    fn required_first_failure(output: &str, exit_code: i32, context: &str) -> FirstFailure {
+        must_some_with(parse_first_failure(output, exit_code), context)
+    }
+
+    #[track_caller]
+    fn deserialize_json<T: DeserializeOwned>(json: &str, context: &str) -> T {
+        must_with(serde_json::from_str(json), context)
+    }
+
+    #[track_caller]
+    fn serialize_json<T: Serialize>(value: &T, context: &str) -> String {
+        must_with(serde_json::to_string(value), context)
+    }
+
+    #[track_caller]
+    fn compare_receipts_ok(baseline: &Receipt, current: &Receipt) -> DiffResult {
+        must_with(compare_receipts(baseline, current), "compare receipts should succeed")
+    }
+
+    #[track_caller]
+    fn required_metric_change<'a>(diff: &'a DiffResult, name: &str) -> &'a MetricChange {
+        must_some_with(metric_change_for(diff, name), format_args!("{name} metric should exist"))
     }
 
     fn package_pr_gate(name: &str, packages: Vec<String>) -> GateDefinition {
@@ -3085,6 +3928,23 @@ mod tests {
         assert_eq!(GatePlanningRole::RustPackageScoped.to_string(), "rust_package_scoped");
         assert_eq!(GatePlanningRole::Static.to_string(), "static");
         Ok(())
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn watchdog_timeout_includes_process_cleanup_grace() {
+        assert_eq!(
+            shell_command_watchdog_timeout(720),
+            std::time::Duration::from_secs(795),
+            "the Linux watchdog's 75-second TERM/KILL grace must be included in \
+             the Rust backstop after the declared execution window"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn watchdog_timeout_has_no_unix_cleanup_grace() {
+        assert_eq!(shell_command_watchdog_timeout(720), std::time::Duration::from_secs(720));
     }
 
     #[test]
@@ -3246,6 +4106,39 @@ mod tests {
         let config = GateRunnerConfig {
             tier: GateTier::Commit,
             list_only: true,
+            ..GateRunnerConfig::default()
+        };
+
+        assert!(staged_guard_violation(&policy, &config)?.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn staged_guard_violation_none_in_explain_denominator_mode() -> color_eyre::eyre::Result<()> {
+        // `--explain-denominator` is as read-only as `--list`: it prints the
+        // `ci_route_profile.v1` expansion (#10178) and never executes a gate,
+        // so even `--tier all` must not demand `--staged` from it.
+        let policy = policy_with_commit_and_pr_fast_gates();
+        let config = GateRunnerConfig {
+            tier: GateTier::All,
+            explain_denominator: true,
+            ..GateRunnerConfig::default()
+        };
+
+        assert!(staged_guard_violation(&policy, &config)?.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn staged_guard_violation_none_in_explain_disposition_mode() -> color_eyre::eyre::Result<()> {
+        // `--explain-disposition` is as read-only as `--list`: it prints the
+        // `gate_disposition.v1` authority (#10176) and never executes a
+        // gate, so even `--tier all` must not demand `--staged` from it
+        // (review finding: the guard previously fired on explain runs).
+        let policy = policy_with_commit_and_pr_fast_gates();
+        let config = GateRunnerConfig {
+            tier: GateTier::All,
+            explain_disposition: true,
             ..GateRunnerConfig::default()
         };
 
@@ -3763,6 +4656,76 @@ gates:
         Ok(())
     }
 
+    /// Spin up a throwaway git repo with one commit and a synthetic
+    /// `origin/main` remote-tracking ref. The fixture mirrors the live
+    /// repo shape that `plan_gates` expects (`base_ref: "origin/main"`
+    /// resolves via `change_set::resolve_base_ref`, and the second pass at
+    /// `gates.rs:1619` calls `git rev-parse --verify origin/main^{commit}`)
+    /// without touching the live project index — see issue #15413:
+    /// running `git write-tree` against the real index races against
+    /// parallel tests' transient `git add`/`rm` locks and flakes ~1/8.
+    fn isolated_git_repo_with_origin_main() -> Result<tempfile::TempDir> {
+        let dir = tempfile::tempdir().context("failed to create temp repo dir")?;
+        let root = dir.path();
+        for args in [
+            vec!["init", "--quiet"],
+            vec!["config", "user.email", "test@example.com"],
+            vec!["config", "user.name", "Test"],
+            vec!["config", "core.fileMode", "false"],
+        ] {
+            let status = Command::new("git")
+                .current_dir(root)
+                .args(&args)
+                .status()
+                .with_context(|| format!("failed to run git {args:?}"))?;
+            if !status.success() {
+                bail!("git {args:?} failed in isolated repo setup");
+            }
+        }
+        // Stage one file and commit so `git write-tree` returns a non-empty
+        // tree and `origin/main^{commit}` resolves to a real commit. Without
+        // a commit, `change_set::resolve_base_ref` rejects `origin/main`
+        // (see #3985 Slice 2 review), and the second-pass
+        // `rev-parse --verify origin/main^{commit}` would also fail.
+        std::fs::write(root.join("seed.txt"), "seed\n")
+            .context("failed to write seed file in isolated repo")?;
+        for args in [vec!["add", "seed.txt"], vec!["commit", "--quiet", "-m", "seed"]] {
+            let status = Command::new("git")
+                .current_dir(root)
+                .args(&args)
+                .status()
+                .with_context(|| format!("failed to run git {args:?}"))?;
+            if !status.success() {
+                bail!("git {args:?} failed in isolated repo setup");
+            }
+        }
+        // Synthesize `refs/remotes/origin/main` at HEAD so `git rev-parse
+        // --verify origin/main` succeeds without actually setting up a
+        // remote. The real repository has this because it is a clone of
+        // `origin`; tests must mirror that exact shape because
+        // `change_set::resolve_base_ref` only accepts explicit bases that
+        // exist (issue #3985: no silent substitution).
+        let head = String::from_utf8(
+            Command::new("git")
+                .current_dir(root)
+                .args(["rev-parse", "HEAD"])
+                .output()
+                .context("failed to run git rev-parse HEAD")?
+                .stdout,
+        )
+        .context("git rev-parse HEAD output was not UTF-8")?;
+        let head = head.trim();
+        let status = Command::new("git")
+            .current_dir(root)
+            .args(["update-ref", "refs/remotes/origin/main", head])
+            .status()
+            .context("failed to run git update-ref for origin/main")?;
+        if !status.success() {
+            bail!("git update-ref refs/remotes/origin/main failed");
+        }
+        Ok(dir)
+    }
+
     #[test]
     fn plan_gates_threads_staged_tree_oid_into_non_commit_tiers() -> color_eyre::eyre::Result<()> {
         // Regression for a deep-review P1 on PR #4016: `plan_pr_fast_gates`
@@ -3773,6 +4736,13 @@ gates:
         // `all` keep every gate regardless of tier) runs against the exact
         // staged tree, but the receipt's `staged_tree_oid` silently stays
         // `None`, losing the very identity `--staged` was supposed to prove.
+        //
+        // Runs against an isolated git repo (issue #15413): the prior
+        // implementation called `git write-tree` against the live project
+        // root, which races against transient `git index.lock` files held
+        // by parallel tests and flakes ~1/8 in clean-main runs. Production
+        // `staged_tree_oid` must keep surfacing a persistent lock as a real
+        // error — the fix lives in the test, not in the production path.
         let policy = policy_with_gates(vec![
             pr_gate("fmt", GatePlanningRole::AlwaysOn, "cargo xtask fmt --check"),
             tier_gate(
@@ -3787,14 +4757,81 @@ gates:
             staged: true,
             ..GateRunnerConfig::default()
         };
-        let root = crate::utils::project_root()?;
+        let repo = isolated_git_repo_with_origin_main()?;
+        let root = repo.path();
 
-        let plan = plan_gates(&root, &policy, &config)?;
+        let plan = plan_gates(root, &policy, &config)?;
 
         assert!(
             plan.staged_tree_oid.is_some(),
             "--staged must thread the tree OID into the plan for --tier all, not only \
              --tier commit"
+        );
+        Ok(())
+    }
+
+    /// Confirms the isolated-repo helper resolves the exact refs `plan_gates`
+    /// will probe. Regression guard for #15413: if the helper ever stops
+    /// publishing `origin/main` (or stops committing), the test above will
+    /// flake at `change_set::resolve_base_ref` — this test names that seam so
+    /// the fix is local.
+    #[test]
+    fn isolated_repo_helper_publishes_origin_main_and_seed_commit() -> color_eyre::eyre::Result<()>
+    {
+        let repo = isolated_git_repo_with_origin_main()?;
+        let root = repo.path();
+
+        let head_exists = Command::new("git")
+            .current_dir(root)
+            .args(["rev-parse", "--verify", "HEAD"])
+            .status()
+            .context("failed to run git rev-parse HEAD")?
+            .success();
+        assert!(head_exists, "isolated repo must have a HEAD commit");
+
+        let origin_main_exists = Command::new("git")
+            .current_dir(root)
+            .args(["rev-parse", "--verify", "--quiet", "origin/main"])
+            .status()
+            .context("failed to run git rev-parse origin/main")?
+            .success();
+        assert!(
+            origin_main_exists,
+            "isolated repo must synthesize refs/remotes/origin/main so \
+             change_set::resolve_base_ref accepts the explicit base"
+        );
+
+        let head_oid = String::from_utf8(
+            Command::new("git")
+                .current_dir(root)
+                .args(["rev-parse", "HEAD"])
+                .output()
+                .context("failed to run git rev-parse HEAD for OID")?
+                .stdout,
+        )
+        .context("git rev-parse HEAD output was not UTF-8")?;
+        let origin_main_oid = String::from_utf8(
+            Command::new("git")
+                .current_dir(root)
+                .args(["rev-parse", "--verify", "origin/main"])
+                .output()
+                .context("failed to run git rev-parse origin/main for OID")?
+                .stdout,
+        )
+        .context("git rev-parse origin/main output was not UTF-8")?;
+        assert_eq!(
+            head_oid.trim(),
+            origin_main_oid.trim(),
+            "origin/main must point at the seeded commit"
+        );
+
+        // And the staged-tree OID query itself must succeed against the
+        // isolated repo -- this is the exact call site the original flake
+        // hit via the live project index.
+        let staged_tree = super::super::staged::staged_tree_oid(root)?;
+        assert!(
+            !staged_tree.is_empty(),
+            "staged_tree_oid must return a non-empty OID against the isolated repo"
         );
         Ok(())
     }
@@ -4243,9 +5280,9 @@ gates:
     fn shell_command_natural_exit_preserves_actual_exit_code() -> color_eyre::eyre::Result<()> {
         let tmp = tempdir()?;
         let log_path = tmp.path().join("natural_exit.log");
-        // A command that exits quickly with a non-zero code.
-        // On Windows `cmd /C exit 42` is reliable; on Unix `bash -lc "exit 42"`.
-        let command = if cfg!(windows) { "exit 42" } else { "exit 42" };
+        // A command that exits quickly with a non-zero code. `exit 42` is spelled the
+        // same for the Windows and Unix shells this runner drives.
+        let command = "exit 42";
 
         let execution = run_shell_command_with_timeout(command, &log_path, 30)?;
 
@@ -4286,7 +5323,7 @@ gates:
         let output =
             "test result: FAILED. 7 passed; 2 failed; 3 ignored; 0 measured; 0 filtered out";
 
-        let metrics = parse_test_metrics(output).expect("cargo test summary should parse");
+        let metrics = required_test_metrics(output);
 
         assert_eq!(metrics.tests_passed, Some(7));
         assert_eq!(metrics.tests_failed, Some(2));
@@ -4295,14 +5332,300 @@ gates:
         assert!(parse_test_metrics("no cargo summary here").is_none());
     }
 
+    // =========================================================================
+    // parse_test_execution_reached tests (issue #11797)
+    //
+    // The receipt distinguishes a compile-overrun timeout (cargo never linked
+    // and started the test binary) from a real test-body failure. A retry
+    // that only warms the compile cache is defensible; a retry that hides
+    // an intra-test hang is not (#10023 §"why timeouts only"). Making the
+    // distinction visible in the receipt is the mechanism #11797 asks for.
+    // =========================================================================
+
+    const CARGO_COMMAND: &str = "cargo test -p perl-lsp-rs-core --locked --lib inline_completion";
+    const NON_CARGO_COMMAND: &str = "just doctor";
+
+    #[test]
+    fn parse_test_execution_reached_detects_running_marker() {
+        // The libtest harness prints "running N tests" once the linked test
+        // binary starts executing, regardless of whether any test passes.
+        let output = "   Compiling perl-lsp-rs-core v0.17.0\n\
+                      running 4 tests\n\
+                      test inline_completion::mod::tests::stub_a ... ok\n";
+        assert_eq!(parse_test_execution_reached(CARGO_COMMAND, output), Some(true));
+    }
+
+    #[test]
+    fn parse_test_execution_reached_accepts_repeated_and_tab_whitespace() {
+        assert_eq!(parse_test_execution_reached(CARGO_COMMAND, "running  4 tests"), Some(true));
+        assert_eq!(parse_test_execution_reached(CARGO_COMMAND, "running\t4\ttests"), Some(true));
+    }
+
+    #[test]
+    fn parse_test_execution_reached_rejects_nearby_running_tokens() {
+        for output in ["running 4 testing", "running4 tests", "running 4 tests extra"] {
+            assert_eq!(
+                parse_test_execution_reached(CARGO_COMMAND, output),
+                Some(false),
+                "nearby text must not count as a libtest marker: {output:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_test_execution_reached_detects_zero_tests_running_marker() {
+        // `running 0 tests` still proves the binary linked and started.
+        let output = "running 0 tests\n\
+                      test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured";
+        assert_eq!(parse_test_execution_reached(CARGO_COMMAND, output), Some(true));
+    }
+
+    #[test]
+    fn parse_test_execution_reached_detects_summary_line_alone() {
+        // Some libtest configurations may buffer the preamble but still emit
+        // the summary; either marker alone proves the binary was reached.
+        let output = "test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured";
+        assert_eq!(parse_test_execution_reached(CARGO_COMMAND, output), Some(true));
+    }
+
+    #[test]
+    fn parse_test_execution_reached_is_false_when_only_compile_output_captured() {
+        // The exact #11797 signature: exit 124 with a log of compile
+        // progress and warnings, no libtest preamble or summary anywhere.
+        let output = "   Compiling perl-parser-core v0.17.0\n\
+                      warning: unused import: `foo::Bar`\n\
+                      warning: field is never read: `baz`\n\
+                      ==== gate inline_completion_core attempt 2/2: watchdog timeout ====";
+        assert_eq!(parse_test_execution_reached(CARGO_COMMAND, output), Some(false));
+    }
+
+    #[test]
+    fn parse_test_execution_reached_is_false_when_output_is_empty() {
+        // A watchdog kill during cargo's `Compiling` phase can leave the log
+        // essentially empty by the time the receipt is written.
+        assert_eq!(parse_test_execution_reached(CARGO_COMMAND, ""), Some(false));
+    }
+
+    #[test]
+    fn parse_test_execution_reached_ignores_running_substring_inside_test_stdout() {
+        // A test that prints "running" or a build script that says "still
+        // running" must not trip the marker — the harness preamble is a
+        // line prefix followed by an integer, not a substring anywhere.
+        let output = "gate command still running elapsed_ms=42000 timeout_seconds=150\n\
+                      warning: something running in background\n";
+        assert_eq!(parse_test_execution_reached(CARGO_COMMAND, output), Some(false));
+    }
+
+    #[test]
+    fn parse_test_execution_reached_ignores_non_cargo_test_commands() {
+        // The receipt field only makes a claim for cargo test invocations;
+        // returning a bare bool for `just doctor` or a shell script would
+        // mislabel any incidental "running" output in those logs.
+        let output = "running gates\ntest result: ok";
+        assert_eq!(parse_test_execution_reached(NON_CARGO_COMMAND, output), None);
+    }
+
+    #[test]
+    fn log_reaches_test_execution_survives_a_tail_evicting_preamble() {
+        // read_gate_output retains only the last 4 MiB of a gate log. A
+        // verbose test that printed its preamble and then hung past the
+        // retention boundary must still be reported as reached — the string
+        // variant would see only the post-preamble noise and answer false,
+        // misclassifying an intra-test hang as a compile-only overrun
+        // (#11797 review, P2 tail-truncation finding).
+        let marker_line = "running 4 tests\n";
+        let filler = "x".repeat(256) + "\n";
+        let head_lines = (MAX_GATE_OUTPUT_BYTES as usize) / filler.len() + 16;
+        let mut body = String::new();
+        for _ in 0..head_lines {
+            body.push_str(&filler);
+        }
+        body.push_str(marker_line);
+        body.push_str(&filler.repeat(4));
+        let tmp = must_with(tempdir(), "test tempdir");
+        let log_path = tmp.path().join("gate.log");
+        write_gate_log(&log_path, &body, "write gate log");
+        assert!(
+            body.len() > MAX_GATE_OUTPUT_BYTES as usize,
+            "precondition: the fixture must exceed the retained-tail bound"
+        );
+        assert_eq!(
+            log_reaches_test_execution(CARGO_COMMAND, &log_path).ok().flatten(),
+            Some(true),
+            "a preamble outside the 4 MiB tail still proves the binary ran"
+        );
+        let compile_only = "   Compiling perl-lsp-rs-core v0.17.0\n".repeat(64);
+        write_gate_log(&log_path, compile_only, "rewrite gate log");
+        assert_eq!(
+            log_reaches_test_execution(CARGO_COMMAND, &log_path).ok().flatten(),
+            Some(false),
+            "compile-only full logs stay false"
+        );
+        assert_eq!(
+            log_reaches_test_execution(NON_CARGO_COMMAND, &log_path).ok().flatten(),
+            None,
+            "non-cargo-test commands carry no claim regardless of log shape"
+        );
+        assert!(
+            log_reaches_test_execution(CARGO_COMMAND, &tmp.path().join("missing.log")).is_err(),
+            "unreadable logs must remain instrumentation-unknown"
+        );
+    }
+
+    #[test]
+    fn log_reaches_test_execution_scans_env_wrapped_commands() {
+        let tmp = must_with(tempdir(), "test tempdir");
+        let log_path = tmp.path().join("lsp_smoke.log");
+        write_gate_log(&log_path, "running 3 tests\n", "write gate log");
+        assert_eq!(
+            log_reaches_test_execution(
+                "cargo build -p perllsp --locked && env -u RUSTC_WRAPPER cargo test",
+                &log_path
+            )
+            .ok()
+            .flatten(),
+            Some(true),
+            "the lsp_smoke env-wrapped shape must gain the receipt diagnostic"
+        );
+    }
+
+    #[test]
+    fn parse_test_execution_reached_recognizes_doc_tests_preamble() {
+        // The doc-test binary uses the same preamble shape.
+        let output = "   Doc-tests inline_completion\n\n\
+                      running 12 tests\n";
+        assert_eq!(parse_test_execution_reached(CARGO_COMMAND, output), Some(true));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn run_single_gate_marks_test_execution_reached_for_cargo_test_passes()
+    -> color_eyre::eyre::Result<()> {
+        // is_cargo_test_command inspects the last `&&`-separated segment of
+        // the command string (`.split("&&").last()`), so we shape the gate as
+        // a printf that emits libtest-style output and then terminates the
+        // shell before the trailing `cargo test <bogus>` classifier tail is
+        // ever reached. The receipt's claim keys off that shape without
+        // touching the real Cargo toolchain.
+        let full_command =
+            "printf 'running 2 tests\\ntest inline_completion::mod::stub_a ... ok\\n\
+              test inline_completion::mod::stub_b ... ok\\n\\n\
+              test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured\\n' \
+              ; exit 0; true && cargo test --lib --locked"
+                .to_string();
+        let mut gate = pr_gate("inline-fake", GatePlanningRole::AlwaysOn, &full_command);
+        gate.tags.push("test".to_string());
+        let policy = policy_with_gates(vec![gate.clone()]);
+        let tmp = tempdir()?;
+
+        let result =
+            run_single_gate(&gate, &policy, tmp.path(), &GateRunnerConfig::default(), None)?;
+
+        // Sanity: is_cargo_test_command must have accepted the shape, or the
+        // wiring under test never gets a chance to make its claim.
+        assert!(
+            is_cargo_test_command(&full_command),
+            "test precondition failed: command must be a cargo test invocation for the wiring to fire"
+        );
+        let metrics = result
+            .metrics
+            .as_ref()
+            .ok_or_else(|| color_eyre::eyre::eyre!("cargo test gate should populate metrics"))?;
+        assert_eq!(
+            metrics.test_execution_reached,
+            Some(true),
+            "receipt must record that the libtest binary was reached; got {metrics:?}"
+        );
+        // Corollary: the same log line the harness reads must be parseable
+        // as a cargo summary, so tests_total matches what the log says.
+        assert_eq!(
+            metrics.tests_total,
+            Some(2),
+            "the same run must parse the summary line and count tests; got {metrics:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn run_single_gate_marks_test_execution_not_reached_for_compile_only_output()
+    -> color_eyre::eyre::Result<()> {
+        // The #11797 signature: cargo-test-class command whose log holds
+        // only Compiling/warning lines, no libtest preamble anywhere. The
+        // false && cargo test suffix short-circuits so the real toolchain
+        // is not invoked, but the command STRING still qualifies for the
+        // test_execution_reached claim via is_cargo_test_command's tail
+        // segment rule.
+        let full_command = "printf '   Compiling perl-lsp-rs-core v0.17.0\\n\
+              warning: unused import: `foo::Bar`\\n\
+              warning: field is never read: `baz`\\n' \
+              ; false && cargo test --lib --locked"
+            .to_string();
+        let mut gate = pr_gate("inline-compile-only", GatePlanningRole::AlwaysOn, &full_command);
+        gate.tags.push("test".to_string());
+        let policy = policy_with_gates(vec![gate.clone()]);
+        let tmp = tempdir()?;
+
+        let result =
+            run_single_gate(&gate, &policy, tmp.path(), &GateRunnerConfig::default(), None)?;
+
+        assert!(
+            is_cargo_test_command(&full_command),
+            "test precondition failed: command must be a cargo test invocation for the wiring to fire"
+        );
+        let metrics = result.metrics.as_ref().ok_or_else(|| {
+            color_eyre::eyre::eyre!("cargo-test-class gate should always carry a metrics envelope")
+        })?;
+        assert_eq!(
+            metrics.test_execution_reached,
+            Some(false),
+            "receipt must flag a compile-only log as test-execution-not-reached; got {metrics:?}"
+        );
+        // Corollary: no cargo test summary was emitted, so tests_total stays absent.
+        assert!(
+            metrics.tests_total.is_none(),
+            "compile-only log must not synthesize a tests_total; got {metrics:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn run_single_gate_omits_test_execution_reached_for_non_cargo_commands()
+    -> color_eyre::eyre::Result<()> {
+        // A non-cargo-test command (formatter, linter, shell script) leaves
+        // the field absent even when its output happens to contain "running"
+        // — the claim only applies where it could be evidenced.
+        let command = "printf 'running fmt\\ntest result: ok\\n'";
+        let gate = pr_gate("fmt-like", GatePlanningRole::AlwaysOn, command);
+        let policy = policy_with_gates(vec![gate.clone()]);
+        let tmp = tempdir()?;
+
+        let result =
+            run_single_gate(&gate, &policy, tmp.path(), &GateRunnerConfig::default(), None)?;
+
+        assert!(
+            !is_cargo_test_command(command),
+            "test precondition failed: command must NOT be a cargo test invocation"
+        );
+        assert!(
+            result.metrics.as_ref().is_none_or(|metrics| metrics.test_execution_reached.is_none()),
+            "non-cargo-test gate must not carry a test_execution_reached claim; got {:?}",
+            result.metrics,
+        );
+        Ok(())
+    }
+
     #[test]
     fn unresolved_package_args_gate_refuses_to_spawn() -> color_eyre::eyre::Result<()> {
         let gate =
             pr_gate("scoped-tests", GatePlanningRole::RustScoped, "cargo test {package_args}");
         let policy = policy_with_gates(vec![gate.clone()]);
         let tmp = tempdir()?;
-        let err = run_single_gate(&gate, &policy, tmp.path(), &GateRunnerConfig::default(), None)
-            .expect_err("unresolved package args must fail before command execution");
+        let err = must_err_with(
+            run_single_gate(&gate, &policy, tmp.path(), &GateRunnerConfig::default(), None),
+            "unresolved package args must fail before command execution",
+        );
         let message = format!("{err:#}");
 
         assert!(message.contains("scoped-tests"), "gate name should be in error: {message}");
@@ -4356,7 +5679,7 @@ gates:
         assert_eq!(result.exit_code, Some(0));
         assert_eq!(result.log_path.as_deref(), Some("logs/unit-smoke.log"));
         assert_eq!(result.artifacts, Some(vec!["target/receipts/unit-smoke.json".to_string()]));
-        let metrics = result.metrics.expect("test-tagged gate should expose test metrics");
+        let metrics = must_some_with(result.metrics, "test-tagged gate should expose test metrics");
         assert_eq!(metrics.tests_passed, Some(3));
         assert_eq!(metrics.tests_failed, Some(0));
         assert_eq!(metrics.tests_ignored, Some(2));
@@ -4392,7 +5715,7 @@ gates:
         assert_eq!(loaded.gates.len(), 1);
         assert_eq!(loaded.gates[0].gate_name, "tests");
         let missing = tmp.path().join("missing.json");
-        let err = load_receipt(&missing).expect_err("missing baseline should be reported");
+        let err = must_err_with(load_receipt(&missing), "missing baseline should be reported");
         assert!(
             format!("{err:#}").contains("Failed to read baseline receipt"),
             "missing-file context should be actionable"
@@ -4424,6 +5747,385 @@ gates:
         Ok(())
     }
 
+    /// Retried cargo-test gates retain reach evidence for every attempt, not only
+    /// the final attempt whose log survives truncation (#11914).
+    #[test]
+    #[cfg(unix)]
+    fn retried_cargo_test_gate_retains_each_attempt_reach_result() -> color_eyre::eyre::Result<()> {
+        let tmp = tempdir()?;
+        let marker = tmp.path().join("gate-retry-reach");
+        let marker_display = marker.display().to_string();
+        let command = format!(
+            "if [ -f {marker_display} ]; then printf 'running 2 tests\\n'; exit 0; \
+             else touch {marker_display}; sleep 3; fi; exit 0; true && cargo test --lib --locked"
+        );
+        let mut gate = pr_gate("synthetic_retry_reach_gate", GatePlanningRole::AlwaysOn, &command);
+        gate.tags.push("test".to_string());
+        gate.timeout_seconds = 1;
+        gate.retry_count = 1;
+        let policy = policy_with_gates(vec![gate.clone()]);
+
+        let result =
+            run_single_gate(&gate, &policy, tmp.path(), &GateRunnerConfig::default(), None)?;
+
+        let metrics = result
+            .metrics
+            .as_ref()
+            .ok_or_else(|| color_eyre::eyre::eyre!("cargo test gate should populate metrics"))?;
+        color_eyre::eyre::ensure!(
+            metrics.test_execution_reached == Some(true),
+            "final-attempt compatibility field was not true: {:?}",
+            metrics.test_execution_reached
+        );
+        let expected_attempts = vec![
+            TestExecutionAttemptEvidence { attempt: 1, test_execution_reached: Some(false) },
+            TestExecutionAttemptEvidence { attempt: 2, test_execution_reached: Some(true) },
+        ];
+        color_eyre::eyre::ensure!(
+            metrics.test_execution_reached_attempts.as_slice() == expected_attempts.as_slice(),
+            "unexpected attempt evidence: {:?}",
+            metrics.test_execution_reached_attempts
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn unreadable_attempt_log_is_unknown_not_compile_only() -> color_eyre::eyre::Result<()> {
+        let tmp = tempdir()?;
+        let evidence = attempt_reach_evidence(
+            1,
+            "cargo test -p xtask --locked",
+            &tmp.path().join("missing.log"),
+        );
+        color_eyre::eyre::ensure!(
+            evidence == TestExecutionAttemptEvidence { attempt: 1, test_execution_reached: None },
+            "unreadable attempt log was not preserved as unknown: {evidence:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn retry_trailer_failure_preserves_captured_attempt_evidence() -> color_eyre::eyre::Result<()> {
+        let tmp = tempdir()?;
+        let gate_name = "synthetic-retry-trailer-failure";
+        let log_path = tmp.path().join(format!("{gate_name}.log"));
+        let command = format!(
+            "rm -f '{}'; sleep 3; exit 0; true && cargo test --lib --locked",
+            log_path.display()
+        );
+        let mut gate = pr_gate(gate_name, GatePlanningRole::AlwaysOn, &command);
+        gate.tags.push("test".to_string());
+        gate.timeout_seconds = 1;
+        gate.retry_count = 1;
+        let policy = policy_with_gates(vec![gate.clone()]);
+
+        let result =
+            run_single_gate(&gate, &policy, tmp.path(), &GateRunnerConfig::default(), None)?;
+
+        color_eyre::eyre::ensure!(
+            result.status == "error",
+            "trailer instrumentation failure did not remain an error: {}",
+            result.status
+        );
+        let metrics = result.metrics.ok_or_else(|| {
+            color_eyre::eyre::eyre!("executed attempt evidence was erased on trailer failure")
+        })?;
+        color_eyre::eyre::ensure!(
+            metrics.test_execution_reached.is_none(),
+            "unknown final attempt unexpectedly produced legacy evidence"
+        );
+        color_eyre::eyre::ensure!(
+            metrics.test_execution_reached_attempts
+                == vec![TestExecutionAttemptEvidence { attempt: 1, test_execution_reached: None }],
+            "unexpected evidence retained after trailer failure: {:?}",
+            metrics.test_execution_reached_attempts
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn retry_runner_rejects_oversized_counts_before_execution() -> color_eyre::eyre::Result<()> {
+        let tmp = tempdir()?;
+        for retry_count in [MAX_GATE_RETRIES + 1, u32::MAX] {
+            let Err(error) = run_shell_command_with_retries(
+                "command-must-not-run",
+                &tmp.path().join("never-created.log"),
+                1,
+                retry_count,
+                MAX_GATE_RETRIES,
+                "oversized-retry",
+            ) else {
+                color_eyre::eyre::bail!(
+                    "oversized retry count {retry_count} unexpectedly executed"
+                );
+            };
+            color_eyre::eyre::ensure!(
+                error.to_string().contains("exceeds configured limit"),
+                "unexpected rejection for {retry_count}: {error:#}"
+            );
+            color_eyre::eyre::ensure!(
+                !tmp.path().join("never-created.log").exists(),
+                "oversized retry count spawned the command"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn receipt_rejects_missing_or_duplicate_attempt_ordinals() -> color_eyre::eyre::Result<()> {
+        for ordinals in [vec![1, 3], vec![1, 1]] {
+            let receipt = test_receipt_with_metrics(GateMetrics {
+                test_execution_reached_attempts: ordinals
+                    .into_iter()
+                    .map(|attempt| TestExecutionAttemptEvidence {
+                        attempt,
+                        test_execution_reached: Some(false),
+                    })
+                    .collect(),
+                ..GateMetrics::default()
+            });
+            let Err(error) = validate_attempt_histories(&receipt) else {
+                color_eyre::eyre::bail!("non-contiguous attempt evidence unexpectedly validated");
+            };
+            color_eyre::eyre::ensure!(
+                error.to_string().contains("ordinals must be contiguous"),
+                "unexpected attempt validation error: {error:#}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn receipt_round_trip_enforces_legacy_final_attempt_consistency() -> color_eyre::eyre::Result<()>
+    {
+        let tmp = tempdir()?;
+        for (case, final_reached) in [("true", Some(true)), ("false", Some(false)), ("null", None)]
+        {
+            let receipt = test_receipt_with_metrics(GateMetrics {
+                test_execution_reached: final_reached,
+                test_execution_reached_attempts: vec![TestExecutionAttemptEvidence {
+                    attempt: 1,
+                    test_execution_reached: final_reached,
+                }],
+                ..GateMetrics::default()
+            });
+            let path = tmp.path().join(format!("matching-{case}.json"));
+            write_receipt(&receipt, &path)?;
+            let loaded = load_receipt(&path)?;
+            validate_attempt_histories(&loaded)?;
+        }
+
+        let legacy_only = test_receipt_with_metrics(GateMetrics {
+            test_execution_reached: Some(true),
+            ..GateMetrics::default()
+        });
+        validate_attempt_histories(&legacy_only)?;
+
+        let contradictions = [
+            (Some(true), Some(false)),
+            (Some(false), Some(true)),
+            (Some(true), None),
+            (Some(false), None),
+            (None, Some(true)),
+            (None, Some(false)),
+        ];
+        for (index, (legacy, typed)) in contradictions.into_iter().enumerate() {
+            let receipt = test_receipt_with_metrics(GateMetrics {
+                test_execution_reached: legacy,
+                test_execution_reached_attempts: vec![TestExecutionAttemptEvidence {
+                    attempt: 1,
+                    test_execution_reached: typed,
+                }],
+                ..GateMetrics::default()
+            });
+            let path = tmp.path().join(format!("contradiction-{index}.json"));
+            let Err(write_error) = write_receipt(&receipt, &path) else {
+                color_eyre::eyre::bail!("contradictory receipt unexpectedly wrote: {index}");
+            };
+            color_eyre::eyre::ensure!(
+                write_error.to_string().contains("contradicts typed final row"),
+                "unexpected write rejection: {write_error:#}"
+            );
+
+            fs::write(&path, serde_json::to_string_pretty(&receipt)?)?;
+            let Err(load_error) = load_receipt(&path) else {
+                color_eyre::eyre::bail!("contradictory receipt unexpectedly loaded: {index}");
+            };
+            color_eyre::eyre::ensure!(
+                load_error.to_string().contains("contradicts typed final row"),
+                "unexpected load rejection: {load_error:#}"
+            );
+        }
+        Ok(())
+    }
+
+    /// #10023 race family: a gate whose attempt hits the watchdog must retry
+    /// when policy declares retry_count, and the final log must record the
+    /// attempt history. The family gates' budgets are dominated by cold-cache
+    /// dependency rebuilds (exit 124 with zero test output), so one retry is a
+    /// compile-overrun remedy, not a hang hider.
+    #[test]
+    fn timeout_gate_with_retry_count_runs_both_attempts_and_trails_the_log()
+    -> color_eyre::eyre::Result<()> {
+        let gate = GateDefinition {
+            name: "synthetic_retry_timeout_gate".to_string(),
+            tier: "merge_gate".to_string(),
+            description: "Always times out; proves retry_count is honored".to_string(),
+            required: true,
+            command: if cfg!(windows) {
+                "ping -n 4 127.0.0.1".to_string()
+            } else {
+                "sleep 3".to_string()
+            },
+            timeout_seconds: 1,
+            retry_count: 1,
+            budgets: None,
+            quarantine: false,
+            tags: Vec::new(),
+            artifacts: Vec::new(),
+            matrix: None,
+            planning: Some(GatePlanningConfig {
+                role: GatePlanningRole::AlwaysOn,
+                packages: Vec::new(),
+            }),
+            short_circuit: false,
+        };
+        let policy = policy_with_gates(vec![gate.clone()]);
+        let tmp = tempdir()?;
+        let config = GateRunnerConfig::default();
+
+        let result = run_single_gate(&gate, &policy, tmp.path(), &config, None)?;
+
+        assert_eq!(result.status, "timeout", "both attempts time out; final status stays timeout");
+        assert!(
+            result.duration_ms >= 2_000,
+            "duration {:?} should cover two 1s attempts",
+            result.duration_ms
+        );
+        let log = std::fs::read_to_string(tmp.path().join("synthetic_retry_timeout_gate.log"))?;
+        assert!(
+            log.contains("attempt 2/2: watchdog timeout"),
+            "final log must trail the attempt history; got: {log}"
+        );
+        Ok(())
+    }
+
+    /// A rescued gate (first attempt times out, second passes) must report
+    /// `pass` with the rescue visible in the receipt's output summary.
+    /// POSIX-only: the marker-file dance needs a shell.
+    #[test]
+    #[cfg(unix)]
+    fn timeout_gate_rescued_on_retry_reports_pass_with_rescue_trailer()
+    -> color_eyre::eyre::Result<()> {
+        // The marker is interpolated into a shell command, so its name must
+        // stay shell-safe: ThreadId's Debug output (`ThreadId(2)`) carries
+        // parentheses that break the `if [ -f ... ]` syntax on Linux.
+        static MARKER_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let seq = MARKER_SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let marker =
+            std::env::temp_dir().join(format!("gate-retry-marker-{}-{seq}", std::process::id()));
+        let _ = std::fs::remove_file(&marker);
+        let marker_display = marker.display().to_string();
+        let command = format!(
+            "if [ -f {marker_display} ]; then echo rescued; else touch {marker_display}; sleep 3; fi"
+        );
+        let gate = GateDefinition {
+            name: "synthetic_rescued_gate".to_string(),
+            tier: "merge_gate".to_string(),
+            description: "Times out once, passes on retry".to_string(),
+            required: true,
+            command,
+            timeout_seconds: 1,
+            retry_count: 1,
+            budgets: None,
+            quarantine: false,
+            tags: Vec::new(),
+            artifacts: Vec::new(),
+            matrix: None,
+            planning: Some(GatePlanningConfig {
+                role: GatePlanningRole::AlwaysOn,
+                packages: Vec::new(),
+            }),
+            short_circuit: false,
+        };
+        let policy = policy_with_gates(vec![gate.clone()]);
+        let tmp = tempdir()?;
+        let config = GateRunnerConfig::default();
+
+        let result = run_single_gate(&gate, &policy, tmp.path(), &config, None)?;
+        let _ = std::fs::remove_file(&marker);
+
+        assert_eq!(result.status, "pass", "second attempt exits 0 before its sleep");
+        assert!(
+            result.duration_ms >= 1_000,
+            "duration {:?} should include the timed-out first attempt",
+            result.duration_ms
+        );
+        let summary = result.output_summary.unwrap_or_default();
+        assert!(
+            summary.contains("passed after earlier watchdog timeout(s)"),
+            "receipt summary must surface the rescue; got: {summary}"
+        );
+        Ok(())
+    }
+
+    /// A first-attempt timeout rescued by a NONZERO second exit must report
+    /// `fail` with a label that does not claim a pass (#11825 review: the
+    /// trailer previously read "passed after earlier watchdog timeout(s)"
+    /// regardless of the final attempt's exit code).
+    #[test]
+    #[cfg(unix)]
+    fn timeout_gate_failing_retry_labels_the_failure_not_a_pass() -> color_eyre::eyre::Result<()> {
+        static MARKER_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let seq = MARKER_SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let marker = std::env::temp_dir()
+            .join(format!("gate-retry-fail-marker-{}-{seq}", std::process::id()));
+        let _ = std::fs::remove_file(&marker);
+        let marker_display = marker.display().to_string();
+        let command = format!(
+            "if [ -f {marker_display} ]; then exit 3; else touch {marker_display}; sleep 3; fi"
+        );
+        let gate = GateDefinition {
+            name: "synthetic_retry_fail_gate".to_string(),
+            tier: "merge_gate".to_string(),
+            description: "Times out once, exits nonzero on retry".to_string(),
+            required: true,
+            command,
+            timeout_seconds: 1,
+            retry_count: 1,
+            budgets: None,
+            quarantine: false,
+            tags: Vec::new(),
+            artifacts: Vec::new(),
+            matrix: None,
+            planning: Some(GatePlanningConfig {
+                role: GatePlanningRole::AlwaysOn,
+                packages: Vec::new(),
+            }),
+            short_circuit: false,
+        };
+        let policy = policy_with_gates(vec![gate.clone()]);
+        let tmp = tempdir()?;
+        let config = GateRunnerConfig::default();
+
+        let result = run_single_gate(&gate, &policy, tmp.path(), &config, None)?;
+        let _ = std::fs::remove_file(&marker);
+
+        assert_eq!(result.status, "fail", "second attempt exits 3; the gate must stay red");
+        assert_eq!(result.exit_code, Some(3));
+        let summary = result.output_summary.unwrap_or_default();
+        assert!(
+            summary.contains("exited 3 after earlier watchdog timeout(s)"),
+            "receipt summary must label the failed retry honestly; got: {summary}"
+        );
+        assert!(
+            !summary.contains("passed after earlier"),
+            "a failed retry must never be labeled a pass; got: {summary}"
+        );
+        Ok(())
+    }
+
     #[test]
     fn required_gate_timeout_reports_receipt_fields_and_blocks_overall_status()
     -> color_eyre::eyre::Result<()> {
@@ -4450,6 +6152,7 @@ gates:
                 role: GatePlanningRole::AlwaysOn,
                 packages: Vec::new(),
             }),
+            short_circuit: false,
         };
         let policy = policy_with_gates(vec![gate.clone()]);
         let tmp = tempdir()?;
@@ -4548,6 +6251,7 @@ gates:
             metrics: None,
             artifacts: None,
             first_failure: None,
+            command_started: status != "skip",
         })
     }
 
@@ -4924,8 +6628,9 @@ gates:
         // and that values survive the serde round-trip unchanged.
         // Uses Option<AgentReceipt> to confirm old receipts without the field
         // still deserialize successfully (backward compat).
-        let receipt: Receipt = serde_json::from_str(r#"{
-            "schema_version": "1.0.0",
+        let receipt: Receipt = deserialize_json(
+            r#"{
+            "schema_version": "gates.v1",
             "metadata": {
                 "timestamp": "2026-04-23T00:00:00Z",
                 "git_sha": "abc123",
@@ -4961,11 +6666,15 @@ gates:
                 "failures": [{"lane":"clippy","summary":"clippy found 3 warnings","repro":"cargo clippy -p xtask"}],
                 "suggested_next_actions": ["fix clippy warnings", "rerun gate"]
             }
-        }"#)
-        .expect("phase-1 agent receipt shape should deserialize");
+        }"#,
+            "phase-1 agent receipt shape should deserialize",
+        );
 
         // agent_receipt must be present (Some, not None)
-        let ar = receipt.agent_receipt.expect("agent_receipt should be Some when present in JSON");
+        let ar = must_some_with(
+            receipt.agent_receipt,
+            "agent_receipt should be Some when present in JSON",
+        );
 
         // Verify field values, not just key presence — these would fail if
         // a field were silently dropped or misnamed in the struct definition.
@@ -4985,9 +6694,9 @@ gates:
         assert_eq!(ar.suggested_next_actions.len(), 2);
 
         // Confirm backward compatibility: a receipt WITHOUT agent_receipt deserializes to None.
-        let old_receipt: Receipt = serde_json::from_str(
+        let old_receipt: Receipt = deserialize_json(
             r#"{
-            "schema_version": "1.0.0",
+            "schema_version": "gates.v1",
             "metadata": {
                 "timestamp": "2026-04-23T00:00:00Z",
                 "git_sha": "abc123",
@@ -5008,8 +6717,8 @@ gates:
                 "overall_status": "pass"
             }
         }"#,
-        )
-        .expect("receipt without agent_receipt should deserialize for backward compat");
+            "receipt without agent_receipt should deserialize for backward compat",
+        );
         assert!(
             old_receipt.agent_receipt.is_none(),
             "receipt without agent_receipt field must deserialize to None"
@@ -5051,7 +6760,7 @@ gates:
         // EnvironmentInfo, AgentReceipt, …) by hand.  compare_receipts only
         // reads receipt.gates and receipt.metadata.timestamp, so the rest can
         // be placeholder values.
-        let mut receipt: Receipt = serde_json::from_str(
+        let mut receipt: Receipt = deserialize_json(
             r#"{
             "schema_version": "1",
             "metadata": {
@@ -5083,8 +6792,8 @@ gates:
                 "suggested_next_actions": []
             }
         }"#,
-        )
-        .expect("minimal receipt JSON is valid");
+            "minimal receipt JSON is valid",
+        );
         receipt.gates.push(GateResult {
             gate_name: "tests".to_string(),
             tier: "pr_fast".to_string(),
@@ -5098,6 +6807,7 @@ gates:
             metrics: Some(metrics),
             artifacts: None,
             first_failure: None,
+            command_started: true,
         });
         receipt
     }
@@ -5125,7 +6835,7 @@ gates:
             ..GateMetrics::default()
         });
 
-        let diff = compare_receipts(&baseline, &current).expect("compare receipts should succeed");
+        let diff = compare_receipts_ok(&baseline, &current);
         assert!(
             metric_change_for(&diff, "tests_total").is_some(),
             "tests_total change should be recorded"
@@ -5159,9 +6869,8 @@ gates:
             ..GateMetrics::default()
         });
 
-        let diff = compare_receipts(&baseline, &current).expect("compare receipts should succeed");
-        let warning_change =
-            metric_change_for(&diff, "warnings_count").expect("warnings_count metric should exist");
+        let diff = compare_receipts_ok(&baseline, &current);
+        let warning_change = required_metric_change(&diff, "warnings_count");
         assert_eq!(warning_change.delta_percent, 100.0);
         assert!(!warning_change.delta_percent.is_nan());
         assert!(!warning_change.delta_percent.is_infinite());
@@ -5226,8 +6935,11 @@ error: aborting due to previous error
 
     #[test]
     fn parse_first_failure_extracts_test_name_site_and_message_new_style() {
-        let ff = parse_first_failure(CARGO_TEST_FAILURE_NEW_STYLE, 101)
-            .expect("should find failure in new-style output");
+        let ff = required_first_failure(
+            CARGO_TEST_FAILURE_NEW_STYLE,
+            101,
+            "should find failure in new-style output",
+        );
 
         assert_eq!(
             ff.test.as_deref(),
@@ -5252,8 +6964,11 @@ error: aborting due to previous error
 
     #[test]
     fn parse_first_failure_extracts_site_old_style() {
-        let ff = parse_first_failure(CARGO_TEST_FAILURE_OLD_STYLE, 101)
-            .expect("should find failure in old-style output");
+        let ff = required_first_failure(
+            CARGO_TEST_FAILURE_OLD_STYLE,
+            101,
+            "should find failure in old-style output",
+        );
 
         assert_eq!(
             ff.test.as_deref(),
@@ -5285,8 +7000,8 @@ error: aborting due to previous error
 
     #[test]
     fn parse_first_failure_exit_code_is_preserved() {
-        let ff = parse_first_failure(CARGO_TEST_FAILURE_NEW_STYLE, 42)
-            .expect("should find failure markers");
+        let ff =
+            required_first_failure(CARGO_TEST_FAILURE_NEW_STYLE, 42, "should find failure markers");
         assert_eq!(ff.exit_code, 42, "exit_code should match what was passed in");
     }
 
@@ -5294,8 +7009,7 @@ error: aborting due to previous error
     fn parse_first_failure_prefers_failed_line_over_stdout_section() {
         // When both `... FAILED` and `---- ... stdout ----` are present,
         // the test name from `... FAILED` should win (it appears first).
-        let ff =
-            parse_first_failure(CARGO_TEST_FAILURE_NEW_STYLE, 101).expect("should find failure");
+        let ff = required_first_failure(CARGO_TEST_FAILURE_NEW_STYLE, 101, "should find failure");
         // The `... FAILED` line should be chosen
         assert_eq!(
             ff.test.as_deref(),
@@ -5314,8 +7028,8 @@ error: aborting due to previous error
             message: Some("assertion failed".to_string()),
             exit_code: 101,
         };
-        let json = serde_json::to_string(&ff).expect("should serialize");
-        let roundtripped: FirstFailure = serde_json::from_str(&json).expect("should deserialize");
+        let json = serialize_json(&ff, "should serialize");
+        let roundtripped: FirstFailure = deserialize_json(&json, "should deserialize");
         assert_eq!(ff, roundtripped);
     }
 
@@ -5323,7 +7037,7 @@ error: aborting due to previous error
     fn first_failure_skips_serializing_none_fields() {
         // None fields should be omitted from JSON (skip_serializing_if = "Option::is_none")
         let ff = FirstFailure { test: None, site: None, message: None, exit_code: 1 };
-        let json = serde_json::to_string(&ff).expect("should serialize");
+        let json = serialize_json(&ff, "should serialize");
         assert!(!json.contains("\"test\""), "None test field should be omitted from JSON");
         assert!(!json.contains("\"site\""), "None site field should be omitted from JSON");
         assert!(!json.contains("\"message\""), "None message field should be omitted from JSON");
@@ -5336,6 +7050,41 @@ error: aborting due to previous error
         assert!(is_cargo_test_command("cargo test -p perl-parser --lib"), "with flags");
         assert!(is_cargo_test_command("cargo test --workspace"), "workspace flag");
         assert!(is_cargo_test_command("/usr/local/bin/cargo test"), "absolute path cargo");
+        assert!(
+            is_cargo_test_command(
+                "cargo build -p perllsp --locked && cargo test --locked --tests -p perl-lsp-rs"
+            ),
+            "prebuild chain keeps test recognition"
+        );
+    }
+
+    #[test]
+    fn is_cargo_test_command_recognizes_env_wrapped_invocations() {
+        // lsp_smoke's merge-gate command ends its chain with
+        // `env -u RUSTC_WRAPPER cargo test ...` (#11797 review): env(1)'s
+        // flags and assignments must not hide the wrapped cargo invocation.
+        assert!(
+            is_cargo_test_command("env -u RUSTC_WRAPPER cargo test --locked -p perl-lsp-rs"),
+            "unset flag pair"
+        );
+        assert!(is_cargo_test_command("env RUST_TEST_THREADS=2 cargo test"), "assignment prefix");
+        assert!(
+            is_cargo_test_command(
+                "env PROPTEST_CASES=2048 PROPTEST_MAX_SHRINK_ITERS=1000 cargo test --lib"
+            ),
+            "multiple assignments"
+        );
+        assert!(
+            is_cargo_test_command(
+                "cargo build -p perllsp --locked && env -u RUSTC_WRAPPER cargo test"
+            ),
+            "env shape as the chained final segment"
+        );
+        assert!(
+            !is_cargo_test_command("env RUST_TEST_THREADS=2 cargo build"),
+            "env wrapping does not make a non-test command a test"
+        );
+        assert!(!is_cargo_test_command("env"), "bare env with no wrapped command");
     }
 
     #[test]
@@ -5346,6 +7095,10 @@ error: aborting due to previous error
         assert!(!is_cargo_test_command("cargo xtask fmt --check"), "xtask fmt is not test");
         assert!(!is_cargo_test_command("true"), "bare true is not test");
         assert!(!is_cargo_test_command(""), "empty string is not test");
+        assert!(
+            !is_cargo_test_command("cargo build -p perllsp --locked"),
+            "prebuild alone is still not a test command"
+        );
     }
 
     #[test]
@@ -5370,10 +7123,14 @@ error: aborting due to previous error
                 message: Some("assertion failed".to_string()),
                 exit_code: 101,
             }),
+            command_started: true,
         };
-        let json = serde_json::to_string(&result).expect("should serialize");
-        let roundtripped: GateResult = serde_json::from_str(&json).expect("should deserialize");
-        let ff = roundtripped.first_failure.expect("first_failure should be Some after roundtrip");
+        let json = serialize_json(&result, "should serialize");
+        let roundtripped: GateResult = deserialize_json(&json, "should deserialize");
+        let ff = must_some_with(
+            roundtripped.first_failure,
+            "first_failure should be Some after roundtrip",
+        );
         assert_eq!(ff.test.as_deref(), Some("parser::tests::test_foo"));
         assert_eq!(ff.site.as_deref(), Some("src/lib.rs:99"));
         assert_eq!(ff.exit_code, 101);
@@ -5390,7 +7147,7 @@ error: aborting due to previous error
             "duration_ms": 500,
             "command": "cargo test -p perl-parser"
         }"#;
-        let result: GateResult = serde_json::from_str(json).expect("backward compat deserialize");
+        let result: GateResult = deserialize_json(json, "backward compat deserialize");
         assert!(result.first_failure.is_none(), "first_failure must be None when absent from JSON");
     }
 
@@ -5498,6 +7255,617 @@ error: aborting due to previous error
 
         assert_eq!(result.status, "pass");
         assert_eq!(result.command, VERSION_SYNC_GATE_COMMAND);
+        Ok(())
+    }
+
+    // =========================================================================
+    // inline_completion_contract gate-split tests (issue #6845)
+    //
+    // The former `inline_completion_contract` gate chained four Cargo commands
+    // with `&&`, so one failure masked the other three contracts.  It was
+    // replaced with four independent gates.  The tests below prove the split
+    // is structurally correct against the live gate-policy.yaml.
+    // =========================================================================
+
+    /// The four expected gate names and their canonical package scope.
+    const INLINE_COMPLETION_GATE_NAMES: &[&str] = &[
+        "inline_completion_registration",
+        "lsp_registration_contract",
+        "lsp_capability_snapshots",
+        "inline_completion_core",
+    ];
+
+    #[test]
+    fn inline_completion_contract_replaced_by_four_independent_gates()
+    -> color_eyre::eyre::Result<()> {
+        // Load the live policy so any drift in gate-policy.yaml causes a
+        // compile-time-equivalent failure here rather than silently passing.
+        let root = crate::utils::project_root()?;
+        let policy = load_policy_for_inspection(&root.join(".ci/gate-policy.yaml"))?;
+
+        // The old composite gate must not exist.
+        let old_gate = policy.gates.iter().find(|g| g.name == "inline_completion_contract");
+        assert!(
+            old_gate.is_none(),
+            "inline_completion_contract must be removed — it chains commands \
+             with && which masks individual contract failures (issue #6845)"
+        );
+
+        // All four replacement gates must exist.
+        for &expected_name in INLINE_COMPLETION_GATE_NAMES {
+            let gate = policy.gates.iter().find(|g| g.name == expected_name);
+            assert!(
+                gate.is_some(),
+                "Expected independent gate '{expected_name}' not found in gate-policy.yaml \
+                 (issue #6845 requires four separate gate entries)"
+            );
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn inline_completion_gates_have_no_command_chaining() -> color_eyre::eyre::Result<()> {
+        // Each new gate must have exactly one command.  Shell operators (`&&`,
+        // `||`, `;`) inside a single command string re-introduce the masking
+        // that the split was designed to eliminate: the runner cannot observe
+        // individual sub-command results and cannot continue past the first
+        // failure within the shell chain.
+        let root = crate::utils::project_root()?;
+        let policy = load_policy_for_inspection(&root.join(".ci/gate-policy.yaml"))?;
+
+        for &gate_name in INLINE_COMPLETION_GATE_NAMES {
+            let gate = policy
+                .gates
+                .iter()
+                .find(|g| g.name == gate_name)
+                .ok_or_else(|| color_eyre::eyre::eyre!("gate '{gate_name}' not found"))?;
+
+            assert!(
+                !gate.command.contains("&&"),
+                "Gate '{gate_name}' command must not contain '&&': {}",
+                gate.command,
+            );
+            assert!(
+                !gate.command.contains("||"),
+                "Gate '{gate_name}' command must not contain '||': {}",
+                gate.command,
+            );
+            // Semicolons used as statement separators are the same failure
+            // mode; a single trailing ';' from YAML folded-block is fine but a
+            // second Cargo invocation after ';' defeats the isolation.
+            let cmd = gate.command.trim_end_matches(';');
+            assert!(
+                !cmd.contains(';'),
+                "Gate '{gate_name}' command must not contain ';' separators: {}",
+                gate.command,
+            );
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn inline_completion_gates_are_required_within_tier_and_family_scoped()
+    -> color_eyre::eyre::Result<()> {
+        let root = crate::utils::project_root()?;
+        let policy = load_policy_for_inspection(&root.join(".ci/gate-policy.yaml"))?;
+
+        for &gate_name in INLINE_COMPLETION_GATE_NAMES {
+            let gate = policy
+                .gates
+                .iter()
+                .find(|gate| gate.name == gate_name)
+                .ok_or_else(|| color_eyre::eyre::eyre!("gate '{gate_name}' not found"))?;
+
+            assert!(
+                gate.required,
+                "Gate '{gate_name}' must remain required within the pr_fast runner; \
+                 this field does not claim that GitHub protects the containing PR Smoke job"
+            );
+            let planning = gate.planning.as_ref().ok_or_else(|| {
+                color_eyre::eyre::eyre!("Gate '{gate_name}' must have planning metadata")
+            })?;
+            assert_eq!(planning.role, GatePlanningRole::RustPackageScoped);
+            let packages: Vec<_> = planning.packages.iter().map(String::as_str).collect();
+            assert_eq!(
+                packages,
+                vec!["perl-lsp-rs", "perl-lsp-rs-core"],
+                "every split child must preserve the former family's selection on either package"
+            );
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn inline_completion_gates_cover_the_same_packages_as_former_composite()
+    -> color_eyre::eyre::Result<()> {
+        // The original `inline_completion_contract` was scoped to
+        // [perl-lsp-rs, perl-lsp-rs-core].  The four replacement gates must
+        // collectively cover at least these packages so the package-scoped
+        // trigger logic selects them on the same set of code changes.
+        let root = crate::utils::project_root()?;
+        let policy = load_policy_for_inspection(&root.join(".ci/gate-policy.yaml"))?;
+
+        let covered_packages: HashSet<&str> = INLINE_COMPLETION_GATE_NAMES
+            .iter()
+            .filter_map(|&gate_name| policy.gates.iter().find(|g| g.name == gate_name))
+            .flat_map(|gate| {
+                gate.planning
+                    .as_ref()
+                    .map(|p| p.packages.iter().map(|s| s.as_str()).collect::<Vec<_>>())
+                    .unwrap_or_default()
+            })
+            .collect();
+
+        let required_packages = ["perl-lsp-rs", "perl-lsp-rs-core"];
+        for &pkg in &required_packages {
+            assert!(
+                covered_packages.contains(pkg),
+                "The inline-completion gate family must cover package '{pkg}' \
+                 (it was covered by the former composite gate). \
+                 Current coverage: {covered_packages:?}"
+            );
+        }
+
+        Ok(())
+    }
+
+    /// (issue #6845) Union coverage across the family is not the property that
+    /// matters — the former composite was selected when a diff touched *either*
+    /// package, and ran all four commands. Assert the actual selected set for
+    /// each package independently, so a future narrowing of any child's scope
+    /// (which union coverage would still accept) fails here.
+    #[test]
+    fn each_former_composite_package_selects_the_whole_inline_completion_family()
+    -> color_eyre::eyre::Result<()> {
+        let root = crate::utils::project_root()?;
+        let policy = load_policy_for_inspection(&root.join(".ci/gate-policy.yaml"))?;
+
+        let family: Vec<GateDefinition> = INLINE_COMPLETION_GATE_NAMES
+            .iter()
+            .map(|&gate_name| {
+                policy
+                    .gates
+                    .iter()
+                    .find(|gate| gate.name == gate_name)
+                    .cloned()
+                    .ok_or_else(|| color_eyre::eyre::eyre!("gate '{gate_name}' not found"))
+            })
+            .collect::<color_eyre::eyre::Result<_>>()?;
+
+        for package in ["perl-lsp-rs", "perl-lsp-rs-core"] {
+            let plan = build_pr_fast_plan_from_scope_with_targets(
+                GateTier::PrFast,
+                "origin/main".to_string(),
+                family.clone(),
+                Some(scope_output("code", &[package], &[], &[])),
+                true,
+                false,
+                None,
+                None,
+            )?;
+
+            let selected: HashSet<&str> =
+                plan.selected.iter().map(|planned| planned.gate.name.as_str()).collect();
+
+            for &gate_name in INLINE_COMPLETION_GATE_NAMES {
+                assert!(
+                    selected.contains(gate_name),
+                    "a change touching only '{package}' must still select '{gate_name}': \
+                     the former composite ran all four contracts on either package, so a \
+                     child scoped away from one of them silently narrows coverage. \
+                     Selected: {selected:?}"
+                );
+            }
+        }
+
+        Ok(())
+    }
+
+    /// (issue #11797) PR Smoke selects a per-run `CARGO_TARGET_DIR`
+    /// (`pr-smoke-${run_id}-${run_attempt}`); the shared Rust cache covers
+    /// dependencies, not target artifacts across runs, and the separate
+    /// "Warm xtask" step prebuilds xtask only. These bounds are policy
+    /// protection informed by the reported timeout family, not a cold-cache
+    /// acceptance receipt. `retry_count: 1` permits a second attempt to reuse
+    /// artifacts created in the same run. Current hosted receipts remain the
+    /// authority for whether a PR reaches the test binary within the bounds.
+    #[test]
+    fn inline_completion_gates_size_budget_for_cold_cache_compilation()
+    -> color_eyre::eyre::Result<()> {
+        // Only the two gates whose command targets the perl-lsp-rs-core mega
+        // crate are covered here; the lsp_registration_contract / lsp_capability_snapshots
+        // pair compile a smaller subset of that crate's tests and their budgets
+        // are governed independently.
+        const COLD_COMPILE_GATES: &[&str] =
+            &["inline_completion_registration", "inline_completion_core"];
+        // These numbers are the policy floor/ceiling: `retry_count: 1` still
+        // bounds the total wall time to 2x per gate, and the outer PR-smoke
+        // watchdog (3600s = 60m, #15915) has to absorb every pr-fast gate combined.
+        // This invariant constrains configuration; it does not establish a
+        // cold-cache performance result.
+        const MIN_TIMEOUT_SECONDS: u64 = 240;
+        const MAX_TIMEOUT_SECONDS: u64 = 300;
+        const MIN_MAX_DURATION_MS: u64 = 210_000;
+        const MAX_MAX_DURATION_MS: u64 = 270_000;
+
+        let root = crate::utils::project_root()?;
+        let policy = load_policy_for_inspection(&root.join(".ci/gate-policy.yaml"))?;
+
+        for &gate_name in COLD_COMPILE_GATES {
+            let gate = policy
+                .gates
+                .iter()
+                .find(|g| g.name == gate_name)
+                .ok_or_else(|| color_eyre::eyre::eyre!("gate '{gate_name}' not found"))?;
+            assert!(
+                (MIN_TIMEOUT_SECONDS..=MAX_TIMEOUT_SECONDS).contains(&gate.timeout_seconds),
+                "Gate '{gate_name}' timeout_seconds={} must sit in [{MIN_TIMEOUT_SECONDS}, {MAX_TIMEOUT_SECONDS}] \
+                 to keep the configured PR Smoke policy within its outer 60m watchdog (#11797, #15915)",
+                gate.timeout_seconds,
+            );
+            let budget = gate.budgets.as_ref().ok_or_else(|| {
+                color_eyre::eyre::eyre!("Gate '{gate_name}' must declare a budget")
+            })?;
+            let max_ms = budget.max_duration_ms.ok_or_else(|| {
+                color_eyre::eyre::eyre!(
+                    "Gate '{gate_name}' budget must declare max_duration_ms (#11797)"
+                )
+            })?;
+            assert!(
+                (MIN_MAX_DURATION_MS..=MAX_MAX_DURATION_MS).contains(&max_ms),
+                "Gate '{gate_name}' budget.max_duration_ms={max_ms} must sit in \
+                 [{MIN_MAX_DURATION_MS}, {MAX_MAX_DURATION_MS}] (#11797)",
+            );
+            // max_duration_ms is declarative only today (the runner enforces
+            // timeout_seconds; see the budgets NOTE in gate-policy.yaml), so
+            // this ordering assertion is anti-drift configuration shape, not
+            // an enforcement guarantee: it keeps the recorded ceiling below
+            // the enforced hard timeout so a future enforcement change cannot
+            // inherit a policy where the soft budget could never fire first.
+            assert!(
+                max_ms < gate.timeout_seconds * 1000,
+                "Gate '{gate_name}' budget.max_duration_ms={max_ms} must stay below \
+                 hard timeout_seconds={} * 1000",
+                gate.timeout_seconds,
+            );
+            // Retry-once is the compile-overrun remedy from #10023; drop it
+            // and a cold first attempt has no chance to warm the target dir
+            // for a second, and #11797 comes straight back.
+            assert_eq!(
+                gate.retry_count, 1,
+                "Gate '{gate_name}' must keep retry_count: 1 so a compile-overrun first attempt \
+                 warms the per-run CARGO_TARGET_DIR for the second (#10023, #11797)",
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn gate_runner_reports_independent_results_when_a_peer_fails() -> color_eyre::eyre::Result<()> {
+        let failing_gate = tier_gate("gate_a_fails", "pr_fast", "exit 1");
+        let passing_gate = tier_gate("gate_b_still_runs", "pr_fast", "exit 0");
+        let policy = policy_with_gates(vec![failing_gate.clone(), passing_gate.clone()]);
+        let plan = static_gate_plan(
+            GateTier::PrFast,
+            "HEAD".to_string(),
+            vec![failing_gate, passing_gate],
+            None,
+        );
+        let config = GateRunnerConfig {
+            tier: GateTier::PrFast,
+            output_format: OutputFormat::Summary,
+            fail_fast: false,
+            ..GateRunnerConfig::default()
+        };
+
+        let receipt = run_gate_plan(&plan, &policy, &config)?;
+
+        assert_eq!(receipt.gates.len(), 2, "the real plan must emit both terminal rows");
+        assert_eq!(receipt.gates[0].gate_name, "gate_a_fails");
+        assert_eq!(receipt.gates[0].status, "fail");
+        assert_eq!(receipt.gates[1].gate_name, "gate_b_still_runs");
+        assert_eq!(receipt.gates[1].status, "pass");
+        assert!(
+            receipt.gates.iter().all(|gate| gate.log_path.is_some()),
+            "each terminal row must retain its independent log path"
+        );
+        assert_eq!(receipt.summary.total_gates, 2);
+        assert_eq!(receipt.summary.failed, 1);
+        assert_eq!(receipt.summary.passed, 1);
+        assert_eq!(
+            receipt.summary.blocking_failures.as_deref(),
+            Some(&["gate_a_fails".to_string()][..])
+        );
+
+        Ok(())
+    }
+
+    // -------------------------------------------------------------------
+    // Conversion falsifiers: helpers still fail with named context
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn gates_converted_must_wrappers_carry_track_caller() {
+        let src = include_str!("gates.rs");
+        let mut failures = Vec::new();
+        for helper in [
+            "fn write_gate_log(",
+            "fn required_test_metrics(",
+            "fn required_first_failure(",
+            "fn deserialize_json<",
+            "fn serialize_json<",
+            "fn compare_receipts_ok(",
+            "fn required_metric_change<",
+        ] {
+            let Some(idx) = src.find(helper) else {
+                failures.push(format!("missing wrapper {helper}"));
+                continue;
+            };
+            let preceding = src.get(..idx).unwrap_or("");
+            let last_attr_line =
+                preceding.lines().rev().find(|line| !line.trim().is_empty()).unwrap_or("");
+            if last_attr_line.trim() != "#[track_caller]" {
+                failures.push(format!(
+                    "{helper} is not immediately preceded by #[track_caller] (found {last_attr_line:?})"
+                ));
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    #[test]
+    #[should_panic(expected = "must: rewrite gate log:")]
+    fn gates_converted_write_helper_preserves_site_specific_context() {
+        let tmp = must_with(tempdir(), "test tempdir");
+        write_gate_log(&tmp.path().join("missing").join("gate.log"), b"x", "rewrite gate log");
+    }
+
+    #[test]
+    #[should_panic(expected = "must_some: cargo test summary should parse:")]
+    fn gates_converted_option_assertion_still_fails_when_cargo_summary_is_absent() {
+        let _ = required_test_metrics("no cargo summary here");
+    }
+
+    #[test]
+    #[should_panic(expected = "must: phase-1 agent receipt shape should deserialize:")]
+    fn gates_converted_result_assertion_still_fails_when_receipt_json_is_invalid() {
+        let _: Receipt =
+            deserialize_json("{not json}", "phase-1 agent receipt shape should deserialize");
+    }
+
+    #[test]
+    #[should_panic(expected = "must_err: missing baseline should be reported:")]
+    fn gates_converted_err_assertion_still_fails_when_receipt_exists() {
+        let tmp = must_with(tempdir(), "test tempdir");
+        let path = tmp.path().join("receipt.json");
+        let receipt = test_receipt_with_metrics(GateMetrics::default());
+        must_with(write_receipt(&receipt, &path), "write receipt for err-assertion falsifier");
+        let _ = must_err_with(load_receipt(&path), "missing baseline should be reported");
+    }
+
+    fn short_circuit_pr_gate(name: &str, command: &str) -> GateDefinition {
+        GateDefinition { short_circuit: true, ..pr_gate(name, GatePlanningRole::AlwaysOn, command) }
+    }
+
+    /// (#13698) The focused control-plane owner gates must be declared before
+    /// `unit_routed_full` (declaration order is execution order), must stay
+    /// required with `short_circuit: true`, and the broad cohort must keep its
+    /// exact identity — a focused pass can never remove or weaken the backstop
+    /// (issue falsifier 4), and the backstop itself must never short-circuit.
+    #[test]
+    fn focused_control_plane_gates_precede_unit_routed_full_and_pin_the_backstop()
+    -> color_eyre::eyre::Result<()> {
+        let root = crate::utils::project_root()?;
+        let policy = load_policy_for_inspection(&root.join(".ci/gate-policy.yaml"))?;
+
+        let gate_index = |name: &str| {
+            policy.gates.iter().position(|gate| gate.name == name).ok_or_else(|| {
+                color_eyre::eyre::eyre!("gate '{name}' missing from .ci/gate-policy.yaml")
+            })
+        };
+        let subject = gate_index("ci_subject_digest_oracle")?;
+        let bins = gate_index("unit_control_plane_bins")?;
+        let cohort = gate_index("unit_routed_full")?;
+
+        assert!(
+            subject < cohort && bins < cohort,
+            "focused owner gates (#13698) must be declared before unit_routed_full so a \
+             deterministic control-plane failure surfaces before the broad cohort \
+             (subject={subject}, bins={bins}, cohort={cohort})"
+        );
+
+        for (name, expected_command, expected_packages) in [
+            (
+                "ci_subject_digest_oracle",
+                "cargo test -p xtask --locked --test ci_subject",
+                vec!["xtask"],
+            ),
+            (
+                "unit_control_plane_bins",
+                "cargo test -p xtask --locked --bin xtask -- tasks::gates:: tasks::ci_scope:: \
+                 tasks::workflow_policy_lint:: tasks::workflow_trigger_lint:: \
+                 -- --test-threads=1",
+                vec!["xtask"],
+            ),
+        ] {
+            let gate = &policy.gates[gate_index(name)?];
+            assert_eq!(gate.tier, "pr_fast", "focused gate '{name}' tier drifted");
+            assert_eq!(gate.command, expected_command, "focused gate '{name}' command drifted");
+            // Denominator honesty (#14409 review): the bin-target projection
+            // names only owners that publish bin-target unit tests. The
+            // generated-inventory and badge owners have no `#[test]` functions
+            // in `--bin xtask`; their proof lives in the `xtask/tests/`
+            // integration suites the broad `unit_routed_full` cohort runs.
+            if name == "unit_control_plane_bins" {
+                assert!(
+                    !gate.command.contains("tasks::generated_files::")
+                        && !gate.command.contains("tasks::badges::"),
+                    "focused bin-target gate '{name}' must not claim owners without \
+                     bin-target unit tests"
+                );
+            }
+            assert!(gate.required, "focused gate '{name}' must stay required");
+            assert!(
+                gate.short_circuit,
+                "focused gate '{name}' must declare short_circuit: true (#13698)"
+            );
+            let planning = gate
+                .planning
+                .as_ref()
+                .ok_or_else(|| color_eyre::eyre::eyre!("focused gate '{name}' missing planning"))?;
+            assert_eq!(planning.role, GatePlanningRole::RustPackageScoped);
+            assert_eq!(
+                planning.packages,
+                expected_packages.iter().map(|package| package.to_string()).collect::<Vec<_>>(),
+                "focused gate '{name}' must stay exactly-subject routed to its owner crate"
+            );
+        }
+
+        // Backstop pin: the broad cohort keeps its exact identity and budget
+        // (#13698 acceptance — broad unit proof remains authoritative; no
+        // timeout increase, no required-to-advisory downgrade).
+        let cohort_gate = &policy.gates[cohort];
+        assert_eq!(
+            cohort_gate.command,
+            "cargo build -p perllsp --locked && cargo test --locked --tests {package_args}"
+        );
+        assert_eq!(cohort_gate.timeout_seconds, 1500);
+        assert_eq!(cohort_gate.retry_count, 1);
+        assert!(cohort_gate.required);
+        assert!(!cohort_gate.short_circuit, "the backstop must never short-circuit");
+        Ok(())
+    }
+
+    /// (#13698 falsifier 6) A failed required gate that declares
+    /// `short_circuit: true` stops the remaining plan, but every remaining
+    /// planned gate is still recorded as a typed skip row naming its cause —
+    /// saved work stays visible in the receipt, and the run stays red.
+    #[test]
+    fn short_circuit_failure_stops_the_cohort_and_records_saved_work()
+    -> color_eyre::eyre::Result<()> {
+        let focused_fails = short_circuit_pr_gate("gate_focused_fails", "exit 1");
+        let cohort = pr_gate("gate_cohort_never_runs", GatePlanningRole::AlwaysOn, "exit 0");
+        let policy = policy_with_gates(vec![focused_fails.clone(), cohort.clone()]);
+        let plan = static_gate_plan(
+            GateTier::PrFast,
+            "HEAD".to_string(),
+            vec![focused_fails, cohort],
+            None,
+        );
+        let config = GateRunnerConfig {
+            tier: GateTier::PrFast,
+            output_format: OutputFormat::Summary,
+            fail_fast: false,
+            ..GateRunnerConfig::default()
+        };
+
+        let receipt = run_gate_plan(&plan, &policy, &config)?;
+
+        assert_eq!(receipt.gates.len(), 2, "the failing gate plus its saved-work row");
+        assert_eq!(receipt.gates[0].gate_name, "gate_focused_fails");
+        assert_eq!(receipt.gates[0].status, "fail");
+        assert_eq!(receipt.gates[1].gate_name, "gate_cohort_never_runs");
+        assert_eq!(receipt.gates[1].status, "skip", "the cohort is recorded, not executed");
+        assert_eq!(receipt.gates[1].exit_code, None);
+        assert!(
+            receipt.gates[1]
+                .output_summary
+                .as_deref()
+                .unwrap_or_default()
+                .contains("short-circuited by failed required gate 'gate_focused_fails'"),
+            "the saved-work row must name its cause: {:?}",
+            receipt.gates[1].output_summary
+        );
+        assert_eq!(receipt.summary.failed, 1);
+        assert_eq!(receipt.summary.skipped, 1);
+        assert_eq!(receipt.summary.overall_status, "fail");
+        assert_eq!(
+            receipt.summary.blocking_failures.as_deref(),
+            Some(&["gate_focused_fails".to_string()][..])
+        );
+        Ok(())
+    }
+
+    /// (#13698 falsifier 3) A focused pass never short-circuits anything: the
+    /// broad cohort still runs and both dispositions are independently
+    /// recorded.
+    #[test]
+    fn focused_pass_keeps_the_broad_cohort_running() -> color_eyre::eyre::Result<()> {
+        let focused_passes = short_circuit_pr_gate("gate_focused_passes", "exit 0");
+        let cohort = pr_gate("gate_cohort_runs", GatePlanningRole::AlwaysOn, "exit 0");
+        let policy = policy_with_gates(vec![focused_passes.clone(), cohort.clone()]);
+        let plan = static_gate_plan(
+            GateTier::PrFast,
+            "HEAD".to_string(),
+            vec![focused_passes, cohort],
+            None,
+        );
+        let config = GateRunnerConfig {
+            tier: GateTier::PrFast,
+            output_format: OutputFormat::Summary,
+            fail_fast: false,
+            ..GateRunnerConfig::default()
+        };
+
+        let receipt = run_gate_plan(&plan, &policy, &config)?;
+
+        assert_eq!(receipt.gates.len(), 2);
+        assert_eq!(receipt.gates[0].status, "pass");
+        assert_eq!(
+            receipt.gates[1].status, "pass",
+            "a focused pass must not remove the broad cohort"
+        );
+        assert!(receipt.gates[1].log_path.is_some());
+        assert_eq!(receipt.summary.overall_status, "pass");
+        Ok(())
+    }
+
+    /// (#14409 review — tier scope) `short_circuit` is a pr_fast-only
+    /// behavior. Merge-gate and nightly plans inherit the focused pr_fast
+    /// gates, but their remaining tiers are the independent backstop evidence
+    /// for those runs, so a focused pr_fast failure there must let them
+    /// execute: no skip rows, no early stop, real execution evidence for every
+    /// remaining gate.
+    #[test]
+    fn short_circuit_does_not_fire_outside_pr_fast_plans() -> color_eyre::eyre::Result<()> {
+        for tier in [GateTier::MergeGate, GateTier::Nightly] {
+            let label = tier.to_string();
+            let focused_fails = short_circuit_pr_gate("gate_focused_fails", "exit 1");
+            let backstop =
+                pr_gate("gate_backstop_still_runs", GatePlanningRole::AlwaysOn, "exit 0");
+            let policy = policy_with_gates(vec![focused_fails.clone(), backstop.clone()]);
+            let plan = static_gate_plan(
+                tier.clone(),
+                "HEAD".to_string(),
+                vec![focused_fails, backstop],
+                None,
+            );
+            let config = GateRunnerConfig {
+                tier,
+                output_format: OutputFormat::Summary,
+                fail_fast: false,
+                ..GateRunnerConfig::default()
+            };
+
+            let receipt = run_gate_plan(&plan, &policy, &config)?;
+
+            assert_eq!(receipt.gates.len(), 2, "{label}: both gates must be recorded");
+            assert_eq!(receipt.gates[0].gate_name, "gate_focused_fails");
+            assert_eq!(receipt.gates[0].status, "fail");
+            assert_eq!(
+                receipt.gates[1].status, "pass",
+                "{label}: the backstop must run, not be short-circuited into a skip row"
+            );
+            assert!(
+                receipt.gates[1].log_path.is_some(),
+                "{label}: the backstop needs real execution evidence"
+            );
+            assert_eq!(receipt.summary.failed, 1);
+            assert_eq!(receipt.summary.skipped, 0, "{label}: no saved-work skip rows");
+        }
         Ok(())
     }
 }

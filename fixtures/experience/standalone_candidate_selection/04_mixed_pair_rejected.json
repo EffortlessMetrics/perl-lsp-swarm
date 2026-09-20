@@ -1,0 +1,50 @@
+{
+  "packet_schema": "standalone_candidate_selection_vector.v1",
+  "expectation": {
+    "verdict": "reject",
+    "reason_code": "member_subject_mismatch"
+  },
+  "candidates": [
+    {
+      "schema_version": "standalone_candidate.v1",
+      "policy_version": "v1",
+      "route_mode": "first_party_posix",
+      "source_mode": "release_archive",
+      "transaction_id": "tx-11179-build-m",
+      "attempt_id": "at-11179-build-m",
+      "created_by_operation": "install",
+      "resolved_subject_digest": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+      "stage_dag_digest": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+      "release_display_version": "0.19.0",
+      "release_topology_digest": "d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6",
+      "target_platform": "linux",
+      "target_triple": "x86_64-unknown-linux-gnu",
+      "target_libc": "gnu",
+      "product_unit_disposition": "archive_pair_required",
+      "dap_preview_maturity": false,
+      "candidate_generation": 1,
+      "members": [
+        {
+          "role": "perllsp_server",
+          "artifact_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "observation_packet_sha256": "abababababababababababababababababababababababababababababababab",
+          "subject_binding": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+        },
+        {
+          "role": "perl_dap_adapter",
+          "artifact_sha256": "cacacacacacacacacacacacacacacacacacacacacacacacacacacacacacacaca",
+          "observation_packet_sha256": "cbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcb",
+          "subject_binding": "e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5"
+        }
+      ],
+      "limitations": [
+        "synthetic contract vector for the standalone install train"
+      ],
+      "candidate_id": "81b52a5bcd3313cfff73d28b407e922857e8cac0b8b747b8cfe472a1f04795fa",
+      "manifest_sha256": "10d25aae829c3f074a756cc296d618d9f09d983e9f138b8aa7ded9ef5ede966b"
+    }
+  ],
+  "prior_selection": null,
+  "next_selection": null,
+  "transition": null
+}

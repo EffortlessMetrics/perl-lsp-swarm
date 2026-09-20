@@ -4,7 +4,7 @@
 //! GitHub, lifecycle labels, agent identity, or live issue/PR state.
 
 use color_eyre::eyre::{Result, bail};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -14,7 +14,22 @@ use crate::utils::project_root;
 const PROVIDER_SKILL_ROOTS: &[(&str, &str)] =
     &[("codex", ".agents/skills"), ("claude", ".claude/skills")];
 
+/// Allowlist for intentionally (or temporarily, with an owner) single-provider
+/// skills, enforced by the cross-provider parity check (#12802).
+const SKILL_PARITY_ALLOWLIST: &str = "policy/skill-provider-parity.toml";
+
 const FORBIDDEN_SHARED_REVIEW_AUTHORITY: &str = "PR_REVIEW_STANDARD.md";
+const METASYNTACTIC_PLACEHOLDERS: &[&str] = &["skill", "skill_name", "skill-name"];
+const ROUTE_BEARING_LABELS: &[&str] = &[
+    "entry flow",
+    "entry route",
+    "next flow",
+    "next route",
+    "return flow",
+    "return route",
+    "fallback flow",
+    "fallback route",
+];
 
 const REVIEW_SKILL_MARKERS: &[(&str, &[&str])] = &[
     (
@@ -102,12 +117,26 @@ struct ProviderReport {
     skill_count: usize,
     checked_skills: Vec<String>,
     route_count: usize,
+    route_observations: Vec<RouteObservationReport>,
     metadata_chars: usize,
+}
+
+#[derive(Debug, Serialize)]
+struct RouteObservationReport {
+    source: String,
+    path: String,
+    line: usize,
+    column_start: usize,
+    column_end: usize,
+    target: String,
+    syntax: RouteSyntax,
+    executable_edge: bool,
 }
 
 #[derive(Debug, Serialize)]
 struct ScenarioReport {
     fixture_count: usize,
+    trace_fixture_count: usize,
     checked_providers: Vec<String>,
     errors: Vec<String>,
 }
@@ -117,6 +146,7 @@ struct ScenarioOutput {
     schema: &'static str,
     result: &'static str,
     fixture_count: usize,
+    trace_fixture_count: usize,
     checked_providers: Vec<String>,
     errors: Vec<String>,
 }
@@ -127,7 +157,46 @@ struct Skill {
     path: PathBuf,
     text: String,
     route_targets: Vec<String>,
+    route_observations: Vec<RouteObservation>,
     metadata_chars: usize,
+}
+
+#[derive(Debug, Clone, Copy, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum RouteSyntax {
+    ExplicitSigil,
+    ArrowTarget,
+    ListTarget,
+    BareTarget,
+    ImperativeInvocation,
+    LabeledTarget,
+    ProseMention,
+    CodeIdentifier,
+    InlineCode,
+    Placeholder,
+}
+
+impl RouteSyntax {
+    const fn is_edge(self) -> bool {
+        matches!(
+            self,
+            Self::ExplicitSigil
+                | Self::ArrowTarget
+                | Self::ListTarget
+                | Self::BareTarget
+                | Self::ImperativeInvocation
+                | Self::LabeledTarget
+        )
+    }
+}
+
+#[derive(Debug, Clone, Eq, Ord, PartialEq, PartialOrd)]
+struct RouteObservation {
+    target: String,
+    line: usize,
+    column_start: usize,
+    column_end: usize,
+    syntax: RouteSyntax,
 }
 
 #[derive(Debug)]
@@ -135,6 +204,278 @@ struct ScenarioFixture {
     name: &'static str,
     required_skills: &'static [&'static str],
     required_edges: &'static [(&'static str, &'static str)],
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum TraceEvent {
+    RepairApplied { in_claim: bool, reversible: bool },
+    ProofRerun { affected: bool, passed: bool },
+    Disclosed,
+    ApprovalRequested { basis: ApprovalBasis },
+    CandidateWait { wake_event: &'static str, scope: HoldScope },
+    Polled { state_changed: bool },
+    OtherClaimAvailable,
+    AdvancedOtherClaim,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum HoldScope {
+    Candidate,
+    AffectedClaim,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum ApprovalBasis {
+    MaterialDecision,
+    ProtectedTransaction,
+    SelfAuthoredMistake,
+}
+
+#[derive(Debug)]
+struct ContinuationTrace {
+    name: &'static str,
+    incident: &'static str,
+    claim_constraint: ClaimConstraint,
+    events: &'static [TraceEvent],
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum ClaimConstraint {
+    InAdmittedCandidate,
+    PendingCandidateIntegration,
+    NonDerivableDecision,
+    ProtectedExternalAction,
+    ActiveWriterOwnership,
+    HigherPrecedenceAffectedClaim,
+}
+
+const SELF_CORRECTION_TRACES: &[ContinuationTrace] = &[
+    ContinuationTrace {
+        name: "receipt_identity_self_repair",
+        incident: "#15161",
+        claim_constraint: ClaimConstraint::InAdmittedCandidate,
+        events: &[
+            TraceEvent::RepairApplied { in_claim: true, reversible: true },
+            TraceEvent::ProofRerun { affected: true, passed: true },
+            TraceEvent::Disclosed,
+        ],
+    },
+    ContinuationTrace {
+        name: "positive_fixture_self_repair",
+        incident: "PR #13162",
+        claim_constraint: ClaimConstraint::InAdmittedCandidate,
+        events: &[
+            TraceEvent::RepairApplied { in_claim: true, reversible: true },
+            TraceEvent::ProofRerun { affected: true, passed: true },
+            TraceEvent::Disclosed,
+        ],
+    },
+    ContinuationTrace {
+        name: "pending_ci_keeps_goal_moving",
+        incident: "#14129",
+        claim_constraint: ClaimConstraint::PendingCandidateIntegration,
+        events: &[
+            TraceEvent::Polled { state_changed: true },
+            TraceEvent::CandidateWait {
+                wake_event: "required-check-completion",
+                scope: HoldScope::Candidate,
+            },
+            TraceEvent::OtherClaimAvailable,
+            TraceEvent::AdvancedOtherClaim,
+        ],
+    },
+    ContinuationTrace {
+        name: "material_decision_checkpoint",
+        incident: "material product or policy choice",
+        claim_constraint: ClaimConstraint::NonDerivableDecision,
+        events: &[TraceEvent::ApprovalRequested { basis: ApprovalBasis::MaterialDecision }],
+    },
+    ContinuationTrace {
+        name: "protected_transaction_checkpoint",
+        incident: "protected external transaction",
+        claim_constraint: ClaimConstraint::ProtectedExternalAction,
+        events: &[TraceEvent::ApprovalRequested { basis: ApprovalBasis::ProtectedTransaction }],
+    },
+    ContinuationTrace {
+        name: "active_writer_collision",
+        incident: "#13349",
+        claim_constraint: ClaimConstraint::ActiveWriterOwnership,
+        events: &[
+            TraceEvent::CandidateWait {
+                wake_event: "writer-release-or-handoff",
+                scope: HoldScope::AffectedClaim,
+            },
+            TraceEvent::OtherClaimAvailable,
+            TraceEvent::AdvancedOtherClaim,
+        ],
+    },
+    ContinuationTrace {
+        name: "higher_precedence_hold_is_scoped",
+        incident: "higher-precedence prohibition",
+        claim_constraint: ClaimConstraint::HigherPrecedenceAffectedClaim,
+        events: &[
+            TraceEvent::CandidateWait {
+                wake_event: "instruction-conflict-resolution",
+                scope: HoldScope::AffectedClaim,
+            },
+            TraceEvent::OtherClaimAvailable,
+            TraceEvent::AdvancedOtherClaim,
+        ],
+    },
+];
+
+fn validate_continuation_trace(trace: &ContinuationTrace) -> Vec<String> {
+    let mut errors = Vec::new();
+    if trace.events.is_empty() {
+        errors.push(format!("{} ({}) has no observed events", trace.name, trace.incident));
+        return errors;
+    }
+    let mut repaired = false;
+    let mut proof_result = None;
+    let mut disclosed = false;
+    let mut approval = false;
+    let mut candidate_wait = false;
+    let mut advanced = false;
+    let mut other_claim_available = false;
+    for event in trace.events {
+        if advanced {
+            errors.push(format!("{} has events after advancing the other claim", trace.name));
+        }
+        match event {
+            TraceEvent::RepairApplied { in_claim, reversible } => {
+                if repaired || proof_result.is_some() || disclosed {
+                    errors.push(format!("{} repair is out of order", trace.name));
+                }
+                if !in_claim || !reversible {
+                    errors.push(format!("{} repair is outside its reversible claim", trace.name));
+                }
+                repaired = true;
+            }
+            TraceEvent::ProofRerun { affected, passed } => {
+                if !repaired || proof_result.is_some() || disclosed {
+                    errors.push(format!("{} proof rerun is out of order", trace.name));
+                }
+                if !affected {
+                    errors.push(format!("{} lacks affected proof", trace.name));
+                }
+                // A failed rerun still requires honest disclosure; it is not merge proof.
+                proof_result = Some(*passed);
+            }
+            TraceEvent::Disclosed => {
+                if !repaired || proof_result.is_none() || disclosed {
+                    errors.push(format!("{} disclosure is out of order", trace.name));
+                }
+                disclosed = true;
+            }
+            TraceEvent::ApprovalRequested { basis } => {
+                if *basis == ApprovalBasis::SelfAuthoredMistake {
+                    errors.push(format!("{} turns self-authored repair into approval", trace.name));
+                }
+                approval = true;
+            }
+            TraceEvent::CandidateWait { wake_event, scope } => {
+                if candidate_wait {
+                    errors.push(format!("{} repeats its candidate wait", trace.name));
+                }
+                if wake_event.trim().is_empty() {
+                    errors.push(format!("{} has no exact candidate wake event", trace.name));
+                }
+                if *scope == HoldScope::Candidate
+                    && trace.claim_constraint != ClaimConstraint::PendingCandidateIntegration
+                {
+                    errors
+                        .push(format!("{} uses a broad hold for its claim constraint", trace.name));
+                }
+                if *scope == HoldScope::AffectedClaim
+                    && !matches!(
+                        trace.claim_constraint,
+                        ClaimConstraint::ActiveWriterOwnership
+                            | ClaimConstraint::HigherPrecedenceAffectedClaim
+                    )
+                {
+                    errors.push(format!(
+                        "{} uses an affected hold for the wrong claim constraint",
+                        trace.name
+                    ));
+                }
+                candidate_wait = true;
+            }
+            TraceEvent::Polled { state_changed } => {
+                if !state_changed {
+                    errors.push(format!("{} treats unchanged polling as progress", trace.name));
+                }
+            }
+            TraceEvent::OtherClaimAvailable => {
+                other_claim_available = true;
+            }
+            TraceEvent::AdvancedOtherClaim => {
+                if !candidate_wait {
+                    errors.push(format!(
+                        "{} advances before recording its candidate wait",
+                        trace.name
+                    ));
+                }
+                if !other_claim_available {
+                    errors.push(format!(
+                        "{} advanced a claim without observed availability",
+                        trace.name
+                    ));
+                }
+                advanced = true;
+            }
+        }
+    }
+    if repaired && (proof_result.is_none() || !disclosed) {
+        errors.push(format!(
+            "{} repair must be followed by affected proof and disclosure",
+            trace.name
+        ));
+    }
+    if candidate_wait && other_claim_available && !advanced {
+        errors.push(format!("{} candidate wait became a goal stop", trace.name));
+    }
+    match trace.claim_constraint {
+        ClaimConstraint::InAdmittedCandidate => {
+            if !repaired || approval {
+                errors.push(format!("{} must repair without approval", trace.name));
+            }
+        }
+        ClaimConstraint::PendingCandidateIntegration
+        | ClaimConstraint::ActiveWriterOwnership
+        | ClaimConstraint::HigherPrecedenceAffectedClaim => {
+            if !candidate_wait {
+                errors.push(format!("{} must hold the affected claim locally", trace.name));
+            } else if other_claim_available && !advanced {
+                errors.push(format!("{} must advance available disjoint work", trace.name));
+            }
+        }
+        ClaimConstraint::NonDerivableDecision | ClaimConstraint::ProtectedExternalAction => {
+            if !approval {
+                errors.push(format!("{} must retain its approval checkpoint", trace.name));
+            }
+        }
+    }
+    if repaired && !matches!(trace.claim_constraint, ClaimConstraint::InAdmittedCandidate) {
+        errors.push(format!("{} repairs a claim that requires a hold or decision", trace.name));
+    }
+    let expected_approval = match trace.claim_constraint {
+        ClaimConstraint::NonDerivableDecision => Some(ApprovalBasis::MaterialDecision),
+        ClaimConstraint::ProtectedExternalAction => Some(ApprovalBasis::ProtectedTransaction),
+        _ => None,
+    };
+    for event in trace.events {
+        if let TraceEvent::ApprovalRequested { basis } = event
+            && Some(*basis) != expected_approval
+        {
+            errors
+                .push(format!("{} approval basis does not match its claim constraint", trace.name));
+        }
+    }
+    errors
+}
+
+fn check_continuation_traces() -> Vec<String> {
+    SELF_CORRECTION_TRACES.iter().flat_map(validate_continuation_trace).collect()
 }
 
 const SCENARIO_FIXTURES: &[ScenarioFixture] = &[
@@ -292,8 +633,9 @@ pub fn run_scenarios(config: ScenarioConfig) -> Result<()> {
         "human" => {
             println!("{}", output.result);
             println!(
-                "scenarios: {} fixtures across {} providers",
+                "scenarios: {} route fixtures + {} continuation traces across {} providers",
                 output.fixture_count,
+                output.trace_fixture_count,
                 output.checked_providers.len()
             );
             for error in &output.errors {
@@ -317,6 +659,7 @@ fn scenario_output(report: CheckReport) -> ScenarioOutput {
         schema: "agent-flow-scenarios.v1",
         result,
         fixture_count: scenarios.fixture_count,
+        trace_fixture_count: scenarios.trace_fixture_count,
         checked_providers: scenarios.checked_providers,
         errors: scenarios.errors,
     }
@@ -343,6 +686,7 @@ fn check_repository(root: &Path, selected_skill: Option<&str>) -> Result<CheckRe
             .collect::<BTreeMap<_, _>>();
         provider_skills.insert((*provider).to_string(), (known_names.clone(), route_map));
         let mut route_count = 0;
+        let mut route_reports = Vec::new();
         let mut metadata_chars = 0;
         let mut checked_skills = Vec::new();
 
@@ -352,12 +696,36 @@ fn check_repository(root: &Path, selected_skill: Option<&str>) -> Result<CheckRe
         {
             selected_matches += 1;
             metadata_chars += skill.metadata_chars;
-            route_count += skill.route_targets.len();
             checked_skills.push(skill.name.clone());
-            for target in &skill.route_targets {
-                if !known_names.contains(target) {
-                    errors.push(missing_route_target_message(&skill.path, &skill.name, target));
+            let relative_path = skill
+                .path
+                .strip_prefix(root)
+                .unwrap_or(&skill.path)
+                .to_string_lossy()
+                .replace('\\', "/");
+
+            for observation in &skill.route_observations {
+                let syntax = resolve_route_syntax(observation, &known_names);
+                if syntax.is_edge() {
+                    route_count += 1;
+                    if !known_names.contains(&observation.target) {
+                        errors.push(missing_route_target_message(
+                            &skill.path,
+                            &skill.name,
+                            observation,
+                        ));
+                    }
                 }
+                route_reports.push(RouteObservationReport {
+                    source: skill.name.clone(),
+                    path: relative_path.clone(),
+                    line: observation.line,
+                    column_start: observation.column_start,
+                    column_end: observation.column_end,
+                    target: observation.target.clone(),
+                    syntax,
+                    executable_edge: syntax.is_edge(),
+                });
             }
         }
 
@@ -374,6 +742,7 @@ fn check_repository(root: &Path, selected_skill: Option<&str>) -> Result<CheckRe
                 skill_count: checked_skills.len(),
                 checked_skills,
                 route_count,
+                route_observations: route_reports,
                 metadata_chars,
             },
         );
@@ -387,23 +756,167 @@ fn check_repository(root: &Path, selected_skill: Option<&str>) -> Result<CheckRe
         ));
     }
 
-    let scenario_errors = check_scenarios(&provider_skills);
+    // #12802: SKILL_CONTRACT.md requires substantive skills to be
+    // operationally complete in both provider implementations. Enforce the
+    // name-set parity, with an explicit policy allowlist as the only
+    // sanctioned single-provider state. A focused --skill check still runs
+    // parity validation, filtered to the selected skill — a focused PASS must
+    // never sanction an unallowlisted single-provider skill.
+    {
+        let name_sets = provider_skills
+            .iter()
+            .map(|(provider, (names, _))| (provider.clone(), names.clone()))
+            .collect::<BTreeMap<_, _>>();
+        let allowlist = load_skill_parity_allowlist(root, &mut errors);
+        errors.extend(skill_parity_violations(&name_sets, &allowlist, selected_skill));
+    }
+
+    let mut scenario_errors = check_scenarios(&provider_skills);
+    scenario_errors.extend(check_continuation_traces());
+    scenario_errors.extend(check_self_correction_guidance(root, selected_skill));
     errors.extend(scenario_errors.iter().cloned());
     let scenarios = ScenarioReport {
         fixture_count: SCENARIO_FIXTURES.len(),
+        trace_fixture_count: SELF_CORRECTION_TRACES.len(),
         checked_providers: provider_skills.keys().cloned().collect(),
         errors: scenario_errors,
     };
 
     let result = if errors.is_empty() { "PASS" } else { "FAIL" };
     Ok(CheckReport {
-        schema: "agent-flow-check.v1",
+        schema: "agent-flow-check.v2",
         result,
         providers,
         scenarios,
         errors,
         advisories,
     })
+}
+
+#[derive(Debug, Deserialize)]
+struct SkillParityAllow {
+    skill: String,
+    root: String,
+    #[allow(dead_code)]
+    reason: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct SkillParityAllowlist {
+    #[serde(default)]
+    allow: Vec<SkillParityAllow>,
+}
+
+/// Load the single-provider skill allowlist. A missing file means an empty
+/// allowlist; a malformed file is a hard error (fail closed — an unreadable
+/// authority must not silently widen parity).
+fn load_skill_parity_allowlist(root: &Path, errors: &mut Vec<String>) -> Vec<SkillParityAllow> {
+    let path = root.join(SKILL_PARITY_ALLOWLIST);
+    match fs::read_to_string(&path) {
+        Ok(text) => match toml::from_str::<SkillParityAllowlist>(&text) {
+            Ok(parsed) => parsed.allow,
+            Err(error) => {
+                errors.push(format!("{}: malformed parity allowlist: {error}", path.display()));
+                Vec::new()
+            }
+        },
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(error) => {
+            errors.push(format!("{}: cannot read parity allowlist: {error}", path.display()));
+            Vec::new()
+        }
+    }
+}
+
+/// Compare provider skill-name sets: every skill must exist in every
+/// provider root unless its single-provider state is explicitly allowlisted.
+/// Allowlist entries are themselves ratcheted: an entry whose skill now
+/// exists everywhere (debt fixed) or nowhere (skill gone) is stale and
+/// fails, duplicate entries for one skill are rejected, and every entry's
+/// root must equal the skill's actual sole provider root — so the allowlist
+/// can neither fossilize nor sanction by accident. With `selected`, only
+/// violations involving that skill are reported (focused --skill checks).
+fn skill_parity_violations(
+    provider_names: &BTreeMap<String, BTreeSet<String>>,
+    allowlist: &[SkillParityAllow],
+    selected: Option<&str>,
+) -> Vec<String> {
+    let mut violations = Vec::new();
+    let all_skills = provider_names.values().flatten().cloned().collect::<BTreeSet<_>>();
+
+    for skill in &all_skills {
+        let present_in = provider_names
+            .iter()
+            .filter(|(_, names)| names.contains(skill))
+            .map(|(provider, _)| provider.clone())
+            .collect::<Vec<_>>();
+        if present_in.len() == provider_names.len() {
+            continue;
+        }
+        let present_root = PROVIDER_SKILL_ROOTS
+            .iter()
+            .find(|(provider, _)| present_in.iter().any(|p| p == provider))
+            .map(|(_, root)| (*root).to_string())
+            .unwrap_or_default();
+        let entries = allowlist.iter().filter(|entry| entry.skill == *skill).collect::<Vec<_>>();
+        if entries.len() > 1 {
+            violations.push(format!(
+                "{SKILL_PARITY_ALLOWLIST}: {} entries for skill '{skill}'; exactly one allowlist \
+                 entry per skill is allowed",
+                entries.len()
+            ));
+            continue;
+        }
+        // A lone entry with the wrong root is reported precisely by the
+        // per-entry root check below; the generic drift message fires only
+        // when no entry sanctions the skill at all.
+        if entries.is_empty() && selected.is_none_or(|name| name == skill) {
+            violations.push(format!(
+                "skill '{skill}' exists only in {present_root}; SKILL_CONTRACT.md requires both \
+                 provider implementations — add the twin or an explicit {SKILL_PARITY_ALLOWLIST} entry (#12802)"
+            ));
+        }
+    }
+
+    for entry in allowlist {
+        if selected.is_some_and(|name| name != entry.skill) {
+            continue;
+        }
+        let presence =
+            provider_names.values().map(|names| names.contains(&entry.skill)).collect::<Vec<_>>();
+        if presence.iter().all(|present| *present) {
+            violations.push(format!(
+                "{SKILL_PARITY_ALLOWLIST}: entry '{}' is stale — the skill now exists in every \
+                 provider root; remove the entry",
+                entry.skill
+            ));
+        } else if presence.iter().all(|present| !present) {
+            violations.push(format!(
+                "{SKILL_PARITY_ALLOWLIST}: entry '{}' names a skill present in no provider root; \
+                 remove the entry",
+                entry.skill
+            ));
+        } else {
+            // Single-provider skill: the entry's root must equal the skill's
+            // actual sole provider root, independent of any other entry.
+            let actual_root = PROVIDER_SKILL_ROOTS
+                .iter()
+                .find(|(provider, _)| {
+                    provider_names.get(*provider).is_some_and(|names| names.contains(&entry.skill))
+                })
+                .map(|(_, root)| (*root).to_string())
+                .unwrap_or_default();
+            if entry.root != actual_root {
+                violations.push(format!(
+                    "{SKILL_PARITY_ALLOWLIST}: entry '{}' names root '{}' but the skill exists \
+                     only in '{actual_root}'; correct or remove the entry",
+                    entry.skill, entry.root
+                ));
+            }
+        }
+    }
+
+    violations
 }
 
 fn check_provider_operational_contract(
@@ -496,6 +1009,245 @@ fn check_scenarios(
     errors
 }
 
+const SELF_CORRECTION_DOCUMENT: &str = "docs/agents/DEVELOPMENT_METHOD.md";
+const SELF_CORRECTION_MARKER: &str = "Self-authored correction and disclosure";
+const SELF_CORRECTION_REFERENCE: &str = "correction and disclosure contract";
+const CANONICAL_SELF_CORRECTION_CLAUSES: &[(&str, &str)] = &[
+    ("correction", "correct it immediately"),
+    ("proof", "rerun the affected proof"),
+    ("disclosure", "disclose the defect, correction, result, and remaining uncertainty"),
+    ("scope/writer", "covered by the accepted claim and current writer envelope"),
+    (
+        "approval boundary",
+        "ask for a decision only when the correction requires a non-derivable product or policy choice, a separately protected external action, or material scope, cost, privacy, security, or exposure change",
+    ),
+    (
+        "candidate-local continuation",
+        "pending candidate work remains a candidate-local wait with one exact wake event",
+    ),
+    (
+        "higher precedence",
+        "repository guidance cannot override a higher-precedence runtime instruction; that provenance remains an explicit uncertainty boundary",
+    ),
+    (
+        "approval transaction",
+        "the fact that the agent introduced the defect does not create a new approval transaction",
+    ),
+    (
+        "disjoint continuation",
+        "do not turn unchanged polling into progress or an umbrella blocker; advance another disjoint claim when its authority permits",
+    ),
+];
+const KNOWN_BAD_SELF_CORRECTION_WORDING: &[&str] = &[
+    "tell the user rather than going back and correcting your bug",
+    "tell the user rather than correct the bug and let them decide",
+];
+const SELF_CORRECTION_SKILLS: &[&str] = &[
+    "deliver-goal",
+    "deliver-pr",
+    "orchestrate-work",
+    "build-candidate",
+    "address-review-comments",
+    "finish-pr",
+    "merge-reconcile",
+];
+
+#[derive(Deserialize)]
+struct AuthorityStatusDocument {
+    current_method: String,
+    documents: Vec<AuthorityStatusEntry>,
+}
+
+#[derive(Deserialize)]
+struct AuthorityStatusEntry {
+    path: String,
+    status: String,
+}
+
+fn check_self_correction_guidance(root: &Path, selected_skill: Option<&str>) -> Vec<String> {
+    let mut errors = Vec::new();
+    errors.extend(authority_binding_errors(root));
+    let mut surfaces = Vec::new();
+    for relative in [SELF_CORRECTION_DOCUMENT, "AGENTS.md", "CLAUDE.md"] {
+        surfaces.push((relative.to_string(), root.join(relative)));
+    }
+    for provider in [".agents/skills", ".claude/skills"] {
+        for skill in SELF_CORRECTION_SKILLS {
+            if selected_skill.is_some_and(|selected| selected != *skill) {
+                continue;
+            }
+            let relative = format!("{provider}/{skill}/SKILL.md");
+            surfaces.push((relative.clone(), root.join(relative)));
+        }
+    }
+    for (label, path) in surfaces {
+        let text = match fs::read_to_string(&path) {
+            Ok(text) => text,
+            Err(error) => {
+                errors.push(format!("{label}: cannot read self-correction guidance: {error}"));
+                continue;
+            }
+        };
+        let required = if label == SELF_CORRECTION_DOCUMENT {
+            SELF_CORRECTION_MARKER
+        } else {
+            SELF_CORRECTION_REFERENCE
+        };
+        if !text.contains(required) {
+            errors.push(format!("{label}: missing self-correction guidance marker '{required}'"));
+        }
+        if label == SELF_CORRECTION_DOCUMENT {
+            errors.extend(
+                canonical_self_correction_errors(&text)
+                    .into_iter()
+                    .map(|error| format!("{label}: {error}")),
+            );
+        }
+        match contains_known_bad_self_correction_wording(&text) {
+            Ok(true) => errors.push(format!("{label}: contains known-bad self-correction wording")),
+            Ok(false) => {}
+            Err(error) => {
+                errors.push(format!("{label}: cannot check self-correction wording: {error}"))
+            }
+        }
+    }
+    errors
+}
+
+fn authority_binding_errors(root: &Path) -> Vec<String> {
+    let relative = "docs/agents/authority_status.toml";
+    let path = root.join(relative);
+    let text = match fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(error) => {
+            return vec![format!("{relative}: authority binding cannot read registry: {error}")];
+        }
+    };
+    authority_binding_errors_from_text(&text)
+        .into_iter()
+        .map(|error| format!("{relative}: {error}"))
+        .collect()
+}
+
+// Provider references still name this fixed guide. A changed authority must fail
+// until the guide, references, and checker are deliberately migrated together.
+fn authority_binding_errors_from_text(text: &str) -> Vec<String> {
+    let registry = match toml::from_str::<AuthorityStatusDocument>(text) {
+        Ok(registry) => registry,
+        Err(error) => return vec![format!("authority binding registry is malformed: {error}")],
+    };
+    let expected = SELF_CORRECTION_DOCUMENT;
+    let mut errors = Vec::new();
+    if registry.current_method != expected {
+        errors.push(format!("authority binding current_method must be '{expected}'"));
+    }
+    let matches =
+        registry.documents.iter().filter(|entry| entry.path == expected).collect::<Vec<_>>();
+    if matches.len() != 1 {
+        errors.push(format!(
+            "authority binding requires exactly one current '{expected}' document row"
+        ));
+    } else if matches.first().is_none_or(|entry| entry.status != "current") {
+        errors.push(format!("authority binding document '{expected}' must have status 'current'"));
+    }
+    errors
+}
+
+fn canonical_self_correction_errors(text: &str) -> Vec<String> {
+    let section = match canonical_self_correction_section(text) {
+        Ok(section) => section,
+        Err(reason) => return vec![reason.to_owned()],
+    };
+    let normalized = normalize_guidance_text(&section);
+    CANONICAL_SELF_CORRECTION_CLAUSES
+        .iter()
+        .filter(|(_, clause)| !normalized.contains(&normalize_guidance_text(clause)))
+        .map(|(name, _)| format!("canonical self-correction section missing {name} clause"))
+        .collect()
+}
+
+/// Extract the finite, named canonical section used by the guidance checker.
+/// This intentionally handles only the repository's `##` Markdown heading
+/// shape; it is a structural presence check, not a general Markdown parser.
+fn canonical_self_correction_section(text: &str) -> Result<String, &'static str> {
+    let heading = format!("## {SELF_CORRECTION_MARKER}");
+    let heading_count = text.lines().filter(|line| line.trim() == heading).count();
+    if heading_count == 0 {
+        return Err("missing canonical self-correction section body");
+    }
+    if heading_count > 1 {
+        return Err("canonical self-correction section appears more than once");
+    }
+    let mut in_section = false;
+    let mut body = String::new();
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if !in_section {
+            if trimmed == heading {
+                in_section = true;
+            }
+            continue;
+        }
+        if trimmed.starts_with("# ") || trimmed.starts_with("## ") {
+            break;
+        }
+        body.push_str(line);
+        body.push('\n');
+    }
+    if body.trim().is_empty() {
+        return Err("canonical self-correction section body is empty");
+    }
+    Ok(body)
+}
+
+fn normalize_guidance_text(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ").to_ascii_lowercase()
+}
+
+fn contains_known_bad_self_correction_wording(
+    text: &str,
+) -> std::result::Result<bool, regex::Error> {
+    // Finite formatting forms, not a Markdown parser: simple inline links,
+    // non-nested emphasis and single-backtick code. Preserve other punctuation.
+    let links = regex::Regex::new(r"\[([^\[\]\n]+)\]\([^()\n]*\)")?;
+    let formatting =
+        regex::Regex::new(r"\*\*([^*]+)\*\*|__([^_]+)__|\*([^*]+)\*|_([^_]+)_|`([^`]+)`")?;
+    let mut paragraph = String::new();
+    for line in text.lines().chain(std::iter::once("")) {
+        if !line.trim().is_empty() {
+            paragraph.push(' ');
+            paragraph.push_str(line);
+            continue;
+        }
+        let visible = links.replace_all(&paragraph, "$1");
+        let visible = formatting.replace_all(&visible, |captures: &regex::Captures<'_>| {
+            let Some(whole) = captures.get(0) else { return String::new() };
+            let before = visible.get(..whole.start()).and_then(|s| s.chars().next_back());
+            let after = visible.get(whole.end()..).and_then(|s| s.chars().next());
+            // Unmatched adjacent delimiters, escapes and intraword punctuation
+            // must not be converted into spaces that manufacture a phrase.
+            let boundary =
+                |c: char| c.is_alphanumeric() || matches!(c, '*' | '_' | '`' | '~' | '\\');
+            if before.is_some_and(boundary) || after.is_some_and(boundary) {
+                return whole.as_str().to_owned();
+            }
+            captures
+                .iter()
+                .skip(1)
+                .flatten()
+                .next()
+                .map_or_else(|| whole.as_str().to_owned(), |label| label.as_str().to_owned())
+        });
+        let normalized =
+            visible.split_whitespace().collect::<Vec<_>>().join(" ").to_ascii_lowercase();
+        if KNOWN_BAD_SELF_CORRECTION_WORDING.iter().any(|phrase| normalized.contains(phrase)) {
+            return Ok(true);
+        }
+        paragraph.clear();
+    }
+    Ok(false)
+}
+
 fn collect_skills(skill_root: &Path, errors: &mut Vec<String>) -> Result<Vec<Skill>> {
     let mut skills = Vec::new();
     let mut entries = fs::read_dir(skill_root)?.collect::<std::result::Result<Vec<_>, _>>()?;
@@ -522,12 +1274,14 @@ fn collect_skills(skill_root: &Path, errors: &mut Vec<String>) -> Result<Vec<Ski
             )),
             None => errors.push(format!("{}: missing frontmatter name", skill_path.display())),
         }
-        let route_targets = route_targets(&text);
+        let route_observations = route_observations(&text);
+        let route_targets = edge_targets(&route_observations);
         skills.push(Skill {
             name: directory_name,
             path: skill_path,
             text,
             route_targets,
+            route_observations,
             metadata_chars,
         });
     }
@@ -572,18 +1326,46 @@ fn frontmatter_metadata_chars(text: &str) -> usize {
     0
 }
 
+#[cfg(test)]
 fn route_targets(text: &str) -> Vec<String> {
+    edge_targets(&route_observations(text))
+}
+
+fn edge_targets(observations: &[RouteObservation]) -> Vec<String> {
+    observations
+        .iter()
+        .filter(|observation| observation.syntax.is_edge())
+        .map(|observation| observation.target.clone())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
+fn resolve_route_syntax(
+    observation: &RouteObservation,
+    known_names: &BTreeSet<String>,
+) -> RouteSyntax {
+    match observation.syntax {
+        RouteSyntax::InlineCode if known_names.contains(observation.target.as_str()) => {
+            RouteSyntax::ProseMention
+        }
+        RouteSyntax::InlineCode => RouteSyntax::CodeIdentifier,
+        syntax => syntax,
+    }
+}
+
+fn route_observations(text: &str) -> Vec<RouteObservation> {
     let mut in_route_section = false;
-    let mut targets = BTreeSet::new();
-    for line in text.lines() {
+    let mut observations = BTreeSet::new();
+    for (line_index, line) in text.lines().enumerate() {
         let trimmed = line.trim();
         if trimmed.starts_with("## ") {
             in_route_section = is_route_heading(trimmed);
             continue;
         }
-        targets.extend(route_tokens(trimmed, in_route_section));
+        observations.extend(route_line_observations(line, line_index + 1, in_route_section));
     }
-    targets.into_iter().collect()
+    observations.into_iter().collect()
 }
 
 fn is_route_heading(heading: &str) -> bool {
@@ -598,71 +1380,259 @@ fn is_route_heading(heading: &str) -> bool {
         || normalized == "procedure"
 }
 
-fn missing_route_target_message(path: &Path, source: &str, target: &str) -> String {
+fn missing_route_target_message(
+    path: &Path,
+    source: &str,
+    observation: &RouteObservation,
+) -> String {
     format!(
-        "{}: route from '{}' points to missing provider-local skill '{}' (if this is prose or a code identifier, remove its backticks; route references should use an explicit route form)",
+        "{}:{}:{}: route from '{}' points to missing provider-local skill '{}' via {:?} (if this is prose or a code identifier, remove its route syntax; route references should use an explicit route form)",
         path.display(),
+        observation.line,
+        observation.column_start + 1,
         source,
-        target
+        observation.target,
+        observation.syntax
     )
 }
 
+#[cfg(test)]
 fn route_tokens(line: &str, in_route_section: bool) -> Vec<String> {
-    // Metasyntactic `$placeholders` that appear in prose inside route/orchestration
-    // sections but are NOT actual skill route targets (#5930).
-    const METASYNTACTIC_PLACEHOLDERS: &[&str] = &["skill", "skill_name", "skill-name"];
+    edge_targets(&route_line_observations(line, 1, in_route_section))
+}
 
-    let mut tokens = Vec::new();
-    let chars = line.chars().collect::<Vec<_>>();
-    let mut index = 0;
-    while index < chars.len() {
-        if in_route_section && chars[index] == '$' {
-            let start = index + 1;
-            let mut end = start;
-            while end < chars.len()
-                && (chars[end].is_ascii_lowercase()
-                    || chars[end].is_ascii_digit()
-                    || chars[end] == '-')
-            {
-                end += 1;
+fn route_line_observations(
+    line: &str,
+    line_number: usize,
+    in_route_section: bool,
+) -> Vec<RouteObservation> {
+    if !in_route_section {
+        return Vec::new();
+    }
+
+    let mut observations = BTreeSet::new();
+    scan_backticked_tokens(line, line_number, &mut observations);
+    observations.into_iter().collect()
+}
+
+fn scan_backticked_tokens(
+    line: &str,
+    line_number: usize,
+    observations: &mut BTreeSet<RouteObservation>,
+) {
+    let mut cursor = 0;
+    // Text since the previous token's closing backtick. Arrow detection reads
+    // only this segment: a `->` belongs to the token it points at, not to every
+    // later token on the same line.
+    let mut segment_start = 0;
+    while let Some(relative_start) = line[cursor..].find('`') {
+        let opening = cursor + relative_start;
+        let content_start = opening + 1;
+        let Some(relative_end) = line[content_start..].find('`') else {
+            break;
+        };
+        let closing = content_start + relative_end;
+        let token = &line[content_start..closing];
+
+        if let Some(target) = token.strip_prefix('$') {
+            if is_route_name(target) {
+                observations.insert(RouteObservation {
+                    target: target.to_string(),
+                    line: line_number,
+                    column_start: content_start + 1,
+                    column_end: closing,
+                    syntax: if METASYNTACTIC_PLACEHOLDERS.contains(&target) {
+                        RouteSyntax::Placeholder
+                    } else {
+                        RouteSyntax::ExplicitSigil
+                    },
+                });
             }
-            if end > start {
-                let token: String = chars[start..end].iter().collect();
-                // Skip metasyntactic placeholders that are prose, not route targets.
-                if !METASYNTACTIC_PLACEHOLDERS.contains(&token.as_str()) {
-                    tokens.push(token);
-                }
-            }
-            index = end;
-        } else if in_route_section && chars[index] == '`' {
-            let start = index + 1;
-            if let Some(relative_end) =
-                chars[start..].iter().position(|character| *character == '`')
-            {
-                let end = start + relative_end;
-                let token = chars[start..end].iter().collect::<String>();
-                let token = token.strip_prefix('$').unwrap_or(&token);
-                if token.chars().next().is_some_and(|character| character.is_ascii_lowercase())
-                    && token.chars().all(|character| {
-                        character.is_ascii_lowercase()
-                            || character.is_ascii_digit()
-                            || character == '-'
-                    })
-                    // Skip metasyntactic placeholders that are prose, not route
-                    // targets — mirrors the bare-$ branch (#5930).
-                    && !METASYNTACTIC_PLACEHOLDERS.contains(&token)
-                {
-                    tokens.push(token.to_owned());
-                }
-                index = end + 1;
+            cursor = closing + 1;
+            segment_start = cursor;
+            continue;
+        }
+
+        if is_route_name(token) {
+            let code_span = &line[opening..=closing];
+            let segment = &line[segment_start..opening];
+            let syntax = if METASYNTACTIC_PLACEHOLDERS.contains(&token) {
+                RouteSyntax::Placeholder
+            } else if segment.contains("->") || segment.contains('→') {
+                RouteSyntax::ArrowTarget
             } else {
-                index += 1;
-            }
-        } else {
-            index += 1;
+                classify_arrowless_code_span(line, code_span, opening)
+            };
+            observations.insert(RouteObservation {
+                target: token.to_string(),
+                line: line_number,
+                column_start: content_start,
+                column_end: closing,
+                syntax,
+            });
+        }
+        cursor = closing + 1;
+        segment_start = cursor;
+    }
+}
+
+fn classify_arrowless_code_span(line: &str, code_span: &str, opening: usize) -> RouteSyntax {
+    let trimmed = line.trim();
+    let candidate = strip_markdown_list_marker(trimmed);
+    if candidate == code_span {
+        return RouteSyntax::BareTarget;
+    }
+    if let Some(rest) = candidate.strip_prefix(code_span) {
+        let rest = rest.trim_start();
+        if rest.starts_with(':') || rest.starts_with('—') {
+            return RouteSyntax::ListTarget;
         }
     }
-    tokens
+    // A labeled route is defined by its label, not by its bullet: the bare and
+    // list forms above carry no list requirement either, and
+    // `has_route_label_prefix` already restricts the match to
+    // `ROUTE_BEARING_LABELS`.
+    //
+    // Use `&line[..opening]` (the exact prefix before this token's opening
+    // backtick) rather than the full line. When the same code span appears
+    // more than once on a line, passing the full line to a `str::find`-based
+    // helper always resolves the first occurrence's prefix context, silently
+    // misclassifying every later occurrence. Scoping to `&line[..opening]`
+    // makes each token's classification independent of its position in the
+    // line — consistent with the arrow branch, which already uses `segment`
+    // (the text since the previous closing backtick) for the same reason.
+    let prefix_before_opening = &line[..opening];
+    if has_route_label_prefix(prefix_before_opening) {
+        return RouteSyntax::LabeledTarget;
+    }
+    if is_markdown_list_item(trimmed) && has_imperative_route_prefix(prefix_before_opening) {
+        return RouteSyntax::ImperativeInvocation;
+    }
+    RouteSyntax::InlineCode
+}
+
+/// Check whether `prefix_before_opening` — everything in the source line
+/// before the current token's opening backtick — ends with a route-bearing
+/// label followed by a colon.
+///
+/// Accepts the raw `&line[..opening]` slice. The list marker (if any) and
+/// trailing whitespace are stripped internally, so the caller does not need
+/// to pre-process it.
+///
+/// Uses suffix matching (not equality) so that earlier content on the same
+/// line — such as a preceding prose code span — does not prevent a later
+/// labeled route from being recognised. The route labels in
+/// `ROUTE_BEARING_LABELS` are specific enough that suffix matching is safe.
+fn has_route_label_prefix(prefix_before_opening: &str) -> bool {
+    // Strip the list marker and surrounding whitespace from the prefix.
+    let candidate = strip_markdown_list_marker(prefix_before_opening.trim());
+    let prefix = candidate.trim();
+    let label = if let Some(without_colon) = prefix.strip_suffix(':') {
+        strip_strong_emphasis(without_colon).trim()
+    } else {
+        let without_emphasis = strip_strong_emphasis(prefix);
+        let Some(without_colon) = without_emphasis.strip_suffix(':') else {
+            return false;
+        };
+        without_colon.trim()
+    };
+    let normalized = label.to_ascii_lowercase();
+    ROUTE_BEARING_LABELS.iter().any(|&route_label| {
+        // Suffix match: the route label appears at the end of a longer prefix.
+        // Guard with a non-alphanumeric boundary so "xentry flow" doesn't
+        // spuriously match "entry flow". An exact match yields an empty
+        // `before`, which also passes the guard.
+        if let Some(before) = normalized.strip_suffix(route_label) {
+            !before.ends_with(|c: char| c.is_alphanumeric())
+        } else {
+            false
+        }
+    })
+}
+
+fn strip_strong_emphasis(text: &str) -> &str {
+    text.strip_prefix("**").and_then(|inner| inner.strip_suffix("**")).unwrap_or(text)
+}
+
+/// The set of imperative verbs that introduce a route invocation when they
+/// appear immediately before a backtick-quoted skill name.
+///
+/// Multi-word entries are matched as a suffix so that prose can precede the
+/// verb on the same line (e.g. `"See `foo` — invoke `bar`"`), while a word-
+/// boundary guard prevents false positives like `"reinvoke"` matching
+/// `"invoke"`.
+const IMPERATIVE_ROUTE_VERBS: &[&str] = &[
+    "invoke",
+    "route to",
+    "continue with",
+    "proceed through",
+    "enter through",
+    "call",
+    "hand off to",
+    "return to",
+];
+
+/// Check whether `prefix_before_opening` — everything in the source line
+/// before the current token's opening backtick — ends with an imperative
+/// route verb (after stripping the list marker and surrounding whitespace).
+///
+/// Uses suffix matching (not equality) so that prose text preceding the verb
+/// on the same line — such as a prior prose code span — does not prevent
+/// recognition. A word-boundary guard (the character before the matched verb
+/// must not be alphanumeric or `_`, so `"reinvoke"` cannot match `"invoke"`)
+/// still accepts punctuation boundaries such as `"— invoke"`.
+///
+/// Accepts the raw `&line[..opening]` slice. The list marker and whitespace
+/// are stripped internally.
+fn has_imperative_route_prefix(prefix_before_opening: &str) -> bool {
+    let candidate = strip_markdown_list_marker(prefix_before_opening.trim());
+    let prefix = candidate.trim().to_ascii_lowercase();
+    IMPERATIVE_ROUTE_VERBS.iter().any(|&verb| {
+        if let Some(before) = prefix.strip_suffix(verb) {
+            // An exact match yields an empty `before`; `"".ends_with(..)` is
+            // false, so exact matches pass without a redundant is_empty check.
+            // A non-empty `before` must end with a non-word character to keep a
+            // word boundary: "reinvoke" must not match "invoke", while prose
+            // punctuation such as "— invoke" still counts. The underscore is
+            // word-like here so "foo_invoke" does not match.
+            !before.ends_with(|c: char| c.is_alphanumeric() || c == '_')
+        } else {
+            false
+        }
+    })
+}
+
+fn is_markdown_list_item(line: &str) -> bool {
+    if ["- ", "* ", "+ "].iter().any(|marker| line.starts_with(marker)) {
+        return true;
+    }
+    line.split_once(". ").is_some_and(|(prefix, _)| {
+        !prefix.is_empty() && prefix.bytes().all(|byte| byte.is_ascii_digit())
+    })
+}
+
+fn strip_markdown_list_marker(line: &str) -> &str {
+    for marker in ["- ", "* ", "+ "] {
+        if let Some(rest) = line.strip_prefix(marker) {
+            return rest.trim_start();
+        }
+    }
+    if let Some((prefix, rest)) = line.split_once(". ")
+        && !prefix.is_empty()
+        && prefix.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return rest.trim_start();
+    }
+    line
+}
+
+fn is_route_name(token: &str) -> bool {
+    token.bytes().next().is_some_and(|byte| byte.is_ascii_lowercase())
+        && token.bytes().all(is_route_name_byte)
+}
+
+const fn is_route_name_byte(byte: u8) -> bool {
+    byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-' || byte == b'_'
 }
 
 fn print_human(report: &CheckReport) {
@@ -676,8 +1646,9 @@ fn print_human(report: &CheckReport) {
         );
     }
     println!(
-        "scenarios: {} fixtures across {} providers",
+        "scenarios: {} route fixtures + {} continuation traces across {} providers",
         report.scenarios.fixture_count,
+        report.scenarios.trace_fixture_count,
         report.scenarios.checked_providers.len()
     );
     for error in &report.errors {
@@ -694,8 +1665,10 @@ mod tests {
     use std::path::Path;
 
     use super::{
-        SCENARIO_FIXTURES, check_scenarios, frontmatter_metadata_chars, frontmatter_value,
-        missing_markers, missing_route_target_message, route_targets, route_tokens,
+        RouteObservation, RouteSyntax, SCENARIO_FIXTURES, SkillParityAllow, check_scenarios,
+        edge_targets, frontmatter_metadata_chars, frontmatter_value, missing_markers,
+        missing_route_target_message, resolve_route_syntax, route_line_observations,
+        route_observations, route_targets, route_tokens, skill_parity_violations,
     };
 
     #[test]
@@ -729,6 +1702,372 @@ mod tests {
     }
 
     #[test]
+    fn preserves_arrow_list_bare_and_imperative_routes() {
+        let text = "## Routes\n- ready -> `deliver-pr`\n- `review-pr`: submit review\n`verify-live-ci`\n2. Invoke `build-from-proof` where implementation is missing.\n";
+        assert_eq!(
+            route_targets(text),
+            vec!["build-from-proof", "deliver-pr", "review-pr", "verify-live-ci"]
+        );
+        let syntaxes = route_observations(text)
+            .into_iter()
+            .filter(|observation| observation.syntax.is_edge())
+            .map(|observation| observation.syntax)
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            syntaxes,
+            BTreeSet::from([
+                RouteSyntax::ArrowTarget,
+                RouteSyntax::ListTarget,
+                RouteSyntax::BareTarget,
+                RouteSyntax::ImperativeInvocation,
+            ])
+        );
+    }
+
+    #[test]
+    fn preserves_labeled_route_fields_as_edges() {
+        let text = "## Routes\n- Entry flow: `deliver-pr`\n- **Next route:** `finish-pr`\n";
+        let observations = route_observations(text);
+        assert_eq!(observations.len(), 2, "both labeled route fields are observed");
+        assert_eq!(edge_targets(&observations), vec!["deliver-pr", "finish-pr"]);
+        assert!(
+            observations.iter().all(|observation| observation.syntax == RouteSyntax::LabeledTarget),
+            "both labeled route fields classify as LabeledTarget"
+        );
+    }
+
+    #[test]
+    fn labeled_route_typos_remain_load_bearing() {
+        let observations = route_line_observations("- Entry flow: `delver-pr`", 1, true);
+        assert_eq!(observations.len(), 1, "labeled route yields exactly one observation");
+        assert_eq!(edge_targets(&observations), vec!["delver-pr"]);
+        assert_eq!(
+            resolve_route_syntax(&observations[0], &BTreeSet::new()),
+            RouteSyntax::LabeledTarget,
+            "a misspelled labeled route stays an edge so it fails closed"
+        );
+    }
+
+    /// Regression test for #10201.
+    ///
+    /// When the same code span text appears more than once on a line and the
+    /// first occurrence is prose, the later occurrence that carries a
+    /// route-bearing label must still be classified as `LabeledTarget` and
+    /// must therefore appear in the route edge set.
+    ///
+    /// The historical bug: `classify_arrowless_code_span` passed the whole
+    /// line to the prefix helpers, which used `str::find` to locate the
+    /// code span. `find` always returned the first occurrence's position, so
+    /// every later occurrence was classified using the first occurrence's
+    /// context — silently turning a real executable edge into `InlineCode`.
+    #[test]
+    fn prose_occurrence_before_labeled_route_does_not_shadow_it()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // "See `delver-pr`" is prose. "Entry flow: `delver-pr`" is a labeled
+        // route reference to a non-existent skill — it must be an edge.
+        let line = "- See `delver-pr` \u{2014} Entry flow: `delver-pr`";
+        let observations = route_line_observations(line, 1, true);
+        assert_eq!(observations.len(), 2, "both occurrences of `delver-pr` are observed");
+
+        // Prose occurrence: prefix is "- See " — no route-bearing label.
+        let prose = observations
+            .iter()
+            .find(|obs| {
+                &line[obs.column_start..obs.column_end] == "delver-pr" && obs.column_start < 10
+            })
+            .ok_or("first (prose) occurrence is present")?;
+        assert_eq!(
+            prose.syntax,
+            RouteSyntax::InlineCode,
+            "prose occurrence has no route label and stays InlineCode"
+        );
+
+        // Labeled occurrence: prefix ends with "Entry flow:" — must be an edge.
+        let labeled = observations
+            .iter()
+            .find(|obs| {
+                &line[obs.column_start..obs.column_end] == "delver-pr" && obs.column_start > 10
+            })
+            .ok_or("second (labeled) occurrence is present")?;
+        assert_eq!(
+            resolve_route_syntax(labeled, &std::collections::BTreeSet::new()),
+            RouteSyntax::LabeledTarget,
+            "labeled occurrence is a route edge even when a prose occurrence precedes it"
+        );
+        assert_eq!(
+            edge_targets(&observations),
+            vec!["delver-pr"],
+            "only the labeled occurrence contributes to the edge set"
+        );
+        Ok(())
+    }
+
+    /// Regression test for #10539.
+    ///
+    /// When prose precedes an imperative verb on the same line — e.g. a
+    /// descriptive sentence followed by "— invoke `skill`" — the second code
+    /// span must be classified as `ImperativeInvocation`, not `InlineCode`.
+    ///
+    /// The historical bug: `has_imperative_route_prefix` compared the trimmed
+    /// prefix for exact equality against the imperative verb list, so any prose
+    /// before the verb caused the check to fail and the invocation to be
+    /// silently downgraded to `InlineCode`.
+    #[test]
+    fn prose_before_imperative_verb_does_not_shadow_invocation()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // "See `typo-skill`" is prose. "— invoke `typo-skill`" is an imperative
+        // invocation that must be classified as an edge even though an earlier
+        // occurrence of the same span exists on the same line.
+        let line = "- See `typo-skill` \u{2014} invoke `typo-skill`";
+        let observations = route_line_observations(line, 1, true);
+        assert_eq!(observations.len(), 2, "both occurrences of `typo-skill` are observed");
+
+        // First occurrence: prose prefix "- See " → InlineCode.
+        let prose = observations
+            .iter()
+            .find(|obs| obs.column_start < 10)
+            .ok_or("first (prose) occurrence is present")?;
+        assert_eq!(
+            prose.syntax,
+            RouteSyntax::InlineCode,
+            "prose occurrence has no imperative verb and stays InlineCode"
+        );
+
+        // Second occurrence: prefix ends with "invoke" → ImperativeInvocation.
+        let imperative = observations
+            .iter()
+            .find(|obs| obs.column_start > 10)
+            .ok_or("second (imperative) occurrence is present")?;
+        assert_eq!(
+            imperative.syntax,
+            RouteSyntax::ImperativeInvocation,
+            "the occurrence after an imperative verb is an executable edge"
+        );
+        assert_eq!(
+            edge_targets(&observations),
+            vec!["typo-skill"],
+            "only the imperative occurrence contributes to the edge set"
+        );
+        Ok(())
+    }
+
+    /// An em dash (or other punctuation) directly abutting the verb is still a
+    /// prose boundary: `"—invoke"` must classify the following span as an
+    /// imperative invocation, while `"reinvoke"` and `"foo_invoke"` must not.
+    #[test]
+    fn punctuation_boundary_counts_and_underscore_does_not() {
+        let punct = route_line_observations("- See \u{2014}invoke `deliver-pr`", 1, true);
+        assert!(
+            punct.iter().any(|obs| obs.syntax == RouteSyntax::ImperativeInvocation),
+            "em dash directly before the verb is a prose boundary"
+        );
+
+        let underscored = route_line_observations("- foo_invoke `deliver-pr`", 1, true);
+        assert!(
+            underscored.iter().all(|obs| obs.syntax == RouteSyntax::InlineCode),
+            "an identifier ending in _invoke is not an imperative verb"
+        );
+    }
+
+    /// Verify that the word-boundary guard in `has_imperative_route_prefix`
+    /// rejects a prefix whose text contains the verb as a substring of a longer
+    /// word (e.g. "reinvoke" must not match "invoke").
+    #[test]
+    fn imperative_verb_boundary_guard_prevents_substring_false_positive() {
+        // "reinvoke" ends with "invoke" in bytes but is not an imperative verb.
+        let observations = route_line_observations("- reinvoke `deliver-pr`", 1, true);
+        assert_eq!(observations.len(), 1, "the single token is observed");
+        assert!(
+            edge_targets(&observations).is_empty(),
+            "'reinvoke' contains 'invoke' but is not an imperative verb: no edge"
+        );
+        assert_eq!(
+            observations[0].syntax,
+            RouteSyntax::InlineCode,
+            "a non-imperative prefix does not create an ImperativeInvocation"
+        );
+    }
+
+    /// Verify that the word-boundary guard in `has_route_label_prefix` rejects
+    /// a label whose text appears at the end of a longer word (e.g. "xentry
+    /// flow" must not match "entry flow").
+    #[test]
+    fn word_boundary_guard_prevents_suffix_false_positive() {
+        // "Reentry flow:" — ends with "entry flow" in bytes but is not the
+        // label "entry flow" because there is no word boundary before it.
+        let observations = route_line_observations("- Reentry flow: `deliver-pr`", 1, true);
+        assert_eq!(observations.len(), 1, "the single token is observed");
+        assert!(
+            edge_targets(&observations).is_empty(),
+            "'Reentry flow' ends with 'entry flow' but is not a route-bearing label: no edge"
+        );
+        assert_eq!(
+            observations[0].syntax,
+            RouteSyntax::InlineCode,
+            "a non-route label does not create a LabeledTarget"
+        );
+    }
+
+    #[test]
+    fn trailing_inline_code_after_an_arrow_route_is_not_an_edge() {
+        let observations = route_line_observations(
+            "- ready -> `deliver-pr` (compare `candidate-sha` first)",
+            1,
+            true,
+        );
+        assert_eq!(observations.len(), 2, "both backticked tokens are observed");
+        assert_eq!(
+            edge_targets(&observations),
+            vec!["deliver-pr"],
+            "only the arrow target is an edge; a later token must not inherit the arrow"
+        );
+
+        let trailing =
+            observations.iter().find(|observation| observation.target == "candidate-sha");
+        assert!(trailing.is_some(), "the trailing token is observed");
+        let Some(trailing) = trailing else { return };
+        assert_eq!(
+            trailing.syntax,
+            RouteSyntax::InlineCode,
+            "a token after the arrow target stays inline code"
+        );
+    }
+
+    #[test]
+    fn every_target_in_an_arrow_chain_remains_an_edge() {
+        // Scoping the arrow prefix must not break a chain: each *target* still
+        // has an arrow in its own segment. The leading token is the chain's
+        // source rather than a target, and carries no arrow before it, so it
+        // stays inline code — unchanged by the scoping fix.
+        let observations =
+            route_line_observations("- `deliver-pr` -> `build-candidate` -> `finish-pr`", 1, true);
+        assert_eq!(observations.len(), 3, "every chained token is observed");
+        assert_eq!(
+            edge_targets(&observations),
+            vec!["build-candidate", "finish-pr"],
+            "both arrow targets stay edges after the first link"
+        );
+
+        let head = observations.iter().find(|observation| observation.target == "deliver-pr");
+        assert!(head.is_some(), "the chain source is observed");
+        let Some(head) = head else { return };
+        assert_eq!(
+            head.syntax,
+            RouteSyntax::InlineCode,
+            "the chain source is not itself an arrow target"
+        );
+    }
+
+    #[test]
+    fn labeled_route_outside_a_list_is_still_an_edge() {
+        let observations = route_line_observations("Entry flow: `deliver-pr`", 1, true);
+        assert_eq!(observations.len(), 1, "the labeled route yields one observation");
+        assert_eq!(
+            edge_targets(&observations),
+            vec!["deliver-pr"],
+            "a labeled route written as a paragraph is still executable"
+        );
+        assert_eq!(
+            observations[0].syntax,
+            RouteSyntax::LabeledTarget,
+            "the list marker is presentation, not route semantics"
+        );
+    }
+
+    #[test]
+    fn unrelated_labeled_code_remains_non_executable() {
+        let observations = route_line_observations("- Cache key: `deliver-pr`", 1, true);
+        assert_eq!(observations.len(), 1, "the labeled code yields one observation");
+        assert!(
+            edge_targets(&observations).is_empty(),
+            "a label outside ROUTE_BEARING_LABELS creates no edge"
+        );
+        assert_eq!(
+            observations[0].syntax,
+            RouteSyntax::InlineCode,
+            "an unrelated label leaves the token as inline code"
+        );
+    }
+
+    #[test]
+    fn existing_skill_name_in_prose_is_a_prose_mention() {
+        let text =
+            "## Procedure\nTake issue #123 through `deliver-pr` after the candidate is coherent.\n";
+        assert!(route_targets(text).is_empty(), "prose creates no route target");
+        let observations = route_observations(text);
+        assert_eq!(observations.len(), 1, "the prose token is observed once");
+        assert_eq!(observations[0].target, "deliver-pr");
+        assert_eq!(observations[0].syntax, RouteSyntax::InlineCode);
+        assert_eq!(
+            resolve_route_syntax(&observations[0], &BTreeSet::from(["deliver-pr".to_string()])),
+            RouteSyntax::ProseMention,
+            "a real skill named in prose resolves to a prose mention"
+        );
+    }
+
+    #[test]
+    fn unknown_inline_code_is_a_code_identifier() {
+        let text = "## Procedure\nCompare `candidate_sha` before selecting a route.\n";
+        let observations = route_observations(text);
+        assert_eq!(observations.len(), 1, "the inline code token is observed once");
+        assert_eq!(observations[0].target, "candidate_sha");
+        assert_eq!(observations[0].syntax, RouteSyntax::InlineCode);
+        assert_eq!(
+            resolve_route_syntax(&observations[0], &BTreeSet::from(["deliver-pr".to_string()])),
+            RouteSyntax::CodeIdentifier,
+            "a token naming no provider-local skill resolves to a code identifier"
+        );
+        assert!(
+            !resolve_route_syntax(&observations[0], &BTreeSet::new()).is_edge(),
+            "a code identifier is never an executable edge"
+        );
+    }
+
+    #[test]
+    fn backtick_formatting_cannot_mutate_prose_into_a_route() {
+        let plain = "## Procedure\nTake issue #123 through deliver-pr after review.\n";
+        let formatted = "## Procedure\nTake issue #123 through `deliver-pr` after review.\n";
+        assert_eq!(
+            route_targets(plain),
+            route_targets(formatted),
+            "backticks alone must not change the route set"
+        );
+        assert!(route_targets(formatted).is_empty(), "neither form creates a route");
+    }
+
+    #[test]
+    fn explicit_sigil_remains_a_route_inside_prose() {
+        assert_eq!(route_tokens("Invoke `$deliver-pr` after review.", true), vec!["deliver-pr"]);
+    }
+
+    #[test]
+    fn unquoted_shell_or_prose_variables_are_not_routes() {
+        assert!(route_tokens("Export $path before continuing.", true).is_empty());
+        assert!(route_tokens("Read $status and report it.", true).is_empty());
+    }
+
+    #[test]
+    fn near_miss_explicit_route_remains_load_bearing() {
+        let observations = route_line_observations("- ready -> `delver-pr`", 1, true);
+        assert_eq!(edge_targets(&observations), vec!["delver-pr"]);
+        assert_eq!(
+            resolve_route_syntax(&observations[0], &BTreeSet::new()),
+            RouteSyntax::ArrowTarget
+        );
+    }
+
+    #[test]
+    fn route_observations_retain_source_line_and_indentation_range() {
+        let line = "    - ready -> `deliver-pr`";
+        let observations = route_line_observations(line, 9, true);
+        assert_eq!(observations.len(), 1);
+        let observation = &observations[0];
+        assert_eq!(observation.line, 9);
+        assert_eq!(observation.syntax, RouteSyntax::ArrowTarget);
+        assert_eq!(&line[observation.column_start..observation.column_end], "deliver-pr");
+    }
+
+    #[test]
     fn ignores_uppercase_status_tokens() {
         assert_eq!(
             route_tokens("- `REVIEW_CURRENT` -> `$verify-live-ci`", true),
@@ -738,25 +2077,122 @@ mod tests {
 
     #[test]
     fn ignores_metasyntactic_placeholders_in_backticks() {
-        // A `$skill` placeholder in prose under a route-bearing heading must
-        // not be treated as a route target — even inside backticks (#5930).
         assert_eq!(
             route_tokens("which `$skill` to consume. Do not ask agents.", true),
             Vec::<String>::new()
         );
-        // The real skill names are still extracted.
         assert_eq!(route_tokens("- `$deliver-pr` then `$skill`", true), vec!["deliver-pr"]);
+        assert!(
+            route_observations("## Routes\n- `$skill`\n")
+                .iter()
+                .any(|observation| observation.syntax == RouteSyntax::Placeholder)
+        );
     }
 
     #[test]
-    fn missing_route_diagnostic_explains_backticked_prose() {
+    fn missing_route_diagnostic_explains_source_syntax() {
+        let observation = RouteObservation {
+            target: "clear".into(),
+            line: 12,
+            column_start: 7,
+            column_end: 12,
+            syntax: RouteSyntax::ArrowTarget,
+        };
         let message = missing_route_target_message(
             Path::new(".agents/skills/review-tests/SKILL.md"),
             "review-tests",
-            "clear",
+            &observation,
         );
+        assert!(message.contains("SKILL.md:12:8"));
         assert!(message.contains("missing provider-local skill 'clear'"));
-        assert!(message.contains("if this is prose or a code identifier, remove its backticks"));
+        assert!(message.contains("ArrowTarget"));
+    }
+
+    fn parity_names(pairs: &[(&str, &[&str])]) -> BTreeMap<String, BTreeSet<String>> {
+        pairs
+            .iter()
+            .map(|(provider, skills)| {
+                ((*provider).to_string(), skills.iter().map(|s| (*s).to_string()).collect())
+            })
+            .collect()
+    }
+
+    fn parity_allow(skill: &str, root: &str) -> SkillParityAllow {
+        SkillParityAllow {
+            skill: skill.to_string(),
+            root: root.to_string(),
+            reason: "test fixture".to_string(),
+        }
+    }
+
+    #[test]
+    fn skill_parity_flags_unlisted_drift() {
+        let names = parity_names(&[("codex", &["a", "b"]), ("claude", &["a", "b", "c"])]);
+        let violations = skill_parity_violations(&names, &[], None);
+        assert_eq!(violations.len(), 1);
+        assert!(violations[0].contains("skill 'c' exists only in .claude/skills"));
+    }
+
+    #[test]
+    fn skill_parity_accepts_allowlisted_drift() {
+        let names = parity_names(&[("codex", &["a", "b"]), ("claude", &["a", "b", "c"])]);
+        let allow = vec![parity_allow("c", ".claude/skills")];
+        assert!(skill_parity_violations(&names, &allow, None).is_empty());
+    }
+
+    #[test]
+    fn skill_parity_rejects_allowlist_entry_for_the_wrong_root() {
+        let names = parity_names(&[("codex", &["a", "b"]), ("claude", &["a", "b", "c"])]);
+        let allow = vec![parity_allow("c", ".agents/skills")];
+        let violations = skill_parity_violations(&names, &allow, None);
+        assert_eq!(violations.len(), 1);
+        assert!(violations[0].contains(".claude/skills"));
+        assert!(violations[0].contains("names root '.agents/skills'"));
+    }
+
+    #[test]
+    fn skill_parity_rejects_duplicate_entries_even_with_one_correct() {
+        let names = parity_names(&[("codex", &["a", "b"]), ("claude", &["a", "b", "c"])]);
+        let allow = vec![parity_allow("c", ".claude/skills"), parity_allow("c", ".agents/skills")];
+        let violations = skill_parity_violations(&names, &allow, None);
+        // The duplicate record is rejected, and the wrong-root entry is
+        // independently rejected — one correct entry cannot launder the other.
+        assert_eq!(violations.len(), 2);
+        assert!(violations.iter().any(|v| v.contains("2 entries for skill 'c'")));
+        assert!(violations.iter().any(|v| v.contains("names root '.agents/skills'")));
+    }
+
+    #[test]
+    fn skill_parity_selector_filters_violations_to_the_selected_skill() {
+        // A focused check of an unallowlisted single-provider skill fails...
+        let names = parity_names(&[("codex", &["a", "b"]), ("claude", &["a", "b", "c"])]);
+        let violations = skill_parity_violations(&names, &[], Some("c"));
+        assert_eq!(violations.len(), 1);
+        assert!(violations[0].contains("skill 'c' exists only in .claude/skills"));
+        // ...while a focused check of a fully parity-clean skill passes even
+        // when unrelated drift exists.
+        let violations = skill_parity_violations(&names, &[], Some("a"));
+        assert!(violations.is_empty());
+    }
+
+    #[test]
+    fn skill_parity_ratchets_stale_and_phantom_allowlist_entries() {
+        let everywhere = parity_names(&[("codex", &["a", "c"]), ("claude", &["a", "c"])]);
+        let stale = vec![parity_allow("c", ".claude/skills")];
+        let violations = skill_parity_violations(&everywhere, &stale, None);
+        assert_eq!(violations.len(), 1);
+        assert!(violations[0].contains("stale"));
+
+        let phantom = vec![parity_allow("ghost", ".claude/skills")];
+        let violations = skill_parity_violations(&everywhere, &phantom, None);
+        assert_eq!(violations.len(), 1);
+        assert!(violations[0].contains("present in no provider root"));
+    }
+
+    #[test]
+    fn skill_parity_passes_full_parity_with_empty_allowlist() {
+        let names = parity_names(&[("codex", &["a", "b"]), ("claude", &["a", "b"])]);
+        assert!(skill_parity_violations(&names, &[], None).is_empty());
     }
 
     #[test]
@@ -833,11 +2269,12 @@ mod tests {
     #[test]
     fn scenario_output_ignores_unrelated_inventory_errors() {
         let output = super::scenario_output(super::CheckReport {
-            schema: "agent-flow-check.v1",
+            schema: "agent-flow-check.v2",
             result: "FAIL",
             providers: BTreeMap::new(),
             scenarios: super::ScenarioReport {
                 fixture_count: SCENARIO_FIXTURES.len(),
+                trace_fixture_count: super::SELF_CORRECTION_TRACES.len(),
                 checked_providers: vec!["codex".to_string()],
                 errors: Vec::new(),
             },
@@ -846,5 +2283,444 @@ mod tests {
         });
         assert_eq!(output.result, "PASS");
         assert!(output.errors.is_empty());
+    }
+
+    #[test]
+    fn continuation_traces_accept_authorized_routes() -> anyhow::Result<()> {
+        anyhow::ensure!(
+            super::check_continuation_traces().is_empty(),
+            "accepted incident traces failed"
+        );
+        Ok(())
+    }
+
+    fn trace_errors(
+        constraint: super::ClaimConstraint,
+        events: &'static [super::TraceEvent],
+    ) -> Vec<String> {
+        super::validate_continuation_trace(&super::ContinuationTrace {
+            name: "control",
+            incident: "self-correction recurrence",
+            claim_constraint: constraint,
+            events,
+        })
+    }
+
+    #[test]
+    fn continuation_rejects_each_incomplete_or_misordered_repair() -> anyhow::Result<()> {
+        use super::{ApprovalBasis as A, ClaimConstraint as C, TraceEvent as E};
+        let cases: &[(&[E], &str)] = &[
+            (&[], "no observed events"),
+            (&[E::ApprovalRequested { basis: A::SelfAuthoredMistake }], "approval"),
+            (&[E::RepairApplied { in_claim: true, reversible: true }, E::Disclosed], "proof"),
+            (
+                &[
+                    E::RepairApplied { in_claim: true, reversible: true },
+                    E::ProofRerun { affected: true, passed: true },
+                ],
+                "disclosure",
+            ),
+            (
+                &[
+                    E::ProofRerun { affected: true, passed: true },
+                    E::RepairApplied { in_claim: true, reversible: true },
+                    E::Disclosed,
+                ],
+                "out of order",
+            ),
+            (
+                &[
+                    E::Disclosed,
+                    E::RepairApplied { in_claim: true, reversible: true },
+                    E::ProofRerun { affected: true, passed: true },
+                ],
+                "out of order",
+            ),
+            (
+                &[
+                    E::RepairApplied { in_claim: false, reversible: true },
+                    E::ProofRerun { affected: true, passed: true },
+                    E::Disclosed,
+                ],
+                "outside",
+            ),
+            (
+                &[
+                    E::RepairApplied { in_claim: true, reversible: false },
+                    E::ProofRerun { affected: true, passed: true },
+                    E::Disclosed,
+                ],
+                "outside",
+            ),
+            (
+                &[
+                    E::RepairApplied { in_claim: true, reversible: true },
+                    E::ProofRerun { affected: false, passed: true },
+                    E::Disclosed,
+                ],
+                "affected proof",
+            ),
+        ];
+        for (events, expected) in cases {
+            let errors = trace_errors(C::InAdmittedCandidate, events);
+            anyhow::ensure!(
+                errors.iter().any(|e| e.contains(expected)),
+                "missing {expected}: {errors:?}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn failed_proof_still_permits_honest_disclosure() -> anyhow::Result<()> {
+        use super::{ClaimConstraint as C, TraceEvent as E};
+        let errors = trace_errors(
+            C::InAdmittedCandidate,
+            &[
+                E::RepairApplied { in_claim: true, reversible: true },
+                E::ProofRerun { affected: true, passed: false },
+                E::Disclosed,
+            ],
+        );
+        anyhow::ensure!(errors.is_empty(), "failed proof disclosure was rejected: {errors:?}");
+        Ok(())
+    }
+
+    #[test]
+    fn protected_claims_reject_even_well_ordered_repairs() -> anyhow::Result<()> {
+        use super::{ClaimConstraint as C, TraceEvent as E};
+        for constraint in [
+            C::ActiveWriterOwnership,
+            C::HigherPrecedenceAffectedClaim,
+            C::ProtectedExternalAction,
+            C::NonDerivableDecision,
+        ] {
+            let errors = trace_errors(
+                constraint,
+                &[
+                    E::RepairApplied { in_claim: true, reversible: true },
+                    E::ProofRerun { affected: true, passed: true },
+                    E::Disclosed,
+                ],
+            );
+            anyhow::ensure!(
+                errors.iter().any(|e| e.contains("requires a hold or decision")),
+                "protected repair accepted: {constraint:?}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn candidate_wait_needs_advancement_only_when_other_work_exists() -> anyhow::Result<()> {
+        use super::{ClaimConstraint as C, HoldScope as H, TraceEvent as E};
+        let errors = trace_errors(
+            C::PendingCandidateIntegration,
+            &[E::CandidateWait { wake_event: "run-34224617469-completed", scope: H::Candidate }],
+        );
+        anyhow::ensure!(errors.is_empty(), "legitimate sole-claim wait rejected: {errors:?}");
+        for (events, expected) in [
+            (
+                &[
+                    E::CandidateWait { wake_event: "run-completed", scope: H::Candidate },
+                    E::OtherClaimAvailable,
+                ][..],
+                "goal stop",
+            ),
+            (&[E::CandidateWait { wake_event: "", scope: H::Candidate }][..], "wake event"),
+            (
+                &[
+                    E::CandidateWait { wake_event: "run-completed", scope: H::Candidate },
+                    E::Polled { state_changed: false },
+                ][..],
+                "unchanged polling",
+            ),
+            (
+                &[
+                    E::CandidateWait { wake_event: "run-completed", scope: H::Candidate },
+                    E::AdvancedOtherClaim,
+                ][..],
+                "without observed availability",
+            ),
+        ] {
+            let errors = trace_errors(C::PendingCandidateIntegration, events);
+            anyhow::ensure!(
+                errors.iter().any(|e| e.contains(expected)),
+                "missing {expected}: {errors:?}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn continuation_cannot_advance_before_wait_or_keep_running_after_advance() -> anyhow::Result<()>
+    {
+        use super::{ClaimConstraint as C, HoldScope as H, TraceEvent as E};
+        for (events, expected) in [
+            (
+                &[
+                    E::OtherClaimAvailable,
+                    E::AdvancedOtherClaim,
+                    E::CandidateWait { wake_event: "run-completed", scope: H::Candidate },
+                ][..],
+                "before recording",
+            ),
+            (
+                &[
+                    E::CandidateWait { wake_event: "run-completed", scope: H::Candidate },
+                    E::OtherClaimAvailable,
+                    E::AdvancedOtherClaim,
+                    E::AdvancedOtherClaim,
+                ][..],
+                "events after",
+            ),
+            (
+                &[
+                    E::CandidateWait { wake_event: "run-completed", scope: H::Candidate },
+                    E::OtherClaimAvailable,
+                    E::AdvancedOtherClaim,
+                    E::Polled { state_changed: true },
+                ][..],
+                "events after",
+            ),
+        ] {
+            let errors = trace_errors(C::PendingCandidateIntegration, events);
+            anyhow::ensure!(
+                errors.iter().any(|e| e.contains(expected)),
+                "missing {expected}: {errors:?}"
+            );
+        }
+        let errors = trace_errors(
+            C::PendingCandidateIntegration,
+            &[
+                E::CandidateWait { wake_event: "run-completed", scope: H::Candidate },
+                E::CandidateWait { wake_event: "run-completed", scope: H::Candidate },
+            ],
+        );
+        anyhow::ensure!(
+            errors.iter().any(|e| e.contains("repeats its candidate wait")),
+            "duplicate wait accepted"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn approval_requires_its_own_exact_basis() -> anyhow::Result<()> {
+        use super::{ApprovalBasis as A, ClaimConstraint as C, TraceEvent as E};
+        let errors = trace_errors(
+            C::ProtectedExternalAction,
+            &[
+                E::ApprovalRequested { basis: A::ProtectedTransaction },
+                E::ApprovalRequested { basis: A::MaterialDecision },
+            ],
+        );
+        anyhow::ensure!(
+            errors.iter().any(|e| e.contains("approval basis")),
+            "one valid approval masked a wrong basis"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn known_bad_wording_survives_case_and_line_wrap_changes() -> anyhow::Result<()> {
+        for text in [
+            "Tell the user rather than going back and correcting your bug.",
+            "tell the user rather than correct the bug and let them decide",
+            "Tell the user rather than going\nback and correcting your bug.",
+            "tell the **user** rather than going back and correcting your bug",
+            "tell the *user* rather than going back and correcting your bug",
+            "tell the __user__ rather than going back and correcting your bug",
+            "tell the _user_ rather than going back and correcting your bug",
+            "tell the [user](https://example.invalid) rather than going back and correcting your bug",
+            "tell the [**user**](https://example.invalid) rather than going back and correcting your bug",
+            "tell the `user` rather than going back and correcting your bug",
+            "tell the **user** rather than going\r\nback and correcting your bug",
+        ] {
+            anyhow::ensure!(
+                super::contains_known_bad_self_correction_wording(text)?,
+                "known regression was missed: {text:?}"
+            );
+        }
+        anyhow::ensure!(
+            !super::contains_known_bad_self_correction_wording(
+                "Correct the reversible defect, rerun proof, and disclose the correction."
+            )?,
+            "canonical guidance rejected"
+        );
+        anyhow::ensure!(
+            !super::contains_known_bad_self_correction_wording(
+                "tell the\n\nuser rather than going back and correcting your bug"
+            )?,
+            "separate paragraphs were incorrectly joined"
+        );
+        for text in [
+            "tell the *user rather than going back and correcting your bug",
+            "tell the u_ser rather than going back and correcting your bug",
+            "tell the ~~user~~ rather than going back and correcting your bug",
+            "tell the **user* rather than going back and correcting your bug * elsewhere",
+            "tell the\r\n\r\nuser rather than going back and correcting your bug",
+            "tell the\n  \nuser rather than going back and correcting your bug",
+        ] {
+            anyhow::ensure!(
+                !super::contains_known_bad_self_correction_wording(text)?,
+                "unsupported Markdown manufactured a known-bad match: {text:?}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn canonical_self_correction_clauses_are_scoped_to_named_section() -> anyhow::Result<()> {
+        let source = include_str!("../../../docs/agents/DEVELOPMENT_METHOD.md");
+        anyhow::ensure!(
+            super::canonical_self_correction_errors(source).is_empty(),
+            "actual canonical guidance rejected"
+        );
+
+        let heading = "## Self-authored correction and disclosure\n";
+        let body = super::CANONICAL_SELF_CORRECTION_CLAUSES
+            .iter()
+            .map(|(_, clause)| *clause)
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        for (clause_name, clause) in super::CANONICAL_SELF_CORRECTION_CLAUSES {
+            let replacement = format!("{heading}{body}");
+            let removed = replacement.replacen(clause, "", 1);
+            let errors = super::canonical_self_correction_errors(&removed);
+            anyhow::ensure!(
+                errors.iter().any(|error| error
+                    == &format!("canonical self-correction section missing {clause_name} clause")),
+                "deleted {clause_name} clause did not trigger its production finding"
+            );
+        }
+
+        let masked = format!(
+            "{heading}Approval must always be requested before correcting an agent-authored defect.\n\n## Elsewhere\n{body}"
+        );
+        anyhow::ensure!(
+            super::canonical_self_correction_errors(&masked).iter().any(|error|
+                error == "canonical self-correction section missing correction clause"
+            ),
+            "body from another section masked missing canonical correction clause"
+        );
+        for (invalid, expected) in [
+            (body.clone(), "missing canonical self-correction section body"),
+            (format!("{heading}\n## Next"), "canonical self-correction section body is empty"),
+            (
+                format!("{heading}{body}\n\n{heading}{body}"),
+                "canonical self-correction section appears more than once",
+            ),
+        ] {
+            anyhow::ensure!(
+                super::canonical_self_correction_errors(&invalid)
+                    .iter()
+                    .any(|error| error == expected),
+                "malformed canonical section did not trigger {expected}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn authority_binding_requires_one_current_canonical_method() -> anyhow::Result<()> {
+        let valid = "current_method = \"docs/agents/DEVELOPMENT_METHOD.md\"\n\n[[documents]]\npath = \"docs/agents/DEVELOPMENT_METHOD.md\"\nstatus = \"current\"\n";
+        anyhow::ensure!(
+            super::authority_binding_errors_from_text(valid).is_empty(),
+            "valid authority binding rejected"
+        );
+        for (text, expected) in [
+            (valid.replacen("DEVELOPMENT_METHOD.md", "OLD_METHOD.md", 1), "current_method"),
+            (valid.replace("status = \"current\"", "status = \"historical\""), "status 'current'"),
+            (valid.replace("current_method =", "current_method = ["), "malformed"),
+            (
+                format!(
+                    "current_method = \"{}\"\ndocuments = []\n",
+                    super::SELF_CORRECTION_DOCUMENT
+                ),
+                "exactly one current",
+            ),
+            (String::new(), "malformed"),
+            (
+                format!(
+                    "{valid}\n[[documents]]\npath = \"docs/agents/DEVELOPMENT_METHOD.md\"\nstatus = \"current\"\n"
+                ),
+                "exactly one current",
+            ),
+        ] {
+            anyhow::ensure!(
+                super::authority_binding_errors_from_text(&text)
+                    .iter()
+                    .any(|error| error.contains(expected)),
+                "authority negative did not trigger {expected}: {text}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn focused_guidance_checks_keep_local_and_shared_boundaries() -> anyhow::Result<()> {
+        let fixture = tempfile::tempdir()?;
+        let root = fixture.path();
+        std::fs::create_dir_all(root.join("docs/agents"))?;
+        let canonical = include_str!("../../../docs/agents/DEVELOPMENT_METHOD.md");
+        let registry = include_str!("../../../docs/agents/authority_status.toml");
+        std::fs::write(root.join(super::SELF_CORRECTION_DOCUMENT), canonical)?;
+        std::fs::write(root.join("docs/agents/authority_status.toml"), registry)?;
+        for front_door in ["AGENTS.md", "CLAUDE.md"] {
+            std::fs::write(root.join(front_door), super::SELF_CORRECTION_REFERENCE)?;
+        }
+        for provider in [".agents/skills", ".claude/skills"] {
+            for skill in super::SELF_CORRECTION_SKILLS {
+                let directory = root.join(provider).join(skill);
+                std::fs::create_dir_all(&directory)?;
+                std::fs::write(directory.join("SKILL.md"), super::SELF_CORRECTION_REFERENCE)?;
+            }
+        }
+        anyhow::ensure!(
+            super::check_self_correction_guidance(root, None).is_empty(),
+            "valid fixture rejected"
+        );
+        let unrelated = ".agents/skills/build-candidate/SKILL.md";
+        std::fs::write(
+            root.join(unrelated),
+            format!(
+                "{}\n\ntell the user rather than going back and correcting your bug",
+                super::SELF_CORRECTION_REFERENCE
+            ),
+        )?;
+        anyhow::ensure!(
+            super::check_self_correction_guidance(root, Some("deliver-pr")).is_empty(),
+            "unrelated skill contaminated the focused guidance check"
+        );
+        for selected in [None, Some("build-candidate")] {
+            anyhow::ensure!(
+                super::check_self_correction_guidance(root, selected)
+                    .iter()
+                    .any(|error| error.contains(unrelated)),
+                "selected/full check missed its bad guidance"
+            );
+        }
+        std::fs::write(
+            root.join(super::SELF_CORRECTION_DOCUMENT),
+            "## Self-authored correction and disclosure\nApproval is always required.\n",
+        )?;
+        anyhow::ensure!(
+            super::check_self_correction_guidance(root, Some("deliver-pr"))
+                .iter()
+                .any(|error| error.contains("missing correction clause")),
+            "focused check bypassed shared canonical obligations"
+        );
+        std::fs::write(root.join(super::SELF_CORRECTION_DOCUMENT), canonical)?;
+        std::fs::write(
+            root.join("docs/agents/authority_status.toml"),
+            registry.replacen("current_method =", "previous_method =", 1),
+        )?;
+        anyhow::ensure!(
+            super::check_self_correction_guidance(root, Some("deliver-pr"))
+                .iter()
+                .any(|error| error.contains("authority binding")),
+            "focused check bypassed shared authority binding"
+        );
+        Ok(())
     }
 }

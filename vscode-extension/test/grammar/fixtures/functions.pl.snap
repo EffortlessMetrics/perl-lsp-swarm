@@ -64,10 +64,8 @@
 #       ^ source.perl
 #        ^ source.perl keyword.operator.assignment.perl
 #         ^ source.perl
-#          ^^ source.perl keyword.operator.comparison.perl
-#            ^ source.perl
-#             ^^ source.perl keyword.operator.comparison.perl
-#               ^^ source.perl
+#          ^^^^^^ source.perl support.function.builtin.perl
+#                ^ source.perl
 #                 ^^^^^^^ source.perl variable.other.scalar.perl
 #                        ^^^ source.perl
 >push @stack, $item;

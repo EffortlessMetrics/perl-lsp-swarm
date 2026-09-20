@@ -2,18 +2,18 @@ impl<'a> Parser<'a> {
     /// Parse quote operator (q, qq, qw, qr, qx)
     fn parse_quote_operator(&mut self) -> ParseResult<Node> {
         let op_token = self.consume_token()?; // consume q/qq/qw/qr/qx
-        let start = op_token.start;
+        let start = op_token.start();
         let op = op_token.text.as_ref();
 
         // Get the delimiter - it might be a bracket token or other punctuation
         let delim_token = self.consume_token()?;
-        let delim_char = match delim_token.kind {
+        let delim_char = match delim_token.kind() {
             TokenKind::LeftBrace => '{',
             TokenKind::LeftBracket => '[',
             TokenKind::LeftParen => '(',
             TokenKind::Less => '<',
             _ => delim_token.text.chars().next().ok_or_else(|| {
-                ParseError::syntax("Expected delimiter after quote operator", delim_token.start)
+                ParseError::syntax("Expected delimiter after quote operator", delim_token.start())
             })?,
         };
 
@@ -32,7 +32,7 @@ impl<'a> Parser<'a> {
 
         // Collect content until closing delimiter
         let mut content = String::new();
-        
+
         // For regex operators (m, s), we need to preserve the exact pattern
         let preserve_exact_content = matches!(op, "m" | "s" | "qr");
 
@@ -41,15 +41,15 @@ impl<'a> Parser<'a> {
         if matches!(delim_char, '{' | '[' | '(' | '<') {
             let mut depth = 1;
             let max_depth = 50; // Limit nesting depth to prevent timeouts
-            
+
             while depth > 0 && !self.tokens.is_eof() {
                 let token_kind = self.peek_kind();
-                
+
                 // Check if we hit recursion limit
                 if depth > max_depth {
                     return Err(ParseError::syntax(
-                        format!("Quote delimiter nesting too deep (exceeded {})", max_depth), 
-                        self.current_position()
+                        format!("Quote delimiter nesting too deep (exceeded {})", max_depth),
+                        self.current_position(),
                     ));
                 }
 
@@ -115,7 +115,8 @@ impl<'a> Parser<'a> {
             // Preserve the established qw diagnostic while naming other quote-like operators.
             if depth > 0 {
                 let message = if op == "qw" {
-                    "Unclosed qw() delimiter: missing closing delimiter before end of file".to_string()
+                    "Unclosed qw() delimiter: missing closing delimiter before end of file"
+                        .to_string()
                 } else {
                     format!(
                         "Unclosed {}{}{} delimiter: missing closing delimiter before end of file",
@@ -148,7 +149,10 @@ impl<'a> Parser<'a> {
                     let token = self.consume_token()?;
                     if token.text.contains(close_delim) {
                         let pos = token.text.find(close_delim).ok_or_else(|| {
-                            ParseError::syntax("Closing delimiter not found in token", token.start)
+                            ParseError::syntax(
+                                "Closing delimiter not found in token",
+                                token.start(),
+                            )
                         })?;
                         content.push_str(&token.text[..pos]);
                         break;
@@ -167,12 +171,15 @@ impl<'a> Parser<'a> {
         let mut modifiers = String::new();
         if op == "qr" {
             while let Ok(token) = self.tokens.peek() {
-                if token.kind == TokenKind::Identifier && token.text.len() == 1 {
+                if token.kind() == TokenKind::Identifier && token.text.len() == 1 {
                     let ch = token.text.chars().next().ok_or_else(|| {
-                        ParseError::syntax("Empty identifier token", token.start)
+                        ParseError::syntax("Empty identifier token", token.start())
                     })?;
                     if ch.is_ascii_alphabetic()
-                        && matches!(ch, 'i' | 'm' | 's' | 'x' | 'p' | 'n' | 'o' | 'a' | 'd' | 'l' | 'u')
+                        && matches!(
+                            ch,
+                            'i' | 'm' | 's' | 'x' | 'p' | 'n' | 'o' | 'a' | 'd' | 'l' | 'u'
+                        )
                     {
                         modifiers.push(ch);
                         self.tokens.next()?;
@@ -247,15 +254,25 @@ impl<'a> Parser<'a> {
 
                 let mut modifiers = String::new();
                 while let Ok(token) = self.tokens.peek() {
-                    if token.kind == TokenKind::Identifier && token.text.len() == 1 {
+                    if token.kind() == TokenKind::Identifier && token.text.len() == 1 {
                         let ch = token.text.chars().next().ok_or_else(|| {
-                            ParseError::syntax("Empty identifier token", token.start)
+                            ParseError::syntax("Empty identifier token", token.start())
                         })?;
                         if ch.is_ascii_alphabetic()
                             && matches!(
                                 ch,
-                                'i' | 'm' | 's' | 'x' | 'p' | 'n' | 'c' | 'g' | 'o' | 'a' | 'd'
-                                    | 'l' | 'u'
+                                'i' | 'm'
+                                    | 's'
+                                    | 'x'
+                                    | 'p'
+                                    | 'n'
+                                    | 'c'
+                                    | 'g'
+                                    | 'o'
+                                    | 'a'
+                                    | 'd'
+                                    | 'l'
+                                    | 'u'
                             )
                         {
                             modifiers.push(ch);
@@ -279,15 +296,13 @@ impl<'a> Parser<'a> {
                 ))
             }
             "s" => {
-                let replacement = self.parse_quote_operator_substitution_replacement(
-                    opening_delim,
-                    closing_delim,
-                )?;
+                let replacement = self
+                    .parse_quote_operator_substitution_replacement(opening_delim, closing_delim)?;
                 let modifiers = self.parse_quote_operator_substitution_modifiers()?;
                 // The `e`/`ee` modifier evaluates the replacement as Perl code — equivalent to
                 // eval — so it counts as embedded code regardless of the pattern body (#975).
-                let has_embedded_code = self.analyze_regex_body_for_ast(&content, start)?
-                    || modifiers.contains('e');
+                let has_embedded_code =
+                    self.analyze_regex_body_for_ast(&content, start)? || modifiers.contains('e');
                 end = self.previous_position();
 
                 Ok(Node::new(
@@ -329,9 +344,9 @@ impl<'a> Parser<'a> {
 
         while !self.tokens.is_eof() {
             let token = self.consume_token()?;
-            if token.kind != TokenKind::String && token.text.contains(close_delim) {
+            if token.kind() != TokenKind::String && token.text.contains(close_delim) {
                 let pos = token.text.find(close_delim).ok_or_else(|| {
-                    ParseError::syntax("Closing delimiter not found in token", token.start)
+                    ParseError::syntax("Closing delimiter not found in token", token.start())
                 })?;
                 content.push_str(&token.text[..pos]);
                 break;
@@ -346,24 +361,42 @@ impl<'a> Parser<'a> {
         let mut modifiers = String::new();
 
         while let Ok(token) = self.tokens.peek() {
-            if token.kind != TokenKind::Identifier || token.text.len() != 1 {
+            if token.kind() != TokenKind::Identifier || token.text.len() != 1 {
                 break;
             }
 
-            let ch = token.text.chars().next().ok_or_else(|| {
-                ParseError::syntax("Empty identifier token", token.start)
-            })?;
+            let ch = token
+                .text
+                .chars()
+                .next()
+                .ok_or_else(|| ParseError::syntax("Empty identifier token", token.start()))?;
             if !ch.is_ascii_alphabetic() {
                 break;
             }
-            if !matches!(ch, 'g' | 'i' | 'm' | 's' | 'x' | 'o' | 'e' | 'r' | 'p' | 'n' | 'a' | 'd' | 'l' | 'u' | 'c') {
+            if !matches!(
+                ch,
+                'g' | 'i'
+                    | 'm'
+                    | 's'
+                    | 'x'
+                    | 'o'
+                    | 'e'
+                    | 'r'
+                    | 'p'
+                    | 'n'
+                    | 'a'
+                    | 'd'
+                    | 'l'
+                    | 'u'
+                    | 'c'
+            ) {
                 return Err(ParseError::syntax(
                     format!(
                         "Invalid substitution modifier '{}'. Valid modifiers are: \
                          g, i, m, s, x, o, e, r, p, n, a, d, l, u, c",
                         ch
                     ),
-                    token.start,
+                    token.start(),
                 ));
             }
 
@@ -395,7 +428,7 @@ impl<'a> Parser<'a> {
 
                 // Stop if we see a keyword that starts a new statement
                 if matches!(
-                    peek.kind,
+                    peek.kind(),
                     TokenKind::Use
                         | TokenKind::My
                         | TokenKind::Our
@@ -410,11 +443,11 @@ impl<'a> Parser<'a> {
                 }
 
                 // Also stop on semicolon (though we likely won't see it after #)
-                if matches!(peek.kind, TokenKind::Semicolon) {
+                if matches!(peek.kind(), TokenKind::Semicolon) {
                     break;
                 }
 
-                match peek.kind {
+                match peek.kind() {
                     TokenKind::Identifier | TokenKind::Number => {
                         // Check if this is a keyword that likely isn't part of the qw list
                         if matches!(peek.text.as_ref(), "use" | "constant" | "my" | "our" | "sub") {
@@ -478,7 +511,7 @@ impl<'a> Parser<'a> {
     fn parse_qw_list(&mut self) -> ParseResult<Vec<Node>> {
         // Handle different delimiters for qw
         let delimiter_token = self.tokens.peek()?.clone();
-        let close_delim = match delimiter_token.kind {
+        let close_delim = match delimiter_token.kind() {
             TokenKind::LeftParen => {
                 self.consume_token()?;
                 TokenKind::RightParen
@@ -515,7 +548,7 @@ impl<'a> Parser<'a> {
                         value: format!("'{}'", token.text), // qw produces single-quoted strings
                         interpolated: false,
                     },
-                    SourceLocation { start: token.start, end: token.end },
+                    SourceLocation { start: token.start(), end: token.end() },
                 ));
             } else if self.peek_kind() == Some(TokenKind::String) {
                 // Also allow string tokens in qw lists
@@ -525,7 +558,7 @@ impl<'a> Parser<'a> {
                         value: format!("'{}'", token.text.trim_matches(|c| c == '"' || c == '\'')),
                         interpolated: false,
                     },
-                    SourceLocation { start: token.start, end: token.end },
+                    SourceLocation { start: token.start(), end: token.end() },
                 ));
             } else {
                 // Skip other tokens (might be separators or special chars)
@@ -536,7 +569,6 @@ impl<'a> Parser<'a> {
         self.expect(close_delim)?;
         Ok(words)
     }
-
 }
 
 #[cfg(test)]
@@ -571,10 +603,25 @@ mod modifier_tests {
     }
 
     #[test]
-    fn qr_with_global_modifier_g() {
-        // /g should be accepted for qr// (and m//).
-        let result = parse("qr/pattern/g");
-        assert!(result.diagnostics.is_empty(), "expected no errors, got: {:?}", result.diagnostics);
+    fn qr_rejects_match_loop_modifier_g_while_m_accepts_it() {
+        // `qr//` compiles a pattern without running a match loop, so Perl
+        // rejects `g` there ("Unknown regexp modifier") while `m//` accepts
+        // it (#14980).
+        let qr_result = parse("qr/pattern/g");
+        let diagnostic_messages: Vec<String> =
+            qr_result.diagnostics.iter().map(|d| d.to_string()).collect();
+        assert!(
+            diagnostic_messages.iter().any(|m| m.contains("Invalid match modifier 'g'")),
+            "expected a typed 'Invalid match modifier' diagnostic for qr//g, got: {:?}",
+            diagnostic_messages
+        );
+
+        let m_result = parse("m/pattern/g");
+        assert!(
+            m_result.diagnostics.is_empty(),
+            "expected /g to stay valid on m//, got: {:?}",
+            m_result.diagnostics
+        );
     }
 
     #[test]
@@ -600,15 +647,22 @@ mod modifier_tests {
 
     #[test]
     fn m_does_not_crash_on_unknown_modifier_z() {
-        // /z is NOT a valid regex modifier. The parser should handle it
-        // gracefully without crashing — either by consuming it as a modifier
-        // (the lexer pre-tokenizes m//z as a single token) or by breaking
-        // out of the modifier scan. Either way, no panic.
+        // /z is NOT a valid match modifier. The parser must handle it
+        // gracefully (no panic) and produce a typed diagnostic whose message
+        // names the offending letter, matching the `s///` and `tr///`
+        // contract (#14980). The bogus modifier letter must NOT be silently
+        // retained in the AST.
         let result = parse("m/pattern/z");
-        // The regex was parsed into some node.
+        let diagnostic_messages: Vec<String> =
+            result.diagnostics.iter().map(|d| d.to_string()).collect();
         assert!(
-            result.ast.to_sexp().contains("/pattern/"),
-            "expected pattern in AST, got: {}",
+            diagnostic_messages.iter().any(|m| m.contains("Invalid match modifier 'z'")),
+            "expected a typed 'Invalid match modifier' diagnostic for /z, got: {:?}",
+            diagnostic_messages
+        );
+        assert!(
+            !result.ast.to_sexp().contains("/pattern/z"),
+            "the bogus /z modifier must not be retained in the AST, got: {}",
             result.ast.to_sexp()
         );
     }

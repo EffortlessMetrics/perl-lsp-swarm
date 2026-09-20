@@ -1,5 +1,38 @@
 name: Droid Tag
 
+# Explicit, authorized PR mentions only. Automatic review/security stay paused.
+#
+# Security boundary for the manual @droid tag lane (#15840):
+#
+# - the job runs only for human (non-bot) OWNER/MEMBER/COLLABORATOR authors on
+#   this repository's own open pull requests, and the reviewed subject is the
+#   resolved authorized head SHA, checked out with persist-credentials: false;
+# - no workflow-level `env:` block: workflow env would be inherited by every
+#   step including the action, and therefore by the model process. Provider
+#   secrets appear only as inputs of the isolated-review step; the MiniMax key
+#   is serialized by the pinned action into a 0600-keyed private runtime home
+#   and never enters the workflow environment;
+# - the pinned isolated-review action (the droid-action-safe isolated
+#   publisher split, dev merges #7 + #8, verified 2026-09-16) separates model
+#   analysis from publication authority: the job token is consumed only by its
+#   deterministic preparation and publication steps. Model phases receive a
+#   constructed minimal environment (an explicit allowlist plus the Factory
+#   key), a restricted three-tool surface in the lowest autonomy mode, and
+#   redacted, size-capped output capture; the model process never receives a
+#   GitHub credential;
+# - the ephemeral private HOME (GITHUB_ENV) carries no secrets; its HOME/XDG
+#   paths are exactly the allowlisted keys the model phase forwards, so agent
+#   writes land in a throwaway directory instead of the runner home.
+#
+# Accepted residuals (tracked upstream, #15840 / #15863):
+# - the Droid CLI process legitimately holds FACTORY_API_KEY; the model
+#   endpoint remains the only intended egress channel for that value;
+# - the upstream base action still hardcodes its unsafe model-execution
+#   permission bypass and a full process-env spread. This lane does not invoke
+#   the base action path; the isolated-review split above is the structural
+#   remedy, and the open P1 review thread on this lane stays until the
+#   upstream removal lands.
+
 on:
   issue_comment:
     types: [created]
@@ -8,56 +41,172 @@ on:
   pull_request_review:
     types: [submitted]
 
-env:
-  MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
+permissions:
+  contents: read
 
 jobs:
   droid:
     if: |
-      (github.event_name == 'issue_comment' && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association) && contains(github.event.comment.body, '@droid')) ||
-      (github.event_name == 'pull_request_review_comment' && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association) && contains(github.event.comment.body, '@droid')) ||
-      (github.event_name == 'pull_request_review' && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.review.author_association) && contains(github.event.review.body, '@droid'))
-    runs-on: [self-hosted, linux, x64, em-ci, trusted-pr, review-nano, droid-review]
+      github.repository == 'EffortlessMetrics/perl-lsp-swarm' && (
+        (github.event_name == 'issue_comment' && github.event.comment.user.type == 'User' && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association) && contains(github.event.comment.body, '@droid')) ||
+        (github.event_name == 'pull_request_review_comment' && github.event.comment.user.type == 'User' && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association) && contains(github.event.comment.body, '@droid')) ||
+        (github.event_name == 'pull_request_review' && github.event.review.user.type == 'User' && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.review.author_association) && contains(github.event.review.body, '@droid'))
+      )
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
+    concurrency:
+      group: droid-mention-hosted-v2-${{ github.repository }}-${{ github.event.issue.number || github.event.pull_request.number }}
+      cancel-in-progress: false
     permissions:
       contents: read
       pull-requests: write
       issues: write
-      id-token: write
-      actions: read
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with:
-          fetch-depth: 1
-      - name: Configure MiniMax BYOK for Factory Droid
+      - name: Create private Droid runtime
+        id: runtime
         shell: bash
         run: |
-          mkdir -p "$HOME/.factory"
-          cat > "$HOME/.factory/settings.local.json" <<JSON
+          set -euo pipefail
+          umask 077
+          droid_home=$(mktemp -d "${RUNNER_TEMP:?}/droid-home.XXXXXXXX")
+          echo "home=$droid_home" >> "$GITHUB_OUTPUT"
+          mkdir -p "$droid_home/.local/bin"
           {
-            "customModels": [
-              {
-                "displayName": "MiniMax-M2.7",
-                "model": "MiniMax-M2.7",
-                "baseUrl": "https://api.minimax.io/anthropic",
-                "apiKey": "${MINIMAX_API_KEY}",
-                "provider": "anthropic",
-                "maxOutputTokens": 64000,
-                "noImageSupport": true,
-                "extraArgs": {
-                  "temperature": 1
-                }
-              }
-            ]
-          }
-          JSON
-      - name: Run Droid Exec with MiniMax M2.7 BYOK
-        uses: EffortlessMetrics/droid-action-safe@7c1377ccbacddc95560d1570547a5baa51de01ec # based on Factory-AI/droid-action v5; raw debug artifact upload disabled
+            echo "HOME=$droid_home"
+            echo "GH_CONFIG_DIR=$droid_home/.config/gh"
+            echo "XDG_CONFIG_HOME=$droid_home/.config"
+            echo "XDG_CACHE_HOME=$droid_home/.cache"
+            echo "BUN_INSTALL=$droid_home/.bun"
+            echo "FACTORY_DROID_AUTO_UPDATE_ENABLED=false"
+          } >> "$GITHUB_ENV"
+          echo "$droid_home/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Install verified GitHub CLI before Droid preparation
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          for tool in curl tar sha256sum python3 git unzip; do
+            command -v "$tool" >/dev/null || {
+              echo "::error::Droid runner prerequisite missing: $tool"
+              exit 1
+            }
+          done
+          # cli/cli v2.101.0, immutable release asset 565857134 (2026-09-15).
+          archive="$HOME/gh.tar.gz"
+          curl --fail --silent --show-error --location --retry 3 --retry-all-errors \
+            --connect-timeout 15 --max-time 120 \
+            https://github.com/cli/cli/releases/download/v2.101.0/gh_2.101.0_linux_amd64.tar.gz \
+            --output "$archive"
+          printf '%s  %s\n' \
+            9bca2d1c16825f109907a23307628a2f0698fbf99662b73a5cf0b020293072b8 \
+            "$archive" | sha256sum --check --status
+          tar -xzf "$archive" -C "$HOME" gh_2.101.0_linux_amd64/bin/gh
+          install -m 755 "$HOME/gh_2.101.0_linux_amd64/bin/gh" "$HOME/.local/bin/gh"
+          rm -rf -- "$archive" "$HOME/gh_2.101.0_linux_amd64"
+          "$HOME/.local/bin/gh" --version
+
+      - name: Resolve authorized PR head
+        id: subject
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import re
+          import subprocess
+          from pathlib import Path
+
+          event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text())
+          repo = os.environ["GITHUB_REPOSITORY"]
+          if repo != "EffortlessMetrics/perl-lsp-swarm":
+              raise SystemExit("Droid is only authorized in the swarm repository")
+          issue = event.get("issue", {})
+          subject = event.get("pull_request") or (issue if issue.get("pull_request") else {})
+          number = subject.get("number")
+          if type(number) is not int or number <= 0:
+              raise SystemExit("Use @droid on a pull request; this lane does not execute issue tasks")
+          result = subprocess.run(
+              ["gh", "api", f"repos/{repo}/pulls/{number}"],
+              check=True, capture_output=True, text=True,
+          )
+          pr = json.loads(result.stdout)
+          if pr.get("state") != "open" or (pr.get("head", {}).get("repo") or {}).get("full_name") != repo:
+              raise SystemExit("Droid requires an open same-repository PR; no provider secrets were used")
+          head = pr["head"]["sha"]
+          if not isinstance(head, str) or not re.fullmatch(r"[0-9a-f]{40}", head):
+              raise SystemExit("GitHub returned an invalid PR head SHA")
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              output.write(f"head={head}\n")
+          print(f"Droid subject: {repo}#{number} at {head}")
+          PY
+
+      - name: Checkout authorized PR head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ steps.subject.outputs.head }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Install verified Droid CLI
+        id: droid_cli
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          version=0.219.0
+          base_url="https://downloads.factory.ai/factory-cli/releases/${version}/linux/x64"
+          binary="$HOME/.local/bin/droid"
+          checksum="$HOME/droid.sha256"
+
+          curl --fail --silent --show-error --location --retry 3 --retry-all-errors \
+            --connect-timeout 15 --max-time 180 \
+            "${base_url}/droid" --output "$binary"
+          curl --fail --silent --show-error --location --retry 3 --retry-all-errors \
+            --connect-timeout 15 --max-time 60 \
+            "${base_url}/droid.sha256" --output "$checksum"
+
+          expected=$(awk 'NF {print $1; exit}' "$checksum")
+          if ! [[ "$expected" =~ ^[0-9a-fA-F]{64}$ ]]; then
+            echo "::error::Factory checksum is malformed"
+            exit 1
+          fi
+          printf '%s  %s\n' "$expected" "$binary" | sha256sum --check --status
+          chmod 0755 "$binary"
+          rm -f -- "$checksum"
+
+          reported=$("$binary" --version)
+          printf '%s\n' "$reported"
+          if [[ "$reported" != "$version" ]]; then
+            echo "::error::Expected Droid CLI ${version}, got: ${reported}"
+            exit 1
+          fi
+          echo "path=$binary" >> "$GITHUB_OUTPUT"
+
+      - name: Run isolated Droid review with MiniMax M3
+        # isolated-review pin tracks dev merges #7 + #8 (2026-09-16).
+        uses: EffortlessMetrics/droid-action-safe/isolated-review@0c2019dd56a43750a0abf30b6449001707f90807 # dev (2026-09-16)
+        with:
+          github_token: ${{ github.token }}
           factory_api_key: ${{ secrets.FACTORY_API_KEY }}
-          upload_debug_artifacts: false
-          review_depth: shallow
-          review_model: "custom:MiniMax-M2.7-0"
-          security_model: "custom:MiniMax-M2.7-0"
-          show_full_output: false
+          minimax_api_key: ${{ secrets.MINIMAX_API_KEY }}
+          expected_head_sha: ${{ steps.subject.outputs.head }}
+          path_to_droid_executable: ${{ steps.droid_cli.outputs.path }}
+          expected_droid_version: "0.219.0"
+          phase_timeout_minutes: "10"
+
+      - name: Remove private Droid runtime
+        if: always() && steps.runtime.outputs.home != ''
+        shell: bash
+        env:
+          DROID_HOME: ${{ steps.runtime.outputs.home }}
+        run: |
+          set -euo pipefail
+          case "$DROID_HOME" in
+            "${RUNNER_TEMP:?}"/droid-home.*)
+              rm -rf -- "$DROID_HOME" "${RUNNER_TEMP:?}/droid-prompts"
+              ;;
+            *) echo "::error::Refusing unexpected Droid cleanup path"; exit 1 ;;
+          esac

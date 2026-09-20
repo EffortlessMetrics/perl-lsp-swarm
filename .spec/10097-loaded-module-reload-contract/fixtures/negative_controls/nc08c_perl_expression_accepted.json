@@ -1,0 +1,14 @@
+{
+  "name": "nc08c_perl_expression_accepted",
+  "control": 8,
+  "op": "validate_request_surface",
+  "input": {
+    "family": "perl-lsp/loadedModuleReload",
+    "family_version": 1,
+    "correlation_identity": 41,
+    "payload_kind": "perl_expression",
+    "payload_value": "delete $INC{'App/Core.pm'}; require App::Core;",
+    "capability_kind": "unadvertised"
+  },
+  "expected_error": "raw_client_input_accepted"
+}

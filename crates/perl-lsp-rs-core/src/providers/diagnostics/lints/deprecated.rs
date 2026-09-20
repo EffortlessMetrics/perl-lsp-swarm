@@ -52,15 +52,16 @@ pub fn check_deprecated_syntax(node: &Node, diagnostics: &mut Vec<Diagnostic>) {
                             }
                         ],
                         tags: vec![DiagnosticTag::Deprecated],
+                        fixable: false,
+                        critic_observation: None,
                         suggestion: Some(format!("Replace with 'if ({}{})'", sigil, name)),
                     });
                 }
             }
 
             // Check for deprecated $[ variable
-            NodeKind::Variable { sigil, name } => {
-                if sigil == "$" && name == "[" {
-                    diagnostics.push(Diagnostic {
+            NodeKind::Variable { sigil, name } if sigil == "$" && name == "[" => {
+                diagnostics.push(Diagnostic {
                         range: (n.location.start, n.location.start + 2),
                         severity: DiagnosticSeverity::Warning,
                         code: Some(DiagnosticCode::DeprecatedArrayBase.as_str().to_string()),
@@ -76,9 +77,10 @@ pub fn check_deprecated_syntax(node: &Node, diagnostics: &mut Vec<Diagnostic>) {
                             }
                         ],
                         tags: vec![DiagnosticTag::Deprecated],
+                        fixable: false,
+                        critic_observation: None,
                         suggestion: Some("Remove '$[' -- arrays always start at index 0".to_string()),
                     });
-                }
             }
 
             _ => {}

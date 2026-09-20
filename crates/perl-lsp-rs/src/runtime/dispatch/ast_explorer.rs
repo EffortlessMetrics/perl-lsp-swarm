@@ -75,6 +75,9 @@ impl LspServer {
 
 #[cfg(test)]
 mod tests {
+    // Test assertions favor `expect_err()` with a descriptive message over
+    // silent unwraps; the workspace-wide deny is a production-code rule.
+    #![allow(clippy::expect_used)]
     use super::*;
 
     #[test]

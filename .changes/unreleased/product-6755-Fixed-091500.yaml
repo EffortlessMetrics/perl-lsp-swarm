@@ -1,0 +1,14 @@
+project: product
+component: Parser and lexer
+kind: Fixed
+body: >-
+  Stop the file-local sub prepass from learning declaration names out of
+  comments, ordinary and quote-like strings, pattern bodies, POD, heredoc
+  bodies, and data sections. A `sub NAME` spelled only in one of those regions
+  could previously make a later `NAME /pattern/` lex as a regex call instead of
+  division, so these were tokenization changes rather than indexing noise.
+time: 2026-08-16T09:15:00Z
+custom:
+  PR: "6755"
+  Slug: local-sub-prepass-source-aware
+  Breaking: "no"

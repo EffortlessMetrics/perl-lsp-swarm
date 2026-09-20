@@ -1,0 +1,5 @@
+[perl]
+include_paths = ["customlib"]
+
+[features]
+inlay_hints = true

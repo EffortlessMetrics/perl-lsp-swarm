@@ -1,4 +1,6 @@
 import * as vscode from 'vscode';
+import { PRODUCT_NAME, sanitizeDiagnosticField } from './supportCommands';
+import { isPerlLanguageId } from './languageIdentity';
 
 type NavigationOutputChannel = Pick<vscode.OutputChannel, 'show'>;
 
@@ -23,11 +25,6 @@ export interface WorkspaceStatusSnapshot {
   readonly readinessReason?: string;
   readonly activeDocumentReady?: boolean;
   readonly nextAction?: string;
-}
-
-/** Invoke VS Code's organize-imports command. */
-export async function organizeImportsCommand(): Promise<void> {
-  await vscode.commands.executeCommand('editor.action.organizeImports');
 }
 
 /** Display the active server version or an actionable recovery prompt. */
@@ -83,10 +80,22 @@ export async function showWorkspaceStatusCommand(dependencies: {
     running: 'running',
     stopped: 'stopped',
   }[status.mode];
-  const lines = [`Perl LSP workspace status`, `Server: ${modeLabel}`];
+  // Product, runtime state, and observed server identity are different facts
+  // (#6869): the snapshot proves the mode, but only a live version probe
+  // proves what executable answered. Never attach an identity the snapshot
+  // did not establish, and keep a hostile observed value single-line.
+  const lines = [
+    'Perl LSP workspace status',
+    `Product: ${PRODUCT_NAME}`,
+    `Server state: ${modeLabel}`,
+  ];
   const hasLiveServer = status.mode === 'running' || status.mode === 'indexing';
   if (hasLiveServer && status.version) {
-    lines.push(`Version: ${status.version}`);
+    // The probe proves the server's self-reported version only; serverInfo.name
+    // is never carried, so the label must not claim a fuller identity (#6869).
+    lines.push(
+      `Observed server version: ${sanitizeDiagnosticField(status.version, 'unavailable')}`,
+    );
   }
   if (status.fileCount !== undefined) {
     lines.push(`Workspace files: ${status.fileCount}`);
@@ -140,7 +149,7 @@ export async function showWorkspaceStatusCommand(dependencies: {
 /** Show the status-bar action menu for the current editor context. */
 export async function showStatusMenuCommand(): Promise<void> {
   const editor = vscode.window.activeTextEditor;
-  const isPerl = editor?.document.languageId === 'perl';
+  const isPerl = isPerlLanguageId(editor?.document.languageId);
   const filePath = editor?.document.uri.fsPath ?? '';
   const isTestFile = isPerl && (filePath.endsWith('.t') || filePath.endsWith('.pl'));
 
@@ -157,15 +166,6 @@ export async function showStatusMenuCommand(): Promise<void> {
       description: 'Shift+Alt+R',
       detail: 'Restart the language server',
       command: 'perl-lsp.restart',
-    },
-    {
-      label: '$(organization) Organize Imports',
-      description: 'Shift+Alt+O',
-      detail: isPerl
-        ? 'Sort and organize use statements'
-        : 'Sort and organize use statements (Only available for Perl files)',
-      command: 'perl-lsp.organizeImports',
-      disabled: !isPerl,
     },
     {
       label: '$(beaker) Run Tests in Current File',

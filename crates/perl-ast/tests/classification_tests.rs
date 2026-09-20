@@ -33,7 +33,7 @@ fn block_node() -> Node {
 // The canonical fixture lives in tests/helpers.rs. When a new NodeKind
 // variant is added, update helpers.rs (one place for all integration tests).
 fn all_variants() -> Vec<NodeKind> {
-    helpers::all_nodekind_instances().into_iter().map(|n| n.kind).collect()
+    helpers::all_nodekind_instances().into_iter().map(|n| n.into_parts().0).collect()
 }
 
 // ────────────────────────────────────────────────────────
@@ -73,7 +73,7 @@ fn recovery_implies_not_safe_for_breakpoint() {
 // ────────────────────────────────────────────────────────
 
 /// The exact set of variant names that must be safe_for_breakpoint=TRUE
-/// per the plan-reviewer corrected table (44 variants after #1713 adds ArraySlice/HashSlice/KeyValueSlice).
+/// per the plan-reviewer corrected table (47 variants after #15742 adds TargetlessGoto).
 /// Use and No removed (compile-time pragma/unimport; not runtime-breakable).
 const SAFE_FOR_BREAKPOINT_TRUE: &[&str] = &[
     "ExpressionStatement",
@@ -112,6 +112,7 @@ const SAFE_FOR_BREAKPOINT_TRUE: &[&str] = &[
     "Return",
     "LoopControl",
     "Goto",
+    "TargetlessGoto",
     "MethodCall",
     "FunctionCall",
     "AmperCall",
@@ -255,7 +256,13 @@ fn category_spot_checks() {
 
     // DataSection → Declaration (plan-reviewer correction: NOT Statement)
     assert_eq!(
-        NodeKind::DataSection { marker: "__DATA__".to_string(), body: None }.category(),
+        NodeKind::DataSection {
+            marker: "__DATA__".to_string(),
+            marker_span: None,
+            body: None,
+            body_span: None
+        }
+        .category(),
         NodeKindCategory::Declaration
     );
 

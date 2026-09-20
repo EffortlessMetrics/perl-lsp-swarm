@@ -6,6 +6,8 @@
 //! The packet is deterministic (sorted source-facts keys) so golden tests and
 //! reproducible receipts are possible.
 
+#[cfg(test)]
+use perl_tdd_support::{must, must_some};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
@@ -133,8 +135,7 @@ mod tests {
         let packet = DebugSessionPlanBuilder::new("/work/script.pl")
             .source_facts_from_text(&source, text)
             .build();
-        let facts =
-            packet.source_facts.get(&PathBuf::from("/work/script.pl")).expect("facts present");
+        let facts = must_some(packet.source_facts.get(&PathBuf::from("/work/script.pl")));
         assert!(!facts.breakable_line_candidates.is_empty());
         assert!(facts.subroutines.iter().any(|s| s.name == "run"));
     }
@@ -142,16 +143,17 @@ mod tests {
     #[test]
     fn json_is_deterministic_across_builds() {
         let build = || {
-            DebugSessionPlanBuilder::new("/work/script.pl")
-                .source_facts("/z.pl", SourceDebugFacts::default())
-                .source_facts("/a.pl", SourceDebugFacts::default())
-                .to_json()
-                .expect("json")
+            must(
+                DebugSessionPlanBuilder::new("/work/script.pl")
+                    .source_facts("/z.pl", SourceDebugFacts::default())
+                    .source_facts("/a.pl", SourceDebugFacts::default())
+                    .to_json(),
+            )
         };
         assert_eq!(build(), build(), "serialization must be stable");
         let json = build();
-        let a = json.find("/a.pl").expect("a");
-        let z = json.find("/z.pl").expect("z");
+        let a = must_some(json.find("/a.pl"));
+        let z = must_some(json.find("/z.pl"));
         assert!(a < z, "sources emit in sorted order");
     }
 }

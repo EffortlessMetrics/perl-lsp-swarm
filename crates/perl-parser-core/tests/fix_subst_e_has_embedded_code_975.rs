@@ -29,74 +29,86 @@ fn parse_subst(source: &str) -> perl_parser_core::Node {
 
 /// `s/(\w+)/uc($1)/e` — single `e` modifier must set has_embedded_code=true.
 #[test]
-fn subst_e_modifier_sets_has_embedded_code() {
+fn subst_e_modifier_sets_has_embedded_code() -> Result<(), Box<dyn std::error::Error>> {
     let ast = parse_subst(r#"$s =~ s/(\w+)/uc($1)/e;"#);
-    let (embedded, mods) = find_first_substitution(&ast).expect("should find a Substitution node");
+    let (embedded, mods) =
+        find_first_substitution(&ast).ok_or("should find a Substitution node")?;
     assert!(embedded, "s///e must set has_embedded_code=true (modifiers={:?})", mods);
+    Ok(())
 }
 
 /// `s///ee` — double-eval form must also set has_embedded_code=true.
 #[test]
-fn subst_ee_modifier_sets_has_embedded_code() {
+fn subst_ee_modifier_sets_has_embedded_code() -> Result<(), Box<dyn std::error::Error>> {
     let ast = parse_subst(r#"$t =~ s/\$(\w+)/$$1/ee;"#);
-    let (embedded, mods) = find_first_substitution(&ast).expect("should find a Substitution node");
+    let (embedded, mods) =
+        find_first_substitution(&ast).ok_or("should find a Substitution node")?;
     assert!(embedded, "s///ee must set has_embedded_code=true (modifiers={:?})", mods);
+    Ok(())
 }
 
 /// `s/a/b/ge` — combined modifiers: has_embedded_code must be true.
 #[test]
-fn subst_ge_modifier_sets_has_embedded_code() {
+fn subst_ge_modifier_sets_has_embedded_code() -> Result<(), Box<dyn std::error::Error>> {
     let ast = parse_subst(r#"$s =~ s/a/b/ge;"#);
-    let (embedded, mods) = find_first_substitution(&ast).expect("should find a Substitution node");
+    let (embedded, mods) =
+        find_first_substitution(&ast).ok_or("should find a Substitution node")?;
     assert!(embedded, "s///ge must set has_embedded_code=true (modifiers={:?})", mods);
+    Ok(())
 }
 
 /// `s/a/b/gr` — no `e` modifier: has_embedded_code must remain false (regression guard).
 #[test]
-fn subst_no_e_modifier_does_not_set_has_embedded_code() {
+fn subst_no_e_modifier_does_not_set_has_embedded_code() -> Result<(), Box<dyn std::error::Error>> {
     let ast = parse_subst(r#"$s =~ s/a/b/gr;"#);
-    let (embedded, mods) = find_first_substitution(&ast).expect("should find a Substitution node");
+    let (embedded, mods) =
+        find_first_substitution(&ast).ok_or("should find a Substitution node")?;
     assert!(!embedded, "s///gr must NOT set has_embedded_code (modifiers={:?})", mods);
+    Ok(())
 }
 
 /// `s/(?{1+1})/b/g` — `(?{...})` in pattern with no `e`: has_embedded_code=true
 /// via the existing pattern-body path (unchanged behavior, regression guard).
 #[test]
-fn subst_embedded_code_in_pattern_stays_true() {
+fn subst_embedded_code_in_pattern_stays_true() -> Result<(), Box<dyn std::error::Error>> {
     let ast = parse_subst(r#"$s =~ s/(?{1+1})/b/g;"#);
-    let (embedded, mods) = find_first_substitution(&ast).expect("should find a Substitution node");
+    let (embedded, mods) =
+        find_first_substitution(&ast).ok_or("should find a Substitution node")?;
     assert!(
         embedded,
         "s///g with (?{{...}}) in pattern must keep has_embedded_code=true (modifiers={:?})",
         mods
     );
+    Ok(())
 }
 
 // ── Site 2: quotes.rs path (s{}{} form — no =~) ──────────────────────────────
 
 /// `s{(\w+)}{uc($1)}e` — brace-delimited form exercises the quotes.rs code path.
 #[test]
-fn subst_quote_operator_form_e_sets_has_embedded_code() {
+fn subst_quote_operator_form_e_sets_has_embedded_code() -> Result<(), Box<dyn std::error::Error>> {
     let ast = parse_subst(r#"s{(\w+)}{uc($1)}e;"#);
-    let (embedded, mods) = find_first_substitution(&ast).expect("should find a Substitution node");
+    let (embedded, mods) =
+        find_first_substitution(&ast).ok_or("should find a Substitution node")?;
     assert!(
         embedded,
         "s{{}}{{}}e (quote-operator form) must set has_embedded_code=true (modifiers={:?})",
         mods
     );
+    Ok(())
 }
 
 // ── Sexp marker test ─────────────────────────────────────────────────────────
 
-/// The `(risk:code)` marker must appear in the sexp for `s///e`.
+/// The `(has_embedded_code true)` marker must appear in the sexp for `s///e`.
 #[test]
 fn subst_e_sexp_contains_risk_code_marker() {
     let mut parser = Parser::new(r#"$s =~ s/(\w+)/uc($1)/e;"#);
     let ast = must(parser.parse());
     let sexp = ast.to_sexp();
     assert!(
-        sexp.contains("risk:code"),
-        "sexp for s///e must contain '(risk:code)' marker; got:\n{}",
+        sexp.contains("(has_embedded_code true)"),
+        "sexp for s///e must contain '(has_embedded_code true)' marker; got:\n{}",
         sexp
     );
 }
@@ -106,40 +118,48 @@ fn subst_e_sexp_contains_risk_code_marker() {
 /// `s{a}{b}g` — brace-delimited form with NO `e` modifier: has_embedded_code must be false.
 /// This covers the `modifiers.contains('e')` → false branch in quotes.rs.
 #[test]
-fn subst_quote_operator_form_no_e_does_not_set_has_embedded_code() {
+fn subst_quote_operator_form_no_e_does_not_set_has_embedded_code()
+-> Result<(), Box<dyn std::error::Error>> {
     let ast = parse_subst(r#"s{a}{b}g;"#);
-    let (embedded, mods) = find_first_substitution(&ast).expect("should find a Substitution node");
+    let (embedded, mods) =
+        find_first_substitution(&ast).ok_or("should find a Substitution node")?;
     assert!(
         !embedded,
         "s{{}}{{}}g (quote-operator, no e modifier) must NOT set has_embedded_code (modifiers={:?})",
         mods
     );
+    Ok(())
 }
 
 /// `s{a}{b}ee` — brace-delimited form with `ee` double-eval modifier: has_embedded_code must be true.
 /// This covers the `ee` path in quotes.rs (modifiers.contains('e') is true for 'ee').
 #[test]
-fn subst_quote_operator_form_ee_sets_has_embedded_code() {
+fn subst_quote_operator_form_ee_sets_has_embedded_code() -> Result<(), Box<dyn std::error::Error>> {
     let ast = parse_subst(r#"s{a}{b}ee;"#);
-    let (embedded, mods) = find_first_substitution(&ast).expect("should find a Substitution node");
+    let (embedded, mods) =
+        find_first_substitution(&ast).ok_or("should find a Substitution node")?;
     assert!(
         embedded,
         "s{{}}{{}}ee (quote-operator, double-eval) must set has_embedded_code=true (modifiers={:?})",
         mods
     );
+    Ok(())
 }
 
 /// `s{(?{1+1})}{b}e` — both `(?{...})` in pattern body AND `e` modifier active simultaneously.
 /// Verifies the `||` does not short-circuit incorrectly when both sides are true (quotes.rs path).
 #[test]
-fn subst_quote_operator_form_both_embedded_code_and_e_modifier() {
+fn subst_quote_operator_form_both_embedded_code_and_e_modifier()
+-> Result<(), Box<dyn std::error::Error>> {
     let ast = parse_subst(r#"s{(?{1+1})}{b}e;"#);
-    let (embedded, mods) = find_first_substitution(&ast).expect("should find a Substitution node");
+    let (embedded, mods) =
+        find_first_substitution(&ast).ok_or("should find a Substitution node")?;
     assert!(
         embedded,
         "s{{(?{{...}})}}{{}}e (both pattern body and e modifier) must set has_embedded_code=true (modifiers={:?})",
         mods
     );
+    Ok(())
 }
 
 /// `find_first_substitution` returns `None` when the AST has no Substitution node.

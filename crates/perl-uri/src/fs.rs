@@ -50,12 +50,39 @@ pub fn uri_to_fs_path(uri: &str) -> Option<PathBuf> {
     // Convert to filesystem path using the url crate's built-in method.
     // On Windows, accept rooted file URIs like file:///tmp/test.pl as \tmp\test.pl
     // so cross-platform tests and internal helpers stay permissive.
-    let path = url
-        .to_file_path()
-        .ok()
+    // On Windows, `Url::to_file_path()` PANICS — it does not return Err — for
+    // host-less file URLs whose path lacks a drive letter (the url crate's
+    // `file_url_segments_to_pathbuf_windows` asserts "expected an absolute
+    // path"; `file://localhost` normalizes its host away, so the form is
+    // reachable). Such forms route to the non-panicking rooted fallback
+    // instead (#15722).
+    #[cfg(windows)]
+    let direct_path =
+        if windows_to_file_path_wont_panic(&url) { url.to_file_path().ok() } else { None };
+    #[cfg(not(windows))]
+    let direct_path = url.to_file_path().ok();
+    let path = direct_path
         .or_else(|| local_authority_file_uri_to_path(&url))
         .or_else(|| windows_rooted_file_uri_to_path(&url))?;
     Some(repair_path_mojibake(path))
+}
+
+/// Whether `Url::to_file_path()` is safe to call on this URL without
+/// panicking. Only Windows restricts this: the url crate asserts an absolute
+/// (drive-letter) path there, so host-less or rooted-but-driveless forms
+/// must use the non-panicking fallbacks (#15722).
+#[cfg(windows)]
+fn windows_to_file_path_wont_panic(url: &Url) -> bool {
+    let path = url.path();
+    path.len() > 3
+        && path.starts_with('/')
+        && path.as_bytes()[1].is_ascii_alphabetic()
+        && path.as_bytes()[2] == b':'
+}
+
+#[cfg(not(windows))]
+fn windows_to_file_path_wont_panic(_url: &Url) -> bool {
+    true
 }
 
 /// Convert either a `file://` URI or absolute filesystem path to a source path.
@@ -108,6 +135,12 @@ pub fn source_path_from_uri_or_path(input: &str) -> Option<PathBuf> {
 /// # Platform Support
 ///
 /// This function is not available on `wasm32` targets (no filesystem).
+#[expect(
+    clippy::map_err_ignore,
+    reason = "url::Url::from_file_path returns Result<Url, ()> — the error type is the unit type \
+              with no diagnostic payload; abs_path is embedded in the mapped error message so no \
+              context is lost."
+)]
 pub fn fs_path_to_uri<P: AsRef<Path>>(path: P) -> Result<String, String> {
     let path = normalize_filesystem_path(path.as_ref());
 
@@ -148,6 +181,9 @@ fn local_authority_file_uri_to_path(url: &Url) -> Option<PathBuf> {
     }
 
     let canonical = Url::parse(&format!("file://{}", url.path())).ok()?;
+    if !windows_to_file_path_wont_panic(&canonical) {
+        return None;
+    }
     canonical.to_file_path().ok()
 }
 
@@ -182,4 +218,48 @@ fn windows_rooted_file_uri_to_path(url: &Url) -> Option<PathBuf> {
 #[cfg(not(windows))]
 fn windows_rooted_file_uri_to_path(_url: &Url) -> Option<PathBuf> {
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // `fs.rs:184-185` discriminator (#15722): a local-authority file URL
+    // whose canonical re-parse lacks a Windows drive letter must hit the
+    // `!windows_to_file_path_wont_panic(&canonical)` guard. On Windows that
+    // guard returns `None` instead of letting `canonical.to_file_path()`
+    // panic inside the url crate ("expected an absolute path"); elsewhere
+    // the canonical form resolves normally.
+    //
+    // `127.0.0.1` (not `localhost`) is the discriminator host: the url
+    // crate normalizes a `file://localhost` host away to empty, so only a
+    // preserved local authority such as `127.0.0.1` reaches the canonical
+    // re-parse at all.
+    #[test]
+    fn local_authority_driveless_canonical_hits_wont_panic_guard() -> Result<(), String> {
+        let url = Url::parse("file://127.0.0.1/tmp/no-drive.pl")
+            .map_err(|e| format!("test URL parses: {e}"))?;
+        let result = local_authority_file_uri_to_path(&url);
+        #[cfg(windows)]
+        if result.is_some() {
+            return Err(format!(
+                "driveless canonical must take the guard's None path, got {result:?}"
+            ));
+        }
+        #[cfg(not(windows))]
+        if result.is_none() {
+            return Err(format!("driveless canonical resolves off Windows, got {result:?}"));
+        }
+        Ok(())
+    }
+
+    // `fs.rs:78` call observation through the public entry point: a
+    // drive-letter file URL passes `windows_to_file_path_wont_panic` on
+    // every platform, so `uri_to_fs_path` resolves it instead of routing
+    // to a fallback.
+    #[test]
+    fn uri_to_fs_path_drive_letter_passes_wont_panic_guard() {
+        let result = uri_to_fs_path("file://localhost/C:/dir/guard-pass.pl");
+        assert!(result.is_some(), "drive-letter URL must pass the guard, got {result:?}");
+    }
 }

@@ -1,0 +1,516 @@
+{
+  "schema": "emacs_train_specs.v1",
+  "schema_version": 1,
+  "programme": {
+    "parent_programme_issue": 7979,
+    "controller_issue": 8706,
+    "durable_architecture_issue": 11716,
+    "stable_train_issue": 10918,
+    "governing_issue": 11717,
+    "engine_issue": 11751,
+    "method_authority": "#3983",
+    "consumed_manifest": ".spec/10918-emacs-train-graph/train.manifest.json"
+  },
+  "records": [
+    {
+      "node_id": "PROG",
+      "issue": 7979,
+      "train_role": "controller",
+      "disposition": "CONTROLLER_NO_CODING_SPEC",
+      "disposition_provenance": "manifest",
+      "authority_after": "The Emacs support programme is decomposed into a functional controller and covered trains.",
+      "spec_owner": "PROG"
+    },
+    {
+      "node_id": "CTRL",
+      "issue": 8706,
+      "train_role": "controller",
+      "disposition": "CONTROLLER_NO_CODING_SPEC",
+      "disposition_provenance": "manifest",
+      "authority_after": "The functional controller's train is codified as the stable emacs_train.v1 topology.",
+      "spec_owner": "CTRL"
+    },
+    {
+      "node_id": "E00",
+      "issue": 11716,
+      "train_role": "specification",
+      "disposition": "SPEC_COMPILED",
+      "disposition_provenance": "manifest",
+      "compiled_spec": ".spec/11716-emacs-support-architecture",
+      "authority_after": "The E00 bundle is the durable architecture emacs_train.v1 preserves without replacing.",
+      "spec_owner": "E00"
+    },
+    {
+      "node_id": "RELY",
+      "issue": 11766,
+      "train_role": "specification",
+      "disposition": "SPEC_COMPILED",
+      "disposition_provenance": "manifest",
+      "compiled_spec": ".spec/10894-editor-host-reliability",
+      "authority_after": "The shared host-run reliability projection exists at .spec/10894-editor-host-reliability and owns generic mechanics.",
+      "spec_owner": "RELY"
+    },
+    {
+      "node_id": "E01",
+      "issue": 10918,
+      "train_role": "stable_contract",
+      "disposition": "SPEC_COMPILED",
+      "disposition_provenance": "manifest",
+      "compiled_spec": ".spec/10918-emacs-train-graph",
+      "authority_after": "emacs_train.v1 is the stable reviewed implementation topology for #7979/#8706.",
+      "spec_owner": "E01"
+    },
+    {
+      "node_id": "E01R",
+      "issue": 11770,
+      "train_role": "semantic_revision",
+      "disposition": "SPEC_COMPILED",
+      "disposition_provenance": "adjudicated",
+      "compiled_spec": ".spec/11770-emacs-train-revisions",
+      "authority_after": "A versioned change model with diff, check and impact operations owns semantic revision.",
+      "spec_owner": "E01R"
+    },
+    {
+      "node_id": "H7777",
+      "issue": 7777,
+      "train_role": "historical",
+      "disposition": "EXISTING_CONTRACT_SUFFICIENT",
+      "disposition_provenance": "manifest",
+      "authority_after": "The generic receipt contract exists as landed historical evidence.",
+      "spec_owner": "H7777"
+    },
+    {
+      "node_id": "H7778",
+      "issue": 7778,
+      "train_role": "historical",
+      "disposition": "EXISTING_CONTRACT_SUFFICIENT",
+      "disposition_provenance": "manifest",
+      "authority_after": "The hermetic runner core exists as landed historical evidence.",
+      "spec_owner": "H7778"
+    },
+    {
+      "node_id": "FIXT",
+      "issue": 11366,
+      "train_role": "historical",
+      "disposition": "EXISTING_CONTRACT_SUFFICIENT",
+      "disposition_provenance": "manifest",
+      "authority_after": "The canonical fixture and probe substrate exists as landed current-tree substrate.",
+      "spec_owner": "FIXT"
+    },
+    {
+      "node_id": "RUNCONF",
+      "issue": 8734,
+      "train_role": "implementation",
+      "disposition": "ISSUE_PLAN_SUFFICIENT",
+      "disposition_provenance": "manifest",
+      "authority_after": "The Emacs runner is proven conformant to the adopted generic host-run contract.",
+      "spec_owner": "RUNCONF"
+    },
+    {
+      "node_id": "POLICY",
+      "issue": 9375,
+      "train_role": "evidence_policy",
+      "disposition": "ISSUE_PLAN_SUFFICIENT",
+      "disposition_provenance": "manifest",
+      "authority_after": "The Emacs lifecycle-proof routing policy exists and governs evidence dependency routing.",
+      "spec_owner": "POLICY"
+    },
+    {
+      "node_id": "SUBJ_CORE",
+      "issue": 11744,
+      "train_role": "implementation",
+      "disposition": "ISSUE_PLAN_SUFFICIENT",
+      "disposition_provenance": "manifest",
+      "authority_after": "The subject manifest, resolver and cache exist and bind bundled Eglot subject identity.",
+      "spec_owner": "SUBJ_CORE"
+    },
+    {
+      "node_id": "SUBJ_E",
+      "issue": 11745,
+      "train_role": "implementation",
+      "disposition": "ISSUE_PLAN_SUFFICIENT",
+      "disposition_provenance": "manifest",
+      "authority_after": "Released and pinned upstream-source Eglot rows exist through the resolver semantics.",
+      "spec_owner": "SUBJ_E"
+    },
+    {
+      "node_id": "SUBJ_L",
+      "issue": 11746,
+      "train_role": "implementation",
+      "disposition": "ISSUE_PLAN_SUFFICIENT",
+      "disposition_provenance": "manifest",
+      "authority_after": "Released and pinned upstream-source lsp-mode rows exist through the resolver semantics.",
+      "spec_owner": "SUBJ_L"
+    },
+    {
+      "node_id": "SUBJ_FAN",
+      "issue": 8755,
+      "train_role": "fan_in",
+      "disposition": "FAN_IN_OR_CERTIFICATION_SPEC",
+      "disposition_provenance": "manifest",
+      "authority_after": "Subject materialization is a reference fan-in over the decomposed subject lane.",
+      "spec_owner": "SUBJ_FAN"
+    },
+    {
+      "node_id": "OBS",
+      "issue": 11360,
+      "train_role": "implementation",
+      "disposition": "ISSUE_PLAN_SUFFICIENT",
+      "disposition_provenance": "manifest",
+      "authority_after": "A typed host-native observation vocabulary exists with conjunction validation per exact run.",
+      "spec_owner": "OBS"
+    },
+    {
+      "node_id": "PROD",
+      "issue": 11361,
+      "train_role": "implementation",
+      "disposition": "ISSUE_PLAN_SUFFICIENT",
+      "disposition_provenance": "manifest",
+      "authority_after": "One observation-to-receipt producer exists targeting the shared receipt schema.",
+      "spec_owner": "PROD"
+    },
+    {
+      "node_id": "JOURNEYS",
+      "issue": 11768,
+      "train_role": "stable_contract",
+      "disposition": "ISSUE_PLAN_SUFFICIENT",
+      "disposition_provenance": "manifest",
+      "authority_after": "A versioned checked emacs_host_journeys.v1 catalog governs journey, cohort and cell identities.",
+      "spec_owner": "JOURNEYS"
+    },
+    {
+      "node_id": "ADP_E",
+      "issue": 8776,
+      "train_role": "implementation",
+      "disposition": "ISSUE_PLAN_SUFFICIENT",
+      "disposition_provenance": "manifest",
+      "authority_after": "The checked Eglot adapter captures selected client and process facts through the shared observation vocabulary.",
+      "spec_owner": "ADP_E"
+    },
+    {
+      "node_id": "ADP_L",
+      "issue": 8795,
+      "train_role": "implementation",
+      "disposition": "ISSUE_PLAN_SUFFICIENT",
+      "disposition_provenance": "manifest",
+      "authority_after": "The checked lsp-mode adapter captures selected client and server-choice facts through the shared observation vocabulary.",
+      "spec_owner": "ADP_L"
+    },
+    {
+      "node_id": "PROF_E",
+      "issue": 8819,
+      "train_role": "implementation",
+      "disposition": "ISSUE_PLAN_SUFFICIENT",
+      "disposition_provenance": "manifest",
+      "authority_after": "Checked authentic synthetic Eglot profiles prove negotiation and result shapes.",
+      "spec_owner": "PROF_E"
+    },
+    {
+      "node_id": "PROF_L",
+      "issue": 8821,
+      "train_role": "implementation",
+      "disposition": "ISSUE_PLAN_SUFFICIENT",
+      "disposition_provenance": "manifest",
+      "authority_after": "Checked authentic synthetic lsp-mode profiles prove negotiation and result shapes.",
+      "spec_owner": "PROF_L"
+    },
+    {
+      "node_id": "HOST_E29",
+      "issue": 8822,
+      "train_role": "implementation",
+      "disposition": "ISSUE_PLAN_SUFFICIENT",
+      "disposition_provenance": "manifest",
+      "authority_after": "The Emacs 29.4 bundled Eglot full push journey semantic verdict exists as typed actual-host evidence.",
+      "spec_owner": "HOST_E29"
+    },
+    {
+      "node_id": "HOST_E30",
+      "issue": 8823,
+      "train_role": "implementation",
+      "disposition": "ISSUE_PLAN_SUFFICIENT",
+      "disposition_provenance": "manifest",
+      "authority_after": "The Emacs 30.1 bundled Eglot bounded push journey semantic verdict exists as typed actual-host evidence.",
+      "spec_owner": "HOST_E30"
+    },
+    {
+      "node_id": "HOST_E_REL",
+      "issue": 8824,
+      "train_role": "implementation",
+      "disposition": "ISSUE_PLAN_SUFFICIENT",
+      "disposition_provenance": "manifest",
+      "authority_after": "The released GNU ELPA Eglot pull-diagnostic journey semantic verdict exists as typed actual-host evidence.",
+      "spec_owner": "HOST_E_REL"
+    },
+    {
+      "node_id": "HOST_E_SRC",
+      "issue": 8825,
+      "train_role": "implementation",
+      "disposition": "ISSUE_PLAN_SUFFICIENT",
+      "disposition_provenance": "manifest",
+      "authority_after": "The pinned current-source Eglot bounded pull journey semantic verdict exists as typed actual-host evidence.",
+      "spec_owner": "HOST_E_SRC"
+    },
+    {
+      "node_id": "HOST_L_REL",
+      "issue": 8828,
+      "train_role": "implementation",
+      "disposition": "ISSUE_PLAN_SUFFICIENT",
+      "disposition_provenance": "manifest",
+      "authority_after": "The released lsp-mode journey and competing-client selection semantic verdict exists as typed actual-host evidence.",
+      "spec_owner": "HOST_L_REL"
+    },
+    {
+      "node_id": "HOST_L_SRC",
+      "issue": 8830,
+      "train_role": "implementation",
+      "disposition": "ISSUE_PLAN_SUFFICIENT",
+      "disposition_provenance": "manifest",
+      "authority_after": "The pinned current-source lsp-mode bounded journey semantic verdict exists as typed actual-host evidence.",
+      "spec_owner": "HOST_L_SRC"
+    },
+    {
+      "node_id": "ROOT_E_OBS",
+      "issue": 11747,
+      "train_role": "implementation",
+      "disposition": "ISSUE_PLAN_SUFFICIENT",
+      "disposition_provenance": "manifest",
+      "authority_after": "The canonical stock Eglot root matrix exists as observation only.",
+      "spec_owner": "ROOT_E_OBS"
+    },
+    {
+      "node_id": "ROOT_L_OBS",
+      "issue": 11748,
+      "train_role": "implementation",
+      "disposition": "ISSUE_PLAN_SUFFICIENT",
+      "disposition_provenance": "manifest",
+      "authority_after": "The canonical stock lsp-mode root matrix exists as observation only.",
+      "spec_owner": "ROOT_L_OBS"
+    },
+    {
+      "node_id": "ROOT_E_SEM",
+      "issue": 11749,
+      "train_role": "implementation",
+      "disposition": "ISSUE_PLAN_SUFFICIENT",
+      "disposition_provenance": "manifest",
+      "authority_after": "Behavior-bearing Eglot root, isolation, configuration and standard-override verdicts exist.",
+      "spec_owner": "ROOT_E_SEM"
+    },
+    {
+      "node_id": "ROOT_L_SEM",
+      "issue": 11750,
+      "train_role": "implementation",
+      "disposition": "ISSUE_PLAN_SUFFICIENT",
+      "disposition_provenance": "manifest",
+      "authority_after": "Behavior-bearing lsp-mode root, isolation, configuration and standard-override verdicts exist.",
+      "spec_owner": "ROOT_L_SEM"
+    },
+    {
+      "node_id": "ROOT_OBS_FAN",
+      "issue": 8834,
+      "train_role": "fan_in",
+      "disposition": "FAN_IN_OR_CERTIFICATION_SPEC",
+      "disposition_provenance": "manifest",
+      "authority_after": "The stock root-observation fan-in exists over both client-family matrices.",
+      "spec_owner": "ROOT_OBS_FAN"
+    },
+    {
+      "node_id": "ROOT_SEM_FAN",
+      "issue": 8838,
+      "train_role": "fan_in",
+      "disposition": "FAN_IN_OR_CERTIFICATION_SPEC",
+      "disposition_provenance": "manifest",
+      "authority_after": "The root-semantics fan-in exists over both client-family semantics leaves.",
+      "spec_owner": "ROOT_SEM_FAN"
+    },
+    {
+      "node_id": "LINUX",
+      "issue": 8842,
+      "train_role": "implementation",
+      "disposition": "ISSUE_PLAN_SUFFICIENT",
+      "disposition_provenance": "manifest",
+      "authority_after": "A Linux install and fresh-process substrate exists for public replay.",
+      "spec_owner": "LINUX"
+    },
+    {
+      "node_id": "PUB_E_B",
+      "issue": 8846,
+      "train_role": "implementation",
+      "disposition": "ISSUE_PLAN_SUFFICIENT",
+      "disposition_provenance": "manifest",
+      "authority_after": "The bundled Eglot public replay exists over exact local and root evidence.",
+      "spec_owner": "PUB_E_B"
+    },
+    {
+      "node_id": "PUB_E_R",
+      "issue": 8849,
+      "train_role": "implementation",
+      "disposition": "ISSUE_PLAN_SUFFICIENT",
+      "disposition_provenance": "manifest",
+      "authority_after": "The released standalone Eglot public replay exists over exact local and root evidence.",
+      "spec_owner": "PUB_E_R"
+    },
+    {
+      "node_id": "PUB_L_R",
+      "issue": 8853,
+      "train_role": "implementation",
+      "disposition": "ISSUE_PLAN_SUFFICIENT",
+      "disposition_provenance": "manifest",
+      "authority_after": "The released lsp-mode public replay exists over exact local and root evidence.",
+      "spec_owner": "PUB_L_R"
+    },
+    {
+      "node_id": "REG",
+      "issue": 8858,
+      "train_role": "implementation",
+      "disposition": "ISSUE_PLAN_SUFFICIENT",
+      "disposition_provenance": "manifest",
+      "authority_after": "The registry imports the exact Emacs receipt rows from complete public replay evidence.",
+      "spec_owner": "REG"
+    },
+    {
+      "node_id": "DOCS",
+      "issue": 8862,
+      "train_role": "implementation",
+      "disposition": "ISSUE_PLAN_SUFFICIENT",
+      "disposition_provenance": "manifest",
+      "authority_after": "Generated setup and support docs project exactly from registry rows.",
+      "spec_owner": "DOCS"
+    },
+    {
+      "node_id": "CERT",
+      "issue": 8865,
+      "train_role": "fan_in",
+      "disposition": "FAN_IN_OR_CERTIFICATION_SPEC",
+      "disposition_provenance": "manifest",
+      "authority_after": "The Linux support cut is certified over the complete composed denominator on current main.",
+      "spec_owner": "CERT"
+    },
+    {
+      "node_id": "SPECENG",
+      "issue": 11751,
+      "train_role": "implementation",
+      "disposition": "ISSUE_PLAN_SUFFICIENT",
+      "disposition_provenance": "manifest",
+      "authority_after": "One deterministic disposition engine runs over shared spec machinery with plan, compile, check and explain.",
+      "spec_owner": "SPECENG"
+    },
+    {
+      "node_id": "SPEC_SUB",
+      "issue": 11752,
+      "train_role": "implementation",
+      "disposition": "EXISTING_CONTRACT_SUFFICIENT",
+      "disposition_provenance": "adjudicated",
+      "authority_after": "Every node in the substrate, subject and adapter leaves carries exactly one checked disposition or an explicit reviewed non-builder disposition.",
+      "spec_owner": "SPEC_SUB"
+    },
+    {
+      "node_id": "SPEC_HOST",
+      "issue": 11753,
+      "train_role": "implementation",
+      "disposition": "EXISTING_CONTRACT_SUFFICIENT",
+      "disposition_provenance": "adjudicated",
+      "authority_after": "Every node in the profile and actual-host leaves carries exactly one checked disposition or an explicit reviewed non-builder disposition.",
+      "spec_owner": "SPEC_HOST"
+    },
+    {
+      "node_id": "SPEC_PUB",
+      "issue": 11754,
+      "train_role": "implementation",
+      "disposition": "EXISTING_CONTRACT_SUFFICIENT",
+      "disposition_provenance": "adjudicated",
+      "authority_after": "Every node in the root, public-replay and projection leaves carries exactly one checked disposition or an explicit reviewed non-builder disposition.",
+      "spec_owner": "SPEC_PUB"
+    },
+    {
+      "node_id": "SPEC_CTRL",
+      "issue": 11755,
+      "train_role": "implementation",
+      "disposition": "ISSUE_PLAN_SUFFICIENT",
+      "disposition_provenance": "manifest",
+      "authority_after": "Every node in the controller, residual, external and maintenance dispositions carries exactly one checked disposition or an explicit reviewed non-builder disposition.",
+      "spec_owner": "SPEC_CTRL"
+    },
+    {
+      "node_id": "E02",
+      "issue": 11717,
+      "train_role": "fan_in",
+      "disposition": "FAN_IN_OR_CERTIFICATION_SPEC",
+      "disposition_provenance": "manifest",
+      "authority_after": "Every stable Emacs node carries one checked spec disposition through the engine and populations.",
+      "spec_owner": "E02"
+    },
+    {
+      "node_id": "CTXENG",
+      "issue": 11756,
+      "train_role": "implementation",
+      "disposition": "SPEC_COMPILED",
+      "disposition_provenance": "adjudicated",
+      "compiled_spec": ".spec/11756-emacs-context-engine",
+      "authority_after": "A deterministic emacs_node_context.v1 resolver and renderer exists, bound to exact tree digests.",
+      "spec_owner": "CTXENG"
+    },
+    {
+      "node_id": "CTX_SUB",
+      "issue": 11757,
+      "train_role": "implementation",
+      "disposition": "EXISTING_CONTRACT_SUFFICIENT",
+      "disposition_provenance": "adjudicated",
+      "authority_after": "Each authoritative node of substrate, subject, adapter, profile and host leaves maps onto one exact current tree for fresh-agent navigation.",
+      "spec_owner": "CTX_SUB"
+    },
+    {
+      "node_id": "CTX_PUB",
+      "issue": 11758,
+      "train_role": "implementation",
+      "disposition": "EXISTING_CONTRACT_SUFFICIENT",
+      "disposition_provenance": "adjudicated",
+      "authority_after": "Each authoritative node of root, public-replay and projection leaves maps onto one exact current tree for fresh-agent navigation.",
+      "spec_owner": "CTX_PUB"
+    },
+    {
+      "node_id": "E04",
+      "issue": 11718,
+      "train_role": "fan_in",
+      "disposition": "FAN_IN_OR_CERTIFICATION_SPEC",
+      "disposition_provenance": "manifest",
+      "authority_after": "Each authoritative node maps onto one exact current tree as bounded navigation context.",
+      "spec_owner": "E04"
+    },
+    {
+      "node_id": "E06",
+      "issue": 11719,
+      "train_role": "packet_adapter",
+      "disposition": "ISSUE_PLAN_SUFFICIENT",
+      "disposition_provenance": "manifest",
+      "authority_after": "One packet adapter joins architecture, train, specs and tree context into the shared packet contracts.",
+      "spec_owner": "E06"
+    },
+    {
+      "node_id": "ROUTE",
+      "issue": 11759,
+      "train_role": "implementation",
+      "disposition": "ISSUE_PLAN_SUFFICIENT",
+      "disposition_provenance": "manifest",
+      "authority_after": "Scenario classes route packets to typed actions or non-passes deterministically without real models.",
+      "spec_owner": "ROUTE"
+    },
+    {
+      "node_id": "COHORT",
+      "issue": 11760,
+      "train_role": "dogfood",
+      "disposition": "ISSUE_PLAN_SUFFICIENT",
+      "disposition_provenance": "manifest",
+      "authority_after": "Bounded fresh-agent, lower-cost, reviewer, resume and refusal cohorts run against current packets.",
+      "spec_owner": "COHORT"
+    },
+    {
+      "node_id": "DOG",
+      "issue": 10936,
+      "train_role": "dogfood",
+      "disposition": "FAN_IN_OR_CERTIFICATION_SPEC",
+      "disposition_provenance": "manifest",
+      "authority_after": "The dogfood controller fans in deterministic scenarios and real cohort evidence.",
+      "spec_owner": "DOG"
+    }
+  ]
+}

@@ -1,2 +1,81 @@
 pub mod perllsp
 pub use perllsp::<<perl_lsp::*>>
+pub mod perllsp::claude_compat
+pub enum perllsp::claude_compat::CompatibilityReason
+pub perllsp::claude_compat::CompatibilityReason::ExactEvidence
+pub perllsp::claude_compat::CompatibilityReason::ExactKnownBad
+pub perllsp::claude_compat::CompatibilityReason::ExactPairNotEstablished
+pub perllsp::claude_compat::CompatibilityReason::ExplicitNotProven
+pub const fn perllsp::claude_compat::CompatibilityReason::as_str(self) -> &'static str
+pub fn perllsp::claude_compat::CompatibilityReason::clone(&self) -> perllsp::claude_compat::CompatibilityReason
+pub fn perllsp::claude_compat::CompatibilityReason::eq(&self, other: &perllsp::claude_compat::CompatibilityReason) -> bool
+pub fn perllsp::claude_compat::CompatibilityReason::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum perllsp::claude_compat::CompatibilityResult
+pub perllsp::claude_compat::CompatibilityResult::Compatible
+pub perllsp::claude_compat::CompatibilityResult::Incompatible
+pub perllsp::claude_compat::CompatibilityResult::NotProven
+pub const fn perllsp::claude_compat::CompatibilityResult::as_str(self) -> &'static str
+pub fn perllsp::claude_compat::CompatibilityResult::clone(&self) -> perllsp::claude_compat::CompatibilityResult
+pub fn perllsp::claude_compat::CompatibilityResult::eq(&self, other: &perllsp::claude_compat::CompatibilityResult) -> bool
+pub fn perllsp::claude_compat::CompatibilityResult::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perllsp::claude_compat::CompatibilityCatalog
+pub perllsp::claude_compat::CompatibilityCatalog::rows: alloc::vec::Vec<perllsp::claude_compat::CompatibilityRow>
+pub perllsp::claude_compat::CompatibilityCatalog::schema_version: alloc::string::String
+pub fn perllsp::claude_compat::CompatibilityCatalog::decision_for(&self, plugin: &perllsp::claude_compat::PluginSubject, server: &perllsp::claude_compat::ServerSubject, host: core::option::Option<&perllsp::claude_compat::HostSubject>) -> core::result::Result<perllsp::claude_compat::CompatibilityDecision, alloc::string::String>
+pub fn perllsp::claude_compat::CompatibilityCatalog::validate(&self) -> core::result::Result<(), alloc::string::String>
+pub fn perllsp::claude_compat::CompatibilityCatalog::clone(&self) -> perllsp::claude_compat::CompatibilityCatalog
+pub fn perllsp::claude_compat::CompatibilityCatalog::eq(&self, other: &perllsp::claude_compat::CompatibilityCatalog) -> bool
+pub fn perllsp::claude_compat::CompatibilityCatalog::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perllsp::claude_compat::CompatibilityDecision
+pub perllsp::claude_compat::CompatibilityDecision::evidence_refs: alloc::vec::Vec<alloc::string::String>
+pub perllsp::claude_compat::CompatibilityDecision::limitations: alloc::vec::Vec<alloc::string::String>
+pub perllsp::claude_compat::CompatibilityDecision::reason: perllsp::claude_compat::CompatibilityReason
+pub perllsp::claude_compat::CompatibilityDecision::result: perllsp::claude_compat::CompatibilityResult
+pub fn perllsp::claude_compat::CompatibilityDecision::clone(&self) -> perllsp::claude_compat::CompatibilityDecision
+pub fn perllsp::claude_compat::CompatibilityDecision::eq(&self, other: &perllsp::claude_compat::CompatibilityDecision) -> bool
+pub fn perllsp::claude_compat::CompatibilityDecision::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perllsp::claude_compat::CompatibilityRow
+pub perllsp::claude_compat::CompatibilityRow::evidence_refs: alloc::vec::Vec<alloc::string::String>
+pub perllsp::claude_compat::CompatibilityRow::host: core::option::Option<perllsp::claude_compat::HostSubject>
+pub perllsp::claude_compat::CompatibilityRow::limitations: alloc::vec::Vec<alloc::string::String>
+pub perllsp::claude_compat::CompatibilityRow::plugin: perllsp::claude_compat::PluginSubject
+pub perllsp::claude_compat::CompatibilityRow::result: perllsp::claude_compat::CompatibilityResult
+pub perllsp::claude_compat::CompatibilityRow::server: perllsp::claude_compat::ServerSubject
+pub fn perllsp::claude_compat::CompatibilityRow::clone(&self) -> perllsp::claude_compat::CompatibilityRow
+pub fn perllsp::claude_compat::CompatibilityRow::eq(&self, other: &perllsp::claude_compat::CompatibilityRow) -> bool
+pub fn perllsp::claude_compat::CompatibilityRow::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perllsp::claude_compat::HostSubject
+pub perllsp::claude_compat::HostSubject::claude_code_version: alloc::string::String
+pub perllsp::claude_compat::HostSubject::control_plane_schema: core::option::Option<alloc::string::String>
+pub fn perllsp::claude_compat::HostSubject::clone(&self) -> perllsp::claude_compat::HostSubject
+pub fn perllsp::claude_compat::HostSubject::cmp(&self, other: &perllsp::claude_compat::HostSubject) -> core::cmp::Ordering
+pub fn perllsp::claude_compat::HostSubject::eq(&self, other: &perllsp::claude_compat::HostSubject) -> bool
+pub fn perllsp::claude_compat::HostSubject::partial_cmp(&self, other: &perllsp::claude_compat::HostSubject) -> core::option::Option<core::cmp::Ordering>
+pub fn perllsp::claude_compat::HostSubject::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perllsp::claude_compat::PluginSubject
+pub perllsp::claude_compat::PluginSubject::contract_digest: alloc::string::String
+pub perllsp::claude_compat::PluginSubject::package_digest: alloc::string::String
+pub perllsp::claude_compat::PluginSubject::slug: alloc::string::String
+pub perllsp::claude_compat::PluginSubject::tree_digest: alloc::string::String
+pub perllsp::claude_compat::PluginSubject::version: alloc::string::String
+pub fn perllsp::claude_compat::PluginSubject::clone(&self) -> perllsp::claude_compat::PluginSubject
+pub fn perllsp::claude_compat::PluginSubject::cmp(&self, other: &perllsp::claude_compat::PluginSubject) -> core::cmp::Ordering
+pub fn perllsp::claude_compat::PluginSubject::eq(&self, other: &perllsp::claude_compat::PluginSubject) -> bool
+pub fn perllsp::claude_compat::PluginSubject::partial_cmp(&self, other: &perllsp::claude_compat::PluginSubject) -> core::option::Option<core::cmp::Ordering>
+pub fn perllsp::claude_compat::PluginSubject::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perllsp::claude_compat::ServerSubject
+pub perllsp::claude_compat::ServerSubject::arch: alloc::string::String
+pub perllsp::claude_compat::ServerSubject::artifact_sha256: alloc::string::String
+pub perllsp::claude_compat::ServerSubject::build_revision: alloc::string::String
+pub perllsp::claude_compat::ServerSubject::executable: alloc::string::String
+pub perllsp::claude_compat::ServerSubject::platform: alloc::string::String
+pub perllsp::claude_compat::ServerSubject::version: alloc::string::String
+pub fn perllsp::claude_compat::ServerSubject::clone(&self) -> perllsp::claude_compat::ServerSubject
+pub fn perllsp::claude_compat::ServerSubject::cmp(&self, other: &perllsp::claude_compat::ServerSubject) -> core::cmp::Ordering
+pub fn perllsp::claude_compat::ServerSubject::eq(&self, other: &perllsp::claude_compat::ServerSubject) -> bool
+pub fn perllsp::claude_compat::ServerSubject::partial_cmp(&self, other: &perllsp::claude_compat::ServerSubject) -> core::option::Option<core::cmp::Ordering>
+pub fn perllsp::claude_compat::ServerSubject::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub const perllsp::claude_compat::PLUGIN_SLUG: &str
+pub const perllsp::claude_compat::SCHEMA_VERSION: &str
+pub const perllsp::claude_compat::SERVER_EXECUTABLE: &str
+pub fn perllsp::claude_compat::embedded_catalog() -> perllsp::claude_compat::CompatibilityCatalog

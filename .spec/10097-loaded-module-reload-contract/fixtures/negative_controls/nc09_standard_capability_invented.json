@@ -1,0 +1,14 @@
+{
+  "name": "nc09_standard_capability_invented",
+  "control": 9,
+  "op": "validate_request_surface",
+  "input": {
+    "family": "perl-lsp/loadedModuleReload",
+    "family_version": 1,
+    "correlation_identity": 41,
+    "payload_kind": "typed_module_subject",
+    "capability_kind": "invented_standard",
+    "capability_name": "supportsModuleReload"
+  },
+  "expected_error": "standard_capability_collision"
+}

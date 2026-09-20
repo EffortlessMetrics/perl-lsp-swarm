@@ -4,6 +4,9 @@
 
 set -euo pipefail
 
+# Toolchain guard (#12593): refuse a stale non-rustup cargo before any build work.
+. "$(dirname -- "${BASH_SOURCE[0]}")/../scripts/lib/cargo-toolchain-guard.sh" && cargo_toolchain_guard
+
 echo "========================================="
 echo "   Perl Parser Comprehensive Test Suite"
 echo "========================================="

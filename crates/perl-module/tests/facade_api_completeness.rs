@@ -9,12 +9,41 @@
 //! Issue: #4420 (Wave 1 pilot — perl-module-* → perl-module facade)
 
 use perl_module::{
+    // request module (#8497) — every export added to api.rs must appear here
+    AbsenceEvidence,
+    DynamicModuleRequest,
     // resolution module
     IncRoot,
     IncRootKind,
+    LegacySeparatorProfile,
     // import module
     LoadTiming,
+    // module_move module
+    MODULE_MOVE_SCHEMA_VERSION,
+    ModuleFilePath,
+    ModuleFilePathError,
     ModuleImportKind,
+    ModuleMoveBlocker,
+    ModuleMoveDisposition,
+    ModuleMoveEdit,
+    ModuleMoveFileGeneration,
+    ModuleMoveInvalidPlan,
+    ModuleMoveOccurrence,
+    ModuleMovePlan,
+    ModuleMoveResourceTransition,
+    ModuleMoveSource,
+    ModuleMoveTarget,
+    ModuleName,
+    ModuleNameError,
+    ModuleRequest,
+    ModuleRequestError,
+    ModuleRequestKind,
+    ModuleResolutionOutcome,
+    ModuleUriResolution,
+    PackageSeparatorForm,
+    PartialModuleRequest,
+    RequestBoundary,
+    ResolvedEvidence,
     // rename module
     apply_module_rename_edits,
     // token module
@@ -41,12 +70,14 @@ use perl_module::{
     module_path_to_name,
     module_variant_pairs,
     normalize_package_separator,
+    outcome_from_uri_resolution,
     // import module
     parse_module_import_head,
     // token_parser module
     parse_module_token,
     plan_module_rename_edits,
     replace_module_token,
+    uri_resolution_from_outcome,
 };
 
 /// Verify that all items exported via api.rs can be imported and used.
@@ -88,6 +119,86 @@ fn test_path_module_functions() {
     assert!(is_lookup_safe_module_name("My::Module"));
     assert!(!is_lookup_safe_module_name("Foo/Bar"));
     assert!(!is_lookup_safe_module_name("../../etc/passwd"));
+}
+
+/// Verify the #8497 request/outcome vocabulary is reachable from the facade.
+#[test]
+fn test_request_module_types_are_accessible() -> Result<(), Box<dyn std::error::Error>> {
+    let bareword = ModuleRequest::bareword("My::Module")?;
+    assert_eq!(bareword.kind(), ModuleRequestKind::BarewordModule);
+    assert_eq!(bareword.module_name().map(ModuleName::canonical), Some("My::Module"));
+
+    let quoted = ModuleRequest::quoted_require("My/Module.pm")?;
+    assert_eq!(quoted.kind(), ModuleRequestKind::LiteralRelativeFile);
+    assert_eq!(quoted.module_name(), None);
+
+    let legacy = ModuleName::parse("My'Module")?;
+    assert_eq!(legacy.separator_form(), PackageSeparatorForm::Legacy);
+
+    let dynamic = ModuleRequest::dynamic("$class", None, RequestBoundary::RuntimeString);
+    assert_eq!(dynamic.boundary(), Some(RequestBoundary::RuntimeString));
+
+    assert!(!ModuleResolutionOutcome::NotProvenAbsent.has_complete_denominator());
+    // The evidence types must be nameable *and* usable through the facade: a
+    // consumer has to be able to read an exact outcome it did not construct.
+    // Counting the export is not enough — that is what let the previous count
+    // bump pass while the type was unreachable from this list.
+    fn reads_resolution(evidence: &ResolvedEvidence) -> (&str, ModuleRequestKind) {
+        (evidence.selected_uri(), evidence.request().kind())
+    }
+    fn reads_absence(evidence: &AbsenceEvidence) -> ModuleRequestKind {
+        evidence.request().kind()
+    }
+    let _: fn(&ResolvedEvidence) -> (&str, ModuleRequestKind) = reads_resolution;
+    let _: fn(&AbsenceEvidence) -> ModuleRequestKind = reads_absence;
+
+    assert!(!ModuleResolutionOutcome::TimedOut.has_complete_denominator());
+
+    // Error and evidence types reachable from the facade.
+    let name_error: Option<ModuleNameError> = ModuleName::parse("Foo/Bar").err();
+    assert!(name_error.is_some());
+    let path_error: Option<ModuleFilePathError> = ModuleFilePath::parse("/abs").err();
+    assert!(path_error.is_some());
+    let request_error: Option<ModuleRequestError> = ModuleRequest::bareword("").err();
+    assert!(request_error.is_some());
+
+    let strict = ModuleName::parse_with_profile("My'Module", LegacySeparatorProfile::Reject);
+    assert!(strict.is_err(), "the rejecting profile refuses the legacy separator");
+
+    let file = ModuleFilePath::parse("My/Module.pm")?;
+    assert_eq!(file.literal(), "My/Module.pm");
+
+    // Inexact request payload types.
+    let partial = ModuleRequest::partially_static(
+        "\"My::$leaf\"",
+        vec!["My::".to_string()],
+        None,
+        RequestBoundary::VariableInterpolation,
+    );
+    let partial_fragments = match &partial {
+        ModuleRequest::PartiallyStatic(inner) => {
+            Some(PartialModuleRequest::static_fragments(inner))
+        }
+        _ => None,
+    };
+    assert_eq!(partial_fragments, Some(&["My::".to_string()][..]));
+
+    let dynamic_form = match &dynamic {
+        ModuleRequest::Dynamic(inner) => Some(DynamicModuleRequest::source_form(inner)),
+        _ => None,
+    };
+    assert_eq!(dynamic_form, Some("$class"));
+
+    // Compatibility adapters.
+    let widened = outcome_from_uri_resolution(&ModuleUriResolution::NotFound);
+    assert_eq!(widened, ModuleResolutionOutcome::NotProvenAbsent);
+    assert_eq!(uri_resolution_from_outcome(&widened), Some(ModuleUriResolution::NotFound));
+    assert_eq!(
+        uri_resolution_from_outcome(&ModuleResolutionOutcome::Ambiguous),
+        None,
+        "the narrowing adapter refuses to erase a classification"
+    );
+    Ok(())
 }
 
 /// Verify token_core functions work end-to-end.
@@ -288,16 +399,29 @@ fn test_module_token_surrounded_by_whitespace() {
     assert!(contains_module_token(source, "My::Module"));
 }
 
-/// Regression: verify all 73 api.rs exports are re-exported.
-/// Count the actual exports in api.rs to ensure the facade is complete.
+/// Regression: verify all api.rs exports are re-exported.
+///
+/// The import list above is the compile-time check: an item that leaves api.rs
+/// stops this file compiling. The count below is read from api.rs at test time
+/// rather than restated in a comment, so it cannot silently go stale the way the
+/// previous hand-maintained figure did (it still read 73 when api.rs had grown
+/// past it).
 #[test]
 fn test_api_rs_re_export_count() -> Result<(), Box<dyn std::error::Error>> {
-    // This test is compile-time verified by the import list above.
-    // If any export is missing from api.rs, this file will not compile.
-    // Count manually from api.rs: 73 pub use statements.
-    // If you add/remove items in api.rs, update this comment.
+    let api_rs = include_str!("../src/api.rs");
+    let exports = api_rs.lines().filter(|line| line.starts_with("pub use ")).count();
+
+    assert_eq!(
+        exports, EXPECTED_API_RE_EXPORTS,
+        "api.rs now has {exports} `pub use` statements but EXPECTED_API_RE_EXPORTS says          {EXPECTED_API_RE_EXPORTS}; add the new item to the import list at the top of this          file and update the constant"
+    );
     Ok(())
 }
+
+/// Number of `pub use` statements in `src/api.rs`.
+///
+/// Update this together with the import list above whenever the facade changes.
+const EXPECTED_API_RE_EXPORTS: usize = 98;
 
 /// Regression: verify legacy package separator handling.
 #[test]
@@ -337,16 +461,16 @@ fn test_rename_multiline_source() {
 }
 
 /// Regression: verify that consumer imports don't regress (import patterns work).
-/// This test validates the migration path: old `perl_module_name::*` -> `perl_module::name::*`
+/// This test validates the migration path: old `perl_module_name::*` -> `perl_module::*`
 #[test]
 fn test_consumer_import_pattern_all_modules() {
     // Verify that importing from each module family works
-    use perl_module::boundary::contains_standalone_module_token as contains_token;
-    use perl_module::import_match::line_references_module_import as matches_import;
-    use perl_module::name::normalize_package_separator as normalize;
-    use perl_module::path::module_name_to_path as to_path;
-    use perl_module::token::contains_module_token as contains;
-    use perl_module::token_core::is_module_token_char as is_token_char;
+    use perl_module::contains_module_token as contains;
+    use perl_module::contains_standalone_module_token as contains_token;
+    use perl_module::is_module_token_char as is_token_char;
+    use perl_module::line_references_module_import as matches_import;
+    use perl_module::module_name_to_path as to_path;
+    use perl_module::normalize_package_separator as normalize;
 
     // Quick smoke tests to verify imports work
     assert_eq!(normalize("Foo'Bar"), "Foo::Bar");
@@ -378,4 +502,43 @@ fn test_documentation_62_migrated_tests_present() {
     // - rename: tests (the one with the pre-existing bug)
     // - resolution: tests
     // Total: ≥62 from old crates
+}
+
+/// The relocated pure move planner (#7448) is reachable only through the
+/// facade: the types import, the schema constant is stable, and the internal
+/// `module_move` path is not (that direction is proven by the `compile_fail`
+/// doctest in `src/api.rs`).
+#[test]
+fn test_module_move_facade_exports() {
+    assert_eq!(MODULE_MOVE_SCHEMA_VERSION, 1);
+    let target = ModuleMoveTarget::Package("Old::Name".to_string());
+    assert_eq!(target, ModuleMoveTarget::Package("Old::Name".to_string()));
+    let blocker = ModuleMoveBlocker::InvalidSource;
+    assert_eq!(blocker.tag(), "invalid-source");
+    let disposition = ModuleMoveDisposition::Complete;
+    assert_eq!(disposition.tag(), "complete");
+    let invalid = ModuleMoveInvalidPlan::CompletePlanWithoutEdits;
+    assert!(format!("{invalid:?}").contains("CompletePlanWithoutEdits"));
+    // Type-level reachability: constructing these value types compiles.
+    let _ = ModuleMoveFileGeneration {
+        file_id: perl_semantic_facts::FileId(1),
+        generation: perl_semantic_facts::SourceGeneration::Unknown,
+    };
+    let _ = ModuleMoveResourceTransition {
+        source_path: String::new(),
+        target_path: String::new(),
+        source_module: String::new(),
+        target_module: String::new(),
+    };
+}
+
+/// The remaining plan types are facade-exported: naming them in a signature
+/// compiles only when the crate root re-exports them. Never called.
+#[allow(dead_code)]
+fn module_move_types_reachable(
+    _source: ModuleMoveSource,
+    _occurrence: ModuleMoveOccurrence,
+    _edit: ModuleMoveEdit,
+    _plan: ModuleMovePlan,
+) {
 }

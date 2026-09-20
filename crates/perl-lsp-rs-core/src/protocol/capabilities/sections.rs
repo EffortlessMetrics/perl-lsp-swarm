@@ -4,9 +4,10 @@ use lsp_types::*;
 
 pub(super) fn apply_document_sync(caps: &mut ServerCapabilities) {
     // Use Options instead of Kind to comply with LSP 3.18 shape requirements.
-    // TextDocumentSyncKind::FULL (1): the server always reparses the full document
-    // on every didChange notification. INCREMENTAL (2) would be inaccurate — no
-    // incremental AST state is maintained between edits.
+    // TextDocumentSyncKind::FULL (1): v0.18 transfers complete document text on
+    // every didChange. INCREMENTAL (2) would advertise ranged transfer that
+    // production does not apply. Internal full reparse is independent of this
+    // transfer kind.
     caps.text_document_sync = Some(TextDocumentSyncCapability::Options(TextDocumentSyncOptions {
         open_close: Some(true),
         change: Some(TextDocumentSyncKind::FULL),
@@ -272,13 +273,16 @@ fn semantic_token_modifiers() -> Vec<SemanticTokenModifier> {
     ]
 }
 
-fn code_action_kinds(build: &BuildFlags) -> Vec<CodeActionKind> {
+fn code_action_kinds(_build: &BuildFlags) -> Vec<CodeActionKind> {
     // Build code action kinds based on flags.
     let mut kinds = vec![CodeActionKind::QUICKFIX];
 
-    if build.source_organize_imports {
-        kinds.push(CodeActionKind::SOURCE_ORGANIZE_IMPORTS);
-    }
+    // `source.organizeImports` is intentionally NOT advertised (#8305): its
+    // only implementation was a destructive line-oriented sorter that has been
+    // withdrawn from every request path. Advertisement must match runtime
+    // availability; restoration requires #8319 to admit a bounded
+    // source-preserving cohort and #10696 to land the proven cutover, at which
+    // point advertisement returns together with a working implementation.
 
     // Advertise generic `refactor` plus concrete sub-kinds so clients can
     // surface the full refactoring menu and send precise `context.only`

@@ -1,0 +1,4233 @@
+//! Trusted-base containment for internally contradictory GitHub closing relations.
+//!
+//! This is CP00 from issue #10413. It does not decide whether an issue is
+//! semantically complete. It rejects only a closed set of contradictions that
+//! are visible in stable PR sections and exact issue classifications.
+#![allow(clippy::print_stderr, clippy::print_stdout)]
+
+use clap::{Parser, ValueEnum};
+use color_eyre::eyre::{Context, ContextCompat, Result, bail};
+use regex::Regex;
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use std::{
+    collections::BTreeMap,
+    env, fs,
+    path::{Path, PathBuf},
+    process::{Command, exit},
+};
+
+const REPORT_SCHEMA: &str = "semantic_close_containment_report.v1";
+const FIXTURE_SCHEMA: &str = "semantic_close_containment_fixture.v1";
+const EXIT_CONTRADICTION: i32 = 2;
+const EXIT_NOT_PROVEN: i32 = 3;
+const MAX_EVENT_BYTES: usize = 2 * 1024 * 1024;
+const MAX_FIXTURE_BYTES: usize = 512 * 1024;
+const MAX_PR_BODY_BYTES: usize = 128 * 1024;
+const MAX_PR_TITLE_BYTES: usize = 4 * 1024;
+const MAX_ISSUE_BODY_BYTES: usize = 256 * 1024;
+const MAX_GITHUB_OUTPUT_BYTES: usize = 512 * 1024;
+const MAX_RELATIONS: usize = 32;
+const MAX_SECTION_BYTES: usize = 32 * 1024;
+const MAX_SOURCE_LINE_BYTES: usize = 2 * 1024;
+
+#[derive(Debug, Parser)]
+#[command(name = "semantic-close-containment")]
+#[command(about = "Reject high-confidence contradictory terminal issue relations")]
+struct Args {
+    /// GitHub event payload. Defaults to GITHUB_EVENT_PATH when neither input is supplied.
+    #[arg(long, conflicts_with = "fixture")]
+    event: Option<PathBuf>,
+
+    /// Immutable offline regression fixture.
+    #[arg(long, conflicts_with = "event")]
+    fixture: Option<PathBuf>,
+
+    #[arg(long, value_enum, default_value_t = OutputFormat::Human)]
+    format: OutputFormat,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum OutputFormat {
+    Human,
+    Json,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+enum ResultCode {
+    PassNotApplicable,
+    PassNoHighConfidenceContradiction,
+    FailPhaseTerminalRelation,
+    FailExplicitUnprovenRequiredWork,
+    FailRemainingWorkSameIssue,
+    FailControllerPacketMissing,
+    FailPredecessorSuccessorCollapse,
+    FailProofLevelContradiction,
+    NotProvenGithub,
+    InstrumentFailure,
+}
+
+impl ResultCode {
+    fn is_failure(self) -> bool {
+        matches!(
+            self,
+            Self::FailPhaseTerminalRelation
+                | Self::FailExplicitUnprovenRequiredWork
+                | Self::FailRemainingWorkSameIssue
+                | Self::FailControllerPacketMissing
+                | Self::FailPredecessorSuccessorCollapse
+                | Self::FailProofLevelContradiction
+        )
+    }
+
+    fn is_not_proven(self) -> bool {
+        matches!(self, Self::NotProvenGithub | Self::InstrumentFailure)
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::PassNotApplicable => "PASS_NOT_APPLICABLE",
+            Self::PassNoHighConfidenceContradiction => "PASS_NO_HIGH_CONFIDENCE_CONTRADICTION",
+            Self::FailPhaseTerminalRelation => "FAIL_PHASE_TERMINAL_RELATION",
+            Self::FailExplicitUnprovenRequiredWork => "FAIL_EXPLICIT_UNPROVEN_REQUIRED_WORK",
+            Self::FailRemainingWorkSameIssue => "FAIL_REMAINING_WORK_SAME_ISSUE",
+            Self::FailControllerPacketMissing => "FAIL_CONTROLLER_PACKET_MISSING",
+            Self::FailPredecessorSuccessorCollapse => "FAIL_PREDECESSOR_SUCCESSOR_COLLAPSE",
+            Self::FailProofLevelContradiction => "FAIL_PROOF_LEVEL_CONTRADICTION",
+            Self::NotProvenGithub => "NOT_PROVEN_GITHUB",
+            Self::InstrumentFailure => "INSTRUMENT_FAILURE",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RuleId {
+    PhaseTerminal,
+    ExplicitlyNotProven,
+    RemainingSameIssue,
+    ControllerPacketMissing,
+    PredecessorSuccessorCollapse,
+    ProofLevelContradiction,
+}
+
+impl RuleId {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::PhaseTerminal => "CP00-PHASE-TERMINAL",
+            Self::ExplicitlyNotProven => "CP00-EXPLICITLY-NOT-PROVEN",
+            Self::RemainingSameIssue => "CP00-REMAINING-SAME-ISSUE",
+            Self::ControllerPacketMissing => "CP00-CONTROLLER-PACKET-MISSING",
+            Self::PredecessorSuccessorCollapse => "CP00-PREDECESSOR-SUCCESSOR-COLLAPSE",
+            Self::ProofLevelContradiction => "CP00-PROOF-LEVEL-CONTRADICTION",
+        }
+    }
+
+    fn retirement_mapping(self) -> &'static str {
+        match self {
+            Self::PhaseTerminal => "CP03 denominator/close-mode evaluation",
+            Self::ExplicitlyNotProven => "CP03 explicitly-not-established row evaluation",
+            Self::RemainingSameIssue => "CP03 denominator row disposition evaluation",
+            Self::ControllerPacketMissing => "CP03 controller fan-in and packet evaluation",
+            Self::PredecessorSuccessorCollapse => {
+                "CP03 proposition identity and successor-retirement evaluation"
+            }
+            Self::ProofLevelContradiction => "CP03 required proof-level evaluation",
+        }
+    }
+
+    #[cfg(test)]
+    fn all() -> [Self; 6] {
+        [
+            Self::PhaseTerminal,
+            Self::ExplicitlyNotProven,
+            Self::RemainingSameIssue,
+            Self::ControllerPacketMissing,
+            Self::PredecessorSuccessorCollapse,
+            Self::ProofLevelContradiction,
+        ]
+    }
+}
+
+/// Rule activation for the mutation controls. Production always evaluates with
+/// every contradiction rule enabled; the focused suite disables exactly one
+/// rule at a time to prove each immutable fixture disposition depends on that
+/// rule, so a guard removed from the evaluator cannot keep its fixture green.
+#[derive(Clone, Copy)]
+struct RuleGate {
+    disabled: Option<RuleId>,
+}
+
+impl RuleGate {
+    fn all_rules() -> Self {
+        Self { disabled: None }
+    }
+
+    fn enabled(self, rule: RuleId) -> bool {
+        self.disabled != Some(rule)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct IssueKey {
+    repository: String,
+    number: u64,
+}
+
+#[derive(Clone, Debug)]
+struct PullRequestSubject {
+    repository: String,
+    number: u64,
+    title: String,
+    body: String,
+}
+
+#[derive(Clone, Debug)]
+struct IssueSubject {
+    number: u64,
+    title: String,
+    body: String,
+}
+
+#[derive(Clone, Debug)]
+enum IssueEvidence {
+    Available(IssueSubject),
+    Unavailable(String),
+}
+
+#[derive(Clone, Debug)]
+struct ClosingRelation {
+    key: IssueKey,
+    keyword: String,
+    source_line: String,
+    line_number: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum SectionKind {
+    Claim,
+    ControllingIssue,
+    GoverningContract,
+    ClaimBoundary,
+    NonGoals,
+    RemainingWork,
+    Summary,
+    Changes,
+    ReviewMap,
+    Acceptance,
+    Objective,
+    Outcome,
+}
+
+#[derive(Clone, Debug, Default)]
+struct Section {
+    headings: Vec<String>,
+    body: String,
+    occurrence_starts: Vec<usize>,
+    occurrence_headings: Vec<String>,
+}
+
+impl Section {
+    fn occurrences(&self) -> impl Iterator<Item = &str> {
+        self.occurrence_starts.iter().enumerate().flat_map(|(index, start)| {
+            let end = self.occurrence_starts.get(index + 1).copied().unwrap_or(self.body.len());
+            // Heading and body are separate units; neither can supply a missing
+            // subject or predicate to the other. Keep exact bounded source text.
+            [self.occurrence_headings.get(index).map(String::as_str), self.body.get(*start..end)]
+                .into_iter()
+                .flatten()
+        })
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct Report {
+    schema_version: &'static str,
+    repository: String,
+    pull_request_number: u64,
+    pull_request_title: String,
+    aggregate_code: ResultCode,
+    semantic_completion_proven: bool,
+    rows: Vec<RelationResult>,
+    /// Present only for live evaluation (#15640): the captured
+    /// `pulls_api` snapshot the verdict was computed from. Fixture reports
+    /// carry `None` because fixture provenance lives in the fixture itself.
+    subject_snapshot: Option<SubjectSnapshot>,
+}
+
+impl Report {
+    fn exit_code(&self) -> i32 {
+        if self.rows.iter().any(|row| row.code.is_failure()) {
+            EXIT_CONTRADICTION
+        } else if self.rows.iter().any(|row| row.code.is_not_proven()) {
+            EXIT_NOT_PROVEN
+        } else {
+            0
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct RelationResult {
+    repository: String,
+    issue_number: u64,
+    keyword: String,
+    source_line: String,
+    line_number: usize,
+    code: ResultCode,
+    rule_id: Option<String>,
+    reason: String,
+    suggested_relation: Option<String>,
+    retirement_mapping: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GithubEvent {
+    repository: GithubRepository,
+    pull_request: GithubPullRequestLocator,
+}
+
+#[derive(Debug, Deserialize)]
+struct GithubRepository {
+    full_name: String,
+}
+
+/// #15640: reruns replay the original event payload, so the event's PR
+/// title/body can never observe a later body correction. The event supplies
+/// only the immutable locator plus audit metadata; the semantic subject is
+/// built exclusively from a live `GET /repos/{owner}/{repo}/pulls/{number}`
+/// snapshot. The locator struct deliberately has no title/body fields, so the
+/// stale event prose cannot be read even by accident.
+#[derive(Debug, Deserialize)]
+struct GithubPullRequestLocator {
+    number: u64,
+    base: GithubPullRequestBase,
+    head: GithubPullRequestHeadRef,
+}
+
+#[derive(Debug, Deserialize)]
+struct GithubPullRequestBase {
+    repo: GithubRepository,
+}
+
+#[derive(Debug, Deserialize)]
+struct GithubPullRequestHeadRef {
+    #[serde(default)]
+    sha: Option<String>,
+}
+
+/// Provenance receipt for the semantic subject (#15640): the report proves
+/// what it actually evaluated — one captured live snapshot — instead of
+/// merely saying "current body".
+#[derive(Clone, Debug, Serialize)]
+struct SubjectSnapshot {
+    /// Where the subject bytes came from. Only `pulls_api` subjects reach
+    /// live evaluation; fixtures carry their own provenance block.
+    source: &'static str,
+    /// GitHub `updated_at` of the fetched pull request.
+    pr_updated_at: String,
+    /// Head SHA recorded by the originating event (audit; "unknown" when
+    /// absent). Comparing it with `head_sha` shows whether the live snapshot
+    /// sits at the event's head or a push landed in between.
+    event_head_sha: String,
+    /// Live head SHA of the fetched pull request ("unknown" when absent).
+    head_sha: String,
+    /// SHA-256 over the evaluated title bytes, a NUL separator, and the
+    /// evaluated body bytes (hex).
+    title_body_sha256: String,
+    title_bytes: usize,
+    body_bytes: usize,
+}
+
+#[derive(Debug, Deserialize)]
+struct GithubIssuePayload {
+    number: u64,
+    title: String,
+    body: Option<String>,
+    pull_request: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Fixture {
+    schema_version: String,
+    provenance: FixtureProvenance,
+    repository: String,
+    pull_request: FixturePullRequest,
+    issues: Vec<FixtureIssue>,
+    expected: FixtureExpected,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FixtureProvenance {
+    captured_at: String,
+    sources: Vec<String>,
+    subject_shas: Vec<String>,
+    boundary: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FixturePullRequest {
+    number: u64,
+    title: String,
+    body: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FixtureIssue {
+    repository: String,
+    number: u64,
+    title: String,
+    body: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FixtureExpected {
+    aggregate_code: ResultCode,
+    rows: Vec<FixtureExpectedRow>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FixtureExpectedRow {
+    repository: String,
+    issue_number: u64,
+    code: ResultCode,
+}
+
+fn main() {
+    if let Err(error) = run_cli() {
+        eprintln!(
+            "INSTRUMENT_FAILURE semantic-close-containment: {}",
+            sanitize_for_output(&error.to_string(), 1_024)
+        );
+        exit(EXIT_NOT_PROVEN);
+    }
+}
+
+fn run_cli() -> Result<()> {
+    color_eyre::install()?;
+    let args = Args::parse();
+
+    let (report, fixture_expected) = if let Some(path) = args.fixture {
+        let fixture = load_fixture(&path)?;
+        let report = evaluate_fixture(&fixture)?;
+        let expected = fixture.expected;
+        (report, Some(expected))
+    } else {
+        let event_path = match args.event {
+            Some(path) => path,
+            None => PathBuf::from(
+                env::var("GITHUB_EVENT_PATH")
+                    .context("supply --event/--fixture or set GITHUB_EVENT_PATH")?,
+            ),
+        };
+        (evaluate_live_event(&event_path)?, None)
+    };
+
+    if let Some(expected) = fixture_expected {
+        verify_expected(&report, &expected)?;
+    }
+
+    match args.format {
+        OutputFormat::Human => print_human(&report),
+        OutputFormat::Json => println!("{}", serde_json::to_string_pretty(&report)?),
+    }
+
+    let code = report.exit_code();
+    if code != 0 {
+        exit(code);
+    }
+    Ok(())
+}
+
+/// #15640: the event payload supplies only the immutable locator; the
+/// semantic subject always comes from one live pulls-API snapshot captured in
+/// this run. A fetch failure is an instrument failure — there is no fallback
+/// to the event's stale title/body, because stale prose is never current
+/// proof.
+fn evaluate_live_event(path: &Path) -> Result<Report> {
+    let raw = read_bounded(path, MAX_EVENT_BYTES, "GitHub event payload")?;
+    let locator = parse_event_locator(&raw)?;
+    let (pull, snapshot) = fetch_live_subject(&locator)?;
+
+    let mut cache: BTreeMap<IssueKey, IssueEvidence> = BTreeMap::new();
+    let mut report = evaluate(&pull, |key| {
+        if let Some(cached) = cache.get(key) {
+            return cached.clone();
+        }
+        let evidence = fetch_issue_live(key);
+        cache.insert(key.clone(), evidence.clone());
+        evidence
+    })?;
+    report.subject_snapshot = Some(snapshot);
+    Ok(report)
+}
+
+/// Immutable identity of the pull request to evaluate, extracted from the
+/// `pull_request_target` event payload: repository identity, PR number, base
+/// repository, and head SHA (audit only).
+#[derive(Clone, Debug)]
+struct EventLocator {
+    repository: String,
+    number: u64,
+    head_sha: String,
+}
+
+fn parse_event_locator(raw: &[u8]) -> Result<EventLocator> {
+    let event: GithubEvent =
+        serde_json::from_slice(raw).context("parsing pull_request_target event payload")?;
+    let repository = canonical_repository(&event.repository.full_name)?;
+    let base = canonical_repository(&event.pull_request.base.repo.full_name)
+        .context("canonicalizing event base repository")?;
+    if base != repository {
+        bail!(
+            "event repository {repository} does not match event base repository \
+             {base}; refusing to evaluate across a locator mismatch"
+        );
+    }
+    Ok(EventLocator {
+        repository,
+        number: event.pull_request.number,
+        head_sha: event.pull_request.head.sha.unwrap_or_else(|| "unknown".to_string()),
+    })
+}
+
+fn fetch_live_subject(locator: &EventLocator) -> Result<(PullRequestSubject, SubjectSnapshot)> {
+    let raw = fetch_pull_request_json(locator)?;
+    validate_live_snapshot(&raw, locator)
+}
+
+/// One bounded `gh api` call with the existing read-only token. Exactly one
+/// fetch per evaluation: a body edit during the run starts a newer run rather
+/// than invalidating this snapshot.
+fn fetch_pull_request_json(locator: &EventLocator) -> Result<Vec<u8>> {
+    let endpoint = format!("repos/{}/pulls/{}", locator.repository, locator.number);
+    let output = Command::new("gh")
+        .args(["api", "--method", "GET", &endpoint])
+        .output()
+        .context("failed to start gh api for the live pull request snapshot")?;
+    if !output.status.success() {
+        bail!(
+            "live pull request fetch failed: gh api exited with status {} \
+             (no event-payload fallback is permitted; rerun event prose is \
+             never current proof)",
+            output.status
+        );
+    }
+    if output.stdout.len() > MAX_GITHUB_OUTPUT_BYTES {
+        bail!("live pull request response exceeded the bounded containment input");
+    }
+    Ok(output.stdout)
+}
+
+#[derive(Debug, Deserialize)]
+struct LivePullRequest {
+    number: u64,
+    title: String,
+    body: Option<String>,
+    updated_at: String,
+    head: GithubPullRequestHeadRef,
+    base: GithubPullRequestBase,
+}
+
+/// Validate the fetched snapshot against the event locator, apply the
+/// subject bounds, and derive the snapshot receipt. Locator mismatch,
+/// malformed data, and oversized title/body fail closed as instrument
+/// failures (exit 3) — they are never semantic verdicts.
+fn validate_live_snapshot(
+    raw: &[u8],
+    locator: &EventLocator,
+) -> Result<(PullRequestSubject, SubjectSnapshot)> {
+    let payload: LivePullRequest =
+        serde_json::from_slice(raw).context("parsing live pull request response")?;
+    if payload.number != locator.number {
+        bail!(
+            "live pull request response returned number {} but the event locator \
+             is {}",
+            payload.number,
+            locator.number
+        );
+    }
+    let base = canonical_repository(&payload.base.repo.full_name)
+        .context("canonicalizing live pull request base repository")?;
+    if base != locator.repository {
+        bail!(
+            "live pull request base repository {base} does not match the event \
+             locator {}",
+            locator.repository
+        );
+    }
+    if payload.title.len() > MAX_PR_TITLE_BYTES {
+        bail!("live pull request title exceeds the bounded containment input");
+    }
+    let body = payload.body.unwrap_or_default();
+    if body.len() > MAX_PR_BODY_BYTES {
+        bail!("live pull request body exceeds the bounded containment input");
+    }
+
+    let mut hasher = Sha256::new();
+    hasher.update(payload.title.as_bytes());
+    hasher.update([0u8]);
+    hasher.update(body.as_bytes());
+    let title_body_sha256 =
+        hasher.finalize().iter().map(|byte| format!("{byte:02x}")).collect::<String>();
+
+    let snapshot = SubjectSnapshot {
+        source: "pulls_api",
+        pr_updated_at: payload.updated_at,
+        event_head_sha: locator.head_sha.clone(),
+        head_sha: payload.head.sha.unwrap_or_else(|| "unknown".to_string()),
+        title_body_sha256,
+        title_bytes: payload.title.len(),
+        body_bytes: body.len(),
+    };
+    Ok((
+        PullRequestSubject {
+            repository: locator.repository.clone(),
+            number: locator.number,
+            title: payload.title,
+            body,
+        },
+        snapshot,
+    ))
+}
+
+fn load_fixture(path: &Path) -> Result<Fixture> {
+    let raw = read_bounded(path, MAX_FIXTURE_BYTES, "semantic-close fixture")?;
+    let fixture: Fixture = serde_json::from_slice(&raw).context("parsing strict fixture")?;
+    validate_fixture(&fixture)?;
+    Ok(fixture)
+}
+
+fn validate_fixture(fixture: &Fixture) -> Result<()> {
+    if fixture.schema_version != FIXTURE_SCHEMA {
+        bail!("unsupported fixture schema {:?}; expected {FIXTURE_SCHEMA}", fixture.schema_version);
+    }
+    canonical_repository(&fixture.repository)?;
+    if fixture.provenance.captured_at.trim().is_empty()
+        || fixture.provenance.sources.is_empty()
+        || fixture.provenance.boundary.trim().is_empty()
+    {
+        bail!("fixture provenance must retain capture date, sources, and boundary");
+    }
+    if fixture.provenance.sources.iter().any(|source| !source.starts_with("https://github.com/")) {
+        bail!("fixture provenance sources must be canonical GitHub URLs");
+    }
+    if fixture.provenance.subject_shas.iter().any(|sha| !sha.is_empty() && !is_full_sha(sha)) {
+        bail!("fixture provenance subject SHAs must be empty or full lowercase hex");
+    }
+    if fixture.pull_request.title.trim().is_empty() {
+        bail!("fixture pull request title must not be empty");
+    }
+    let mut seen = BTreeMap::new();
+    for issue in &fixture.issues {
+        let key =
+            IssueKey { repository: canonical_repository(&issue.repository)?, number: issue.number };
+        if seen.insert(key, ()).is_some() {
+            bail!("duplicate issue subject in fixture");
+        }
+    }
+    Ok(())
+}
+
+fn evaluate_fixture(fixture: &Fixture) -> Result<Report> {
+    evaluate_fixture_with_rules(fixture, RuleGate::all_rules())
+}
+
+fn evaluate_fixture_with_rules(fixture: &Fixture, rules: RuleGate) -> Result<Report> {
+    let pull = PullRequestSubject {
+        repository: canonical_repository(&fixture.repository)?,
+        number: fixture.pull_request.number,
+        title: fixture.pull_request.title.clone(),
+        body: fixture.pull_request.body.clone(),
+    };
+    let mut issues = BTreeMap::new();
+    for issue in &fixture.issues {
+        let key =
+            IssueKey { repository: canonical_repository(&issue.repository)?, number: issue.number };
+        issues.insert(
+            key,
+            IssueEvidence::Available(IssueSubject {
+                number: issue.number,
+                title: issue.title.clone(),
+                body: issue.body.clone(),
+            }),
+        );
+    }
+    evaluate_with_rules(
+        &pull,
+        |key| {
+            issues.get(key).cloned().unwrap_or_else(|| {
+                IssueEvidence::Unavailable("fixture omitted the referenced issue".to_string())
+            })
+        },
+        rules,
+    )
+}
+
+fn verify_expected(report: &Report, expected: &FixtureExpected) -> Result<()> {
+    if report.aggregate_code != expected.aggregate_code {
+        bail!(
+            "fixture aggregate mismatch: expected {}, observed {}",
+            expected.aggregate_code.as_str(),
+            report.aggregate_code.as_str()
+        );
+    }
+    if report.rows.len() != expected.rows.len() {
+        bail!(
+            "fixture row-count mismatch: expected {}, observed {}",
+            expected.rows.len(),
+            report.rows.len()
+        );
+    }
+    for (observed, expected_row) in report.rows.iter().zip(&expected.rows) {
+        let expected_repo = canonical_repository(&expected_row.repository)?;
+        if observed.repository != expected_repo
+            || observed.issue_number != expected_row.issue_number
+            || observed.code != expected_row.code
+        {
+            bail!(
+                "fixture row mismatch for {}#{}: expected {}, observed {}#{} {}",
+                expected_repo,
+                expected_row.issue_number,
+                expected_row.code.as_str(),
+                observed.repository,
+                observed.issue_number,
+                observed.code.as_str()
+            );
+        }
+    }
+    Ok(())
+}
+
+fn evaluate<F>(pull: &PullRequestSubject, issue_lookup: F) -> Result<Report>
+where
+    F: FnMut(&IssueKey) -> IssueEvidence,
+{
+    evaluate_with_rules(pull, issue_lookup, RuleGate::all_rules())
+}
+
+fn evaluate_with_rules<F>(
+    pull: &PullRequestSubject,
+    mut issue_lookup: F,
+    rules: RuleGate,
+) -> Result<Report>
+where
+    F: FnMut(&IssueKey) -> IssueEvidence,
+{
+    let relations = parse_closing_relations(&pull.body, &pull.repository)?;
+    if relations.is_empty() {
+        return Ok(Report {
+            schema_version: REPORT_SCHEMA,
+            repository: pull.repository.clone(),
+            pull_request_number: pull.number,
+            pull_request_title: pull.title.clone(),
+            aggregate_code: ResultCode::PassNotApplicable,
+            semantic_completion_proven: false,
+            rows: Vec::new(),
+            subject_snapshot: None,
+        });
+    }
+
+    let sections = parse_sections(&pull.body, MAX_PR_BODY_BYTES)?;
+    let relation_count = relations.len();
+    let mut rows = Vec::with_capacity(relation_count);
+    for relation in relations {
+        let evidence = issue_lookup(&relation.key);
+        rows.push(evaluate_relation(pull, &sections, relation_count, relation, evidence, rules));
+    }
+
+    let aggregate_code = rows
+        .iter()
+        .find(|row| row.code.is_failure())
+        .map(|row| row.code)
+        .or_else(|| rows.iter().find(|row| row.code.is_not_proven()).map(|row| row.code))
+        .unwrap_or(ResultCode::PassNoHighConfidenceContradiction);
+
+    Ok(Report {
+        schema_version: REPORT_SCHEMA,
+        repository: pull.repository.clone(),
+        pull_request_number: pull.number,
+        pull_request_title: pull.title.clone(),
+        aggregate_code,
+        semantic_completion_proven: false,
+        rows,
+        subject_snapshot: None,
+    })
+}
+
+fn evaluate_relation(
+    pull: &PullRequestSubject,
+    sections: &BTreeMap<SectionKind, Section>,
+    relation_count: usize,
+    relation: ClosingRelation,
+    evidence: IssueEvidence,
+    rules: RuleGate,
+) -> RelationResult {
+    let unavailable = |code: ResultCode, reason: String| RelationResult {
+        repository: relation.key.repository.clone(),
+        issue_number: relation.key.number,
+        keyword: relation.keyword.clone(),
+        source_line: relation.source_line.clone(),
+        line_number: relation.line_number,
+        code,
+        rule_id: None,
+        reason,
+        suggested_relation: None,
+        retirement_mapping: None,
+    };
+
+    let issue = match evidence {
+        IssueEvidence::Available(issue) => issue,
+        IssueEvidence::Unavailable(reason) => {
+            return unavailable(
+                ResultCode::NotProvenGithub,
+                format!(
+                    "terminal relation could not be checked against its issue subject: {}",
+                    sanitize_for_output(&reason, 512)
+                ),
+            );
+        }
+    };
+
+    if issue.number != relation.key.number {
+        return unavailable(
+            ResultCode::InstrumentFailure,
+            "issue lookup returned a different issue number".to_string(),
+        );
+    }
+    if issue.body.len() > MAX_ISSUE_BODY_BYTES {
+        return unavailable(
+            ResultCode::InstrumentFailure,
+            "issue body exceeded the bounded semantic-containment input".to_string(),
+        );
+    }
+
+    let issue_sections = match parse_sections(&issue.body, MAX_ISSUE_BODY_BYTES) {
+        Ok(parsed) => parsed,
+        Err(error) => {
+            return unavailable(
+                ResultCode::InstrumentFailure,
+                format!(
+                    "issue structure could not be parsed within bounds: {}",
+                    sanitize_for_output(&error.to_string(), 512)
+                ),
+            );
+        }
+    };
+
+    let controlling = section_text(sections, &[SectionKind::ControllingIssue]);
+    let claim_boundary = section_text(sections, &[SectionKind::ClaimBoundary]);
+    let scoped_to_issue = relation_count == 1
+        || references_issue(&controlling, &relation.key, &pull.repository)
+        || references_issue(&claim_boundary, &relation.key, &pull.repository);
+
+    if rules.enabled(RuleId::ControllerPacketMissing)
+        && issue_is_controller(&issue)
+        && !has_semantic_close_packet(sections, &relation.key, &pull.repository)
+    {
+        return failed_row(
+            &relation,
+            ResultCode::FailControllerPacketMissing,
+            RuleId::ControllerPacketMissing,
+            "terminal closure targets a controller/programme issue without an explicit semantic close packet reference",
+            suggested_advances(&relation.key, &pull.repository),
+        );
+    }
+
+    if rules.enabled(RuleId::PredecessorSuccessorCollapse)
+        && issue_names_pull_as_historical_predecessor(&issue.body, pull.number)
+    {
+        return failed_row(
+            &relation,
+            ResultCode::FailPredecessorSuccessorCollapse,
+            RuleId::PredecessorSuccessorCollapse,
+            "the issue identifies this PR as historical predecessor/deletion evidence, not proof that the surviving successor proposition is retired",
+            suggested_refs(&relation.key, &pull.repository),
+        );
+    }
+
+    if rules.enabled(RuleId::ProofLevelContradiction)
+        && proof_level_is_explicitly_excluded(sections, &issue_sections)
+    {
+        return failed_row(
+            &relation,
+            ResultCode::FailProofLevelContradiction,
+            RuleId::ProofLevelContradiction,
+            "the PR explicitly excludes an installed/public/packaged/presentation proof level required by the issue",
+            suggested_advances(&relation.key, &pull.repository),
+        );
+    }
+
+    let remaining = section_text(sections, &[SectionKind::RemainingWork]);
+    if rules.enabled(RuleId::RemainingSameIssue)
+        && references_issue(&remaining, &relation.key, &pull.repository)
+    {
+        return failed_row(
+            &relation,
+            ResultCode::FailRemainingWorkSameIssue,
+            RuleId::RemainingSameIssue,
+            "the structured Remaining work section assigns required work to the same issue that the PR asks GitHub to close",
+            suggested_advances(&relation.key, &pull.repository),
+        );
+    }
+
+    if rules.enabled(RuleId::PhaseTerminal) && scoped_to_issue && !issue_is_phase_leaf(&issue) {
+        let phase_text = format!(
+            "{}\n{}",
+            relation_scoped_section_text(
+                sections,
+                &[SectionKind::ClaimBoundary],
+                relation_count,
+                &relation.key,
+                &pull.repository,
+            ),
+            relation.source_line
+        );
+        if contains_partial_boundary(&phase_text) {
+            return failed_row(
+                &relation,
+                ResultCode::FailPhaseTerminalRelation,
+                RuleId::PhaseTerminal,
+                "the PR's structured boundary describes a phase/partial/slice while requesting terminal closure of the broader issue",
+                suggested_advances(&relation.key, &pull.repository),
+            );
+        }
+    }
+
+    // CP00-003 owns complete attribution units, including soft-wrapped predicates.
+    // Keep the phase rule's separate line-scoping semantics unchanged.
+    let explicitly_unproven_text = [SectionKind::ClaimBoundary, SectionKind::NonGoals]
+        .iter()
+        .filter_map(|kind| sections.get(kind))
+        .flat_map(Section::occurrences)
+        .map(|occurrence| {
+            exclusion_text_attributable_to_closed_issue(
+                occurrence,
+                &relation.key,
+                &pull.repository,
+                relation_count,
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    if rules.enabled(RuleId::ExplicitlyNotProven)
+        && required_work_exclusion(
+            &explicitly_unproven_text,
+            Some((&relation.key, &pull.repository)),
+        )
+    {
+        return failed_row(
+            &relation,
+            ResultCode::FailExplicitUnprovenRequiredWork,
+            RuleId::ExplicitlyNotProven,
+            "the structured claim boundary explicitly says required full/complete issue work is not proved or established",
+            suggested_advances(&relation.key, &pull.repository),
+        );
+    }
+
+    RelationResult {
+        repository: relation.key.repository.clone(),
+        issue_number: relation.key.number,
+        keyword: relation.keyword.clone(),
+        source_line: relation.source_line.clone(),
+        line_number: relation.line_number,
+        code: ResultCode::PassNoHighConfidenceContradiction,
+        rule_id: None,
+        reason: "no supported high-confidence contradiction was found; this is not semantic issue-close proof"
+            .to_string(),
+        suggested_relation: None,
+        retirement_mapping: None,
+    }
+}
+
+fn failed_row(
+    relation: &ClosingRelation,
+    code: ResultCode,
+    rule: RuleId,
+    reason: &str,
+    suggested_relation: String,
+) -> RelationResult {
+    RelationResult {
+        repository: relation.key.repository.clone(),
+        issue_number: relation.key.number,
+        keyword: relation.keyword.clone(),
+        source_line: relation.source_line.clone(),
+        line_number: relation.line_number,
+        code,
+        rule_id: Some(rule.as_str().to_string()),
+        reason: reason.to_string(),
+        suggested_relation: Some(suggested_relation),
+        retirement_mapping: Some(rule.retirement_mapping().to_string()),
+    }
+}
+
+fn fetch_issue_live(key: &IssueKey) -> IssueEvidence {
+    if let Err(error) = canonical_repository(&key.repository) {
+        return IssueEvidence::Unavailable(error.to_string());
+    }
+    let endpoint = format!("repos/{}/issues/{}", key.repository, key.number);
+    let output = match Command::new("gh").args(["api", "--method", "GET", &endpoint]).output() {
+        Ok(output) => output,
+        Err(error) => {
+            return IssueEvidence::Unavailable(format!("failed to start gh api: {error}"));
+        }
+    };
+    if !output.status.success() {
+        return IssueEvidence::Unavailable(format!("gh api exited with status {}", output.status));
+    }
+    if output.stdout.len() > MAX_GITHUB_OUTPUT_BYTES {
+        return IssueEvidence::Unavailable("GitHub issue response exceeded the input bound".into());
+    }
+    let payload: GithubIssuePayload = match serde_json::from_slice(&output.stdout) {
+        Ok(payload) => payload,
+        Err(error) => {
+            return IssueEvidence::Unavailable(format!("invalid GitHub issue response: {error}"));
+        }
+    };
+    if payload.number != key.number {
+        return IssueEvidence::Unavailable("GitHub returned a different issue number".into());
+    }
+    if payload.pull_request.is_some() {
+        return IssueEvidence::Unavailable(
+            "terminal relation resolved to a pull request rather than an issue".into(),
+        );
+    }
+    IssueEvidence::Available(IssueSubject {
+        number: payload.number,
+        title: payload.title,
+        body: payload.body.unwrap_or_default(),
+    })
+}
+
+fn parse_closing_relations(body: &str, current_repository: &str) -> Result<Vec<ClosingRelation>> {
+    if body.len() > MAX_PR_BODY_BYTES {
+        bail!("PR body exceeds the bounded containment input");
+    }
+    let relation_re = Regex::new(
+        r"(?i)\b(close(?:s|d)?|fix(?:es|ed)?|resolve(?:s|d)?):?\s+(?:https://github\.com/(?P<url_repo>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/issues/(?P<url_number>[0-9]+)\b|(?:(?P<repo>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+))?#(?P<number>[0-9]+)\b)",
+    )
+    .context("compiling closing-relation parser")?;
+    let mut relations = Vec::new();
+    let mut fence: Option<Fence> = None;
+    let mut in_blockquote = false;
+
+    for (index, line) in body.lines().enumerate() {
+        if line.len() > MAX_SOURCE_LINE_BYTES {
+            bail!("PR body contains a line larger than the relation-parser bound");
+        }
+        let trimmed = line.trim_start();
+        if let Some(marker) = fence_marker(trimmed) {
+            if fence.is_some_and(|opening| marker.closes(opening)) {
+                fence = None;
+            } else if fence.is_none() {
+                fence = Some(marker);
+            }
+            continue;
+        }
+        if fence.is_some() {
+            continue;
+        }
+        if trimmed.is_empty() {
+            in_blockquote = false;
+            continue;
+        }
+        if trimmed.starts_with('>') {
+            in_blockquote = true;
+            continue;
+        }
+        if in_blockquote {
+            continue;
+        }
+
+        for capture in relation_re.captures_iter(line) {
+            if relations.len() >= MAX_RELATIONS {
+                bail!("PR body exceeds the supported terminal-relation count");
+            }
+            let keyword = capture
+                .get(1)
+                .map(|value| value.as_str().to_ascii_lowercase())
+                .context("closing relation omitted keyword")?;
+            let repository = match capture.name("url_repo").or_else(|| capture.name("repo")) {
+                Some(value) => canonical_repository(value.as_str())?,
+                None => current_repository.to_string(),
+            };
+            let number = capture
+                .name("url_number")
+                .or_else(|| capture.name("number"))
+                .context("closing relation omitted issue number")?
+                .as_str()
+                .parse::<u64>()
+                .context("parsing closing relation issue number")?;
+            if number == 0 {
+                continue;
+            }
+            relations.push(ClosingRelation {
+                key: IssueKey { repository, number },
+                keyword,
+                source_line: sanitize_for_output(line.trim(), MAX_SOURCE_LINE_BYTES),
+                line_number: index + 1,
+            });
+        }
+    }
+    Ok(relations)
+}
+
+fn parse_sections(body: &str, max_body_bytes: usize) -> Result<BTreeMap<SectionKind, Section>> {
+    if body.len() > max_body_bytes {
+        bail!("Markdown body exceeds the bounded section-parser input");
+    }
+    let mut sections: BTreeMap<SectionKind, Section> = BTreeMap::new();
+    let mut current: Option<SectionKind> = None;
+    let mut current_level: Option<usize> = None;
+    let mut fence: Option<Fence> = None;
+
+    for line in body.lines() {
+        let trimmed = line.trim_start();
+        if let Some(marker) = fence_marker(trimmed) {
+            if fence.is_some_and(|opening| marker.closes(opening)) {
+                fence = None;
+            } else if fence.is_none() {
+                fence = Some(marker);
+            }
+            continue;
+        }
+        if fence.is_some() || trimmed.starts_with('>') {
+            continue;
+        }
+        if let Some((kind, heading)) = classify_heading(trimmed) {
+            let section = sections.entry(kind).or_default();
+            section.headings.push(heading);
+            section.occurrence_starts.push(section.body.len());
+            section.occurrence_headings.push(trimmed.trim_start_matches('#').trim().to_string());
+            current = Some(kind);
+            current_level = markdown_heading_level(trimmed);
+            continue;
+        }
+        if let Some(level) = markdown_heading_level(trimmed)
+            && current_level.is_some_and(|current| level <= current)
+        {
+            current = None;
+            current_level = None;
+            continue;
+        }
+        if let Some(kind) = current {
+            let section = sections.entry(kind).or_default();
+            if section.body.len() + line.len() + 1 > MAX_SECTION_BYTES {
+                bail!("stable PR section exceeds the configured byte bound");
+            }
+            if !section.body.is_empty() {
+                section.body.push('\n');
+            }
+            section.body.push_str(line);
+        }
+    }
+    Ok(sections)
+}
+
+fn classify_heading(line: &str) -> Option<(SectionKind, String)> {
+    let hash_count = line.chars().take_while(|character| *character == '#').count();
+    if !(2..=6).contains(&hash_count) {
+        return None;
+    }
+    let heading = line.get(hash_count..)?.trim().trim_matches('*').trim();
+    if heading.is_empty() {
+        return None;
+    }
+    let normalized = heading.to_ascii_lowercase().replace('_', " ");
+    let kind = if normalized == "claim" {
+        SectionKind::Claim
+    } else if normalized.starts_with("controlling issue") {
+        SectionKind::ControllingIssue
+    } else if normalized.starts_with("governing contract") {
+        SectionKind::GoverningContract
+    } else if normalized.starts_with("claim boundary") {
+        SectionKind::ClaimBoundary
+    } else if normalized.starts_with("non-goals") || normalized.starts_with("non goals") {
+        SectionKind::NonGoals
+    } else if normalized.starts_with("remaining work")
+        || normalized.starts_with("remaining ungated callers")
+        || normalized.starts_with("remaining tasks")
+    {
+        SectionKind::RemainingWork
+    } else if normalized == "summary" {
+        SectionKind::Summary
+    } else if normalized == "changes" || normalized == "what changed" {
+        SectionKind::Changes
+    } else if normalized.starts_with("review map") {
+        SectionKind::ReviewMap
+    } else if normalized.starts_with("acceptance") {
+        SectionKind::Acceptance
+    } else if normalized == "objective" {
+        SectionKind::Objective
+    } else if normalized == "outcome" {
+        SectionKind::Outcome
+    } else {
+        return None;
+    };
+    Some((kind, sanitize_for_output(heading, 512)))
+}
+
+fn markdown_heading_level(line: &str) -> Option<usize> {
+    let hash_count = line.chars().take_while(|character| *character == '#').count();
+    if !(2..=6).contains(&hash_count) {
+        return None;
+    }
+    let heading = line.get(hash_count..)?.trim().trim_matches('*').trim();
+    (!heading.is_empty()).then_some(hash_count)
+}
+
+#[derive(Clone, Copy)]
+struct Fence {
+    character: char,
+    length: usize,
+    suffix_is_whitespace: bool,
+}
+
+impl Fence {
+    fn closes(self, opening: Self) -> bool {
+        self.character == opening.character
+            && self.length >= opening.length
+            && self.suffix_is_whitespace
+    }
+}
+
+fn fence_marker(line: &str) -> Option<Fence> {
+    let character = line.chars().next()?;
+    if !matches!(character, '`' | '~') {
+        return None;
+    }
+    let length = line.chars().take_while(|marker| *marker == character).count();
+    let suffix_is_whitespace = line.chars().skip(length).all(char::is_whitespace);
+    (length >= 3).then_some(Fence { character, length, suffix_is_whitespace })
+}
+
+fn section_text(sections: &BTreeMap<SectionKind, Section>, kinds: &[SectionKind]) -> String {
+    let mut text = String::new();
+    for kind in kinds {
+        if let Some(section) = sections.get(kind) {
+            for heading in &section.headings {
+                if !text.is_empty() {
+                    text.push('\n');
+                }
+                text.push_str(heading);
+            }
+            if !section.body.is_empty() {
+                if !text.is_empty() {
+                    text.push('\n');
+                }
+                text.push_str(&section.body);
+            }
+        }
+    }
+    text
+}
+
+fn issue_is_controller(issue: &IssueSubject) -> bool {
+    let title = issue.title.to_ascii_lowercase();
+    let body = issue.body.to_ascii_lowercase();
+    title.starts_with("program(")
+        || title.starts_with("programme(")
+        || title.starts_with("controller(")
+        || body.contains("this is the **accepted") && body.contains("controller")
+        || body.contains("not a coding pr unit")
+}
+
+fn has_semantic_close_packet(
+    sections: &BTreeMap<SectionKind, Section>,
+    key: &IssueKey,
+    current_repository: &str,
+) -> bool {
+    let contract = section_text(sections, &[SectionKind::GoverningContract]);
+    contract.lines().any(|line| {
+        let lower = line.to_ascii_lowercase();
+        let has_marker = lower.contains("semantic close packet") || lower.contains("close packet");
+        let negated = [
+            "not supplied",
+            "not provided",
+            "missing",
+            "absent",
+            "without",
+            "unavailable",
+            "not available",
+            "not included",
+            "not present",
+            "does not include",
+            "doesn't include",
+            "no semantic close packet",
+            "no close packet",
+        ]
+        .iter()
+        .any(|marker| lower.contains(marker));
+        let has_concrete_reference = lower.split_once(':').is_some_and(|(_, reference)| {
+            reference.contains('/') || reference.contains(".json") || reference.contains("https://")
+        });
+        has_marker
+            && !negated
+            && has_concrete_reference
+            && references_issue(line, key, current_repository)
+    })
+}
+
+fn issue_names_pull_as_historical_predecessor(issue_body: &str, pull_number: u64) -> bool {
+    issue_body.lines().any(|line| {
+        let lower = line.trim().to_ascii_lowercase();
+        (lower.starts_with("historical deletion:") || lower.starts_with("historical predecessor:"))
+            && references_number(line, pull_number)
+    })
+}
+
+const PROOF_LEVEL_TERMS: [&str; 6] =
+    ["installed", "public", "packaged", "presentation", "release", "actual host"];
+
+const PROOF_LEVEL_NEGATIVE_POLARITY_MARKERS: [&str; 21] = [
+    "unchanged",
+    "does not change",
+    "do not change",
+    "doesn't change",
+    "must not change",
+    "must not be changed",
+    "is not changed",
+    "are not changed",
+    "will not change",
+    "cannot change",
+    "without changing",
+    "no change to",
+    "does not require",
+    "do not require",
+    "doesn't require",
+    "not required",
+    "not needed",
+    "isn't required",
+    "aren't required",
+    "isn't needed",
+    "aren't needed",
+];
+
+// #15463: the marker list above enumerates three negation verbs (change,
+// require, need). The CP00-PROOF-LEVEL-CONTRADICTION rule needs to recognize
+// negative phrasings of *any* verb that introduce a proof-level term — e.g.
+// "does not manufacture installed proof". Rather than grow the list forever,
+// clause-scoped negation tokens ("not", "never", "no", "cannot", "n't") are
+// detected structurally within the segment the term lives in. `n't` uses a
+// substring match because the leading letter is alphanumeric ("isn't" →
+// before the apostrophe is 's'); the other four use word-boundary matching so
+// substrings like "noted", "another", "snowfall" do not disarm a genuine
+// requirement.
+const NEGATION_TOKEN_WORDS: [&str; 4] = ["not", "never", "no", "cannot"];
+const NEGATION_TOKEN_SUBSTRING: &str = "n't";
+
+const PROOF_LEVEL_REQUIREMENT_PREDICATES: [&str; 6] =
+    ["required", "requires", "require", "must", "needed", "needs"];
+
+fn proof_level_is_explicitly_excluded(
+    pr_sections: &BTreeMap<SectionKind, Section>,
+    issue_sections: &BTreeMap<SectionKind, Section>,
+) -> bool {
+    let issue_requirements = section_text(
+        issue_sections,
+        &[SectionKind::Acceptance, SectionKind::Objective, SectionKind::Outcome],
+    );
+    let exclusions =
+        section_text(pr_sections, &[SectionKind::ClaimBoundary, SectionKind::NonGoals]);
+    let exclusions_lower = exclusions.to_ascii_lowercase();
+    if !contains_explicit_exclusion(&exclusions_lower) {
+        return false;
+    }
+    PROOF_LEVEL_TERMS.iter().any(|term| {
+        issue_requires_proof_level_term(&issue_requirements, term)
+            && proof_level_term_is_excluded(&exclusions_lower, term)
+    })
+}
+
+/// Returns true when `text` (already known to contain at least one explicit-
+/// exclusion marker from [`contains_explicit_exclusion`]) excludes the proof-
+/// level `term` somewhere in the same sentence/list-item/clause.
+///
+/// This mirrors `unit_requires_proof_level_term`'s clause-scoping for the PR
+/// side. The earlier section-wide `contains_proof_level_term` allowed any
+/// mention of `public`/`installed`/`packaged`/`presentation`/`release`/
+/// `actual host` to satisfy the rule as long as the section also contained
+/// any exclusion marker — so a Claim Boundary that *asserted* the public
+/// surface was covered still armed CP00 whenever a sibling sentence said
+/// "Not claimed: foo.". See #15627.
+fn proof_level_term_is_excluded(text: &str, term: &str) -> bool {
+    requirement_units(text).iter().flat_map(|unit| split_coordinated_clauses(unit)).any(|unit| {
+        let lower = unit.to_ascii_lowercase();
+        contains_explicit_exclusion(&lower) && contains_proof_level_term(&lower, term)
+    })
+}
+
+fn issue_requires_proof_level_term(text: &str, term: &str) -> bool {
+    requirement_units(text).iter().any(|unit| unit_requires_proof_level_term(unit, term))
+}
+
+fn requirement_units(text: &str) -> Vec<String> {
+    markdown_paragraphs(text)
+        .into_iter()
+        .flat_map(split_markdown_list_items)
+        .flat_map(|item| split_sentences(&item))
+        .flat_map(|sentence| split_on_semicolons(&sentence))
+        .filter(|unit| !unit.is_empty())
+        .collect()
+}
+
+fn split_markdown_list_items(text: String) -> Vec<String> {
+    let lines: Vec<&str> = text.lines().collect();
+    if !lines.iter().any(|line| list_item_body(line).is_some()) {
+        return vec![text];
+    }
+    let mut items = Vec::new();
+    let mut current = String::new();
+    for line in lines {
+        if let Some(body) = list_item_body(line) {
+            if !current.is_empty() {
+                items.push(std::mem::take(&mut current));
+            }
+            current = body.trim().to_string();
+            continue;
+        }
+        if current.is_empty() {
+            current = line.trim().to_string();
+            continue;
+        }
+        let continuation = line.trim();
+        if !continuation.is_empty() {
+            current.push(' ');
+            current.push_str(continuation);
+        }
+    }
+    if !current.is_empty() {
+        items.push(current);
+    }
+    if items.is_empty() { vec![text] } else { items }
+}
+
+fn list_item_body(line: &str) -> Option<&str> {
+    let trimmed = line.trim_start();
+    if let Some(body) = trimmed.strip_prefix("- ").or_else(|| trimmed.strip_prefix("* ")) {
+        return Some(body);
+    }
+    let digit_count = trimmed.bytes().take_while(u8::is_ascii_digit).count();
+    if digit_count == 0 {
+        return None;
+    }
+    trimmed.get(digit_count..).and_then(|tail| tail.strip_prefix(". "))
+}
+
+fn split_on_semicolons(text: &str) -> Vec<String> {
+    text.split(';').map(str::trim).filter(|part| !part.is_empty()).map(ToOwned::to_owned).collect()
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PolaritySignal {
+    Negative,
+    Require,
+}
+
+fn unit_requires_proof_level_term(unit: &str, term: &str) -> bool {
+    let segments = split_coordinated_clauses(unit);
+    let local: Vec<Option<bool>> =
+        segments.iter().map(|segment| term_local_requirement(segment, term)).collect();
+    let negative_segment: Vec<bool> =
+        segments.iter().map(|segment| clause_has_negative_polarity(segment)).collect();
+    let local_predicate: Vec<bool> =
+        segments.iter().map(|segment| segment_has_local_predicate(segment)).collect();
+
+    local.iter().enumerate().any(|(index, requirement)| match requirement {
+        Some(true) => true,
+        Some(false) => false,
+        None => {
+            if !contains_proof_level_term(&segments[index], term) {
+                return false;
+            }
+            let inherited_negative = ((index + 1)..segments.len()).any(|later| {
+                negative_segment[later] && (index..later).all(|between| !local_predicate[between])
+            });
+            !inherited_negative
+        }
+    })
+}
+
+fn term_local_requirement(segment: &str, term: &str) -> Option<bool> {
+    let lower = segment.to_ascii_lowercase();
+    let matches = proof_level_term_indices(&lower, term);
+    if matches.is_empty() {
+        return None;
+    }
+    let mut required = false;
+    let mut unsignaled = false;
+    for start in matches {
+        let Some(end) = start.checked_add(term.len()) else {
+            continue;
+        };
+        let before = lower.get(..start).unwrap_or("");
+        let after = lower.get(end..).unwrap_or("");
+        match nearest_polarity_signal(before, after) {
+            Some(PolaritySignal::Require) => required = true,
+            Some(PolaritySignal::Negative) => {}
+            None => unsignaled = true,
+        }
+    }
+    if required {
+        Some(true)
+    } else if unsignaled {
+        None
+    } else {
+        Some(false)
+    }
+}
+
+fn nearest_polarity_signal(before: &str, after: &str) -> Option<PolaritySignal> {
+    earliest_polarity_signal(after).or_else(|| earliest_polarity_signal(before))
+}
+
+fn earliest_polarity_signal(text: &str) -> Option<PolaritySignal> {
+    let mut best: Option<(usize, PolaritySignal)> = None;
+    for marker in PROOF_LEVEL_NEGATIVE_POLARITY_MARKERS {
+        if let Some(index) = text.find(marker) {
+            replace_earlier_signal(&mut best, index, PolaritySignal::Negative);
+        }
+    }
+    if let Some(index) = earliest_negation_token_index(text) {
+        replace_earlier_signal(&mut best, index, PolaritySignal::Negative);
+    }
+    for predicate in PROOF_LEVEL_REQUIREMENT_PREDICATES {
+        if let Some(index) = first_word_index_unless_negated(text, predicate) {
+            replace_earlier_signal(&mut best, index, PolaritySignal::Require);
+        }
+    }
+    best.map(|(_, signal)| signal)
+}
+
+/// Returns the earliest byte index of any clause-scoped negation token in
+/// `text`, or `None` if none is present. See [`NEGATION_TOKEN_WORDS`] and
+/// [`NEGATION_TOKEN_SUBSTRING`] for the rationale.
+fn earliest_negation_token_index(text: &str) -> Option<usize> {
+    let mut best: Option<usize> = None;
+    for token in NEGATION_TOKEN_WORDS {
+        if let Some(index) = first_word_index(text, token) {
+            best = Some(best.map_or(index, |current| current.min(index)));
+        }
+    }
+    if let Some(index) = text.find(NEGATION_TOKEN_SUBSTRING) {
+        best = Some(best.map_or(index, |current| current.min(index)));
+    }
+    best
+}
+
+/// Returns the index of the first whole-word occurrence of `word` in `text`
+/// that is *not* immediately followed by a clause-scoped negation token.
+///
+/// The CP00 requirement predicates (must, required, needed, …) are otherwise
+/// legitimate Require signals, but a modal like "must" inside a "must not X"
+/// phrase is part of a negative construction, not a positive one. Without
+/// this guard, `Mapping must not manufacture public proof` would arm the rule
+/// on the bare "must" predicate at byte offset 7 even though the structural
+/// "not" at offset 12 should win (#15463).
+fn first_word_index_unless_negated(text: &str, word: &str) -> Option<usize> {
+    word_match_indices(text, word)
+        .into_iter()
+        .find(|index| !is_immediately_followed_by_negation(text, *index, word.len()))
+}
+
+/// True when the text following `word` (of length `word_len` starting at
+/// `index`) opens with a negation token after any leading whitespace. Covers
+/// `must not X`, `required not`, `mustn't X` (no space), and the broader
+/// `not / never / no / cannot / n't` vocabulary.
+fn is_immediately_followed_by_negation(text: &str, index: usize, word_len: usize) -> bool {
+    let after = text.get(index + word_len..).unwrap_or("");
+    let trimmed = after.trim_start();
+    for neg in NEGATION_TOKEN_WORDS {
+        if let Some(rest) = trimmed.strip_prefix(neg)
+            && (rest.is_empty()
+                || !rest.chars().next().is_some_and(|character| {
+                    character.is_ascii_alphanumeric() && character != '\''
+                }))
+        {
+            return true;
+        }
+    }
+    trimmed.starts_with(NEGATION_TOKEN_SUBSTRING)
+}
+
+fn replace_earlier_signal(
+    best: &mut Option<(usize, PolaritySignal)>,
+    index: usize,
+    signal: PolaritySignal,
+) {
+    match *best {
+        Some((current, PolaritySignal::Negative)) if index >= current => {}
+        Some((current, _)) if index > current => {}
+        Some((current, _)) if index == current && signal != PolaritySignal::Negative => {}
+        _ => *best = Some((index, signal)),
+    }
+}
+
+fn segment_has_local_predicate(segment: &str) -> bool {
+    earliest_polarity_signal(&segment.to_ascii_lowercase()).is_some()
+}
+
+fn clause_has_negative_polarity(clause: &str) -> bool {
+    earliest_polarity_signal(&clause.to_ascii_lowercase()) == Some(PolaritySignal::Negative)
+}
+
+fn proof_level_term_indices(text: &str, term: &str) -> Vec<usize> {
+    if term.contains(' ') {
+        text.match_indices(term).map(|(index, _)| index).collect()
+    } else {
+        word_match_indices(text, term)
+    }
+}
+
+fn first_word_index(text: &str, word: &str) -> Option<usize> {
+    word_match_indices(text, word).into_iter().next()
+}
+
+fn word_match_indices(text: &str, word: &str) -> Vec<usize> {
+    text.match_indices(word)
+        .filter(|(index, _)| word_boundaries_hold(text, *index, word.len()))
+        .map(|(index, _)| index)
+        .collect()
+}
+
+fn word_boundaries_hold(text: &str, index: usize, len: usize) -> bool {
+    // A hyphenated compound (`source-release`) must not donate its trailing
+    // term (`release`) as a standalone proof-level mention (#15505): `-`
+    // joins identifier characters for proof-level matching, alongside
+    // alphanumerics and `_`.
+    let before_ok =
+        text.get(..index).and_then(|prefix| prefix.chars().next_back()).is_none_or(|character| {
+            !character.is_ascii_alphanumeric() && character != '_' && character != '-'
+        });
+    let after_ok =
+        text.get(index + len..).and_then(|suffix| suffix.chars().next()).is_none_or(|character| {
+            !character.is_ascii_alphanumeric() && character != '_' && character != '-'
+        });
+    before_ok && after_ok
+}
+
+fn split_coordinated_clauses(text: &str) -> Vec<String> {
+    let lower = text.to_ascii_lowercase();
+    let mut segments = Vec::new();
+    let mut start = 0;
+    let mut index = 0;
+    while index < lower.len() {
+        if let Some(separator_len) = coordinated_separator_len(&lower, index) {
+            if let Some(segment) = text.get(start..index) {
+                let segment = segment.trim();
+                if !segment.is_empty() {
+                    segments.push(segment.to_string());
+                }
+            }
+            start = index + separator_len;
+            index = start;
+            continue;
+        }
+        let next =
+            lower.get(index..).and_then(|tail| tail.chars().next()).map_or(1, char::len_utf8);
+        index += next;
+    }
+    if let Some(tail) = text.get(start..) {
+        let tail = tail.trim();
+        if !tail.is_empty() {
+            segments.push(tail.to_string());
+        }
+    }
+    if segments.is_empty() {
+        let trimmed = text.trim();
+        if trimmed.is_empty() { Vec::new() } else { vec![trimmed.to_string()] }
+    } else {
+        segments
+    }
+}
+
+fn coordinated_separator_len(lower: &str, index: usize) -> Option<usize> {
+    for separator in [" and ", " but "] {
+        if lower.get(index..).is_some_and(|tail| tail.starts_with(separator)) {
+            return Some(separator.len());
+        }
+    }
+    None
+}
+
+fn contains_proof_level_term(text: &str, term: &str) -> bool {
+    let text = text.to_ascii_lowercase();
+    if term.contains(' ') { text.contains(term) } else { contains_word(&text, term) }
+}
+
+const REQUIRED_WORK_SUBJECTS: &[&str] = &[
+    "full acceptance criteria",
+    "complete acceptance criteria",
+    "remaining acceptance criteria",
+    "full acceptance",
+    "complete acceptance",
+    "remaining acceptance",
+    "full issue work",
+    "complete issue work",
+    "remaining issue work",
+    "full required work",
+    "complete required work",
+    "remaining required work",
+    "complete remaining work",
+    "remaining work",
+    "complete remaining call-site cohort",
+];
+
+#[cfg(test)]
+fn explicitly_not_proven_required_work(text: &str) -> bool {
+    required_work_exclusion(text, None)
+}
+
+fn required_work_exclusion(text: &str, owner_context: Option<(&IssueKey, &str)>) -> bool {
+    attribution_units(text).iter().any(|unit| {
+        // Markdown emphasis and soft line wrapping do not change a subject.
+        // Keep paragraph/list/sentence boundaries before normalizing whitespace.
+        let unit = prose_without_inline_code(unit).to_ascii_lowercase();
+        let unit = unit.split_whitespace().collect::<Vec<_>>().join(" ");
+        let unit = without_supported_emphasis(&unit);
+        REQUIRED_WORK_SUBJECTS.iter().any(|subject| {
+            word_match_indices(&unit, subject).into_iter().any(|index| {
+                // A contained subject cannot bypass ownership attached to the
+                // complete supported subject, even when its start differs.
+                if REQUIRED_WORK_SUBJECTS.iter().any(|longer| {
+                    longer.len() > subject.len()
+                        && word_match_indices(&unit, longer).into_iter().any(|start| {
+                            start <= index && start + longer.len() >= index + subject.len()
+                        })
+                }) {
+                    return false;
+                }
+                let Some(before) = unit.get(..index) else { return false };
+                let Some(after) = unit.get(index + subject.len()..) else { return false };
+                let before = before.trim_end();
+                let before = if before == "the" {
+                    ""
+                } else {
+                    before.strip_suffix(" the").unwrap_or(before)
+                };
+                let (before, prefix_owner) = strip_issue_owner_suffix(before);
+                let (after, suffix_owner) = strip_issue_owner_prefix(after.trim_start());
+                if [prefix_owner, suffix_owner]
+                    .into_iter()
+                    .flatten()
+                    .any(|owner| !subject_owner_matches(owner, owner_context))
+                {
+                    return false;
+                }
+                let prefix_exclusion = [
+                    "does not prove",
+                    "does not establish",
+                    "does not claim",
+                    "not proved",
+                    "not proven",
+                    "not established",
+                    "not claimed",
+                    "explicitly out of scope",
+                ]
+                .iter()
+                .any(|exclusion| {
+                    let Some(introduction) =
+                        before.trim_end_matches(':').trim_end().strip_suffix(exclusion)
+                    else {
+                        return false;
+                    };
+                    if introduction
+                        .chars()
+                        .next_back()
+                        .is_some_and(|character| character.is_alphanumeric() || character == '_')
+                    {
+                        return false;
+                    }
+                    *exclusion != "explicitly out of scope"
+                        || !matches!(introduction.split_whitespace().last(), Some("not" | "never"))
+                });
+                let suffix_exclusion = ["is ", "are ", "remains "]
+                    .iter()
+                    .filter_map(|copula| after.strip_prefix(copula))
+                    .any(|predicate| {
+                        [
+                            "not proved",
+                            "not proven",
+                            "not established",
+                            "not claimed",
+                            "explicitly out of scope",
+                        ]
+                        .iter()
+                        .any(|exclusion| {
+                            predicate.strip_prefix(exclusion).is_some_and(|rest| {
+                                rest.chars().next().is_none_or(|ch| !ch.is_alphanumeric())
+                            })
+                        })
+                    });
+                prefix_exclusion || suffix_exclusion
+            })
+        })
+    })
+}
+
+fn strip_issue_owner_suffix(text: &str) -> (&str, Option<&str>) {
+    let (before, owner) = text.rsplit_once(' ').unwrap_or(("", text));
+    match owner.strip_suffix("'s") {
+        // Issue-looking tokens still pass the strict identity parser below;
+        // malformed owners are refused, never reinterpreted as ordinary prose.
+        Some(owner) if hash_issue_number_present(owner) => (before, Some(owner)),
+        _ => (text, None),
+    }
+}
+
+fn without_supported_emphasis(text: &str) -> String {
+    let mut normalized = text.to_string();
+    // These are complete supported subjects and exclusion labels/predicates,
+    // not arbitrary Markdown fragments or punctuation deletion.
+    for phrase in REQUIRED_WORK_SUBJECTS.iter().copied().chain([
+        "does not prove",
+        "does not establish",
+        "does not claim",
+        "not proved",
+        "not proven",
+        "not established",
+        "not claimed",
+        "explicitly out of scope",
+    ]) {
+        for phrase in [phrase.to_string(), format!("{phrase}:")] {
+            for (delimiter, marker) in [("**", '*'), ("*", '*'), ("__", '_'), ("_", '_')] {
+                let pattern = format!("{delimiter}{phrase}{delimiter}");
+                let starts: Vec<usize> = normalized
+                    .match_indices(&pattern)
+                    .filter_map(|(start, _)| {
+                        let end = start + pattern.len();
+                        let before = normalized.get(..start)?.chars().next_back();
+                        let after = normalized.get(end..)?.chars().next();
+                        // Escape parity is the same for emphasis and backticks.
+                        (!backtick_is_escaped(&normalized, start)
+                            && before != Some(marker)
+                            && after != Some(marker)
+                            && !before.is_some_and(|character| {
+                                character.is_alphanumeric() || character == '_'
+                            })
+                            && !after.is_some_and(|character| {
+                                character.is_alphanumeric() || character == '_'
+                            }))
+                        .then_some(start)
+                    })
+                    .collect();
+                for start in starts.into_iter().rev() {
+                    normalized.replace_range(start..start + pattern.len(), &phrase);
+                }
+            }
+        }
+    }
+    normalized
+}
+
+fn prose_without_inline_code(text: &str) -> String {
+    let mut prose = String::new();
+    let mut index = 0;
+    while let Some(tail) = text.get(index..) {
+        let Some(character) = tail.chars().next() else { break };
+        if character == '`' && !backtick_is_escaped(text, index) {
+            let run = tail.chars().take_while(|next| *next == '`').count();
+            if let Some(end) = matching_inline_code_span_end(text, index, run) {
+                // Preserve an opaque boundary: removing an example must not join
+                // separate prose fragments into a supported subject/template.
+                prose.push('\0');
+                index = end;
+                continue;
+            }
+            // An unmatched run is literal prose, not a shorter code opener.
+            prose.extend(std::iter::repeat_n('`', run));
+            index += run;
+            continue;
+        }
+        prose.push(character);
+        index += character.len_utf8();
+    }
+    prose
+}
+
+fn strip_issue_owner_prefix(text: &str) -> (&str, Option<&str>) {
+    let Some(owned) = text.strip_prefix("owned by ").or_else(|| text.strip_prefix("of ")) else {
+        return (text, None);
+    };
+    let (owner, after) = owned.split_once(' ').unwrap_or((owned, ""));
+    (after, Some(owner.trim_end_matches(['.', ';', ':', '!', '?'])))
+}
+
+fn subject_owner_matches(text: &str, context: Option<(&IssueKey, &str)>) -> bool {
+    let current_repository = context.map_or("example/repository", |(_, repository)| repository);
+    let Some(owner) = parse_issue_reference(text, current_repository) else { return false };
+    context.is_none_or(|(key, _)| owner == *key)
+}
+
+fn parse_issue_reference(text: &str, current_repository: &str) -> Option<IssueKey> {
+    let (repository, number) = text.rsplit_once('#')?;
+    if number.is_empty() || !number.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    let number = number.parse::<u64>().ok()?;
+    if number == 0 {
+        return None;
+    }
+    let repository = if repository.is_empty() { current_repository } else { repository };
+    Some(IssueKey { repository: canonical_repository(repository).ok()?, number })
+}
+
+fn contains_explicit_exclusion(text: &str) -> bool {
+    [
+        "does not prove",
+        "does not establish",
+        "does not claim",
+        "not proved",
+        "not proven",
+        "not established",
+        "not claimed",
+        "explicitly out of scope",
+    ]
+    .iter()
+    .any(|marker| text.contains(marker))
+}
+
+fn contains_partial_boundary(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    (contains_word(&lower, "phase") && contains_word(&lower, "only"))
+        || [
+            "partial delivery",
+            "partial fix",
+            "partial implementation",
+            "partial change",
+            "partial scope",
+            "partial support",
+            "partial coverage",
+            "partial address",
+            "only partially",
+            "partially addresses",
+            "partially implements",
+            "partially covers",
+            "partially fixes",
+            "partially supports",
+        ]
+        .iter()
+        .any(|marker| lower.contains(marker))
+        || lower.contains("slice only")
+        || lower.contains("bounded slice")
+}
+
+fn issue_is_phase_leaf(issue: &IssueSubject) -> bool {
+    let text = format!("{}\n{}", issue.title, issue.body).to_ascii_lowercase();
+    text.contains("this is phase ")
+        || text.contains("phase leaf")
+        || text.contains("phase-leaf")
+        || text.contains("phase_leaf")
+}
+
+fn references_issue(text: &str, key: &IssueKey, current_repository: &str) -> bool {
+    if key.repository == current_repository && references_number(text, key.number) {
+        return true;
+    }
+    let qualified = format!("{}#{}", key.repository, key.number);
+    let lower = text.to_ascii_lowercase();
+    lower.contains(&qualified)
+        || lower.contains(&format!("https://github.com/{}/issues/{}", key.repository, key.number))
+}
+
+fn relation_scoped_section_text(
+    sections: &BTreeMap<SectionKind, Section>,
+    kinds: &[SectionKind],
+    relation_count: usize,
+    key: &IssueKey,
+    current_repository: &str,
+) -> String {
+    if relation_count == 1 {
+        return section_text(sections, kinds);
+    }
+
+    kinds
+        .iter()
+        .filter_map(|kind| sections.get(kind))
+        .flat_map(|section| section.body.lines())
+        .filter(|line| references_issue(line, key, current_repository))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Keep claim-boundary / non-goal units whose exclusions can be attributed to the
+/// issue named in the closing relation.
+///
+/// Units are sentences inside Markdown paragraphs. A whitespace-only line is
+/// a paragraph break, matching rendered Markdown rather than a literal `\n\n`.
+/// Sentence ends are `.`, `!`, or `?` followed by whitespace or end of text,
+/// except inside Markdown inline code spans (matched backtick runs). A
+/// backtick escaped by an odd-length backslash run is literal prose and does
+/// not open or close a span.
+/// A unit that mentions some other issue and does not mention the closed issue
+/// is a neighboring-issue disclaimer. Unnumbered prose still counts: atomic
+/// closes often describe "the remaining work" without repeating `#N`, even
+/// when a later sentence names the issue that tracks that leftover.
+/// With multiple closing relations, retain only complete units naming this issue;
+/// a soft-wrapped predicate stays with its owner, while separate units do not borrow it.
+fn exclusion_text_attributable_to_closed_issue(
+    text: &str,
+    key: &IssueKey,
+    current_repository: &str,
+    relation_count: usize,
+) -> String {
+    attribution_units(text)
+        .into_iter()
+        .filter(|unit| {
+            let prose = prose_without_inline_code(unit);
+            let references = exact_issue_references(&prose, current_repository);
+            if references.is_empty() {
+                relation_count == 1
+            } else {
+                references.iter().any(|reference| reference == key)
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+fn attribution_units(text: &str) -> Vec<String> {
+    markdown_paragraphs(text)
+        .into_iter()
+        .flat_map(split_markdown_list_items)
+        .flat_map(|paragraph| split_sentences(&paragraph))
+        .filter(|unit| !unit.is_empty())
+        .collect()
+}
+
+fn markdown_paragraphs(text: &str) -> Vec<String> {
+    let mut paragraphs = Vec::new();
+    let mut current = String::new();
+    for line in text.lines() {
+        if line.trim().is_empty() {
+            if !current.is_empty() {
+                paragraphs.push(std::mem::take(&mut current));
+            }
+            continue;
+        }
+        if !current.is_empty() {
+            current.push('\n');
+        }
+        current.push_str(line);
+    }
+    if !current.is_empty() {
+        paragraphs.push(current);
+    }
+    paragraphs
+}
+
+fn split_sentences(text: &str) -> Vec<String> {
+    let mut sentences = Vec::new();
+    let mut start = 0;
+    let mut index = 0;
+    while index < text.len() {
+        let Some(character) = text[index..].chars().next() else {
+            break;
+        };
+        if character == '`' {
+            if backtick_is_escaped(text, index) {
+                index += 1;
+                continue;
+            }
+            let run = text[index..].chars().take_while(|next| *next == '`').count();
+            if let Some(span_end) = matching_inline_code_span_end(text, index, run) {
+                index = span_end;
+                continue;
+            }
+            index += run;
+            continue;
+        }
+        let after = index + character.len_utf8();
+        if matches!(character, '.' | '!' | '?') {
+            let boundary = text
+                .get(after..)
+                .and_then(|tail| tail.chars().next())
+                .is_none_or(char::is_whitespace);
+            if boundary {
+                if let Some(sentence) = text.get(start..after) {
+                    let sentence = sentence.trim();
+                    if !sentence.is_empty() {
+                        sentences.push(sentence.to_string());
+                    }
+                }
+                start = after;
+            }
+        }
+        index = after;
+    }
+    if let Some(tail) = text.get(start..) {
+        let tail = tail.trim();
+        if !tail.is_empty() {
+            sentences.push(tail.to_string());
+        }
+    }
+    sentences
+}
+
+fn matching_inline_code_span_end(text: &str, opener_start: usize, run: usize) -> Option<usize> {
+    let mut index = opener_start.checked_add(run)?;
+    while index < text.len() {
+        let Some(character) = text[index..].chars().next() else {
+            break;
+        };
+        if character == '`' {
+            let close_run = text[index..].chars().take_while(|next| *next == '`').count();
+            if close_run == run {
+                return index.checked_add(run);
+            }
+            index += close_run;
+            continue;
+        }
+        index += character.len_utf8();
+    }
+    None
+}
+
+fn backtick_is_escaped(text: &str, index: usize) -> bool {
+    let Some(prefix) = text.get(..index) else {
+        return false;
+    };
+    let backslashes = prefix.chars().rev().take_while(|character| *character == '\\').count();
+    backslashes % 2 == 1
+}
+
+fn exact_issue_references(text: &str, current_repository: &str) -> Vec<IssueKey> {
+    let lower = text.to_ascii_lowercase();
+    let mut references: Vec<IssueKey> = lower
+        .split(|character: char| {
+            !character.is_alphanumeric() && !matches!(character, '_' | '-' | '.' | '/' | '#')
+        })
+        .filter_map(|token| parse_issue_reference(token.trim_end_matches('.'), current_repository))
+        .collect();
+    for (start, _) in lower.match_indices("https://github.com/") {
+        let enclosing_prefix = lower
+            .get(..start)
+            .unwrap_or_default()
+            .rsplit(|character: char| {
+                character.is_whitespace() || matches!(character, '<' | '(' | '[' | '"' | '\'')
+            })
+            .next()
+            .unwrap_or_default();
+        if enclosing_prefix.contains("://") {
+            continue;
+        }
+        if lower.get(..start).and_then(|prefix| prefix.chars().next_back()).is_some_and(
+            |character| {
+                character.is_alphanumeric()
+                    || matches!(character, '_' | '-' | '.' | '/' | ':' | '#' | '?')
+            },
+        ) {
+            continue;
+        }
+        let Some(tail) = lower.get(start + "https://github.com/".len()..) else { continue };
+        let path = tail
+            .split(|character: char| {
+                !character.is_alphanumeric() && !matches!(character, '_' | '-' | '.' | '/')
+            })
+            .next()
+            .unwrap_or_default()
+            .trim_end_matches('.');
+        let Some((repository, number)) = path.split_once("/issues/") else { continue };
+        if let Some(reference) =
+            parse_issue_reference(&format!("{repository}#{number}"), current_repository)
+        {
+            references.push(reference);
+        }
+    }
+    references
+}
+
+fn hash_issue_number_present(text: &str) -> bool {
+    text.match_indices('#').any(|(index, _)| {
+        text.get(index + 1..)
+            .and_then(|tail| tail.chars().next())
+            .is_some_and(|character| character.is_ascii_digit())
+    })
+}
+
+fn references_number(text: &str, number: u64) -> bool {
+    let needle = format!("#{number}");
+    text.match_indices(&needle).any(|(index, _)| {
+        let after = index + needle.len();
+        text.get(after..)
+            .and_then(|tail| tail.chars().next())
+            .is_none_or(|character| !character.is_ascii_digit())
+    })
+}
+
+fn contains_word(text: &str, word: &str) -> bool {
+    !word_match_indices(text, word).is_empty()
+}
+
+fn suggested_advances(key: &IssueKey, current_repository: &str) -> String {
+    if key.repository == current_repository {
+        format!("Advances #{}", key.number)
+    } else {
+        format!("Advances {}#{}", key.repository, key.number)
+    }
+}
+
+fn suggested_refs(key: &IssueKey, current_repository: &str) -> String {
+    if key.repository == current_repository {
+        format!("Refs #{}", key.number)
+    } else {
+        format!("Refs {}#{}", key.repository, key.number)
+    }
+}
+
+fn canonical_repository(repository: &str) -> Result<String> {
+    let trimmed = repository.trim();
+    if trimmed.len() > 200 {
+        bail!("repository identity exceeds 200 bytes");
+    }
+    let (owner, name) =
+        trimmed.split_once('/').context("repository identity must be owner/name")?;
+    if owner.is_empty()
+        || name.is_empty()
+        || name.contains('/')
+        || !owner.chars().all(valid_repo_character)
+        || !name.chars().all(valid_repo_character)
+    {
+        bail!("invalid repository identity {trimmed:?}");
+    }
+    Ok(format!("{}/{}", owner.to_ascii_lowercase(), name.to_ascii_lowercase()))
+}
+
+fn valid_repo_character(character: char) -> bool {
+    character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.')
+}
+
+fn is_full_sha(value: &str) -> bool {
+    value.len() == 40
+        && value
+            .chars()
+            .all(|character| character.is_ascii_digit() || ('a'..='f').contains(&character))
+}
+
+fn read_bounded(path: &Path, max_bytes: usize, label: &str) -> Result<Vec<u8>> {
+    let metadata = fs::metadata(path).with_context(|| format!("reading {label} metadata"))?;
+    let length = usize::try_from(metadata.len()).context("input size does not fit usize")?;
+    if length > max_bytes {
+        bail!("{label} exceeds {max_bytes} bytes");
+    }
+    let bytes = fs::read(path).with_context(|| format!("reading {label}"))?;
+    if bytes.len() > max_bytes {
+        bail!("{label} exceeded the bound while being read");
+    }
+    Ok(bytes)
+}
+
+fn sanitize_for_output(value: &str, max_bytes: usize) -> String {
+    let mut output = String::new();
+    for character in value.chars() {
+        let rendered = if character.is_control() && character != '\t' { '�' } else { character };
+        if output.len() + rendered.len_utf8() > max_bytes {
+            output.push('…');
+            break;
+        }
+        output.push(rendered);
+    }
+    output
+}
+
+fn print_human(report: &Report) {
+    println!(
+        "{}   {}#{}   {}",
+        report.aggregate_code.as_str(),
+        report.repository,
+        report.pull_request_number,
+        sanitize_for_output(&report.pull_request_title, 512)
+    );
+    // #15640: prove what this run actually evaluated — one captured live
+    // snapshot — so a rerun verdict can be tied to the exact subject bytes.
+    // Printed before any early return: a no-relation verdict still carries
+    // its subject receipt.
+    if let Some(snapshot) = &report.subject_snapshot {
+        println!(
+            "  subject snapshot: {} updated_at={} event_head={} live_head={} title/body sha256={} ({}+{} bytes)",
+            snapshot.source,
+            snapshot.pr_updated_at,
+            snapshot.event_head_sha,
+            snapshot.head_sha,
+            snapshot.title_body_sha256,
+            snapshot.title_bytes,
+            snapshot.body_bytes
+        );
+    }
+    if report.rows.is_empty() {
+        println!("  no automatic closing relation; issue/domain lookup skipped");
+        return;
+    }
+    for row in &report.rows {
+        println!(
+            "  {}   {}#{}   line {}",
+            row.code.as_str(),
+            row.repository,
+            row.issue_number,
+            row.line_number
+        );
+        if let Some(rule) = &row.rule_id {
+            println!("    rule: {rule}");
+        }
+        println!("    reason: {}", row.reason);
+        println!("    relation: {}", row.source_line);
+        if let Some(replacement) = &row.suggested_relation {
+            println!("    replacement: {replacement}");
+        }
+        if let Some(mapping) = &row.retirement_mapping {
+            println!("    retirement: {mapping}");
+        }
+    }
+    println!(
+        "  semantic_completion_proven: false (a containment pass is never semantic-close proof)"
+    );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    const FIXTURES: [(&str, &str); 26] = [
+        (
+            "valid-explicit-subject-inventory-14633",
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../.ci/semantic-close-containment/fixtures/valid-explicit-subject-inventory-14633.json"
+            )),
+        ),
+        (
+            "valid-explicit-subject-guard-14654",
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../.ci/semantic-close-containment/fixtures/valid-explicit-subject-guard-14654.json"
+            )),
+        ),
+        (
+            "valid-explicit-subject-markdown-boundaries",
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../.ci/semantic-close-containment/fixtures/valid-explicit-subject-markdown-boundaries.json"
+            )),
+        ),
+        (
+            "invalid-explicit-subject-full-acceptance",
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../.ci/semantic-close-containment/fixtures/invalid-explicit-subject-full-acceptance.json"
+            )),
+        ),
+        (
+            "invalid-phase-terminal-5023-5001",
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../.ci/semantic-close-containment/fixtures/invalid-phase-terminal-5023-5001.json"
+            )),
+        ),
+        (
+            "invalid-partial-slice-6239-5016",
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../.ci/semantic-close-containment/fixtures/invalid-partial-slice-6239-5016.json"
+            )),
+        ),
+        (
+            "invalid-proof-level-6282-5901",
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../.ci/semantic-close-containment/fixtures/invalid-proof-level-6282-5901.json"
+            )),
+        ),
+        (
+            "valid-proof-level-unchanged-release",
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../.ci/semantic-close-containment/fixtures/valid-proof-level-unchanged-release.json"
+            )),
+        ),
+        (
+            "invalid-proof-level-required-release",
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../.ci/semantic-close-containment/fixtures/invalid-proof-level-required-release.json"
+            )),
+        ),
+        (
+            "valid-proof-level-hyphenated-compound-source-release",
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../.ci/semantic-close-containment/fixtures/valid-proof-level-hyphenated-compound-source-release.json"
+            )),
+        ),
+        (
+            "valid-proof-level-does-not-manufacture-10831",
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../.ci/semantic-close-containment/fixtures/valid-proof-level-does-not-manufacture-10831.json"
+            )),
+        ),
+        (
+            "invalid-predecessor-successor-5968-5231",
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../.ci/semantic-close-containment/fixtures/invalid-predecessor-successor-5968-5231.json"
+            )),
+        ),
+        (
+            "invalid-controller-no-packet",
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../.ci/semantic-close-containment/fixtures/invalid-controller-no-packet.json"
+            )),
+        ),
+        (
+            "invalid-explicit-unproven",
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../.ci/semantic-close-containment/fixtures/invalid-explicit-unproven.json"
+            )),
+        ),
+        (
+            "invalid-explicit-unproven-named-closed-issue",
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../.ci/semantic-close-containment/fixtures/invalid-explicit-unproven-named-closed-issue.json"
+            )),
+        ),
+        (
+            "invalid-explicit-unproven-tracked-by-neighbor",
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../.ci/semantic-close-containment/fixtures/invalid-explicit-unproven-tracked-by-neighbor.json"
+            )),
+        ),
+        (
+            "invalid-explicit-unproven-escaped-backtick",
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../.ci/semantic-close-containment/fixtures/invalid-explicit-unproven-escaped-backtick.json"
+            )),
+        ),
+        (
+            "invalid-remaining-same-issue",
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../.ci/semantic-close-containment/fixtures/invalid-remaining-same-issue.json"
+            )),
+        ),
+        (
+            "valid-controller-packet",
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../.ci/semantic-close-containment/fixtures/valid-controller-packet.json"
+            )),
+        ),
+        (
+            "valid-phase-leaf-2624",
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../.ci/semantic-close-containment/fixtures/valid-phase-leaf-2624.json"
+            )),
+        ),
+        (
+            "valid-atomic",
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../.ci/semantic-close-containment/fixtures/valid-atomic.json"
+            )),
+        ),
+        (
+            "valid-neighbor-disclaimer-unproven",
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../.ci/semantic-close-containment/fixtures/valid-neighbor-disclaimer-unproven.json"
+            )),
+        ),
+        (
+            "valid-neighbor-disclaimer-inline-code",
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../.ci/semantic-close-containment/fixtures/valid-neighbor-disclaimer-inline-code.json"
+            )),
+        ),
+        (
+            "valid-representation-scope-substring",
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../.ci/semantic-close-containment/fixtures/valid-representation-scope-substring.json"
+            )),
+        ),
+        (
+            "no-terminal-relation",
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../.ci/semantic-close-containment/fixtures/no-terminal-relation.json"
+            )),
+        ),
+        (
+            "multiple-relations-one-invalid",
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../.ci/semantic-close-containment/fixtures/multiple-relations-one-invalid.json"
+            )),
+        ),
+    ];
+
+    #[test]
+    fn immutable_fixture_matrix_matches_expected_dispositions() -> Result<()> {
+        for (name, raw) in FIXTURES {
+            let fixture: Fixture = serde_json::from_str(raw)
+                .with_context(|| format!("parsing embedded fixture {name}"))?;
+            validate_fixture(&fixture)
+                .with_context(|| format!("validating embedded fixture {name}"))?;
+            let report = evaluate_fixture(&fixture)
+                .with_context(|| format!("evaluating embedded fixture {name}"))?;
+            verify_expected(&report, &fixture.expected)
+                .with_context(|| format!("checking embedded fixture {name}"))?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn code_fences_and_blockquotes_do_not_create_terminal_relations() -> Result<()> {
+        let body = "```text\nCloses #123\nCloses https://github.com/org/repo/issues/124\n```\n> Fixes #456\nRefs #789\n";
+        let relations = parse_closing_relations(body, "effortlessmetrics/perl-lsp-swarm")?;
+        assert!(relations.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn shorter_fence_marker_cannot_close_a_longer_fence() -> Result<()> {
+        for body in ["````text\n```\nCloses #123\n````\n", "~~~~text\n~~~\nCloses #123\n~~~~\n"] {
+            let relations = parse_closing_relations(body, "effortlessmetrics/perl-lsp-swarm")?;
+            assert!(relations.is_empty());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn closing_fence_with_trailing_text_does_not_expose_terminal_relation() -> Result<()> {
+        let body = "````text\n```` not-a-close\nCloses #123\n````\n";
+        let relations = parse_closing_relations(body, "effortlessmetrics/perl-lsp-swarm")?;
+        assert!(relations.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn lazy_blockquote_continuation_cannot_create_terminal_relation() -> Result<()> {
+        let body = "> quoted paragraph\nCloses #123\n\nCloses #456\n";
+        let relations = parse_closing_relations(body, "effortlessmetrics/perl-lsp-swarm")?;
+        assert_eq!(relations.len(), 1);
+        assert_eq!(relations[0].key.number, 456);
+        Ok(())
+    }
+
+    #[test]
+    fn github_url_terminal_relation_is_parsed_and_normalized() -> Result<()> {
+        let relations = parse_closing_relations(
+            "Closes https://github.com/OtherOrg/OtherRepo/issues/42",
+            "effortlessmetrics/perl-lsp-swarm",
+        )?;
+        assert_eq!(relations.len(), 1);
+        assert_eq!(relations[0].key.repository, "otherorg/otherrepo");
+        assert_eq!(relations[0].key.number, 42);
+        Ok(())
+    }
+
+    #[test]
+    fn optional_colon_forms_match_whitespace_forms() -> Result<()> {
+        let current_repository = "effortlessmetrics/perl-lsp-swarm";
+        let forms = [
+            ("Closes #123", "Closes: #123"),
+            ("Fixes OtherOrg/OtherRepo#124", "Fixes: OtherOrg/OtherRepo#124"),
+            (
+                "Resolves https://github.com/OtherOrg/OtherRepo/issues/125",
+                "Resolves: https://github.com/OtherOrg/OtherRepo/issues/125",
+            ),
+        ];
+
+        for (whitespace_form, colon_form) in forms {
+            let whitespace = parse_closing_relations(whitespace_form, current_repository)?;
+            let colon = parse_closing_relations(colon_form, current_repository)?;
+            assert_eq!(colon.len(), 1, "colon form was not parsed: {colon_form}");
+            assert_eq!(whitespace.len(), 1);
+            assert_eq!(
+                colon[0].key, whitespace[0].key,
+                "colon form changed relation key: {colon_form}"
+            );
+            assert_eq!(
+                colon[0].keyword, whitespace[0].keyword,
+                "colon form changed keyword: {colon_form}"
+            );
+        }
+
+        for malformed in ["Closes:#123", "Fixes:: #124", "Resolves:OtherOrg/OtherRepo#125"] {
+            assert!(
+                parse_closing_relations(malformed, current_repository)?.is_empty(),
+                "malformed closing relation was accepted: {malformed}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn cross_repository_terminal_relation_is_normalized() -> Result<()> {
+        let relations = parse_closing_relations(
+            "Resolves OtherOrg/OtherRepo#42",
+            "effortlessmetrics/perl-lsp-swarm",
+        )?;
+        assert_eq!(relations.len(), 1);
+        assert_eq!(relations[0].key.repository, "otherorg/otherrepo");
+        assert_eq!(relations[0].key.number, 42);
+        Ok(())
+    }
+
+    #[test]
+    fn multiple_relations_use_only_their_claim_boundary_association() -> Result<()> {
+        let pull = PullRequestSubject {
+            repository: "effortlessmetrics/perl-lsp-swarm".into(),
+            number: 9000002,
+            title: "test: relation-specific boundary scope".into(),
+            body: "## Claim Boundary\n#1 is a partial phase only.\n#2 is a complete implementation.\n\nCloses #1\nCloses #2\n".into(),
+        };
+        let report = evaluate(&pull, |key| {
+            IssueEvidence::Available(IssueSubject {
+                number: key.number,
+                title: format!("issue #{}", key.number),
+                body: "## Acceptance\nThe complete issue is required.".into(),
+            })
+        })?;
+        assert_eq!(report.rows.len(), 2);
+        assert_eq!(report.rows[0].issue_number, 1);
+        assert_eq!(report.rows[0].code, ResultCode::FailPhaseTerminalRelation);
+        assert_eq!(report.rows[1].issue_number, 2);
+        assert_eq!(report.rows[1].code, ResultCode::PassNoHighConfidenceContradiction);
+        Ok(())
+    }
+
+    #[test]
+    fn partial_subject_matter_is_not_treated_as_partial_delivery() {
+        assert!(!contains_partial_boundary(
+            "The issue explains why this is never a partial one; the complete change is delivered."
+        ));
+    }
+
+    #[test]
+    fn partial_delivery_language_remains_a_boundary_failure() {
+        assert!(contains_partial_boundary(
+            "This PR partially addresses the issue and leaves the remaining callers for follow-up."
+        ));
+        assert!(contains_partial_boundary("This is a partial implementation."));
+        assert!(contains_partial_boundary("This is a bounded slice only."));
+    }
+
+    #[test]
+    fn multiple_relations_scope_explicitly_unproven_work_to_the_named_issue() -> Result<()> {
+        let pull = PullRequestSubject {
+            repository: "effortlessmetrics/perl-lsp-swarm".into(),
+            number: 9000002,
+            title: "test: relation-specific unproven scope".into(),
+            body: "## Claim Boundary\n#1 does not prove full acceptance.\n#2 proves full acceptance.\n\nCloses #1\nCloses #2\n".into(),
+        };
+        let report = evaluate(&pull, |key| {
+            IssueEvidence::Available(IssueSubject {
+                number: key.number,
+                title: format!("issue #{}", key.number),
+                body: "## Acceptance\nThe complete issue is required.".into(),
+            })
+        })?;
+        assert_eq!(report.rows[0].code, ResultCode::FailExplicitUnprovenRequiredWork);
+        assert_eq!(report.rows[1].code, ResultCode::PassNoHighConfidenceContradiction);
+        Ok(())
+    }
+
+    #[test]
+    fn contains_word_rejects_presentation_inside_representation() {
+        assert!(contains_word("presentation", "presentation"));
+        assert!(contains_word("a presentation layer", "presentation"));
+        assert!(!contains_word("representation", "presentation"));
+        assert!(!contains_word("the hir representation of this slice", "presentation"));
+        assert!(!contains_word("fallback", "all"));
+        assert!(!contains_word("called", "all"));
+        assert!(contains_word("in all four families", "all"));
+        assert!(!contains_word("completeness", "complete"));
+        assert!(!contains_word("everything", "every"));
+        assert!(!contains_word("publicly", "public"));
+        assert!(!contains_word("uninstalled", "installed"));
+    }
+
+    fn proof_level_from_bodies(issue_body: &str, pr_body: &str) -> Result<bool> {
+        let issue_sections = parse_sections(issue_body, MAX_ISSUE_BODY_BYTES)?;
+        let pr_sections = parse_sections(pr_body, MAX_PR_BODY_BYTES)?;
+        Ok(proof_level_is_explicitly_excluded(&pr_sections, &issue_sections))
+    }
+
+    fn excluding_pr(term: &str) -> String {
+        format!("## Claim Boundary\n{term} evidence is explicitly out of scope.\n\nCloses #1\n")
+    }
+
+    #[test]
+    fn proof_level_polarity_does_not_arm_an_unchanged_public_surface() -> Result<()> {
+        let issue =
+            "## Acceptance\nThe public unchecked constructor remains deliberately unchanged.\n";
+        assert!(
+            !proof_level_from_bodies(issue, &excluding_pr("Public"))?,
+            "an unchanged public surface must not count as a required proof level"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn proof_level_polarity_still_arms_a_required_public_surface() -> Result<()> {
+        let issue = "## Acceptance\nPublic proof is required.\n";
+        assert!(
+            proof_level_from_bodies(issue, &excluding_pr("Public"))?,
+            "a genuine public proof requirement must still arm the rule"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn proof_level_polarity_is_clause_scoped_not_section_wide_not() -> Result<()> {
+        let issue =
+            "## Acceptance\nPublic proof is required.\nThe helper is not used in the fixture.\n";
+        assert!(
+            proof_level_from_bodies(issue, &excluding_pr("Public"))?,
+            "a bare 'not' in another sentence must not suppress a genuine public requirement"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn proof_level_negative_polarity_markers_cover_the_issue_examples() -> Result<()> {
+        let pr = excluding_pr("Public");
+        for issue in [
+            "## Acceptance\nThe public parser constructor does not change in this PR.\n",
+            "## Acceptance\nThis PR must not change the public Parser::from_tokens.\n",
+            "## Acceptance\nThe public API must not be changed.\n",
+            "## Acceptance\nThe public surface is unchanged.\n",
+            "## Acceptance\nThe issue does not require public proof.\n",
+            "## Objective\nLeave the public constructor unchanged.\n",
+            "## Outcome\nNo change to the public installed surface.\n",
+        ] {
+            assert!(
+                !proof_level_from_bodies(issue, &pr)?,
+                "negative polarity failed to disarm public for {issue:?}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn proof_level_mixed_sentence_keeps_required_term_and_drops_unchanged_term() -> Result<()> {
+        let issue = "## Acceptance\nThe public constructor remains unchanged and installed proof is required.\n";
+        assert!(
+            !proof_level_from_bodies(issue, &excluding_pr("Public"))?,
+            "unchanged public must not arm when installed is the required term"
+        );
+        assert!(
+            proof_level_from_bodies(issue, &excluding_pr("Installed"))?,
+            "installed proof required after an unchanged public clause must still arm"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn proof_level_coordinated_subjects_share_a_trailing_unchanged_predicate() -> Result<()> {
+        let issue =
+            "## Acceptance\nThe public constructor and production consumers remain unchanged.\n";
+        assert!(
+            !proof_level_from_bodies(issue, &excluding_pr("Public"))?,
+            "coordinated subjects of one unchanged predicate must not arm public"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn proof_level_later_unchanged_helper_does_not_suppress_an_earlier_requirement() -> Result<()> {
+        let issue = "## Acceptance\nPublic proof is required and the helper does not change.\n";
+        assert!(
+            proof_level_from_bodies(issue, &excluding_pr("Public"))?,
+            "a later unrelated 'does not change' must not disarm a required public term"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn proof_level_required_while_unrelated_helper_unchanged_still_arms() -> Result<()> {
+        let issue = "## Acceptance\nPublic proof is required while the helper remains unchanged.\n";
+        assert!(
+            proof_level_from_bodies(issue, &excluding_pr("Public"))?,
+            "an unrelated later unchanged helper must not disarm a required public term in the same sentence"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn proof_level_numbered_list_items_are_independent() -> Result<()> {
+        let issue = "## Acceptance\n1. The public constructor remains unchanged.\n2. Installed proof is required.\n";
+        assert!(!proof_level_from_bodies(issue, &excluding_pr("Public"))?);
+        assert!(proof_level_from_bodies(issue, &excluding_pr("Installed"))?);
+        Ok(())
+    }
+
+    #[test]
+    fn proof_level_wrapped_bullet_keeps_unchanged_with_its_term() -> Result<()> {
+        let issue = "## Acceptance\n- The public constructor remains\n  unchanged.\n- Installed proof is required.\n";
+        assert!(
+            !proof_level_from_bodies(issue, &excluding_pr("Public"))?,
+            "a wrapped unchanged predicate must stay with its public term"
+        );
+        assert!(proof_level_from_bodies(issue, &excluding_pr("Installed"))?);
+        Ok(())
+    }
+
+    #[test]
+    fn proof_level_not_needed_and_isnt_required_are_negative_polarity() -> Result<()> {
+        let pr = excluding_pr("Public");
+        for issue in [
+            "## Acceptance\nPublic proof is not needed.\n",
+            "## Acceptance\nPublic proof isn't required.\n",
+            "## Acceptance\nPublic proof isn't needed.\n",
+        ] {
+            assert!(
+                !proof_level_from_bodies(issue, &pr)?,
+                "negative polarity failed to disarm public for {issue:?}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn proof_level_terms_are_whole_words_not_publicly_or_uninstalled() -> Result<()> {
+        let issue = "## Acceptance\nThe publicly documented helper and uninstalled leftover are required.\n";
+        let pr = "## Claim Boundary\nPublic and installed evidence is explicitly out of scope.\n";
+        assert!(
+            !proof_level_from_bodies(issue, pr)?,
+            "publicly/uninstalled must not satisfy public/installed via substring"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn proof_level_actual_host_phrase_still_matches() -> Result<()> {
+        let issue = "## Acceptance\nActual host proof is required.\n";
+        let pr = "## Claim Boundary\nActual host evidence is explicitly out of scope.\n";
+        assert!(proof_level_from_bodies(issue, pr)?);
+        let unchanged = "## Acceptance\nThe actual host surface remains unchanged.\n";
+        assert!(!proof_level_from_bodies(unchanged, pr)?);
+        Ok(())
+    }
+
+    // PR-side polarity: the section-wide "term appears anywhere" check is
+    // loosened so a sentence that *asserts* a public/installed/packaged/released
+    // surface does not arm the rule merely because another sentence in the same
+    // section contains an exclusion marker. The PR side now requires the term
+    // and the exclusion marker to share a sentence/list-item/clause. See #15627.
+
+    #[test]
+    fn proof_level_pr_assertion_does_not_arm_when_exclusion_is_in_a_separate_sentence() -> Result<()>
+    {
+        // Reproducer from #15627 against #7129: the Claim Boundary contains an
+        // explicit-exclusion marker ("Not claimed:") for an unrelated surface and
+        // an assertion that the public formatter surface is covered. The
+        // existing issue acceptance requires "public" proof.
+        let issue = "## Acceptance\nRemove compat from public configuration.\n";
+        let pr = "## Claim Boundary\nNot claimed: the legacy compat engine shim.\n\
+                  Provably true: no public formatter surface offers compat as an engine.\n\n\
+                  Closes #7129\n";
+        assert!(
+            !proof_level_from_bodies(issue, pr)?,
+            "an assertion in one sentence must not arm the rule because another \
+             sentence excludes an unrelated surface"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn proof_level_pr_exclusion_in_same_sentence_still_arms() -> Result<()> {
+        // Negative control: the exclusion marker and the term live in the same
+        // sentence, so the term genuinely is being excluded.
+        let issue = "## Acceptance\nPublic proof is required.\n";
+        let pr = "## Claim Boundary\nPublic evidence is explicitly out of scope.\n\
+                  Closes #1\n";
+        assert!(
+            proof_level_from_bodies(issue, pr)?,
+            "an exclusion that names the term in the same sentence must still arm"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn proof_level_pr_exclusion_via_does_not_prove_in_same_sentence_still_arms() -> Result<()> {
+        // A second exclusion-marker style in the same sentence still arms.
+        let issue = "## Acceptance\nPublic proof is required.\n";
+        let pr = "## Claim Boundary\nThe release train does not prove public surface parity.\n\
+                  Closes #1\n";
+        assert!(
+            proof_level_from_bodies(issue, pr)?,
+            "an exclusion that names the term in the same sentence via a different marker must still arm"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn proof_level_pr_assertion_in_markdown_table_cell_does_not_arm() -> Result<()> {
+        // Markdown-table reproducer from the #15627 comment about #15633/#7588:
+        // the table cell quotes the issue's acceptance criterion verbatim while
+        // asserting it is satisfied; the exclusion marker lives in a separate
+        // paragraph. The check must not arm on the cell mention.
+        let issue = "## Acceptance\nPublic docs/API make the per-file claim explicit.\n";
+        let pr = "## Claim Boundary\n\
+                  | Acceptance criterion | Evidence |\n\
+                  | --- | --- |\n\
+                  | Public docs/API make the per-file claim explicit | rewritten module docs |\n\
+                  \n\
+                  Not claimed: the per-file proof in legacy 5.8 branches.\n\n\
+                  Closes #7588\n";
+        assert!(
+            !proof_level_from_bodies(issue, pr)?,
+            "a Markdown-table cell that quotes the issue's acceptance criterion must not arm"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn proof_level_pr_term_in_exclusion_clause_of_split_sentence_arms() -> Result<()> {
+        // The exclusion marker and the term live in the same coordinate clause,
+        // even when the sentence also contains an assertion for another term.
+        let issue = "## Acceptance\nPublic proof is required.\n";
+        let pr = "## Claim Boundary\n\
+                  Public evidence is explicitly out of scope, but installed proof is asserted.\n\
+                  Closes #1\n";
+        assert!(
+            proof_level_from_bodies(issue, pr)?,
+            "a clause that excludes the term must still arm even when another clause asserts a different term"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn proof_level_pr_term_in_different_coordinate_clause_does_not_arm() -> Result<()> {
+        // Coordinate-clause scoping (#15627 review): the exclusion marker
+        // lives in one coordinate ("Not claimed: the legacy shim") while the
+        // term is asserted in the other ("the public formatter surface is
+        // covered"). The marker must not leak across the "but" boundary.
+        // Inverse of proof_level_pr_term_in_exclusion_clause_of_split_sentence_arms.
+        let issue = "## Acceptance\nPublic proof is required.\n";
+        let pr = "## Claim Boundary\n\
+                  Not claimed: the legacy shim, but the public formatter surface is covered.\n\
+                  Closes #1\n";
+        assert!(
+            !proof_level_from_bodies(issue, pr)?,
+            "an assertion in a different coordinate clause from the exclusion marker must not arm"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn proof_level_pr_term_in_different_list_item_from_marker_does_not_arm() -> Result<()> {
+        // List-item clause scoping: the exclusion marker is in one bullet, the
+        // term appears in a different bullet asserting coverage.
+        let issue = "## Acceptance\nPublic proof is required.\n";
+        let pr = "## Claim Boundary\n\
+                  - Not claimed: the legacy compat shim.\n\
+                  - The public formatter surface is provably covered.\n\
+                  Closes #1\n";
+        assert!(
+            !proof_level_from_bodies(issue, pr)?,
+            "an assertion in a different list item from the exclusion marker must not arm"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn proof_level_pr_term_and_marker_in_same_list_item_arm() -> Result<()> {
+        // Negative control for list-item clause scoping.
+        let issue = "## Acceptance\nPublic proof is required.\n";
+        let pr = "## Claim Boundary\n\
+                  - Public evidence is explicitly out of scope.\n\
+                  - Installed proof is asserted.\n\
+                  Closes #1\n";
+        assert!(
+            proof_level_from_bodies(issue, pr)?,
+            "a list item that excludes the term must arm even when another list item asserts a different term"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn proof_level_pr_template_claim_boundary_does_not_arm_per_template_vocabulary() -> Result<()> {
+        // Reproducer for the .github/PULL_REQUEST_TEMPLATE.md vocabulary path:
+        // the template's "Claim Boundary" heading contains "out of scope" as
+        // section vocabulary, but the body itself contains no actual
+        // exclusion. The rule must not arm merely because the section name
+        // carries exclusion vocabulary.
+        let issue = "## Acceptance\nPublic docs carry the per-file claim.\n";
+        let pr = "## Claim Boundary\n\
+                  ## What becomes provably true\n\
+                  The public formatter surface is covered by the rewritten module docs.\n\
+                  ## What is explicitly out of scope\n\
+                  The 5.8-era per-file parity test bench.\n\n\
+                  Closes #1\n";
+        assert!(
+            !proof_level_from_bodies(issue, pr)?,
+            "the template's Claim Boundary vocabulary must not arm when no clause excludes the term"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn proof_level_pr_term_local_requirement_only_false_counts_as_excluded() {
+        // The PR-side helper mirrors unit_requires_proof_level_term but counts
+        // a term as excluded when its local polarity is negative (Some(false))
+        // rather than when it is positive (Some(true)).
+        // "Public evidence is explicitly out of scope." has no polarity
+        // marker in the negative-polarity list, but the section-level
+        // explicit-exclusion marker carries it. The helper checks
+        // (contains_explicit_exclusion && contains_proof_level_term) at the
+        // sentence granularity produced by requirement_units.
+        assert!(proof_level_term_is_excluded(
+            "Public evidence is explicitly out of scope.",
+            "public"
+        ));
+        assert!(!proof_level_term_is_excluded(
+            "Provably true: no public formatter surface offers compat as an engine.",
+            "public"
+        ));
+        assert!(proof_level_term_is_excluded(
+            "Public evidence is explicitly out of scope, but installed proof is asserted.",
+            "public"
+        ));
+        assert!(!proof_level_term_is_excluded(
+            "Not claimed: the legacy shim. The public surface is covered.",
+            "public"
+        ));
+    }
+
+    #[test]
+    fn proof_level_requirement_units_discriminate_mixed_and_unrelated_not() {
+        assert!(issue_requires_proof_level_term(
+            "Public proof is required. The helper is not used.",
+            "public"
+        ));
+        assert!(!issue_requires_proof_level_term(
+            "The public constructor remains unchanged.",
+            "public"
+        ));
+        assert!(issue_requires_proof_level_term("Installed proof is required.", "installed"));
+        assert!(!issue_requires_proof_level_term(
+            "The public constructor remains unchanged and installed proof is required.",
+            "public"
+        ));
+        assert!(issue_requires_proof_level_term(
+            "The public constructor remains unchanged and installed proof is required.",
+            "installed"
+        ));
+    }
+
+    // #15463: the marker list above enumerates only three negation verbs
+    // (change / require / need). Acceptance text that introduces a proof-level
+    // term with any other negation verb ("does not manufacture", "does not
+    // assert", "does not establish", "does not prove", "does not claim",
+    // "does not guarantee") must still disarm CP00. The structural
+    // clause-scoped negation tokens (not / never / no / cannot / n't) make
+    // every verb a negative phrasing without enumerating each.
+
+    #[test]
+    fn proof_level_does_not_manufacture_arms_disarm_installed() -> Result<()> {
+        // #10831 / #15458 reproducer: the issue names `installed proof` in a
+        // list whose leading clause says "Mapping does not manufacture …". A
+        // PR that excludes installed proof must not be told to downgrade its
+        // relation because it agrees with the issue's own negative phrasing.
+        let pr =
+            "## Claim Boundary\nInstalled evidence is explicitly out of scope.\n\nCloses #10831\n";
+        let issue = "## Acceptance\nMapping does not manufacture currentness, publication, installed proof, or support.\n";
+        assert!(
+            !proof_level_from_bodies(issue, pr)?,
+            "an issue that frames installed proof inside a 'does not manufacture' clause must disarm CP00"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn proof_level_structural_negation_disarms_other_verbs() -> Result<()> {
+        // The verb list is intentionally open: any verb following a negation
+        // token disarms the same way. Each row is an independent issue/PR pair
+        // sharing the same shape: an Acceptance clause that names the term
+        // under a negative verb, and a PR that excludes the term.
+        let pr = "## Claim Boundary\nPublic evidence is explicitly out of scope.\n\nCloses #1\n";
+        for issue in [
+            "## Acceptance\nMapping does not assert currentness, publication, public proof, or support.\n",
+            "## Acceptance\nMapping does not prove currentness, publication, public proof, or support.\n",
+            "## Acceptance\nMapping does not establish currentness, publication, public proof, or support.\n",
+            "## Acceptance\nMapping does not claim currentness, publication, public proof, or support.\n",
+            "## Acceptance\nMapping does not guarantee currentness, publication, public proof, or support.\n",
+            "## Acceptance\nMapping cannot manufacture currentness, publication, public proof, or support.\n",
+            "## Acceptance\nMapping will not manufacture currentness, publication, public proof, or support.\n",
+            "## Acceptance\nMapping must not manufacture currentness, publication, public proof, or support.\n",
+            "## Acceptance\nMapping never manufactures currentness, publication, public proof, or support.\n",
+            "## Acceptance\nMapping doesn't manufacture currentness, publication, public proof, or support.\n",
+        ] {
+            assert!(
+                !proof_level_from_bodies(issue, pr)?,
+                "structural negation failed to disarm public for {issue:?}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn proof_level_required_predicate_wins_when_negation_is_in_a_different_clause() -> Result<()> {
+        // Regression: a bare 'not' in a *different* clause from the term must
+        // not disarm a genuine requirement. The clause-scoping already splits
+        // the segments at " and " / " but "; structural negation operates on
+        // the segment, so an unrelated segment's 'not' must not bleed in.
+        let issue = "## Acceptance\nPublic proof is required while the helper is not used here.\n";
+        let pr = "## Claim Boundary\nPublic evidence is explicitly out of scope.\n\nCloses #1\n";
+        assert!(
+            proof_level_from_bodies(issue, pr)?,
+            "an earlier required clause must still arm when a later clause only carries bare 'not'"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn proof_level_modal_must_not_x_disarms_for_any_x() -> Result<()> {
+        // A predicate word like "must" that is *immediately* followed by a
+        // negation token is no longer a Require signal. This complements the
+        // "must not change" / "must not be changed" markers — every other
+        // verb in a "must not X" phrase now disarms without enumeration.
+        let pr = "## Claim Boundary\nPublic evidence is explicitly out of scope.\n\nCloses #1\n";
+        for issue in [
+            "## Acceptance\nPublic proof must not be manufactured here.\n",
+            "## Acceptance\nMapping must not assert public proof.\n",
+            "## Acceptance\nMapping mustn't claim public proof.\n",
+            "## Acceptance\nRequired public proof must not be a goal.\n",
+        ] {
+            assert!(
+                !proof_level_from_bodies(issue, pr)?,
+                "must-not-X phrasing must disarm CP00 for {issue:?}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn proof_level_modal_must_alone_still_arms() -> Result<()> {
+        // Negative control: the predicate-unless-negated guard must not
+        // disable bare "must" when there is no following negation.
+        let issue = "## Acceptance\nPublic proof must be present.\n";
+        let pr = "## Claim Boundary\nPublic evidence is explicitly out of scope.\n\nCloses #1\n";
+        assert!(
+            proof_level_from_bodies(issue, pr)?,
+            "a bare 'must' predicate with no following negation must still arm"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn proof_level_substring_words_do_not_disarm_unrelated_noted_nothing() -> Result<()> {
+        // Word-boundary correctness: 'noted', 'nothing', 'another', 'snowfall'
+        // all contain a 'not' or 'no' substring that must NOT disarm a real
+        // requirement. Only whole-word tokens with ASCII-alphanumeric
+        // boundaries count.
+        let issue = "## Acceptance\nAnother requirement, nothing more, is needed: installed proof is required.\n";
+        let pr = "## Claim Boundary\nInstalled evidence is explicitly out of scope.\n\nCloses #1\n";
+        assert!(
+            proof_level_from_bodies(issue, pr)?,
+            "substrings like 'noted', 'nothing', 'another' must not disarm a genuine requirement"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn proof_level_cannot_token_matches_even_when_not_is_substring() {
+        // 'cannot' contains 'not' as a substring but its preceding character
+        // ('n') is alphanumeric — so word-boundary matching rejects 'not' as
+        // a whole word here. The structural detector must catch 'cannot'
+        // explicitly so a phrase like 'Mapping cannot proceed' still disarms
+        // the term it is bound to.
+        assert!(
+            earliest_negation_token_index("Mapping cannot proceed with public proof.").is_some()
+        );
+        // Sanity: a word that merely contains 'not' as a non-word substring
+        // must NOT trip the detector.
+        assert_eq!(earliest_negation_token_index("The noted item is required."), None);
+        assert_eq!(earliest_negation_token_index("Another story is required."), None);
+        assert_eq!(earliest_negation_token_index("Nothing to add is required."), None);
+    }
+
+    #[test]
+    fn proof_level_nt_substring_matches_even_when_preceded_by_alphanumeric() {
+        // "isn't", "doesn't", "didn't" all have 'n' immediately before the
+        // apostrophe. Word-boundary matching rejects 'n't' as a whole word
+        // there. The substring detector must catch it.
+        assert!(earliest_negation_token_index("Mapping isn't public proof.").is_some());
+        assert!(
+            earliest_negation_token_index("Mapping doesn't manufacture public proof.").is_some()
+        );
+        // Sanity: the apostrophe itself without a preceding 'n' should still
+        // match — "we'll" is not a negation, but "doesn't" is. The detector
+        // is intentionally liberal about "'t" placement to mirror the way
+        // English contractions form.
+        assert!(earliest_negation_token_index("Mapping doesn't claim installed proof.").is_some());
+    }
+
+    #[test]
+    fn explicit_attribution_uses_exact_reference_identity_and_real_issue_owners() -> Result<()> {
+        let local = "effortlessmetrics/perl-lsp-swarm";
+        let multi =
+            "Closes #10\nCloses #11\nCloses #100\nCloses other/repo#10\nCloses other/repo#100";
+        let mut mismatches = Vec::new();
+        for (boundary, closes, owner) in [
+            ("C#'s full acceptance criteria are not established.", "Closes #10", Some((local, 10))),
+            (
+                "Full acceptance criteria are not established; example `#11`.",
+                "Closes #10",
+                Some((local, 10)),
+            ),
+            ("Full acceptance criteria are not established; see #11.", "Closes #10", None),
+            (
+                "For https://example.test/?next=https://github.com/other/repo/issues/10, full acceptance criteria are not established.",
+                multi,
+                None,
+            ),
+            (
+                "For reference=https://github.com/other/repo/issues/10, full acceptance criteria are not established.",
+                multi,
+                Some(("other/repo", 10)),
+            ),
+            (
+                "For [reference](https://github.com/other/repo/issues/10), full acceptance criteria are not established.",
+                multi,
+                Some(("other/repo", 10)),
+            ),
+            (
+                "This PR's full acceptance criteria are not established.",
+                "Closes #10",
+                Some((local, 10)),
+            ),
+            (
+                "#11's full acceptance criteria are not established; see #10.",
+                multi,
+                Some((local, 11)),
+            ),
+            (
+                "For other/repo#10, full acceptance criteria are not established.",
+                multi,
+                Some(("other/repo", 10)),
+            ),
+            (
+                "For other/repo#100, full acceptance criteria are not established.",
+                multi,
+                Some(("other/repo", 100)),
+            ),
+            ("For #10, full acceptance criteria are not established.", multi, Some((local, 10))),
+            ("For #100, full acceptance criteria are not established.", multi, Some((local, 100))),
+            (
+                "For https://github.com/other/repo/issues/10, full acceptance criteria are not established.",
+                multi,
+                Some(("other/repo", 10)),
+            ),
+            (
+                "For https://github.com/other/repo/issues/100, full acceptance criteria are not established.",
+                multi,
+                Some(("other/repo", 100)),
+            ),
+            ("For xother/repo#10, full acceptance criteria are not established.", multi, None),
+            ("For other/repo#100x, full acceptance criteria are not established.", multi, None),
+            (
+                "For xhttps://github.com/other/repo/issues/10, full acceptance criteria are not established.",
+                multi,
+                None,
+            ),
+            (
+                "For https://example.test/https://github.com/other/repo/issues/10, full acceptance criteria are not established.",
+                multi,
+                None,
+            ),
+            ("not-a-repo#11's full acceptance criteria are not established; see #10.", multi, None),
+        ] {
+            let pull = PullRequestSubject {
+                repository: local.into(),
+                number: 990108,
+                title: "fix: exact attribution controls".into(),
+                body: format!("## Claim Boundary\n{boundary}\n\n{closes}"),
+            };
+            let report = evaluate(&pull, |key| {
+                IssueEvidence::Available(IssueSubject {
+                    number: key.number,
+                    title: "Complete the named change".into(),
+                    body: "## Acceptance\nThe named change is established.".into(),
+                })
+            })?;
+            if report.rows.len() != closes.lines().count() {
+                bail!("missing relation row");
+            }
+            for row in report.rows {
+                let expected = if owner == Some((row.repository.as_str(), row.issue_number)) {
+                    ResultCode::FailExplicitUnprovenRequiredWork
+                } else {
+                    ResultCode::PassNoHighConfidenceContradiction
+                };
+                if row.code != expected {
+                    mismatches.push(format!(
+                        "{boundary}: {}#{} expected {expected:?}, observed {:?}",
+                        row.repository, row.issue_number, row.code
+                    ));
+                }
+            }
+        }
+        if !mismatches.is_empty() {
+            bail!("exact attribution mismatches: {mismatches:?}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn explicit_owner_class_retains_longest_subject_and_section_scope() -> Result<()> {
+        let mut cases = Vec::new();
+        for subject in [
+            "full acceptance",
+            "full acceptance criteria",
+            "complete acceptance",
+            "complete acceptance criteria",
+            "remaining acceptance",
+            "remaining acceptance criteria",
+            "complete remaining work",
+            "remaining work",
+        ] {
+            for (reference, expected_owner) in
+                [("#11", Some(11)), ("#11x", None), ("#0", None), ("#18446744073709551616", None)]
+            {
+                for owned in [
+                    format!("{reference}'s {subject}"),
+                    format!("{subject} of {reference}"),
+                    format!("{subject} owned by {reference}"),
+                ] {
+                    cases.push((
+                        format!("This PR does not prove {owned}; see #10."),
+                        true,
+                        expected_owner,
+                    ));
+                    cases.push((format!("Not claimed: {owned}; see #10."), true, expected_owner));
+                    cases.push((
+                        format!("{owned} are not established; see #10."),
+                        true,
+                        expected_owner,
+                    ));
+                }
+            }
+        }
+        cases.push((
+            "#11's complete remaining work is not established; see #10.".into(),
+            true,
+            Some(11),
+        ));
+        cases.push(("#11's complete remaining work is established; #10's remaining work is not established.".into(), true, Some(10)));
+        for token in [
+            "#10x",
+            "#0",
+            "#18446744073709551616",
+            "not-a-repo#10",
+            "https://github.com/other/repo/issues/10x",
+        ] {
+            cases.push((format!("Full acceptance criteria are not established; parser token {token} remains unchanged."), false, Some(10)));
+        }
+        for owned in [
+            "#10x's full acceptance criteria",
+            "full acceptance criteria of #10x",
+            "full acceptance criteria owned by #10x",
+        ] {
+            cases.push((format!("This PR does not prove the {owned}."), false, None));
+        }
+        cases.push(("#10's full acceptance criteria are not established.".into(), true, Some(10)));
+        cases.push(("Full acceptance criteria are not established.".into(), true, None));
+        let mut mismatches = Vec::new();
+        for section in ["Claim Boundary", "Non-goals"] {
+            for (boundary, multiple, owner) in &cases {
+                let closes = if *multiple { "Closes #10\nCloses #11" } else { "Closes #10" };
+                let pull = PullRequestSubject {
+                    repository: "effortlessmetrics/perl-lsp-swarm".into(),
+                    number: 990109,
+                    title: "fix: owned exclusion class".into(),
+                    body: format!("## {section}\n{boundary}\n\n{closes}"),
+                };
+                let report = evaluate(&pull, |key| {
+                    IssueEvidence::Available(IssueSubject {
+                        number: key.number,
+                        title: "Complete the named change".into(),
+                        body: "## Acceptance\nThe named change is established.".into(),
+                    })
+                })?;
+                if report.rows.len() != closes.lines().count() {
+                    bail!("missing owned exclusion class relation row");
+                }
+                for row in report.rows {
+                    let expected = if *owner == Some(row.issue_number) {
+                        ResultCode::FailExplicitUnprovenRequiredWork
+                    } else {
+                        ResultCode::PassNoHighConfidenceContradiction
+                    };
+                    if row.code != expected {
+                        mismatches.push(format!(
+                            "{section}: {boundary}: #{} expected {expected:?}, observed {:?}",
+                            row.issue_number, row.code
+                        ));
+                    }
+                }
+            }
+        }
+        if !mismatches.is_empty() {
+            bail!("owned exclusion class mismatches: {mismatches:?}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn explicit_heading_and_literal_star_controls_use_full_evaluator() -> Result<()> {
+        let mut mismatches = Vec::new();
+        for (body, contradictory) in [
+            ("## Claim Boundary: Full acceptance criteria are not established", true),
+            ("## Non-Goals: Full acceptance criteria are not established", true),
+            (
+                "## Claim Boundary\nComplete\n## Claim Boundary: Full acceptance criteria are not established",
+                true,
+            ),
+            ("## Claim Boundary: Full acceptance criteria\nare not established", false),
+            (
+                "## Claim Boundary: Full acceptance criteria\n## Claim Boundary: are not established",
+                false,
+            ),
+            ("## Claim Boundary\nFull accept*ance criteria are not established", false),
+            ("## Claim Boundary\nFull acceptance criteria are not estab*lished", false),
+            ("## Claim Boundary\n*Full acceptance criteria* are not established", true),
+            ("## Claim Boundary\n**Full acceptance criteria** are not established", true),
+            ("## Claim Boundary\n\\*Full acceptance criteria* are not established", false),
+            ("## Claim Boundary\n*Full acceptance criteria\\* are not established", false),
+            (
+                "## Claim Boundary\nFull accept*ance is an example; full acceptance criteria are not established",
+                true,
+            ),
+            ("## Claim Boundary\n**Not claimed:** the full acceptance criteria", true),
+            ("## Claim Boundary\nx**not claimed:** the full acceptance criteria", false),
+            ("## Claim Boundary\nxnot claimed: the full acceptance criteria", false),
+            ("## Claim Boundary\nNot claimedthe full acceptance criteria", false),
+            ("## Claim Boundary\nNot claimed: the full acceptance criteria", true),
+            ("## Claim Boundary\nFor this PR, not claimed: the full acceptance criteria", true),
+            ("## Claim Boundary\nidentifier_**not claimed:** the full acceptance criteria", false),
+            ("## Claim Boundary\n**Not cla*imed:** the full acceptance criteria", false),
+            ("## Claim Boundary\nFull acceptance criteria are **not established**", true),
+            ("## Claim Boundary\n`Full acceptance criteria are not established\\`.", false),
+            ("## Claim Boundary\n\\`Full acceptance criteria are not established\\`.", true),
+        ] {
+            let pull = PullRequestSubject {
+                repository: "effortlessmetrics/perl-lsp-swarm".into(),
+                number: 990107,
+                title: "fix: heading and literal delimiter controls".into(),
+                body: format!("{body}\n\nCloses #10"),
+            };
+            let report = evaluate(&pull, |key| {
+                IssueEvidence::Available(IssueSubject {
+                    number: key.number,
+                    title: "Complete the named change".into(),
+                    body: "## Acceptance\nThe named change is established.".into(),
+                })
+            })?;
+            let expected = if contradictory {
+                ResultCode::FailExplicitUnprovenRequiredWork
+            } else {
+                ResultCode::PassNoHighConfidenceContradiction
+            };
+            if report.rows.first().map(|row| row.code) != Some(expected) {
+                mismatches.push(format!("{body}: expected {expected:?}"));
+            }
+        }
+        if !mismatches.is_empty() {
+            bail!("heading/literal-star mismatches: {mismatches:?}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn explicit_owner_occurrence_and_scope_polarity_are_independent() -> Result<()> {
+        let local = "effortlessmetrics/perl-lsp-swarm";
+        let multi = "Closes #10\nCloses #11\nCloses #100\nCloses other/repo#10";
+        let mut mismatches = Vec::new();
+        for (boundary, closes, owner) in [
+            (
+                "#11's full acceptance criteria are not established; see #10.",
+                multi,
+                Some((local, 11)),
+            ),
+            (
+                "other/repo#10's full acceptance criteria are not established; see #10.",
+                multi,
+                Some(("other/repo", 10)),
+            ),
+            (
+                "Full acceptance criteria of #11\nare not established; see #10.",
+                multi,
+                Some((local, 11)),
+            ),
+            ("Not established: #11's remaining required work; see #10.", multi, Some((local, 11))),
+            (
+                "Remaining required work owned by #11 is not established; see #10.",
+                multi,
+                Some((local, 11)),
+            ),
+            (
+                "Remaining required work of other/repo#10 is not established; #10 is complete.",
+                multi,
+                Some(("other/repo", 10)),
+            ),
+            (
+                "Not established: other/repo#10's remaining required work; #10 is complete.",
+                multi,
+                Some(("other/repo", 10)),
+            ),
+            (
+                "Remaining required work owned by other/repo#10 is not established; #10 is complete.",
+                multi,
+                Some(("other/repo", 10)),
+            ),
+            (
+                "Remaining required work of #100 is not established; see #10.",
+                multi,
+                Some((local, 100)),
+            ),
+            (
+                "Full acceptance criteria of #10\n## Claim Boundary\nare not established",
+                multi,
+                None,
+            ),
+            (
+                "Full acceptance criteria of #10\n## Other heading\nExample\n## Claim Boundary\nare not established",
+                multi,
+                None,
+            ),
+            (
+                "Example café\n## Claim Boundary\n## Claim Boundary\nFull acceptance criteria of #10 are not established",
+                multi,
+                Some((local, 10)),
+            ),
+            ("Not explicitly out of scope: the remaining required work.", "Closes #10", None),
+            ("Never explicitly out of scope: the remaining required work.", "Closes #10", None),
+            (
+                "Explicitly out of scope: the remaining required work.",
+                "Closes #10",
+                Some((local, 10)),
+            ),
+            (
+                "Not explicitly out of scope: the remaining required work. Explicitly out of scope: the full acceptance criteria.",
+                "Closes #10",
+                Some((local, 10)),
+            ),
+        ] {
+            let pull = PullRequestSubject {
+                repository: local.into(),
+                number: 990106,
+                title: "fix: attribution class controls".into(),
+                body: format!("## Claim Boundary\n{boundary}\n\n{closes}"),
+            };
+            let report = evaluate(&pull, |key| {
+                IssueEvidence::Available(IssueSubject {
+                    number: key.number,
+                    title: "Complete the named change".into(),
+                    body: "## Acceptance\nThe named change is established.".into(),
+                })
+            })?;
+            if report.rows.len() != closes.lines().count() {
+                bail!("missing relation row");
+            }
+            for row in report.rows {
+                let expected = if owner == Some((row.repository.as_str(), row.issue_number)) {
+                    ResultCode::FailExplicitUnprovenRequiredWork
+                } else {
+                    ResultCode::PassNoHighConfidenceContradiction
+                };
+                if row.code != expected {
+                    mismatches.push(format!(
+                        "{boundary}: {}#{} expected {expected:?}, observed {:?}",
+                        row.repository, row.issue_number, row.code
+                    ));
+                }
+            }
+        }
+        if !mismatches.is_empty() {
+            bail!("attribution class mismatches: {mismatches:?}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn explicit_review_exclusions_preserve_wrapped_relation_ownership() -> Result<()> {
+        let mut mismatches = Vec::new();
+        for (boundary, failing_issue) in [
+            ("Explicitly out of scope: the remaining required work of #10.", Some(10)),
+            ("The remaining required work of #10 is explicitly out of scope.", Some(10)),
+            ("Full acceptance criteria of #10\nare not established.", Some(10)),
+            (
+                "- Full acceptance criteria of #11\n  are not established\n- Full acceptance criteria of #10 are established",
+                Some(11),
+            ),
+            (
+                "Full acceptance criteria of #10\nare established.\n\nThe guard is explicitly out of scope.",
+                None,
+            ),
+            ("Full acceptance criteria of #10\n\nare not established.", None),
+            ("Full acceptance criteria of #12\nare not established.", None),
+        ] {
+            let pull = PullRequestSubject {
+                repository: "effortlessmetrics/perl-lsp-swarm".into(),
+                number: 990105,
+                title: "fix: review exclusion controls".into(),
+                body: format!("## Claim Boundary\n{boundary}\n\nCloses #10\nCloses #11"),
+            };
+            let report = evaluate(&pull, |key| {
+                IssueEvidence::Available(IssueSubject {
+                    number: key.number,
+                    title: "Complete the named change".into(),
+                    body: "## Acceptance\nThe named change is established.".into(),
+                })
+            })?;
+            if report.rows.len() != 2 {
+                bail!("expected two relation rows");
+            }
+            for row in report.rows {
+                let expected = if Some(row.issue_number) == failing_issue {
+                    ResultCode::FailExplicitUnprovenRequiredWork
+                } else {
+                    ResultCode::PassNoHighConfidenceContradiction
+                };
+                if row.code != expected {
+                    mismatches.push(format!(
+                        "{boundary}: #{} expected {expected:?}, observed {:?}",
+                        row.issue_number, row.code
+                    ));
+                }
+            }
+        }
+        if !mismatches.is_empty() {
+            bail!("review exclusion mismatches: {mismatches:?}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn explicit_required_subject_families_retain_prefix_and_suffix_exclusions() -> Result<()> {
+        let mut mismatches = Vec::new();
+        for modifier in ["full", "complete", "remaining"] {
+            for work in ["acceptance criteria", "acceptance", "issue work", "required work"] {
+                let predicate = if work == "acceptance criteria" {
+                    "are not established"
+                } else {
+                    "is not proven"
+                };
+                for boundary in [
+                    format!("This PR does not prove the {modifier} {work}."),
+                    format!("The {modifier} {work} {predicate}."),
+                    format!("Explicitly out of scope: the {modifier} {work}."),
+                    format!("The {modifier} {work} is explicitly out of scope."),
+                ] {
+                    let pull = PullRequestSubject {
+                        repository: "effortlessmetrics/perl-lsp-swarm".into(),
+                        number: 990104,
+                        title: "fix: required subject family control".into(),
+                        body: format!("## Claim Boundary\n{boundary}\n\nCloses #10"),
+                    };
+                    let report = evaluate(&pull, |key| {
+                        IssueEvidence::Available(IssueSubject {
+                            number: key.number,
+                            title: "Complete the named change".into(),
+                            body: "## Acceptance\nThe named change is established.".into(),
+                        })
+                    })?;
+                    if report.rows.first().map(|row| row.code)
+                        != Some(ResultCode::FailExplicitUnprovenRequiredWork)
+                    {
+                        mismatches.push(boundary);
+                    }
+                }
+            }
+        }
+        if !mismatches.is_empty() {
+            bail!("required subject exclusions were lost: {mismatches:?}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn explicit_subject_inline_code_is_data_in_full_evaluator() -> Result<()> {
+        let mut mismatches = Vec::new();
+        for (boundary, contradictory) in [
+            (
+                "The guard rejects `full acceptance criteria are not established` as a contradiction. This is parser coverage, not a claim of general completeness.",
+                false,
+            ),
+            (
+                "The guard rejects ``full acceptance criteria are not established; `sample` `` as an example.",
+                false,
+            ),
+            ("Full acceptance criteria are not established for `some_value`.", true),
+            ("`Full acceptance criteria are not established.", true),
+            ("\\`Full acceptance criteria are not established\\`.", true),
+            ("Full `example` acceptance criteria are not established.", false),
+            ("Full acceptance criteria are satisfied; `not established` is an example.", false),
+        ] {
+            let pull = PullRequestSubject {
+                repository: "effortlessmetrics/perl-lsp-swarm".into(),
+                number: 990103,
+                title: "fix: inline example control".into(),
+                body: format!("## Claim Boundary\n{boundary}\n\nCloses #10"),
+            };
+            let report = evaluate(&pull, |key| {
+                IssueEvidence::Available(IssueSubject {
+                    number: key.number,
+                    title: "Complete the named change".into(),
+                    body: "## Acceptance\nThe named change is established.".into(),
+                })
+            })?;
+            let observed = report
+                .rows
+                .first()
+                .ok_or_else(|| color_eyre::eyre::eyre!("missing relation row"))?
+                .code;
+            let expected = if contradictory {
+                ResultCode::FailExplicitUnprovenRequiredWork
+            } else {
+                ResultCode::PassNoHighConfidenceContradiction
+            };
+            if observed != expected {
+                mismatches
+                    .push(format!("{boundary}: expected {expected:?}, observed {observed:?}"));
+            }
+        }
+        if !mismatches.is_empty() {
+            bail!("inline-code full evaluator mismatches: {mismatches:?}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn explicit_subject_ownership_and_emphasis_survive_attribution() -> Result<()> {
+        let key = IssueKey { repository: "effortlessmetrics/perl-lsp-swarm".into(), number: 10 };
+        let mut mismatches = Vec::new();
+        for (text, expected) in [
+            ("Full acceptance criteria of #10 are not established.", true),
+            ("Full acceptance criteria of #11 are not established.", false),
+            ("__Full acceptance criteria__ are not established.", true),
+            ("_Full acceptance criteria_ are not established.", true),
+            ("Full issue work remains not proven.", true),
+            ("prefix_full acceptance criteria_suffix are not established.", false),
+            ("Full_acceptance criteria are not established.", false),
+        ] {
+            let attributable =
+                exclusion_text_attributable_to_closed_issue(text, &key, &key.repository, 1);
+            if explicitly_not_proven_required_work(&attributable) != expected {
+                mismatches.push(format!("expected {expected}: {text}"));
+            }
+        }
+        if !mismatches.is_empty() {
+            bail!("owned rendered subject mismatches: {mismatches:?}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn explicit_subject_exclusion_is_bound_to_required_work() -> Result<()> {
+        for text in [
+            "Every row is classified. Activation is not claimed.",
+            "Not claimed: that this guard is now complete.",
+            "Full acceptance criteria are satisfied and this guard is not claimed complete.",
+            "Full acceptance criteria are satisfied; this guard is not claimed complete.",
+            "Full acceptance criteria\n\nare not established for this guard.",
+            "- Full acceptance criteria\n- are not established for this guard",
+            "Full acceptance criteria are satisfied. This guard is not claimed complete.",
+        ] {
+            if explicitly_not_proven_required_work(text) {
+                bail!("unrelated exclusion must not borrow the required-work subject: {text}");
+            }
+        }
+        for text in [
+            "This PR does not prove the full acceptance criteria.",
+            "Full acceptance criteria are not established.",
+            "Not claimed: the remaining required work.",
+            "The complete remaining work is not proven.",
+            "This PR does not establish #10's remaining required work.",
+            "The complete remaining call-site cohort is not established.",
+            "Full acceptance criteria are satisfied and remaining required work is not established.",
+        ] {
+            if !explicitly_not_proven_required_work(text) {
+                bail!("explicit required-work exclusion must remain blocking: {text}");
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn explicitly_not_proven_required_work_uses_whole_word_scope_markers() {
+        assert!(explicitly_not_proven_required_work(
+            "this does not prove remaining work in all four families"
+        ));
+        assert!(explicitly_not_proven_required_work(
+            "the complete remaining call-site cohort is not established"
+        ));
+        assert!(!explicitly_not_proven_required_work(
+            "the required hir representation, fallback path, called helper, completeness remainder, everything publicly uninstalled here is not established"
+        ));
+        assert!(!explicitly_not_proven_required_work("this pr proves the claim in full"));
+    }
+
+    #[test]
+    fn neighbor_issue_disclaimer_is_not_attributable_unproven_required_work() {
+        let key = IssueKey { repository: "effortlessmetrics/perl-lsp-swarm".into(), number: 10 };
+        let current = "effortlessmetrics/perl-lsp-swarm";
+        let text = "This PR proves #10's claim in full.\n\nRemaining required work owned by #11 is not established.";
+        let attributable = exclusion_text_attributable_to_closed_issue(text, &key, current, 1);
+        assert!(
+            !explicitly_not_proven_required_work(&attributable),
+            "filtered text must drop the neighboring-issue exclusion: {attributable:?}"
+        );
+        assert!(
+            explicitly_not_proven_required_work(text),
+            "unfiltered text must still show why attribution is load-bearing"
+        );
+
+        let named_closed = "This PR does not prove #10's remaining required work.\n\nWork owned by #11 is separately not established.";
+        let attributable_named =
+            exclusion_text_attributable_to_closed_issue(named_closed, &key, current, 1);
+        assert!(
+            explicitly_not_proven_required_work(&attributable_named),
+            "naming the closed issue must keep the exclusion: {attributable_named:?}"
+        );
+
+        let spaced = "This PR proves #10's claim in full.\n \t\nRemaining required work owned by #11 is not established.";
+        let attributable_spaced =
+            exclusion_text_attributable_to_closed_issue(spaced, &key, current, 1);
+        assert!(
+            !explicitly_not_proven_required_work(&attributable_spaced),
+            "whitespace-only blank lines must still drop the neighboring disclaimer: {attributable_spaced:?}"
+        );
+
+        let tracked =
+            "This PR does not prove the complete remaining work. That work is tracked by #11.";
+        let attributable_tracked =
+            exclusion_text_attributable_to_closed_issue(tracked, &key, current, 1);
+        assert!(
+            explicitly_not_proven_required_work(&attributable_tracked),
+            "an unnumbered closed-issue exclusion must survive a later tracker sentence: {attributable_tracked:?}"
+        );
+
+        for terminator in ['!', '?'] {
+            let punctuated = format!(
+                "This PR does not prove the complete remaining work{terminator} That work is tracked by #11."
+            );
+            let attributable_punctuated =
+                exclusion_text_attributable_to_closed_issue(&punctuated, &key, current, 1);
+            assert!(
+                explicitly_not_proven_required_work(&attributable_punctuated),
+                "sentence terminators other than '.' must still keep the exclusion: {attributable_punctuated:?}"
+            );
+        }
+
+        let inline_question =
+            "Remaining required work is not established for `$ready ? $new : $old`; see #11.";
+        let attributable_inline_question =
+            exclusion_text_attributable_to_closed_issue(inline_question, &key, current, 1);
+        assert!(
+            !explicitly_not_proven_required_work(&attributable_inline_question),
+            "a `?` inside an inline code span must not split off the neighbor reference: {attributable_inline_question:?}"
+        );
+        assert!(
+            explicitly_not_proven_required_work(inline_question),
+            "unfiltered inline-code neighbor text must still show why attribution is load-bearing"
+        );
+
+        let inline_bang =
+            "Remaining required work is not established for `die $msg! now`; see #11.";
+        let attributable_inline_bang =
+            exclusion_text_attributable_to_closed_issue(inline_bang, &key, current, 1);
+        assert!(
+            !explicitly_not_proven_required_work(&attributable_inline_bang),
+            "a `!` inside an inline code span must not split off the neighbor reference: {attributable_inline_bang:?}"
+        );
+        assert!(
+            explicitly_not_proven_required_work(inline_bang),
+            "unfiltered inline-bang neighbor text must still show why attribution is load-bearing"
+        );
+
+        let inline_dot = "Remaining required work is not established for `$x. meth $y`; see #11.";
+        let attributable_inline_dot =
+            exclusion_text_attributable_to_closed_issue(inline_dot, &key, current, 1);
+        assert!(
+            !explicitly_not_proven_required_work(&attributable_inline_dot),
+            "a `.` inside an inline code span must not split off the neighbor reference: {attributable_inline_dot:?}"
+        );
+
+        let escaped = "This PR does not prove the complete remaining work for \\`foo? bar\\`. That work is tracked by #11.";
+        let attributable_escaped =
+            exclusion_text_attributable_to_closed_issue(escaped, &key, current, 1);
+        assert!(
+            explicitly_not_proven_required_work(&attributable_escaped),
+            "escaped backticks must not hide an unnumbered closed-issue exclusion: {attributable_escaped:?}"
+        );
+    }
+
+    #[test]
+    fn unknown_sibling_headings_end_stable_sections_but_nested_headings_do_not() -> Result<()> {
+        let sections = parse_sections(
+            "## Claim Boundary\nfirst boundary line\n### Unrecognized nested heading\nnested boundary line\n## Unrecognized sibling heading\nsibling prose must not be boundary\n",
+            MAX_PR_BODY_BYTES,
+        )?;
+        let boundary = section_text(&sections, &[SectionKind::ClaimBoundary]);
+        assert!(boundary.contains("first boundary line"));
+        assert!(boundary.contains("nested boundary line"));
+        assert!(!boundary.contains("sibling prose must not be boundary"));
+        Ok(())
+    }
+
+    #[test]
+    fn rule_registry_has_explicit_cp03_retirement_mapping() {
+        for rule in RuleId::all() {
+            assert!(rule.as_str().starts_with("CP00-"));
+            assert!(rule.retirement_mapping().starts_with("CP03 "));
+        }
+    }
+
+    #[test]
+    fn hostile_pr_text_is_data_and_never_executed() -> Result<()> {
+        let temp = tempdir()?;
+        let marker = temp.path().join("must-not-exist");
+        let body = format!(
+            "## Claim Boundary\nCandidate text: $(touch {})\n\nCloses #9000001\n",
+            marker.display()
+        );
+        let pull = PullRequestSubject {
+            repository: "effortlessmetrics/perl-lsp-swarm".into(),
+            number: 9000002,
+            title: "test: hostile metadata stays inert (#9000001)".into(),
+            body,
+        };
+        let issue = IssueEvidence::Available(IssueSubject {
+            number: 9000001,
+            title: "fix: atomic fixture".into(),
+            body: "## Acceptance\nOne bounded defect is fixed.".into(),
+        });
+        let report = evaluate(&pull, |_| issue.clone())?;
+        assert_eq!(report.aggregate_code, ResultCode::PassNoHighConfidenceContradiction);
+        assert!(!marker.exists());
+        Ok(())
+    }
+
+    #[test]
+    fn oversized_pr_body_fails_closed() {
+        let body = "x".repeat(MAX_PR_BODY_BYTES + 1);
+        let result = parse_closing_relations(&body, "effortlessmetrics/perl-lsp-swarm");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn fixture_decoder_rejects_unknown_fields() {
+        let raw = r#"{
+          "schema_version":"semantic_close_containment_fixture.v1",
+          "provenance":{"captured_at":"2026-08-21","sources":["https://github.com/a/b/issues/1"],"subject_shas":[],"boundary":"bounded"},
+          "repository":"a/b",
+          "pull_request":{"number":2,"title":"x","body":"Refs #1"},
+          "issues":[],
+          "expected":{"aggregate_code":"PASS_NOT_APPLICABLE","rows":[]},
+          "unexpected":true
+        }"#;
+        let parsed = serde_json::from_str::<Fixture>(raw);
+        assert!(parsed.is_err());
+    }
+
+    /// Mutation controls (#10413 negative controls): disabling exactly one
+    /// contradiction rule must change the named immutable fixture's
+    /// disposition, so the strict expected-code comparison would go red if the
+    /// guard were removed or weakened in the evaluator.
+    #[test]
+    fn mutation_controls_prove_each_rule_owns_its_fixture_disposition() -> Result<()> {
+        let controls = [
+            (
+                RuleId::PhaseTerminal,
+                "invalid-phase-terminal-5023-5001",
+                Some(("## Claim Boundary\nPhase 1 only.\n\nCloses #5001", None)),
+            ),
+            (RuleId::RemainingSameIssue, "invalid-remaining-same-issue", None),
+            (RuleId::PredecessorSuccessorCollapse, "invalid-predecessor-successor-5968-5231", None),
+            (
+                RuleId::ProofLevelContradiction,
+                "invalid-proof-level-6282-5901",
+                Some((
+                    "## Claim Boundary\nRelease evidence is explicitly out of scope.\n\nCloses #5901",
+                    Some("## Acceptance\nRelease proof is required."),
+                )),
+            ),
+            (RuleId::ControllerPacketMissing, "invalid-controller-no-packet", None),
+            (RuleId::ExplicitlyNotProven, "invalid-explicit-unproven", None),
+        ];
+        for (rule, name, isolated) in controls {
+            let raw = FIXTURES
+                .iter()
+                .find(|(fixture_name, _)| *fixture_name == name)
+                .map(|(_, raw)| *raw)
+                .with_context(|| {
+                    format!("locating embedded fixture {name} for mutation control")
+                })?;
+            let fixture: Fixture =
+                serde_json::from_str(raw).with_context(|| format!("parsing fixture {name}"))?;
+
+            let intact = evaluate_fixture(&fixture)?;
+            verify_expected(&intact, &fixture.expected)
+                .with_context(|| format!("control side of mutation fixture {name}"))?;
+            assert!(
+                intact.aggregate_code.is_failure(),
+                "mutation fixture {name} must fail with every rule enabled"
+            );
+
+            let mutated = if let Some((body, isolated_issue_body)) = isolated {
+                let issue = fixture.issues.first().with_context(|| {
+                    format!("locating issue subject for mutation fixture {name}")
+                })?;
+                let pull = PullRequestSubject {
+                    repository: fixture.repository.clone(),
+                    number: fixture.pull_request.number,
+                    title: fixture.pull_request.title.clone(),
+                    body: body.to_string(),
+                };
+                let evidence = IssueEvidence::Available(IssueSubject {
+                    number: issue.number,
+                    title: issue.title.clone(),
+                    body: isolated_issue_body.unwrap_or(&issue.body).to_string(),
+                });
+                evaluate_with_rules(&pull, |_| evidence.clone(), RuleGate { disabled: Some(rule) })?
+            } else {
+                evaluate_fixture_with_rules(&fixture, RuleGate { disabled: Some(rule) })?
+            };
+            assert_ne!(
+                mutated.aggregate_code,
+                intact.aggregate_code,
+                "disabling {} left the {name} disposition unchanged; the mutation control does not discriminate",
+                rule.as_str()
+            );
+            assert_eq!(
+                mutated.aggregate_code,
+                ResultCode::PassNoHighConfidenceContradiction,
+                "disabling {} left another contradiction active in {name}",
+                rule.as_str()
+            );
+        }
+        Ok(())
+    }
+
+    /// Child counts and completion prose outside the `Governing contract`
+    /// section are never a semantic close packet; only an explicit packet
+    /// reference in that section releases a controller terminal relation.
+    #[test]
+    fn controller_child_counts_or_prose_are_not_a_semantic_close_packet() -> Result<()> {
+        let current_repository = "effortlessmetrics/perl-lsp-swarm";
+        let key = IssueKey { repository: current_repository.into(), number: 8035 };
+
+        let boundary_prose = parse_sections(
+            "## Claim Boundary\nAll 12 child leaves reconciled; #8035 is complete per fan-in totals.\n\nCloses #8035\n",
+            MAX_PR_BODY_BYTES,
+        )?;
+        assert!(!has_semantic_close_packet(&boundary_prose, &key, current_repository));
+
+        let summary_prose = parse_sections(
+            "## Summary\n12/12 children landed, closing #8035 with complete counts.\n",
+            MAX_PR_BODY_BYTES,
+        )?;
+        assert!(!has_semantic_close_packet(&summary_prose, &key, current_repository));
+
+        let negated_packet = parse_sections(
+            "## Governing contract\nSemantic close packet for #8035 is not supplied.\n",
+            MAX_PR_BODY_BYTES,
+        )?;
+        assert!(!has_semantic_close_packet(&negated_packet, &key, current_repository));
+
+        let unavailable_packet = parse_sections(
+            "## Governing contract\nSemantic close packet for #8035: unavailable at `.spec/8035/issue-close-proof.json`.\n",
+            MAX_PR_BODY_BYTES,
+        )?;
+        assert!(!has_semantic_close_packet(&unavailable_packet, &key, current_repository));
+
+        let absent_packet = parse_sections(
+            "## Governing contract\nNo semantic close packet is available for #8035: `.spec/8035/issue-close-proof.json`.\n",
+            MAX_PR_BODY_BYTES,
+        )?;
+        assert!(!has_semantic_close_packet(&absent_packet, &key, current_repository));
+
+        let packet = parse_sections(
+            "## Governing contract\nSemantic close packet for #8035: `.spec/8035/issue-close-proof.json`.\n",
+            MAX_PR_BODY_BYTES,
+        )?;
+        assert!(has_semantic_close_packet(&packet, &key, current_repository));
+        Ok(())
+    }
+
+    /// #15640: the event payload is parsed for the locator only. A stale
+    /// event title/body (the rerun payload) must not be bound anywhere the
+    /// evaluator can reach.
+    #[test]
+    fn event_payload_supplies_a_locator_never_a_semantic_subject() -> Result<()> {
+        let raw = br#"{
+          "repository": {"full_name": "EffortlessMetrics/perl-lsp-swarm"},
+          "pull_request": {
+            "number": 15605,
+            "title": "stale rerun title",
+            "body": "Closes #12905 on merge",
+            "base": {"repo": {"full_name": "EffortlessMetrics/perl-lsp-swarm"}},
+            "head": {"sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
+          }
+        }"#;
+        let locator = parse_event_locator(raw)?;
+        assert_eq!(locator.repository, "effortlessmetrics/perl-lsp-swarm");
+        assert_eq!(locator.number, 15605);
+        assert_eq!(locator.head_sha, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        Ok(())
+    }
+
+    #[test]
+    fn event_base_repository_mismatch_fails_closed() -> Result<()> {
+        let raw = br#"{
+          "repository": {"full_name": "EffortlessMetrics/perl-lsp-swarm"},
+          "pull_request": {
+            "number": 1,
+            "base": {"repo": {"full_name": "OtherOrg/OtherRepo"}},
+            "head": {"sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
+          }
+        }"#;
+        assert!(parse_event_locator(raw).is_err());
+        Ok(())
+    }
+
+    /// #15640 required control: the live snapshot must agree with the event
+    /// locator (repository, PR number, base repository) before use.
+    #[test]
+    fn live_snapshot_locator_mismatch_fails_closed() -> Result<()> {
+        let locator = EventLocator {
+            repository: "effortlessmetrics/perl-lsp-swarm".into(),
+            number: 15605,
+            head_sha: "unknown".into(),
+        };
+        let different_number = br#"{
+          "number": 999,
+          "title": "t",
+          "body": null,
+          "updated_at": "2026-09-12T12:26:40Z",
+          "head": {"sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
+          "base": {"repo": {"full_name": "EffortlessMetrics/perl-lsp-swarm"}}
+        }"#;
+        assert!(validate_live_snapshot(different_number, &locator).is_err());
+
+        let different_base = br#"{
+          "number": 15605,
+          "title": "t",
+          "body": null,
+          "updated_at": "2026-09-12T12:26:40Z",
+          "head": {"sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
+          "base": {"repo": {"full_name": "OtherOrg/OtherRepo"}}
+        }"#;
+        assert!(validate_live_snapshot(different_base, &locator).is_err());
+
+        let malformed = br#"{"number": 15605, "title": "t""#;
+        assert!(validate_live_snapshot(malformed, &locator).is_err());
+        Ok(())
+    }
+
+    /// The subject comes from the live snapshot (title/body), the snapshot
+    /// receipt records `updated_at`/head/digest, and the digest changes when
+    /// the evaluated prose changes — the property that makes a stale rerun
+    /// verdict detectable.
+    #[test]
+    fn live_snapshot_builds_subject_and_stable_digest() -> Result<()> {
+        let locator = EventLocator {
+            repository: "effortlessmetrics/perl-lsp-swarm".into(),
+            number: 15605,
+            head_sha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
+        };
+        let raw = br#"{
+          "number": 15605,
+          "title": "fix(ci): live subject",
+          "body": "Fixes #15641",
+          "updated_at": "2026-09-12T12:26:40Z",
+          "head": {"sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
+          "base": {"repo": {"full_name": "EffortlessMetrics/perl-lsp-swarm"}}
+        }"#;
+        let (pull, snapshot) = validate_live_snapshot(raw, &locator)?;
+        assert_eq!(pull.title, "fix(ci): live subject");
+        assert_eq!(pull.body, "Fixes #15641");
+        assert_eq!(snapshot.source, "pulls_api");
+        assert_eq!(snapshot.pr_updated_at, "2026-09-12T12:26:40Z");
+        assert_eq!(snapshot.event_head_sha, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        assert_eq!(snapshot.head_sha, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        assert_eq!(snapshot.title_bytes, "fix(ci): live subject".len());
+        assert_eq!(snapshot.body_bytes, "Fixes #15641".len());
+        assert_eq!(snapshot.title_body_sha256.len(), 64);
+        assert!(snapshot.title_body_sha256.chars().all(|character| character.is_ascii_hexdigit()));
+
+        let edited = br#"{
+          "number": 15605,
+          "title": "fix(ci): live subject",
+          "body": "Advances #15641",
+          "updated_at": "2026-09-12T12:30:00Z",
+          "head": {"sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
+          "base": {"repo": {"full_name": "EffortlessMetrics/perl-lsp-swarm"}}
+        }"#;
+        let (_, edited_snapshot) = validate_live_snapshot(edited, &locator)?;
+        assert_ne!(
+            snapshot.title_body_sha256, edited_snapshot.title_body_sha256,
+            "a body edit must change the snapshot digest"
+        );
+
+        // Deterministic: the same bytes produce the same digest.
+        let (_, replayed) = validate_live_snapshot(raw, &locator)?;
+        assert_eq!(snapshot.title_body_sha256, replayed.title_body_sha256);
+        Ok(())
+    }
+
+    /// A null live body is an empty description, not unavailable data; an
+    /// oversized live body or title fails closed (#15640).
+    #[test]
+    fn live_snapshot_bounds_fail_closed() -> Result<()> {
+        let locator = EventLocator {
+            repository: "effortlessmetrics/perl-lsp-swarm".into(),
+            number: 15605,
+            head_sha: "unknown".into(),
+        };
+        let null_body = br#"{
+          "number": 15605,
+          "title": "t",
+          "body": null,
+          "updated_at": "2026-09-12T12:26:40Z",
+          "head": {"sha": null},
+          "base": {"repo": {"full_name": "EffortlessMetrics/perl-lsp-swarm"}}
+        }"#;
+        let (pull, snapshot) = validate_live_snapshot(null_body, &locator)?;
+        assert_eq!(pull.body, "");
+        assert_eq!(snapshot.head_sha, "unknown");
+        assert_eq!(snapshot.body_bytes, 0);
+
+        let oversized_body = format!(
+            r#"{{"number":15605,"title":"t","body":"{}","updated_at":"2026-09-12T12:26:40Z","head":{{"sha":null}},"base":{{"repo":{{"full_name":"EffortlessMetrics/perl-lsp-swarm"}}}}}}"#,
+            "x".repeat(MAX_PR_BODY_BYTES + 1)
+        );
+        assert!(validate_live_snapshot(oversized_body.as_bytes(), &locator).is_err());
+
+        let oversized_title = format!(
+            r#"{{"number":15605,"title":"{}","body":"b","updated_at":"2026-09-12T12:26:40Z","head":{{"sha":null}},"base":{{"repo":{{"full_name":"EffortlessMetrics/perl-lsp-swarm"}}}}}}"#,
+            "x".repeat(MAX_PR_TITLE_BYTES + 1)
+        );
+        assert!(validate_live_snapshot(oversized_title.as_bytes(), &locator).is_err());
+        Ok(())
+    }
+}

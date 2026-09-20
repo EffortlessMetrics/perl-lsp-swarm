@@ -97,6 +97,21 @@ impl QueryContext {
     }
 }
 
+/// Source span of a semantic anchor, resolved from a fact snapshot.
+///
+/// Byte offsets are used deliberately: they are independent of the line/column
+/// encoding a consumer happens to use, so they can be compared against spans
+/// produced by other layers without an encoding conversion.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AnchorSourceSpan {
+    /// Normalized URI of the source that owns the anchor.
+    pub source_uri: String,
+    /// Inclusive start byte offset of the anchor span.
+    pub start_byte: u32,
+    /// Exclusive end byte offset of the anchor span.
+    pub end_byte: u32,
+}
+
 // ── SemanticQueries trait ──
 
 /// Workspace-level semantic query facade.
@@ -123,6 +138,24 @@ pub trait SemanticQueries {
     /// Returns all non-definition occurrences that reference the given
     /// entity, preserving occurrence kind classification.
     fn references(&self, entity_id: EntityId) -> Vec<OccurrenceFact>;
+
+    /// Resolve `anchor_id` to its owning source URI and byte span.
+    ///
+    /// Implementations must answer from the fact snapshot this facade already
+    /// borrows. Callers frequently run inside
+    /// `WorkspaceIndex::with_semantic_queries_for_uri`, which holds the
+    /// `fact_shards` read lock for the whole callback; resolving an anchor by
+    /// re-entering `WorkspaceIndex` from there re-acquires that same
+    /// non-reentrant, write-preferring lock and deadlocks against a queued
+    /// reindex.
+    ///
+    /// Returns `None` when the anchor has no resolvable source span (generated
+    /// or virtual members), when the span is degenerate, or when more than one
+    /// shard claims the same `anchor_id`. Duplicate IDs must fail closed rather
+    /// than returning whichever shard `HashMap` iteration happens to hit first.
+    fn anchor_source_span(&self, _anchor_id: AnchorId) -> Option<AnchorSourceSpan> {
+        None
+    }
 
     /// Return symbols visible at a given file position and scope.
     fn visible_symbols_at(
@@ -497,6 +530,33 @@ impl<'a> WorkspaceSemanticQueries<'a> {
 }
 
 impl<'a> SemanticQueries for WorkspaceSemanticQueries<'a> {
+    /// Resolve the anchor from the borrowed shard snapshot.
+    ///
+    /// This never touches `WorkspaceIndex`, so it is safe to call from inside
+    /// `with_semantic_queries_for_uri` while the `fact_shards` read lock is
+    /// held. A degenerate span, or the same `anchor_id` appearing in more than
+    /// one shard, is reported as unresolved rather than as an arbitrary
+    /// first-hit location.
+    fn anchor_source_span(&self, anchor_id: AnchorId) -> Option<AnchorSourceSpan> {
+        let mut found = None;
+        for shard in self.fact_shards.values() {
+            for anchor in shard.anchors.iter().filter(|anchor| anchor.id == anchor_id) {
+                if anchor.span_end_byte <= anchor.span_start_byte {
+                    return None;
+                }
+                let next = AnchorSourceSpan {
+                    source_uri: shard.source_uri.clone(),
+                    start_byte: anchor.span_start_byte,
+                    end_byte: anchor.span_end_byte,
+                };
+                if found.replace(next).is_some() {
+                    return None;
+                }
+            }
+        }
+        found
+    }
+
     fn symbol_at(&self, file_id: FileId, byte_offset: u32) -> Option<(EntityFact, OccurrenceFact)> {
         let shard = self.shard_for_file(file_id)?;
 
@@ -510,9 +570,17 @@ impl<'a> SemanticQueries for WorkspaceSemanticQueries<'a> {
         // Find an occurrence at this anchor.
         let occurrence = shard.occurrences.iter().find(|o| o.anchor_id == anchor.id)?;
 
-        // Resolve the entity from the occurrence's entity_id.
+        // Resolve the entity from the occurrence's entity_id. The declaring
+        // shard may differ from the referencing file: cross-file inherited
+        // calls bind the parent's entity at the canonical fact boundary, so
+        // the EntityFact must be looked up across the workspace, not assumed
+        // to live in the referencing file's own shard.
         let entity_id = occurrence.entity_id?;
-        let entity = shard.entities.iter().find(|e| e.id == entity_id)?;
+        let entity = self
+            .fact_shards
+            .values()
+            .flat_map(|shard| shard.entities.iter())
+            .find(|e| e.id == entity_id)?;
 
         Some((entity.clone(), occurrence.clone()))
     }
@@ -702,23 +770,23 @@ impl<'a> SemanticQueries for WorkspaceSemanticQueries<'a> {
         // ── Block on generated-member entities ──
         // Generated members (Moo/Moose accessors) cannot be safely renamed
         // without a generator-specific edit plan (Req 17.6).
-        if let Some(ref info) = entity_info {
-            if info.kind == EntityKind::GeneratedMember {
-                blockers.push(PlanBlocker::new(
-                    PlanBlockerReason::GeneratedMember,
-                    info.anchor_id,
-                    "Cannot rename generated member without a generator-specific edit plan."
-                        .to_string(),
-                ));
-                return RenamePlan::new(
-                    entity_id,
-                    old_name,
-                    new_name.to_string(),
-                    edits,
-                    blockers,
-                    warnings,
-                );
-            }
+        if let Some(ref info) = entity_info
+            && info.kind == EntityKind::GeneratedMember
+        {
+            blockers.push(PlanBlocker::new(
+                PlanBlockerReason::GeneratedMember,
+                info.anchor_id,
+                "Cannot rename generated member without a generator-specific edit plan."
+                    .to_string(),
+            ));
+            return RenamePlan::new(
+                entity_id,
+                old_name,
+                new_name.to_string(),
+                edits,
+                blockers,
+                warnings,
+            );
         }
 
         // ── Collect definition occurrences ──
@@ -950,16 +1018,16 @@ impl<'a> SemanticQueries for WorkspaceSemanticQueries<'a> {
         // ── Block on generated-member entities (Req 17.7) ──
         // Generated members (Moo/Moose accessors) cannot be safely deleted
         // without a generator-specific delete plan.
-        if let Some(ref info) = entity_info {
-            if info.kind == EntityKind::GeneratedMember {
-                blockers.push(PlanBlocker::new(
-                    PlanBlockerReason::GeneratedMember,
-                    info.anchor_id,
-                    "Cannot delete generated member without a generator-specific delete plan."
-                        .to_string(),
-                ));
-                return SafeDeletePlan::new(entity_id, name, blockers, warnings);
-            }
+        if let Some(ref info) = entity_info
+            && info.kind == EntityKind::GeneratedMember
+        {
+            blockers.push(PlanBlocker::new(
+                PlanBlockerReason::GeneratedMember,
+                info.anchor_id,
+                "Cannot delete generated member without a generator-specific delete plan."
+                    .to_string(),
+            ));
+            return SafeDeletePlan::new(entity_id, name, blockers, warnings);
         }
 
         let bare = bare_name(&name);
@@ -1107,19 +1175,19 @@ impl<'a> SemanticQueries for WorkspaceSemanticQueries<'a> {
             // Symbol filter: if a symbol name is requested, it must match the
             // entity associated with this occurrence (when known). When the
             // entity_id is None the boundary is fully dynamic (any symbol).
-            if let Some(sym) = symbol {
-                if let Some(entity_id) = occurrence.entity_id {
-                    // Resolve the entity to check name match.
-                    let entity_matches = shard.entities.iter().any(|e| {
-                        e.id == entity_id
-                            && (e.canonical_name == sym || bare_name(&e.canonical_name) == sym)
-                    });
-                    if !entity_matches {
-                        continue;
-                    }
+            if let Some(sym) = symbol
+                && let Some(entity_id) = occurrence.entity_id
+            {
+                // Resolve the entity to check name match.
+                let entity_matches = shard.entities.iter().any(|e| {
+                    e.id == entity_id
+                        && (e.canonical_name == sym || bare_name(&e.canonical_name) == sym)
+                });
+                if !entity_matches {
+                    continue;
                 }
-                // entity_id is None → fully dynamic, any symbol is plausible.
             }
+            // entity_id is None → fully dynamic, any symbol is plausible.
 
             return Some(occurrence.clone());
         }
@@ -1717,6 +1785,65 @@ mod tests {
         assert_eq!(ctx.file_id, FileId(5));
         assert_eq!(ctx.scope_id, None);
         assert_eq!(ctx.byte_offset, None);
+        Ok(())
+    }
+
+    // ── anchor_source_span tests ──
+
+    fn colliding_anchor_shard(uri: &str, file_id: FileId, start: u32, end: u32) -> FileFactShard {
+        make_shard(
+            uri,
+            file_id,
+            vec![AnchorFact {
+                id: AnchorId(42),
+                file_id,
+                span_start_byte: start,
+                span_end_byte: end,
+                scope_id: None,
+                provenance: Provenance::ExactAst,
+                confidence: Confidence::High,
+            }],
+            vec![],
+            vec![],
+            vec![],
+        )
+    }
+
+    #[test]
+    fn anchor_source_span_resolves_unique_id() -> Result<(), Box<dyn std::error::Error>> {
+        let (_file_id, shard) = simple_shard();
+        let mut shards = HashMap::new();
+        shards.insert(shard.source_uri.clone(), shard);
+        let ref_index = ReferenceIndex::new();
+        let ie_index = ImportExportIndex::new();
+        let queries = build_queries(&ref_index, &ie_index, &shards);
+
+        let span = queries.anchor_source_span(AnchorId(10)).ok_or("unique anchor must resolve")?;
+        assert_eq!(span.source_uri, "file:///lib/Foo.pm");
+        assert_eq!(span.start_byte, 0);
+        assert_eq!(span.end_byte, 15);
+        Ok(())
+    }
+
+    #[test]
+    fn anchor_source_span_fails_closed_for_duplicate_ids_across_shards()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Distinct spans so a first-hit implementation would return whichever
+        // shard HashMap iteration happens to yield first. Fail-closed must not
+        // let iteration order manufacture a source-backed identity.
+        let shard_a = colliding_anchor_shard("file:///lib/A.pm", FileId(1), 0, 7);
+        let shard_b = colliding_anchor_shard("file:///lib/B.pm", FileId(2), 10, 17);
+        let mut shards = HashMap::new();
+        shards.insert(shard_a.source_uri.clone(), shard_a);
+        shards.insert(shard_b.source_uri.clone(), shard_b);
+        let ref_index = ReferenceIndex::new();
+        let ie_index = ImportExportIndex::new();
+        let queries = build_queries(&ref_index, &ie_index, &shards);
+
+        assert!(
+            queries.anchor_source_span(AnchorId(42)).is_none(),
+            "duplicate AnchorId across shards must fail closed rather than pick a HashMap winner"
+        );
         Ok(())
     }
 
@@ -2457,6 +2584,113 @@ mod tests {
         let candidates = queries.method_candidates("Child", "greet");
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].canonical_name, "Parent::greet");
+        Ok(())
+    }
+
+    #[test]
+    fn inherited_method_identity_is_shared_by_candidates_definitions_and_references()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let file_child = FileId(1);
+        let file_parent = FileId(2);
+        let parent_anchor = AnchorId(20);
+        let call_anchor = AnchorId(30);
+        let method_id = EntityId(200);
+
+        let shard_child = make_shard(
+            "file:///lib/Child.pm",
+            file_child,
+            vec![AnchorFact {
+                id: call_anchor,
+                file_id: file_child,
+                span_start_byte: 0,
+                span_end_byte: 15,
+                scope_id: None,
+                provenance: Provenance::ExactAst,
+                confidence: Confidence::High,
+            }],
+            vec![],
+            vec![OccurrenceFact {
+                id: OccurrenceId(300),
+                kind: OccurrenceKind::Call,
+                entity_id: Some(method_id),
+                anchor_id: call_anchor,
+                scope_id: None,
+                provenance: Provenance::ExactAst,
+                confidence: Confidence::High,
+            }],
+            vec![],
+        );
+
+        let shard_parent = make_shard(
+            "file:///lib/Parent.pm",
+            file_parent,
+            vec![AnchorFact {
+                id: parent_anchor,
+                file_id: file_parent,
+                span_start_byte: 0,
+                span_end_byte: 15,
+                scope_id: None,
+                provenance: Provenance::ExactAst,
+                confidence: Confidence::High,
+            }],
+            vec![EntityFact {
+                id: method_id,
+                kind: EntityKind::Method,
+                canonical_name: "Parent::greet".to_string(),
+                anchor_id: Some(parent_anchor),
+                scope_id: None,
+                provenance: Provenance::ExactAst,
+                confidence: Confidence::High,
+            }],
+            vec![],
+            vec![],
+        );
+
+        let mut shards = HashMap::new();
+        shards.insert(shard_child.source_uri.clone(), shard_child.clone());
+        shards.insert(shard_parent.source_uri.clone(), shard_parent.clone());
+
+        let mut package_graph = PackageGraphIndex::new();
+        package_graph.add_edges(
+            "file:///lib/Child.pm",
+            file_child,
+            vec![PackageEdge::new(
+                "Child".to_string(),
+                "Parent".to_string(),
+                PackageEdgeKind::Inherits,
+                Some(AnchorId(1)),
+                Provenance::ExactAst,
+                Confidence::High,
+            )],
+        );
+
+        let mut reference_index = ReferenceIndex::new();
+        reference_index.add_file(&shard_child);
+        let import_export_index = ImportExportIndex::new();
+        let queries = WorkspaceSemanticQueries::with_package_graph(
+            &reference_index,
+            &import_export_index,
+            &shards,
+            &package_graph,
+        );
+
+        let candidate = queries
+            .method_candidates("Child", "greet")
+            .into_iter()
+            .next()
+            .ok_or("inherited method candidate should resolve")?;
+        let definition = queries
+            .definitions("Parent::greet", &QueryContext::new(file_child, None, Some(10)))
+            .into_iter()
+            .next()
+            .ok_or("inherited method definition should resolve")?;
+        let references = queries.references(method_id);
+
+        assert_eq!(candidate.entity_id, method_id);
+        assert_eq!(definition.entity_id, method_id);
+        assert_eq!(references.len(), 1);
+        assert_eq!(references[0].entity_id, Some(method_id));
+        assert_eq!(references[0].anchor_id, call_anchor);
         Ok(())
     }
 

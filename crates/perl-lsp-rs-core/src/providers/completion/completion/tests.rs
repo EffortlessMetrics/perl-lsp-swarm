@@ -2,7 +2,7 @@ use super::*;
 use crate::providers::file_completion::CWD_LOCK as FILE_COMPLETION_CWD_LOCK;
 use perl_parser_core::Parser;
 use perl_semantic_analyzer::analysis::symbol::{ScopeKind, SymbolExtractor};
-use perl_tdd_support::{must, must_some};
+use perl_test_must::{must, must_some, must_some_with};
 use perl_workspace::workspace_index::WorkspaceIndex;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -46,6 +46,255 @@ $c
 
     assert!(completions.iter().any(|c| c.label == "$count"));
     assert!(completions.iter().any(|c| c.label == "$counter"));
+}
+
+fn union_receiver_workspace_index() -> Result<Arc<WorkspaceIndex>, Box<dyn std::error::Error>> {
+    let index = Arc::new(WorkspaceIndex::new());
+    index.index_file(
+        Url::parse("file:///workspace/Foo.pm")?,
+        "package Foo;\nsub shared_method { }\nsub foo_only { }\n1;\n".to_string(),
+    )?;
+    index.index_file(
+        Url::parse("file:///workspace/Bar.pm")?,
+        "package Bar;\nsub shared_method { }\nsub bar_only { }\n1;\n".to_string(),
+    )?;
+    Ok(index)
+}
+
+fn object_receiver_fact(
+    ty: perl_semantic_analyzer::analysis::type_inference::PerlType,
+) -> perl_semantic_analyzer::analysis::type_facts::TypeFact {
+    use perl_semantic_analyzer::analysis::type_facts::TypeEvidence;
+    use perl_semantic_analyzer::analysis::type_facts::TypeFact;
+
+    let mut fact = TypeFact::new(ty, perl_semantic_facts::Confidence::High);
+    fact.evidence = vec![TypeEvidence::WorkspaceSymbol { package: "Foo".to_string() }];
+    fact
+}
+
+fn completion_provider(source: &str) -> Result<CompletionProvider, Box<dyn std::error::Error>> {
+    let mut parser = Parser::new(source);
+    let ast = parser.parse()?;
+    let index = union_receiver_workspace_index()?;
+    Ok(CompletionProvider::new_with_index_and_source(&ast, source, Some(index)))
+}
+
+#[test]
+fn production_method_completion_ignores_pod_looking_heredoc_content()
+-> Result<(), Box<dyn std::error::Error>> {
+    let source = "use HTTP::Tiny;\nmy $http = HTTP::Tiny->new;\nmy $text = <<'END';\n=begin comment\n=for comment\n=end comment\nEND\n$http->po";
+    let provider = completion_provider(source)?;
+    let completions = provider.get_completions(source, source.len());
+
+    assert!(
+        completions.iter().any(|item| item.label == "post"),
+        "constructor methods must remain available after POD-looking heredoc content"
+    );
+    Ok(())
+}
+
+#[test]
+fn production_method_completion_accepts_real_cut_and_rejects_pod_or_reassigned_context()
+-> Result<(), Box<dyn std::error::Error>> {
+    let for_source = "use HTTP::Tiny;\n=for comment\ndocumentation\n\n=cut\nmy $http = HTTP::Tiny->new;\n$http->po";
+    let for_provider = completion_provider(for_source)?;
+    assert!(
+        for_provider
+            .get_completions(for_source, for_source.len())
+            .iter()
+            .any(|item| item.label == "post"),
+        "code after =cut must remain reachable after a =for paragraph"
+    );
+
+    let malformed_source =
+        "use HTTP::Tiny;\n=begin\nnot a valid region\nmy $http = HTTP::Tiny->new;\n$http->po";
+    let malformed_provider = completion_provider(malformed_source)?;
+    assert!(
+        !malformed_provider
+            .get_completions(malformed_source, malformed_source.len())
+            .iter()
+            .any(|item| item.label == "post"),
+        "a targetless =begin without =cut must keep the trailing code in POD"
+    );
+
+    let reassigned_source =
+        "use HTTP::Tiny;\nmy $http = HTTP::Tiny->new;\n$http = make_other();\n$http->po";
+    let reassigned_provider = completion_provider(reassigned_source)?;
+    assert!(
+        !reassigned_provider
+            .get_completions(reassigned_source, reassigned_source.len())
+            .iter()
+            .any(|item| item.label == "post"),
+        "constructor inference must stop after a later reassignment"
+    );
+    Ok(())
+}
+
+#[test]
+fn production_method_completion_ignores_indented_pod_directives()
+-> Result<(), Box<dyn std::error::Error>> {
+    let source = "use HTTP::Tiny;\n  =begin comment\n  =for comment\n  =cut\nmy $http = HTTP::Tiny->new;\n$http->po";
+    let provider = completion_provider(source)?;
+
+    assert!(
+        provider.get_completions(source, source.len()).iter().any(|item| item.label == "post"),
+        "indented POD-looking lines must not suppress production completion"
+    );
+    Ok(())
+}
+
+fn completion_provider_with_receiver_fact(
+    source: &str,
+    receiver_fact: Option<perl_semantic_analyzer::analysis::type_facts::TypeFact>,
+) -> Result<CompletionProvider, Box<dyn std::error::Error>> {
+    let mut provider = completion_provider(source)?;
+
+    if let Some(fact) = receiver_fact {
+        let engine =
+            provider.type_engine.as_mut().ok_or("workspace provider has no type engine")?;
+        engine.set_variable_fact("obj".to_string(), fact);
+    }
+
+    Ok(provider)
+}
+
+fn custom_union_method_labels(completions: &[CompletionItem]) -> Vec<&str> {
+    completions
+        .iter()
+        .filter(|item| matches!(item.label.as_ref(), "shared_method" | "foo_only" | "bar_only"))
+        .map(|item| item.label.as_ref())
+        .collect()
+}
+
+#[test]
+fn production_completion_routes_inferred_union_receiver_to_workspace_methods()
+-> Result<(), Box<dyn std::error::Error>> {
+    // The provider's normal AST inference derives this union from the two
+    // source-backed constructor branches; no test-only fact injection is used.
+    let source = "my $obj = 1 ? Foo->new() : Bar->new();\n$obj->";
+    let provider = completion_provider(source)?;
+    let completions = provider.get_completions(source, source.len());
+
+    let shared: Vec<_> = completions.iter().filter(|item| item.label == "shared_method").collect();
+    let foo_only = completions.iter().find(|item| item.label == "foo_only");
+    let bar_only = completions.iter().find(|item| item.label == "bar_only");
+
+    assert_eq!(shared.len(), 1, "shared union method must be deduplicated");
+    assert!(foo_only.is_some(), "Foo-only method must be offered");
+    assert!(
+        bar_only.is_some(),
+        "Bar-only method proves the second union arm reached production dispatch"
+    );
+
+    let shared_sort = shared[0].sort_text.as_deref().unwrap_or_default();
+    let foo_sort = foo_only.and_then(|item| item.sort_text.as_deref()).unwrap_or_default();
+    assert!(
+        shared_sort.starts_with("2u_"),
+        "shared method should use shared tier, got {shared_sort:?}"
+    );
+    assert!(
+        foo_sort.starts_with("3u_"),
+        "partial method should use partial tier, got {foo_sort:?}"
+    );
+    assert!(
+        shared[0]
+            .detail
+            .as_deref()
+            .is_some_and(|detail| detail.contains("receiver: union candidates")),
+        "production completion should expose the UnionCandidates evidence route"
+    );
+    Ok(())
+}
+
+#[test]
+fn production_completion_single_package_receiver_does_not_use_union_route()
+-> Result<(), Box<dyn std::error::Error>> {
+    use perl_semantic_analyzer::analysis::type_inference::PerlType;
+
+    let fact = object_receiver_fact(PerlType::Object("Foo".to_string()));
+    let source = "my $obj;\n$obj->";
+    let provider = completion_provider_with_receiver_fact(source, Some(fact))?;
+    let completions = provider.get_completions(source, source.len());
+    let labels = custom_union_method_labels(&completions);
+
+    assert!(labels.contains(&"foo_only"), "single-package Foo receiver should keep Foo methods");
+    assert!(!labels.contains(&"bar_only"), "single-package receiver must not surface Bar methods");
+    assert!(
+        completions.iter().filter(|item| item.label == "shared_method").all(|item| {
+            !item.detail.as_deref().unwrap_or_default().contains("receiver: union candidates")
+        }),
+        "single-package receiver must not use UnionCandidates evidence"
+    );
+    Ok(())
+}
+
+#[test]
+fn production_completion_unknown_receiver_stays_bounded() -> Result<(), Box<dyn std::error::Error>>
+{
+    let source = "my $obj;\n$obj->";
+    let provider = completion_provider_with_receiver_fact(source, None)?;
+    let completions = provider.get_completions(source, source.len());
+
+    assert!(
+        custom_union_method_labels(&completions).is_empty(),
+        "unknown receiver must not borrow methods from unrelated indexed packages"
+    );
+    Ok(())
+}
+
+#[test]
+fn production_completion_dynamic_receiver_stays_fail_closed()
+-> Result<(), Box<dyn std::error::Error>> {
+    let source = "my $class = $name;\nmy $obj = bless {}, $class;\n$obj->";
+    let provider = completion_provider_with_receiver_fact(source, None)?;
+    let completions = provider.get_completions(source, source.len());
+
+    assert!(
+        custom_union_method_labels(&completions).is_empty(),
+        "dynamic bless receiver must not use union or unknown fallback methods"
+    );
+    Ok(())
+}
+
+#[test]
+fn production_completion_object_plus_non_object_union_is_not_a_union_receiver()
+-> Result<(), Box<dyn std::error::Error>> {
+    use perl_semantic_analyzer::analysis::type_inference::PerlType;
+
+    let fact = object_receiver_fact(PerlType::Union(vec![
+        PerlType::Object("Foo".to_string()),
+        PerlType::Scalar(perl_semantic_analyzer::analysis::type_inference::ScalarType::String),
+    ]));
+    let source = "my $obj;\n$obj->";
+    let provider = completion_provider_with_receiver_fact(source, Some(fact))?;
+    let completions = provider.get_completions(source, source.len());
+
+    assert!(
+        custom_union_method_labels(&completions).is_empty(),
+        "object-plus-non-object union must not claim a precise union receiver"
+    );
+    Ok(())
+}
+
+#[test]
+fn production_completion_mixed_multi_object_union_stays_fail_closed()
+-> Result<(), Box<dyn std::error::Error>> {
+    use perl_semantic_analyzer::analysis::type_inference::{PerlType, ScalarType};
+
+    let fact = object_receiver_fact(PerlType::Union(vec![
+        PerlType::Object("Foo".to_string()),
+        PerlType::Object("Bar".to_string()),
+        PerlType::Scalar(ScalarType::String),
+    ]));
+    let source = "my $obj;\n$obj->";
+    let provider = completion_provider_with_receiver_fact(source, Some(fact))?;
+    let completions = provider.get_completions(source, source.len());
+
+    assert!(
+        custom_union_method_labels(&completions).is_empty(),
+        "mixed union with multiple object arms must not dispatch object methods"
+    );
+    Ok(())
 }
 
 #[test]
@@ -675,6 +924,200 @@ Point->new(
 
     let x_item = must_some(completions.iter().find(|item| item.label == "x"));
     assert_eq!(x_item.insert_text.as_deref(), Some("x => "));
+}
+
+/// A named `:param(external_name)` is the keyword `new` actually accepts, so
+/// the completion must offer the explicit name instead of the field name.
+///
+/// Controlling issue: #13449.
+#[test]
+fn test_object_pad_constructor_param_completion_uses_explicit_param_name() {
+    let code = r#"
+use Object::Pad;
+
+class Point {
+field $x :param(across) = 0;
+field $y :param = 0;
+}
+
+Point->new(
+"#;
+
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new_with_index_and_source(&ast, code, None);
+
+    let completions = provider.get_completions(code, code.len());
+
+    let across = must_some(completions.iter().find(|item| item.label == "across"));
+    assert_eq!(across.insert_text.as_deref(), Some("across => "));
+    assert_eq!(across.detail.as_deref(), Some("Object::Pad constructor parameter"));
+
+    assert!(
+        !completions.iter().any(|item| {
+            item.label == "x" && item.detail.as_deref() == Some("Object::Pad constructor parameter")
+        }),
+        "the field name must not be offered as a constructor keyword once :param names one"
+    );
+    assert!(
+        completions.iter().any(|item| item.label == "y"),
+        "a bare :param still completes under the field name"
+    );
+}
+
+/// A literal constructor key must be quoted before it is inserted as Perl.
+///
+/// `=>` auto-quotes only a plain identifier. Verified on perl 5.38.2 that
+/// `C->new(foo-bar => 1)` dies with `Bareword "foo" not allowed while
+/// "strict subs" in use`, `C->new(Foo::bar => 1)` dies under `use strict`,
+/// and `C->new($dyn => 1)` inserts the variable's *value* rather than the key.
+/// Inserting any of them unquoted silently changes which constructor argument
+/// the user is naming.
+///
+/// Controlling issue: #13449.
+#[test]
+fn test_object_pad_constructor_param_completion_quotes_literal_keys() {
+    for (key, expected_insert) in [
+        // A plain identifier is left bare: `=>` already quotes it.
+        ("plain_key", "plain_key => "),
+        ("_leading", "_leading => "),
+        ("mixed123", "mixed123 => "),
+        // Everything else has to be quoted.
+        ("foo-bar", "'foo-bar' => "),
+        ("Foo::bar", "'Foo::bar' => "),
+        ("1bad", "'1bad' => "),
+        ("get()", "'get()' => "),
+    ] {
+        let code = format!(
+            "\nuse Object::Pad;\n\nclass Point {{\nfield $x :param({key}) = 0;\n}}\n\nPoint->new(\n"
+        );
+
+        let mut parser = Parser::new(&code);
+        let ast = must(parser.parse());
+        let provider = CompletionProvider::new_with_index_and_source(&ast, &code, None);
+        let completions = provider.get_completions(&code, code.len());
+
+        let item = must_some(completions.iter().find(|item| {
+            item.label == key && item.detail.as_deref() == Some("Object::Pad constructor parameter")
+        }));
+        assert_eq!(
+            item.insert_text.as_deref(),
+            Some(expected_insert),
+            "`:param({key})` must insert `{expected_insert}`"
+        );
+        assert_eq!(item.label, key, "the label keeps the key as the source wrote it");
+        assert_eq!(item.filter_text.as_deref(), Some(key), "filtering keeps the decoded key");
+    }
+}
+
+/// A literal constructor key stays reachable while the user types the
+/// identifier head of that key, and the edit replaces what was typed.
+///
+/// Offering `foo-bar` only at the bare `->new(` caret would make the key
+/// visible but unusable in practice: a user who starts typing it would lose
+/// it. This pins the reachable window that the quoting work depends on.
+///
+/// Boundary, deliberately not asserted here: once the caret follows the `-`
+/// itself, `analyze_context` rewrites the prefix to `foo->` and answers the
+/// position as a method call, so no key survives the `field_name`
+/// `starts_with` filter. That rule is in `analyze_context` and predates this
+/// change; #15466 owns it, with the measured evidence that widening
+/// `object_pad_constructor_package` instead removes the method and variable
+/// completions that currently answer those carets.
+///
+/// Controlling issue: #13449.
+#[test]
+fn test_object_pad_constructor_param_completion_survives_an_identifier_prefix() {
+    let code = "\nuse Object::Pad;\n\nclass Point {\nfield $x :param(foo-bar) = 0;\nfield $y :param = 0;\n}\n\nPoint->new(foo";
+
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new_with_index_and_source(&ast, code, None);
+    let completions = provider.get_completions(code, code.len());
+
+    let item = must_some(completions.iter().find(|item| item.label == "foo-bar"));
+    assert_eq!(
+        item.insert_text.as_deref(),
+        Some("'foo-bar' => "),
+        "the typed identifier head must still reach the quoted literal key"
+    );
+    assert_eq!(
+        item.text_edit_range,
+        Some((code.len() - "foo".len(), code.len())),
+        "accepting the item must replace the typed `foo`, not append after it"
+    );
+    assert!(
+        !completions.iter().any(|item| item.label == "y"),
+        "the typed prefix must still filter out the keys it does not match; got {:?}",
+        completions.iter().map(|item| item.label.as_ref()).collect::<Vec<_>>()
+    );
+}
+
+/// The `=>` auto-quote discriminator: only a leading `_`/ASCII letter
+/// followed by `_`/ASCII-alphanumeric characters keeps the bare form.
+///
+/// Each boundary the analyzer cannot trace needs a named input: a leading
+/// underscore, a full alphanumeric run, and underscores inside the tail.
+/// Anything else (empty, leading digit, hyphens, spaces, sigils, colons,
+/// non-ASCII) must take the quoted form.
+#[test]
+fn test_is_bareword_constructor_key_discriminates_identifier_boundaries() {
+    for (key, expected) in [
+        // Leading-underscore boundary (`first == '_'`).
+        ("_", true),
+        ("_foo", true),
+        ("_9lives", true),
+        // Full alphanumeric-run boundary.
+        ("a", true),
+        ("plain", true),
+        ("abc123", true),
+        ("Z", true),
+        // Underscore inside the tail (`character == '_'`).
+        ("a_b", true),
+        ("foo__bar", true),
+        ("_a_b9", true),
+        // Non-identifier keys take the quoted form.
+        ("", false),
+        ("9abc", false),
+        ("foo-bar", false),
+        ("foo bar", false),
+        ("$dyn", false),
+        ("Foo::bar", false),
+        ("it's", false),
+        ("café", false),
+    ] {
+        assert_eq!(
+            super::is_bareword_constructor_key(key),
+            expected,
+            "`{key}` bareword classification must be `{expected}`"
+        );
+    }
+}
+
+/// Sigils, spaces, apostrophes, and backslashes survive quoting intact.
+///
+/// These keys cannot reach the provider through the current parser, which
+/// collapses internal trivia (#14998), so they are exercised at the rendering
+/// seam directly. The quoting must already be correct for when they can.
+#[test]
+fn test_constructor_key_insertion_escapes_quotes_and_backslashes() {
+    for (key, expected) in [
+        ("$dyn", "'$dyn' => "),
+        ("foo@arr", "'foo@arr' => "),
+        ("external name", "'external name' => "),
+        ("$dyn + 1", "'$dyn + 1' => "),
+        // A single quote must be escaped, or the inserted string terminates early.
+        ("it's", "'it\\'s' => "),
+        // A backslash must be escaped, or it escapes the closing quote.
+        ("back\\slash", "'back\\\\slash' => "),
+        ("trailing\\", "'trailing\\\\' => "),
+    ] {
+        assert_eq!(
+            super::constructor_key_insertion(key),
+            expected,
+            "`{key}` must be inserted as `{expected}`"
+        );
+    }
 }
 
 #[test]
@@ -2848,6 +3291,77 @@ al"#;
     Ok(())
 }
 
+#[test]
+fn runtime_import_visible_symbol_is_position_gated_and_has_no_edits()
+-> Result<(), Box<dyn std::error::Error>> {
+    let index = Arc::new(WorkspaceIndex::new());
+    index.index_file(
+        Url::parse("file:///workspace/lib/Tools.pm")?,
+        r#"package Tools;
+use Exporter 'import';
+our @EXPORT_OK = qw(alpha);
+sub alpha { }
+1;
+"#
+        .to_string(),
+    )?;
+
+    let importer_uri = Url::parse("file:///workspace/runtime.pl")?;
+    let before = r#"package App;
+require Tools;
+al
+Tools->import(qw(alpha));
+"#;
+    index.index_file(importer_uri.clone(), before.to_string())?;
+    let mut parser = Parser::new(before);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new_with_index_and_source(&ast, before, Some(index.clone()));
+    let before_completions = provider.get_completions_with_path(
+        before,
+        must_some(before.find("al\n")) + 2,
+        Some(importer_uri.as_str()),
+    );
+    assert!(
+        !before_completions.iter().any(|item| item.label == "alpha"),
+        "runtime import must not authorize a bare symbol before the import call"
+    );
+
+    let after = r#"package App;
+require Tools;
+Tools->import(qw(alpha));
+al
+"#;
+    index.index_file(importer_uri.clone(), after.to_string())?;
+    let mut parser = Parser::new(after);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new_with_index_and_source(&ast, after, Some(index));
+    let completions =
+        provider.get_completions_with_path(after, after.len() - 1, Some(importer_uri.as_str()));
+    let alpha = must_some(completions.iter().find(|item| item.label == "alpha"));
+    assert!(alpha.additional_edits.is_empty());
+    Ok(())
+}
+
+#[test]
+fn require_only_does_not_authorize_bare_visible_symbol() -> Result<(), Box<dyn std::error::Error>> {
+    let index = Arc::new(WorkspaceIndex::new());
+    index.index_file(
+        Url::parse("file:///workspace/lib/Tools.pm")?,
+        "package Tools;\nsub alpha { }\n1;\n".to_string(),
+    )?;
+    let importer_uri = Url::parse("file:///workspace/require_only.pl")?;
+    let code = "package App;\nrequire Tools;\nal\n";
+    index.index_file(importer_uri.clone(), code.to_string())?;
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new_with_index_and_source(&ast, code, Some(index));
+    let completions =
+        provider.get_completions_with_path(code, code.len() - 1, Some(importer_uri.as_str()));
+
+    assert!(!completions.iter().any(|item| item.label == "alpha"));
+    Ok(())
+}
+
 // -------------------------------------------------------------------------
 // Unknown-receiver bounded fallback (issue #7929, outcome A)
 //
@@ -3808,26 +4322,15 @@ fn test_use_statement_skips_past_module_name_at_qw() -> Result<(), Box<dyn std::
 }
 
 // -------------------------------------------------------------------------
-// Auto-import additionalTextEdits for workspace symbol completions (#1694)
+// Import-edit withdrawal and workspace completion containment (#11158)
 //
-// Completing an unimported workspace subroutine, variable, or constant should
-// attach an `additionalTextEdits` entry inserting the required `use Module;`
-// statement, matching the behavior already provided for method completions.
+// Completion providers must not synthesize `use` edits. Bare candidates are
+// omitted unless their namespace is already visible; qualified insertions remain.
 // -------------------------------------------------------------------------
 
-/// Find the auto-import edit text on the completion item whose label matches
-/// `label`, if any.
-fn auto_import_edit_text<'a>(completions: &'a [CompletionItem], label: &str) -> Option<&'a str> {
-    completions
-        .iter()
-        .find(|c| c.label == label)?
-        .additional_edits
-        .first()
-        .map(|(_, text)| text.as_str())
-}
-
 #[test]
-fn workspace_subroutine_completion_auto_imports_module() -> Result<(), Box<dyn std::error::Error>> {
+fn workspace_subroutine_completion_omits_unimported_bare_symbol()
+-> Result<(), Box<dyn std::error::Error>> {
     let index = Arc::new(WorkspaceIndex::new());
     index.index_file(
         Url::parse("file:///lib/Foo.pm")?,
@@ -3839,15 +4342,20 @@ fn workspace_subroutine_completion_auto_imports_module() -> Result<(), Box<dyn s
     let provider = CompletionProvider::new_with_index(&ast, Some(index));
     let completions = provider.get_completions(code, code.len());
 
-    // Workspace subroutine completions are labelled by qualified name.
-    let edit = auto_import_edit_text(&completions, "Foo::barker")
-        .ok_or("expected `Foo::barker` workspace subroutine completion with an auto-import edit")?;
-    assert_eq!(edit, "use Foo;\n", "should auto-insert `use Foo;` for unimported subroutine");
+    assert!(
+        !completions.iter().any(|c| c.label == "barker"),
+        "bare unimported workspace subroutine must be omitted; qualified completion may remain"
+    );
+    assert!(
+        !completions.iter().any(|c| c.label == "Foo::barker"),
+        "unimported workspace subroutine must not leak an unsafe qualified label"
+    );
     Ok(())
 }
 
 #[test]
-fn workspace_constant_completion_auto_imports_module() -> Result<(), Box<dyn std::error::Error>> {
+fn workspace_constant_completion_omits_unimported_bare_symbol()
+-> Result<(), Box<dyn std::error::Error>> {
     let index = Arc::new(WorkspaceIndex::new());
     index.index_file(
         Url::parse("file:///lib/Foo.pm")?,
@@ -3859,20 +4367,27 @@ fn workspace_constant_completion_auto_imports_module() -> Result<(), Box<dyn std
     let provider = CompletionProvider::new_with_index(&ast, Some(index));
     let completions = provider.get_completions(code, code.len());
 
-    let item = completions
-        .iter()
-        .find(|c| c.label == "ANSWER")
-        .ok_or("expected `ANSWER` constant completion")?;
-    assert_eq!(item.kind, CompletionItemKind::Constant);
-    assert_eq!(
-        item.additional_edits.len(),
-        1,
-        "constant completion must carry exactly one auto-import edit; got {:?}",
-        item.additional_edits
-    );
-    assert_eq!(
-        item.additional_edits[0].1, "use Foo;\n",
-        "constant completion must auto-insert exactly `use Foo;`"
+    assert!(!completions.iter().any(|c| c.label == "ANSWER"));
+    Ok(())
+}
+
+#[test]
+fn workspace_export_completion_omits_unimported_bare_symbol()
+-> Result<(), Box<dyn std::error::Error>> {
+    let index = Arc::new(WorkspaceIndex::new());
+    index.index_file(
+        Url::parse("file:///lib/Foo.pm")?,
+        "package Foo;\nour @EXPORT = qw(barker);\nsub barker { }\n1;\n".to_string(),
+    )?;
+    let code = "use strict;\nbark";
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new_with_index(&ast, Some(index));
+    let completions = provider.get_completions(code, code.len());
+
+    assert!(
+        !completions.iter().any(|c| c.label == "barker"),
+        "unimported workspace export must not produce a bare insertion"
     );
     Ok(())
 }
@@ -3885,8 +4400,8 @@ fn workspace_completion_suppresses_auto_import_when_already_imported()
         Url::parse("file:///lib/Foo.pm")?,
         "package Foo;\nsub barker { }\n1;\n".to_string(),
     )?;
-    // `Foo` is already imported, so no duplicate `use Foo;` edit should attach.
-    let code = "use strict;\nuse Foo;\nbark";
+    // An exact explicit import makes the bare insertion valid, but never adds an edit.
+    let code = "use strict;\nuse Foo qw(barker);\nbark";
     let mut parser = Parser::new(code);
     let ast = must(parser.parse());
     let provider = CompletionProvider::new_with_index(&ast, Some(index));
@@ -3896,12 +4411,7 @@ fn workspace_completion_suppresses_auto_import_when_already_imported()
         .iter()
         .find(|c| c.label == "Foo::barker")
         .ok_or("expected `Foo::barker` workspace completion")?;
-    assert_eq!(
-        item.additional_edits,
-        vec![],
-        "already-imported module must not produce a duplicate auto-import edit; got {:?}",
-        item.additional_edits
-    );
+    assert!(item.additional_edits.is_empty());
     Ok(())
 }
 
@@ -3928,7 +4438,13 @@ fn workspace_completion_no_auto_import_for_file_local_symbol()
 }
 
 #[test]
-fn workspace_variable_completion_auto_imports_module() -> Result<(), Box<dyn std::error::Error>> {
+fn workspace_variable_completion_preserves_qualified_insertion_without_import()
+-> Result<(), Box<dyn std::error::Error>> {
+    // `$Foo::xyl` is served by the sigil path's `::` branch
+    // (`add_package_completions`). The name of this test claims a qualified
+    // insertion, so assert the inserted text — not just the absence of an
+    // import edit, which an untruthful bare insertion would also satisfy
+    // (issue #11937).
     let index = Arc::new(WorkspaceIndex::new());
     index.index_file(
         Url::parse("file:///lib/Foo.pm")?,
@@ -3946,23 +4462,78 @@ fn workspace_variable_completion_auto_imports_module() -> Result<(), Box<dyn std
         .ok_or("expected `$xylophone` workspace variable completion")?;
     assert_eq!(item.kind, CompletionItemKind::Variable);
     assert_eq!(
-        item.additional_edits.len(),
-        1,
-        "variable completion must carry exactly one auto-import edit; got {:?}",
-        item.additional_edits
+        item.insert_text.as_deref(),
+        Some("$Foo::xylophone"),
+        "the document never imports Foo, so only a fully qualified insertion resolves"
     );
-    assert_eq!(
-        item.additional_edits[0].1, "use Foo;\n",
-        "variable completion from Foo must auto-insert exactly `use Foo;`"
+    assert!(item.additional_edits.is_empty());
+    Ok(())
+}
+
+/// Pins the interception that makes the `WsSymbolKind::Variable` arm of
+/// `add_workspace_symbol_completions` dead code.
+///
+/// Every workspace variable candidate carries a leading sigil, so only a
+/// sigil-prefixed request could match one — and `complete_sigil_context`
+/// serves every sigil prefix and returns before `complete_general_context`
+/// (the sole caller of the workspace-symbol pass) runs. That is why the arm
+/// was removed rather than gated (issue #11937). If this test fails, the
+/// dispatch order changed and the arm has to come back *gated*, not as the
+/// bare/double-sigil emission it used to be.
+#[test]
+fn sigil_prefixed_requests_never_reach_the_workspace_symbol_pass()
+-> Result<(), Box<dyn std::error::Error>> {
+    let index = Arc::new(WorkspaceIndex::new());
+    index.index_file(
+        Url::parse("file:///lib/Foo.pm")?,
+        "package Foo;\nour $xylophone = 1;\n1;\n".to_string(),
+    )?;
+
+    // Guard against vacuity: the same index, reached through the sigil path's
+    // `::` branch, does serve this symbol. So an empty bare-prefix result below
+    // is the dispatch interception, not an unpopulated index.
+    let qualified_code = "use strict;\n$Foo::xyl";
+    let mut qualified_parser = Parser::new(qualified_code);
+    let qualified_ast = must(qualified_parser.parse());
+    let qualified_provider =
+        CompletionProvider::new_with_index(&qualified_ast, Some(index.clone()));
+    let qualified = qualified_provider.get_completions(qualified_code, qualified_code.len());
+    assert!(
+        qualified.iter().any(|c| c.insert_text.as_deref() == Some("$Foo::xylophone")),
+        "index must be populated and findable through the sigil `::` branch; got {:?}",
+        qualified.iter().map(|c| c.label.as_ref()).collect::<Vec<_>>()
     );
+
+    // A bare sigil prefix is served entirely by the sigil path, which knows
+    // nothing of the workspace index — so no workspace variable appears under
+    // any spelling.
+    for code in ["use strict;\n$", "use strict;\n$xyl", "use strict;\n@xyl", "use strict;\n%xyl"] {
+        let mut parser = Parser::new(code);
+        let ast = must(parser.parse());
+        let provider = CompletionProvider::new_with_index(&ast, Some(index.clone()));
+        let completions = provider.get_completions(code, code.len());
+        let leaked: Vec<_> = completions
+            .iter()
+            .filter(|c| {
+                c.label.contains("xylophone")
+                    || c.insert_text.as_deref().is_some_and(|t| t.contains("xylophone"))
+            })
+            .map(|c| (c.label.to_string(), c.insert_text.as_deref().map(str::to_string)))
+            .collect();
+        assert!(
+            leaked.is_empty(),
+            "sigil prefix {code:?} must be served by the sigil path alone; got {leaked:?}"
+        );
+    }
     Ok(())
 }
 
 #[test]
-fn qualified_subroutine_completion_auto_imports_module() -> Result<(), Box<dyn std::error::Error>> {
+fn qualified_subroutine_completion_preserves_qualified_insertion_without_import()
+-> Result<(), Box<dyn std::error::Error>> {
     // Qualified `Foo::bar` completions are served by add_package_completions
     // (the `::` path), not add_workspace_symbol_completions. Observe that this
-    // path auto-imports the unimported defining module.
+    // path inserts the fully qualified member and needs no import edit.
     let index = Arc::new(WorkspaceIndex::new());
     index.index_file(
         Url::parse("file:///lib/Foo.pm")?,
@@ -3978,50 +4549,8 @@ fn qualified_subroutine_completion_auto_imports_module() -> Result<(), Box<dyn s
         .iter()
         .find(|c| c.label == "barley")
         .ok_or("expected `barley` qualified subroutine completion")?;
-    assert_eq!(
-        item.additional_edits.len(),
-        1,
-        "qualified subroutine completion must carry exactly one auto-import edit; got {:?}",
-        item.additional_edits
-    );
-    assert_eq!(
-        item.additional_edits[0].1, "use Foo;\n",
-        "qualified subroutine completion must auto-insert exactly `use Foo;`"
-    );
+    assert!(item.additional_edits.is_empty());
     Ok(())
-}
-
-#[test]
-fn workspace_auto_import_edits_returns_exact_edits_per_branch() {
-    // Direct call-observation with exact assertions on the helper that produces
-    // every workspace completion's `additionalTextEdits`, discriminating each
-    // guard branch (reachable, main, current package, empty, file-local,
-    // already-imported).
-    use super::workspace::workspace_auto_import_edits;
-
-    let source = "use strict;\nmy $x = 1;\n";
-    let after_use = "use strict;\n".len();
-
-    // Reachable, unimported, foreign module -> exactly one edit after the use block.
-    let edits = workspace_auto_import_edits(source, Some("My::App"), "main");
-    assert_eq!(edits.len(), 1, "expected exactly one edit; got {edits:?}");
-    assert_eq!(edits[0].1, "use My::App;\n");
-    assert_eq!(edits[0].0.start, after_use);
-    assert_eq!(edits[0].0.end, after_use);
-
-    // Implicit `main` package must never be auto-imported.
-    assert_eq!(workspace_auto_import_edits(source, Some("main"), "Other"), vec![]);
-    // The document's own current package needs no import.
-    assert_eq!(workspace_auto_import_edits(source, Some("Demo"), "Demo"), vec![]);
-    // Empty module name yields no edit.
-    assert_eq!(workspace_auto_import_edits(source, Some(""), "main"), vec![]);
-    // File-local symbol (no container module) yields no edit.
-    assert_eq!(workspace_auto_import_edits(source, None, "main"), vec![]);
-    // Already-imported module yields no duplicate edit.
-    assert_eq!(
-        workspace_auto_import_edits("use My::App;\nmy $x = 1;\n", Some("My::App"), "main"),
-        vec![]
-    );
 }
 
 #[test]
@@ -7952,7 +8481,7 @@ sub helper { }
     );
 
     // Constants should have Constant kind
-    let pi = completions.iter().find(|c| c.label == "PI").unwrap();
+    let pi = must_some(completions.iter().find(|c| c.label == "PI"));
     assert_eq!(
         pi.kind,
         crate::providers::completion_item::CompletionItemKind::Constant,
@@ -8499,13 +9028,15 @@ fn block_form_package_at_scope_end_is_main() {
     let mut parser = Parser::new(code);
     let ast = must(parser.parse());
     let table = SymbolExtractor::new().extract(&ast);
-    let scope_end = table
-        .scopes
-        .values()
-        .filter(|scope| scope.kind == ScopeKind::Package)
-        .map(|scope| scope.location.end)
-        .max()
-        .expect("block-form package scope");
+    let scope_end = must_some_with(
+        table
+            .scopes
+            .values()
+            .filter(|scope| scope.kind == ScopeKind::Package)
+            .map(|scope| scope.location.end)
+            .max(),
+        "block-form package scope",
+    );
     assert_eq!(
         CompletionContext::detect_current_package(&table, scope_end),
         "main",
@@ -8624,5 +9155,452 @@ sub inspect {
     assert!(
         labels.iter().any(|label| label == "name"),
         "open Child source must win over unrelated indexed bare symbol, got {labels:?}"
+    );
+}
+
+/// Proof seam for issue #11858: empty-prefix general context must emit visible
+/// document variables (`$var`) in addition to keywords and built-ins.
+///
+/// Confirms that `add_all_variables` correctly populates from the symbol table
+/// when the provider is built via `new_with_index_and_source_and_paths` and
+/// queried through `get_completions_with_path_cancellable`, the production
+/// provider seam. Binary launch and document-state behavior remain outside
+/// this unit test's scope.
+#[test]
+fn test_empty_prefix_emits_document_variables() {
+    // Matches the fixture in lsp_completion_tests::test_empty_prefix_completion.
+    let source = "my $var = 42;\nsub test { }\n\n";
+    // Cursor at the very end (line 3 char 0 in LSP terms) — after all declarations.
+    let pos = source.len();
+
+    let mut parser = Parser::new(source);
+    let ast = must(parser.parse());
+
+    // Build and query the provider through the production completion seam.
+    let provider = CompletionProvider::new_with_index_and_source_and_paths(
+        &ast,
+        source,
+        None,
+        Vec::new(),
+        Vec::new(),
+        false,
+    );
+    let completions = provider.get_completions_with_path_cancellable(source, pos, None, &|| false);
+
+    let labels: Vec<&str> = completions.iter().map(|c| c.label.as_ref()).collect();
+
+    // Variables declared before the cursor must appear for an empty prefix.
+    assert!(
+        labels.contains(&"$var"),
+        "empty-prefix completion must emit document variable $var (issue #11858); got ({} items): {labels:?}",
+        labels.len()
+    );
+
+    // Subroutines declared in the file must also appear.
+    assert!(
+        labels.contains(&"test"),
+        "empty-prefix completion must emit document subroutine test; got ({} items): {labels:?}",
+        labels.len()
+    );
+
+    // Control-flow keywords must appear (regression guard for #11863 reserve).
+    assert!(
+        labels.contains(&"if"),
+        "empty-prefix completion must include control-flow keyword 'if'; got ({} items): {labels:?}",
+        labels.len()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Issue #8941 — lexical visibility admission before ranking.
+//
+// A lexical that is not visible at the cursor must not appear at ANY rank.
+// Sibling/child/ended scopes, later declarations, and shadowed outers are
+// admission failures, not low-priority Workspace-distance candidates.
+// ---------------------------------------------------------------------------
+
+fn variable_labels(completions: &[CompletionItem]) -> Vec<&str> {
+    completions
+        .iter()
+        .filter(|c| c.kind == CompletionItemKind::Variable)
+        .map(|c| c.label.as_ref())
+        .collect()
+}
+
+/// Sibling blocks: `$left` lives in a sibling block that has ended before
+/// the cursor. It must not be offered at any rank (#8941).
+#[test]
+fn test_sibling_block_lexical_is_not_offered() {
+    let code = concat!("{\n", "    my $left = 1;\n", "}\n", "{\n", "    $le\n", "}\n");
+    let trigger = code.rfind("$le").unwrap_or(0) + 3;
+
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new_with_index_and_source(&ast, code, None);
+    let completions = provider.get_completions(code, trigger);
+
+    let labels = variable_labels(&completions);
+    assert!(
+        !labels.iter().any(|l| l.contains("left")),
+        "sibling-block lexical $left must not be offered; got {labels:?}"
+    );
+}
+
+/// Sibling subs: `$only_a` belongs to sub a's scope; completion inside sub b
+/// must not offer it (#8941).
+#[test]
+fn test_sibling_sub_lexical_is_not_offered() {
+    let code = concat!(
+        "sub only_a_host {\n",
+        "    my $only_a = 1;\n",
+        "}\n",
+        "sub consumer {\n",
+        "    $only\n",
+        "}\n"
+    );
+    let trigger = code.rfind("$only").unwrap_or(0) + 5;
+
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new_with_index_and_source(&ast, code, None);
+    let completions = provider.get_completions(code, trigger);
+
+    let labels = variable_labels(&completions);
+    assert!(
+        !labels.iter().any(|l| l.contains("only_a")),
+        "sibling-sub lexical $only_a must not be offered; got {labels:?}"
+    );
+}
+
+/// Child scope: after the child block closed, its lexical is gone. The cursor
+/// back in the parent scope must not see it (#8941 negative control: an
+/// incomplete/recovered child scope must not reactivate a closed binding).
+#[test]
+fn test_ended_child_scope_lexical_is_not_offered() {
+    let code = concat!(
+        "sub host {\n",
+        "    if (1) {\n",
+        "        my $inner_only = 2;\n",
+        "    }\n",
+        "    $inner\n",
+        "}\n"
+    );
+    let trigger = code.rfind("$inner").unwrap_or(0) + 6;
+
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new_with_index_and_source(&ast, code, None);
+    let completions = provider.get_completions(code, trigger);
+
+    let labels = variable_labels(&completions);
+    assert!(
+        !labels.iter().any(|l| l.contains("inner_only")),
+        "closed child-scope lexical $inner_only must not be offered; got {labels:?}"
+    );
+}
+
+/// Nested shadowing: inside the block, `$value` names exactly one binding —
+/// the inner one. The shadowed outer binding must not be offered alongside it,
+/// and the surviving item must carry the inner binding's identity evidence
+/// (its leading-comment documentation), not merely an identical label.
+#[test]
+fn test_nested_shadow_offers_exactly_inner_binding() {
+    let code = concat!(
+        "# outer documentation marker\n",
+        "my $value = 1;\n",
+        "{\n",
+        "    # inner documentation marker\n",
+        "    my $value = 2;\n",
+        "    $val\n",
+        "}\n"
+    );
+    let trigger = code.rfind("$val").unwrap_or(0) + 4;
+
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new_with_index_and_source(&ast, code, None);
+    let completions = provider.get_completions(code, trigger);
+
+    let value_items: Vec<&CompletionItem> =
+        completions.iter().filter(|c| c.label == "$value").collect();
+    assert_eq!(
+        value_items.len(),
+        1,
+        "shadowed outer binding must be excluded so exactly one $value remains; got {} items with sort_text {:?}",
+        value_items.len(),
+        value_items.iter().map(|i| i.sort_text.as_deref()).collect::<Vec<_>>()
+    );
+
+    let doc = value_items[0].documentation.as_deref().unwrap_or("");
+    assert!(
+        doc.contains("inner documentation marker"),
+        "surviving $value must be the INNER binding (doc evidence), got doc: {doc:?}"
+    );
+}
+
+/// Declaration after cursor: same scope, but the declaration has not been
+/// reached yet. Must be excluded from both the sigil path and the general
+/// no-sigil path (`add_all_variables`) (#8941 negative control).
+#[test]
+fn test_declaration_after_cursor_is_excluded_on_sigil_path() {
+    // NOTE: use find(), not rfind(): the typed prefix also occurs inside the
+    // later declaration's own name, and the cursor must sit at the USAGE site
+    // before the declaration.
+    let code = "$coun\n# separation\nmy $council = 1;\n";
+    let trigger = code.find("$coun").unwrap_or(0) + 5;
+
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new_with_index_and_source(&ast, code, None);
+    let completions = provider.get_completions(code, trigger);
+
+    let labels = variable_labels(&completions);
+    assert!(
+        !labels.iter().any(|l| l.contains("council")),
+        "future lexical $council must not be offered on sigil path; got {labels:?}"
+    );
+}
+
+/// Same future-declaration exclusion through the general no-sigil path
+/// (`add_all_variables`), which historically had no source-order gate.
+#[test]
+fn test_declaration_after_cursor_is_excluded_on_general_path() {
+    let code = "coun\n# separation\nmy $council = 1;\n";
+    let trigger = code.find("coun").unwrap_or(0) + 4;
+
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new_with_index_and_source(&ast, code, None);
+    let completions = provider.get_completions(code, trigger);
+
+    let labels = variable_labels(&completions);
+    assert!(
+        !labels.iter().any(|l| l.contains("council")),
+        "future lexical $council must not be offered through add_all_variables; got {labels:?}"
+    );
+}
+
+/// Closure capture: a named sub defined AFTER a file-level `my` does see the
+/// lexical (its declaring scope is an ancestor of the sub scope). Admission
+/// must not over-block this visible case (#8941 closure-capture bullet).
+#[test]
+fn test_closure_capture_of_file_lexical_remains_visible() {
+    let code = concat!("my $outer_capture = 1;\n", "sub inner {\n", "    $out\n", "}\n");
+    let trigger = code.rfind("$out").unwrap_or(0) + 4;
+
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new_with_index_and_source(&ast, code, None);
+    let completions = provider.get_completions(code, trigger);
+
+    let labels = variable_labels(&completions);
+    assert!(
+        labels.iter().any(|l| l.contains("outer_capture")),
+        "file lexical captured by named sub must remain visible; got {labels:?}"
+    );
+}
+
+/// Ancestor visibility: file-level `my` stays visible inside nested blocks.
+#[test]
+fn test_ancestor_file_lexical_visible_in_nested_block() {
+    let code =
+        concat!("my $file_lexical = 1;\n", "{\n", "    {\n", "        $file\n", "    }\n", "}\n");
+    let trigger = code.rfind("$file").unwrap_or(0) + 5;
+
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new_with_index_and_source(&ast, code, None);
+    let completions = provider.get_completions(code, trigger);
+
+    let labels = variable_labels(&completions);
+    assert!(
+        labels.iter().any(|l| l.contains("file_lexical")),
+        "ancestor file lexical must stay visible inside nested blocks; got {labels:?}"
+    );
+}
+
+/// `our` package globals keep their bounded always-visible behavior
+/// (declaration role distinct from lexicals), including after the cursor.
+#[test]
+fn test_our_package_global_keeps_bounded_visibility() {
+    let code = concat!("our $pkg_before;\n", "$pk\n", "our $pkg_after;\n");
+    let trigger = code.rfind("$pk").unwrap_or(0) + 3;
+
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new_with_index_and_source(&ast, code, None);
+    let completions = provider.get_completions(code, trigger);
+
+    let labels = variable_labels(&completions);
+    assert!(
+        labels.iter().any(|l| l.contains("pkg_before")),
+        "our declared before cursor must stay visible; got {labels:?}"
+    );
+    assert!(
+        labels.iter().any(|l| l.contains("pkg_after")),
+        "our declared after cursor keeps package-global visibility (bounded behavior); got {labels:?}"
+    );
+}
+
+/// Signature parameters are recorded as `my` lexicals of the subroutine
+/// scope: visible in the body, invisible from sibling scopes.
+#[test]
+fn test_signature_param_visible_in_body_only() {
+    let body_code = concat!("sub sized ($param_len) {\n", "    $param\n", "}\n");
+    let trigger = body_code.rfind("$param").unwrap_or(0) + 6;
+
+    let mut parser = Parser::new(body_code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new_with_index_and_source(&ast, body_code, None);
+    let completions = provider.get_completions(body_code, trigger);
+
+    let labels = variable_labels(&completions);
+    assert!(
+        labels.iter().any(|l| l.contains("param_len")),
+        "signature parameter must be visible in its own sub body; got {labels:?}"
+    );
+
+    let sibling_code = concat!(
+        "sub sized ($param_len) {\n",
+        "    1;\n",
+        "}\n",
+        "sub other {\n",
+        "    $param\n",
+        "}\n"
+    );
+    let sibling_trigger = sibling_code.rfind("$param").unwrap_or(0) + 6;
+
+    let mut sibling_parser = Parser::new(sibling_code);
+    let sibling_ast = must(sibling_parser.parse());
+    let sibling_provider =
+        CompletionProvider::new_with_index_and_source(&sibling_ast, sibling_code, None);
+    let sibling_completions = sibling_provider.get_completions(sibling_code, sibling_trigger);
+
+    let sibling_labels = variable_labels(&sibling_completions);
+    assert!(
+        !sibling_labels.iter().any(|l| l.contains("param_len")),
+        "signature parameter must not leak into sibling sub; got {sibling_labels:?}"
+    );
+}
+
+/// `for`/`foreach` iterator variables follow lexical admission rules.
+///
+/// BOUNDED (#8941): the current SymbolTable does not represent bare
+/// `for my $x (...)` iterators at all — the analyzer's Foreach handler
+/// receives a VariableDeclaration node its recorder silently skips, so no
+/// symbol exists to admit or reject (producer gap transferred to #7423/
+/// #7424). Until canonical loop bindings land, this test pins that neither
+/// half fabricates candidates: nothing appears inside or after the loop,
+/// and admission of a *represented* loop lexical is covered by the
+/// predicate unit tests in lexical_visibility.
+#[test]
+fn test_foreach_iterator_scoped_to_loop() {
+    let inside_code = concat!("for my $loop_item (1 .. 3) {\n", "    $loop\n", "}\n");
+    let trigger = inside_code.rfind("$loop").unwrap_or(0) + 5;
+
+    let mut parser = Parser::new(inside_code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new_with_index_and_source(&ast, inside_code, None);
+    let completions = provider.get_completions(inside_code, trigger);
+
+    let labels = variable_labels(&completions);
+    assert!(
+        !labels.iter().any(|l| l.contains("loop_item")),
+        "unrepresented iterators must not be fabricated; got {labels:?}"
+    );
+
+    // The analyzer genuinely lacks the binding: confirm the producer gap
+    // rather than an admission rejection, so #7423/#7424 own the fix.
+    assert!(
+        !provider.symbol_table.symbols.contains_key("loop_item"),
+        "analyzer now records foreach iterators — revisit this seam for real admission coverage"
+    );
+
+    let after_code = concat!("for my $loop_item (1 .. 3) {\n", "    1;\n", "}\n", "$loop\n");
+    let after_trigger = after_code.rfind("$loop").unwrap_or(0) + 5;
+
+    let mut after_parser = Parser::new(after_code);
+    let after_ast = must(after_parser.parse());
+    let after_provider =
+        CompletionProvider::new_with_index_and_source(&after_ast, after_code, None);
+    let after_completions = after_provider.get_completions(after_code, after_trigger);
+
+    let after_labels = variable_labels(&after_completions);
+    assert!(
+        !after_labels.iter().any(|l| l.contains("loop_item")),
+        "ended loop scope must not contribute its iterator; got {after_labels:?}"
+    );
+}
+
+/// CRLF line endings must not change admission decisions.
+#[test]
+fn test_sibling_block_admission_under_crlf() {
+    let code = "{\r\n    my $crlf_left = 1;\r\n}\r\n{\r\n    $crlf_le\r\n}\r\n";
+    let trigger = code.rfind("$crlf_le").unwrap_or(0) + 8;
+
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new_with_index_and_source(&ast, code, None);
+    let completions = provider.get_completions(code, trigger);
+
+    let labels = variable_labels(&completions);
+    assert!(
+        !labels.iter().any(|l| l.contains("crlf_left")),
+        "CRLF sources must still exclude sibling-block lexicals; got {labels:?}"
+    );
+}
+
+/// A multi-byte character before the cursor must not shift byte-offset
+/// source-order math: the earlier ASCII lexical stays visible.
+#[test]
+fn test_astral_char_before_cursor_preserves_byte_offset_order() {
+    let code = "my $emoji_seed = \"\u{1D306}\";\nmy $plain_after = 1;\n$pla\n";
+    let trigger = code.rfind("$pla").unwrap_or(0) + 4;
+
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new_with_index_and_source(&ast, code, None);
+    let completions = provider.get_completions(code, trigger);
+
+    let labels = variable_labels(&completions);
+    assert!(
+        labels.iter().any(|l| l.contains("plain_after")),
+        "astral character before cursor must not break byte-offset admission; got {labels:?}"
+    );
+}
+
+/// Incomplete block under recovery: while typing inside an unclosed block,
+/// ancestors stay visible and closed siblings stay excluded.
+#[test]
+fn test_incomplete_block_keeps_ancestor_and_excludes_closed_sibling() {
+    let code = concat!(
+        "my $done_first = 1;\n",
+        "{\n",
+        "    my $closed_block_only = 0;\n",
+        "}\n",
+        "sub typing {\n",
+        "    if (1) {\n",
+        "        my $live_here = 2;\n",
+        "        $li\n"
+    );
+    let trigger = code.len();
+
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new_with_index_and_source(&ast, code, None);
+    let completions = provider.get_completions(code, trigger);
+
+    let labels = variable_labels(&completions);
+    assert!(
+        labels.iter().any(|l| l.contains("live_here")),
+        "incomplete inner block must keep its own lexical visible; got {labels:?}"
+    );
+    assert!(
+        labels.iter().any(|l| l.contains("done_first")),
+        "file-level ancestor lexical must stay visible during recovery; got {labels:?}"
+    );
+    assert!(
+        !labels.iter().any(|l| l.contains("closed_block_only")),
+        "ended sibling block must not reactivate during recovery; got {labels:?}"
     );
 }

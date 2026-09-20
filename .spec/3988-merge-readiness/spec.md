@@ -1,5 +1,9 @@
 # SWARM-MERGE-1: current-head merge-readiness fan-in (M1)
 
+<!-- authority-status:v1 -->
+> **Status: historical.** Current authority: [Review and proof currentness](../../docs/agents/REVIEW_CURRENTNESS.md).
+> Retained as historical design or mechanism evidence. Internal wording below that calls this document accepted, active doctrine, a north star, current instruction, or lifecycle authority is historical and must not route current work. See [Agent and maintainer authority status](../../docs/agents/AUTHORITY_STATUS.md).
+
 ## Purpose
 
 Provide one deterministic, read-only evaluation of the evidence required before

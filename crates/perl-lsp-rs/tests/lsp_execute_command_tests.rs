@@ -235,17 +235,17 @@ fn validate_json_schema(
         }
     }
 
-    if let Some(items) = schema.get("items") {
-        if let Some(values) = value.as_array() {
-            for (index, item) in values.iter().enumerate() {
-                validate_json_schema(
-                    item,
-                    items,
-                    root_schema,
-                    trust_report_schema,
-                    &format!("{path}/{index}"),
-                )?;
-            }
+    if let Some(items) = schema.get("items")
+        && let Some(values) = value.as_array()
+    {
+        for (index, item) in values.iter().enumerate() {
+            validate_json_schema(
+                item,
+                items,
+                root_schema,
+                trust_report_schema,
+                &format!("{path}/{index}"),
+            )?;
         }
     }
 

@@ -116,6 +116,68 @@ close($fh);
     Ok(())
 }
 
+/// Regression guard for #9835: `textDocument/codeAction` used to panic the
+/// server when a file operation was followed by multi-byte UTF-8 text within
+/// the error-checking lookahead window, because the window was cut at a fixed
+/// 50-*byte* offset that could land inside a character.
+///
+/// This is the wire-level proof: the request must answer normally — and still
+/// offer the action — rather than taking the request path down.
+#[test]
+fn test_code_action_survives_multibyte_source() -> Result<(), Box<dyn std::error::Error>> {
+    let server = start_lsp_server();
+    initialize_lsp(&server);
+
+    let uri = "file:///utf8.pl";
+    // The accented comment starts within 50 bytes of the `open` call's end, so
+    // the pre-fix 50-byte window ended inside an 'é'.
+    let text = format!("\nopen($fh, '<', 'data.txt');\n#{}\n", "é".repeat(40));
+    send_notification(
+        &server,
+        json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": uri,
+                    "languageId": "perl",
+                    "version": 1,
+                    "text": text
+                }
+            }
+        }),
+    );
+
+    let response = send_request(
+        &server,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 42,
+            "method": "textDocument/codeAction",
+            "params": {
+                "textDocument": { "uri": uri },
+                "range": {
+                    "start": { "line": 1, "character": 0 },
+                    "end": { "line": 1, "character": 27 }
+                },
+                "context": {
+                    "diagnostics": []
+                }
+            }
+        }),
+    );
+
+    let actions = response["result"]
+        .as_array()
+        .ok_or("codeAction must return a result array on non-ASCII source")?;
+    assert!(
+        actions.iter().any(|a| a["title"].as_str().unwrap_or("").contains("error checking")),
+        "the error-checking action must still be offered when non-ASCII text follows the call"
+    );
+    shutdown_and_exit(&server);
+    Ok(())
+}
+
 /// Test converting old-style for loops to foreach
 #[test]
 fn test_convert_loop_style() -> Result<(), Box<dyn std::error::Error>> {
@@ -503,7 +565,7 @@ my $y = 20;
     Ok(())
 }
 
-/// Test organize imports refactoring
+/// The legacy organize-imports action stays withdrawn (#8305)
 #[test]
 fn test_organize_imports() -> Result<(), Box<dyn std::error::Error>> {
     let server = start_lsp_server();
@@ -557,7 +619,14 @@ print "test\n";
     );
 
     let actions = response["result"].as_array().ok_or("Expected result to be an array")?;
-    assert!(actions.iter().any(|a| a["title"].as_str().unwrap_or("").contains("Organize imports")));
+    assert!(
+        actions.iter().all(|a| a["title"].as_str().unwrap_or("") != "Organize imports"),
+        "the withdrawn legacy organizer (#8305) must not be offered; got {actions:?}"
+    );
+    assert!(
+        actions.iter().all(|a| a["kind"].as_str().unwrap_or("") != "source.organizeImports"),
+        "no action may carry the withdrawn source.organizeImports kind; got {actions:?}"
+    );
     shutdown_and_exit(&server);
     Ok(())
 }

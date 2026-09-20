@@ -7,6 +7,9 @@
 
 set -euo pipefail
 
+# Toolchain guard (#12593): refuse a stale non-rustup cargo before any build work.
+. "$(dirname -- "${BASH_SOURCE[0]}")/lib/cargo-toolchain-guard.sh" && cargo_toolchain_guard
+
 export CARGO_TERM_COLOR=always
 export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-2}"
 export RUST_TEST_THREADS="${RUST_TEST_THREADS:-1}"
@@ -108,8 +111,8 @@ cargo check -p perl-parser --features workspace
 echo "  ✓ Workspace build compiles"
 
 echo ""
-echo ">>> Build perl-lsp binary (ensures tests use correct version)"
-cargo build -p perl-lsp-rs $PROFILE_FLAG
+echo ">>> Build perllsp product binary (ensures tests use correct version)"
+cargo build -p perllsp --bin perllsp $PROFILE_FLAG
 
 echo ""
 echo ">>> perl-parser lib tests"

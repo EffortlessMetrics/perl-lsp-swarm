@@ -201,10 +201,10 @@
 
         # Packages
         packages = {
-          default = self.packages.${system}.perl-lsp;
+          default = self.packages.${system}.perllsp;
 
-          perl-lsp = pkgs.rustPlatform.buildRustPackage {
-            pname = "perl-lsp";
+          perllsp = pkgs.rustPlatform.buildRustPackage {
+            pname = "perllsp";
             version = "0.17.0";
             src = self;
             cargoLock.lockFile = ./Cargo.lock;
@@ -212,7 +212,7 @@
             inherit buildInputs;
             nativeBuildInputs = with pkgs; [ pkg-config ];
 
-            buildAndTestSubdir = "crates/perl-lsp-rs";
+            buildAndTestSubdir = "crates/perllsp";
 
             # Skip tests during package build (run via checks)
             doCheck = false;
@@ -221,14 +221,14 @@
               description = "Lightning-fast Perl LSP server";
               homepage = "https://github.com/EffortlessMetrics/perl-lsp";
               license = licenses.mit;
-              mainProgram = "perl-lsp";
+              mainProgram = "perllsp";
             };
           };
         };
 
         # Apps
         apps.default = flake-utils.lib.mkApp {
-          drv = self.packages.${system}.perl-lsp;
+          drv = self.packages.${system}.perllsp;
         };
 
         # Convenience script for running all checks

@@ -1,0 +1,13 @@
+{
+  "name": "nc10_availability_as_authority",
+  "control": 10,
+  "op": "verify_mechanism_claims",
+  "input": {
+    "mechanism": "class_refresh_compatibility_subject",
+    "claims": [
+      "available",
+      "availability_grants_product_authority"
+    ]
+  },
+  "expected_error": "availability_as_product_authority"
+}

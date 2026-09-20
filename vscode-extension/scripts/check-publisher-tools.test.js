@@ -24,8 +24,8 @@ void test('publisher CLIs resolve from exact local dependencies without network 
       {
         packageName: 'ovsx',
         executable: 'ovsx',
-        expectedVersion: '1.0.2',
-        reportedVersion: '1.0.2',
+        expectedVersion: '1.1.1',
+        reportedVersion: '1.1.1',
       },
     ],
   );

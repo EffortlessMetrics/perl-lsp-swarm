@@ -1,4 +1,4 @@
-use perl_module::import::{ModuleImportKind, parse_module_import_head};
+use perl_module::{ModuleImportKind, parse_module_import_head};
 
 #[test]
 fn given_use_statement_when_parsed_then_use_kind_and_module_token_are_returned() {

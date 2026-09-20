@@ -1,96 +1,71 @@
-use crate::bridge_adapter::BridgeAdapter;
 use crate::debug_adapter::DebugAdapter;
+use crate::security::launch_authority::LaunchAuthority;
 use crate::server::config::DapConfig;
-use crate::server::mode::DapMode;
 
-/// Marks a failure opening the native DAP TCP listener, before a client session exists.
+/// Native DAP server lifecycle.
 ///
-/// The operating-system error remains the source in the `anyhow` chain so
-/// callers that historically downcast socket failures to `std::io::Error`
-/// keep that compatibility surface.
-#[derive(Debug, thiserror::Error)]
-#[error("failed to bind DAP socket on 127.0.0.1:{port}")]
-pub struct DapSocketBindError {
-    /// The requested local port.
-    pub port: u16,
-}
-
-impl perl_parser_core::ErrorClass for DapSocketBindError {
-    fn error_class(&self) -> perl_parser_core::ErrorCategory {
-        // OS-level socket bind failure — external resource/port unavailable.
-        perl_parser_core::ErrorCategory::Infra
-    }
-}
-
-/// DAP server
-///
-/// Supports two operating modes:
-/// - **Native** (default): Uses the built-in [`DebugAdapter`] with `perl -d`
-/// - **Bridge**: Proxies DAP messages to Perl::LanguageServer via [`BridgeAdapter`]
+/// `DapServer` owns the supported product runtime: the built-in
+/// [`DebugAdapter`] driving the local Perl debugger. Historical proxying to an
+/// alternate DAP implementation is not part of this lifecycle. Native editor
+/// TCP (`run_socket`) is retired; production admission is stdio only.
 pub struct DapServer {
-    /// Server configuration
+    /// Server configuration.
     pub config: DapConfig,
-    /// The underlying debug adapter (used in Native mode)
+    /// The underlying native debug adapter.
     adapter: DebugAdapter,
 }
 
 impl DapServer {
-    /// Create a new DAP server instance
+    /// Create a new native DAP server instance.
     ///
     /// # Arguments
     ///
-    /// * `config` - Server configuration including operating mode
+    /// * `config` - Server configuration including logging, workspace context,
+    ///   and the launch-authority startup inputs (#8656).
     ///
     /// # Errors
     ///
-    /// Currently always succeeds. Phase 2 will add validation and initialization errors.
+    /// Construction retains a result boundary for configuration and runtime
+    /// initialization failures. When launch-authority inputs are configured,
+    /// they are validated here and invalid inputs (for example a missing
+    /// trusted root) reject startup before any debuggee process can spawn.
+    /// Without authority inputs the server still starts for boundary-free
+    /// management flows, and every launch request is refused fail-closed
+    /// (see `handle_launch`).
     pub fn new(config: DapConfig) -> anyhow::Result<Self> {
         let adapter = DebugAdapter::new();
-        // Wire the configured workspace boundary (if any) into the adapter so
-        // launch requests are validated against it. See
-        // `DebugAdapter::set_workspace_root` and `handle_launch` for the
-        // narrowing-only override rule applied to launch-args `workspaceRoot`.
+        // Resolve the launch-authority decision from the user/machine-owned
+        // startup inputs when any are configured. A configured
+        // `workspace_root` is a startup-owned boundary: it joins the
+        // trusted-root set so the historical workspace-bound behavior keeps
+        // working under the explicit contract.
+        let mut startup = config.launch_authority.clone();
         if let Some(root) = config.workspace_root.clone() {
+            if !startup.trusted_roots.iter().any(|listed| listed == &root) {
+                startup.trusted_roots.push(root.clone());
+            }
             adapter.set_workspace_root(root);
+        }
+        if !startup.trusted_roots.is_empty() || startup.allow_unbounded.is_some() {
+            let authority = LaunchAuthority::resolve(&startup).map_err(|error| {
+                anyhow::anyhow!("launch authority rejected at startup: {error}")
+            })?;
+            tracing::info!(
+                mode = authority.mode().label(),
+                authority_identity = %authority.identity(),
+                "launch authority resolved"
+            );
+            adapter.set_launch_authority(authority);
         }
         Ok(Self { config, adapter })
     }
 
-    /// Run the DAP server
-    ///
-    /// Dispatches to the appropriate transport based on the configured [`DapMode`]:
-    /// - [`DapMode::Native`]: Starts the stdio transport loop via `DebugAdapter::run`
-    /// - [`DapMode::Bridge`]: Spawns Perl::LanguageServer and proxies DAP messages
-    ///   via [`BridgeAdapter`] using a tokio async runtime
-    pub fn run(&mut self) -> anyhow::Result<()> {
-        match self.config.mode {
-            DapMode::Native => self.adapter.run().map_err(Into::into),
-            DapMode::Bridge => {
-                tracing::info!("Starting DAP server in bridge mode");
-                let rt = tokio::runtime::Runtime::new()?;
-                rt.block_on(async {
-                    let mut bridge = BridgeAdapter::new();
-                    bridge.spawn_pls_dap().await?;
-                    bridge.proxy_messages().await?;
-                    bridge.shutdown().await?;
-                    Ok(())
-                })
-            }
-        }
-    }
-
-    /// Run the DAP server over TCP socket transport.
-    ///
-    /// This binds to `127.0.0.1:<port>` and serves one DAP client session.
+    /// Run the native DAP server over stdio.
     ///
     /// # Errors
     ///
-    /// Returns an error if bridge mode is selected, since socket transport
-    /// is only supported for native mode.
-    pub fn run_socket(&mut self, port: u16) -> anyhow::Result<()> {
-        if self.config.mode == DapMode::Bridge {
-            anyhow::bail!("Socket transport is not supported in bridge mode");
-        }
-        self.adapter.run_socket(port)
+    /// Returns an error when the DAP transport or native adapter session fails.
+    pub fn run(&mut self) -> anyhow::Result<()> {
+        self.adapter.run().map_err(Into::into)
     }
 }

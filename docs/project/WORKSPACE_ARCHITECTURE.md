@@ -97,26 +97,10 @@ The largest family, with 41 crates covering every LSP capability:
   `perl-lsp-uri`, `perl-lsp-config`, `perl-lsp-launcher`,
   `perl-lsp-performance`, `perl-lsp-diagnostic-catalog`,
   `perl-lsp-diagnostic-types`
-- **Feature governance** (8 crates, see below)
-
-### perl-lsp-feature-\* (8 crates) -- Feature Governance Subsystem
-
-A subset of the LSP family forming a complete feature toggle and governance
-system:
-
-| Crate | Purpose |
-|-------|---------|
-| `perl-lsp-feature-ids` | Canonical feature identifiers |
-| `perl-lsp-feature-flags` | Runtime feature flag evaluation |
-| `perl-lsp-feature-contracts` | Feature capability contracts |
-| `perl-lsp-feature-profile` | Feature profile definitions |
-| `perl-lsp-feature-profile-cli` | CLI parsing for feature profiles |
-| `perl-lsp-feature-policy` | Feature enablement policy engine |
-| `perl-lsp-feature-grid` | Feature capability matrix |
-| `perl-lsp-feature-governance` | Top-level governance orchestrator |
-
-This subsystem enables clients to selectively enable or disable LSP features,
-with the policy engine enforcing constraints across the capability matrix.
+Feature selection and governance are modules in `perl-lsp-rs-core`, under
+`src/features/` and `src/governance/`; they are not separate workspace crates.
+The modules cover catalog contracts, profile parsing, policy, capability mapping,
+and grid reporting for the LSP server and tooling.
 
 ### perl-dap-\* (9 crates) -- Debug Adapter Protocol
 

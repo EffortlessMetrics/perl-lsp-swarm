@@ -3,6 +3,9 @@
 //! This module provides a complete Rust-native implementation of the Perl parser
 //! using Pest for grammar parsing, without any dependency on tree-sitter's C code.
 
+use crate::error::ParseError;
+use crate::heredoc::{HeredocQueue, HeredocRemoval, HeredocScan};
+use crate::outcome::{ParserFailure, StrictParseError};
 use crate::pratt_parser::PrattParser;
 use pest::{
     Parser,
@@ -322,30 +325,250 @@ pub enum AstNode {
     },
 }
 
+/// One substitution performed by a normalization pass, in byte offsets.
+///
+/// `input_start..input_end` is the span replaced in that pass's input;
+/// `output_start..output_end` is the span it became in that pass's output.
+#[derive(Debug, Clone, Copy)]
+struct RewriteEdit {
+    input_start: usize,
+    input_end: usize,
+    output_start: usize,
+    output_end: usize,
+}
+
+/// Translates a byte offset in the normalized text back to the caller's source.
+///
+/// Passes are stored in application order and unwound in reverse.
+#[derive(Debug, Clone, Default)]
+struct NormalizationMap {
+    passes: Vec<Vec<RewriteEdit>>,
+}
+
+impl NormalizationMap {
+    /// A map for text that was not rewritten at all.
+    fn identity() -> Self {
+        Self { passes: Vec::new() }
+    }
+
+    /// Map an offset in the final normalized text back to the original source.
+    ///
+    /// An offset that lands inside a replacement resolves to the start of the
+    /// span that replacement came from: the rewritten bytes have no
+    /// finer-grained original to point at, and the span start is the token the
+    /// caller actually wrote.
+    fn to_source_offset(&self, normalized_offset: usize) -> usize {
+        self.passes.iter().rev().fold(normalized_offset, |offset, edits| {
+            let mut shift: isize = 0;
+            for edit in edits {
+                if offset < edit.output_start {
+                    break;
+                }
+                if offset < edit.output_end {
+                    return edit.input_start;
+                }
+                shift += (edit.output_end - edit.output_start) as isize
+                    - (edit.input_end - edit.input_start) as isize;
+            }
+            // Edits processed here all end at or before `offset`, so the net
+            // shift can never exceed it: the result is non-negative by
+            // construction. Saturate rather than fall back to a misleading
+            // source-start offset.
+            (offset as isize - shift).max(0) as usize
+        })
+    }
+
+    /// Carry an offset in this map's input text forward into the normalized
+    /// text.
+    ///
+    /// Returns `None` when the offset lands inside a span some pass rewrote:
+    /// those bytes have no single forward image, and a caller that needs an
+    /// exact identity — the heredoc queue, which would otherwise fall back to
+    /// matching on marker text and let a phantom opener take a later body —
+    /// must fail closed rather than guess.
+    fn to_normalized_offset(&self, input_offset: usize) -> Option<usize> {
+        self.passes.iter().try_fold(input_offset, |offset, edits| {
+            let mut shift: isize = 0;
+            for edit in edits {
+                if offset < edit.input_start {
+                    break;
+                }
+                if offset < edit.input_end {
+                    return None;
+                }
+                shift += (edit.output_end - edit.output_start) as isize
+                    - (edit.input_end - edit.input_start) as isize;
+            }
+            usize::try_from(offset as isize + shift).ok()
+        })
+    }
+
+    /// A map with the heredoc pre-pass's body removals prepended as its first
+    /// pass.
+    ///
+    /// The normalization passes run over the body-stripped text, so on their
+    /// own they resolve an offset only as far back as that intermediate text.
+    /// Each removal is an edit whose output is empty, which lets
+    /// [`Self::to_source_offset`] keep folding back into the caller's own
+    /// source in one pass rather than needing a second coordinate system.
+    fn behind_removals(&self, removals: &[HeredocRemoval]) -> Self {
+        if removals.is_empty() {
+            return self.clone();
+        }
+        let mut passes = Vec::with_capacity(self.passes.len() + 1);
+        passes.push(
+            removals
+                .iter()
+                .map(|removal| RewriteEdit {
+                    input_start: removal.source_start,
+                    input_end: removal.source_end,
+                    output_start: removal.stripped_at,
+                    output_end: removal.stripped_at,
+                })
+                .collect(),
+        );
+        passes.extend(self.passes.iter().cloned());
+        Self { passes }
+    }
+}
+
+/// Apply `regex` to `input`, rendering each match with `render`, and record the
+/// byte spans involved so the substitution can be unwound later.
+fn rewrite_tracking_offsets(
+    input: &str,
+    regex: &Regex,
+    render: impl Fn(&regex::Captures<'_>) -> String,
+) -> (String, Vec<RewriteEdit>) {
+    let mut output = String::with_capacity(input.len());
+    let mut edits = Vec::new();
+    let mut consumed = 0usize;
+
+    for caps in regex.captures_iter(input) {
+        let Some(whole) = caps.get(0) else {
+            continue;
+        };
+        output.push_str(&input[consumed..whole.start()]);
+        let output_start = output.len();
+        output.push_str(&render(&caps));
+        edits.push(RewriteEdit {
+            input_start: whole.start(),
+            input_end: whole.end(),
+            output_start,
+            output_end: output.len(),
+        });
+        consumed = whole.end();
+    }
+    output.push_str(&input[consumed..]);
+
+    (output, edits)
+}
+
 /// Pure Rust Perl parser implementation
 pub struct PureRustPerlParser {
     _pratt_parser: PrattParser,
+    /// Bodies owned by the heredoc pre-pass, awaiting attachment (#8220).
+    heredocs: HeredocQueue,
+    /// Whether Pest's spans are offsets into the scanner's stripped text, so a
+    /// queued capture can be identified by position rather than marker alone.
+    heredoc_offsets_exact: bool,
+    /// Offset added to a pair's span to recover whole-source coordinates.
+    ///
+    /// Zero on the whole-source parse; set per fragment during recovery.
+    heredoc_span_base: usize,
+    /// Heredoc openers the grammar produced during the last parse.
+    ///
+    /// The scanner and the grammar decide independently which `<<` is an
+    /// opener. Counting the grammar's decisions makes a disagreement visible
+    /// instead of silent: without it, an opener the scanner never recognized
+    /// creates no capture, so nothing could report the body it failed to own.
+    heredoc_nodes_built: usize,
 }
 
 impl PureRustPerlParser {
     pub fn new() -> Self {
-        Self { _pratt_parser: PrattParser::new() }
+        Self {
+            _pratt_parser: PrattParser::new(),
+            heredocs: HeredocQueue::default(),
+            heredoc_offsets_exact: false,
+            heredoc_span_base: 0,
+            heredoc_nodes_built: 0,
+        }
     }
 
+    /// Parse `source` into an [`AstNode`].
+    ///
+    /// `source` is rewritten by an internal normalization pass before Pest sees
+    /// it (see [`Self::normalize_source_mapped`]). Pest's byte offsets therefore index
+    /// the rewritten buffer, and are translated back before they reach
+    /// [`ParseError::Rejected`], so a rejection's [`crate::SourceRange`] is
+    /// always an offset into `source` as the caller supplied it — which is what
+    /// [`StrictParseError`] documents.
     #[inline(always)]
-    pub fn parse(&mut self, source: &str) -> Result<AstNode, Box<dyn std::error::Error>> {
-        let normalized = Self::normalize_source(source);
+    pub fn parse(&mut self, source: &str) -> Result<AstNode, ParseError> {
+        let scan = crate::heredoc::scan(source);
+        self.parse_scanned(&scan, source)
+    }
+
+    /// Parse the body-stripped text of `scan`, attaching its captured bodies.
+    ///
+    /// Heredoc bodies are removed before normalization so that neither
+    /// `normalize_source` nor the grammar re-reads body text as Perl code, and
+    /// so following code resumes at the line after the terminator (#8220).
+    ///
+    /// `caller_source` is the text the caller passed in, before any body was
+    /// removed. Normalization now runs over the *stripped* text, so its map
+    /// alone would resolve a Pest offset only as far back as that intermediate
+    /// text. Prepending the scan's removals as the map's first pass carries the
+    /// offset the rest of the way, keeping the guarantee `error.rs` documents:
+    /// a reported range is an offset into the caller's own source.
+    pub(crate) fn parse_scanned(
+        &mut self,
+        scan: &HeredocScan,
+        caller_source: &str,
+    ) -> Result<AstNode, ParseError> {
+        let (normalized, stripped_normalization) = Self::normalize_source_mapped(scan.stripped());
+        // The scanner records opener offsets into the *stripped* text, but Pest
+        // parses the normalized text. Carrying them through the rewrites keeps a
+        // usable identity for every capture; if any offset cannot be carried the
+        // queue reports it and attachment fails closed rather than guessing by
+        // marker text, which would let a phantom opener take a later body.
+        self.heredocs = HeredocQueue::from_scan_translated(scan, |at| {
+            stripped_normalization.to_normalized_offset(at)
+        });
+        self.heredoc_nodes_built = 0;
+        self.heredoc_offsets_exact = self.heredocs.offsets_are_usable();
+        self.heredoc_span_base = 0;
+        let normalization = stripped_normalization.behind_removals(scan.removals());
 
         match <PerlParser as Parser<Rule>>::parse(Rule::program, &normalized) {
             Ok(pairs) => self.build_ast(pairs),
             Err(e) => {
-                // Attempt partial parsing by trying to parse individual statements
-                self.parse_with_recovery(&normalized, e)
+                // Recovery parses fragments, whose spans are fragment-relative;
+                // `parse_with_recovery` sets a per-fragment base so they can
+                // still be carried back to whole-source coordinates.
+                self.parse_with_recovery(&normalized, caller_source, &normalization, e)
             }
         }
     }
 
-    fn normalize_source(source: &str) -> String {
+    /// Captured heredoc bodies no opener node claimed during the last parse.
+    pub(crate) fn queued_heredoc_bodies(&self) -> usize {
+        self.heredocs.remaining()
+    }
+
+    /// Heredoc openers the grammar produced during the last parse.
+    pub(crate) const fn heredoc_nodes_built(&self) -> usize {
+        self.heredoc_nodes_built
+    }
+
+    /// Normalize `source` and retain enough information to translate a byte
+    /// offset in the normalized text back to the equivalent offset in `source`.
+    ///
+    /// The map runs both ways: the error path unwinds a Pest offset back to the
+    /// caller's text, and the heredoc pre-pass carries an opener offset forward
+    /// into the coordinate system Pest actually reports, so a capture keeps a
+    /// usable identity instead of falling back to matching on marker text alone.
+    fn normalize_source_mapped(source: &str) -> (String, NormalizationMap) {
         static SIMPLE_SCALAR_DEREF_RE: LazyLock<Option<Regex>> =
             LazyLock::new(|| Regex::new(r"\$\$(?P<name>[A-Za-z_][A-Za-z0-9_:]*)").ok());
         static ASSIGN_BITNOT_RE: LazyLock<Option<Regex>> =
@@ -354,41 +577,57 @@ impl PureRustPerlParser {
         // These are fixed patterns; if one ever fails to compile, skip normalization
         // rather than panicking inside production parser code.
         let Some(scalar_deref_re) = SIMPLE_SCALAR_DEREF_RE.as_ref() else {
-            return source.to_string();
+            return (source.to_string(), NormalizationMap::identity());
         };
         let Some(assign_bitnot_re) = ASSIGN_BITNOT_RE.as_ref() else {
-            return source.to_string();
+            return (source.to_string(), NormalizationMap::identity());
         };
 
-        let normalized_derefs = scalar_deref_re
-            .replace_all(source, |caps: &regex::Captures<'_>| {
+        let (normalized_derefs, deref_edits) =
+            rewrite_tracking_offsets(source, scalar_deref_re, |caps| {
                 let variable = format!("${}", &caps["name"]);
                 format!("${{{}}}", variable)
-            })
-            .into_owned();
+            });
 
-        assign_bitnot_re
-            .replace_all(&normalized_derefs, |caps: &regex::Captures<'_>| {
+        let (normalized, bitnot_edits) =
+            rewrite_tracking_offsets(&normalized_derefs, assign_bitnot_re, |caps| {
                 format!("= bitnot({})", &caps["expr"])
-            })
-            .into_owned()
+            });
+
+        (normalized, NormalizationMap { passes: vec![deref_edits, bitnot_edits] })
     }
 
+    /// `normalized` must be the exact text Pest attempted to parse (and that
+    /// produced `original_error`); `caller_source` is the untouched text the
+    /// caller supplied, and `normalization` translates offsets between them, so
+    /// a rejection reports a range into `caller_source`.
     fn parse_with_recovery(
         &mut self,
-        source: &str,
+        normalized: &str,
+        caller_source: &str,
+        normalization: &NormalizationMap,
         original_error: pest::error::Error<Rule>,
-    ) -> Result<AstNode, Box<dyn std::error::Error>> {
+    ) -> Result<AstNode, ParseError> {
+        let source = normalized;
         let mut statements = Vec::new();
-        let lines: Vec<&str> = source.lines().collect();
         let mut current_block = String::new();
         let mut brace_count: i32 = 0;
         let mut in_single_quote = false;
         let mut in_double_quote = false;
+        // Offsets into `source` so each fragment's Pest spans can be carried
+        // back to whole-source coordinates. `split_inclusive` keeps each line's
+        // terminator, so `current_block` is byte-identical to the slice of
+        // `source` it came from — `lines()` would drop `\r` and silently skew
+        // every offset on CRLF input.
+        let mut cursor = 0usize;
+        let mut block_start = 0usize;
 
-        for line in lines {
+        for line in source.split_inclusive('\n') {
+            if current_block.is_empty() {
+                block_start = cursor;
+            }
             current_block.push_str(line);
-            current_block.push('\n');
+            cursor += line.len();
 
             // Count braces outside of string literals (state persists across lines)
             {
@@ -425,13 +664,30 @@ impl PureRustPerlParser {
                         trimmed.to_string()
                     };
 
+                    // `with_semi` starts at the trimmed block, so a pair span
+                    // plus this base is a whole-source offset again. Any `;`
+                    // appended above sits past the end and carries no opener.
+                    let leading =
+                        current_block.len().saturating_sub(current_block.trim_start().len());
+                    self.heredoc_span_base = block_start.saturating_add(leading);
+
                     if let Ok(pairs) =
                         <PerlParser as Parser<Rule>>::parse(Rule::statements, &with_semi)
                     {
                         for pair in pairs {
                             for inner_pair in pair.into_inner() {
-                                if let Some(node) = self.build_node(inner_pair).unwrap_or(None) {
-                                    statements.push(node);
+                                // Skipping an unparseable fragment is what recovery is
+                                // for, so a parser-domain rejection stays skippable. An
+                                // operational failure must not be: collapsing it here
+                                // would let an AST-builder invariant violation resurface
+                                // as a `Rejected` below (or as an `Ok` when another
+                                // statement happened to survive), which is exactly the
+                                // conflation this contract forbids.
+                                match self.build_node(inner_pair) {
+                                    Ok(Some(node)) => statements.push(node),
+                                    Ok(None) => {}
+                                    Err(failure @ ParseError::Failed(_)) => return Err(failure),
+                                    Err(ParseError::Rejected(_)) => {}
                                 }
                             }
                         }
@@ -453,7 +709,22 @@ impl PureRustPerlParser {
         }
 
         if statements.is_empty() {
-            Err(Box::new(original_error))
+            // Pest's offsets index `normalized`, so translate them back before
+            // they are bound: `StrictParseError` documents its range as an
+            // offset into the caller's original source, and storing a
+            // normalized offset there would quietly contradict that. This is a
+            // parser-domain rejection, not an instrument failure —
+            // `original_error` came directly from a failed Pest parse.
+            let mapped =
+                StrictParseError::from_pest_mapped(&original_error, caller_source, |offset| {
+                    normalization.to_source_offset(offset)
+                });
+            match mapped {
+                Ok(rejection) => Err(ParseError::Rejected(rejection)),
+                Err(outcome_error) => Err(ParseError::Failed(ParserFailure::instrument(format!(
+                    "failed to bind pest rejection to the caller source: {outcome_error}"
+                )))),
+            }
         } else {
             Ok(AstNode::Program(statements))
         }
@@ -483,7 +754,7 @@ impl PureRustPerlParser {
         groups
     }
 
-    pub fn build_ast(&mut self, pairs: Pairs<Rule>) -> Result<AstNode, Box<dyn std::error::Error>> {
+    pub fn build_ast(&mut self, pairs: Pairs<Rule>) -> Result<AstNode, ParseError> {
         let mut nodes = Vec::new();
         for pair in pairs {
             if let Some(node) = self.build_node(pair)? {
@@ -491,7 +762,9 @@ impl PureRustPerlParser {
             }
         }
         if nodes.len() == 1 {
-            nodes.pop().ok_or_else(|| "Empty nodes".into())
+            // `nodes.len() == 1` was just checked, so this is an internal
+            // invariant violation, not a source-domain rejection.
+            nodes.pop().ok_or_else(|| ParseError::Failed(ParserFailure::instrument("Empty nodes")))
         } else {
             Ok(AstNode::Program(nodes))
         }
@@ -502,10 +775,7 @@ impl PureRustPerlParser {
     /// This remains public so bridge consumers (for example `tree-sitter-perl-rs`
     /// with `v2-pest-microcrate`) can continue calling internal v2 build paths.
     #[inline]
-    pub fn build_node(
-        &mut self,
-        pair: Pair<Rule>,
-    ) -> Result<Option<AstNode>, Box<dyn std::error::Error>> {
+    pub fn build_node(&mut self, pair: Pair<Rule>) -> Result<Option<AstNode>, ParseError> {
         // Use stacker to grow stack if needed, with 512KB red zone
         const STACK_RED_ZONE: usize = 512 * 1024; // 512KB
         const STACK_SIZE: usize = 8 * 1024 * 1024; // 8MB growth
@@ -514,10 +784,7 @@ impl PureRustPerlParser {
 
     /// Actual implementation of build_node
     #[inline]
-    fn build_node_impl(
-        &mut self,
-        pair: Pair<Rule>,
-    ) -> Result<Option<AstNode>, Box<dyn std::error::Error>> {
+    fn build_node_impl(&mut self, pair: Pair<Rule>) -> Result<Option<AstNode>, ParseError> {
         match pair.as_rule() {
             // Fast-path rules
             Rule::simple_assignment => {
@@ -1344,6 +1611,9 @@ impl PureRustPerlParser {
                 Ok(Some(AstNode::String(Arc::from(pair.as_str()))))
             }
             Rule::heredoc => {
+                // The `heredoc` rule starts at the `<<`, which is the same
+                // coordinate the scanner recorded for its capture.
+                let opener_start = pair.as_span().start().saturating_add(self.heredoc_span_base);
                 let inner = pair.into_inner();
                 let mut indented = false;
                 let mut marker = Arc::from("");
@@ -1385,15 +1655,23 @@ impl PureRustPerlParser {
                     }
                 }
 
-                // Note: In a real implementation, we would need to collect the heredoc content
-                // from subsequent lines until we find the marker. For now, we just create
-                // a placeholder.
-                Ok(Some(AstNode::Heredoc {
-                    marker,
-                    indented,
-                    quoted,
-                    content: Arc::from(""), // This would be filled by a stateful parser
-                }))
+                // The body was removed from the parsed text by the heredoc
+                // pre-pass (#8220) and is attached here. The queued capture's
+                // marker must match, and where Pest's spans are still stripped
+                // -text offsets its position must match too — otherwise a
+                // grammar opener the scanner did not own can claim a later
+                // capture that repeats its marker, leaving the real heredoc
+                // empty. Where the coordinates do not survive (normalization
+                // rewrote the text, or recovery parsed fragments) the marker
+                // alone decides, and `parse_heredoc_outcome` still reports the
+                // disagreement rather than passing it off as clean. An empty
+                // content therefore means an empty body, an unowned opener, or
+                // a direct `build_node` call by a bridge consumer.
+                self.heredoc_nodes_built = self.heredoc_nodes_built.saturating_add(1);
+                let at = self.heredoc_offsets_exact.then_some(opener_start);
+                let content =
+                    self.heredocs.take(&marker, at).map_or_else(|| Arc::from(""), Arc::from);
+                Ok(Some(AstNode::Heredoc { marker, indented, quoted, content }))
             }
             Rule::list => {
                 let mut elements = Vec::new();
@@ -1932,11 +2210,9 @@ impl PureRustPerlParser {
                         Rule::for_init => {
                             init = self.build_node(p)?.map(Box::new);
                         }
-                        Rule::assignment_expression => {
+                        Rule::assignment_expression if init.is_none() && condition.is_none() => {
                             // For C-style initialization without for_init wrapper
-                            if init.is_none() && condition.is_none() {
-                                init = self.build_node(p)?.map(Box::new);
-                            }
+                            init = self.build_node(p)?.map(Box::new);
                         }
                         Rule::expression => {
                             if is_c_style {
@@ -2171,10 +2447,7 @@ impl PureRustPerlParser {
         }
     }
 
-    fn build_expression(
-        &mut self,
-        pair: Pair<Rule>,
-    ) -> Result<Option<AstNode>, Box<dyn std::error::Error>> {
+    fn build_expression(&mut self, pair: Pair<Rule>) -> Result<Option<AstNode>, ParseError> {
         let inner = pair.into_inner().next().ok_or("Empty expression")?;
         match inner.as_rule() {
             Rule::assignment_expression => self.build_node(inner),
@@ -2187,7 +2460,7 @@ impl PureRustPerlParser {
     fn build_ternary_expression(
         &mut self,
         pair: Pair<Rule>,
-    ) -> Result<Option<AstNode>, Box<dyn std::error::Error>> {
+    ) -> Result<Option<AstNode>, ParseError> {
         let inner: Vec<_> = pair.into_inner().collect();
         if inner.len() == 1 {
             // No ternary, just pass through
@@ -2217,7 +2490,7 @@ impl PureRustPerlParser {
         &mut self,
         pair: Pair<Rule>,
         _op_rule: Rule,
-    ) -> Result<Option<AstNode>, Box<dyn std::error::Error>> {
+    ) -> Result<Option<AstNode>, ParseError> {
         let inner: Vec<_> = pair.into_inner().collect();
         if inner.len() == 1 {
             let first = inner.into_iter().next().ok_or("Expected exactly one element")?;
@@ -2234,7 +2507,7 @@ impl PureRustPerlParser {
     fn build_binary_expr_with_precedence(
         &mut self,
         pairs: Vec<Pair<Rule>>,
-    ) -> Result<Option<AstNode>, Box<dyn std::error::Error>> {
+    ) -> Result<Option<AstNode>, ParseError> {
         if pairs.is_empty() {
             return Ok(None);
         }
@@ -2263,10 +2536,7 @@ impl PureRustPerlParser {
         AstNode::BinaryOp { op, left: Box::new(left), right: Box::new(right) }
     }
 
-    fn parse_arg_list(
-        &mut self,
-        pair: Pair<Rule>,
-    ) -> Result<Vec<AstNode>, Box<dyn std::error::Error>> {
+    fn parse_arg_list(&mut self, pair: Pair<Rule>) -> Result<Vec<AstNode>, ParseError> {
         let mut args = Vec::new();
         for arg in pair.into_inner() {
             if let Some(node) = self.build_node(arg)? {
@@ -2280,7 +2550,7 @@ impl PureRustPerlParser {
         &mut self,
         pair: Pair<Rule>,
         deref_type: &'static str,
-    ) -> Result<Option<AstNode>, Box<dyn std::error::Error>> {
+    ) -> Result<Option<AstNode>, ParseError> {
         let mut inner = pair.into_inner();
         let expr = if let Some(inner_pair) = inner.next() {
             match inner_pair.as_rule() {
@@ -2792,23 +3062,23 @@ impl Default for PureRustPerlParser {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use perl_tdd_support::must;
 
     #[test]
-    fn test_basic_parsing() {
+    fn test_basic_parsing() -> Result<(), String> {
         let mut parser = PureRustPerlParser::new();
         let source = "$var";
-        let ast = must(parser.parse(source));
+        let ast = parser.parse(source).map_err(|error| format!("{error:?}"))?;
         let sexp = parser.to_sexp(&ast);
 
         assert!(sexp.contains("(scalar_variable $var)"), "expected scalar variable; got: {sexp}");
+        Ok(())
     }
 
     #[test]
-    fn test_variable_parsing() {
+    fn test_variable_parsing() -> Result<(), String> {
         let mut parser = PureRustPerlParser::new();
         let source = "$scalar @array %hash";
-        let ast = must(parser.parse(source));
+        let ast = parser.parse(source).map_err(|error| format!("{error:?}"))?;
         let sexp = parser.to_sexp(&ast);
 
         assert!(sexp.contains("$scalar"), "expected scalar variable; got: {sexp}");
@@ -2817,52 +3087,57 @@ mod tests {
             sexp.contains("(%)") && sexp.contains("(identifier hash)"),
             "expected hash token shape; got: {sexp}"
         );
+        Ok(())
     }
 
     #[test]
-    fn test_assignment_parsing() {
+    fn test_assignment_parsing() -> Result<(), String> {
         let mut parser = PureRustPerlParser::new();
         let source = "my $var = 42;";
-        let ast = must(parser.parse(source));
+        let ast = parser.parse(source).map_err(|error| format!("{error:?}"))?;
         let sexp = parser.to_sexp(&ast);
 
         assert!(sexp.contains("(variable_declaration"), "expected declaration; got: {sexp}");
         assert!(sexp.contains("(number 42)"), "expected numeric initializer; got: {sexp}");
+        Ok(())
     }
 
     #[test]
-    fn test_function_declaration() {
+    fn test_function_declaration() -> Result<(), String> {
         let mut parser = PureRustPerlParser::new();
         let source = "sub hello { print 'Hello'; }";
-        let ast = must(parser.parse(source));
+        let ast = parser.parse(source).map_err(|error| format!("{error:?}"))?;
         let sexp = parser.to_sexp(&ast);
 
         assert!(
             sexp.contains("(subroutine (identifier hello)"),
             "expected subroutine declaration; got: {sexp}"
         );
+        Ok(())
     }
 
     #[test]
-    fn test_if_statement() {
+    fn test_if_statement() -> Result<(), String> {
         let mut parser = PureRustPerlParser::new();
         let source = "if ($x > 0) { print 'positive'; }";
-        let ast = must(parser.parse(source));
+        let ast = parser.parse(source).map_err(|error| format!("{error:?}"))?;
         let sexp = parser.to_sexp(&ast);
 
         assert!(sexp.contains("(if_statement"), "expected if statement; got: {sexp}");
+        Ok(())
     }
 
     #[test]
-    fn test_regression_percent_string_in_if_assignment() {
+    fn test_regression_percent_string_in_if_assignment() -> Result<(), String> {
         let mut parser = PureRustPerlParser::new();
         let source = r#"if ($a > 0) { $a = "%"; }"#;
         let result = parser.parse(source);
         assert!(result.is_ok(), "Failed to parse regression input: {source}");
+        Ok(())
     }
 
     #[test]
-    fn test_regression_q_string_heredoc_marker_no_content_does_not_panic() {
+    fn test_regression_q_string_heredoc_marker_no_content_does_not_panic() -> Result<(), String> {
         // #3917: a literal "{__HEREDOC__" .. "__HEREDOC__}" span with no
         // room for content in between (start_idx + HEREDOC_PLACEHOLDER_OPEN.len()
         // > end_idx) used to panic on an inverted slice range instead of
@@ -2871,14 +3146,16 @@ mod tests {
         let source = "q{__HEREDOC__}";
         let result = parser.parse(source);
         assert!(result.is_ok(), "Failed to parse regression input: {source}");
+        Ok(())
     }
 
     #[test]
-    fn test_regression_qq_string_heredoc_marker_no_content_does_not_panic() {
+    fn test_regression_qq_string_heredoc_marker_no_content_does_not_panic() -> Result<(), String> {
         let mut parser = PureRustPerlParser::new();
         let source = "qq{__HEREDOC__}";
         let result = parser.parse(source);
         assert!(result.is_ok(), "Failed to parse regression input: {source}");
+        Ok(())
     }
 
     /// Depth-first search for the first `AstNode::String` value in a parse tree,
@@ -2896,7 +3173,8 @@ mod tests {
     }
 
     #[test]
-    fn test_regression_q_string_heredoc_marker_adjacent_boundary_extracts_empty_content() {
+    fn test_regression_q_string_heredoc_marker_adjacent_boundary_extracts_empty_content()
+    -> Result<(), String> {
         // #3917 follow-up: exercise the start_idx + HEREDOC_PLACEHOLDER_OPEN.len()
         // == end_idx boundary, where the opening "{__HEREDOC__" marker is
         // immediately followed by a fresh "__HEREDOC__}" match with nothing
@@ -2906,37 +3184,128 @@ mod tests {
         // literal text "q{__HEREDOC____HEREDOC__}".
         let mut parser = PureRustPerlParser::new();
         let source = "q{__HEREDOC____HEREDOC__}";
-        let ast = must(parser.parse(source));
+        let ast = parser.parse(source).map_err(|error| format!("{error:?}"))?;
         assert_eq!(
             find_first_string(&ast),
             Some(""),
             "expected the heredoc markers to extract to an empty string, not a raw-content fallback; got AST: {ast:?}"
         );
+        Ok(())
     }
 
     #[test]
-    fn test_array_assignment() {
+    fn test_array_assignment() -> Result<(), String> {
         let mut parser = PureRustPerlParser::new();
         let source = "@array = (1, 2, 3);";
-        let ast = must(parser.parse(source));
+        let ast = parser.parse(source).map_err(|error| format!("{error:?}"))?;
         let sexp = parser.to_sexp(&ast);
 
         assert!(
             sexp.contains("(assignment (array_variable @array)"),
             "expected array assignment; got: {sexp}"
         );
+        Ok(())
     }
 
     #[test]
-    fn test_hash_assignment() {
+    fn test_hash_assignment() -> Result<(), String> {
         let mut parser = PureRustPerlParser::new();
         let source = "%hash = (a => 1, b => 2);";
-        let ast = must(parser.parse(source));
+        let ast = parser.parse(source).map_err(|error| format!("{error:?}"))?;
         let sexp = parser.to_sexp(&ast);
 
         assert!(
             sexp.contains("(assignment (hash_variable %hash)"),
             "expected hash assignment; got: {sexp}"
         );
+        Ok(())
+    }
+
+    // -----------------------------------------------------------------------
+    // Offset translation (#8220). `NormalizationMap` is the single authority
+    // for rewrite spans and runs both ways: back to the caller's source for
+    // error ranges, forward into Pest's coordinates for heredoc openers. The
+    // integration tests cover the composed behaviour through `parse()`; these
+    // rows pin the map's own branches, including the fail-closed one that no
+    // real source reaches.
+    // -----------------------------------------------------------------------
+
+    /// A one-pass map replacing `input_start..input_end` with a span of
+    /// `output_len` bytes at the same start.
+    fn one_pass_map(input_start: usize, input_end: usize, output_len: usize) -> NormalizationMap {
+        NormalizationMap {
+            passes: vec![vec![RewriteEdit {
+                input_start,
+                input_end,
+                output_start: input_start,
+                output_end: input_start + output_len,
+            }]],
+        }
+    }
+
+    #[test]
+    fn identity_map_translates_every_offset_to_itself_in_both_directions() {
+        let map = NormalizationMap::identity();
+        for offset in [0_usize, 1, 17, 4096] {
+            assert_eq!(map.to_source_offset(offset), offset);
+            assert_eq!(map.to_normalized_offset(offset), Some(offset));
+        }
+    }
+
+    #[test]
+    fn forward_translation_shifts_offsets_after_a_rewrite_and_leaves_earlier_ones() {
+        // `$$name` (6 bytes at 4..10) becomes `${$name}` (8 bytes): everything
+        // after it moves by two, everything before it does not move at all.
+        let map = one_pass_map(4, 10, 8);
+        assert_eq!(map.to_normalized_offset(0), Some(0), "an offset before the rewrite is fixed");
+        assert_eq!(map.to_normalized_offset(3), Some(3));
+        assert_eq!(map.to_normalized_offset(10), Some(12), "the byte after it shifts by two");
+        assert_eq!(map.to_normalized_offset(14), Some(16));
+    }
+
+    #[test]
+    fn forward_translation_fails_closed_inside_a_rewritten_span() {
+        // Bytes inside the replaced span have no single forward image, and
+        // that includes the span's own first byte: it is the start of text
+        // that no longer exists, not a boundary. The heredoc queue depends on
+        // `None` here rather than a plausible-looking offset, because a wrong
+        // opener identity hands a body to the wrong node. No real opener lands
+        // here — neither normalization pattern can match text containing `<<`
+        // — so this is the fail-closed branch, asserted rather than assumed.
+        let map = one_pass_map(4, 10, 8);
+        assert_eq!(map.to_normalized_offset(4), None, "the replaced span's start is inside it");
+        assert_eq!(map.to_normalized_offset(5), None);
+        assert_eq!(map.to_normalized_offset(9), None, "the last replaced byte is inside it");
+    }
+
+    #[test]
+    fn behind_removals_is_a_no_op_when_the_scan_removed_nothing() {
+        // Source with no heredoc: the composed map must behave exactly like
+        // the normalization map alone, or every ordinary parse would report
+        // shifted ranges.
+        let map = one_pass_map(0, 6, 8);
+        let composed = map.behind_removals(&[]);
+        for offset in [0_usize, 8, 12, 99] {
+            assert_eq!(composed.to_source_offset(offset), map.to_source_offset(offset));
+        }
+    }
+
+    #[test]
+    fn behind_removals_adds_back_every_removed_body_before_the_offset() {
+        // Two bodies removed at the same stripped position, as two openers on
+        // one line produce. An offset after them must gain the total removed
+        // length; one before them must not move.
+        let removals = [
+            HeredocRemoval { source_start: 10, source_end: 30, stripped_at: 10 },
+            HeredocRemoval { source_start: 30, source_end: 45, stripped_at: 10 },
+        ];
+        let composed = NormalizationMap::identity().behind_removals(&removals);
+        assert_eq!(composed.to_source_offset(5), 5, "an offset before the removals does not move");
+        assert_eq!(
+            composed.to_source_offset(10),
+            45,
+            "an offset at the removal point resumes after both removed bodies"
+        );
+        assert_eq!(composed.to_source_offset(12), 47);
     }
 }

@@ -1,0 +1,9 @@
+project: product
+component: Developer experience
+kind: Fixed
+body: Routed the forced pending-parse gap helper through `DocumentState::update_content` so the canonical `text_arc` text moves with every simulated edit; the helper previously left `text_arc` holding the pre-edit source, and hover answered from stale source text while the gap was open (#11933).
+time: 2026-08-23T00:00:00Z
+custom:
+  PR: "12094"
+  Slug: faithful-pending-parse-gap-simulation
+  Breaking: "no"

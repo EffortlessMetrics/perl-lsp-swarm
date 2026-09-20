@@ -1,0 +1,27 @@
+{
+  "schema": "train_edge_contract.v1",
+  "schema_version": 1,
+  "contract_id": "invalid-sidecar-in-core-spine",
+  "programme": { "name": "invalid-examples" },
+  "propositions": [
+    { "id": "P_dap_sidecar", "claim_ceiling": "Sidecar only." },
+    { "id": "P_lsp_core", "claim_ceiling": "Core only." }
+  ],
+  "edges": [
+    {
+      "source": "P_dap_sidecar",
+      "kind": "nonblocking_sidecar",
+      "target": "P_lsp_core",
+      "provenance": "sidecar relationship"
+    }
+  ],
+  "claim_profiles": [
+    {
+      "id": "core_profile",
+      "version": 1,
+      "required": ["P_lsp_core", "P_dap_sidecar"],
+      "allowed_terminal_limitation_states": ["not_proven"],
+      "claim_ceiling": "Invalid example: a sidecar enters the core requirement set."
+    }
+  ]
+}

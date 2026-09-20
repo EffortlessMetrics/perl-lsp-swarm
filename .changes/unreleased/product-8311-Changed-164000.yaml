@@ -1,0 +1,9 @@
+project: product
+component: Compatibility
+kind: Changed
+body: "The nextEdit.enabled setting is no longer public configuration: it never had an editor-visible provider, so it is removed from the settings schema, examples, and docs. Supplying the legacy nextEdit key (or a [next_edit] project section) is now ignored with one bounded deprecation reason and can never report ready or enabled; internal next-edit scaffolding remains default-off and receipt-only."
+time: 2026-08-23T16:40:00Z
+custom:
+  PR: "8311"
+  Slug: hide-next-edit-setting
+  Breaking: "no"

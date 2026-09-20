@@ -7,6 +7,8 @@
     reason = "tracked conversion debt: https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3021"
 )]
 
+#[cfg(feature = "incremental")]
+use super::srp_helpers::build_incremental_edit_set;
 use super::*;
 use serde_json::json;
 use std::io::{self, Write};
@@ -212,7 +214,7 @@ fn test_incremental_path_taken_on_ranged_change() -> Result<(), Box<dyn std::err
         assert!(doc.incremental_doc.is_some(), "incremental_doc must be initialized on didOpen");
     }
 
-    // Apply a ranged change: replace "42" with "43"
+    // Ranged change is a Full-sync violation: last-good text is retained.
     server.handle_did_change(Some(json!({
         "textDocument": { "uri": uri, "version": 2 },
         "contentChanges": [{
@@ -224,39 +226,15 @@ fn test_incremental_path_taken_on_ranged_change() -> Result<(), Box<dyn std::err
         }]
     })))?;
 
-    // Document must still be stored with updated content and a present AST
     {
         let docs = server.documents.lock();
         let doc = docs.get(uri).ok_or("document not stored after didChange")?;
-        assert!(doc.text.contains("43"), "document text must be updated");
+        assert!(doc.text.contains("42"), "ranged didChange must not mutate last-good text");
+        assert!(!doc.text.contains("43"), "ranged didChange must not apply the replacement");
+        assert!(doc.full_sync_required(), "ranged didChange must enter full-sync-required");
         assert!(
-            doc.current_parsed().is_some_and(|p| p.ast().is_some()),
-            "AST must be present after incremental change"
-        );
-        // incremental_doc must still be present after a ranged edit
-        assert!(doc.incremental_doc.is_some(), "incremental_doc must survive a ranged edit");
-        // The incremental doc's internal source must reflect the edit.
-        // This catches a silent reinit-instead-of-apply bug: reinit would also hold
-        // "43" in the source, but would not have the version counter bumped from 0.
-        // Checking the source text is the strongest behavioral assertion available
-        // without mocking the apply_edits call itself.
-        let inc = doc.incremental_doc.as_ref().unwrap();
-        assert!(
-            inc.source.contains("43"),
-            "incremental_doc.source must contain the edit result; got: {:?}",
-            inc.source
-        );
-        assert!(
-            !inc.source.contains("42"),
-            "incremental_doc.source must not contain the old value; got: {:?}",
-            inc.source
-        );
-        // version > 0 proves apply_edits was called (increments version), not just reinit
-        // (which starts at version 0 after IncrementalDocument::new).
-        assert!(
-            inc.version > 0,
-            "incremental_doc.version must be > 0 after at least one edit; got {}",
-            inc.version
+            doc.current_parsed().is_none(),
+            "last-good AST cannot masquerade as current after a Full-sync violation"
         );
     }
     Ok(())
@@ -303,14 +281,10 @@ fn test_incremental_fallback_on_parse_error() -> Result<(), Box<dyn std::error::
                           "text": "my $x = 42;\n" }
     }))?;
 
-    // Replace with broken syntax — must not panic; document must survive
+    // Replace with broken syntax via full-document transfer — must not panic.
     server.handle_did_change(Some(json!({
         "textDocument": { "uri": uri, "version": 2 },
-        "contentChanges": [{
-            "range": { "start": { "line": 0, "character": 0 },
-                       "end":   { "line": 0, "character": 11 } },
-            "text": "sub { !!!"
-        }]
+        "contentChanges": [{ "text": "sub { !!!" }]
     })))?;
 
     assert!(server.documents.lock().contains_key(uri), "document must survive broken syntax");
@@ -339,10 +313,11 @@ fn test_incremental_empty_content_changes() -> Result<(), Box<dyn std::error::Er
 
     let docs = server.documents.lock();
     let doc = docs.get(uri).ok_or("document not stored after empty change")?;
-    // Text must be unchanged
     assert_eq!(doc.text, text, "empty contentChanges must not modify document text");
-    // incremental_doc must still be present (reinit from same text is fine)
-    assert!(doc.incremental_doc.is_some(), "incremental_doc must be present after no-op change");
+    assert!(
+        doc.full_sync_required(),
+        "empty contentChanges is a Full-sync violation, not a silent no-op"
+    );
     Ok(())
 }
 
@@ -368,6 +343,206 @@ fn test_did_change_ranged_edit_ignored_for_unopened_document()
     Ok(())
 }
 
+#[test]
+fn test_did_change_ranged_edit_does_not_mutate_open_document()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = LspServer::new();
+    let uri = "file:///opened-full-sync.pl";
+    server.did_open(json!({
+        "textDocument": {
+            "uri": uri,
+            "languageId": "perl",
+            "version": 1,
+            "text": "sub old_symbol { 1 }\n"
+        }
+    }))?;
+
+    server.handle_did_change(Some(json!({
+        "textDocument": { "uri": uri, "version": 2 },
+        "contentChanges": [{
+            "range": {
+                "start": { "line": 0, "character": 4 },
+                "end": { "line": 0, "character": 14 }
+            },
+            "text": "new_symbol"
+        }]
+    })))?;
+
+    let docs = server.documents.lock();
+    let doc = docs.get(uri).ok_or("open document must remain stored")?;
+    assert_eq!(doc.text, "sub old_symbol { 1 }\n");
+    assert_eq!(
+        doc.version, 2,
+        "violation must record the observed client version without accepting rejected text"
+    );
+    assert!(doc.full_sync_required());
+    assert!(doc.current_parsed().is_none());
+    Ok(())
+}
+
+#[test]
+fn test_ranged_violation_clears_published_diagnostics_and_symbols()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = LspServer::new();
+    let uri = "file:///desync-clear.pl";
+    server.did_open(json!({
+        "textDocument": {
+            "uri": uri,
+            "languageId": "perl",
+            "version": 1,
+            "text": "sub old_name { 1 }\n"
+        }
+    }))?;
+    assert!(
+        server.symbol_index.lock().search_prefix("old_").contains(&"old_name".to_string()),
+        "didOpen must publish document symbols"
+    );
+    let opened = server.test_last_committed_push_diagnostic(uri).ok_or("didOpen diagnostics")?;
+    assert_eq!(opened.0, 1, "didOpen push diagnostics commit at generation 1");
+
+    server.handle_did_change(Some(json!({
+        "textDocument": { "uri": uri, "version": 2 },
+        "contentChanges": [{
+            "range": {
+                "start": { "line": 0, "character": 4 },
+                "end": { "line": 0, "character": 12 }
+            },
+            "text": "renamed"
+        }]
+    })))?;
+
+    assert!(
+        server.symbol_index.lock().search_prefix("old_").is_empty(),
+        "Full-sync violation must clear cached document symbols"
+    );
+    let cleared = server
+        .test_last_committed_push_diagnostic(uri)
+        .ok_or("violation must commit a diagnostics clear")?;
+    let desync_gen = {
+        let docs = server.documents.lock();
+        docs.get(uri).ok_or("desync document")?.current_generation()
+    };
+    assert_eq!(
+        cleared.0, desync_gen,
+        "diagnostics clear must use the post-desync generation, not the pre-bump identity"
+    );
+    assert!(cleared.1 > opened.1, "clear must be a newer committed sequence than didOpen");
+    Ok(())
+}
+
+#[test]
+fn test_full_document_did_change_recovers_after_ranged_violation()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = LspServer::new();
+    let uri = "file:///recover-full-sync.pl";
+    server.did_open(json!({
+        "textDocument": {
+            "uri": uri,
+            "languageId": "perl",
+            "version": 1,
+            "text": "sub old_symbol { 1 }\n"
+        }
+    }))?;
+    server.handle_did_change(Some(json!({
+        "textDocument": { "uri": uri, "version": 2 },
+        "contentChanges": [{
+            "range": {
+                "start": { "line": 0, "character": 0 },
+                "end": { "line": 0, "character": 1 }
+            },
+            "text": "x"
+        }]
+    })))?;
+    server.handle_did_change(Some(json!({
+        "textDocument": { "uri": uri, "version": 3 },
+        "contentChanges": [{ "text": "sub new_symbol { 1 }\n" }]
+    })))?;
+
+    let docs = server.documents.lock();
+    let doc = docs.get(uri).ok_or("recovered document must remain stored")?;
+    assert_eq!(doc.text, "sub new_symbol { 1 }\n");
+    assert_eq!(doc.version, 3);
+    assert!(!doc.full_sync_required());
+    assert!(doc.current_parsed().is_some_and(|p| p.ast().is_some()));
+    Ok(())
+}
+
+#[test]
+fn test_delayed_older_full_replacement_does_not_recover_after_newer_violation()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = LspServer::new();
+    let uri = "file:///delayed-stale-recovery.pl";
+    server.did_open(json!({
+        "textDocument": {
+            "uri": uri,
+            "languageId": "perl",
+            "version": 1,
+            "text": "sub last_good { 1 }\n"
+        }
+    }))?;
+    let opened_gen = {
+        let docs = server.documents.lock();
+        docs.get(uri).ok_or("opened document")?.current_generation()
+    };
+
+    server.handle_did_change(Some(json!({
+        "textDocument": { "uri": uri, "version": 3 },
+        "contentChanges": [{
+            "range": {
+                "start": { "line": 0, "character": 0 },
+                "end": { "line": 0, "character": 1 }
+            },
+            "text": "x"
+        }]
+    })))?;
+
+    let desync_gen = {
+        let docs = server.documents.lock();
+        let doc = docs.get(uri).ok_or("desync document")?;
+        assert_eq!(doc.text, "sub last_good { 1 }\n");
+        assert_eq!(doc.version, 3);
+        assert!(doc.full_sync_required());
+        let desync_generation = doc.current_generation();
+        assert!(desync_generation > opened_gen, "violation must advance generation");
+        desync_generation
+    };
+    let (state, ready_gen, _) = server
+        .test_active_document_readiness(&server.normalize_uri_key(uri))
+        .ok_or("desync must keep a readiness entry")?;
+    assert_eq!(
+        state, "unavailable_terminal",
+        "predecessor parser-core readiness cannot remain current after a Full-sync violation"
+    );
+    assert_eq!(ready_gen, desync_gen);
+
+    server.handle_did_change(Some(json!({
+        "textDocument": { "uri": uri, "version": 2 },
+        "contentChanges": [{ "text": "sub stale { 0 }\n" }]
+    })))?;
+
+    {
+        let docs = server.documents.lock();
+        let doc = docs.get(uri).ok_or("document after delayed v2")?;
+        assert_eq!(doc.text, "sub last_good { 1 }\n");
+        assert_eq!(doc.version, 3);
+        assert!(doc.full_sync_required());
+        assert!(doc.current_parsed().is_none());
+    }
+
+    server.handle_did_change(Some(json!({
+        "textDocument": { "uri": uri, "version": 4 },
+        "contentChanges": [{ "text": "sub recovered { 1 }\n" }]
+    })))?;
+
+    let docs = server.documents.lock();
+    let doc = docs.get(uri).ok_or("recovered document")?;
+    assert_eq!(doc.text, "sub recovered { 1 }\n");
+    assert_eq!(doc.version, 4);
+    assert!(!doc.full_sync_required());
+    assert!(doc.current_parsed().is_some_and(|p| p.ast().is_some()));
+    Ok(())
+}
+
 /// Verify that an edit at the very end of the document (zero-length insertion) is handled.
 /// This is the most common case for autocompletion triggers.
 #[cfg(feature = "incremental")]
@@ -382,16 +557,10 @@ fn test_incremental_insert_at_end_of_document() -> Result<(), Box<dyn std::error
         "textDocument": { "uri": uri, "languageId": "perl", "version": 1, "text": text }
     }))?;
 
-    // Insert a new line at the end (line 1, char 0 — past the only line)
+    // Insert a new line via full-document replacement.
     server.handle_did_change(Some(json!({
         "textDocument": { "uri": uri, "version": 2 },
-        "contentChanges": [{
-            "range": {
-                "start": { "line": 1, "character": 0 },
-                "end":   { "line": 1, "character": 0 }
-            },
-            "text": "my $y = 2;\n"
-        }]
+        "contentChanges": [{ "text": "my $x = 1;\nmy $y = 2;\n" }]
     })))?;
 
     let docs = server.documents.lock();
@@ -419,16 +588,10 @@ fn test_incremental_utf16_multi_byte_character_positions() -> Result<(), Box<dyn
         "textDocument": { "uri": uri, "languageId": "perl", "version": 1, "text": text }
     }))?;
 
-    // Replace the emoji (UTF-16: start=12, end=14) with the ASCII "xx"
+    // Replace the emoji via full-document transfer (v0.18 envelope).
     server.handle_did_change(Some(json!({
         "textDocument": { "uri": uri, "version": 2 },
-        "contentChanges": [{
-            "range": {
-                "start": { "line": 0, "character": 12 },
-                "end":   { "line": 0, "character": 14 }
-            },
-            "text": "xx"
-        }]
+        "contentChanges": [{ "text": "my $emoji = xx;\n" }]
     })))?;
 
     let docs = server.documents.lock();
@@ -441,7 +604,7 @@ fn test_incremental_utf16_multi_byte_character_positions() -> Result<(), Box<dyn
 }
 
 /// Verify that the `incremental_state` fast-path field is initialized on
-/// `didOpen` and survives a ranged `didChange` (Gap A wiring, issue #2080).
+/// `didOpen` and survives a full-document `didChange` (Gap A wiring, issue #2080).
 ///
 /// This test fails before the `IncrementalState` field is wired into
 /// `DocumentState` and confirmed after it is. It also verifies that the
@@ -478,20 +641,12 @@ fn test_incremental_state_wired_into_did_change() -> Result<(), Box<dyn std::err
         );
     }
 
-    // Edit the last line: change `my $var_29 = 29;` -> `my $var_29 = 999;`
-    // A checkpoint before the edit site means we should reparse < full doc.
-    let edit_line = lines.len() as u64 - 1;
+    // Edit the last line via full-document replacement.
     lines[29] = "my $var_29 = 999;".to_string();
 
     server.handle_did_change(Some(json!({
         "textDocument": { "uri": uri, "version": 2 },
-        "contentChanges": [{
-            "range": {
-                "start": { "line": edit_line, "character": 13 },
-                "end":   { "line": edit_line, "character": 15 }
-            },
-            "text": "999"
-        }]
+        "contentChanges": [{ "text": lines.join("\n") + "\n" }]
     })))?;
 
     // After didChange, incremental_state must survive and source must be updated.
@@ -500,7 +655,7 @@ fn test_incremental_state_wired_into_did_change() -> Result<(), Box<dyn std::err
         let doc = docs.get(uri).ok_or("document not stored after didChange")?;
         assert!(
             doc.incremental_state.is_some(),
-            "incremental_state must survive a ranged edit (Gap A wiring absent)"
+            "incremental_state must survive a full-document edit (Gap A wiring absent)"
         );
         let state = doc.incremental_state.as_ref().unwrap();
         assert!(
@@ -549,16 +704,10 @@ fn test_incremental_state_off_by_default_on_did_change() -> Result<(), Box<dyn s
         );
     }
 
-    // A ranged edit: replace "42" with "43".
+    // A full-document replacement: "42" becomes "43".
     server.handle_did_change(Some(json!({
         "textDocument": { "uri": uri, "version": 2 },
-        "contentChanges": [{
-            "range": {
-                "start": { "line": 0, "character": 8 },
-                "end":   { "line": 0, "character": 10 }
-            },
-            "text": "43"
-        }]
+        "contentChanges": [{ "text": "my $x = 43;\nmy $y = 99;\n" }]
     })))?;
 
     // After didChange: incremental fields stay None, but the committed AST and
@@ -568,17 +717,17 @@ fn test_incremental_state_off_by_default_on_did_change() -> Result<(), Box<dyn s
         let doc = docs.get(uri).ok_or("document not stored after didChange")?;
         assert!(
             doc.incremental_doc.is_none(),
-            "incremental_doc must stay None by default after a ranged edit"
+            "incremental_doc must stay None by default after a full-document edit"
         );
         assert!(
             doc.incremental_state.is_none(),
-            "incremental_state must stay None by default after a ranged edit"
+            "incremental_state must stay None by default after a full-document edit"
         );
         assert!(doc.text.contains("43"), "document text must be updated by the full parse path");
         assert!(!doc.text.contains("42"), "old value must be gone from committed text");
         assert!(
             doc.current_parsed().is_some_and(|p| p.ast().is_some()),
-            "committed AST must be present after the ranged edit"
+            "committed AST must be present after the full-document edit"
         );
     }
 
@@ -874,6 +1023,19 @@ fn test_diagnostics_churn_drains_retained_state_after_close_delete()
                 "textDocument": { "uri": uri, "version": version },
                 "contentChanges": [{ "text": text }]
             })))?;
+            // Observe the armed debounce before the synchronous publish below:
+            // that publish runs the full analysis stack and can exceed the
+            // 60ms debounce window on slow platforms (Windows file IO), so a
+            // snapshot taken after it systematically sees an already-fired
+            // worker there. Poll briefly for the worker thread to record the
+            // schedule, mirroring the drain poll after close/delete below.
+            for _ in 0..500 {
+                if server.runtime_pressure_snapshot().diagnostic_debounce_pending_uris > 0 {
+                    saw_debounce_pressure = true;
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
             server.publish_diagnostics(&uri);
 
             let pressure = server.runtime_pressure_snapshot();
@@ -1155,71 +1317,72 @@ fn stale_side_effects_never_commit_through_the_real_worker_after_a_newer_edit()
     }
     let _release_guard = ReleaseOnDrop(&side_effect_barrier);
 
-    // Edit N (generation 1): arm the side-effect barrier so the worker
+    // Edit N (generation 2 -- didOpen now accepts its first snapshot at
+    // generation 1, #11305): arm the side-effect barrier so the worker
     // pauses immediately after N's publish succeeds, before its side
     // effects (symbol reindex) commit.
-    side_effect_barrier.arm(&normalized_uri, 1);
-    server.test_apply_did_change(uri, "sub gen1_symbol_must_never_be_indexed { 1 }\n", 2)?;
+    side_effect_barrier.arm(&normalized_uri, 2);
+    server.test_apply_did_change(uri, "sub gen2_symbol_must_never_be_indexed { 1 }\n", 2)?;
     side_effect_barrier.wait_until_paused();
 
-    // Publish already landed -- current_parsed() must be generation 1.
+    // Publish already landed -- current_parsed() must be generation 2.
     {
         let docs = server.documents.lock();
         let doc = must_some(docs.get(&normalized_uri));
         let current = must_some(doc.current_parsed());
-        assert_eq!(current.generation(), 1);
+        assert_eq!(current.generation(), 2);
     }
     // But its side effects have not committed -- the symbol index must
     // still be exactly as it was after the initial didOpen.
-    assert!(server.symbol_index.lock().search_prefix("gen1_symbol").is_empty());
+    assert!(server.symbol_index.lock().search_prefix("gen2_symbol").is_empty());
 
-    // Edit N+1 (generation 2) commits for REAL while N's side effects are
+    // Edit N+1 (generation 3) commits for REAL while N's side effects are
     // still paused. `didChange` applies the text and bumps the generation
     // counter SYNCHRONOUSLY (that part never waits on the worker) and only
     // then enqueues its own parse job -- which, per the per-URI
-    // single-flight design, cannot be dequeued until generation 1's
+    // single-flight design, cannot be dequeued until generation 2's
     // `process_job` call fully returns (i.e. after its side effects
     // resolve, whether they commit or are skipped). So at this point the
-    // TEXT/generation for this URI is already 2, but generation 2's own
+    // TEXT/generation for this URI is already 3, but generation 3's own
     // parse+side-effects have NOT run yet -- this is exactly the coordinator's
-    // race: "the document's generation moved on" without generation 1's
+    // race: "the document's generation moved on" without generation 2's
     // deferred side effects having had a chance to notice yet.
-    server.test_apply_did_change(uri, "sub gen2_symbol_is_the_real_current_fact { 1 }\n", 3)?;
+    server.test_apply_did_change(uri, "sub gen3_symbol_is_the_real_current_fact { 1 }\n", 3)?;
     assert_eq!(
         server.test_document_generation(uri),
-        Some(2),
+        Some(3),
         "the text/generation commit for edit N+1 must land immediately, independent of the paused worker"
     );
     assert!(
-        server.symbol_index.lock().search_prefix("gen2_symbol").is_empty(),
-        "generation 2's parse has not run yet (its job is queued behind generation 1's still-in-flight one)"
+        server.symbol_index.lock().search_prefix("gen3_symbol").is_empty(),
+        "generation 3's parse has not run yet (its job is queued behind generation 2's still-in-flight one)"
     );
 
-    // Release generation 1's paused side effects. Its callback
+    // Release generation 2's paused side effects. Its callback
     // (`run_post_parse_side_effects`) must now detect staleness (the
-    // document is at generation 2, not 1) and skip the reindex entirely --
-    // then, per the per-URI serialization, generation 2's own queued job is
+    // document is at generation 3, not 2) and skip the reindex entirely --
+    // then, per the per-URI serialization, generation 3's own queued job is
     // picked up and runs to completion (publish + side effects) once
-    // generation 1's `process_job` call returns.
+    // generation 2's `process_job` call returns.
     side_effect_barrier.release();
 
     assert!(
         server.test_wait_for_parse_worker_settled(uri, Duration::from_secs(5)),
-        "generation 1's released side-effect callback must finish running"
+        "generation 2's released side-effect callback must finish running"
     );
     assert!(
-        server.symbol_index.lock().search_prefix("gen1_symbol").is_empty(),
-        "generation 1's side effects must NEVER reach the symbol index once superseded -- \
+        server.symbol_index.lock().search_prefix("gen2_symbol").is_empty(),
+        "generation 2's side effects must NEVER reach the symbol index once superseded -- \
          this is the publication-validity != side-effect-validity invariant"
     );
-    // The document's real current fact (generation 2) must still be intact.
+    // The document's real current fact (generation 3) must still be intact.
     assert!(
         server
             .symbol_index
             .lock()
-            .search_prefix("gen2_symbol")
-            .contains(&"gen2_symbol_is_the_real_current_fact".to_string()),
-        "generation 1's rejected side effects must not have clobbered generation 2's index entry"
+            .search_prefix("gen3_symbol")
+            .contains(&"gen3_symbol_is_the_real_current_fact".to_string()),
+        "generation 2's rejected side effects must not have clobbered generation 3's index entry"
     );
 
     Ok(())
@@ -1248,7 +1411,7 @@ fn test_did_close_removes_virtual_file_from_workspace_index()
         }
     }))?;
     if let Some(coordinator) = server.coordinator() {
-        coordinator.index().index_file(url.clone(), source.to_string())?;
+        coordinator.index().index_initial_file(url.clone(), source.to_string())?;
         assert!(
             !coordinator.index().file_symbols(&uri).is_empty(),
             "workspace index must hold symbols while virtual document is open"
@@ -1293,7 +1456,7 @@ fn test_did_close_preserves_workspace_index_for_existing_file()
         }
     }))?;
     if let Some(coordinator) = server.coordinator() {
-        coordinator.index().index_file(url.clone(), source.to_string())?;
+        coordinator.index().index_initial_file(url.clone(), source.to_string())?;
         assert!(
             !coordinator.index().file_symbols(&uri).is_empty(),
             "workspace index setup must hold symbols before close"
@@ -1362,8 +1525,12 @@ fn e2e_did_open_publishes_active_document_ready_after_index_commit()
         "active-document readiness must identify the opened URI; got: {text:?}"
     );
     assert!(
-        text.contains(r#""generation":0"#),
-        "active-document readiness must identify the opened generation; got: {text:?}"
+        text.contains(r#""generation":1"#),
+        "active-document readiness must identify the opened first accepted generation (#11305); got: {text:?}"
+    );
+    assert!(
+        !text.contains(r#""generation":0"#),
+        "active-document readiness must never report the generation-zero sentinel; got: {text:?}"
     );
     Ok(())
 }
@@ -1524,6 +1691,579 @@ fn test_did_save_text_preserves_client_version() -> Result<(), Box<dyn std::erro
     Ok(())
 }
 
+/// An admitted full replacement that exceeds the per-line bound must not be
+/// committed. `didChange` is a notification, so the rejection is a
+/// synchronization loss: predecessor text stays stored as evidence, current
+/// answers fail closed, and recovery requires a later acceptable replacement.
+#[test]
+fn test_did_change_rejects_overlong_result_before_commit() -> Result<(), Box<dyn std::error::Error>>
+{
+    let uri = "file:///test_did_change_line_bound.pl";
+    let overlong = "x".repeat(100_001);
+
+    let full = json!({"text": overlong.clone()});
+
+    let server = LspServer::new();
+    server.did_open(json!({
+        "textDocument": {
+            "uri": uri,
+            "languageId": "perl",
+            "version": 1,
+            "text": "short\n"
+        }
+    }))?;
+    let ranged = server.handle_did_change(Some(json!({
+        "textDocument": {"uri": uri, "version": 2},
+        "contentChanges": [{
+            "range": {
+                "start": {"line": 0, "character": 0},
+                "end": {"line": 0, "character": 5}
+            },
+            "text": overlong.clone()
+        }]
+    })));
+    assert!(ranged.is_ok(), "ranged didChange is a notification violation, not InvalidParams");
+    {
+        let document = server.documents.lock().get(uri).ok_or("document retained")?.clone();
+        assert_eq!(document.text, "short\n");
+        assert!(document.full_sync_required());
+    }
+
+    let server = LspServer::new();
+    server.did_open(json!({
+        "textDocument": {
+            "uri": uri,
+            "languageId": "perl",
+            "version": 1,
+            "text": "short\n"
+        }
+    }))?;
+    let normalized = server.normalize_uri_key(uri);
+    let opened_generation = {
+        let document = server.documents.lock().get(uri).ok_or("open document")?.clone();
+        assert!(!document.full_sync_required());
+        assert!(document.current_parsed().is_some(), "didOpen must publish a current parse");
+        document.current_generation()
+    };
+    let result = server.handle_did_change(Some(json!({
+        "textDocument": {"uri": uri, "version": 2},
+        "contentChanges": [full]
+    })));
+    assert!(
+        result.is_ok(),
+        "overlong full didChange is a notification sync loss, not InvalidParams: {result:?}"
+    );
+    let document = server
+        .documents
+        .lock()
+        .get(uri)
+        .ok_or("rejected didChange must retain the document")?
+        .clone();
+    assert_eq!(document.text, "short\n", "rejected full didChange must not commit");
+    assert_eq!(
+        document.version, 2,
+        "overlong replacement must watermark the observed client version"
+    );
+    assert!(
+        document.current_generation() > opened_generation,
+        "overlong replacement must advance generation so predecessor facts are not current"
+    );
+    assert!(
+        document.full_sync_required(),
+        "unstorable admitted replacement must fail-close current answers"
+    );
+    assert!(
+        document.current_parsed().is_none(),
+        "overlong replacement must not keep the predecessor parse current"
+    );
+    let (state, ready_gen, _) = server
+        .test_active_document_readiness(&normalized)
+        .ok_or("overlong replacement must keep a readiness entry")?;
+    assert_eq!(
+        state, "unavailable_terminal",
+        "predecessor parser-core readiness cannot remain current after an unstorable replacement"
+    );
+    assert_eq!(ready_gen, document.current_generation());
+
+    Ok(())
+}
+
+/// Production `textDocument/didChange` has no id, so even a former InvalidParams
+/// return would be suppressed. Prove the notification dispatch path fail-closes
+/// stale text, AST, diagnostics, symbols, and edit-producing answers.
+#[test]
+fn test_did_change_overlong_full_replacement_fails_closed_on_notification_path()
+-> Result<(), Box<dyn std::error::Error>> {
+    let uri = "file:///overlong-notification-desync.pl";
+    let predecessor = "sub old_name { 1 }\n";
+    let overlong = "x".repeat(100_001);
+    let recovered = "sub recovered_name { 2 }\n";
+
+    let server = LspServer::new();
+    server.test_mark_initialize_session_accepted();
+    server.did_open(json!({
+        "textDocument": {
+            "uri": uri,
+            "languageId": "perl",
+            "version": 1,
+            "text": predecessor
+        }
+    }))?;
+    assert!(
+        server.symbol_index.lock().search_prefix("old_").contains(&"old_name".to_string()),
+        "didOpen must publish document symbols"
+    );
+    let opened = server.test_last_committed_push_diagnostic(uri).ok_or("didOpen diagnostics")?;
+    assert_eq!(opened.0, 1, "didOpen push diagnostics commit at generation 1");
+    assert!(
+        matches!(
+            server.lookup_user_answer_text(uri),
+            crate::runtime::document_access::UserAnswerTextLookup::Current(_)
+        ),
+        "open document must expose current user-answer text"
+    );
+
+    let response = server.handle_request(JsonRpcRequest {
+        _jsonrpc: "2.0".to_string(),
+        id: None,
+        method: "textDocument/didChange".to_string(),
+        params: Some(json!({
+            "textDocument": { "uri": uri, "version": 2 },
+            "contentChanges": [{ "text": overlong }]
+        })),
+    });
+    assert!(
+        response.is_none(),
+        "didChange notification must not answer, including after an unstorable replacement"
+    );
+
+    let document = server.documents.lock().get(uri).ok_or("document retained")?.clone();
+    assert_eq!(
+        document.text, predecessor,
+        "overlong notification must not commit replacement text"
+    );
+    assert_eq!(document.version, 2);
+    assert!(document.full_sync_required());
+    assert!(document.current_parsed().is_none());
+    assert!(
+        matches!(
+            server.lookup_user_answer_text(uri),
+            crate::runtime::document_access::UserAnswerTextLookup::Unavailable
+        ),
+        "predecessor text must not remain a current user answer"
+    );
+    assert!(
+        server.symbol_index.lock().search_prefix("old_").is_empty(),
+        "overlong notification must clear cached document symbols"
+    );
+    let cleared = server
+        .test_last_committed_push_diagnostic(uri)
+        .ok_or("overlong notification must commit a diagnostics clear")?;
+    assert_eq!(
+        cleared.0,
+        document.current_generation(),
+        "diagnostics clear must use the post-desync generation"
+    );
+    assert!(cleared.1 > opened.1, "clear must be a newer committed sequence than didOpen");
+
+    let hover = server.handle_hover(Some(json!({
+        "textDocument": { "uri": uri },
+        "position": { "line": 0, "character": 4 }
+    })))?;
+    assert!(
+        hover.as_ref().is_none_or(Value::is_null),
+        "hover must not publish predecessor text after an unstorable replacement: {hover:?}"
+    );
+
+    let format_error = server
+        .handle_formatting(Some(json!({
+            "textDocument": { "uri": uri, "version": 2 },
+            "options": { "tabSize": 4, "insertSpaces": true },
+        })))
+        .err()
+        .ok_or("desynchronized formatting must fail closed")?;
+    assert_eq!(format_error.code, CONTENT_MODIFIED);
+
+    server.handle_did_change(Some(json!({
+        "textDocument": { "uri": uri, "version": 3 },
+        "contentChanges": [{ "text": recovered }]
+    })))?;
+    let recovered_doc = server.documents.lock().get(uri).ok_or("recovered document")?.clone();
+    assert_eq!(recovered_doc.text, recovered);
+    assert!(!recovered_doc.full_sync_required());
+    assert!(recovered_doc.current_parsed().is_some());
+    assert!(
+        matches!(
+            server.lookup_user_answer_text(uri),
+            crate::runtime::document_access::UserAnswerTextLookup::Current(_)
+        ),
+        "accepted full replacement must restore current user-answer text"
+    );
+    Ok(())
+}
+
+/// Missing, null, or non-array `contentChanges` on an open document is the same
+/// Full-sync violation as an empty array: predecessor text stays current, and
+/// answers fail closed until a later accepted full replacement.
+#[test]
+fn test_did_change_malformed_outer_content_changes_fail_close_open_document()
+-> Result<(), Box<dyn std::error::Error>> {
+    let shapes = [
+        ("missing", None),
+        ("null", Some(json!(null))),
+        ("object", Some(json!({}))),
+        ("string", Some(json!("not-an-array"))),
+        ("number", Some(json!(1))),
+    ];
+    for (label, outer) in shapes {
+        let server = LspServer::new();
+        let uri = format!("file:///malformed-outer-{label}.pl");
+        let original = "sub predecessor_link { 1 }\n";
+        server.did_open(json!({
+            "textDocument": {
+                "uri": uri,
+                "languageId": "perl",
+                "version": 1,
+                "text": original
+            }
+        }))?;
+        let opened_generation = {
+            let document = server.documents.lock().get(&uri).ok_or("open document")?.clone();
+            assert!(document.current_parsed().is_some());
+            document.current_generation()
+        };
+
+        let mut params = json!({
+            "textDocument": { "uri": uri, "version": 2 }
+        });
+        if let Some(changes) = outer {
+            params["contentChanges"] = changes;
+        }
+        server.handle_did_change(Some(params))?;
+
+        let document = server.documents.lock().get(&uri).ok_or("document retained")?.clone();
+        assert_eq!(document.text, original, "{label}: predecessor text must remain current");
+        assert_eq!(document.version, 2, "{label}: observed version still watermarks");
+        assert!(
+            document.full_sync_required(),
+            "{label}: malformed outer contentChanges must fail-close"
+        );
+        assert!(
+            document.current_parsed().is_none(),
+            "{label}: predecessor parse must not remain a current answer"
+        );
+        assert!(
+            document.current_generation() > opened_generation,
+            "{label}: violation must advance generation"
+        );
+        let (state, ready_gen, _) = server
+            .test_active_document_readiness(&server.normalize_uri_key(&uri))
+            .ok_or("malformed outer must keep a readiness entry")?;
+        assert_eq!(
+            state, "unavailable_terminal",
+            "{label}: predecessor parser-core readiness cannot remain current"
+        );
+        assert_eq!(ready_gen, document.current_generation());
+    }
+    Ok(())
+}
+
+/// Unopened documents keep the ignore-and-wait-for-didOpen policy when the
+/// outer `contentChanges` field is missing or the wrong JSON type.
+#[test]
+fn test_did_change_malformed_outer_content_changes_ignored_for_unopened_document()
+-> Result<(), Box<dyn std::error::Error>> {
+    let shapes = [
+        json!({"textDocument": {"uri": "file:///unopened-missing.pl", "version": 1}}),
+        json!({
+            "textDocument": {"uri": "file:///unopened-null.pl", "version": 1},
+            "contentChanges": null
+        }),
+        json!({
+            "textDocument": {"uri": "file:///unopened-object.pl", "version": 1},
+            "contentChanges": {}
+        }),
+    ];
+    for params in shapes {
+        let server = LspServer::new();
+        let uri = params["textDocument"]["uri"].as_str().ok_or("uri")?;
+        server.handle_did_change(Some(params.clone()))?;
+        let docs = server.documents.lock();
+        assert!(
+            docs.get(uri).is_none(),
+            "malformed outer didChange for unopened docs must be ignored"
+        );
+    }
+    Ok(())
+}
+
+/// didSave text reconciliation uses the same full-replacement path as didChange.
+/// `didSave` is a notification, so an unstorable line is not InvalidParams: the
+/// text is not committed and current answers fail closed.
+#[test]
+fn test_did_save_rejects_overlong_text_before_commit() -> Result<(), Box<dyn std::error::Error>> {
+    let server = LspServer::new();
+    let uri = "file:///test_did_save_line_bound.pl";
+    let overlong = "x".repeat(100_001);
+
+    server.did_open(json!({
+        "textDocument": {
+            "uri": uri,
+            "languageId": "perl",
+            "version": 1,
+            "text": "saved\n"
+        }
+    }))?;
+    let opened_generation = {
+        let documents = server.documents.lock();
+        documents.get(uri).ok_or("didOpen must retain the document")?.current_generation()
+    };
+
+    let result = server.handle_did_save(Some(json!({
+        "textDocument": {"uri": uri, "version": 1},
+        "text": overlong
+    })));
+    assert!(
+        result.is_ok(),
+        "overlong didSave is a notification sync loss, not InvalidParams: {result:?}"
+    );
+
+    let document = server
+        .documents
+        .lock()
+        .get(uri)
+        .ok_or("rejected didSave must retain the document")?
+        .clone();
+    assert_eq!(document.text, "saved\n", "rejected didSave must not commit the text");
+    assert_eq!(document.version, 1, "didSave must preserve the already-observed client version");
+    assert!(
+        document.current_generation() > opened_generation,
+        "overlong didSave must advance generation so predecessor facts are not current"
+    );
+    assert!(
+        document.full_sync_required(),
+        "unstorable didSave replacement must fail-close current answers"
+    );
+    assert!(
+        document.current_parsed().is_none(),
+        "overlong didSave must not keep the predecessor parse current"
+    );
+    assert!(
+        matches!(
+            server.lookup_user_answer_text(uri),
+            crate::runtime::document_access::UserAnswerTextLookup::Unavailable
+        ),
+        "predecessor text must not remain a current user answer after overlong didSave"
+    );
+    Ok(())
+}
+
+/// A Full-sync violation keeps predecessor text as evidence. A later didSave
+/// that supplies that same text is still a complete synchronized snapshot and
+/// must recover providers rather than taking the identical-text no-op.
+#[test]
+fn test_did_save_identical_text_recovers_after_ranged_violation()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = LspServer::new();
+    let uri = "file:///identical-save-recovery.pl";
+    let predecessor = "sub last_good { 1 }\n";
+
+    server.did_open(json!({
+        "textDocument": {
+            "uri": uri,
+            "languageId": "perl",
+            "version": 1,
+            "text": predecessor
+        }
+    }))?;
+    {
+        let documents = server.documents.lock();
+        let doc = documents.get(uri).ok_or("didOpen must retain the document")?;
+        assert!(!doc.full_sync_required());
+        assert!(doc.current_parsed().is_some(), "didOpen must publish a current parse");
+    }
+    assert!(
+        matches!(
+            server.lookup_user_answer_text(uri),
+            crate::runtime::document_access::UserAnswerTextLookup::Current(_)
+        ),
+        "open document must have a current user-answer snapshot"
+    );
+
+    server.handle_did_change(Some(json!({
+        "textDocument": { "uri": uri, "version": 2 },
+        "contentChanges": [{
+            "range": {
+                "start": { "line": 0, "character": 0 },
+                "end": { "line": 0, "character": 1 }
+            },
+            "text": "x"
+        }]
+    })))?;
+    {
+        let documents = server.documents.lock();
+        let doc = documents.get(uri).ok_or("desynchronized document must remain stored")?;
+        assert_eq!(doc.text, predecessor);
+        assert!(doc.full_sync_required(), "ranged didChange must enter full-sync-required");
+    }
+    assert!(
+        matches!(
+            server.lookup_user_answer_text(uri),
+            crate::runtime::document_access::UserAnswerTextLookup::Unavailable
+        ),
+        "predecessor text must not remain a current user answer after a Full-sync violation"
+    );
+
+    server.handle_did_save(Some(json!({
+        "textDocument": { "uri": uri, "version": 2 },
+        "text": predecessor
+    })))?;
+
+    let recovered_generation = {
+        let documents = server.documents.lock();
+        let doc = documents.get(uri).ok_or("recovered document must remain stored")?;
+        assert_eq!(doc.text, predecessor);
+        assert!(
+            !doc.full_sync_required(),
+            "identical didSave includeText must recover after a Full-sync violation"
+        );
+        assert!(
+            doc.current_parsed().is_some(),
+            "identical didSave recovery must publish a current parse"
+        );
+        doc.current_generation()
+    };
+    assert!(
+        matches!(
+            server.lookup_user_answer_text(uri),
+            crate::runtime::document_access::UserAnswerTextLookup::Current(_)
+        ),
+        "identical didSave recovery must restore current user-answer text"
+    );
+
+    server.handle_did_save(Some(json!({
+        "textDocument": { "uri": uri, "version": 2 },
+        "text": predecessor
+    })))?;
+    {
+        let documents = server.documents.lock();
+        let doc = documents.get(uri).ok_or("already-synchronized document must remain stored")?;
+        assert!(!doc.full_sync_required());
+        assert_eq!(
+            doc.current_generation(),
+            recovered_generation,
+            "identical didSave must remain a no-op once the document is already synchronized"
+        );
+    }
+    Ok(())
+}
+
+/// A didSave without includeText cannot recover Full-sync. Generation-only
+/// index admission must not republish predecessor buffer text as current.
+#[test]
+fn test_did_save_without_text_does_not_republish_predecessor_after_ranged_violation()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = LspServer::new();
+    let uri = "file:///did-save-no-text-predecessor.pl";
+    let predecessor = "sub save_pred { 1 }\n";
+    let recovered = "sub save_recovered { 1 }\n";
+
+    server.did_open(json!({
+        "textDocument": {
+            "uri": uri,
+            "languageId": "perl",
+            "version": 1,
+            "text": predecessor
+        }
+    }))?;
+    server.test_index_live_file(uri, predecessor, 1).map_err(std::io::Error::other)?;
+    assert!(
+        !server.workspace_index_stale_for_document(uri),
+        "indexed didOpen must start with current workspace facts"
+    );
+    assert!(
+        matches!(
+            server.lookup_user_answer_text(uri),
+            crate::runtime::document_access::UserAnswerTextLookup::Current(_)
+        ),
+        "open document must have a current user-answer snapshot"
+    );
+
+    server.handle_did_change(Some(json!({
+        "textDocument": { "uri": uri, "version": 2 },
+        "contentChanges": [{
+            "range": {
+                "start": { "line": 0, "character": 0 },
+                "end": { "line": 0, "character": 1 }
+            },
+            "text": "x"
+        }]
+    })))?;
+    {
+        let documents = server.documents.lock();
+        let doc = documents.get(uri).ok_or("desynchronized document must remain stored")?;
+        assert_eq!(doc.text, predecessor);
+        assert!(doc.full_sync_required());
+    }
+    assert!(
+        server.workspace_index_stale_for_document(uri),
+        "Full-sync violation must stale workspace facts"
+    );
+    assert!(
+        matches!(
+            server.lookup_user_answer_text(uri),
+            crate::runtime::document_access::UserAnswerTextLookup::Unavailable
+        ),
+        "predecessor text must not remain a current user answer after a Full-sync violation"
+    );
+
+    server.handle_did_save(Some(json!({
+        "textDocument": { "uri": uri, "version": 2 }
+    })))?;
+    {
+        let documents = server.documents.lock();
+        let doc = documents.get(uri).ok_or("document must remain stored after textless didSave")?;
+        assert!(doc.full_sync_required(), "didSave without includeText must not recover Full-sync");
+        assert_eq!(doc.text, predecessor);
+    }
+    assert!(
+        matches!(
+            server.lookup_user_answer_text(uri),
+            crate::runtime::document_access::UserAnswerTextLookup::Unavailable
+        ),
+        "textless didSave must not restore current user-answer text from predecessor"
+    );
+    assert!(
+        server.workspace_index_stale_for_document(uri),
+        "generation-only didSave must not re-admit predecessor text into the workspace index"
+    );
+
+    server.handle_did_change(Some(json!({
+        "textDocument": { "uri": uri, "version": 3 },
+        "contentChanges": [{ "text": recovered }]
+    })))?;
+    let recovered_gen = {
+        let documents = server.documents.lock();
+        let doc = documents.get(uri).ok_or("recovered document")?;
+        assert!(!doc.full_sync_required());
+        assert_eq!(doc.text, recovered);
+        doc.current_generation()
+    };
+    server.test_index_live_file(uri, recovered, recovered_gen).map_err(std::io::Error::other)?;
+    assert!(
+        matches!(
+            server.lookup_user_answer_text(uri),
+            crate::runtime::document_access::UserAnswerTextLookup::Current(_)
+        ),
+        "accepted full replacement must restore current user-answer text"
+    );
+    assert!(
+        !server.workspace_index_stale_for_document(uri),
+        "full replacement plus index catch-up must restore current workspace facts"
+    );
+    Ok(())
+}
+
 /// A changed same-version didSave replacement must cancel streams that captured
 /// the previous buffer, including streams using the preserved client version.
 #[test]
@@ -1555,6 +2295,58 @@ fn test_did_save_text_cancels_same_version_streams() -> Result<(), Box<dyn std::
 
     assert!(session.is_cancelled(), "changed didSave text must cancel same-version streams");
     assert_eq!(server.stream_sessions().len(), 0, "cancelled same-version streams must be evicted");
+    Ok(())
+}
+
+/// The ordinary synchronous `didOpen` route must retain the complete parse
+/// outcome when the same recovery-bearing source is opened again. Before
+/// #11215, the AST-only cache returned an AST with an empty error list on the
+/// second open, upgrading the document to a false-clean result.
+#[test]
+fn repeated_did_open_of_recovery_bearing_source_preserves_parse_outcome()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = LspServer::new();
+    let uri = "file:///did_open_recovery_repeat.pl";
+    let malformed = "my $x = ;\n";
+    let mut first_outcome = None;
+
+    for version in [1, 2] {
+        server.did_open(json!({
+            "textDocument": {
+                "uri": uri,
+                "languageId": "perl",
+                "version": version,
+                "text": malformed
+            }
+        }))?;
+
+        let normalized_uri = server.normalize_uri_key(uri);
+        let documents = server.documents.lock();
+        let document = documents.get(&normalized_uri).ok_or("didOpen must store the document")?;
+        let snapshot = document
+            .current_parsed()
+            .ok_or("didOpen must synchronously publish a parse snapshot")?;
+        let outcome = (
+            snapshot.parse_errors().iter().map(|error| format!("{error:?}")).collect::<Vec<_>>(),
+            snapshot.degradation_tier(),
+            snapshot.ast().is_some(),
+        );
+        assert!(
+            !outcome.0.is_empty(),
+            "recovery-bearing source must retain parse diagnostics on didOpen version {version}"
+        );
+
+        if let Some(expected) = first_outcome.as_ref() {
+            assert_eq!(
+                expected, &outcome,
+                "reopening identical recovery-bearing source must preserve diagnostic \
+                 identity/order, degradation tier, and AST/result class"
+            );
+        } else {
+            first_outcome = Some(outcome);
+        }
+    }
+
     Ok(())
 }
 
@@ -1598,6 +2390,49 @@ fn test_cancelled_open_returns_ok_without_storing_document()
         "cancelled parse must not store document state"
     );
 
+    Ok(())
+}
+
+/// Configured file-limit guard (#8895): a document over `maxFileSizeBytes`
+/// must be stored WITHOUT a parse (Minimal tier, no AST) rather than being
+/// structurally rejected. The sink owns the configured limit precisely;
+/// structural admission deliberately carries only headroom above it.
+#[test]
+fn test_over_limit_document_is_stored_without_parse() -> Result<(), Box<dyn std::error::Error>> {
+    let server = LspServer::new();
+    let uri = "file:///over_limit.pl";
+    let limit = crate::state::max_file_size_bytes();
+    // Short lines so only the total-size guard is exercised; build exactly
+    // limit+1 bytes so the guard fires on the boundary byte.
+    let line = format!("{}\n", "a".repeat(79));
+    let mut text = line.repeat((limit + 1) / line.len());
+    let remainder = (limit + 1) % line.len();
+    if remainder > 0 {
+        text.push_str(&"a".repeat(remainder));
+    }
+    debug_assert_eq!(text.len(), limit + 1);
+    assert!(text.len() > limit, "test document must exceed the configured limit");
+
+    server.did_open(json!({
+        "textDocument": {
+            "uri": uri,
+            "languageId": "perl",
+            "version": 1,
+            "text": text
+        }
+    }))?;
+
+    let docs = server.documents.lock();
+    let doc = docs.get(uri).ok_or("over-limit document must still be stored")?;
+    assert_eq!(
+        doc.current_parsed().map_or(DegradationTier::Minimal, |p| p.degradation_tier()),
+        DegradationTier::Minimal,
+        "over-limit content should result in Minimal degradation tier"
+    );
+    assert!(
+        doc.current_parsed().is_none_or(|p| p.ast().is_none()),
+        "parser must not run on over-limit documents"
+    );
     Ok(())
 }
 
@@ -1863,6 +2698,93 @@ fn test_template_file_guard_parses_mojolicious_language_id()
     assert!(
         doc.current_parsed().is_some_and(|p| p.ast().is_some()),
         "template with mojolicious languageId should be parsed as Perl"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_parsed_template_recovers_after_ranged_violation() -> Result<(), Box<dyn std::error::Error>>
+{
+    let server = LspServer::new();
+    let uri = "file:///app/templates/recover.html.ep";
+    server.did_open(json!({
+        "textDocument": {
+            "uri": uri,
+            "languageId": "embedded-perl",
+            "version": 1,
+            "text": "<%= my $name = 'world'; %>"
+        }
+    }))?;
+    {
+        let docs = server.documents.lock();
+        let doc = docs.get(uri).ok_or("parsed template must be stored after didOpen")?;
+        assert!(
+            doc.current_parsed().is_some_and(|p| p.ast().is_some()),
+            "embedded-perl template must start parsed"
+        );
+    }
+
+    server.handle_did_change(Some(json!({
+        "textDocument": { "uri": uri, "version": 2 },
+        "contentChanges": [{
+            "range": {
+                "start": { "line": 0, "character": 0 },
+                "end": { "line": 0, "character": 1 }
+            },
+            "text": "x"
+        }]
+    })))?;
+    server.handle_did_change(Some(json!({
+        "textDocument": { "uri": uri, "version": 3 },
+        "contentChanges": [{ "text": "<%= my $title = 'recovered'; %>" }]
+    })))?;
+
+    let docs = server.documents.lock();
+    let doc = docs.get(uri).ok_or("recovered template must remain stored")?;
+    assert_eq!(doc.text, "<%= my $title = 'recovered'; %>");
+    assert!(!doc.full_sync_required());
+    assert!(
+        doc.current_parsed().is_some_and(|p| p.ast().is_some()),
+        "previously parsed Perl-mode template must reparse after full-document recovery"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_non_perl_template_stays_guarded_after_ranged_violation()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = LspServer::new();
+    let uri = "file:///app/templates/html-mode.html.ep";
+    server.did_open(json!({
+        "textDocument": {
+            "uri": uri,
+            "languageId": "html",
+            "version": 1,
+            "text": "<div><%= $name %></div>"
+        }
+    }))?;
+    server.handle_did_change(Some(json!({
+        "textDocument": { "uri": uri, "version": 2 },
+        "contentChanges": [{
+            "range": {
+                "start": { "line": 0, "character": 0 },
+                "end": { "line": 0, "character": 1 }
+            },
+            "text": "x"
+        }]
+    })))?;
+    server.handle_did_change(Some(json!({
+        "textDocument": { "uri": uri, "version": 3 },
+        "contentChanges": [{ "text": "<div><%= $title %></div>" }]
+    })))?;
+
+    let docs = server.documents.lock();
+    let doc = docs.get(uri).ok_or("html-mode template must remain stored")?;
+    assert_eq!(doc.text, "<div><%= $title %></div>");
+    assert!(!doc.full_sync_required());
+    assert!(
+        doc.current_parsed().is_none_or(|p| p.ast().is_none()),
+        "non-Perl languageId template must stay in the didOpen no-parse guard after recovery"
     );
     Ok(())
 }
@@ -2218,7 +3140,10 @@ fn rapid_burst_does_not_permanently_degrade_the_workspace_index_coordinator()
 
     let coordinator = must_some(server.coordinator());
     assert!(
-        !matches!(coordinator.state(), perl_parser::workspace_index::IndexState::Degraded { .. }),
+        !matches!(
+            coordinator.state(),
+            perl_workspace::workspace_index::IndexState::Degraded { .. }
+        ),
         "the coordinator must not remain Degraded once the burst has fully settled; got: {:?}",
         coordinator.state()
     );
@@ -2277,11 +3202,13 @@ fn panicking_new_lifecycle_job_still_credits_the_pending_parse_settle()
     let coordinator = must_some(server.coordinator());
     let baseline = coordinator.pending_parse_count();
 
-    // Arm the panic injector for generation 1, then apply the edit that
-    // both bumps to generation 1 AND establishes this as a NEW pending-parse
-    // lifecycle (nothing was queued/active for this URI a moment ago, so
-    // `enqueue` returns `true` and `notify_change` fires -- see #3660).
-    server.test_parse_worker_arm_panic(uri, 1);
+    // Arm the panic injector for generation 2 (the first edit's generation
+    // -- didOpen accepts its first snapshot at generation 1, #11305), then
+    // apply the edit that both bumps to generation 2 AND establishes this as
+    // a NEW pending-parse lifecycle (nothing was queued/active for this URI a
+    // moment ago, so `enqueue` returns `true` and `notify_change` fires --
+    // see #3660).
+    server.test_parse_worker_arm_panic(uri, 2);
     server.test_apply_did_change(uri, "my $aa = 1;\n", 2)?;
     assert!(
         must_some(server.parse_worker())
@@ -2302,7 +3229,10 @@ fn panicking_new_lifecycle_job_still_credits_the_pending_parse_settle()
         coordinator.pending_parse_count()
     );
     assert!(
-        !matches!(coordinator.state(), perl_parser::workspace_index::IndexState::Degraded { .. }),
+        !matches!(
+            coordinator.state(),
+            perl_workspace::workspace_index::IndexState::Degraded { .. }
+        ),
         "the coordinator must not be left Degraded by an uncredited panic; got: {:?}",
         coordinator.state()
     );
@@ -2344,13 +3274,15 @@ fn terminal_stale_reject_with_no_successor_still_credits_the_pending_parse_settl
     let coordinator = must_some(server.coordinator());
     let baseline = coordinator.pending_parse_count();
 
-    // Pause generation 1's job immediately before it attempts to publish --
+    // Pause generation 2's job (the first edit's generation -- didOpen
+    // accepts its first snapshot at generation 1, #11305) immediately before
+    // it attempts to publish --
     // this is the new-lifecycle enqueue, so `notify_change` fires once here.
-    server.test_parse_worker_arm_barrier(uri, 1);
+    server.test_parse_worker_arm_barrier(uri, 2);
     server.test_apply_did_change(uri, "my $aa = 1;\n", 2)?;
     server.test_parse_worker_wait_until_paused();
 
-    // Close + reopen while generation 1 is paused: `didOpen` is always
+    // Close + reopen while generation 2 is paused: `didOpen` is always
     // synchronous (never touches the async worker), so nothing gets
     // enqueued behind the paused job -- `pending` stays empty for this URI.
     // The reopened document gets a brand-new `DocumentState` with a fresh
@@ -2358,7 +3290,7 @@ fn terminal_stale_reject_with_no_successor_still_credits_the_pending_parse_settl
     server.handle_did_close(Some(json!({"textDocument": {"uri": uri}})))?;
     server.test_apply_did_open(uri, "my $reopened = 1;\n", 1)?;
 
-    // Release generation 1's paused job: `Arc::ptr_eq` against the fresh
+    // Release generation 2's paused job: `Arc::ptr_eq` against the fresh
     // document's generation handle fails, so `publish_parsed_if_current`'s
     // caller treats it as unpublished -- `jobs_rejected_stale` increments,
     // `on_published` never fires, and (with nothing queued behind it)
@@ -2384,9 +3316,320 @@ fn terminal_stale_reject_with_no_successor_still_credits_the_pending_parse_settl
         coordinator.pending_parse_count()
     );
     assert!(
-        !matches!(coordinator.state(), perl_parser::workspace_index::IndexState::Degraded { .. }),
+        !matches!(
+            coordinator.state(),
+            perl_workspace::workspace_index::IndexState::Degraded { .. }
+        ),
         "the coordinator must not be left Degraded by an uncredited terminal stale-reject; got: {:?}",
         coordinator.state()
+    );
+
+    Ok(())
+}
+
+// #11305 (SRC-03) open/save generation-binding falsifiers. All races below
+// are encoded with deterministic capture/release or worker barriers -- no
+// sleeps drive any assertion.
+
+/// Generation-zero spy: the first open's workspace-source commit must cross
+/// the live API carrying the document's first ACCEPTED generation
+/// (`FIRST_ACCEPTED_DOCUMENT_GENERATION`, non-zero), never the generation-zero
+/// sentinel shared with initial import.
+#[cfg(feature = "workspace")]
+#[test]
+fn open_save_source_generation_first_open_commits_non_zero_live_generation()
+-> Result<(), Box<dyn std::error::Error>> {
+    use perl_tdd_support::must_some;
+
+    let server = LspServer::new();
+    let uri = "file:///open_save_first_open_gen_spy.pl";
+
+    server.did_open(json!({
+        "textDocument": {
+            "uri": uri,
+            "languageId": "perl",
+            "version": 1,
+            "text": "package FirstOpenSpy;\nsub alpha_v1 { 1 }\n1;\n"
+        }
+    }))?;
+
+    let index = must_some(server.coordinator()).index();
+    assert_eq!(
+        index.indexed_generation(uri),
+        Some(crate::state::FIRST_ACCEPTED_DOCUMENT_GENERATION.get()),
+        "first open must commit workspace source at the first accepted generation"
+    );
+    assert!(
+        index.file_symbols(uri).iter().any(|s| s.name == "alpha_v1"),
+        "first open's facts must be published from the accepted buffer"
+    );
+
+    Ok(())
+}
+
+/// Held save versus newer edit: save work captured for generation N is
+/// released only after didChange accepted N+1; N must change nothing current.
+///
+/// The hold is realized deterministically by capturing the exact
+/// `(instance, generation)` identity `handle_did_save` snapshots under one
+/// lock, then letting a real newer edit win before releasing the held commit.
+#[cfg(feature = "workspace")]
+#[test]
+fn open_save_source_generation_held_save_loses_to_newer_edit()
+-> Result<(), Box<dyn std::error::Error>> {
+    use perl_tdd_support::must_some;
+
+    let server = LspServer::new();
+    let uri = "file:///held_save_vs_newer_edit.pl";
+    let v1 = "package HeldSave;\nsub alpha_v1 { 1 }\n1;\n";
+    let v2 = "package HeldSave;\nsub alpha_v2 { 2 }\n1;\n";
+
+    server.did_open(json!({
+        "textDocument": {
+            "uri": uri,
+            "languageId": "perl",
+            "version": 1,
+            "text": v1
+        }
+    }))?;
+
+    let normalized_uri = server.normalize_uri_key(uri);
+    let (held_generation, held_instance) = {
+        let documents = server.documents.lock();
+        let doc =
+            server.get_document(&documents, &normalized_uri).ok_or("opened document must exist")?;
+        let generation = std::num::NonZeroU32::new(doc.current_generation())
+            .ok_or("held save identity must be non-zero")?;
+        (generation, doc.generation.clone())
+    };
+
+    // Accept edit N+1 for real (synchronous fallback path commits its
+    // workspace side effects inline).
+    server.handle_did_change(Some(json!({
+        "textDocument": {"uri": uri, "version": 2},
+        "contentChanges": [{"text": v2}]
+    })))?;
+
+    let index = must_some(server.coordinator()).index();
+    assert_eq!(
+        index.indexed_generation(uri),
+        Some(2),
+        "edit N+1 must have committed before the held save is released"
+    );
+
+    // Release held save N: superseded instance/generation -> typed stale,
+    // no source/fact mutation.
+    let url = url::Url::parse(uri)?;
+    let outcome = server.commit_live_save_reconciliation(
+        index,
+        &normalized_uri,
+        url,
+        held_generation,
+        &held_instance,
+        v1.to_string(),
+        "held save vs newer edit",
+    );
+    assert!(
+        outcome.is_none(),
+        "held save N must be rejected stale after edit N+1 won; got {outcome:?}"
+    );
+    assert_eq!(
+        index.indexed_generation(uri),
+        Some(2),
+        "released stale save must not move the indexed generation"
+    );
+    let symbols = index.file_symbols(uri);
+    let names: Vec<&str> = symbols.iter().map(|s| s.name.as_str()).collect();
+    assert!(
+        names.contains(&"alpha_v2") && !names.contains(&"alpha_v1"),
+        "workspace facts must still reflect edit N+1 only; got {names:?}"
+    );
+
+    Ok(())
+}
+
+/// Reopen ABA with TRUE numeric coincidence: instance I1 is captured at
+/// generation 1 with NO intervening edit; close resets the workspace
+/// high-water mark and the reopened instance I2 also sits at generation 1.
+/// Numeric generation alone therefore accepts the released work -- only the
+/// document-instance Arc identity (`Arc::ptr_eq`) can reject it, and the
+/// workspace monotonic guard alone would visibly ACCEPT it (high-water was
+/// reset, payload bytes differ from the reopened buffer).
+#[cfg(feature = "workspace")]
+#[test]
+fn open_save_source_generation_reopen_aba_rejects_prior_instance_work()
+-> Result<(), Box<dyn std::error::Error>> {
+    use perl_tdd_support::must_some;
+
+    let server = LspServer::new();
+    let uri = "file:///reopen_aba.pl";
+    let bytes_a = "package ReopenAba;\nsub aba_alpha { 1 }\n1;\n";
+    let bytes_b = "package ReopenAba;\nsub aba_beta { 2 }\n1;\n";
+
+    // Instance I1 at generation 1; its background open task commits A@1.
+    server.did_open(json!({
+        "textDocument": {
+            "uri": uri, "languageId": "perl", "version": 1, "text": bytes_a
+        }
+    }))?;
+
+    // Hold I1's gen-1 save work carrying divergent payload B -- captured
+    // exactly as `handle_did_save` snapshots it, BEFORE anything else moves.
+    let normalized_uri = server.normalize_uri_key(uri);
+    let (i1_generation, i1_instance) = {
+        let documents = server.documents.lock();
+        let doc = server
+            .get_document(&documents, &normalized_uri)
+            .ok_or("document must exist before close")?;
+        let generation = std::num::NonZeroU32::new(doc.current_generation())
+            .ok_or("prior instance identity must be non-zero")?;
+        (generation, doc.generation.clone())
+    };
+    assert_eq!(i1_generation.get(), 1);
+
+    // Close resets the workspace high-water mark to 0; reopen identical
+    // URI/version/bytes creates instance I2 whose first accepted generation
+    // numerically COINCIDES with the held identity (both 1). No edit
+    // intervenes between capture and release.
+    server.handle_did_close(Some(json!({"textDocument": {"uri": uri}})))?;
+    server.did_open(json!({
+        "textDocument": {
+            "uri": uri, "languageId": "perl", "version": 1, "text": bytes_a
+        }
+    }))?;
+
+    let index = must_some(server.coordinator()).index();
+    assert_eq!(
+        index.indexed_generation(uri),
+        Some(1),
+        "the fresh instance's own open work must not be silenced by prior-session state"
+    );
+
+    // Release I1's held save: numbers are equal and the workspace guard
+    // would accept (high-water reset to 0, then I2 committed @1 <= 1), so
+    // ONLY Arc instance identity can reject this commit.
+    let url = url::Url::parse(uri)?;
+    let outcome = server.commit_live_save_reconciliation(
+        index,
+        &normalized_uri,
+        url,
+        i1_generation,
+        &i1_instance,
+        bytes_b.to_string(),
+        "reopen ABA",
+    );
+    assert!(
+        outcome.is_none(),
+        "prior-instance save work must be rejected after close/reopen even at an \
+         equal numeric generation; got {outcome:?}"
+    );
+    let symbols = index.file_symbols(uri);
+    let names: Vec<&str> = symbols.iter().map(|s| s.name.as_str()).collect();
+    assert!(
+        names.contains(&"aba_alpha") && !names.contains(&"aba_beta"),
+        "reopened instance's bytes must remain authoritative; got {names:?}"
+    );
+
+    Ok(())
+}
+
+/// Save-with-text through the real async gap: while the save's post-parse
+/// side effects are held at the deterministic worker barrier, nothing current
+/// may leak; on release, the live commit publishes the accepted generation.
+#[cfg(feature = "workspace")]
+#[test]
+fn open_save_source_generation_held_side_effects_publish_only_accepted_disposition()
+-> Result<(), Box<dyn std::error::Error>> {
+    use perl_tdd_support::must_some;
+
+    let server = StdArc::new(LspServer::new());
+    server.install_default_parse_worker();
+    let uri = "file:///held_save_side_effects.pl";
+    let v1 = "package HeldEffects;\nsub effects_v1 { 1 }\n1;\n";
+    let v2 = "package HeldEffects;\nsub effects_v2 { 2 }\n1;\n";
+    let normalized_uri = server.normalize_uri_key(uri);
+
+    server.test_apply_did_open(uri, v1, 1)?;
+    assert!(
+        must_some(server.parse_worker())
+            .wait_until_settled(&normalized_uri, Duration::from_secs(5)),
+        "initial open must settle"
+    );
+
+    // Hold the save's side effects between publish and commit.
+    server.test_parse_worker_arm_side_effect_barrier(&normalized_uri, 2);
+    server.handle_did_save(Some(json!({
+        "textDocument": {"uri": uri},
+        "text": v2
+    })))?;
+    server.test_parse_worker_wait_until_side_effects_paused();
+
+    {
+        let index = must_some(server.coordinator()).index();
+        assert_eq!(
+            index.indexed_generation(uri),
+            Some(1),
+            "held save side effects must not touch workspace state before release"
+        );
+        assert!(
+            index.file_symbols(uri).iter().any(|s| s.name == "effects_v1"),
+            "pre-release facts must reflect only the prior accepted generation"
+        );
+    }
+
+    server.test_parse_worker_release_side_effect_barrier();
+    assert!(
+        must_some(server.parse_worker())
+            .wait_until_settled(&normalized_uri, Duration::from_secs(5)),
+        "released save lifecycle must settle"
+    );
+
+    let index = must_some(server.coordinator()).index();
+    assert_eq!(
+        index.indexed_generation(uri),
+        Some(2),
+        "released save must publish the accepted generation"
+    );
+    assert!(
+        index.file_symbols(uri).iter().any(|s| s.name == "effects_v2"),
+        "released save's accepted facts must land from the exact saved buffer"
+    );
+
+    Ok(())
+}
+
+/// Generation-zero ban on the save path: a no-parse (template) document sits
+/// at internal generation zero and must never cross a live source commit --
+/// its save reconciliation is skipped outright rather than indexed.
+#[cfg(feature = "workspace")]
+#[test]
+fn open_save_source_generation_zero_never_crosses_live_commit()
+-> Result<(), Box<dyn std::error::Error>> {
+    use perl_tdd_support::must_some;
+
+    let server = LspServer::new();
+    let uri = "file:///zero_gen_template.tt";
+
+    server.did_open(json!({
+        "textDocument": {
+            "uri": uri,
+            "languageId": "html",
+            "version": 1,
+            "text": "%% template body %%\n"
+        }
+    }))?;
+
+    server.handle_did_save(Some(json!({"textDocument": {"uri": uri}})))?;
+
+    let index = must_some(server.coordinator()).index();
+    assert_eq!(
+        index.indexed_generation(uri),
+        None,
+        "a generation-zero (no-parse) document must never cross a live source commit"
+    );
+    assert!(
+        index.file_symbols(uri).is_empty(),
+        "no workspace facts may appear for a skipped generation-zero save"
     );
 
     Ok(())

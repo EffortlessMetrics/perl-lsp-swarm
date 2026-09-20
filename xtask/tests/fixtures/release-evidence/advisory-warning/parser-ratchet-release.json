@@ -1,1 +1,63 @@
-{"status":"pass"}
+{
+  "check": "parser-ratchet",
+  "schema_version": "2",
+  "event": "local",
+  "verdict": "pass",
+  "profile": "release",
+  "release_version": "0.13.0",
+  "base_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "candidate_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "selected": true,
+  "selection_reason": "release profile requires complete current parser evidence",
+  "measurement_disposition": "complete",
+  "instrument_state": "complete",
+  "scaffold": false,
+  "measurements_disabled": false,
+  "evidence_bundle": {
+    "bundle_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+    "profile_policy_id": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+    "metric_registry_id": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+    "manifest_fingerprint": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+    "semantic_digest": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+    "required_evidence_count": 1,
+    "completed_evidence_count": 1,
+    "required_producer_ids": [
+      "parser-accuracy-current-run"
+    ],
+    "producer_results": [
+      {
+        "producer_id": "parser-accuracy-current-run",
+        "receipt_id": "sha256:6666666666666666666666666666666666666666666666666666666666666666",
+        "state": "complete",
+        "candidate_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    ]
+  },
+  "metrics": {
+    "base": {
+      "panic_count": 0,
+      "timeout_count": 0,
+      "clean_parse_rate": 1.0,
+      "error_node_count": 0,
+      "node_kind_seen_count": 1,
+      "concept_floors": {},
+      "corpus_runtime_ms": 1,
+      "scope": "release"
+    },
+    "head": {
+      "panic_count": 0,
+      "timeout_count": 0,
+      "clean_parse_rate": 1.0,
+      "error_node_count": 0,
+      "node_kind_seen_count": 1,
+      "concept_floors": {},
+      "corpus_runtime_ms": 1,
+      "scope": "release"
+    }
+  },
+  "violations": [],
+  "repro": {
+    "command": "cargo xtask parser-ratchet run --profile release --base bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb --head aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  }
+}

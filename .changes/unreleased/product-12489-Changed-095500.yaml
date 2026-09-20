@@ -1,0 +1,9 @@
+project: product
+component: Performance and reliability
+kind: Changed
+body: Made perl-ast Node structural equality iterative and stack-safe on a 50,000-node 256 KiB worker; Debug remains derived-recursive (#8839).
+time: 2026-08-25T09:55:00Z
+custom:
+  PR: "12489"
+  Slug: ast-node-iterative-eq
+  Breaking: "no"

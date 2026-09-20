@@ -20,13 +20,43 @@ import {
   classifyWindowsArm64Support,
   getUnsupportedWindowsArm64Message,
   findReleaseAssetName,
+  lookupSha256SumsDigest,
   selectWindowsArm64Target,
   WINDOWS_ARM64_TARGET,
   WINDOWS_X64_TARGET,
   isTransientManagedInstallError,
   parseLocalVersion,
+  hostManagedCompatibilityKeys,
+  readGitHubToken,
+  resolveGitHubAuthDisposition,
   __resetManagedInstallSingleflightForTesting,
 } from '../downloader';
+import {
+  legacyManagedBaseDir,
+  managedNamespaceDir,
+  managedUpdateCheckStateKey,
+} from '../managedStorageIdentity';
+import { buildManagedCandidateManifest } from '../managedCacheProtocol';
+import type { ManagedCandidateManifest, ManagedCandidateSubject } from '../managedCacheProtocol';
+import {
+  MANAGED_CANDIDATE_MANIFEST_FILE,
+  MANAGED_CURRENT_SELECTION_FILE,
+  acquireSessionManagedHostReference,
+  commitManagedCandidateSelection,
+  readManagedCurrentSelection,
+} from '../managedCandidateRuntime';
+import { env as vscodeEnv } from './__mocks__/vscode';
+
+/**
+ * The compatibility key this test host resolves to. Managed state is namespaced
+ * by it rather than by `process.platform`/`process.arch` (#9847), so tests must
+ * ask for it rather than reconstruct a path shape.
+ */
+const HOST_COMPATIBILITY_KEY = hostManagedCompatibilityKeys()[0]!;
+
+function hostNamespaceDir(storageRoot: string): string {
+  return managedNamespaceDir(storageRoot, HOST_COMPATIBILITY_KEY)!;
+}
 
 // ---------------------------------------------------------------------------
 // Helpers: build a minimal mock ExtensionContext
@@ -38,11 +68,14 @@ interface DownloaderPrivateSurface {
   getPlatformTarget(): string;
   getLocalBinaryPath(): string;
   buildVersionedInstallDirName(versionTag: string): string;
-  commitVersionedInstall(installDirName: string): void;
-  pruneOldVersionedInstalls(baseDir: string, currentName: string): void;
+  commitVersionedInstall(
+    installDirName: string,
+    compatibilityKey?: string,
+    manifest?: ManagedCandidateManifest | null,
+  ): void;
+  collectStaleManagedCandidates(baseDir: string): void;
   runEnsureBinary(forceDownload: boolean): Promise<string | null>;
   calculateSHA256(filePath: string): Promise<string>;
-  findBinary(dir: string, name: string): string | null;
   getLatestRelease(timeoutMs?: number): Promise<unknown>;
   getLocalVersion(binaryPath: string): Promise<string | null>;
   downloadWithProgress(): Promise<string>;
@@ -70,6 +103,41 @@ function makeContext(storagePath?: string): vscode.ExtensionContext {
     extensionPath: dir,
     subscriptions: [],
   } as unknown as vscode.ExtensionContext;
+}
+
+/** Put one environment variable back, including the "was unset" case. */
+function restoreEnv(name: 'GITHUB_TOKEN' | 'GH_TOKEN', value: string | undefined): void {
+  if (value === undefined) {
+    delete process.env[name];
+  } else {
+    process.env[name] = value;
+  }
+}
+
+/**
+ * Neutralize ambient GitHub credentials for the enclosing describe block.
+ *
+ * `GITHUB_TOKEN` and `GH_TOKEN` are routinely set on developer machines and CI
+ * runners, and `readGitHubToken` consults both. Without this, whether a test
+ * that never mentions credentials takes the authenticated path depends on the
+ * host environment. Tests that need a token assign one directly; these hooks
+ * put the ambient values back afterwards.
+ */
+function isolateGitHubTokenEnv(): void {
+  let priorGitHubToken: string | undefined;
+  let priorGhToken: string | undefined;
+
+  beforeEach(() => {
+    priorGitHubToken = process.env.GITHUB_TOKEN;
+    priorGhToken = process.env.GH_TOKEN;
+    delete process.env.GITHUB_TOKEN;
+    delete process.env.GH_TOKEN;
+  });
+
+  afterEach(() => {
+    restoreEnv('GITHUB_TOKEN', priorGitHubToken);
+    restoreEnv('GH_TOKEN', priorGhToken);
+  });
 }
 
 function makeOutputChannel(): vscode.OutputChannel {
@@ -107,11 +175,22 @@ describe('BinaryDownloader.getPlatformTarget', () => {
   });
 
   afterEach(() => {
-    process.env.ANDROID_ROOT = androidRootBackup;
-    process.env.ANDROID_DATA = androidDataBackup;
-    process.env.TERMUX_VERSION = termuxVersionBackup;
+    // Assigning `undefined` to a process.env key stores the *string*
+    // "undefined", which is truthy — that leaked a permanent Termux/Android
+    // host into every later test in this file. Unset instead.
+    restoreEnv('ANDROID_ROOT', androidRootBackup);
+    restoreEnv('ANDROID_DATA', androidDataBackup);
+    restoreEnv('TERMUX_VERSION', termuxVersionBackup);
     jest.restoreAllMocks();
   });
+
+  function restoreEnv(name: string, value: string | undefined): void {
+    if (value === undefined) {
+      delete process.env[name];
+    } else {
+      process.env[name] = value;
+    }
+  }
 
   function getPlatformTarget(dl: TestDownloader): string {
     return dl.getPlatformTarget();
@@ -392,13 +471,17 @@ describe('BinaryDownloader internal ARM64 mirror compatibility', () => {
 // Local binary path construction
 // ---------------------------------------------------------------------------
 describe('BinaryDownloader.getLocalBinaryPath', () => {
-  test('binary path includes platform and arch subdirectory', () => {
+  test('binary path is namespaced by the host compatibility key, not platform/arch', () => {
     const ctx = makeContext('/tmp/test-storage');
     const downloader = new BinaryDownloader(ctx, makeOutputChannel()) as unknown as TestDownloader;
     const binaryPath: string = downloader.getLocalBinaryPath();
 
-    expect(binaryPath).toContain(process.platform);
-    expect(binaryPath).toContain(process.arch);
+    expect(binaryPath.startsWith(hostNamespaceDir('/tmp/test-storage'))).toBe(true);
+    // The pre-#9847 key must not be what selects the directory: on Linux it
+    // cannot distinguish GNU from musl.
+    expect(binaryPath).not.toContain(
+      legacyManagedBaseDir('/tmp/test-storage', process.platform, process.arch),
+    );
   });
 
   test('binary name is perllsp (or perllsp.exe on win32)', () => {
@@ -596,7 +679,7 @@ describe('Versioned managed install layout', () => {
     storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'managed-install-test-'));
     const ctx = makeContext(storageRoot);
     downloader = new BinaryDownloader(ctx, makeOutputChannel()) as unknown as TestDownloader;
-    baseDir = path.join(storageRoot, 'bin', `${process.platform}-${process.arch}`);
+    baseDir = hostNamespaceDir(storageRoot);
     fs.mkdirSync(baseDir, { recursive: true });
   });
 
@@ -606,7 +689,7 @@ describe('Versioned managed install layout', () => {
     }
   });
 
-  test('getLocalBinaryPath falls back to flat layout when no pointer exists (legacy users)', () => {
+  test('getLocalBinaryPath falls back to the flat layout when no pointer exists', () => {
     const flat = path.join(baseDir, lspBinaryName);
     fs.writeFileSync(flat, 'fake binary');
 
@@ -704,43 +787,378 @@ describe('Versioned managed install layout', () => {
     expect(fs.readFileSync(path.join(baseDir, 'current'), 'utf8').trim()).toBe('v0.13.4-stamp');
   });
 
-  test('pruneOldVersionedInstalls keeps current plus exactly one prior install', () => {
-    const names = ['v0.13.0-a', 'v0.13.1-b', 'v0.13.2-c', 'v0.13.3-d'];
-    names.forEach((name, idx) => {
-      const dir = path.join(baseDir, name);
-      fs.mkdirSync(dir);
-      // Older index → older mtime
-      const t = Date.now() / 1000 - (names.length - idx) * 60;
-      fs.utimesSync(dir, t, t);
+  test('collectStaleManagedCandidates keeps current plus prior and deletes proven-stale generations', () => {
+    // Digest seeds must stay hex so the minted candidate ids are canonical.
+    const candidateSubject = (seed: string): ManagedCandidateSubject => ({
+      release: 'v0.13.3',
+      version: `v0.13.3-${seed}`,
+      target: HOST_COMPATIBILITY_KEY,
+      topology_digest: seed.repeat(64).slice(0, 64),
+      perllsp_digest: 'f'.repeat(64),
+      perl_dap_digest: null,
+    });
+    const installCandidateDir = (
+      dirName: string,
+      seed: string,
+      ageSeconds: number,
+    ): { dir: string; manifest: ManagedCandidateManifest } => {
+      const dir = path.join(baseDir, dirName);
+      fs.mkdirSync(dir, { recursive: true });
+      const manifest = buildManagedCandidateManifest(candidateSubject(seed));
+      fs.writeFileSync(path.join(dir, MANAGED_CANDIDATE_MANIFEST_FILE), JSON.stringify(manifest));
+      const stamp = Date.now() / 1000 - ageSeconds;
+      fs.utimesSync(dir, stamp, stamp);
+      return { dir, manifest };
+    };
+
+    const current = installCandidateDir('v0.13.3-d', 'a', 0);
+    const prior = installCandidateDir('v0.13.2-c', 'b', 60);
+    const stale1 = installCandidateDir('v0.13.1-b', 'c', 120);
+    const stale2 = installCandidateDir('v0.13.0-a', 'd', 180);
+    commitManagedCandidateSelection(baseDir, current.manifest, () => {
+      /* quiet */
     });
 
-    downloader.pruneOldVersionedInstalls(baseDir, 'v0.13.3-d');
+    downloader.collectStaleManagedCandidates(baseDir);
 
-    expect(fs.existsSync(path.join(baseDir, 'v0.13.3-d'))).toBe(true); // current
-    expect(fs.existsSync(path.join(baseDir, 'v0.13.2-c'))).toBe(true); // most recent prior
-    expect(fs.existsSync(path.join(baseDir, 'v0.13.1-b'))).toBe(false); // pruned
-    expect(fs.existsSync(path.join(baseDir, 'v0.13.0-a'))).toBe(false); // pruned
+    expect(fs.existsSync(current.dir)).toBe(true); // current_default
+    expect(fs.existsSync(prior.dir)).toBe(true); // previous-known-good fallback
+    expect(fs.existsSync(stale1.dir)).toBe(false); // stale_unreferenced
+    expect(fs.existsSync(stale2.dir)).toBe(false); // stale_unreferenced
   });
 
-  test('pruneOldVersionedInstalls preserves current when it is the only versioned dir', () => {
-    fs.mkdirSync(path.join(baseDir, 'v0.13.3-d'));
+  test('collectStaleManagedCandidates preserves current when it is the only versioned dir', () => {
+    const dir = path.join(baseDir, 'v0.13.3-d');
+    fs.mkdirSync(dir);
+    const manifest = buildManagedCandidateManifest({
+      release: 'v0.13.3',
+      version: 'v0.13.3',
+      target: HOST_COMPATIBILITY_KEY,
+      topology_digest: '1'.repeat(64),
+      perllsp_digest: '2'.repeat(64),
+      perl_dap_digest: null,
+    });
+    fs.writeFileSync(path.join(dir, MANAGED_CANDIDATE_MANIFEST_FILE), JSON.stringify(manifest));
+    commitManagedCandidateSelection(baseDir, manifest, () => {
+      /* quiet */
+    });
 
-    downloader.pruneOldVersionedInstalls(baseDir, 'v0.13.3-d');
+    downloader.collectStaleManagedCandidates(baseDir);
 
-    expect(fs.existsSync(path.join(baseDir, 'v0.13.3-d'))).toBe(true);
+    expect(fs.existsSync(dir)).toBe(true);
   });
 
-  test('pruneOldVersionedInstalls ignores files at base dir (legacy flat binaries survive)', () => {
+  test('collectStaleManagedCandidates ignores files at base dir (legacy flat binaries survive)', () => {
     const flatBin = path.join(baseDir, lspBinaryName);
     fs.writeFileSync(flatBin, 'legacy');
-    fs.mkdirSync(path.join(baseDir, 'v0.13.3-d'));
+    const dir = path.join(baseDir, 'v0.13.3-d');
+    fs.mkdirSync(dir);
+    const manifest = buildManagedCandidateManifest({
+      release: 'v0.13.3',
+      version: 'v0.13.3',
+      target: HOST_COMPATIBILITY_KEY,
+      topology_digest: '3'.repeat(64),
+      perllsp_digest: '4'.repeat(64),
+      perl_dap_digest: null,
+    });
+    fs.writeFileSync(path.join(dir, MANAGED_CANDIDATE_MANIFEST_FILE), JSON.stringify(manifest));
+    commitManagedCandidateSelection(baseDir, manifest, () => {
+      /* quiet */
+    });
 
-    downloader.pruneOldVersionedInstalls(baseDir, 'v0.13.3-d');
+    downloader.collectStaleManagedCandidates(baseDir);
 
     expect(fs.existsSync(flatBin)).toBe(true);
   });
 
-  test('legacy migration: install side-by-side with flat layout, pointer activates versioned', () => {
+  test('commitVersionedInstall also commits the policy selection record when given a manifest', () => {
+    const installDirName = 'v0.13.3-stamp';
+    fs.mkdirSync(path.join(baseDir, installDirName));
+    const manifest = buildManagedCandidateManifest({
+      release: 'v0.13.3',
+      version: 'v0.13.3',
+      target: HOST_COMPATIBILITY_KEY,
+      topology_digest: '5'.repeat(64),
+      perllsp_digest: '6'.repeat(64),
+      perl_dap_digest: null,
+    });
+
+    downloader.commitVersionedInstall(installDirName, undefined, manifest);
+
+    const pointer = path.join(baseDir, 'current');
+    expect(fs.readFileSync(pointer, 'utf8').trim()).toBe(installDirName);
+    expect(fs.existsSync(`${pointer}.tmp`)).toBe(false);
+    const selection = readManagedCurrentSelection(baseDir);
+    expect(selection?.selection_generation).toBe(1);
+    expect(selection?.candidate_id).toBe(manifest.candidate_id);
+    expect(fs.existsSync(`${path.join(baseDir, MANAGED_CURRENT_SELECTION_FILE)}.tmp`)).toBe(false);
+  });
+
+  test('commitVersionedInstall without a manifest writes the pointer only (legacy shape unchanged)', () => {
+    const installDirName = 'v0.13.3-stamp';
+    fs.mkdirSync(path.join(baseDir, installDirName));
+
+    downloader.commitVersionedInstall(installDirName);
+
+    expect(fs.readFileSync(path.join(baseDir, 'current'), 'utf8').trim()).toBe(installDirName);
+    expect(fs.existsSync(path.join(baseDir, MANAGED_CURRENT_SELECTION_FILE))).toBe(false);
+  });
+
+  test('getLocalBinaryPath resolves the policy-governed current candidate', () => {
+    const currentName = 'v0.13.4-stamp';
+    const currentDir = path.join(baseDir, currentName);
+    fs.mkdirSync(currentDir);
+    fs.writeFileSync(path.join(currentDir, lspBinaryName), 'current bytes');
+    const manifest = buildManagedCandidateManifest({
+      release: 'v0.13.4',
+      version: 'v0.13.4',
+      target: HOST_COMPATIBILITY_KEY,
+      topology_digest: '7'.repeat(64),
+      perllsp_digest: '8'.repeat(64),
+      perl_dap_digest: null,
+    });
+    fs.writeFileSync(
+      path.join(currentDir, MANAGED_CANDIDATE_MANIFEST_FILE),
+      JSON.stringify(manifest),
+    );
+    commitManagedCandidateSelection(baseDir, manifest, () => {
+      /* quiet */
+    });
+    // No legacy `current` pointer at all: resolution must come from the
+    // policy-governed branch.
+
+    expect(downloader.getLocalBinaryPath()).toBe(path.join(currentDir, lspBinaryName));
+  });
+
+  test('getLocalBinaryPath stays bound to a live-referenced candidate after current moves', () => {
+    const previousSessionId = vscodeEnv.sessionId;
+    try {
+      vscodeEnv.sessionId = 'window-a';
+      const oldName = 'v0.13.3-old';
+      const oldDir = path.join(baseDir, oldName);
+      fs.mkdirSync(oldDir);
+      fs.writeFileSync(path.join(oldDir, lspBinaryName), 'old bytes');
+      const oldManifest = buildManagedCandidateManifest({
+        release: 'v0.13.3',
+        version: 'v0.13.3',
+        target: HOST_COMPATIBILITY_KEY,
+        topology_digest: '9'.repeat(64),
+        perllsp_digest: 'a'.repeat(64),
+        perl_dap_digest: null,
+      });
+      fs.writeFileSync(
+        path.join(oldDir, MANAGED_CANDIDATE_MANIFEST_FILE),
+        JSON.stringify(oldManifest),
+      );
+      const oldStamp = Date.now() / 1000 - 120;
+      fs.utimesSync(oldDir, oldStamp, oldStamp);
+
+      const newName = 'v0.13.4-new';
+      const newDir = path.join(baseDir, newName);
+      fs.mkdirSync(newDir);
+      fs.writeFileSync(path.join(newDir, lspBinaryName), 'new bytes');
+      const newManifest = buildManagedCandidateManifest({
+        release: 'v0.13.4',
+        version: 'v0.13.4',
+        target: HOST_COMPATIBILITY_KEY,
+        topology_digest: 'b'.repeat(64),
+        perllsp_digest: 'c'.repeat(64),
+        perl_dap_digest: null,
+      });
+      fs.writeFileSync(
+        path.join(newDir, MANAGED_CANDIDATE_MANIFEST_FILE),
+        JSON.stringify(newManifest),
+      );
+      commitManagedCandidateSelection(baseDir, newManifest, () => {
+        /* quiet */
+      });
+      // This session already launched the old candidate and holds a live
+      // reference: moving the default must not rebind it.
+      acquireSessionManagedHostReference(baseDir, 'window-a', oldManifest.candidate_id, () => {
+        /* quiet */
+      });
+
+      expect(downloader.getLocalBinaryPath()).toBe(path.join(oldDir, lspBinaryName));
+    } finally {
+      vscodeEnv.sessionId = previousSessionId;
+    }
+  });
+
+  test('a policy-governed namespace never falls back to the pointer after restart_required', () => {
+    const previousSessionId = vscodeEnv.sessionId;
+    try {
+      vscodeEnv.sessionId = 'window-stuck';
+      const currentName = 'v0.13.4-current';
+      const currentDir = path.join(baseDir, currentName);
+      fs.mkdirSync(currentDir);
+      fs.writeFileSync(path.join(currentDir, lspBinaryName), 'current bytes');
+      const currentManifest = buildManagedCandidateManifest({
+        release: 'v0.13.4',
+        version: 'v0.13.4',
+        target: HOST_COMPATIBILITY_KEY,
+        topology_digest: '1'.repeat(64),
+        perllsp_digest: '2'.repeat(64),
+        perl_dap_digest: null,
+      });
+      fs.writeFileSync(
+        path.join(currentDir, MANAGED_CANDIDATE_MANIFEST_FILE),
+        JSON.stringify(currentManifest),
+      );
+      // The pointer would happily resolve the current dir...
+      fs.writeFileSync(path.join(baseDir, 'current'), `${currentName}\n`);
+      // ...but this session holds a live reference to a candidate that no
+      // longer exists in the catalog: policy says restart_required, and the
+      // pointer must not silently rebind the session instead.
+      const absentManifest = buildManagedCandidateManifest({
+        release: 'v0.13.0',
+        version: 'v0.13.0',
+        target: HOST_COMPATIBILITY_KEY,
+        topology_digest: '3'.repeat(64),
+        perllsp_digest: '4'.repeat(64),
+        perl_dap_digest: null,
+      });
+      commitManagedCandidateSelection(baseDir, currentManifest, () => {
+        /* quiet */
+      });
+      acquireSessionManagedHostReference(
+        baseDir,
+        'window-stuck',
+        absentManifest.candidate_id,
+        () => {
+          /* quiet */
+        },
+      );
+
+      // The namespace is refused, so resolution falls past it to the flat
+      // legacy layout rather than launching the pointer-named binary.
+      expect(downloader.getLocalBinaryPath()).toBe(path.join(baseDir, lspBinaryName));
+    } finally {
+      vscodeEnv.sessionId = previousSessionId;
+    }
+  });
+
+  test('a policy-governed namespace resolves current despite a structurally invalid sibling manifest', () => {
+    const currentName = 'v0.13.4-current';
+    const currentDir = path.join(baseDir, currentName);
+    fs.mkdirSync(currentDir);
+    fs.writeFileSync(path.join(currentDir, lspBinaryName), 'current bytes');
+    const currentManifest = buildManagedCandidateManifest({
+      release: 'v0.13.4',
+      version: 'v0.13.4',
+      target: HOST_COMPATIBILITY_KEY,
+      topology_digest: '5'.repeat(64),
+      perllsp_digest: '6'.repeat(64),
+      perl_dap_digest: null,
+    });
+    fs.writeFileSync(
+      path.join(currentDir, MANAGED_CANDIDATE_MANIFEST_FILE),
+      JSON.stringify(currentManifest),
+    );
+    fs.writeFileSync(path.join(baseDir, 'current'), `${currentName}\n`);
+    commitManagedCandidateSelection(baseDir, currentManifest, () => {
+      /* quiet */
+    });
+    // A structurally invalid manifest sibling is filtered by the landed
+    // host-selection policy (it poisons GC, not selection): resolution stays
+    // governed, the valid current wins on its own, and the pointer is not
+    // consulted.
+    const broken = path.join(baseDir, 'broken');
+    fs.mkdirSync(broken);
+    fs.writeFileSync(
+      path.join(broken, MANAGED_CANDIDATE_MANIFEST_FILE),
+      JSON.stringify({ schema_version: 'managed_candidate_manifest.v1', candidate_id: 'nope' }),
+    );
+
+    expect(downloader.getLocalBinaryPath()).toBe(path.join(currentDir, lspBinaryName));
+  });
+
+  test('a refused selection commit leaves the activation pointer unmoved', () => {
+    const oldName = 'v0.13.3-old';
+    const oldDir = path.join(baseDir, oldName);
+    fs.mkdirSync(oldDir);
+    const oldManifest = buildManagedCandidateManifest({
+      release: 'v0.13.3',
+      version: 'v0.13.3',
+      target: HOST_COMPATIBILITY_KEY,
+      topology_digest: '7'.repeat(64),
+      perllsp_digest: '8'.repeat(64),
+      perl_dap_digest: null,
+    });
+    fs.writeFileSync(
+      path.join(oldDir, MANAGED_CANDIDATE_MANIFEST_FILE),
+      JSON.stringify(oldManifest),
+    );
+    commitManagedCandidateSelection(baseDir, oldManifest, () => {
+      /* quiet */
+    });
+    downloader.commitVersionedInstall(oldName, undefined, oldManifest);
+    expect(fs.readFileSync(path.join(baseDir, 'current'), 'utf8').trim()).toBe(oldName);
+
+    // Corrupt the selection record into bytes this version cannot interpret
+    // the way a torn write would: the commit must refuse rather than reset
+    // the generation counter, and the pointer must not move past it.
+    fs.writeFileSync(path.join(baseDir, MANAGED_CURRENT_SELECTION_FILE), '{torn write');
+    const newName = 'v0.13.4-new';
+    fs.mkdirSync(path.join(baseDir, newName));
+    const newManifest = buildManagedCandidateManifest({
+      release: 'v0.13.4',
+      version: 'v0.13.4',
+      target: HOST_COMPATIBILITY_KEY,
+      topology_digest: '9'.repeat(64),
+      perllsp_digest: 'a'.repeat(64),
+      perl_dap_digest: null,
+    });
+    fs.writeFileSync(
+      path.join(baseDir, newName, MANAGED_CANDIDATE_MANIFEST_FILE),
+      JSON.stringify(newManifest),
+    );
+
+    downloader.commitVersionedInstall(newName, undefined, newManifest);
+
+    // The pointer must not claim an activation the policy record refutes,
+    // and the unreadable evidence is left exactly as it was found.
+    expect(fs.readFileSync(path.join(baseDir, 'current'), 'utf8').trim()).toBe(oldName);
+    expect(fs.readFileSync(path.join(baseDir, MANAGED_CURRENT_SELECTION_FILE), 'utf8')).toBe(
+      '{torn write',
+    );
+
+    // Recovery from unreadable selection evidence is an explicit repair
+    // (remove the torn record), never another commit over it; afterwards the
+    // commit lands coherently from a fresh generation.
+    fs.rmSync(path.join(baseDir, MANAGED_CURRENT_SELECTION_FILE));
+    downloader.commitVersionedInstall(newName, undefined, newManifest);
+    expect(fs.readFileSync(path.join(baseDir, 'current'), 'utf8').trim()).toBe(newName);
+    expect(readManagedCurrentSelection(baseDir)?.candidate_id).toBe(newManifest.candidate_id);
+  });
+
+  test('a null manifest refuses activation instead of moving the pointer past the policy', () => {
+    const oldName = 'v0.13.3-old';
+    const oldDir = path.join(baseDir, oldName);
+    fs.mkdirSync(oldDir);
+    const oldManifest = buildManagedCandidateManifest({
+      release: 'v0.13.3',
+      version: 'v0.13.3',
+      target: HOST_COMPATIBILITY_KEY,
+      topology_digest: 'b'.repeat(64),
+      perllsp_digest: 'c'.repeat(64),
+      perl_dap_digest: null,
+    });
+    fs.writeFileSync(
+      path.join(oldDir, MANAGED_CANDIDATE_MANIFEST_FILE),
+      JSON.stringify(oldManifest),
+    );
+    downloader.commitVersionedInstall(oldName, undefined, oldManifest);
+    expect(fs.readFileSync(path.join(baseDir, 'current'), 'utf8').trim()).toBe(oldName);
+
+    // A failed manifest mint is a null manifest: activating the install
+    // anyway would leave the pointer naming a dir the policy cannot see.
+    downloader.commitVersionedInstall('v0.13.4-orphan', undefined, null);
+
+    expect(fs.readFileSync(path.join(baseDir, 'current'), 'utf8').trim()).toBe(oldName);
+    expect(readManagedCurrentSelection(baseDir)?.candidate_id).toBe(oldManifest.candidate_id);
+  });
+
+  test('install lands side-by-side with a flat layout and the pointer activates it', () => {
     // Seed a legacy 0.13.2-style flat binary that a long-running user would have.
     const flatBin = path.join(baseDir, lspBinaryName);
     fs.writeFileSync(flatBin, 'legacy 0.13.2 bytes');
@@ -968,70 +1386,6 @@ describe('BinaryDownloader.calculateSHA256', () => {
 });
 
 // ---------------------------------------------------------------------------
-// findBinary (recursive directory search)
-// ---------------------------------------------------------------------------
-describe('BinaryDownloader.findBinary', () => {
-  let tmpDir: string;
-
-  beforeEach(() => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'find-bin-'));
-  });
-
-  afterEach(() => {
-    fs.rmSync(tmpDir, { recursive: true, force: true });
-  });
-
-  test('finds binary in top-level directory', () => {
-    fs.writeFileSync(path.join(tmpDir, 'perllsp'), 'binary');
-
-    const downloader = new BinaryDownloader(
-      makeContext(),
-      makeOutputChannel(),
-    ) as unknown as TestDownloader;
-    const result = downloader.findBinary(tmpDir, 'perllsp');
-
-    expect(result).toBe(path.join(tmpDir, 'perllsp'));
-  });
-
-  test('finds binary in nested directory', () => {
-    const nested = path.join(tmpDir, 'subdir', 'bin');
-    fs.mkdirSync(nested, { recursive: true });
-    fs.writeFileSync(path.join(nested, 'perllsp'), 'binary');
-
-    const downloader = new BinaryDownloader(
-      makeContext(),
-      makeOutputChannel(),
-    ) as unknown as TestDownloader;
-    const result = downloader.findBinary(tmpDir, 'perllsp');
-
-    expect(result).toBe(path.join(nested, 'perllsp'));
-  });
-
-  test('returns null when binary is not found', () => {
-    const downloader = new BinaryDownloader(
-      makeContext(),
-      makeOutputChannel(),
-    ) as unknown as TestDownloader;
-    const result = downloader.findBinary(tmpDir, 'nonexistent');
-
-    expect(result).toBeNull();
-  });
-
-  test('ignores files with different names', () => {
-    fs.writeFileSync(path.join(tmpDir, 'not-perllsp'), 'wrong');
-    fs.writeFileSync(path.join(tmpDir, 'perllsp.old'), 'wrong');
-
-    const downloader = new BinaryDownloader(
-      makeContext(),
-      makeOutputChannel(),
-    ) as unknown as TestDownloader;
-    const result = downloader.findBinary(tmpDir, 'perllsp');
-
-    expect(result).toBeNull();
-  });
-});
-
-// ---------------------------------------------------------------------------
 // Download URL security validation (downloadFile method)
 // ---------------------------------------------------------------------------
 describe('BinaryDownloader download URL security', () => {
@@ -1148,18 +1502,22 @@ describe('BinaryDownloader download stream lifecycle', () => {
   type TestFile = EventEmitter & {
     destroy: jest.Mock;
     close: jest.Mock;
+    write: jest.Mock;
+    end: jest.Mock;
   };
   type TestRequest = EventEmitter & {
     destroy: jest.Mock;
   };
   type TestResponse = EventEmitter & {
     statusCode: number;
-    pipe: jest.Mock;
+    headers: Record<string, string>;
+    destroy: jest.Mock;
+    resume: jest.Mock;
   };
   type DownloaderSeams = {
     downloadFile: (url: string, dest: string, timeoutMs?: number) => Promise<void>;
     createWriteStream: (dest: string) => TestFile;
-    removePartialFile: (dest: string) => void;
+    removePartialFile: (dest: string) => Promise<void>;
     httpGet: (...args: unknown[]) => TestRequest;
   };
 
@@ -1191,26 +1549,18 @@ describe('BinaryDownloader download stream lifecycle', () => {
     };
   }
 
-  test('observes stream errors before request failure and temporary-directory cleanup', async () => {
+  test('does not open a dest stream before a response, and still cleans up request failure', async () => {
     const destination = path.join(tmpDir, 'partial.bin');
     const seams = downloader as unknown as DownloaderSeams;
-    const file = new EventEmitter() as TestFile;
-    file.destroy = jest.fn();
-    file.close = jest.fn();
-    const createWriteStream = jest.spyOn(seams, 'createWriteStream').mockReturnValue(file);
+    const createWriteStream = jest.spyOn(seams, 'createWriteStream');
     const removePartialFile = jest.spyOn(seams, 'removePartialFile');
 
     const request = new EventEmitter() as TestRequest;
     request.destroy = jest.fn();
     const requestError = Object.assign(new Error('request failed'), { code: 'ECONNRESET' });
-    const streamError = Object.assign(new Error('destination disappeared'), { code: 'ENOENT' });
-    let listenerCountBeforeRequestActivity = 0;
     jest.spyOn(seams, 'httpGet').mockImplementation(() => {
-      listenerCountBeforeRequestActivity = file.listenerCount('error');
-      fs.rmSync(tmpDir, { recursive: true, force: true });
       process.nextTick(() => {
         request.emit('error', requestError);
-        setImmediate(() => file.emit('error', streamError));
       });
       return request;
     });
@@ -1222,8 +1572,7 @@ describe('BinaryDownloader download stream lifecycle', () => {
       );
       await new Promise<void>((resolve) => setImmediate(resolve));
 
-      expect(listenerCountBeforeRequestActivity).toBe(1);
-      expect(createWriteStream).toHaveBeenCalledWith(destination);
+      expect(createWriteStream).not.toHaveBeenCalled();
       expect(removePartialFile).toHaveBeenCalledTimes(1);
       expect(uncaught.errors).toEqual([]);
     } finally {
@@ -1234,14 +1583,7 @@ describe('BinaryDownloader download stream lifecycle', () => {
   test('cleans up exactly once when the download times out', async () => {
     const destination = path.join(tmpDir, 'timed-out.bin');
     const seams = downloader as unknown as DownloaderSeams;
-    const file = new EventEmitter() as TestFile;
-    file.close = jest.fn();
-    file.destroy = jest.fn(() => {
-      process.nextTick(() =>
-        file.emit('error', Object.assign(new Error('stream closed'), { code: 'ENOENT' })),
-      );
-    });
-    jest.spyOn(seams, 'createWriteStream').mockReturnValue(file);
+    const createWriteStream = jest.spyOn(seams, 'createWriteStream');
     const removePartialFile = jest.spyOn(seams, 'removePartialFile');
     const request = new EventEmitter() as TestRequest;
     request.destroy = jest.fn();
@@ -1254,7 +1596,8 @@ describe('BinaryDownloader download stream lifecycle', () => {
       );
       await new Promise<void>((resolve) => setImmediate(resolve));
 
-      expect(file.destroy).toHaveBeenCalledTimes(1);
+      expect(request.destroy).toHaveBeenCalled();
+      expect(createWriteStream).not.toHaveBeenCalled();
       expect(removePartialFile).toHaveBeenCalledTimes(1);
       expect(uncaught.errors).toEqual([]);
     } finally {
@@ -1268,27 +1611,30 @@ describe('BinaryDownloader download stream lifecycle', () => {
     const file = new EventEmitter() as TestFile;
     file.destroy = jest.fn();
     file.close = jest.fn();
+    file.write = jest.fn();
+    file.end = jest.fn();
     jest.spyOn(seams, 'createWriteStream').mockReturnValue(file);
     const removePartialFile = jest.spyOn(seams, 'removePartialFile');
 
     const response = new EventEmitter() as TestResponse;
     response.statusCode = 200;
+    response.headers = {};
+    response.destroy = jest.fn();
+    response.resume = jest.fn();
     const streamError = Object.assign(new Error('partial response failed'), { code: 'EPIPE' });
-    response.pipe = jest.fn(() => {
-      file.emit('error', streamError);
-      return file;
-    });
     const request = new EventEmitter() as TestRequest;
     request.destroy = jest.fn();
     jest.spyOn(seams, 'httpGet').mockImplementation((_https, _url, _options, callback) => {
-      (callback as (value: unknown) => void)(response);
+      process.nextTick(() => {
+        (callback as (value: unknown) => void)(response);
+        process.nextTick(() => response.emit('error', streamError));
+      });
       return request;
     });
 
     await expect(seams.downloadFile('http://localhost/file', destination, 1000)).rejects.toBe(
       streamError,
     );
-    expect(response.pipe).toHaveBeenCalledTimes(1);
     expect(removePartialFile).toHaveBeenCalledTimes(1);
   });
 });
@@ -1297,22 +1643,66 @@ describe('BinaryDownloader download stream lifecycle', () => {
 // Release metadata fetch timeout
 // ---------------------------------------------------------------------------
 describe('BinaryDownloader getLatestRelease timeout', () => {
+  isolateGitHubTokenEnv();
+
   type TestRequest = EventEmitter & {
     destroy: jest.Mock;
   };
-  type TestResponse = EventEmitter;
+  // A real http.IncomingMessage always carries a status, and getLatestRelease
+  // now rejects non-success responses before parsing, so the fixture supplies
+  // one too.
+  type TestResponse = EventEmitter & {
+    statusCode?: number;
+    headers: Record<string, string>;
+    destroy: jest.Mock;
+  };
+  type TestCancellation = {
+    isCancellationRequested: boolean;
+    onCancellationRequested: (listener: () => void) => { dispose: () => void };
+  };
   type DownloaderSeams = {
-    getLatestRelease: (timeoutMs?: number) => Promise<unknown>;
+    getLatestRelease: (timeoutMs?: number, token?: TestCancellation) => Promise<unknown>;
     httpGet: (...args: unknown[]) => TestRequest;
   };
 
+  function makeResponse(statusCode = 200): TestResponse {
+    const response = new EventEmitter() as TestResponse;
+    response.statusCode = statusCode;
+    response.headers = {};
+    response.destroy = jest.fn();
+    return response;
+  }
+
   let downloader: TestDownloader;
+  let restoreProcessHost: (() => void) | undefined;
 
   beforeEach(() => {
     downloader = new BinaryDownloader(
       makeContext(),
       makeOutputChannel(),
     ) as unknown as TestDownloader;
+    // Fixtures name x86_64-unknown-linux-gnu .tar.gz assets; pin the host so
+    // these controls are independent of the machine running the suite. The
+    // target mock alone is not enough: getLatestRelease also derives the
+    // archive extension and the ARM64 emulation check from process.platform
+    // and process.arch, so a Windows runner would match .zip asset names
+    // against these .tar.gz fixtures and every selection control would
+    // refuse for a reason the fixture never chose.
+    jest
+      .spyOn(downloader as unknown as { getPlatformTarget: () => string }, 'getPlatformTarget')
+      .mockReturnValue('x86_64-unknown-linux-gnu');
+    const platformDescriptor = Object.getOwnPropertyDescriptor(process, 'platform');
+    const archDescriptor = Object.getOwnPropertyDescriptor(process, 'arch');
+    Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });
+    Object.defineProperty(process, 'arch', { value: 'x64', configurable: true });
+    restoreProcessHost = () => {
+      if (platformDescriptor) {
+        Object.defineProperty(process, 'platform', platformDescriptor);
+      }
+      if (archDescriptor) {
+        Object.defineProperty(process, 'arch', archDescriptor);
+      }
+    };
     const vscode = require('vscode');
     vscode.workspace.getConfiguration.mockReturnValue({
       get: jest.fn((key: string, defaultValue?: unknown) => {
@@ -1329,6 +1719,8 @@ describe('BinaryDownloader getLatestRelease timeout', () => {
   });
 
   afterEach(() => {
+    restoreProcessHost?.();
+    restoreProcessHost = undefined;
     jest.restoreAllMocks();
   });
 
@@ -1346,14 +1738,25 @@ describe('BinaryDownloader getLatestRelease timeout', () => {
 
   test('resolves a successful release response and clears the pending timer', async () => {
     const seams = downloader as unknown as DownloaderSeams;
-    const release = { tag_name: 'v1.2.3', assets: [] };
-    const response = new EventEmitter() as TestResponse;
+    const release = {
+      tag_name: 'v1.2.3',
+      prerelease: false,
+      assets: [
+        {
+          name: 'perllsp-1.2.3-x86_64-unknown-linux-gnu.tar.gz',
+          browser_download_url:
+            'https://example.invalid/perllsp-1.2.3-x86_64-unknown-linux-gnu.tar.gz',
+        },
+      ],
+    };
+    const response = makeResponse();
     const request = new EventEmitter() as TestRequest;
     request.destroy = jest.fn();
     jest.spyOn(seams, 'httpGet').mockImplementation((_https, _url, _options, callback) => {
       (callback as (value: unknown) => void)(response);
       process.nextTick(() => {
-        response.emit('data', JSON.stringify(release));
+        // The latest channel now fetches the release list; the selector picks.
+        response.emit('data', JSON.stringify([release]));
         response.emit('end');
       });
       return request;
@@ -1361,6 +1764,316 @@ describe('BinaryDownloader getLatestRelease timeout', () => {
 
     await expect(seams.getLatestRelease(1000)).resolves.toEqual(release);
     expect(request.destroy).not.toHaveBeenCalled();
+  });
+
+  // The array response is only requested for `channel === 'stable'`. These
+  // three controls pin the fail-closed selection: an explicit `prerelease:
+  // false` is required, and neither a prerelease nor a release that omits the
+  // field may be installed for a user who selected stable.
+  function stableChannelConfig(): void {
+    const vscode = require('vscode');
+    vscode.workspace.getConfiguration.mockReturnValue({
+      get: jest.fn((key: string, defaultValue?: unknown) => {
+        if (key === 'channel') {
+          return 'stable';
+        }
+        if (key === 'downloadBaseUrl') {
+          return '';
+        }
+        return defaultValue;
+      }),
+      update: jest.fn(),
+    });
+  }
+
+  function respondWithReleaseList(seams: DownloaderSeams, releases: unknown[]): void {
+    const response = makeResponse();
+    const request = new EventEmitter() as TestRequest;
+    request.destroy = jest.fn();
+    jest.spyOn(seams, 'httpGet').mockImplementation((_https, _url, _options, callback) => {
+      (callback as (value: unknown) => void)(response);
+      process.nextTick(() => {
+        response.emit('data', JSON.stringify(releases));
+        response.emit('end');
+      });
+      return request;
+    });
+  }
+
+  test('selects the release that explicitly declares prerelease false', async () => {
+    const seams = downloader as unknown as DownloaderSeams;
+    stableChannelConfig();
+    respondWithReleaseList(seams, [
+      { tag_name: 'v2.0.0-rc.1', prerelease: true, assets: [] },
+      {
+        tag_name: 'v1.9.0',
+        prerelease: false,
+        assets: [
+          {
+            name: 'perllsp-1.9.0-x86_64-unknown-linux-gnu.tar.gz',
+            browser_download_url:
+              'https://example.invalid/perllsp-1.9.0-x86_64-unknown-linux-gnu.tar.gz',
+          },
+        ],
+      },
+    ]);
+
+    await expect(seams.getLatestRelease(1000)).resolves.toMatchObject({ tag_name: 'v1.9.0' });
+  });
+
+  test('a historical mistagged release cannot poison the stable route (hosted-smoke regression)', async () => {
+    const seams = downloader as unknown as DownloaderSeams;
+    stableChannelConfig();
+    // Mirrors the live EffortlessMetrics/perl-lsp release history: v0.13.1
+    // carries prerelease:true on a stable-semver tag.
+    respondWithReleaseList(seams, [
+      {
+        tag_name: 'v1.9.0',
+        prerelease: false,
+        assets: [
+          {
+            name: 'perllsp-1.9.0-x86_64-unknown-linux-gnu.tar.gz',
+            browser_download_url:
+              'https://example.invalid/perllsp-1.9.0-x86_64-unknown-linux-gnu.tar.gz',
+          },
+        ],
+      },
+      { tag_name: 'v0.13.1', prerelease: true, assets: [] },
+    ]);
+
+    await expect(seams.getLatestRelease(1000)).resolves.toMatchObject({ tag_name: 'v1.9.0' });
+  });
+
+  test('an explicit tag pin of a mistagged historical release still installs (smoke shape)', async () => {
+    const seams = downloader as unknown as DownloaderSeams;
+    // The hosted managed-binary smoke pins channel=tag, versionTag=v0.13.1.
+    // The mistag quarantine protects recency channels; an exact pin chooses
+    // one specific artifact and must keep working.
+    const vscode = require('vscode');
+    vscode.workspace.getConfiguration.mockReturnValue({
+      get: jest.fn((key: string, defaultValue?: unknown) => {
+        if (key === 'channel') {
+          return 'tag';
+        }
+        if (key === 'versionTag') {
+          return 'v0.13.1';
+        }
+        if (key === 'downloadBaseUrl') {
+          return '';
+        }
+        return defaultValue;
+      }),
+      update: jest.fn(),
+    });
+    const response = makeResponse();
+    const request = new EventEmitter() as TestRequest;
+    request.destroy = jest.fn();
+    jest.spyOn(seams, 'httpGet').mockImplementation((_https, _url, _options, callback) => {
+      (callback as (value: unknown) => void)(response);
+      process.nextTick(() => {
+        response.emit(
+          'data',
+          JSON.stringify({
+            tag_name: 'v0.13.1',
+            prerelease: true,
+            assets: [
+              {
+                name: 'perllsp-0.13.1-x86_64-unknown-linux-gnu.tar.gz',
+                browser_download_url:
+                  'https://example.invalid/perllsp-0.13.1-x86_64-unknown-linux-gnu.tar.gz',
+              },
+            ],
+          }),
+        );
+        response.emit('end');
+      });
+      return request;
+    });
+
+    await expect(seams.getLatestRelease(1000)).resolves.toMatchObject({ tag_name: 'v0.13.1' });
+  });
+
+  test('refuses to install a prerelease when the stable channel has no stable release', async () => {
+    const seams = downloader as unknown as DownloaderSeams;
+    stableChannelConfig();
+    respondWithReleaseList(seams, [
+      { tag_name: 'v2.0.0-rc.2', prerelease: true, assets: [] },
+      { tag_name: 'v2.0.0-rc.1', prerelease: true, assets: [] },
+    ]);
+
+    await expect(seams.getLatestRelease(1000)).rejects.toThrow('No stable release found');
+  });
+
+  test('does not treat a release that omits prerelease as stable', async () => {
+    const seams = downloader as unknown as DownloaderSeams;
+    stableChannelConfig();
+    respondWithReleaseList(seams, [{ tag_name: 'v1.9.0', assets: [] }]);
+
+    // The omitted prerelease flag is unresolved metadata: the adapter maps it
+    // fail-closed, the record then disagrees with its parsed semver, and the
+    // selector refuses the whole input rather than guessing.
+    await expect(seams.getLatestRelease(1000)).rejects.toThrow(
+      'Managed release metadata is not proven',
+    );
+  });
+
+  test('reports a missing release when GitHub answers 404', async () => {
+    const seams = downloader as unknown as DownloaderSeams;
+    const response = makeResponse(404);
+    const request = new EventEmitter() as TestRequest;
+    request.destroy = jest.fn();
+    jest.spyOn(seams, 'httpGet').mockImplementation((_https, _url, _options, callback) => {
+      (callback as (value: unknown) => void)(response);
+      process.nextTick(() => {
+        response.emit('data', JSON.stringify({ message: 'Not Found' }));
+        response.emit('end');
+      });
+      return request;
+    });
+
+    await expect(seams.getLatestRelease(1000)).rejects.toThrow('No releases found');
+  });
+
+  test('rejects release metadata that does not match the expected schema', async () => {
+    const seams = downloader as unknown as DownloaderSeams;
+    const response = makeResponse();
+    const request = new EventEmitter() as TestRequest;
+    request.destroy = jest.fn();
+    jest.spyOn(seams, 'httpGet').mockImplementation((_https, _url, _options, callback) => {
+      (callback as (value: unknown) => void)(response);
+      process.nextTick(() => {
+        response.emit('data', JSON.stringify({ tag_name: 'v1.2.3', assets: 'not-an-array' }));
+        response.emit('end');
+      });
+      return request;
+    });
+
+    await expect(seams.getLatestRelease(1000)).rejects.toThrow(
+      'Release metadata response has an invalid schema',
+    );
+  });
+
+  test('stops an in-flight metadata request when the progress token cancels', async () => {
+    const seams = downloader as unknown as DownloaderSeams;
+    const response = makeResponse();
+    const request = new EventEmitter() as TestRequest;
+    request.destroy = jest.fn();
+    const listeners = new Set<() => void>();
+    const token: TestCancellation = {
+      isCancellationRequested: false,
+      onCancellationRequested: (listener) => {
+        listeners.add(listener);
+        return { dispose: () => listeners.delete(listener) };
+      },
+    };
+
+    jest.spyOn(seams, 'httpGet').mockImplementation((_https, _url, _options, callback) => {
+      (callback as (value: unknown) => void)(response);
+      // The body never completes; only cancellation can settle this request.
+      process.nextTick(() => {
+        response.emit('data', '{');
+        token.isCancellationRequested = true;
+        for (const listener of [...listeners]) {
+          listener();
+        }
+      });
+      return request;
+    });
+
+    await expect(seams.getLatestRelease(60000, token)).rejects.toThrow('Release fetch cancelled');
+    expect(request.destroy).toHaveBeenCalledTimes(1);
+  });
+
+  test('encodes a configured release tag before it reaches the API path', async () => {
+    const seams = downloader as unknown as DownloaderSeams;
+    const response = makeResponse();
+    const request = new EventEmitter() as TestRequest;
+    request.destroy = jest.fn();
+
+    const vscode = require('vscode');
+    vscode.workspace.getConfiguration.mockReturnValue({
+      get: jest.fn((key: string, defaultValue?: unknown) => {
+        if (key === 'channel') {
+          return 'tag';
+        }
+        if (key === 'versionTag') {
+          return '../../../other-repo/releases/latest?x=1';
+        }
+        if (key === 'downloadBaseUrl') {
+          return '';
+        }
+        return defaultValue;
+      }),
+      update: jest.fn(),
+    });
+
+    let capturedUrl = '';
+    jest.spyOn(seams, 'httpGet').mockImplementation((_https, url, _options, callback) => {
+      capturedUrl = url as string;
+      (callback as (value: unknown) => void)(response);
+      process.nextTick(() => {
+        response.emit(
+          'data',
+          JSON.stringify({ tag_name: 'v1.2.3', prerelease: false, assets: [] }),
+        );
+        response.emit('end');
+      });
+      return request;
+    });
+
+    // The selector enforces the exact configured tag: a 200 echo whose
+    // tag_name does not match the configuration is refused, not normalized.
+    await expect(seams.getLatestRelease(1000)).rejects.toThrow(
+      'No compatible managed release found',
+    );
+
+    expect(capturedUrl).toBe(
+      'https://api.github.com/repos/EffortlessMetrics/perl-lsp/releases/tags/' +
+        '..%2F..%2F..%2Fother-repo%2Freleases%2Flatest%3Fx%3D1',
+    );
+  });
+
+  test('hands the progress cancellation token to the metadata request', async () => {
+    const seams = downloader as unknown as DownloaderSeams & {
+      downloadWithProgress: () => Promise<string>;
+    };
+    const vscode = require('vscode');
+    let progressToken: TestCancellation | undefined;
+    vscode.window.withProgress.mockImplementationOnce(
+      async (_options: unknown, task: (progress: unknown, token: unknown) => Promise<unknown>) => {
+        progressToken = {
+          isCancellationRequested: false,
+          onCancellationRequested: jest.fn(() => ({ dispose: jest.fn() })),
+        };
+        return task({ report: jest.fn() }, progressToken);
+      },
+    );
+    const getLatestRelease = jest
+      .spyOn(seams, 'getLatestRelease')
+      .mockRejectedValue(new Error('metadata seam reached'));
+
+    await expect(seams.downloadWithProgress()).rejects.toThrow('metadata seam reached');
+    expect(getLatestRelease).toHaveBeenCalledWith(30000, progressToken);
+  });
+
+  test('rejects a metadata body that exceeds the release envelope', async () => {
+    const seams = downloader as unknown as DownloaderSeams;
+    const response = makeResponse();
+    const request = new EventEmitter() as TestRequest;
+    request.destroy = jest.fn();
+    jest.spyOn(seams, 'httpGet').mockImplementation((_https, _url, _options, callback) => {
+      (callback as (value: unknown) => void)(response);
+      process.nextTick(() => {
+        // Two chunks of 768 KiB cross the 1 MiB envelope mid-stream.
+        response.emit('data', Buffer.alloc(768 * 1024, 0x61));
+        response.emit('data', Buffer.alloc(768 * 1024, 0x61));
+        response.emit('end');
+      });
+      return request;
+    });
+
+    await expect(seams.getLatestRelease(60000)).rejects.toThrow('exceeded 1048576 bytes');
+    expect(request.destroy).toHaveBeenCalledTimes(1);
   });
 
   test('rejects with the request error before the timeout fires', async () => {
@@ -1379,10 +2092,9 @@ describe('BinaryDownloader getLatestRelease timeout', () => {
 
   test('omits GitHub bearer credentials when proxyStrictSSL is disabled', async () => {
     const seams = downloader as unknown as DownloaderSeams;
-    const response = new EventEmitter() as TestResponse;
+    const response = makeResponse();
     const request = new EventEmitter() as TestRequest;
     request.destroy = jest.fn();
-    const priorToken = process.env.GITHUB_TOKEN;
     process.env.GITHUB_TOKEN = 'test-token-should-not-leak';
 
     const vscode = require('vscode');
@@ -1407,22 +2119,210 @@ describe('BinaryDownloader getLatestRelease timeout', () => {
       capturedOptions = options as { headers?: Record<string, string> };
       (callback as (value: unknown) => void)(response);
       process.nextTick(() => {
-        response.emit('data', JSON.stringify({ tag_name: 'v1.2.3', assets: [] }));
+        response.emit(
+          'data',
+          JSON.stringify([
+            {
+              tag_name: 'v1.2.3',
+              prerelease: false,
+              assets: [
+                {
+                  name: 'perllsp-1.2.3-x86_64-unknown-linux-gnu.tar.gz',
+                  browser_download_url:
+                    'https://example.invalid/perllsp-1.2.3-x86_64-unknown-linux-gnu.tar.gz',
+                },
+              ],
+            },
+          ]),
+        );
         response.emit('end');
       });
       return request;
     });
 
-    try {
-      await seams.getLatestRelease(1000);
-      expect(capturedOptions?.headers?.Authorization).toBeUndefined();
-    } finally {
-      if (priorToken === undefined) {
-        delete process.env.GITHUB_TOKEN;
-      } else {
-        process.env.GITHUB_TOKEN = priorToken;
-      }
+    await seams.getLatestRelease(1000);
+    expect(capturedOptions?.headers?.Authorization).toBeUndefined();
+  });
+
+  /**
+   * The credential decision is named rather than inferred (#15493): the reason
+   * the token was dropped reaches the log, and the token itself never does.
+   */
+  test('records why credentials were withheld without logging the token', async () => {
+    // This control reads the log, so it needs its own channel rather than the
+    // shared fixture's discarded one.
+    const channel = makeOutputChannel();
+    const localDownloader = new BinaryDownloader(
+      makeContext(),
+      channel,
+    ) as unknown as TestDownloader;
+    jest
+      .spyOn(localDownloader as unknown as { getPlatformTarget: () => string }, 'getPlatformTarget')
+      .mockReturnValue('x86_64-unknown-linux-gnu');
+    const seams = localDownloader as unknown as DownloaderSeams;
+    const response = makeResponse();
+    const request = new EventEmitter() as TestRequest;
+    request.destroy = jest.fn();
+    process.env.GITHUB_TOKEN = 'test-token-should-not-leak';
+
+    const vscode = require('vscode');
+    vscode.workspace.getConfiguration.mockReturnValue({
+      get: jest.fn((key: string, defaultValue?: unknown) => {
+        if (key === 'channel') {
+          return 'latest';
+        }
+        if (key === 'downloadBaseUrl') {
+          return '';
+        }
+        if (key === 'proxyStrictSSL') {
+          return false;
+        }
+        return defaultValue;
+      }),
+      update: jest.fn(),
+    });
+
+    jest.spyOn(seams, 'httpGet').mockImplementation((_https, _url, _options, callback) => {
+      (callback as (value: unknown) => void)(response);
+      process.nextTick(() => {
+        response.emit(
+          'data',
+          JSON.stringify([
+            {
+              tag_name: 'v1.2.3',
+              prerelease: false,
+              assets: [
+                {
+                  name: 'perllsp-1.2.3-x86_64-unknown-linux-gnu.tar.gz',
+                  browser_download_url:
+                    'https://example.invalid/perllsp-1.2.3-x86_64-unknown-linux-gnu.tar.gz',
+                },
+              ],
+            },
+          ]),
+        );
+        response.emit('end');
+      });
+      return request;
+    });
+
+    await seams.getLatestRelease(1000);
+    const logged = (channel.appendLine as unknown as jest.Mock).mock.calls
+      .map((call) => String(call[0]))
+      .join('\n');
+    expect(logged).toMatch(/withheld/i);
+    expect(logged).toMatch(/http\.proxyStrictSSL/);
+    expect(logged).not.toContain('test-token-should-not-leak');
+  });
+
+  test('sends GitHub bearer credentials when certificate validation is on', async () => {
+    const seams = downloader as unknown as DownloaderSeams;
+    const response = makeResponse();
+    const request = new EventEmitter() as TestRequest;
+    request.destroy = jest.fn();
+    process.env.GITHUB_TOKEN = 'test-token-should-be-sent';
+
+    const vscode = require('vscode');
+    vscode.workspace.getConfiguration.mockReturnValue({
+      get: jest.fn((key: string, defaultValue?: unknown) => {
+        if (key === 'channel') {
+          return 'latest';
+        }
+        if (key === 'downloadBaseUrl') {
+          return '';
+        }
+        if (key === 'proxyStrictSSL') {
+          return true;
+        }
+        return defaultValue;
+      }),
+      update: jest.fn(),
+    });
+
+    let capturedOptions: { headers?: Record<string, string> } | undefined;
+    jest.spyOn(seams, 'httpGet').mockImplementation((_https, _url, options, callback) => {
+      capturedOptions = options as { headers?: Record<string, string> };
+      (callback as (value: unknown) => void)(response);
+      process.nextTick(() => {
+        response.emit(
+          'data',
+          JSON.stringify([
+            {
+              tag_name: 'v1.2.3',
+              prerelease: false,
+              assets: [
+                {
+                  name: 'perllsp-1.2.3-x86_64-unknown-linux-gnu.tar.gz',
+                  browser_download_url:
+                    'https://example.invalid/perllsp-1.2.3-x86_64-unknown-linux-gnu.tar.gz',
+                },
+              ],
+            },
+          ]),
+        );
+        response.emit('end');
+      });
+      return request;
+    });
+
+    await seams.getLatestRelease(1000);
+    expect(capturedOptions?.headers?.Authorization).toBe('Bearer test-token-should-be-sent');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// GitHub credential policy (#15493)
+// ---------------------------------------------------------------------------
+describe('GitHub API credential policy', () => {
+  isolateGitHubTokenEnv();
+
+  const apiUrl = 'https://api.github.com/repos/EffortlessMetrics/perl-lsp/releases';
+
+  test('attaches the credential to a GitHub API host over verified TLS', () => {
+    expect(resolveGitHubAuthDisposition({ url: apiUrl, hasToken: true, strictTls: true })).toBe(
+      'sent',
+    );
+  });
+
+  test('withholds the credential when certificate validation is disabled', () => {
+    expect(resolveGitHubAuthDisposition({ url: apiUrl, hasToken: true, strictTls: false })).toBe(
+      'withheld_unverified_tls',
+    );
+  });
+
+  test('reports the absent token separately from a transport refusal', () => {
+    expect(resolveGitHubAuthDisposition({ url: apiUrl, hasToken: false, strictTls: true })).toBe(
+      'no_token',
+    );
+    expect(resolveGitHubAuthDisposition({ url: apiUrl, hasToken: false, strictTls: false })).toBe(
+      'no_token',
+    );
+  });
+
+  test('never offers the credential to another host', () => {
+    for (const url of [
+      'https://api.github.com.evil.invalid/repos/x/y/releases',
+      'https://objects.githubusercontent.com/release.tar.gz',
+      'https://internal.invalid/releases',
+      'http://api.github.com/repos/x/y/releases',
+    ]) {
+      expect(resolveGitHubAuthDisposition({ url, hasToken: true, strictTls: true })).toBe(
+        'not_github_api_host',
+      );
     }
+  });
+
+  test('reads either supported token variable', () => {
+    expect(readGitHubToken()).toBeUndefined();
+
+    process.env.GH_TOKEN = 'gh-token';
+    expect(readGitHubToken()).toBe('gh-token');
+
+    process.env.GITHUB_TOKEN = 'github-token';
+    expect(readGitHubToken()).toBe('github-token');
+
+    process.env.GITHUB_TOKEN = '';
+    expect(readGitHubToken()).toBe('gh-token');
   });
 });
 
@@ -1491,6 +2391,130 @@ describe('release asset candidate selection', () => {
 
     expect(candidates[0]).toBe('perllsp-0.13.1-x86_64-pc-windows-msvc.zip');
     expect(candidates).toContain('perllsp-v0.13.1-x86_64-pc-windows-msvc.zip');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// SHA256SUMS anchored digest lookup (#9839)
+//
+// A line only counts when the digest is a whole leading token and the file
+// name field exactly equals the requested asset. Substring containment let a
+// crafted filename that merely contained the requested name (or an embedded
+// digest string) satisfy verification with an attacker-chosen digest.
+// ---------------------------------------------------------------------------
+describe('SHA256SUMS anchored digest lookup', () => {
+  const GOOD_DIGEST = 'ab'.repeat(32);
+  const EVIL_DIGEST = 'cd'.repeat(32);
+  const ASSET_NAME = 'perllsp-0.13.1-x86_64-pc-windows-msvc.zip';
+
+  test('rejects crafted decoy whose filename embeds a valid digest plus the requested suffix (#9839 falsifier)', () => {
+    // Today's substring match resolves `evil.asset` to EVIL_DIGEST because the
+    // decoy filename contains it; the embedded "valid" digest makes the craft
+    // look genuine at a glance.
+    const sums = `${EVIL_DIGEST}  xx${GOOD_DIGEST}evil.asset\n`;
+
+    expect(lookupSha256SumsDigest(sums, 'evil.asset')).toEqual({ status: 'absent' });
+  });
+
+  test('decoy line containing the asset name as a substring cannot shadow the real entry', () => {
+    const sums = [
+      `${EVIL_DIGEST}  prefix-${ASSET_NAME}.bak`,
+      `${GOOD_DIGEST}  ${ASSET_NAME}`,
+      '',
+      '',
+    ].join('\n');
+
+    expect(lookupSha256SumsDigest(sums, ASSET_NAME)).toEqual({
+      status: 'found',
+      digest: GOOD_DIGEST,
+    });
+  });
+
+  test('resolves genuine sha256sum entries across binary modes, tabs, and CRLF', () => {
+    const binaryMarker = `${GOOD_DIGEST} *${ASSET_NAME}\n`;
+    expect(lookupSha256SumsDigest(binaryMarker, ASSET_NAME)).toEqual({
+      status: 'found',
+      digest: GOOD_DIGEST,
+    });
+
+    const tabSeparated = `${GOOD_DIGEST}\t${ASSET_NAME}\n`;
+    expect(lookupSha256SumsDigest(tabSeparated, ASSET_NAME)).toEqual({
+      status: 'found',
+      digest: GOOD_DIGEST,
+    });
+
+    const amongOthers = [
+      `${'11'.repeat(32)}  unrelated.tar.gz`,
+      `${GOOD_DIGEST}  ${ASSET_NAME}`,
+      `${'22'.repeat(32)}  another.zip`,
+      '',
+    ].join('\n');
+    expect(lookupSha256SumsDigest(amongOthers, ASSET_NAME)).toEqual({
+      status: 'found',
+      digest: GOOD_DIGEST,
+    });
+  });
+
+  test('rejects uppercase digest characters as non-canonical', () => {
+    const uppercaseDigest = GOOD_DIGEST.toUpperCase();
+    const sums = `${uppercaseDigest}  ${ASSET_NAME}\r\n`;
+
+    expect(lookupSha256SumsDigest(sums, ASSET_NAME)).toEqual({ status: 'malformed' });
+  });
+
+  test('fails closed on malformed lines even when they mention the asset name', () => {
+    const malformedEntries = [
+      // Digest one character short.
+      `${GOOD_DIGEST.slice(0, 63)}  ${ASSET_NAME}`,
+      // Digest one character long.
+      `${GOOD_DIGEST}a  ${ASSET_NAME}`,
+      // Non-hex character inside the digest token.
+      `${GOOD_DIGEST.slice(0, 31) + 'g' + GOOD_DIGEST.slice(32)}  ${ASSET_NAME}`,
+    ];
+
+    for (const sums of malformedEntries) {
+      expect(lookupSha256SumsDigest(`${sums}\n`, ASSET_NAME)).toEqual({ status: 'malformed' });
+    }
+
+    const ignoredCases = [
+      // Digest glued to the filename without a separator.
+      `${GOOD_DIGEST}${ASSET_NAME}`,
+      // Reversed (BSD-style) ordering is not sha256sum format.
+      `${ASSET_NAME}  ${GOOD_DIGEST}`,
+      // Indented entry never comes from sha256sum output.
+      `  ${GOOD_DIGEST}  ${ASSET_NAME}`,
+      // Prose mentioning the asset carries no digest token.
+      `checksum for ${ASSET_NAME} pending`,
+      // Empty manifest.
+      '',
+      // Comment-style line.
+      `# ${GOOD_DIGEST}  ${ASSET_NAME}`,
+    ];
+
+    for (const sums of ignoredCases) {
+      expect(lookupSha256SumsDigest(`${sums}\n`, ASSET_NAME)).toEqual({ status: 'absent' });
+    }
+  });
+
+  test('duplicate entries are conflicting and fail closed, even when they agree', () => {
+    const conflicting = [`${GOOD_DIGEST}  ${ASSET_NAME}`, `${EVIL_DIGEST}  ${ASSET_NAME}`, ''].join(
+      '\n',
+    );
+    expect(lookupSha256SumsDigest(conflicting, ASSET_NAME)).toEqual({ status: 'conflicting' });
+
+    const agreeing = [`${GOOD_DIGEST}  ${ASSET_NAME}`, `${GOOD_DIGEST}  ${ASSET_NAME}`, ''].join(
+      '\n',
+    );
+    expect(lookupSha256SumsDigest(agreeing, ASSET_NAME)).toEqual({ status: 'conflicting' });
+
+    const validAndMalformed = [
+      `${GOOD_DIGEST}  ${ASSET_NAME}`,
+      `${GOOD_DIGEST.slice(0, 63)}  ${ASSET_NAME}`,
+      '',
+    ].join('\n');
+    expect(lookupSha256SumsDigest(validAndMalformed, ASSET_NAME)).toEqual({
+      status: 'conflicting',
+    });
   });
 });
 
@@ -1641,11 +2665,7 @@ describe('checkForUpdateSilent', () => {
     // Place a stub binary in the expected auto-download location so
     // fs.existsSync passes.
     const binaryName = process.platform === 'win32' ? 'perllsp.exe' : 'perllsp';
-    const binDir = path.join(
-      ctx.globalStorageUri.fsPath,
-      'bin',
-      `${process.platform}-${process.arch}`,
-    );
+    const binDir = hostNamespaceDir(ctx.globalStorageUri.fsPath);
     fs.mkdirSync(binDir, { recursive: true });
     tmpBinary = path.join(binDir, binaryName);
     fs.writeFileSync(tmpBinary, '#!/bin/sh\necho "perllsp 0.12.0"');
@@ -1847,7 +2867,7 @@ describe('checkForUpdateSilent', () => {
     expect(vscode.window.showInformationMessage).not.toHaveBeenCalled();
   });
 
-  test('records lastUpdateCheck timestamp when check runs', async () => {
+  test("records the update-check timestamp under this target's scoped key", async () => {
     mockConfig({ channel: 'latest', serverPath: '', updateCheckInterval: 24 });
     jest.spyOn(downloader, 'getLocalVersion').mockResolvedValue('0.12.0');
     jest.spyOn(downloader, 'getLatestRelease').mockResolvedValue({
@@ -1855,17 +2875,51 @@ describe('checkForUpdateSilent', () => {
       assets: [],
     });
 
+    const scopedKey = managedUpdateCheckStateKey(HOST_COMPATIBILITY_KEY)!;
     const before = Date.now();
     await downloader.checkForUpdateSilent();
     const after = Date.now();
 
-    expect(ctx.globalState.update).toHaveBeenCalledWith(
-      'perl-lsp.lastUpdateCheck',
-      expect.any(Number),
-    );
-    const recorded = ctx.globalState._store.get('perl-lsp.lastUpdateCheck') as number;
+    expect(ctx.globalState.update).toHaveBeenCalledWith(scopedKey, expect.any(Number));
+    const recorded = ctx.globalState._store.get(scopedKey) as number;
     expect(recorded).toBeGreaterThanOrEqual(before);
     expect(recorded).toBeLessThanOrEqual(after);
+    // The unscoped pre-#9847 key must not be advanced: it is shared by every
+    // compatibility target sitting in one global state object.
+    expect(ctx.globalState._store.get('perl-lsp.lastUpdateCheck')).toBeUndefined();
+  });
+
+  test("a foreign target's recent check does not suppress this target's check", async () => {
+    // A sibling host — same global state, different compatibility key — checked
+    // for updates a moment ago. That must not silence this host (#9847).
+    const foreignKey = managedUpdateCheckStateKey(
+      HOST_COMPATIBILITY_KEY.endsWith('-musl')
+        ? 'x86_64-unknown-linux-gnu'
+        : 'x86_64-unknown-linux-musl',
+    )!;
+    ctx.globalState._store.set(foreignKey, Date.now());
+    mockConfig({ channel: 'latest', serverPath: '', updateCheckInterval: 24 });
+    jest.spyOn(downloader, 'getLocalVersion').mockResolvedValue('0.12.0');
+    const getLatestSpy = jest.spyOn(downloader, 'getLatestRelease').mockResolvedValue({
+      tag_name: 'v0.12.0',
+      assets: [],
+    });
+
+    await downloader.checkForUpdateSilent();
+
+    expect(getLatestSpy).toHaveBeenCalled();
+  });
+
+  test('the unscoped pre-#9847 timestamp still suppresses an immediate check', async () => {
+    // Upgrading the extension must not force every installed host to check at
+    // once; the legacy value seeds this target's first scoped decision.
+    ctx.globalState._store.set('perl-lsp.lastUpdateCheck', Date.now());
+    mockConfig({ channel: 'latest', serverPath: '', updateCheckInterval: 24 });
+    const getLatestSpy = jest.spyOn(downloader, 'getLatestRelease');
+
+    await downloader.checkForUpdateSilent();
+
+    expect(getLatestSpy).not.toHaveBeenCalled();
   });
 
   test('strips "v" prefix from remote tag_name before comparison', async () => {
@@ -1923,6 +2977,8 @@ describe('checkForUpdateSilent', () => {
 // ensureBinary error classification — actionable messages (#3274)
 // ---------------------------------------------------------------------------
 describe('ensureBinary error classification', () => {
+  isolateGitHubTokenEnv();
+
   let ctx: FullTestContext;
   let outputChannel: vscode.OutputChannel;
   let downloader: TestDownloader;
@@ -2053,6 +3109,215 @@ describe('ensureBinary error classification', () => {
     const call = vscode.window.showErrorMessage.mock.calls[0];
     expect(call[0]).toMatch(/403|rate.?limit|GITHUB_TOKEN/i);
     expect(call[0]).toMatch(/perl-lsp\.serverPath/);
+  });
+
+  /**
+   * A 403 is diagnosed against the credential decision the refused request
+   * actually used (#15493). Telling a user to set GITHUB_TOKEN is wrong advice
+   * when the token exists and was withheld because certificate validation is
+   * disabled — and the `proxyStrictSSL` remedy is equally wrong for a 403 from
+   * the archive or checksum download, which never carries credentials.
+   */
+  function withStrictSSL(strictSSL: boolean): void {
+    const vscode = require('vscode');
+    vscode.workspace.getConfiguration.mockImplementation(() => ({
+      get: jest.fn((key: string, defaultValue?: unknown) =>
+        key === 'proxyStrictSSL' ? strictSSL : defaultValue,
+      ),
+      has: jest.fn(() => false),
+      inspect: jest.fn(),
+      update: jest.fn(),
+    }));
+  }
+
+  /**
+   * Drive a real release-metadata request that GitHub refuses with 403, so the
+   * remedy is derived from the disposition that request actually used rather
+   * than from a stubbed error string.
+   */
+  function setupReleaseMetadata403(): void {
+    (
+      downloader as unknown as { downloadWithProgress: { mockRestore?: () => void } }
+    ).downloadWithProgress.mockRestore?.();
+
+    jest
+      .spyOn(downloader as unknown as { getPlatformTarget: () => string }, 'getPlatformTarget')
+      .mockReturnValue('x86_64-unknown-linux-gnu');
+
+    jest
+      .spyOn(downloader as unknown as { httpGet: (...args: unknown[]) => unknown }, 'httpGet')
+      .mockImplementation((..._args: unknown[]) => {
+        const callback = _args[3] as (value: unknown) => void;
+        const response = new EventEmitter() as EventEmitter & {
+          statusCode: number;
+          headers: Record<string, string>;
+          destroy: jest.Mock;
+        };
+        response.statusCode = 403;
+        response.headers = {};
+        response.destroy = jest.fn();
+        callback(response);
+        process.nextTick(() => response.emit('end'));
+        const request = new EventEmitter() as EventEmitter & { destroy: jest.Mock };
+        request.destroy = jest.fn();
+        return request;
+      });
+  }
+
+  test('metadata 403 names proxyStrictSSL when a present token was withheld', async () => {
+    process.env.GITHUB_TOKEN = 'test-token-should-not-leak';
+    withStrictSSL(false);
+    setupReleaseMetadata403();
+    const vscode = require('vscode');
+    vscode.window.showErrorMessage.mockResolvedValue(undefined);
+
+    await downloader.ensureBinary();
+
+    const message = vscode.window.showErrorMessage.mock.calls[0][0] as string;
+    expect(message).toMatch(/http\.proxyStrictSSL/);
+    // The user already set a token; repeating that advice sends them to the
+    // wrong setting.
+    expect(message).not.toMatch(/set the GITHUB_TOKEN environment variable/);
+    expect(message).not.toContain('test-token-should-not-leak');
+    expect(message).toMatch(/perl-lsp\.serverPath/);
+  });
+
+  test('metadata 403 keeps the token advice when no token was withheld', async () => {
+    // Certificate validation is off, but there is no credential to withhold
+    // (the hooks cleared both variables), so the anonymous rate limit really is
+    // the whole story.
+    withStrictSSL(false);
+    setupReleaseMetadata403();
+    const vscode = require('vscode');
+    vscode.window.showErrorMessage.mockResolvedValue(undefined);
+
+    await downloader.ensureBinary();
+
+    const message = vscode.window.showErrorMessage.mock.calls[0][0] as string;
+    expect(message).toMatch(/set the GITHUB_TOKEN environment variable/);
+    expect(message).not.toMatch(/http\.proxyStrictSSL/);
+  });
+
+  test('metadata 403 keeps the token advice when the token was sent', async () => {
+    process.env.GITHUB_TOKEN = 'test-token-should-not-leak';
+    withStrictSSL(true);
+    setupReleaseMetadata403();
+    const vscode = require('vscode');
+    vscode.window.showErrorMessage.mockResolvedValue(undefined);
+
+    await downloader.ensureBinary();
+
+    const message = vscode.window.showErrorMessage.mock.calls[0][0] as string;
+    expect(message).toMatch(/set the GITHUB_TOKEN environment variable/);
+    expect(message).not.toMatch(/http\.proxyStrictSSL/);
+    expect(message).not.toContain('test-token-should-not-leak');
+  });
+
+  /**
+   * A force call that arrives while an ensure install is in flight waits for
+   * it, then runs its own. The 403 record belongs to the run that owns it: the
+   * waiting call must not inherit the in-flight run's disposition, and must not
+   * wipe it out from under that run either.
+   */
+  test('a force run joined behind an ensure does not inherit its 403 disposition', async () => {
+    type Seams = {
+      releaseMetadata403Disposition?: string;
+      runEnsureBinary: (forceDownload: boolean) => Promise<string | null>;
+    };
+    const seams = downloader as unknown as Seams;
+
+    let releaseEnsure!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      releaseEnsure = resolve;
+    });
+
+    let dispositionSeenByForceRun: string | undefined = 'never-ran';
+    const runSpy = jest.spyOn(seams, 'runEnsureBinary');
+    // The in-flight ensure records a metadata 403 while the force call waits.
+    runSpy.mockImplementationOnce(async () => {
+      await gate;
+      seams.releaseMetadata403Disposition = 'withheld_unverified_tls';
+      throw new Error('Release fetch failed: HTTP 403');
+    });
+    // The force call's own run must start from a clean record.
+    runSpy.mockImplementationOnce(async () => {
+      dispositionSeenByForceRun = seams.releaseMetadata403Disposition;
+      return null;
+    });
+
+    const vscode = require('vscode');
+    vscode.window.showErrorMessage.mockResolvedValue(undefined);
+
+    const ensureCall = downloader.ensureBinary(false).catch(() => null);
+    await Promise.resolve();
+    const forceCall = downloader.ensureBinary(true).catch(() => null);
+    await Promise.resolve();
+    releaseEnsure();
+    await ensureCall;
+    await forceCall;
+
+    expect(dispositionSeenByForceRun).toBeUndefined();
+  });
+
+  /**
+   * `checkForUpdateSilent` reaches `fetchReleaseMetadata` outside the
+   * singleflight contract. Only a download run reports a remedy, so only a
+   * download run may record one.
+   */
+  test('a metadata 403 outside an owned download run records nothing', async () => {
+    process.env.GITHUB_TOKEN = 'test-token-should-not-leak';
+    withStrictSSL(false);
+
+    type Seams = {
+      releaseMetadata403Disposition?: string;
+      fetchReleaseMetadata: (url: string, timeoutMs: number, token?: unknown) => Promise<unknown>;
+      httpGet: (...args: unknown[]) => unknown;
+    };
+    const seams = downloader as unknown as Seams;
+
+    jest.spyOn(seams, 'httpGet').mockImplementation((..._args: unknown[]) => {
+      const callback = _args[3] as (value: unknown) => void;
+      const response = new EventEmitter() as EventEmitter & {
+        statusCode: number;
+        headers: Record<string, string>;
+        destroy: jest.Mock;
+      };
+      response.statusCode = 403;
+      response.headers = {};
+      response.destroy = jest.fn();
+      callback(response);
+      process.nextTick(() => response.emit('end'));
+      const request = new EventEmitter() as EventEmitter & { destroy: jest.Mock };
+      request.destroy = jest.fn();
+      return request;
+    });
+
+    // No ensureBinary around this call: it stands for the silent update check.
+    await expect(
+      seams.fetchReleaseMetadata(
+        'https://api.github.com/repos/EffortlessMetrics/perl-lsp/releases',
+        1000,
+      ),
+    ).rejects.toThrow();
+
+    expect(seams.releaseMetadata403Disposition).toBeUndefined();
+  });
+
+  test('non-metadata 403 keeps the generic advice even with a withheld credential', async () => {
+    // The archive and checksum downloads never carry credentials, so
+    // re-enabling certificate validation cannot resolve a 403 from them. The
+    // remedy must follow the refused request, not the current settings.
+    process.env.GITHUB_TOKEN = 'test-token-should-not-leak';
+    withStrictSSL(false);
+    setupDownloadError('Failed to download: HTTP 403');
+    const vscode = require('vscode');
+    vscode.window.showErrorMessage.mockResolvedValue(undefined);
+
+    await downloader.ensureBinary();
+
+    const message = vscode.window.showErrorMessage.mock.calls[0][0] as string;
+    expect(message).not.toMatch(/http\.proxyStrictSSL/);
+    expect(message).toMatch(/set the GITHUB_TOKEN environment variable/);
   });
 
   test('HTTP 404 shows not-found guidance with download URL', async () => {

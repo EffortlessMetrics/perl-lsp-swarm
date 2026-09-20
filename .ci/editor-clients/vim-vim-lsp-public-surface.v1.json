@@ -1,0 +1,129 @@
+{
+  "schema_version": "vim_lsp_public_surface.v1",
+  "artifact_role": "classification of the exact pinned vim-lsp APIs/events later Vim drivers may consume; constrains adapters without proving any user behavior (#11369)",
+  "claim_boundary": "inventory and classification only. A stable classification is source-bound to the pinned subject bytes; it is not a behavior proof, support claim, or compatibility promise across future subjects.",
+  "classification_values": [
+    "stable_public_action_or_event",
+    "public_but_version_sensitive_autoload",
+    "instrument_only_hook_requiring_justification",
+    "not_exposed_by_pinned_client",
+    "unknown_not_proven"
+  ],
+  "surfaces": [
+    {
+      "surface": "server registration and root callback",
+      "api": ["lsp#register_server(server_info)", "'root_uri' funcref in server_info", "lsp#utils#find_nearest_parent_file_directory(path, markers)", "lsp#utils#path_to_uri(dir)"],
+      "classification": "stable_public_action_or_event",
+      "evidence": [
+        {"path": "autoload/lsp.vim", "line": 210, "git_blob_sha1": "466080ee3a3be84ace86b5c46bdff3665d2ced6d"},
+        {"path": "autoload/lsp/utils.vim", "line": 245, "git_blob_sha1": "eb6d5baaa1b0780099e92aa445e6a2573cfdf97f"},
+        {"path": "autoload/lsp/utils.vim", "line": 96, "git_blob_sha1": "eb6d5baaa1b0780099e92aa445e6a2573cfdf97f"}
+      ]
+    },
+    {
+      "surface": "server initialized / buffer enabled events",
+      "api": ["User autocmd lsp_server_init", "User autocmd lsp_buffer_enabled"],
+      "classification": "stable_public_action_or_event",
+      "evidence": [
+        {"path": "autoload/lsp.vim", "line": 1060, "git_blob_sha1": "466080ee3a3be84ace86b5c46bdff3665d2ced6d"},
+        {"path": "autoload/lsp.vim", "line": 435, "git_blob_sha1": "466080ee3a3be84ace86b5c46bdff3665d2ced6d"}
+      ]
+    },
+    {
+      "surface": "client diagnostics state or event",
+      "api": ["User autocmd lsp_diagnostics_updated", "lsp#get_buffer_diagnostics_counts()"],
+      "classification": "stable_public_action_or_event",
+      "evidence": [
+        {"path": "autoload/lsp.vim", "line": 1354, "git_blob_sha1": "466080ee3a3be84ace86b5c46bdff3665d2ced6d"},
+        {"path": "autoload/lsp.vim", "line": 35, "git_blob_sha1": "466080ee3a3be84ace86b5c46bdff3665d2ced6d"}
+      ]
+    },
+    {
+      "surface": "generic request channel (hover/definition/references/rename/formatting/completion results)",
+      "api": ["lsp#send_request(server_name, request)", "lsp#get_text_document_identifier()", "lsp#get_position()"],
+      "classification": "stable_public_action_or_event",
+      "evidence": [
+        {"path": "autoload/lsp.vim", "line": 1266, "git_blob_sha1": "466080ee3a3be84ace86b5c46bdff3665d2ced6d"},
+        {"path": "autoload/lsp.vim", "line": 1140, "git_blob_sha1": "466080ee3a3be84ace86b5c46bdff3665d2ced6d"},
+        {"path": "autoload/lsp.vim", "line": 1145, "git_blob_sha1": "466080ee3a3be84ace86b5c46bdff3665d2ced6d"}
+      ]
+    },
+    {
+      "surface": "completion conversion/application",
+      "api": ["lsp#omni#get_vim_completion_items(options)"],
+      "classification": "public_but_version_sensitive_autoload",
+      "note": "omni autoload backs the omnifunc but is not documented driver API; drivers must retain a fallback and re-verify per subject bump",
+      "evidence": [
+        {"path": "autoload/lsp/omni.vim", "line": 286, "git_blob_sha1": "931b3459476eb03eee7cbfda868141c774cab983"}
+      ]
+    },
+    {
+      "surface": "rename/workspace-edit application",
+      "api": ["lsp#utils#workspace_edit#apply_workspace_edit(edit)"],
+      "classification": "public_but_version_sensitive_autoload",
+      "evidence": [
+        {"path": "autoload/lsp/utils/workspace_edit.vim", "line": 2, "git_blob_sha1": "5dafd26ca2079179410b341e6a6e15651936370b"}
+      ]
+    },
+    {
+      "surface": "formatting application",
+      "api": ["lsp#utils#text_edit#apply_text_edits(uri, text_edits)"],
+      "classification": "public_but_version_sensitive_autoload",
+      "evidence": [
+        {"path": "autoload/lsp/utils/text_edit.vim", "line": 13, "git_blob_sha1": "86558b6ac191cfbcf43e157ad068e0243bb3cf70"}
+      ]
+    },
+    {
+      "surface": "workspace configuration refresh",
+      "api": ["lsp#update_workspace_config(server_name, workspace_config)", "server_info 'workspace_config' consumed by lsp#utils#workspace_config#get_value"],
+      "classification": "stable_public_action_or_event",
+      "evidence": [
+        {"path": "autoload/lsp.vim", "line": 1403, "git_blob_sha1": "466080ee3a3be84ace86b5c46bdff3665d2ced6d"},
+        {"path": "autoload/lsp/utils/workspace_config.vim", "line": 1, "git_blob_sha1": "0304f29fb02cdcb3d9605413c72cabd5ff84b66f"}
+      ]
+    },
+    {
+      "surface": "buffer edit/open/close/reopen lifecycle",
+      "api": ["native Vim filetype/autocmd behavior plus lsp#enable() buffer tracking"],
+      "classification": "stable_public_action_or_event",
+      "note": "the lifecycle itself is host-owned; only the enable/track boundary belongs to the client",
+      "evidence": [
+        {"path": "autoload/lsp.vim", "line": 51, "git_blob_sha1": "466080ee3a3be84ace86b5c46bdff3665d2ced6d"}
+      ]
+    },
+    {
+      "surface": "server stop/restart and log/status inspection",
+      "api": ["lsp#stop_server(server_name)", "lsp#get_server_status(...)", "lsp#is_server_running(name)", "lsp#print_server_status()", "g:lsp_log_file / g:lsp_log_verbose"],
+      "classification": "stable_public_action_or_event",
+      "evidence": [
+        {"path": "autoload/lsp.vim", "line": 244, "git_blob_sha1": "466080ee3a3be84ace86b5c46bdff3665d2ced6d"},
+        {"path": "autoload/lsp.vim", "line": 151, "git_blob_sha1": "466080ee3a3be84ace86b5c46bdff3665d2ced6d"},
+        {"path": "autoload/lsp.vim", "line": 135, "git_blob_sha1": "466080ee3a3be84ace86b5c46bdff3665d2ced6d"}
+      ]
+    },
+    {
+      "surface": "didChange observation/instrumentation seam",
+      "api": ["g:lsp_log_verbose = 1 + g:lsp_log_file wire capture parsed offline"],
+      "classification": "instrument_only_hook_requiring_justification",
+      "justification": "retained wire evidence for receipts; adds no user-facing feature",
+      "evidence": [
+        {"path": "plugin/lsp.vim", "line": 10, "git_blob_sha1": "897466bcffae3f8e9c1c039f50aa927edad05f65"},
+        {"path": "plugin/lsp.vim", "line": 11, "git_blob_sha1": "897466bcffae3f8e9c1c039f50aa927edad05f65"}
+      ]
+    },
+    {
+      "surface": "experimental workspace folders",
+      "api": ["g:lsp_experimental_workspace_folders (default 0)", "lsp#capabilities#has_workspace_folders_change_notifications(server_name)"],
+      "classification": "instrument_only_hook_requiring_justification",
+      "justification": "governed observation mode only (#10960 owns any supported cell); default stays off",
+      "evidence": [
+        {"path": "plugin/lsp.vim", "line": 94, "git_blob_sha1": "897466bcffae3f8e9c1c039f50aa927edad05f65"},
+        {"path": "autoload/lsp/capabilities.vim", "line": 36, "git_blob_sha1": "119e6f0ee4d6bb38b168c8ced333b6f27c5cdc64"}
+      ]
+    }
+  ],
+  "consumer_binding": {
+    "canonical_driver": "scripts/ux/vim_vim_lsp_driver.vim",
+    "rule": "later adapters consume only surfaces classified above; anything else starts as unknown_not_proven and needs its own reviewed inventory row"
+  }
+}

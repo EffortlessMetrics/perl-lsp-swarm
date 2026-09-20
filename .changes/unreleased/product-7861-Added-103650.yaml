@@ -1,0 +1,9 @@
+project: product
+component: Packaging and distribution
+kind: Added
+body: Stage a versioned Mason registry package candidate for perllsp.
+time: 2026-08-13T10:36:50Z
+custom:
+  PR: "7861"
+  Slug: mason-perllsp-candidate
+  Breaking: "no"

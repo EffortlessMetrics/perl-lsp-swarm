@@ -53,7 +53,7 @@ fn test_function_definition() -> Result<(), Box<dyn std::error::Error>> {
     let ast = parser.parse()?;
 
     let sexp = ast.to_sexp();
-    assert!(sexp.contains("sub hello"));
+    assert!(sexp.contains("(sub (name hello)"));
     assert!(sexp.contains("return"));
     Ok(())
 }

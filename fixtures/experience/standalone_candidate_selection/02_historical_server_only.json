@@ -1,0 +1,75 @@
+{
+  "packet_schema": "standalone_candidate_selection_vector.v1",
+  "expectation": {
+    "verdict": "accept"
+  },
+  "candidates": [
+    {
+      "schema_version": "standalone_candidate.v1",
+      "policy_version": "v1",
+      "route_mode": "first_party_posix",
+      "source_mode": "release_archive",
+      "transaction_id": "tx-11179-build-h",
+      "attempt_id": "at-11179-build-h",
+      "created_by_operation": "repair",
+      "resolved_subject_digest": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+      "stage_dag_digest": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+      "release_display_version": "0.18.2",
+      "release_topology_digest": "d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6",
+      "target_platform": "linux",
+      "target_triple": "x86_64-unknown-linux-gnu",
+      "target_libc": "gnu",
+      "product_unit_disposition": "historical_server_only",
+      "dap_preview_maturity": false,
+      "candidate_generation": 1,
+      "members": [
+        {
+          "role": "perllsp_server",
+          "artifact_sha256": "babababababababababababababababababababababababababababababababa",
+          "observation_packet_sha256": "bcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbc",
+          "subject_binding": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+        }
+      ],
+      "limitations": [
+        "historical releases shipped the language server without a DAP adapter"
+      ],
+      "candidate_id": "79ebdeef45a5496085bf9a408bcd55fb5c953fc1528f56daa2f706aaabad8f99",
+      "manifest_sha256": "bb07cdc728886d914319b16fc88aed8d1e5ca99869e6d55f36d8a8b8d5fd9932"
+    }
+  ],
+  "prior_selection": null,
+  "next_selection": {
+    "schema_version": "standalone_current_selection.v1",
+    "selection_policy_version": "v1",
+    "install_root": {
+      "root_role": "user_local",
+      "root_identity_sha256": "d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4"
+    },
+    "selection_generation": 4,
+    "selected_candidate_id": "79ebdeef45a5496085bf9a408bcd55fb5c953fc1528f56daa2f706aaabad8f99",
+    "selected_manifest_sha256": "bb07cdc728886d914319b16fc88aed8d1e5ca99869e6d55f36d8a8b8d5fd9932",
+    "previous_known_good": null,
+    "operation": "repair",
+    "transaction_id": "tx-11179-sel-02",
+    "attempt_id": "at-11179-sel-02",
+    "commit_result": "committed",
+    "bounded_reason": "historical server-only candidate repaired in place"
+  },
+  "transition": {
+    "schema_version": "standalone_install_transition.v1",
+    "route_mode": "first_party_posix",
+    "operation": "repair",
+    "transaction_id": "tx-11179-sel-02",
+    "attempt_id": "at-11179-sel-02",
+    "disposition": "selection_committed",
+    "candidate_id": "79ebdeef45a5496085bf9a408bcd55fb5c953fc1528f56daa2f706aaabad8f99",
+    "prior_current_candidate_id": null,
+    "outcome_dimensions": {
+      "product_units": "repaired",
+      "cleanup": "completed",
+      "process_startup": "verified",
+      "path_persistence": "persisted"
+    },
+    "bounded_reason": "server-only historical boundary recorded in limitations"
+  }
+}

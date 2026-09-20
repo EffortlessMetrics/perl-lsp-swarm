@@ -1,0 +1,9 @@
+project: product
+component: Developer experience
+kind: Changed
+body: Aligned five stale call-site semantic-token expectations across the pending-parse freshness, legend-contract, and e2e suites with the #5077 identifier-only emission contract, so the feature-gated freshness gate and both ungated token suites prove live behavior instead of a pre-#5077 span.
+time: 2026-08-23T00:00:00Z
+custom:
+  PR: "11933"
+  Slug: call-site-token-span-contract-alignment
+  Breaking: "no"

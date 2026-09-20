@@ -1,4 +1,4 @@
-use perl_module::import_match::line_references_module_import;
+use perl_module::line_references_module_import;
 use proptest::prelude::*;
 
 fn module_name_strategy() -> impl Strategy<Value = String> {

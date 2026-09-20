@@ -93,6 +93,15 @@ That does not authorize a rebase, empty commit, or unrelated source change. Let 
 current run report, rerun or redispatch the same head where the platform supports it, or
 return `NOT_PROVEN` with the missing capability.
 
+One bounded exception: a `pull_request` check evaluates the merge tree, not the head
+alone. After material base movement (release bumps, sweeping landings on `main`), a
+same-head rerun replays the run's ORIGINAL merge snapshot, so it can never report on
+the current tree. For that case the sanctioned fresh trigger is an empty-commit head
+bump (`ci: re-request fresh merge-tree checks`), which re-evaluates the changed
+subject; the ban covers manufacturing a current status on an unchanged subject, not
+re-evaluating a merge tree that base movement itself invalidated (#12174, #12251,
+#12256, #12258 each unblocked only through the fresh trigger).
+
 ### Merge race and landed result
 
 The live PR head SHA is compare-and-swap protection at the irreversible merge boundary:
@@ -189,6 +198,32 @@ Keep these observations distinct:
 `UNSTABLE`, `BLOCKED`, and similar GitHub summaries must be decomposed into required
 status, advisory status, review, thread, policy, conflict, or platform facts. A summary
 word is not a semantic disposition.
+
+### Mergeability signal during long-running suites (2026-08-23, #11928)
+
+The enforced integration set on current `main` is exactly five status contexts: classic
+branch protection requires `Perl LSP Rust Small Result` and `ripr+ New Gap Gate`; the
+active ruleset additionally requires `Compile All Targets (bit-rot guard)`,
+`Conflict marker check`, and `validate-title`. Every producing workflow triggers on all
+pull requests without path filters. Advisory, third-party, and path-filtered suites hold
+no enforcement binding, so a queued or skipped run among them cannot gate integration by
+policy — whatever it does to event volume.
+
+Two ordinary mechanisms produce non-`CLEAN` mergeability summaries while nothing is wrong
+with the candidate:
+
+- the required aggregate contexts report only after multi-minute routed evidence
+  generation (`ripr+ New Gap Gate`, `Perl LSP Rust Small Result`), so `BLOCKED` is the
+  expected summary while those suites execute;
+- GitHub computes `mergeable`/`mergeStateStatus` asynchronously under repository-wide
+  load, so transient `UNKNOWN` windows appear across every open PR — including PRs whose
+  own checks are green or already merged.
+
+Disposition rule: read `UNKNOWN` as `UNKNOWN_NOT_PROVEN`; decompose `BLOCKED` by reading
+the five enforced contexts directly instead of acting on the summary word; and never
+mutate, close, or rebase a candidate because of either state. Workflow or runner changes
+that would shorten these windows are ordinary claims owned by their own issues; summary-
+word frustration alone selects no branch mutation and no protection change here.
 
 ## Stacked candidates under squash merge
 

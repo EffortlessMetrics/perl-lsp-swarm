@@ -1,0 +1,45 @@
+{
+  "schema_version": "zed_perl_defaults_compatibility.v1",
+  "status": "not_proven",
+  "rows": [
+    {
+      "zed_defaults": "current@7733b9922665f103abda7c6a3fde6b9dfdc8eba9",
+      "perl_extension": "public-0.4.0@eb27a19e69fed8a041b706b23a1f42fbafb29fd8",
+      "expected": "capture_existing_behavior",
+      "observed": "not_proven"
+    },
+    {
+      "zed_defaults": "candidate-perl-order",
+      "perl_extension": "public-0.4.0@eb27a19e69fed8a041b706b23a1f42fbafb29fd8",
+      "expected": "perl-lsp remains dormant; unknown negated perllsp is harmless or merge order is constrained",
+      "observed": "not_proven"
+    },
+    {
+      "zed_defaults": "current@7733b9922665f103abda7c6a3fde6b9dfdc8eba9",
+      "perl_extension": "staged-three-server-candidate",
+      "expected": "known pre-default interval; alternatives may attempt startup and this combination is not publication-ready",
+      "observed": "not_proven"
+    },
+    {
+      "zed_defaults": "candidate-perl-order",
+      "perl_extension": "staged-three-server-candidate",
+      "expected": "only Perl Navigator starts in a clean profile; perl-lsp and perllsp remain selectable",
+      "observed": "not_proven"
+    }
+  ],
+  "selection_checks": [
+    "clean profile starts only perlnavigator-server",
+    "selecting perllsp starts only exact perllsp --stdio unless multiple servers are explicitly retained",
+    "selecting perl-lsp starts only tree-sitter-perl's server",
+    "explicitly listing two providers starts two providers",
+    "missing selected server cannot fall through to another provider"
+  ],
+  "submission_order": {
+    "status": "unresolved_pending_actual_host",
+    "allowed_results": [
+      "zed-defaults-first-safe",
+      "extension-first-required",
+      "coordinated-release-required"
+    ]
+  }
+}

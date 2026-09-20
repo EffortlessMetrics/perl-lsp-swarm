@@ -10,11 +10,11 @@
 //!   root-level re-exports like `ParseError`, `ParseOutput`, `error_classifier`).
 //! - `edit` and `heredoc` are re-exported at crate root under their own names
 //!   (`syntax::edit`, `heredoc_collector`).
-//! - `path_normalize`, `path_security`, `percentile`, `qualified_name`,
+//! - `path_normalize`, `path_security`, `qualified_name`,
 //!   `source_file`, and `text_line` are re-exported directly at crate root
 //!   so consumers use `perl_parser_core::path_normalize` etc.
-//! - `quote` is only accessed via `engine::quote_parser` to keep quote-parsing
-//!   concerns encapsulated behind the engine boundary.
+//! - `quote` and `quote_geometry` are accessed via `engine::quote_parser` to
+//!   keep quote-parsing concerns encapsulated behind the engine boundary.
 
 /// Edit tracking for incremental parsing (previously `perl-edit`).
 pub mod edit;
@@ -26,12 +26,12 @@ pub mod heredoc;
 pub mod path_normalize;
 /// Workspace-bound path validation and traversal prevention (previously `perl-path-security`).
 pub mod path_security;
-/// Percentile helpers for integer metric samples (previously `perl-percentile`).
-pub mod percentile;
 /// Perl qualified-name parsing, splitting, and validation helpers (previously `perl-qualified-name`).
 pub mod qualified_name;
 /// Quote operator parsing helpers (previously `perl-quote`).
 pub mod quote;
+/// Generation-bound canonical regex-analysis records.
+pub mod regex_analysis;
 /// Lexical source-region index for comment/literal/POD classification.
 pub mod source_context;
 /// Perl source-file classification helpers (previously `perl-source-file`).

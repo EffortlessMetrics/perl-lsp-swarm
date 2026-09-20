@@ -1,0 +1,9 @@
+project: product
+component: Packaging and distribution
+kind: Security
+body: Standalone shell and PowerShell installers inspect a verified release archive against a versioned safety policy and extract only accepted topology members into a private staging root. Invalid, oversized, or ambiguous archives leave the install destination unchanged.
+time: 2026-08-26T11:45:00Z
+custom:
+  PR: 12742
+  Slug: standalone-archive-safety
+  Breaking: "yes"

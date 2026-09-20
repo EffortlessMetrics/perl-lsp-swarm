@@ -151,7 +151,7 @@ print "Done";
     println!("  Error nodes: {}", error_count);
     println!("  Missing nodes: {}", missing_count);
     println!("  Total errors reported: {}", output.diagnostics.len());
-    println!("  Terminated early: {}", output.terminated_early);
+    println!("  Terminated early: {}", output.terminated_early());
     println!(
         "  Recovery rate: {:.1}%",
         (valid_count as f64 / (valid_count + error_count + missing_count).max(1) as f64) * 100.0

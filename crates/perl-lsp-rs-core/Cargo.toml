@@ -17,6 +17,7 @@ include = [
     "build.rs",
     "build_catalog.rs",
     "features_sot.toml",
+    "protocol_schema_source.json",
     "Cargo.toml",
     "README.md",
 ]
@@ -25,18 +26,24 @@ include = [
 doctest = false
 
 [dependencies]
+perl-source-identity.workspace = true
 lsp-types.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+# Collision-resistant content digests for observation identity (#10813);
+# also the EffectiveLspSurface input-digest receipt binding (#9665).
+sha2.workspace = true
 
 # Provider crate dependencies (Wave G1a: 15 providers absorbed)
 perl-parser-core.workspace = true
+perl-regex.workspace = true
 perl-module.workspace = true
 perl-position-tracking.workspace = true
 perl-semantic-analyzer.workspace = true
 perl-semantic-facts.workspace = true
 perl-lexer.workspace = true
 perl-ast.workspace = true
+perl-test-facts.workspace = true
 walkdir.workspace = true
 regex.workspace = true
 url.workspace = true
@@ -79,15 +86,30 @@ lsp-compat = []
 # Enabled by default; library consumers can disable with --no-default-features
 # to drop the TLS stack entirely.
 ai-provider = ["dep:ureq"]
+# Proof-only instrumentation (native-critic scope/pragma rebuild counter, #7286).
+# Off by default so a production build carries neither the counter nor its
+# accessors; `perl-lsp-rs` enables it through dev-dependencies so its tests can
+# observe the critic stage, which its own `#[cfg(test)]` cannot reach across the
+# crate boundary. Same shape as the DAP crate's `test-helpers` feature.
+#
+# That precedent is named without its crate name deliberately:
+# `test_rs_core_has_no_dap_dependency` guards the cycle break by substring, over
+# everything above `[dev-dependencies]`, so spelling the crate out even in a
+# comment trips it. Leaving the gate exactly as strict is worth the awkward
+# phrasing.
+test-instrumentation = []
 
 [dev-dependencies]
+perl-test-must.workspace = true
 perl-tdd-support.workspace = true
+sha2.workspace = true
 serde_json.workspace = true
 perl-lsp-rs.workspace = true
 perl-subprocess-runtime.workspace = true
 tempfile.workspace = true
-insta = { version = "1.47.2", features = ["yaml"] }
+insta = { workspace = true, features = ["yaml"] }
 proptest.workspace = true
+serial_test = "4.0.1"
 
 [package.metadata.docs.rs]
 all-features = true

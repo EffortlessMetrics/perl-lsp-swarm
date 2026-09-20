@@ -1,0 +1,27 @@
+{
+  "name": "nc07_stale_identity_survives",
+  "control": 7,
+  "op": "verify_invalidation_plan",
+  "input": {
+    "outcome": {
+      "kind": "indeterminate_possibly_applied",
+      "failure_phase": "runtime_acknowledgement_read_back",
+      "cause": "timeout_after_mutation_began"
+    },
+    "dispositions": {
+      "frame_reference": "preserved_for_later_reconciliation",
+      "scope_reference": "stale_when_generation_advanced",
+      "variable_reference": "stale_when_generation_advanced",
+      "evaluate_reference": "stale_when_generation_advanced",
+      "module_id": "always_stale",
+      "loaded_source_observation": "always_stale",
+      "source_content_read": "always_stale",
+      "applied_breakpoint_installation": "always_stale",
+      "exception_and_current_stop_facts": "stale_when_generation_advanced",
+      "retained_runtime_query_result": "always_stale",
+      "thread_reference": "projection_reprojected",
+      "durable_client_breakpoint_configuration": "preserved_for_later_reconciliation"
+    }
+  },
+  "expected_error": "stale_identity_survives_possibly_applied"
+}

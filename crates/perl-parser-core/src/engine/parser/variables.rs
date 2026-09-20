@@ -1,9 +1,31 @@
+/// Return `true` when `inner` is a directly written bareword glob name: a
+/// plain identifier or a `::`-qualified symbol path (`foo`, `Foo::Bar`).
+///
+/// Anything else inside `*{...}` is a computed body whose symbol only exists
+/// at runtime — a call (`foo()`), a quoted/symbolic name (`"name"`), an
+/// interpolation, or an expression (`$x . $y`) — and must keep the braced
+/// dynamic spelling (#15650, #15712).
+fn is_plain_bareword_glob_name(inner: &str) -> bool {
+    inner.split("::").all(|segment| {
+        !segment.is_empty() && segment.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+    })
+}
+
+/// Normalize the name of a dynamic typeglob (`*{...}`) in assignment position.
+///
+/// A braced bareword (`*{name}`, `*{ name }`, `*{Foo::name}`) is a directly
+/// written symbol and normalizes to its bare name so the stash layer can
+/// resolve it. Every other computed body keeps the literal braced spelling:
+/// its symbol is only known at runtime, and downstream consumers classify a
+/// leading `{` as a dynamic, non-static glob name (#15650). Reporting the
+/// bare expression text (`foo()`, `"name"`) as a static glob name would mint
+/// a symbol that no static consumer can resolve (#15712).
 fn normalize_dynamic_typeglob_name(name: &str) -> String {
-    let inner = name
-        .strip_prefix('{')
-        .and_then(|inner| inner.strip_suffix('}'))
-        .unwrap_or(name);
-    inner.trim().trim_end_matches(';').trim().to_string()
+    let Some(inner) = name.strip_prefix('{').and_then(|rest| rest.strip_suffix('}')) else {
+        return name.trim().trim_end_matches(';').trim().to_string();
+    };
+    let inner = inner.trim().trim_end_matches(';').trim();
+    if is_plain_bareword_glob_name(inner) { inner.to_string() } else { format!("{{{inner}}}") }
 }
 
 impl<'a> Parser<'a> {
@@ -22,30 +44,7 @@ impl<'a> Parser<'a> {
             // Parse comma-separated list of variables with their individual attributes
             while self.peek_kind() != Some(TokenKind::RightParen) && !self.tokens.is_eof() {
                 let var = self.parse_variable_list_item()?;
-
-                // Parse optional attributes for this specific variable
-                let var_attributes = if self.peek_kind() == Some(TokenKind::Colon) {
-                    self.parse_variable_attributes()?
-                } else {
-                    Vec::new()
-                };
-
-                // Create a node that includes both the variable and its attributes
-                let var_with_attrs = if var_attributes.is_empty() {
-                    var
-                } else {
-                    let start = var.location.start;
-                    let end = self.previous_position();
-                    Node::new(
-                        NodeKind::VariableWithAttributes {
-                            variable: Box::new(var),
-                            attributes: var_attributes,
-                        },
-                        SourceLocation { start, end },
-                    )
-                };
-
-                variables.push(var_with_attrs);
+                variables.push(self.with_optional_list_item_attributes(var)?);
 
                 if self.peek_kind() == Some(TokenKind::Comma) {
                     self.consume_token()?; // consume comma
@@ -175,10 +174,8 @@ impl<'a> Parser<'a> {
             // A parenthesized RHS (`my $a = (1, $b);`) is unaffected: the
             // parens are parsed as a single primary term by `parse_ternary`
             // regardless of the outer precedence level.
-            let assign_op = self.peek_compound_assign_op();
-            let initializer = if let Some(op) = assign_op {
-                let op_token = self.tokens.next()?;
-                let rhs = if let Some(missing) = self.recover_missing_infix_rhs(op_token.start) {
+            let initializer = if let Some((op, op_start)) = self.consume_assignment_operator()? {
+                let rhs = if let Some(missing) = self.recover_missing_infix_rhs(op_start) {
                     missing
                 } else {
                     self.parse_assignment()?
@@ -203,10 +200,15 @@ impl<'a> Parser<'a> {
 
             // Don't consume semicolon here - let parse_statement handle it uniformly
 
-            let end = initializer.as_ref().map_or_else(
-                || self.previous_position(),
-                |node| node.location.end.max(self.previous_position()),
-            );
+            // `previous_position()` only advances through `consume_token`, and
+            // the `local` target above is parsed through `parse_assignment`,
+            // which pulls the operator and RHS straight from the token stream.
+            // Anchor the end on the parsed nodes so `local $x = EXPR` spans the
+            // whole assignment instead of stopping at `$x`.
+            let end = initializer
+                .as_ref()
+                .map_or(variable.location.end, |node| node.location.end)
+                .max(self.previous_position());
             let node = Node::new(
                 NodeKind::VariableDeclaration {
                     declarator,
@@ -227,7 +229,7 @@ impl<'a> Parser<'a> {
                 let undef_token = self.consume_token()?;
                 Ok(Node::new(
                     NodeKind::Undef,
-                    SourceLocation { start: undef_token.start, end: undef_token.end },
+                    SourceLocation { start: undef_token.start(), end: undef_token.end() },
                 ))
             }
             Some(TokenKind::LeftParen) => {
@@ -269,6 +271,30 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// Attach optional per-item attributes after a list-declaration slot.
+    ///
+    /// Shared by statement-form `my ($x :shared, $y)` and declaration-as-argument
+    /// forms (`Readonly my (...)`, `const my (...)`) so both paths stay in lockstep.
+    fn with_optional_list_item_attributes(&mut self, var: Node) -> ParseResult<Node> {
+        let var_attributes = if self.peek_kind() == Some(TokenKind::Colon) {
+            self.parse_variable_attributes()?
+        } else {
+            Vec::new()
+        };
+        if var_attributes.is_empty() {
+            return Ok(var);
+        }
+        let start = var.location.start;
+        let end = self.previous_position();
+        Ok(Node::new(
+            NodeKind::VariableWithAttributes {
+                variable: Box::new(var),
+                attributes: var_attributes,
+            },
+            SourceLocation { start, end },
+        ))
+    }
+
     /// Consume an optional legacy type constraint in lexical declarations.
     ///
     /// This supports old pseudo-hash style declarations like:
@@ -292,13 +318,13 @@ impl<'a> Parser<'a> {
             } else {
                 let next = self.tokens.peek_second()?;
                 matches!(
-                    next.kind,
+                    next.kind(),
                     TokenKind::ScalarSigil
                         | TokenKind::ArraySigil
                         | TokenKind::HashSigil
                         | TokenKind::SubSigil
                         | TokenKind::GlobSigil
-                ) || (next.kind == TokenKind::Identifier
+                ) || (next.kind() == TokenKind::Identifier
                     && next
                         .text
                         .chars()
@@ -330,7 +356,12 @@ impl<'a> Parser<'a> {
             None
         };
 
-        let end = self.previous_position();
+        // See `parse_variable_declaration`: the localized lvalue and RHS are
+        // parsed from the raw token stream, so anchor the end on the nodes.
+        let end = initializer
+            .as_ref()
+            .map_or(variable.location.end, |node| node.location.end)
+            .max(self.previous_position());
         let node = Node::new(
             NodeKind::VariableDeclaration {
                 declarator,
@@ -348,20 +379,18 @@ impl<'a> Parser<'a> {
         // If the next token is a sigil token, delegate to parse_variable_from_sigil
         // This handles cases where the lexer splits sigil and name (e.g. "%" "hash" vs "%hash")
         // Also handles operators that can act as sigils in this context (%, &, *)
-        if let Some(kind) = self.peek_kind() {
-            match kind {
-                TokenKind::ScalarSigil
-                | TokenKind::ArraySigil
-                | TokenKind::HashSigil
-                | TokenKind::SubSigil
-                | TokenKind::GlobSigil
-                | TokenKind::Percent     // %hash
-                | TokenKind::BitwiseAnd  // &sub
-                | TokenKind::Star => {   // *glob
-                    return self.parse_variable_from_sigil();
-                }
-                _ => {}
-            }
+        if let Some(
+            TokenKind::ScalarSigil
+            | TokenKind::ArraySigil
+            | TokenKind::HashSigil
+            | TokenKind::SubSigil
+            | TokenKind::GlobSigil
+            | TokenKind::Percent      // %hash
+            | TokenKind::BitwiseAnd   // &sub
+            | TokenKind::Star,        // *glob
+        ) = self.peek_kind()
+        {
+            return self.parse_variable_from_sigil();
         }
 
         let token = self.consume_token()?;
@@ -373,7 +402,7 @@ impl<'a> Parser<'a> {
         if let Some(name) = Self::simple_braced_scalar_token_name(text) {
             return Ok(Node::new(
                 NodeKind::Variable { sigil: String::from("$"), name: name.to_string() },
-                SourceLocation { start: token.start, end: token.end },
+                SourceLocation { start: token.start(), end: token.end() },
             ));
         }
 
@@ -384,7 +413,7 @@ impl<'a> Parser<'a> {
         if let Some(name) = Self::qualified_braced_scalar_token_name(text) {
             return Ok(Node::new(
                 NodeKind::Variable { sigil: String::from("$"), name: name.to_string() },
-                SourceLocation { start: token.start, end: token.end },
+                SourceLocation { start: token.start(), end: token.end() },
             ));
         }
 
@@ -395,10 +424,10 @@ impl<'a> Parser<'a> {
                 .chars()
                 .next()
                 .ok_or_else(|| {
-                    ParseError::syntax("Empty token text for array/hash dereference", token.start)
+                    ParseError::syntax("Empty token text for array/hash dereference", token.start())
                 })?
                 .to_string();
-            let start = token.start;
+            let start = token.start();
 
             // Parse the expression inside the braces
             let (expr, folded) = if sigil == "$" {
@@ -430,7 +459,7 @@ impl<'a> Parser<'a> {
 
         // Special handling for &{ (code dereference)
         if &**text == "&{" {
-            return self.parse_code_dereference(token.start);
+            return self.parse_code_dereference(token.start());
         }
 
         let (sigil, name) = if let Some(rest) = text.strip_prefix('$') {
@@ -447,7 +476,7 @@ impl<'a> Parser<'a> {
         } else {
             return Err(ParseError::syntax(
                 format!("Expected variable, found '{}'", text),
-                token.start,
+                token.start(),
             ));
         };
 
@@ -462,12 +491,12 @@ impl<'a> Parser<'a> {
             && self.peek_kind() != Some(TokenKind::Assign)
         {
             let inner_text = &name[1..name.len() - 1];
-            let (operand, diagnostics) = parse_inline_expression(inner_text, token.start + 2)?;
+            let (operand, diagnostics) = parse_inline_expression(inner_text, token.start() + 2)?;
             self.errors.extend(diagnostics);
-            let end = token.end;
+            let end = token.end();
             let node = Node::new(
                 NodeKind::Unary { op: "*{}".to_string(), operand: Box::new(operand) },
-                SourceLocation { start: token.start, end },
+                SourceLocation { start: token.start(), end },
             );
             return self.parse_postfix_chain(node);
         }
@@ -492,14 +521,14 @@ impl<'a> Parser<'a> {
                 // `${ name }` == `$name` (perlref): already folded to a
                 // scalar variable node; do not re-wrap in Unary{"${}"}.
                 let mut folded_node = expr;
-                folded_node.location = SourceLocation { start: token.start, end };
+                folded_node.location = SourceLocation { start: token.start(), end };
                 return Ok(folded_node);
             }
 
             let op = format!("{}{{}}", sigil);
             return Ok(Node::new(
                 NodeKind::Unary { op, operand: Box::new(expr) },
-                SourceLocation { start: token.start, end },
+                SourceLocation { start: token.start(), end },
             ));
         }
 
@@ -510,8 +539,8 @@ impl<'a> Parser<'a> {
         // any trailing postfix (like `()` for function calls), then expect `}`.
         if name.starts_with('{') && !name.ends_with('}') {
             let inner_name = &name[1..]; // strip leading {
-            let inner_start = token.start + sigil.len() + 1; // after sigil and {
-            let inner_end = token.end;
+            let inner_start = token.start() + sigil.len() + 1; // after sigil and {
+            let inner_end = token.end();
 
             // `${sep }` (trailing whitespace before `}`, none after `${`):
             // the lexer greedily captures `${sep` as one token because
@@ -528,7 +557,7 @@ impl<'a> Parser<'a> {
                 let end = self.previous_position();
                 return Ok(Node::new(
                     NodeKind::Variable { sigil: "$".to_string(), name: inner_name.to_string() },
-                    SourceLocation { start: token.start, end },
+                    SourceLocation { start: token.start(), end },
                 ));
             }
 
@@ -557,13 +586,13 @@ impl<'a> Parser<'a> {
             let op = format!("{}{{}}", sigil);
             return Ok(Node::new(
                 NodeKind::Unary { op, operand: Box::new(inner) },
-                SourceLocation { start: token.start, end },
+                SourceLocation { start: token.start(), end },
             ));
         }
 
         // Check if the variable name is followed by :: for package-qualified variables
         let mut full_name = name;
-        let mut end = token.end;
+        let mut end = token.end();
 
         // Handle $#$ref — last index of dereferenced array
         // The lexer sends `$#` as Identifier("$#"), so sigil="$" name="#"
@@ -576,7 +605,7 @@ impl<'a> Parser<'a> {
                 let inner_end = inner.location.end;
                 return Ok(Node::new(
                     NodeKind::Unary { op: "$#".to_string(), operand: Box::new(inner) },
-                    SourceLocation { start: token.start, end: inner_end },
+                    SourceLocation { start: token.start(), end: inner_end },
                 ));
             } else if self.peek_kind() == Some(TokenKind::LeftBrace) {
                 // $#{expr} — last index via block dereference
@@ -587,7 +616,7 @@ impl<'a> Parser<'a> {
                 let brace_end = self.previous_position();
                 return Ok(Node::new(
                     NodeKind::Unary { op: "$#".to_string(), operand: Box::new(inner) },
-                    SourceLocation { start: token.start, end: brace_end },
+                    SourceLocation { start: token.start(), end: brace_end },
                 ));
             }
         }
@@ -601,15 +630,11 @@ impl<'a> Parser<'a> {
             || (matches!(sigil.as_str(), "@" | "%") && full_name == "$$"))
             && self.peek_kind().is_some_and(Self::is_variable_name_kind)
             && (full_name.is_empty()
-                || self
-                    .tokens
-                    .peek()
-                    .ok()
-                    .is_some_and(|name_token| name_token.start == end))
+                || self.tokens.peek().ok().is_some_and(|name_token| name_token.start() == end))
         {
             let name_token = self.tokens.next()?;
             full_name.push_str(&name_token.text);
-            end = name_token.end;
+            end = name_token.end();
         }
 
         // Handle :: in package-qualified variables
@@ -621,7 +646,7 @@ impl<'a> Parser<'a> {
             if self.peek_kind() == Some(TokenKind::Identifier) {
                 let name_token = self.tokens.next()?;
                 full_name.push_str(&name_token.text);
-                end = name_token.end;
+                end = name_token.end();
             } else {
                 // Handle cases like $Foo::$bar
                 return Err(ParseError::syntax(
@@ -633,9 +658,17 @@ impl<'a> Parser<'a> {
 
         if sigil == "*" {
             let name = normalize_dynamic_typeglob_name(&full_name);
+            // A fused `*{EXPR}` assignment token carries no parsed body yet.
+            // When normalization keeps the brace marker (a computed body),
+            // recover the inner expression so scope analysis can see the
+            // variables it uses (#15731). Recovery is best-effort: the raw
+            // braced text stays in `name`, and the assignment path neither
+            // fails nor gains diagnostics from a body the tokenizer fused
+            // away — exactly its behavior before the body child existed.
+            let body = fused_typeglob_body(&name, token.start());
             Ok(Node::new(
-                NodeKind::Typeglob { name },
-                SourceLocation { start: token.start, end },
+                NodeKind::Typeglob { name, body },
+                SourceLocation { start: token.start(), end },
             ))
         } else if matches!(sigil.as_str(), "$" | "@" | "%")
             && Self::is_unbraced_scalar_deref_name(&full_name)
@@ -645,17 +678,17 @@ impl<'a> Parser<'a> {
             let inner_name = full_name[1..].to_string();
             let inner = Node::new(
                 NodeKind::Variable { sigil: "$".to_string(), name: inner_name },
-                SourceLocation { start: token.start + sigil.len(), end },
+                SourceLocation { start: token.start() + sigil.len(), end },
             );
             let op = format!("{}{{}}", sigil);
             Ok(Node::new(
                 NodeKind::Unary { op, operand: Box::new(inner) },
-                SourceLocation { start: token.start, end },
+                SourceLocation { start: token.start(), end },
             ))
         } else {
             Ok(Node::new(
                 NodeKind::Variable { sigil, name: full_name },
-                SourceLocation { start: token.start, end },
+                SourceLocation { start: token.start(), end },
             ))
         }
     }
@@ -693,20 +726,20 @@ impl<'a> Parser<'a> {
             return Ok(None);
         }
 
-        if self.tokens.peek_second()?.kind == TokenKind::DoubleColon {
+        if self.tokens.peek_second()?.kind() == TokenKind::DoubleColon {
             let first = self.tokens.next()?;
             return self
-                .parse_qualified_scalar_tail(first.text.to_string(), first.start, first.end)
+                .parse_qualified_scalar_tail(first.text.to_string(), first.start(), first.end())
                 .map(Some);
         }
 
         if is_package_qualified_scalar_name(&self.tokens.peek()?.text)
-            && self.tokens.peek_second()?.kind == TokenKind::RightBrace
+            && self.tokens.peek_second()?.kind() == TokenKind::RightBrace
         {
             let name_token = self.tokens.next()?;
             return Ok(Some(Node::new(
                 NodeKind::Variable { sigil: "$".to_string(), name: name_token.text.to_string() },
-                SourceLocation { start: name_token.start, end: name_token.end },
+                SourceLocation { start: name_token.start(), end: name_token.end() },
             )));
         }
 
@@ -752,24 +785,20 @@ impl<'a> Parser<'a> {
             return Ok(None);
         }
 
-        if self.tokens.peek_second()?.kind != TokenKind::RightBrace {
+        if self.tokens.peek_second()?.kind() != TokenKind::RightBrace {
             return Ok(None);
         }
 
         let name_token = self.tokens.next()?;
         Ok(Some(Node::new(
             NodeKind::Variable { sigil: String::from("$"), name: name_token.text.to_string() },
-            SourceLocation { start: name_token.start, end: name_token.end },
+            SourceLocation { start: name_token.start(), end: name_token.end() },
         )))
     }
 
     fn simple_braced_scalar_token_name(text: &str) -> Option<&str> {
         let inner = text.strip_prefix("${")?.strip_suffix('}')?;
-        if is_simple_scalar_name(inner) {
-            Some(inner)
-        } else {
-            None
-        }
+        if is_simple_scalar_name(inner) { Some(inner) } else { None }
     }
 
     /// Extract the package-qualified name from a token whose full text is a
@@ -781,11 +810,7 @@ impl<'a> Parser<'a> {
     /// case (issue #3593).
     fn qualified_braced_scalar_token_name(text: &str) -> Option<&str> {
         let inner = text.strip_prefix("${")?.strip_suffix('}')?;
-        if is_package_qualified_scalar_name(inner) {
-            Some(inner)
-        } else {
-            None
-        }
+        if is_package_qualified_scalar_name(inner) { Some(inner) } else { None }
     }
 
     fn try_parse_braced_caret_special_scalar(&mut self) -> ParseResult<Option<Node>> {
@@ -800,17 +825,17 @@ impl<'a> Parser<'a> {
 
         let caret_token = self.tokens.next()?;
         let mut name = String::from("^");
-        let mut end = caret_token.end;
+        let mut end = caret_token.end();
 
         if self.peek_kind() == Some(TokenKind::Identifier) {
             let ident = self.tokens.next()?;
             name.push_str(&ident.text);
-            end = ident.end;
+            end = ident.end();
         }
 
         Ok(Some(Node::new(
             NodeKind::Variable { sigil: String::from("$"), name },
-            SourceLocation { start: caret_token.start, end },
+            SourceLocation { start: caret_token.start(), end },
         )))
     }
 
@@ -827,7 +852,7 @@ impl<'a> Parser<'a> {
             if self.peek_kind() == Some(TokenKind::Identifier) {
                 let name_token = self.tokens.next()?;
                 full_name.push_str(&name_token.text);
-                end = name_token.end;
+                end = name_token.end();
             } else {
                 return Err(ParseError::syntax(
                     "Expected identifier after :: in package-qualified variable",
@@ -874,11 +899,11 @@ impl<'a> Parser<'a> {
     /// Parse a variable when we have a sigil token first
     fn parse_variable_from_sigil(&mut self) -> ParseResult<Node> {
         let sigil_token = self.consume_token()?;
-        let sigil = match sigil_token.kind {
+        let sigil = match sigil_token.kind() {
             TokenKind::BitwiseAnd => "&".to_string(), // Handle & as sigil
             _ => sigil_token.text.to_string(),
         };
-        let start = sigil_token.start;
+        let start = sigil_token.start();
 
         // Check if next token is an identifier or a keyword that should be treated as identifier
         let next_kind = self.peek_kind();
@@ -888,21 +913,44 @@ impl<'a> Parser<'a> {
         let (name, mut end) = if next_kind.is_some_and(Self::is_variable_name_kind) {
             let name_token = self.tokens.next()?;
             let mut name = name_token.text.to_string();
-            let mut end = name_token.end;
+            let mut end = name_token.end();
+
+            // The lexer folds a trailing sigil+name like `@@x` into one
+            // Identifier token, so the name branch above accepts it and the
+            // else-branch rejection below never runs. A non-`$` sigil whose
+            // "name" itself starts with a sigil character is exactly the bare
+            // double-sigil shape of issue #15750: surface the UnexpectedToken
+            // diagnostic and ERROR node instead of silently building
+            // `Variable { sigil: @, name: @x }`. `$`-prefixed names stay
+            // valid here (unbraced derefs like `@$ref`).
+            if sigil != "$" && name.starts_with(['@', '%', '&', '*']) {
+                let expected = format!("identifier, '{{', or '$' after '{sigil}' sigil");
+                let node = self.recover_from_error(
+                    format!(
+                        "bare '{sigil}' sigil followed by another sigil — \
+                         not a valid Perl variable"
+                    ),
+                    expected,
+                    name,
+                    start,
+                );
+                // The fused sigil+name token is already consumed, so
+                // `current_position` ends the recovery span exactly at the
+                // bad text.
+                let mut node = node;
+                node.location.end = end;
+                return Ok(node);
+            }
 
             // `%$$slice` may arrive as `%`, `$$`, `slice`; only join an
             // adjacent tail so whitespace-delimited `$$ eq` keeps `eq` as op.
             if name == "$$"
                 && self.peek_kind() == Some(TokenKind::Identifier)
-                && self
-                    .tokens
-                    .peek()
-                    .ok()
-                    .is_some_and(|next_token| next_token.start == end)
+                && self.tokens.peek().ok().is_some_and(|next_token| next_token.start() == end)
             {
                 let next_token = self.tokens.next()?;
                 name.push_str(&next_token.text);
-                end = next_token.end;
+                end = next_token.end();
             }
 
             // Handle :: in package-qualified variables
@@ -913,7 +961,7 @@ impl<'a> Parser<'a> {
                 if self.peek_kind() == Some(TokenKind::Identifier) {
                     let next_token = self.tokens.next()?;
                     name.push_str(&next_token.text);
-                    end = next_token.end;
+                    end = next_token.end();
                 } else {
                     return Err(ParseError::syntax(
                         "Expected identifier after :: in package-qualified variable",
@@ -924,6 +972,66 @@ impl<'a> Parser<'a> {
 
             (name, end)
         } else {
+            // Reject bare double-sigil constructs like `@@`, `%%`, `**`, `&&`
+            // when the first sigil is not `$` (issue #15750). The `$` sigil has
+            // many special-variable forms — $$ PID, $@ eval error, $! system
+            // error, $? / $^X / $# / $0 / $:: / $: — that are dispatched in
+            // the `match self.peek_kind()` arm below. For `@`, `%`, `*`, `&`,
+            // the only valid second tokens are `$` (unbraced dereference
+            // target like `@$ref`, handled in the ScalarSigil arm and at
+            // line 1189) and `{` (braced dereference, handled at line 1134
+            // and 1167). Anything else is a syntax error: surface it via
+            // UnexpectedToken + ERROR node so statement-boundary recovery
+            // can engage instead of silently misparsing garbage.
+            if sigil != "$" {
+                let bad_kind = self.peek_kind();
+                let is_bad_double_sigil = matches!(
+                    bad_kind,
+                    Some(
+                        TokenKind::ArraySigil
+                            | TokenKind::HashSigil
+                            | TokenKind::SubSigil
+                            | TokenKind::GlobSigil
+                            | TokenKind::Percent
+                            | TokenKind::BitwiseAnd
+                            | TokenKind::Star
+                    )
+                );
+                if is_bad_double_sigil {
+                    let expected = format!("identifier, '{{', or '$' after '{}' sigil", sigil);
+                    let found = self
+                        .tokens
+                        .peek()
+                        .ok()
+                        .map(|t| t.text.to_string())
+                        .filter(|s| !s.is_empty())
+                        .unwrap_or_else(|| "end of input".to_string());
+                    // Consume the second sigil so the parser advances and
+                    // does not loop on the same token. Subsequent bad
+                    // sigils or following garbage will surface in their own
+                    // ERROR nodes, which is the honest shape v3 owes its
+                    // callers.
+                    let consumed = self.tokens.next()?;
+                    let end = consumed.end();
+                    let node = self.recover_from_error(
+                        format!(
+                            "bare '{}' sigil followed by another sigil — \
+                             not a valid Perl variable",
+                            sigil
+                        ),
+                        expected,
+                        found,
+                        start,
+                    );
+                    // Tighten the recovered node's span to cover both
+                    // sigils so downstream tooling can localize the error
+                    // to the actual bad region.
+                    let mut node = node;
+                    node.location.end = end;
+                    return Ok(node);
+                }
+            }
+
             // Handle special variables like $$, $@, $!, $?, etc.
             match self.peek_kind() {
                 Some(TokenKind::ScalarSigil) => {
@@ -931,11 +1039,12 @@ impl<'a> Parser<'a> {
                     // dereference target that must preserve the referenced name.
                     let token = self.tokens.next()?;
                     if self.tokens.peek().ok().is_some_and(|name_token| {
-                        Self::is_variable_name_kind(name_token.kind) && name_token.start == token.end
+                        Self::is_variable_name_kind(name_token.kind())
+                            && name_token.start() == token.end()
                     }) {
                         let name_token = self.tokens.next()?;
                         let mut name = format!("${}", name_token.text);
-                        let mut end = name_token.end;
+                        let mut end = name_token.end();
 
                         while self.peek_kind() == Some(TokenKind::DoubleColon) {
                             self.tokens.next()?; // consume ::
@@ -944,7 +1053,7 @@ impl<'a> Parser<'a> {
                             if self.peek_kind() == Some(TokenKind::Identifier) {
                                 let next_token = self.tokens.next()?;
                                 name.push_str(&next_token.text);
-                                end = next_token.end;
+                                end = next_token.end();
                             } else {
                                 return Err(ParseError::syntax(
                                     "Expected identifier after :: in package-qualified variable",
@@ -955,18 +1064,18 @@ impl<'a> Parser<'a> {
 
                         (name, end)
                     } else {
-                        ("$".to_string(), token.end)
+                        ("$".to_string(), token.end())
                     }
                 }
                 Some(TokenKind::ArraySigil) => {
                     // $@ - eval error
                     let token = self.tokens.next()?;
-                    ("@".to_string(), token.end)
+                    ("@".to_string(), token.end())
                 }
                 Some(TokenKind::Not) => {
                     // $! - system error
                     let token = self.tokens.next()?;
-                    ("!".to_string(), token.end)
+                    ("!".to_string(), token.end())
                 }
                 Some(TokenKind::Unknown) => {
                     // Could be $?, $^, $#, or other special
@@ -974,16 +1083,16 @@ impl<'a> Parser<'a> {
                     match token.text.as_ref() {
                         "?" => {
                             let token = self.tokens.next()?;
-                            ("?".to_string(), token.end)
+                            ("?".to_string(), token.end())
                         }
                         "^" => {
                             // Handle $^X variables
                             let token = self.tokens.next()?;
                             if self.peek_kind() == Some(TokenKind::Identifier) {
                                 let var_token = self.tokens.next()?;
-                                (format!("^{}", var_token.text), var_token.end)
+                                (format!("^{}", var_token.text), var_token.end())
                             } else {
-                                ("^".to_string(), token.end)
+                                ("^".to_string(), token.end())
                             }
                         }
                         "#" => {
@@ -992,7 +1101,7 @@ impl<'a> Parser<'a> {
                             if self.peek_kind() == Some(TokenKind::Identifier) {
                                 let var_token = self.tokens.next()?;
                                 let mut var_name = var_token.text.to_string();
-                                let mut var_end = var_token.end;
+                                let mut var_end = var_token.end();
 
                                 // Handle $#Pkg::Var (package-qualified)
                                 while self.peek_kind() == Some(TokenKind::DoubleColon) {
@@ -1001,7 +1110,7 @@ impl<'a> Parser<'a> {
                                     if self.peek_kind() == Some(TokenKind::Identifier) {
                                         let next_token = self.tokens.next()?;
                                         var_name.push_str(&next_token.text);
-                                        var_end = next_token.end;
+                                        var_end = next_token.end();
                                     }
                                 }
 
@@ -1038,13 +1147,13 @@ impl<'a> Parser<'a> {
                                 return Ok(node);
                             } else {
                                 // Just $# by itself
-                                ("#".to_string(), token.end)
+                                ("#".to_string(), token.end())
                             }
                         }
                         _ => {
                             return Err(ParseError::syntax(
                                 format!("Unexpected character after sigil: {}", token.text),
-                                token.start,
+                                token.start(),
                             ));
                         }
                     }
@@ -1052,22 +1161,22 @@ impl<'a> Parser<'a> {
                 Some(TokenKind::Number) => {
                     // $0, $1, $2, etc. - numbered capture groups
                     let num_token = self.tokens.next()?;
-                    (num_token.text.to_string(), num_token.end)
+                    (num_token.text.to_string(), num_token.end())
                 }
                 Some(TokenKind::DoubleColon) => {
                     // $:: — the main namespace stash
                     let dc_token = self.tokens.next()?; // consume ::
                     if self.peek_kind() == Some(TokenKind::Identifier) {
                         let name_token = self.tokens.next()?;
-                        (format!("::{}", name_token.text), name_token.end)
+                        (format!("::{}", name_token.text), name_token.end())
                     } else {
-                        ("::".to_string(), dc_token.end)
+                        ("::".to_string(), dc_token.end())
                     }
                 }
                 Some(TokenKind::Colon) => {
                     // $: — format line-break character variable
                     let colon_token = self.tokens.next()?;
-                    (":".to_string(), colon_token.end)
+                    (":".to_string(), colon_token.end())
                 }
                 _ => {
                     // Empty variable name (just the sigil)
@@ -1086,10 +1195,20 @@ impl<'a> Parser<'a> {
             self.expect(TokenKind::RightBrace)?;
             let end = self.previous_position();
             if self.peek_kind() == Some(TokenKind::Assign) {
+                // Slice the braced source text (including the braces) so the
+                // same normalization applies to the fused and split forms.
                 let name = normalize_dynamic_typeglob_name(&String::from_utf8_lossy(
-                    &self.src_bytes[body_start..end.saturating_sub(1)],
+                    &self.src_bytes[body_start.saturating_sub(1)..end],
                 ));
-                return Ok(Node::new(NodeKind::Typeglob { name }, SourceLocation { start, end }));
+                // A computed body keeps its braced name; retain the parsed
+                // expression as the structured body so scope analysis can see
+                // the variables it uses (#15731). A braced bareword strips to
+                // its static name and carries no body.
+                let body = name.starts_with('{').then(|| Box::new(expr));
+                return Ok(Node::new(
+                    NodeKind::Typeglob { name, body },
+                    SourceLocation { start, end },
+                ));
             }
             let node = Node::new(
                 NodeKind::Unary { op: "*{}".to_string(), operand: Box::new(expr) },
@@ -1154,7 +1273,7 @@ impl<'a> Parser<'a> {
             Ok(Node::new(NodeKind::AmperCall { name, args }, SourceLocation { start, end }))
         } else if sigil == "*" {
             let name = normalize_dynamic_typeglob_name(&name);
-            Ok(Node::new(NodeKind::Typeglob { name }, SourceLocation { start, end }))
+            Ok(Node::new(NodeKind::Typeglob { name, body: None }, SourceLocation { start, end }))
         } else if matches!(sigil.as_str(), "$" | "@" | "%")
             && Self::is_unbraced_scalar_deref_name(&name)
         {
@@ -1308,13 +1427,11 @@ impl<'a> Parser<'a> {
                 NodeKind::OptionalParameter { .. } => {
                     seen_optional = true;
                 }
-                NodeKind::MandatoryParameter { .. } => {
-                    if seen_optional {
-                        self.errors.push(ParseError::syntax(
-                            "Mandatory parameter cannot follow an optional parameter in signature",
-                            param.location.start,
-                        ));
-                    }
+                NodeKind::MandatoryParameter { .. } if seen_optional => {
+                    self.errors.push(ParseError::syntax(
+                        "Mandatory parameter cannot follow an optional parameter in signature",
+                        param.location.start,
+                    ));
                 }
                 _ => {}
             }
@@ -1383,11 +1500,7 @@ impl<'a> Parser<'a> {
             None
         };
 
-        end = if let Some(ref default) = default_value {
-            default.location.end
-        } else {
-            end
-        };
+        end = if let Some(ref default) = default_value { default.location.end } else { end };
 
         // Check if variable is slurpy (@args or %hash)
         let is_slurpy = matches!(&variable.kind, NodeKind::Variable { sigil, .. } if sigil == "@" || sigil == "%");
@@ -1439,7 +1552,7 @@ impl<'a> Parser<'a> {
         // texts that begin with a Perl sigil character.
         while self.peek_kind() == Some(TokenKind::Colon) {
             let next_is_attr_ident = match self.tokens.peek_second() {
-                Ok(tok) if tok.kind == TokenKind::Identifier => {
+                Ok(tok) if tok.kind() == TokenKind::Identifier => {
                     let first = tok.text.chars().next();
                     !matches!(first, Some('$' | '@' | '%' | '&' | '*'))
                 }
@@ -1450,15 +1563,15 @@ impl<'a> Parser<'a> {
             }
             self.consume_token()?; // consume ':'
             let attr = self.expect(TokenKind::Identifier)?;
-            end = attr.end;
+            end = attr.end();
 
             if self.peek_kind() == Some(TokenKind::LeftParen) {
                 self.consume_token()?; // consume '('
                 let mut depth = 1usize;
                 while depth > 0 && !self.tokens.is_eof() {
                     let token = self.consume_token()?;
-                    end = token.end;
-                    match token.kind {
+                    end = token.end();
+                    match token.kind() {
                         TokenKind::LeftParen => depth += 1,
                         TokenKind::RightParen => depth -= 1,
                         _ => {}
@@ -1484,13 +1597,13 @@ impl<'a> Parser<'a> {
         match self.tokens.peek_second() {
             Ok(token) => {
                 // Check if it starts with prototype characters or looks like a prototype
-                matches!(token.kind,
+                matches!(token.kind(),
                     TokenKind::ScalarSigil | TokenKind::ArraySigil |
                     TokenKind::HashSigil | TokenKind::SubSigil |
                     TokenKind::Star | TokenKind::Semicolon |
                     TokenKind::Backslash) ||
                 // Check for special vars that look like prototypes ($$, $#, etc)
-                (token.kind == TokenKind::Identifier &&
+                (token.kind() == TokenKind::Identifier &&
                  token.text.chars().all(|c| matches!(c, '$' | '@' | '%' | '*' | '&' | ';' | '\\')))
             }
             Err(_) => false,
@@ -1501,14 +1614,14 @@ impl<'a> Parser<'a> {
     fn is_likely_prototype(&mut self) -> ParseResult<bool> {
         // We need to peek past the opening paren without consuming
         // First, ensure we're at a left paren
-        if self.tokens.peek()?.kind != TokenKind::LeftParen {
+        if self.tokens.peek()?.kind() != TokenKind::LeftParen {
             return Ok(false);
         }
 
         // Use peek_second to look at the token after the paren
         match self.tokens.peek_second() {
             Ok(token) => {
-                Ok(match token.kind {
+                Ok(match token.kind() {
                     // These are unambiguously prototype tokens.
                     // `+` means "scalar or array/hash ref" (perlsub), valid in prototypes.
                     // `++` is also valid: Perl's lexer merges two `+` into `Increment`, so
@@ -1524,7 +1637,7 @@ impl<'a> Parser<'a> {
                     // Sigils: peek past to distinguish prototype ($;@%) from signature ($x, @rest)
                     TokenKind::ScalarSigil | TokenKind::ArraySigil | TokenKind::HashSigil => {
                         match self.tokens.peek_third() {
-                            Ok(third) => !matches!(third.kind, TokenKind::Identifier),
+                            Ok(third) => !matches!(third.kind(), TokenKind::Identifier),
                             Err(_) => true, // default to prototype on error
                         }
                     }
@@ -1567,7 +1680,7 @@ impl<'a> Parser<'a> {
                             return Ok(false);
                         }
                         if let Ok(third) = self.tokens.peek_third() {
-                            let third_starts_signature = match third.kind {
+                            let third_starts_signature = match third.kind() {
                                 TokenKind::Identifier => third
                                     .text
                                     .chars()
@@ -1607,7 +1720,7 @@ impl<'a> Parser<'a> {
         while !self.tokens.is_eof() {
             let token = self.consume_token()?;
 
-            match token.kind {
+            match token.kind() {
                 TokenKind::RightParen => {
                     // End of prototype
                     break;
@@ -1663,24 +1776,40 @@ impl<'a> Parser<'a> {
     }
 }
 
+/// Recover the parsed body of a fused `*{EXPR}` typeglob assignment token.
+///
+/// The lexer keeps `*{...}` as one identifier token, so a dynamic typeglob
+/// assignment reaches [`Parser::parse_variable`] with the braced body only as
+/// raw text. When normalization kept the brace marker (a computed body),
+/// re-parse the inner expression so the `Typeglob` node carries it as a
+/// structured child (#15731). Recovery is best-effort: on any inner parse
+/// failure the body stays `None` and the raw braced text in `name` remains the
+/// only representation, matching the assignment path's pre-#15731 diagnostic
+/// surface. A braced bareword (`*{name}`) strips to its static name and never
+/// gets a body.
+fn fused_typeglob_body(name: &str, token_start: usize) -> Option<Box<Node>> {
+    let inner = name.strip_prefix('{')?.strip_suffix('}')?;
+    // Advisory diagnostics from the inner parse are deliberately dropped:
+    // the assignment path never surfaced them before #15731.
+    let (body, _) = parse_inline_expression(inner, token_start.saturating_add(2)).ok()?;
+    Some(Box::new(body))
+}
+
 /// Parse an expression captured inside the lexer's single `*{...}` token and
 /// restore its source offsets relative to the containing source file.
 fn parse_inline_expression(source: &str, offset: usize) -> ParseResult<(Node, Vec<ParseError>)> {
     let mut parser = Parser::new(source);
     let ast = parser.parse().map_err(|error| offset_parse_error(error, offset))?;
-    let diagnostics = parser
-        .errors()
-        .iter()
-        .cloned()
-        .map(|error| offset_parse_error(error, offset))
-        .collect();
-    let NodeKind::Program { mut statements } = ast.kind else {
+    let diagnostics =
+        parser.errors().iter().cloned().map(|error| offset_parse_error(error, offset)).collect();
+    let NodeKind::Program { mut statements } = ast.into_parts().0 else {
         return Err(ParseError::syntax("Expected an expression program", offset));
     };
     let mut expressions = Vec::new();
     for statement in statements.drain(..) {
         let statement_start = statement.location.start;
-        let NodeKind::ExpressionStatement { expression: statement_expression } = statement.kind
+        let NodeKind::ExpressionStatement { expression: statement_expression } =
+            statement.into_parts().0
         else {
             return Err(ParseError::syntax(
                 "Expected an expression statement",
@@ -1714,10 +1843,7 @@ fn build_deref_body(mut expressions: Vec<Node>, body_start: usize) -> ParseResul
         .into_iter()
         .map(|expression| {
             let location = expression.location;
-            Node::new(
-                NodeKind::ExpressionStatement { expression: Box::new(expression) },
-                location,
-            )
+            Node::new(NodeKind::ExpressionStatement { expression: Box::new(expression) }, location)
         })
         .collect();
     Ok(Node::new(NodeKind::Block { statements }, SourceLocation { start, end }))
@@ -1736,11 +1862,9 @@ fn offset_parse_error(error: ParseError, offset: usize) -> ParseError {
         ParseError::Advisory { message, location } => {
             ParseError::Advisory { message, location: location.saturating_add(offset) }
         }
-        ParseError::Recovered { site, kind, location } => ParseError::Recovered {
-            site,
-            kind,
-            location: location.saturating_add(offset),
-        },
+        ParseError::Recovered { site, kind, location } => {
+            ParseError::Recovered { site, kind, location: location.saturating_add(offset) }
+        }
         other => other,
     }
 }
@@ -1796,10 +1920,7 @@ mod inline_expression_tests {
             Err(error) => error,
         };
         if error.location() != Some(17) {
-            let location = match error.location() {
-                Some(location) => location,
-                None => 17,
-            };
+            let location = error.location().unwrap_or(17);
             return Err(ParseError::syntax(
                 "expected the non-expression error at the outer offset",
                 location,
@@ -1809,7 +1930,8 @@ mod inline_expression_tests {
     }
 
     #[test]
-    fn non_expression_after_expression_is_not_discarded() -> Result<(), Box<dyn std::error::Error>> {
+    fn non_expression_after_expression_is_not_discarded() -> Result<(), Box<dyn std::error::Error>>
+    {
         let error = match parse_inline_expression("$tmp; my $name;", 17) {
             Ok(_) => return Err("expected a non-expression statement to be rejected".into()),
             Err(error) => error,
@@ -1851,7 +1973,7 @@ mod inline_expression_tests {
     fn multi_statement_inline_expression_preserves_every_expression() -> ParseResult<()> {
         let (node, _) = parse_inline_expression("$tmp; 'STDOUT'", 17)?;
 
-        let NodeKind::Block { statements } = node.kind else {
+        let NodeKind::Block { statements } = node.into_parts().0 else {
             return Err(ParseError::syntax(
                 "expected multi-statement inline expression to remain a block",
                 17,
@@ -1869,12 +1991,11 @@ mod inline_expression_tests {
             matches!(diagnostic, ParseError::Advisory { message, .. }
                 if message.contains("Nested quantifiers detected"))
         }) {
-            return Err(ParseError::syntax(
-                "expected inline parser advisory to be forwarded",
-                17,
-            ));
+            return Err(ParseError::syntax("expected inline parser advisory to be forwarded", 17));
         }
-        if !diagnostics.iter().all(|diagnostic| diagnostic.location().is_none_or(|location| location >= 17))
+        if !diagnostics
+            .iter()
+            .all(|diagnostic| diagnostic.location().is_none_or(|location| location >= 17))
         {
             return Err(ParseError::syntax(
                 "expected forwarded inline diagnostics to retain the outer offset",
@@ -1920,7 +2041,7 @@ mod prototype_heuristic_tests {
     fn parse_sub(code: &str) -> Option<Node> {
         let mut parser = Parser::new(code);
         let ast = parser.parse().ok()?;
-        if let NodeKind::Program { statements } = ast.kind {
+        if let NodeKind::Program { statements } = ast.into_parts().0 {
             statements.into_iter().next()
         } else {
             None
@@ -1954,7 +2075,11 @@ mod prototype_heuristic_tests {
     fn named_parameter_carries_external_name_and_default() {
         fn find_named(node: &Node, out: &mut Vec<(String, bool, bool, Option<String>)>) {
             if let NodeKind::NamedParameter {
-                external_name, default_value, required, default_operator, ..
+                external_name,
+                default_value,
+                required,
+                default_operator,
+                ..
             } = &node.kind
             {
                 out.push((
@@ -2274,8 +2399,8 @@ mod code_dereference_tests {
     /// Helper: parse code and return the first statement node.
     fn parse_first_stmt(code: &str) -> Option<Node> {
         let ast = parse_program(code);
-        match ast.kind {
-            NodeKind::Program { mut statements } if !statements.is_empty() => {
+        match ast.into_parts() {
+            (NodeKind::Program { mut statements }, _) if !statements.is_empty() => {
                 Some(statements.swap_remove(0))
             }
             _ => None,

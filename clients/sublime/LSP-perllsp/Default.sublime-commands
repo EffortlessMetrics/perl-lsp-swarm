@@ -1,0 +1,42 @@
+[
+  {
+    "caption": "Perl: Run Current File",
+    "command": "perllsp_execute",
+    "args": { "action": "run_current_file" }
+  },
+  {
+    "caption": "Perl: Run Current Test File",
+    "command": "perllsp_execute",
+    "args": { "action": "run_current_test" }
+  },
+  {
+    "caption": "Perl: Run Workspace Tests",
+    "command": "perllsp_execute",
+    "args": { "action": "run_workspace_tests" }
+  },
+  {
+    "caption": "Perl: Run Critic Command (Compatibility Surface)",
+    "command": "perllsp_execute",
+    "args": { "action": "run_critic_compatibility" }
+  },
+  {
+    "caption": "Perl: Go to Test",
+    "command": "perllsp_execute",
+    "args": { "action": "go_to_test" }
+  },
+  {
+    "caption": "Perl: Go to Implementation",
+    "command": "perllsp_execute",
+    "args": { "action": "go_to_implementation" }
+  },
+  {
+    "caption": "Perl: Workspace Trust Report",
+    "command": "perllsp_execute",
+    "args": { "action": "workspace_trust_report" }
+  },
+  {
+    "caption": "Perl: Preview Safe Delete",
+    "command": "perllsp_execute",
+    "args": { "action": "preview_safe_delete" }
+  }
+]

@@ -55,7 +55,7 @@ CI hasn't broken since their last look).
 
 | Job | Timeout | Scope |
 |-----|---------|-------|
-| `pr-smoke` | 35 min | Format, scoped clippy, scoped test, integration-test compile |
+| `pr-smoke` | 75 min | Format, scoped clippy, scoped test, integration-test compile |
 | `merge-gate-shards` | 20 min | Bounded merge-gate shards via gate policy (see Section 2) |
 | `merge-gate` | 2 min | Aggregates shard results into the required merge-blocking status |
 | `ux-tests` | 15 min | UX regression suite against live binary |
@@ -189,7 +189,7 @@ these blocks merge (via the `ci/merge-gate` commit status check):
 |------|----------------|---------|
 | `clippy_full` | `cargo clippy --workspace --lib` + `--bins --no-deps` | Full lint including unwrap/expect ban |
 | `unit_full` | `cargo test --workspace --lib --locked` | All workspace library tests |
-| `compile_all_targets` | `just check-all-targets` | Catch integration-test and bench bit-rot |
+| `compile_all_targets` | `just check-all-targets` | Catch integration-test, bench, and default-feature example `#[cfg(test)]` bit-rot |
 | `lsp_smoke` | `cargo test -p perl-lsp-rs --test semantic_definition` | Deterministic LSP integration test |
 | `lsp_tier_a` | CLI smoke + capabilities snapshot + protocol tests | LSP capability correctness |
 | `lsp_tier_b` | Definitions, completion, color, code lens, security, behavioral | LSP core behavior |
@@ -202,7 +202,6 @@ these blocks merge (via the `ci/merge-gate` commit status check):
 | `v2_bundle_sync` | `bash scripts/check-v2-bundle-sync.sh` | v2 bundle files stay synchronized |
 | `workflow_audit` | `python3 scripts/ci-audit-workflows.py` | No ungated expensive jobs in workflows |
 | `nested_lock_check` | `find . -name Cargo.lock` | No nested Cargo.lock files |
-| `published_crate_count` | `xtask published-crate-count` | Crate count ratchet |
 
 ### Advisory (Informational) Gates
 
@@ -214,7 +213,6 @@ These gates have `required: false`. Failures produce signal and are tracked in
 | `parser_corpus_ratchet` | Baseline drifts with runner Perl version (Ubuntu Perl updates produce environmental false positives) |
 | `cpan_corpus_ratchet` | CPAN corpus not installed on PR runners; owned by post-merge cron |
 | `security_audit` | Currently quarantined: `cargo-audit` ecosystem breakage as of 2026-04-26 |
-| `published_crate_count` | Quarantined until collapse completes (~30–31 target crates) |
 | All `nightly` gates | Informational by tier definition |
 
 **Quarantine tracking**: Quarantined items are tracked in `.ci/debt-ledger.yaml`. The
@@ -310,8 +308,9 @@ check rather than no check.
 
 ### Timeout Classification
 
-`pr-smoke` has a 35-minute GitHub job timeout and wraps `xtask gates --tier pr-fast`
-with a 30-minute runner watchdog. Individual shell-backed gates still use their
+`pr-smoke` has a 75-minute GitHub job timeout and wraps `xtask gates --tier pr-fast`
+with a 45-minute runner watchdog, leaving setup and receipt/telemetry headroom.
+Individual shell-backed gates still use their
 `.ci/gate-policy.yaml` `timeout_seconds` values. On Unix runners, xtask delegates those
 per-gate deadlines to GNU `timeout` when available so a timed-out cargo or test command
 terminates as a process group, writes a receipt entry with `status: "timeout"`, and does
@@ -523,11 +522,12 @@ gh pr view <N> --json statusCheckRollup \
 gh pr view <N> --json mergeStateStatus
 ```
 
-**Do not use `rtk gh pr checks` for merge-readiness decisions.** The `rtk` filter
-summarizes individual job conclusions and can drop aggregator failures. PR #7016 showed
-this: `rtk` reported "Passed: 14, Failed: 0" while `CI Gate (Merge-Blocking)` was
-`FAILURE` on the latest SHA. Use raw `statusCheckRollup` queries for merge gates.
-See [FAILURE_MODES.md — rtk gh pr checks Masks Aggregator Failure](FAILURE_MODES.md).
+**Do not rely on filtered check summaries for merge-readiness decisions.** A filtered
+view can summarize individual job conclusions while dropping aggregator failures. PR
+#7016 showed this: an individual-job summary reported "Passed: 14, Failed: 0" while
+`CI Gate (Merge-Blocking)` was `FAILURE` on the latest SHA. Use direct
+`statusCheckRollup` queries for merge gates. See
+[FAILURE_MODES.md — Filtered Check Summaries Mask Aggregator Failure](FAILURE_MODES.md).
 
 ### Native merge-state behavior
 
@@ -660,7 +660,8 @@ differing only in `metadata.environment.type` ("local" vs "ci").
 - [OCTOPUS_CLUSTER.md](OCTOPUS_CLUSTER.md) — umbrella system design, vocabulary
 - [FAILURE_MODES.md](FAILURE_MODES.md) — operational failure patterns (Master Bit-Rot
   Cascade, xtask fmt False Cascade, Master Test Panic Blocker, CI Cancellation Cascade,
-  Workflow PR-Only Trigger Observability Gap, rtk Masks Aggregator Failure)
+  Workflow PR-Only Trigger Observability Gap, Filtered Check Summaries Mask Aggregator
+  Failure)
 - [LIVE_SIGNALS_VS_LABELS.md](LIVE_SIGNALS_VS_LABELS.md) — live CI vs `ci-green` label;
   reconciler behavior; merge-readiness query patterns
 - [ORCHESTRATION_DOCTRINE.md](ORCHESTRATION_DOCTRINE.md) — design philosophy behind the
@@ -695,5 +696,3 @@ The JSON receipt classifies the first observed failure and provides reproduction
 | `server_crash` | `crash_fix` | Fix crash before merge |
 | `new_test_bug` | `test_fix` | Fix test logic and rerun |
 | `unknown` | `triage` | Inspect logs and add classifier coverage |
-
-

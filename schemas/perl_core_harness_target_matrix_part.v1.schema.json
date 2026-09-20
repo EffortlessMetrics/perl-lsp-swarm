@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://effortlessmetrics.dev/schemas/perl_core_harness_target_matrix_part.v1.schema.json",
+  "title": "Perl core harness upstream target matrix part v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "targets"],
+  "properties": {
+    "schema_version": {
+      "const": "perl_core_harness.target_matrix_part.v1"
+    },
+    "targets": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "perl_core_harness_target_matrix.v1.schema.json#/$defs/matrix_entry"
+      }
+    }
+  }
+}

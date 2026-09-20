@@ -110,8 +110,6 @@ fn transport_mode_socket_preserves_exact_port() {
 
 #[test]
 fn transport_mode_equality() {
-    assert_eq!(TransportMode::Stdio, TransportMode::Stdio);
-    assert_eq!(TransportMode::Socket { port: 100 }, TransportMode::Socket { port: 100 });
     assert_ne!(TransportMode::Stdio, TransportMode::Socket { port: 100 });
     assert_ne!(TransportMode::Socket { port: 100 }, TransportMode::Socket { port: 200 });
 }
@@ -144,6 +142,25 @@ fn launch_config_features_json_is_valid_json() {
         first == '{' || first == '[',
         "features_json should start with JSON delimiter, got: {first}"
     );
+}
+
+#[test]
+fn production_features_json_has_no_declaration_compliance_claim() {
+    let config = LaunchConfig::new(FeatureProfile::Production);
+    let json = config.features_json();
+    let value: serde_json::Value = must(serde_json::from_str(&json));
+
+    assert_eq!(value["profile"].as_str(), Some("production"));
+    assert!(value["advertised"].as_array().is_some_and(|items| !items.is_empty()));
+    assert!(value["feature_profiles"].as_array().is_some_and(|profiles| !profiles.is_empty()));
+    for forbidden_key in
+        ["compliance_percent", "trackable_feature_count", "advertised_trackable_feature_count"]
+    {
+        assert!(
+            value.get(forbidden_key).is_none(),
+            "production --features-json must not expose declaration aggregate {forbidden_key}: {json}"
+        );
+    }
 }
 
 #[test]

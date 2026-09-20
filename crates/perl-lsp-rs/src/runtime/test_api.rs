@@ -155,8 +155,11 @@ impl LspServer {
 
     /// Test-only helper that forces the pending-parse generation gap (#3396 PR4).
     ///
-    /// Updates a document's rope/text/version and bumps its generation counter
-    /// -- exactly like a real `didChange` -- but deliberately does **not**
+    /// Updates a document's full text state (rope, canonical `text_arc`,
+    /// `text`, version, line starts) via
+    /// [`crate::state::DocumentState::update_content`] and bumps its
+    /// generation counter -- exactly like a real `didChange` -- but
+    /// deliberately does **not**
     /// re-parse or publish a new [`crate::state::ParsedSnapshot`]. Immediately
     /// after this call, [`crate::state::DocumentState::current_parsed`] returns
     /// `None` (the last published snapshot's generation now trails the text
@@ -180,18 +183,19 @@ impl LspServer {
         version: i32,
     ) -> Result<(), String> {
         let normalized_uri = self.normalize_uri_key(uri);
-        let rope = ropey::Rope::from_str(new_text);
-        let line_starts = perl_parser::position::LineStartsCache::new(new_text);
 
         let mut documents = self.documents.lock();
         let doc = documents
             .get_mut(&normalized_uri)
             .ok_or_else(|| format!("document not open: {uri}"))?;
-        doc.rope = rope;
-        doc.text = new_text.to_string();
-        doc.version = version;
-        doc.line_starts = line_starts;
-        doc.generation.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        // Route through `DocumentState::update_content` so *every* text
+        // surface moves together, including the canonical `text_arc` copy
+        // (#4999). Writing a subset of the fields by hand left `text_arc`
+        // holding the pre-edit text while the gap was open, and providers
+        // that read `text_arc` (hover, symbols) answered from stale source
+        // text (#11933) even though the gap contract only tolerates a stale
+        // *parse snapshot*, never stale text.
+        doc.update_content(new_text, version);
         // Deliberately do NOT call `publish_parsed_if_current` here: the whole
         // point of this helper is to leave the previously published snapshot
         // stale relative to the bumped generation, forcing `current_parsed()`
@@ -268,10 +272,10 @@ impl LspServer {
     ///
     /// # Returns
     /// - `Ok(Some(locations))`: Definition location(s) found.
-    /// - `Ok(None)`: No definition found at position.
+    /// - `Ok(Some(Value::Null))` or an empty location array: No definition found.
     ///
     /// # Errors
-    /// Returns [`JsonRpcError`] if params are invalid or document not found.
+    /// Returns [`JsonRpcError`] if provided params are invalid.
     pub fn test_handle_definition(
         &self,
         params: Option<Value>,
@@ -407,10 +411,11 @@ impl LspServer {
     ///
     /// # Returns
     /// - `Ok(Some(signature_help))`: Signature information found.
-    /// - `Ok(None)`: No signature help available at position.
+    /// - `Ok(Some(Value::Null))`: No signature help available at position or the
+    ///   document is not open.
     ///
     /// # Errors
-    /// Returns [`JsonRpcError`] if params are invalid or document not found.
+    /// Returns [`JsonRpcError`] if params are invalid or the feature is not advertised.
     pub fn test_handle_signature_help(
         &self,
         params: Option<Value>,
@@ -614,45 +619,12 @@ impl LspServer {
         self.handle_did_change_configuration(params);
     }
 
-    /// Install a mock subprocess runtime for the `CriticAnalyzer`.
-    ///
-    /// When set, the lazy-init path in `collect_external_perlcritic_diagnostics`
-    /// constructs a `CriticAnalyzer` using this runtime instead of the OS runtime.
-    /// This allows tests to exercise the full pipeline — including config-driven
-    /// profile discovery — without spawning a real `perlcritic` process.
-    ///
-    /// Call [`Self::test_bypass_perlcritic_command_check`] alongside this to
-    /// skip the `command_exists` guard.
-    ///
-    /// Resets the cached analyzer to `None` so the next diagnostic cycle
-    /// rebuilds it with the injected runtime.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn test_install_mock_critic_runtime(
+    /// Install a subprocess runtime used only by formatter requests in tests.
+    pub fn test_install_formatter_runtime(
         &self,
         runtime: std::sync::Arc<dyn perl_subprocess_runtime::SubprocessRuntime>,
     ) {
-        *self.critic_runtime_override.lock() = Some(runtime);
-        // Reset any cached analyzer so it is rebuilt with the new runtime.
-        *self.critic_analyzer.lock() = None;
-    }
-
-    /// Skip the `command_exists("perlcritic")` guard in
-    /// `collect_external_perlcritic_diagnostics` for the lifetime of this server.
-    ///
-    /// This lets tests exercise the full diagnostic pipeline with a mock runtime
-    /// without needing perlcritic installed on the test machine.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn test_bypass_perlcritic_command_check(&self) {
-        self.skip_perlcritic_command_check.store(true, std::sync::atomic::Ordering::Relaxed);
-    }
-
-    /// Force the perlcritic availability check to report a missing binary.
-    ///
-    /// This keeps unavailable-binary tests deterministic on hosts where
-    /// `perlcritic` is installed, without changing the process `PATH`.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn test_force_perlcritic_command_unavailable(&self) {
-        self.force_perlcritic_command_unavailable.store(true, std::sync::atomic::Ordering::Relaxed);
+        *self.formatter_runtime_override.lock() = Some(runtime);
     }
 
     /// Set the server root path (used for `.perlcriticrc` walk-up discovery).
@@ -731,9 +703,21 @@ impl LspServer {
     /// Configure AI completion settings directly for test purposes.
     ///
     /// Avoids direct access to `self.config` from integration tests.
+    ///
+    /// Enabling here also admits a trusted user/operator activation (#4997):
+    /// this test-only API stands in for the future server-owned operator
+    /// adapter (#10817), because no client channel can arm remote egress
+    /// anymore. Disabling revokes the activation so tests observe the same
+    /// fail-closed construction gate production uses.
     pub fn test_configure_ai_completion(&self, enabled: bool, fallback: bool) {
         let mut cfg = self.config.lock();
         cfg.ai_completion.user_enabled = enabled;
+        if enabled {
+            cfg.ai_completion.admit_trusted_user_operator_activation();
+        } else {
+            cfg.ai_completion.activation_authority =
+                perl_lsp_rs_core::config::AiActivationAuthority::Unavailable;
+        }
         cfg.ai_completion.fallback = fallback;
         recompute_ai_completion_effective(&mut cfg.ai_completion);
     }
@@ -823,6 +807,38 @@ impl LspServer {
 
         let url = url::Url::parse(uri).map_err(|e| e.to_string())?;
         coordinator.index().index_file(url, text.to_string())
+    }
+
+    /// Test-only live source commit at an owner-supplied non-zero generation.
+    ///
+    /// Prefer this over `index_file_with_generation` in new fixtures so #8129
+    /// tests do not grow the #11301 compatibility baseline.
+    #[cfg(feature = "workspace")]
+    pub fn test_index_live_file(
+        &self,
+        uri: &str,
+        text: &str,
+        generation: u32,
+    ) -> Result<(), String> {
+        use perl_workspace::workspace_index::{SourceCommit, SourceCommitOutcome};
+        use std::num::NonZeroU32;
+
+        let Some(coordinator) = self.index_coordinator.as_ref() else {
+            return Err("No coordinator available".to_string());
+        };
+        let Some(commit_gen) = NonZeroU32::new(generation) else {
+            return Err("zero generation is not a live commit identity".to_string());
+        };
+        let url = url::Url::parse(uri).map_err(|e| e.to_string())?;
+        match coordinator.index().index_live_file(
+            url,
+            text.to_string(),
+            SourceCommit::new(commit_gen),
+        ) {
+            SourceCommitOutcome::Accepted | SourceCommitOutcome::NoOp => Ok(()),
+            SourceCommitOutcome::RejectedStale => Err("rejected stale live commit".to_string()),
+            SourceCommitOutcome::Failed(msg) => Err(msg),
+        }
     }
 
     /// Register workspace folder URIs on the server for multi-root workspace tests.
@@ -918,6 +934,31 @@ impl LspServer {
             started,
             release,
         );
+    }
+
+    /// Pause the real background scan inside its per-file commit critical
+    /// section, after `indexing_transition_lock` is acquired (#13308). The
+    /// gate fires once, at the first indexed file, and holds the scan — and
+    /// the transition lock — until `release` fires or the gate times out.
+    #[cfg(feature = "workspace")]
+    pub fn test_gate_indexing_commit(
+        &self,
+        started: std::sync::mpsc::Sender<()>,
+        release: std::sync::mpsc::Receiver<()>,
+    ) {
+        super::readiness::set_indexing_commit_gate(&self.indexing_commit_gate, started, release);
+    }
+
+    /// Hold a workspace-folder transition after membership/index mutation and
+    /// before matching project configuration is installed.
+    pub fn test_gate_workspace_topology_transition(
+        &self,
+        started: std::sync::mpsc::Sender<()>,
+        release: std::sync::mpsc::Receiver<()>,
+    ) {
+        if let Ok(mut gate) = self.workspace_transition_test_gate.lock() {
+            *gate = Some(super::WorkspaceTopologyTransitionGate { started, release });
+        }
     }
 
     #[cfg(feature = "workspace")]
@@ -1312,6 +1353,9 @@ mod tests {
 
     #[test]
     fn test_notify_index_ready_wait_entered_forwards_to_readiness_observer() -> Result<()> {
+        // Same process-global wait-entered slot as the readiness contract
+        // tests (#15016). Serialize with every other notify-capable wait.
+        let _serial = crate::runtime::readiness::readiness_wait_path_test_lock();
         let server = LspServer::new();
         let coordinator = server
             .index_coordinator
@@ -1324,8 +1368,11 @@ mod tests {
         let (wait_entered_tx, wait_entered_rx) = std::sync::mpsc::channel();
         server.test_notify_index_ready_wait_entered(wait_entered_tx);
         let worker_coordinator = coordinator;
+        // Wide observer budget: under CI scheduling jitter a one-second
+        // recv can expire before the main thread reaches its wait, failing
+        // the join and flaking the contract test (same class as #15016).
         let worker = std::thread::spawn(move || -> Result<()> {
-            wait_entered_rx.recv_timeout(Duration::from_secs(1))?;
+            wait_entered_rx.recv_timeout(Duration::from_secs(30))?;
             worker_coordinator.transition_to_ready(0, 0);
             Ok(())
         });

@@ -7,7 +7,6 @@
 
 use std::env;
 use std::error::Error;
-use std::fs;
 use std::path::Path;
 
 // Import catalog helpers inlined from build_catalog.rs
@@ -17,9 +16,7 @@ mod catalog {
     include!("build_catalog.rs");
 }
 
-use catalog::{
-    load_catalog_for_build, render_lsp_fallback_module, render_lsp_feature_catalog_module,
-};
+use catalog::generate_lsp_catalog_module_at;
 
 fn main() -> Result<(), Box<dyn Error>> {
     let out_dir = env::var("OUT_DIR").map_err(
@@ -27,26 +24,15 @@ fn main() -> Result<(), Box<dyn Error>> {
     )?;
 
     let manifest_dir = env::var("CARGO_MANIFEST_DIR")?;
-    let dest_path = Path::new(&out_dir).join("feature_contracts.rs");
-
     println!("cargo:rerun-if-env-changed=FEATURES_TOML_OVERRIDE");
 
-    match load_catalog_for_build(Path::new(&manifest_dir)) {
-        Ok((catalog, source)) => {
-            println!("cargo:rerun-if-changed={}", source.path.display());
-            let code = render_lsp_feature_catalog_module(&catalog, source.comment());
-            fs::write(&dest_path, code).map_err(|error| {
-                format!("Failed to write feature_contracts.rs to {:?}: {error}", dest_path)
-            })?;
-        }
-        Err(error) => {
-            eprintln!("Warning: failed to load LSP feature catalog from features.toml: {error}");
-            let code = render_lsp_fallback_module();
-            fs::write(&dest_path, code).map_err(|error| {
-                format!("Failed to write fallback feature_contracts.rs to {:?}: {error}", dest_path)
-            })?;
-        }
-    }
+    let source = generate_lsp_catalog_module_at(
+        Path::new(&manifest_dir),
+        Path::new(&out_dir),
+        env::var_os("FEATURES_TOML_OVERRIDE").map(Into::into),
+    )
+    .map_err(|error| format!("failed to load LSP feature catalog: {error}"))?;
+    println!("cargo:rerun-if-changed={}", source.path.display());
 
     Ok(())
 }

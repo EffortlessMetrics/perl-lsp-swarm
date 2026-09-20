@@ -1,0 +1,9 @@
+project: product
+component: Packaging and distribution
+kind: Removed
+body: "Retired the duplicate `perl-lsp` executable from the `perl-lsp-rs` implementation crate; install and launch the canonical `perllsp` product command instead."
+time: 2026-08-12T09:26:00Z
+custom:
+  PR: "7497"
+  Slug: retire-perl-lsp-binary
+  Breaking: "yes"

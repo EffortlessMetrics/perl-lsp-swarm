@@ -179,26 +179,17 @@ my $x = unknown_function();
     harness.open_document("file:///nodef.pl", doc)?;
 
     // Go to definition on a comment (no symbol)
-    let result = harness
-        .request(
-            "textDocument/definition",
-            json!({
-                "textDocument": {"uri": "file:///nodef.pl"},
-                "position": {"line": 1, "character": 5} // Inside comment text
-            }),
-        )
-        .unwrap_or(json!(null));
+    let result = harness.request(
+        "textDocument/definition",
+        json!({
+            "textDocument": {"uri": "file:///nodef.pl"},
+            "position": {"line": 1, "character": 5} // Inside comment text
+        }),
+    )?;
 
     // Should return null or empty array
-    if !result.is_null() {
-        if result.is_array() {
-            let locations = result.as_array().ok_or("Expected array")?;
-            assert!(
-                locations.is_empty(),
-                "Definition on comment should return empty array, got {} locations",
-                locations.len()
-            );
-        }
+    if !result.is_null() && !result.as_array().is_some_and(Vec::is_empty) {
+        return Err(format!("Definition on comment must be null or empty, got {result}").into());
     }
 
     Ok(())
@@ -345,11 +336,9 @@ fn test_definition_on_empty_file() -> TestResult {
         .unwrap_or(json!(null));
 
     // Empty file should return null or empty array
-    if !result.is_null() {
-        if result.is_array() {
-            let locations = result.as_array().ok_or("Expected array")?;
-            assert!(locations.is_empty(), "Definition on empty file should return empty array");
-        }
+    if !result.is_null() && result.is_array() {
+        let locations = result.as_array().ok_or("Expected array")?;
+        assert!(locations.is_empty(), "Definition on empty file should return empty array");
     }
 
     Ok(())

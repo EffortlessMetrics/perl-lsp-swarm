@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Fixed
+body: "`perl-parser-pest` now selects an explicit heredoc contract (#8220): an opener owns the lines below it up to its terminator, those bytes become `AstNode::Heredoc.content`, and they leave the text handed to Pest so following code resumes after the terminator instead of the body being re-parsed as statements. A heredoc that cannot be owned truthfully — missing terminator, body over budget, too many openers on one line, or Perl-illegal `<< MARKER` — now carries a typed diagnostic through the new `parse_heredoc_outcome`, so an empty content can no longer masquerade as a complete parse. Two cases are reported rather than fixed, and are visible through the same surface: `<< MARKER` stays admitted by the grammar and is recorded as unsupported syntax, and a residual disagreement between the pre-pass and the grammar about which `<<` opens a heredoc is reported instead of returning a clean parse. Consumers reading fixture classifications should note that `heredoc.bare-eof` moves to `valid` as a result."
+time: 2026-09-02T12:00:00Z
+custom:
+  PR: "8220"
+  Slug: pest-heredoc-body-contract-8220
+  Breaking: "no"

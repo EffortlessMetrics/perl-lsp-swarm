@@ -2,9 +2,7 @@
 
 use std::borrow::Cow;
 
-use perl_module::name::{
-    legacy_package_separator, module_variant_pairs, normalize_package_separator,
-};
+use perl_module::{legacy_package_separator, module_variant_pairs, normalize_package_separator};
 
 // ──────────────────────────────────────────────────────────────
 // normalize_package_separator

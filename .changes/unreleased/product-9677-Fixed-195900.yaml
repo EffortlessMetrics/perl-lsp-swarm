@@ -1,0 +1,9 @@
+project: product
+component: CI
+kind: Fixed
+body: "The lsp_smoke merge gate now builds the perllsp binary before running its tests. perllsp is its own workspace package, so `cargo test -p perl-lsp-rs` never built it; the test harness then fell through its binary-resolution chain to the `cargo run -p perllsp` fallback, which had to compile the whole server inside each test's 16s initialize timeout. Every semantic_definition test that spawns a server timed out twice and failed, which is what kept the gate red on main. With the binary prebuilt the same suite passes 16/16 in about a second. This is the same precondition already fixed for the routed integration gate."
+time: 2026-08-15T19:59:00Z
+custom:
+  PR: "9677"
+  Slug: lsp-smoke-prebuild-perllsp
+  Breaking: "no"

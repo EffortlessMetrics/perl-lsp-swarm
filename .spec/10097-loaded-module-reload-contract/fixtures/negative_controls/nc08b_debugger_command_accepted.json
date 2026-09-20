@@ -1,0 +1,14 @@
+{
+  "name": "nc08b_debugger_command_accepted",
+  "control": 8,
+  "op": "validate_request_surface",
+  "input": {
+    "family": "perl-lsp/loadedModuleReload",
+    "family_version": 1,
+    "correlation_identity": 41,
+    "payload_kind": "debugger_command",
+    "payload_value": "x \\\\%INC",
+    "capability_kind": "unadvertised"
+  },
+  "expected_error": "raw_client_input_accepted"
+}

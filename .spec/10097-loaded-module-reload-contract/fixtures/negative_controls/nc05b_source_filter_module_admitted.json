@@ -1,0 +1,33 @@
+{
+  "name": "nc05b_source_filter_module_admitted",
+  "control": 5,
+  "op": "admit",
+  "input": {
+    "candidate": {
+      "session_generation": 3,
+      "suspension_generation": 11,
+      "observation_generation": 2,
+      "inc_key": "Filter/Context.pm",
+      "resolved_runtime_path": "/ws/lib/Filter/Context.pm",
+      "saved_content_digest": "sha256:bb22",
+      "logical_source_uri": "file:///ws/lib/Filter/Context.pm",
+      "perl_identity": "perl 5.42.0",
+      "launch_root": "/ws",
+      "module_classification": "source_backed_perl_module",
+      "operation_identity": 5
+    },
+    "observation": {
+      "stopped_and_command_ready": true,
+      "runtime_supported": true,
+      "loaded_in_runtime": true,
+      "within_launch_authority": true,
+      "runtime_mapping_unambiguous": true,
+      "identity_binding_complete": true,
+      "identity_current": true,
+      "client_source_matches_saved": true,
+      "module_classification": "source_filter_or_compile_hook",
+      "active_frame_in_target": false
+    }
+  },
+  "expected_error": "source_filter_or_compile_hook_boundary"
+}

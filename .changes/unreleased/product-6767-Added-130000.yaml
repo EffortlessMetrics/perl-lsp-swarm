@@ -1,0 +1,9 @@
+project: product
+component: compiler
+kind: Added
+body: "Seeded the versioned builtin semantic catalog and admission guard (#6679): typed argument roles/contexts/access, side effects, boundaries, and proof states are validated in both directions, proven status requires typed implementation evidence, and the complete flag must cover the canonical lexer builtin inventory."
+time: 2026-08-19T00:30:00Z
+custom:
+  PR: "6767"
+  Slug: compiler-builtin-catalog
+  Breaking: "no"

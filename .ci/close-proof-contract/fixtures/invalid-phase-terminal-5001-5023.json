@@ -1,0 +1,208 @@
+{
+  "schema_version": "close_proof_contract_fixture.v1",
+  "provenance": {
+    "captured_at": "2026-08-21",
+    "sources": [
+      "https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/5001",
+      "https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/5023"
+    ],
+    "subject_shas": [
+      "afd37f99a25344fc5b2c362925333b1b71604d8c"
+    ],
+    "boundary": "Immutable bounded structured excerpts of historical GitHub subjects. The fixture proves schema-level dispositions only; semantic completion evaluation belongs to CP03 (#10382)."
+  },
+  "contract": {
+    "schema_version": "issue_contract.v1",
+    "repository": "effortlessmetrics/perl-lsp-swarm",
+    "issue_number": 5001,
+    "title": "security(config): audit all resource-scoped settings for workspace-owned capabilities",
+    "kind": "multi_phase",
+    "required_proof_level": "authorized_behavior",
+    "allowed_close_modes": [
+      "completed",
+      "phase_complete_issue_remains_open",
+      "superseded",
+      "true_duplicate",
+      "not_planned"
+    ],
+    "denominator": [
+      {
+        "row_id": "settings.inventory.complete",
+        "statement": "Every resource-scoped setting is inventoried across all phases.",
+        "required_proof_level": "representation"
+      },
+      {
+        "row_id": "settings.hardening.applied",
+        "statement": "Capability-granting settings in every phase are hardened against workspace-owned capabilities.",
+        "required_proof_level": "authorized_behavior"
+      },
+      {
+        "row_id": "settings.classification.table",
+        "statement": "The checked-in classification table covers every committed setting.",
+        "required_proof_level": "representation"
+      }
+    ],
+    "negative_controls": [
+      {
+        "control_id": "nc.setting-addition-without-classification",
+        "guards_row_id": "settings.classification.table",
+        "description": "Adding a setting without a classification row fails proof."
+      }
+    ],
+    "mandatory_children": [],
+    "transfer_policy": {
+      "permitted": false,
+      "conditions": []
+    },
+    "domain_evidence_refs": [
+      ".ci/security/release-settings-closeout.json"
+    ],
+    "identity": {
+      "issue_body_digest": "0000000000000000000000000000000000000000000000000000000000001389",
+      "denominator_digest": "9a1b905f5044972e005710d6d6ee79ad2cca664a54b8dd9d93647dd913b4c5a2",
+      "accepted_ruling": null
+    }
+  },
+  "cases": [
+    {
+      "case_id": "pr-5023-terminal-close-attempt",
+      "description": "Historical PR #5023 requested a terminal close while proving only Phase 1 of the settings audit.",
+      "packet": {
+        "schema_version": "issue_close_proof.v1",
+        "repository": "effortlessmetrics/perl-lsp-swarm",
+        "issue_number": 5001,
+        "requested_close_mode": "completed",
+        "contract_binding": {
+          "contract_issue_body_digest": "0000000000000000000000000000000000000000000000000000000000001389",
+          "contract_denominator_digest": "9a1b905f5044972e005710d6d6ee79ad2cca664a54b8dd9d93647dd913b4c5a2",
+          "accepted_ruling_digest": null
+        },
+        "candidate_pr": 5023,
+        "landed_subjects": [],
+        "landing_content_proof": [],
+        "established_claims": [
+          {
+            "statement": "VS Code resource/workspace settings and the didChangeConfiguration channel cannot enable legacy perlcritic subprocess profile paths or external perltidy profile injection.",
+            "covers_rows": [
+              "settings.inventory.complete"
+            ]
+          }
+        ],
+        "explicitly_not_established_claims": [
+          {
+            "statement": ".perl-lsp.toml hardening and the full Phase 2 inventory gate are not proved by this slice.",
+            "covers_rows": [
+              "settings.hardening.applied"
+            ]
+          }
+        ],
+        "row_dispositions": {
+          "settings.classification.table": {
+            "disposition": "not_proven",
+            "reason": "the classification table lands with the complete settings denominator."
+          },
+          "settings.hardening.applied": {
+            "disposition": "not_proven",
+            "reason": "Phase 1 only; the full 17-setting inventory gate remains open."
+          },
+          "settings.inventory.complete": {
+            "disposition": "proven_current_main",
+            "evidence": {
+              "producer": "xtask-pr-close-proof",
+              "subject": "000000000000000000000000000000000000c437",
+              "content_digest": "000000000000000000000000000000000000000000000000000000000007aa2d",
+              "reference": "cargo xtask pr-close-proof --pr 5023"
+            }
+          }
+        },
+        "negative_control_dispositions": {
+          "nc.setting-addition-without-classification": {
+            "state": "not_proven",
+            "reason": "the guarded classification row is not yet proven."
+          }
+        },
+        "child_dispositions": [],
+        "duplicate_of": null,
+        "verdict": {
+          "pr_scope": "pass",
+          "issue_close": "invalid",
+          "reasons": [
+            "A Phase 1 boundary cannot satisfy completed; the correct relation is Advances #5001."
+          ]
+        }
+      },
+      "expected_pr_scope": "pass",
+      "expected_issue_close": "invalid"
+    },
+    {
+      "case_id": "pr-5023-corrected-non-terminal-relation",
+      "description": "The same bounded slice recorded as phase_complete_issue_remains_open passes PR scope while the issue stays open.",
+      "packet": {
+        "schema_version": "issue_close_proof.v1",
+        "repository": "effortlessmetrics/perl-lsp-swarm",
+        "issue_number": 5001,
+        "requested_close_mode": "phase_complete_issue_remains_open",
+        "contract_binding": {
+          "contract_issue_body_digest": "0000000000000000000000000000000000000000000000000000000000001389",
+          "contract_denominator_digest": "9a1b905f5044972e005710d6d6ee79ad2cca664a54b8dd9d93647dd913b4c5a2",
+          "accepted_ruling_digest": null
+        },
+        "candidate_pr": 5023,
+        "landed_subjects": [],
+        "landing_content_proof": [],
+        "established_claims": [
+          {
+            "statement": "VS Code resource/workspace settings and the didChangeConfiguration channel cannot enable legacy perlcritic subprocess profile paths or external perltidy profile injection.",
+            "covers_rows": [
+              "settings.inventory.complete"
+            ]
+          }
+        ],
+        "explicitly_not_established_claims": [
+          {
+            "statement": ".perl-lsp.toml hardening and the full Phase 2 inventory gate are not proved by this slice.",
+            "covers_rows": [
+              "settings.hardening.applied"
+            ]
+          }
+        ],
+        "row_dispositions": {
+          "settings.classification.table": {
+            "disposition": "not_proven",
+            "reason": "the classification table lands with the complete settings denominator."
+          },
+          "settings.hardening.applied": {
+            "disposition": "not_proven",
+            "reason": "Phase 1 only; the full 17-setting inventory gate remains open."
+          },
+          "settings.inventory.complete": {
+            "disposition": "proven_current_main",
+            "evidence": {
+              "producer": "xtask-pr-close-proof",
+              "subject": "000000000000000000000000000000000000c437",
+              "content_digest": "000000000000000000000000000000000000000000000000000000000007aa2d",
+              "reference": "cargo xtask pr-close-proof --pr 5023"
+            }
+          }
+        },
+        "negative_control_dispositions": {
+          "nc.setting-addition-without-classification": {
+            "state": "not_proven",
+            "reason": "the guarded classification row is not yet proven."
+          }
+        },
+        "child_dispositions": [],
+        "duplicate_of": null,
+        "verdict": {
+          "pr_scope": "pass",
+          "issue_close": "valid",
+          "reasons": [
+            "The non-terminal phase disposition matches the recorded claim boundary; issue #5001 remains open."
+          ]
+        }
+      },
+      "expected_pr_scope": "pass",
+      "expected_issue_close": "valid"
+    }
+  ]
+}

@@ -21,6 +21,8 @@ pub(super) fn duplicate_key_diagnostic(
             message: format!("Key '{key_text}' first defined here"),
         }],
         tags: Vec::new(),
+        fixable: false,
+        critic_observation: None,
         suggestion: Some(format!("Remove the earlier '{key_text}' entry or rename this key")),
     }
 }

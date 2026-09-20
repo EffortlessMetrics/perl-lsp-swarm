@@ -5,11 +5,11 @@
 #[cfg(test)]
 use super::super::*;
 use super::super::{LspServer, MessageType, md5, normalize_package_separator};
-use perl_module::resolution::use_lib::{UseLibPath, resolve_use_lib_paths_from_source};
-use perl_module::resolution::{
+use perl_module::{
     ModuleUriResolution, build_effective_inc_roots,
     resolve_module_path as resolve_workspace_module_path, resolve_module_uri_with_effective_inc,
 };
+use perl_module::{UseLibPath, resolve_use_lib_paths_from_source};
 use perl_parser_core::hir::{IncRootAction, lower_ast};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -219,7 +219,7 @@ fn resolve_hir_use_lib_paths_and_cancelled(
             continue;
         }
 
-        let resolved = perl_module::resolution::use_lib::resolve_use_lib_paths(
+        let resolved = perl_module::resolve_use_lib_paths(
             std::slice::from_ref(&fact.path),
             workspace_root,
             file_dir,
@@ -412,12 +412,16 @@ fn append_system_inc_paths(
         return;
     }
 
+    append_system_inc_paths_from(config.get_system_inc(), include_paths);
+}
+
+fn append_system_inc_paths_from(system_paths: &[PathBuf], include_paths: &mut Vec<String>) {
     let mut seen: HashSet<String> = include_paths
         .iter()
         .map(|existing| normalized_inc_key(std::path::Path::new(existing)))
         .collect();
 
-    for path in config.get_system_inc() {
+    for path in system_paths {
         let normalized = normalized_inc_key(path);
         if normalized == "." {
             continue;
@@ -431,7 +435,14 @@ fn append_system_inc_paths(
 
 fn normalized_inc_key(path: &std::path::Path) -> String {
     let normalized = path.to_string_lossy().replace('\\', "/");
-    if normalized == "/" { normalized } else { normalized.trim_end_matches('/').to_string() }
+    // Preserve the trailing separator on root forms: POSIX "/" and Windows
+    // drive roots ("C:/") keep theirs, so a drive root never collapses into
+    // the drive-RELATIVE path ("C:" — the drive's current directory, a
+    // different location entirely). Trimming it made the two dedupe as one
+    // include path (#11840 review).
+    let is_root_form = normalized == "/"
+        || (normalized.len() == 3 && normalized.as_bytes()[1] == b':' && normalized.ends_with('/'));
+    if is_root_form { normalized } else { normalized.trim_end_matches('/').to_string() }
 }
 
 impl LspServer {
@@ -667,8 +678,8 @@ mod tests {
     use super::*;
     use crate::runtime::workspace_folder::WorkspaceFolderState;
     use crate::state::DocumentState;
-    use perl_module::resolution::IncRootKind;
-    use perl_module::resolution::build_effective_inc_roots;
+    use perl_module::IncRootKind;
+    use perl_module::build_effective_inc_roots;
     use std::fs;
 
     // --- workspace root detection warning tests ---
@@ -735,32 +746,48 @@ mod tests {
         assert_eq!(roots[2].source, "interpreter-startup-inc");
     }
 
+    /// A Windows drive root ("C:\\") and its drive-relative form ("C:") are
+    /// DIFFERENT directories; the dedupe key must keep them distinct instead
+    /// of collapsing both to "C:" (#11840 review).
     #[test]
-    fn append_system_inc_paths_skips_dot_and_dedupes_normalized_variants() -> TestResult {
-        let mut config = perl_lsp_rs_core::config::WorkspaceConfig::default();
-        config.use_system_inc = true;
-        config.include_paths = vec!["lib".to_string()];
+    fn normalized_inc_key_keeps_drive_roots_distinct_from_drive_relative() {
+        assert_ne!(
+            normalized_inc_key(std::path::Path::new("C:\\")),
+            normalized_inc_key(std::path::Path::new("C:")),
+            "drive root must not collapse into the drive-relative path"
+        );
+        assert_eq!(
+            normalized_inc_key(std::path::Path::new(r"C:\site\lib")),
+            normalized_inc_key(std::path::Path::new("C:/site/lib")),
+            "ordinary paths still normalize to one key"
+        );
+    }
 
-        let temp = tempfile::tempdir()?;
-        let inc_path = temp.path().join("site_perl");
-        std::fs::create_dir_all(&inc_path)?;
-
-        let perl_path = std::env::var("PERL").unwrap_or_else(|_| "perl".to_string());
-        config.perl_path = Some(perl_path);
-        config.perl_args = vec![
-            "-I".to_string(),
-            ".".to_string(),
-            "-I".to_string(),
-            inc_path.to_string_lossy().to_string(),
-            "-I".to_string(),
-            format!("{}{}", inc_path.to_string_lossy(), std::path::MAIN_SEPARATOR),
+    /// Dot-skip and normalized-separator dedupe are owned here, deterministically:
+    /// no live interpreter spawn, so a cold perl start under a parallel suite can
+    /// no longer false-fail the probe budget (the retired live-spawn variant of
+    /// this test flaked ~22% even with retries, #13201). The synthetic variants
+    /// mirror what a real probe yields for `-I dir` and `-I dir<MAIN_SEPARATOR>`;
+    /// the live `perl_args` -> `@INC` wiring itself is proven by
+    /// `get_system_inc_probe_surfaces_perl_arg_include_path` in `perl-lsp-rs-core`
+    /// under a widened, deterministic probe budget.
+    #[test]
+    fn append_system_inc_paths_from_skips_dot_and_dedupes_normalized_variants() -> TestResult {
+        let inc_path = PathBuf::from("site_perl");
+        let native_separator_variant =
+            PathBuf::from(format!("{}{}", inc_path.to_string_lossy(), std::path::MAIN_SEPARATOR));
+        let system_paths = vec![
+            PathBuf::from("."),
+            inc_path.clone(),
+            PathBuf::from("site_perl/"),
+            native_separator_variant,
         ];
-
         let mut include_paths = vec!["lib".to_string(), ".".to_string()];
-        append_system_inc_paths(&mut config, &mut include_paths);
+
+        append_system_inc_paths_from(&system_paths, &mut include_paths);
 
         let dot_count = include_paths.iter().filter(|path| path.as_str() == ".").count();
-        assert_eq!(dot_count, 1, "dot entry should not be duplicated from system @INC");
+        assert_eq!(dot_count, 1, "dot entry should not be duplicated");
 
         let inc_entries = include_paths
             .iter()

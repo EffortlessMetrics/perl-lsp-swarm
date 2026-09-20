@@ -1,0 +1,23 @@
+{
+  "folders": [
+    {
+      "path": "."
+    }
+  ],
+  "debugger_configurations": [
+    {
+      "name": "Perl: Debug current file",
+      "type": "perl",
+      "request": "launch",
+      "program": "${file}",
+      "cwd": "${workspaceFolder}",
+      "perlPath": "perl",
+      "args": [],
+      "includePaths": [
+        "${workspaceFolder}/lib"
+      ],
+      "env": {},
+      "stopOnEntry": false
+    }
+  ]
+}

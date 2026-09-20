@@ -11,15 +11,14 @@ use std::error::Error;
 use std::fmt;
 use std::io;
 use std::io::IsTerminal;
-use std::sync::{Once, OnceLock};
+use std::sync::{Mutex, MutexGuard, Once, PoisonError};
 
 use clap::error::{ContextKind, ContextValue, ErrorKind};
 use clap::{Args, Parser};
+mod checking_guidance;
 pub mod timing;
 pub use crate::features::contracts::trackable_feature_count_for_grid;
-pub use crate::features::grid::{
-    compliance_counts_for_profile, compliance_percent_for_profile, to_json_for_profile,
-};
+pub use crate::features::grid::{compliance_counts_for_profile, to_json_for_profile};
 pub use crate::features::policy::{FeatureProfile, catalog_advertised_feature_ids};
 use crate::features::profile_cli::{feature_profile_supported_tokens, parse_feature_profile_arg};
 use crate::runtime::tuning::{DiagnosticMode, RuntimeMode, RuntimeTuning};
@@ -28,8 +27,14 @@ use tracing_subscriber::prelude::*;
 use tracing_subscriber::{EnvFilter, fmt as tracing_fmt};
 
 static LOGGING_INIT: Once = Once::new();
-/// Keeps the non-blocking file writer alive for the process lifetime.
-static LOG_FILE_GUARD: OnceLock<tracing_appender::non_blocking::WorkerGuard> = OnceLock::new();
+/// Owns the non-blocking file writer until the server's shutdown path drains it.
+static LOG_FILE_GUARD: Mutex<Option<tracing_appender::non_blocking::WorkerGuard>> =
+    Mutex::new(None);
+
+fn lock_log_file_guard() -> MutexGuard<'static, Option<tracing_appender::non_blocking::WorkerGuard>>
+{
+    LOG_FILE_GUARD.lock().unwrap_or_else(PoisonError::into_inner)
+}
 
 /// Default port used by socket transport.
 pub const DEFAULT_LSP_PORT: u16 = 9257;
@@ -73,6 +78,21 @@ pub fn logging_filter(
 /// (max 5 files) **in addition to** stderr. Invalid `RUST_LOG` values fall
 /// back to `default_filter`.
 pub fn init_logging(default_filter: &str) {
+    init_logging_with_env_lookup(default_filter, process_env_var);
+}
+
+fn process_env_var(key: &str) -> Result<String, std::env::VarError> {
+    std::env::var(key)
+}
+
+fn init_logging_with_env_lookup(
+    default_filter: &str,
+    get: fn(&str) -> Result<String, std::env::VarError>,
+) {
+    init_logging_with_log_path(default_filter, get("PERL_LSP_LOG_FILE").ok());
+}
+
+fn init_logging_with_log_path(default_filter: &str, log_path: Option<String>) {
     LOGGING_INIT.call_once(|| {
         let filter = EnvFilter::try_from_default_env()
             .or_else(|_| EnvFilter::try_new(default_filter))
@@ -81,7 +101,7 @@ pub fn init_logging(default_filter: &str) {
         let use_ansi = should_use_ansi_stderr();
 
         // If PERL_LSP_LOG_FILE is set, add a rolling file appender alongside stderr.
-        if let Ok(log_path) = std::env::var("PERL_LSP_LOG_FILE") {
+        if let Some(log_path) = log_path {
             let path = std::path::Path::new(&log_path);
             let log_dir = path.parent().unwrap_or_else(|| std::path::Path::new("."));
             let log_file_prefix = path.file_name().and_then(|f| f.to_str()).unwrap_or("perl-lsp");
@@ -93,7 +113,7 @@ pub fn init_logging(default_filter: &str) {
                 .build(log_dir)
             {
                 let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
-                let _ = LOG_FILE_GUARD.set(guard);
+                *lock_log_file_guard() = Some(guard);
 
                 let stderr_layer = tracing_subscriber::fmt::layer()
                     .with_writer(io::stderr)
@@ -123,6 +143,16 @@ pub fn init_logging(default_filter: &str) {
             .with_target(true)
             .try_init();
     });
+}
+
+/// Flush and stop the rolling-file appender, if one was configured.
+///
+/// Dropping the non-blocking writer guard drains its queue before the process
+/// exits. Call this from the server shutdown path so final diagnostics are not
+/// lost to process teardown.
+pub fn shutdown_logging() {
+    let writer_guard = lock_log_file_guard().take();
+    drop(writer_guard);
 }
 
 fn env_truthy(var_name: &str) -> Option<bool> {
@@ -209,7 +239,7 @@ pub fn log_server_startup(
 #[derive(Args, Debug, Clone)]
 pub struct TransportArgs {
     /// Use stdio for communication (default)
-    #[arg(long, visible_alias = "mcp", default_value_t = false, conflicts_with = "socket")]
+    #[arg(long, default_value_t = false, conflicts_with = "socket")]
     pub stdio: bool,
 
     /// Use TCP socket for communication
@@ -252,17 +282,43 @@ pub struct LspArgs {
     #[arg(long)]
     pub info: bool,
 
-    /// Validate Perl files and report parse errors (batch mode)
+    /// Native in-process parser check of listed files (does not execute project Perl)
     #[arg(long)]
     pub check: bool,
 
-    /// Scan a project directory and report parsability summary
+    /// Native parsability report (80% threshold; not a strict all-clean check)
     #[arg(long, conflicts_with = "check")]
     pub check_project: Option<Option<String>>,
 
     /// Explain first-run workspace setup: Perl path, config, and effective @INC roots
     #[arg(long, conflicts_with_all = ["check", "check_project"])]
     pub doctor: Option<Option<String>>,
+
+    /// With --doctor: show the registry-driven native-first external tooling report
+    #[arg(
+        long,
+        requires = "doctor",
+        conflicts_with_all = ["critic_compatibility", "dev_environment"]
+    )]
+    pub external_tools: bool,
+
+    /// With --doctor: show registry-driven Perl::Critic configuration compatibility
+    #[arg(
+        long,
+        requires = "doctor",
+        conflicts_with_all = ["external_tools", "dev_environment"]
+    )]
+    pub critic_compatibility: bool,
+
+    /// With --doctor: detect development-environment prerequisites
+    /// (symlink privilege, per-shell cargo vs the workspace toolchain pin,
+    /// bash flavors, Perl identity) (#12595)
+    #[arg(
+        long,
+        requires = "doctor",
+        conflicts_with_all = ["external_tools", "critic_compatibility"]
+    )]
+    pub dev_environment: bool,
 
     /// Output machine-readable JSON (currently affects --doctor only)
     #[arg(long)]
@@ -292,6 +348,9 @@ pub struct LspArgs {
             "check",
             "check_project",
             "doctor",
+            "external_tools",
+            "critic_compatibility",
+            "dev_environment",
             "features_json",
             "perltidy_compat_report",
             "perlcritic_compat_report"
@@ -400,9 +459,9 @@ pub enum LaunchAction {
     Health,
     /// Show server info (version, features, coverage).
     Info,
-    /// Validate Perl files in batch mode.
+    /// Native in-process parser check of listed files.
     Check,
-    /// Scan a project directory and report parsability summary.
+    /// Native project parsability report at a fixed 80% threshold.
     CheckProject {
         /// Directory to scan (defaults to ".").
         dir: String,
@@ -411,6 +470,23 @@ pub enum LaunchAction {
     Doctor {
         /// Directory to inspect (defaults to ".").
         dir: String,
+        /// Output JSON instead of human-readable text.
+        json: bool,
+    },
+    /// Show the registry-driven, native-first external tooling report.
+    DoctorExternalTools {
+        /// Output JSON instead of human-readable text.
+        json: bool,
+    },
+    /// Show registry-driven Perl::Critic configuration compatibility.
+    DoctorCriticCompatibility {
+        /// Output JSON instead of human-readable text.
+        json: bool,
+    },
+    /// Detect development-environment prerequisites on this machine (#12595):
+    /// temporary symlink privilege, per-shell Cargo probes vs the workspace
+    /// toolchain pin, bash flavor coverage, and Perl identity divergence.
+    DoctorDevEnvironment {
         /// Output JSON instead of human-readable text.
         json: bool,
     },
@@ -513,6 +589,8 @@ pub enum LaunchParseError {
         /// Closest known option, when the parser can name one.
         suggestion: Option<String>,
     },
+    /// The retired `--mcp` spelling was used for the LSP stdio transport.
+    McpAliasRejected,
     /// A parse failure other than an unknown option — an argument conflict, an
     /// invalid value, or a missing value.
     ///
@@ -567,6 +645,10 @@ impl fmt::Display for LaunchParseError {
                 }
                 None => write!(f, "Unknown option: {option}"),
             },
+            Self::McpAliasRejected => write!(
+                f,
+                "`--mcp` is not an LSP transport alias.\nUse `perllsp --stdio` for LSP.\nUse `perllsp mcp --stdio` only when the native MCP adapter is available."
+            ),
             Self::ParserDiagnostic { rendered } => write!(f, "{rendered}"),
             Self::MissingValue { option } => {
                 write!(f, "Missing value for {option}")
@@ -603,6 +685,7 @@ impl perl_parser_core::ErrorClass for LaunchParseError {
         // infrastructure, protocol, or transient failures.
         match self {
             Self::UnknownOption { .. }
+            | Self::McpAliasRejected
             | Self::ParserDiagnostic { .. }
             | Self::MissingValue { .. }
             | Self::InvalidFeatureProfile { .. }
@@ -669,8 +752,16 @@ where
                 let dir = maybe_dir.unwrap_or_else(|| ".".to_string());
                 LaunchAction::CheckProject { dir }
             } else if let Some(maybe_dir) = parsed_args.doctor {
-                let dir = maybe_dir.unwrap_or_else(|| ".".to_string());
-                LaunchAction::Doctor { dir, json: parsed_args.json }
+                if parsed_args.dev_environment {
+                    LaunchAction::DoctorDevEnvironment { json: parsed_args.json }
+                } else if parsed_args.external_tools {
+                    LaunchAction::DoctorExternalTools { json: parsed_args.json }
+                } else if parsed_args.critic_compatibility {
+                    LaunchAction::DoctorCriticCompatibility { json: parsed_args.json }
+                } else {
+                    let dir = maybe_dir.unwrap_or_else(|| ".".to_string());
+                    LaunchAction::Doctor { dir, json: parsed_args.json }
+                }
             } else if let Some(raw_shell) = parsed_args.completion {
                 let shell = normalize_completion_shell(&raw_shell).ok_or_else(|| {
                     LaunchParseError::InvalidShell { raw_shell: raw_shell.clone() }
@@ -761,6 +852,10 @@ fn prevalidate_cli_values(args: &[std::ffi::OsString]) -> Result<(), LaunchParse
     while index < args.len() {
         let token = args[index].to_string_lossy();
 
+        if token == "--mcp" || token.starts_with("--mcp=") {
+            return Err(LaunchParseError::McpAliasRejected);
+        }
+
         if token == "--port" {
             let next = args.get(index + 1).map(|value| value.to_string_lossy().to_string());
             let Some(raw_port) = next else {
@@ -848,9 +943,12 @@ pub fn help_text() -> String {
     out.push_str("       perllsp --check <file.pl> [file2.pm ...]\n");
     out.push_str("       perllsp --check-project [dir]\n");
     out.push_str("       perllsp --doctor [dir]\n");
+    out.push_str("       perllsp --doctor --external-tools\n");
+    out.push_str("       perllsp --doctor --critic-compatibility\n");
+    out.push_str("       perllsp --doctor --dev-environment\n");
     out.push('\n');
     out.push_str("Server options:\n");
-    out.push_str("  --stdio, --mcp       Use stdio for communication (default)\n");
+    out.push_str("  --stdio              Use stdio for communication (default)\n");
     out.push_str("  --socket             Use TCP socket for communication\n");
     out.push_str(&format!(
         "  --port <port>        Port to listen on (default: {DEFAULT_LSP_PORT})\n"
@@ -880,10 +978,28 @@ pub fn help_text() -> String {
     out.push_str("  --features-json      Output features catalog as JSON\n");
     out.push('\n');
     out.push_str("Tool options:\n");
-    out.push_str("  --check <files...>   Validate Perl files and report parse errors\n");
-    out.push_str("  --check-project [dir]\n");
-    out.push_str("                       Scan project directory for parsability report\n");
+    out.push_str("  ");
+    out.push_str(checking_guidance::CHECK_FLAG);
+    out.push_str(" <files...>   ");
+    out.push_str(checking_guidance::CHECK_DESCRIPTION);
+    out.push_str(" (does not execute project Perl)\n");
+    out.push_str("  ");
+    out.push_str(checking_guidance::CHECK_PROJECT_FLAG);
+    out.push_str(" [dir]\n");
+    out.push_str("                       ");
+    out.push_str(checking_guidance::CHECK_PROJECT_DESCRIPTION);
+    out.push('\n');
     out.push_str("  --doctor [dir]       Explain Perl path, config, and effective @INC roots\n");
+    out.push_str(
+        "  --external-tools     With --doctor: native-first external tooling report (registry-driven)\n",
+    );
+    out.push_str("  --critic-compatibility\n");
+    out.push_str(
+        "                       With --doctor: .perlcriticrc compatibility, process-free\n",
+    );
+    out.push_str(
+        "  --dev-environment    With --doctor: dev-prerequisite report (symlink, shells, Perl)\n",
+    );
     out.push_str(
         "  --json               Machine-readable JSON output (currently affects --doctor)\n",
     );
@@ -908,15 +1024,35 @@ pub fn help_text() -> String {
         "  --ripr-out <path>    Output path (default: target/ripr/reports/perl-facts.json)\n",
     );
     out.push('\n');
+    out.push_str("Checking commands (native vs real Perl):\n");
+    out.push_str("  Need fast native feedback on listed files?     ");
+    out.push_str(checking_guidance::CHECK_FLAG);
+    out.push_str(" <files...>\n");
+    out.push_str("  Need a project parser coverage metric?         ");
+    out.push_str(checking_guidance::CHECK_PROJECT_FLAG);
+    out.push_str(" [dir]\n");
+    out.push_str(
+        "  Need real-Perl compile observation?            editor Perl: Check Syntax / DAP (`perl -c`)\n",
+    );
+    out.push_str(
+        "  Advisories remain visible but non-blocking. `--check-project` can PASS below 100% clean.\n",
+    );
+    out.push('\n');
     out.push_str("Examples:\n");
     out.push_str("  perllsp --stdio                         # stdio mode (default)\n");
-    out.push_str("  perllsp --mcp                           # stdio mode alias for MCP clients\n");
     out.push_str("  perllsp --stdio --log                   # with logging\n");
     out.push_str("  perllsp --socket --port 9257            # TCP socket mode\n");
     out.push_str("  perllsp --stdio --feature-profile=prod  # production profile\n");
-    out.push_str("  perllsp --check lib/MyModule.pm         # syntax check\n");
-    out.push_str("  perllsp --check-project lib/            # project scan\n");
+    out.push_str("  perllsp --check lib/MyModule.pm         # ");
+    out.push_str(checking_guidance::CHECK_EXAMPLE_COMMENT);
+    out.push('\n');
+    out.push_str("  perllsp --check-project lib/            # ");
+    out.push_str(checking_guidance::CHECK_PROJECT_EXAMPLE_COMMENT);
+    out.push('\n');
     out.push_str("  perllsp --doctor .                      # first-run setup report\n");
+    out.push_str("  perllsp --doctor --external-tools       # registry-driven tooling report\n");
+    out.push_str("  perllsp --doctor --critic-compatibility # critic config compatibility\n");
+    out.push_str("  perllsp --doctor --dev-environment      # development-environment checks\n");
     out.push_str("  perllsp --perltidy-compat-report .perltidyrc\n");
     out.push_str("  perllsp --perlcritic-compat-report .perlcriticrc\n");
     out.push_str("  perllsp --info                          # server information\n");
@@ -977,7 +1113,7 @@ const BASH_COMPLETION: &str = r#"_perl_lsp() {
     COMPREPLY=()
     cur="${COMP_WORDS[COMP_CWORD]}"
     prev="${COMP_WORDS[COMP_CWORD-1]}"
-    opts="--stdio --mcp --socket --port --log --health --info --check --check-project --doctor --json --version --features-json --perltidy-compat-report --perlcritic-compat-report --feature-profile --completion --help --runtime-mode --diagnostic-mode --diagnostic-debounce-ms --eager-workspace-indexing --file-watchers --ripr-facts --ripr-schema --ripr-root --ripr-base --ripr-head --ripr-fact-classes --ripr-out"
+    opts="--stdio --socket --port --log --health --info --check --check-project --doctor --external-tools --critic-compatibility --dev-environment --json --version --features-json --perltidy-compat-report --perlcritic-compat-report --feature-profile --completion --help --runtime-mode --diagnostic-mode --diagnostic-debounce-ms --eager-workspace-indexing --file-watchers --ripr-facts --ripr-schema --ripr-root --ripr-base --ripr-head --ripr-fact-classes --ripr-out"
 
     case "${prev}" in
         --port)
@@ -1030,15 +1166,17 @@ const ZSH_COMPLETION: &str = r#"#compdef perl-lsp
 _perl-lsp() {
     _arguments \
         '--stdio[Use stdio for communication (default)]' \
-        '--mcp[Alias for stdio mode (MCP clients)]' \
         '--socket[Use TCP socket for communication]' \
         '--port[Port to listen on]:port:' \
         '--log[Enable logging to stderr]' \
         '--health[Quick health check]' \
         '--info[Show server info]' \
-        '--check[Validate Perl files]:file:_files -g "*.{pl,pm,t}"' \
-        '--check-project[Scan project directory for parsability report]:dir:_directories' \
+        '--check[Native in-process parser check of listed files]:file:_files -g "*.{pl,pm,t}"' \
+        '--check-project[Native parsability report (80% threshold; not a strict all-clean check)]:dir:_directories' \
         '--doctor[Explain Perl path, config, and effective @INC roots]:dir:_directories' \
+        '--external-tools[With --doctor: native-first external tooling report]' \
+        '--critic-compatibility[With --doctor: .perlcriticrc compatibility, process-free]' \
+        '--dev-environment[With --doctor: development-environment prerequisites]' \
         '--version[Show version information]' \
         '--features-json[Output features catalog as JSON]' \
         '--perltidy-compat-report[Report native formatter compatibility for .perltidyrc]:profile:_files' \
@@ -1065,15 +1203,15 @@ _perl-lsp "$@"
 "#;
 
 const FISH_COMPLETION: &str = r#"complete -c perl-lsp -l stdio -d 'Use stdio for communication (default)'
-complete -c perl-lsp -l mcp -d 'Alias for stdio mode (MCP clients)'
 complete -c perl-lsp -l socket -d 'Use TCP socket for communication'
 complete -c perl-lsp -l port -x -d 'Port to listen on'
 complete -c perl-lsp -l log -d 'Enable logging to stderr'
 complete -c perl-lsp -l health -d 'Quick health check'
 complete -c perl-lsp -l info -d 'Show server info'
-complete -c perl-lsp -l check -F -d 'Validate Perl files'
-complete -c perl-lsp -l check-project -d 'Scan project directory for parsability report'
+complete -c perl-lsp -l check -F -d 'Native in-process parser check of listed files'
+complete -c perl-lsp -l check-project -d 'Native parsability report (80% threshold; not a strict all-clean check)'
 complete -c perl-lsp -l doctor -d 'Explain Perl path, config, and effective @INC roots'
+complete -c perl-lsp -l dev-environment -d 'With --doctor: development-environment prerequisites'
 complete -c perl-lsp -l version -d 'Show version information'
 complete -c perl-lsp -l features-json -d 'Output features catalog as JSON'
 complete -c perl-lsp -l perltidy-compat-report -F -d 'Report native formatter compatibility for .perltidyrc'
@@ -1100,15 +1238,17 @@ const POWERSHELL_COMPLETION: &str = r#"Register-ArgumentCompleter -Native -Comma
 
     $options = @(
         [CompletionResult]::new('--stdio', '--stdio', 'ParameterName', 'Use stdio for communication (default)')
-        [CompletionResult]::new('--mcp', '--mcp', 'ParameterName', 'Alias for stdio mode (MCP clients)')
         [CompletionResult]::new('--socket', '--socket', 'ParameterName', 'Use TCP socket for communication')
         [CompletionResult]::new('--port', '--port', 'ParameterName', 'Port to listen on')
         [CompletionResult]::new('--log', '--log', 'ParameterName', 'Enable logging to stderr')
         [CompletionResult]::new('--health', '--health', 'ParameterName', 'Quick health check')
         [CompletionResult]::new('--info', '--info', 'ParameterName', 'Show server info')
-        [CompletionResult]::new('--check', '--check', 'ParameterName', 'Validate Perl files')
-        [CompletionResult]::new('--check-project', '--check-project', 'ParameterName', 'Scan project directory for parsability report')
+        [CompletionResult]::new('--check', '--check', 'ParameterName', 'Native in-process parser check of listed files')
+        [CompletionResult]::new('--check-project', '--check-project', 'ParameterName', 'Native parsability report (80% threshold; not a strict all-clean check)')
         [CompletionResult]::new('--doctor', '--doctor', 'ParameterName', 'Explain Perl path, config, and effective @INC roots')
+        [CompletionResult]::new('--external-tools', '--external-tools', 'ParameterName', 'With --doctor: native-first external tooling report')
+        [CompletionResult]::new('--critic-compatibility', '--critic-compatibility', 'ParameterName', 'With --doctor: .perlcriticrc compatibility, process-free')
+        [CompletionResult]::new('--dev-environment', '--dev-environment', 'ParameterName', 'With --doctor: development-environment prerequisites')
         [CompletionResult]::new('--version', '--version', 'ParameterName', 'Show version information')
         [CompletionResult]::new('--features-json', '--features-json', 'ParameterName', 'Output features catalog as JSON')
         [CompletionResult]::new('--perltidy-compat-report', '--perltidy-compat-report', 'ParameterName', 'Report native formatter compatibility for .perltidyrc')
@@ -1198,13 +1338,10 @@ pub fn format_info_output(
     use_color: bool,
 ) -> String {
     let feature_count = catalog_advertised_feature_ids(profile).len();
-    // Numerator, denominator, and percent all come from the same helper. The
-    // advertised count above is deliberately not reused here: it includes
-    // features that do not count toward coverage, and using it as the numerator
-    // is what made this line print a fraction that disagreed with its own
-    // percentage.
+    // Numerator and denominator come from the same declaration-count helper.
+    // This is navigation data about the catalog, not behavior evidence: since
+    // #6731 the line must not render a percentage or a compliance claim.
     let (covered, spec_total) = compliance_counts_for_profile(profile);
-    let coverage = compliance_percent_for_profile(profile);
 
     let mut out = String::with_capacity(256);
 
@@ -1219,7 +1356,12 @@ pub fn format_info_output(
     // Not `N/N active (100%)`: both sides were the same binding, so the line
     // could only ever read 100% and told the reader nothing.
     out.push_str(&format!("Features:         {feature_count} advertised\n"));
-    out.push_str(&format!("LSP spec coverage: {covered}/{spec_total} ({coverage:.0}%)\n"));
+    // Not `LSP spec coverage: N/M (P%)`: a declaration-count fraction is
+    // navigation data, and rendering it as coverage/percentage presented
+    // declarations as behavior proof (#6731).
+    out.push_str(&format!(
+        "LSP catalog rows: {covered}/{spec_total} declared ga/preview (navigation only, not behavior evidence)\n"
+    ));
     out.push_str(&format!("Executable:       {exe_path}\n"));
     out.push_str("\nTip: run with --log or set PERL_LSP_LOG=1 for diagnostics\n");
 
@@ -1245,12 +1387,30 @@ pub fn format_startup_banner(version: &str, profile: FeatureProfile, is_socket: 
 /// Suppressed when `PERL_LSP_QUIET` is set in the environment.
 // The startup banner is intentionally written to stderr before the tracing subscriber
 // is configured. This is the one permitted `eprintln!` in this crate.
+pub fn startup_banner(version: &str, profile: FeatureProfile, transport: TransportMode) {
+    startup_banner_with_env_lookup(version, profile, transport, process_env_var);
+}
+
+fn startup_banner_with_env_lookup(
+    version: &str,
+    profile: FeatureProfile,
+    transport: TransportMode,
+    get: fn(&str) -> Result<String, std::env::VarError>,
+) {
+    startup_banner_with_quiet(version, profile, transport, get("PERL_LSP_QUIET").is_ok());
+}
+
 #[expect(
     clippy::print_stderr,
     reason = "Startup banner fires before the tracing subscriber is configured — intentional stderr output"
 )]
-pub fn startup_banner(version: &str, profile: FeatureProfile, transport: TransportMode) {
-    if std::env::var("PERL_LSP_QUIET").is_ok() {
+fn startup_banner_with_quiet(
+    version: &str,
+    profile: FeatureProfile,
+    transport: TransportMode,
+    quiet: bool,
+) {
+    if quiet {
         return;
     }
     eprintln!("{}", format_startup_banner(version, profile, transport.is_socket()));
@@ -1284,12 +1444,13 @@ mod tests {
         RuntimeTuning, TransportMode, parse_args,
     };
     use perl_parser_core::{ErrorCategory, ErrorClass};
-    use perl_tdd_support::{must, must_some};
+    use perl_tdd_support::{must, must_err, must_some};
 
     #[test]
     fn launch_parse_errors_are_user_errors_for_every_variant() {
         let errors = [
             LaunchParseError::UnknownOption { option: "--wat".into(), suggestion: None },
+            LaunchParseError::McpAliasRejected,
             LaunchParseError::ParserDiagnostic { rendered: "conflict".into() },
             LaunchParseError::MissingValue { option: "--port".into() },
             LaunchParseError::InvalidFeatureProfile { raw_profile: "bad".into() },
@@ -1315,27 +1476,211 @@ mod tests {
     }
 
     #[test]
-    #[allow(unsafe_code)]
-    fn init_logging_does_not_panic_with_log_file() {
-        let dir = std::env::temp_dir().join("perl-lsp-test-log-rotation");
-        let _ = std::fs::create_dir_all(&dir);
-        let log_path = dir.join("test.log");
-
-        // Set the env var for this test — init_logging is Once-guarded so the
-        // file path may not actually be used if another test already initialized,
-        // but this must not panic regardless.
-        // SAFETY: test-only, single-threaded access to this env var.
-        unsafe {
-            std::env::set_var("PERL_LSP_LOG_FILE", log_path.to_str().unwrap_or_default());
+    fn init_logging_does_not_panic_with_log_file() -> Result<(), Box<dyn std::error::Error>> {
+        const MARKER: &str = "PERL_LSP_WAVE_A1_LOG_CHILD";
+        const TOKEN: &str = "wave-a1-log-token";
+        if std::env::var_os(MARKER).is_some() {
+            super::init_logging("debug");
+            tracing::info!(target: "wave_a1", "{TOKEN}");
+            super::shutdown_logging();
+            return Ok(());
         }
-        super::init_logging("debug");
-        // SAFETY: test-only cleanup.
-        unsafe {
-            std::env::remove_var("PERL_LSP_LOG_FILE");
-        }
+        let dir = tempfile::tempdir()?;
+        let output = std::process::Command::new(std::env::current_exe()?)
+            .args([
+                "--exact",
+                "runtime::launcher::tests::init_logging_does_not_panic_with_log_file",
+                "--nocapture",
+            ])
+            .env(MARKER, "1")
+            .env("PERL_LSP_LOG_FILE", dir.path().join("wave-a1.log"))
+            .output()?;
+        assert!(output.status.success(), "logging child failed: {output:?}");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let found = loop {
+            let found = std::fs::read_dir(dir.path())?
+                .filter_map(Result::ok)
+                .filter_map(|entry| std::fs::read_to_string(entry.path()).ok())
+                .any(|contents| contents.contains(TOKEN));
+            if found || std::time::Instant::now() >= deadline {
+                break found;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        };
+        assert!(found, "rolling log must contain marker {TOKEN}");
+        Ok(())
+    }
 
-        // Cleanup
-        let _ = std::fs::remove_dir_all(&dir);
+    fn rolling_log_contains_token(
+        dir: &std::path::Path,
+        token: &str,
+    ) -> Result<bool, Box<dyn std::error::Error>> {
+        Ok(std::fs::read_dir(dir)?
+            .filter_map(Result::ok)
+            .filter_map(|entry| std::fs::read_to_string(entry.path()).ok())
+            .any(|contents| contents.contains(token)))
+    }
+
+    fn spawn_log_file_child(
+        test_name: &str,
+        marker: &str,
+        log_file: &std::path::Path,
+    ) -> Result<std::process::Output, Box<dyn std::error::Error>> {
+        Ok(std::process::Command::new(std::env::current_exe()?)
+            .args(["--exact", test_name, "--nocapture"])
+            .env(marker, "1")
+            .env("PERL_LSP_LOG_FILE", log_file)
+            .output()?)
+    }
+
+    struct CpuSaturation {
+        stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        handles: Vec<std::thread::JoinHandle<()>>,
+    }
+
+    impl Drop for CpuSaturation {
+        fn drop(&mut self) {
+            self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+            for handle in self.handles.drain(..) {
+                let _ = handle.join();
+            }
+        }
+    }
+
+    /// Occupy a bounded number of cores so the non-blocking appender worker
+    /// is not the first thread scheduled. Two to four spinners recreate the
+    /// issue's load-dependent loss without saturating a whole CI machine.
+    fn saturate_cpu() -> CpuSaturation {
+        let workers = std::thread::available_parallelism()
+            .map(std::num::NonZeroUsize::get)
+            .unwrap_or(2)
+            .clamp(2, 4);
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let handles = (0..workers)
+            .map(|_| {
+                let stop = std::sync::Arc::clone(&stop);
+                std::thread::spawn(move || {
+                    while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                        std::hint::black_box((0..256u64).fold(0u64, |acc, n| acc.wrapping_add(n)));
+                    }
+                })
+            })
+            .collect();
+        CpuSaturation { stop, handles }
+    }
+
+    fn install_test_file_guard(
+        dir: &std::path::Path,
+        prefix: &str,
+    ) -> Result<tracing_appender::non_blocking::NonBlocking, Box<dyn std::error::Error>> {
+        let appender = tracing_appender::rolling::RollingFileAppender::builder()
+            .rotation(tracing_appender::rolling::Rotation::DAILY)
+            .filename_prefix(prefix)
+            .max_log_files(5)
+            .build(dir)?;
+        let (non_blocking, guard) = tracing_appender::non_blocking(appender);
+        *super::LOG_FILE_GUARD.lock().unwrap_or_else(std::sync::PoisonError::into_inner) =
+            Some(guard);
+        Ok(non_blocking)
+    }
+
+    fn poison_log_file_guard() {
+        let _ = std::thread::spawn(|| {
+            let Ok(_guard) = super::LOG_FILE_GUARD.lock() else {
+                return;
+            };
+            let reason = std::hint::black_box("poison");
+            assert_ne!(
+                reason, "poison",
+                "intentionally poison LOG_FILE_GUARD so shutdown must recover"
+            );
+        })
+        .join();
+    }
+
+    /// Deterministic guard-drop oracle for #14537: after the child exits, the
+    /// marker must already be on disk. A post-exit poll cannot recover a record
+    /// lost because `WorkerGuard` was never dropped. CPU saturation recreates
+    /// the original flake window; `shutdown_logging` in the child is what
+    /// makes this assertion hold.
+    #[test]
+    fn init_logging_persists_marker_under_cpu_saturation_after_guard_drop()
+    -> Result<(), Box<dyn std::error::Error>> {
+        const MARKER: &str = "PERL_LSP_WAVE_A1_LOG_CHILD_CPU_SAT";
+        const TOKEN: &str = "wave-a1-cpu-sat-token";
+        if std::env::var_os(MARKER).is_some() {
+            super::init_logging("debug");
+            tracing::info!(target: "wave_a1", "{TOKEN}");
+            super::shutdown_logging();
+            return Ok(());
+        }
+        // Three loaded children: a no-drop mutant failed 5/8 here, so one trial
+        // can still go green. Three cuts the false-green chance without a poll.
+        for trial in 0..3 {
+            let dir = tempfile::tempdir()?;
+            let log_file = dir.path().join(format!("wave-a1-cpu-sat-{trial}.log"));
+            let output = {
+                let _load = saturate_cpu();
+                spawn_log_file_child(
+                    "runtime::launcher::tests::init_logging_persists_marker_under_cpu_saturation_after_guard_drop",
+                    MARKER,
+                    &log_file,
+                )?
+            };
+            assert!(output.status.success(), "logging child failed on trial {trial}: {output:?}");
+            assert!(
+                rolling_log_contains_token(dir.path(), TOKEN)?,
+                "rolling log must contain marker {TOKEN} immediately after child exit under CPU saturation (trial {trial})"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn shutdown_logging_drains_queued_bytes_immediately_and_recovers_from_poison()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use std::io::Write;
+
+        // Opposite-direction control: shutdown with no appender, twice, is a no-op.
+        super::shutdown_logging();
+        super::shutdown_logging();
+
+        let dir = tempfile::tempdir()?;
+        const DRAIN_TOKEN: &str = "wave-a1-guard-drop-token";
+        let mut writer = install_test_file_guard(dir.path(), "guard-drop")?;
+        writer.write_all(format!("{DRAIN_TOKEN}\n").as_bytes())?;
+        super::shutdown_logging();
+        assert!(
+            rolling_log_contains_token(dir.path(), DRAIN_TOKEN)?,
+            "rolling log must contain marker {DRAIN_TOKEN} immediately after WorkerGuard drop"
+        );
+        assert!(
+            super::LOG_FILE_GUARD
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .is_none(),
+            "shutdown_logging must take the guard so a later exit cannot leak it"
+        );
+
+        let poison_dir = tempfile::tempdir()?;
+        const POISON_TOKEN: &str = "wave-a1-poison-token";
+        let mut writer = install_test_file_guard(poison_dir.path(), "guard-poison")?;
+        writer.write_all(format!("{POISON_TOKEN}\n").as_bytes())?;
+        poison_log_file_guard();
+        {
+            let _load = saturate_cpu();
+            super::shutdown_logging();
+            assert!(
+                super::lock_log_file_guard().is_none(),
+                "shutdown_logging must take the guard even when the mutex is poisoned"
+            );
+        }
+        assert!(
+            rolling_log_contains_token(poison_dir.path(), POISON_TOKEN)?,
+            "rolling log must contain marker {POISON_TOKEN} after shutdown recovers a poisoned mutex"
+        );
+        Ok(())
     }
 
     #[test]
@@ -1355,36 +1700,32 @@ mod tests {
     }
 
     #[test]
-    fn parse_mcp_alias_uses_stdio_transport() {
-        let plan = must(parse_args(["perl-lsp", "--mcp"]));
-        assert_eq!(plan.config.transport, TransportMode::Stdio);
+    fn parse_mcp_alias_is_rejected() {
+        let error = must_err(parse_args(["perl-lsp", "--mcp"]));
+        assert!(matches!(error, LaunchParseError::McpAliasRejected));
     }
 
     #[test]
-    fn mcp_alias_documented_consistently_across_surfaces() {
-        // Help text, every shell completion, and the CLI parser must all
-        // advertise --mcp. If any surface is forgotten when a future rename
-        // lands, this test catches it before users hit broken tab-completion
-        // or stale docs.
+    fn retired_mcp_alias_is_absent_from_all_lsp_surfaces() {
+        // Help text and every shell completion must not advertise the retired
+        // alias, while the parser returns protocol guidance if it is used.
         let help = super::help_text();
-        assert!(help.contains("--mcp"), "help_text is missing --mcp: {help}");
-        assert!(
-            help.contains("perllsp --mcp"),
-            "help_text examples are missing a --mcp invocation: {help}"
-        );
+        assert!(!help.contains("--mcp"), "help_text advertises retired alias: {help}");
 
-        // Fish uses `-l mcp` (long-option form without double-dashes);
-        // other shells embed `--mcp` literally. Pick the right token per shell.
-        for (shell, needle) in
-            [("bash", "--mcp"), ("zsh", "--mcp"), ("fish", "-l mcp"), ("powershell", "--mcp")]
-        {
+        for shell in ["bash", "zsh", "fish", "powershell"] {
             let script = must_some(super::shell_completion(shell));
-            assert!(script.contains(needle), "{shell} completion is missing {needle}: {script}");
+            assert!(
+                !script.contains("--mcp"),
+                "{shell} completion advertises retired alias: {script}"
+            );
+            assert!(
+                !script.contains("-l mcp"),
+                "{shell} completion advertises retired alias: {script}"
+            );
         }
 
-        // Parser side: --mcp must still resolve to stdio (alias semantics).
-        let plan = must(parse_args(["perl-lsp", "--mcp"]));
-        assert_eq!(plan.config.transport, TransportMode::Stdio);
+        let error = must_err(parse_args(["perl-lsp", "--mcp"]));
+        assert!(matches!(error, LaunchParseError::McpAliasRejected));
     }
 
     #[test]
@@ -1562,7 +1903,7 @@ mod tests {
         assert!(out.contains("0.10.0"));
         assert!(out.contains("perl-parser v3"));
         assert!(out.contains("Features:"));
-        assert!(out.contains("LSP spec coverage:"));
+        assert!(out.contains("LSP catalog rows:"));
         assert!(out.contains("/usr/bin/perl-lsp"));
     }
 
@@ -1584,11 +1925,11 @@ mod tests {
     }
 
     #[test]
-    fn info_coverage_fraction_evaluates_to_its_printed_percentage() -> Result<(), String> {
-        // The line read `33/60 (53%)` — 33/60 is 55%. The numerator was the raw
-        // advertised count while the percent came from the trackable count.
-        // Recompute the printed percentage from the printed fraction and
-        // require them to agree; restoring the old numerator fails this.
+    fn info_catalog_line_reports_navigation_counts_without_a_percentage() -> Result<(), String> {
+        // The line used to read `LSP spec coverage: 123/125 (98%)` — a
+        // declaration-count fraction rendered as behavior-backed coverage.
+        // Since #6731 the counts may remain as navigation data, but the line
+        // must not carry a percentage or a coverage/compliance claim.
         let profile = super::FeatureProfile::current();
         let out = super::format_info_output(
             "0.17.0",
@@ -1601,35 +1942,38 @@ mod tests {
 
         let line = out
             .lines()
-            .find(|line| line.starts_with("LSP spec coverage:"))
-            .ok_or_else(|| format!("no coverage line in:\n{out}"))?;
-        let rendered = line.trim_start_matches("LSP spec coverage:").trim();
-        let (fraction, percent) = rendered
-            .split_once(" (")
-            .ok_or_else(|| format!("unexpected coverage format: {line:?}"))?;
-        let (covered, total) = fraction
-            .split_once('/')
-            .ok_or_else(|| format!("unexpected fraction format: {fraction:?}"))?;
+            .find(|line| line.starts_with("LSP catalog rows:"))
+            .ok_or_else(|| format!("no catalog-rows line in:\n{out}"))?;
 
+        assert!(
+            !line.contains('%'),
+            "catalog navigation line must not render a percentage: {line:?}"
+        );
+        assert!(
+            !line.contains("coverage") && !line.contains("compliance"),
+            "catalog navigation line must not frame counts as coverage or compliance: {line:?}"
+        );
+        assert!(
+            line.contains("navigation only"),
+            "catalog counts must be labeled navigation only: {line:?}"
+        );
+
+        let rendered = line.trim_start_matches("LSP catalog rows:").trim();
+        let (covered, total) = rendered
+            .split_whitespace()
+            .next()
+            .ok_or_else(|| format!("unexpected catalog format: {line:?}"))?
+            .split_once('/')
+            .ok_or_else(|| format!("unexpected fraction format: {line:?}"))?;
         let covered: f64 = covered
             .trim()
             .parse()
             .map_err(|err| format!("invalid covered value {covered:?}: {err}"))?;
         let total: f64 =
             total.trim().parse().map_err(|err| format!("invalid total value {total:?}: {err}"))?;
-        let printed: f64 = percent
-            .trim_end_matches("%)")
-            .trim()
-            .parse()
-            .map_err(|err| format!("invalid printed percentage {percent:?}: {err}"))?;
 
-        assert!(total > 0.0, "coverage denominator must be positive: {line:?}");
-        let recomputed = (covered / total * 100.0).round();
-        assert!(
-            (recomputed - printed).abs() < f64::EPSILON,
-            "coverage fraction and percentage disagree: {line:?} \
-             — {covered}/{total} is {recomputed}%, printed {printed}%"
-        );
+        assert!(total > 0.0, "catalog denominator must be positive: {line:?}");
+        assert!(covered <= total, "declared count cannot exceed its denominator: {line:?}");
         Ok(())
     }
 
@@ -1680,6 +2024,8 @@ mod tests {
     fn help_mentions_check_flag() {
         let text = super::help_text();
         assert!(text.contains("--check"));
+        assert!(text.contains(super::checking_guidance::CHECK_DESCRIPTION));
+        assert!(text.contains("does not execute project Perl"));
     }
 
     #[test]
@@ -1715,6 +2061,7 @@ mod tests {
     fn help_mentions_check_project_flag() {
         let text = super::help_text();
         assert!(text.contains("--check-project"));
+        assert!(text.contains(super::checking_guidance::CHECK_PROJECT_DESCRIPTION));
     }
 
     // -- --doctor flag -----------------------------------------------
@@ -1754,6 +2101,75 @@ mod tests {
         let text = super::help_text();
         assert!(text.contains("--doctor"));
         assert!(text.contains("effective @INC roots"));
+    }
+
+    // -- --doctor --external-tools / --critic-compatibility ------------------
+
+    #[test]
+    fn parse_doctor_external_tools_flag() {
+        let plan = must(parse_args(["perl-lsp", "--doctor", "--external-tools"]));
+        assert_eq!(plan.action, LaunchAction::DoctorExternalTools { json: false });
+    }
+
+    #[test]
+    fn parse_doctor_external_tools_json_flag() {
+        let plan = must(parse_args(["perl-lsp", "--doctor", "--external-tools", "--json"]));
+        assert_eq!(plan.action, LaunchAction::DoctorExternalTools { json: true });
+    }
+
+    #[test]
+    fn parse_doctor_critic_compatibility_flag() {
+        let plan = must(parse_args(["perl-lsp", "--doctor", "--critic-compatibility"]));
+        assert_eq!(plan.action, LaunchAction::DoctorCriticCompatibility { json: false });
+    }
+
+    #[test]
+    fn parse_doctor_dev_environment_flag() {
+        let plan = must(parse_args(["perl-lsp", "--doctor", "--dev-environment"]));
+        assert_eq!(plan.action, LaunchAction::DoctorDevEnvironment { json: false });
+    }
+
+    #[test]
+    fn parse_doctor_dev_environment_json_flag() {
+        let plan = must(parse_args(["perl-lsp", "--doctor", "--dev-environment", "--json"]));
+        assert_eq!(plan.action, LaunchAction::DoctorDevEnvironment { json: true });
+    }
+
+    #[test]
+    fn doctor_mode_flags_require_doctor() {
+        assert!(parse_args(["perl-lsp", "--external-tools"]).is_err());
+        assert!(parse_args(["perl-lsp", "--critic-compatibility"]).is_err());
+        assert!(parse_args(["perl-lsp", "--dev-environment"]).is_err());
+    }
+
+    #[test]
+    fn doctor_mode_flags_conflict_with_each_other() {
+        assert!(
+            parse_args(["perl-lsp", "--doctor", "--external-tools", "--critic-compatibility"])
+                .is_err()
+        );
+        assert!(
+            parse_args(["perl-lsp", "--doctor", "--external-tools", "--dev-environment"]).is_err()
+        );
+        assert!(
+            parse_args(["perl-lsp", "--doctor", "--critic-compatibility", "--dev-environment"])
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn doctor_mode_flags_conflict_with_ripr_facts() {
+        assert!(parse_args(["perl-lsp", "--doctor", "--external-tools", "--ripr-facts"]).is_err());
+        assert!(parse_args(["perl-lsp", "--doctor", "--dev-environment", "--ripr-facts"]).is_err());
+    }
+
+    #[test]
+    fn help_mentions_doctor_mode_flags() {
+        let text = super::help_text();
+        assert!(text.contains("--external-tools"));
+        assert!(text.contains("--critic-compatibility"));
+        assert!(text.contains("--dev-environment"));
+        assert!(text.contains("registry-driven"));
     }
 
     // ── InvalidShell error ────────────────────────────────────────
@@ -1801,29 +2217,40 @@ mod tests {
     }
 
     #[test]
-    #[allow(unsafe_code)]
-    fn startup_banner_suppressed_by_quiet_env() {
-        // Save previous value to avoid test pollution even if test panics.
-        let previous = std::env::var_os("PERL_LSP_QUIET");
-
-        // SAFETY: test-only env var manipulation; previous value is restored after test.
-        unsafe {
-            std::env::set_var("PERL_LSP_QUIET", "1");
+    fn startup_banner_suppressed_by_quiet_env() -> Result<(), Box<dyn std::error::Error>> {
+        const MARKER: &str = "PERL_LSP_WAVE_A1_BANNER_CHILD";
+        if std::env::var_os(MARKER).is_some() {
+            super::startup_banner(
+                "wave-a1-banner-token",
+                super::FeatureProfile::current(),
+                super::TransportMode::Stdio,
+            );
+            return Ok(());
         }
-
-        // startup_banner must not panic when PERL_LSP_QUIET is set.
-        // The transport argument must propagate through without crashing.
-        super::startup_banner(
-            "0.12.0",
-            super::FeatureProfile::current(),
-            super::TransportMode::Stdio,
-        );
-
-        // SAFETY: restore previous value.
-        match previous {
-            Some(value) => unsafe { std::env::set_var("PERL_LSP_QUIET", value) },
-            None => unsafe { std::env::remove_var("PERL_LSP_QUIET") },
-        }
+        let visible = std::process::Command::new(std::env::current_exe()?)
+            .args([
+                "--exact",
+                "runtime::launcher::tests::startup_banner_suppressed_by_quiet_env",
+                "--nocapture",
+            ])
+            .env(MARKER, "1")
+            .env_remove("PERL_LSP_QUIET")
+            .output()?;
+        assert!(visible.status.success());
+        let visible_output = String::from_utf8_lossy(&visible.stderr);
+        assert!(visible_output.contains("wave-a1-banner-token"));
+        let suppressed = std::process::Command::new(std::env::current_exe()?)
+            .args([
+                "--exact",
+                "runtime::launcher::tests::startup_banner_suppressed_by_quiet_env",
+                "--nocapture",
+            ])
+            .env(MARKER, "1")
+            .env("PERL_LSP_QUIET", "1")
+            .output()?;
+        assert!(suppressed.status.success());
+        assert!(!String::from_utf8_lossy(&suppressed.stderr).contains("wave-a1-banner-token"));
+        Ok(())
     }
 
     // ANSI detection helpers

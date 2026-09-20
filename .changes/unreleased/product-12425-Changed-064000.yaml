@@ -1,0 +1,9 @@
+project: product
+component: Performance and reliability
+kind: Changed
+body: Documented that perl-ast Node destruction is iterative and that derived Clone, Debug, and PartialEq remain recursive with a parser-produced-tree precondition (#6900).
+time: 2026-08-25T06:40:00Z
+custom:
+  PR: "12425"
+  Slug: ast-node-depth-safety-contract
+  Breaking: "no"

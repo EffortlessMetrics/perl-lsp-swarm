@@ -1,0 +1,9 @@
+project: product
+component: Diagnostics
+kind: Added
+body: "Add parser-owned ParseDiagnosticAnchor API so downstream consumers preserve diagnostic positions across ParseError growth. Eliminates wildcard fallbacks that silently placed Recovered errors and future unknown variants at byte zero."
+time: 2026-08-12T00:00:00Z
+custom:
+  PR: "6886"
+  Slug: parse-error-diagnostic-anchor-contract
+  Breaking: "no"

@@ -13,7 +13,6 @@
 //! These integration tests focus on the public API behavior.
 
 use perl_dap::debug_adapter::{DapMessage, DebugAdapter};
-use serde_json;
 
 /// Helper to create a test adapter
 fn create_test_adapter() -> DebugAdapter {

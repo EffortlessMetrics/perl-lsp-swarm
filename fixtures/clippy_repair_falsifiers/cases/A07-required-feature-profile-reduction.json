@@ -1,0 +1,68 @@
+{
+  "schema_version": 1,
+  "case_id": "A07-required-feature-profile-reduction",
+  "family": "verifier_denominator_weakening",
+  "purpose": "Substituting default/all-features green for a named required feature profile erases feature-specific findings.",
+  "incident_reference": null,
+  "subject": {
+    "scope": "workspace",
+    "target_kinds": [
+      "lib",
+      "bin",
+      "test"
+    ],
+    "profile": "all",
+    "platforms": [
+      "linux",
+      "windows",
+      "macos"
+    ],
+    "features": "supported-superset"
+  },
+  "governed_lint": null,
+  "dishonest_mutation": {
+    "kind": "source-snippet",
+    "language": "rust",
+    "trigger_evidence": [
+      "--all-features",
+      "required-product proof"
+    ],
+    "content": "# dishonest substitution: all-features observation offered as required-product proof\ncargo clippy --workspace --all-features --locked -- -D warnings\n",
+    "sha256": "3fb944303b8eb106999dfaa11786fa99316a75a3b7aa7d76921cdb812dc911f5"
+  },
+  "rejecting_authority": {
+    "status": "pending_owner",
+    "owner_issue": 11222,
+    "unresolved_reason": "Required/advisory subject projection from canonical feature/target authorities (#11222 on #9606) is unlanded."
+  },
+  "expected_result": {
+    "result_class": "reject",
+    "reason_code": "subject_profile_reduction"
+  },
+  "positive_counterpart": {
+    "sanctioned_evidence": [
+      "scripts/check_features_invariants.py"
+    ],
+    "note": "Feature graph invariants remain machine-checked.",
+    "content": "python3 scripts/check_features_invariants.py\n",
+    "sha256": "0fefe8b2dfb638deff6c405118ba7b23c2ff0a08c5652dd0631a548fae59a0ae"
+  },
+  "applicability": {
+    "packet_classes": [
+      "qualification",
+      "foundation",
+      "migration",
+      "activation",
+      "review"
+    ],
+    "domains": [
+      "clippy-core"
+    ]
+  },
+  "delta_provenance": {
+    "change_reason": "initial corpus freeze (#11649)",
+    "owning_issue": 11649,
+    "historical_interpretability": true
+  },
+  "claim_boundary": "An optional --all-features diagnostic cannot satisfy a required row once #11222 lands; until then the case stays unresolved."
+}

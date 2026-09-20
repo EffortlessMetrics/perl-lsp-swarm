@@ -1,0 +1,36 @@
+{
+  "schema": "perl_dap.loaded_module_reload_family.vector.v1",
+  "name": "raw_command_refused",
+  "description": "A raw debugger command (or Perl expression) in the request is refused with raw_client_input_refused; the payload is the typed subject only.",
+  "negotiation": {
+    "client": {
+      "family": "perl-lsp/loadedModuleReload",
+      "versions": [
+        1
+      ]
+    },
+    "adapter": {
+      "epoch": 7,
+      "backed": true
+    }
+  },
+  "request": {
+    "family": "perl-lsp/loadedModuleReload",
+    "familyVersion": 1,
+    "sessionEpoch": 7,
+    "operationId": 47,
+    "subject": {
+      "moduleIdentity": "opaque-module-token-1a2b",
+      "savedSourceDigest": "sha256:0f12e4d6a9b8c7d5e3f1a0b9c8d7e6f5a4b3c2d1e0f9a8b7c6d5e4f3a2b1c0d",
+      "logicalSourceUri": "perl-lsp-subject:epoch=7;observation=3",
+      "observationGeneration": 3
+    },
+    "command": "p $App::Core::x"
+  },
+  "expect": {
+    "evaluation": "rejected",
+    "code": "raw_client_input_refused",
+    "kind": "request_rejected",
+    "success": false
+  }
+}

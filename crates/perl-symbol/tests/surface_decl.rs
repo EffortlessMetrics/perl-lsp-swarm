@@ -3,6 +3,7 @@
 //! These tests validate that `extract_symbol_decls` correctly walks the AST
 //! and produces `SymbolDecl` values for packages, subroutines, variables,
 //! constants, and classes — without depending on `perl-parser-core`.
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
 use perl_ast::{Node, NodeKind, SourceLocation};
 use perl_symbol::surface::{SymbolDecl, extract_symbol_decls};

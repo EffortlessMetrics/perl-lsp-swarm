@@ -277,8 +277,11 @@ open(FH, $path);
 
 2. **Verify the suppression is in the intended scope**:
 
-Line-local suppressions apply to nearby findings; file- or block-wide behavior
-depends on the suppression form supported by the rule path.
+A `## no critic` directive opens at its own line and covers every later matching
+finding until a `## use critic` comment closes it, or until the end of the file.
+It is never retroactive, so a directive placed below a finding does not suppress
+it. Put the directive above the code you mean to exempt, and close the region
+with `## use critic` when you do not want it to run to the end of the file.
 
 3. **Run focused suppression tests when changing rule behavior**:
 

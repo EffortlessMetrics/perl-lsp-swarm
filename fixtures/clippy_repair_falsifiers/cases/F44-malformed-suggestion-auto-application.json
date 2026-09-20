@@ -1,0 +1,70 @@
+{
+  "schema_version": 1,
+  "case_id": "F44-malformed-suggestion-auto-application",
+  "family": "real_regression_10600_family",
+  "purpose": "MaybeIncorrect/HasPlaceholders/Unspecified/stale-span/malformed suggestions mutating source automatically.",
+  "incident_reference": null,
+  "subject": {
+    "scope": "workspace",
+    "target_kinds": [
+      "lib",
+      "bin",
+      "test"
+    ],
+    "profile": "all",
+    "platforms": [
+      "linux",
+      "windows",
+      "macos"
+    ],
+    "features": "default"
+  },
+  "governed_lint": null,
+  "dishonest_mutation": {
+    "kind": "source-snippet",
+    "language": "rust",
+    "trigger_evidence": [
+      "MaybeIncorrect",
+      "span from previous revision",
+      "placeholder identifiers land in source"
+    ],
+    "content": "// suggestion JSON: applicability \"MaybeIncorrect\", span from previous revision\n// agent applies blindly; placeholder identifiers land in source\n",
+    "sha256": "c16c0f1cefd1a2ce7bf68c2b39bb5fcdab665bf8995404750a41ff1a70b331e9"
+  },
+  "rejecting_authority": {
+    "status": "pending_owner",
+    "owner_issue": 11228,
+    "unresolved_reason": "Suggestion-quality gating (#11228) open."
+  },
+  "expected_result": {
+    "result_class": "reject",
+    "reason_code": "malformed_auto_mutation"
+  },
+  "positive_counterpart": {
+    "sanctioned_evidence": [
+      "applicability == MachineApplicable",
+      "span resolves in current tree"
+    ],
+    "note": "Only Exact/applicable spans apply.",
+    "content": "// honest: apply iff applicability == MachineApplicable && span resolves in current tree\n",
+    "sha256": "bb9c2ba2718e46c056fddace7dda7a48a7035e91b3d5d50a8b268a2e9d14c548"
+  },
+  "applicability": {
+    "packet_classes": [
+      "qualification",
+      "foundation",
+      "migration",
+      "activation",
+      "review"
+    ],
+    "domains": [
+      "clippy-core"
+    ]
+  },
+  "delta_provenance": {
+    "change_reason": "initial corpus freeze (#11649)",
+    "owning_issue": 11649,
+    "historical_interpretability": true
+  },
+  "claim_boundary": "Quality vocabulary references #11228's future owner fields; corpus stores the failure identity only."
+}

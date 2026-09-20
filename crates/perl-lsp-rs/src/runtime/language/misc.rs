@@ -12,19 +12,25 @@
 
 use super::super::{
     CodeLensProvider, INVALID_PARAMS, INVALID_REQUEST, JsonRpcError, LspServer, METHOD_NOT_FOUND,
-    Node, NodeKind, TestKind, TestRunner, Value, get_shebang_lens, json, position_to_offset,
-    resolve_code_lens,
+    TestKind, TestRunner, Value, get_shebang_lens, json, position_to_offset, resolve_code_lens,
 };
-use crate::protocol::{invalid_params, req_position, req_uri};
+use crate::protocol::{JsonRpcId, invalid_params, req_position, req_uri};
 #[cfg(feature = "workspace")]
 use crate::runtime::readiness::IndexReadinessPolicy;
 #[cfg(feature = "workspace")]
 use crate::runtime::routing::{IndexAccessMode, route_index_access};
 use crate::runtime::window::RequestProgressGuard;
 use crate::state::{code_lens_cap, code_lens_resolve_deadline, inlay_hints_cap};
+use perl_lsp_rs_core::protocol::resolve_envelope::{
+    ResolveCurrentnessKind, ResolveCurrentnessRef, ResolveEnvelopeCodec, ResolveEnvelopeHeaderV1,
+    ResolveEnvelopeToken, ResolveIdentityRef, ResolveReplayDisposition,
+};
 use perl_lsp_rs_core::providers::completion::collect_module_names_from_roots_with_cache;
+use perl_lsp_rs_core::providers::inlay_hints::InlayHintResolveSubjectV1;
 use perl_lsp_rs_core::providers::inline_completion::{
-    BackendError, InlineCompletionEnvironment, InlinePackageMethodFact,
+    BackendError, EvaluatedInlineCompletionItem, InlineCompletionEnvironment,
+    InlineCompletionProvider, InlineCompletionSnapshotIdentity, InlinePackageMethodFact,
+    PreparedInvocationContext,
 };
 use perl_lsp_rs_core::providers::normalize_provider_decision_receipt;
 use perl_parser_core::source_file::is_perl_source_uri;
@@ -36,7 +42,116 @@ fn to_json_array<T: serde::Serialize>(values: &[T]) -> Value {
     serde_json::to_value(values).unwrap_or(Value::Array(Vec::new()))
 }
 
+/// `data` key carrying an inlay hint's authenticated resolve envelope (#14672).
+const INLAY_HINT_RESOLVE_ENVELOPE_KEY: &str = "resolveEnvelope";
+
+/// Per-response issuer for authenticated inlay-hint resolve envelopes (#14672).
+///
+/// One instance covers a single `textDocument/inlayHint` response, so every hint
+/// in that response shares an operation/result correlation and the same
+/// currentness references, while each hint gets its own issue sequence.
+struct InlayHintEnvelopeIssuer<'a> {
+    uri: &'a str,
+    incarnation: u64,
+    generation: u32,
+    content_hash: u64,
+    originating_operation: ResolveIdentityRef,
+    originating_result: ResolveIdentityRef,
+    effective_profile: ResolveIdentityRef,
+    currentness: Vec<ResolveCurrentnessRef>,
+}
+
+impl<'a> InlayHintEnvelopeIssuer<'a> {
+    /// Build the per-response issuing context, or `None` when any identity the
+    /// envelope requires cannot be constructed.
+    ///
+    /// The operation and result references are session-local correlation only.
+    /// #7106/#7219 own real operation/result identity; when they land, these two
+    /// references become the exact ones rather than a derived sequence.
+    fn new(
+        authenticator: &perl_lsp_rs_core::protocol::resolve_envelope::SessionResolveAuthenticator,
+        uri: &'a str,
+        incarnation: u64,
+        parsed: &crate::state::ParsedSnapshot,
+        effective_profile: &str,
+    ) -> Option<Self> {
+        let sequence = authenticator.next_issue_sequence().ok()?;
+        let generation = parsed.generation();
+        let content_hash = parsed.content_hash();
+
+        Some(Self {
+            uri,
+            incarnation,
+            generation,
+            content_hash,
+            originating_operation: ResolveIdentityRef::new(format!(
+                "operation:inlayhint:{sequence:016x}"
+            ))
+            .ok()?,
+            originating_result: ResolveIdentityRef::new(format!(
+                "result:inlayhint:{sequence:016x}"
+            ))
+            .ok()?,
+            effective_profile: ResolveIdentityRef::new(effective_profile).ok()?,
+            currentness: vec![
+                ResolveCurrentnessRef::new(
+                    ResolveCurrentnessKind::Document,
+                    ResolveIdentityRef::new(format!("document:generation:{generation}")).ok()?,
+                ),
+                ResolveCurrentnessRef::new(
+                    ResolveCurrentnessKind::Source,
+                    ResolveIdentityRef::new(format!("source:content:{content_hash:016x}")).ok()?,
+                ),
+            ],
+        })
+    }
+
+    /// Issue one envelope for a hint, or `None` when the hint records no
+    /// callable name and therefore has no resolvable label location.
+    fn issue_for(
+        &self,
+        hint: &Value,
+        authenticator: &perl_lsp_rs_core::protocol::resolve_envelope::SessionResolveAuthenticator,
+    ) -> Option<ResolveEnvelopeToken> {
+        let function_name = hint
+            .pointer("/data/functionName")
+            .and_then(Value::as_str)
+            .or_else(|| hint.pointer("/data/function").and_then(Value::as_str))?;
+        let position = hint.get("position")?;
+        let line = u32::try_from(position.get("line").and_then(Value::as_u64)?).ok()?;
+        let character = u32::try_from(position.get("character").and_then(Value::as_u64)?).ok()?;
+
+        let header = ResolveEnvelopeHeaderV1::for_subject::<InlayHintResolveSubjectV1>(
+            authenticator.session_identity().clone(),
+            self.originating_operation.clone(),
+            self.originating_result.clone(),
+            self.effective_profile.clone(),
+            self.currentness.clone(),
+            ResolveReplayDisposition::CurrentSubjectBound,
+            authenticator.next_issue_sequence().ok()?,
+        )
+        .ok()?;
+
+        ResolveEnvelopeCodec::default()
+            .issue(
+                header,
+                InlayHintResolveSubjectV1 {
+                    uri: self.uri.to_string(),
+                    incarnation: self.incarnation,
+                    generation: self.generation,
+                    content_hash: self.content_hash,
+                    line,
+                    character,
+                    function_name: function_name.to_string(),
+                },
+                authenticator,
+            )
+            .ok()
+    }
+}
+
 mod debug_launch;
+mod inlay_hint_declaration;
 mod inline_values;
 mod live_provider_trace;
 #[cfg(not(target_arch = "wasm32"))]
@@ -53,24 +168,44 @@ fn truncate_inlay_hint_label(hint: &mut Value, max_chars: usize) {
     let Some(label) = hint.get_mut("label") else {
         return;
     };
-    let Some(text) = label.as_str() else {
-        return;
-    };
-    if text.chars().count() <= max_chars {
-        return;
+    match label {
+        Value::String(text) if text.chars().count() > max_chars => {
+            *text = text.chars().take(max_chars).collect();
+        }
+        Value::Array(parts) => {
+            // Spend the budget across the parts in order; parts past the budget
+            // are dropped rather than left empty.
+            let mut remaining = max_chars;
+            parts.retain_mut(|part| {
+                let Some(text) = part.get("value").and_then(Value::as_str).map(str::to_owned)
+                else {
+                    return true;
+                };
+                if remaining == 0 {
+                    return false;
+                }
+                let count = text.chars().count();
+                if count > remaining {
+                    part["value"] = Value::String(text.chars().take(remaining).collect());
+                    remaining = 0;
+                } else {
+                    remaining -= count;
+                }
+                true
+            });
+        }
+        _ => {}
     }
-
-    *label = Value::String(text.chars().take(max_chars).collect());
 }
 
 #[derive(Debug, Clone)]
-struct SelectedInlineCompletionInfo {
+pub(crate) struct SelectedInlineCompletionInfo {
     range: lsp_types::Range,
     text: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum InlineCompletionTriggerKind {
+pub(crate) enum InlineCompletionTriggerKind {
     Invoked,
     Automatic,
     LegacyNoContext,
@@ -166,7 +301,7 @@ fn is_inline_package_method_fragment_char(ch: char) -> bool {
     ch.is_ascii_alphanumeric() || ch == '_'
 }
 
-fn inline_completion_trigger_kind(
+pub(crate) fn inline_completion_trigger_kind(
     params: &Value,
 ) -> Result<InlineCompletionTriggerKind, JsonRpcError> {
     match params.pointer("/context/triggerKind").and_then(Value::as_u64) {
@@ -177,7 +312,7 @@ fn inline_completion_trigger_kind(
     }
 }
 
-fn selected_inline_completion_info(
+pub(crate) fn selected_inline_completion_info(
     params: &Value,
 ) -> Result<Option<SelectedInlineCompletionInfo>, JsonRpcError> {
     let Some(selected) = params.pointer("/context/selectedCompletionInfo") else {
@@ -201,18 +336,17 @@ fn selected_inline_completion_info(
 }
 
 fn constrain_inline_completions_to_selected_info(
-    mut list: perl_lsp_rs_core::providers::inline_completion::InlineCompletionList,
+    candidates: Vec<EvaluatedInlineCompletionItem>,
     selected: Option<&SelectedInlineCompletionInfo>,
     line: u32,
     character: u32,
-) -> perl_lsp_rs_core::providers::inline_completion::InlineCompletionList {
+) -> Vec<EvaluatedInlineCompletionItem> {
     let Some(selected) = selected else {
-        return list;
+        return candidates;
     };
 
     if selected.range.start.line != selected.range.end.line {
-        list.items.clear();
-        return list;
+        return Vec::new();
     }
 
     let implicit_range = lsp_types::Range {
@@ -220,49 +354,127 @@ fn constrain_inline_completions_to_selected_info(
         end: lsp_types::Position::new(line, character),
     };
 
-    list.items = list
-        .items
+    candidates
         .into_iter()
-        .filter_map(|mut item| {
-            if !item.insert_text.starts_with(&selected.text) {
+        .filter_map(|mut candidate| {
+            if !candidate.item.insert_text.starts_with(&selected.text) {
                 return None;
             }
 
-            match &item.range {
-                Some(range) if range == &selected.range => Some(item),
+            match &candidate.item.range {
+                Some(range) if range == &selected.range => Some(candidate),
                 Some(_) => None,
                 None if selected.range == implicit_range => {
-                    item.range = Some(selected.range);
-                    Some(item)
+                    candidate.item.range = Some(selected.range);
+                    Some(candidate)
                 }
                 None => None,
             }
         })
-        .collect();
-    list
+        .collect()
 }
 
-fn apply_inline_completion_trigger_policy(
-    mut list: perl_lsp_rs_core::providers::inline_completion::InlineCompletionList,
+/// Apply the shared selected-completion and trigger contracts to evaluated
+/// candidates from either the deterministic or the external backend path.
+///
+/// Automatic ghost text is decided by the candidate's evidence rather than by
+/// the shape of its text, so an ordinary Perl continuation backed by a proven
+/// fact can appear while a scaffold or guess stays invoked-only.
+pub(crate) fn finalize_inline_completions(
+    provider: &InlineCompletionProvider,
+    candidates: Vec<EvaluatedInlineCompletionItem>,
+    selected: Option<&SelectedInlineCompletionInfo>,
     trigger_kind: InlineCompletionTriggerKind,
+    line: u32,
+    character: u32,
 ) -> perl_lsp_rs_core::providers::inline_completion::InlineCompletionList {
+    let constrained =
+        constrain_inline_completions_to_selected_info(candidates, selected, line, character);
+
     if trigger_kind == InlineCompletionTriggerKind::Automatic {
-        list.items.retain(is_safe_automatic_inline_item);
-        list.items.truncate(1);
+        return provider.select_automatic_item(constrained);
     }
 
-    list
+    perl_lsp_rs_core::providers::inline_completion::InlineCompletionList {
+        items: constrained.into_iter().map(|candidate| candidate.item).collect(),
+    }
 }
 
-fn is_safe_automatic_inline_item(
-    item: &perl_lsp_rs_core::providers::inline_completion::InlineCompletionItem,
-) -> bool {
-    let text = item.insert_text.trim();
-    !text.is_empty()
-        && text.chars().count() <= 80
-        && text.ends_with(';')
-        && !text.contains(['\r', '\n', '$', '@', '%', '{', '}', '[', ']', '(', ')'])
-        && !text.contains("...")
+/// Attach external-backend evidence to AI-produced items.
+///
+/// AI text carries no local supporting fact, so it enters finalization as
+/// low-confidence external evidence and is never shown as automatic ghost text.
+pub(crate) fn evaluate_external_backend_items(
+    list: perl_lsp_rs_core::providers::inline_completion::InlineCompletionList,
+) -> Vec<EvaluatedInlineCompletionItem> {
+    list.items.into_iter().map(EvaluatedInlineCompletionItem::from_external_backend).collect()
+}
+
+/// Typed outcome of one external (AI) inline-completion evaluation through the
+/// shared policy seam.
+///
+/// The buffered route and the custom streaming route must reach the same
+/// verdict for the same candidate, so both consume this single helper; a
+/// filtered result is a typed decision (#10005's terminal owner), never an
+/// implicit empty list.
+#[derive(Debug)]
+pub(crate) enum ExternalCompletionOutcome {
+    /// At least one evaluated external candidate survived range, parse-safety,
+    /// selected-completion, and trigger policy.
+    Accepted(perl_lsp_rs_core::providers::inline_completion::InlineCompletionList),
+    /// Nothing survived and the configured fallback asks for the deterministic
+    /// route.
+    FallbackRequired,
+    /// Nothing survived and no fallback is configured; the result is final and
+    /// empty.
+    FinalEmpty,
+}
+
+/// Whether an external (AI) backend may be consulted for this trigger.
+///
+/// Automatic ghost-text requests never make remote calls: external candidates
+/// enter as low-confidence evidence and cannot qualify for automatic display,
+/// so dispatching would only add latency and cost. An automatic custom-stream
+/// request is delegated to the standard route before any backend dispatch.
+pub(crate) fn external_completion_permitted(trigger_kind: InlineCompletionTriggerKind) -> bool {
+    trigger_kind != InlineCompletionTriggerKind::Automatic
+}
+
+/// Evaluate external backend items through the one shared finalization seam:
+/// exact replacement ranges, parse-damage filter, external-evidence wrap,
+/// selected-completion constraint, and trigger policy.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn evaluate_external_candidates(
+    provider: &InlineCompletionProvider,
+    items: Vec<perl_lsp_rs_core::providers::inline_completion::InlineCompletionItem>,
+    text: &str,
+    context: &perl_lsp_rs_core::providers::inline_completion::PreparedInlineCompletionContext,
+    selected: Option<&SelectedInlineCompletionInfo>,
+    trigger_kind: InlineCompletionTriggerKind,
+    line: u32,
+    character: u32,
+    fallback: bool,
+) -> ExternalCompletionOutcome {
+    let list = perl_lsp_rs_core::providers::inline_completion::InlineCompletionList { items };
+    let list = provider.apply_replacement_ranges_for_context(list, context, line, character);
+    let list = provider.filter_parse_safe_items(list, text, line, character);
+    let finalized = finalize_inline_completions(
+        provider,
+        evaluate_external_backend_items(list),
+        selected,
+        trigger_kind,
+        line,
+        character,
+    );
+    if finalized.items.is_empty() {
+        if fallback {
+            ExternalCompletionOutcome::FallbackRequired
+        } else {
+            ExternalCompletionOutcome::FinalEmpty
+        }
+    } else {
+        ExternalCompletionOutcome::Accepted(finalized)
+    }
 }
 
 fn inline_use_module_fragment(prefix: &str) -> Option<&str> {
@@ -314,7 +526,8 @@ impl LspServer {
         receipt.insert("reason".to_string(), json!(shape.reason));
         receipt.insert("fact_source".to_string(), json!("provider_runtime"));
         receipt.insert("confidence".to_string(), json!("low"));
-        receipt.insert("freshness".to_string(), json!("fresh"));
+        // Result shape does not establish accepted-state freshness. Let the
+        // receipt normalizer retain its unknown default for this generic trace.
         receipt.insert("source_backed".to_string(), json!(false));
         receipt.insert("source_backed_state".to_string(), json!("not_proven_by_dispatch_trace"));
         receipt.insert("dynamic_boundary".to_string(), json!(false));
@@ -379,7 +592,20 @@ impl LspServer {
         else {
             return;
         };
-        if let Some(trace) = self.provider_decision_trace(&provider) {
+        let Some(trace) = self.provider_decision_trace(&provider) else {
+            return;
+        };
+        let Some(request_id) = request.get("request_id") else {
+            request.insert("request_receipt".to_string(), trace);
+            return;
+        };
+        if let Some(typed_request_id) = JsonRpcId::try_from_value(request_id)
+            && trace.get("request_id") == Some(&typed_request_id.to_value())
+        {
+            // The selector has been consumed by the server-side attachment;
+            // keeping it in the provider arguments would look like a caller
+            // selector combined with an explicit request_receipt.
+            request.remove("request_id");
             request.insert("request_receipt".to_string(), trace);
         }
     }
@@ -488,24 +714,7 @@ impl LspServer {
                     ));
                 }
 
-                // Add URI to hint data for later resolution.
-                // Merge with any existing data (e.g. functionName/paramIndex from
-                // the hints provider) rather than overwriting it.
-                let enriched_hints: Vec<Value> = hints
-                    .iter()
-                    .map(|hint| {
-                        let mut h = hint.clone();
-                        if let Some(obj) = h.as_object_mut() {
-                            let data = obj.entry("data".to_string()).or_insert_with(|| json!({}));
-                            if let Some(data_obj) = data.as_object_mut() {
-                                data_obj.insert("uri".to_string(), json!(uri));
-                            }
-                        }
-                        h
-                    })
-                    .collect();
-
-                let mut result = enriched_hints;
+                let mut result = hints;
                 for hint in &mut result {
                     truncate_inlay_hint_label(hint, max_label_length);
                 }
@@ -515,10 +724,102 @@ impl LspServer {
                     tracing::debug!(from = result.len(), to = cap, "InlayHints: capping");
                     result.truncate(cap);
                 }
+
+                // Attach one authenticated #8342 subject per resolvable hint
+                // (#14672), after the cap so no envelope is minted for a hint
+                // that is about to be dropped. This replaces the previous
+                // `data.uri` enrichment: `inlayHint/resolve` recovers the
+                // document, the producing snapshot and the callable from the
+                // envelope, never from the client's copy of `data`. Hints keep
+                // their existing presentation data (docSummary / functionName /
+                // paramIndex) — that is display text, not identity.
+                let result = self.attach_inlay_hint_resolve_envelopes(
+                    uri,
+                    doc.incarnation,
+                    parsed.as_deref(),
+                    &result,
+                );
                 return Ok(Some(json!(result)));
             }
         }
         Ok(Some(json!([])))
+    }
+
+    /// Attach one authenticated #8342 resolve envelope to each resolvable hint
+    /// (#14672).
+    ///
+    /// A hint is resolvable only when the client advertised the `label.location`
+    /// resolve property, the producer recorded a callable name for the hint, and
+    /// the connection still owns a session authenticator. Every other hint is
+    /// returned unchanged: it stays a valid hint and keeps its presentation
+    /// data, it simply carries no lazily resolvable label location. Failing to
+    /// issue is therefore fail-closed for the location and harmless for the hint
+    /// itself.
+    ///
+    /// Gating on the client property matters for response size as well as
+    /// honesty. A token measures ~1.5 KB on the wire — the signed envelope is
+    /// roughly 750 bytes of JSON, which the substrate's hex encoding then
+    /// doubles — and a capped response holds up to [`inlay_hints_cap`] hints, so
+    /// a full response for a `label.location` client can carry on the order of
+    /// 750 KB of tokens. Minting them for a client that can never redeem one
+    /// would be pure waste, so only advertised support pays that cost.
+    /// `an_issued_envelope_stays_within_its_documented_wire_budget` pins the
+    /// per-token size so it cannot drift silently.
+    fn attach_inlay_hint_resolve_envelopes(
+        &self,
+        uri: &str,
+        incarnation: u64,
+        parsed: Option<&crate::state::ParsedSnapshot>,
+        hints: &[Value],
+    ) -> Vec<Value> {
+        let mut enriched = hints.to_vec();
+
+        let Some(parsed) = parsed else {
+            return enriched;
+        };
+
+        // Read client capabilities before taking the authenticator, so this
+        // path never holds the authenticator while acquiring another lock.
+        let (supports_label_location, profile) = {
+            let capabilities = self.client_capabilities.lock();
+            let supports = capabilities
+                .inlay_hint_resolve_support
+                .as_ref()
+                .is_some_and(|properties| properties.contains("label.location"));
+            // The accepted text-sync session is the sole position-encoding
+            // authority. Its contract is fail-closed to UTF-16, so this
+            // profile must not read the removed client-capability field.
+            let profile = "profile:inlayhint:utf16";
+            (supports, profile)
+        };
+        if !supports_label_location {
+            return enriched;
+        }
+
+        let guard = self.resolve_session_authenticator.lock();
+        let Some(authenticator) = guard.as_ref() else {
+            return enriched;
+        };
+        let Some(issuer) =
+            InlayHintEnvelopeIssuer::new(authenticator, uri, incarnation, parsed, profile)
+        else {
+            return enriched;
+        };
+
+        for hint in &mut enriched {
+            let Some(token) = issuer.issue_for(hint, authenticator) else {
+                continue;
+            };
+            if let Some(object) = hint.as_object_mut() {
+                let data = object.entry("data".to_string()).or_insert_with(|| json!({}));
+                if let Some(data_object) = data.as_object_mut() {
+                    data_object
+                        .insert(INLAY_HINT_RESOLVE_ENVELOPE_KEY.to_string(), json!(token.as_str()));
+                }
+            }
+        }
+
+        enriched
     }
 
     /// Handle inlayHint/resolve request
@@ -535,13 +836,29 @@ impl LspServer {
         params: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
         if let Some(mut hint) = params {
-            // If hint already has both tooltip and labelDetails, return as-is
-            if hint.get("tooltip").is_some() && hint.get("labelDetails").is_some() {
-                return Ok(Some(hint));
+            // `labelDetails` is client-round-tripped presentation data. Never
+            // trust it merely because it is present: a client can fabricate a
+            // complete-looking hint without a server-issued resolve envelope.
+            // Drop it before resolving so the only location we can add below
+            // comes from an authenticated, current subject.
+            if let Some(object) = hint.as_object_mut() {
+                object.remove("labelDetails");
+                // The same applies to a `location` the client attached to a
+                // label part: the only part location we emit is the one the
+                // authenticated subject selects below (#14679 shape, #14672
+                // authority).
+                if let Some(Value::Array(parts)) = object.get_mut("label") {
+                    for part in parts.iter_mut() {
+                        if let Some(part) = part.as_object_mut() {
+                            part.remove("location");
+                        }
+                    }
+                }
             }
 
             // Extract hint properties for tooltip and label location generation
-            let label = hint.get("label").and_then(|l| l.as_str()).unwrap_or("").to_string();
+            let label =
+                crate::inlay_hints::inlay_hint_label_str(&hint).unwrap_or_default().to_string();
             let kind = hint.get("kind").and_then(|k| k.as_u64()).unwrap_or(0);
 
             // Add tooltip if not already present.
@@ -592,8 +909,12 @@ impl LspServer {
                 }
             }
 
-            // Add labelDetails.location for parameter hints (kind=2) if not already present,
-            // but only when the client declared "label.location" in resolveSupport.properties.
+            // Fill `InlayHintLabelPart.location` for parameter hints (kind=2), but only when
+            // the client declared "label.location" in resolveSupport.properties and the hint
+            // carries an authenticated currentness-bound subject (#14672). The label's
+            // representation is preserved: the provider already emits parameter labels as
+            // parts, and resolve only populates the advertised nested property (#14679). A
+            // string label is left untouched rather than rewritten into parts.
             let client_supports_label_location = self
                 .client_capabilities
                 .lock()
@@ -602,13 +923,17 @@ impl LspServer {
                 .map(|props| props.contains("label.location"))
                 .unwrap_or(false);
 
-            if hint.get("labelDetails").is_none()
-                && kind == 2
+            if kind == 2
                 && client_supports_label_location
                 && let Some(label_location) = self.resolve_hint_label_location(&hint)
                 && let Some(obj) = hint.as_object_mut()
+                && let Some(Value::Array(parts)) = obj.get_mut("label")
+                && let Some(part) = parts
+                    .iter_mut()
+                    .find(|part| part.get("value").is_some() && part.get("location").is_none())
+                && let Some(part) = part.as_object_mut()
             {
-                obj.insert("labelDetails".to_string(), json!({ "location": label_location }));
+                part.insert("location".to_string(), label_location);
             }
 
             Ok(Some(hint))
@@ -619,57 +944,105 @@ impl LspServer {
 
     /// Resolve the LSP Location for an inlay hint label, enabling click-to-definition.
     ///
-    /// Extracts the document URI and function name from the hint's `data` field,
-    /// looks up the open document, walks the AST to find the subroutine definition,
-    /// and converts its byte-offset location to an LSP `{ uri, range }` object.
+    /// The subject comes from the authenticated #8342 envelope this server issued
+    /// when it produced the hint, never from the client's copy of `data`
+    /// (#14672). Before that migration the document and the callable were read
+    /// straight out of the round-tripped item, so a fabricated hint — one never
+    /// preceded by any `textDocument/inlayHint` request — resolved to a real
+    /// source range, and a hint issued before an edit was silently reprojected
+    /// against different source.
+    /// The verified call-site position selects the last same-package definition,
+    /// or the package named by an authenticated qualified callable.
     ///
-    /// Returns `None` when the document is not open, the function is not found,
-    /// or the hint data is missing required fields.
+    /// Returns `None`, leaving the label part without a `location`, when:
+    ///
+    /// - the item carries no envelope, or one this session cannot authenticate
+    ///   (foreign session, tampered tag, wrong family or version, malformed);
+    /// - the authenticated hint position does not match the item being resolved,
+    ///   so a valid envelope cannot be moved onto a different hint;
+    /// - the recorded document is no longer open, or the URI was closed and
+    ///   reopened since issuance (a new open instance, even on identical text);
+    /// - the document's parsed snapshot moved — generation or content hash
+    ///   differs from the one that produced the hint;
+    /// - the recorded callable has no declaration in that exact snapshot.
     fn resolve_hint_label_location(&self, hint: &Value) -> Option<Value> {
-        let data = hint.get("data")?;
-        let uri = data.get("uri").and_then(|u| u.as_str())?;
-        let function_name = data
-            .get("functionName")
-            .and_then(|f| f.as_str())
-            .or_else(|| data.get("function").and_then(|f| f.as_str()))?;
-        let short_name = function_name.rsplit("::").next().unwrap_or(function_name);
+        let token = ResolveEnvelopeToken::parse(
+            hint.pointer("/data/resolveEnvelope").and_then(Value::as_str)?,
+        )
+        .ok()?;
+
+        let subject = {
+            let guard = self.resolve_session_authenticator.lock();
+            let authenticator = guard.as_ref()?;
+            ResolveEnvelopeCodec::default()
+                .validate::<InlayHintResolveSubjectV1, _>(
+                    &token,
+                    authenticator.session_identity(),
+                    authenticator,
+                )
+                .ok()?
+                .into_parts()
+                .1
+        };
+
+        // The envelope authenticates one exact hint. Refuse a valid envelope
+        // that has been reattached to a different hint in the same document.
+        //
+        // Kind needs no separate comparison here: only parameter hints carry a
+        // `data.functionName`, so only `kind: 2` ever receives an envelope, and
+        // the caller already gates this path on the item's `kind == 2`. Every
+        // field the returned location derives from is authenticated, so an item
+        // whose presentation the client altered still resolves to exactly the
+        // location its authenticated position and callable select.
+        let position = hint.get("position")?;
+        if position.get("line").and_then(Value::as_u64) != Some(u64::from(subject.line))
+            || position.get("character").and_then(Value::as_u64)
+                != Some(u64::from(subject.character))
+        {
+            return None;
+        }
 
         let documents = self.documents_guard();
-        let doc = self.get_document(&documents, uri)?;
-        let parsed = doc.current_parsed();
-        let ast = parsed.as_ref().and_then(|p| p.ast())?;
+        let doc = self.get_document(&documents, &subject.uri)?;
+        let parsed = doc.current_parsed()?;
 
-        let sub_node = Self::find_subroutine_node(ast, function_name).or_else(|| {
-            (short_name != function_name)
-                .then(|| Self::find_subroutine_node(ast, short_name))
-                .flatten()
-        })?;
+        // `CurrentSubjectBound` replay: the item is valid only while the exact
+        // open instance and the exact snapshot that produced it are current.
+        //
+        // The incarnation check is load-bearing, not belt-and-braces: a
+        // `didClose` + `didOpen` cycle installs a fresh `DocumentState` whose
+        // generation restarts at `FIRST_ACCEPTED_DOCUMENT_GENERATION`, and
+        // unchanged text reproduces the same content hash, so the generation
+        // and hash pair repeats across a reopen. That is the same ABA hole
+        // `text_sync::document_generation_still_current` closes with
+        // `Arc::ptr_eq`; a wire subject cannot carry an `Arc`, so it carries
+        // the process-unique instance identity instead.
+        if doc.incarnation != subject.incarnation
+            || parsed.generation() != subject.generation
+            || parsed.content_hash() != subject.content_hash
+        {
+            return None;
+        }
+
+        let ast = parsed.ast()?;
+        let function_name = subject.function_name.as_str();
+        let call_site_offset = self.pos16_to_offset(doc, subject.line, subject.character);
+
+        let sub_node = inlay_hint_declaration::effective_subroutine_declaration(
+            ast,
+            function_name,
+            call_site_offset,
+        )?;
         let (start_line, start_char) = self.offset_to_pos16(doc, sub_node.location.start);
         let (end_line, end_char) = self.offset_to_pos16(doc, sub_node.location.end);
 
         Some(json!({
-            "uri": uri,
+            "uri": subject.uri,
             "range": {
                 "start": { "line": start_line, "character": start_char },
                 "end":   { "line": end_line,   "character": end_char   }
             }
         }))
-    }
-
-    /// Walk the AST to find a top-level subroutine node with the given name.
-    fn find_subroutine_node<'a>(node: &'a Node, name: &str) -> Option<&'a Node> {
-        if matches!(&node.kind, NodeKind::Subroutine { name: Some(sub_name), .. } if sub_name == name)
-        {
-            return Some(node);
-        }
-
-        let mut found = None;
-        node.for_each_child(|child| {
-            if found.is_none() {
-                found = Self::find_subroutine_node(child, name);
-            }
-        });
-        found
     }
 
     /// Handle textDocument/selectionRange request
@@ -743,6 +1116,9 @@ impl LspServer {
             };
 
             if let Some(doc) = doc_snapshot {
+                if doc.full_sync_required() {
+                    return Ok(Some(json!([])));
+                }
                 let start = Instant::now();
                 let deadline = code_lens_resolve_deadline();
                 let parsed = doc.current_parsed();
@@ -951,11 +1327,26 @@ impl LspServer {
             let trigger_kind = inline_completion_trigger_kind(&params)?;
             let selected_completion = selected_inline_completion_info(&params)?;
 
-            // Snapshot text under document lock, then release before any slow work
-            let text = {
+            // Snapshot text plus its version/generation identity under the
+            // document lock, then release before any slow work. The identity
+            // binds the invoked AI context to one immutable snapshot.
+            let (text, snapshot_identity) = {
                 let documents = self.documents_guard();
                 match self.get_document(&documents, uri) {
-                    Some(doc) => doc.text_arc.to_string(),
+                    Some(doc) => match doc.text_for_user_answers() {
+                        Some(text) => (
+                            text.to_string(),
+                            InlineCompletionSnapshotIdentity {
+                                document_version: Some(i64::from(doc.version)),
+                                source_generation: Some(u64::from(
+                                    doc.generation.load(std::sync::atomic::Ordering::Acquire),
+                                )),
+                            },
+                        ),
+                        None => {
+                            return Ok(Some(json!({ "items": [] })));
+                        }
+                    },
                     None => {
                         return Ok(Some(json!({ "items": [] })));
                     }
@@ -970,48 +1361,74 @@ impl LspServer {
                 let a = &cfg.ai_completion;
                 (a.enabled, a.fallback, a.max_output_tokens, a.timeout_ms)
             };
-            if ai_enabled && let Some(context) = provider.prepare_context(&text, line, character) {
-                let backend_result =
-                    self.try_ai_inline_completion(&context, ai_max_output_tokens, ai_timeout_ms);
-                match backend_result {
-                    Ok(ref items) if !items.is_empty() => {
-                        let list =
-                            perl_lsp_rs_core::providers::inline_completion::InlineCompletionList {
-                                items: items.clone(),
-                            };
-                        let list = provider
-                            .apply_replacement_ranges_for_context(list, &context, line, character);
-                        let list = provider.filter_parse_safe_items(list, &text, line, character);
-                        let list = constrain_inline_completions_to_selected_info(
-                            list,
-                            selected_completion.as_ref(),
-                            line,
-                            character,
-                        );
-                        let list = apply_inline_completion_trigger_policy(list, trigger_kind);
-                        if !list.items.is_empty() || !ai_fallback {
-                            return Ok(Some(serde_json::to_value(list).map_err(|e| {
-                                crate::protocol::internal_error(&format!(
-                                    "Failed to serialize inline completions: {}",
-                                    e
-                                ))
-                            })?));
+            // Automatic requests are deterministic-first: a keystroke-triggered
+            // suggestion must not wait on — or pay for — a remote call, and no
+            // external candidate can qualify for automatic display anyway. The
+            // predicate is shared with the custom streaming route.
+            let consult_backend = ai_enabled && external_completion_permitted(trigger_kind);
+            if consult_backend {
+                // Invoked AI preparation is snapshot-bound and fails closed:
+                // a request version that no longer matches the snapshot, or a
+                // cursor inside a hard-reject zone, makes zero backend calls.
+                let request_document_version = params
+                    .pointer("/context/selectedCompletionInfo/textDocumentVersion")
+                    .and_then(Value::as_i64);
+                if let PreparedInvocationContext::Ready(context) = provider.prepare_invoked_context(
+                    &text,
+                    line,
+                    character,
+                    snapshot_identity,
+                    request_document_version,
+                ) {
+                    let backend_result = self.try_ai_inline_completion(
+                        &context,
+                        ai_max_output_tokens,
+                        ai_timeout_ms,
+                    );
+                    match backend_result {
+                        Ok(ref items) if !items.is_empty() => {
+                            match evaluate_external_candidates(
+                                &provider,
+                                items.clone(),
+                                &text,
+                                &context,
+                                selected_completion.as_ref(),
+                                trigger_kind,
+                                line,
+                                character,
+                                ai_fallback,
+                            ) {
+                                ExternalCompletionOutcome::Accepted(list) => {
+                                    return Ok(Some(serde_json::to_value(list).map_err(|e| {
+                                        crate::protocol::internal_error(&format!(
+                                            "Failed to serialize inline completions: {}",
+                                            e
+                                        ))
+                                    })?));
+                                }
+                                ExternalCompletionOutcome::FinalEmpty => {
+                                    return Ok(Some(json!({ "items": [] })));
+                                }
+                                ExternalCompletionOutcome::FallbackRequired => {
+                                    // Fall through to the deterministic route.
+                                }
+                            }
                         }
-                    }
-                    Err(ref e) => {
-                        if matches!(e, BackendError::Auth(_)) {
-                            self.notify_ai_auth_failure();
+                        Err(ref e) => {
+                            if matches!(e, BackendError::Auth(_)) {
+                                self.notify_ai_auth_failure();
+                            }
+                            tracing::debug!("AI inline completion failed: {}", e);
+                            if !ai_fallback {
+                                return Ok(Some(json!({ "items": [] })));
+                            }
+                            // Fall through to deterministic
                         }
-                        tracing::debug!("AI inline completion failed: {}", e);
-                        if !ai_fallback {
-                            return Ok(Some(json!({ "items": [] })));
-                        }
-                        // Fall through to deterministic
-                    }
-                    _ => {
-                        // Ok(empty) — fall through to deterministic if fallback enabled
-                        if !ai_fallback {
-                            return Ok(Some(json!({ "items": [] })));
+                        _ => {
+                            // Ok(empty) — fall through to deterministic if fallback enabled
+                            if !ai_fallback {
+                                return Ok(Some(json!({ "items": [] })));
+                            }
                         }
                     }
                 }
@@ -1030,18 +1447,14 @@ impl LspServer {
                     )
                 })
                 .unwrap_or_default();
-            let completions = constrain_inline_completions_to_selected_info(
-                provider.get_inline_completions_with_environment(
-                    &text,
-                    line,
-                    character,
-                    &environment,
-                ),
+            let completions = finalize_inline_completions(
+                &provider,
+                provider.evaluate_inline_completions(&text, line, character, &environment),
                 selected_completion.as_ref(),
+                trigger_kind,
                 line,
                 character,
             );
-            let completions = apply_inline_completion_trigger_policy(completions, trigger_kind);
             return Ok(Some(serde_json::to_value(completions).map_err(|e| {
                 crate::protocol::internal_error(&format!(
                     "Failed to serialize inline completions: {}",
@@ -1053,7 +1466,41 @@ impl LspServer {
         Ok(Some(json!({ "items": [] })))
     }
 
-    fn inline_completion_environment_for_context(
+    /// Evaluate the deterministic inline-completion route for one request.
+    ///
+    /// Buffered responses, streaming terminal fallbacks, and filtered external
+    /// finals all reach this one helper, so a streamed AI candidate and a
+    /// buffered one receive the same range, safety, selection, and trigger
+    /// verdicts.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn deterministic_inline_items(
+        &self,
+        provider: &InlineCompletionProvider,
+        uri: &str,
+        text: &str,
+        line: u32,
+        character: u32,
+        selected: Option<&SelectedInlineCompletionInfo>,
+        trigger_kind: InlineCompletionTriggerKind,
+    ) -> Vec<perl_lsp_rs_core::providers::inline_completion::InlineCompletionItem> {
+        let environment = provider
+            .prepare_context(text, line, character)
+            .map(|context| {
+                self.inline_completion_environment_for_context(uri, text, line, character, &context)
+            })
+            .unwrap_or_default();
+        finalize_inline_completions(
+            provider,
+            provider.evaluate_inline_completions(text, line, character, &environment),
+            selected,
+            trigger_kind,
+            line,
+            character,
+        )
+        .items
+    }
+
+    pub(crate) fn inline_completion_environment_for_context(
         &self,
         uri: &str,
         text: &str,
@@ -1409,8 +1856,12 @@ impl LspServer {
             data: None,
         })?;
 
+        let Some(text) = doc.text_for_user_answers() else {
+            return Ok(Some(json!([])));
+        };
+
         // Detect colors in the document text
-        let color_infos = super::colors::detect_colors(&doc.text);
+        let color_infos = super::colors::detect_colors(text);
 
         // Convert to LSP format
         let lsp_colors: Vec<Value> = color_infos
@@ -1493,8 +1944,10 @@ impl LspServer {
 
             let documents = self.documents_guard();
             if let Some(doc) = self.get_document(&documents, uri) {
-                let result =
-                    crate::linked_editing::handle_linked_editing(&doc.text, line, character);
+                let Some(text) = doc.text_for_user_answers() else {
+                    return Ok(Some(Value::Null));
+                };
+                let result = crate::linked_editing::handle_linked_editing(text, line, character);
                 return Ok(Some(serde_json::to_value(result).map_err(|e| {
                     crate::protocol::internal_error(&format!(
                         "Failed to serialize linked editing ranges: {}",
@@ -2340,16 +2793,16 @@ mod tests {
     }
 
     /// When the client declares "label.location" in resolveSupport.properties,
-    /// handle_inlay_hint_resolve must include labelDetails in the response for
+    /// handle_inlay_hint_resolve must include a label part location in the response for
     /// a parameter hint (kind=2) that has no function data to resolve.
     ///
     /// In this test the hint has no `data.functionName` so `resolve_hint_label_location`
     /// returns None — but the important thing is that the code path is entered
-    /// (i.e. no labelDetails are injected when there is nothing to look up, and
+    /// (i.e. no label part location is injected when there is nothing to look up, and
     /// no panic occurs).
     #[test]
     fn inlay_hint_resolve_label_location_requires_client_capability() {
-        // Hint without client capability: labelDetails must NOT be added
+        // Hint without client capability: a label part location must NOT be added
         let server_no_cap = make_server_with_caps(ClientCapabilities {
             inlay_hint_resolve_support: None,
             ..ClientCapabilities::default()
@@ -2366,10 +2819,10 @@ mod tests {
         let resolved = result.expect("must return Some");
         assert!(
             resolved.get("labelDetails").is_none(),
-            "labelDetails must be absent when client did not declare resolve support"
+            "legacy labelDetails must be absent when client did not declare resolve support"
         );
 
-        // Hint with client capability for a different property: labelDetails must NOT be added
+        // Hint with client capability for a different property: a label part location must NOT be added
         let mut other_props = HashSet::new();
         other_props.insert("tooltip".to_string());
         let server_other_prop = make_server_with_caps(ClientCapabilities {
@@ -2382,12 +2835,12 @@ mod tests {
         let resolved2 = result2.expect("must return Some");
         assert!(
             resolved2.get("labelDetails").is_none(),
-            "labelDetails must be absent when client only declared 'tooltip' resolve support"
+            "legacy labelDetails must be absent when client only declared 'tooltip' resolve support"
         );
 
         // Hint with client capability declaring "label.location": the resolver attempts
         // label location lookup.  With no open document the lookup returns None so
-        // labelDetails is still absent — but no panic or error must occur.
+        // The label part location is still absent — but no panic or error must occur.
         let mut location_props = HashSet::new();
         location_props.insert("label.location".to_string());
         let server_with_cap = make_server_with_caps(ClientCapabilities {
@@ -2398,10 +2851,10 @@ mod tests {
             .handle_inlay_hint_resolve(Some(hint))
             .expect("resolve must not error when client declares label.location");
         let resolved3 = result3.expect("must return Some");
-        // Document is not open so resolve_hint_label_location returns None — labelDetails absent
+        // Document is not open so resolve_hint_label_location returns None — no label location
         assert!(
             resolved3.get("labelDetails").is_none(),
-            "labelDetails must be absent when document is not open (no sub found)"
+            "legacy labelDetails must be absent when document is not open (no sub found)"
         );
         // Tooltip must still be filled in regardless of label.location capability
         assert!(

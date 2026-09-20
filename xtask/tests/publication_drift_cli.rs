@@ -13,11 +13,8 @@ fn clean_fixture_succeeds_with_verified_authority_receipt() -> Result<()> {
     let temp = TempDir::new()?;
     let receipt_path = temp.path().join("clean-receipt.json");
 
-    let output = run_classifier(
-        &root.join("fixtures/publication_drift/clean.json"),
-        &root,
-        &receipt_path,
-    )?;
+    let output =
+        run_classifier(&root.join("fixtures/publication_drift/clean.json"), &root, &receipt_path)?;
 
     assert!(
         output.status.success(),
@@ -27,10 +24,7 @@ fn clean_fixture_succeeds_with_verified_authority_receipt() -> Result<()> {
 
     let receipt: Value = serde_json::from_slice(&fs::read(&receipt_path)?)?;
     assert_eq!(receipt["verdict"].as_str(), Some("clean"));
-    assert_eq!(
-        receipt["manifest_verification"]["status"].as_str(),
-        Some("verified")
-    );
+    assert_eq!(receipt["manifest_verification"]["status"].as_str(), Some("verified"));
     assert_eq!(receipt["authority_valid"].as_bool(), Some(true));
     Ok(())
 }
@@ -39,19 +33,13 @@ fn clean_fixture_succeeds_with_verified_authority_receipt() -> Result<()> {
 fn clean_fixture_creates_a_missing_nested_receipt_directory() -> Result<()> {
     let root = repo_root()?;
     let temp = TempDir::new()?;
-    let receipt_path = temp
-        .path()
-        .join("new/nested/receipts/publication-drift.json");
-    let parent = receipt_path
-        .parent()
-        .ok_or_else(|| anyhow!("nested receipt path must have a parent"))?;
+    let receipt_path = temp.path().join("new/nested/receipts/publication-drift.json");
+    let parent =
+        receipt_path.parent().ok_or_else(|| anyhow!("nested receipt path must have a parent"))?;
     assert!(!parent.exists(), "nested receipt parent must start absent");
 
-    let output = run_classifier(
-        &root.join("fixtures/publication_drift/clean.json"),
-        &root,
-        &receipt_path,
-    )?;
+    let output =
+        run_classifier(&root.join("fixtures/publication_drift/clean.json"), &root, &receipt_path)?;
 
     assert!(
         output.status.success(),
@@ -102,21 +90,12 @@ fn known_windows_drift_blocks_after_writing_drift_receipt() -> Result<()> {
         &receipt_path,
     )?;
 
-    assert!(
-        !output.status.success(),
-        "known product drift must return a blocking exit"
-    );
-    assert!(
-        receipt_path.is_file(),
-        "blocking classifier invocation must retain its receipt"
-    );
+    assert!(!output.status.success(), "known product drift must return a blocking exit");
+    assert!(receipt_path.is_file(), "blocking classifier invocation must retain its receipt");
 
     let receipt: Value = serde_json::from_slice(&fs::read(&receipt_path)?)?;
     assert_eq!(receipt["verdict"].as_str(), Some("drift"));
-    assert_eq!(
-        receipt["manifest_verification"]["status"].as_str(),
-        Some("verified")
-    );
+    assert_eq!(receipt["manifest_verification"]["status"].as_str(), Some("verified"));
     assert!(
         has_blocker(&receipt, "same_version_divergent_product"),
         "missing same_version_divergent_product blocker; blockers={}",
@@ -156,8 +135,6 @@ fn repo_root() -> Result<PathBuf> {
 
 fn has_blocker(receipt: &Value, code: &str) -> bool {
     receipt["blockers"].as_array().is_some_and(|blockers| {
-        blockers
-            .iter()
-            .any(|blocker| blocker["code"].as_str() == Some(code))
+        blockers.iter().any(|blocker| blocker["code"].as_str() == Some(code))
     })
 }

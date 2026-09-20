@@ -1,128 +1,45 @@
-//! Query matching and ranking helpers for workspace symbol search.
+//! Query matching helpers for workspace symbol search.
 //!
-//! This crate has a single responsibility: provide reusable matching and
-//! ranking primitives used by LSP symbol-search providers.
+//! This crate has a single responsibility: provide reusable matching
+//! primitives used by LSP symbol-search providers.
+//!
+//! # Ownership (#10794)
+//!
+//! Query policy moved above `perl-symbol`: admission, tiers, digests, and the
+//! canonical evidence comparator live in
+//! [`perl_workspace::workspace_symbol_query`]. The function here is a thin
+//! forwarding shim kept only so existing call sites and their test suites
+//! keep compiling; it adds no policy of its own. Canonical paths should
+//! consume the compiled [`WorkspaceSymbolQueryProfile`] directly.
+//!
+//! `compare_names_by_query` was removed in the #10794 repair review: after
+//! both provider paths migrated to evidence-based sorting it had zero
+//! production callers, and its legacy total-order reproduction was divergent
+//! for loose-ineligible queries (an admitted-set substring fell into the
+//! non-match slot). Ordering coverage lives at the canonical owner
+//! (`WorkspaceSymbolMatchEvidence::compare`).
 
-use std::cmp::Ordering;
+use perl_workspace::workspace_symbol_query::{
+    WorkspaceSymbolQueryProfile, WorkspaceSymbolSearchKeyRole as KeyRole, match_searchable_key,
+};
 
 pub use perl_symbol::MIN_LOOSE_MATCH_QUERY_CHARS;
 
 /// Returns `true` when a symbol name matches the provided query.
 ///
-/// Matching strategy order after trimming leading/trailing query whitespace:
-/// 1. Empty query (matches everything)
-/// 2. Exact case-insensitive match
-/// 3. Prefix case-insensitive match
-/// 4. Contains case-insensitive match
-/// 5. Subsequence/fuzzy case-insensitive match
-///
-/// Tiers 4 and 5 are the *loose* tiers and require a query of at least
-/// [`MIN_LOOSE_MATCH_QUERY_CHARS`] characters. A single-character query
-/// therefore matches only by exact or prefix. (#5335)
+/// Forwarding shim over the canonical owner (#10794). Matching strategy after
+/// trimming leading/trailing query whitespace: empty query matches everything,
+/// then case-insensitive exact/prefix always run, and substring/subsequence
+/// require a folded query of at least [`MIN_LOOSE_MATCH_QUERY_CHARS`] chars.
 #[must_use]
 pub fn matches_query(name: &str, query: &str) -> bool {
-    let query = query.trim();
-    if query.is_empty() {
-        return true;
-    }
-
-    let name_lower = name.to_lowercase();
-    let query_lower = query.to_lowercase();
-
-    if name_lower == query_lower {
-        return true;
-    }
-
-    if name_lower.starts_with(&query_lower) {
-        return true;
-    }
-
-    // Length is measured on the *lowercased* query, because lowercasing can
-    // lengthen a one-character input -- 'İ' (U+0130) lowercases to the two
-    // chars "i\u{307}" -- and it is the lowercased form that the tiers below
-    // actually match against.
-    if query_lower.chars().count() < MIN_LOOSE_MATCH_QUERY_CHARS {
-        return false;
-    }
-
-    if name_lower.contains(&query_lower) {
-        return true;
-    }
-
-    is_subsequence(&name_lower, &query_lower)
-}
-
-/// Compares two symbol names by query relevance.
-///
-/// Ordering (highest to lowest relevance):
-/// 1. Exact match (case-insensitive)
-/// 2. Prefix match
-/// 3. Contains (substring) match
-/// 4. Fuzzy/subsequence match
-///
-/// Within the same tier, shorter names rank higher (closer to the query
-/// length), with lexicographic order as the final tiebreaker.
-#[must_use]
-pub fn compare_names_by_query(a: &str, b: &str, query: &str) -> Ordering {
-    let query_lower = query.trim().to_lowercase();
-    let a_lower = a.to_lowercase();
-    let b_lower = b.to_lowercase();
-
-    let a_tier = match_tier(&a_lower, &query_lower);
-    let b_tier = match_tier(&b_lower, &query_lower);
-
-    // Lower tier number = better match
-    match a_tier.cmp(&b_tier) {
-        Ordering::Equal => {
-            // Within the same tier, prefer shorter names (closer to the query)
-            match a.len().cmp(&b.len()) {
-                Ordering::Equal => a.cmp(b),
-                len_ord => len_ord,
-            }
-        }
-        tier_ord => tier_ord,
-    }
-}
-
-/// Assigns a numeric tier to a symbol name based on how well it matches the query.
-///
-/// Lower tier = better match:
-/// - 0: exact match
-/// - 1: prefix match
-/// - 2: contains (substring) match
-/// - 3: fuzzy/subsequence or no match (fallback)
-fn match_tier(name_lower: &str, query_lower: &str) -> u8 {
-    if name_lower == query_lower {
-        0
-    } else if name_lower.starts_with(query_lower) {
-        1
-    } else if name_lower.contains(query_lower) {
-        2
-    } else {
-        3
-    }
-}
-
-fn is_subsequence(haystack: &str, needle: &str) -> bool {
-    let mut needle_chars = needle.chars();
-    let mut current = needle_chars.next();
-
-    for ch in haystack.chars() {
-        if let Some(target) = current {
-            if ch == target {
-                current = needle_chars.next();
-            }
-        } else {
-            return true;
-        }
-    }
-
-    current.is_none()
+    let profile = WorkspaceSymbolQueryProfile::compile(query);
+    match_searchable_key(&profile, name, KeyRole::Other).is_some()
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{compare_names_by_query, matches_query};
+    use super::matches_query;
     use proptest::prelude::*;
 
     #[test]
@@ -139,12 +56,6 @@ mod tests {
         assert!(matches_query("foobar", "  foo  "));
         assert!(matches_query("foobar", "  fb  "));
         assert!(matches_query("anything", "   "));
-    }
-
-    #[test]
-    fn query_ranking_ignores_outer_whitespace() {
-        let ordered = compare_names_by_query("foo", "foobar", "  foo  ");
-        assert!(ordered.is_lt(), "exact trimmed query match must rank before prefix match");
     }
 
     #[test]
@@ -203,55 +114,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn relevance_prefers_exact_then_prefix_then_name_order() {
-        let mut names = ["foxtrot", "foo", "foobar", "alpha"];
-        names.sort_by(|a, b| compare_names_by_query(a, b, "foo"));
-
-        assert_eq!(names, ["foo", "foobar", "alpha", "foxtrot"]);
-    }
-
-    #[test]
-    fn contains_matches_rank_above_fuzzy_matches() {
-        // "get_bar" contains "bar" (tier 2)
-        // "baz_art" has "bar" as subsequence b-a-z-a-r-t: b..a..r (tier 3)
-        let mut names = ["baz_art", "get_bar"];
-        names.sort_by(|a, b| compare_names_by_query(a, b, "bar"));
-
-        assert_eq!(names[0], "get_bar", "substring match should rank above fuzzy");
-    }
-
-    #[test]
-    fn exact_match_beats_everything() {
-        let mut names = ["get_log", "getLogger", "log", "logging"];
-        names.sort_by(|a, b| compare_names_by_query(a, b, "log"));
-
-        assert_eq!(names[0], "log", "exact match should be first");
-    }
-
-    #[test]
-    fn shorter_names_preferred_within_same_tier() {
-        // Both are prefix matches (tier 1), shorter should come first
-        let mut names = ["foobarqux", "foobar"];
-        names.sort_by(|a, b| compare_names_by_query(a, b, "foo"));
-
-        assert_eq!(names[0], "foobar");
-        assert_eq!(names[1], "foobarqux");
-    }
-
-    #[test]
-    fn four_tier_ranking_order() {
-        // exact=0, prefix=1, contains=2, fuzzy=3
-        // "lxoxg" is a fuzzy match for "log" (l..o..g subsequence)
-        let mut names = ["get_log", "lxoxg", "log", "logger"];
-        names.sort_by(|a, b| compare_names_by_query(a, b, "log"));
-
-        assert_eq!(names[0], "log", "tier 0: exact");
-        assert_eq!(names[1], "logger", "tier 1: prefix");
-        assert_eq!(names[2], "get_log", "tier 2: contains");
-        assert_eq!(names[3], "lxoxg", "tier 3: fuzzy");
-    }
-
     proptest! {
         #[test]
         fn case_insensitive_matching_is_equivalent(name in "[a-zA-Z]{1,24}", query in "[a-zA-Z]{0,12}") {
@@ -259,14 +121,6 @@ mod tests {
             let actual = matches_query(&name.to_uppercase(), &query.to_lowercase());
 
             prop_assert_eq!(actual, expected);
-        }
-
-        #[test]
-        fn comparison_is_antisymmetric(a in "[a-zA-Z_]{1,20}", b in "[a-zA-Z_]{1,20}", query in "[a-zA-Z]{0,10}") {
-            let ab = compare_names_by_query(&a, &b, &query);
-            let ba = compare_names_by_query(&b, &a, &query);
-
-            prop_assert_eq!(ab, ba.reverse());
         }
     }
 }

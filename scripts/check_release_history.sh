@@ -15,6 +15,12 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$REPO_ROOT"
 
+# The prebuilt xtask paths below are intentionally cargo-free. Once the
+# fallback ladder reaches Cargo, however, guard the exact binary before any
+# metadata or build work so an apt Cargo cannot hide the real toolchain error.
+# This keeps prebuilt-only checkouts usable while closing the stale-Cargo gap.
+. "$SCRIPT_DIR/lib/cargo-toolchain-guard.sh"
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 # Print error message and set error flag
@@ -93,6 +99,12 @@ DRIFT_FOUND=0
 # uses the same full-history checkout and fetched tags as the checks below.
 if ! python3 scripts/check_release_tag_provenance.py --verify-git --repo-root "$REPO_ROOT"; then
     error "Release-tag provenance drift check failed"
+fi
+
+# The provenance validator carries its own unittest suite; run it so the
+# classifier regressions fail here rather than in review (#15263).
+if ! python3 scripts/tests/test_release_tag_provenance.py; then
+    error "Release-tag provenance unit tests failed"
 fi
 
 for tag in "${ALL_TAGS[@]}"; do
@@ -203,11 +215,8 @@ run_install_surface_check() {
         fi
     done
 
-    if cargo metadata --no-deps --format-version 1 >/dev/null 2>&1; then
-        cargo xtask install-surface-check
-        return
-    fi
-
+    # A stale-but-usable prebuilt binary is still preferable to requiring
+    # Cargo. This path is important for cargo-less release checkouts.
     if [[ -x target/debug/xtask.exe ]]; then
         target/debug/xtask.exe install-surface-check
         return
@@ -218,7 +227,18 @@ run_install_surface_check() {
         return
     fi
 
+    if cargo_guard_before_fallback &&
+       cargo metadata --no-deps --format-version 1 >/dev/null 2>&1; then
+        cargo xtask install-surface-check
+        return
+    fi
+
+    cargo_guard_before_fallback
     cargo xtask install-surface-check
+}
+
+cargo_guard_before_fallback() {
+    cargo_toolchain_guard
 }
 
 if ! run_install_surface_check; then

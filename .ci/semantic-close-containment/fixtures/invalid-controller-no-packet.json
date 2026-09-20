@@ -1,0 +1,35 @@
+{
+  "schema_version": "semantic_close_containment_fixture.v1",
+  "provenance": {
+    "captured_at": "2026-08-21",
+    "sources": [
+      "https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/8035"
+    ],
+    "subject_shas": [],
+    "boundary": "Immutable bounded structured excerpts; canonical GitHub subjects and exact candidate SHAs are retained. The fixture proves only the CP00 contradiction class."
+  },
+  "repository": "effortlessmetrics/perl-lsp-swarm",
+  "pull_request": {
+    "number": 990001,
+    "title": "fix(workspace-source): land one bounded source-currentness leaf (#8035)",
+    "body": "## Claim Boundary\n\nOne bounded source-currentness leaf is complete.\n\nCloses #8035."
+  },
+  "issues": [
+    {
+      "repository": "effortlessmetrics/perl-lsp-swarm",
+      "number": 8035,
+      "title": "program(workspace-source): eliminate generation-zero live publication and accepted-store candidate contamination",
+      "body": "## Role\n\nThis is the accepted workspace-source currentness controller, not a coding PR unit. Implement its SRC leaves and exact-process fan-in before controller closure.\n\n## Acceptance\n\nAll child/source lifecycle rows and exact-process proof must be current."
+    }
+  ],
+  "expected": {
+    "aggregate_code": "FAIL_CONTROLLER_PACKET_MISSING",
+    "rows": [
+      {
+        "repository": "effortlessmetrics/perl-lsp-swarm",
+        "issue_number": 8035,
+        "code": "FAIL_CONTROLLER_PACKET_MISSING"
+      }
+    ]
+  }
+}

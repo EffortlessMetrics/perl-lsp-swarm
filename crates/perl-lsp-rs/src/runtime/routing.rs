@@ -43,7 +43,9 @@
 //! ```
 
 #[cfg(feature = "workspace")]
-use perl_parser::workspace_index::{DegradationReason, IndexCoordinator, IndexPhase, IndexState};
+use perl_workspace::workspace_index::{
+    DegradationReason, IndexCoordinator, IndexPhase, IndexState,
+};
 #[cfg(feature = "workspace")]
 use std::sync::Arc;
 
@@ -173,6 +175,8 @@ pub fn route_index_access(coordinator: Option<&Arc<IndexCoordinator>>) -> IndexA
                     // Map degradation reason to human-readable message
                     IndexAccessMode::Partial(degradation_reason_str(&reason))
                 }
+                // Forward-compatible fallback for future variants (#2898)
+                _ => IndexAccessMode::Partial("unknown index state"),
             }
         }
         None => IndexAccessMode::None,

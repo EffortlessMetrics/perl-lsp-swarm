@@ -88,7 +88,7 @@ Each entry has: (1) one-line takeaway, (2) incident, (3) what to do differently,
 - Each PR is ~6–10 min of CI regardless of diff size. Three 1-line PRs in the same crate = 18–30 min of CI. One 3-line PR = 6–10 min.
 - "Do not combine" overrides batching: MSRV bump, lint activation, no-panic baseline, release bump must each be separate PRs.
 
-**Durably encoded**: `docs/development/RUST_1_95_ROLLOUT.md` "do not combine" section; `docs/ci/codecov-rollout.md` PR ladder pattern.
+**Durably encoded in the historical rollout**: `docs/development/RUST_1_95_ROLLOUT.md` "do not combine" section; `docs/ci/codecov-rollout.md` PR ladder pattern.
 
 ---
 
@@ -144,7 +144,7 @@ Each entry has: (1) one-line takeaway, (2) incident, (3) what to do differently,
 
 **Takeaway**: When a second doc refines or supersedes a first, add a reciprocal cross-link banner to both. Do not delete the older doc; the history layer is the value.
 
-**Incident**: After `docs/ci/codecov-rollout.md` was created as a post-landing improvement doc, the orchestrator considered deleting `docs/development/RUST_1_95_ROLLOUT.md` as a "duplicate." The user corrected: "We can have layered documentation of this." The two docs serve different functions (initial rollout ladder vs. post-landing quality improvement). Deleting either would have lost the scoped framing the other doc provides.
+**Historical incident**: After `docs/ci/codecov-rollout.md` was created as a post-landing improvement doc, the orchestrator considered deleting `docs/development/RUST_1_95_ROLLOUT.md` as a "duplicate." The user corrected: "We can have layered documentation of this." The two docs served different functions (initial rollout ladder vs. post-landing quality improvement). Deleting either would have lost the scoped framing the other doc provided.
 
 **Next time**:
 - When creating a doc that refines or extends an existing one, add a banner to both: `> See also: [<other-doc>](<path>) — <one-line relationship>`.

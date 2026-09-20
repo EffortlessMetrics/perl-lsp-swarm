@@ -10,7 +10,6 @@
 //! - **extract_variable**: Extract selected expression into a named variable
 //! - **extract_subroutine**: Extract code block into a new subroutine
 //! - **loop_conversion**: Convert between loop styles (for/foreach/while)
-//! - **import_management**: Organize and add/remove use statements
 //! - **postfix**: Postfix completion-style actions (e.g., `.if`, `.unless`)
 //! - **error_checking**: Add error handling around expressions
 //! - **helpers**: Shared utilities for text manipulation and position mapping
@@ -21,7 +20,14 @@
 //!
 //! - **refactor.extract**: Extract variable, extract subroutine
 //! - **refactor.rewrite**: Loop conversion, error wrapping
-//! - **source.organizeImports**: Import management
+//!
+//! `source.organizeImports` is intentionally absent: the only implementation was
+//! a destructive line sorter and is withdrawn until #10696 lands a proven cohort.
+//!
+//! "Add missing imports" is intentionally absent (#10690): the hard-coded
+//! function→module spelling table is not candidate identity and not edit
+//! authorization. Restoration requires #790/#8948 to land exact
+//! unresolved-subject selection, exporter proof, and package-aware insertion.
 //!
 //! # Performance Characteristics
 //!
@@ -40,7 +46,6 @@ mod error_checking;
 mod extract_subroutine;
 mod extract_variable;
 mod helpers;
-mod import_management;
 mod loop_conversion;
 mod postfix;
 mod signature_actions;
@@ -92,7 +97,7 @@ impl EnhancedCodeActionsProvider {
         self.collect_signature_actions(ast, ast, normalized_range, &mut actions);
 
         // Global actions (not node-specific)
-        actions.extend(self.get_global_refactorings(ast));
+        actions.extend(self.get_global_refactorings());
 
         actions
     }
@@ -403,19 +408,21 @@ impl EnhancedCodeActionsProvider {
     }
 
     /// Get global refactoring actions
-    fn get_global_refactorings(&self, ast: &Node) -> Vec<CodeAction> {
+    fn get_global_refactorings(&self) -> Vec<CodeAction> {
         let mut actions = Vec::new();
         let helpers = Helpers::new(&self.source, &self.lines);
 
-        // Add missing imports
-        if let Some(action) = import_management::add_missing_imports(ast, &self.source, &helpers) {
-            actions.push(action);
-        }
+        // "Add missing imports" is withdrawn (#10690): the hard-coded
+        // function→module spelling table turned name affinity into an enabled
+        // `use <module>;` edit inserted at a package-blind preamble offset.
+        // Hard-coded affinity is not candidate identity and not edit
+        // authorization; restoration requires #790/#8948.
 
-        // Organize imports
-        if let Some(action) = import_management::organize_imports(ast, &self.source, &helpers) {
-            actions.push(action);
-        }
+        // Organize imports is withdrawn (#8305): the legacy line-oriented
+        // organizer replaced the whole first-to-last import-looking interval
+        // and could destroy executable statements in between. No action may be
+        // offered for `source.organizeImports` until #8319 admits a bounded
+        // source-preserving cohort and #10696 lands the proven cutover.
 
         // Add pragmas
         actions.extend(self.add_recommended_pragmas(&helpers));
@@ -524,10 +531,10 @@ mod tests {
     fn test_utf8_action_adds_open_when_utf8_already_present() {
         let source = "use utf8;\nmy $msg = \"café\";\n";
         let mut parser = Parser::new(source);
-        let ast = must(parser.parse());
+        let _ast = must(parser.parse());
 
         let provider = EnhancedCodeActionsProvider::new(source.to_string());
-        let actions = provider.get_global_refactorings(&ast);
+        let actions = provider.get_global_refactorings();
         let utf8_action = must_some(actions.iter().find(|a| a.title == "Add UTF-8 support"));
 
         assert_eq!(
@@ -540,10 +547,10 @@ mod tests {
     fn test_utf8_action_ignores_comment_mentions_of_pragma() {
         let source = "# use utf8;\nmy $msg = \"café\";\n";
         let mut parser = Parser::new(source);
-        let ast = must(parser.parse());
+        let _ast = must(parser.parse());
 
         let provider = EnhancedCodeActionsProvider::new(source.to_string());
-        let actions = provider.get_global_refactorings(&ast);
+        let actions = provider.get_global_refactorings();
         let utf8_action = must_some(actions.iter().find(|a| a.title == "Add UTF-8 support"));
 
         assert_eq!(
@@ -557,10 +564,10 @@ mod tests {
         // Inverse regression: only `use open :utf8` is present, should only add `use utf8;`.
         let source = "use open qw(:std :utf8);\nmy $msg = \"café\";\n";
         let mut parser = Parser::new(source);
-        let ast = must(parser.parse());
+        let _ast = must(parser.parse());
 
         let provider = EnhancedCodeActionsProvider::new(source.to_string());
-        let actions = provider.get_global_refactorings(&ast);
+        let actions = provider.get_global_refactorings();
         let utf8_action = must_some(actions.iter().find(|a| a.title == "Add UTF-8 support"));
 
         assert_eq!(
@@ -574,10 +581,10 @@ mod tests {
         // Both pragmas already present — no UTF-8 action should be generated.
         let source = "use utf8;\nuse open qw(:std :utf8);\nmy $msg = \"café\";\n";
         let mut parser = Parser::new(source);
-        let ast = must(parser.parse());
+        let _ast = must(parser.parse());
 
         let provider = EnhancedCodeActionsProvider::new(source.to_string());
-        let actions = provider.get_global_refactorings(&ast);
+        let actions = provider.get_global_refactorings();
 
         assert!(
             !actions.iter().any(|a| a.title == "Add UTF-8 support"),
@@ -590,10 +597,10 @@ mod tests {
         // No non-ASCII content — no UTF-8 action regardless of pragma presence.
         let source = "my $msg = \"hello\";\n";
         let mut parser = Parser::new(source);
-        let ast = must(parser.parse());
+        let _ast = must(parser.parse());
 
         let provider = EnhancedCodeActionsProvider::new(source.to_string());
-        let actions = provider.get_global_refactorings(&ast);
+        let actions = provider.get_global_refactorings();
 
         assert!(
             !actions.iter().any(|a| a.title == "Add UTF-8 support"),
@@ -606,10 +613,10 @@ mod tests {
         // `use open ... :encoding(UTF-8)` must also count as open-utf8 pragma present.
         let source = "use utf8;\nuse open IO => ':encoding(UTF-8)';\nmy $msg = \"café\";\n";
         let mut parser = Parser::new(source);
-        let ast = must(parser.parse());
+        let _ast = must(parser.parse());
 
         let provider = EnhancedCodeActionsProvider::new(source.to_string());
-        let actions = provider.get_global_refactorings(&ast);
+        let actions = provider.get_global_refactorings();
 
         assert!(
             !actions.iter().any(|a| a.title == "Add UTF-8 support"),
@@ -622,10 +629,10 @@ mod tests {
         // Leading whitespace on the pragma line should still be matched (anchored to ^\s*).
         let source = "    use utf8;\nmy $msg = \"café\";\n";
         let mut parser = Parser::new(source);
-        let ast = must(parser.parse());
+        let _ast = must(parser.parse());
 
         let provider = EnhancedCodeActionsProvider::new(source.to_string());
-        let actions = provider.get_global_refactorings(&ast);
+        let actions = provider.get_global_refactorings();
         let utf8_action = must_some(actions.iter().find(|a| a.title == "Add UTF-8 support"));
 
         assert_eq!(
@@ -639,10 +646,10 @@ mod tests {
         // `use utf8mode` (hypothetical) is not `use utf8` — the \b word boundary must prevent a match.
         let source = "use utf8mode;\nmy $msg = \"café\";\n";
         let mut parser = Parser::new(source);
-        let ast = must(parser.parse());
+        let _ast = must(parser.parse());
 
         let provider = EnhancedCodeActionsProvider::new(source.to_string());
-        let actions = provider.get_global_refactorings(&ast);
+        let actions = provider.get_global_refactorings();
         let utf8_action = must_some(actions.iter().find(|a| a.title == "Add UTF-8 support"));
 
         assert_eq!(
@@ -656,10 +663,10 @@ mod tests {
         // Comment on same line after pragma should still match.
         let source = "use utf8; # enable unicode\nmy $msg = \"café\";\n";
         let mut parser = Parser::new(source);
-        let ast = must(parser.parse());
+        let _ast = must(parser.parse());
 
         let provider = EnhancedCodeActionsProvider::new(source.to_string());
-        let actions = provider.get_global_refactorings(&ast);
+        let actions = provider.get_global_refactorings();
         let utf8_action = must_some(actions.iter().find(|a| a.title == "Add UTF-8 support"));
 
         assert_eq!(
@@ -678,6 +685,48 @@ mod tests {
         let actions = provider.get_enhanced_refactoring_actions(&ast, (0, 30));
 
         assert!(actions.iter().any(|a| a.title.contains("error checking")));
+    }
+
+    /// Regression guard for #9835: a file operation followed within the
+    /// error-checking lookahead window by multi-byte text used to panic the
+    /// `textDocument/codeAction` request, because the window was cut at a fixed
+    /// 50-*byte* offset that could land inside a UTF-8 sequence.
+    #[test]
+    fn test_add_error_checking_does_not_panic_on_multibyte_source() {
+        let source = format!("open my $fh, '<', 'f';\n#{}\n", "é".repeat(40));
+        let mut parser = Parser::new(&source);
+        let ast = must(parser.parse());
+
+        let provider = EnhancedCodeActionsProvider::new(source.clone());
+        let actions = provider.get_enhanced_refactoring_actions(&ast, (0, source.len()));
+
+        assert!(
+            actions.iter().any(|a| a.title.contains("error checking")),
+            "the action must still be offered for an unchecked open followed by non-ASCII text"
+        );
+    }
+
+    /// The inverse of the test above, and the one that proves the *character*
+    /// window is the right behavior rather than merely a non-panicking one.
+    ///
+    /// The `die` here sits inside the 50-character window but well outside a
+    /// 50-byte one: the 30 two-byte 'é's push it past byte 60. So the pre-fix
+    /// byte window could not see it and would have offered the action on an
+    /// operation that is already checked; the character window suppresses it.
+    #[test]
+    fn test_add_error_checking_suppressed_by_idiom_beyond_the_byte_window() {
+        let source = format!("open my $fh, '<', 'f';\n# {} or die\n", "é".repeat(30));
+        let mut parser = Parser::new(&source);
+        let ast = must(parser.parse());
+
+        let provider = EnhancedCodeActionsProvider::new(source.clone());
+        let actions = provider.get_enhanced_refactoring_actions(&ast, (0, source.len()));
+
+        assert!(
+            !actions.iter().any(|a| a.title.contains("error checking")),
+            "an idiom inside the 50-character window must suppress the action, \
+             even though it lies beyond 50 bytes"
+        );
     }
 
     #[test]

@@ -7,6 +7,7 @@
 //!
 //! These tests use `proptest!` to assert invariants of each strategy and
 //! direct sampling loops to pin specific structural characteristics.
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
 use perl_test_generators::{
     module_path, module_path_segments, non_empty_unicode_string, unicode_string, variable,
@@ -95,14 +96,12 @@ proptest! {
     /// `$0` is the program name in Perl; `$1`..$9` are capture groups.
     #[test]
     fn numeric_variables_have_digit_body(v in variable()) {
-        if let Some(body) = v.strip_prefix('$') {
-            if body.len() == 1 && body.chars().next().is_some_and(|c| c.is_ascii_digit()) {
-                let digit: u8 = body.chars().next().map_or(0, |c| c as u8 - b'0');
-                prop_assert!(
-                    digit <= 9,
-                    "numeric variable out of range 0-9: {v:?}"
-                );
-            }
+        if let Some(body) = v.strip_prefix('$')
+            && body.len() == 1
+            && body.chars().next().is_some_and(|c| c.is_ascii_digit())
+        {
+            let digit: u8 = body.chars().next().map_or(0, |c| c as u8 - b'0');
+            prop_assert!(digit <= 9, "numeric variable out of range 0-9: {v:?}");
         }
     }
 

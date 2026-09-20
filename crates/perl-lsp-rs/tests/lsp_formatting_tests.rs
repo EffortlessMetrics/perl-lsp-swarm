@@ -1,11 +1,13 @@
-//! Tests for textDocument/formatting and textDocument/rangeFormatting LSP features
+//! Tests for the proven manual whole-document formatting route plus
+//! withdrawal controls for the secondary edit routes (#11955).
 //!
-//! Validates the document formatting provider functionality including:
-//! - Full document formatting
-//! - Range formatting for a specific region
+//! Validates:
+//! - Full document formatting (`textDocument/formatting`, still live)
 //! - Formatting options (tabSize, insertSpaces)
-//! - Capability advertisement in server initialization
+//! - Capability advertisement agreeing with runtime reachability
 //! - Graceful handling when formatter produces no changes
+//! - Withdrawn routes (`textDocument/rangeFormatting`) refusing with the
+//!   truthful unadvertised disposition instead of producing edits
 
 mod support;
 use serde_json::json;
@@ -47,6 +49,8 @@ sub world{return "world";}
 "#,
         edits,
     );
+    // Pins the current whole-document outcome including the true-EOF
+    // correction: one final newline after the last sub, not two.
     assert_eq!(
         formatted,
         concat!(
@@ -57,94 +61,94 @@ sub world{return "world";}
             "sub world {\n",
             "    return \"world\";\n",
             "}\n",
-            "\n",
         )
     );
 
     Ok(())
 }
 
-/// Test range formatting to format only a specific portion of the document
+/// Withdrawal control (#11955): `textDocument/rangeFormatting` must refuse
+/// with the truthful unadvertised disposition — never edits, never a
+/// successful empty — while manual whole-document formatting stays live for
+/// the same document and the refused request leaves the buffer untouched.
 #[test]
-fn test_formatting_range() -> TestResult {
+fn test_formatting_range_is_withdrawn_and_leaves_source_unchanged() -> TestResult {
     let mut harness = LspHarness::new();
     let _init = harness.initialize(None)?;
 
-    let doc_uri = "file:///test_range_format.pl";
-    harness.open(
-        doc_uri,
-        r#"
-# Well-formatted section
-sub clean_func {
-    my $x = 1;
-    return $x;
-}
+    let doc_uri = "file:///test_range_withdrawn.pl";
+    let source = "\n\
+# Well-formatted section\n\
+sub clean_func {\n\
+    my $x = 1;\n\
+    return $x;\n\
+}\n\
+\n\
+# Poorly formatted line\n\
+sub messy{my$y=2;return$y;}\n\
+";
+    harness.open(doc_uri, source)?;
 
-# Poorly formatted section to be range-formatted
-sub messy{my$y=2;return$y;}
-
-# Another well-formatted section
-sub another_clean {
-    return 42;
-}
-"#,
-    )?;
-
-    let response = harness.request(
-        "textDocument/rangeFormatting",
-        json!({
+    let withdrawn_response = harness.request_raw(json!({
+        "jsonrpc": "2.0",
+        "method": "textDocument/rangeFormatting",
+        "params": {
             "textDocument": { "uri": doc_uri },
             "range": {
-                "start": { "line": 8, "character": 0 },
-                "end": { "line": 8, "character": 30 }
+                "start": { "line": 7, "character": 0 },
+                "end": { "line": 7, "character": 26 }
             },
             "options": {
                 "tabSize": 4,
                 "insertSpaces": true
             }
+        },
+    }));
+    let error = withdrawn_response
+        .get("error")
+        .ok_or("withdrawn rangeFormatting must return an error, not a result")?;
+    assert_eq!(error["code"], -32601, "refusal must be MethodNotFound (-32601)");
+    assert!(
+        withdrawn_response.get("result").is_none(),
+        "a refusal must not carry a successful result payload"
+    );
+
+    // Invalid geometry variants are equally refused before any parsing.
+    for bad_range in [
+        json!({"start": {"line": 99, "character": 0}, "end": {"line": 99, "character": 5}}),
+        json!({"start": {"line": 7, "character": 10}, "end": {"line": 7, "character": 2}}),
+    ] {
+        let response = harness.request_raw(json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/rangeFormatting",
+            "params": {
+                "textDocument": { "uri": doc_uri },
+                "range": bad_range,
+                "options": {"tabSize": 4, "insertSpaces": true}
+            },
+        }));
+        assert_eq!(
+            response.pointer("/error/code").and_then(|code| code.as_i64()),
+            Some(-32601),
+            "invalid geometry cannot yield an edit on a withdrawn route"
+        );
+    }
+
+    // Manual whole-document formatting remains available and still sees the
+    // original bytes: formatting output contains the messy line's content,
+    // proving no withdrawn request mutated the document generation.
+    let manual = harness.request(
+        "textDocument/formatting",
+        json!({
+            "textDocument": { "uri": doc_uri },
+            "options": {"tabSize": 4, "insertSpaces": true}
         }),
     )?;
-
-    let edits = response.as_array().ok_or("rangeFormatting response must be an array")?;
-    assert_eq!(edits.len(), 1, "native range formatting should edit the selected line");
-    let formatted = apply_text_edits(
-        r#"
-# Well-formatted section
-sub clean_func {
-    my $x = 1;
-    return $x;
-}
-
-# Poorly formatted section to be range-formatted
-sub messy{my$y=2;return$y;}
-
-# Another well-formatted section
-sub another_clean {
-    return 42;
-}
-"#,
-        edits,
-    );
-    assert_eq!(
-        formatted,
-        r#"
-# Well-formatted section
-sub clean_func {
-    my $x = 1;
-    return $x;
-}
-
-# Poorly formatted section to be range-formatted
-sub messy {
-    my $y = 2;
-    return $y;
-}
-
-# Another well-formatted section
-sub another_clean {
-    return 42;
-}
-"#
+    let edits = manual.as_array().ok_or("formatting response must be an array")?;
+    let formatted = apply_text_edits(source, edits).replace(char::is_whitespace, "");
+    assert!(
+        formatted.contains("submessy{"),
+        "manual formatting must still observe the original source bytes"
     );
 
     Ok(())
@@ -206,7 +210,9 @@ fn test_formatting_options_tab_size() -> TestResult {
     Ok(())
 }
 
-/// Test that formatting capability is advertised during initialization
+/// Test that capability advertisement agrees with runtime reachability (#11955):
+/// whole-document formatting stays advertised; withdrawn range formatting must
+/// not be promised.
 #[test]
 fn test_formatting_capability_advertised() -> TestResult {
     let mut harness = LspHarness::new();
@@ -222,11 +228,10 @@ fn test_formatting_capability_advertised() -> TestResult {
         capabilities
     );
 
-    // Check for documentRangeFormattingProvider
-    let has_range_formatting = capabilities.get("documentRangeFormattingProvider").is_some();
+    // Withdrawn route (#11955): advertisement must not promise range formatting.
     assert!(
-        has_range_formatting,
-        "Server should advertise documentRangeFormattingProvider capability. Capabilities: {:?}",
+        capabilities.get("documentRangeFormattingProvider").is_none(),
+        "documentRangeFormattingProvider is withdrawn and must not be advertised. Capabilities: {:?}",
         capabilities
     );
 
@@ -307,27 +312,6 @@ fn test_formatting_disabled_via_configuration_returns_no_edits() -> TestResult {
     let edits = response.as_array().ok_or("formatting response must be an array")?;
     assert!(edits.is_empty(), "expected no formatting edits when formatting is disabled");
 
-    let range_response = harness.request(
-        "textDocument/rangeFormatting",
-        json!({
-            "textDocument": { "uri": doc_uri },
-            "range": {
-                "start": { "line": 0, "character": 0 },
-                "end": { "line": 0, "character": 26 }
-            },
-            "options": {
-                "tabSize": 4,
-                "insertSpaces": true
-            }
-        }),
-    )?;
-    let range_edits =
-        range_response.as_array().ok_or("rangeFormatting response must be an array")?;
-    assert!(
-        range_edits.is_empty(),
-        "expected no range formatting edits when formatting is disabled"
-    );
-
     Ok(())
 }
 
@@ -397,7 +381,9 @@ fn test_native_formatting_policies_route_through_document_formatting() -> TestRe
     Ok(())
 }
 
-/// Test that configured native formatter policy fields route through LSP range formatting.
+/// Withdrawal control (#11955): formatter policy configuration cannot re-arm
+/// the withdrawn range route — it refuses identically regardless of engine or
+/// style settings.
 #[test]
 fn test_native_formatting_policies_route_through_range_formatting() -> TestResult {
     let mut harness = LspHarness::new();
@@ -420,12 +406,12 @@ fn test_native_formatting_policies_route_through_range_formatting() -> TestResul
     );
 
     let doc_uri = "file:///test_native_range_formatting_policies.pl";
-    let source = "my $prefix = 1;\nif($ok){return 1;}else{return 0;}\nmy $suffix = 1;\n";
-    harness.open(doc_uri, source)?;
+    harness.open(doc_uri, "my $prefix = 1;\nif($ok){return 1;}else{return 0;}\n")?;
 
-    let response = harness.request(
-        "textDocument/rangeFormatting",
-        json!({
+    let response = harness.request_raw(json!({
+        "jsonrpc": "2.0",
+        "method": "textDocument/rangeFormatting",
+        "params": {
             "textDocument": { "uri": doc_uri },
             "range": {
                 "start": { "line": 1, "character": 0 },
@@ -435,26 +421,15 @@ fn test_native_formatting_policies_route_through_range_formatting() -> TestResul
                 "tabSize": 4,
                 "insertSpaces": true
             }
-        }),
-    )?;
-    let edits = response.as_array().ok_or("rangeFormatting response must be an array")?;
-    let formatted = apply_text_edits(source, edits);
+        },
+    }));
 
     assert_eq!(
-        formatted,
-        concat!(
-            "my $prefix = 1;\n",
-            "if($ok)\n",
-            "{\n",
-            "    return 1;\n",
-            "}\n",
-            "else\n",
-            "{\n",
-            "    return 0;\n",
-            "}\n",
-            "my $suffix = 1;\n",
-        )
+        response.pointer("/error/code").and_then(|code| code.as_i64()),
+        Some(-32601),
+        "withdrawn rangeFormatting must refuse even with live formatting configuration"
     );
+    assert!(response.get("result").is_none(), "refusal must not carry an edit payload");
 
     Ok(())
 }

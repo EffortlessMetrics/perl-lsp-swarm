@@ -9,10 +9,169 @@
 //! - The GATE_REGISTRY.toml policy gate command does not require a freshness check.
 //! - The modular structure (4 generated files + stable stub) is correctly wired.
 
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::PathBuf;
 
 use serde_yaml_ng::Value;
+use toml::Value as TomlValue;
+
+fn required_workflows(policy: &TomlValue) -> Result<BTreeSet<String>, Box<dyn std::error::Error>> {
+    let mut workflows = BTreeSet::new();
+    for check in ["check", "checks"]
+        .into_iter()
+        .filter_map(|table| policy.get(table).and_then(TomlValue::as_array))
+        .flatten()
+        .filter(|check| check.get("required").and_then(TomlValue::as_bool) == Some(true))
+    {
+        let name =
+            check.get("name").and_then(TomlValue::as_str).unwrap_or("<unnamed required check>");
+        let workflow = check
+            .get("workflow")
+            .and_then(TomlValue::as_str)
+            .ok_or_else(|| format!("required check `{name}` must declare a workflow path"))?;
+        let workflow_name = workflow
+            .rsplit('/')
+            .next()
+            .filter(|workflow_name| !workflow_name.is_empty())
+            .ok_or_else(|| format!("required check `{name}` has an empty workflow path"))?;
+        workflows.insert(workflow_name.to_owned());
+    }
+    Ok(workflows)
+}
+
+fn workflow_on(workflow: &Value) -> Option<&Value> {
+    workflow.as_mapping()?.iter().find_map(|(key, value)| match key {
+        Value::String(key) if key == "on" => Some(value),
+        Value::Bool(true) => Some(value),
+        _ => None,
+    })
+}
+
+fn workflow_dispatch_trigger(workflow: &Value) -> bool {
+    let Some(triggers) = workflow_on(workflow) else {
+        return false;
+    };
+
+    match triggers {
+        Value::Mapping(mapping) => {
+            mapping.keys().any(|key| key.as_str() == Some("workflow_dispatch"))
+        }
+        Value::Sequence(events) => {
+            events.iter().any(|event| event.as_str() == Some("workflow_dispatch"))
+        }
+        Value::String(event) => event == "workflow_dispatch",
+        _ => false,
+    }
+}
+
+#[cfg(unix)]
+fn assert_dispatch_loop_behavior(
+    dispatch_run: &str,
+    dispatch_order: &[String],
+    branch: &str,
+    base_sha: &str,
+    head_sha: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use std::process::{Command, Output};
+
+    let temp_dir = tempfile::tempdir()?;
+    let stub_dir = temp_dir.path().join("bin");
+    fs::create_dir(&stub_dir)?;
+    let stub_gh = stub_dir.join("gh");
+    // Record the full argument vector for every call and tolerate any arity:
+    // ci.yml's workflow_dispatch requires `-f base_sha=… -f head_sha=…`
+    // (#13019), so a five-arg stub would reject exactly the call this fixture
+    // must admit — and did, leaving this test red on main unobserved (#15100).
+    fs::write(
+        &stub_gh,
+        "#!/usr/bin/env bash\n\
+         printf '%s\\n' \"$*\" >> \"$GH_LOG\"\n\
+         if [ -n \"${FAIL_WORKFLOW:-}\" ] && [ \"$FAIL_WORKFLOW\" = \"${3:-}\" ]; then exit 1; fi\n",
+    )?;
+    use std::os::unix::fs::PermissionsExt;
+    let mut permissions = fs::metadata(&stub_gh)?.permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&stub_gh, permissions)?;
+    // Stub every dispatch call, not just the first: the ci.yml special case
+    // precedes the bare `elif` dispatch, and an unstubbed suffix would invoke
+    // the real gh — failing hermeticity and, on an authenticated machine,
+    // dispatching real workflows.
+    let simulation_run =
+        dispatch_run.replace("gh workflow run", &format!("{} workflow run", stub_gh.display()));
+    assert_ne!(simulation_run, dispatch_run, "dispatch step must invoke gh workflow run");
+
+    let run_dispatch = |fail_workflow: Option<&str>, log_name: &str| {
+        let log_path = temp_dir.path().join(log_name);
+        let existing_path = std::env::var_os("PATH").unwrap_or_default();
+        let path = std::env::join_paths(
+            std::iter::once(stub_dir.clone()).chain(std::env::split_paths(&existing_path)),
+        )?;
+        let mut command = Command::new("/bin/bash");
+        command
+            .arg("-c")
+            .arg(&simulation_run)
+            .env("PATH", path)
+            .env("BRANCH", branch)
+            .env("BASE_SHA", base_sha)
+            .env("GENERATED_HEAD_SHA", head_sha)
+            .env("GH_LOG", &log_path);
+        if let Some(fail_workflow) = fail_workflow {
+            command.env("FAIL_WORKFLOW", fail_workflow);
+        } else {
+            command.env_remove("FAIL_WORKFLOW");
+        }
+        let output: Output = command.output().map_err(|error| {
+            format!("failed to execute dispatch shell for {}: {error}", log_path.display())
+        })?;
+        let calls = fs::read_to_string(&log_path)
+            .map_err(|error| {
+                format!(
+                    "failed to read {}: {error}; stdout={}; stderr={}",
+                    log_path.display(),
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr)
+                )
+            })?
+            .lines()
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        Ok::<_, Box<dyn std::error::Error>>((output, calls))
+    };
+
+    let (success_output, success_calls) = run_dispatch(None, "all-success.log")?;
+    assert!(
+        success_output.status.success(),
+        "all-success dispatch run failed: {}",
+        String::from_utf8_lossy(&success_output.stderr)
+    );
+    // ci.yml's workflow_dispatch requires the dispatched subject's exact
+    // base/head SHAs (#13019); every other required workflow declares no
+    // dispatch inputs and stays bare (#13355).
+    let expected_calls = dispatch_order
+        .iter()
+        .map(|workflow| {
+            if workflow == "ci.yml" {
+                format!(
+                    "workflow run {workflow} --ref {branch} -f base_sha={base_sha} -f head_sha={head_sha}"
+                )
+            } else {
+                format!("workflow run {workflow} --ref {branch}")
+            }
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(success_calls, expected_calls, "all required dispatches must run in workflow order");
+
+    let first_workflow = dispatch_order.first().ok_or("required workflow set must not be empty")?;
+    let (failure_output, failure_calls) = run_dispatch(Some(first_workflow), "first-failure.log")?;
+    assert!(!failure_output.status.success(), "a failed dispatch must fail the step");
+    assert_eq!(
+        failure_calls, expected_calls,
+        "a failed dispatch must not skip later required workflows"
+    );
+
+    Ok(())
+}
 
 fn project_root() -> PathBuf {
     // Walk up from the manifest directory to the workspace root.
@@ -124,6 +283,144 @@ fn test_post_merge_workflow_triggers_on_push_to_master() -> Result<(), Box<dyn s
         content.contains("master"),
         "post-merge-status.yml push trigger must include master branch"
     );
+    Ok(())
+}
+
+/// Required contexts raised on a generated PR must be represented as reachable
+/// through the workflow-dispatch route used by the post-merge writer (#11731).
+#[test]
+fn test_required_checks_record_workflow_dispatch_route() -> Result<(), Box<dyn std::error::Error>> {
+    let root = project_root();
+    let policy_path = root.join(".ci/policies/required-checks.toml");
+    let policy_text = fs::read_to_string(policy_path)?;
+    let policy: TomlValue = toml::from_str(&policy_text)?;
+    let checks = policy
+        .get("checks")
+        .and_then(TomlValue::as_array)
+        .ok_or("required-checks.toml must declare a checks array")?;
+
+    for check in checks
+        .iter()
+        .filter(|check| check.get("required").and_then(TomlValue::as_bool) == Some(true))
+    {
+        let required_name =
+            check.get("name").and_then(TomlValue::as_str).unwrap_or("<unnamed required check>");
+        let events = check
+            .get("events")
+            .and_then(TomlValue::as_array)
+            .ok_or_else(|| format!("`{required_name}` must declare events"))?;
+        assert!(
+            events.iter().any(|event| event.as_str() == Some("workflow_dispatch")),
+            "`{required_name}` must record workflow_dispatch as a supported route"
+        );
+    }
+
+    Ok(())
+}
+
+/// The generated-PR workflow must dispatch every workflow that owns a required
+/// check and retain a failing step result when any individual dispatch fails
+/// (#11731).
+#[test]
+fn test_post_merge_workflow_dispatches_all_required_checks()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = project_root();
+    let workflow_path = root.join(".github/workflows/post-merge-status.yml");
+    let content = fs::read_to_string(&workflow_path)?;
+    let workflow: Value = serde_yaml_ng::from_str(&content)?;
+    let jobs = workflow
+        .get("jobs")
+        .and_then(Value::as_mapping)
+        .ok_or("post-merge-status.yml must declare jobs")?;
+    let dispatch_step = jobs
+        .values()
+        .filter_map(|job| job.get("steps").and_then(Value::as_sequence))
+        .flat_map(|steps| steps.iter())
+        .find(|step| {
+            step.get("name").and_then(Value::as_str) == Some("Raise CI on the generated PR")
+        })
+        .ok_or("post-merge-status.yml must define the generated-PR dispatch step")?;
+    let dispatch_run = dispatch_step
+        .get("run")
+        .and_then(Value::as_str)
+        .ok_or("generated-PR dispatch step must define a shell body")?;
+    let dispatch_branch = dispatch_step
+        .get("env")
+        .and_then(Value::as_mapping)
+        .and_then(|env| {
+            env.iter().find_map(|(key, value)| match key {
+                Value::String(key) if key == "BRANCH" => value.as_str(),
+                _ => None,
+            })
+        })
+        .ok_or("generated-PR dispatch step must define BRANCH")?;
+    assert_eq!(
+        dispatch_branch, "automation/post-merge-status",
+        "generated-PR dispatch must target its automation branch"
+    );
+
+    let policy_path = root.join(".ci/policies/required-checks.toml");
+    let policy_text = fs::read_to_string(policy_path)?;
+    let policy: TomlValue = toml::from_str(&policy_text)?;
+    let required_workflows = required_workflows(&policy)?;
+    assert!(
+        !required_workflows.is_empty(),
+        "required-checks.toml must declare at least one required workflow"
+    );
+
+    let dispatch_start = dispatch_run
+        .split_once("for workflow in")
+        .map(|(_, remainder)| remainder)
+        .ok_or("dispatch step must iterate over workflow names")?;
+    let (dispatch_names, _) = dispatch_start
+        .split_once("; do")
+        .ok_or("dispatch workflow loop must use a shell `; do` delimiter")?;
+    let dispatch_order: Vec<String> =
+        dispatch_names.split_whitespace().map(str::to_owned).collect();
+    let dispatched_workflows: BTreeSet<String> = dispatch_order.iter().cloned().collect();
+    assert_eq!(
+        dispatched_workflows, required_workflows,
+        "generated-PR dispatch set must equal the unique workflow paths for required checks"
+    );
+    for workflow_name in &required_workflows {
+        let workflow_path = root.join(".github/workflows").join(workflow_name);
+        let workflow_text = fs::read_to_string(&workflow_path)?;
+        let workflow: Value = serde_yaml_ng::from_str(&workflow_text)?;
+        assert!(
+            workflow_dispatch_trigger(&workflow),
+            "{workflow_name} must declare an on.workflow_dispatch trigger"
+        );
+    }
+    assert!(
+        dispatch_run.contains("set +e")
+            && dispatch_run.contains("failed=1")
+            && dispatch_run.contains("exit \"$failed\""),
+        "generated-PR dispatch step must continue after an individual failure and fail overall"
+    );
+
+    // The ci.yml dispatch arm reads its subject identity from step env
+    // (#13355); both names must be declared so the simulated invocation is
+    // the one the workflow really makes.
+    let step_env = dispatch_step
+        .get("env")
+        .and_then(Value::as_mapping)
+        .ok_or("generated-PR dispatch step must declare env")?;
+    for required_env in ["BASE_SHA", "GENERATED_HEAD_SHA"] {
+        assert!(
+            step_env.keys().any(|key| key.as_str() == Some(required_env)),
+            "generated-PR dispatch step must declare {required_env} for the ci.yml subject inputs"
+        );
+    }
+
+    #[cfg(unix)]
+    assert_dispatch_loop_behavior(
+        dispatch_run,
+        &dispatch_order,
+        dispatch_branch,
+        "0123456789abcdef0123456789abcdef01234567",
+        "89abcdef0123456789abcdef0123456789abcdef",
+    )?;
+
     Ok(())
 }
 
@@ -254,6 +551,122 @@ fn test_post_merge_generator_job_is_read_only() -> Result<(), Box<dyn std::error
         Some(&Value::Bool(false)),
         "the generating checkout must set `persist-credentials: false`"
     );
+    Ok(())
+}
+
+/// #12606: queued runs may finish generating after newer commits landed on the
+/// default branch. The writer must refuse payloads that are no longer fresh
+/// against the live default-branch tip before any branch mutation, a
+/// changed=false run must supersede stranded proposal PRs generated from older
+/// sources, and the PR body must carry a machine-readable source SHA so the
+/// sweep can identify them.
+#[test]
+fn test_post_merge_workflow_guards_stale_queued_run_publication()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = project_root();
+    let workflow_path = root.join(".github/workflows/post-merge-status.yml");
+    let content = fs::read_to_string(&workflow_path)?;
+    let workflow: Value = serde_yaml_ng::from_str(&content)?;
+    let jobs = workflow
+        .get("jobs")
+        .and_then(Value::as_mapping)
+        .ok_or("post-merge-status.yml must declare jobs")?;
+
+    let steps = |job: &str| -> Result<Vec<Value>, Box<dyn std::error::Error>> {
+        jobs.get(job)
+            .and_then(|job| job.get("steps"))
+            .and_then(Value::as_sequence)
+            .map(|steps| steps.to_vec())
+            .ok_or_else(|| format!("post-merge-status.yml job `{job}` must declare steps").into())
+    };
+
+    let open_pr_steps = steps("open-pr")?;
+    fn step_name(step: &Value) -> &str {
+        step.get("name").and_then(Value::as_str).unwrap_or("")
+    }
+    let freshness_index = open_pr_steps
+        .iter()
+        .position(|step| {
+            step_name(step) == "Reject payload whose source fell behind the default branch"
+        })
+        .ok_or("open-pr must gate publication on live default-branch freshness (#12606)")?;
+    let freshness_step = &open_pr_steps[freshness_index];
+    assert_eq!(
+        freshness_step.get("id").and_then(Value::as_str),
+        Some("freshness"),
+        "the freshness step must expose its decision as step outputs"
+    );
+
+    let create_pr_index = open_pr_steps
+        .iter()
+        .position(|step| step_name(step) == "Create generated status PR")
+        .ok_or("open-pr must still propose generated files through a PR")?;
+    assert!(
+        freshness_index < create_pr_index,
+        "the freshness gate must refuse BEFORE any automation branch mutation"
+    );
+    assert_eq!(
+        open_pr_steps[create_pr_index].get("if").and_then(Value::as_str),
+        Some("steps.freshness.outputs.publish == 'true'"),
+        "publication steps must be skipped when the payload is not fresh"
+    );
+    let raise_ci = open_pr_steps
+        .iter()
+        .find(|step| step_name(step) == "Raise CI on the generated PR")
+        .ok_or("open-pr must keep dispatching CI on the generated PR")?;
+    let raise_ci_if = raise_ci.get("if").and_then(Value::as_str).unwrap_or("");
+    assert!(
+        raise_ci_if.contains("steps.freshness.outputs.publish == 'true'"),
+        "CI dispatch must not fire after a refused publication; a skipped \
+         create-pr step exposes empty outputs, which are not '0'\n\
+         Found condition: {raise_ci_if}"
+    );
+
+    // The sweep identifies proposals by a machine-readable marker in the PR
+    // body written from the same trusted github.sha the manifest binds.
+    assert!(
+        content.contains("post-merge-status: source_sha="),
+        "the proposal PR body must embed a machine-readable source SHA marker \
+         so changed=false runs can identify stale proposals (#12606)"
+    );
+
+    let supersede = jobs
+        .get("supersede-stale")
+        .ok_or("a changed=false run must be able to supersede stranded proposal PRs (#12606)")?;
+    assert_eq!(
+        supersede.get("if").and_then(Value::as_str),
+        Some("needs.generate.outputs.changed == 'false'"),
+        "the supersede sweep must fire exactly when regeneration found no drift"
+    );
+    let perms = supersede
+        .get("permissions")
+        .and_then(Value::as_mapping)
+        .ok_or("supersede-stale must declare explicit least-authority permissions")?;
+    let find_perm = |key: &str| {
+        perms.iter().find_map(|(name, value)| {
+            (name.as_str() == Some(key)).then_some(value).and_then(Value::as_str)
+        })
+    };
+    assert_eq!(find_perm("pull-requests"), Some("write"));
+    assert_eq!(find_perm("contents"), Some("read"));
+
+    let sweep_run = supersede
+        .get("steps")
+        .and_then(Value::as_sequence)
+        .and_then(|steps| steps.iter().find_map(|step| step.get("run")))
+        .and_then(Value::as_str)
+        .ok_or("supersede-stale must define its sweep shell body")?;
+    assert!(
+        sweep_run.contains("/compare/"),
+        "the sweep must prove staleness by ancestry against the live tip via \
+         the GitHub compare API, not by string comparison alone"
+    );
+    assert!(
+        sweep_run.contains("leaving it untouched"),
+        "the sweep must stay conservative: proposals without an embedded SHA, \
+         or whose source is not provably behind main, must be left untouched"
+    );
+
     Ok(())
 }
 

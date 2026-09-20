@@ -1,0 +1,29 @@
+name: fixture-inherited-job-write-scoped
+# The post-#5989 shape: workflow default is read-only and every job states the
+# authority it actually needs.
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      statuses: read
+    steps:
+      - run: echo "read-only validation"
+  create-tag:
+    needs: validate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - run: git push origin "$TAG"
+  trigger-release:
+    needs: [create-tag, validate]
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      - run: gh api -X POST "/repos/${REPOSITORY}/actions/workflows/release.yml/dispatches"

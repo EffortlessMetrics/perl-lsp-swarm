@@ -32,6 +32,8 @@ clap = { workspace = true }
 chrono = "0.4.42"
 proptest.workspace = true
 rand = "0.10.1"
+same-file = "1.0.6"
+sha2.workspace = true
 tracing.workspace = true
 toml = "1.1.2"
 
@@ -48,6 +50,11 @@ ci-fast = []
 [package.metadata.docs.rs]
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
+
+[package.metadata.perl-corpus]
+asset-root = "external"
+authoritative-env = "PERL_CORPUS_ROOT"
+packaged-assets = ["src", "concepts"]
 
 [lints]
 workspace = true

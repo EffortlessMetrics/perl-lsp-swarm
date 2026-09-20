@@ -1,11 +1,10 @@
 //! Real tests for Document Lifecycle Events
 //! Tests didSave, willSave, and willSaveWaitUntil notifications
 
-use perl_lsp::{JsonRpcRequest, JsonRpcResponse, LspServer};
-use serde_json::{Value, json};
+use perl_lsp::{JsonRpcRequest, LspServer};
+use serde_json::json;
 
 mod support;
-use support::test_helpers::apply_text_edits;
 
 /// Helper to set up an initialized LSP server with a document
 fn setup_server_with_document() -> (LspServer, String) {
@@ -52,11 +51,6 @@ fn setup_server_with_document() -> (LspServer, String) {
     server.handle_request(open_notification);
 
     (server, uri)
-}
-
-/// Helper to extract result from JsonRpcResponse
-fn get_result(response: Option<JsonRpcResponse>) -> Option<Value> {
-    response.and_then(|r| r.result)
 }
 
 #[test]
@@ -153,11 +147,14 @@ fn test_will_save_notification() {
     assert!(response.is_none());
 }
 
+/// Withdrawal control (#11955): formatter-owned `willSaveWaitUntil` is
+/// withdrawn until #8092 selects one proven save owner. Direct requests must
+/// receive the truthful method-not-advertised refusal — never edits, and never
+/// a successful empty standing in for refusal.
 #[test]
-fn test_will_save_wait_until_returns_valid_edits() -> Result<(), Box<dyn std::error::Error>> {
+fn test_will_save_wait_until_is_withdrawn() -> Result<(), Box<dyn std::error::Error>> {
     let (server, uri) = setup_server_with_document();
 
-    // Send willSaveWaitUntil request (this is a request, not notification)
     let request = JsonRpcRequest {
         _jsonrpc: "2.0".to_string(),
         id: Some(perl_lsp::protocol::JsonRpcId::Integer(10_i64)),
@@ -171,33 +168,19 @@ fn test_will_save_wait_until_returns_valid_edits() -> Result<(), Box<dyn std::er
     };
     let response = server.handle_request(request);
 
-    assert!(response.is_some(), "willSaveWaitUntil should return a response");
-    let edits = get_result(response);
-    assert!(edits.is_some(), "Response should have a result");
-
-    let edits = edits.ok_or("Failed to get edits from response")?;
-    assert!(edits.is_array(), "Response should be an array of text edits");
-
-    // Native default formatting always returns a text-edit array. It may be
-    // empty when the opened document is already outside the safe formatter
-    // subset or needs no change.
-    let edits_arr = edits.as_array().ok_or("Edits should be an array")?;
-    for edit in edits_arr {
-        assert!(edit.is_object());
-        let obj = edit.as_object().ok_or("Edit should be an object")?;
-        assert!(obj.contains_key("range"), "Edit must have range");
-        assert!(obj.contains_key("newText"), "Edit must have newText");
-
-        let range = &obj["range"];
-        assert!(range["start"].is_object(), "Range start must be object");
-        assert!(range["end"].is_object(), "Range end must be object");
-    }
+    let response = response.ok_or("willSaveWaitUntil must return a response envelope")?;
+    let error = response.error.ok_or("withdrawn willSaveWaitUntil must return an error")?;
+    assert_eq!(error.code, -32601, "refusal must be MethodNotFound (-32601)");
 
     Ok(())
 }
 
+/// Withdrawal control (#11955): even with messy unformatted content that the
+/// old save-owner path would rewrite, `willSaveWaitUntil` refuses instead of
+/// producing a second save owner's edits.
 #[test]
-fn test_will_save_wait_until_with_formatting() -> Result<(), Box<dyn std::error::Error>> {
+fn test_will_save_wait_until_refuses_despite_unformatted_content()
+-> Result<(), Box<dyn std::error::Error>> {
     let (server, uri) = setup_server_with_document();
 
     // Update document with poorly formatted code
@@ -217,7 +200,6 @@ fn test_will_save_wait_until_with_formatting() -> Result<(), Box<dyn std::error:
     };
     server.handle_request(change_notification);
 
-    // Send willSaveWaitUntil request
     let request = JsonRpcRequest {
         _jsonrpc: "2.0".to_string(),
         id: Some(perl_lsp::protocol::JsonRpcId::Integer(11_i64)),
@@ -231,22 +213,13 @@ fn test_will_save_wait_until_with_formatting() -> Result<(), Box<dyn std::error:
     };
     let response = server.handle_request(request);
 
-    assert!(response.is_some(), "willSaveWaitUntil should return a response");
-    let edits = get_result(response);
-    assert!(edits.is_some(), "Response should have a result");
-
-    let edits = edits.ok_or("Failed to get edits from response")?;
-    assert!(edits.is_array(), "Response should be an array of text edits");
-
-    let edits_arr = edits.as_array().ok_or("Edits should be an array")?;
+    let response =
+        response.ok_or("willSaveWaitUntil must return a response envelope even when messy")?;
+    let error = response.error.ok_or("withdrawn willSaveWaitUntil must return an error")?;
+    assert_eq!(error.code, -32601, "refusal must be MethodNotFound (-32601)");
     assert!(
-        !edits_arr.is_empty(),
-        "native willSaveWaitUntil formatting should return edits for supported messy code"
-    );
-    let formatted = apply_text_edits("sub test{my$foo=42;return$foo;}\n", edits_arr);
-    assert_eq!(
-        formatted,
-        concat!("sub test {\n", "    my $foo = 42;\n", "    return $foo;\n", "}\n", "\n",)
+        response.result.is_none(),
+        "refusal must not carry an edit payload for unformatted content"
     );
 
     Ok(())
@@ -315,7 +288,14 @@ fn test_save_events_sequence() {
         })),
     };
     let edits_response = server.handle_request(will_save_wait_until);
-    assert!(edits_response.is_some());
+    let error = edits_response.as_ref().and_then(|response| response.error.as_ref());
+    assert!(edits_response.is_some(), "willSaveWaitUntil must return a response envelope");
+    assert!(error.is_some(), "withdrawn willSaveWaitUntil must return an error");
+    assert_eq!(error.map(|err| err.code), Some(-32601));
+    assert!(
+        edits_response.as_ref().is_some_and(|response| response.result.is_none()),
+        "withdrawn willSaveWaitUntil must not return edits"
+    );
 
     // 3. didSave notification
     let did_save = JsonRpcRequest {

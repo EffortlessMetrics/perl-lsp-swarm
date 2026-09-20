@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Added
+body: Defined the FilePirLexicalContributionV1 envelope — one immutable compiler-produced lexical fact object binding exact source/generation/body-HIR identities with #2660 roles, an 8-state completeness axis, tri-state work observations, and a deterministic fingerprint — validated by falsifiers covering mixed subjects, declaration relabeling, Modify loss, binding collapse, and exact-empty inflation (PIRL-01, #12109).
+time: 2026-08-24T00:00:00Z
+custom:
+  PR: "12180"
+  Slug: pir-lexical-contribution-envelope
+  Breaking: "no"

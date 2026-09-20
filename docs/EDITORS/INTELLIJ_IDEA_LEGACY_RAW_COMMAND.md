@@ -1,102 +1,118 @@
 # IntelliJ IDEA Legacy Raw Command Setup
 
-Use this fallback only when the upstream LSP4IJ `perl-lsp` integration is not
-available in your installed LSP4IJ build, when you are testing a local or
-unreleased `perllsp` binary, or when you need temporary custom launch flags.
+Use this fallback for local/unreleased `perllsp` candidates, temporary custom launch flags, or a LSP4IJ build where the relevant Perl template route is unavailable.
 
-For normal JetBrains setup, start with
-[IntelliJ IDEA / JetBrains Setup Guide](INTELLIJ_IDEA_SETUP.md) and use the
-upstream LSP4IJ integration.
+For the maintained LSP4IJ integration model, start with [IntelliJ IDEA / LSP4IJ Setup](INTELLIJ_IDEA_SETUP.md).
 
-## Add a Raw Command Server
+This page documents **manual configuration**, not an actual-client support verdict.
 
-1. Open **File > Settings > Languages & Frameworks > Language Servers**.
-2. Click **+** to add a new server definition.
-3. Fill in the fields:
+## Add a raw-command server
 
-   | Field | Value |
-   |-------|-------|
-   | **Name** | `perl-lsp` |
-   | **Command** | `perllsp --stdio` |
-   | **Mappings: File name patterns** | `*.pl`, `*.pm`, `*.t`, `*.psgi`, `*.cgi` |
-
-4. Click **OK** to save.
-
-## Binary Path
-
-If IntelliJ does not inherit your shell `PATH`, use an absolute binary path:
+1. Open **Settings > Languages & Frameworks > Language Servers**.
+2. Add a new server definition.
+3. Use the canonical server process:
 
 | Field | Value |
-|-------|-------|
-| **Command** | `/usr/local/bin/perllsp --stdio` |
+| --- | --- |
+| Name | `perl-lsp` |
+| Command | `perllsp --stdio` |
+| File patterns | `*.pl`, `*.pm`, `*.t` |
 
-Find the path with:
+The initial file-family boundary is intentionally limited to `.pl`, `.pm`, and `.t`. Do not add `.psgi`, `.cgi`, `.fcgi`, POD, XS, templates, or extensionless scripts merely because another integration maps them or the parser can inspect them. Those are independent support cells.
+
+## Binary identity
+
+If the IDE does not inherit your shell `PATH`, use an absolute path to the intended candidate.
+
+Unix-like shells:
 
 ```bash
 command -v perllsp
+perllsp --version
 ```
 
-On Windows PowerShell:
+Windows PowerShell:
 
 ```powershell
-where perllsp
+where.exe perllsp
+perllsp --version
 ```
 
-On Windows, use the full path with forward slashes or escaped backslashes:
+On Windows, a raw command may use a path such as:
 
 ```text
 C:/path/to/perllsp.exe --stdio
 ```
 
-## Descriptor Example
+When collecting interoperability evidence, record the exact binary path/version/hash rather than accepting any command named `perllsp`.
 
-Minimal descriptor/config example:
+## Checked descriptor example
+
+The checked descriptor at [`lsp4ij-perl-lsp.json`](lsp4ij-perl-lsp.json) uses the same bounded contract:
 
 ```json
 {
   "name": "Perl Language Server",
   "languageId": "perl",
-  "fileExtensions": ["pl", "pm", "t", "psgi"],
+  "fileExtensions": ["pl", "pm", "t"],
   "command": ["perllsp", "--stdio"]
 }
 ```
 
-The same example is checked in at
-[`docs/EDITORS/lsp4ij-perl-lsp.json`](lsp4ij-perl-lsp.json).
+This descriptor is a manual setup example. It is not the canonical upstream LSP4IJ template and must not become a second settings or installer authority.
 
-## Initialization Options
+## Project configuration
 
-If you need server-specific startup settings, add an `initializationOptions` JSON
-block in the LSP4IJ **Server** tab under **Initialization options**:
+Prefer `.perl-lsp.toml` for shared project/repository behavior.
+
+The raw-command route follows the same configuration authority as every other generic client:
+
+```text
+.perl-lsp.toml
+  portable project/repository configuration
+
+LSP client settings
+  sparse user/editor overrides using canonical perl.* keys where supported
+
+initializationOptions
+  only values that genuinely require initialize/reinitialize timing
+```
+
+Do not copy VS Code `perl-lsp.*` extension settings into this generic LSP route.
+
+## Initialization options
+
+When a setting is genuinely initialization-time, the server-native shape is rooted at `perl`:
 
 ```json
 {
   "perl": {
     "workspace": {
-      "includePaths": ["lib", ".", "local/lib/perl5"]
-    },
-    "inlayHints": {
-      "enabled": true
+      "includePaths": ["lib", "vendor/lib"]
     }
   }
 }
 ```
 
-Prefer `.perl-lsp.toml` in the project root for settings that should apply
-across all editors and teammates. Use LSP4IJ initialization options for
-IDE-specific overrides.
+Do not use `initializationOptions` as a blanket replacement for live configuration. Field timing/scope belongs to the canonical configuration/schema authority.
 
-## Verify
+## Verify the manual route
 
-1. Open a Perl file matching one of the configured file patterns.
-2. Confirm that the LSP4IJ status bar or LSP console shows `perllsp --stdio`
-   starting successfully.
-3. Introduce a temporary syntax error and confirm a diagnostic appears.
-4. Remove the syntax error.
+1. Open a `.pl`, `.pm`, or `.t` file.
+2. Confirm the LSP4IJ console shows the intended `perllsp --stdio` process.
+3. Confirm the exact binary version/path is the candidate you intended to test.
+4. Introduce and remove a bounded syntax error to verify the configured route is active.
+5. Exercise only the semantic cells you actually intend to claim or troubleshoot.
+6. Shut down/restart the server and confirm the old process does not remain orphaned.
 
-If the server does not start, verify the binary outside IntelliJ first:
+A successful launch or diagnostic proves only the cells exercised. It does not make every `perllsp` capability an IntelliJ/LSP4IJ support claim.
 
-```bash
-perllsp --version
-perllsp --health
-```
+## When to leave this route
+
+Return to the normal template path when:
+
+- the released/corrected LSP4IJ template for your cohort is available;
+- you no longer need a local/unreleased binary or custom launch flags; and
+- the exact template/install subject you want to claim is directly receipted.
+
+Keep manual configuration, locally imported corrected templates, and released built-in templates as separate evidence subjects.

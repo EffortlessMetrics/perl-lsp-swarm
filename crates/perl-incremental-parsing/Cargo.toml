@@ -1,5 +1,6 @@
 [package]
 name = "perl-incremental-parsing"
+autobenches = false
 publish = false
 version.workspace = true
 edition.workspace = true
@@ -8,13 +9,14 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-description = "Incremental parsing support for Perl with subtree reuse and LSP integration"
+description = "Compatibility adapter for the canonical perl-parser incremental API"
 readme = "README.md"
 documentation = "https://docs.rs/perl-incremental-parsing"
-keywords = ["perl", "incremental", "parser", "lsp", "rope"]
-categories = ["parsing", "development-tools", "text-editors"]
+keywords = ["perl", "incremental", "parser", "compatibility"]
+categories = ["parsing", "development-tools"]
 include = [
   "src/**",
+  "behavior_disposition.json",
   "Cargo.toml",
   "LICENSE*",
   "README.md"
@@ -37,10 +39,19 @@ perl-lexer = { workspace = true }
 ropey.workspace = true
 serde_json.workspace = true
 
+# Criterion bench: `harness = false` is REQUIRED because the nightly
+# "Performance Benchmarks" job invokes this target with `-- --noplot` (a
+# Criterion-only flag). Without an explicit [[bench]] stanza the target falls
+# back to libtest autodiscovery (harness = true) and libtest rejects the flag:
+#   error: Unrecognized option: 'noplot'
+[[bench]]
+name = "incremental_parsing_benchmarks"
+harness = false
+
+
 [package.metadata.docs.rs]
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
 [lints]
 workspace = true
-

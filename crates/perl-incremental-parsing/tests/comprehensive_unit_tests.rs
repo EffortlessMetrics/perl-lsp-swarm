@@ -11,7 +11,7 @@
 //! - SimpleIncrementalParser: initial parse, incremental reparse, structural changes
 //! - CheckpointedIncrementalParser: parsing, edit application, cache management
 //! - IncrementalParserV2: value edits, whitespace edits, advanced reuse
-//! - IncrementalTree: node-map lookup
+//! - IncrementalTree: canonical containment lookup
 //! - IncrementalMetrics: efficiency calculation
 //! - Integration helpers: LSP position conversion, DocumentParser, IncrementalConfig
 
@@ -1730,10 +1730,10 @@ fn incremental_tree_find_containing_node_entire_range() -> Result<(), Box<dyn st
     let root = parse_ok("my $x = 42;")?;
     let tree = IncrementalTree::new(root, "my $x = 42;".to_string());
     // The whole program should contain [0, 11]
-    if let Some(node) = tree.find_containing_node(0, 11) {
-        if let NodeKind::Program { .. } = &node.kind {
-            // expected
-        }
+    if let Some(node) = tree.find_containing_node(0, 11)
+        && let NodeKind::Program { .. } = &node.kind
+    {
+        // expected
     }
     Ok(())
 }
@@ -2115,8 +2115,6 @@ fn incremental_config_custom() -> Result<(), Box<dyn std::error::Error>> {
 #[test]
 fn symbol_priority_equality() -> Result<(), Box<dyn std::error::Error>> {
     use perl_incremental_parsing::incremental::incremental_document::SymbolPriority;
-    assert_eq!(SymbolPriority::Low, SymbolPriority::Low);
-    assert_eq!(SymbolPriority::Critical, SymbolPriority::Critical);
     assert_ne!(SymbolPriority::Low, SymbolPriority::High);
     Ok(())
 }

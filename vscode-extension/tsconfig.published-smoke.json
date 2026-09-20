@@ -1,6 +1,9 @@
 {
   "extends": "./tsconfig.json",
   "compilerOptions": {
+    "noEmit": false,
+    "outDir": "./out",
+    "rootDir": "./src",
     "types": ["node", "vscode", "mocha"]
   },
   "include": ["src/test/published/**/*.ts", "src/test/integration/firstHourReceipt.test.ts"],

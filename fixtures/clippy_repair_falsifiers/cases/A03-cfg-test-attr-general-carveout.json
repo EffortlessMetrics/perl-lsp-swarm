@@ -1,0 +1,69 @@
+{
+  "schema_version": 1,
+  "case_id": "A03-cfg-test-attr-general-carveout",
+  "family": "verifier_denominator_weakening",
+  "purpose": "cfg_attr(test, allow(...)) reintroduces a general test carve-out that the settled target-kind contract bans.",
+  "incident_reference": null,
+  "subject": {
+    "scope": "workspace",
+    "target_kinds": [
+      "test"
+    ],
+    "profile": "all",
+    "platforms": [
+      "linux",
+      "windows",
+      "macos"
+    ],
+    "features": "default"
+  },
+  "governed_lint": {
+    "lint": "clippy::unwrap_used",
+    "level_source": "Cargo.toml [workspace.lints.clippy]"
+  },
+  "dishonest_mutation": {
+    "kind": "source-snippet",
+    "language": "rust",
+    "trigger_evidence": [
+      "cfg_attr(test, allow(clippy::unwrap_used"
+    ],
+    "content": "#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]\n\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn parses_seed() {\n        let parsed: Vec<i32> = \"1,x\".split(',').map(|v| v.parse().unwrap()).collect();\n        assert_eq!(parsed.len(), 2);\n    }\n}\n",
+    "sha256": "a5544cc414da1425a1586bd9a28c659ad816a72e1ef61b7f79d03b585132eee8"
+  },
+  "rejecting_authority": {
+    "status": "bound",
+    "authority_kind": "file_contract",
+    "reference": "file:policy/clippy-lints.toml#allow_test_carveouts = false"
+  },
+  "expected_result": {
+    "result_class": "reject",
+    "reason_code": "test_cfg_attr_general_carveout"
+  },
+  "positive_counterpart": {
+    "sanctioned_evidence": [
+      "collect::<Result<_, _>>()",
+      "ParseIntError"
+    ],
+    "note": "Test failures flow through typed results.",
+    "content": "#[cfg(test)]\nmod tests {\n    #[test]\n    fn parses_seed() -> Result<(), std::num::ParseIntError> {\n        let parsed: Vec<i32> = \"1,2\"\n            .split(',')\n            .map(str::parse)\n            .collect::<Result<_, _>>()?;\n        assert_eq!(parsed, vec![1, 2]);\n        Ok(())\n    }\n}\n",
+    "sha256": "e20b4c8f5377ed7152e8fe417c5cc8aa1fafa152626d7ec7ff3fad78e436812e"
+  },
+  "applicability": {
+    "packet_classes": [
+      "qualification",
+      "foundation",
+      "migration",
+      "activation",
+      "review"
+    ],
+    "domains": [
+      "clippy-core"
+    ]
+  },
+  "delta_provenance": {
+    "change_reason": "initial corpus freeze (#11649)",
+    "owning_issue": 11649,
+    "historical_interpretability": true
+  },
+  "claim_boundary": "panic_free_tests=true and allow_test_carveouts=false are settled policy posture; corpus records the banned spelling."
+}

@@ -29,7 +29,7 @@ warrant different cadences:
 | Broad acceptance / property / fuzz / BDD matrix | label-gated **or** nightly cron | Real evidence but expensive; only fire when a reviewer explicitly asks (`bdd`, `property-tests`, `fuzz`, `full-ci`) or on the scheduled cron. |
 | Mutation testing | targeted PR (`mutation` label) **or** nightly cron **or** release readiness | High-cost runtime evidence; never default-PR. |
 | `ripr` (static oracle-gap) | every Rust-diff PR | Cheap static substitute that surfaces "this changed line is not exercised by any test that could discriminate behavior." Advisory only. |
-| Coverage | push to `master`, label-gated PR (`coverage`), workflow_dispatch | Codecov upload is push-billed; on-demand for PRs. |
+| Coverage | scheduled nightly run or explicit `workflow_dispatch` with coverage enabled | Advisory Codecov upload; it is not a PR or merge-queue lane. |
 
 The doctrine, from [`ripr.md`](ripr.md):
 
@@ -54,8 +54,8 @@ inventory):
 - `cargo xtask check-lint-policy` and any other `cargo xtask check-*`
   ledger gates that have shipped at the time of the PR (the
   per-checker set grows as ledger PRs land; see
-  [`../development/RUST_1_95_PROACTIVE_GUARDS.md`](../development/RUST_1_95_PROACTIVE_GUARDS.md)
-  for the planned guards rail).
+  [`ci-lane-map.md`](ci-lane-map.md) and the governed policy files for the
+  current shipped inventory).
 - `cargo deny check` (if wired into the canonical CI workflow).
 - `ripr` advisory lane.
 
@@ -77,7 +77,6 @@ changes).
 | `property-tests` | broad property sweep in `property-testing.yml` (high case-count). |
 | `fuzz` | quick-fuzz across all parser surfaces in `fuzzing.yml`. |
 | `mutation` | targeted mutation testing in `mutation-testing.yml` (scoped to touched risk-pack). |
-| `coverage` | `coverage.yml` Codecov upload on PR. |
 | `security-audit` | standalone `cargo-deny` in `ci-security.yml` (also fires on push-main + weekly cron). |
 | `full-ci` | "spend authorization": activates every label-gated lane on a single PR. Reviewer signs off on the cost. |
 
@@ -89,7 +88,7 @@ canary lanes.
 - Full property-test sweep (256+ cases per crate).
 - Full fuzz matrix at extended budget.
 - Full mutation sweep across trust surfaces.
-- Coverage on `master` (`coverage.yml`).
+- Coverage via the scheduled `ci-nightly.yml` run or an explicit manual dispatch.
 - `ci-nightly.yml` for any other long-running canary.
 
 The point of nightly: surface regressions that the bounded PR-fast
@@ -126,6 +125,68 @@ risk surface and the matching risk-pack. A `ripr` finding on a
 parser-touching PR is more load-bearing than the same finding on a
 docs-only PR.
 
+## Doctests as proof
+
+Doctests **are** part of the proof surface, but only for the packages the
+`doctest_contract_proof` merge-gate route names. Nothing else in the
+repository runs `cargo test --doc`: `--lib` excludes doctests, `--tests`
+selects integration targets only, `--all-targets` expands to
+`--lib --bins --tests --benches --examples` and **excludes** `--doc`, and
+`cargo nextest` cannot run them at all. Until #13774 that route did not
+exist, so every doctest in the workspace was compiled by nobody.
+
+This matters most for `compile_fail`, the repository's only idiom for a
+negative type-level contract. An unenforced `compile_fail` is worse than no
+test: reintroducing the very construct it forbids leaves CI fully green.
+
+### Where a negative type-level contract belongs
+
+Two homes, and the choice is mechanical:
+
+| Situation | Home |
+|---|---|
+| The crate is selected by `doctest_contract_proof`, and the item is reachable under that route's feature selection | a `compile_fail` doctest, in place |
+| Anything else — notably an item behind a non-default feature | a compile-time assertion in an integration test a gate already runs |
+
+For the second, use `static_assertions::assert_not_impl_any!` (a workspace
+dev-dependency) and add the target to the gate that already builds that crate.
+`crates/perl-parser/tests/incremental_state_read_only_authority.rs` is the
+worked example: its contracts were `compile_fail` doctests on an item behind
+the non-default `incremental` feature, so no `--doc` route could reach them.
+
+`doctest_enforcement` keeps the choice honest. A `compile_fail` fence in a
+crate the route does not select fails that gate, naming the file and line.
+
+### `doctest = false` is not an exclusion
+
+A package declaring `[lib] doctest = false` can still be covered. Measured on
+the pinned 1.95.0 toolchain, the field removes doctests from the *default*
+`cargo test` target selection only; an explicit `cargo test -p <pkg> --doc`
+collects and runs them regardless. `perl-parser-core` declares it and still
+reports 18 passed / 3 failed under `--doc`.
+
+So do not read that field as "this crate is out of the denominator". The real
+exclusion is a `#[cfg(feature = "…")]` module behind a feature the route does
+not enable: those doctests are never compiled at all.
+
+### Vacuity: a doctest that passes without asserting anything
+
+A doctest can run, pass, and prove nothing. Two shapes to avoid, neither of
+which any gate can detect:
+
+- **The hidden uncalled `fn`.** Wrapping the body in a function that is never
+  called — commonly via `#` -hidden lines — means the example only
+  type-checks. Nothing executes, so no assertion is evaluated. If the example
+  is meant to *run*, call what it defines; if it is only meant to compile, say
+  so in the prose so a later reader does not mistake it for behavioural proof.
+- **The `compile_fail` that fails for the wrong reason.** `compile_fail`
+  passes when the block does not compile, for *any* reason — a typo in a path,
+  a missing `use`, a renamed item. Such a block keeps passing after the
+  invariant it was written for is gone. When you add one, delete the forbidden
+  line and confirm the block then *compiles*; that opposite-direction control
+  is what distinguishes a contract from a typo. `crates/perl-corpus/src/files.rs`
+  carries a worked pair.
+
 ## Risk-pack auto-routing
 
 Risk packs in [`../../policy/ci-risk-packs.toml`](../../policy/ci-risk-packs.toml)
@@ -141,10 +202,9 @@ recommended label. The reviewer can:
 - Apply `full-ci` → activates every recommended lane plus the broad ones.
 - Apply nothing → the PR runs only PR-fast required lanes.
 
-The risk-pack model is **advisory** at the PR level. The
-[`RUST_1_95_PROACTIVE_GUARDS.md`](../development/RUST_1_95_PROACTIVE_GUARDS.md)
-rail row PG-2 introduces a checker that verifies risk-pack references
-resolve to real lanes and real labels (currently unchecked).
+The risk-pack model is **advisory** at the PR level. The current mapping and
+lane names are maintained in [`ci-lane-map.md`](ci-lane-map.md) and
+`policy/ci-risk-packs.toml`.
 
 ## Skipped-by-policy receipts
 
@@ -162,10 +222,8 @@ Categories:
 | `ripr-waived` | A `ripr-waive` label suppressed advisory output for this PR (when wired). |
 | `duplicate` | The lane's intent is already produced by another lane on this PR (e.g. standalone `cargo-deny` when `ci.yml` already ran it). |
 
-The PG-5 row in
-[`RUST_1_95_PROACTIVE_GUARDS.md`](../development/RUST_1_95_PROACTIVE_GUARDS.md)
-adds a CI Actuals emitter that records skip categories in a
-machine-readable receipt.
+Skip categories are recorded by the current CI Actuals surface described in
+[`ci-actuals.md`](ci-actuals.md).
 
 ## Cost framing
 
@@ -186,16 +244,14 @@ Tiers:
 - `hard_limit_lem` — emergency ceiling; requires `full-ci` (which
   implies override).
 
-These are advisory in the current rollout. Hard enforcement is the
-C-LL row in
-[`../development/RUST_1_95_ROLLOUT.md`](../development/RUST_1_95_ROLLOUT.md)
-(learned LEM, actuals-backed calibration).
+These are the current LEM planning rules; learned estimates and actuals are
+documented in [`lem-budgeting.md`](lem-budgeting.md) and
+[`learned-estimates.md`](learned-estimates.md).
 
 ## See also
 
-- [`ci-lane-map.md`](ci-lane-map.md) — per-workflow inventory.
-- [`../development/RUST_1_95_ROLLOUT.md`](../development/RUST_1_95_ROLLOUT.md) — the remaining-roadmap canonical doc.
-- [`../development/RUST_1_95_PROACTIVE_GUARDS.md`](../development/RUST_1_95_PROACTIVE_GUARDS.md) — proactive integrity guards rail (PG-1..PG-6 includes the lane mapping + actuals coverage checkers that keep this doc honest).
+- [`ci-lane-map.md`](ci-lane-map.md) — current per-workflow inventory.
+- [`ci-actuals.md`](ci-actuals.md) — current machine-readable actuals contract.
 - [`lem-budgeting.md`](lem-budgeting.md) — LEM cost model.
 - [`ripr.md`](ripr.md) — `ripr` static oracle-gap lane doctrine.
 - [`../release/RUNBOOK.md`](../release/RUNBOOK.md) — release execution.

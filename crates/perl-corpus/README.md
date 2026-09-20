@@ -22,12 +22,65 @@ The parser-accuracy manifest and generated metric receipts are the sources for c
 
 The crate exposes:
 
+- distinct plain-source and sectioned-document loading contracts;
 - section loading and queries: `parse_file`, `parse_dir`, `find_by_tag`;
 - corpus discovery and inventory helpers;
 - fixture and sidecar expectation models;
 - deterministic Perl generators with explicit seeds;
 - focused helpers for heredocs, regexes, globs, tie interfaces, formats, and loop-control cases;
 - linting, metadata backfill, indexing, and snapshot support.
+
+### Root authority and compatibility discovery
+
+The published crate ships APIs and deliberately included crate assets, not the repository's complete corpus. Load-bearing callers must bind the external repository root explicitly or through `PERL_CORPUS_ROOT`:
+
+```rust,no_run
+use perl_corpus::CorpusPaths;
+use std::path::Path;
+
+let paths = CorpusPaths::resolve_authoritative(Some(Path::new("/absolute/perl-lsp")))?;
+paths.require_repository_layout()?;
+
+let retained_root = paths.root_authority();
+println!("{}", retained_root.path().display());
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+Strict selection is explicit input, then `PERL_CORPUS_ROOT`, then a typed missing-authority error. Invalid explicit input fails immediately rather than falling through. A strict root must be absolute, directory-backed, and free of symbolic-link or Windows reparse-point components. `CorpusRoot` retains an open directory identity across clones; its canonical path is diagnostic context, not the authority itself.
+
+`CorpusPaths::discover()` and `CorpusPaths::from_root()` retain their historical unchecked behavior for compatibility. They return raw mutable paths and do not establish root authority. `CorpusPaths::try_from_root`, `try_discover`, and `resolve_authoritative` return immutable `ResolvedCorpusPaths`; converting that value with `into_paths()` is an explicit downgrade to compatibility paths. `ResolvedCorpusPaths` intentionally has no `Deref` or other implicit conversion into `CorpusPaths`, so a validated resolution cannot silently reach a path-based compatibility API: use `as_paths()` to borrow the compatibility view or `into_paths()` to consume the value.
+
+`require_repository_layout()` verifies only the required `test_corpus/` and `crates/perl-corpus/fuzz/` directory chains. It does not recurse, choose members, infer extensions, or replace `CorpusTopology`. Selected-member containment and opening belong to the later capability traversal seam.
+
+### Typed source loading
+
+Ordinary Perl sources and sectioned corpus documents use different APIs:
+
+```rust,no_run
+use perl_corpus::{load_plain_perl_source, load_sectioned_corpus_document};
+
+let plain = load_plain_perl_source(
+    "test_corpus/example.pl",
+    "/absolute/root/test_corpus/example.pl",
+)?;
+let sectioned = load_sectioned_corpus_document(
+    "tree_sitter/corpus/expressions.txt",
+    "/absolute/root/tree-sitter-perl/test/corpus/expressions.txt",
+)?;
+assert!(!plain.source.is_empty());
+assert!(!sectioned.cases.is_empty());
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+A `.txt` extension does not make an asset sectioned. The topology or consumer chooses the loader.
+
+Plain loading opens the selected leaf without following a symbolic link or Windows reparse point, verifies the opened handle is a regular file, and reads bytes from that same handle. It preserves exact UTF-8 text, BOM presence, and newline representation; delimiter-looking Perl content is never reinterpreted. Platforms without a reviewed no-follow open contract fail explicitly.
+
+Sectioned loading retains the same exact source but normalizes newlines only for its parser view. Every delimiter candidate must have a non-empty title and closing delimiter, the structurally declared and parsed populations must match exactly, and duplicate effective IDs fail the document.
+
+`SectionCaseId { asset_id, section_id }` is the stable case authority. The legacy `Section.id` fallback remains leaf-derived compatibility data and may collide across parent assets; it is not promoted as global corpus identity.
+
+Legacy `parse_file` and `parse_dir` remain compatibility APIs pending the topology migrations in #6985 and #6989. Intermediate-component containment also remains topology/path-authority work; the direct loader protects the selected leaf and opened bytes.
 
 Example:
 
@@ -55,7 +108,8 @@ assert!(!source.is_empty());
 From the repository root:
 
 ```bash
-# Inspect corpus commands and their current options
+# Inspect the current binary.
+cargo run -p perl-corpus -- --help
 cargo xtask --help
 
 # Inspect parser-accuracy commands
@@ -64,11 +118,13 @@ cargo xtask metrics --help
 # Run the parser's manifest-backed E2E surface
 cargo test -p perl-parser --test parser_accuracy_e2e
 
-# Run perl-corpus unit tests
+# Run perl-corpus unit and integration tests
 cargo test -p perl-corpus
+cargo test -p perl-corpus --test root_path_authority
+cargo test -p perl-corpus --test distribution_contract
 ```
 
-The exact command surface is owned by `xtask` and the workspace test targets; this README does not maintain a shadow CLI contract.
+The exact command surface is owned by the binary, `xtask`, and workspace test targets; this README does not maintain an independent shadow of every subcommand.
 
 For a new parser-accuracy fixture:
 

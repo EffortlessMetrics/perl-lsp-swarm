@@ -12,11 +12,11 @@ fn main() {
         let mut stream = TokenStream::new(test);
         print!("  Tokens: ");
         while let Ok(token) = stream.next() {
-            if matches!(token.kind, TokenKind::Eof) {
+            if matches!(token.kind(), TokenKind::Eof) {
                 println!("EOF");
                 break;
             }
-            print!("{:?}={:?} ", token.kind, token.text);
+            print!("{:?}={:?} ", token.kind(), token.text);
         }
 
         // Try parsing

@@ -9,6 +9,10 @@ crates/perl-corpus/fixtures/parser_accuracy/span_mixed_newlines.pl -text !eol wh
 # Release UX smoke fixture intentionally preserves CRLF line endings.
 testdata/ux/release_smoke/crlf_links/main.pl -text !eol whitespace=-blank-at-eol
 
+# Pest fixture newline identity is exact bytes, not checkout-normalized text.
+crates/perl-parser-pest/tests/fixtures/sources/unicode-newline/crlf.pl -text !eol whitespace=-blank-at-eol
+crates/perl-parser-pest/tests/fixtures/sources/unicode-newline/bare-cr.pl -text !eol whitespace=-blank-at-eol
+
 # =============================================================================
 # Image and font files (must not have line endings modified)
 # =============================================================================

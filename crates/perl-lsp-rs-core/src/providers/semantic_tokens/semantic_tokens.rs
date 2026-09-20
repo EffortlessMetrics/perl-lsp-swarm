@@ -109,7 +109,19 @@ use perl_parser_core::ast::{Node, NodeKind};
 use regex::Regex;
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::collections::VecDeque;
+use std::ops::ControlFlow;
 use std::sync::LazyLock;
+
+/// Undelta-encoded semantic token `(line, character, length, type, modifiers)`.
+pub type RawSemanticToken = (u32, u32, u32, u32, u32);
+
+/// Maximum source bytes admitted to the opaque lexer in a bounded traversal.
+///
+/// The compatibility collector remains unlimited. A caller that supplies a
+/// cancellation callback or budget receives `SourceLimitExceeded` before
+/// lexing a larger source, so one `PerlLexer::next_token` call can never hide
+/// more than 256 KiB of source scanning from the caller's polling authority.
+pub const MAX_BOUNDED_LEXER_SOURCE_BYTES: usize = 256 * 1024;
 
 /// LSP semantic token encoding format for client transmission
 ///
@@ -331,20 +343,6 @@ fn method_call_name_offsets(text: &str, object_end: usize, method: &str) -> Opti
 // Heredoc language injection helpers (Issue #2059)
 // ---------------------------------------------------------------------------
 
-/// Regex matching SQL keywords (case-insensitive).
-///
-/// Matches word-boundary-delimited SQL keywords in a heredoc body and emits
-/// `sql_heredoc_keyword` semantic tokens for each match.
-static SQL_KW_RE: LazyLock<Option<Regex>> = LazyLock::new(|| {
-    Regex::new(
-        r"(?i)\b(SELECT|FROM|WHERE|AND|OR|NOT|IN|IS|NULL|LIKE|BETWEEN|JOIN|INNER|LEFT|RIGHT|OUTER|FULL|CROSS|ON|AS|DISTINCT|GROUP|BY|ORDER|HAVING|LIMIT|OFFSET|UNION|ALL|INSERT|INTO|VALUES|UPDATE|SET|DELETE|CREATE|DROP|ALTER|TABLE|INDEX|VIEW|RETURNING|WITH|CASE|WHEN|THEN|ELSE|END|EXISTS|EXCEPT|INTERSECT)\b"
-    ).ok()
-});
-
-/// Regex matching JSON object keys: `"key":`.
-static JSON_KEY_RE: LazyLock<Option<Regex>> =
-    LazyLock::new(|| Regex::new(r#""([^"\\]|\\.)*"\s*:"#).ok());
-
 /// Determine the injection language for a heredoc start token.
 ///
 /// `text` is the full heredoc start token text (e.g. `<<SQL`, `<<'SQL'`, `<<~SQL`,
@@ -374,72 +372,315 @@ fn heredoc_injection_language(text: &str) -> Option<&'static str> {
     }
 }
 
+/// Emit one semantic token per source line that the span `start..end` covers.
+///
+/// An LSP semantic token cannot describe a span crossing a line boundary: the
+/// wire format carries a single `length`, measured from the token's start on
+/// its own line. A multiline span is therefore normalized into ordered,
+/// nonempty, line-contained segments (#1850). Line terminators are excluded
+/// from every segment, and a line the span meets only through its terminator
+/// contributes no segment.
+///
+/// A single-line span yields exactly one segment whose length equals the old
+/// `end_character - start_character`, so same-line tokens keep their existing
+/// geometry.
+/// Segmenting is metered through `traversal`: one admission per line the span
+/// covers, so a cancellation or work budget interrupts a very large multiline
+/// token instead of materializing every one of its lines first.
+///
+/// A line that emits nothing — a blank interior line, or the empty tail after a
+/// terminal newline — is charged too, because scanning and position-mapping it
+/// is the work the budget exists to bound. Charging only emitting lines would
+/// let a span of many blank lines iterate unmetered, which is exactly the hole
+/// this metering closes. This matches the surrounding convention: the lexer
+/// loop admits once per token and the AST walk once per node, both regardless
+/// of whether that iteration ends up emitting anything.
+fn push_line_contained_segments(
+    text: &str,
+    start: usize,
+    end: usize,
+    to_pos16: &impl Fn(usize) -> (u32, u32),
+    kind: u32,
+    modifiers: u32,
+    out: &mut Vec<RawSemanticToken>,
+    traversal: &mut TraversalState<'_, '_>,
+) -> Result<(), TraversalStop> {
+    let Some(span) = text.get(start..end) else {
+        // Invalid geometry is a collection failure, not legitimate empty work.
+        return Err(TraversalStop::InvalidGeometry);
+    };
+
+    let mut segment_start = start;
+    for (offset, _) in span.match_indices('\n') {
+        traversal.admit_work()?;
+        let line_end = start.saturating_add(offset);
+        // Drop only the carriage return that pairs with *this* '\n'. Under the
+        // LF-only coordinate contract a bare CR is ordinary addressable content
+        // (`perl-position-tracking/src/line_index.rs`), so stripping every
+        // trailing CR would shorten a span that genuinely ends in one.
+        let content_end = match line_end.checked_sub(1) {
+            Some(previous)
+                if previous >= segment_start && text.as_bytes().get(previous) == Some(&b'\r') =>
+            {
+                previous
+            }
+            _ => line_end,
+        };
+        push_line_contained_token(segment_start, content_end, to_pos16, kind, modifiers, out);
+        segment_start = line_end.saturating_add(1);
+    }
+    traversal.admit_work()?;
+    // A span may end between CR and LF. Terminator membership belongs to the
+    // full source, not only to the selected substring. A standalone CR remains
+    // content under the canonical LF-only coordinate policy.
+    let content_end = match end.checked_sub(1) {
+        Some(previous)
+            if previous >= segment_start
+                && text.as_bytes().get(previous) == Some(&b'\r')
+                && text.as_bytes().get(end) == Some(&b'\n') =>
+        {
+            previous
+        }
+        _ => end,
+    };
+    push_line_contained_token(segment_start, content_end, to_pos16, kind, modifiers, out);
+    Ok(())
+}
+
+/// Emit one token for a span, and only when that span lies within a single line.
+///
+/// Two callers rely on the same rule for different reasons.
+///
+/// Segmentation calls it per segment, where single-line containment is already
+/// guaranteed and the check is a backstop.
+///
+/// Construct *anchors* call it directly as a deliberate policy. Some AST arms
+/// fall back to the whole construct's `node.location` because no narrower name
+/// span is available — a subroutine or class anchor covers its entire body.
+/// Normalizing those into per-line segments would paint the whole body as one
+/// token class, and the longer-wins rule in `remove_overlapping_tokens` would
+/// then discard every narrower token inside it. Painting nothing, as today, is
+/// the honest result until those anchors carry real name spans; that narrowing
+/// belongs to the semantic-classification work, not to this geometry repair.
+///
+/// Subtracting columns that live on different lines is meaningless, so a span
+/// that still crosses a line emits nothing rather than a fabricated length.
+fn push_line_contained_token(
+    start: usize,
+    end: usize,
+    to_pos16: &impl Fn(usize) -> (u32, u32),
+    kind: u32,
+    modifiers: u32,
+    out: &mut Vec<RawSemanticToken>,
+) {
+    if end <= start {
+        return;
+    }
+    let (line, start_character) = to_pos16(start);
+    let (end_line, end_character) = to_pos16(end);
+    if line != end_line {
+        return;
+    }
+    let length = end_character.saturating_sub(start_character);
+    if length > 0 {
+        out.push((line, start_character, length, kind, modifiers));
+    }
+}
+
 /// Emit semantic tokens for SQL keyword matches inside a heredoc body.
 fn tokenize_sql_body(
+    text: &str,
     body: &str,
     body_start: usize,
     to_pos16: &impl Fn(usize) -> (u32, u32),
     leg: &TokensLegend,
-    out: &mut Vec<(u32, u32, u32, u32, u32)>,
-) {
-    let re = match SQL_KW_RE.as_ref() {
-        Some(r) => r,
-        None => return,
-    };
+    out: &mut Vec<RawSemanticToken>,
+    traversal: &mut TraversalState<'_, '_>,
+) -> Result<(), TraversalStop> {
     let kind = kind_idx(leg, "sql_heredoc_keyword");
-    for mat in re.find_iter(body) {
-        let offset = body_start + mat.start();
-        let (sl, sc) = to_pos16(offset);
-        let (el, ec) = to_pos16(body_start + mat.end());
-        let len = if sl == el { ec.saturating_sub(sc) } else { 0 };
-        if len > 0 {
-            out.push((sl, sc, len, kind, 0));
+    let mut word_start = None;
+    for (index, character) in body.char_indices().chain(std::iter::once((body.len(), ' '))) {
+        traversal.admit_work()?;
+        if is_regex_word_character(character) {
+            word_start.get_or_insert(index);
+            continue;
         }
+        let Some(start) = word_start.take() else {
+            continue;
+        };
+        let word = &body[start..index];
+        if !is_sql_keyword(word) {
+            continue;
+        }
+        let offset = body_start + start;
+        push_line_contained_segments(
+            text,
+            offset,
+            body_start + index,
+            to_pos16,
+            kind,
+            0,
+            out,
+            traversal,
+        )?;
     }
+    Ok(())
+}
+
+static WORD_CHARACTER_RE: LazyLock<Option<Regex>> = LazyLock::new(|| Regex::new(r"(?u)^\w$").ok());
+
+fn is_regex_word_character(character: char) -> bool {
+    let mut encoded = [0u8; 4];
+    let text = character.encode_utf8(&mut encoded);
+    WORD_CHARACTER_RE.as_ref().is_some_and(|regex| regex.is_match(text))
+}
+
+fn is_sql_keyword(word: &str) -> bool {
+    [
+        "SELECT",
+        "FROM",
+        "WHERE",
+        "AND",
+        "OR",
+        "NOT",
+        "IN",
+        "IS",
+        "NULL",
+        "LIKE",
+        "BETWEEN",
+        "JOIN",
+        "INNER",
+        "LEFT",
+        "RIGHT",
+        "OUTER",
+        "FULL",
+        "CROSS",
+        "ON",
+        "AS",
+        "DISTINCT",
+        "GROUP",
+        "BY",
+        "ORDER",
+        "HAVING",
+        "LIMIT",
+        "OFFSET",
+        "UNION",
+        "ALL",
+        "INSERT",
+        "INTO",
+        "VALUES",
+        "UPDATE",
+        "SET",
+        "DELETE",
+        "CREATE",
+        "DROP",
+        "ALTER",
+        "TABLE",
+        "INDEX",
+        "VIEW",
+        "RETURNING",
+        "WITH",
+        "CASE",
+        "WHEN",
+        "THEN",
+        "ELSE",
+        "END",
+        "EXISTS",
+        "EXCEPT",
+        "INTERSECT",
+    ]
+    .iter()
+    .any(|keyword| word.eq_ignore_ascii_case(keyword))
 }
 
 /// Emit semantic tokens for JSON key matches inside a heredoc body.
 fn tokenize_json_body(
+    text: &str,
     body: &str,
     body_start: usize,
     to_pos16: &impl Fn(usize) -> (u32, u32),
     leg: &TokensLegend,
-    out: &mut Vec<(u32, u32, u32, u32, u32)>,
-) {
-    let re = match JSON_KEY_RE.as_ref() {
-        Some(r) => r,
-        None => return,
-    };
+    out: &mut Vec<RawSemanticToken>,
+    traversal: &mut TraversalState<'_, '_>,
+) -> Result<(), TraversalStop> {
     let kind = kind_idx(leg, "json_heredoc_key");
-    for mat in re.find_iter(body) {
-        // Highlight only the key string (before the colon), not the colon itself.
-        // The regex matches `"key":` — trim the trailing colon off the token length.
-        let match_text = mat.as_str();
-        let colon_offset = match_text.rfind(':').unwrap_or(match_text.len());
-        let key_start = body_start + mat.start();
-        let key_end = key_start + colon_offset;
-        let (sl, sc) = to_pos16(key_start);
-        let (el, ec) = to_pos16(key_end);
-        let len = if sl == el { ec.saturating_sub(sc) } else { 0 };
-        if len > 0 {
-            out.push((sl, sc, len, kind, 0));
+    let mut cursor = 0usize;
+    while cursor < body.len() {
+        traversal.admit_work()?;
+        let Some(character) = body[cursor..].chars().next() else {
+            break;
+        };
+        if character != '"' {
+            cursor = cursor.saturating_add(character.len_utf8());
+            continue;
         }
+        let key_start_offset = cursor;
+        cursor = cursor.saturating_add(1);
+        let mut escaped = false;
+        let mut key_end_offset = None;
+        while cursor < body.len() {
+            traversal.admit_work()?;
+            let Some(current) = body[cursor..].chars().next() else {
+                break;
+            };
+            let current_len = current.len_utf8();
+            if current == '"' && !escaped {
+                key_end_offset = Some(cursor.saturating_add(current_len));
+                cursor = cursor.saturating_add(current_len);
+                break;
+            }
+            escaped = current == '\\' && !escaped;
+            if current != '\\' {
+                escaped = false;
+            }
+            cursor = cursor.saturating_add(current_len);
+        }
+        let Some(_closing_quote_end) = key_end_offset else {
+            // No unescaped closing quote remains in the suffix. Resetting to
+            // open+1 would only rescan the same escaped-quote suffix (O(n^2) on
+            // bodies like `"\"\"...`) and cannot recover a later JSON key,
+            // which itself requires an unescaped quote delimiter.
+            break;
+        };
+        while cursor < body.len() {
+            traversal.admit_work()?;
+            let Some(current) = body[cursor..].chars().next() else {
+                break;
+            };
+            if !current.is_whitespace() {
+                break;
+            }
+            cursor = cursor.saturating_add(current.len_utf8());
+        }
+        if body.as_bytes().get(cursor) != Some(&b':') {
+            cursor = key_start_offset.saturating_add(1);
+            continue;
+        }
+        // Preserve the historical regex geometry: whitespace before the colon
+        // belongs to the json_heredoc_key span, while the colon does not.
+        let key_end_offset = cursor;
+        let key_start = body_start + key_start_offset;
+        let key_end = body_start + key_end_offset;
+        push_line_contained_segments(text, key_start, key_end, to_pos16, kind, 0, out, traversal)?;
     }
+    Ok(())
 }
 
 /// Dispatch to the appropriate body tokenizer based on the injection language.
 fn tokenize_heredoc_body(
+    text: &str,
     body: &str,
     body_start: usize,
     lang: &str,
     to_pos16: &impl Fn(usize) -> (u32, u32),
     leg: &TokensLegend,
-    out: &mut Vec<(u32, u32, u32, u32, u32)>,
-) {
+    out: &mut Vec<RawSemanticToken>,
+    traversal: &mut TraversalState<'_, '_>,
+) -> Result<(), TraversalStop> {
     match lang {
-        "sql" => tokenize_sql_body(body, body_start, to_pos16, leg, out),
-        "json" => tokenize_json_body(body, body_start, to_pos16, leg, out),
-        _ => {}
+        "sql" => tokenize_sql_body(text, body, body_start, to_pos16, leg, out, traversal),
+        "json" => tokenize_json_body(text, body, body_start, to_pos16, leg, out, traversal),
+        _ => Ok(()),
     }
 }
 
@@ -491,17 +732,204 @@ fn is_special_variable(full_name: &str) -> bool {
     )
 }
 
-/// Find the first occurrence of `needle` in `haystack` starting at byte offset `from`.
-///
-/// Returns the absolute offset within `haystack` where `needle` begins,
-/// or `None` if not found. Used to locate interpolated-string parts within
-/// the full token text so we can derive their absolute source positions.
-fn find_bytes_at(haystack: &[u8], from: usize, needle: &[u8]) -> Option<usize> {
+fn find_bytes_at_controlled(
+    haystack: &[u8],
+    from: usize,
+    needle: &[u8],
+    traversal: &mut TraversalState<'_, '_>,
+) -> Result<Option<usize>, TraversalStop> {
     if needle.is_empty() {
-        return Some(from);
+        return Ok(Some(from));
     }
     let end = haystack.len().saturating_sub(needle.len());
-    (from..=end).find(|&i| haystack[i..i + needle.len()] == *needle)
+    for index in from..=end {
+        traversal.admit_work()?;
+        if haystack[index..index + needle.len()] == *needle {
+            return Ok(Some(index));
+        }
+    }
+    Ok(None)
+}
+
+/// Caller-owned limits for semantic-token traversal.
+///
+/// Cancellation is polled before every lexer step and every AST node. A work
+/// unit is also charged for every interpolation part and substring candidate,
+/// heredoc character, declaration-target node, declaration-index insertion or lookup, raw-token copy,
+/// heapsort comparison or swap, overlap candidate, and encoded token.
+/// Cancellation is checked before the budget, so
+/// simultaneous cancellation and exhaustion reports `Cancelled`. A zero budget
+/// admits no work. Once either stop is observed, no further work is performed;
+/// overshoot is zero work units. The only opaque interval is one lexer call,
+/// bounded to [`MAX_BOUNDED_LEXER_SOURCE_BYTES`] for controlled traversals.
+#[non_exhaustive]
+pub struct SemanticTokensTraversalControl<'a> {
+    cancellation: Option<&'a (dyn Fn() -> bool + Send + Sync)>,
+    work_budget: Option<usize>,
+}
+
+impl<'a> SemanticTokensTraversalControl<'a> {
+    /// Traverse without cancellation or a work budget.
+    #[must_use]
+    pub const fn unlimited() -> Self {
+        Self { cancellation: None, work_budget: None }
+    }
+
+    /// Traverse with caller-owned cancellation and an optional deterministic work budget.
+    #[must_use]
+    pub const fn new(
+        cancellation: &'a (dyn Fn() -> bool + Send + Sync),
+        work_budget: Option<usize>,
+    ) -> Self {
+        Self { cancellation: Some(cancellation), work_budget }
+    }
+
+    const fn is_bounded(&self) -> bool {
+        self.cancellation.is_some() || self.work_budget.is_some()
+    }
+}
+
+/// Result of a controlled semantic-token traversal.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum SemanticTokensTraversalOutcome {
+    /// The complete token stream, identical to the compatibility collector output.
+    Complete(Vec<EncodedToken>),
+    /// The caller cancelled traversal before the next work unit was admitted.
+    Cancelled {
+        /// Exact number of admitted units described by the traversal control.
+        work_done: usize,
+    },
+    /// The deterministic work budget was consumed before traversal completed.
+    BudgetExhausted {
+        /// Explicitly incomplete raw tokens collected before exhaustion.
+        partial: PartialSemanticTokens,
+        /// Exact number of admitted units described by the traversal control.
+        work_done: usize,
+    },
+    /// No AST was available at the core collection boundary.
+    NoAst,
+    /// Collection preparation or source geometry validation failed.
+    CollectionFailure(SemanticTokensCollectionError),
+    /// A bounded collector cannot safely admit an opaque lexer call for this source.
+    SourceLimitExceeded {
+        /// Source size presented by the caller.
+        source_bytes: usize,
+        /// Maximum source size supported by the bounded collector.
+        limit_bytes: usize,
+    },
+}
+
+/// Typed collection failure supplied to the core semantic-token boundary.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct SemanticTokensCollectionError {
+    message: String,
+}
+
+impl SemanticTokensCollectionError {
+    /// Create a collection failure without imposing an LSP wire error policy.
+    #[must_use]
+    pub fn new(message: impl Into<String>) -> Self {
+        Self { message: message.into() }
+    }
+
+    /// Human-readable failure detail for logging or caller-owned policy.
+    #[must_use]
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+}
+
+/// AST availability at the fallible core collection boundary.
+#[non_exhaustive]
+pub enum SemanticTokensCollectionInput<'a> {
+    /// A parsed AST is available for traversal.
+    Ast(&'a Node),
+    /// Parsing completed without an AST.
+    NoAst,
+    /// Parsing or collection preparation failed.
+    CollectionFailure(SemanticTokensCollectionError),
+}
+
+/// Explicitly incomplete semantic-token data.
+///
+/// This type intentionally does not expose LSP-encoded data: sorting, overlap
+/// removal, and delta encoding may themselves be interrupted. Callers can
+/// inspect the amount of collected raw data without mistaking it for a complete
+/// token stream or paying unbounded finalization cost after a stop.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct PartialSemanticTokens {
+    ast_tokens: Vec<RawSemanticToken>,
+    lexer_tokens: Vec<RawSemanticToken>,
+}
+
+impl PartialSemanticTokens {
+    /// Number of raw tokens retained before traversal or finalization stopped.
+    #[must_use]
+    pub const fn raw_token_count(&self) -> usize {
+        self.ast_tokens.len().saturating_add(self.lexer_tokens.len())
+    }
+
+    /// Iterate the retained raw tokens without sorting or allocating.
+    pub fn raw_tokens(&self) -> impl Iterator<Item = &RawSemanticToken> {
+        self.ast_tokens.iter().chain(&self.lexer_tokens)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TraversalStop {
+    InvalidGeometry,
+    Cancelled,
+    BudgetExhausted,
+    WorkCounterOverflow,
+}
+
+struct TraversalState<'control, 'callback> {
+    control: &'control SemanticTokensTraversalControl<'callback>,
+    work_done: usize,
+}
+
+#[cfg(test)]
+thread_local! {
+    static CONTROLLED_CHILD_EDGES_ENUMERATED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static DECLARATION_INDEX_INSERTIONS_ATTEMPTED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static DECLARATION_LOOKUPS_ATTEMPTED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+impl TraversalState<'_, '_> {
+    fn admit_work(&mut self) -> Result<(), TraversalStop> {
+        if self.control.cancellation.is_some_and(|cancelled| cancelled()) {
+            return Err(TraversalStop::Cancelled);
+        }
+        if self.control.work_budget.is_some_and(|budget| self.work_done >= budget) {
+            return Err(TraversalStop::BudgetExhausted);
+        }
+        self.work_done = self.work_done.checked_add(1).ok_or(TraversalStop::WorkCounterOverflow)?;
+        Ok(())
+    }
+}
+
+fn interrupted_outcome(
+    stop: TraversalStop,
+    ast_tokens: Vec<RawSemanticToken>,
+    lexer_tokens: Vec<RawSemanticToken>,
+    work_done: usize,
+) -> SemanticTokensTraversalOutcome {
+    match stop {
+        TraversalStop::InvalidGeometry => SemanticTokensTraversalOutcome::CollectionFailure(
+            SemanticTokensCollectionError::new("invalid semantic-token source geometry"),
+        ),
+        TraversalStop::Cancelled => SemanticTokensTraversalOutcome::Cancelled { work_done },
+        TraversalStop::BudgetExhausted => SemanticTokensTraversalOutcome::BudgetExhausted {
+            partial: PartialSemanticTokens { ast_tokens, lexer_tokens },
+            work_done,
+        },
+        TraversalStop::WorkCounterOverflow => SemanticTokensTraversalOutcome::CollectionFailure(
+            SemanticTokensCollectionError::new("semantic-token work counter overflow"),
+        ),
+    }
 }
 
 /// Collect semantic tokens for LSP highlighting in the Complete stage.
@@ -530,12 +958,78 @@ pub fn collect_semantic_tokens(
     text: &str,
     to_pos16: &impl Fn(usize) -> (u32, u32),
 ) -> Vec<EncodedToken> {
+    match collect_semantic_tokens_controlled(
+        ast,
+        text,
+        to_pos16,
+        &SemanticTokensTraversalControl::unlimited(),
+    ) {
+        SemanticTokensTraversalOutcome::Complete(tokens) => tokens,
+        SemanticTokensTraversalOutcome::Cancelled { .. }
+        | SemanticTokensTraversalOutcome::BudgetExhausted { .. }
+        | SemanticTokensTraversalOutcome::NoAst
+        | SemanticTokensTraversalOutcome::CollectionFailure(_)
+        | SemanticTokensTraversalOutcome::SourceLimitExceeded { .. } => Vec::new(),
+    }
+}
+
+/// Collect from a boundary that preserves absent-AST and typed-failure states.
+pub fn collect_semantic_tokens_from_input(
+    input: SemanticTokensCollectionInput<'_>,
+    text: &str,
+    to_pos16: &impl Fn(usize) -> (u32, u32),
+    control: &SemanticTokensTraversalControl<'_>,
+) -> SemanticTokensTraversalOutcome {
+    match input {
+        SemanticTokensCollectionInput::Ast(ast) => {
+            collect_semantic_tokens_controlled(ast, text, to_pos16, control)
+        }
+        SemanticTokensCollectionInput::NoAst => SemanticTokensTraversalOutcome::NoAst,
+        SemanticTokensCollectionInput::CollectionFailure(error) => {
+            SemanticTokensTraversalOutcome::CollectionFailure(error)
+        }
+    }
+}
+
+/// Collect semantic tokens with caller-owned cancellation and deterministic work limits.
+pub fn collect_semantic_tokens_controlled(
+    ast: &Node,
+    text: &str,
+    to_pos16: &impl Fn(usize) -> (u32, u32),
+    control: &SemanticTokensTraversalControl<'_>,
+) -> SemanticTokensTraversalOutcome {
+    let mut traversal = TraversalState { control, work_done: 0 };
     let leg = legend();
     // AST tokens are collected first so that when lexer tokens occupy the same
     // span (e.g. "method" keyword vs method-name token), the AST token wins
     // the stable-sort tie-break in remove_overlapping_tokens.
-    let mut ast_tokens: Vec<(u32, u32, u32, u32, u32)> = Vec::new();
-    let mut lexer_tokens: Vec<(u32, u32, u32, u32, u32)> = Vec::new();
+    let mut ast_tokens: Vec<RawSemanticToken> = Vec::new();
+    let mut lexer_tokens: Vec<RawSemanticToken> = Vec::new();
+    macro_rules! controlled_value {
+        ($expression:expr) => {
+            match $expression {
+                Ok(value) => value,
+                Err(stop) => {
+                    return interrupted_outcome(
+                        stop,
+                        ast_tokens,
+                        lexer_tokens,
+                        traversal.work_done,
+                    );
+                }
+            }
+        };
+    }
+
+    if control.is_bounded() && text.len() > MAX_BOUNDED_LEXER_SOURCE_BYTES {
+        if let Err(stop) = traversal.admit_work() {
+            return interrupted_outcome(stop, ast_tokens, lexer_tokens, traversal.work_done);
+        }
+        return SemanticTokensTraversalOutcome::SourceLimitExceeded {
+            source_bytes: text.len(),
+            limit_bytes: MAX_BOUNDED_LEXER_SOURCE_BYTES,
+        };
+    }
 
     // 1) Fast path from lexer categories: conservative single-line emission
     // FIFO queue of pending heredoc injection languages, one entry per heredoc start token
@@ -544,11 +1038,13 @@ pub fn collect_semantic_tokens(
     let mut pending_heredoc_langs: VecDeque<Option<&'static str>> = VecDeque::new();
     // Use with_body_tokens so the lexer emits HeredocBody tokens (needed for injection).
     let mut lexer = PerlLexer::with_body_tokens(text);
-    while let Some(tok) = lexer.next_token() {
-        let (sl, sc) = to_pos16(tok.start);
-        let (el, ec) = to_pos16(tok.end);
-        let len = if sl == el { ec.saturating_sub(sc) } else { 0 };
-
+    loop {
+        if let Err(stop) = traversal.admit_work() {
+            return interrupted_outcome(stop, ast_tokens, lexer_tokens, traversal.work_done);
+        }
+        let Some(tok) = lexer.next_token() else {
+            break;
+        };
         // Map token types to semantic token kinds
         // Note: The lexer's TokenType enum is simpler than what we're matching
         let kind = match &tok.token_type {
@@ -573,54 +1069,61 @@ pub fn collect_semantic_tokens(
                 // This avoids the "longer wins" overlap-removal rule that would
                 // silently discard variable sub-tokens if we also pushed a
                 // whole-string token spanning the entire interpolated string.
-                if len > 0 {
+                if tok.end > tok.start {
                     let text_bytes = tok.text.as_bytes();
                     let mut cursor: usize = 1; // skip opening quote char
                     for part in parts {
+                        controlled_value!(traversal.admit_work());
                         match part {
                             StringPart::Literal(lit) => {
-                                if let Some(rel) = find_bytes_at(text_bytes, cursor, lit.as_bytes())
-                                {
+                                if let Some(rel) = controlled_value!(find_bytes_at_controlled(
+                                    text_bytes,
+                                    cursor,
+                                    lit.as_bytes(),
+                                    &mut traversal,
+                                )) {
                                     let part_start = tok.start + rel;
                                     let part_end = part_start + lit.len();
-                                    let (psl, psc) = to_pos16(part_start);
-                                    let (pel, pec) = to_pos16(part_end);
-                                    let plen = if psl == pel { pec.saturating_sub(psc) } else { 0 };
-                                    if plen > 0 {
-                                        lexer_tokens.push((
-                                            psl,
-                                            psc,
-                                            plen,
-                                            kind_idx(&leg, "string"),
-                                            0,
-                                        ));
-                                    }
+                                    controlled_value!(push_line_contained_segments(
+                                        text,
+                                        part_start,
+                                        part_end,
+                                        to_pos16,
+                                        kind_idx(&leg, "string"),
+                                        0,
+                                        &mut lexer_tokens,
+                                        &mut traversal,
+                                    ));
                                     cursor = rel + lit.len();
                                 }
                             }
                             StringPart::Variable(var) => {
-                                if let Some(rel) = find_bytes_at(text_bytes, cursor, var.as_bytes())
-                                {
+                                if let Some(rel) = controlled_value!(find_bytes_at_controlled(
+                                    text_bytes,
+                                    cursor,
+                                    var.as_bytes(),
+                                    &mut traversal,
+                                )) {
                                     let part_start = tok.start + rel;
                                     let part_end = part_start + var.len();
-                                    let (psl, psc) = to_pos16(part_start);
-                                    let (pel, pec) = to_pos16(part_end);
-                                    let plen = if psl == pel { pec.saturating_sub(psc) } else { 0 };
-                                    if plen > 0 {
-                                        lexer_tokens.push((
-                                            psl,
-                                            psc,
-                                            plen,
-                                            kind_idx(&leg, "variable"),
-                                            0,
-                                        ));
-                                    }
+                                    controlled_value!(push_line_contained_segments(
+                                        text,
+                                        part_start,
+                                        part_end,
+                                        to_pos16,
+                                        kind_idx(&leg, "variable"),
+                                        0,
+                                        &mut lexer_tokens,
+                                        &mut traversal,
+                                    ));
                                     cursor = rel + var.len();
                                 }
                             }
-                            // Expression, ArraySlice, MethodCall: defined in StringPart but
-                            // the current lexer never emits them — only Literal and Variable
-                            // are populated. Skip silently.
+                            // Expression, ArraySlice, MethodCall: defined in StringPart
+                            // and emitted by the lexer for subscripts, slices, and
+                            // method tails. They render as string-fragment text here
+                            // (no dedicated semantic-token kind); skipping them
+                            // leaves only their Variable head highlighted.
                             _ => {}
                         }
                     }
@@ -630,7 +1133,7 @@ pub fn collect_semantic_tokens(
 
             TokenType::StringLiteral
             | TokenType::QuoteSingle
-            | TokenType::QuoteDouble
+            | TokenType::QuoteDouble(_)
             | TokenType::QuoteWords
             | TokenType::QuoteCommand => "string",
 
@@ -640,7 +1143,7 @@ pub fn collect_semantic_tokens(
                 "string"
             }
 
-            TokenType::HeredocBody(_) => {
+            TokenType::HeredocBody(_) | TokenType::InterpolatedHeredocBody(_) => {
                 // Pop the queued injection language for the corresponding heredoc start.
                 // NOTE: The Arc<str> inside HeredocBody is always empty_arc(); the actual
                 // body text must be sliced from the source using tok.start..tok.end.
@@ -649,7 +1152,26 @@ pub fn collect_semantic_tokens(
                 {
                     let body_end = tok.end.min(text.len());
                     let body = &text[tok.start.min(body_end)..body_end];
-                    tokenize_heredoc_body(body, tok.start, lang, to_pos16, &leg, &mut lexer_tokens);
+                    let before_injection = lexer_tokens.len();
+                    controlled_value!(tokenize_heredoc_body(
+                        text,
+                        body,
+                        tok.start,
+                        lang,
+                        to_pos16,
+                        &leg,
+                        &mut lexer_tokens,
+                        &mut traversal,
+                    ));
+                    if lexer_tokens.len() > before_injection {
+                        // The injected language painted this body. Emitting the
+                        // body as whole-line string segments as well would let
+                        // the "longer wins" rule in remove_overlapping_tokens
+                        // silently discard those narrower keyword/key tokens —
+                        // the same hazard the InterpolatedString arm avoids by
+                        // emitting only its parts.
+                        continue;
+                    }
                 }
                 "string"
             }
@@ -673,377 +1195,505 @@ pub fn collect_semantic_tokens(
             _ => continue,
         };
 
-        if len > 0 {
-            lexer_tokens.push((sl, sc, len, kind_idx(&leg, kind), 0));
-        }
+        controlled_value!(push_line_contained_segments(
+            text,
+            tok.start,
+            tok.end,
+            to_pos16,
+            kind_idx(&leg, kind),
+            0,
+            &mut lexer_tokens,
+            &mut traversal,
+        ));
     }
 
-    let const_fast_enabled = ast_uses_const_fast(ast);
-    let readonly_enabled = ast_uses_readonly(ast);
+    let const_fast_enabled = controlled_value!(ast_uses_const_fast(ast, &mut traversal));
+    let readonly_enabled = controlled_value!(ast_uses_readonly(ast, &mut traversal));
 
     // 2a) Collect variable declaration spans for modifier tagging
-    let decl_spans = declaration_readonly_flags(ast)
-        .into_iter()
-        .map(|((start, end), is_readonly)| (start, end, is_readonly))
-        .collect::<Vec<_>>();
+    let decl_spans = controlled_value!(declaration_readonly_flags(
+        ast,
+        const_fast_enabled,
+        readonly_enabled,
+        &mut traversal,
+    ));
 
     // 2a-ii) Collect assignment LHS spans to apply the "modification" modifier (bit 7)
-    let assignment_spans = assignment_lhs_spans(ast);
+    let assignment_spans = controlled_value!(assignment_lhs_spans(ast, &mut traversal));
 
     // 2b) AST overlays: package/sub/variable with precise spans where available
-    walk_ast_full(ast, &mut |node| {
-        // For nodes with name_span, use the precise span for better highlighting
-        match &node.kind {
-            NodeKind::Package { name_span, .. } => {
-                let (sl, sc) = to_pos16(name_span.start);
-                let (el, ec) = to_pos16(name_span.end);
-                let len = if sl == el { ec.saturating_sub(sc) } else { 0 };
-                if len > 0 {
-                    ast_tokens.push((
-                        sl,
-                        sc,
-                        len,
+    controlled_value!(walk_ast_full_controlled_with_state(
+        ast,
+        &mut traversal,
+        &mut |node, traversal| {
+            // For nodes with name_span, use the precise span for better highlighting
+            match &node.kind {
+                NodeKind::Package { name_span, .. } => {
+                    push_line_contained_segments(
+                        text,
+                        name_span.start,
+                        name_span.end,
+                        to_pos16,
                         kind_idx(&leg, "namespace"),
                         1, /*declaration*/
-                    ));
+                        &mut ast_tokens,
+                        traversal,
+                    )?;
+                    return Ok(true);
                 }
-                return true;
-            }
-            NodeKind::Subroutine { name: Some(_), name_span: Some(span), .. } => {
-                let (sl, sc) = to_pos16(span.start);
-                let (el, ec) = to_pos16(span.end);
-                let len = if sl == el { ec.saturating_sub(sc) } else { 0 };
-                if len > 0 {
-                    ast_tokens.push((
-                        sl,
-                        sc,
-                        len,
+                NodeKind::Subroutine { name: Some(_), name_span: Some(span), .. } => {
+                    push_line_contained_segments(
+                        text,
+                        span.start,
+                        span.end,
+                        to_pos16,
                         kind_idx(&leg, "function"),
                         1 | 2, /*declaration|definition*/
-                    ));
+                        &mut ast_tokens,
+                        traversal,
+                    )?;
+                    return Ok(true);
                 }
-                return true;
-            }
-            NodeKind::Subroutine { name: Some(_), .. } => {
-                let (sl, sc) = to_pos16(node.location.start);
-                let (el, ec) = to_pos16(node.location.end);
-                let len = if sl == el { ec.saturating_sub(sc) } else { 0 };
-                if len > 0 {
-                    ast_tokens.push((
-                        sl,
-                        sc,
-                        len,
+                NodeKind::Subroutine { name: Some(_), .. } => {
+                    // Whole-construct anchor: see push_single_line_anchor.
+                    push_line_contained_token(
+                        node.location.start,
+                        node.location.end,
+                        to_pos16,
                         kind_idx(&leg, "function"),
                         1, /*declaration*/
-                    ));
+                        &mut ast_tokens,
+                    );
+                    return Ok(true);
                 }
-                return true;
-            }
-            NodeKind::Method { name, .. } => {
-                let (start, end) = method_declaration_name_offsets(
-                    text,
-                    node.location.start,
-                    node.location.end,
-                    name,
-                )
-                .unwrap_or((node.location.start, node.location.end));
-                let (sl, sc) = to_pos16(start);
-                let (el, ec) = to_pos16(end);
-                let len = if sl == el { ec.saturating_sub(sc) } else { 0 };
-                if len > 0 {
-                    ast_tokens.push((
-                        sl,
-                        sc,
-                        len,
+                NodeKind::Method { name, .. } => {
+                    let (start, end) = method_declaration_name_offsets(
+                        text,
+                        node.location.start,
+                        node.location.end,
+                        name,
+                    )
+                    .unwrap_or((node.location.start, node.location.end));
+                    // The located name is single-line; the fallback is a
+                    // whole-construct anchor. See push_single_line_anchor.
+                    push_line_contained_token(
+                        start,
+                        end,
+                        to_pos16,
                         kind_idx(&leg, "method"),
                         1 | 2, /*declaration|definition*/
-                    ));
+                        &mut ast_tokens,
+                    );
+                    return Ok(true);
                 }
-                return true;
-            }
-            NodeKind::Class { .. } => {
-                let (sl, sc) = to_pos16(node.location.start);
-                let (el, ec) = to_pos16(node.location.end);
-                let len = if sl == el { ec.saturating_sub(sc) } else { 0 };
-                if len > 0 {
-                    ast_tokens.push((sl, sc, len, kind_idx(&leg, "class"), 1 /*declaration*/));
+                NodeKind::Class { .. } => {
+                    // Whole-construct anchor: see push_single_line_anchor.
+                    push_line_contained_token(
+                        node.location.start,
+                        node.location.end,
+                        to_pos16,
+                        kind_idx(&leg, "class"),
+                        1, /*declaration*/
+                        &mut ast_tokens,
+                    );
+                    return Ok(true);
                 }
-                return true;
-            }
-            NodeKind::PhaseBlock { phase_span: Some(span), .. } => {
-                let (sl, sc) = to_pos16(span.start);
-                let (el, ec) = to_pos16(span.end);
-                let len = if sl == el { ec.saturating_sub(sc) } else { 0 };
-                if len > 0 {
-                    ast_tokens.push((sl, sc, len, kind_idx(&leg, "macro"), 0));
+                NodeKind::PhaseBlock { phase_span: Some(span), .. } => {
+                    push_line_contained_segments(
+                        text,
+                        span.start,
+                        span.end,
+                        to_pos16,
+                        kind_idx(&leg, "macro"),
+                        0,
+                        &mut ast_tokens,
+                        traversal,
+                    )?;
+                    return Ok(true);
                 }
-                return true;
-            }
-            NodeKind::LabeledStatement { label, .. } => {
-                let Some(fallback_end) = node.location.start.checked_add(label.len()) else {
-                    return true;
-                };
-                let (start, end) =
-                    statement_label_offsets(text, node.location.start, node.location.end, label)
-                        .unwrap_or((node.location.start, fallback_end));
-                let (sl, sc) = to_pos16(start);
-                let (el, ec) = to_pos16(end);
-                let len = if sl == el { ec.saturating_sub(sc) } else { 0 };
-                if len > 0 {
-                    ast_tokens.push((sl, sc, len, kind_idx(&leg, "label"), 1 /*declaration*/));
+                NodeKind::LabeledStatement { label, .. } => {
+                    let Some(fallback_end) = node.location.start.checked_add(label.len()) else {
+                        return Ok(true);
+                    };
+                    let (start, end) = statement_label_offsets(
+                        text,
+                        node.location.start,
+                        node.location.end,
+                        label,
+                    )
+                    .unwrap_or((node.location.start, fallback_end));
+                    push_line_contained_segments(
+                        text,
+                        start,
+                        end,
+                        to_pos16,
+                        kind_idx(&leg, "label"),
+                        1, /*declaration*/
+                        &mut ast_tokens,
+                        traversal,
+                    )?;
+                    return Ok(true);
                 }
-                return true;
-            }
-            NodeKind::LoopControl { op, label: Some(label) } => {
-                if let Some((start, end)) = loop_control_label_offsets(
-                    text,
-                    node.location.start,
-                    node.location.end,
-                    op,
-                    label,
-                ) {
-                    let (sl, sc) = to_pos16(start);
-                    let (el, ec) = to_pos16(end);
-                    let len = if sl == el { ec.saturating_sub(sc) } else { 0 };
-                    if len > 0 {
-                        ast_tokens.push((sl, sc, len, kind_idx(&leg, "label"), 0));
+                NodeKind::LoopControl { op, label: Some(label) } => {
+                    if let Some((start, end)) = loop_control_label_offsets(
+                        text,
+                        node.location.start,
+                        node.location.end,
+                        op,
+                        label,
+                    ) {
+                        push_line_contained_segments(
+                            text,
+                            start,
+                            end,
+                            to_pos16,
+                            kind_idx(&leg, "label"),
+                            0,
+                            &mut ast_tokens,
+                            traversal,
+                        )?;
                     }
+                    return Ok(true);
                 }
-                return true;
-            }
-            NodeKind::MethodCall { object, method, args } => {
-                // Emit a narrow token for just the method name, not the entire
-                // expression. Whitespace/newlines may separate the receiver from
-                // `->method` (perldoc perlop), so scan forward for the span rather
-                // than assuming `->` abuts the receiver at object.location.end + 2.
-                if let Some((method_name_start, method_name_end)) =
-                    method_call_name_offsets(text, object.location.end, method)
-                {
-                    let (sl, sc) = to_pos16(method_name_start);
-                    let (el, ec) = to_pos16(method_name_end);
-                    let len = if sl == el { ec.saturating_sub(sc) } else { 0 };
-                    if len > 0 {
-                        ast_tokens.push((sl, sc, len, kind_idx(&leg, "method"), 0));
+                NodeKind::MethodCall { object, method, args } => {
+                    // Emit a narrow token for just the method name, not the entire
+                    // expression. Whitespace/newlines may separate the receiver from
+                    // `->method` (perldoc perlop), so scan forward for the span rather
+                    // than assuming `->` abuts the receiver at object.location.end + 2.
+                    if let Some((method_name_start, method_name_end)) =
+                        method_call_name_offsets(text, object.location.end, method)
+                    {
+                        push_line_contained_segments(
+                            text,
+                            method_name_start,
+                            method_name_end,
+                            to_pos16,
+                            kind_idx(&leg, "method"),
+                            0,
+                            &mut ast_tokens,
+                            traversal,
+                        )?;
                     }
-                }
-                // If this is a SQL-bearing DBI method, classify the first string arg as sql_string.
-                let is_sql_method = matches!(
-                    method.as_str(),
-                    "prepare"
-                        | "do"
-                        | "query"
-                        | "selectrow_array"
-                        | "selectrow_arrayref"
-                        | "selectrow_hashref"
-                        | "selectall_arrayref"
-                        | "selectall_hashref"
-                        | "fetchall_arrayref"
-                        | "fetchall_hashref"
-                        | "fetchrow_arrayref"
-                        | "fetchrow_hashref"
-                        | "execute"
-                );
-                if is_sql_method
-                    && let Some(first_arg) = args.first()
-                    && matches!(first_arg.kind, NodeKind::String { .. })
-                {
-                    let (asl, asc) = to_pos16(first_arg.location.start);
-                    let (ael, aec) = to_pos16(first_arg.location.end);
-                    let alen = if asl == ael { aec.saturating_sub(asc) } else { 0 };
-                    if alen > 0 {
-                        ast_tokens.push((asl, asc, alen, kind_idx(&leg, "sql_string"), 0));
-                    }
-                }
-                return true;
-            }
-            _ => {}
-        }
-
-        let (s, e) = (node.location.start, node.location.end);
-        let (sl, sc) = to_pos16(s);
-        let (el, ec) = to_pos16(e);
-        let len = if sl == el { ec.saturating_sub(sc) } else { 0 };
-
-        let (kind, mods): (&str, u32) = match &node.kind {
-            NodeKind::FunctionCall { name, .. } | NodeKind::AmperCall { name, .. } => {
-                if matches!(&node.kind, NodeKind::FunctionCall { .. })
-                    && ((const_fast_enabled && name == "const")
-                        || (readonly_enabled && name == "Readonly"))
-                {
-                    return true;
-                }
-                // Skip builtins that should remain as keywords from the lexer pass,
-                // and synthetic names produced for coderef/deref calls (these don't
-                // start at node.location.start — painting them produces garbage).
-                match name.as_str() {
-                    "eval" | "do" | "use" | "no" | "return" | "my" | "our" | "local" | "state"
-                    | "next" | "last" | "redo" | "goto" => return true,
-                    // Synthetic FunctionCall names from postfix.rs (coderef invocation)
-                    // and variables.rs (deref).  The name is not a real identifier at
-                    // node.location.start, so narrowing to name.len() bytes paints
-                    // garbage on the receiver.
-                    "->()" | "&{}" | "$" => return true,
-                    _ => {
-                        // Narrow the token to just the function name, not the entire
-                        // call expression.  Previously the token spanned the whole call
-                        // (name + args), which caused the arguments to inherit the
-                        // function color and dropped inner string/number/variable tokens
-                        // via overlap removal.  (#5077)
-                        //
-                        // For AmperCall the source is `&name(...)` — the name starts
-                        // one byte after the node start (past the `&`).
-                        let is_amper = matches!(&node.kind, NodeKind::AmperCall { .. });
-                        let name_start = if is_amper { s + 1 } else { s };
-                        let name_end = name_start + name.len();
-                        let (nsl, nsc) = to_pos16(name_start);
-                        let (nel, nec) = to_pos16(name_end);
-                        if nsl == nel {
-                            let nlen = nec.saturating_sub(nsc);
-                            if nlen > 0 {
-                                ast_tokens.push((nsl, nsc, nlen, kind_idx(&leg, "function"), 0));
-                            }
+                    // If this is a SQL-bearing DBI method, classify the first string arg as sql_string.
+                    let is_sql_method = matches!(
+                        method.as_str(),
+                        "prepare"
+                            | "do"
+                            | "query"
+                            | "selectrow_array"
+                            | "selectrow_arrayref"
+                            | "selectrow_hashref"
+                            | "selectall_arrayref"
+                            | "selectall_hashref"
+                            | "fetchall_arrayref"
+                            | "fetchall_hashref"
+                            | "fetchrow_arrayref"
+                            | "fetchrow_hashref"
+                            | "execute"
+                    );
+                    if is_sql_method
+                        && let Some(first_arg) = args.first()
+                        && let NodeKind::String { interpolated, .. } = first_arg.kind
+                    {
+                        if interpolated {
+                            // An interpolated argument is also painted by the
+                            // lexer as literal/variable parts. Segmenting the
+                            // whole argument would cover those narrower tokens
+                            // on every line, and longer-wins in
+                            // remove_overlapping_tokens would discard them —
+                            // the same hazard handled for heredoc injection.
+                            // Keep the pre-existing single-line-only reach so
+                            // no continuation line loses its variable token.
+                            push_line_contained_token(
+                                first_arg.location.start,
+                                first_arg.location.end,
+                                to_pos16,
+                                kind_idx(&leg, "sql_string"),
+                                0,
+                                &mut ast_tokens,
+                            );
+                        } else {
+                            push_line_contained_segments(
+                                text,
+                                first_arg.location.start,
+                                first_arg.location.end,
+                                to_pos16,
+                                kind_idx(&leg, "sql_string"),
+                                0,
+                                &mut ast_tokens,
+                                traversal,
+                            )?;
                         }
-                        return true; // already emitted with narrowed range
+                    }
+                    return Ok(true);
+                }
+                _ => {}
+            }
+
+            let (s, e) = (node.location.start, node.location.end);
+
+            let (kind, mods): (&str, u32) = match &node.kind {
+                NodeKind::FunctionCall { name, .. } | NodeKind::AmperCall { name, .. } => {
+                    if matches!(&node.kind, NodeKind::FunctionCall { .. })
+                        && ((const_fast_enabled && name == "const")
+                            || (readonly_enabled && name == "Readonly"))
+                    {
+                        return Ok(true);
+                    }
+                    // Skip builtins that should remain as keywords from the lexer pass,
+                    // and synthetic names produced for coderef/deref calls (these don't
+                    // start at node.location.start — painting them produces garbage).
+                    match name.as_str() {
+                        "eval" | "do" | "use" | "no" | "return" | "my" | "our" | "local"
+                        | "state" | "next" | "last" | "redo" | "goto" | "await" => return Ok(true),
+                        // Synthetic FunctionCall names from postfix.rs (coderef invocation)
+                        // and variables.rs (deref).  The name is not a real identifier at
+                        // node.location.start, so narrowing to name.len() bytes paints
+                        // garbage on the receiver.
+                        "->()" | "&{}" | "$" => return Ok(true),
+                        _ => {
+                            // Narrow the token to just the function name, not the entire
+                            // call expression.  Previously the token spanned the whole call
+                            // (name + args), which caused the arguments to inherit the
+                            // function color and dropped inner string/number/variable tokens
+                            // via overlap removal.  (#5077)
+                            //
+                            // For AmperCall the source is `&name(...)` — the name starts
+                            // one byte after the node start (past the `&`).
+                            let is_amper = matches!(&node.kind, NodeKind::AmperCall { .. });
+                            let name_start = if is_amper { s + 1 } else { s };
+                            let name_end = name_start + name.len();
+                            let (nsl, nsc) = to_pos16(name_start);
+                            let (nel, nec) = to_pos16(name_end);
+                            if nsl == nel {
+                                let nlen = nec.saturating_sub(nsc);
+                                if nlen > 0 {
+                                    ast_tokens.push((
+                                        nsl,
+                                        nsc,
+                                        nlen,
+                                        kind_idx(&leg, "function"),
+                                        0,
+                                    ));
+                                }
+                            }
+                            return Ok(true); // already emitted with narrowed range
+                        }
                     }
                 }
-            }
-            NodeKind::Variable { sigil, name } => {
-                let (vs, ve) = (node.location.start, node.location.end);
-                let decl_info = decl_spans.iter().find(|(ds, de, _)| *ds <= vs && ve <= *de);
-                let full_name = format!("{sigil}{name}");
-                let special_mod = if is_special_variable(&full_name) { 512 } else { 0 }; // defaultLibrary bit 9
-                let sigil_mod: u32 = match sigil.as_str() {
-                    "$" => 1024, // scalarVariable bit 10
-                    "@" => 2048, // arrayVariable  bit 11
-                    "%" => 4096, // hashVariable   bit 12
-                    _ => 0,      // "&" (code ref), "*" (glob), others
-                };
-                let mods = match decl_info {
-                    // `Const::Fast` / `Readonly` produce true read-only variables,
-                    // so emit `declaration | readonly` (bits 0 | 2) (#4968).
-                    Some((_, _, true)) => 1 | 4 | special_mod | sigil_mod,
-                    // `my`, `state`, `local`, and `our` create ordinary mutable
-                    // lexical/package variables — `our` is an alias, not immutable
-                    // — so the `readonly` modifier (bit 2) must not be applied
-                    // (#4968). Use `declaration` only.
-                    Some((_, _, false)) => 1 | special_mod | sigil_mod,
-                    None => {
-                        // Apply "modification" modifier (bit 7 = 128) when the variable is
-                        // the direct LHS of an assignment expression ($x = ...).
-                        let mod_bit = if assignment_spans.contains(&(vs, ve)) { 128 } else { 0 };
-                        special_mod | sigil_mod | mod_bit
-                    }
-                };
-                ("variable", mods)
-            }
-            _ => return true,
-        };
+                NodeKind::Variable { sigil, name } => {
+                    let (vs, ve) = (node.location.start, node.location.end);
+                    let decl_info = declaration_flag(&decl_spans, (vs, ve), traversal)?;
+                    let full_name = format!("{sigil}{name}");
+                    let special_mod = if is_special_variable(&full_name) { 512 } else { 0 }; // defaultLibrary bit 9
+                    let sigil_mod: u32 = match sigil.as_str() {
+                        "$" => 1024, // scalarVariable bit 10
+                        "@" => 2048, // arrayVariable  bit 11
+                        "%" => 4096, // hashVariable   bit 12
+                        _ => 0,      // "&" (code ref), "*" (glob), others
+                    };
+                    let mods = match decl_info {
+                        // `Const::Fast` / `Readonly` produce true read-only variables,
+                        // so emit `declaration | readonly` (bits 0 | 2) (#4968).
+                        Some(true) => 1 | 4 | special_mod | sigil_mod,
+                        // `my`, `state`, `local`, and `our` create ordinary mutable
+                        // lexical/package variables — `our` is an alias, not immutable
+                        // — so the `readonly` modifier (bit 2) must not be applied
+                        // (#4968). Use `declaration` only.
+                        Some(false) => 1 | special_mod | sigil_mod,
+                        None => {
+                            // Apply "modification" modifier (bit 7 = 128) when the variable is
+                            // the direct LHS of an assignment expression ($x = ...).
+                            let mod_bit =
+                                if assignment_spans.contains(&(vs, ve)) { 128 } else { 0 };
+                            special_mod | sigil_mod | mod_bit
+                        }
+                    };
+                    ("variable", mods)
+                }
+                _ => return Ok(true),
+            };
 
-        if len > 0 {
-            ast_tokens.push((sl, sc, len, kind_idx(&leg, kind), mods));
-        }
-        true
-    });
+            // Generic node span: an expression or declaration anchor that may
+            // cover a whole multiline construct. See push_single_line_anchor.
+            push_line_contained_token(s, e, to_pos16, kind_idx(&leg, kind), mods, &mut ast_tokens);
+            Ok(true)
+        },
+    ));
 
-    // 3) Merge: AST tokens first so they win stable-sort ties over same-span lexer tokens
-    let mut raw_tokens = ast_tokens;
-    raw_tokens.extend(lexer_tokens);
-
-    // 4) Remove overlapping tokens (LSP specification compliance)
-    let dedup_tokens = remove_overlapping_tokens(raw_tokens);
-
-    // 5) Sort by position and encode with deltas (thread-safe)
-    encode_raw_tokens_to_deltas(dedup_tokens)
+    let tokens =
+        controlled_value!(finalize_tokens_controlled(&ast_tokens, &lexer_tokens, &mut traversal,));
+    SemanticTokensTraversalOutcome::Complete(tokens)
 }
 
-/// Remove overlapping tokens to comply with LSP specification
-/// Prefers tokens with higher specificity (AST over lexer) and longer spans
-fn remove_overlapping_tokens(
-    raw_tokens: Vec<(u32, u32, u32, u32, u32)>,
-) -> Vec<(u32, u32, u32, u32, u32)> {
-    // Sort by start position first
-    let mut sorted_tokens = raw_tokens;
-    sorted_tokens
-        .sort_by_key(|&(line, start_char, _length, _token_type, _modifier)| (line, start_char));
+#[derive(Clone, Copy)]
+struct IndexedRawToken {
+    token: RawSemanticToken,
+    order: usize,
+}
 
-    let mut result = Vec::new();
+fn indexed_token_key(token: &IndexedRawToken) -> (u32, u32, usize) {
+    (token.token.0, token.token.1, token.order)
+}
 
-    for token in sorted_tokens {
-        let (line, start_char, length, _token_type, _modifier) = token;
+fn sift_down(
+    tokens: &mut [IndexedRawToken],
+    mut root: usize,
+    end: usize,
+    traversal: &mut TraversalState<'_, '_>,
+) -> Result<(), TraversalStop> {
+    loop {
+        let Some(left) = root.checked_mul(2).and_then(|value| value.checked_add(1)) else {
+            return Ok(());
+        };
+        if left >= end {
+            return Ok(());
+        }
+        let mut largest = root;
+        traversal.admit_work()?;
+        if indexed_token_key(&tokens[left]) > indexed_token_key(&tokens[largest]) {
+            largest = left;
+        }
+        let right = left.saturating_add(1);
+        if right < end {
+            traversal.admit_work()?;
+            if indexed_token_key(&tokens[right]) > indexed_token_key(&tokens[largest]) {
+                largest = right;
+            }
+        }
+        if largest == root {
+            return Ok(());
+        }
+        traversal.admit_work()?;
+        tokens.swap(root, largest);
+        root = largest;
+    }
+}
 
-        // Check if this token overlaps with the last token in result
-        if let Some(&(last_line, last_start, last_length, _last_type, _last_modifier)) =
-            result.last()
+fn controlled_sort_tokens(
+    tokens: &mut [IndexedRawToken],
+    traversal: &mut TraversalState<'_, '_>,
+) -> Result<(), TraversalStop> {
+    let length = tokens.len();
+    for root in (0..length / 2).rev() {
+        sift_down(tokens, root, length, traversal)?;
+    }
+    for end in (1..length).rev() {
+        traversal.admit_work()?;
+        tokens.swap(0, end);
+        sift_down(tokens, 0, end, traversal)?;
+    }
+    Ok(())
+}
+
+fn finalize_tokens_controlled(
+    ast_tokens: &[RawSemanticToken],
+    lexer_tokens: &[RawSemanticToken],
+    traversal: &mut TraversalState<'_, '_>,
+) -> Result<Vec<EncodedToken>, TraversalStop> {
+    let capacity = ast_tokens.len().saturating_add(lexer_tokens.len());
+    let mut indexed = Vec::with_capacity(capacity);
+    for token in ast_tokens.iter().chain(lexer_tokens) {
+        traversal.admit_work()?;
+        indexed.push(IndexedRawToken { token: *token, order: indexed.len() });
+    }
+    controlled_sort_tokens(&mut indexed, traversal)?;
+
+    let mut dedup: Vec<RawSemanticToken> = Vec::with_capacity(indexed.len());
+    for indexed_token in indexed {
+        traversal.admit_work()?;
+        let token = indexed_token.token;
+        let (line, start_char, length, _, _) = token;
+        if let Some(&(last_line, last_start, last_length, _, _)) = dedup.last()
+            && line == last_line
+            && start_char < last_start.saturating_add(last_length)
         {
-            // Tokens overlap if they're on the same line and ranges intersect
-            if line == last_line && start_char < last_start + last_length {
-                // Choose the token with better specificity or longer length
-                if length > last_length {
-                    result.pop(); // Remove the previous token
-                    result.push(token);
-                }
-                // If current token is not better, skip it
-            } else {
-                result.push(token);
+            if length > last_length {
+                dedup.pop();
+                dedup.push(token);
             }
         } else {
-            result.push(token);
+            dedup.push(token);
         }
     }
 
-    result
-}
-
-/// Thread-safe token encoding from raw position data
-fn encode_raw_tokens_to_deltas(
-    mut raw_tokens: Vec<(u32, u32, u32, u32, u32)>,
-) -> Vec<EncodedToken> {
-    // Sort by position (line, then character)
-    raw_tokens.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
-
-    let mut out: Vec<EncodedToken> = Vec::new();
-    let mut prev_line = 0u32;
-    let mut prev_char = 0u32;
-
-    for (line, char, len, kind, mods) in raw_tokens {
-        let (dline, dchar) = if line == prev_line {
-            (0, char.saturating_sub(prev_char))
+    let mut encoded = Vec::with_capacity(dedup.len());
+    let mut previous_line = 0u32;
+    let mut previous_character = 0u32;
+    for (line, character, length, kind, modifiers) in dedup {
+        traversal.admit_work()?;
+        let (delta_line, delta_character) = if line == previous_line {
+            (0, character.saturating_sub(previous_character))
         } else {
-            (line.saturating_sub(prev_line), char)
+            (line.saturating_sub(previous_line), character)
         };
-
-        out.push([dline, dchar, len, kind, mods]);
-        prev_line = line;
-        prev_char = char;
+        encoded.push([delta_line, delta_character, length, kind, modifiers]);
+        previous_line = line;
+        previous_character = character;
     }
-
-    out
+    Ok(encoded)
 }
 
 /// Comprehensive AST walker for semantic token extraction.
+#[cfg(test)]
 fn walk_ast_full<F>(node: &Node, visitor: &mut F) -> bool
 where
     F: FnMut(&Node) -> bool,
 {
-    if !visitor(node) {
-        return false;
-    }
-
-    for child in node.children() {
-        if !walk_ast_full(child, visitor) {
-            return false;
-        }
-    }
-
-    true
+    let control = SemanticTokensTraversalControl::unlimited();
+    let mut traversal = TraversalState { control: &control, work_done: 0 };
+    walk_ast_full_controlled(node, &mut traversal, visitor).unwrap_or_default()
 }
 
-fn declaration_readonly_flags(ast: &Node) -> FxHashMap<(usize, usize), bool> {
-    let mut flags = FxHashMap::default();
-    let const_fast_enabled = ast_uses_const_fast(ast);
-    let readonly_enabled = ast_uses_readonly(ast);
+fn walk_ast_full_controlled<F>(
+    node: &Node,
+    traversal: &mut TraversalState<'_, '_>,
+    visitor: &mut F,
+) -> Result<bool, TraversalStop>
+where
+    F: FnMut(&Node) -> bool,
+{
+    walk_ast_full_controlled_with_state(node, traversal, &mut |node, _| Ok(visitor(node)))
+}
 
-    walk_ast_full(ast, &mut |node| {
+fn walk_ast_full_controlled_with_state<F>(
+    node: &Node,
+    traversal: &mut TraversalState<'_, '_>,
+    visitor: &mut F,
+) -> Result<bool, TraversalStop>
+where
+    F: FnMut(&Node, &mut TraversalState<'_, '_>) -> Result<bool, TraversalStop>,
+{
+    traversal.admit_work()?;
+    if !visitor(node, traversal)? {
+        return Ok(false);
+    }
+    match node.try_for_each_child_with_field_observed(
+        |_, _| {
+            #[cfg(test)]
+            CONTROLLED_CHILD_EDGES_ENUMERATED
+                .with(|count| count.set(count.get().saturating_add(1)));
+        },
+        |_, child| match walk_ast_full_controlled_with_state(child, traversal, visitor) {
+            Ok(true) => ControlFlow::Continue(()),
+            Ok(false) => ControlFlow::Break(Ok(false)),
+            Err(stop) => ControlFlow::Break(Err(stop)),
+        },
+    ) {
+        ControlFlow::Continue(()) => Ok(true),
+        ControlFlow::Break(result) => result,
+    }
+}
+
+fn declaration_readonly_flags(
+    ast: &Node,
+    const_fast_enabled: bool,
+    readonly_enabled: bool,
+    traversal: &mut TraversalState<'_, '_>,
+) -> Result<FxHashMap<(usize, usize), bool>, TraversalStop> {
+    let mut flags = FxHashMap::default();
+
+    walk_ast_full_controlled_with_state(ast, traversal, &mut |node, traversal| {
         match &node.kind {
             NodeKind::VariableDeclaration { declarator, variable, .. } => {
                 // `our` creates a package-variable alias in lexical scope; it
@@ -1051,110 +1701,182 @@ fn declaration_readonly_flags(ast: &Node) -> FxHashMap<(usize, usize), bool> {
                 // `Readonly` produce true readonly semantics (#4968).
                 let is_readonly = false;
                 let _ = declarator;
-                flags
-                    .entry((variable.location.start, variable.location.end))
-                    .and_modify(|flag| *flag |= is_readonly)
-                    .or_insert(is_readonly);
+                mark_declaration_target_flags(variable, is_readonly, &mut flags, traversal)?;
             }
             NodeKind::VariableListDeclaration { declarator, variables, .. } => {
                 let is_readonly = false;
                 let _ = declarator;
                 for variable in variables {
-                    flags
-                        .entry((variable.location.start, variable.location.end))
-                        .and_modify(|flag| *flag |= is_readonly)
-                        .or_insert(is_readonly);
+                    mark_declaration_target_flags(variable, is_readonly, &mut flags, traversal)?;
                 }
             }
             NodeKind::FunctionCall { name, args } if const_fast_enabled && name == "const" => {
-                mark_const_fast_decl_flags(args, &mut flags);
+                mark_readonly_declaration_flags(args, &mut flags, traversal)?;
             }
             NodeKind::FunctionCall { name, args } if readonly_enabled && name == "Readonly" => {
-                mark_readonly_decl_flags(args, &mut flags);
+                mark_readonly_declaration_flags(args, &mut flags, traversal)?;
             }
             _ => {}
         }
-        true
-    });
+        Ok(true)
+    })?;
 
-    flags
+    Ok(flags)
 }
 
-fn assignment_lhs_spans(ast: &Node) -> FxHashSet<(usize, usize)> {
+fn mark_declaration_target_flags(
+    target: &Node,
+    is_readonly: bool,
+    flags: &mut FxHashMap<(usize, usize), bool>,
+    traversal: &mut TraversalState<'_, '_>,
+) -> Result<(), TraversalStop> {
+    walk_ast_full_controlled_with_state(target, traversal, &mut |node, traversal| {
+        if matches!(&node.kind, NodeKind::Variable { .. }) {
+            #[cfg(test)]
+            DECLARATION_INDEX_INSERTIONS_ATTEMPTED
+                .with(|count| count.set(count.get().saturating_add(1)));
+            traversal.admit_work()?;
+            flags
+                .entry((node.location.start, node.location.end))
+                .and_modify(|flag| *flag |= is_readonly)
+                .or_insert(is_readonly);
+        }
+        Ok(true)
+    })?;
+    Ok(())
+}
+
+fn declaration_flag(
+    flags: &FxHashMap<(usize, usize), bool>,
+    span: (usize, usize),
+    traversal: &mut TraversalState<'_, '_>,
+) -> Result<Option<bool>, TraversalStop> {
+    #[cfg(test)]
+    DECLARATION_LOOKUPS_ATTEMPTED.with(|count| count.set(count.get().saturating_add(1)));
+    traversal.admit_work()?;
+    Ok(flags.get(&span).copied())
+}
+
+fn assignment_lhs_spans(
+    ast: &Node,
+    traversal: &mut TraversalState<'_, '_>,
+) -> Result<FxHashSet<(usize, usize)>, TraversalStop> {
     let mut spans = FxHashSet::default();
-    walk_ast_full(ast, &mut |node| {
+    walk_ast_full_controlled(ast, traversal, &mut |node| {
         if let NodeKind::Assignment { lhs, .. } = &node.kind {
             spans.insert((lhs.location.start, lhs.location.end));
         }
         true
-    });
-    spans
+    })?;
+    Ok(spans)
 }
 
-fn ast_uses_const_fast(ast: &Node) -> bool {
+fn ast_uses_const_fast(
+    ast: &Node,
+    traversal: &mut TraversalState<'_, '_>,
+) -> Result<bool, TraversalStop> {
     let mut enabled = false;
-    walk_ast_full(ast, &mut |node| {
+    walk_ast_full_controlled(ast, traversal, &mut |node| {
         if matches!(&node.kind, NodeKind::Use { module, .. } if module == "Const::Fast") {
             enabled = true;
             return false;
         }
         true
-    });
-    enabled
+    })?;
+    Ok(enabled)
 }
 
-fn ast_uses_readonly(ast: &Node) -> bool {
+fn ast_uses_readonly(
+    ast: &Node,
+    traversal: &mut TraversalState<'_, '_>,
+) -> Result<bool, TraversalStop> {
     let mut enabled = false;
-    walk_ast_full(ast, &mut |node| {
+    walk_ast_full_controlled(ast, traversal, &mut |node| {
         if matches!(&node.kind, NodeKind::Use { module, .. } if module == "Readonly") {
             enabled = true;
             return false;
         }
         true
-    });
-    enabled
+    })?;
+    Ok(enabled)
 }
 
-fn mark_const_fast_decl_flags(args: &[Node], flags: &mut FxHashMap<(usize, usize), bool>) {
+fn mark_readonly_declaration_flags(
+    args: &[Node],
+    flags: &mut FxHashMap<(usize, usize), bool>,
+    traversal: &mut TraversalState<'_, '_>,
+) -> Result<(), TraversalStop> {
     for arg in args {
-        match &arg.kind {
-            NodeKind::VariableDeclaration { variable, .. } => {
-                flags.insert((variable.location.start, variable.location.end), true);
-            }
-            NodeKind::VariableListDeclaration { variables, .. } => {
-                for variable in variables {
-                    flags.insert((variable.location.start, variable.location.end), true);
-                }
-            }
-            _ => {}
-        }
+        mark_readonly_declaration_operand(arg, flags, traversal)?;
     }
+    Ok(())
 }
 
-fn mark_readonly_decl_flags(args: &[Node], flags: &mut FxHashMap<(usize, usize), bool>) {
-    for arg in args {
-        match &arg.kind {
-            NodeKind::VariableDeclaration { variable, .. } => {
-                flags.insert((variable.location.start, variable.location.end), true);
-            }
-            NodeKind::VariableListDeclaration { variables, .. } => {
-                for variable in variables {
-                    flags.insert((variable.location.start, variable.location.end), true);
-                }
-            }
-            _ => {}
+/// Mark only the `Readonly` / `const` declaration operand.
+///
+/// Walk transparent wrappers around that operand (`=>` / assignment LHS), but do
+/// not descend into initializer / RHS subtrees — nested declarations there are
+/// unrelated locals and must stay non-readonly.
+fn mark_readonly_declaration_operand(
+    node: &Node,
+    flags: &mut FxHashMap<(usize, usize), bool>,
+    traversal: &mut TraversalState<'_, '_>,
+) -> Result<(), TraversalStop> {
+    traversal.admit_work()?;
+    match &node.kind {
+        NodeKind::VariableDeclaration { variable, .. } => {
+            mark_declaration_target_flags(variable, true, flags, traversal)
         }
+        NodeKind::VariableListDeclaration { variables, .. } => {
+            for variable in variables {
+                mark_declaration_target_flags(variable, true, flags, traversal)?;
+            }
+            Ok(())
+        }
+        // `Readonly my $x => EXPR` / `const my $x = EXPR`: only the LHS operand
+        // is frozen by the wrapper call.
+        NodeKind::Binary { left, .. } => mark_readonly_declaration_operand(left, flags, traversal),
+        NodeKind::Assignment { lhs, .. } => {
+            mark_readonly_declaration_operand(lhs, flags, traversal)
+        }
+        _ => Ok(()),
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use perl_test_must::{must_some_with, must_with};
+
     use super::*;
     use perl_parser_core::Parser;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     // Helper to create token tuple
     fn tok(line: u32, start: u32, len: u32, kind: u32, mods: u32) -> (u32, u32, u32, u32, u32) {
         (line, start, len, kind, mods)
+    }
+
+    fn finalized_raw_tokens(input: Vec<RawSemanticToken>) -> Vec<RawSemanticToken> {
+        let control = SemanticTokensTraversalControl::unlimited();
+        let mut traversal = TraversalState { control: &control, work_done: 0 };
+        let encoded = match finalize_tokens_controlled(&input, &[], &mut traversal) {
+            Ok(tokens) => tokens,
+            Err(_) => return Vec::new(),
+        };
+        let mut line = 0u32;
+        let mut character = 0u32;
+        encoded
+            .into_iter()
+            .map(|[delta_line, delta_character, length, kind, modifiers]| {
+                if delta_line == 0 {
+                    character = character.saturating_add(delta_character);
+                } else {
+                    line = line.saturating_add(delta_line);
+                    character = delta_character;
+                }
+                (line, character, length, kind, modifiers)
+            })
+            .collect()
     }
 
     fn pos16(source: &str, byte_offset: usize) -> (u32, u32) {
@@ -1172,6 +1894,818 @@ mod tests {
             }
         }
         (line, col)
+    }
+
+    fn lexer_work_units(source: &str) -> usize {
+        let mut lexer = PerlLexer::with_body_tokens(source);
+        let mut work = 0usize;
+        while lexer.next_token().is_some() {
+            work = work.saturating_add(1);
+        }
+        work.saturating_add(1)
+    }
+
+    #[test]
+    fn controlled_complete_output_matches_compatibility_collector()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let source = "package Demo; my $value = 42; sub answer { return $value; }";
+        let mut parser = Parser::new(source);
+        let ast = parser.parse()?;
+        let legacy = collect_semantic_tokens(&ast, source, &|offset| pos16(source, offset));
+        let controlled = collect_semantic_tokens_controlled(
+            &ast,
+            source,
+            &|offset| pos16(source, offset),
+            &SemanticTokensTraversalControl::unlimited(),
+        );
+
+        assert_eq!(controlled, SemanticTokensTraversalOutcome::Complete(legacy));
+        Ok(())
+    }
+
+    #[test]
+    fn complete_output_matches_frozen_protocol_vector() -> Result<(), Box<dyn std::error::Error>> {
+        let source = "package Demo;\nmy $x = 42;\n";
+        let mut parser = Parser::new(source);
+        let ast = parser.parse()?;
+
+        let outcome = collect_semantic_tokens_controlled(
+            &ast,
+            source,
+            &|offset| pos16(source, offset),
+            &SemanticTokensTraversalControl::unlimited(),
+        );
+
+        assert_eq!(
+            outcome,
+            SemanticTokensTraversalOutcome::Complete(vec![
+                [0, 0, 7, 13, 0],
+                [0, 8, 4, 0, 1],
+                [1, 0, 2, 13, 0],
+                [0, 3, 2, 11, 1025],
+                [0, 3, 1, 19, 0],
+                [0, 2, 2, 17, 0],
+            ])
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn collection_boundary_distinguishes_no_ast_and_failure() {
+        let control = SemanticTokensTraversalControl::unlimited();
+        let no_ast = collect_semantic_tokens_from_input(
+            SemanticTokensCollectionInput::NoAst,
+            "",
+            &|_| (0, 0),
+            &control,
+        );
+        let failure = collect_semantic_tokens_from_input(
+            SemanticTokensCollectionInput::CollectionFailure(SemanticTokensCollectionError::new(
+                "parse failed",
+            )),
+            "",
+            &|_| (0, 0),
+            &control,
+        );
+
+        assert_eq!(no_ast, SemanticTokensTraversalOutcome::NoAst);
+        assert_eq!(
+            failure,
+            SemanticTokensTraversalOutcome::CollectionFailure(SemanticTokensCollectionError::new(
+                "parse failed"
+            ))
+        );
+    }
+
+    /// Decode the source text of every token painted with `kind` in `source`.
+    ///
+    /// Shared by the heredoc-injection tests so boundary and recovery cases read
+    /// one production projection instead of each rebuilding a private decoder.
+    fn painted_tokens(source: &str, kind: &str) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+        let mut parser = Parser::new(source);
+        let ast = parser.parse()?;
+        let kind = *legend().map.get(kind).ok_or("semantic-token kind missing")?;
+        let lines: Vec<&str> = source.split('\n').collect();
+        let mut line = 0u32;
+        let mut column = 0u32;
+        let mut result = Vec::new();
+        for [delta_line, delta_column, length, token_type, _modifiers] in
+            collect_semantic_tokens(&ast, source, &|offset| pos16(source, offset))
+        {
+            if delta_line == 0 {
+                column = column.saturating_add(delta_column);
+            } else {
+                line = line.saturating_add(delta_line);
+                column = delta_column;
+            }
+            if token_type == kind {
+                let source_line = lines.get(line as usize).ok_or("token line missing")?;
+                // `column` and `length` are UTF-16 code units, because `pos16`
+                // accumulates `len_utf16`. Decoding with `chars()` would conflate
+                // code units with scalar values and mis-slice any line holding an
+                // astral character, so slice the UTF-16 form itself.
+                let utf16: Vec<u16> = source_line.encode_utf16().collect();
+                let end = (column as usize).saturating_add(length as usize);
+                let slice = utf16.get(column as usize..end).ok_or("token range out of bounds")?;
+                result.push(String::from_utf16(slice)?);
+            }
+        }
+        Ok(result)
+    }
+
+    #[test]
+    fn complete_heredoc_vectors_preserve_injected_language_boundaries()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let sql = "my $sql = <<SQL;\nSELECT id FROM users WHERE id = 1;\nSQL\n";
+        assert_eq!(painted_tokens(sql, "sql_heredoc_keyword")?, vec!["SELECT", "FROM", "WHERE"]);
+
+        let json = "my $json = <<JSON;\n{\"name\": \"Ada\", \"nested-key\": 1, \"not a key\": true}\nJSON\n";
+        assert_eq!(
+            painted_tokens(json, "json_heredoc_key")?,
+            vec!["\"name\"", "\"nested-key\"", "\"not a key\""]
+        );
+        assert!(!painted_tokens(json, "json_heredoc_key")?.iter().any(|token| token == "value"));
+        Ok(())
+    }
+
+    #[test]
+    fn json_heredoc_recovers_a_later_key_after_a_colon_miss()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // `"bad and "` closes but no colon follows, so it is not a key. Its
+        // closing quote is also the quote that opens the only real key on the
+        // line. The scanner must resume one byte past the rejected candidate's
+        // opening quote rather than past its closing quote; consuming the closing
+        // quote swallows `"good"` and paints nothing at all (#7538 finding 1).
+        let source = "my $json = <<JSON;\n{\"bad and \"good\": 1}\nJSON\n";
+
+        let keys = painted_tokens(source, "json_heredoc_key")?;
+
+        assert_eq!(
+            keys,
+            vec!["\"good\""],
+            "the key after a rejected candidate must survive, and the candidate must not be painted"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn json_heredoc_unterminated_tail_keeps_earlier_keys() -> Result<(), Box<dyn std::error::Error>>
+    {
+        // A trailing candidate with no unescaped closing quote ends the scan. It
+        // must neither retract the keys already painted before it nor paint the
+        // unterminated tail as a key.
+        //
+        // Honest bound on what this discriminates: it fails if the tail is painted
+        // or if the scan panics, but it cannot distinguish the `break` at the
+        // no-closing-quote branch from a reset-and-continue there, because the
+        // earlier key is pushed before the tail is ever reached and both choices
+        // then yield the same output. The reason `break` is correct is an argument
+        // about reachability, not about this output: the candidate-local `escaped`
+        // state starts false right after a real quote, so finding no unescaped
+        // quote in the remaining suffix proves none exists, and a later key needs
+        // two. The reset alternative is also what makes a `"\""\""...` body
+        // quadratic, which is why the production comment prefers `break`.
+        let source = "my $json = <<JSON;\n{\"a\": 1, \"unterminated\nJSON\n";
+
+        let keys = painted_tokens(source, "json_heredoc_key")?;
+
+        assert_eq!(keys, vec!["\"a\""], "an unterminated tail must not retract or widen keys");
+        Ok(())
+    }
+
+    #[test]
+    fn json_heredoc_recovery_holds_across_an_astral_character()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // The same colon-miss recovery, but with a non-BMP character ahead of the
+        // surviving key on the line. The emitted column and length are UTF-16 code
+        // units, so `U+1F600` (two units, one scalar) is exactly where a decoder
+        // that confuses the two reports the wrong span.
+        let source = "my $json = <<JSON;\n{\"\u{1F600} and \"good\": 1}\nJSON\n";
+
+        let keys = painted_tokens(source, "json_heredoc_key")?;
+
+        assert_eq!(keys, vec!["\"good\""], "astral text must not shift the recovered key span");
+        Ok(())
+    }
+
+    #[test]
+    fn json_heredoc_colon_miss_rescan_charges_the_budget() {
+        // The colon-miss reset deliberately rescans the bytes inside the rejected
+        // candidate, so those bytes are visited twice. Re-visiting must charge the
+        // traversal budget, or a body of quoted non-keys performs work that
+        // neither the budget nor cancellation can observe. Both bodies below are
+        // the same length and hold one real key; only the first forces a rescan,
+        // so an unmetered rescan would make their admission counts equal.
+        let rescan = "{\"bad and \"good\": 1}";
+        let no_rescan = "{\"bad_and_good\": 11}";
+        assert_eq!(rescan.len(), no_rescan.len(), "the comparison needs equal-length bodies");
+
+        let admissions = |body: &str| -> usize {
+            let unlimited = SemanticTokensTraversalControl::unlimited();
+            let mut traversal = TraversalState { control: &unlimited, work_done: 0 };
+            let mut out = Vec::new();
+            let result = tokenize_json_body(
+                body,
+                body,
+                0,
+                &|offset| pos16(body, offset),
+                &legend(),
+                &mut out,
+                &mut traversal,
+            );
+            assert_eq!(result, Ok(()), "an unlimited budget must complete the scan");
+            traversal.work_done
+        };
+
+        let rescan_work = admissions(rescan);
+        let plain_work = admissions(no_rescan);
+
+        // Exact totals, deliberately not a `rescan_work > plain_work` inequality.
+        // That inequality cannot discriminate: it survives dropping a whole scan
+        // loop's admissions, because a rescanning body runs two candidate scans
+        // and so charges more either way (the same mutation moves these totals to
+        // 17 and 15, where the inequality still holds). Pinning both totals is
+        // what actually fails when any one loop stops charging. 32 = 31 scanner
+        // admissions + 1 from `push_line_contained_segments` for the accepted
+        // single-line key; 22 = 21 + 1.
+        assert_eq!(rescan_work, 32, "every byte position the scanner visits charges once");
+        assert_eq!(plain_work, 22, "every byte position the scanner visits charges once");
+
+        // The budget must also stop the scan, not merely count it. `plain_work` is
+        // derived above rather than hardcoded, and is below the rescan body's cost.
+        let never_cancelled = || false;
+        let control = SemanticTokensTraversalControl::new(&never_cancelled, Some(plain_work));
+        let mut traversal = TraversalState { control: &control, work_done: 0 };
+        let mut out = Vec::new();
+
+        let result = tokenize_json_body(
+            rescan,
+            rescan,
+            0,
+            &|offset| pos16(rescan, offset),
+            &legend(),
+            &mut out,
+            &mut traversal,
+        );
+
+        assert_eq!(result, Err(TraversalStop::BudgetExhausted));
+        assert_eq!(traversal.work_done, plain_work, "the scan must stop exactly at the budget");
+    }
+
+    #[test]
+    fn large_traversal_budget_covers_finalization() -> Result<(), Box<dyn std::error::Error>> {
+        let source =
+            (0..512).map(|index| format!("my $value_{index} = {index};\n")).collect::<String>();
+        let mut parser = Parser::new(&source);
+        let ast = parser.parse()?;
+        let complete_polls = AtomicUsize::new(0);
+        let never_cancelled = || {
+            complete_polls.fetch_add(1, Ordering::Relaxed);
+            false
+        };
+        let complete = collect_semantic_tokens_controlled(
+            &ast,
+            &source,
+            &|offset| pos16(&source, offset),
+            &SemanticTokensTraversalControl::new(&never_cancelled, None),
+        );
+        assert!(
+            matches!(complete, SemanticTokensTraversalOutcome::Complete(_)),
+            "an unlimited traversal must complete, got {complete:?}"
+        );
+        let total_work = complete_polls.load(Ordering::Relaxed);
+        let budget = total_work.checked_sub(1).ok_or("complete traversal recorded no work")?;
+        let bounded_never_cancelled = || false;
+        let control = SemanticTokensTraversalControl::new(&bounded_never_cancelled, Some(budget));
+
+        let bounded = collect_semantic_tokens_controlled(
+            &ast,
+            &source,
+            &|offset| pos16(&source, offset),
+            &control,
+        );
+
+        assert!(
+            matches!(
+                bounded,
+                SemanticTokensTraversalOutcome::BudgetExhausted { work_done, .. }
+                    if work_done == budget
+            ),
+            "a budget of {budget} must exhaust with work_done == {budget}, got {bounded:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn inner_scans_stop_at_the_exact_budget() -> Result<(), Box<dyn std::error::Error>> {
+        let never_cancelled = || false;
+        let find_control = SemanticTokensTraversalControl::new(&never_cancelled, Some(7));
+        let mut find_traversal = TraversalState { control: &find_control, work_done: 0 };
+        let find_result =
+            find_bytes_at_controlled(b"aaaaaaaaaaaaaaaa-target", 0, b"target", &mut find_traversal);
+        assert_eq!(find_result, Err(TraversalStop::BudgetExhausted));
+        assert_eq!(find_traversal.work_done, 7);
+
+        let json_control = SemanticTokensTraversalControl::new(&never_cancelled, Some(9));
+        let mut json_traversal = TraversalState { control: &json_control, work_done: 0 };
+        let mut tokens = Vec::new();
+        let json_result = tokenize_json_body(
+            r#"{"a-very-long-key": 1}"#,
+            r#"{"a-very-long-key": 1}"#,
+            0,
+            &|offset| (0, offset as u32),
+            &legend(),
+            &mut tokens,
+            &mut json_traversal,
+        );
+        assert_eq!(json_result, Err(TraversalStop::BudgetExhausted));
+        assert_eq!(json_traversal.work_done, 9);
+        Ok(())
+    }
+
+    #[test]
+    fn heredoc_scanners_preserve_json_and_sql_geometry() -> Result<(), Box<dyn std::error::Error>> {
+        let control = SemanticTokensTraversalControl::unlimited();
+        let mut traversal = TraversalState { control: &control, work_done: 0 };
+        let mut json_tokens = Vec::new();
+        tokenize_json_body(
+            r#""key"   : 1, "a\"b": 2, "not-key""#,
+            r#""key"   : 1, "a\"b": 2, "not-key""#,
+            0,
+            &|offset| (0, offset as u32),
+            &legend(),
+            &mut json_tokens,
+            &mut traversal,
+        )
+        .map_err(|_| "unexpected JSON traversal stop")?;
+        assert_eq!(json_tokens, vec![tok(0, 0, 8, 22, 0), tok(0, 13, 6, 22, 0)]);
+
+        let mut recovered_tokens = Vec::new();
+        tokenize_json_body(
+            "\"unterminated\n{\"valid\": 1}",
+            "\"unterminated\n{\"valid\": 1}",
+            0,
+            &|offset| (0, offset as u32),
+            &legend(),
+            &mut recovered_tokens,
+            &mut traversal,
+        )
+        .map_err(|_| "unexpected malformed JSON traversal stop")?;
+        assert_eq!(recovered_tokens, vec![tok(0, 15, 7, 22, 0)]);
+
+        // Discriminator for the unterminated-reset seam: a long run of
+        // backslash-escaped quotes with no unescaped closer must stay linear.
+        // Resume-at-open+1 would re-scan the remaining suffix from each escape
+        // quote and push work_done into O(n^2).
+        let escaped_quote_runs = 128usize;
+        let mut escaped_bomb = String::from('"');
+        for _ in 0..escaped_quote_runs {
+            escaped_bomb.push_str("\\\"");
+        }
+        let never_cancelled = || false;
+        let bomb_control = SemanticTokensTraversalControl::new(&never_cancelled, None);
+        let mut bomb_traversal = TraversalState { control: &bomb_control, work_done: 0 };
+        let mut bomb_tokens = Vec::new();
+        tokenize_json_body(
+            &escaped_bomb,
+            &escaped_bomb,
+            0,
+            &|offset| (0, offset as u32),
+            &legend(),
+            &mut bomb_tokens,
+            &mut bomb_traversal,
+        )
+        .map_err(|_| "unexpected escaped-quote bomb traversal stop")?;
+        assert!(bomb_tokens.is_empty(), "unterminated escaped quotes emit no keys");
+        let linear_ceiling = escaped_quote_runs.saturating_mul(4).saturating_add(8);
+        assert!(
+            bomb_traversal.work_done <= linear_ceiling,
+            "unterminated escaped-quote scan must stay linear: work_done={} ceiling={}",
+            bomb_traversal.work_done,
+            linear_ceiling
+        );
+
+        let mut sql_tokens = Vec::new();
+        tokenize_sql_body(
+            "éSELECT SELECTé select notselect",
+            "éSELECT SELECTé select notselect",
+            0,
+            &|offset| (0, offset as u32),
+            &legend(),
+            &mut sql_tokens,
+            &mut traversal,
+        )
+        .map_err(|_| "unexpected SQL traversal stop")?;
+        assert_eq!(sql_tokens, vec![tok(0, 18, 6, 21, 0)]);
+        Ok(())
+    }
+
+    #[test]
+    fn ast_child_enumeration_stops_before_eager_sibling_work()
+    -> Result<(), Box<dyn std::error::Error>> {
+        CONTROLLED_CHILD_EDGES_ENUMERATED.with(|count| count.set(0));
+        let source = (0..512).map(|index| format!("{index};\n")).collect::<String>();
+        let mut parser = Parser::new(&source);
+        let ast = parser.parse()?;
+        let never_cancelled = || false;
+        let control = SemanticTokensTraversalControl::new(&never_cancelled, Some(1));
+        let mut traversal = TraversalState { control: &control, work_done: 0 };
+        let mut visited = 0usize;
+
+        let result = walk_ast_full_controlled(&ast, &mut traversal, &mut |_| {
+            visited = visited.saturating_add(1);
+            true
+        });
+
+        assert_eq!(result, Err(TraversalStop::BudgetExhausted));
+        assert_eq!(traversal.work_done, 1);
+        assert_eq!(visited, 1, "only the admitted root may reach the visitor");
+        assert_eq!(
+            CONTROLLED_CHILD_EDGES_ENUMERATED.with(std::cell::Cell::get),
+            1,
+            "the production walker must enumerate only the first rejected child edge"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn ast_child_enumeration_observes_cancellation_before_next_sibling()
+    -> Result<(), Box<dyn std::error::Error>> {
+        CONTROLLED_CHILD_EDGES_ENUMERATED.with(|count| count.set(0));
+        let source = (0..512).map(|index| format!("{index};\n")).collect::<String>();
+        let mut parser = Parser::new(&source);
+        let ast = parser.parse()?;
+        let polls = AtomicUsize::new(0);
+        let cancellation = || polls.fetch_add(1, Ordering::Relaxed) >= 1;
+        let control = SemanticTokensTraversalControl::new(&cancellation, None);
+        let mut traversal = TraversalState { control: &control, work_done: 0 };
+        let mut visited = 0usize;
+
+        let result = walk_ast_full_controlled(&ast, &mut traversal, &mut |_| {
+            visited = visited.saturating_add(1);
+            true
+        });
+
+        assert_eq!(result, Err(TraversalStop::Cancelled));
+        assert_eq!(traversal.work_done, 1);
+        assert_eq!(visited, 1, "cancellation must stop before visiting a sibling");
+        assert_eq!(polls.load(Ordering::Relaxed), 2);
+        assert_eq!(
+            CONTROLLED_CHILD_EDGES_ENUMERATED.with(std::cell::Cell::get),
+            1,
+            "cancellation must prevent enumeration of later sibling edges"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn declaration_lookup_consumes_one_exact_work_unit() {
+        let never_cancelled = || false;
+        let control = SemanticTokensTraversalControl::new(&never_cancelled, Some(0));
+        let mut traversal = TraversalState { control: &control, work_done: 0 };
+        let mut flags = FxHashMap::default();
+        flags.insert((4, 6), true);
+
+        let result = declaration_flag(&flags, (4, 6), &mut traversal);
+
+        assert_eq!(result, Err(TraversalStop::BudgetExhausted));
+        assert_eq!(traversal.work_done, 0);
+    }
+
+    #[test]
+    fn declaration_lookup_observes_cancellation_before_hash_work() {
+        let cancelled = || true;
+        let control = SemanticTokensTraversalControl::new(&cancelled, None);
+        let mut traversal = TraversalState { control: &control, work_done: 0 };
+        let mut flags = FxHashMap::default();
+        flags.insert((4, 6), true);
+
+        let result = declaration_flag(&flags, (4, 6), &mut traversal);
+
+        assert_eq!(result, Err(TraversalStop::Cancelled));
+        assert_eq!(traversal.work_done, 0);
+    }
+
+    #[test]
+    fn controlled_collector_stops_inside_indexed_declaration_lookups()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let source =
+            (0..256).map(|index| format!("my $value_{index} = {index};\n")).collect::<String>();
+        let mut parser = Parser::new(&source);
+        let ast = parser.parse()?;
+
+        DECLARATION_LOOKUPS_ATTEMPTED.with(|count| count.set(0));
+        let cancel_during_second_lookup =
+            || DECLARATION_LOOKUPS_ATTEMPTED.with(std::cell::Cell::get) >= 2;
+        let cancelled = collect_semantic_tokens_controlled(
+            &ast,
+            &source,
+            &|offset| pos16(&source, offset),
+            &SemanticTokensTraversalControl::new(&cancel_during_second_lookup, None),
+        );
+        let SemanticTokensTraversalOutcome::Cancelled { work_done } = cancelled else {
+            return Err("collector did not cancel during declaration lookup".into());
+        };
+        assert_eq!(
+            DECLARATION_LOOKUPS_ATTEMPTED.with(std::cell::Cell::get),
+            2,
+            "the production overlay must route each variable through the indexed lookup"
+        );
+
+        DECLARATION_LOOKUPS_ATTEMPTED.with(|count| count.set(0));
+        let never_cancelled = || false;
+        let exhausted = collect_semantic_tokens_controlled(
+            &ast,
+            &source,
+            &|offset| pos16(&source, offset),
+            &SemanticTokensTraversalControl::new(&never_cancelled, Some(work_done)),
+        );
+        assert!(
+            matches!(
+                exhausted,
+                SemanticTokensTraversalOutcome::BudgetExhausted {
+                    work_done: exhausted_work,
+                    ..
+                } if exhausted_work == work_done
+            ),
+            "the exact cancellation prefix must also exhaust the budget at the lookup boundary"
+        );
+        assert_eq!(
+            DECLARATION_LOOKUPS_ATTEMPTED.with(std::cell::Cell::get),
+            2,
+            "budget exhaustion must occur on the second indexed lookup"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn controlled_collector_stops_inside_wrapped_declaration_indexing()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let source = "my ($first, ($nested_a, $nested_b), $tagged :shared);\n";
+        let mut parser = Parser::new(source);
+        let ast = parser.parse()?;
+
+        DECLARATION_INDEX_INSERTIONS_ATTEMPTED.with(|count| count.set(0));
+        let cancel_during_second_insert =
+            || DECLARATION_INDEX_INSERTIONS_ATTEMPTED.with(std::cell::Cell::get) >= 2;
+        let cancelled = collect_semantic_tokens_controlled(
+            &ast,
+            source,
+            &|offset| pos16(source, offset),
+            &SemanticTokensTraversalControl::new(&cancel_during_second_insert, None),
+        );
+        let SemanticTokensTraversalOutcome::Cancelled { work_done } = cancelled else {
+            return Err("collector did not cancel during wrapped declaration indexing".into());
+        };
+        assert_eq!(
+            DECLARATION_INDEX_INSERTIONS_ATTEMPTED.with(std::cell::Cell::get),
+            2,
+            "production indexing must reach the second wrapped variable insertion"
+        );
+
+        DECLARATION_INDEX_INSERTIONS_ATTEMPTED.with(|count| count.set(0));
+        let never_cancelled = || false;
+        let exhausted = collect_semantic_tokens_controlled(
+            &ast,
+            source,
+            &|offset| pos16(source, offset),
+            &SemanticTokensTraversalControl::new(&never_cancelled, Some(work_done)),
+        );
+        assert!(
+            matches!(
+                exhausted,
+                SemanticTokensTraversalOutcome::BudgetExhausted {
+                    work_done: exhausted_work,
+                    ..
+                } if exhausted_work == work_done
+            ),
+            "the cancellation prefix must exhaust the exact budget at wrapped indexing"
+        );
+        assert_eq!(
+            DECLARATION_INDEX_INSERTIONS_ATTEMPTED.with(std::cell::Cell::get),
+            2,
+            "budget exhaustion must occur on the second wrapped variable insertion"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn declaration_index_complete_run_preserves_frozen_modifier_geometry()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let source = concat!(
+            "use Const::Fast;\n",
+            "const my $fast => 1;\n",
+            "use Readonly;\n",
+            "Readonly my ($left, $right) => (2, 3);\n",
+            "my ($plain, $other);\n",
+            "$plain = $fast + $left;\n",
+        );
+        let mut parser = Parser::new(source);
+        let ast = parser.parse()?;
+        let outcome = collect_semantic_tokens_controlled(
+            &ast,
+            source,
+            &|offset| pos16(source, offset),
+            &SemanticTokensTraversalControl::unlimited(),
+        );
+        let SemanticTokensTraversalOutcome::Complete(encoded) = outcome else {
+            return Err("unlimited declaration fixture did not complete".into());
+        };
+        let variable_kind = kind_idx(&legend(), "variable");
+        let mut line = 0u32;
+        let mut character = 0u32;
+        let variables = encoded
+            .into_iter()
+            .filter_map(|[delta_line, delta_character, length, kind, modifiers]| {
+                if delta_line == 0 {
+                    character = character.saturating_add(delta_character);
+                } else {
+                    line = line.saturating_add(delta_line);
+                    character = delta_character;
+                }
+                (kind == variable_kind).then_some((line, character, length, modifiers))
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            variables,
+            vec![
+                (1, 9, 5, 1029),
+                (3, 13, 5, 1029),
+                (3, 20, 6, 1029),
+                (4, 4, 6, 1025),
+                (4, 12, 6, 1025),
+                (5, 0, 6, 1152),
+                (5, 9, 5, 1024),
+                (5, 17, 5, 1024),
+            ],
+            "exact declaration spans must not leak declaration/readonly bits to later uses"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn controlled_finalization_preserves_overlap_and_tie_order()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let control = SemanticTokensTraversalControl::unlimited();
+        let mut traversal = TraversalState { control: &control, work_done: 0 };
+        let ast = vec![tok(0, 0, 5, 7, 3), tok(0, 8, 2, 11, 0)];
+        let lexer = vec![tok(0, 0, 5, 13, 0), tok(0, 4, 7, 16, 0), tok(1, 2, 3, 17, 0)];
+
+        let encoded = finalize_tokens_controlled(&ast, &lexer, &mut traversal)
+            .map_err(|_| "unexpected finalization stop")?;
+
+        assert_eq!(encoded, vec![[0, 4, 7, 16, 0], [1, 2, 3, 17, 0]]);
+        Ok(())
+    }
+
+    #[test]
+    fn oversized_single_lexer_token_stops_before_opaque_lexing()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let source = format!("#{}", "x".repeat(MAX_BOUNDED_LEXER_SOURCE_BYTES));
+        let mut parser = Parser::new("");
+        let ast = parser.parse()?;
+        let polls = AtomicUsize::new(0);
+        let cancellation = || {
+            polls.fetch_add(1, Ordering::Relaxed);
+            false
+        };
+        let control = SemanticTokensTraversalControl::new(&cancellation, None);
+
+        let outcome = collect_semantic_tokens_controlled(
+            &ast,
+            &source,
+            &|offset| (0, offset as u32),
+            &control,
+        );
+
+        assert!(matches!(
+            outcome,
+            SemanticTokensTraversalOutcome::SourceLimitExceeded {
+                source_bytes,
+                limit_bytes: MAX_BOUNDED_LEXER_SOURCE_BYTES,
+            } if source_bytes == source.len()
+        ));
+        assert_eq!(polls.load(Ordering::Relaxed), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn cancellation_stops_during_lexer_traversal_without_extra_work()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let source = "my $first = 1; my $second = 2;";
+        let mut parser = Parser::new(source);
+        let ast = parser.parse()?;
+        let polls = AtomicUsize::new(0usize);
+        let cancellation = || {
+            let observed = polls.fetch_add(1, Ordering::Relaxed);
+            observed >= 2
+        };
+        let control = SemanticTokensTraversalControl::new(&cancellation, None);
+
+        let outcome = collect_semantic_tokens_controlled(
+            &ast,
+            source,
+            &|offset| pos16(source, offset),
+            &control,
+        );
+
+        assert_eq!(outcome, SemanticTokensTraversalOutcome::Cancelled { work_done: 2 });
+        assert_eq!(polls.load(Ordering::Relaxed), 3);
+        Ok(())
+    }
+
+    #[test]
+    fn cancellation_stops_during_ast_traversal_without_extra_work()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let source = "sub outer { my $x = 1; if ($x) { return $x; } }";
+        let mut parser = Parser::new(source);
+        let ast = parser.parse()?;
+        let lexer_work = lexer_work_units(source);
+        let ast_work_before_cancel = 3usize;
+        let cancel_after = lexer_work.saturating_add(ast_work_before_cancel);
+        let polls = AtomicUsize::new(0usize);
+        let cancellation = || {
+            let observed = polls.fetch_add(1, Ordering::Relaxed);
+            observed >= cancel_after
+        };
+        let control = SemanticTokensTraversalControl::new(&cancellation, None);
+
+        let outcome = collect_semantic_tokens_controlled(
+            &ast,
+            source,
+            &|offset| pos16(source, offset),
+            &control,
+        );
+
+        assert_eq!(outcome, SemanticTokensTraversalOutcome::Cancelled { work_done: cancel_after });
+        assert_eq!(polls.load(Ordering::Relaxed), cancel_after.saturating_add(1));
+        Ok(())
+    }
+
+    #[test]
+    fn budget_exhaustion_reports_exact_work_and_incomplete_partial_tokens()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let source = "my $first = 1; my $second = 2;";
+        let mut parser = Parser::new(source);
+        let ast = parser.parse()?;
+        let never_cancelled = || false;
+        let budget = 4usize;
+        let control = SemanticTokensTraversalControl::new(&never_cancelled, Some(budget));
+
+        let outcome = collect_semantic_tokens_controlled(
+            &ast,
+            source,
+            &|offset| pos16(source, offset),
+            &control,
+        );
+
+        match outcome {
+            SemanticTokensTraversalOutcome::BudgetExhausted { partial, work_done } => {
+                assert_eq!(work_done, budget);
+                assert!(
+                    partial.raw_token_count() > 0,
+                    "the exhausted outcome should retain collected tokens"
+                );
+            }
+            SemanticTokensTraversalOutcome::Complete(_) => {
+                return Err("budget-exhausted output was incorrectly marked complete".into());
+            }
+            SemanticTokensTraversalOutcome::Cancelled { .. } => {
+                return Err("budget exhaustion was incorrectly reported as cancellation".into());
+            }
+            SemanticTokensTraversalOutcome::NoAst
+            | SemanticTokensTraversalOutcome::CollectionFailure(_)
+            | SemanticTokensTraversalOutcome::SourceLimitExceeded { .. } => {
+                return Err("budget exhaustion was incorrectly reported as input failure".into());
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn zero_budget_admits_no_work() -> Result<(), Box<dyn std::error::Error>> {
+        let source = "my $value = 1;";
+        let mut parser = Parser::new(source);
+        let ast = parser.parse()?;
+        let never_cancelled = || false;
+        let control = SemanticTokensTraversalControl::new(&never_cancelled, Some(0));
+
+        let outcome = collect_semantic_tokens_controlled(
+            &ast,
+            source,
+            &|offset| pos16(source, offset),
+            &control,
+        );
+
+        assert_eq!(
+            outcome,
+            SemanticTokensTraversalOutcome::BudgetExhausted {
+                partial: PartialSemanticTokens { ast_tokens: Vec::new(), lexer_tokens: Vec::new() },
+                work_done: 0,
+            }
+        );
+        Ok(())
     }
 
     #[test]
@@ -1240,7 +2774,7 @@ mod tests {
     fn test_remove_overlapping_tokens_basic() {
         // No overlap
         let input = vec![tok(0, 0, 5, 0, 0), tok(0, 6, 5, 0, 0)];
-        let result = remove_overlapping_tokens(input.clone());
+        let result = finalized_raw_tokens(input.clone());
         assert_eq!(result, input);
     }
 
@@ -1249,7 +2783,7 @@ mod tests {
         // Touching is NOT overlap
         // [0, 5) and [5, 10)
         let input = vec![tok(0, 0, 5, 0, 0), tok(0, 5, 5, 0, 0)];
-        let result = remove_overlapping_tokens(input.clone());
+        let result = finalized_raw_tokens(input.clone());
         assert_eq!(result, input);
     }
 
@@ -1260,7 +2794,7 @@ mod tests {
         // Expect Outer kept
         let input = vec![tok(0, 0, 10, 0, 0), tok(0, 2, 3, 1, 0)];
         // Sorted: Outer, Inner
-        let result = remove_overlapping_tokens(input);
+        let result = finalized_raw_tokens(input);
         assert_eq!(result.len(), 1);
         assert_eq!(result[0], tok(0, 0, 10, 0, 0));
     }
@@ -1271,7 +2805,7 @@ mod tests {
         // Sorted: A, B
         // Expect B (longer) replaces A
         let input = vec![tok(0, 0, 5, 0, 0), tok(0, 0, 10, 1, 0)];
-        let result = remove_overlapping_tokens(input);
+        let result = finalized_raw_tokens(input);
         assert_eq!(result.len(), 1);
         assert_eq!(result[0], tok(0, 0, 10, 1, 0));
     }
@@ -1283,7 +2817,7 @@ mod tests {
         // Overlap at 4. B is longer.
         // Expect A replaced by B.
         let input = vec![tok(0, 0, 5, 0, 0), tok(0, 4, 6, 1, 0)];
-        let result = remove_overlapping_tokens(input);
+        let result = finalized_raw_tokens(input);
         assert_eq!(result.len(), 1);
         assert_eq!(result[0], tok(0, 4, 6, 1, 0));
     }
@@ -1295,7 +2829,7 @@ mod tests {
         // Overlap at 8. A is longer.
         // Expect A kept, B dropped.
         let input = vec![tok(0, 0, 10, 0, 0), tok(0, 8, 7, 1, 0)];
-        let result = remove_overlapping_tokens(input);
+        let result = finalized_raw_tokens(input);
         assert_eq!(result.len(), 1);
         assert_eq!(result[0], tok(0, 0, 10, 0, 0));
     }
@@ -1306,7 +2840,7 @@ mod tests {
         // B [0, 5) len 5
         // Expect A kept (first one)
         let input = vec![tok(0, 0, 5, 1, 0), tok(0, 0, 5, 2, 0)];
-        let result = remove_overlapping_tokens(input.clone());
+        let result = finalized_raw_tokens(input.clone());
         assert_eq!(result.len(), 1);
         assert_eq!(result[0], tok(0, 0, 5, 1, 0));
     }
@@ -1314,7 +2848,7 @@ mod tests {
     #[test]
     fn test_remove_overlapping_tokens_different_lines() {
         let input = vec![tok(0, 0, 5, 0, 0), tok(1, 0, 5, 0, 0)];
-        let result = remove_overlapping_tokens(input.clone());
+        let result = finalized_raw_tokens(input.clone());
         assert_eq!(result, input);
     }
 
@@ -1327,7 +2861,7 @@ mod tests {
     #[test]
     fn mutation_hardening_empty_input() {
         let input = vec![];
-        let result = remove_overlapping_tokens(input);
+        let result = finalized_raw_tokens(input);
         assert_eq!(result.len(), 0, "Empty input must produce empty output");
     }
 
@@ -1336,7 +2870,7 @@ mod tests {
     #[test]
     fn mutation_hardening_single_token() {
         let input = vec![tok(0, 0, 5, 0, 0)];
-        let result = remove_overlapping_tokens(input.clone());
+        let result = finalized_raw_tokens(input.clone());
         assert_eq!(result.len(), 1, "Single token must be preserved");
         assert_eq!(result[0], input[0], "Single token must match input exactly");
     }
@@ -1347,7 +2881,7 @@ mod tests {
     fn mutation_hardening_adjacent_non_overlapping() {
         // Token A: [0, 5), Token B: [5, 10) - touching but not overlapping
         let input = vec![tok(0, 0, 5, 0, 0), tok(0, 5, 5, 1, 0)];
-        let result = remove_overlapping_tokens(input.clone());
+        let result = finalized_raw_tokens(input.clone());
         assert_eq!(result.len(), 2, "Adjacent non-overlapping tokens must both be kept");
         assert_eq!(result[0], tok(0, 0, 5, 0, 0));
         assert_eq!(result[1], tok(0, 5, 5, 1, 0));
@@ -1359,7 +2893,7 @@ mod tests {
     fn mutation_hardening_exact_boundary() {
         // Token A: [10, 15), Token B: [15, 20) - exact boundary
         let input = vec![tok(0, 10, 5, 0, 0), tok(0, 15, 5, 1, 0)];
-        let result = remove_overlapping_tokens(input);
+        let result = finalized_raw_tokens(input);
         assert_eq!(result.len(), 2, "Tokens with exact boundaries must not overlap");
     }
 
@@ -1370,7 +2904,7 @@ mod tests {
         // Token A: [0, 6), Token B: [5, 10) - overlap by 1 char at position 5
         // A is kept because it comes first and B is not longer (A=6, B=5)
         let input = vec![tok(0, 0, 6, 0, 0), tok(0, 5, 5, 1, 0)];
-        let result = remove_overlapping_tokens(input);
+        let result = finalized_raw_tokens(input);
         assert_eq!(result.len(), 1, "Single char overlap must trigger deduplication");
         assert_eq!(result[0], tok(0, 0, 6, 0, 0), "First token kept (longer)");
     }
@@ -1381,7 +2915,7 @@ mod tests {
     fn mutation_hardening_partial_overlap_length_determines_winner() {
         // Token A: [0, 5) len=5, Token B: [3, 10) len=7 - partial overlap, B longer
         let input = vec![tok(0, 0, 5, 0, 0), tok(0, 3, 7, 1, 0)];
-        let result = remove_overlapping_tokens(input);
+        let result = finalized_raw_tokens(input);
         assert_eq!(result.len(), 1, "Partial overlap must keep only one token");
         assert_eq!(result[0], tok(0, 3, 7, 1, 0), "Longer overlapping token must win");
     }
@@ -1392,7 +2926,7 @@ mod tests {
     fn mutation_hardening_equal_length_keeps_first() {
         // Token A: [0, 5) len=5, Token B: [2, 7) len=5 - equal length overlap
         let input = vec![tok(0, 0, 5, 0, 0), tok(0, 2, 5, 1, 0)];
-        let result = remove_overlapping_tokens(input);
+        let result = finalized_raw_tokens(input);
         assert_eq!(result.len(), 1, "Equal length overlap must keep first token");
         assert_eq!(result[0], tok(0, 0, 5, 0, 0), "First token must be kept when lengths equal");
     }
@@ -1428,7 +2962,7 @@ print "ok" foreach @ys;
             tok(0, 0, 100, 0, 0), // Line 0, very long token
             tok(1, 0, 5, 1, 0),   // Line 1, early position
         ];
-        let result = remove_overlapping_tokens(input.clone());
+        let result = finalized_raw_tokens(input.clone());
         assert_eq!(result.len(), 2, "Tokens on different lines must never overlap");
         assert_eq!(result[0], tok(0, 0, 100, 0, 0));
         assert_eq!(result[1], tok(1, 0, 5, 1, 0));
@@ -1444,7 +2978,7 @@ print "ok" foreach @ys;
             tok(0, 4, 5, 1, 0), // len=5 (overlaps A)
             tok(0, 8, 4, 2, 0), // len=4 (would overlap B)
         ];
-        let result = remove_overlapping_tokens(input);
+        let result = finalized_raw_tokens(input);
         // A is kept (4 < 0+5, but 5 > 5 is false, so B is skipped)
         // C doesn't overlap A (8 < 0+5 is false), so C is kept
         assert_eq!(result.len(), 2, "First and third tokens kept");
@@ -1460,7 +2994,7 @@ print "ok" foreach @ys;
             tok(0, 5, 0, 0, 0), // Zero-length token [5, 5)
             tok(0, 5, 5, 1, 0), // Normal token at same position [5, 10)
         ];
-        let result = remove_overlapping_tokens(input);
+        let result = finalized_raw_tokens(input);
         // Zero-length token [5,5) doesn't overlap with [5,10) per < check (5 < 5+0 is false)
         assert_eq!(
             result.len(),
@@ -1476,7 +3010,7 @@ print "ok" foreach @ys;
     #[test]
     fn mutation_hardening_multiple_zero_length() {
         let input = vec![tok(0, 5, 0, 0, 0), tok(0, 5, 0, 1, 0), tok(0, 5, 0, 2, 0)];
-        let result = remove_overlapping_tokens(input);
+        let result = finalized_raw_tokens(input);
         // Zero-length tokens at same position don't overlap each other (5 < 5+0 is false)
         assert_eq!(result.len(), 3, "Multiple zero-length tokens are all kept");
     }
@@ -1486,7 +3020,7 @@ print "ok" foreach @ys;
     #[test]
     fn mutation_hardening_large_positions() {
         let input = vec![tok(1000, u32::MAX - 100, 50, 0, 0), tok(1000, u32::MAX - 40, 20, 1, 0)];
-        let result = remove_overlapping_tokens(input);
+        let result = finalized_raw_tokens(input);
         // Overflow is prevented by saturating operations in the original code
         assert_eq!(result.len(), 2, "Large positions must not cause overflow issues");
     }
@@ -1497,7 +3031,7 @@ print "ok" foreach @ys;
     fn mutation_hardening_sort_order() {
         // Input in reverse order
         let input = vec![tok(2, 10, 5, 0, 0), tok(1, 10, 5, 1, 0), tok(0, 10, 5, 2, 0)];
-        let result = remove_overlapping_tokens(input);
+        let result = finalized_raw_tokens(input);
         assert_eq!(result.len(), 3, "Non-overlapping tokens must all be preserved");
         // Verify sorted by line
         assert_eq!(result[0].0, 0);
@@ -1511,7 +3045,7 @@ print "ok" foreach @ys;
     fn mutation_hardening_sort_order_same_line() {
         // Input with tokens in reverse order on same line
         let input = vec![tok(0, 30, 5, 0, 0), tok(0, 20, 5, 1, 0), tok(0, 10, 5, 2, 0)];
-        let result = remove_overlapping_tokens(input);
+        let result = finalized_raw_tokens(input);
         assert_eq!(result.len(), 3, "Non-overlapping tokens must all be preserved");
         // Verify sorted by start position
         assert_eq!(result[0].1, 10);
@@ -1526,7 +3060,7 @@ print "ok" foreach @ys;
         // All tokens overlap at same position, increasing length
         let input =
             vec![tok(0, 0, 3, 0, 0), tok(0, 0, 5, 1, 0), tok(0, 0, 7, 2, 0), tok(0, 0, 9, 3, 0)];
-        let result = remove_overlapping_tokens(input);
+        let result = finalized_raw_tokens(input);
         assert_eq!(result.len(), 1, "Longest token must survive multiple replacements");
         assert_eq!(result[0], tok(0, 0, 9, 3, 0), "Longest token must be the survivor");
     }
@@ -1541,7 +3075,7 @@ print "ok" foreach @ys;
             tok(0, 10, 3, 2, 0), // [10, 13)
             tok(0, 15, 3, 3, 0), // [15, 18)
         ];
-        let result = remove_overlapping_tokens(input.clone());
+        let result = finalized_raw_tokens(input.clone());
         assert_eq!(result.len(), 4, "All non-overlapping tokens must be preserved");
         assert_eq!(result, input, "Token order and content must be unchanged");
     }
@@ -1552,7 +3086,7 @@ print "ok" foreach @ys;
     fn mutation_hardening_boundary_minus_one() {
         // Token A: [0, 10), Token B: [9, 15) - overlap at position 9
         let input = vec![tok(0, 0, 10, 0, 0), tok(0, 9, 6, 1, 0)];
-        let result = remove_overlapping_tokens(input);
+        let result = finalized_raw_tokens(input);
         assert_eq!(result.len(), 1, "Boundary-1 overlap must be detected");
         assert_eq!(result[0], tok(0, 0, 10, 0, 0), "First longer token wins");
     }
@@ -1564,7 +3098,7 @@ print "ok" foreach @ys;
         let input = vec![
             tok(0, 0, 5, 42, 7), // Specific type and modifiers
         ];
-        let result = remove_overlapping_tokens(input.clone());
+        let result = finalized_raw_tokens(input.clone());
         assert_eq!(result[0].3, 42, "Token type must be preserved");
         assert_eq!(result[0].4, 7, "Token modifiers must be preserved");
     }
@@ -1580,7 +3114,7 @@ print "ok" foreach @ys;
             tok(0, 5, 3, 3, 0),
             tok(2, 0, 3, 4, 0),
         ];
-        let result = remove_overlapping_tokens(input);
+        let result = finalized_raw_tokens(input);
         assert_eq!(result.len(), 5);
         // Verify primary sort by line
         assert!(result[0].0 <= result[1].0);
@@ -1735,13 +3269,14 @@ print "ok" foreach @ys;
     /// Helper: collect the modifier bits for the first `$name` variable token.
     fn first_var_mods(source: &str, name: &str) -> u32 {
         let mut parser = Parser::new(source);
-        let ast = parser.parse().expect("parse");
+        let ast = must_with(parser.parse(), "parse");
         let tokens = collect_semantic_tokens(&ast, source, &|offset| pos16(source, offset));
         let lines: Vec<&str> = source.split('\n').collect();
         let mut line = 0u32;
         let mut col = 0u32;
-        let variable_idx = *legend().map.get("variable").expect("variable in legend");
+        let variable_idx = *must_some_with(legend().map.get("variable"), "variable in legend");
         let target = format!("${name}");
+        let mut found = None;
         for [delta_line, delta_start, length, token_type, mods] in tokens {
             if delta_line == 0 {
                 col = col.saturating_add(delta_start);
@@ -1750,15 +3285,16 @@ print "ok" foreach @ys;
                 col = delta_start;
             }
             if token_type == variable_idx {
-                let src_line = lines.get(line as usize).expect("line in range");
+                let src_line = must_some_with(lines.get(line as usize), "line in range");
                 let painted: String =
                     src_line.chars().skip(col as usize).take(length as usize).collect();
                 if painted == target {
-                    return mods;
+                    found = Some(mods);
+                    break;
                 }
             }
         }
-        panic!("no `${name}` variable token found in source: {source:?}");
+        must_some_with(found, format!("no `${name}` variable token found in source: {source:?}"))
     }
 
     const DECLARATION_BIT: u32 = 1; // bit 0
@@ -1808,7 +3344,7 @@ print "ok" foreach @ys;
 
     /// #4968 Slice 1: `Readonly` declarations carry both `declaration` and
     /// `readonly` modifiers. Uses the `Readonly my $x => ...` form that
-    /// `mark_readonly_decl_flags` detects (FunctionCall name == "Readonly").
+    /// `mark_readonly_declaration_flags` detects (FunctionCall name == "Readonly").
     #[test]
     fn readonly_declaration_carries_readonly_modifier() {
         let source = "use Readonly;\nReadonly my $x => 42;\n";
@@ -1823,5 +3359,527 @@ print "ok" foreach @ys;
             READONLY_BIT,
             "Readonly declaration must carry readonly (bit 2), got mods={mods}"
         );
+    }
+
+    #[test]
+    fn wrapped_declarations_preserve_frozen_modifier_bits() {
+        for (source, name, expected_modifiers) in [
+            ("my ($a, ($nested, $deep));\n", "nested", 1025),
+            ("my ($tagged :shared, $plain);\n", "tagged", 1025),
+            (
+                "use Const::Fast;\nconst my ($fast, ($nested_fast)) => (1, 2);\n",
+                "nested_fast",
+                1029,
+            ),
+        ] {
+            assert_eq!(
+                first_var_mods(source, name),
+                expected_modifiers,
+                "wrapped declaration `${name}` must preserve its frozen modifiers"
+            );
+        }
+
+        let readonly_source =
+            "use Readonly;\nReadonly my ($tagged_ro :shared, $plain_ro) => (1, 2);\n";
+        assert_eq!(
+            first_var_mods(readonly_source, "tagged_ro"),
+            1029,
+            "wrapped Readonly declaration must emit the attributed variable with frozen modifiers"
+        );
+        assert_eq!(
+            first_var_mods(readonly_source, "plain_ro"),
+            1029,
+            "wrapped Readonly declaration must emit every variable with frozen modifiers"
+        );
+
+        // Nested locals inside the Readonly/const initializer must not inherit
+        // the frozen modifier from the outer wrapped declaration.
+        let nested_local_source =
+            "use Readonly;\nReadonly my $outer => do { my $tmp = 1; $tmp };\n";
+        assert_eq!(
+            first_var_mods(nested_local_source, "outer"),
+            1029,
+            "outer Readonly declaration operand must stay frozen"
+        );
+        let tmp_mods = first_var_mods(nested_local_source, "tmp");
+        assert_eq!(
+            tmp_mods & READONLY_BIT,
+            0,
+            "nested local inside Readonly RHS must not inherit readonly, got mods={tmp_mods}"
+        );
+        assert_eq!(
+            tmp_mods & DECLARATION_BIT,
+            DECLARATION_BIT,
+            "nested local inside Readonly RHS must still be a declaration, got mods={tmp_mods}"
+        );
+    }
+
+    fn require_geometry(condition: bool, message: std::fmt::Arguments<'_>) -> std::io::Result<()> {
+        if condition { Ok(()) } else { Err(std::io::Error::other(message.to_string())) }
+    }
+
+    /// Collect the (line, start, length) geometry a span normalizes into.
+    ///
+    /// Uses the real `pos16` mapping so UTF-16 counting is exercised rather
+    /// than assumed.
+    fn segments_of(
+        source: &str,
+        start: usize,
+        end: usize,
+    ) -> std::io::Result<Vec<(u32, u32, u32)>> {
+        let control = SemanticTokensTraversalControl::unlimited();
+        let mut traversal = TraversalState { control: &control, work_done: 0 };
+        let mut out = Vec::new();
+        push_line_contained_segments(
+            source,
+            start,
+            end,
+            &|offset| pos16(source, offset),
+            7,
+            0,
+            &mut out,
+            &mut traversal,
+        )
+        .map_err(|stop| std::io::Error::other(format!("geometry refused: {stop:?}")))?;
+        Ok(out.into_iter().map(|(line, start, length, _, _)| (line, start, length)).collect())
+    }
+
+    #[test]
+    fn multiline_span_becomes_nonempty_line_contained_segments()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // "abc\ndef\nghi": a span from inside line 0 to inside line 2 must be
+        // three separate tokens, not one zero-length token (#1850).
+        let source = "abc\ndef\nghi";
+        require_geometry(
+            (segments_of(source, 1, 10)?) == (vec![(0, 1, 2), (1, 0, 3), (2, 0, 2)]),
+            format_args!("geometry values differ"),
+        )?;
+        Ok(())
+    }
+
+    #[test]
+    fn single_line_span_keeps_its_previous_exact_length() -> Result<(), Box<dyn std::error::Error>>
+    {
+        // Control: the overwhelmingly common case must be byte-for-byte what
+        // the old `ec.saturating_sub(sc)` produced.
+        let source = "my $x = 1;\n";
+        require_geometry(
+            (segments_of(source, 3, 5)?) == (vec![(0, 3, 2)]),
+            format_args!("geometry values differ"),
+        )?;
+        Ok(())
+    }
+
+    #[test]
+    fn crlf_segments_exclude_the_carriage_return() -> Result<(), Box<dyn std::error::Error>> {
+        // Without the CR strip a CRLF file over-counts every segment by one,
+        // pushing the token past the end of its own line.
+        let source = "abc\r\ndef\r\n";
+        require_geometry(
+            (segments_of(source, 0, 10)?) == (vec![(0, 0, 3), (1, 0, 3)]),
+            format_args!("geometry values differ"),
+        )?;
+        Ok(())
+    }
+
+    #[test]
+    fn a_bare_carriage_return_is_content_not_a_terminator() -> Result<(), Box<dyn std::error::Error>>
+    {
+        // `perl-position-tracking`'s LF-only contract: "CRLF is one separator
+        // and a bare CR is ordinary source content". Only the CR paired with a
+        // '\n' may be dropped, so a span ending in a bare CR keeps its full
+        // length.
+        let source = "ab\rcd\nef";
+        require_geometry(
+            (segments_of(source, 0, 3)?) == (vec![(0, 0, 3)]),
+            format_args!("trailing bare CR is content"),
+        )?;
+        require_geometry(
+            (segments_of(source, 0, 5)?) == (vec![(0, 0, 5)]),
+            format_args!("interior bare CR is content"),
+        )?;
+        Ok(())
+    }
+
+    #[test]
+    fn segmentation_is_metered_by_the_traversal_budget() -> Result<(), Box<dyn std::error::Error>> {
+        // Segmenting a large multiline token must remain interruptible: without
+        // metering, a small budget or a cancellation is ignored until every
+        // line has been materialized.
+        let source = "a\nb\nc\nd\ne\nf\n";
+        let never_cancelled = || false;
+        let control = SemanticTokensTraversalControl::new(&never_cancelled, Some(3));
+        let mut traversal = TraversalState { control: &control, work_done: 0 };
+        let mut out = Vec::new();
+        let result = push_line_contained_segments(
+            source,
+            0,
+            source.len(),
+            &|offset| pos16(source, offset),
+            7,
+            0,
+            &mut out,
+            &mut traversal,
+        );
+        require_geometry(
+            (result) == (Err(TraversalStop::BudgetExhausted)),
+            format_args!("geometry values differ"),
+        )?;
+        require_geometry(
+            (traversal.work_done) == (3),
+            format_args!("each covered line charges exactly one admission"),
+        )?;
+        require_geometry(
+            out.len() <= 3,
+            format_args!("no segment may be produced past the budget: {out:?}"),
+        )?;
+
+        // Lines that emit nothing are charged too, and deliberately so: metering
+        // only emitting lines would let a span of blank lines iterate unmetered.
+        // "a\n\n\nb" covers four lines and emits two tokens, so it owes four
+        // admissions, not two.
+        let blank_heavy = "a\n\n\nb";
+        let unlimited = SemanticTokensTraversalControl::unlimited();
+        let mut blank_traversal = TraversalState { control: &unlimited, work_done: 0 };
+        let mut blank_out = Vec::new();
+        push_line_contained_segments(
+            blank_heavy,
+            0,
+            blank_heavy.len(),
+            &|offset| pos16(blank_heavy, offset),
+            7,
+            0,
+            &mut blank_out,
+            &mut blank_traversal,
+        )
+        .map_err(|_| "unlimited budget must not stop")?;
+        require_geometry(
+            (blank_out.len()) == (2),
+            format_args!("only the two nonempty lines emit: {blank_out:?}"),
+        )?;
+        require_geometry(
+            (blank_traversal.work_done) == (4),
+            format_args!("every covered line is metered, emitting or not"),
+        )?;
+
+        // The same span stops immediately under cancellation.
+        let always_cancelled = || true;
+        let cancel_control = SemanticTokensTraversalControl::new(&always_cancelled, None);
+        let mut cancel_traversal = TraversalState { control: &cancel_control, work_done: 0 };
+        let mut cancelled_out = Vec::new();
+        let cancelled = push_line_contained_segments(
+            source,
+            0,
+            source.len(),
+            &|offset| pos16(source, offset),
+            7,
+            0,
+            &mut cancelled_out,
+            &mut cancel_traversal,
+        );
+        require_geometry(
+            (cancelled) == (Err(TraversalStop::Cancelled)),
+            format_args!("geometry values differ"),
+        )?;
+        require_geometry(
+            cancelled_out.is_empty(),
+            format_args!("cancellation must stop before any segment"),
+        )?;
+        Ok(())
+    }
+
+    #[test]
+    fn a_line_touched_only_by_its_terminator_contributes_no_segment()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // The blank interior line must not produce an empty token.
+        let source = "ab\n\ncd";
+        require_geometry(
+            (segments_of(source, 0, 6)?) == (vec![(0, 0, 2), (2, 0, 2)]),
+            format_args!("geometry values differ"),
+        )?;
+        Ok(())
+    }
+
+    #[test]
+    fn segments_are_counted_in_utf16_units_not_bytes() -> Result<(), Box<dyn std::error::Error>> {
+        // U+1D11E is 4 UTF-8 bytes but 2 UTF-16 code units. A byte count would
+        // report 5 for the first line instead of 3.
+        let source = "\u{1D11E}x\ny";
+        require_geometry(
+            (segments_of(source, 0, 7)?) == (vec![(0, 0, 3), (1, 0, 1)]),
+            format_args!("geometry values differ"),
+        )?;
+        Ok(())
+    }
+
+    #[test]
+    fn spans_without_representable_geometry_are_refused() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let source = "abc\ndef";
+        // Reversed, past the end, and off a character boundary must all fail
+        // closed rather than clamp into a plausible-looking token.
+        require_geometry(
+            segments_of(source, 5, 2).is_err(),
+            format_args!("reversed span must emit nothing"),
+        )?;
+        require_geometry(
+            segments_of(source, 2, 99).is_err(),
+            format_args!("out-of-bounds span must emit nothing"),
+        )?;
+        let multibyte = "\u{1D11E}";
+        require_geometry(
+            segments_of(multibyte, 1, 3).is_err(),
+            format_args!("split char boundary must emit nothing"),
+        )?;
+        Ok(())
+    }
+
+    /// Decode the provider's delta stream into absolute (line, start, length).
+    fn painted_geometry(source: &str) -> Result<Vec<(u32, u32, u32)>, Box<dyn std::error::Error>> {
+        let mut parser = Parser::new(source);
+        let ast = parser.parse()?;
+        let mut line = 0u32;
+        let mut character = 0u32;
+        let mut out = Vec::new();
+        for [delta_line, delta_character, length, _kind, _mods] in
+            collect_semantic_tokens(&ast, source, &|offset| pos16(source, offset))
+        {
+            if delta_line == 0 {
+                character = character.saturating_add(delta_character);
+            } else {
+                line = line.saturating_add(delta_line);
+                character = delta_character;
+            }
+            out.push((line, character, length));
+        }
+        Ok(out)
+    }
+
+    #[test]
+    fn multiline_constructs_emit_only_valid_nonzero_tokens()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Every one of these carries at least one span that crosses a line
+        // boundary. Before #1850 each such span computed length 0 and was
+        // dropped by an `if len > 0` guard, so the construct was invisible.
+        // POD is deliberately absent: this provider emits no token for it at
+        // all today, so it cannot discriminate a geometry change (#1850 covers
+        // geometry, not token production).
+        let sources = [
+            "my $s = \"first line\nsecond line\";\n",
+            "my $t = <<END;\nplain heredoc body\nmore body\nEND\n",
+            "sub outer {\n    my $x = 1;\n    return $x;\n}\n",
+        ];
+
+        for source in sources {
+            let painted = painted_geometry(source)?;
+            let lines: Vec<&str> = source.split('\n').collect();
+            require_geometry(
+                !painted.is_empty(),
+                format_args!("no tokens emitted for source: {source:?}"),
+            )?;
+            for (line, start, length) in painted {
+                require_geometry(
+                    length > 0,
+                    format_args!("zero-length token at {line}:{start} in {source:?}"),
+                )?;
+                let line_text =
+                    lines.get(line as usize).ok_or("token points past the last source line")?;
+                let line_units: u32 = line_text.chars().map(|c| c.len_utf16() as u32).sum::<u32>();
+                require_geometry(
+                    start.saturating_add(length) <= line_units,
+                    format_args!(
+                        "token {line}:{start}+{length} escapes its line ({line_units} units) in {source:?}"
+                    ),
+                )?;
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn multiline_string_is_painted_on_each_line_it_covers() -> Result<(), Box<dyn std::error::Error>>
+    {
+        // The defect's user-visible shape: a string spanning two lines used to
+        // contribute nothing at all. It must now paint both lines.
+        let source = "my $s = \"alpha\nbeta\";\n";
+        let painted = painted_geometry(source)?;
+        require_geometry(
+            painted.iter().any(|(line, _, _)| *line == 0),
+            format_args!("string must still paint its opening line: {painted:?}"),
+        )?;
+        require_geometry(
+            painted.iter().any(|(line, _, _)| *line == 1),
+            format_args!("string must paint its continuation line: {painted:?}"),
+        )?;
+        Ok(())
+    }
+
+    #[test]
+    fn a_multiline_construct_anchor_does_not_paint_its_body()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Regression guard for the geometry repair itself. The class arm
+        // anchors on the whole construct because no narrower name span is
+        // available. Segmenting that anchor would paint every body line as a
+        // "class" token, and the longer-wins rule in remove_overlapping_tokens
+        // would then discard the tokens inside the body.
+        let source = "class Foo {\n    field $x;\n    method go { return 1; }\n}\n";
+        let anchor_kind = *legend().map.get("class").ok_or("class missing from legend")?;
+        let painted = {
+            let mut parser = Parser::new(source);
+            let ast = parser.parse()?;
+            let mut line = 0u32;
+            let mut character = 0u32;
+            let mut out = Vec::new();
+            for [delta_line, delta_character, length, token_type, _mods] in
+                collect_semantic_tokens(&ast, source, &|offset| pos16(source, offset))
+            {
+                if delta_line == 0 {
+                    character = character.saturating_add(delta_character);
+                } else {
+                    line = line.saturating_add(delta_line);
+                    character = delta_character;
+                }
+                out.push((line, character, length, token_type));
+            }
+            out
+        };
+
+        require_geometry(
+            !painted.iter().any(|(line, _, _, token_type)| *line > 0 && *token_type == anchor_kind),
+            format_args!("a class anchor must not paint its body lines as class: {painted:?}"),
+        )?;
+        require_geometry(
+            painted.iter().any(|(line, _, _, _)| *line == 1),
+            format_args!("tokens inside the body must survive: {painted:?}"),
+        )?;
+        Ok(())
+    }
+
+    #[test]
+    fn a_multiline_interpolated_sql_argument_keeps_its_variable_tokens()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // A DBI SQL argument is classified `sql_string` over the whole
+        // argument, while the lexer separately paints the interpolated
+        // `$table` as a `variable`. Segmenting the classification would cover
+        // the variable on its line and longer-wins would discard it.
+        let source = "my $dbh; my $table = 'users';\n$dbh->prepare(\"SELECT *\nFROM $table\nWHERE id=1\");\n";
+        let variable = *legend().map.get("variable").ok_or("variable missing from legend")?;
+        let mut parser = Parser::new(source);
+        let ast = parser.parse()?;
+        let mut line = 0u32;
+        let mut character = 0u32;
+        let mut variables = Vec::new();
+        for [delta_line, delta_character, length, token_type, _mods] in
+            collect_semantic_tokens(&ast, source, &|offset| pos16(source, offset))
+        {
+            if delta_line == 0 {
+                character = character.saturating_add(delta_character);
+            } else {
+                line = line.saturating_add(delta_line);
+                character = delta_character;
+            }
+            if token_type == variable {
+                variables.push((line, character, length));
+            }
+        }
+        require_geometry(
+            variables.iter().any(|(line, _, _)| *line == 2),
+            format_args!(
+                "the interpolated $table on the continuation line must survive: {variables:?}"
+            ),
+        )?;
+        Ok(())
+    }
+
+    #[test]
+    fn injected_heredoc_keywords_survive_body_painting() -> Result<(), Box<dyn std::error::Error>> {
+        // Painting the heredoc body as line segments must not let the
+        // longer-wins overlap rule swallow the injected SQL keywords.
+        let source = "my $sql = <<SQL;\nSELECT id FROM users;\nSQL\n";
+        let keyword = *legend()
+            .map
+            .get("sql_heredoc_keyword")
+            .ok_or("sql_heredoc_keyword missing from legend")?;
+        let mut parser = Parser::new(source);
+        let ast = parser.parse()?;
+        let mut line = 0u32;
+        let mut character = 0u32;
+        let mut keywords = Vec::new();
+        for [delta_line, delta_character, length, token_type, _mods] in
+            collect_semantic_tokens(&ast, source, &|offset| pos16(source, offset))
+        {
+            if delta_line == 0 {
+                character = character.saturating_add(delta_character);
+            } else {
+                line = line.saturating_add(delta_line);
+                character = delta_character;
+            }
+            if token_type == keyword {
+                keywords.push((line, character, length));
+            }
+        }
+        require_geometry(
+            keywords.len() >= 2,
+            format_args!("injected SQL keywords must survive body painting, got {keywords:?}"),
+        )?;
+        Ok(())
+    }
+
+    #[test]
+    fn invalid_geometry_is_a_typed_failure_not_empty_success() -> anyhow::Result<()> {
+        for (source, start, end) in [("abc\ndef", 5, 2), ("abc\ndef", 2, 99), ("é", 1, 2)] {
+            let control = SemanticTokensTraversalControl::unlimited();
+            let mut traversal = TraversalState { control: &control, work_done: 0 };
+            let mut out = Vec::new();
+            let result = push_line_contained_segments(
+                source,
+                start,
+                end,
+                &|offset| pos16(source, offset),
+                7,
+                0,
+                &mut out,
+                &mut traversal,
+            );
+            let stop = result.err().ok_or_else(|| anyhow::anyhow!("invalid geometry succeeded"))?;
+            anyhow::ensure!(stop == TraversalStop::InvalidGeometry, "wrong refusal: {stop:?}");
+            let outcome = interrupted_outcome(stop, Vec::new(), out, traversal.work_done);
+            anyhow::ensure!(
+                matches!(outcome, SemanticTokensTraversalOutcome::CollectionFailure(_)),
+                "invalid geometry must not become Complete: {outcome:?}"
+            );
+        }
+        let control = SemanticTokensTraversalControl::unlimited();
+        let mut traversal = TraversalState { control: &control, work_done: 0 };
+        let mut out = Vec::new();
+        let result = push_line_contained_segments(
+            "abc",
+            1,
+            1,
+            &|offset| pos16("abc", offset),
+            7,
+            0,
+            &mut out,
+            &mut traversal,
+        );
+        anyhow::ensure!(result.is_ok() && out.is_empty(), "valid empty span must succeed");
+        Ok(())
+    }
+
+    #[test]
+    fn partial_crlf_endpoint_excludes_only_paired_carriage_return() -> anyhow::Result<()> {
+        anyhow::ensure!(
+            segments_of("ab\r\ncd", 0, 3)? == vec![(0, 0, 2)],
+            "partial CRLF endpoint must exclude the paired CR"
+        );
+        anyhow::ensure!(
+            segments_of("ab\r", 0, 3)? == vec![(0, 0, 3)],
+            "standalone CR remains content"
+        );
+        anyhow::ensure!(
+            segments_of("ab\r\ncd", 2, 3)?.is_empty(),
+            "terminator-only intersection must not emit a token"
+        );
+        Ok(())
     }
 }

@@ -35,15 +35,20 @@ before committing derived state.
 
 ## Current Inventory
 
+The live `LspServer` does not retain an AST-only parse cache. `didOpen`,
+`didChange`, and the asynchronous parse-worker route run the full parser for
+each current document parse and publish its complete outcome, including
+recovery diagnostics. A complete parse-artifact store is future work.
+
 | Owner | State | Key type | Byte-risk | Bounds and cleanup | Pressure counter or signal | Regression test or receipt |
 |-------|-------|----------|-----------|--------------------|----------------------------|----------------------------|
 | `LspServer` | Open documents in `documents` | Normalized URI `String` | Raw source text and document metadata | `didClose` uses `evict_open_document_session_state`; delete and folder removal route through stronger helpers | `MemoryStateSnapshot.documents`; `MemoryStateSnapshot.open_text_bytes` | `test_did_close_zeroes_memory_state_snapshot`; folder-removal tests in `workspace.rs` |
-| `LspServer` | `ast_cache` | URI `String` with cached content hash | Parsed ASTs for recently used documents | `AstCache::new(100, 300)` in runtime constructors; explicit `AstCache::remove` on close/delete | `MemoryStateSnapshot.ast_cache_entries` | `ast_cache_remove_evicts_entry_immediately` |
 | `LspServer` | `semantic_analyzer_cache` | `(normalized_uri, content_hash)` | Semantic analyzer graphs and derived scope state | Invalidated on `didChange`, close, and delete; hard-clears when the cache reaches 50 entries | `MemoryStateSnapshot.semantic_analyzer_cache_entries` | semantic analyzer invalidation tests in `text_sync.rs`; `MemoryStateSnapshot` |
 | `LspServer` | `parse_cancel_flags` | URI `String` | Per-document cancellation tokens and stale parse coordination | New parses cancel prior tokens; close/delete/folder cleanup trips and removes flags | `MemoryStateSnapshot.parse_cancel_flags` | `test_did_close_cancels_and_removes_flag`; snapshot tests |
 | `LspServer` | `pod_cache` | Filesystem `PathBuf` | Parsed POD hover docs | Soft cap 1024 entries, prune target 512; close/delete removes the file path entry | `MemoryStateSnapshot.pod_cache_entries` | POD hover cache cap and close/delete eviction test; `MemoryStateSnapshot.pod_cache_entries` |
 | `LspServer` | Pull diagnostics file cache | Filesystem path | Diagnostic result state and external diagnostic reuse | Invalidated on text change, close, and delete through the pull diagnostics orchestrator | `RuntimePressureSnapshot.diagnostic_debounce_pending_uris`; diagnostics churn drain assertions | lifecycle snapshot tests; diagnostics churn retained-state coverage |
-| `LspServer` | Perl::Critic analyzer and warning set | Analyzer config and workspace warning keys | External analyzer cache, profile discovery, warning suppression keys | Analyzer reset on critic configuration changes; file cache invalidated on document changes and eviction | diagnostics churn drain assertions; memory regression issue template owner field | diagnostics tests; diagnostics churn retained-state coverage |
+| `LspServer` | Perl::Critic analyzer and warning set | Analyzer config and workspace warning keys | External analyzer cache, profile discovery | Analyzer reset on critic configuration changes; file cache invalidated on document changes and eviction; warning suppression (push and pull paths) moved to the bounded `session_warning_dedup` store (#9769) | diagnostics churn drain assertions; memory regression issue template owner field | diagnostics tests; diagnostics churn retained-state coverage |
+| `LspServer` | Session warning dedup store (`session_warning_dedup`, #9769) | Typed `SessionWarningIdentity { code, subject tag, u64 fingerprint }` per family (critic / client_setting / ai_backend) | Presentation-only suppression identities; no raw value, path, or secret payload retained | Hard cap 32 fixed-size identities per family with reviewed saturation (new identities beyond the cap emit without retaining); critic family (shared by push and pull diagnostics) cleared on critic config transitions, AI-backend family cleared on configuration notifications; session end releases everything by drop | `SessionWarningDedupSnapshot` per-family counters (entries, high-water, inserted, suppressed, emitted_without_retaining, cleared_by_lifecycle) | `session_warning_dedup_tests.rs` bound/privacy/lifecycle falsifiers; xtask raw-string-set negative control |
 | `StreamSessionManager` | Inline-completion stream sessions | `SessionKey { uri, document_version, line, character }` | Streaming buffers, cancellation flags, per-request session entries | `cancel_for_uri` and `cancel_for_uri_version` cancel and remove entries immediately | `MemoryStateSnapshot.stream_sessions`; `RuntimePressureSnapshot.active_stream_sessions` | stream-session eviction tests; `MemoryStateSnapshot.stream_sessions` |
 | `SymbolIndex` | Open-document symbols | Document URI plus symbol name | Per-open-document symbol vectors and lookup maps | Re-index replaces old symbols; close cleanup clears document symbols | close/delete lifecycle assertions for retained symbols | `test_did_close_removes_document_symbols_from_index` |
 | `WorkspaceIndex` | Files, symbols, references, semantic shards, import/export facts | Normalized URI plus symbol/reference keys | Workspace-wide derived state, potentially proportional to workspace size | Delete and reindex use `remove_file`/`clear_file`; close-only should not remove file-backed symbols | `WorkspaceIndex::memory_snapshot`; memory plateau receipt fields | `memory_leak_regression.rs`; close/delete lifecycle tests; memory plateau receipts |
@@ -67,7 +72,7 @@ before committing derived state.
 | Nightly workspace-symbol churn | 300 files, 10 changes, strict plateau |
 | POD cache | Soft cap 1024 entries, prune target 512 |
 | Semantic analyzer cache | 50 entries before clear |
-| Runtime AST cache | 100 entries, 300 second TTL, explicit remove on close/delete |
+| Session warning dedup (#9769) | Hard cap 32 fixed-size fingerprint identities per family, saturation emits without retaining |
 | Workspace index caches | Use configured workspace resource limits; delete/reindex must not duplicate secondary indexes |
 
 ## Regression Surfaces

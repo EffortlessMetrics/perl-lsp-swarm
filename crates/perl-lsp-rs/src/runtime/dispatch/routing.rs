@@ -22,6 +22,35 @@ impl LspServer {
         let method = request.method.clone();
         let request_start = std::time::Instant::now();
 
+        // Checked method-direction admission (#8896). #7010 has already
+        // classified the envelope, so anything reaching this seam carries a
+        // method name; only methods registered client→server may proceed to
+        // application handlers. Wrong-direction requests answer MethodNotFound
+        // (-32601); wrong-direction notifications are dropped with no response
+        // and no state mutation. JSON-RPC responses never arrive here because
+        // #7010 consumes them as `$/perl-lsp/clientResponse` first.
+        match crate::protocol::method_direction::inbound_decision(&method, id.is_some()) {
+            crate::protocol::method_direction::InboundDecision::Allow => {}
+            crate::protocol::method_direction::InboundDecision::RejectRequest => {
+                let result = Err(enhanced_error(
+                    METHOD_NOT_FOUND,
+                    &format!("Method '{method}' is not valid in the client-to-server direction"),
+                    "method_not_found",
+                    Some(&method),
+                ));
+                self.record_lsp_request_latency(&method, request_start);
+                return RoutedResponse::Handler { id, method, should_respond, result };
+            }
+            crate::protocol::method_direction::InboundDecision::IgnoreNotification => {
+                tracing::debug!(
+                    method = %method,
+                    "Dropped server-to-client notification received from client"
+                );
+                self.record_lsp_request_latency(&method, request_start);
+                return RoutedResponse::Handler { id, method, should_respond, result: Ok(None) };
+            }
+        }
+
         // LSP spec: after shutdown, the server must reject all requests except
         // `exit` with -32600 InvalidRequest (#6103).
         if method != "exit"
@@ -42,21 +71,41 @@ impl LspServer {
 
         let result = match method.as_str() {
             "initialize" => self.handle_initialize_dispatch(request.params),
-            "initialized" => self.handle_initialized_dispatch(),
+            // `workspace/configuration` is a server→client request and cannot be
+            // emitted while initialize is still in flight (#7708). Pull it from
+            // the routing seam after `initialized` succeeds so lifecycle.rs stays
+            // bit-identical to main (ripr same-file / owner-function accounting).
+            "initialized" => {
+                let outcome = self.handle_initialized_dispatch();
+                if outcome.is_ok() {
+                    self.request_workspace_configuration_for_folders();
+                }
+                outcome
+            }
             // Compatibility: some lightweight clients send `initialize` and then
             // immediately issue requests without an explicit `initialized` notification.
-            // Accept those requests once `initialize` has completed successfully.
-            _ if !self.initialize_requested.load(Ordering::Acquire)
-                && method != "shutdown"
-                && method != "exit" =>
-            {
+            // Accept those requests only once `initialize` has ACCEPTED the
+            // text-sync session contract (`initialization_accepted`): a consumed
+            // one-shot guard without acceptance — the failed-acceptance window —
+            // must fail closed here with ServerNotInitialized instead of serving
+            // (review 5061915323). shutdown/exit stay reachable per LSP spec.
+            _ if !self.initialization_accepted() && method != "shutdown" && method != "exit" => {
                 Err(JsonRpcError {
                     code: -32002, // ServerNotInitialized per LSP spec
                     message: "Server not initialized".to_string(),
                     data: None,
                 })
             }
-            "shutdown" => self.handle_shutdown_dispatch(),
+            "shutdown" => {
+                let outcome = self.handle_shutdown_dispatch();
+                // A client may shut down while the post-initialize configuration
+                // pull is still pending; clear eligibility with the shutdown Ok
+                // path so a late response cannot mutate configuration (#7708).
+                if outcome.is_ok() {
+                    self.pending_workspace_configuration_requests.lock().clear();
+                }
+                outcome
+            }
             "exit" => self.handle_exit_dispatch(),
             "textDocument/didOpen" => self.handle_did_open_dispatch(request.params),
             "textDocument/didChange" => self.handle_did_change_dispatch(request.params),
@@ -152,9 +201,9 @@ impl LspServer {
             "textDocument/documentLink" => self.handle_document_links_dispatch(request.params),
             "documentLink/resolve" => self.handle_document_link_resolve_dispatch(request.params),
             "textDocument/selectionRange" => self.handle_selection_range_dispatch(request.params),
-            "textDocument/onTypeFormatting" => {
-                self.handle_on_type_formatting_dispatch(request.params)
-            }
+            // textDocument/onTypeFormatting is withdrawn (#11955): the shared
+            // policy route refuses it; an un-intercepted request must fail
+            // closed as method-not-found below rather than reach any handler.
             "textDocument/codeLens" => self.handle_code_lens_dispatch(request.params),
             "codeLens/resolve" => self.handle_code_lens_resolve_dispatch(request.params),
             "textDocument/linkedEditingRange" => {
@@ -192,10 +241,10 @@ impl LspServer {
                     self.handle_formatting_cancellable_dispatch(request.params, request_id)
                 });
             }
-            "textDocument/rangeFormatting" => self.handle_range_formatting_dispatch(request.params),
-            "textDocument/rangesFormatting" => {
-                self.handle_ranges_formatting_dispatch(request.params)
-            }
+            // textDocument/rangeFormatting and textDocument/rangesFormatting
+            // are withdrawn (#11955): the shared policy route refuses them; an
+            // un-intercepted request must fail closed as method-not-found
+            // below rather than reach any handler.
             "textDocument/prepareCallHierarchy" => {
                 self.handle_prepare_call_hierarchy_dispatch(request.params)
             }
@@ -211,7 +260,6 @@ impl LspServer {
             }
             "perl/showAst" => self.handle_show_ast_dispatch(request.params),
             "experimental/testDiscovery" => self.handle_test_discovery_dispatch(request.params),
-            "workspace/configuration" => self.handle_configuration_dispatch(request.params),
             "workspace/didChangeWatchedFiles" => {
                 self.handle_did_change_watched_files_dispatch(request.params)
             }
@@ -234,7 +282,6 @@ impl LspServer {
             "workspace/didDeleteFiles" => self.handle_did_delete_files_dispatch(request.params),
             "workspace/willCreateFiles" => self.handle_will_create_files_dispatch(request.params),
             "workspace/didCreateFiles" => self.handle_did_create_files_dispatch(request.params),
-            "workspace/applyEdit" => self.handle_apply_edit_dispatch(request.params),
             "workspace/textDocumentContent" => {
                 self.handle_text_document_content_dispatch(request.params)
             }
@@ -303,10 +350,14 @@ impl LspServer {
 
         let result = match method.as_str() {
             "textDocument/prepareTypeHierarchy" | "typeHierarchy/prepare" => {
-                self.handle_prepare_type_hierarchy_dispatch(params)
+                self.handle_prepare_type_hierarchy_dispatch(params, id.as_ref())
             }
-            "typeHierarchy/supertypes" => self.handle_type_hierarchy_supertypes_dispatch(params),
-            "typeHierarchy/subtypes" => self.handle_type_hierarchy_subtypes_dispatch(params),
+            "typeHierarchy/supertypes" => {
+                self.handle_type_hierarchy_supertypes_dispatch(params, id.as_ref())
+            }
+            "typeHierarchy/subtypes" => {
+                self.handle_type_hierarchy_subtypes_dispatch(params, id.as_ref())
+            }
             _ => Err(enhanced_error(
                 METHOD_NOT_FOUND,
                 &format!("Method '{}' not found or not supported", method),
@@ -446,7 +497,12 @@ mod tests {
         .enumerate()
         {
             let server = LspServer::new();
-            server.initialize_requested.store(true, Ordering::Release);
+            // Real initialize so the accepted-contract gate
+            // (`initialization_accepted`, review 5061915323) admits serving;
+            // the consumed guard alone no longer does.
+            server
+                .handle_initialize(None)
+                .map_err(|error| std::io::Error::other(format!("initialize failed: {error:?}")))?;
             let request_id = JsonRpcId::Integer(4100 + offset as i64);
             server.cancel_mark(&request_id);
 
@@ -490,7 +546,12 @@ mod tests {
     #[test]
     fn route_request_call_presence_observer() -> Result<(), Box<dyn std::error::Error>> {
         let server = LspServer::new();
-        server.initialize_requested.store(true, Ordering::Release);
+        // Real initialize so the accepted-contract gate
+        // (`initialization_accepted`, review 5061915323) admits serving; the
+        // consumed guard alone no longer does.
+        server
+            .handle_initialize(None)
+            .map_err(|error| std::io::Error::other(format!("initialize failed: {error:?}")))?;
         let uri = "file:///routing-type-hierarchy.pl";
         server
             .test_apply_did_open(
@@ -587,6 +648,222 @@ mod tests {
         Ok(())
     }
 
+    /// ripr seam `238b96ead57bf174`: after shutdown, `method != "exit"` is rejected.
+    #[test]
+    fn ripr_seam_proof_route_request_after_shutdown_rejects_non_exit()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        server.shutdown_received.store(true, Ordering::Release);
+
+        let routed = server.route_request(
+            JsonRpcRequest {
+                _jsonrpc: "2.0".to_string(),
+                id: Some(JsonRpcId::Integer(77081)),
+                method: "textDocument/hover".to_string(),
+                params: None,
+            },
+            Some(json!(77081)),
+            true,
+        );
+
+        let RoutedResponse::Handler { result, .. } = routed else {
+            return Err("post-shutdown non-exit route must return a Handler response".into());
+        };
+        let error = result.err().ok_or("post-shutdown non-exit must be InvalidRequest")?;
+        assert_eq!(error.code, -32600, "exact InvalidRequest for method != \"exit\"");
+        assert!(
+            error.message.contains("shutdown"),
+            "rejection must name the post-shutdown gate: {}",
+            error.message
+        );
+        Ok(())
+    }
+
+    /// ripr seam `238e98ead57e2ab1`: `method != "shutdown"` is required for the
+    /// post-shutdown reject — `shutdown` itself must still reach the handler.
+    #[test]
+    fn ripr_seam_proof_route_request_shutdown_bypasses_post_shutdown_gate()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        server.shutdown_received.store(true, Ordering::Release);
+
+        let routed = server.route_request(
+            JsonRpcRequest {
+                _jsonrpc: "2.0".to_string(),
+                id: Some(JsonRpcId::Integer(77082)),
+                method: "shutdown".to_string(),
+                params: None,
+            },
+            Some(json!(77082)),
+            true,
+        );
+
+        let RoutedResponse::Handler { result, .. } = routed else {
+            return Err("shutdown must route to the lifecycle handler after shutdown flag".into());
+        };
+        let error = result.err().ok_or("second shutdown must be InvalidRequest from handler")?;
+        assert_eq!(error.code, -32600);
+        assert!(
+            error.message.contains("only be sent once"),
+            "must be the handler idempotence error, not the post-shutdown gate: {}",
+            error.message
+        );
+        assert!(
+            !error.message.contains("Server has been shutdown"),
+            "method == \"shutdown\" must bypass the post-shutdown early reject"
+        );
+        Ok(())
+    }
+
+    /// ripr seam `fe813eac7a1c99cf`: `!initialization_accepted && method != "shutdown"`.
+    #[test]
+    fn ripr_seam_proof_route_request_before_initialize_rejects_non_shutdown()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        assert!(
+            !server.initialize_requested.load(Ordering::Acquire),
+            "fresh server must start with initialize_requested == false"
+        );
+
+        let rejected = server.route_request(
+            JsonRpcRequest {
+                _jsonrpc: "2.0".to_string(),
+                id: Some(JsonRpcId::Integer(77083)),
+                method: "textDocument/hover".to_string(),
+                params: None,
+            },
+            Some(json!(77083)),
+            true,
+        );
+        let RoutedResponse::Handler { result, .. } = rejected else {
+            return Err("pre-initialize non-shutdown must return a Handler response".into());
+        };
+        let error =
+            result.err().ok_or("pre-initialize non-shutdown must be ServerNotInitialized")?;
+        assert_eq!(error.code, -32002, "exact ServerNotInitialized (-32002)");
+
+        let shutdown = server.route_request(
+            JsonRpcRequest {
+                _jsonrpc: "2.0".to_string(),
+                id: Some(JsonRpcId::Integer(77084)),
+                method: "shutdown".to_string(),
+                params: None,
+            },
+            Some(json!(77084)),
+            true,
+        );
+        let RoutedResponse::Handler { result, .. } = shutdown else {
+            return Err("pre-initialize shutdown must reach the lifecycle handler".into());
+        };
+        assert_eq!(
+            result.map_err(|e| format!("first shutdown must succeed: {e:?}"))?,
+            Some(json!(null)),
+            "method == \"shutdown\" must bypass the pre-initialize reject"
+        );
+        Ok(())
+    }
+
+    /// Review 5061915323: the consumed-guard/failed-acceptance window —
+    /// `initialize_requested` set but no ACCEPTED text-sync session — must
+    /// fail closed at the serving boundary. Previously this state served
+    /// hover (null result), didOpen (stored the document and pushed
+    /// diagnostics), and formatting end-to-end (via the formatting
+    /// intercept) because the -32002 arm keyed on the guard alone.
+    #[test]
+    fn consumed_guard_without_accepted_contract_serves_nothing()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        server.initialize_requested.store(true, Ordering::Release);
+        assert!(
+            server.accepted_text_sync_session().is_none(),
+            "constructed window state must have no accepted contract"
+        );
+
+        // Hover: the reviewer's exact falsifier — was a null result, must be
+        // ServerNotInitialized.
+        let hover_request = JsonRpcRequest {
+            _jsonrpc: "2.0".to_string(),
+            id: Some(JsonRpcId::Integer(50619001)),
+            method: "textDocument/hover".to_string(),
+            params: Some(json!({
+                "textDocument": { "uri": "file:///window-hover.pl" },
+                "position": { "line": 0, "character": 0 }
+            })),
+        };
+        let hover_code = server
+            .handle_request(hover_request)
+            .and_then(|response| response.error)
+            .map(|error| error.code);
+        assert_eq!(
+            hover_code,
+            Some(-32002),
+            "hover in the window state must be ServerNotInitialized (-32002)"
+        );
+
+        // didOpen notification: was stored + pushed diagnostics uninitialized;
+        // must be refused without storing the document.
+        let uri = "file:///window-did-open.pl";
+        let did_open = server.handle_request(JsonRpcRequest {
+            _jsonrpc: "2.0".to_string(),
+            id: None,
+            method: "textDocument/didOpen".to_string(),
+            params: Some(json!({
+                "textDocument": {
+                    "uri": uri,
+                    "languageId": "perl",
+                    "version": 1,
+                    "text": "my $window = 1;\n"
+                }
+            })),
+        });
+        assert!(did_open.is_none(), "didOpen notification must produce no response");
+        assert!(
+            !server.documents.lock().contains_key(uri),
+            "didOpen in the window state must not store the document"
+        );
+
+        // Formatting: was served end-to-end through the intercept; the
+        // intercept must fall through and the router must refuse -32002.
+        let formatting_code = server
+            .handle_request(JsonRpcRequest {
+                _jsonrpc: "2.0".to_string(),
+                id: Some(JsonRpcId::Integer(50619002)),
+                method: "textDocument/formatting".to_string(),
+                params: Some(json!({
+                    "textDocument": { "uri": "file:///window-format.pl" },
+                    "options": { "tabSize": 4, "insertSpaces": true }
+                })),
+            })
+            .and_then(|response| response.error)
+            .map(|error| error.code);
+        assert_eq!(
+            formatting_code,
+            Some(-32002),
+            "formatting in the window state must be ServerNotInitialized (-32002)"
+        );
+
+        // Positive control: with the contract ACCEPTED (compat path — no
+        // `initialized` notification), the same hover shape is served.
+        let accepted = LspServer::new();
+        accepted
+            .handle_initialize(None)
+            .map_err(|error| std::io::Error::other(format!("initialize failed: {error:?}")))?;
+        let hover_served = accepted.handle_request(JsonRpcRequest {
+            _jsonrpc: "2.0".to_string(),
+            id: Some(JsonRpcId::Integer(50619003)),
+            method: "textDocument/hover".to_string(),
+            params: Some(json!({
+                "textDocument": { "uri": "file:///accepted-hover.pl" },
+                "position": { "line": 0, "character": 0 }
+            })),
+        });
+        assert!(
+            hover_served.as_ref().is_some_and(|response| response.error.is_none()),
+            "hover after an accepted initialize must be served: {hover_served:?}"
+        );
+        Ok(())
+    }
+
     fn handler_result(
         routed: RoutedResponse,
         method: &str,
@@ -675,7 +952,12 @@ mod tests {
 
         for (offset, method) in methods.iter().enumerate() {
             let server = LspServer::new();
-            server.initialize_requested.store(true, Ordering::Release);
+            // Real initialize so the accepted-contract gate
+            // (`initialization_accepted`, review 5061915323) admits serving;
+            // the consumed guard alone no longer does.
+            server
+                .handle_initialize(None)
+                .map_err(|error| std::io::Error::other(format!("initialize failed: {error:?}")))?;
             let request_id = JsonRpcId::Integer(4600 + offset as i64);
             server.cancel_mark(&request_id);
 
@@ -718,6 +1000,109 @@ mod tests {
             }
         }
 
+        Ok(())
+    }
+
+    /// #8896: a server→client standard request sent by the client is rejected
+    /// with MethodNotFound (-32601) and never reaches the (removed) stateful
+    /// application handler.
+    #[test]
+    fn wrong_direction_standard_request_returns_method_not_found()
+    -> Result<(), Box<dyn std::error::Error>> {
+        for method in [
+            "workspace/applyEdit",
+            "workspace/configuration",
+            "client/registerCapability",
+            "client/unregisterCapability",
+        ] {
+            let server = LspServer::new();
+            // Real initialize so the accepted-contract gate
+            // (`initialization_accepted`, review 5061915323) admits serving;
+            // the consumed guard alone no longer does.
+            server
+                .handle_initialize(None)
+                .map_err(|error| std::io::Error::other(format!("initialize failed: {error:?}")))?;
+
+            let routed = server.route_request(
+                JsonRpcRequest {
+                    _jsonrpc: "2.0".to_string(),
+                    id: Some(JsonRpcId::Integer(8896)),
+                    method: method.to_string(),
+                    params: Some(json!({ "edit": { "changes": {} } })),
+                },
+                Some(json!(8896)),
+                true,
+            );
+
+            let RoutedResponse::Handler { result, .. } = routed else {
+                return Err(format!("{method} must produce a routable rejection").into());
+            };
+            let error = result.err().ok_or_else(|| {
+                format!("{method} must be rejected, not answered by an application handler")
+            })?;
+            assert_eq!(error.code, METHOD_NOT_FOUND, "{method}");
+            assert!(
+                error.message.contains("client-to-server"),
+                "{method} rejection must name the direction boundary: {}",
+                error.message
+            );
+        }
+        Ok(())
+    }
+
+    /// #8896: a wrong-direction notification produces no response frame and
+    /// runs no application code, so it cannot mutate documents or feature
+    /// state.
+    #[test]
+    fn wrong_direction_notification_is_dropped_without_state_mutation()
+    -> Result<(), Box<dyn std::error::Error>> {
+        for method in ["workspace/applyEdit", "$/progress", "window/showMessage"] {
+            let server = LspServer::new();
+            // Real initialize so the accepted-contract gate
+            // (`initialization_accepted`, review 5061915323) admits serving;
+            // the consumed guard alone no longer does.
+            server
+                .handle_initialize(None)
+                .map_err(|error| std::io::Error::other(format!("initialize failed: {error:?}")))?;
+            server
+                .test_apply_did_open("file:///direction-drop.pl", "my $kept = 1;\n", 1)
+                .map_err(|error| std::io::Error::other(format!("didOpen failed: {error:?}")))?;
+
+            let routed = server.route_request(
+                JsonRpcRequest {
+                    _jsonrpc: "2.0".to_string(),
+                    id: None,
+                    method: method.to_string(),
+                    params: Some(json!({
+                        "edit": { "changes": {
+                            "file:///direction-drop.pl": [
+                                { "range": { "start": {"line": 0, "character": 0},
+                                             "end": {"line": 0, "character": 1} },
+                                  "newText": "MUTATED" } ]
+                        } }
+                    })),
+                },
+                None,
+                false,
+            );
+
+            let RoutedResponse::Handler { result, should_respond, .. } = routed else {
+                return Err(format!("{method} notification must route as dropped").into());
+            };
+            assert!(!should_respond, "{method} notification must not request a response");
+            assert!(
+                matches!(result, Ok(None)),
+                "{method} notification drop must produce no handler result: {result:?}"
+            );
+
+            // No application code ran, so the open document must be intact.
+            let documents = server.documents.lock();
+            let mutated = documents
+                .get("file:///direction-drop.pl")
+                .map(|document| document.text.contains("MUTATED"))
+                .unwrap_or(false);
+            assert!(!mutated, "{method} notification must not mutate application state");
+        }
         Ok(())
     }
 }

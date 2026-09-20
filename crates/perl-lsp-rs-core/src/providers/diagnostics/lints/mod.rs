@@ -109,6 +109,9 @@
 //! |------|----------|-------------|
 //! | `PL406` | Hint | Statement cannot be reached due to preceding unconditional exit |
 //!
+//! Traversal and evaluation order for PL406 are governed by the per-variant
+//! disposition registry in `unreachable_code_disposition.rs` (issue #10844).
+//!
 //! ## Duplicate hash keys (`duplicate_hash_keys.rs`)
 //!
 //! | Code | Severity | Description |
@@ -172,6 +175,8 @@ pub mod source_filter;
 pub mod strict_warnings;
 /// Unreachable code detection (PL406)
 pub mod unreachable_code;
+/// PL406 semantic traversal disposition registry (issue #10844)
+pub mod unreachable_code_disposition;
 /// Unused import detection
 pub mod unused_imports;
 /// Perl version compatibility warnings (PL900)

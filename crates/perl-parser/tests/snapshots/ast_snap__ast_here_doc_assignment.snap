@@ -1,6 +1,5 @@
 ---
 source: crates/perl-parser/tests/ast_snap.rs
-assertion_line: 172
 expression: "parse_sexp(\"my $sql = <<'SQL';\\nselect * from users;\\nSQL\\n\")"
 ---
-(source_file (my_declaration (variable $ sql)(heredoc "SQL" "select * from users;")))
+(source_file (statements (my_declaration (declarator my) (variable (variable (sigil $) (name sql))) (initializer (heredoc (delimiter SQL) (content "select * from users;"))))))

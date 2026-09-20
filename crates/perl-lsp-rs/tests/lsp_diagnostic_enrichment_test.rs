@@ -369,3 +369,51 @@ fn test_related_information_forwarded() -> Result<(), Box<dyn std::error::Error>
 
     Ok(())
 }
+
+// Test 8 (#5035): the SQL-injection producer reaches the wire with the
+// storyboarded codeDescription contract — the `security.sql_injection` story
+// (lsp_critical_user_stories.rs, TEST 4) pins codeDescription.href to the OWASP
+// SQL injection reference, carried here by the registered PL607 code.
+#[test]
+fn test_sql_injection_code_description_is_owasp_referenced()
+-> Result<(), Box<dyn std::error::Error>> {
+    let uri = "file:///test_sql_injection.pl";
+    let content = concat!(
+        "use strict; use warnings;\n",
+        "my $dbh = DBI->connect('dbi:Pg:dbname=x', 'u', 'p');\n",
+        "my $user_id = <STDIN>;\n",
+        "my $sth = $dbh->prepare(\"SELECT * FROM users WHERE id = $user_id\");\n",
+    );
+    let server = open_document(uri, content);
+    let items = get_diagnostics(&server, uri)?;
+
+    let sql_diag = items
+        .iter()
+        .find(|d| d["code"].as_str() == Some("PL607"))
+        .ok_or("Expected PL607 (SecuritySqlInjection) for interpolated prepare")?;
+
+    assert_eq!(
+        sql_diag["codeDescription"]["href"],
+        "https://owasp.org/www-community/attacks/SQL_Injection",
+        "PL607 codeDescription must carry the storyboarded OWASP reference: {}",
+        sql_diag["codeDescription"]
+    );
+    assert_eq!(sql_diag["severity"], 2, "PL607 keeps the security family's Warning severity");
+
+    // The placeholder control in the same document must not produce PL607.
+    let safe_uri = "file:///test_sql_injection_safe.pl";
+    let safe_content = concat!(
+        "use strict; use warnings;\n",
+        "my $dbh = DBI->connect('dbi:Pg:dbname=x', 'u', 'p');\n",
+        "my $sth = $dbh->prepare('SELECT * FROM users WHERE id = ?');\n",
+        "$sth->execute(42);\n",
+    );
+    let safe_server = open_document(safe_uri, safe_content);
+    let safe_items = get_diagnostics(&safe_server, safe_uri)?;
+    assert!(
+        safe_items.iter().all(|d| d["code"].as_str() != Some("PL607")),
+        "placeholder prepare with bind values must stay silent on the wire: {safe_items:?}"
+    );
+
+    Ok(())
+}

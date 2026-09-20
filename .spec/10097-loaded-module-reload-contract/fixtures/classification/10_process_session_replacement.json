@@ -1,0 +1,17 @@
+{
+  "name": "10_process_session_replacement.json",
+  "fixture_class": "process/session replacement (#10097 class 10); bound generations belong to the replaced session",
+  "observation": {
+  "stopped_and_command_ready": true,
+  "runtime_supported": true,
+  "loaded_in_runtime": true,
+  "within_launch_authority": true,
+  "runtime_mapping_unambiguous": true,
+  "identity_binding_complete": true,
+  "identity_current": false,
+  "client_source_matches_saved": true,
+  "module_classification": "source_backed_perl_module",
+  "active_frame_in_target": false
+},
+  "expected_disposition": "source_not_exact_or_stale"
+}

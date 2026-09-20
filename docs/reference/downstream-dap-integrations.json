@@ -21,6 +21,7 @@
     { "triple": "aarch64-unknown-linux-musl", "platform": "unix" },
     { "triple": "x86_64-apple-darwin", "platform": "unix" },
     { "triple": "aarch64-apple-darwin", "platform": "unix" },
-    { "triple": "x86_64-pc-windows-msvc", "platform": "windows" }
+    { "triple": "x86_64-pc-windows-msvc", "platform": "windows" },
+    { "triple": "aarch64-pc-windows-msvc", "platform": "windows" }
   ]
 }

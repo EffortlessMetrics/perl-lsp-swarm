@@ -1,14 +1,12 @@
 //! Tests for DapMode, DapConfig, DapServer, TcpAttachConfig,
-//! TcpAttachSession, DapEvent, and BridgeAdapter.
+//! TcpAttachSession, and DapEvent.
 //!
-//! These tests verify the public API surfaces of the top-level DAP server
-//! types and supporting adapter infrastructure without requiring a live
-//! Perl debugger process.
+//! These tests verify the public API surfaces of the native top-level DAP
+//! server and supporting adapter infrastructure without requiring a live Perl
+//! debugger process.
 
 use perl_dap::tcp_attach::{DapEvent, TcpAttachConfig, TcpAttachSession};
-use perl_dap::{BridgeAdapter, DapConfig, DapMode, DapServer, DapSocketBindError};
-use std::io;
-use std::net::TcpListener;
+use perl_dap::{DapConfig, DapMode, DapServer};
 use std::time::Duration;
 
 // ── DapMode ────────────────────────────────────────────────────────
@@ -20,26 +18,34 @@ fn dap_mode_default_is_native() {
 
 #[test]
 fn dap_mode_clone_and_eq() {
-    let mode = DapMode::Bridge;
+    let mode = DapMode::Native;
     let cloned = mode.clone();
     assert_eq!(mode, cloned);
-    assert_ne!(DapMode::Native, DapMode::Bridge);
 }
 
 #[test]
 fn dap_mode_debug_format() {
     let debug_str = format!("{:?}", DapMode::Native);
     assert!(debug_str.contains("Native"));
-    let debug_str = format!("{:?}", DapMode::Bridge);
-    assert!(debug_str.contains("Bridge"));
+    assert!(!debug_str.contains("Bridge"));
 }
 
 // ── DapServer ──────────────────────────────────────────────────────
 
 #[test]
 fn dap_server_creation_native() -> Result<(), Box<dyn std::error::Error>> {
-    let config =
-        DapConfig { log_level: "info".to_string(), mode: DapMode::Native, workspace_root: None };
+    // Startup authority is mandatory (#8656): a server without trusted roots
+    // or an explicit unbounded acknowledgement fails closed.
+    let root = tempfile::tempdir()?;
+    let config = DapConfig {
+        log_level: "info".to_string(),
+        mode: DapMode::Native,
+        workspace_root: None,
+        launch_authority: perl_dap::LaunchAuthorityStartup {
+            trusted_roots: vec![root.path().to_path_buf()],
+            allow_unbounded: None,
+        },
+    };
     let server = DapServer::new(config)?;
     assert_eq!(server.config.mode, DapMode::Native);
     assert_eq!(server.config.log_level, "info");
@@ -48,53 +54,61 @@ fn dap_server_creation_native() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[test]
-fn dap_server_creation_bridge() -> Result<(), Box<dyn std::error::Error>> {
+fn dap_server_creation_preserves_workspace_root() -> Result<(), Box<dyn std::error::Error>> {
+    // The trusted root must exist so the #8656 startup authority resolves.
+    let root_dir = tempfile::tempdir()?;
+    let root = root_dir.path().to_path_buf();
     let config = DapConfig {
         log_level: "debug".to_string(),
-        mode: DapMode::Bridge,
-        workspace_root: Some(std::path::PathBuf::from("/workspace")),
+        mode: DapMode::Native,
+        workspace_root: Some(root.clone()),
+        launch_authority: perl_dap::LaunchAuthorityStartup::default(),
     };
     let server = DapServer::new(config)?;
-    assert_eq!(server.config.mode, DapMode::Bridge);
-    assert_eq!(server.config.workspace_root, Some(std::path::PathBuf::from("/workspace")));
+    assert_eq!(server.config.mode, DapMode::Native);
+    assert_eq!(server.config.workspace_root, Some(root));
     Ok(())
 }
 
 #[test]
-fn dap_server_socket_rejects_bridge_mode() -> Result<(), Box<dyn std::error::Error>> {
-    let config =
-        DapConfig { log_level: "info".to_string(), mode: DapMode::Bridge, workspace_root: None };
-    let mut server = DapServer::new(config)?;
-    let result = server.run_socket(9999);
-    assert!(result.is_err(), "Socket transport should be rejected in bridge mode");
-    let err_msg = result.err().ok_or("Expected error")?.to_string();
-    assert!(err_msg.contains("not supported"), "Error should mention lack of support: {err_msg}");
-    Ok(())
+fn dap_server_without_launch_authority_still_constructs_for_management_flows() {
+    // #8656: without authority inputs the server still starts so boundary-free
+    // management flows keep working; launch requests are refused fail-closed
+    // (covered by the adapter-level launch tests).
+    let config = DapConfig {
+        log_level: "info".to_string(),
+        mode: DapMode::Native,
+        workspace_root: None,
+        launch_authority: perl_dap::LaunchAuthorityStartup::default(),
+    };
+    let server =
+        DapServer::new(config).expect("a server without authority inputs must still construct");
+    assert!(server.config.launch_authority.trusted_roots.is_empty());
+    assert!(server.config.launch_authority.allow_unbounded.is_none());
 }
 
 #[test]
-fn dap_server_socket_reports_occupied_native_port_before_accept()
--> Result<(), Box<dyn std::error::Error>> {
-    let occupied = TcpListener::bind(("127.0.0.1", 0))?;
-    let port = occupied.local_addr()?.port();
-    let config =
-        DapConfig { log_level: "info".to_string(), mode: DapMode::Native, workspace_root: None };
-    let mut server = DapServer::new(config)?;
-
-    let error = match server.run_socket(port) {
-        Ok(()) => return Err(io::Error::other("occupied native port unexpectedly accepted").into()),
+fn dap_server_trusted_root_that_does_not_exist_is_rejected() {
+    // #8656: trusted roots are canonicalized and validated at startup.
+    let missing = std::env::temp_dir().join(format!("pldap-missing-root-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&missing);
+    let config = DapConfig {
+        log_level: "info".to_string(),
+        mode: DapMode::Native,
+        workspace_root: None,
+        launch_authority: perl_dap::LaunchAuthorityStartup {
+            trusted_roots: vec![missing],
+            allow_unbounded: None,
+        },
+    };
+    let error = match DapServer::new(config) {
+        Ok(_) => panic!("a missing trusted root must be rejected"),
         Err(error) => error,
     };
-    let marker = error.downcast_ref::<DapSocketBindError>().ok_or_else(|| {
-        io::Error::other("native bind failure did not preserve the DAP bind marker")
-    })?;
-    assert_eq!(marker.port, port, "bind marker must preserve the occupied port");
-    let source = error
-        .downcast_ref::<io::Error>()
-        .ok_or_else(|| io::Error::other("native bind source must remain available"))?;
-    assert_eq!(source.kind(), io::ErrorKind::AddrInUse);
-    assert!(error.to_string().contains(&port.to_string()));
-    Ok(())
+    assert!(
+        error.to_string().contains("does not exist"),
+        "startup error should name the missing root; got: {error:?}"
+    );
 }
 
 // ── TcpAttachConfig ────────────────────────────────────────────────
@@ -139,11 +153,11 @@ fn tcp_attach_config_validate_max_port_is_valid() {
 
 #[test]
 fn tcp_attach_config_validate_boundary_timeout() {
-    // At 300_000 (5 min) should be valid
+    // At 300_000 (5 min) should be valid.
     let mut config = TcpAttachConfig::new("localhost".to_string(), 13603).with_timeout(300_000);
     assert!(config.validate().is_ok());
 
-    // At 300_001 should fail
+    // At 300_001 should fail.
     let mut config = TcpAttachConfig::new("localhost".to_string(), 13603).with_timeout(300_001);
     assert!(config.validate().is_err());
 }
@@ -154,7 +168,7 @@ fn tcp_attach_config_validate_1ms_timeout() {
     assert!(config.validate().is_ok());
 }
 
-// ── TcpAttachSession ───────────────────────────────────────────────
+// ── TcpAttachSession ────────────────────────────────────────────────
 
 #[test]
 fn tcp_attach_session_default_is_disconnected() {
@@ -186,7 +200,7 @@ fn tcp_attach_session_start_reader_without_connection_fails() {
 #[test]
 fn tcp_attach_session_connect_to_invalid_host_fails() {
     let mut session = TcpAttachSession::new();
-    // Use a very short timeout to fail fast
+    // Use a very short timeout to fail fast.
     let mut config = TcpAttachConfig::new("192.0.2.1".to_string(), 59999).with_timeout(100);
     let result = session.connect(&mut config);
     assert!(result.is_err(), "Connecting to unreachable host should fail");
@@ -249,22 +263,4 @@ fn dap_event_clone() {
     let debug_original = format!("{:?}", event);
     let debug_cloned = format!("{:?}", cloned);
     assert_eq!(debug_original, debug_cloned);
-}
-
-// ── BridgeAdapter ──────────────────────────────────────────────────
-
-#[test]
-fn bridge_adapter_creation() {
-    let adapter = BridgeAdapter::new();
-    // BridgeAdapter::new() should succeed without panicking
-    let debug = format!("{:?}", "BridgeAdapter created");
-    assert!(!debug.is_empty());
-    drop(adapter);
-}
-
-#[test]
-fn bridge_adapter_default_creation() {
-    let adapter = BridgeAdapter::default();
-    // Default should be equivalent to new()
-    drop(adapter);
 }

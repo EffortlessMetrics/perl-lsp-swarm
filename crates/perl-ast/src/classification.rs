@@ -212,7 +212,8 @@ impl NodeKind {
             | NodeKind::StatementModifier { .. }
             | NodeKind::Return { .. }
             | NodeKind::LoopControl { .. }
-            | NodeKind::Goto { .. } => NodeKindCategory::Statement,
+            | NodeKind::Goto { .. }
+            | NodeKind::TargetlessGoto { .. } => NodeKindCategory::Statement,
 
             NodeKind::Variable { .. }
             | NodeKind::VariableWithAttributes { .. }
@@ -779,6 +780,15 @@ impl NodeKind {
                 recovery = false,
                 bp = true
             ),
+            NodeKind::TargetlessGoto { .. } => flags!(
+                exec = true,
+                scope = false,
+                decl = false,
+                refs = false,
+                children = false,
+                recovery = false,
+                bp = true
+            ),
             NodeKind::MethodCall { .. } => flags!(
                 exec = true,
                 scope = false,
@@ -1083,6 +1093,8 @@ mod tests {
 
     /// One representative of every `NodeKind` variant so every match arm in
     /// `category()` and `flags()` is exercised under `--lib` profdata.
+    ///
+    /// Exhaustiveness is enforced by `fixture_corpora_cover_every_variant`.
     fn all_variants() -> Vec<NodeKind> {
         vec![
             NodeKind::Program { statements: vec![] },
@@ -1112,6 +1124,13 @@ mod tests {
                 left: Box::new(leaf()),
                 right: Box::new(leaf()),
             },
+            NodeKind::ArraySlice { target: Box::new(leaf()), indices: Box::new(leaf()) },
+            NodeKind::HashSlice { target: Box::new(leaf()), keys: Box::new(leaf()) },
+            NodeKind::KeyValueSlice { target: Box::new(leaf()), keys: Box::new(leaf()) },
+            NodeKind::ChainedComparison {
+                operands: vec![leaf(), leaf(), leaf()],
+                ops: vec!["<".to_string(), "<".to_string()],
+            },
             NodeKind::Ternary {
                 condition: Box::new(leaf()),
                 then_expr: Box::new(leaf()),
@@ -1123,9 +1142,10 @@ mod tests {
             NodeKind::Undef,
             NodeKind::Readline { filehandle: None },
             NodeKind::Glob { pattern: "*.pl".to_string() },
-            NodeKind::Typeglob { name: "foo".to_string() },
+            NodeKind::Typeglob { name: "foo".to_string(), body: None },
             NodeKind::Number { value: "42".to_string() },
             NodeKind::String { value: "hello".to_string(), interpolated: false },
+            NodeKind::VString { value: "v1.2.3".to_string() },
             NodeKind::Heredoc {
                 delimiter: "EOF".to_string(),
                 content: "body".to_string(),
@@ -1222,12 +1242,14 @@ mod tests {
             NodeKind::Return { value: None },
             NodeKind::LoopControl { op: "next".to_string(), label: None },
             NodeKind::Goto { target: Box::new(leaf()), form: GotoTargetForm::Label },
+            NodeKind::TargetlessGoto {},
             NodeKind::MethodCall {
                 object: Box::new(leaf()),
                 method: "foo".to_string(),
                 args: vec![],
             },
             NodeKind::FunctionCall { name: "print".to_string(), args: vec![] },
+            NodeKind::AmperCall { name: "foo".to_string(), args: vec![] },
             NodeKind::IndirectCall {
                 method: "new".to_string(),
                 object: Box::new(leaf()),
@@ -1269,7 +1291,12 @@ mod tests {
                 phase_span: None,
                 block: Box::new(block_node()),
             },
-            NodeKind::DataSection { marker: "__DATA__".to_string(), body: None },
+            NodeKind::DataSection {
+                marker: "__DATA__".to_string(),
+                marker_span: None,
+                body: None,
+                body_span: None,
+            },
             NodeKind::Class {
                 name: "Foo".to_string(),
                 name_span: None,
@@ -1290,6 +1317,38 @@ mod tests {
             NodeKind::MissingBlock,
             NodeKind::UnknownRest,
         ]
+    }
+
+    // ── Test 0: the fixture corpora really do cover every variant ─────────────
+    //
+    // `category()` and `flags()` are wildcard-free matches, so the compiler
+    // forces a new `NodeKind` variant to be classified. Nothing forces that
+    // variant into the fixture vecs above, so without this guard a new variant
+    // silently escapes every invariant test in this module — including
+    // `contains_children_matches_for_each_child`, the only oracle that checks a
+    // classification flag against the real traversal. Comparing sorted name
+    // vectors also rejects duplicate entries.
+
+    fn sorted_names(names: impl Iterator<Item = &'static str>) -> Vec<&'static str> {
+        let mut names: Vec<&'static str> = names.collect();
+        names.sort_unstable();
+        names
+    }
+
+    #[test]
+    fn fixture_corpora_cover_every_variant() {
+        let canonical = sorted_names(NodeKind::ALL_KIND_NAMES.iter().copied());
+
+        assert_eq!(
+            sorted_names(all_variants().iter().map(NodeKind::kind_name)),
+            canonical,
+            "all_variants() is out of sync with the NodeKind enum"
+        );
+        assert_eq!(
+            sorted_names(all_variants_maximal().iter().map(|node| node.kind.kind_name())),
+            canonical,
+            "all_variants_maximal() is out of sync with the NodeKind enum"
+        );
     }
 
     // ── Test 1: every variant produces a category and flags that pass validate()
@@ -1593,6 +1652,8 @@ mod tests {
 
     /// One representative of every `NodeKind` variant with *every* `Node`-typed
     /// field populated, so `child_count() > 0` iff the variant has Node children.
+    ///
+    /// Exhaustiveness is enforced by `fixture_corpora_cover_every_variant`.
     fn all_variants_maximal() -> Vec<Node> {
         let n = |kind| Node::new(kind, loc());
         vec![
@@ -1623,6 +1684,13 @@ mod tests {
                 left: Box::new(leaf()),
                 right: Box::new(leaf()),
             }),
+            n(NodeKind::ArraySlice { target: Box::new(leaf()), indices: Box::new(leaf()) }),
+            n(NodeKind::HashSlice { target: Box::new(leaf()), keys: Box::new(leaf()) }),
+            n(NodeKind::KeyValueSlice { target: Box::new(leaf()), keys: Box::new(leaf()) }),
+            n(NodeKind::ChainedComparison {
+                operands: vec![leaf(), leaf(), leaf()],
+                ops: vec!["<".to_string(), "<".to_string()],
+            }),
             n(NodeKind::Ternary {
                 condition: Box::new(leaf()),
                 then_expr: Box::new(leaf()),
@@ -1634,7 +1702,7 @@ mod tests {
             n(NodeKind::Undef),
             n(NodeKind::Readline { filehandle: Some("STDIN".to_string()) }),
             n(NodeKind::Glob { pattern: "*.pl".to_string() }),
-            n(NodeKind::Typeglob { name: "foo".to_string() }),
+            n(NodeKind::Typeglob { name: "foo".to_string(), body: None }),
             n(NodeKind::Number { value: "42".to_string() }),
             n(NodeKind::String { value: "hello".to_string(), interpolated: false }),
             n(NodeKind::VString { value: "v1.2.3".to_string() }),
@@ -1744,12 +1812,14 @@ mod tests {
             n(NodeKind::Return { value: Some(Box::new(leaf())) }),
             n(NodeKind::LoopControl { op: "next".to_string(), label: None }),
             n(NodeKind::Goto { target: Box::new(leaf()), form: GotoTargetForm::Label }),
+            n(NodeKind::TargetlessGoto {}),
             n(NodeKind::MethodCall {
                 object: Box::new(leaf()),
                 method: "foo".to_string(),
                 args: vec![leaf()],
             }),
             n(NodeKind::FunctionCall { name: "print".to_string(), args: vec![leaf()] }),
+            n(NodeKind::AmperCall { name: "foo".to_string(), args: vec![leaf()] }),
             n(NodeKind::IndirectCall {
                 method: "new".to_string(),
                 object: Box::new(leaf()),
@@ -1803,7 +1873,12 @@ mod tests {
                 phase_span: None,
                 block: Box::new(block_node()),
             }),
-            n(NodeKind::DataSection { marker: "__DATA__".to_string(), body: None }),
+            n(NodeKind::DataSection {
+                marker: "__DATA__".to_string(),
+                marker_span: None,
+                body: None,
+                body_span: None,
+            }),
             n(NodeKind::Class {
                 name: "Foo".to_string(),
                 name_span: None,

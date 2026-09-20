@@ -3,7 +3,6 @@
   "codeActionProvider": {
     "codeActionKinds": [
       "quickfix",
-      "source.organizeImports",
       "refactor",
       "refactor.extract",
       "refactor.rewrite",
@@ -50,16 +49,6 @@
   "documentHighlightProvider": true,
   "documentLinkProvider": {
     "resolveProvider": true
-  },
-  "documentOnTypeFormattingProvider": {
-    "firstTriggerCharacter": "}",
-    "moreTriggerCharacter": [
-      ";",
-      "\n"
-    ]
-  },
-  "documentRangeFormattingProvider": {
-    "rangesSupport": true
   },
   "documentSymbolProvider": true,
   "executeCommandProvider": {

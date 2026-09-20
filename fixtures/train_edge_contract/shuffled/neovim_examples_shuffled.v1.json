@@ -1,0 +1,262 @@
+{
+  "claim_profiles": [
+    {
+      "allowed_terminal_limitation_states": [
+        "not_proven"
+      ],
+      "claim_ceiling": "macOS platform only.",
+      "id": "neovim_platform_macos",
+      "required": [
+        "P_platform_macos"
+      ],
+      "version": 1
+    },
+    {
+      "id": "neovim_bounded_core",
+      "version": 1,
+      "required": [
+        "P_full_document_v0_18"
+      ],
+      "allowed_terminal_limitation_states": [
+        "not_proven",
+        "explicit_limitation"
+      ],
+      "claim_ceiling": "Bounded core only; atomic-ranged proof and race evidence never enter this profile."
+    },
+    {
+      "id": "neovim_platform_linux",
+      "version": 1,
+      "required": [
+        "P_platform_linux"
+      ],
+      "allowed_terminal_limitation_states": [
+        "not_proven"
+      ],
+      "claim_ceiling": "Linux platform only."
+    },
+    {
+      "id": "neovim_stable_channel",
+      "version": 1,
+      "required": [
+        "P_channel_stable"
+      ],
+      "allowed_terminal_limitation_states": [
+        "not_proven"
+      ],
+      "claim_ceiling": "Stable channel only."
+    },
+    {
+      "id": "neovim_atomic_incremental",
+      "version": 1,
+      "selecting_authority": "neovim_release_scope_decision",
+      "selection_subject": "editing scope",
+      "required": [
+        "P_atomic_incremental_claim"
+      ],
+      "allowed_terminal_limitation_states": [
+        "not_proven",
+        "pending_external_stage"
+      ],
+      "claim_ceiling": "Atomic-incremental claim only under the exact selected branch."
+    },
+    {
+      "id": "neovim_nightly_channel",
+      "version": 1,
+      "required": [
+        "P_channel_nightly"
+      ],
+      "allowed_terminal_limitation_states": [
+        "not_proven"
+      ],
+      "claim_ceiling": "Nightly channel only."
+    }
+  ],
+  "projection": {
+    "proposition_states": [
+      {
+        "id": "P_platform_macos",
+        "implementation": { "terminal": false, "reason_class": "not_proven" },
+        "evidence": { "terminal": false, "reason_class": "not_proven" },
+        "proposition": { "terminal": false, "reason_class": "not_proven" }
+      },
+      {
+        "id": "P_lsp_core",
+        "implementation": { "terminal": true },
+        "evidence": { "terminal": true },
+        "proposition": { "terminal": true, "derives_from": "verified_proposition" }
+      },
+      {
+        "id": "P_channel_nightly",
+        "implementation": { "terminal": true },
+        "evidence": { "terminal": true },
+        "proposition": { "terminal": true, "derives_from": "verified_proposition" }
+      },
+      {
+        "id": "P_dap_sidecar",
+        "implementation": { "terminal": false, "reason_class": "not_proven" },
+        "evidence": { "terminal": false, "reason_class": "not_proven" },
+        "proposition": { "terminal": false, "reason_class": "not_proven" }
+      },
+      {
+        "id": "P_atomic_incremental_claim",
+        "implementation": { "terminal": false, "reason_class": "not_proven" },
+        "evidence": { "terminal": false, "reason_class": "not_proven" },
+        "proposition": { "terminal": false, "reason_class": "not_proven" }
+      },
+      {
+        "id": "P_neovim_core_composition",
+        "implementation": { "terminal": true },
+        "evidence": { "terminal": true },
+        "proposition": { "terminal": true, "derives_from": "verified_proposition" }
+      },
+      {
+        "id": "P_full_document_v0_18",
+        "implementation": { "terminal": true },
+        "evidence": { "terminal": true },
+        "proposition": { "terminal": true, "derives_from": "verified_proposition" }
+      },
+      {
+        "id": "P_parser_race_evidence",
+        "implementation": { "terminal": false, "reason_class": "not_proven" },
+        "evidence": { "terminal": false, "reason_class": "not_proven" },
+        "proposition": { "terminal": false, "reason_class": "not_proven" }
+      },
+      {
+        "id": "P_platform_linux",
+        "implementation": { "terminal": true },
+        "evidence": { "terminal": true },
+        "proposition": { "terminal": true, "derives_from": "verified_proposition" }
+      },
+      {
+        "id": "P_channel_stable",
+        "implementation": { "terminal": false, "reason_class": "not_proven" },
+        "evidence": { "terminal": false, "reason_class": "not_proven" },
+        "proposition": { "terminal": false, "reason_class": "not_proven" }
+      },
+      {
+        "id": "P_atomic_ranged_actual_host_proof",
+        "implementation": { "terminal": false, "reason_class": "not_proven" },
+        "evidence": { "terminal": false, "reason_class": "not_proven" },
+        "proposition": { "terminal": false, "reason_class": "not_proven" }
+      },
+      {
+        "id": "P_parser_current_tree_contract",
+        "implementation": { "terminal": true },
+        "evidence": { "terminal": true },
+        "proposition": { "terminal": true, "derives_from": "verified_proposition" }
+      }
+    ]
+  },
+  "schema": "train_edge_contract.v1",
+  "schema_version": 1,
+  "contract_id": "neovim-reviewed-examples.v1",
+  "programme": {
+    "name": "neovim-examples",
+    "local_extension": "synthetic reviewed Neovim examples encoding the #10858 required fixtures 1-4"
+  },
+  "authorities": [
+    {
+      "id": "neovim_release_scope_decision",
+      "subject": "full-document versus atomic-incremental editing scope selection"
+    }
+  ],
+  "propositions": [
+    {
+      "id": "P_dap_sidecar",
+      "claim_ceiling": "DAP sidecar work; adjacent only, cannot block or satisfy LSP core."
+    },
+    {
+      "id": "P_channel_stable",
+      "claim_ceiling": "Stable install channel only; one channel passing never satisfies a sibling."
+    },
+    {
+      "id": "P_atomic_incremental_claim",
+      "claim_ceiling": "Atomic-incremental editing claim; active only under its exact selected release branch."
+    },
+    {
+      "id": "P_neovim_core_composition",
+      "claim_ceiling": "Fan-in composition of independently terminal core children; manufactures nothing."
+    },
+    {
+      "id": "P_full_document_v0_18",
+      "claim_ceiling": "Full-document provider behavior for v0.18 only; never the atomic-incremental claim."
+    },
+    {
+      "id": "P_platform_linux",
+      "claim_ceiling": "Linux platform only; one platform passing never satisfies a sibling."
+    },
+    {
+      "id": "P_parser_race_evidence",
+      "claim_ceiling": "Optional parser/race evidence; enrichment only, never a blocker."
+    },
+    {
+      "id": "P_lsp_core",
+      "claim_ceiling": "LSP core behavior; independent of every sidecar."
+    },
+    {
+      "id": "P_platform_macos",
+      "claim_ceiling": "macOS platform only; one platform passing never satisfies a sibling."
+    },
+    {
+      "id": "P_channel_nightly",
+      "claim_ceiling": "Nightly install channel only; one channel passing never satisfies a sibling."
+    },
+    {
+      "id": "P_parser_current_tree_contract",
+      "claim_ceiling": "Exact current-tree parser contract; implementation prerequisite only."
+    },
+    {
+      "id": "P_atomic_ranged_actual_host_proof",
+      "claim_ceiling": "Atomic-ranged actual-host proof only; required solely by the selected atomic branch."
+    }
+  ],
+  "edges": [
+    {
+      "source": "P_neovim_core_composition",
+      "kind": "fan_in",
+      "target": "P_neovim_core_composition",
+      "children": [
+        "P_channel_nightly",
+        "P_full_document_v0_18"
+      ],
+      "satisfaction_source": "independently_terminal_child_propositions",
+      "provenance": "#10858 fixture 7: fan-in composes independently terminal children only"
+    },
+    {
+      "source": "P_dap_sidecar",
+      "kind": "nonblocking_sidecar",
+      "target": "P_lsp_core",
+      "provenance": "#10858 fixture 6: a DAP sidecar cannot block or satisfy LSP core"
+    },
+    {
+      "source": "P_atomic_incremental_claim",
+      "kind": "conditional_release_gate",
+      "target": "P_atomic_ranged_actual_host_proof",
+      "selecting_authority": "neovim_release_scope_decision",
+      "selected_value": "atomic_incremental",
+      "selection_subject": "editing scope",
+      "active_predecessor": "P_atomic_ranged_actual_host_proof",
+      "invalidation_rule": "gate closes when the release scope selection changes or expires",
+      "provenance": "#10858 fixture 2: atomic-incremental requires its selected branch"
+    },
+    {
+      "source": "P_full_document_v0_18",
+      "kind": "consumes_if_available",
+      "target": "P_parser_race_evidence",
+      "provenance": "#10858 fixture 3: parser/race evidence may stay absent for the bounded core"
+    },
+    {
+      "source": "P_channel_stable",
+      "kind": "requires_behavior_for_claim",
+      "target": "P_full_document_v0_18",
+      "claim_profile": "neovim_stable_channel",
+      "provenance": "stable channel claim needs current full-document behavior"
+    },
+    {
+      "source": "P_full_document_v0_18",
+      "kind": "requires_implementation",
+      "target": "P_parser_current_tree_contract",
+      "provenance": "#10858 fixture 1: full-document v0.18 requires the parser contract"
+    }
+  ]
+}

@@ -1,0 +1,9 @@
+project: product
+component: Packaging and distribution
+kind: Fixed
+body: "Align the LSP4IJ Perl LSP and DAP installer definitions with current release targets and add native Windows ARM64 selection."
+time: 2026-08-13T11:17:10Z
+custom:
+  PR: "7920"
+  Slug: lsp4ij-installer-release-topology
+  Breaking: "no"

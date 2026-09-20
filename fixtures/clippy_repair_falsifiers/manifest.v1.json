@@ -1,0 +1,308 @@
+{
+  "schema_version": 1,
+  "corpus": "ClippyRepairFalsifierCorpusV1",
+  "producer_toolchain": "1.95",
+  "case_count": 50,
+  "cases": [
+    {
+      "case_id": "A01-file-wide-suppression-carveout",
+      "family": "verifier_denominator_weakening",
+      "file": "cases/A01-file-wide-suppression-carveout.json",
+      "packet_ready": true
+    },
+    {
+      "case_id": "A02-dead-code-baseline-absorption",
+      "family": "verifier_denominator_weakening",
+      "file": "cases/A02-dead-code-baseline-absorption.json",
+      "packet_ready": false
+    },
+    {
+      "case_id": "A03-cfg-test-attr-general-carveout",
+      "family": "verifier_denominator_weakening",
+      "file": "cases/A03-cfg-test-attr-general-carveout.json",
+      "packet_ready": true
+    },
+    {
+      "case_id": "A04-exact-lint-group-substitution",
+      "family": "verifier_denominator_weakening",
+      "file": "cases/A04-exact-lint-group-substitution.json",
+      "packet_ready": true
+    },
+    {
+      "case_id": "A05-command-missing-docs-reintroduction",
+      "family": "verifier_denominator_weakening",
+      "file": "cases/A05-command-missing-docs-reintroduction.json",
+      "packet_ready": false
+    },
+    {
+      "case_id": "A06-required-target-omission",
+      "family": "verifier_denominator_weakening",
+      "file": "cases/A06-required-target-omission.json",
+      "packet_ready": true
+    },
+    {
+      "case_id": "A07-required-feature-profile-reduction",
+      "family": "verifier_denominator_weakening",
+      "file": "cases/A07-required-feature-profile-reduction.json",
+      "packet_ready": false
+    },
+    {
+      "case_id": "A08-platform-substitution-linux-for-hosted",
+      "family": "verifier_denominator_weakening",
+      "file": "cases/A08-platform-substitution-linux-for-hosted.json",
+      "packet_ready": false
+    },
+    {
+      "case_id": "A09-zero-work-or-malformed-as-success",
+      "family": "verifier_denominator_weakening",
+      "file": "cases/A09-zero-work-or-malformed-as-success.json",
+      "packet_ready": true
+    },
+    {
+      "case_id": "A10-candidate-refresh-baseline-absorption",
+      "family": "verifier_denominator_weakening",
+      "file": "cases/A10-candidate-refresh-baseline-absorption.json",
+      "packet_ready": false
+    },
+    {
+      "case_id": "B11-same-total-finding-swap",
+      "family": "count_identity_debt_substitution",
+      "file": "cases/B11-same-total-finding-swap.json",
+      "packet_ready": true
+    },
+    {
+      "case_id": "B12-accepted-finding-copy-to-other-path",
+      "family": "count_identity_debt_substitution",
+      "file": "cases/B12-accepted-finding-copy-to-other-path.json",
+      "packet_ready": true
+    },
+    {
+      "case_id": "B13-consumed-finding-identity-reintroduction",
+      "family": "count_identity_debt_substitution",
+      "file": "cases/B13-consumed-finding-identity-reintroduction.json",
+      "packet_ready": false
+    },
+    {
+      "case_id": "B14-suppression-displacement-count-equal",
+      "family": "count_identity_debt_substitution",
+      "file": "cases/B14-suppression-displacement-count-equal.json",
+      "packet_ready": true
+    },
+    {
+      "case_id": "B15-stale-cross-toolchain-receipt",
+      "family": "count_identity_debt_substitution",
+      "file": "cases/B15-stale-cross-toolchain-receipt.json",
+      "packet_ready": false
+    },
+    {
+      "case_id": "B16-open-world-item-as-closed-cleanup",
+      "family": "count_identity_debt_substitution",
+      "file": "cases/B16-open-world-item-as-closed-cleanup.json",
+      "packet_ready": false
+    },
+    {
+      "case_id": "C17-ok-erasure-of-result",
+      "family": "lost_work_error_obligation_theater",
+      "file": "cases/C17-ok-erasure-of-result.json",
+      "packet_ready": false
+    },
+    {
+      "case_id": "C18-let-underscore-must-use-discard",
+      "family": "lost_work_error_obligation_theater",
+      "file": "cases/C18-let-underscore-must-use-discard.json",
+      "packet_ready": true
+    },
+    {
+      "case_id": "C19-uncontracted-underscore-binding",
+      "family": "lost_work_error_obligation_theater",
+      "file": "cases/C19-uncontracted-underscore-binding.json",
+      "packet_ready": false
+    },
+    {
+      "case_id": "C20-log-only-error-consumption",
+      "family": "lost_work_error_obligation_theater",
+      "file": "cases/C20-log-only-error-consumption.json",
+      "packet_ready": false
+    },
+    {
+      "case_id": "C21-panic-assertion-flow-substitution",
+      "family": "lost_work_error_obligation_theater",
+      "file": "cases/C21-panic-assertion-flow-substitution.json",
+      "packet_ready": true
+    },
+    {
+      "case_id": "C22-redaction-weakening-for-cause-retention",
+      "family": "lost_work_error_obligation_theater",
+      "file": "cases/C22-redaction-weakening-for-cause-retention.json",
+      "packet_ready": false
+    },
+    {
+      "case_id": "C23-renamed-error-variable-still-ignored",
+      "family": "lost_work_error_obligation_theater",
+      "file": "cases/C23-renamed-error-variable-still-ignored.json",
+      "packet_ready": false
+    },
+    {
+      "case_id": "D24-unchecked-byte-slicing-swap",
+      "family": "boundary_data_semantics_theater",
+      "file": "cases/D24-unchecked-byte-slicing-swap.json",
+      "packet_ready": false
+    },
+    {
+      "case_id": "D25-get-unwrap-indexing-substitution",
+      "family": "boundary_data_semantics_theater",
+      "file": "cases/D25-get-unwrap-indexing-substitution.json",
+      "packet_ready": true
+    },
+    {
+      "case_id": "D26-clamp-default-range-semantics-swap",
+      "family": "boundary_data_semantics_theater",
+      "file": "cases/D26-clamp-default-range-semantics-swap.json",
+      "packet_ready": false
+    },
+    {
+      "case_id": "D27-ascii-only-unicode-evidence",
+      "family": "boundary_data_semantics_theater",
+      "file": "cases/D27-ascii-only-unicode-evidence.json",
+      "packet_ready": false
+    },
+    {
+      "case_id": "D28-numeric-helper-semantics-drift",
+      "family": "boundary_data_semantics_theater",
+      "file": "cases/D28-numeric-helper-semantics-drift.json",
+      "packet_ready": false
+    },
+    {
+      "case_id": "D29-atomic-mutex-substitution-unproved",
+      "family": "boundary_data_semantics_theater",
+      "file": "cases/D29-atomic-mutex-substitution-unproved.json",
+      "packet_ready": false
+    },
+    {
+      "case_id": "D30-await-structure-change-unproofed",
+      "family": "boundary_data_semantics_theater",
+      "file": "cases/D30-await-structure-change-unproofed.json",
+      "packet_ready": true
+    },
+    {
+      "case_id": "D31-unsafe-boundary-widening-unowned",
+      "family": "boundary_data_semantics_theater",
+      "file": "cases/D31-unsafe-boundary-widening-unowned.json",
+      "packet_ready": false
+    },
+    {
+      "case_id": "E32-parameter-bag-without-owner",
+      "family": "structural_ownership_theater",
+      "file": "cases/E32-parameter-bag-without-owner.json",
+      "packet_ready": false
+    },
+    {
+      "case_id": "E33-type-alias-only-hiding",
+      "family": "structural_ownership_theater",
+      "file": "cases/E33-type-alias-only-hiding.json",
+      "packet_ready": false
+    },
+    {
+      "case_id": "E34-trampoline-ordering-split",
+      "family": "structural_ownership_theater",
+      "file": "cases/E34-trampoline-ordering-split.json",
+      "packet_ready": false
+    },
+    {
+      "case_id": "E35-ownership-theater-clone-wrapper",
+      "family": "structural_ownership_theater",
+      "file": "cases/E35-ownership-theater-clone-wrapper.json",
+      "packet_ready": false
+    },
+    {
+      "case_id": "E36-invariant-free-accessor",
+      "family": "structural_ownership_theater",
+      "file": "cases/E36-invariant-free-accessor.json",
+      "packet_ready": false
+    },
+    {
+      "case_id": "E37-api-shape-change-as-compliance",
+      "family": "structural_ownership_theater",
+      "file": "cases/E37-api-shape-change-as-compliance.json",
+      "packet_ready": true
+    },
+    {
+      "case_id": "E38-generated-output-edited-generator-stale",
+      "family": "structural_ownership_theater",
+      "file": "cases/E38-generated-output-edited-generator-stale.json",
+      "packet_ready": true
+    },
+    {
+      "case_id": "F39-lib-only-helper-deletion",
+      "family": "real_regression_10600_family",
+      "file": "cases/F39-lib-only-helper-deletion.json",
+      "packet_ready": true
+    },
+    {
+      "case_id": "F40-default-feature-import-deletion",
+      "family": "real_regression_10600_family",
+      "file": "cases/F40-default-feature-import-deletion.json",
+      "packet_ready": true
+    },
+    {
+      "case_id": "F41-auto-suggestion-reexport-deletion",
+      "family": "real_regression_10600_family",
+      "file": "cases/F41-auto-suggestion-reexport-deletion.json",
+      "packet_ready": false
+    },
+    {
+      "case_id": "F42-unbounded-clippy-fix-scope",
+      "family": "real_regression_10600_family",
+      "file": "cases/F42-unbounded-clippy-fix-scope.json",
+      "packet_ready": false
+    },
+    {
+      "case_id": "F43-machine-applicable-crossing-authorities",
+      "family": "real_regression_10600_family",
+      "file": "cases/F43-machine-applicable-crossing-authorities.json",
+      "packet_ready": false
+    },
+    {
+      "case_id": "F44-malformed-suggestion-auto-application",
+      "family": "real_regression_10600_family",
+      "file": "cases/F44-malformed-suggestion-auto-application.json",
+      "packet_ready": false
+    },
+    {
+      "case_id": "G45-restating-documentation",
+      "family": "documentation_cargo_test_proof_theater",
+      "file": "cases/G45-restating-documentation.json",
+      "packet_ready": false
+    },
+    {
+      "case_id": "G46-invented-guarantee-documentation",
+      "family": "documentation_cargo_test_proof_theater",
+      "file": "cases/G46-invented-guarantee-documentation.json",
+      "packet_ready": false
+    },
+    {
+      "case_id": "G47-test-proof-weakening-for-green",
+      "family": "documentation_cargo_test_proof_theater",
+      "file": "cases/G47-test-proof-weakening-for-green.json",
+      "packet_ready": true
+    },
+    {
+      "case_id": "G48-cargo-feature-surface-compliance-change",
+      "family": "documentation_cargo_test_proof_theater",
+      "file": "cases/G48-cargo-feature-surface-compliance-change.json",
+      "packet_ready": true
+    },
+    {
+      "case_id": "G49-dependency-upgrade-as-duplicate-fix",
+      "family": "documentation_cargo_test_proof_theater",
+      "file": "cases/G49-dependency-upgrade-as-duplicate-fix.json",
+      "packet_ready": true
+    },
+    {
+      "case_id": "G50-private-evidence-for-product-package",
+      "family": "documentation_cargo_test_proof_theater",
+      "file": "cases/G50-private-evidence-for-product-package.json",
+      "packet_ready": true
+    }
+  ]
+}

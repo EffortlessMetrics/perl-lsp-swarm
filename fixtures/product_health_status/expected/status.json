@@ -1,0 +1,804 @@
+{
+  "schema": "product_health_status.v1",
+  "generator": "xtask::product_health_status",
+  "assembly_policy": "generic-exact.v1",
+  "registry_schema": "product_health_rail_registry.v1",
+  "registry_digest": "sha256:58f19f78490b8fbc7b7cfde2aedfba8e76efda81e3ba42368359f5741faf5720",
+  "adapters": [
+    {
+      "schema": "product_health_rail_adapter.v1",
+      "adapter_id": "fixture.adapter",
+      "source_family": "fixture",
+      "accepted_source_schemas": [
+        "fixture.v1"
+      ],
+      "validator_id": "fixture.validator.v1",
+      "subject_selector": "fixture.subject",
+      "currentness_authority": "declared-succession"
+    },
+    {
+      "schema": "product_health_rail_adapter.v1",
+      "adapter_id": "fixture2a.adapter",
+      "source_family": "fixture2",
+      "accepted_source_schemas": [
+        "fixture2.v1"
+      ],
+      "validator_id": "fixture2.validator.v1",
+      "subject_selector": "fixture2.subject",
+      "currentness_authority": "declared-succession"
+    },
+    {
+      "schema": "product_health_rail_adapter.v1",
+      "adapter_id": "fixture2b.adapter",
+      "source_family": "fixture2",
+      "accepted_source_schemas": [
+        "fixture2.v1"
+      ],
+      "validator_id": "fixture2.validator.v1",
+      "subject_selector": "fixture2.subject",
+      "currentness_authority": "declared-succession"
+    },
+    {
+      "schema": "product_health_rail_adapter.v1",
+      "adapter_id": "fixture3.adapter",
+      "source_family": "fixture3",
+      "accepted_source_schemas": [
+        "fixture3.v1"
+      ],
+      "validator_id": "fixture3.validator.v1",
+      "subject_selector": "fixture3.subject",
+      "currentness_authority": "declared-succession"
+    }
+  ],
+  "rails": [
+    {
+      "schema": "product_health_rail.v1",
+      "rail_id": "fixture.checks",
+      "area": "ci",
+      "proposition": "fixture CI lane contract holds on the checked tree",
+      "source_schema": "fixture.v1",
+      "source_digest": "sha256:117cc06ee92d437c1d7a498229f295408356252ef5989617cc04fe32612d83ad",
+      "subject": "checks@fixture-tree",
+      "currentness": "exact:checks",
+      "result": "conflicting_current_sources",
+      "applicability": "required",
+      "limitations": [],
+      "nonclaims": [],
+      "claim_ceiling": "fixture CI lane proposition only",
+      "source_detail": {},
+      "currentness_state": "conflicting_current_sources",
+      "source_result": null,
+      "adapter_id": "fixture.adapter",
+      "packet_id": null,
+      "owner": "",
+      "wake_event": null,
+      "blockers": [
+        "changed_byte_identity",
+        "conflicting_current_sources"
+      ],
+      "max_permitted_wording": "no claim permitted (conflicting_current_sources)",
+      "history": [
+        {
+          "packet_id": "checks-run",
+          "digest": "sha256:90ad285ecb126d8658deda9a9ee23036b2e92280035573f2d4ece4c78669f46a",
+          "state": "current",
+          "superseded_by": null
+        },
+        {
+          "packet_id": "checks-run",
+          "digest": "sha256:ddb269acf04b723fd463b7473920f1cfd3561685c1fdbbd8fbb27162f90ebfc7",
+          "state": "current",
+          "superseded_by": null
+        }
+      ],
+      "support_authorized": false,
+      "release_authorized": false,
+      "published_channels": []
+    },
+    {
+      "schema": "product_health_rail.v1",
+      "rail_id": "fixture.client",
+      "area": "client",
+      "proposition": "fixture editor client contract holds on the declared platform",
+      "source_schema": "fixture.v1",
+      "source_digest": "sha256:586f9ebc28ac86dded124bac45bb244eaf930750b8952942f6c17b297acf18a4",
+      "subject": "client@declared-platform",
+      "currentness": "exact:client",
+      "result": "invalid",
+      "applicability": "required",
+      "limitations": [],
+      "nonclaims": [],
+      "claim_ceiling": "fixture editor client proposition on the declared platform only",
+      "source_detail": {},
+      "currentness_state": "source_subject_mismatch",
+      "source_result": null,
+      "adapter_id": "fixture.adapter",
+      "packet_id": null,
+      "owner": "",
+      "wake_event": null,
+      "blockers": [
+        "source_subject_mismatch"
+      ],
+      "max_permitted_wording": "no claim permitted (invalid)",
+      "history": [],
+      "support_authorized": false,
+      "release_authorized": false,
+      "published_channels": []
+    },
+    {
+      "schema": "product_health_rail.v1",
+      "rail_id": "fixture.compiler",
+      "area": "compiler",
+      "proposition": "fixture compiler contract holds on the checked tree",
+      "source_schema": "fixture.v1",
+      "source_digest": "sha256:b362175855e0520888507cef8c929a9cc92521711eec447be5ee2ecc0206dc12",
+      "subject": "compiler@fixture-tree",
+      "currentness": "exact:compiler",
+      "result": "failed",
+      "applicability": "required",
+      "limitations": [],
+      "nonclaims": [
+        "historical fixture pass is not current truth"
+      ],
+      "claim_ceiling": "fixture compiler proposition only",
+      "source_detail": {
+        "packet_file": "compiler-now.json"
+      },
+      "currentness_state": "current_exact",
+      "source_result": "failed",
+      "adapter_id": "fixture.adapter",
+      "packet_id": "compiler-now",
+      "owner": "",
+      "wake_event": null,
+      "blockers": [
+        "declared_result_differs"
+      ],
+      "max_permitted_wording": "no claim permitted (failed)",
+      "history": [
+        {
+          "packet_id": "compiler-old",
+          "digest": "sha256:2c902de4cfe4cd1a5b6c44588baddc52f9c2c2ce992cbd399ae2bc25db247828",
+          "state": "historical",
+          "superseded_by": "compiler-now"
+        }
+      ],
+      "support_authorized": false,
+      "release_authorized": false,
+      "published_channels": []
+    },
+    {
+      "schema": "product_health_rail.v1",
+      "rail_id": "fixture.dap",
+      "area": "dap",
+      "proposition": "fixture DAP contract holds on the checked tree",
+      "source_schema": "fixture.v1",
+      "source_digest": "sha256:9c181c4c3b272b1e57f3d3ba74e740bf4d4f904a3e0f14f26ef5d5926bb68cb8",
+      "subject": "dap@fixture-tree",
+      "currentness": "exact:dap",
+      "result": "stale",
+      "applicability": "required",
+      "limitations": [],
+      "nonclaims": [],
+      "claim_ceiling": "fixture DAP proposition only",
+      "source_detail": {},
+      "currentness_state": "stale_only",
+      "source_result": null,
+      "adapter_id": "fixture.adapter",
+      "packet_id": null,
+      "owner": "",
+      "wake_event": null,
+      "blockers": [],
+      "max_permitted_wording": "no claim permitted (stale)",
+      "history": [
+        {
+          "packet_id": "dap",
+          "digest": "sha256:0c3e936f141ebefebdeb224afc623abbeed04a1d7e7113514267a0c341b44d8a",
+          "state": "stale",
+          "superseded_by": null
+        }
+      ],
+      "support_authorized": false,
+      "release_authorized": false,
+      "published_channels": []
+    },
+    {
+      "schema": "product_health_rail.v1",
+      "rail_id": "fixture.diagnostics",
+      "area": "diagnostics",
+      "proposition": "fixture diagnostics contract holds on the checked tree",
+      "source_schema": "fixture.v1",
+      "source_digest": "sha256:be3f1b44776624b9c37b661e9711ac1d8f51628b80c33e3b60b6a56fea088c9b",
+      "subject": "diagnostics@fixture-tree",
+      "currentness": "exact:diagnostics",
+      "result": "pass",
+      "applicability": "required",
+      "limitations": [],
+      "nonclaims": [],
+      "claim_ceiling": "fixture diagnostics proposition only",
+      "source_detail": {
+        "packet_file": "diag-a.json"
+      },
+      "currentness_state": "current_exact",
+      "source_result": "pass",
+      "adapter_id": "fixture.adapter",
+      "packet_id": "diag",
+      "owner": "",
+      "wake_event": null,
+      "blockers": [
+        "declared_result_differs",
+        "duplicate_packet_ref"
+      ],
+      "max_permitted_wording": "fixture diagnostics proposition only",
+      "history": [],
+      "support_authorized": false,
+      "release_authorized": false,
+      "published_channels": []
+    },
+    {
+      "schema": "product_health_rail.v1",
+      "rail_id": "fixture.editor",
+      "area": "editor",
+      "proposition": "fixture editor integration contract holds on the checked tree",
+      "source_schema": "fixture.v1",
+      "source_digest": "sha256:2b224d7b6e74e630be290776bd7940904cf8e69204f729dc97bb35d14b57f42b",
+      "subject": "editor@fixture-tree",
+      "currentness": "exact:editor",
+      "result": "not_proven",
+      "applicability": "required",
+      "limitations": [],
+      "nonclaims": [],
+      "claim_ceiling": "fixture editor integration proposition only",
+      "source_detail": {},
+      "currentness_state": "source_subject_missing",
+      "source_result": null,
+      "adapter_id": "fixture.adapter",
+      "packet_id": null,
+      "owner": "",
+      "wake_event": null,
+      "blockers": [
+        "source_subject_missing"
+      ],
+      "max_permitted_wording": "no claim permitted (not_proven)",
+      "history": [],
+      "support_authorized": false,
+      "release_authorized": false,
+      "published_channels": []
+    },
+    {
+      "schema": "product_health_rail.v1",
+      "rail_id": "fixture.notapplicable",
+      "area": "release",
+      "proposition": "fixture docs-site channel contract holds",
+      "source_schema": "fixture.v1",
+      "source_digest": "sha256:3d9fc4bde7ceef058d65b00186e79c1f14b42687b491644c303065135b644e18",
+      "subject": "notapplicable@docs-site",
+      "currentness": "exact:notapplicable",
+      "result": "not_applicable",
+      "applicability": "not_applicable",
+      "limitations": [],
+      "nonclaims": [
+        "channel not exercised in this fixture"
+      ],
+      "claim_ceiling": "no claim: channel is not applicable in this fixture",
+      "source_detail": {
+        "packet_file": "na.json"
+      },
+      "currentness_state": "current_exact",
+      "source_result": "not_applicable",
+      "adapter_id": "fixture.adapter",
+      "packet_id": "na",
+      "owner": "",
+      "wake_event": null,
+      "blockers": [
+        "declared_result_differs"
+      ],
+      "max_permitted_wording": "no claim permitted (not_applicable)",
+      "history": [],
+      "support_authorized": false,
+      "release_authorized": false,
+      "published_channels": []
+    },
+    {
+      "schema": "product_health_rail.v1",
+      "rail_id": "fixture.package",
+      "area": "package",
+      "proposition": "fixture packaging contract holds on the checked tree",
+      "source_schema": "fixture.v1",
+      "source_digest": "sha256:d0ce98ed8d38438a59a339c17034bc48c3058d77807233f8f384e386f5e60edf",
+      "subject": "package@fixture-tree",
+      "currentness": "exact:package",
+      "result": "failed",
+      "applicability": "required",
+      "limitations": [],
+      "nonclaims": [],
+      "claim_ceiling": "fixture packaging proposition only",
+      "source_detail": {
+        "packet_file": "pkg-new.json"
+      },
+      "currentness_state": "current_exact",
+      "source_result": "failed",
+      "adapter_id": "fixture.adapter",
+      "packet_id": "pkg-new",
+      "owner": "",
+      "wake_event": null,
+      "blockers": [
+        "declared_result_differs",
+        "succession_resolved_conflict"
+      ],
+      "max_permitted_wording": "no claim permitted (failed)",
+      "history": [
+        {
+          "packet_id": "pkg-old",
+          "digest": "sha256:2c4da878559d4a86bf2cd64cb97fa2291c816d77af1be6490739d69cdb8eaaca",
+          "state": "current",
+          "superseded_by": "pkg-new"
+        }
+      ],
+      "support_authorized": false,
+      "release_authorized": false,
+      "published_channels": []
+    },
+    {
+      "schema": "product_health_rail.v1",
+      "rail_id": "fixture.parser",
+      "area": "parser",
+      "proposition": "fixture parser contract holds on the checked tree",
+      "source_schema": "fixture.v1",
+      "source_digest": "sha256:c39d053f8a37d09dc8ddc8ba901df3bb3d30766151bec10eb0a1d1c81cc7f9c2",
+      "subject": "parser@fixture-tree",
+      "currentness": "exact:parser",
+      "result": "pass",
+      "applicability": "required",
+      "limitations": [],
+      "nonclaims": [
+        "does not establish release authority"
+      ],
+      "claim_ceiling": "fixture parser proposition only",
+      "source_detail": {
+        "owner": "parser-fixture-owner",
+        "packet_file": "parser-current.json",
+        "wake_event": "fixture.parser rerun"
+      },
+      "currentness_state": "current_exact",
+      "source_result": "pass",
+      "adapter_id": "fixture.adapter",
+      "packet_id": "parser-current",
+      "owner": "parser-fixture-owner",
+      "wake_event": "fixture.parser rerun",
+      "blockers": [],
+      "max_permitted_wording": "fixture parser proposition only",
+      "history": [],
+      "support_authorized": false,
+      "release_authorized": false,
+      "published_channels": []
+    },
+    {
+      "schema": "product_health_rail.v1",
+      "rail_id": "fixture.parser-limited",
+      "area": "parser",
+      "proposition": "fixture parser edge contract holds within the harness subset",
+      "source_schema": "fixture.v1",
+      "source_digest": "sha256:3798c15854bcabe82db3f7728822eb28c3c9e7eb762956355aba9c71473a4fdb",
+      "subject": "parser-limited@fixture-tree",
+      "currentness": "exact:parser-limited",
+      "result": "pass_with_declared_limitations",
+      "applicability": "conditional",
+      "limitations": [
+        "harness subset only"
+      ],
+      "nonclaims": [
+        "no coverage outside the harness subset"
+      ],
+      "claim_ceiling": "fixture parser edge proposition within declared bounds",
+      "source_detail": {
+        "packet_file": "parser-limited.json"
+      },
+      "currentness_state": "current_exact",
+      "source_result": "pass_with_declared_limitations",
+      "adapter_id": "fixture.adapter",
+      "packet_id": "parser-limited",
+      "owner": "",
+      "wake_event": null,
+      "blockers": [
+        "declared_result_differs"
+      ],
+      "max_permitted_wording": "fixture parser edge proposition within declared bounds — only with all declared limitations",
+      "history": [],
+      "support_authorized": false,
+      "release_authorized": false,
+      "published_channels": []
+    },
+    {
+      "schema": "product_health_rail.v1",
+      "rail_id": "fixture.release",
+      "area": "release",
+      "proposition": "fixture release channel contract holds",
+      "source_schema": "fixture3.v1",
+      "source_digest": "sha256:5b11e5b32c49f2981856cf254feb9df77965d3a01a1da6c884c27012f1443100",
+      "subject": "release@fixture-channel",
+      "currentness": "exact:release",
+      "result": "not_proven",
+      "applicability": "required",
+      "limitations": [],
+      "nonclaims": [
+        "no release authority exists in this object"
+      ],
+      "claim_ceiling": "fixture release channel proposition only",
+      "source_detail": {},
+      "currentness_state": "source_unavailable",
+      "source_result": null,
+      "adapter_id": "fixture3.adapter",
+      "packet_id": null,
+      "owner": "",
+      "wake_event": null,
+      "blockers": [
+        "source_unavailable"
+      ],
+      "max_permitted_wording": "no claim permitted (not_proven)",
+      "history": [],
+      "support_authorized": false,
+      "release_authorized": false,
+      "published_channels": []
+    },
+    {
+      "schema": "product_health_rail.v1",
+      "rail_id": "fixture.security",
+      "area": "security",
+      "proposition": "fixture security contract holds on the checked tree",
+      "source_schema": "fixture.v1",
+      "source_digest": "sha256:ed9f0b9c3066b16517b402ac63090a5b26ae0291162a1abac7c86eb6d67521bd",
+      "subject": "security@fixture-tree",
+      "currentness": "exact:security",
+      "result": "conflicting_current_sources",
+      "applicability": "required",
+      "limitations": [],
+      "nonclaims": [],
+      "claim_ceiling": "fixture security proposition only",
+      "source_detail": {},
+      "currentness_state": "conflicting_current_sources",
+      "source_result": null,
+      "adapter_id": "fixture.adapter",
+      "packet_id": null,
+      "owner": "",
+      "wake_event": null,
+      "blockers": [
+        "conflicting_current_sources"
+      ],
+      "max_permitted_wording": "no claim permitted (conflicting_current_sources)",
+      "history": [
+        {
+          "packet_id": "sec-a",
+          "digest": "sha256:82df49d14d93651d4db2ed1c68614c4754fbc17d12fec0c0b894cd41e9ddd7ea",
+          "state": "current",
+          "superseded_by": null
+        },
+        {
+          "packet_id": "sec-b",
+          "digest": "sha256:4d922a846e66117ae609ae86ff0850516bc8a82f913013e771898daa526bfeed",
+          "state": "current",
+          "superseded_by": null
+        }
+      ],
+      "support_authorized": false,
+      "release_authorized": false,
+      "published_channels": []
+    },
+    {
+      "schema": "product_health_rail.v1",
+      "rail_id": "fixture.security-independent",
+      "area": "security",
+      "proposition": "fixture independent security sweep holds on the checked tree",
+      "source_schema": "fixture.v1",
+      "source_digest": "sha256:b7bb72897d58b3de711844cec40de68253b56331fc34ed0a5e25b4a22d2bde9b",
+      "subject": "security-independent@fixture-tree",
+      "currentness": "exact:security-independent",
+      "result": "pass_with_declared_limitations",
+      "applicability": "required",
+      "limitations": [
+        "sweep bounded to fixture corpus"
+      ],
+      "nonclaims": [
+        "does not satisfy any other security rail"
+      ],
+      "claim_ceiling": "fixture independent security sweep proposition only",
+      "source_detail": {
+        "packet_file": "sec-ind.json"
+      },
+      "currentness_state": "current_exact",
+      "source_result": "pass_with_declared_limitations",
+      "adapter_id": "fixture.adapter",
+      "packet_id": "sec-ind",
+      "owner": "",
+      "wake_event": null,
+      "blockers": [
+        "declared_result_differs"
+      ],
+      "max_permitted_wording": "fixture independent security sweep proposition only — only with all declared limitations",
+      "history": [],
+      "support_authorized": false,
+      "release_authorized": false,
+      "published_channels": []
+    },
+    {
+      "schema": "product_health_rail.v1",
+      "rail_id": "fixture.test-client",
+      "area": "client",
+      "proposition": "fixture second client contract holds on the checked tree",
+      "source_schema": "fixture2.v1",
+      "source_digest": "sha256:c0a3068c78214bedc0922acd711cce2742017346cff4a15b6c4c2be00a5b3999",
+      "subject": "test-client@fixture-tree",
+      "currentness": "exact:test-client",
+      "result": "unsupported",
+      "applicability": "optional",
+      "limitations": [],
+      "nonclaims": [],
+      "claim_ceiling": "fixture second client proposition only",
+      "source_detail": {},
+      "currentness_state": "adapter_unavailable",
+      "source_result": null,
+      "adapter_id": null,
+      "packet_id": null,
+      "owner": "",
+      "wake_event": null,
+      "blockers": [
+        "adapter_ambiguous"
+      ],
+      "max_permitted_wording": "no claim permitted (unsupported)",
+      "history": [],
+      "support_authorized": false,
+      "release_authorized": false,
+      "published_channels": []
+    },
+    {
+      "schema": "product_health_rail.v1",
+      "rail_id": "fixture.unproven",
+      "area": "editor",
+      "proposition": "fixture editor journey contract holds on the checked tree",
+      "source_schema": "fixture.v1",
+      "source_digest": "sha256:71e410d31263d6fabbee61ad47742d174b71959ef4b9fc54723620c3d1a092f1",
+      "subject": "unproven@fixture-tree",
+      "currentness": "exact:unproven",
+      "result": "not_proven",
+      "applicability": "required",
+      "limitations": [],
+      "nonclaims": [],
+      "claim_ceiling": "fixture editor journey proposition only",
+      "source_detail": {
+        "packet_file": "unproven.json"
+      },
+      "currentness_state": "current_exact",
+      "source_result": "not_proven",
+      "adapter_id": "fixture.adapter",
+      "packet_id": "unproven",
+      "owner": "",
+      "wake_event": null,
+      "blockers": [],
+      "max_permitted_wording": "no claim permitted (not_proven)",
+      "history": [],
+      "support_authorized": false,
+      "release_authorized": false,
+      "published_channels": []
+    }
+  ],
+  "findings": [
+    {
+      "code": "adapter_ambiguous",
+      "subject": "fixture.test-client",
+      "detail": "overlapping current adapters [fixture2a.adapter, fixture2b.adapter] accept source schema fixture2.v1 without a declared migration"
+    },
+    {
+      "code": "changed_byte_identity",
+      "subject": "fixture.checks",
+      "detail": "the same packet id appears with different canonical bytes"
+    },
+    {
+      "code": "conflicting_current_sources",
+      "subject": "fixture.checks",
+      "detail": "2 distinct current packets for one rail remain unresolved dual authority"
+    },
+    {
+      "code": "conflicting_current_sources",
+      "subject": "fixture.security",
+      "detail": "2 distinct current packets for one rail remain unresolved dual authority"
+    },
+    {
+      "code": "declared_result_differs",
+      "subject": "fixture.compiler",
+      "detail": "registry declared pass but assembled evidence yields failed; registry declaration is not evidence"
+    },
+    {
+      "code": "declared_result_differs",
+      "subject": "fixture.diagnostics",
+      "detail": "registry declared not_proven but assembled evidence yields pass; registry declaration is not evidence"
+    },
+    {
+      "code": "declared_result_differs",
+      "subject": "fixture.notapplicable",
+      "detail": "registry declared not_proven but assembled evidence yields not_applicable; registry declaration is not evidence"
+    },
+    {
+      "code": "declared_result_differs",
+      "subject": "fixture.package",
+      "detail": "registry declared not_proven but assembled evidence yields failed; registry declaration is not evidence"
+    },
+    {
+      "code": "declared_result_differs",
+      "subject": "fixture.parser-limited",
+      "detail": "registry declared not_proven but assembled evidence yields pass_with_declared_limitations; registry declaration is not evidence"
+    },
+    {
+      "code": "declared_result_differs",
+      "subject": "fixture.security-independent",
+      "detail": "registry declared not_proven but assembled evidence yields pass_with_declared_limitations; registry declaration is not evidence"
+    },
+    {
+      "code": "duplicate_packet_ref",
+      "subject": "fixture.diagnostics",
+      "detail": "files diag-a.json and diag-b.json hold byte-identical packet diag"
+    },
+    {
+      "code": "rail_state_adapter_unavailable",
+      "subject": "fixture.test-client",
+      "detail": "generic currentness state adapter_unavailable with result unsupported"
+    },
+    {
+      "code": "rail_state_conflicting_current_sources",
+      "subject": "fixture.checks",
+      "detail": "generic currentness state conflicting_current_sources with result conflicting_current_sources"
+    },
+    {
+      "code": "rail_state_conflicting_current_sources",
+      "subject": "fixture.security",
+      "detail": "generic currentness state conflicting_current_sources with result conflicting_current_sources"
+    },
+    {
+      "code": "rail_state_source_subject_mismatch",
+      "subject": "fixture.client",
+      "detail": "generic currentness state source_subject_mismatch with result invalid"
+    },
+    {
+      "code": "rail_state_source_subject_missing",
+      "subject": "fixture.editor",
+      "detail": "generic currentness state source_subject_missing with result not_proven"
+    },
+    {
+      "code": "rail_state_source_unavailable",
+      "subject": "fixture.release",
+      "detail": "generic currentness state source_unavailable with result not_proven"
+    },
+    {
+      "code": "rail_state_stale_only",
+      "subject": "fixture.dap",
+      "detail": "generic currentness state stale_only with result stale"
+    },
+    {
+      "code": "source_subject_mismatch",
+      "subject": "fixture.client",
+      "detail": "packet client-wrong claims rail fixture.client but declares subject `client@other-platform` (rail subject `client@declared-platform`)"
+    },
+    {
+      "code": "source_subject_missing",
+      "subject": "fixture.editor",
+      "detail": "source family resolves but no packet declares rail fixture.editor"
+    },
+    {
+      "code": "source_unavailable",
+      "subject": "fixture.release",
+      "detail": "no repository-local packet resolves for adapter fixture3.adapter (selector `fixture3.subject`)"
+    },
+    {
+      "code": "succession_resolved_conflict",
+      "subject": "fixture.package",
+      "detail": "packet pkg-new supersedes current packet pkg-old by declared succession"
+    }
+  ],
+  "history": [
+    {
+      "packet_id": "checks-run",
+      "digest": "sha256:90ad285ecb126d8658deda9a9ee23036b2e92280035573f2d4ece4c78669f46a",
+      "state": "current",
+      "superseded_by": null
+    },
+    {
+      "packet_id": "checks-run",
+      "digest": "sha256:ddb269acf04b723fd463b7473920f1cfd3561685c1fdbbd8fbb27162f90ebfc7",
+      "state": "current",
+      "superseded_by": null
+    },
+    {
+      "packet_id": "compiler-old",
+      "digest": "sha256:2c902de4cfe4cd1a5b6c44588baddc52f9c2c2ce992cbd399ae2bc25db247828",
+      "state": "historical",
+      "superseded_by": "compiler-now"
+    },
+    {
+      "packet_id": "dap",
+      "digest": "sha256:0c3e936f141ebefebdeb224afc623abbeed04a1d7e7113514267a0c341b44d8a",
+      "state": "stale",
+      "superseded_by": null
+    },
+    {
+      "packet_id": "pkg-old",
+      "digest": "sha256:2c4da878559d4a86bf2cd64cb97fa2291c816d77af1be6490739d69cdb8eaaca",
+      "state": "current",
+      "superseded_by": "pkg-new"
+    },
+    {
+      "packet_id": "sec-a",
+      "digest": "sha256:82df49d14d93651d4db2ed1c68614c4754fbc17d12fec0c0b894cd41e9ddd7ea",
+      "state": "current",
+      "superseded_by": null
+    },
+    {
+      "packet_id": "sec-b",
+      "digest": "sha256:4d922a846e66117ae609ae86ff0850516bc8a82f913013e771898daa526bfeed",
+      "state": "current",
+      "superseded_by": null
+    }
+  ],
+  "rollup": {
+    "required_satisfied": [
+      "fixture.diagnostics",
+      "fixture.parser",
+      "fixture.security-independent"
+    ],
+    "required_nonsatisfying": [
+      {
+        "rail_id": "fixture.checks",
+        "currentness_state": "conflicting_current_sources",
+        "result": "conflicting_current_sources"
+      },
+      {
+        "rail_id": "fixture.client",
+        "currentness_state": "source_subject_mismatch",
+        "result": "invalid"
+      },
+      {
+        "rail_id": "fixture.compiler",
+        "currentness_state": "current_exact",
+        "result": "failed"
+      },
+      {
+        "rail_id": "fixture.dap",
+        "currentness_state": "stale_only",
+        "result": "stale"
+      },
+      {
+        "rail_id": "fixture.editor",
+        "currentness_state": "source_subject_missing",
+        "result": "not_proven"
+      },
+      {
+        "rail_id": "fixture.package",
+        "currentness_state": "current_exact",
+        "result": "failed"
+      },
+      {
+        "rail_id": "fixture.release",
+        "currentness_state": "source_unavailable",
+        "result": "not_proven"
+      },
+      {
+        "rail_id": "fixture.security",
+        "currentness_state": "conflicting_current_sources",
+        "result": "conflicting_current_sources"
+      },
+      {
+        "rail_id": "fixture.unproven",
+        "currentness_state": "current_exact",
+        "result": "not_proven"
+      }
+    ],
+    "optional_conditional_not_selected": [
+      "fixture.test-client"
+    ],
+    "source_adapters_unavailable": [
+      "fixture.test-client"
+    ],
+    "current_source_conflicts": [
+      "fixture.checks",
+      "fixture.security"
+    ]
+  },
+  "semantic_digest": "sha256:6b7bf4a9393eb728a6934cefd108668e71a3327ff47235239e9b99eace583c93"
+}

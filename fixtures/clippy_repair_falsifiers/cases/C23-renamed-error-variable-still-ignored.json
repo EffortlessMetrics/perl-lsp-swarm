@@ -1,0 +1,69 @@
+{
+  "schema_version": 1,
+  "case_id": "C23-renamed-error-variable-still-ignored",
+  "family": "lost_work_error_obligation_theater",
+  "purpose": "Renaming the error variable away from underscore without semantic handling preserves the ignore under an honest-looking name.",
+  "incident_reference": null,
+  "subject": {
+    "scope": "workspace",
+    "target_kinds": [
+      "lib",
+      "bin",
+      "test"
+    ],
+    "profile": "all",
+    "platforms": [
+      "linux",
+      "windows",
+      "macos"
+    ],
+    "features": "default"
+  },
+  "governed_lint": null,
+  "dishonest_mutation": {
+    "kind": "source-snippet",
+    "language": "rust",
+    "trigger_evidence": [
+      "drained_ok",
+      "value discarded"
+    ],
+    "content": "pub fn drain(pump: &Pump) -> Done {\n    let drained_ok = pump.run(); // name suggests success, value discarded\n    Done::from(drained_ok)\n}\n",
+    "sha256": "00a4f0cff48af0bc2e652b1de5b8cd329814d118c19bf5e04178c7df3e921f18"
+  },
+  "rejecting_authority": {
+    "status": "pending_owner",
+    "owner_issue": 11236,
+    "unresolved_reason": "Same deliberate-discard contract gap as C19; distinct rename-shaped spelling frozen separately."
+  },
+  "expected_result": {
+    "result_class": "reject",
+    "reason_code": "renamed_but_semantically_ignored"
+  },
+  "positive_counterpart": {
+    "sanctioned_evidence": [
+      "map(Done::from)",
+      "PumpError"
+    ],
+    "note": "Outcome pattern-matched explicitly.",
+    "content": "pub fn drain(pump: &Pump) -> Result<Done, PumpError> {\n    pump.run().map(Done::from)\n}\n",
+    "sha256": "987b05c8e78d41694b723cdc0b774ff524a8680e213c5a68d872bfed4c516cdc"
+  },
+  "applicability": {
+    "packet_classes": [
+      "qualification",
+      "foundation",
+      "migration",
+      "activation",
+      "review"
+    ],
+    "domains": [
+      "clippy-core"
+    ]
+  },
+  "delta_provenance": {
+    "change_reason": "initial corpus freeze (#11649)",
+    "owning_issue": 11649,
+    "historical_interpretability": true
+  },
+  "claim_boundary": "Pairs with C19; both stay unresolved until #11236 settles discard law."
+}

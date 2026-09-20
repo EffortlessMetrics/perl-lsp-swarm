@@ -1,0 +1,9 @@
+project: product
+component: Editor integrations
+kind: Added
+body: "Added a fail-closed packet for updating the existing official Zed Perl extension entry after upstream merge, binding the current registry subject, allowed two-path diff, branch-reachable submodule requirement, version equality, validation, and public-install evidence boundary."
+time: 2026-08-13T12:10:00Z
+custom:
+  PR: "7952"
+  Slug: zed-registry-update-packet
+  Breaking: "no"

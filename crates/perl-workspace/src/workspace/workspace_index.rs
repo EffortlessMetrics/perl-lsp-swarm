@@ -43,7 +43,7 @@
 //! // Index a Perl file
 //! let uri = Url::parse("file:///example.pl")?;
 //! let code = "package MyPackage;\nsub example { return 42; }";
-//! index.index_file(uri, code.to_string())?;
+//! index.index_initial_file(uri, code.to_string())?;
 //!
 //! // Find symbol definitions
 //! let definition = index.find_definition("MyPackage::example");
@@ -66,19 +66,20 @@ use crate::ast::{Node, NodeKind};
 use crate::document_store::{Document, DocumentStore};
 use crate::position::{Position, Range};
 use crate::workspace::monitoring::IndexInstrumentation;
-use parking_lot::{Mutex, RwLock};
+use parking_lot::{ArcMutexGuard, Mutex, RawMutex, RwLock};
 use perl_position_tracking::{WireLocation, WirePosition, WireRange};
 use perl_semantic_facts::{
     AnchorFact, AnchorId, Confidence, EdgeFact, EntityFact, EntityId, EntityKind, FileId,
-    PackageEdge, PackageEdgeKind, Provenance,
+    OccurrenceFact, OccurrenceId, OccurrenceKind, PackageEdge, PackageEdgeKind, Provenance,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
+use std::num::NonZeroU32;
 use std::path::Path;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::Instant;
 use url::Url;
 
@@ -101,6 +102,10 @@ pub use crate::workspace::monitoring::{
     DegradationReason, EarlyExitReason, EarlyExitRecord, IndexInstrumentationSnapshot,
     IndexMetrics, IndexPerformanceCaps, IndexPhase, IndexPhaseTransition, IndexResourceLimits,
     IndexStateKind, IndexStateTransition, ResourceKind,
+};
+use crate::workspace_symbol_query::{
+    WorkspaceSymbolMatchTier, WorkspaceSymbolQueryProfile, WorkspaceSymbolSearchKeyRole,
+    legacy_index_match_rank, match_searchable_key,
 };
 pub use perl_symbol::MIN_LOOSE_MATCH_QUERY_CHARS;
 use perl_symbol::surface::decl::extract_symbol_decls;
@@ -147,7 +152,7 @@ pub use perl_uri::{is_file_uri, is_special_scheme, uri_extension, uri_key};
 /// # Usage
 ///
 /// ```rust,ignore
-/// use perl_parser::workspace_index::{IndexPhase, IndexState};
+/// use perl_workspace::workspace_index::{IndexPhase, IndexState};
 /// use std::time::Instant;
 ///
 /// let state = IndexState::Building {
@@ -158,6 +163,7 @@ pub use perl_uri::{is_file_uri, is_special_scheme, uri_extension, uri_key};
 /// };
 /// ```
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub enum IndexState {
     /// Index is being constructed (workspace scan in progress)
     Building {
@@ -256,7 +262,7 @@ impl IndexState {
 /// # Usage
 ///
 /// ```rust,ignore
-/// use perl_parser::workspace_index::{IndexCoordinator, IndexState};
+/// use perl_workspace::workspace_index::{IndexCoordinator, IndexState};
 ///
 /// let coordinator = IndexCoordinator::new();
 /// assert!(matches!(coordinator.state(), IndexState::Building { .. }));
@@ -319,7 +325,7 @@ impl IndexCoordinator {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// use perl_parser::workspace_index::IndexCoordinator;
+    /// use perl_workspace::workspace_index::IndexCoordinator;
     ///
     /// let coordinator = IndexCoordinator::new();
     /// ```
@@ -353,7 +359,7 @@ impl IndexCoordinator {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// use perl_parser::workspace_index::{IndexCoordinator, IndexResourceLimits};
+    /// use perl_workspace::workspace_index::{IndexCoordinator, IndexResourceLimits};
     ///
     /// let limits = IndexResourceLimits::default();
     /// let coordinator = IndexCoordinator::with_limits(limits);
@@ -408,7 +414,7 @@ impl IndexCoordinator {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// use perl_parser::workspace_index::{IndexCoordinator, IndexState};
+    /// use perl_workspace::workspace_index::{IndexCoordinator, IndexState};
     ///
     /// let coordinator = IndexCoordinator::new();
     /// match coordinator.state() {
@@ -439,7 +445,7 @@ impl IndexCoordinator {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// use perl_parser::workspace_index::IndexCoordinator;
+    /// use perl_workspace::workspace_index::IndexCoordinator;
     ///
     /// let coordinator = IndexCoordinator::new();
     /// let _index = coordinator.index();
@@ -488,7 +494,7 @@ impl IndexCoordinator {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// use perl_parser::workspace_index::IndexCoordinator;
+    /// use perl_workspace::workspace_index::IndexCoordinator;
     ///
     /// let coordinator = IndexCoordinator::new();
     /// coordinator.notify_change("file:///example.pl");
@@ -518,7 +524,7 @@ impl IndexCoordinator {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// use perl_parser::workspace_index::IndexCoordinator;
+    /// use perl_workspace::workspace_index::IndexCoordinator;
     ///
     /// let coordinator = IndexCoordinator::new();
     /// coordinator.notify_parse_complete("file:///example.pl");
@@ -527,21 +533,20 @@ impl IndexCoordinator {
         let pending = self.metrics.decrement_pending_parses();
 
         // Check for recovery from parse storm
-        if pending == 0 {
-            if let IndexState::Degraded { reason: DegradationReason::ParseStorm { .. }, .. } =
+        if pending == 0
+            && let IndexState::Degraded { reason: DegradationReason::ParseStorm { .. }, .. } =
                 self.state()
-            {
-                // Attempt recovery - transition back to Building for re-scan
-                let mut state = self.state.write();
-                let from_kind = state.kind();
-                self.instrumentation.record_state_transition(from_kind, IndexStateKind::Building);
-                *state = IndexState::Building {
-                    phase: IndexPhase::Idle,
-                    indexed_count: 0,
-                    total_count: 0,
-                    started_at: Instant::now(),
-                };
-            }
+        {
+            // Attempt recovery - transition back to Building for re-scan
+            let mut state = self.state.write();
+            let from_kind = state.kind();
+            self.instrumentation.record_state_transition(from_kind, IndexStateKind::Building);
+            *state = IndexState::Building {
+                phase: IndexPhase::Idle,
+                indexed_count: 0,
+                total_count: 0,
+                started_at: Instant::now(),
+            };
         }
 
         // Enforce resource limits after parse completion
@@ -572,7 +577,7 @@ impl IndexCoordinator {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// use perl_parser::workspace_index::IndexCoordinator;
+    /// use perl_workspace::workspace_index::IndexCoordinator;
     ///
     /// let coordinator = IndexCoordinator::new();
     /// coordinator.transition_to_ready(100, 5000);
@@ -735,7 +740,7 @@ impl IndexCoordinator {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// use perl_parser::workspace_index::IndexCoordinator;
+    /// use perl_workspace::workspace_index::IndexCoordinator;
     ///
     /// let coordinator = IndexCoordinator::new();
     /// coordinator.transition_to_building(100);
@@ -782,7 +787,7 @@ impl IndexCoordinator {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// use perl_parser::workspace_index::{DegradationReason, IndexCoordinator, ResourceKind};
+    /// use perl_workspace::workspace_index::{DegradationReason, IndexCoordinator, ResourceKind};
     ///
     /// let coordinator = IndexCoordinator::new();
     /// coordinator.transition_to_degraded(DegradationReason::ResourceLimit {
@@ -829,7 +834,7 @@ impl IndexCoordinator {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// use perl_parser::workspace_index::IndexCoordinator;
+    /// use perl_workspace::workspace_index::IndexCoordinator;
     ///
     /// let coordinator = IndexCoordinator::new();
     /// let _reason = coordinator.check_limits();
@@ -871,7 +876,7 @@ impl IndexCoordinator {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// use perl_parser::workspace_index::IndexCoordinator;
+    /// use perl_workspace::workspace_index::IndexCoordinator;
     ///
     /// let coordinator = IndexCoordinator::new();
     /// // ... index some files ...
@@ -923,7 +928,7 @@ impl IndexCoordinator {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// use perl_parser::workspace_index::IndexCoordinator;
+    /// use perl_workspace::workspace_index::IndexCoordinator;
     ///
     /// let coordinator = IndexCoordinator::new();
     /// let locations = coordinator.query(
@@ -955,6 +960,7 @@ impl Default for IndexCoordinator {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 /// Symbol kinds for cross-file indexing during Index/Navigate workflows.
+#[non_exhaustive]
 pub enum SymKind {
     /// Variable symbol ($, @, or % sigil)
     Var,
@@ -992,7 +998,7 @@ pub struct SymbolKey {
 /// # Examples
 ///
 /// ```rust,ignore
-/// use perl_parser::workspace_index::normalize_var;
+/// use perl_workspace::workspace_index::normalize_var;
 ///
 /// assert_eq!(normalize_var("$count"), (Some('$'), "count"));
 /// assert_eq!(normalize_var("process_emails"), (None, "process_emails"));
@@ -1114,6 +1120,7 @@ pub struct SymbolReference {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// Classification of how a symbol is referenced in Navigate/Analyze workflows.
+#[non_exhaustive]
 pub enum ReferenceKind {
     /// Symbol definition site (sub declaration, variable declaration)
     Definition,
@@ -1262,6 +1269,28 @@ impl Drop for ReservationGuard<'_> {
     }
 }
 
+/// Signals the beginning and completion of one multi-store index mutation.
+///
+/// Readers use the two version reads around their multi-store access to detect
+/// that a write overlapped the read. This is a torn-read signal, not a
+/// cross-store transaction or snapshot boundary.
+struct WriteVersionGuard<'a> {
+    index: &'a WorkspaceIndex,
+}
+
+impl WriteVersionGuard<'_> {
+    fn new(index: &WorkspaceIndex) -> WriteVersionGuard<'_> {
+        index.bump_write_version();
+        WriteVersionGuard { index }
+    }
+}
+
+impl Drop for WriteVersionGuard<'_> {
+    fn drop(&mut self) {
+        self.index.bump_write_version();
+    }
+}
+
 /// Write-through semantic fact storage for one indexed file.
 ///
 /// Derives `Serialize, Deserialize` (Campaign 31 PR 5, perl-lsp-swarm#2592)
@@ -1302,6 +1331,49 @@ pub struct FileFactShard {
     pub occurrences: Vec<perl_semantic_facts::OccurrenceFact>,
     /// Edge facts for this file.
     pub edges: Vec<EdgeFact>,
+}
+
+/// Owner-supplied currentness token for one live source commit.
+///
+/// The workspace index does not mint or interpret this value. The owning
+/// document/currentness authority must supply a non-zero generation after its
+/// own currentness check. URI identity is already supplied by the `uri`
+/// argument; this API does not invent a competing per-URI source identity.
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Ord, PartialOrd, Hash)]
+pub struct SourceCommit {
+    generation: NonZeroU32,
+}
+
+impl SourceCommit {
+    /// Construct a live source commit guard from an owner-supplied generation.
+    pub const fn new(generation: NonZeroU32) -> Self {
+        Self { generation }
+    }
+
+    /// Return the non-zero source generation represented by this commit.
+    pub const fn generation(self) -> NonZeroU32 {
+        self.generation
+    }
+}
+
+/// Typed result of a source commit attempt.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub enum SourceCommitOutcome {
+    /// Candidate was parsed and published.
+    Accepted,
+    /// Candidate matched the accepted content and required no work.
+    NoOp,
+    /// Candidate was older than the accepted live generation.
+    RejectedStale,
+    /// Candidate failed before publication.
+    Failed(String),
+}
+
+#[derive(Debug, Eq, PartialEq)]
+enum IndexFileWithGenerationOutcome {
+    Accepted,
+    NoOp,
+    RejectedStale,
 }
 
 /// Thread-safe workspace index
@@ -1351,6 +1423,39 @@ pub struct WorkspaceIndex {
     /// Monotonic write version — bumped on every index mutation so readers
     /// can detect torn reads across the multiple independent RwLocks. (#5116)
     write_version: Arc<AtomicU64>,
+    /// Per-file lifecycle serialization. Entries are reference-counted and
+    /// removed after the last holder releases one, so a long-running server
+    /// does not retain one lock forever for every URI it has ever seen.
+    lifecycle_guards: Arc<Mutex<HashMap<String, Arc<LifecycleGuardEntry>>>>,
+}
+
+struct LifecycleGuardEntry {
+    lock: Arc<Mutex<()>>,
+    holders: AtomicUsize,
+}
+
+struct LifecycleGuard {
+    key: String,
+    entry: Arc<LifecycleGuardEntry>,
+    registry: Arc<Mutex<HashMap<String, Arc<LifecycleGuardEntry>>>>,
+    lock: Option<ArcMutexGuard<RawMutex, ()>>,
+}
+
+impl Drop for LifecycleGuard {
+    fn drop(&mut self) {
+        // Unlock before touching the registry. The entry Arc held by this
+        // guard keeps the mutex alive even if the registry removes it.
+        drop(self.lock.take());
+        // Keep the registry locked while decrementing and possibly removing
+        // the entry. A new holder must not observe the unlocked URI mutex and
+        // then lose its registry entry to this guard's cleanup.
+        let mut guards = self.registry.lock();
+        if self.entry.holders.fetch_sub(1, Ordering::AcqRel) == 1
+            && guards.get(&self.key).is_some_and(|current| Arc::ptr_eq(current, &self.entry))
+        {
+            guards.remove(&self.key);
+        }
+    }
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -1394,6 +1499,14 @@ impl WorkspaceIndex {
         )
     }
 
+    fn sort_and_dedup_definition_candidates(entries: &mut Vec<DefinitionCandidate>) {
+        entries.sort_by(|left, right| {
+            Self::definition_candidate_sort_key(left)
+                .cmp(&Self::definition_candidate_sort_key(right))
+        });
+        entries.dedup();
+    }
+
     fn rebuild_symbol_cache(
         files: &HashMap<String, FileIndex>,
         symbols: &mut HashMap<String, Vec<DefinitionCandidate>>,
@@ -1415,11 +1528,7 @@ impl WorkspaceIndex {
             }
         }
         for entries in symbols.values_mut() {
-            entries.sort_by(|left, right| {
-                Self::definition_candidate_sort_key(left)
-                    .cmp(&Self::definition_candidate_sort_key(right))
-            });
-            entries.dedup();
+            Self::sort_and_dedup_definition_candidates(entries);
         }
     }
 
@@ -1457,24 +1566,27 @@ impl WorkspaceIndex {
         symbols: &mut HashMap<String, Vec<DefinitionCandidate>>,
         file_index: &FileIndex,
     ) {
+        let mut touched_keys = HashSet::new();
         for sym in &file_index.symbols {
             if let Some(ref qname) = sym.qualified_name {
-                symbols.entry(qname.clone()).or_default().push(DefinitionCandidate {
+                let key = qname.clone();
+                symbols.entry(key.clone()).or_default().push(DefinitionCandidate {
                     location: Location { uri: sym.uri.clone(), range: sym.range },
                     kind: sym.kind,
                 });
+                touched_keys.insert(key);
             }
-            symbols.entry(sym.name.clone()).or_default().push(DefinitionCandidate {
+            let key = sym.name.clone();
+            symbols.entry(key.clone()).or_default().push(DefinitionCandidate {
                 location: Location { uri: sym.uri.clone(), range: sym.range },
                 kind: sym.kind,
             });
+            touched_keys.insert(key);
         }
-        for entries in symbols.values_mut() {
-            entries.sort_by(|left, right| {
-                Self::definition_candidate_sort_key(left)
-                    .cmp(&Self::definition_candidate_sort_key(right))
-            });
-            entries.dedup();
+        for key in touched_keys {
+            if let Some(entries) = symbols.get_mut(&key) {
+                Self::sort_and_dedup_definition_candidates(entries);
+            }
         }
     }
 
@@ -1718,7 +1830,7 @@ impl WorkspaceIndex {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// use perl_parser::workspace_index::WorkspaceIndex;
+    /// use perl_workspace::workspace_index::WorkspaceIndex;
     ///
     /// let index = WorkspaceIndex::new();
     /// assert!(!index.has_symbols());
@@ -1743,6 +1855,7 @@ impl WorkspaceIndex {
             limits,
             resource_limit_rejection: Mutex::new(None),
             write_version: Arc::new(AtomicU64::new(0)),
+            lifecycle_guards: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -1803,6 +1916,7 @@ impl WorkspaceIndex {
             limits,
             resource_limit_rejection: Mutex::new(None),
             write_version: Arc::new(AtomicU64::new(0)),
+            lifecycle_guards: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -1843,8 +1957,41 @@ impl WorkspaceIndex {
         }
     }
 
+    #[cfg(test)]
     fn restore_document(&self, uri: &str, rejected_text: &str, previous: Option<&Document>) {
         self.document_store.restore_if_current(uri, 1, rejected_text, previous);
+    }
+
+    /// Publish a document only after its candidate has passed parsing and
+    /// admission.  An existing document store entry must accept the version;
+    /// a rejected update is an explicit failed per-file commit.
+    fn commit_document(
+        &self,
+        uri: &str,
+        version: i32,
+        text: String,
+        enforce_version: bool,
+    ) -> bool {
+        self.document_store.accept_candidate(uri.to_string(), version, text, enforce_version)
+            == crate::document_store::DocumentCommitResult::Accepted
+    }
+
+    fn lifecycle_guard(&self, key: &str) -> LifecycleGuard {
+        let (entry, registry) = {
+            let mut guards = self.lifecycle_guards.lock();
+            let entry = Arc::clone(guards.entry(key.to_string()).or_insert_with(|| {
+                Arc::new(LifecycleGuardEntry {
+                    lock: Arc::new(Mutex::new(())),
+                    holders: AtomicUsize::new(0),
+                })
+            }));
+            // The registry owns the entry while this holder is being
+            // registered. Do not hold the registry mutex while waiting for
+            // another operation on this URI.
+            entry.holders.fetch_add(1, Ordering::Relaxed);
+            (entry, Arc::clone(&self.lifecycle_guards))
+        };
+        LifecycleGuard { key: key.to_string(), lock: Some(entry.lock.lock_arc()), entry, registry }
     }
 
     fn admission_limit_for(
@@ -1942,6 +2089,7 @@ impl WorkspaceIndex {
     /// `pending_generation` to 0 lets the reopened file index normally.
     pub fn reset_generation_for_close(&self, uri: &str) {
         let key = DocumentStore::uri_key(&Self::normalize_uri(uri));
+        let _lifecycle = self.lifecycle_guard(&key);
         let mut files = self.files.write();
         if let Some(file_index) = files.get_mut(&key) {
             file_index.generation = 0;
@@ -1992,30 +2140,103 @@ impl WorkspaceIndex {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// use perl_parser::workspace_index::WorkspaceIndex;
+    /// use perl_workspace::workspace_index::WorkspaceIndex;
     /// use url::Url;
     ///
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// let index = WorkspaceIndex::new();
     /// let uri = Url::parse("file:///example.pl")?;
-    /// index.index_file(uri, "sub hello { return 1; }".to_string())?;
+    /// index.index_initial_file(uri, "sub hello { return 1; }".to_string())?;
     /// # Ok(())
     /// # }
     /// ```
     ///
     /// Returns: `Ok(())` when indexing succeeds, otherwise an error string.
+    ///
+    /// # Compatibility and migration
+    ///
+    /// This is a deprecated compatibility surface retained for existing
+    /// initial-index callers. New code should use [`Self::index_initial_file`]
+    /// for discovery/import or [`Self::index_live_file`] for an owner-checked
+    /// live source commit.
     pub fn index_file(&self, uri: Url, text: String) -> Result<(), String> {
+        self.index_initial_file(uri, text)
+    }
+
+    /// Index one file during initial discovery/import with no live-document
+    /// generation semantics.
+    pub fn index_initial_file(&self, uri: Url, text: String) -> Result<(), String> {
         self.index_file_with_generation(uri, text, 0)
     }
 
+    /// Index one live source commit after the owner has checked currentness.
+    ///
+    /// A raw generation or the legacy [`Self::index_file`] surface cannot
+    /// represent this contract. The typed guard makes zero identity and
+    /// generation structurally unrepresentable at this boundary.
+    pub fn index_live_file(
+        &self,
+        uri: Url,
+        text: String,
+        commit: SourceCommit,
+    ) -> SourceCommitOutcome {
+        let key = DocumentStore::uri_key(uri.as_str());
+        let mut hasher = DefaultHasher::new();
+        text.hash(&mut hasher);
+        let content_hash = hasher.finish();
+
+        // Serialize the freshness check and identical-content generation
+        // advance with all other writers of this URI. Otherwise a generation
+        // one NoOp can return without recording its high-water mark, allowing
+        // a later older live commit to be accepted.
+        {
+            let _lifecycle = self.lifecycle_guard(&key);
+            let mut files = self.files.write();
+            if let Some(file) = files.get_mut(&key) {
+                let high_water = file.generation.max(file.pending_generation);
+                if high_water > commit.generation.get() {
+                    return SourceCommitOutcome::RejectedStale;
+                }
+                if file.content_hash == content_hash {
+                    file.generation = commit.generation.get();
+                    file.pending_generation = file.pending_generation.max(file.generation);
+                    return SourceCommitOutcome::NoOp;
+                }
+            }
+        }
+
+        match self.index_file_with_generation_outcome(uri, text, commit.generation.get()) {
+            Ok(IndexFileWithGenerationOutcome::Accepted) => SourceCommitOutcome::Accepted,
+            Ok(IndexFileWithGenerationOutcome::NoOp) => SourceCommitOutcome::NoOp,
+            Ok(IndexFileWithGenerationOutcome::RejectedStale) => SourceCommitOutcome::RejectedStale,
+            Err(error) => SourceCommitOutcome::Failed(error),
+        }
+    }
+
     /// Index a file from its URI, text content, and document generation.
+    ///
+    /// # Compatibility and migration
+    ///
+    /// This is a deprecated compatibility surface for callers that still pass
+    /// a raw generation. New initial-index code should use
+    /// [`Self::index_initial_file`], and live source commits should use
+    /// [`Self::index_live_file`] with [`SourceCommit`].
     pub fn index_file_with_generation(
         &self,
         uri: Url,
         text: String,
         generation: u32,
     ) -> Result<(), String> {
-        self.bump_write_version(); // Signal to readers that a mutation is in progress (#5116)
+        self.index_file_with_generation_outcome(uri, text, generation).map(|_| ())
+    }
+
+    fn index_file_with_generation_outcome(
+        &self,
+        uri: Url,
+        text: String,
+        generation: u32,
+    ) -> Result<IndexFileWithGenerationOutcome, String> {
+        let _write_version = WriteVersionGuard::new(self);
         let uri_str = uri.to_string();
 
         // Compute content hash for early-exit optimization
@@ -2023,22 +2244,14 @@ impl WorkspaceIndex {
         text.hash(&mut hasher);
         let content_hash = hasher.finish();
 
-        // Check if content is unchanged (early-exit optimization), and --
-        // still under the SAME `files.write()` guard -- update
-        // `document_store`. `document_store` has its own, entirely separate
-        // internal lock (`DocumentStore::documents: Arc<RwLock<..>>`, no
-        // cross-reference to `self.files`), so holding `files.write()`
-        // across both the generation check AND the `document_store` write
-        // does not risk any lock-ordering deadlock; it makes the two
-        // genuinely atomic with respect to any other writer of this URI's
-        // entry, closing the race outright rather than narrowing it (an
-        // earlier revision applied this same generation check here but
-        // released `files.write()` before the `document_store` write,
-        // leaving a real, if nanosecond-scale, window a stale out-of-order
-        // task could still land in -- flagged again by factory-droid on
-        // PR #3618 after that partial fix).
+        // Check the current generation under the per-URI lifecycle guard, then
+        // publish the DocumentStore candidate and the index projections in
+        // their respective critical sections. The guard serializes writers of
+        // this URI; the separate stores are not one cross-store atomic
+        // transaction, so readers must use the write-version/torn-read
+        // protections where a coherent snapshot is required.
         let key = DocumentStore::uri_key(&uri_str);
-        let previous_document = self.document_store.get(&uri_str);
+        let _lifecycle = self.lifecycle_guard(&key);
         // Set below iff this task's generation genuinely advances the
         // claimed high-water mark (a genuine reservation, not a
         // same-or-older no-op). `ReservationGuard::drop` rolls the claim
@@ -2064,7 +2277,7 @@ impl WorkspaceIndex {
                     // Content unchanged, skip re-indexing
                     #[cfg(test)]
                     reindex_metrics::record_content_hash_short_circuit();
-                    return Ok(());
+                    return Ok(IndexFileWithGenerationOutcome::NoOp);
                 }
                 // Same monotonic generation guard as the one under the later
                 // `files.write()` block below (see its doc comment for the
@@ -2081,7 +2294,7 @@ impl WorkspaceIndex {
                 if generation > 0 && high_water > 0 && high_water > generation {
                     #[cfg(test)]
                     reindex_metrics::record_stale_rejected_pre_parse();
-                    return Ok(());
+                    return Ok(IndexFileWithGenerationOutcome::RejectedStale);
                 }
                 // Reserve this generation NOW, before parsing -- not just at
                 // the later guard, which only runs AFTER
@@ -2122,48 +2335,18 @@ impl WorkspaceIndex {
             }
         }
 
-        // Update document store AFTER releasing `files.write()` (#3722).
-        // The LineIndex::new(text) inside Document::new()/update() is O(text),
-        // so holding the global files lock during this call serialized all
-        // indexing. document_store has its own internal RwLock, and its
-        // version check handles concurrent writes independently.
-        {
-            // Use generation as the document version so the document_store's
-            // stale-write check becomes load-bearing. Ensure version >= 1 to
-            // avoid rejecting updates to batch-indexed files (which open with
-            // version 1) when generation is 0 (#3686).
-            let doc_version = (generation as i32).max(1);
-            if self.document_store.is_open(&uri_str) {
-                self.document_store.update(&uri_str, doc_version, text.clone());
-            } else {
-                self.document_store.open(uri_str.clone(), doc_version, text.clone());
-            }
-        }
+        // Keep the candidate private while parsing and extracting.  In
+        // particular, constructing its LineIndex here must not publish the
+        // candidate geometry to readers of the accepted DocumentStore.
+        let doc_version = (generation as i32).max(1);
+        let mut candidate_document = Document::new(uri_str.clone(), doc_version, text.clone());
         let mut parser = Parser::new(&text);
         let ast = match parser.parse() {
             Ok(ast) => ast,
             Err(e) => {
-                // `reservation`'s `Drop` (if it holds a claim) rolls
-                // `pending_generation` back to the last genuinely committed
-                // generation -- this task never reaches the late guard's
-                // commit below.
-                self.restore_document(&uri_str, &text, previous_document.as_ref());
+                // `reservation`'s `Drop` (if it holds a claim) rolls the
+                // pending generation back; no shared projection was touched.
                 return Err(format!("Parse error: {}", e));
-            }
-        };
-
-        // Get the document for line index. If the document was closed out
-        // from under a still-in-flight background index task (e.g. a rapid
-        // didClose racing this task's own reservation), `reservation`'s
-        // `Drop` rolls the claim back here too -- previously this early
-        // return left `self.files[key].generation`'s reservation
-        // permanently claimed with nothing that would ever commit it
-        // (#3618 review-3660 finding 3(c)).
-        let mut doc = match self.document_store.get(&uri_str) {
-            Some(document) => document,
-            None => {
-                self.restore_document(&uri_str, &text, previous_document.as_ref());
-                return Err("Document not found".to_string());
             }
         };
 
@@ -2183,8 +2366,17 @@ impl WorkspaceIndex {
         // the reference walk is unified (declarations are a separable
         // follow-up; see `FileExtractionBundle::build_unified`'s doc
         // comment).
-        let mut bundle =
-            FileExtractionBundle::build_unified(&ast, &uri_str, content_hash, &mut doc, folder_uri);
+        let file_hir = perl_parser_core::hir::lower_ast(&ast);
+        let package_edges = package_edges_from_stash_graph(&file_hir.stash_graph);
+        let inherited_method_aliases = self.inherited_method_aliases(&package_edges);
+        let mut bundle = FileExtractionBundle::build_unified(
+            &ast,
+            &uri_str,
+            content_hash,
+            &mut candidate_document,
+            folder_uri,
+            &inherited_method_aliases,
+        );
         // `build_unified` builds its own `FileIndex` (it has no notion of
         // this call's `generation` parameter) -- restore it here, exactly
         // as the pre-cutover `FileIndex { ..., generation, ... }` literal
@@ -2219,8 +2411,6 @@ impl WorkspaceIndex {
         // file's module export sets (#2587), so the exporter's @EXPORT/@EXPORT_OK
         // facts reach the import/export index rather than being computed and
         // discarded.
-        let file_hir = perl_parser_core::hir::lower_ast(&ast);
-        let package_edges = package_edges_from_stash_graph(&file_hir.stash_graph);
         let module_export_sets = file_hir.stash_graph.export_sets();
 
         // Update the index, refresh the global symbol cache, and replace this file's
@@ -2283,21 +2473,31 @@ impl WorkspaceIndex {
             // the async parse worker -- the only caller that ever supplies
             // a real, monotonically-increasing generation for the same
             // in-flight document -- without touching any untracked caller.
-            if generation > 0 {
-                if let Some(existing) = files.get(&key) {
-                    if existing.generation > 0 && existing.generation > generation {
-                        #[cfg(test)]
-                        reindex_metrics::record_stale_rejected_post_parse();
-                        return Ok(());
-                    }
+            if generation > 0
+                && let Some(existing) = files.get(&key)
+            {
+                let high_water = existing.generation.max(existing.pending_generation);
+                if high_water > 0 && high_water > generation {
+                    #[cfg(test)]
+                    reindex_metrics::record_stale_rejected_post_parse();
+                    return Ok(IndexFileWithGenerationOutcome::RejectedStale);
                 }
             }
 
             if let Some(kind) = self.admission_limit_for(&files, &key, &file_index) {
-                self.restore_document(&uri_str, &text, previous_document.as_ref());
                 drop(files);
                 self.record_resource_limit_rejection(kind.clone());
                 return Err(Self::resource_limit_error(kind, &self.limits));
+            }
+
+            // Generation zero is the existing untracked scan/reopen contract:
+            // this seam has no session/epoch identity with which to reject a
+            // stale refresh. Preserve that contract for file-watcher and
+            // reopen callers; only tracked generations get store-level stale
+            // rejection here. A future epoch-aware seam can tighten this
+            // without changing the LSP handlers in this issue.
+            if !self.commit_document(&uri_str, doc_version, text.clone(), generation > 0) {
+                return Err("Document store rejected candidate version".to_string());
             }
 
             // Remove stale global references from previous version of this file
@@ -2407,7 +2607,7 @@ impl WorkspaceIndex {
             reindex_metrics::record_generation_accepted();
         }
 
-        Ok(())
+        Ok(IndexFileWithGenerationOutcome::Accepted)
     }
 
     /// Remove a file from the index
@@ -2423,85 +2623,95 @@ impl WorkspaceIndex {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// use perl_parser::workspace_index::WorkspaceIndex;
+    /// use perl_workspace::workspace_index::WorkspaceIndex;
     ///
     /// let index = WorkspaceIndex::new();
     /// index.remove_file("file:///example.pl");
     /// ```
     pub fn remove_file(&self, uri: &str) {
-        self.bump_write_version();
+        let _write_version = WriteVersionGuard::new(self);
         let uri_str = Self::normalize_uri(uri);
         let key = DocumentStore::uri_key(&uri_str);
+        let _lifecycle = self.lifecycle_guard(&key);
 
-        // Remove from document store
-        self.document_store.close(&uri_str);
+        // Remove file/projection state before closing the document. Indexing
+        // and batch publication acquire `files` before touching the
+        // DocumentStore, so keeping that order here avoids a cross-URI lock
+        // inversion.
+        {
+            let mut files = self.files.write();
+            if let Some(file_index) = files.remove(&key) {
+                self.fact_shards.write().remove(&key);
 
-        // Remove file index
-        let mut files = self.files.write();
-        if let Some(file_index) = files.remove(&key) {
-            self.fact_shards.write().remove(&key);
-
-            // Clean up semantic cross-file indexes for this file.
-            self.semantic_reference_index.write().remove_file(&uri_str);
-            {
-                let mut ie_idx = self.semantic_import_export_index.write();
-                ie_idx.remove_file_imports(&uri_str);
-                ie_idx.remove_module_exports(&uri_str);
-                ie_idx.remove_file_use_lib(&uri_str);
-            }
-            self.semantic_package_graph_index.write().remove_edges_for_file(&uri_str);
-
-            // Incrementally remove symbols and re-insert any shadowed names.
-            let mut symbols = self.symbols.write();
-            let mut search_idx = self.search_index.write();
-            Self::incremental_remove_symbols(&files, &mut symbols, &file_index);
-            Self::incremental_remove_search(&files, &mut search_idx, &file_index);
-
-            // Defensive sweep: purge any remaining cache entries whose value
-            // points to this file's URI.  incremental_remove_symbols already
-            // handles known symbol names; this sweep guarantees no stale
-            // candidates survive even when:
-            //   * the file had zero symbols (nothing for incremental_remove
-            //     to walk), or
-            //   * a symbol's stored uri differs from the canonical normalize_uri
-            //     output (URI normalization edge cases).
-            // Match against every URI spelling observed in this file index plus
-            // the canonical uri_str so raw/normalized variants are all caught.
-            let mut removed_uris = vec![uri_str.as_str()];
-            for observed_uri in file_index.symbols.iter().map(|s| s.uri.as_str()).chain(
-                file_index.references.values().flat_map(|refs| refs.iter().map(|r| r.uri.as_str())),
-            ) {
-                if !removed_uris.contains(&observed_uri) {
-                    removed_uris.push(observed_uri);
+                // Clean up semantic cross-file indexes for this file.
+                self.semantic_reference_index.write().remove_file(&uri_str);
+                {
+                    let mut ie_idx = self.semantic_import_export_index.write();
+                    ie_idx.remove_file_imports(&uri_str);
+                    ie_idx.remove_module_exports(&uri_str);
+                    ie_idx.remove_file_use_lib(&uri_str);
                 }
-            }
-            symbols.retain(|_, candidates| {
-                candidates.retain(|candidate| {
-                    let cand_uri = candidate.location.uri.as_str();
-                    !removed_uris.contains(&cand_uri)
-                });
-                !candidates.is_empty()
-            });
-            // Defensive sweep for search_index: remove any remaining entries
-            // pointing to the removed URI (mirrors the symbols sweep above).
-            search_idx.retain(|_, syms| {
-                syms.retain(|sym| !removed_uris.contains(&sym.uri.as_str()));
-                !syms.is_empty()
-            });
+                self.semantic_package_graph_index.write().remove_edges_for_file(&uri_str);
 
-            // Remove from global reference index. Two-phase cleanup: first
-            // remove names this file was known to reference (cheap path), then
-            // a defensive sweep over all remaining entries to catch any that
-            // were inserted under names not present in this file's
-            // FileIndex::references map (e.g. via aggregated/global insertion
-            // paths). Empty buckets are dropped.
-            let mut global_refs = self.global_references.write();
-            Self::remove_file_global_refs(&mut global_refs, &file_index, &uri_str);
-            global_refs.retain(|_, locs| {
-                locs.retain(|loc| !removed_uris.contains(&loc.uri.as_str()));
-                !locs.is_empty()
-            });
+                // Incrementally remove symbols and re-insert any shadowed names.
+                let mut symbols = self.symbols.write();
+                let mut search_idx = self.search_index.write();
+                Self::incremental_remove_symbols(&files, &mut symbols, &file_index);
+                Self::incremental_remove_search(&files, &mut search_idx, &file_index);
+
+                // Defensive sweep: purge any remaining cache entries whose value
+                // points to this file's URI.  incremental_remove_symbols already
+                // handles known symbol names; this sweep guarantees no stale
+                // candidates survive even when:
+                //   * the file had zero symbols (nothing for incremental_remove
+                //     to walk), or
+                //   * a symbol's stored uri differs from the canonical normalize_uri
+                //     output (URI normalization edge cases).
+                // Match against every URI spelling observed in this file index plus
+                // the canonical uri_str so raw/normalized variants are all caught.
+                let mut removed_uris = vec![uri_str.as_str()];
+                for observed_uri in file_index.symbols.iter().map(|s| s.uri.as_str()).chain(
+                    file_index
+                        .references
+                        .values()
+                        .flat_map(|refs| refs.iter().map(|r| r.uri.as_str())),
+                ) {
+                    if !removed_uris.contains(&observed_uri) {
+                        removed_uris.push(observed_uri);
+                    }
+                }
+                symbols.retain(|_, candidates| {
+                    candidates.retain(|candidate| {
+                        let cand_uri = candidate.location.uri.as_str();
+                        !removed_uris.contains(&cand_uri)
+                    });
+                    !candidates.is_empty()
+                });
+                // Defensive sweep for search_index: remove any remaining entries
+                // pointing to the removed URI (mirrors the symbols sweep above).
+                search_idx.retain(|_, syms| {
+                    syms.retain(|sym| !removed_uris.contains(&sym.uri.as_str()));
+                    !syms.is_empty()
+                });
+
+                // Remove from global reference index. Two-phase cleanup: first
+                // remove names this file was known to reference (cheap path), then
+                // a defensive sweep over all remaining entries to catch any that
+                // were inserted under names not present in this file's
+                // FileIndex::references map (e.g. via aggregated/global insertion
+                // paths). Empty buckets are dropped.
+                let mut global_refs = self.global_references.write();
+                Self::remove_file_global_refs(&mut global_refs, &file_index, &uri_str);
+                global_refs.retain(|_, locs| {
+                    locs.retain(|loc| !removed_uris.contains(&loc.uri.as_str()));
+                    !locs.is_empty()
+                });
+            }
         }
+
+        // Close only after all file/projection locks have been released. This
+        // preserves the files-then-DocumentStore ordering used by indexers.
+        self.document_store.close(&uri_str);
     }
 
     /// Remove a file from the index (URL variant for compatibility)
@@ -2517,7 +2727,7 @@ impl WorkspaceIndex {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// use perl_parser::workspace_index::WorkspaceIndex;
+    /// use perl_workspace::workspace_index::WorkspaceIndex;
     /// use url::Url;
     ///
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -2544,7 +2754,7 @@ impl WorkspaceIndex {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// use perl_parser::workspace_index::WorkspaceIndex;
+    /// use perl_workspace::workspace_index::WorkspaceIndex;
     ///
     /// let index = WorkspaceIndex::new();
     /// index.clear_file("file:///example.pl");
@@ -2566,7 +2776,7 @@ impl WorkspaceIndex {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// use perl_parser::workspace_index::WorkspaceIndex;
+    /// use perl_workspace::workspace_index::WorkspaceIndex;
     /// use url::Url;
     ///
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -2640,14 +2850,20 @@ impl WorkspaceIndex {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// use perl_parser::workspace_index::WorkspaceIndex;
+    /// use perl_workspace::workspace_index::WorkspaceIndex;
     ///
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// let index = WorkspaceIndex::new();
-    /// index.index_file_str("file:///example.pl", "sub hello { }")?;
+    /// index.index_initial_file_str("file:///example.pl", "sub hello { }")?;
     /// # Ok(())
     /// # }
     /// ```
+    /// # Compatibility and migration
+    ///
+    /// This is a deprecated compatibility surface retained for existing
+    /// initial-index callers. New code should use [`Self::index_initial_file_str`]
+    /// for discovery/import or [`Self::index_live_file`] for an owner-checked
+    /// live source commit.
     pub fn index_file_str(&self, uri: &str, text: &str) -> Result<(), String> {
         let path = Path::new(uri);
         let url = if path.is_absolute() {
@@ -2661,7 +2877,23 @@ impl WorkspaceIndex {
                     .map_err(|_| format!("Invalid URI or file path: {}", uri))
             })?
         };
-        self.index_file(url, text.to_string())
+        self.index_initial_file(url, text.to_string())
+    }
+
+    /// String/path form of [`Self::index_initial_file`].
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn index_initial_file_str(&self, uri: &str, text: &str) -> Result<(), String> {
+        let path = Path::new(uri);
+        let url = if path.is_absolute() {
+            url::Url::from_file_path(path)
+                .map_err(|_| format!("Invalid URI or file path: {}", uri))?
+        } else {
+            url::Url::parse(uri).or_else(|_| {
+                url::Url::from_file_path(path)
+                    .map_err(|_| format!("Invalid URI or file path: {}", uri))
+            })?
+        };
+        self.index_initial_file(url, text.to_string())
     }
 
     /// Index multiple files in a single batch operation.
@@ -2673,18 +2905,41 @@ impl WorkspaceIndex {
     /// Phase 1: Parse all files without holding locks.
     /// Phase 2: Bulk-insert file indices and rebuild the symbol cache once.
     pub fn index_files_batch(&self, files_to_index: Vec<(Url, String)>) -> Vec<String> {
+        let _write_version = WriteVersionGuard::new(self);
         let mut errors = Vec::new();
 
+        // A duplicate normalized key is one logical batch item. Retain the
+        // last input deliberately and deterministically. This does not claim
+        // historical sequential equivalence under partial failure.
+        let mut deduplicated = Vec::with_capacity(files_to_index.len());
+        let mut positions = HashMap::new();
+        for item in files_to_index {
+            let key = DocumentStore::uri_key(item.0.as_str());
+            if let Some(position) = positions.get(&key).copied() {
+                deduplicated[position] = item;
+            } else {
+                positions.insert(key, deduplicated.len());
+                deduplicated.push(item);
+            }
+        }
+
+        // Hold each URI's lifecycle guard across parsing and commit. This
+        // prevents remove_file from completing between those phases and then
+        // being undone by a late batch insertion. Sort the normalized keys so
+        // concurrent batches acquire multiple guards in one global order.
+        let mut lifecycle_keys: Vec<_> =
+            deduplicated.iter().map(|(uri, _)| DocumentStore::uri_key(uri.as_str())).collect();
+        lifecycle_keys.sort_unstable();
+        lifecycle_keys.dedup();
+        let mut lifecycle_guards = Vec::new();
+        for key in lifecycle_keys {
+            lifecycle_guards.push(self.lifecycle_guard(&key));
+        }
+
         // Phase 1: Parse all files without locks
-        let mut parsed: Vec<(
-            String,
-            String,
-            String,
-            FileIndex,
-            Vec<PackageEdge>,
-            Option<Document>,
-        )> = Vec::with_capacity(files_to_index.len());
-        for (uri, text) in &files_to_index {
+        let mut parsed: Vec<(String, String, String, FileIndex, Vec<PackageEdge>)> =
+            Vec::with_capacity(deduplicated.len());
+        for (uri, text) in &deduplicated {
             let uri_str = uri.to_string();
 
             // Content hash for early-exit
@@ -2693,23 +2948,15 @@ impl WorkspaceIndex {
             let content_hash = hasher.finish();
 
             let key = DocumentStore::uri_key(&uri_str);
-            let previous_document = self.document_store.get(&uri_str);
 
             // Check if content unchanged
             {
                 let files = self.files.read();
-                if let Some(existing) = files.get(&key) {
-                    if existing.content_hash == content_hash {
-                        continue;
-                    }
+                if let Some(existing) = files.get(&key)
+                    && existing.content_hash == content_hash
+                {
+                    continue;
                 }
-            }
-
-            // Update document store
-            if self.document_store.is_open(&uri_str) {
-                self.document_store.update(&uri_str, 1, text.clone());
-            } else {
-                self.document_store.open(uri_str.clone(), 1, text.clone());
             }
 
             // Parse
@@ -2717,20 +2964,12 @@ impl WorkspaceIndex {
             let ast = match parser.parse() {
                 Ok(ast) => ast,
                 Err(e) => {
-                    self.restore_document(&uri_str, text, previous_document.as_ref());
                     errors.push(format!("Parse error in {}: {}", uri_str, e));
                     continue;
                 }
             };
 
-            let mut doc = match self.document_store.get(&uri_str) {
-                Some(d) => d,
-                None => {
-                    self.restore_document(&uri_str, text, previous_document.as_ref());
-                    errors.push(format!("Document not found: {}", uri_str));
-                    continue;
-                }
-            };
+            let mut candidate_document = Document::new(uri_str.clone(), 1, text.clone());
 
             // Determine workspace folder URI from the file URI
             let folder_uri = self.determine_folder_uri(&uri_str);
@@ -2741,11 +2980,12 @@ impl WorkspaceIndex {
                 folder_uri: folder_uri.clone(),
                 ..Default::default()
             };
-            let mut visitor = IndexVisitor::new(&mut doc, uri_str.clone(), folder_uri);
+            let mut visitor =
+                IndexVisitor::new(&mut candidate_document, uri_str.clone(), folder_uri);
             visitor.visit(&ast, &mut file_index);
 
             let package_edges = package_graph_edges_from_hir(&ast);
-            parsed.push((key, uri_str, text.clone(), file_index, package_edges, previous_document));
+            parsed.push((key, uri_str, text.clone(), file_index, package_edges));
         }
 
         // Phase 2: Bulk insert with single cache rebuild
@@ -2760,11 +3000,21 @@ impl WorkspaceIndex {
             files.reserve(parsed.len());
             symbols.reserve(parsed.len().saturating_mul(20).saturating_mul(2));
 
-            for (key, uri_str, text, file_index, package_edges, previous_document) in parsed {
+            for (key, uri_str, text, file_index, package_edges) in parsed {
                 if let Some(kind) = self.admission_limit_for(&files, &key, &file_index) {
-                    self.restore_document(&uri_str, &text, previous_document.as_ref());
                     self.record_resource_limit_rejection(kind.clone());
                     errors.push(Self::resource_limit_error(kind, &self.limits));
+                    continue;
+                }
+
+                // Batch indexing is an untracked filesystem/initial-scan
+                // refresh, matching `index_file` and generation-zero callers.
+                // It has no document generation with which to reject a stale
+                // candidate; tracked LSP updates use
+                // `index_file_with_generation` instead.
+                if !self.commit_document(&uri_str, 1, text.clone(), false) {
+                    errors
+                        .push(format!("Document store rejected candidate version for {}", uri_str));
                     continue;
                 }
 
@@ -2802,6 +3052,11 @@ impl WorkspaceIndex {
         errors
     }
 
+    /// Initial-discovery name for [`Self::index_files_batch`].
+    pub fn index_initial_files_batch(&self, files_to_index: Vec<(Url, String)>) -> Vec<String> {
+        self.index_files_batch(files_to_index)
+    }
+
     /// Find all references to a symbol using dual indexing strategy
     ///
     /// This function searches for both exact matches and bare name matches when
@@ -2824,7 +3079,7 @@ impl WorkspaceIndex {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// use perl_parser::workspace_index::WorkspaceIndex;
+    /// use perl_workspace::workspace_index::WorkspaceIndex;
     ///
     /// let index = WorkspaceIndex::new();
     /// let _refs = index.find_references("Utils::process_data");
@@ -3172,7 +3427,7 @@ impl WorkspaceIndex {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// use perl_parser::workspace_index::WorkspaceIndex;
+    /// use perl_workspace::workspace_index::WorkspaceIndex;
     ///
     /// let index = WorkspaceIndex::new();
     /// let _symbols = index.all_symbols();
@@ -3190,6 +3445,7 @@ impl WorkspaceIndex {
 
     /// Clear all indexed files and symbols from the workspace.
     pub fn clear(&self) {
+        let _write_version = WriteVersionGuard::new(self);
         self.files.write().clear();
         self.symbols.write().clear();
         self.search_index.write().clear();
@@ -3292,6 +3548,7 @@ impl WorkspaceIndex {
         uri: &str,
         content_hash: u64,
         ast: &Node,
+        source: &str,
     ) -> FileFactShard {
         let file_id = Self::hash_uri_to_file_id(uri);
 
@@ -3313,7 +3570,12 @@ impl WorkspaceIndex {
         // Build an entity lookup map for reference resolution.
         let entity_ids_by_name: std::collections::BTreeMap<String, EntityId> =
             decl_facts.entities.iter().map(|e| (e.canonical_name.clone(), e.id)).collect();
-        let ref_facts = symbol_refs_to_semantic_facts(&refs, file_id, &entity_ids_by_name);
+        let ref_facts = symbol_refs_to_semantic_facts(
+            &refs,
+            file_id,
+            &entity_ids_by_name,
+            &std::collections::BTreeMap::new(),
+        );
 
         // Extract dynamic boundary evidence for `eval "sub NAME { ... }"` patterns.
         // Non-literal evals (e.g. `eval $code`) are intentionally skipped — the
@@ -3326,11 +3588,14 @@ impl WorkspaceIndex {
         reindex_metrics::record_eval_sub(eval_sub_start.elapsed());
         let dynamic_boundaries: Vec<perl_semantic_facts::OccurrenceFact> =
             eval_sub_triples.iter().map(|(_, _, occ)| occ.clone()).collect();
+        let (hir_boundary_anchors, hir_boundary_occurrences) = dynamic_isa_facts(uri, ast, file_id);
+        let mut dynamic_boundaries = dynamic_boundaries;
+        dynamic_boundaries.extend(hir_boundary_occurrences);
         #[cfg(test)]
         let generated_member_start = Instant::now();
         let generated_member_facts =
-            crate::semantic::generated_member_extractor::extract_generated_member_facts(
-                ast, file_id,
+            crate::semantic::generated_member_extractor::extract_generated_member_facts_with_source(
+                ast, file_id, source,
             );
         #[cfg(test)]
         reindex_metrics::record_generated_member(generated_member_start.elapsed());
@@ -3356,6 +3621,7 @@ impl WorkspaceIndex {
         all_synthetic_entities.extend(synthetic_entities_from_generated);
         let mut all_synthetic_anchors = synthetic_anchors_from_eval;
         all_synthetic_anchors.extend(synthetic_anchors_from_generated);
+        all_synthetic_anchors.extend(hir_boundary_anchors);
 
         // Build the canonical fact shard.
         // Synthetic entities/anchors are now passed to the builder so that
@@ -3372,6 +3638,80 @@ impl WorkspaceIndex {
             &all_synthetic_entities,
             &all_synthetic_anchors,
         )
+    }
+
+    /// Resolve statically named inherited method calls against declarations
+    /// already present in the workspace. Reference extraction runs before a
+    /// file is committed, so its local name map cannot see declarations from
+    /// a parent file; this alias map keeps that cross-file identity at the
+    /// canonical fact boundary instead of making providers rediscover it.
+    ///
+    /// Inheritance walks the whole ancestor chain: hop 1 comes from the
+    /// caller's just-extracted edges (the current file's own `use parent` is
+    /// not yet committed to the package graph index at this point), and
+    /// deeper hops come from the graph's transitive ancestor walk, so
+    /// grandparent declarations resolve through the same canonical path.
+    fn inherited_method_aliases(
+        &self,
+        package_edges: &[PackageEdge],
+    ) -> std::collections::BTreeMap<String, EntityId> {
+        let shards = self.fact_shards.read();
+
+        // Collect every candidate entity per alias key before admitting any
+        // alias. `fact_shards` is a HashMap, so a direct insert would let
+        // shard visit order -- not Perl semantics -- silently pick the winner
+        // whenever two ancestors define the same method or a package is
+        // reopened across shards. Only an unambiguous single declaration is
+        // admitted; ambiguous names stay absent so the occurrence remains
+        // honestly unresolved (#812: stale or ambiguous parent/MRO facts
+        // remain qualified or refused).
+        let mut candidates: std::collections::BTreeMap<
+            String,
+            std::collections::BTreeSet<EntityId>,
+        > = std::collections::BTreeMap::new();
+
+        for edge in package_edges.iter().filter(|edge| edge.kind == PackageEdgeKind::Inherits) {
+            // Hop 1 is this file's direct parent from the just-extracted
+            // edges; `package_graph_ancestors` supplies the transitive chain
+            // (including that same direct parent once committed) for deeper
+            // hops.
+            let mut ancestors = vec![edge.to_package.clone()];
+            ancestors.extend(self.package_graph_ancestors(&edge.to_package).ancestors);
+            ancestors.sort();
+            ancestors.dedup();
+            for ancestor_package in ancestors {
+                let parent_prefix = format!("{ancestor_package}::");
+                for shard in shards.values() {
+                    for entity in &shard.entities {
+                        let Some(method_name) = entity.canonical_name.strip_prefix(&parent_prefix)
+                        else {
+                            continue;
+                        };
+                        if method_name.contains("::")
+                            || !matches!(
+                                entity.kind,
+                                EntityKind::Method
+                                    | EntityKind::Subroutine
+                                    | EntityKind::GeneratedMember
+                            )
+                        {
+                            continue;
+                        }
+                        candidates
+                            .entry(format!("{}::{}", edge.from_package, method_name))
+                            .or_default()
+                            .insert(entity.id);
+                    }
+                }
+            }
+        }
+
+        candidates
+            .into_iter()
+            .filter_map(|(name, ids)| {
+                if ids.len() == 1 { ids.into_iter().next().map(|id| (name, id)) } else { None }
+            })
+            .collect()
     }
 
     /// **Production canonical builder for the unified reference traversal
@@ -3395,6 +3735,8 @@ impl WorkspaceIndex {
         content_hash: u64,
         ast: &Node,
         refs: &[perl_symbol::surface::r#ref::SymbolRef],
+        inherited_method_aliases: &std::collections::BTreeMap<String, EntityId>,
+        source: &str,
     ) -> FileFactShard {
         let file_id = Self::hash_uri_to_file_id(uri);
 
@@ -3405,9 +3747,20 @@ impl WorkspaceIndex {
         reindex_metrics::record_decl_extract(decl_start.elapsed());
         let decl_facts = symbol_decls_to_semantic_facts(&decls, file_id);
 
+        // Own declarations rank above inherited aliases (#812: own overrides
+        // rank above inherited methods): the declaration map wins the lookup
+        // and the alias map is only consulted when it misses. Aliases are
+        // dispatch-only entries -- a `Child::name()` call or `\&Child::name`
+        // coderef names a concrete subroutine and must not silently bind the
+        // parent's method entity.
         let entity_ids_by_name: std::collections::BTreeMap<String, EntityId> =
             decl_facts.entities.iter().map(|e| (e.canonical_name.clone(), e.id)).collect();
-        let ref_facts = symbol_refs_to_semantic_facts(refs, file_id, &entity_ids_by_name);
+        let ref_facts = symbol_refs_to_semantic_facts(
+            refs,
+            file_id,
+            &entity_ids_by_name,
+            inherited_method_aliases,
+        );
 
         #[cfg(test)]
         let eval_sub_start = Instant::now();
@@ -3415,13 +3768,19 @@ impl WorkspaceIndex {
             crate::semantic::eval_sub_extractor::extract_eval_sub_boundaries(ast, file_id);
         #[cfg(test)]
         reindex_metrics::record_eval_sub(eval_sub_start.elapsed());
-        let dynamic_boundaries: Vec<perl_semantic_facts::OccurrenceFact> =
+        let (hir_boundary_anchors, hir_boundary_occurrences) = dynamic_isa_facts(uri, ast, file_id);
+        // The refs path's contract (see the doc comment above) keeps every
+        // non-reference extractor identical to `build_canonical_fact_shard_for_ast`;
+        // the isa boundary occurrences must reach the shard here exactly as
+        // they do there, or the paired anchors dangle without occurrences.
+        let mut dynamic_boundaries: Vec<perl_semantic_facts::OccurrenceFact> =
             eval_sub_triples.iter().map(|(_, _, occ)| occ.clone()).collect();
+        dynamic_boundaries.extend(hir_boundary_occurrences);
         #[cfg(test)]
         let generated_member_start = Instant::now();
         let generated_member_facts =
-            crate::semantic::generated_member_extractor::extract_generated_member_facts(
-                ast, file_id,
+            crate::semantic::generated_member_extractor::extract_generated_member_facts_with_source(
+                ast, file_id, source,
             );
         #[cfg(test)]
         reindex_metrics::record_generated_member(generated_member_start.elapsed());
@@ -3439,6 +3798,7 @@ impl WorkspaceIndex {
         all_synthetic_entities.extend(synthetic_entities_from_generated);
         let mut all_synthetic_anchors = synthetic_anchors_from_eval;
         all_synthetic_anchors.extend(synthetic_anchors_from_generated);
+        all_synthetic_anchors.extend(hir_boundary_anchors);
 
         crate::semantic::facts::build_canonical_fact_shard(
             uri,
@@ -3482,9 +3842,17 @@ impl WorkspaceIndex {
         let source_uri = new_shard.source_uri.clone();
 
         // ── Update cross-file semantic indexes per category ──
-        // Occurrences and edges are both managed by the ReferenceIndex.
-        // When either changes we must remove+re-add the file in that index.
-        if replacement.occurrences_updated || replacement.edges_updated {
+        // Occurrences, edges, and entities all feed the ReferenceIndex: it
+        // synthesizes one edge per non-definition occurrence, takes target
+        // candidates from `EdgeKind::References`, and derives each edge's
+        // canonical name from the shard's entity rows. Because that name
+        // decides which projection an occurrence lands in — named or
+        // unresolved — an entity-only change moves rows just as an
+        // occurrence or edge change does, and must rebuild the file here.
+        if replacement.occurrences_updated
+            || replacement.edges_updated
+            || replacement.entities_updated
+        {
             let mut ref_idx = self.semantic_reference_index.write();
             if old_shard.is_some() {
                 ref_idx.remove_file(&source_uri);
@@ -3627,6 +3995,21 @@ impl WorkspaceIndex {
     /// [`WorkspaceSemanticQueries`] facade that borrows from read-locked
     /// semantic indexes. Locks are released when `f` returns.
     ///
+    /// # Re-entrancy contract (#15644)
+    ///
+    /// The callback runs while this method holds read guards on `fact_shards`
+    /// and all three semantic indexes. The callback must NOT re-enter
+    /// `WorkspaceIndex` — not via `find_definition`/`find_references`, not via
+    /// `semantic_anchor_wire_location`, and not via any other shard/symbol
+    /// accessor. `parking_lot`'s `RwLock` is neither reentrant nor
+    /// reader-preferring: once a concurrent `index_*` call queues its write
+    /// locks on those same maps, a nested read inside the callback blocks
+    /// behind the writer while the writer blocks behind the callback's outer
+    /// read — a guaranteed deadlock. Resolve legacy locations before entering
+    /// the callback, and serve anchor lookups from the snapshot the borrowed
+    /// `WorkspaceSemanticQueries` already provides (for example
+    /// `SemanticQueries::anchor_source_span`).
+    ///
     /// Returns `Some(result)` if the URI is indexed and semantic data is
     /// available, `None` if the URI has not been indexed or its fact shard is
     /// absent (the caller should fall back to legacy diagnostics).
@@ -3668,6 +4051,9 @@ impl WorkspaceIndex {
     /// Lock order is identical to [`Self::with_semantic_queries_for_uri`]:
     /// shards → reference_index → import_export_index (no package-graph lock
     /// — the caller owns the graph).
+    ///
+    /// Like [`Self::with_semantic_queries_for_uri`], the callback must not
+    /// re-enter `WorkspaceIndex` while these read guards are held (#15644).
     ///
     /// Returns `Some(result)` if the URI is indexed and semantic data is
     /// available, `None` if the URI has not been indexed or its fact shard is
@@ -3831,7 +4217,7 @@ impl WorkspaceIndex {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// use perl_parser::workspace_index::WorkspaceIndex;
+    /// use perl_workspace::workspace_index::WorkspaceIndex;
     ///
     /// let index = WorkspaceIndex::new();
     /// assert!(!index.has_symbols());
@@ -3862,7 +4248,7 @@ impl WorkspaceIndex {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// use perl_parser::workspace_index::WorkspaceIndex;
+    /// use perl_workspace::workspace_index::WorkspaceIndex;
     ///
     /// let index = WorkspaceIndex::new();
     /// let _results = index.search_symbols("example");
@@ -3891,54 +4277,80 @@ impl WorkspaceIndex {
     /// only by exact name or prefix; the substring and subsequence tiers are
     /// skipped for them. (#5335)
     pub fn search_source_symbols(&self, query: &str, cap: Option<usize>) -> Vec<WorkspaceSymbol> {
-        let query = query.trim();
-        let query_lower = query.to_lowercase();
-        // #5335: a one-character query is too weak for the loose match tiers --
-        // substring and subsequence would both admit every name containing that
-        // character, i.e. nearly the whole workspace. Restrict it to exact and
-        // prefix matches.
-        //
-        // Length is measured on the *lowercased* query, because lowercasing can
-        // lengthen a one-character input -- 'İ' (U+0130) lowercases to the two
-        // chars "i\u{307}" -- and it is the lowercased form matched below.
-        let loose_match_allowed = query_lower.chars().count() >= MIN_LOOSE_MATCH_QUERY_CHARS;
+        let profile = WorkspaceSymbolQueryProfile::compile(query);
+        self.search_source_symbols_with_profile(&profile, cap)
+    }
+
+    /// [`Self::search_source_symbols`] against a caller-compiled
+    /// [`WorkspaceSymbolQueryProfile`] (#10794).
+    ///
+    /// One logical request compiles its query once and passes the same
+    /// profile/digest through every matching path. Admission and tiers are
+    /// owned by [`match_searchable_key`]; this method owns only iteration,
+    /// `(uri, start_byte)` dedup, and the legacy rank/name aggregation order.
+    pub fn search_source_symbols_with_profile(
+        &self,
+        profile: &WorkspaceSymbolQueryProfile,
+        cap: Option<usize>,
+    ) -> Vec<WorkspaceSymbol> {
         let search_idx = self.search_index.read();
+        Self::search_source_symbols_from_buckets(
+            search_idx.iter().map(|(name_key, symbols)| (name_key.as_str(), symbols)),
+            profile,
+            cap,
+        )
+    }
+
+    /// Applies the source-symbol admission and legacy materialization policy
+    /// to an ordered stream of index buckets.
+    ///
+    /// The iterator boundary keeps the production consumer identical to the
+    /// normal `HashMap` path while allowing tests to exercise a deliberate
+    /// weak-alias-first traversal without depending on hash-map iteration.
+    fn search_source_symbols_from_buckets<'a, I>(
+        buckets: I,
+        profile: &WorkspaceSymbolQueryProfile,
+        cap: Option<usize>,
+    ) -> Vec<WorkspaceSymbol>
+    where
+        I: IntoIterator<Item = (&'a str, &'a Vec<WorkspaceSymbol>)>,
+    {
         let mut seen: HashSet<(String, usize)> = HashSet::new();
         // Collect results with a relevance score for ranking. (#5087)
         // Match priority: exact > substring/prefix > subsequence (fuzzy).
         //
-        // An empty query still lists everything: `loose_match_allowed` is false
-        // for it, and the short-query branch below tests `starts_with("")`, which
-        // is true for every key -- the same set, and the same score, that
-        // `contains("")` produced before. That is the desired "list everything"
-        // behavior for an empty `workspace/symbol` query.
-        let mut scored: Vec<(u8, WorkspaceSymbol)> = Vec::new();
-        for (name_key, symbols) in search_idx.iter() {
-            // Compare case-insensitively at query time; index keys preserve
-            // source casing so distinct Perl packages stay separate buckets.
-            let name_key_lower = name_key.to_lowercase();
-            let score = if name_key_lower == query_lower {
-                3 // exact match
-            } else if !loose_match_allowed {
-                // Short query: prefix is the only non-exact tier available.
-                // Prefix matches are a strict subset of the substring matches
-                // this replaces, so no already-returned symbol changes score.
-                if !name_key_lower.starts_with(&query_lower) {
-                    continue;
-                }
-                2 // prefix match
-            } else if name_key_lower.contains(&query_lower) {
-                2 // substring match
-            } else if is_subsequence(&query_lower, &name_key_lower) {
-                // Reaching here implies `loose_match_allowed`, i.e. a query of at
-                // least MIN_LOOSE_MATCH_QUERY_CHARS chars, so no separate
-                // subsequence-length guard is needed. (The one `main` carried was
-                // unreachable anyway: for a one-char needle `is_subsequence` is
-                // equivalent to `contains`, which is tested first.)
-                1 // fuzzy subsequence match
+        // An empty query still lists everything: the browse disposition of the
+        // profile admits every key at the prefix slot -- the same set, and the
+        // same score, that `contains("")` produced before. That is the desired
+        // "list everything" behavior for an empty `workspace/symbol` query.
+        // The legacy geometry deduplication below is intentionally retained.
+        // Order the admitted buckets first so a row indexed under several
+        // aliases is represented by the strongest current-profile evidence,
+        // regardless of HashMap iteration order. This does not establish row
+        // identity; canonical source/root/generation identity remains owned by
+        // #8756/#10641.
+        let mut admitted = Vec::new();
+        for (name_key, symbols) in buckets {
+            // Admission/tier policy is owned by the compiled query profile;
+            // comparison stays case-insensitive here so distinct Perl packages
+            // remain separate index buckets that do not cross-match.
+            let key_role = if name_key.contains("::") || name_key.contains('\'') {
+                WorkspaceSymbolSearchKeyRole::QualifiedName
             } else {
+                WorkspaceSymbolSearchKeyRole::BareName
+            };
+            let Some(evidence) = match_searchable_key(profile, name_key, key_role) else {
                 continue;
             };
+            admitted.push((evidence, name_key, symbols));
+        }
+        admitted.sort_by(|(left, left_key, _), (right, right_key, _)| {
+            left.compare(right).then_with(|| left_key.cmp(right_key))
+        });
+
+        let mut scored: Vec<(u8, WorkspaceSymbol)> = Vec::new();
+        for (evidence, _name_key, symbols) in admitted {
+            let score = legacy_index_match_rank(evidence.tier());
             for sym in symbols {
                 let dedup_key = (sym.uri.clone(), sym.range.start.byte);
                 if seen.insert(dedup_key) {
@@ -3966,25 +4378,32 @@ impl WorkspaceIndex {
         query: &str,
         cap: Option<usize>,
     ) -> Vec<WorkspaceSymbol> {
-        let query = query.trim();
-        if query.is_empty() {
+        let profile = WorkspaceSymbolQueryProfile::compile(query);
+        self.search_generated_workspace_symbols_with_profile(&profile, cap)
+    }
+
+    /// [`Self::search_generated_workspace_symbols`] against a caller-compiled
+    /// [`WorkspaceSymbolQueryProfile`] (#10794).
+    ///
+    /// Admission stays with the compiled profile; this path keeps its current
+    /// membership exactly — browse queries return an empty set, and the
+    /// generated matcher never admits the subsequence tier, so only
+    /// exact/prefix/substring evidence is accepted.
+    pub fn search_generated_workspace_symbols_with_profile(
+        &self,
+        profile: &WorkspaceSymbolQueryProfile,
+        cap: Option<usize>,
+    ) -> Vec<WorkspaceSymbol> {
+        if profile.is_browse() {
             return Vec::new();
         }
 
-        let query_lower = query.to_lowercase();
         // #5335: mirror the short-query narrowing that `search_source_symbols`
         // applies. These results are appended to the *same* `workspace/symbol`
         // response, so leaving this matcher ungated would keep reproducing the
-        // one-character blowup for every framework-generated member.
-        let loose_match_allowed = query_lower.chars().count() >= MIN_LOOSE_MATCH_QUERY_CHARS;
-        let matches_query_text = |candidate: &str| -> bool {
-            let candidate_lower = candidate.to_lowercase();
-            if loose_match_allowed {
-                candidate_lower.contains(&query_lower)
-            } else {
-                candidate_lower.starts_with(&query_lower)
-            }
-        };
+        // one-character blowup for every framework-generated member. The loose
+        // gate lives inside the profile; rejecting subsequence-tier evidence
+        // preserves this path's contains/starts_with-only membership.
         let source_backed_qualified_names = self.source_backed_qualified_names();
         let shards = self.fact_shards.read();
         let mut results = Vec::new();
@@ -4005,7 +4424,17 @@ impl WorkspaceIndex {
                 else {
                     continue;
                 };
-                if !matches_query_text(bare_name) && !matches_query_text(&entity.canonical_name) {
+                let admits = |candidate: &str| -> bool {
+                    match_searchable_key(
+                        profile,
+                        candidate,
+                        WorkspaceSymbolSearchKeyRole::GeneratedFrameworkProjection,
+                    )
+                    .is_some_and(|evidence| {
+                        evidence.tier() != WorkspaceSymbolMatchTier::Subsequence
+                    })
+                };
+                if !admits(bare_name) && !admits(&entity.canonical_name) {
                     continue;
                 }
                 let Some(anchor_id) = entity.anchor_id else {
@@ -4102,7 +4531,7 @@ impl WorkspaceIndex {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// use perl_parser::workspace_index::WorkspaceIndex;
+    /// use perl_workspace::workspace_index::WorkspaceIndex;
     ///
     /// let index = WorkspaceIndex::new();
     /// let _results = index.find_symbols("example");
@@ -4127,7 +4556,7 @@ impl WorkspaceIndex {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// use perl_parser::workspace_index::WorkspaceIndex;
+    /// use perl_workspace::workspace_index::WorkspaceIndex;
     ///
     /// let index = WorkspaceIndex::new();
     /// let symbols = index.search_symbols("example");
@@ -4178,7 +4607,7 @@ impl WorkspaceIndex {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// use perl_parser::workspace_index::WorkspaceIndex;
+    /// use perl_workspace::workspace_index::WorkspaceIndex;
     ///
     /// let index = WorkspaceIndex::new();
     /// let ranked = index.search_symbols_ranked("example", "file:///project1/src/main.pl");
@@ -4248,7 +4677,7 @@ impl WorkspaceIndex {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// use perl_parser::workspace_index::WorkspaceIndex;
+    /// use perl_workspace::workspace_index::WorkspaceIndex;
     ///
     /// let index = WorkspaceIndex::new();
     /// let _symbols = index.file_symbols("file:///example.pl");
@@ -4274,7 +4703,7 @@ impl WorkspaceIndex {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// use perl_parser::workspace_index::WorkspaceIndex;
+    /// use perl_workspace::workspace_index::WorkspaceIndex;
     ///
     /// let index = WorkspaceIndex::new();
     /// let _deps = index.file_dependencies("file:///example.pl");
@@ -4300,7 +4729,7 @@ impl WorkspaceIndex {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// use perl_parser::workspace_index::WorkspaceIndex;
+    /// use perl_workspace::workspace_index::WorkspaceIndex;
     ///
     /// let index = WorkspaceIndex::new();
     /// let _files = index.find_dependents("My::Module");
@@ -4332,7 +4761,7 @@ impl WorkspaceIndex {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// use perl_parser::workspace_index::WorkspaceIndex;
+    /// use perl_workspace::workspace_index::WorkspaceIndex;
     ///
     /// let index = WorkspaceIndex::new();
     /// let _store = index.document_store();
@@ -4360,7 +4789,7 @@ impl WorkspaceIndex {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// use perl_parser::workspace_index::WorkspaceIndex;
+    /// use perl_workspace::workspace_index::WorkspaceIndex;
     ///
     /// let index = WorkspaceIndex::new();
     /// let _unused = index.find_unused_symbols();
@@ -4441,10 +4870,11 @@ impl WorkspaceIndex {
             if used_names.contains(qualified) {
                 return true;
             }
-            if let Some((_, bare)) = qualified.rsplit_once("::") {
-                if bare != symbol.name.as_str() && used_names.contains(bare) {
-                    return true;
-                }
+            if let Some((_, bare)) = qualified.rsplit_once("::")
+                && bare != symbol.name.as_str()
+                && used_names.contains(bare)
+            {
+                return true;
             }
         }
         false
@@ -4463,7 +4893,7 @@ impl WorkspaceIndex {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// use perl_parser::workspace_index::WorkspaceIndex;
+    /// use perl_workspace::workspace_index::WorkspaceIndex;
     ///
     /// let index = WorkspaceIndex::new();
     /// let _members = index.get_package_members("My::Package");
@@ -4475,18 +4905,18 @@ impl WorkspaceIndex {
         for (_uri_key, file_index) in files.iter() {
             for symbol in &file_index.symbols {
                 // Check if symbol belongs to this package
-                if let Some(ref container) = symbol.container_name {
-                    if container == package_name {
-                        members.push(symbol.clone());
-                    }
+                if let Some(ref container) = symbol.container_name
+                    && container == package_name
+                {
+                    members.push(symbol.clone());
                 }
                 // Also check qualified names
-                if let Some(ref qname) = symbol.qualified_name {
-                    if qname.starts_with(&format!("{}::", package_name)) {
-                        // Avoid duplicates - only add if not already in via container_name
-                        if symbol.container_name.as_deref() != Some(package_name) {
-                            members.push(symbol.clone());
-                        }
+                if let Some(ref qname) = symbol.qualified_name
+                    && qname.starts_with(&format!("{}::", package_name))
+                {
+                    // Avoid duplicates - only add if not already in via container_name
+                    if symbol.container_name.as_deref() != Some(package_name) {
+                        members.push(symbol.clone());
                     }
                 }
             }
@@ -4702,7 +5132,7 @@ impl WorkspaceIndex {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// use perl_parser::workspace_index::{SymKind, SymbolKey, WorkspaceIndex};
+    /// use perl_workspace::workspace_index::{SymKind, SymbolKey, WorkspaceIndex};
     /// use std::sync::Arc;
     ///
     /// let index = WorkspaceIndex::new();
@@ -4865,12 +5295,20 @@ impl FileExtractionBundle {
         let mut visitor = IndexVisitor::new(doc, uri_str.to_string(), folder_uri);
         visitor.visit(ast, &mut file_index);
 
-        let canonical_shard =
-            WorkspaceIndex::build_canonical_fact_shard_for_ast(uri_str, content_hash, ast);
+        let canonical_shard = WorkspaceIndex::build_canonical_fact_shard_for_ast(
+            uri_str,
+            content_hash,
+            ast,
+            doc.text(),
+        );
 
         let file_id = WorkspaceIndex::hash_uri_to_file_id(uri_str);
         let import_specs =
-            crate::semantic::workspace_import_extractor::extract_import_specs(ast, file_id);
+            crate::semantic::workspace_import_extractor::extract_import_specs_with_source(
+                ast,
+                file_id,
+                doc.text(),
+            );
         let use_lib_facts =
             crate::semantic::workspace_import_extractor::extract_use_lib_facts(ast, file_id);
 
@@ -4911,6 +5349,7 @@ impl FileExtractionBundle {
         content_hash: u64,
         doc: &mut Document,
         folder_uri: Option<String>,
+        inherited_method_aliases: &std::collections::BTreeMap<String, EntityId>,
     ) -> Self {
         let mut file_index = FileIndex {
             source_uri: uri_str.to_string(),
@@ -4931,13 +5370,19 @@ impl FileExtractionBundle {
             content_hash,
             ast,
             &symbol_refs,
+            inherited_method_aliases,
+            doc.text(),
         );
 
         let file_id = WorkspaceIndex::hash_uri_to_file_id(uri_str);
         #[cfg(test)]
         let import_start = Instant::now();
         let import_specs =
-            crate::semantic::workspace_import_extractor::extract_import_specs(ast, file_id);
+            crate::semantic::workspace_import_extractor::extract_import_specs_with_source(
+                ast,
+                file_id,
+                doc.text(),
+            );
         #[cfg(test)]
         reindex_metrics::record_import_extract(import_start.elapsed());
         #[cfg(test)]
@@ -4998,6 +5443,49 @@ fn package_edges_from_stash_graph(
             ))
         })
         .collect()
+}
+
+fn dynamic_isa_facts(
+    uri: &str,
+    ast: &Node,
+    file_id: FileId,
+) -> (Vec<AnchorFact>, Vec<OccurrenceFact>) {
+    let hir = perl_parser_core::hir::lower_ast(ast);
+    let mut anchors = Vec::new();
+    let mut occurrences = Vec::new();
+    for boundary in hir.stash_graph.dynamic_boundaries.iter().filter(|boundary| {
+        boundary.kind == perl_parser_core::hir::StashDynamicBoundaryKind::DynamicInheritance
+    }) {
+        let mut anchor_hasher = DefaultHasher::new();
+        uri.hash(&mut anchor_hasher);
+        boundary.range.start.hash(&mut anchor_hasher);
+        boundary.range.end.hash(&mut anchor_hasher);
+        boundary.kind.hash(&mut anchor_hasher);
+        let anchor_id = AnchorId(anchor_hasher.finish());
+        let mut occurrence_hasher = DefaultHasher::new();
+        anchor_id.hash(&mut occurrence_hasher);
+        1u8.hash(&mut occurrence_hasher);
+        let occurrence_id = OccurrenceId(occurrence_hasher.finish());
+        anchors.push(AnchorFact {
+            id: anchor_id,
+            file_id,
+            span_start_byte: boundary.range.start.min(u32::MAX as usize) as u32,
+            span_end_byte: boundary.range.end.min(u32::MAX as usize) as u32,
+            scope_id: None,
+            provenance: Provenance::DynamicBoundary,
+            confidence: Confidence::Low,
+        });
+        occurrences.push(OccurrenceFact {
+            id: occurrence_id,
+            kind: OccurrenceKind::DynamicBoundary,
+            entity_id: None,
+            anchor_id,
+            scope_id: None,
+            provenance: Provenance::DynamicBoundary,
+            confidence: Confidence::Low,
+        });
+    }
+    (anchors, occurrences)
 }
 
 /// AST visitor for extracting symbols and references
@@ -5203,15 +5691,15 @@ impl IndexVisitor {
                 // `our @ISA = qw(Base1 Base2)` — register inheritance dependencies.
                 if let (NodeKind::Variable { sigil, name }, Some(init)) =
                     (&variable.kind, initializer.as_deref())
+                    && sigil == "@"
+                    && name == "ISA"
                 {
-                    if sigil == "@" && name == "ISA" {
-                        for module_name in
-                            extract_module_names_from_call_args(std::slice::from_ref(init))
-                        {
-                            file_index
-                                .dependencies
-                                .insert(normalize_dependency_module_name(&module_name));
-                        }
+                    for module_name in
+                        extract_module_names_from_call_args(std::slice::from_ref(init))
+                    {
+                        file_index
+                            .dependencies
+                            .insert(normalize_dependency_module_name(&module_name));
                     }
                 }
                 // Visit initializer
@@ -5284,14 +5772,13 @@ impl IndexVisitor {
                     }
                 } else if name == "push" {
                     // `push @ISA, 'Base'` — register inheritance dependencies.
-                    if let Some(first) = args.first() {
-                        if matches!(&first.kind, NodeKind::Variable { sigil, name } if sigil == "@" && name == "ISA")
-                        {
-                            for module_name in extract_module_names_from_call_args(&args[1..]) {
-                                file_index
-                                    .dependencies
-                                    .insert(normalize_dependency_module_name(&module_name));
-                            }
+                    if let Some(first) = args.first()
+                        && matches!(&first.kind, NodeKind::Variable { sigil, name } if sigil == "@" && name == "ISA")
+                    {
+                        for module_name in extract_module_names_from_call_args(&args[1..]) {
+                            file_index
+                                .dependencies
+                                .insert(normalize_dependency_module_name(&module_name));
                         }
                     }
                 }
@@ -5498,11 +5985,11 @@ impl IndexVisitor {
 
             NodeKind::Method { body, signature, .. } => {
                 // Visit params
-                if let Some(sig) = signature {
-                    if let NodeKind::Signature { parameters } = &sig.kind {
-                        for param in parameters {
-                            self.visit_node(param, file_index);
-                        }
+                if let Some(sig) = signature
+                    && let NodeKind::Signature { parameters } = &sig.kind
+                {
+                    for param in parameters {
+                        self.visit_node(param, file_index);
                     }
                 }
 
@@ -5591,10 +6078,8 @@ impl IndexVisitor {
                     self.visit_node(value, file_index);
                 }
             }
-            NodeKind::Return { value } => {
-                if let Some(val) = value {
-                    self.visit_node(val, file_index);
-                }
+            NodeKind::Return { value: Some(val) } => {
+                self.visit_node(val, file_index);
             }
             NodeKind::Eval { block } | NodeKind::Do { block } | NodeKind::Defer { block } => {
                 self.visit_node(block, file_index);
@@ -5748,11 +6233,11 @@ impl IndexVisitor {
             }
 
             NodeKind::Method { body, signature, .. } => {
-                if let Some(sig) = signature {
-                    if let NodeKind::Signature { parameters } = &sig.kind {
-                        for param in parameters {
-                            self.walk_unified(param, file_index, symbol_refs);
-                        }
+                if let Some(sig) = signature
+                    && let NodeKind::Signature { parameters } = &sig.kind
+                {
+                    for param in parameters {
+                        self.walk_unified(param, file_index, symbol_refs);
                     }
                 }
                 self.walk_unified(body, file_index, symbol_refs);
@@ -5809,15 +6294,15 @@ impl IndexVisitor {
                 // `our @ISA = qw(Base1 Base2)` — register inheritance dependencies.
                 if let (NodeKind::Variable { sigil, name }, Some(init)) =
                     (&variable.kind, initializer.as_deref())
+                    && sigil == "@"
+                    && name == "ISA"
                 {
-                    if sigil == "@" && name == "ISA" {
-                        for module_name in
-                            extract_module_names_from_call_args(std::slice::from_ref(init))
-                        {
-                            file_index
-                                .dependencies
-                                .insert(normalize_dependency_module_name(&module_name));
-                        }
+                    for module_name in
+                        extract_module_names_from_call_args(std::slice::from_ref(init))
+                    {
+                        file_index
+                            .dependencies
+                            .insert(normalize_dependency_module_name(&module_name));
                     }
                 }
                 if let Some(init) = initializer {
@@ -5901,14 +6386,13 @@ impl IndexVisitor {
                     file_index.dependencies.insert(normalize_dependency_module_name(&module_name));
                 } else if name == "push" {
                     // `push @ISA, 'Base'` — register inheritance dependencies.
-                    if let Some(first) = args.first() {
-                        if matches!(&first.kind, NodeKind::Variable { sigil, name } if sigil == "@" && name == "ISA")
-                        {
-                            for module_name in extract_module_names_from_call_args(&args[1..]) {
-                                file_index
-                                    .dependencies
-                                    .insert(normalize_dependency_module_name(&module_name));
-                            }
+                    if let Some(first) = args.first()
+                        && matches!(&first.kind, NodeKind::Variable { sigil, name } if sigil == "@" && name == "ISA")
+                    {
+                        for module_name in extract_module_names_from_call_args(&args[1..]) {
+                            file_index
+                                .dependencies
+                                .insert(normalize_dependency_module_name(&module_name));
                         }
                     }
                 }
@@ -6326,7 +6810,7 @@ fn canonical_ref_for_node(node: &Node) -> Option<perl_symbol::surface::r#ref::Sy
                 anchor_span: Some((node.location.start, node.location.end)),
             })
         }
-        NodeKind::Typeglob { name } => {
+        NodeKind::Typeglob { name, .. } => {
             if name.starts_with('{') {
                 return None;
             }
@@ -6845,7 +7329,7 @@ pub mod lsp_adapter {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// use perl_parser::workspace_index::{Location as IxLocation, lsp_adapter::to_lsp_location};
+    /// use perl_workspace::workspace_index::{Location as IxLocation, lsp_adapter::to_lsp_location};
     /// use lsp_types::Range;
     ///
     /// let ix_loc = IxLocation { uri: "file:///path.pl".to_string(), range: Range::default() };
@@ -6875,7 +7359,7 @@ pub mod lsp_adapter {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// use perl_parser::workspace_index::{Location as IxLocation, lsp_adapter::to_lsp_locations};
+    /// use perl_workspace::workspace_index::{Location as IxLocation, lsp_adapter::to_lsp_locations};
     /// use lsp_types::Range;
     ///
     /// let locations = vec![IxLocation { uri: "file:///script1.pl".to_string(), range: Range::default() }];
@@ -7587,11 +8071,7 @@ print $value;
     fn test_reference_kinds_import_parent_and_export_ok_are_currently_import_only() {
         let index = WorkspaceIndex::new();
         let uri = "file:///typed-refs-import-export.pm";
-        let code = "package Child;
-use parent 'Base';
-our @EXPORT_OK = qw(foo);
-1;
-";
+        let code = "package Child;\nuse parent 'Base';\nour @EXPORT_OK = qw(foo);\n1;\n";
         must(index.index_file(must(url::Url::parse(uri)), code.to_string()));
 
         let parent_kinds = reference_kinds_for(&index, uri, "Base");
@@ -7948,23 +8428,23 @@ use Data::Dumper;
         // Test that URI -> path -> URI conversion preserves the URI
         let original_uri = "file:///tmp/path%20with%20spaces/caf%C3%A9.pl";
 
-        if let Some(path) = uri_to_fs_path(original_uri) {
-            if let Ok(converted_uri) = fs_path_to_uri(&path) {
-                // Should be able to round-trip back to an equivalent URI
-                assert!(converted_uri.starts_with("file://"));
+        if let Some(path) = uri_to_fs_path(original_uri)
+            && let Ok(converted_uri) = fs_path_to_uri(&path)
+        {
+            // Should be able to round-trip back to an equivalent URI
+            assert!(converted_uri.starts_with("file://"));
 
-                // The path component should decode correctly
-                if let Some(roundtrip_path) = uri_to_fs_path(&converted_uri) {
-                    #[cfg(windows)]
-                    if let Ok(rootless) = path.strip_prefix(std::path::Path::new(r"\")) {
-                        assert!(roundtrip_path.ends_with(rootless));
-                    } else {
-                        assert_eq!(path, roundtrip_path);
-                    }
-
-                    #[cfg(not(windows))]
+            // The path component should decode correctly
+            if let Some(roundtrip_path) = uri_to_fs_path(&converted_uri) {
+                #[cfg(windows)]
+                if let Ok(rootless) = path.strip_prefix(std::path::Path::new(r"\")) {
+                    assert!(roundtrip_path.ends_with(rootless));
+                } else {
                     assert_eq!(path, roundtrip_path);
                 }
+
+                #[cfg(not(windows))]
+                assert_eq!(path, roundtrip_path);
             }
         }
     }
@@ -8470,6 +8950,64 @@ use Data::Dumper;
             ),
             "Expected Degraded state with ResourceLimit(MaxSymbols), got: {:?}",
             state
+        );
+    }
+
+    #[test]
+    fn test_check_limits_prefers_file_count_over_symbol_count() {
+        // Retrospective priority: when legacy over-limit state exceeds BOTH
+        // `max_files` and `max_total_symbols`, the file-count limit must be
+        // reported first. New admissions never reach this state — they are
+        // rejected eagerly (see `test_index_file_rejects_new_files_at_max_files`)
+        // — so the over-limit index is simulated directly, as in the sibling
+        // retrospective tests.
+        let limits = IndexResourceLimits {
+            max_files: 1,
+            max_symbols_per_file: 1000,
+            max_total_symbols: 1,
+            max_ast_cache_bytes: 128 * 1024 * 1024,
+            max_ast_cache_items: 50,
+            max_scan_duration_ms: 30_000,
+        };
+
+        let coordinator = IndexCoordinator::with_limits(limits);
+
+        // Two files with one symbol each exceed both budgets
+        // (2 files > 1, 2 symbols > 1). Constructed directly (not via the
+        // `index_file` compatibility surface) so the #11301 ledger's
+        // compatibility-call baseline stays untouched.
+        let legacy_file = FileIndex {
+            source_uri: "file:///legacy-priority.pl".to_string(),
+            symbols: vec![WorkspaceSymbol {
+                name: "legacy_priority".to_string(),
+                kind: SymbolKind::Subroutine,
+                uri: "file:///legacy-priority.pl".to_string(),
+                range: Range {
+                    start: Position { byte: 0, line: 1, column: 1 },
+                    end: Position { byte: 9, line: 1, column: 10 },
+                },
+                qualified_name: None,
+                documentation: None,
+                container_name: None,
+                has_body: true,
+                workspace_folder_uri: None,
+                is_lexical: false,
+            }],
+            ..FileIndex::default()
+        };
+        {
+            let mut files = coordinator.index().files.write();
+            files.insert("file:///legacy-priority-a.pl".to_string(), legacy_file.clone());
+            files.insert("file:///legacy-priority-b.pl".to_string(), legacy_file);
+        }
+
+        let reason = coordinator.check_limits();
+        assert!(
+            matches!(
+                reason,
+                Some(DegradationReason::ResourceLimit { kind: ResourceKind::MaxFiles })
+            ),
+            "Expected MaxFiles when both limits are exceeded, got: {reason:?}"
         );
     }
 
@@ -9334,6 +9872,78 @@ sub hello {
         Ok(())
     }
 
+    /// #11298 red proof: a rejected `DocumentStore` update must prevent the
+    /// candidate from being parsed/extracted against the predecessor's line
+    /// geometry and then published as accepted facts.
+    ///
+    /// A tracked candidate deliberately exercises a store version that is
+    /// newer than the candidate generation. The old path ignored the atomic
+    /// store rejection, so it could replace accepted file facts while the
+    /// store still contained A.
+    #[test]
+    fn rejected_document_store_version_cannot_publish_mixed_geometry()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let index = WorkspaceIndex::new();
+        let uri = must(url::Url::parse("file:///lib/MixedGeometry.pm"));
+        let accepted = "package MixedGeometry;\nsub accepted_a { 1 }\n1;\n";
+        let candidate = "package MixedGeometry;\n\n\n\nsub candidate_b { 1 }\n1;\n";
+
+        index.index_file_with_generation(uri.clone(), accepted.to_string(), 9)?;
+        // Simulate a newer accepted text-sync version without changing the
+        // already-indexed file facts. Generation 10 is valid for the index,
+        // but must be rejected by the store's version decision.
+        index.document_store().open(uri.to_string(), 100, accepted.to_string());
+        let accepted_document = must_some(index.document_store().get(uri.as_str()));
+        assert_eq!(accepted_document.version, 100);
+        assert_eq!(accepted_document.text(), accepted);
+        assert_eq!(
+            accepted_document
+                .line_index
+                .offset_to_position(accepted.find("sub accepted_a").unwrap()),
+            (1, 0),
+            "the accepted predecessor must have A's line geometry"
+        );
+
+        // Version 10 is rejected by the already-accepted version 100, but the
+        // candidate parser still has a valid, independently distinguishable B.
+        let result = index.index_file_with_generation(uri.clone(), candidate.to_string(), 10);
+        let stored = must_some(index.document_store().get(uri.as_str()));
+        assert_eq!(stored.version, 100, "the stale store update must be rejected");
+        assert_eq!(stored.text(), accepted, "accepted source must remain A");
+        assert_eq!(
+            stored.line_index.offset_to_position(stored.text().find("sub accepted_a").unwrap()),
+            (1, 0),
+            "accepted DocumentStore geometry must remain A"
+        );
+
+        // Capture the fact observations before asserting the rejection.  This
+        // keeps a current-main failure diagnostic if the candidate reaches
+        // extraction with mixed geometry, while the expected accepted facts
+        // remain the predecessor's A.
+        let symbols = index.file_symbols(uri.as_str());
+        let candidate_b_line = symbols
+            .iter()
+            .find(|symbol| symbol.name == "candidate_b")
+            .map(|symbol| symbol.range.start.line);
+        let candidate_b_present = candidate_b_line.is_some();
+        let accepted_a_present = symbols.iter().any(|symbol| symbol.name == "accepted_a");
+        assert!(
+            !candidate_b_present,
+            "rejected candidate_b must be absent; observed presence={candidate_b_present}, line={candidate_b_line:?}"
+        );
+        assert!(
+            accepted_a_present,
+            "accepted facts must retain accepted_a; observed candidate_b presence={candidate_b_present}, line={candidate_b_line:?}, accepted_a presence={accepted_a_present}"
+        );
+
+        assert!(
+            result.is_err(),
+            "a rejected DocumentStore version must stop candidate publication; got {result:?}; observed candidate_b presence={candidate_b_present}, line={candidate_b_line:?}, accepted_a presence={accepted_a_present}"
+        );
+
+        Ok(())
+    }
+
     /// #3618 review thread (factory-droid, PRRT_kwDOSid81M6QBZ1u): before the
     /// `generation`/`pending_generation` split added in this PR's fix-3
     /// round, the early guard's reservation wrote directly onto
@@ -9683,6 +10293,68 @@ Utils::process_data();
     }
 
     #[test]
+    fn batch_untracked_refresh_accepts_existing_document() {
+        let index = WorkspaceIndex::new();
+        let uri = must(Url::parse("file:///batch/stale.pm"));
+        let accepted = "package BatchStale;\nsub accepted { 1 }\n1;\n";
+        must(index.index_file_with_generation(uri.clone(), accepted.to_string(), 4));
+        index.document_store().open(uri.to_string(), 9, accepted.to_string());
+
+        let candidate = "package BatchStale;\nsub changed { 1 }\n1;\n";
+        let errors = index.index_files_batch(vec![(uri.clone(), candidate.to_string())]);
+
+        assert!(errors.is_empty(), "untracked batch refresh errors: {errors:?}");
+        assert_eq!(index.document_store().get_text(uri.as_str()).as_deref(), Some(candidate));
+        let symbols = index.file_symbols(uri.as_str());
+        assert!(symbols.iter().any(|symbol| symbol.name == "changed"));
+        assert!(!symbols.iter().any(|symbol| symbol.name == "accepted"));
+        assert_eq!(index.indexed_generation(uri.as_str()), Some(0));
+    }
+
+    #[test]
+    fn batch_duplicate_uri_uses_last_input_deterministically() {
+        let index = WorkspaceIndex::new();
+        let uri = must(Url::parse("file:///batch/duplicate.pm"));
+        let errors = index.index_files_batch(vec![
+            (uri.clone(), "package Duplicate; sub first { 1 } 1;".to_string()),
+            (uri.clone(), "package Duplicate; sub middle { 1 } 1;".to_string()),
+            (uri.clone(), "package Duplicate; sub last { 1 } 1;".to_string()),
+        ]);
+
+        assert!(errors.is_empty(), "duplicate batch indexing errors: {errors:?}");
+        let symbols = index.file_symbols(uri.as_str());
+        assert!(symbols.iter().any(|symbol| symbol.name == "last"));
+        assert!(!symbols.iter().any(|symbol| symbol.name == "first"));
+        assert!(!symbols.iter().any(|symbol| symbol.name == "middle"));
+        assert_eq!(
+            index.document_store().get_text(uri.as_str()).as_deref(),
+            Some("package Duplicate; sub last { 1 } 1;")
+        );
+    }
+
+    #[test]
+    fn generation_zero_refresh_preserves_the_untracked_caller_contract() {
+        let index = WorkspaceIndex::new();
+        let uri = must(Url::parse("file:///generation-zero-refresh.pl"));
+        must(index.index_file_with_generation(
+            uri.clone(),
+            "package Refresh; sub old { 1 } 1;".to_string(),
+            7,
+        ));
+
+        // No session/epoch identity reaches this seam, so generation zero is
+        // intentionally accepted as a later untracked scan/reopen refresh.
+        must(index.index_file(uri.clone(), "package Refresh; sub new { 1 } 1;".to_string()));
+        let symbols = index.file_symbols(uri.as_str());
+        assert!(symbols.iter().any(|symbol| symbol.name == "new"));
+        assert!(!symbols.iter().any(|symbol| symbol.name == "old"));
+        assert_eq!(
+            index.document_store().get_text(uri.as_str()).as_deref(),
+            Some("package Refresh; sub new { 1 } 1;")
+        );
+    }
+
+    #[test]
     fn test_batch_indexing_skips_unchanged() {
         let index = WorkspaceIndex::new();
         let uri = must(Url::parse("file:///batch/skip.pm"));
@@ -9712,6 +10384,71 @@ Utils::process_data();
 
         assert!(index.find_definition("A::a_func_v2").is_some());
         assert!(index.find_definition("B::b_func").is_some());
+    }
+
+    #[test]
+    fn incremental_add_symbols_only_normalizes_touched_name_buckets() {
+        let mut symbols = HashMap::new();
+        let untouched = vec![
+            DefinitionCandidate {
+                location: Location {
+                    uri: "file:///z.pm".to_string(),
+                    range: Range {
+                        start: Position { byte: 0, line: 0, column: 0 },
+                        end: Position { byte: 1, line: 0, column: 1 },
+                    },
+                },
+                kind: SymbolKind::Subroutine,
+            },
+            DefinitionCandidate {
+                location: Location {
+                    uri: "file:///a.pm".to_string(),
+                    range: Range {
+                        start: Position { byte: 0, line: 0, column: 0 },
+                        end: Position { byte: 1, line: 0, column: 1 },
+                    },
+                },
+                kind: SymbolKind::Subroutine,
+            },
+        ];
+        symbols.insert("untouched".to_string(), untouched.clone());
+        symbols.insert(
+            "shared".to_string(),
+            vec![DefinitionCandidate {
+                location: Location {
+                    uri: "file:///z.pm".to_string(),
+                    range: Range {
+                        start: Position { byte: 0, line: 0, column: 0 },
+                        end: Position { byte: 1, line: 0, column: 1 },
+                    },
+                },
+                kind: SymbolKind::Subroutine,
+            }],
+        );
+
+        let symbol = WorkspaceSymbol {
+            name: "shared".to_string(),
+            kind: SymbolKind::Subroutine,
+            uri: "file:///a.pm".to_string(),
+            range: Range {
+                start: Position { byte: 0, line: 0, column: 0 },
+                end: Position { byte: 1, line: 0, column: 1 },
+            },
+            qualified_name: Some("Pkg::shared".to_string()),
+            documentation: None,
+            container_name: Some("Pkg".to_string()),
+            has_body: true,
+            workspace_folder_uri: None,
+            is_lexical: false,
+        };
+        let file_index = FileIndex { symbols: vec![symbol], ..FileIndex::default() };
+
+        WorkspaceIndex::incremental_add_symbols(&mut symbols, &file_index);
+
+        assert_eq!(symbols["untouched"], untouched);
+        assert_eq!(symbols["shared"][0].location.uri, "file:///a.pm");
+        assert_eq!(symbols["shared"].len(), 2);
+        assert_eq!(symbols["Pkg::shared"].len(), 1);
     }
 
     #[test]
@@ -9819,6 +10556,263 @@ Utils::process_data();
         ));
         index.remove_file_url(&child_url);
         assert!(index.package_graph_ancestors("Child").ancestors.is_empty());
+    }
+
+    #[test]
+    fn test_production_inherited_method_identity_spans_semantic_consumers()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use crate::semantic::queries::{QueryContext, SemanticQueries};
+
+        let index = WorkspaceIndex::new();
+        let parent_uri = must(url::Url::parse("file:///test/workspace/identity-parent.pm"));
+        let child_uri = must(url::Url::parse("file:///test/workspace/identity-child.pl"));
+        let child_source = "package Child;\nuse parent 'Parent';\nChild->greet();\n1;\n";
+
+        must(index.index_file(parent_uri, "package Parent;\nsub greet { 1 }\n1;\n".to_string()));
+        must(index.index_file(child_uri.clone(), child_source.to_string()));
+
+        let identity = index
+            .with_semantic_queries_for_uri(child_uri.as_str(), |file_id, queries| {
+                // Resolve the call anchor first: the defining symbol must be
+                // derived from the occurrence the provider is actually asked
+                // about, never supplied as a static class name. A broken
+                // call-site binding now fails this chain instead of leaving a
+                // name-keyed comparison green.
+                let call_offset = u32::try_from(
+                    child_source.find("Child->greet()").expect("call site present")
+                        + "Child->".len(),
+                )
+                .expect("call anchor offset fits u32");
+                let (call_entity, call_occurrence) = queries.symbol_at(file_id, call_offset)?;
+                let candidate = queries.method_candidates("Child", "greet").first()?.clone();
+                let context = QueryContext::new(file_id, None, Some(call_offset));
+                let definition =
+                    queries.definitions(&call_entity.canonical_name, &context).first()?.clone();
+                let references = queries.references(call_entity.id);
+                Some((call_entity, call_occurrence, candidate, definition, references))
+            })
+            .ok_or("missing semantic queries for inherited identity")?
+            .ok_or("inherited method identity chain did not resolve")?;
+
+        assert_eq!(identity.0.canonical_name, "Parent::greet");
+        assert_eq!(identity.1.entity_id, Some(identity.0.id));
+        assert_eq!(identity.2.entity_id, identity.0.id);
+        assert_eq!(identity.3.entity_id, identity.0.id);
+        assert_eq!(identity.3.canonical_name, "Parent::greet");
+        assert_eq!(identity.4.len(), 1);
+        assert_eq!(identity.4[0].entity_id, Some(identity.0.id));
+        Ok(())
+    }
+
+    #[test]
+    fn test_inherited_alias_does_not_displace_child_override()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use crate::semantic::queries::SemanticQueries;
+
+        let index = WorkspaceIndex::new();
+        let parent_uri = must(url::Url::parse("file:///test/workspace/override-parent.pm"));
+        let child_uri = must(url::Url::parse("file:///test/workspace/override-child.pl"));
+        let child_source =
+            "package Child;\nuse parent 'Parent';\nsub greet { 2 }\nChild->greet();\n1;\n";
+
+        must(index.index_file(parent_uri, "package Parent;\nsub greet { 1 }\n1;\n".to_string()));
+        must(index.index_file(child_uri.clone(), child_source.to_string()));
+
+        // #812 law: own overrides rank above inherited methods. The alias map
+        // must only fill vacant names, never overwrite a declaration extracted
+        // from the child file itself.
+        let override_entity = index
+            .with_semantic_queries_for_uri(child_uri.as_str(), |file_id, queries| {
+                let call_offset = u32::try_from(
+                    child_source.find("Child->greet()").expect("call site present")
+                        + "Child->".len(),
+                )
+                .expect("call anchor offset fits u32");
+                queries.symbol_at(file_id, call_offset).map(|(entity, _)| entity)
+            })
+            .ok_or("missing semantic queries for override control")?
+            .ok_or("overriding call site did not resolve to its own declaration")?;
+
+        assert_eq!(
+            override_entity.canonical_name, "Child::greet",
+            "the child's own override must keep its own identity at the call site"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_inherited_alias_refuses_ambiguous_parents_instead_of_last_win()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use crate::semantic::queries::SemanticQueries;
+
+        let index = WorkspaceIndex::new();
+        let parent_a_uri = must(url::Url::parse("file:///test/workspace/ambig-parent-a.pm"));
+        let parent_b_uri = must(url::Url::parse("file:///test/workspace/ambig-parent-b.pm"));
+        let parent_b_reopen_uri =
+            must(url::Url::parse("file:///test/workspace/ambig-parent-b-reopen.pm"));
+        let child_ab_uri = must(url::Url::parse("file:///test/workspace/ambig-child-ab.pl"));
+        let child_b_uri = must(url::Url::parse("file:///test/workspace/ambig-child-b.pl"));
+        let child_b2_uri = must(url::Url::parse("file:///test/workspace/ambig-child-b2.pl"));
+        let child_ab_source =
+            "package ChildAB;\nuse parent qw(ParentA ParentB);\nChildAB->greet();\n1;\n";
+        let child_b_source = "package ChildB;\nuse parent 'ParentB';\nChildB->greet();\n1;\n";
+
+        must(index.index_file(parent_a_uri, "package ParentA;\nsub greet { 1 }\n1;\n".to_string()));
+        must(index.index_file(parent_b_uri, "package ParentB;\nsub greet { 2 }\n1;\n".to_string()));
+        must(index.index_file(child_ab_uri.clone(), child_ab_source.to_string()));
+        must(index.index_file(child_b_uri.clone(), child_b_source.to_string()));
+
+        let call_offset = |source: &str| {
+            u32::try_from(source.find("->greet()").expect("call site present") + "->".len())
+                .expect("call anchor offset fits u32")
+        };
+        let call_name = |uri: &str, source: &'static str| {
+            index
+                .with_semantic_queries_for_uri(uri, |file_id, queries| {
+                    queries
+                        .symbol_at(file_id, call_offset(source))
+                        .map(|(entity, _)| entity.canonical_name)
+                })
+                .flatten()
+        };
+
+        // Two direct parents defining the same method must not collapse to
+        // whichever shard the HashMap visits last (#812: ambiguous parent/MRO
+        // facts are refused, not silently resolved).
+        let child_ab_name = call_name(child_ab_uri.as_str(), child_ab_source);
+        assert!(
+            child_ab_name.is_none(),
+            "ambiguous two-parent alias must stay unresolved, got {child_ab_name:?}"
+        );
+
+        // A single unambiguous parent alias must still resolve.
+        let child_b_name = call_name(child_b_uri.as_str(), child_b_source);
+        assert_eq!(
+            child_b_name.as_deref(),
+            Some("ParentB::greet"),
+            "a single unambiguous parent alias must still resolve"
+        );
+
+        // A parent method reopened across shards is a second candidate: a
+        // freshly indexed child must refuse the alias instead of silently
+        // last-winning.
+        must(index.index_file(
+            parent_b_reopen_uri,
+            "package ParentB;\nsub greet { 3 }\n1;\n".to_string(),
+        ));
+        let child_b2_name = call_name(child_b2_uri.as_str(), child_b_source);
+        assert!(
+            child_b2_name.is_none(),
+            "reopened parent method must refuse the alias, got {child_b2_name:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_inherited_alias_binds_only_dispatching_reference_kinds()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use crate::semantic::queries::SemanticQueries;
+
+        let index = WorkspaceIndex::new();
+        let parent_uri = must(url::Url::parse("file:///test/workspace/kinds-parent.pm"));
+        let child_uri = must(url::Url::parse("file:///test/workspace/kinds-child.pl"));
+        let child_source = "package Child;\nuse parent 'Parent';\nChild->greet();\nChild::greet();\n\\&Child::greet;\n1;\n";
+
+        must(index.index_file(parent_uri, "package Parent;\nsub greet { 1 }\n1;\n".to_string()));
+        must(index.index_file(child_uri.clone(), child_source.to_string()));
+
+        let resolved_name_at = |qualifier: &str| {
+            let offset = u32::try_from(
+                child_source.find(qualifier).expect("anchor present") + qualifier.len(),
+            )
+            .expect("anchor offset fits u32");
+            index
+                .with_semantic_queries_for_uri(child_uri.as_str(), |file_id, queries| {
+                    queries.symbol_at(file_id, offset).map(|(entity, _)| entity.canonical_name)
+                })
+                .flatten()
+        };
+
+        // `->` dispatch inherits through @ISA and binds the parent method.
+        assert_eq!(resolved_name_at("Child->").as_deref(), Some("Parent::greet"));
+
+        // `::` and `\&` name a concrete subroutine; neither dispatches through
+        // @ISA, so binding them to the parent's method would fabricate a
+        // definition for code Perl reports as undefined.
+        assert_eq!(resolved_name_at("Child::"), None);
+        assert_eq!(resolved_name_at("&Child::"), None);
+        Ok(())
+    }
+
+    #[test]
+    fn test_inherited_alias_resolves_through_transitive_ancestor_chain()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use crate::semantic::queries::SemanticQueries;
+
+        let index = WorkspaceIndex::new();
+        let grandparent_uri = must(url::Url::parse("file:///test/workspace/chain-grandparent.pm"));
+        let parent_uri = must(url::Url::parse("file:///test/workspace/chain-parent.pm"));
+        let child_uri = must(url::Url::parse("file:///test/workspace/chain-child.pl"));
+        let child_source = "package Child;\nuse parent 'Parent';\nChild->greet();\n1;\n";
+
+        must(index.index_file(
+            grandparent_uri,
+            "package GrandParent;\nsub greet { 1 }\n1;\n".to_string(),
+        ));
+        must(index.index_file(
+            parent_uri,
+            "package Parent;\nuse parent 'GrandParent';\n1;\n".to_string(),
+        ));
+        must(index.index_file(child_uri.clone(), child_source.to_string()));
+
+        let entity_name = index
+            .with_semantic_queries_for_uri(child_uri.as_str(), |file_id, queries| {
+                let offset = u32::try_from(
+                    child_source.find("Child->").expect("call site present") + "Child->".len(),
+                )
+                .expect("call anchor offset fits u32");
+                queries.symbol_at(file_id, offset).map(|(entity, _)| entity.canonical_name)
+            })
+            .ok_or("missing semantic queries for grandparent chain")?;
+
+        // `use parent` chains transitively: `Child->greet()` must resolve the
+        // method declared on GrandParent through Parent, not stay unresolved
+        // because the child file's direct edge stops at Parent.
+        assert_eq!(entity_name.as_deref(), Some("GrandParent::greet"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_inherited_alias_includes_framework_generated_members()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use crate::semantic::queries::SemanticQueries;
+
+        let index = WorkspaceIndex::new();
+        let parent_uri = must(url::Url::parse("file:///test/workspace/genmem-parent.pm"));
+        let child_uri = must(url::Url::parse("file:///test/workspace/genmem-child.pl"));
+        let parent_source = "package Parent;\nuse Moo;\nhas name => (is => 'ro');\n1;\n";
+        let child_source = "package Child;\nuse parent 'Parent';\nChild->name();\n1;\n";
+
+        must(index.index_file(parent_uri, parent_source.to_string()));
+        must(index.index_file(child_uri.clone(), child_source.to_string()));
+
+        let entity = index
+            .with_semantic_queries_for_uri(child_uri.as_str(), |file_id, queries| {
+                let offset = u32::try_from(
+                    child_source.find("Child->").expect("call site present") + "Child->".len(),
+                )
+                .expect("call anchor offset fits u32");
+                queries.symbol_at(file_id, offset).map(|(entity, _)| entity)
+            })
+            .ok_or("missing semantic queries for generated member chain")?;
+
+        // `method_candidates` already admits EntityKind::GeneratedMember, so
+        // the alias map must too: a Moo-generated accessor on the parent is a
+        // real inherited method target.
+        let entity = entity.ok_or("generated accessor did not resolve through inheritance")?;
+        assert_eq!(entity.canonical_name, "Parent::name");
+        assert_eq!(entity.kind, EntityKind::GeneratedMember);
+        Ok(())
     }
 
     #[test]
@@ -10001,23 +10995,23 @@ helper_one();
         };
         let mut found_parent_use = false;
         for stmt in statements {
-            if let NodeKind::Use { module, args, .. } = &stmt.kind {
-                if module == "parent" {
-                    found_parent_use = true;
-                    assert_eq!(
-                        args,
-                        &["'MyBase'".to_string()],
-                        "Expected args=[\"'MyBase'\"] for `use parent 'MyBase'`, got: {:?}",
-                        args
-                    );
-                    let extracted = extract_module_names_from_use_args(args);
-                    assert_eq!(
-                        extracted,
-                        vec!["MyBase".to_string()],
-                        "extract_module_names_from_use_args should return [\"MyBase\"], got {:?}",
-                        extracted
-                    );
-                }
+            if let NodeKind::Use { module, args, .. } = &stmt.kind
+                && module == "parent"
+            {
+                found_parent_use = true;
+                assert_eq!(
+                    args,
+                    &["'MyBase'".to_string()],
+                    "Expected args=[\"'MyBase'\"] for `use parent 'MyBase'`, got: {:?}",
+                    args
+                );
+                let extracted = extract_module_names_from_use_args(args);
+                assert_eq!(
+                    extracted,
+                    vec!["MyBase".to_string()],
+                    "extract_module_names_from_use_args should return [\"MyBase\"], got {:?}",
+                    extracted
+                );
             }
         }
         assert!(found_parent_use, "No Use node with module='parent' found in AST");
@@ -10962,6 +11956,81 @@ MixedMod->import(qw(qw_one qw_two));
         Ok(())
     }
 
+    /// An entity-only shard replacement must refresh the reference index.
+    ///
+    /// `ReferenceIndex::add_file` derives each occurrence's canonical name from
+    /// `shard.entities`, so which projection an occurrence lands in — named or
+    /// unresolved — depends on the entity category, not only on occurrences and
+    /// edges. Adding the declaring entity row while the occurrence and edge
+    /// facts stay byte-identical must move the occurrence into the name
+    /// projection; skipping the rebuild leaves a stale row the current shard
+    /// contradicts.
+    #[test]
+    fn incremental_replace_refreshes_reference_index_on_entity_only_change()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let index = WorkspaceIndex::new();
+        let uri = "file:///lib/EntityOnly.pm";
+        let key = DocumentStore::uri_key(uri);
+        let entity_id = EntityId(700);
+        let occ_id = OccurrenceId(701);
+        let anchor_id = AnchorId(702);
+
+        // The occurrence names its entity, but v1 carries no entity row: the
+        // canonical name cannot be derived, so the reference is unresolved.
+        let occurrences = vec![OccurrenceFact {
+            id: occ_id,
+            kind: OccurrenceKind::Call,
+            entity_id: Some(entity_id),
+            anchor_id,
+            scope_id: None,
+            provenance: Provenance::ExactAst,
+            confidence: Confidence::High,
+        }];
+        let mut shard_v1 = make_shard(uri, 1, Some(10), Some(20), Some(30), Some(40));
+        shard_v1.occurrences.clone_from(&occurrences);
+        let file_id = shard_v1.file_id;
+        index.replace_fact_shard_incremental(&key, shard_v1);
+
+        let unresolved_key =
+            crate::semantic::references::UnresolvedOccurrenceKey::new(file_id, occ_id, anchor_id);
+        assert_eq!(
+            index.semantic_reference_index.read().get_unresolved(&unresolved_key).len(),
+            1,
+            "v1 has no entity row, so the occurrence starts unresolved"
+        );
+
+        // v2 adds only the declaring entity row: occurrences and edges keep
+        // their exact v1 hashes.
+        let mut shard_v2 = make_shard(uri, 2, Some(10), Some(21), Some(30), Some(40));
+        shard_v2.occurrences = occurrences;
+        shard_v2.entities.push(EntityFact {
+            id: entity_id,
+            kind: EntityKind::Subroutine,
+            canonical_name: "EntityOnly::run".to_string(),
+            anchor_id: None,
+            scope_id: None,
+            provenance: Provenance::ExactAst,
+            confidence: Confidence::High,
+        });
+        let result = index.replace_fact_shard_incremental(&key, shard_v2);
+
+        assert!(result.entities_updated, "entities hash changed → update");
+        assert!(!result.occurrences_updated, "occurrences hash is deliberately unchanged");
+        assert!(!result.edges_updated, "edges hash is deliberately unchanged");
+
+        let ref_idx = index.semantic_reference_index.read();
+        assert_eq!(
+            ref_idx.get_by_name("EntityOnly::run").len(),
+            1,
+            "the newly declared entity must make the occurrence findable by name"
+        );
+        assert!(
+            ref_idx.get_unresolved(&unresolved_key).is_empty(),
+            "the stale unresolved row must not survive its own entity's arrival"
+        );
+        Ok(())
+    }
+
     /// Req 18.4: When a category hash has changed, remove old entries and
     /// insert new ones for that category.
     #[test]
@@ -11772,6 +12841,71 @@ mod entity_id_file_scoped_tests {
     }
 
     // ── search_index correctness: issue #2994 ──
+
+    #[test]
+    fn source_symbol_pipeline_prefers_exact_and_qualified_aliases()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let make_symbol = |name: &str,
+                           qualified_name: Option<&str>,
+                           uri: &str,
+                           start_byte: usize| WorkspaceSymbol {
+            name: name.to_string(),
+            kind: SymbolKind::Subroutine,
+            uri: uri.to_string(),
+            range: Range {
+                start: Position { byte: start_byte, line: 1, column: 1 },
+                end: Position { byte: start_byte + 3, line: 1, column: 4 },
+            },
+            qualified_name: qualified_name.map(str::to_string),
+            documentation: None,
+            container_name: qualified_name.and_then(|value| {
+                value.rsplit_once("::").map(|(container, _)| container.to_string())
+            }),
+            has_body: true,
+            workspace_folder_uri: None,
+            is_lexical: false,
+        };
+
+        let exact_row = make_symbol("run", Some("Pkg::run"), "file:///pkg.pm", 10);
+        let competing_row = make_symbol("a_run", None, "file:///other.pm", 20);
+        let ordered_buckets = [
+            ("Pkg::run".to_string(), vec![exact_row.clone()]),
+            ("run".to_string(), vec![exact_row.clone()]),
+            ("a_run".to_string(), vec![competing_row]),
+        ];
+        let profile = WorkspaceSymbolQueryProfile::compile("run");
+        let matches = WorkspaceIndex::search_source_symbols_from_buckets(
+            ordered_buckets.iter().map(|(key, symbols)| (key.as_str(), symbols)),
+            &profile,
+            Some(1),
+        );
+        let winner = matches.first().ok_or("bare exact query returned no symbol")?;
+        if winner.uri != "file:///pkg.pm" || winner.name != "run" {
+            return Err(format!("bare exact alias lost to {:?}", winner).into());
+        }
+
+        for qualified_key in ["Pkg::run", "Pkg'run"] {
+            let row = make_symbol("run", Some(qualified_key), "file:///qualified.pm", 30);
+            let buckets =
+                [(qualified_key.to_string(), vec![row.clone()]), ("run".to_string(), vec![row])];
+            let profile = WorkspaceSymbolQueryProfile::compile(qualified_key);
+            let matches = WorkspaceIndex::search_source_symbols_from_buckets(
+                buckets.iter().map(|(key, symbols)| (key.as_str(), symbols)),
+                &profile,
+                Some(1),
+            );
+            let winner = matches.first().ok_or_else(|| {
+                format!("qualified exact query {qualified_key:?} returned no symbol")
+            })?;
+            if winner.uri != "file:///qualified.pm" || winner.name != "run" {
+                return Err(
+                    format!("qualified exact alias {qualified_key:?} was not retained").into()
+                );
+            }
+        }
+
+        Ok(())
+    }
 
     /// Verify that `search_source_symbols` via the indexed path returns the same
     /// symbol set as iterating all files would, across multiple files, for both
@@ -13296,11 +14430,16 @@ mod extraction_bundle_shadow_compare {
         let mut visitor = IndexVisitor::new(&mut doc, uri.to_string(), None);
         visitor.visit(ast, &mut file_index);
 
-        let shard = WorkspaceIndex::build_canonical_fact_shard_for_ast(uri, content_hash, ast);
+        let shard =
+            WorkspaceIndex::build_canonical_fact_shard_for_ast(uri, content_hash, ast, doc.text());
 
         let file_id = WorkspaceIndex::hash_uri_to_file_id(uri);
         let import_specs =
-            crate::semantic::workspace_import_extractor::extract_import_specs(ast, file_id);
+            crate::semantic::workspace_import_extractor::extract_import_specs_with_source(
+                ast,
+                file_id,
+                doc.text(),
+            );
         let use_lib_facts =
             crate::semantic::workspace_import_extractor::extract_use_lib_facts(ast, file_id);
 
@@ -13319,7 +14458,14 @@ mod extraction_bundle_shadow_compare {
     fn build_bundle_unified(uri: &str, text: &str, ast: &Node) -> FileExtractionBundle {
         let content_hash = content_hash_of(text);
         let mut doc = Document::new(uri.to_string(), 1, text.to_string());
-        FileExtractionBundle::build_unified(ast, uri, content_hash, &mut doc, None)
+        FileExtractionBundle::build_unified(
+            ast,
+            uri,
+            content_hash,
+            &mut doc,
+            None,
+            &std::collections::BTreeMap::new(),
+        )
     }
 
     /// Assert full structural parity between the two independently-computed
@@ -13457,6 +14603,19 @@ mod extraction_bundle_shadow_compare {
     }
 
     // ── Targeted edge cases ──────────────────────────────────────────────
+
+    #[test]
+    fn parity_dynamic_isa_boundary() {
+        // An interpolated `push @ISA` creates a DynamicInheritance boundary
+        // whose occurrence facts must reach the canonical shard identically
+        // through both extraction paths -- the refs path dropped them while
+        // keeping the paired anchors (dangling-anchor asymmetry).
+        let text = "package Child;\npush @ISA, \"Base::$suffix\";\nsub m { 1; }\n";
+        let uri = "file:///edge/dynamic_isa.pl";
+        assert_parity("dynamic_isa", uri, text);
+        assert_unified_canonical_parity("dynamic_isa", uri, text);
+        assert_unified_legacy_is_superset("dynamic_isa", uri, text);
+    }
 
     #[test]
     fn parity_comment_only() {
@@ -13916,26 +15075,119 @@ sub bar { return $greeting; }
             "compute_key",
         );
     }
-}
 
-/// Check if `needle` is a subsequence of `haystack` (fuzzy match).
-/// E.g. "gpn" is a subsequence of "get_page_name". (#5087)
-///
-/// Note: for a single-`char` needle this is equivalent to
-/// `haystack.contains(needle)`, so callers that test `contains` first will
-/// never reach this function for a one-character query. Restricting fuzzy
-/// matching by needle length therefore has no effect on its own -- see
-/// [`MIN_LOOSE_MATCH_QUERY_CHARS`] for how short queries are actually
-/// narrowed. (#5335)
-fn is_subsequence(needle: &str, haystack: &str) -> bool {
-    let mut needle_chars = needle.chars();
-    let mut current = needle_chars.next();
-    for ch in haystack.chars() {
-        match current {
-            Some(target) if ch == target => current = needle_chars.next(),
-            None => return true,
-            _ => {}
-        }
+    #[test]
+    fn source_commit_api_separates_initial_and_live_contracts() {
+        let index = WorkspaceIndex::new();
+        let uri = must(url::Url::parse("file:///api/source-commit.pl"));
+        let initial = index.index_initial_file(
+            uri.clone(),
+            "package ApiSourceCommit; sub initial { 1 } 1;".to_string(),
+        );
+        assert!(initial.is_ok(), "initial import must remain fallible: {initial:?}");
+
+        let generation = must_some(NonZeroU32::new(1));
+        let outcome = index.index_live_file(
+            uri.clone(),
+            "package ApiSourceCommit; sub live { 2 } 1;".to_string(),
+            SourceCommit::new(generation),
+        );
+        assert_eq!(outcome, SourceCommitOutcome::Accepted);
+        assert!(index.file_symbols(uri.as_str()).iter().any(|symbol| symbol.name == "live"));
     }
-    current.is_none()
+
+    #[test]
+    fn source_commit_api_preserves_stale_and_noop_outcomes() {
+        let index = WorkspaceIndex::new();
+        let uri = must(url::Url::parse("file:///api/source-commit-outcomes.pl"));
+        let generation_two = must_some(NonZeroU32::new(2));
+        let generation_one = must_some(NonZeroU32::new(1));
+        let text = "package Outcomes; sub stable { 1 } 1;".to_string();
+
+        assert_eq!(
+            index.index_live_file(uri.clone(), text.clone(), SourceCommit::new(generation_two),),
+            SourceCommitOutcome::Accepted
+        );
+        assert_eq!(
+            index.index_live_file(uri.clone(), text, SourceCommit::new(generation_two),),
+            SourceCommitOutcome::NoOp
+        );
+        assert_eq!(
+            index.index_live_file(
+                uri,
+                "package Outcomes; sub stale { 1 } 1;".to_string(),
+                SourceCommit::new(generation_one),
+            ),
+            SourceCommitOutcome::RejectedStale
+        );
+    }
+
+    #[test]
+    fn identical_live_generation_advances_before_older_live_commit() {
+        let index = WorkspaceIndex::new();
+        let uri = must(url::Url::parse("file:///api/source-commit-noop-generation.pl"));
+        let text = "package NoOpGeneration; sub stable { 1 } 1;".to_string();
+        let generation_one = must_some(NonZeroU32::new(1));
+        let generation_two = must_some(NonZeroU32::new(2));
+
+        must(index.index_initial_file(uri.clone(), text.clone()));
+        assert_eq!(
+            index.index_live_file(uri.clone(), text.clone(), SourceCommit::new(generation_one)),
+            SourceCommitOutcome::NoOp
+        );
+        assert_eq!(index.indexed_generation(uri.as_str()), Some(1));
+        assert_eq!(
+            index.index_live_file(uri.clone(), text, SourceCommit::new(generation_two)),
+            SourceCommitOutcome::NoOp
+        );
+        assert_eq!(index.indexed_generation(uri.as_str()), Some(2));
+        assert_eq!(
+            index.index_live_file(
+                uri,
+                "package NoOpGeneration; sub older { 2 } 1;".to_string(),
+                SourceCommit::new(generation_one),
+            ),
+            SourceCommitOutcome::RejectedStale
+        );
+    }
+
+    #[test]
+    fn live_noop_rejects_generation_below_pending_high_water() {
+        let index = WorkspaceIndex::new();
+        let uri = must(url::Url::parse("file:///api/source-commit-pending-noop.pl"));
+        let text = "package PendingNoOp; sub stable { 1 } 1;".to_string();
+        let generation_one = must_some(NonZeroU32::new(1));
+
+        must(index.index_initial_file(uri.clone(), text.clone()));
+        let key = DocumentStore::uri_key(uri.as_str());
+        {
+            // Model the ordered state after a newer live writer reserves its
+            // generation but before it publishes parsed content. The lower
+            // live commit has identical content, which used to bypass the
+            // pending high-water guard through the NoOp fast path.
+            let mut files = index.files.write();
+            let file = must_some(files.get_mut(&key));
+            file.pending_generation = 3;
+            assert_eq!(file.generation, 0);
+        }
+
+        assert_eq!(
+            index.index_live_file(uri, text, SourceCommit::new(generation_one)),
+            SourceCommitOutcome::RejectedStale
+        );
+    }
+
+    #[test]
+    fn stale_internal_live_candidate_is_not_accepted_by_legacy_mapping() {
+        let index = WorkspaceIndex::new();
+        let uri = must(url::Url::parse("file:///api/source-commit-stale-mapping.pl"));
+        let current = "package StaleMapping; sub current { 2 } 1;".to_string();
+        let stale = "package StaleMapping; sub stale { 1 } 1;".to_string();
+
+        must(index.index_file_with_generation(uri.clone(), current, 2));
+        assert_eq!(
+            index.index_file_with_generation_outcome(uri, stale, 1),
+            Ok(IndexFileWithGenerationOutcome::RejectedStale)
+        );
+    }
 }

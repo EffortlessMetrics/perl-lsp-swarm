@@ -1,4 +1,5 @@
 #!/bin/bash
+set -euo pipefail
 
 echo "Building VSCode Perl Language Server Extension..."
 
@@ -16,9 +17,9 @@ npm run doctor
 echo "Installing dependencies..."
 npm ci
 
-# Compile TypeScript
-echo "Compiling TypeScript..."
-npm run compile
+# Checked build (authority + all-config type-check + bundle)
+echo "Running checked build..."
+npm run build
 
 # Bundle LSP binary
 echo "Bundling perllsp binary..."
@@ -28,10 +29,11 @@ npm run bundle-lsp
 echo "Packaging extension..."
 npm run package
 
-echo "Build complete! Extension packaged as perl-lsp-rs-*.vsix"
+VSIX_NAME="perl-lsp-rs-$(node -p "require('./package.json').version").vsix"
+echo "Build complete! Extension packaged as ${VSIX_NAME}"
 echo ""
 echo "To install locally:"
-echo "  code --install-extension perl-lsp-rs-*.vsix"
+echo "  code --install-extension ${VSIX_NAME}"
 echo ""
 echo "To publish to marketplace:"
 echo "  npm run publish"

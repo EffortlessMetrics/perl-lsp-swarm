@@ -9,6 +9,7 @@ on:
     paths:
       - 'AGENTS.md'
       - 'CLAUDE.md'
+      - '.github/PULL_REQUEST_TEMPLATE.md'
       - 'docs/agents/**'
       - 'docs/specs/PLSP-SPEC-0006-pr-queue-disposition.md'
       - 'docs/specs/README.md'
@@ -21,7 +22,11 @@ on:
       - 'xtask/src/tasks/agent_flow.rs'
       - 'xtask/src/tasks/mod.rs'
       - 'xtask/tests/agent_merge_review_backstop.rs'
+      - 'xtask/tests/agent_shift_left_entry_contract.rs'
+      - 'xtask/tests/agent_remote_wait_attention.rs'
       - 'xtask/tests/pr_convergence_contract.rs'
+      - 'xtask/tests/shift_left_publication_contract.rs'
+      - 'policy/skill-provider-parity.toml'
       - 'scripts/tests/test-agent-flow-control-plane-trigger.sh'
       - '.github/workflows/agent-flow-control-plane.yml'
   push:
@@ -29,6 +34,7 @@ on:
     paths:
       - 'AGENTS.md'
       - 'CLAUDE.md'
+      - '.github/PULL_REQUEST_TEMPLATE.md'
       - 'docs/agents/**'
       - 'docs/specs/PLSP-SPEC-0006-pr-queue-disposition.md'
       - 'docs/specs/README.md'
@@ -41,7 +47,11 @@ on:
       - 'xtask/src/tasks/agent_flow.rs'
       - 'xtask/src/tasks/mod.rs'
       - 'xtask/tests/agent_merge_review_backstop.rs'
+      - 'xtask/tests/agent_shift_left_entry_contract.rs'
+      - 'xtask/tests/agent_remote_wait_attention.rs'
       - 'xtask/tests/pr_convergence_contract.rs'
+      - 'xtask/tests/shift_left_publication_contract.rs'
+      - 'policy/skill-provider-parity.toml'
       - 'scripts/tests/test-agent-flow-control-plane-trigger.sh'
       - '.github/workflows/agent-flow-control-plane.yml'
 
@@ -59,7 +69,7 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Checkout
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # stable
@@ -74,6 +84,17 @@ jobs:
 
       - name: Check deterministic route scenarios
         run: cargo xtask agent-flow scenarios --format json
+
+      - name: Check shift-left publication contract
+        run: cargo test -p xtask --test shift_left_publication_contract --locked
+      - name: Check shift-left claim admission
+        run: cargo test -p xtask --test agent_shift_left_entry_contract --locked
+
+      - name: Check agent-flow validator regression controls
+        run: cargo test -p xtask --bin xtask tasks::agent_flow --locked
+
+      - name: Check remote-wait attention release
+        run: cargo test -p xtask --test agent_remote_wait_attention --locked
 
       - name: Check merge review/integration backstop
         run: cargo test -p xtask --test agent_merge_review_backstop --locked

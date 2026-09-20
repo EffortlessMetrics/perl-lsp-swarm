@@ -238,10 +238,7 @@ pub fn shape(root: &Node) -> Vec<String> {
 }
 
 fn push_variant_name(n: &Node, out: &mut Vec<String>) {
-    // Variant name from Debug up to '(' or '{'
-    let s = format!("{:?}", n.kind);
-    let name = s.split(['(', '{']).next().map_or_else(|| s.clone(), |n| n.to_string());
-    out.push(name);
+    out.push(n.kind.kind_name().to_string());
 }
 
 fn extract_shape_rec(node: &Node, out: &mut Vec<String>) {
@@ -500,12 +497,12 @@ pub fn pair_breakable(left: &CoreTok, right: &CoreTok) -> bool {
     // because they change meaning when isolated (${X} vs $ {X})
     if let TokenType::Identifier(_) = &left.kind {
         let text = &left.text;
-        if text.ends_with('{') && text.len() == 2 {
-            if let Some(first_char) = text.chars().next() {
-                if matches!(first_char, '$' | '@' | '%') {
-                    return false;
-                }
-            }
+        if text.ends_with('{')
+            && text.len() == 2
+            && let Some(first_char) = text.chars().next()
+            && matches!(first_char, '$' | '@' | '%')
+        {
+            return false;
         }
     }
 

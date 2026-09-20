@@ -1,4 +1,3 @@
-use super::*;
 use crate::LexerConfig;
 
 #[test]
@@ -36,6 +35,11 @@ fn peek_char_uses_character_offsets_for_ascii_and_utf8() -> Result<(), String> {
         return Err("non-BMP offset 2 returned an unexpected character".to_string());
     }
 
+    let empty = PerlLexer::new("");
+    if empty.peek_char(0).is_some() {
+        return Err("empty source returned a character".to_string());
+    }
+
     Ok(())
 }
 
@@ -54,6 +58,12 @@ fn peek_char_preserves_eof_and_max_lookahead_bounds() -> Result<(), String> {
     let eof = PerlLexer::new("éx");
     if eof.peek_char(2).is_some() {
         return Err("EOF returned a character".to_string());
+    }
+
+    let empty_bounded =
+        PerlLexer::with_config("", LexerConfig { max_lookahead: 0, ..LexerConfig::default() });
+    if empty_bounded.peek_char(0).is_some() {
+        return Err("empty source with max_lookahead 0 returned a character".to_string());
     }
 
     Ok(())

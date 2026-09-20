@@ -1,0 +1,69 @@
+{
+  "schema_version": 1,
+  "case_id": "D27-ascii-only-unicode-evidence",
+  "family": "boundary_data_semantics_theater",
+  "purpose": "UTF-8/character/UTF-16 subjects proved only with ASCII fixtures leave multibyte boundaries unexercised.",
+  "incident_reference": null,
+  "subject": {
+    "scope": "workspace",
+    "target_kinds": [
+      "lib",
+      "bin",
+      "test"
+    ],
+    "profile": "all",
+    "platforms": [
+      "linux",
+      "windows",
+      "macos"
+    ],
+    "features": "default"
+  },
+  "governed_lint": null,
+  "dishonest_mutation": {
+    "kind": "source-snippet",
+    "language": "rust",
+    "trigger_evidence": [
+      "ASCII-only sample",
+      "char_column(\"abc\", 2)"
+    ],
+    "content": "#[test]\nfn column_conversion_is_identity() {\n    // ASCII-only sample claims full character-column correctness\n    assert_eq!(char_column(\"abc\", 2), 2);\n}\n",
+    "sha256": "2fb6410f57f320dd1f2d020898980e391f9e4e5970f55b47eedb357e990a489b"
+  },
+  "rejecting_authority": {
+    "status": "pending_owner",
+    "owner_issue": 11257,
+    "unresolved_reason": "Unicode-fixture sufficiency is a reviewer-packet challenge field (#11257); no automated rejector exists."
+  },
+  "expected_result": {
+    "result_class": "reject",
+    "reason_code": "ascii_only_unicode_proof"
+  },
+  "positive_counterpart": {
+    "sanctioned_evidence": [
+      "counts_chars_not_bytes",
+      "1F600"
+    ],
+    "note": "Multibyte samples exercise boundary math.",
+    "content": "#[test]\nfn column_conversion_counts_chars_not_bytes() {\n    assert_eq!(char_column(\"a\\u{301}bc\", 3), 3);\n    assert_eq!(char_column(\"\\u{1F600}x\", 1), 1);\n}\n",
+    "sha256": "4fd0b308118dfe024ef535c1826527ac7c6a5a00a23523dc2a09861da56f7f69"
+  },
+  "applicability": {
+    "packet_classes": [
+      "qualification",
+      "foundation",
+      "migration",
+      "activation",
+      "review"
+    ],
+    "domains": [
+      "clippy-core"
+    ]
+  },
+  "delta_provenance": {
+    "change_reason": "initial corpus freeze (#11649)",
+    "owning_issue": 11649,
+    "historical_interpretability": true
+  },
+  "claim_boundary": "Packet reviewer projection will require unicode counterparts; corpus fixes the minimal honest sample shape."
+}

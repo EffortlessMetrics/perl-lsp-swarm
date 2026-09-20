@@ -1,18 +1,12 @@
-use perl_module::token_core::{
-    ModuleTokenSpan, has_standalone_module_token_boundaries, parse_module_token,
-};
+use perl_module::{ModuleTokenSpan, has_standalone_module_token_boundaries, parse_module_token};
 use proptest::prelude::*;
 
 fn head_chars() -> impl Strategy<Value = String> {
-    prop::char::range('A', 'z')
-        .prop_filter("invalid head chars", |c| c.is_ascii_alphabetic() || *c == '_')
-        .prop_map(|c| c.to_string())
+    prop::sample::select(vec!['A', 'z', '_', 'λ', 'Ж', '界']).prop_map(|c| c.to_string())
 }
 
 fn body_chars() -> impl Strategy<Value = String> {
-    prop::char::range('A', 'z')
-        .prop_filter("invalid body chars", |c| c.is_ascii_alphanumeric() || *c == '_')
-        .prop_map(|c| c.to_string())
+    prop::sample::select(vec!['A', 'z', '0', '9', '_', 'λ', 'Ж', '界']).prop_map(|c| c.to_string())
 }
 
 fn token_segment() -> impl Strategy<Value = String> {
@@ -45,6 +39,8 @@ fn left_boundary_char() -> impl Strategy<Value = char> {
         proptest::char::range('0', '9'),
         Just('_'),
         Just(':'),
+        Just('λ'),
+        Just('界'),
     ]
 }
 
@@ -123,7 +119,12 @@ proptest! {
             if let Some(span) = span {
                 prop_assert!(span.start <= span.end);
                 prop_assert!(span.end <= line.len());
+                prop_assert!(line.is_char_boundary(span.start));
+                prop_assert!(line.is_char_boundary(span.end));
             }
+
+            let end = line.len().saturating_sub(start.min(line.len()));
+            let _ = has_standalone_module_token_boundaries(&line, start, end);
         }
     }
 }

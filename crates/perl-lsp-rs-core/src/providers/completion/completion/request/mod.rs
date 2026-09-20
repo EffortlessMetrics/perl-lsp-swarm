@@ -1,5 +1,6 @@
 mod context;
 mod dispatch;
+mod test_frameworks;
 
 use super::{CompletionItem, CompletionProvider, sort};
 
@@ -39,7 +40,10 @@ pub(super) fn complete(
         filepath,
         is_cancelled,
     ) {
-        CompletionFlow::SortAndReturn => sort::deduplicate_and_sort(completions),
+        CompletionFlow::SortAndReturn => {
+            test_frameworks::reconcile(&mut completions, provider, &context, source, filepath);
+            sort::deduplicate_and_sort(completions)
+        }
         CompletionFlow::Return(items) => items,
         CompletionFlow::Cancelled => vec![],
     }

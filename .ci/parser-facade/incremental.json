@@ -1,0 +1,340 @@
+{
+  "schema_version": 1,
+  "incremental_public_modules": [
+    {
+      "name": "incremental_advanced_reuse",
+      "classification": "experimental",
+      "disposition": "gate",
+      "owner": "#6707",
+      "target_owner": "#7081",
+      "exit_condition": "Quarantine as non-production analytical similarity or retire.",
+      "production_eligible": false
+    },
+    {
+      "name": "incremental_checkpoint",
+      "classification": "compatibility_reexport",
+      "disposition": "deprecate",
+      "owner": "#6701",
+      "target_owner": "#6975",
+      "exit_condition": "Replace with canonical checkpoint/restart contracts or remove.",
+      "production_eligible": false
+    },
+    {
+      "name": "incremental_document",
+      "classification": "experimental",
+      "disposition": "gate",
+      "owner": "#6707",
+      "target_owner": "#7081",
+      "exit_condition": "Quarantine post-full-parse reuse and retain only proven algorithms.",
+      "production_eligible": false
+    },
+    {
+      "name": "incremental_edit",
+      "classification": "compatibility_reexport",
+      "disposition": "deprecate",
+      "owner": "#6701",
+      "target_owner": "#6975",
+      "exit_condition": "Forward to the canonical Edit contract or remove.",
+      "production_eligible": false
+    },
+    {
+      "name": "incremental_handler_v2",
+      "classification": "retire",
+      "disposition": "remove",
+      "owner": "#6701",
+      "target_owner": "#6975",
+      "exit_condition": "Remove the parser-owned LSP handler surface.",
+      "production_eligible": false
+    },
+    {
+      "name": "incremental_integration",
+      "classification": "compatibility_reexport",
+      "disposition": "deprecate",
+      "owner": "#6701",
+      "target_owner": "#6975",
+      "exit_condition": "Migrate consumers to the canonical incremental API.",
+      "production_eligible": false
+    },
+    {
+      "name": "incremental_simple",
+      "classification": "compatibility_reexport",
+      "disposition": "deprecate",
+      "owner": "#6701",
+      "target_owner": "#6975",
+      "exit_condition": "Forward to the canonical API or remove.",
+      "production_eligible": false
+    },
+    {
+      "name": "incremental_v2",
+      "classification": "experimental",
+      "disposition": "gate",
+      "owner": "#6707",
+      "target_owner": "#7081",
+      "exit_condition": "Quarantine noncanonical reuse paths until an admitted strategy is proven.",
+      "production_eligible": false
+    }
+  ],
+  "incremental_public_exports": [
+    {
+      "name": "checkpoint::LexCheckpoint",
+      "classification": "incremental_parser",
+      "disposition": "review",
+      "owner": "#6704",
+      "target_owner": "#6982",
+      "exit_condition": "Retain behind the canonical restart contract once generation identity is complete.",
+      "pending": {
+        "reason": "Lexer checkpoint and restart reporting remain historical generations awaiting their incremental disposition.",
+        "resolves_when": "#6982 dispositions the historical lexer checkpoint generation."
+      },
+      "production_eligible": false
+    },
+    {
+      "name": "checkpoint::ParseCheckpoint",
+      "classification": "retire",
+      "disposition": "remove",
+      "owner": "#6734",
+      "target_owner": "#6977",
+      "exit_condition": "Remove the post-hoc pseudo continuation checkpoint.",
+      "production_eligible": false
+    },
+    {
+      "name": "checkpoint::ScopeSnapshot",
+      "classification": "retire",
+      "disposition": "remove",
+      "owner": "#6734",
+      "target_owner": "#6977",
+      "exit_condition": "Move any real scope projection to its semantic owner or remove.",
+      "production_eligible": false
+    },
+    {
+      "name": "diagnostics::LexRestartReport",
+      "classification": "incremental_parser",
+      "disposition": "review",
+      "owner": "#6704",
+      "target_owner": "#6982",
+      "exit_condition": "Retain as the diagnostics component of the canonical ReparseResult contract.",
+      "pending": {
+        "reason": "Lexer checkpoint and restart reporting remain historical generations awaiting their incremental disposition.",
+        "resolves_when": "#6982 dispositions the historical lexer checkpoint generation."
+      },
+      "production_eligible": true
+    },
+    {
+      "name": "diagnostics::LexRestartStrategy",
+      "classification": "incremental_parser",
+      "disposition": "review",
+      "owner": "#6704",
+      "target_owner": "#6982",
+      "exit_condition": "Retain as the strategy component of the canonical ReparseResult contract.",
+      "pending": {
+        "reason": "Lexer checkpoint and restart reporting remain historical generations awaiting their incremental disposition.",
+        "resolves_when": "#6982 dispositions the historical lexer checkpoint generation."
+      },
+      "production_eligible": true
+    },
+    {
+      "name": "diagnostics::ReparseResult",
+      "classification": "incremental_parser",
+      "disposition": "retain",
+      "owner": "#6710",
+      "target_owner": "#7001",
+      "exit_condition": "Migrate into the canonical generation-bound snapshot/result contract.",
+      "production_eligible": true
+    },
+    {
+      "name": "edit::Edit",
+      "classification": "incremental_parser",
+      "disposition": "retain",
+      "owner": "#6701",
+      "target_owner": "#6975",
+      "exit_condition": "Remain a canonical production edit input.",
+      "production_eligible": true
+    },
+    {
+      "name": "geometry_attachment::SOURCE_GEOMETRY_ATTACHMENT_SCHEMA_VERSION",
+      "classification": "incremental_parser",
+      "disposition": "review",
+      "owner": "#13976",
+      "target_owner": "#7101",
+      "exit_condition": "Retain as the schema identity of the snapshot geometry attachment; becomes production-eligible only once the partition producer publishes a complete attachment.",
+      "pending": { "reason": "The geometry attachment producer has not published a complete partition.", "resolves_when": "#7101 publishes and validates the complete source-geometry attachment contract." },
+      "production_eligible": false
+    },
+    {
+      "name": "geometry_attachment::SourceGeometryAttachment",
+      "classification": "incremental_parser",
+      "disposition": "review",
+      "owner": "#13976",
+      "target_owner": "#7101",
+      "exit_condition": "Reachable from the production ParseSnapshot::source_geometry accessor; becomes production-eligible only once it can publish a complete partition rather than only unavailable.",
+      "pending": { "reason": "The production accessor currently exposes only an unavailable geometry attachment.", "resolves_when": "#7101 publishes a complete source-geometry partition through the accessor." },
+      "production_eligible": false
+    },
+    {
+      "name": "geometry_attachment::SourceGeometryAttachmentState",
+      "classification": "incremental_parser",
+      "disposition": "review",
+      "owner": "#13976",
+      "target_owner": "#7101",
+      "exit_condition": "Retain as the unavailable/partial/complete discriminant; becomes production-eligible with the attachment it describes.",
+      "pending": { "reason": "The geometry attachment state is not yet backed by a complete production partition.", "resolves_when": "#7101 validates the state against a complete source-geometry attachment." },
+      "production_eligible": false
+    },
+    {
+      "name": "geometry_attachment::SourceGeometryInstrumentFailureReason",
+      "classification": "incremental_parser",
+      "disposition": "review",
+      "owner": "#13976",
+      "target_owner": "#7101",
+      "exit_condition": "Retain as the typed instrument-failure cause; becomes production-eligible with the attachment it describes.",
+      "pending": { "reason": "The instrument-failure vocabulary remains tied to the incomplete geometry attachment producer.", "resolves_when": "#7101 validates failure reasons as part of the complete source-geometry contract." },
+      "production_eligible": false
+    },
+    {
+      "name": "geometry_attachment::SourceGeometryLimitation",
+      "classification": "incremental_parser",
+      "disposition": "review",
+      "owner": "#13976",
+      "target_owner": "#7101",
+      "exit_condition": "Retain as the partial-attachment limitation vocabulary; becomes production-eligible with the attachment it describes.",
+      "pending": { "reason": "The limitation vocabulary is not yet backed by a complete production attachment.", "resolves_when": "#7101 validates limitations against the complete source-geometry contract." },
+      "production_eligible": false
+    },
+    {
+      "name": "geometry_attachment::SourceGeometryPayload",
+      "classification": "incremental_parser",
+      "disposition": "review",
+      "owner": "#13976",
+      "target_owner": "#7101",
+      "exit_condition": "Placeholder payload seam for the partition producer; becomes production-eligible only when it carries the canonical byte partition.",
+      "pending": { "reason": "The payload remains a placeholder until the partition producer is complete.", "resolves_when": "#7101 publishes the canonical byte partition payload." },
+      "production_eligible": false
+    },
+    {
+      "name": "geometry_attachment::SourceGeometrySubject",
+      "classification": "incremental_parser",
+      "disposition": "review",
+      "owner": "#13976",
+      "target_owner": "#7101",
+      "exit_condition": "Retain as the generation-bound geometry subject that makes cross-generation attachment impossible; becomes production-eligible with the attachment it identifies.",
+      "pending": { "reason": "The generation-bound subject lacks a complete production attachment to identify.", "resolves_when": "#7101 validates generation-bound identity for the complete source-geometry attachment." },
+      "production_eligible": false
+    },
+    {
+      "name": "geometry_attachment::SourceGeometryUnavailableReason",
+      "classification": "incremental_parser",
+      "disposition": "review",
+      "owner": "#13976",
+      "target_owner": "#7101",
+      "exit_condition": "Retain as the typed unavailable cause published by current constructors; becomes production-eligible with the attachment it describes.",
+      "pending": { "reason": "Current constructors publish unavailable geometry rather than a complete partition.", "resolves_when": "#7101 validates unavailable causes alongside the complete source-geometry contract." },
+      "production_eligible": false
+    },
+    {
+      "name": "geometry_attachment::SourceGeometryValidationError",
+      "classification": "incremental_parser",
+      "disposition": "review",
+      "owner": "#13976",
+      "target_owner": "#7101",
+      "exit_condition": "Reachable from the production ParseSnapshotValidationError::SourceGeometry variant; becomes production-eligible with the attachment it validates.",
+      "pending": { "reason": "The validation error is not yet backed by a complete production attachment contract.", "resolves_when": "#7101 validates source-geometry errors against the complete attachment schema." },
+      "production_eligible": false
+    },
+    {
+      "name": "lex::MAX_STORED_LEX_CHECKPOINTS",
+      "classification": "experimental",
+      "disposition": "review",
+      "owner": "#6704",
+      "target_owner": "#6982",
+      "exit_condition": "Replace the public tuning constant with typed strategy policy or make private once #6982 lands.",
+      "pending": {
+        "reason": "Lexer checkpoint and restart reporting remain historical generations awaiting their incremental disposition.",
+        "resolves_when": "#6982 dispositions the historical lexer checkpoint generation."
+      },
+      "production_eligible": false
+    },
+    {
+      "name": "perl_line_index::LineIndex",
+      "classification": "compatibility_reexport",
+      "disposition": "review",
+      "owner": "#6701",
+      "target_owner": "#6975",
+      "exit_condition": "Keep only if downstream consumers require this exact re-export.",
+      "pending": {
+        "reason": "The canonical incremental API is still converging, so the parser-owned error and index surface cannot be settled from PF01.",
+        "resolves_when": "#6975 lands the canonical incremental contract."
+      },
+      "production_eligible": false
+    },
+    {
+      "name": "snapshot::ParseGeneration",
+      "classification": "incremental_parser",
+      "disposition": "retain",
+      "owner": "#7001",
+      "target_owner": "#6975",
+      "exit_condition": "Monotonic committed-generation identity with checked advancement (#7001).",
+      "production_eligible": true
+    },
+    {
+      "name": "snapshot::ParseSnapshot",
+      "classification": "incremental_parser",
+      "disposition": "retain",
+      "owner": "#7001",
+      "target_owner": "#6975",
+      "exit_condition": "Canonical generation-bound parser result authority: exact source digest, disposition, strategy, native output (#7001).",
+      "production_eligible": true
+    },
+    {
+      "name": "snapshot::ParseSnapshotStrategy",
+      "classification": "incremental_parser",
+      "disposition": "retain",
+      "owner": "#7001",
+      "target_owner": "#6975",
+      "exit_condition": "Production-path identity for each committed generation (#7001).",
+      "production_eligible": true
+    },
+    {
+      "name": "snapshot::ParseSnapshotValidationError",
+      "classification": "incremental_parser",
+      "disposition": "retain",
+      "owner": "#7001",
+      "target_owner": "#6975",
+      "exit_condition": "Typed snapshot/source and disposition mismatch contract (#7001).",
+      "production_eligible": true
+    },
+    {
+      "name": "snapshot::ParseTerminalDisposition",
+      "classification": "incremental_parser",
+      "disposition": "retain",
+      "owner": "#7001",
+      "target_owner": "#6975",
+      "exit_condition": "Typed terminal classification for one exact source generation (#7001).",
+      "production_eligible": true
+    },
+    {
+      "name": "state::IncrementalState",
+      "classification": "incremental_parser",
+      "disposition": "retain",
+      "owner": "#6701",
+      "target_owner": "#6975",
+      "exit_condition": "Remain canonical until the generation-bound snapshot API supersedes its public shape.",
+      "production_eligible": true
+    },
+    {
+      "name": "strategy::MAX_EDIT_SIZE",
+      "classification": "experimental",
+      "disposition": "review",
+      "owner": "#6707",
+      "target_owner": "#7072",
+      "exit_condition": "Replace public heuristic constants with typed strategy policy or make private.",
+      "pending": {
+        "reason": "The edit-size strategy bound is still an implementation detail pending its incremental strategy owner.",
+        "resolves_when": "#7072 settles the incremental edit-size strategy bound."
+      },
+      "production_eligible": false
+    }
+  ],
+  "incremental_public_functions": [
+    "apply_edits"
+  ]
+}

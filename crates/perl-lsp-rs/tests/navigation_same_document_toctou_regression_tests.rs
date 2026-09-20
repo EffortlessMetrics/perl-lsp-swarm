@@ -136,7 +136,7 @@ fn type_definition_fallback_pins_captured_generation_under_racing_didchange() ->
     server.test_apply_did_change(uri, &after, 2)?;
     assert_eq!(
         server.test_document_generation(uri),
-        Some(1),
+        Some(2),
         "the racing didChange must actually advance the document generation"
     );
 
@@ -311,7 +311,7 @@ fn implementation_fallback_pins_captured_generation_under_racing_didchange() -> 
     server.test_apply_did_change(uri, &after, 2)?;
     assert_eq!(
         server.test_document_generation(uri),
-        Some(1),
+        Some(2),
         "the racing didChange must actually advance the document generation"
     );
 

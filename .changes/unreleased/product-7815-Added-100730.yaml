@@ -1,0 +1,9 @@
+project: product
+component: Compatibility
+kind: Added
+body: Add an actual-Neovim virtual perldoc receipt with explicit upstream-dependency state.
+time: 2026-08-13T10:07:30Z
+custom:
+  PR: "7815"
+  Slug: neovim-perldoc-virtual
+  Breaking: "no"

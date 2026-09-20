@@ -1,3 +1,4 @@
+#![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 //! Property-based tests for `perl-token` invariants.
 //!
 //! Invariants tested:
@@ -11,6 +12,7 @@
 //! - Equality reflexivity for `TokenSpan`
 //! - `TokenKind::from_keyword` / `from_operator` / `from_delimiter` / `from_sigil` round-trip:
 //!   each spelled entry maps back to the correct kind
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
 use perl_token::{
     DELIMITER_SPELLINGS, KEYWORD_SPELLINGS, OPERATOR_SPELLINGS, SIGIL_SPELLINGS, TokenKind,
@@ -62,8 +64,8 @@ proptest! {
                 )));
             }
         };
-        prop_assert_eq!(span.start, start);
-        prop_assert_eq!(span.end, end);
+        prop_assert_eq!(span.start(), start);
+        prop_assert_eq!(span.end(), end);
     }
 
     /// `try_new` rejects spans where `end < start`.
@@ -78,7 +80,7 @@ proptest! {
     /// `len()` equals `end - start` for ordered spans.
     #[test]
     fn span_len_equals_end_minus_start((start, end) in ordered_span()) {
-        let span = TokenSpan::new(start, end);
+        let span = TokenSpan::try_new(start, end).expect("ordered span");
         prop_assert_eq!(span.len(), end - start);
     }
 
@@ -87,28 +89,28 @@ proptest! {
     // This property intentionally compares `is_empty` with the raw length predicate.
     #[allow(clippy::len_zero)]
     fn span_is_empty_iff_len_zero((start, end) in ordered_span()) {
-        let span = TokenSpan::new(start, end);
+        let span = TokenSpan::try_new(start, end).expect("ordered span");
         prop_assert_eq!(span.is_empty(), span.len() == 0);
     }
 
     /// `is_empty()` is true iff `start == end`.
     #[test]
     fn span_is_empty_iff_start_eq_end((start, end) in ordered_span()) {
-        let span = TokenSpan::new(start, end);
+        let span = TokenSpan::try_new(start, end).expect("ordered span");
         prop_assert_eq!(span.is_empty(), start == end);
     }
 
     /// Equality is reflexive.
     #[test]
     fn span_equality_is_reflexive((start, end) in ordered_span()) {
-        let span = TokenSpan::new(start, end);
+        let span = TokenSpan::try_new(start, end).expect("ordered span");
         prop_assert_eq!(span, span);
     }
 
     /// `range()` matches the `start..end` range.
     #[test]
     fn span_range_matches_start_end((start, end) in ordered_span()) {
-        let span = TokenSpan::new(start, end);
+        let span = TokenSpan::try_new(start, end).expect("ordered span");
         prop_assert_eq!(span.range(), start..end);
     }
 
@@ -118,7 +120,7 @@ proptest! {
         (start, end) in ordered_span(),
         offset in 0usize..600,
     ) {
-        let span = TokenSpan::new(start, end);
+        let span = TokenSpan::try_new(start, end).expect("ordered span");
         let contained = span.contains(offset);
         let expected = offset >= start && offset < end;
         prop_assert_eq!(contained, expected,
@@ -131,7 +133,7 @@ proptest! {
         (start, end) in ordered_span(),
         offset in 0usize..600,
     ) {
-        let span = TokenSpan::new(start, end);
+        let span = TokenSpan::try_new(start, end).expect("ordered span");
         let touched = span.touches(offset);
         let expected = offset >= start && offset <= end;
         prop_assert_eq!(touched, expected,
@@ -141,8 +143,8 @@ proptest! {
     /// `overlaps` is symmetric.
     #[test]
     fn span_overlaps_is_symmetric(((a0, a1), (b0, b1)) in ordered_span_pair()) {
-        let a = TokenSpan::new(a0, a1);
-        let b = TokenSpan::new(b0, b1);
+        let a = TokenSpan::try_new(a0, a1).expect("ordered span");
+        let b = TokenSpan::try_new(b0, b1).expect("ordered span");
         prop_assert_eq!(a.overlaps(b), b.overlaps(a),
             "overlaps not symmetric: a=[{},{}) b=[{},{})", a0, a1, b0, b1);
     }
@@ -150,22 +152,22 @@ proptest! {
     /// `cover` result contains both input spans.
     #[test]
     fn span_cover_contains_both(((a0, a1), (b0, b1)) in ordered_span_pair()) {
-        let a = TokenSpan::new(a0, a1);
-        let b = TokenSpan::new(b0, b1);
+        let a = TokenSpan::try_new(a0, a1).expect("ordered span");
+        let b = TokenSpan::try_new(b0, b1).expect("ordered span");
         let covered = a.cover(b);
-        // cover(a, b).start <= min(a.start, b.start)
-        prop_assert!(covered.start <= a0, "cover.start ({}) > a.start ({})", covered.start, a0);
-        prop_assert!(covered.start <= b0, "cover.start ({}) > b.start ({})", covered.start, b0);
-        // cover(a, b).end >= max(a.end, b.end)
-        prop_assert!(covered.end >= a1, "cover.end ({}) < a.end ({})", covered.end, a1);
-        prop_assert!(covered.end >= b1, "cover.end ({}) < b.end ({})", covered.end, b1);
+        // cover(a, b).start <= min(a.start(), b.start())
+        prop_assert!(covered.start() <= a0, "cover.start ({}) > a.start ({})", covered.start(), a0);
+        prop_assert!(covered.start() <= b0, "cover.start ({}) > b.start ({})", covered.start(), b0);
+        // cover(a, b).end >= max(a.end(), b.end())
+        prop_assert!(covered.end() >= a1, "cover.end ({}) < a.end ({})", covered.end(), a1);
+        prop_assert!(covered.end() >= b1, "cover.end ({}) < b.end ({})", covered.end(), b1);
     }
 
     /// `cover` is commutative.
     #[test]
     fn span_cover_is_commutative(((a0, a1), (b0, b1)) in ordered_span_pair()) {
-        let a = TokenSpan::new(a0, a1);
-        let b = TokenSpan::new(b0, b1);
+        let a = TokenSpan::try_new(a0, a1).expect("ordered span");
+        let b = TokenSpan::try_new(b0, b1).expect("ordered span");
         prop_assert_eq!(a.cover(b), b.cover(a));
     }
 }
@@ -181,14 +183,21 @@ proptest! {
         ..ProptestConfig::default()
     })]
 
-    /// `TokenRef::try_new` accepts ordered spans.
+    /// `TokenRef::try_new` accepts ordered spans that satisfy empty-span policy.
     #[test]
     fn token_ref_try_new_accepts_ordered(
         (start, end) in ordered_span(),
         kind in any_token_kind(),
     ) {
-        // try_new only checks ordering, not empty-span rules
-        let result = TokenRef::try_new(kind, "x", start, end);
+        let text = "x".repeat(end - start);
+        let result = TokenRef::try_new(kind, &text, start, end);
+        if start == end && !matches!(kind, TokenKind::Eof | TokenKind::Unknown) {
+            prop_assert_eq!(
+                result,
+                Err(TokenSpanError::EmptySpanNotAllowed { kind, at: start })
+            );
+            return Ok(());
+        }
         prop_assert!(result.is_ok(),
             "try_new failed for ordered ({},{}) kind={:?}", start, end, kind);
         let r = match result {
@@ -199,8 +208,9 @@ proptest! {
                 )));
             }
         };
-        prop_assert_eq!(r.start, start);
-        prop_assert_eq!(r.end, end);
+        prop_assert_eq!(r.start(), start);
+        prop_assert_eq!(r.end(), end);
+        prop_assert_eq!(r.text.len(), end - start);
     }
 
     /// `TokenRef::try_new` rejects inverted spans.
@@ -218,17 +228,37 @@ proptest! {
         prop_assert_eq!(result, Err(TokenSpanError::EndBeforeStart { start, end }));
     }
 
-    /// `len()` on `TokenRef` equals `end - start` for ordered spans.
-    /// `TokenRef::new` does not validate spans, so we can pass arbitrary positions
-    /// with "x" as dummy text.
+    /// `len()` on `TokenRef` equals `end - start` for constructible spans.
     #[test]
     fn token_ref_len_is_end_minus_start(
         (start, end) in ordered_span(),
         kind in any_token_kind(),
     ) {
-        // TokenRef::new is unchecked: accepts any (start, end) regardless of text length
-        let r = TokenRef::new(kind, "x", start, end);
+        prop_assume!(start < end || matches!(kind, TokenKind::Eof | TokenKind::Unknown));
+        let text = "x".repeat(end - start);
+        let r = TokenRef::new_checked(kind, &text, start, end).expect("valid token");
         prop_assert_eq!(r.len(), end - start);
+    }
+
+    /// `TokenRef::try_new` rejects source text whose byte length differs from span width.
+    #[test]
+    fn token_ref_try_new_rejects_text_length_mismatch(
+        (start, end) in ordered_span(),
+        kind in any_token_kind(),
+        extra in 1usize..8,
+    ) {
+        prop_assume!(start < end || matches!(kind, TokenKind::Eof | TokenKind::Unknown));
+        let text = "x".repeat(end - start + extra);
+        let result = TokenRef::try_new(kind, &text, start, end);
+        prop_assert_eq!(
+            result,
+            Err(TokenSpanError::TextLengthMismatch {
+                text_len: end - start + extra,
+                span_len: end - start,
+                start,
+                end,
+            })
+        );
     }
 }
 
@@ -322,20 +352,23 @@ fn empty_span_for_eof_is_valid() {
     assert!(result.is_ok());
 }
 
-/// Zero-length span with non-Eof kind is accepted by `try_new` but rejected by `new_checked`.
+/// Empty non-Eof/Unknown kinds are rejected by both `try_new` and `new_checked`.
 #[test]
-fn empty_span_non_eof_rejected_by_new_checked() {
-    let result = TokenRef::new_checked(TokenKind::Identifier, "", 5, 5);
+fn empty_span_non_eof_rejected_by_try_new_and_new_checked() {
     assert_eq!(
-        result,
+        TokenRef::try_new(TokenKind::Identifier, "", 5, 5),
+        Err(TokenSpanError::EmptySpanNotAllowed { kind: TokenKind::Identifier, at: 5 })
+    );
+    assert_eq!(
+        TokenRef::new_checked(TokenKind::Identifier, "", 5, 5),
         Err(TokenSpanError::EmptySpanNotAllowed { kind: TokenKind::Identifier, at: 5 })
     );
 }
 
-/// `TokenSpan::new(0,0)` is empty.
+/// `TokenSpan::try_new(0,0).expect("ordered span")` is empty.
 #[test]
 fn span_zero_zero_is_empty() {
-    let span = TokenSpan::new(0, 0);
+    let span = TokenSpan::try_new(0, 0).expect("ordered span");
     assert!(span.is_empty());
     assert_eq!(span.len(), 0);
 }
@@ -343,7 +376,7 @@ fn span_zero_zero_is_empty() {
 /// `contains` is false for all offsets on an empty span.
 #[test]
 fn empty_span_contains_nothing() {
-    let span = TokenSpan::new(5, 5);
+    let span = TokenSpan::try_new(5, 5).expect("ordered span");
     for offset in 0..10 {
         assert!(!span.contains(offset));
     }
@@ -352,7 +385,7 @@ fn empty_span_contains_nothing() {
 /// `touches` is true only at the single boundary offset of an empty span.
 #[test]
 fn empty_span_touches_only_its_boundary() {
-    let span = TokenSpan::new(5, 5);
+    let span = TokenSpan::try_new(5, 5).expect("ordered span");
     assert!(span.touches(5));
     assert!(!span.touches(4));
     assert!(!span.touches(6));

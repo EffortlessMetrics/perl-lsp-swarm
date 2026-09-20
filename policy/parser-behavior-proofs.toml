@@ -1,0 +1,87 @@
+schema_version = 1
+policy = "parser-behavior-proofs"
+
+[[proof]]
+id = "ordinary_unknown_lowercase_call_uses_bareword_path"
+concept_id = "parser.calls.unknown_lowercase_bareword"
+governing_contract = "#1788, #6491, #6908"
+entrypoint = "Parser::parse"
+required_decision = "unknown_lowercase_bareword_call"
+source_file = "crates/perl-parser-core/src/engine/parser/indirect_object_tests.rs"
+positive_test = "test_unknown_lowercase_name_preserves_nested_arguments_and_exercises_bareword_path"
+source_shape = "my_custom_method $obj ($title // 'Untitled'), $options->{limit};"
+expected_outcome = "FunctionCall(my_custom_method) with three ordered arguments and a span covering the complete non-parenthesized call"
+positive_markers = [
+  "my_custom_method $obj ($title // 'Untitled'), $options->{limit};",
+  "parser.decision_trace()",
+  "ParserDecision::UnknownLowercaseBarewordCall",
+  "NodeKind::FunctionCall",
+  "assert_eq!(args.len(), 3)",
+  "sole_top_level_statement(ast)",
+  "NodeKind::ExpressionStatement",
+  "third arg must keep arrow-hash-deref shape"
+]
+claim_boundary = "Establishes the statement-start unknown-lowercase non-parenthesized call decision for this nested-argument shape; it does not establish arbitrary indirect-object or prototype semantics."
+
+[[proof.negative]]
+test = "test_parenthesized_call_does_not_satisfy_unknown_lowercase_bareword_path"
+reason = "A parenthesized ordinary call reaches the same FunctionCall through the ordinary expression route; it must emit no bareword-route evidence, and it keeps the ExpressionStatement transport the bareword route does not produce."
+markers = [
+  "my_custom_method($obj, ($title // 'Untitled'), $options->{limit});",
+  "parser.decision_trace().is_empty()",
+  "sole_top_level_statement(ast)",
+  "NodeKind::ExpressionStatement { expression }"
+]
+
+[[proof.negative]]
+test = "test_ast_equivalent_bypass_does_not_satisfy_bareword_route_proof"
+reason = "A mutation may preserve the public FunctionCall AST while bypassing the production predicate; absent route evidence must keep the path-specific proof unsatisfied."
+markers = [
+  "set_unknown_lowercase_bareword_decision_bypass_for_test(true)",
+  "parser.decision_trace().is_empty()",
+  "mutation control must preserve the final FunctionCall shape",
+  "mutation control must not move the source onto another route"
+]
+
+[[proof]]
+id = "unclosed_qw_keeps_trailing_declaration_inside_recovery_boundary"
+concept_id = "parser.recovery.unclosed_qw_paired_delimiter"
+governing_contract = "#6491, #6908"
+entrypoint = "Parser::parse"
+required_decision = "unclosed_qw_recovery_boundary"
+source_file = "crates/perl-parser-core/src/engine/parser/indirect_object_tests.rs"
+positive_test = "test_unclosed_non_parenthesized_qw_keeps_trailing_declaration_inside_recovery_boundary"
+source_shape = "my @items = qw[word\\nmy $x = 1;"
+expected_outcome = "One top-level VariableDeclaration plus the established unclosed-qw diagnostic; the later declaration remains inside the malformed quote-word construct."
+positive_markers = [
+  "my @items = qw[word\\nmy $x = 1;",
+  "statements.len() != 1",
+  "Unclosed qw() delimiter: missing closing delimiter before end of file",
+  "NodeKind::VariableDeclaration"
+]
+claim_boundary = "Establishes the current recovery boundary for this exact paired-delimiter malformed source; it does not promote a general quote-like recovery policy."
+
+[[proof.negative]]
+test = "test_closed_non_parenthesized_qw_releases_following_declaration"
+reason = "Closing the delimiter must release the following declaration as a second top-level statement without diagnostics."
+markers = [
+  "my @items = qw[word];\\nmy $x = 1;",
+  "statements.len() != 2",
+  "parser.errors().is_empty()"
+]
+
+[[collection]]
+id = "parser_accuracy_ast_expectations_are_fully_consumed"
+source_file = "crates/perl-parser/tests/parser_accuracy_e2e.rs"
+consumer_test = "parser_accuracy_fixtures_satisfy_manifest_ast_expectations"
+collection = "ast_expectations"
+cardinality = "all"
+required_markers = [
+  "for expectation in &fixture.ast_expectations",
+  "assert_observed_expectation(&fixture.id, expectation, &observed)"
+]
+forbidden_markers = [
+  "fixture.ast_expectations.first()",
+  "fixture.ast_expectations.get(0)"
+]
+claim_boundary = "Establishes complete consumption of parser-accuracy AST expectations; recovery_expectations receive the same cardinality contract when admitted through #6629/#6703."

@@ -1,7 +1,12 @@
+import { randomUUID } from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { isPotentiallyExpensiveRegex } from './gherkinRedosGuard';
+import {
+  createGherkinMatchBudget,
+  isSafeGherkinStepMatch,
+  normalizeGherkinRegexFlags,
+} from './gherkinRedosGuard';
 
 const CREATE_STEP_DEFINITION_COMMAND = 'perl-lsp.createGherkinStepDefinition';
 const GHERKIN_STEP_RE = /^\s*(Given|When|Then|And|But)\b\s*(.*)$/;
@@ -11,8 +16,19 @@ const OUTLINE_PLACEHOLDER_RE = /<[^>\r\n]+>/y;
 const DEFAULT_STEP_DEFINITION_GLOB = '**/*.pm';
 const DEFAULT_EXCLUDE_GLOB = '{**/node_modules/**,**/blib/**}';
 const MAX_STEP_DEFINITION_FILES = 500;
-const MAX_MATCH_REGEX_LENGTH = 256;
-const MAX_MATCH_STEP_TEXT_LENGTH = 512;
+// Exported so the provider workspace scan (#9773) shares one envelope
+// authority instead of restating these bounds in a second module.
+export const MAX_STEP_DEFINITION_FILE_BYTES = 512 * 1024;
+export const MAX_STEP_DEFINITION_TOTAL_BYTES = 16 * 1024 * 1024;
+// The aggregate envelope bounds what the scan READS, not only what it keeps:
+// a candidate rejected by the per-file cap has already consumed up to
+// `MAX_STEP_DEFINITION_FILE_BYTES + 1` bytes of I/O, so attempted reads are
+// counted against this budget and the scan refuses before the next read.
+export const MAX_STEP_DEFINITION_TOTAL_READ_BYTES = 16 * 1024 * 1024;
+// Rejecting ReDoS-shaped patterns bounds the cost of any single match, not the
+// number of matches. An accepted 16 MiB workspace can still hold hundreds of
+// thousands of individually linear-time step definitions, so the population
+// itself gets a budget. Ordinary suites are three orders of magnitude below it.
 // Catastrophic backtracking (ReDoS) requires a *quantified group that itself
 // contains a quantifier, a backreference, a lookaround, or alternation. A
 // single character class
@@ -34,6 +50,7 @@ export interface GherkinStepLine {
 export interface ExtractedStepDefinition {
   keyword: StepKeyword;
   pattern: string;
+  flags: string;
 }
 
 export interface StepDefinitionScan {
@@ -41,9 +58,37 @@ export interface StepDefinitionScan {
   ambiguous: boolean;
 }
 
+export interface WorkspaceStepDefinitionScan {
+  sources: string[];
+  complete: boolean;
+}
+
+export type BoundedFileRead =
+  | { bytes: Uint8Array; text: string; byteLength: number }
+  | { kind: 'over-file-cap' };
+
 interface CreateStepDefinitionArgs {
   featureUri: string;
   line: number;
+}
+
+interface TargetIdentity {
+  dev: number;
+  ino: number;
+  size: number;
+  mtimeMs: number;
+}
+
+interface ExistingTarget {
+  text: string;
+  mode: number;
+  identity: TargetIdentity;
+}
+
+interface SafeTarget {
+  canonicalWorkspaceRoot: string;
+  targetPath: string;
+  parentPath: string;
 }
 
 export function registerGherkinStepDefinitionSupport(): vscode.Disposable[] {
@@ -51,6 +96,11 @@ export function registerGherkinStepDefinitionSupport(): vscode.Disposable[] {
 
   const provider: vscode.CodeActionProvider = {
     async provideCodeActions(document, range) {
+      // Generating a step definition writes to the workspace, so it is not
+      // offered while the workspace is untrusted.
+      if (!vscode.workspace.isTrusted) {
+        return [];
+      }
       return provideGherkinStepDefinitionActions(document, range);
     },
   };
@@ -101,7 +151,7 @@ export function buildGeneratedStepPattern(stepText: string): string {
     OUTLINE_PLACEHOLDER_RE.lastIndex = cursor;
     const placeholder = OUTLINE_PLACEHOLDER_RE.exec(stepText);
     if (placeholder && placeholder.index === cursor) {
-      pattern += '(.+)';
+      pattern += '([^\\r\\n]+)';
       cursor += placeholder[0].length;
       continue;
     }
@@ -120,8 +170,9 @@ export function buildGeneratedStepPattern(stepText: string): string {
 }
 
 export function buildGeneratedStepStub(step: GherkinStepLine, relativeFeaturePath: string): string {
+  const safeFeaturePath = sanitizeGeneratedComment(relativeFeaturePath);
   return [
-    `# Auto-generated from ${relativeFeaturePath}:${step.line + 1}`,
+    `# Auto-generated from ${safeFeaturePath}:${step.line + 1}`,
     `${step.keyword} qr/${buildGeneratedStepPattern(step.text)}/, sub {`,
     '    # TODO: implement step',
     '    return;',
@@ -183,15 +234,16 @@ export function scanStepDefinitions(source: string): StepDefinitionScan {
       continue;
     }
 
-    const pattern = extractSlashDelimitedPattern(trimmed, match[0].length - 1);
-    if (!pattern) {
+    const parsed = extractSlashDelimitedPattern(trimmed, match[0].length - 1);
+    if (!parsed) {
       ambiguous = true;
       continue;
     }
 
     definitions.push({
       keyword: match[1] as StepKeyword,
-      pattern,
+      pattern: parsed.pattern,
+      flags: parsed.flags,
     });
   }
 
@@ -203,12 +255,22 @@ export function classifyStepDefinitionStatus(
   sources: string[],
 ): StepDefinitionStatus {
   let ambiguous = false;
+  const budget = createGherkinMatchBudget();
 
   for (const source of sources) {
     const scan = scanStepDefinitions(source);
     ambiguous = ambiguous || scan.ambiguous;
 
     for (const definition of scan.definitions) {
+      // Count the full parsed population before filtering or matching so both
+      // Gherkin consumers enforce the same deterministic attempt envelope.
+      if (!budget.tryConsume()) {
+        // The population was never fully tested, so "undefined" would be a
+        // claim this scan cannot support. Report the uncertainty instead; the
+        // ambiguous path declines to generate rather than writing a stub that
+        // may duplicate an untested definition.
+        return 'ambiguous';
+      }
       const matches = testExtractedDefinition(definition, step.text);
       if (matches === true) {
         return 'defined';
@@ -236,8 +298,12 @@ async function provideGherkinStepDefinitionActions(
     return [];
   }
 
-  const sources = await collectWorkspaceStepDefinitionSources(workspaceFolder);
-  const status = classifyStepDefinitionStatus(step, sources);
+  const scan = await collectWorkspaceStepDefinitionSources(workspaceFolder);
+  if (!scan.complete) {
+    return [];
+  }
+
+  const status = classifyStepDefinitionStatus(step, scan.sources);
   if (status !== 'undefined') {
     return [];
   }
@@ -273,8 +339,15 @@ async function createStepDefinitionFromFeature(args: CreateStepDefinitionArgs): 
     return;
   }
 
-  const sources = await collectWorkspaceStepDefinitionSources(workspaceFolder);
-  const status = classifyStepDefinitionStatus(step, sources);
+  const scan = await collectWorkspaceStepDefinitionSources(workspaceFolder);
+  if (!scan.complete) {
+    void vscode.window.showWarningMessage(
+      'Step definition generation is unavailable because the workspace scan was incomplete.',
+    );
+    return;
+  }
+
+  const status = classifyStepDefinitionStatus(step, scan.sources);
   if (status === 'defined') {
     void vscode.window.showInformationMessage(
       `A matching step definition already exists for "${step.text}".`,
@@ -290,53 +363,191 @@ async function createStepDefinitionFromFeature(args: CreateStepDefinitionArgs): 
 
   const targetPath = suggestStepDefinitionPath(featureUri.fsPath, workspaceFolder.uri.fsPath);
   const relativeFeaturePath = vscode.workspace.asRelativePath(featureUri);
-  await fs.promises.mkdir(path.dirname(targetPath), { recursive: true });
 
-  if (fs.existsSync(targetPath)) {
-    const existing = await fs.promises.readFile(targetPath, 'utf8');
-    const stub = buildGeneratedStepStub(step, relativeFeaturePath);
-    const separator = existing.trimEnd().length === 0 ? '' : '\n\n';
-    await fs.promises.writeFile(
+  try {
+    await writeGeneratedStepDefinitionFile(
+      workspaceFolder.uri.fsPath,
       targetPath,
-      `${existing.replace(/\s*$/, '')}${separator}${stub}\n`,
-      'utf8',
+      buildStepDefinitionFileContent(step, relativeFeaturePath),
+      buildGeneratedStepStub(step, relativeFeaturePath),
     );
-  } else {
-    const content = buildStepDefinitionFileContent(step, relativeFeaturePath);
-    await fs.promises.writeFile(targetPath, content, 'utf8');
+  } catch (error) {
+    void vscode.window.showErrorMessage(
+      `Could not write the generated step definition: ${error instanceof Error ? error.message : String(error)}`,
+    );
+    return;
   }
 
   const targetDocument = await vscode.workspace.openTextDocument(vscode.Uri.file(targetPath));
   await vscode.window.showTextDocument(targetDocument);
 }
 
-async function collectWorkspaceStepDefinitionSources(
+// Exported for the containment proof in gherkinSecurity.test.ts: the scan
+// bounds are a security claim and need a direct seam, not one observed through
+// the code-action provider.
+export async function collectWorkspaceStepDefinitionSources(
   workspaceFolder: vscode.WorkspaceFolder,
-): Promise<string[]> {
-  const files = await vscode.workspace.findFiles(
-    DEFAULT_STEP_DEFINITION_GLOB,
-    DEFAULT_EXCLUDE_GLOB,
-    MAX_STEP_DEFINITION_FILES,
-  );
+  reader: typeof readBoundedFile = readBoundedFile,
+): Promise<WorkspaceStepDefinitionScan> {
+  let files: vscode.Uri[];
+  try {
+    files = await vscode.workspace.findFiles(
+      new vscode.RelativePattern(workspaceFolder, DEFAULT_STEP_DEFINITION_GLOB),
+      DEFAULT_EXCLUDE_GLOB,
+      MAX_STEP_DEFINITION_FILES + 1,
+    );
+  } catch {
+    return { sources: [], complete: false };
+  }
   const workspacePrefix = ensureTrailingSeparator(workspaceFolder.uri.fsPath);
   const candidateFiles = files.filter((uri) =>
     ensureTrailingSeparator(uri.fsPath).startsWith(workspacePrefix),
   );
 
-  const sources = await Promise.all(
-    candidateFiles.map(async (uri) => {
-      const text = await fs.promises.readFile(uri.fsPath, 'utf8');
-      if (
-        !uri.fsPath.includes(`${path.sep}step_definitions${path.sep}`) &&
-        !text.includes('Test::BDD::Cucumber::StepFile')
-      ) {
-        return null;
-      }
-      return text;
-    }),
-  );
+  // findFiles returns at most maxResults, so reaching the cap means that the
+  // workspace population may have been truncated. Treat the result as
+  // incomplete even if every returned file can be read; otherwise a missing
+  // definition in the unreturned tail could be misclassified as undefined.
+  let complete = files.length <= MAX_STEP_DEFINITION_FILES;
+  if (!complete) {
+    return { sources: [], complete: false };
+  }
 
-  return sources.filter((value): value is string => typeof value === 'string');
+  // Read sequentially under a global byte envelope. The previous concurrent
+  // read had no per-file or aggregate bound, so a workspace could hold the
+  // extension host open on arbitrarily large step-definition candidates.
+  const sources: string[] = [];
+  let acceptedBytes = 0;
+  let attemptedBytes = 0;
+
+  for (const uri of candidateFiles) {
+    if (acceptedBytes >= MAX_STEP_DEFINITION_TOTAL_BYTES) {
+      complete = false;
+      break;
+    }
+
+    // A rejected candidate may consume the per-file limit plus one overflow
+    // byte before readBoundedFile can classify it. Refuse before the next
+    // attempt so this collector's read envelope covers attempted I/O too.
+    if (
+      attemptedBytes + MAX_STEP_DEFINITION_FILE_BYTES + 1 >
+      MAX_STEP_DEFINITION_TOTAL_READ_BYTES
+    ) {
+      complete = false;
+      break;
+    }
+
+    const read = await reader(uri.fsPath, MAX_STEP_DEFINITION_FILE_BYTES);
+    attemptedBytes +=
+      read && 'kind' in read
+        ? MAX_STEP_DEFINITION_FILE_BYTES + 1
+        : read
+          ? read.byteLength
+          : MAX_STEP_DEFINITION_FILE_BYTES + 1;
+    if (!read) {
+      complete = false;
+      continue;
+    }
+    if ('kind' in read) {
+      complete = false;
+      break;
+    }
+    if (acceptedBytes + read.byteLength > MAX_STEP_DEFINITION_TOTAL_BYTES) {
+      complete = false;
+      break;
+    }
+
+    acceptedBytes += read.byteLength;
+
+    if (
+      !uri.fsPath.includes(`${path.sep}step_definitions${path.sep}`) &&
+      !read.text.includes('Test::BDD::Cucumber::StepFile')
+    ) {
+      continue;
+    }
+
+    sources.push(read.text);
+  }
+
+  return { sources, complete };
+}
+
+/**
+ * Read at most `limit` bytes from a regular file, allocating no more than
+ * `limit + 1` bytes regardless of how the file changes after it is opened.
+ *
+ * Deciding on `lstat().size` and then calling `readFile` does not bound the
+ * read: a workspace process can grow or replace the file in between, and
+ * `readFile` allocates whatever is actually there. The size is therefore taken
+ * from the already-open descriptor and enforced by the read itself, and the
+ * read window contains no path observation that a hostile process could race.
+ * Returns bounded raw bytes plus a UTF-8 compatibility view, `over-file-cap`
+ * when the bounded read proves the file exceeds the limit, or `null` for
+ * anything that is not a readable regular file. Consumers that must honor
+ * editor encoding should decode the bytes through
+ * `vscode.workspace.decode` with the source URI. A pre-open `lstat` avoids opening known directories, FIFOs, devices,
+ * and links; descriptor `stat` and a post-read path check remain the race
+ * boundary. `O_NOFOLLOW` and `O_NONBLOCK` are used where the platform defines
+ * them. On win32, which has neither flag, this is a stable-entry check rather
+ * than atomic exclusion or a universal I/O deadline. Parent-directory
+ * symlink exclusion is not established.
+ */
+export async function readBoundedFile(
+  filePath: string,
+  limit: number,
+): Promise<BoundedFileRead | null> {
+  try {
+    const pathEntry = await fs.promises.lstat(filePath);
+    if (!pathEntry.isFile()) {
+      return null;
+    }
+  } catch {
+    return null;
+  }
+
+  let handle: fs.promises.FileHandle;
+  try {
+    const flags =
+      fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_NONBLOCK ?? 0);
+    handle = await fs.promises.open(filePath, flags);
+  } catch {
+    return null;
+  }
+
+  try {
+    const stat = await handle.stat();
+    if (!stat.isFile()) {
+      return null;
+    }
+
+    // One byte past the limit distinguishes "exactly at the limit" from
+    // "larger than the limit" without reading the remainder of the file.
+    const buffer = Buffer.allocUnsafe(limit + 1);
+    let filled = 0;
+    while (filled < buffer.length) {
+      const { bytesRead } = await handle.read(buffer, filled, buffer.length - filled, filled);
+      if (bytesRead === 0) {
+        break;
+      }
+      filled += bytesRead;
+    }
+
+    if (filled > limit) {
+      return { kind: 'over-file-cap' };
+    }
+
+    const pathEntry = await fs.promises.lstat(filePath);
+    if (!pathEntry.isFile()) {
+      return null;
+    }
+
+    const bytes = buffer.subarray(0, filled);
+    return { bytes, text: bytes.toString('utf8'), byteLength: filled };
+  } catch {
+    return null;
+  } finally {
+    await handle.close().catch(() => undefined);
+  }
 }
 
 function ensureTrailingSeparator(value: string): string {
@@ -347,7 +558,10 @@ function escapeRegexLiteral(text: string): string {
   return text.replace(/[|\\{}()[\]^$+*?.]/g, '\\$&').replace(/\//g, '\\/');
 }
 
-function extractSlashDelimitedPattern(line: string, delimiterIndex: number): string | null {
+function extractSlashDelimitedPattern(
+  line: string,
+  delimiterIndex: number,
+): { pattern: string; flags: string } | null {
   let pattern = '';
   let escaped = false;
 
@@ -366,7 +580,11 @@ function extractSlashDelimitedPattern(line: string, delimiterIndex: number): str
     }
 
     if (char === '/') {
-      return pattern;
+      let flags = '';
+      for (let flagIndex = index + 1; /[A-Za-z]/.test(line[flagIndex] ?? ''); flagIndex += 1) {
+        flags += line[flagIndex];
+      }
+      return { pattern, flags };
     }
 
     pattern += char;
@@ -379,21 +597,264 @@ function testExtractedDefinition(
   definition: ExtractedStepDefinition,
   stepText: string,
 ): boolean | null {
-  if (!isSafeRegexForStepMatching(definition.pattern, stepText)) {
+  const flags = normalizeGherkinRegexFlags(definition.flags);
+  if (flags === null || !isSafeGherkinStepMatch(definition.pattern, stepText, flags)) {
     return null;
   }
 
   try {
-    return new RegExp(definition.pattern).test(stepText);
+    return new RegExp(definition.pattern, flags).test(stepText);
   } catch {
     return null;
   }
 }
 
-function isSafeRegexForStepMatching(source: string, stepText: string): boolean {
-  if (source.length > MAX_MATCH_REGEX_LENGTH || stepText.length > MAX_MATCH_STEP_TEXT_LENGTH) {
-    return false;
+/**
+ * Create or append a generated step definition without following a workspace
+ * symlink outside the trusted workspace root.
+ */
+export async function writeGeneratedStepDefinitionFile(
+  workspaceRoot: string,
+  targetPath: string,
+  createContent: string,
+  appendStub: string,
+): Promise<void> {
+  const safeTarget = await prepareSafeTarget(workspaceRoot, targetPath);
+  const existing = await readExistingTarget(safeTarget);
+  const nextContent = existing
+    ? `${existing.text.replace(/\s*$/, '')}${existing.text.trimEnd().length === 0 ? '' : '\n\n'}${appendStub}\n`
+    : createContent;
+
+  if (Buffer.byteLength(nextContent, 'utf8') > MAX_STEP_DEFINITION_FILE_BYTES) {
+    throw new Error('generated step definition exceeds the file-size limit');
   }
 
-  return !isPotentiallyExpensiveRegex(source);
+  await atomicReplaceTarget(
+    safeTarget,
+    nextContent,
+    existing?.mode ?? 0o600,
+    existing?.identity ?? null,
+  );
+}
+
+async function prepareSafeTarget(workspaceRoot: string, targetPath: string): Promise<SafeTarget> {
+  const lexicalWorkspaceRoot = path.resolve(workspaceRoot);
+  const resolvedTarget = path.resolve(targetPath);
+  if (
+    !isPathContained(lexicalWorkspaceRoot, resolvedTarget) ||
+    resolvedTarget === lexicalWorkspaceRoot
+  ) {
+    throw new Error('generated step-definition path escapes the workspace');
+  }
+
+  const canonicalWorkspaceRoot = await fs.promises.realpath(lexicalWorkspaceRoot);
+  const parentPath = path.dirname(resolvedTarget);
+  const parentRelative = path.relative(lexicalWorkspaceRoot, parentPath);
+  const segments = parentRelative.split(path.sep).filter((segment) => segment.length > 0);
+  let current = lexicalWorkspaceRoot;
+
+  for (const segment of segments) {
+    current = path.join(current, segment);
+    let stat: fs.Stats;
+    try {
+      stat = await fs.promises.lstat(current);
+    } catch (error) {
+      if (!isNodeError(error, 'ENOENT')) {
+        throw error;
+      }
+      await fs.promises.mkdir(current);
+      stat = await fs.promises.lstat(current);
+    }
+
+    if (stat.isSymbolicLink()) {
+      throw new Error(`generated step-definition parent is a symlink: ${current}`);
+    }
+    if (!stat.isDirectory()) {
+      throw new Error(`generated step-definition parent is not a directory: ${current}`);
+    }
+
+    const canonicalCurrent = await fs.promises.realpath(current);
+    if (!isPathContained(canonicalWorkspaceRoot, canonicalCurrent)) {
+      throw new Error(`generated step-definition parent escapes the workspace: ${current}`);
+    }
+  }
+
+  return { canonicalWorkspaceRoot, targetPath: resolvedTarget, parentPath };
+}
+
+async function readExistingTarget(target: SafeTarget): Promise<ExistingTarget | null> {
+  let before: fs.Stats;
+  try {
+    before = await fs.promises.lstat(target.targetPath);
+  } catch (error) {
+    if (isNodeError(error, 'ENOENT')) {
+      return null;
+    }
+    throw error;
+  }
+
+  if (before.isSymbolicLink()) {
+    throw new Error('generated step-definition target is a symlink');
+  }
+  if (!before.isFile()) {
+    throw new Error('generated step-definition target is not a regular file');
+  }
+  if (before.size > MAX_STEP_DEFINITION_FILE_BYTES) {
+    throw new Error('existing step-definition file exceeds the file-size limit');
+  }
+
+  const canonicalTarget = await fs.promises.realpath(target.targetPath);
+  if (!isPathContained(target.canonicalWorkspaceRoot, canonicalTarget)) {
+    throw new Error('generated step-definition target escapes the workspace');
+  }
+
+  const handle = await fs.promises.open(
+    target.targetPath,
+    fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW,
+  );
+  try {
+    const after = await handle.stat();
+    if (!after.isFile() || !sameFileIdentity(before, after)) {
+      throw new Error('generated step-definition target changed during validation');
+    }
+    const text = await handle.readFile({ encoding: 'utf8' });
+    if (Buffer.byteLength(text, 'utf8') > MAX_STEP_DEFINITION_FILE_BYTES) {
+      throw new Error('existing step-definition file exceeds the file-size limit');
+    }
+    return { text, mode: before.mode & 0o777, identity: toTargetIdentity(after) };
+  } finally {
+    await handle.close();
+  }
+}
+
+async function atomicReplaceTarget(
+  target: SafeTarget,
+  content: string,
+  mode: number,
+  expected: TargetIdentity | null,
+): Promise<void> {
+  await revalidateSafeParent(target);
+  await assertTargetUnchanged(target.targetPath, expected);
+
+  const temporaryPath = path.join(
+    target.parentPath,
+    `.${path.basename(target.targetPath)}.${process.pid}.${randomUUID()}.tmp`,
+  );
+  let handle: fs.promises.FileHandle | undefined;
+  try {
+    handle = await fs.promises.open(
+      temporaryPath,
+      fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW,
+      mode,
+    );
+    await handle.writeFile(content, { encoding: 'utf8' });
+    await handle.sync();
+    await handle.close();
+    handle = undefined;
+
+    await revalidateSafeParent(target);
+    await assertTargetUnchanged(target.targetPath, expected);
+    await fs.promises.rename(temporaryPath, target.targetPath);
+  } finally {
+    if (handle) {
+      await handle.close().catch(() => undefined);
+    }
+    await fs.promises.rm(temporaryPath, { force: true }).catch(() => undefined);
+  }
+}
+
+async function revalidateSafeParent(target: SafeTarget): Promise<void> {
+  const stat = await fs.promises.lstat(target.parentPath);
+  if (stat.isSymbolicLink() || !stat.isDirectory()) {
+    throw new Error('generated step-definition parent changed during validation');
+  }
+  const canonicalParent = await fs.promises.realpath(target.parentPath);
+  if (!isPathContained(target.canonicalWorkspaceRoot, canonicalParent)) {
+    throw new Error('generated step-definition parent escapes the workspace');
+  }
+}
+
+/**
+ * Refuse the rename unless the target is still exactly what the append content
+ * was derived from.
+ *
+ * `expected` is the identity observed while reading the existing file, or
+ * `null` when the write is a create. Proving only that the current path holds
+ * some regular file is not enough: an editor save or another workspace process
+ * between the read and the rename would have its bytes silently discarded, and
+ * a create would clobber a file that appeared in the meantime. This narrows
+ * that window to the interval between this check and `rename`, which POSIX
+ * gives no way to close; any change observed here aborts the write instead.
+ */
+async function assertTargetUnchanged(
+  targetPath: string,
+  expected: TargetIdentity | null,
+): Promise<void> {
+  let stat: fs.Stats;
+  try {
+    stat = await fs.promises.lstat(targetPath);
+  } catch (error) {
+    if (isNodeError(error, 'ENOENT')) {
+      if (expected) {
+        throw new Error('generated step-definition target was removed during validation');
+      }
+      return;
+    }
+    throw error;
+  }
+
+  if (stat.isSymbolicLink()) {
+    throw new Error('generated step-definition target is a symlink');
+  }
+  if (!stat.isFile()) {
+    throw new Error('generated step-definition target is not a regular file');
+  }
+  if (!expected) {
+    throw new Error('generated step-definition target appeared during validation');
+  }
+  if (!sameTargetIdentity(expected, toTargetIdentity(stat))) {
+    throw new Error('generated step-definition target changed during validation');
+  }
+}
+
+function toTargetIdentity(stat: fs.Stats): TargetIdentity {
+  return { dev: stat.dev, ino: stat.ino, size: stat.size, mtimeMs: stat.mtimeMs };
+}
+
+function sameTargetIdentity(left: TargetIdentity, right: TargetIdentity): boolean {
+  return (
+    left.dev === right.dev &&
+    left.ino === right.ino &&
+    left.size === right.size &&
+    left.mtimeMs === right.mtimeMs
+  );
+}
+
+function sameFileIdentity(left: fs.Stats, right: fs.Stats): boolean {
+  return left.dev === right.dev && left.ino === right.ino;
+}
+
+function isPathContained(root: string, candidate: string): boolean {
+  const relative = path.relative(root, candidate);
+  return (
+    relative === '' ||
+    (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative))
+  );
+}
+
+function sanitizeGeneratedComment(value: string): string {
+  return value.replace(/[\r\n\u2028\u2029]+/g, ' ').trim();
+}
+
+// Deliberately structural rather than `instanceof Error`: fs rejections are
+// constructed in Node's realm and cross a module boundary before reaching
+// here, so an identity check on the Error constructor can be false for a
+// genuine ENOENT and turn "create the missing directory" into a hard failure.
+function isNodeError(error: unknown, code: string): error is NodeJS.ErrnoException {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    (error as { code?: unknown }).code === code
+  );
 }

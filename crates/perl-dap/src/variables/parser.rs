@@ -3,6 +3,7 @@
 //! This module provides utilities for parsing variable output from the Perl debugger
 //! into structured [`PerlValue`] representations.
 
+use crate::parse_origin::{OriginatedParseError, OriginatedParseInput};
 use crate::value::PerlValue;
 use regex::Regex;
 use std::sync::LazyLock;
@@ -32,17 +33,31 @@ pub enum VariableParseError {
     RegexError(#[from] regex::Error),
 }
 
-impl perl_parser_core::ErrorClass for VariableParseError {
-    fn error_class(&self) -> perl_parser_core::ErrorCategory {
+/// Classifiable portion of [`VariableParseError`].
+///
+/// Unrecognized and unterminated variants are intentionally absent. Those
+/// failures are classified only after the caller wraps them with
+/// [`crate::parse_origin::OriginatedParseInput`].
+#[derive(Debug, Clone, Copy)]
+pub enum FixedOriginVariableParseError<'a> {
+    /// Configured parse-depth bound was exceeded.
+    MaxDepthExceeded(usize),
+    /// Internal constant regex failed to compile — adapter bug.
+    RegexError(&'a regex::Error),
+}
+
+impl VariableParseError {
+    /// Returns the fixed-origin view when the variant does not depend on parse mode.
+    #[must_use]
+    pub fn as_fixed_origin(&self) -> Option<FixedOriginVariableParseError<'_>> {
         match self {
-            // Nesting safety limit exceeded — a resource-protection guard.
-            Self::MaxDepthExceeded(_) => perl_parser_core::ErrorCategory::ResourceLimit,
-            // All other variants are adapter/parser gaps: malformed engine
-            // output or constant regex compilation failures.
+            Self::MaxDepthExceeded(depth) => {
+                Some(FixedOriginVariableParseError::MaxDepthExceeded(*depth))
+            }
+            Self::RegexError(error) => Some(FixedOriginVariableParseError::RegexError(error)),
             Self::UnrecognizedFormat(_)
             | Self::UnterminatedString
-            | Self::UnterminatedCollection
-            | Self::RegexError(_) => perl_parser_core::ErrorCategory::Bug,
+            | Self::UnterminatedCollection => None,
         }
     }
 }
@@ -140,6 +155,36 @@ impl VariableParser {
     pub fn with_max_depth(mut self, depth: usize) -> Self {
         self.max_depth = depth;
         self
+    }
+
+    /// Parses an originated variable assignment line.
+    ///
+    /// Origin is taken from `input`; this method does not inspect the payload
+    /// text to choose a category.
+    ///
+    /// # Errors
+    ///
+    /// Returns the underlying [`VariableParseError`] wrapped with the supplied
+    /// origin when the assignment cannot be parsed.
+    pub fn parse_assignment_originated(
+        &self,
+        input: OriginatedParseInput<'_>,
+    ) -> Result<(String, PerlValue), OriginatedParseError<VariableParseError>> {
+        self.parse_assignment(input.text()).map_err(|error| input.attach(error))
+    }
+
+    /// Parses an originated value string.
+    ///
+    /// # Errors
+    ///
+    /// Returns the underlying [`VariableParseError`] wrapped with the supplied
+    /// origin when the value cannot be parsed.
+    pub fn parse_value_originated(
+        &self,
+        input: OriginatedParseInput<'_>,
+        depth: usize,
+    ) -> Result<PerlValue, OriginatedParseError<VariableParseError>> {
+        self.parse_value(input.text(), depth).map_err(|error| input.attach(error))
     }
 
     /// Parses a variable assignment line from debugger output.
@@ -403,7 +448,7 @@ impl VariableParser {
                     if !trimmed.is_empty() {
                         elements.push(trimmed);
                     }
-                    current = String::new();
+                    current.clear();
                 }
                 _ => {
                     current.push(ch);
@@ -480,6 +525,20 @@ impl VariableParser {
         }
 
         result
+    }
+
+    /// Parses originated multi-line variable dump output.
+    ///
+    /// Unrecognized lines are skipped, matching [`Self::parse_variables`].
+    pub fn parse_variables_originated(
+        &self,
+        input: OriginatedParseInput<'_>,
+    ) -> Vec<(String, PerlValue)> {
+        input
+            .text()
+            .lines()
+            .filter_map(|line| self.parse_assignment_originated(input.with_text(line)).ok())
+            .collect()
     }
 
     /// Parses multiple variable lines (e.g., from 'V' command output).

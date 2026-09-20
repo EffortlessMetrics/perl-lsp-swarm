@@ -3,8 +3,6 @@
 //! This module provides comprehensive test execution and coverage analysis
 //! for all LSP features, ensuring complete end-to-end testing.
 
-#![allow(clippy::collapsible_if)]
-
 use colored::*;
 use std::collections::HashMap;
 use std::time::Instant;
@@ -135,10 +133,10 @@ impl LspTestRunner {
             println!("{} {} ({} ms)", "✓".green(), name, duration);
         } else {
             println!("{} {} ({} ms)", "✗".red(), name, duration);
-            if let Some(last_result) = self.test_results.last() {
-                if let Some(ref err) = last_result.error {
-                    println!("  {}", err.red());
-                }
+            if let Some(last_result) = self.test_results.last()
+                && let Some(ref err) = last_result.error
+            {
+                println!("  {}", err.red());
             }
         }
 
@@ -330,14 +328,14 @@ impl LspTestRunner {
                             test.duration_ms as f64 / 1000.0
                         )?;
 
-                        if !test.passed {
-                            if let Some(ref err) = test.error {
-                                writeln!(
-                                    file,
-                                    "      <failure message=\"Test failed\">{}</failure>",
-                                    err
-                                )?;
-                            }
+                        if !test.passed
+                            && let Some(ref err) = test.error
+                        {
+                            writeln!(
+                                file,
+                                "      <failure message=\"Test failed\">{}</failure>",
+                                err
+                            )?;
                         }
 
                         writeln!(file, "    </testcase>")?;

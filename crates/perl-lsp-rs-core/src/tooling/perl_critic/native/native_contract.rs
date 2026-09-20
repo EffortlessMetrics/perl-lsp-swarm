@@ -1,5 +1,6 @@
 //! Core native critic rule and diagnostic contracts.
 
+use super::super::identity::CriticFindingShape;
 use super::super::{CriticConfig, Severity, Violation};
 use perl_parser_core::Node;
 use perl_parser_core::position::Range;
@@ -83,6 +84,11 @@ pub struct CriticFinding {
     pub explanation: String,
     /// Suppression key accepted by inline or file-level suppression handling.
     pub suppression_key: String,
+    /// Producer-owned reviewed finding shape declared at the emission site.
+    ///
+    /// The emitting rule owns this declaration; normalization consumers must
+    /// never infer it from messages, ranges, or code prefixes (#7475).
+    pub observed_shape: CriticFindingShape,
     /// Related spans, when useful.
     pub related: Vec<CriticRelatedInformation>,
     /// Optional fix.

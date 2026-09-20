@@ -1,0 +1,201 @@
+{
+  "schema_version": "close_proof_contract_fixture.v1",
+  "provenance": {
+    "captured_at": "2026-08-21",
+    "sources": [
+      "https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/2333"
+    ],
+    "subject_shas": [],
+    "boundary": "Immutable bounded structured excerpts of historical GitHub subjects. The fixture proves schema-level dispositions only; semantic completion evaluation belongs to CP03 (#10382)."
+  },
+  "contract": {
+    "schema_version": "issue_contract.v1",
+    "repository": "effortlessmetrics/perl-lsp-swarm",
+    "issue_number": 2333,
+    "title": "quality: enforce clippy::wildcard_imports on library code",
+    "kind": "multi_phase",
+    "required_proof_level": "authorized_behavior",
+    "allowed_close_modes": [
+      "completed",
+      "phase_complete_issue_remains_open",
+      "superseded",
+      "true_duplicate",
+      "not_planned"
+    ],
+    "denominator": [
+      {
+        "row_id": "lib-code.warning.active",
+        "statement": "clippy::wildcard_imports warning gate is active on library code.",
+        "required_proof_level": "mechanism"
+      },
+      {
+        "row_id": "lib-code.cleanup.complete",
+        "statement": "Existing wildcard imports are cleaned from library code.",
+        "required_proof_level": "mechanism"
+      },
+      {
+        "row_id": "lib-code.deny.enforced",
+        "statement": "clippy::wildcard_imports deny gate is enforced on library code.",
+        "required_proof_level": "authorized_behavior"
+      }
+    ],
+    "negative_controls": [
+      {
+        "control_id": "nc.new-wildcard-fails-gate",
+        "guards_row_id": "lib-code.deny.enforced",
+        "description": "A new wildcard import in library code fails the enforcement gate."
+      }
+    ],
+    "mandatory_children": [],
+    "transfer_policy": {
+      "permitted": false,
+      "conditions": []
+    },
+    "domain_evidence_refs": [],
+    "identity": {
+      "issue_body_digest": "000000000000000000000000000000000000000000000000000000000000091d",
+      "denominator_digest": "c96ce76dc260a1c05da632ad0d25302d0e67193ff8f3cb5133be7b458500a531",
+      "accepted_ruling": null
+    }
+  },
+  "cases": [
+    {
+      "case_id": "pr-2600-phases-as-terminal-close",
+      "description": "Warning/cleanup phase completion offered as a terminal close of #2333.",
+      "packet": {
+        "schema_version": "issue_close_proof.v1",
+        "repository": "effortlessmetrics/perl-lsp-swarm",
+        "issue_number": 2333,
+        "requested_close_mode": "completed",
+        "contract_binding": {
+          "contract_issue_body_digest": "000000000000000000000000000000000000000000000000000000000000091d",
+          "contract_denominator_digest": "c96ce76dc260a1c05da632ad0d25302d0e67193ff8f3cb5133be7b458500a531",
+          "accepted_ruling_digest": null
+        },
+        "candidate_pr": 2600,
+        "landed_subjects": [],
+        "landing_content_proof": [],
+        "established_claims": [
+          {
+            "statement": "The wildcard-imports warning gate is active and existing library call sites are clean.",
+            "covers_rows": [
+              "lib-code.warning.active",
+              "lib-code.cleanup.complete"
+            ]
+          }
+        ],
+        "explicitly_not_established_claims": [],
+        "row_dispositions": {
+          "lib-code.cleanup.complete": {
+            "disposition": "proven_current_main",
+            "evidence": {
+              "producer": "xtask-pr-close-proof",
+              "subject": "0000000000000000000000000000000000005b24",
+              "content_digest": "0000000000000000000000000000000000000000000000000000000000038f6f",
+              "reference": "cargo xtask pr-close-proof --pr 2600"
+            }
+          },
+          "lib-code.deny.enforced": {
+            "disposition": "not_proven",
+            "reason": "warning/cleanup phases do not prove final deny enforcement."
+          },
+          "lib-code.warning.active": {
+            "disposition": "proven_current_main",
+            "evidence": {
+              "producer": "xtask-pr-close-proof",
+              "subject": "0000000000000000000000000000000000005b23",
+              "content_digest": "0000000000000000000000000000000000000000000000000000000000038f65",
+              "reference": "cargo xtask pr-close-proof --pr 2600"
+            }
+          }
+        },
+        "negative_control_dispositions": {
+          "nc.new-wildcard-fails-gate": {
+            "state": "not_proven",
+            "reason": "deny enforcement has not landed."
+          }
+        },
+        "child_dispositions": [],
+        "duplicate_of": null,
+        "verdict": {
+          "pr_scope": "pass",
+          "issue_close": "invalid",
+          "reasons": [
+            "Warning and cleanup phases do not prove the final deny/enforcement row."
+          ]
+        }
+      },
+      "expected_pr_scope": "pass",
+      "expected_issue_close": "invalid"
+    },
+    {
+      "case_id": "pr-2600-corrected-non-terminal-relation",
+      "description": "The same phase work recorded as phase_complete_issue_remains_open.",
+      "packet": {
+        "schema_version": "issue_close_proof.v1",
+        "repository": "effortlessmetrics/perl-lsp-swarm",
+        "issue_number": 2333,
+        "requested_close_mode": "phase_complete_issue_remains_open",
+        "contract_binding": {
+          "contract_issue_body_digest": "000000000000000000000000000000000000000000000000000000000000091d",
+          "contract_denominator_digest": "c96ce76dc260a1c05da632ad0d25302d0e67193ff8f3cb5133be7b458500a531",
+          "accepted_ruling_digest": null
+        },
+        "candidate_pr": 2600,
+        "landed_subjects": [],
+        "landing_content_proof": [],
+        "established_claims": [
+          {
+            "statement": "The wildcard-imports warning gate is active and existing library call sites are clean.",
+            "covers_rows": [
+              "lib-code.warning.active",
+              "lib-code.cleanup.complete"
+            ]
+          }
+        ],
+        "explicitly_not_established_claims": [],
+        "row_dispositions": {
+          "lib-code.cleanup.complete": {
+            "disposition": "proven_current_main",
+            "evidence": {
+              "producer": "xtask-pr-close-proof",
+              "subject": "0000000000000000000000000000000000005b24",
+              "content_digest": "0000000000000000000000000000000000000000000000000000000000038f6f",
+              "reference": "cargo xtask pr-close-proof --pr 2600"
+            }
+          },
+          "lib-code.deny.enforced": {
+            "disposition": "not_proven",
+            "reason": "warning/cleanup phases do not prove final deny enforcement."
+          },
+          "lib-code.warning.active": {
+            "disposition": "proven_current_main",
+            "evidence": {
+              "producer": "xtask-pr-close-proof",
+              "subject": "0000000000000000000000000000000000005b23",
+              "content_digest": "0000000000000000000000000000000000000000000000000000000000038f65",
+              "reference": "cargo xtask pr-close-proof --pr 2600"
+            }
+          }
+        },
+        "negative_control_dispositions": {
+          "nc.new-wildcard-fails-gate": {
+            "state": "not_proven",
+            "reason": "deny enforcement has not landed."
+          }
+        },
+        "child_dispositions": [],
+        "duplicate_of": null,
+        "verdict": {
+          "pr_scope": "pass",
+          "issue_close": "valid",
+          "reasons": [
+            "The phase disposition matches the recorded boundary; issue #2333 remains open until deny lands."
+          ]
+        }
+      },
+      "expected_pr_scope": "pass",
+      "expected_issue_close": "valid"
+    }
+  ]
+}

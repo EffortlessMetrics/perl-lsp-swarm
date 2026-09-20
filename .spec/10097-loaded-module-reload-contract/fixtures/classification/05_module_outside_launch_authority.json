@@ -1,0 +1,17 @@
+{
+  "name": "05_module_outside_launch_authority.json",
+  "fixture_class": "module outside launch authority (#10097 class 5)",
+  "observation": {
+  "stopped_and_command_ready": true,
+  "runtime_supported": true,
+  "loaded_in_runtime": true,
+  "within_launch_authority": false,
+  "runtime_mapping_unambiguous": true,
+  "identity_binding_complete": true,
+  "identity_current": true,
+  "client_source_matches_saved": true,
+  "module_classification": "source_backed_perl_module",
+  "active_frame_in_target": false
+},
+  "expected_disposition": "outside_launch_authority"
+}

@@ -28,7 +28,7 @@
 use perl_parser_core::Parser;
 use perl_parser_core::hir::{
     AccessMode, AssignMode, BodyOwnerKind, DeclStorageClass, HIR_BODY_MODEL_VERSION, HirExpr,
-    HirStmt, Sigil, UnaryMode, VariableKind, lower_ast,
+    HirExprId, HirStmt, Sigil, UnaryMode, VariableKind, lower_ast,
 };
 
 fn parse(source: &str) -> perl_parser_core::hir::HirFile {
@@ -39,63 +39,66 @@ fn parse(source: &str) -> perl_parser_core::hir::HirFile {
 
 // ── helper: unwrap the root-body from a HirFile ──────────────────────────────
 
-fn root_body(file: &perl_parser_core::hir::HirFile) -> &perl_parser_core::hir::HirBody {
-    file.root_body().expect("HirFile must expose a root body via root_body()")
+fn root_body(
+    file: &perl_parser_core::hir::HirFile,
+) -> Result<&perl_parser_core::hir::HirBody, Box<dyn std::error::Error>> {
+    file.root_body().ok_or_else(|| "HirFile must expose a root body via root_body()".into())
 }
 
 // ── 1. Program-root body is attached ─────────────────────────────────────────
 
 #[test]
-fn hir_canonical_root_body_present() {
+fn hir_canonical_root_body_present() -> Result<(), Box<dyn std::error::Error>> {
     let file = parse("my $x = $y;");
-    let body = root_body(&file);
+    let body = root_body(&file)?;
     assert_eq!(body.owner, BodyOwnerKind::ProgramRoot, "root body owner must be ProgramRoot");
-    let root = body.block(body.root_block).expect("root block must exist");
+    let root = body.block(body.root_block).ok_or("root block must exist")?;
     assert!(!root.stmts.is_empty(), "root body must have at least one statement");
+    Ok(())
 }
 
 // ── 2. `my $x = $y;` — LHS Write (place), RHS Read (lexical) ────────────────
 
 #[test]
-fn hir_canonical_let_lhs_write_rhs_read_lexical() -> Result<(), String> {
+fn hir_canonical_let_lhs_write_rhs_read_lexical() -> Result<(), Box<dyn std::error::Error>> {
     let file = parse("my $x = $y;");
-    let body = root_body(&file);
-    let root = body.block(body.root_block).expect("root block");
+    let body = root_body(&file)?;
+    let root = body.block(body.root_block).ok_or("root block")?;
     assert_eq!(root.stmts.len(), 1);
 
-    let stmt = body.stmt(root.stmts[0]).expect("stmt");
+    let stmt = body.stmt(root.stmts[0]).ok_or("stmt")?;
     let (name, init_id) = match stmt {
         HirStmt::Let { name, sigil, storage, init, .. } => {
             assert_eq!(name.as_str(), "x");
             assert!(matches!(sigil, Sigil::Scalar));
             assert!(matches!(storage, DeclStorageClass::My));
-            (name.as_str(), init.expect("initializer must be present"))
+            (name.as_str(), init.ok_or("initializer must be present")?)
         }
-        other => return Err(format!("expected Let, got {other:?}")),
+        other => return Err(format!("expected Let, got {other:?}").into()),
     };
     let _ = name;
 
     // init is Assign { lhs: Variable($x, Write, Lexical), rhs: Variable($y, Read, Lexical) }
-    let assign = body.expr(init_id).expect("init expr");
+    let assign = body.expr(init_id).ok_or("init expr")?;
     let (lhs_id, rhs_id) = match assign {
         HirExpr::Assign { lhs, rhs, mode } => {
             assert!(matches!(mode, AssignMode::Simple), "plain = must be Simple");
             (*lhs, *rhs)
         }
-        other => return Err(format!("expected Assign, got {other:?}")),
+        other => return Err(format!("expected Assign, got {other:?}").into()),
     };
 
-    let lhs_expr = body.expr(lhs_id).expect("lhs");
+    let lhs_expr = body.expr(lhs_id).ok_or("lhs")?;
     match lhs_expr {
         HirExpr::Variable(v) => {
             assert_eq!(v.name, "x");
             assert!(matches!(v.access, AccessMode::Write), "LHS must be Write (place)");
             assert!(matches!(v.kind, VariableKind::Lexical), "LHS must be Lexical (my)");
         }
-        other => return Err(format!("expected Variable for lhs, got {other:?}")),
+        other => return Err(format!("expected Variable for lhs, got {other:?}").into()),
     }
 
-    let rhs_expr = body.expr(rhs_id).expect("rhs");
+    let rhs_expr = body.expr(rhs_id).ok_or("rhs")?;
     match rhs_expr {
         HirExpr::Variable(v) => {
             assert_eq!(v.name, "y");
@@ -104,7 +107,7 @@ fn hir_canonical_let_lhs_write_rhs_read_lexical() -> Result<(), String> {
             // If it were declared with `my $y` above, it would be Lexical.
             // The important invariant is that the access mode is Read.
         }
-        other => return Err(format!("expected Variable for rhs, got {other:?}")),
+        other => return Err(format!("expected Variable for rhs, got {other:?}").into()),
     }
 
     Ok(())
@@ -113,35 +116,35 @@ fn hir_canonical_let_lhs_write_rhs_read_lexical() -> Result<(), String> {
 // ── 3. `$x = $y;` — plain assignment, LHS Write ──────────────────────────────
 
 #[test]
-fn hir_canonical_plain_assign_lhs_write() -> Result<(), String> {
+fn hir_canonical_plain_assign_lhs_write() -> Result<(), Box<dyn std::error::Error>> {
     let file = parse("$x = $y;");
-    let body = root_body(&file);
-    let root = body.block(body.root_block).expect("root block");
+    let body = root_body(&file)?;
+    let root = body.block(body.root_block).ok_or("root block")?;
 
     // The statement is an Expr wrapping an Assign
     assert!(!root.stmts.is_empty());
-    let stmt = body.stmt(root.stmts[0]).expect("stmt");
+    let stmt = body.stmt(root.stmts[0]).ok_or("stmt")?;
     let expr_id = match stmt {
         HirStmt::Expr(id) => *id,
-        other => return Err(format!("expected Expr stmt, got {other:?}")),
+        other => return Err(format!("expected Expr stmt, got {other:?}").into()),
     };
 
-    let assign = body.expr(expr_id).expect("assign expr");
+    let assign = body.expr(expr_id).ok_or("assign expr")?;
     let (lhs_id, _rhs_id) = match assign {
         HirExpr::Assign { lhs, rhs, mode } => {
             assert!(matches!(mode, AssignMode::Simple), "plain = must be Simple");
             (*lhs, *rhs)
         }
-        other => return Err(format!("expected Assign, got {other:?}")),
+        other => return Err(format!("expected Assign, got {other:?}").into()),
     };
 
-    let lhs_expr = body.expr(lhs_id).expect("lhs");
+    let lhs_expr = body.expr(lhs_id).ok_or("lhs")?;
     match lhs_expr {
         HirExpr::Variable(v) => {
             assert_eq!(v.name, "x");
             assert!(matches!(v.access, AccessMode::Write), "LHS must be Write");
         }
-        other => return Err(format!("expected Variable for lhs, got {other:?}")),
+        other => return Err(format!("expected Variable for lhs, got {other:?}").into()),
     }
 
     Ok(())
@@ -150,18 +153,20 @@ fn hir_canonical_plain_assign_lhs_write() -> Result<(), String> {
 // ── 4. `$x += 1;` — compound assignment → ReadModifyWrite ────────────────────
 
 #[test]
-fn hir_canonical_compound_assign_read_modify_write() -> Result<(), String> {
+fn hir_canonical_compound_assign_read_modify_write() -> Result<(), Box<dyn std::error::Error>> {
     let file = parse("$x += 1;");
-    let body = root_body(&file);
-    let root = body.block(body.root_block).expect("root block");
+    let body = root_body(&file)?;
+    let root = body.block(body.root_block).ok_or("root block")?;
 
-    let stmt = body.stmt(root.stmts[0]).expect("stmt");
+    let stmt = body.stmt(root.stmts[0]).ok_or("stmt")?;
     let expr_id = match stmt {
         HirStmt::Expr(id) => *id,
-        other => return Err(format!("expected Expr stmt for compound assign, got {other:?}")),
+        other => {
+            return Err(format!("expected Expr stmt for compound assign, got {other:?}").into());
+        }
     };
 
-    let assign = body.expr(expr_id).expect("assign expr");
+    let assign = body.expr(expr_id).ok_or("assign expr")?;
     match assign {
         HirExpr::Assign { lhs, mode, .. } => {
             assert!(
@@ -169,7 +174,7 @@ fn hir_canonical_compound_assign_read_modify_write() -> Result<(), String> {
                 "compound assign += must be ReadModifyWrite, got {mode:?}"
             );
             // LHS must be Read (it is read before the write in RMW)
-            let lhs_expr = body.expr(*lhs).expect("lhs");
+            let lhs_expr = body.expr(*lhs).ok_or("lhs")?;
             match lhs_expr {
                 HirExpr::Variable(v) => {
                     assert_eq!(v.name, "x");
@@ -179,10 +184,12 @@ fn hir_canonical_compound_assign_read_modify_write() -> Result<(), String> {
                         v.access
                     );
                 }
-                other => return Err(format!("expected Variable for compound lhs, got {other:?}")),
+                other => {
+                    return Err(format!("expected Variable for compound lhs, got {other:?}").into());
+                }
             }
         }
-        other => return Err(format!("expected Assign for +=, got {other:?}")),
+        other => return Err(format!("expected Assign for +=, got {other:?}").into()),
     }
 
     Ok(())
@@ -191,28 +198,28 @@ fn hir_canonical_compound_assign_read_modify_write() -> Result<(), String> {
 // ── 5. `our $x; $x = $y;` — our declares Package kind ───────────────────────
 
 #[test]
-fn hir_canonical_our_var_is_package_kind() -> Result<(), String> {
+fn hir_canonical_our_var_is_package_kind() -> Result<(), Box<dyn std::error::Error>> {
     // `our $x` declares a package alias. A bare `$x` usage afterwards resolves
     // to the package alias binding → VariableKind::Package.
     let file = parse("our $x; $x = $y;");
-    let body = root_body(&file);
-    let root = body.block(body.root_block).expect("root block");
+    let body = root_body(&file)?;
+    let root = body.block(body.root_block).ok_or("root block")?;
     assert_eq!(root.stmts.len(), 2, "must have 2 statements");
 
     // Second stmt: `$x = $y`
-    let stmt2 = body.stmt(root.stmts[1]).expect("stmt2");
+    let stmt2 = body.stmt(root.stmts[1]).ok_or("stmt2")?;
     let expr_id = match stmt2 {
         HirStmt::Expr(id) => *id,
-        other => return Err(format!("expected Expr stmt for assignment, got {other:?}")),
+        other => return Err(format!("expected Expr stmt for assignment, got {other:?}").into()),
     };
 
-    let assign = body.expr(expr_id).expect("assign");
+    let assign = body.expr(expr_id).ok_or("assign")?;
     let lhs_id = match assign {
         HirExpr::Assign { lhs, .. } => *lhs,
-        other => return Err(format!("expected Assign, got {other:?}")),
+        other => return Err(format!("expected Assign, got {other:?}").into()),
     };
 
-    let lhs_expr = body.expr(lhs_id).expect("lhs");
+    let lhs_expr = body.expr(lhs_id).ok_or("lhs")?;
     match lhs_expr {
         HirExpr::Variable(v) => {
             assert_eq!(v.name, "x");
@@ -222,7 +229,7 @@ fn hir_canonical_our_var_is_package_kind() -> Result<(), String> {
                 v.kind
             );
         }
-        other => return Err(format!("expected Variable for our $x lhs, got {other:?}")),
+        other => return Err(format!("expected Variable for our $x lhs, got {other:?}").into()),
     }
 
     Ok(())
@@ -231,24 +238,24 @@ fn hir_canonical_our_var_is_package_kind() -> Result<(), String> {
 // ── 6. `$Foo::x = $y;` — qualified name → Package slot ──────────────────────
 
 #[test]
-fn hir_canonical_qualified_var_is_package_kind() -> Result<(), String> {
+fn hir_canonical_qualified_var_is_package_kind() -> Result<(), Box<dyn std::error::Error>> {
     let file = parse("$Foo::x = $y;");
-    let body = root_body(&file);
-    let root = body.block(body.root_block).expect("root block");
+    let body = root_body(&file)?;
+    let root = body.block(body.root_block).ok_or("root block")?;
 
-    let stmt = body.stmt(root.stmts[0]).expect("stmt");
+    let stmt = body.stmt(root.stmts[0]).ok_or("stmt")?;
     let expr_id = match stmt {
         HirStmt::Expr(id) => *id,
-        other => return Err(format!("expected Expr stmt, got {other:?}")),
+        other => return Err(format!("expected Expr stmt, got {other:?}").into()),
     };
 
-    let assign = body.expr(expr_id).expect("assign");
+    let assign = body.expr(expr_id).ok_or("assign")?;
     let lhs_id = match assign {
         HirExpr::Assign { lhs, .. } => *lhs,
-        other => return Err(format!("expected Assign, got {other:?}")),
+        other => return Err(format!("expected Assign, got {other:?}").into()),
     };
 
-    let lhs_expr = body.expr(lhs_id).expect("lhs");
+    let lhs_expr = body.expr(lhs_id).ok_or("lhs")?;
     match lhs_expr {
         HirExpr::Variable(v) => {
             // name contains "::" so it must be Package
@@ -260,7 +267,7 @@ fn hir_canonical_qualified_var_is_package_kind() -> Result<(), String> {
             );
             assert!(matches!(v.kind, VariableKind::Package), "must be Package kind");
         }
-        other => return Err(format!("expected Variable for $Foo::x lhs, got {other:?}")),
+        other => return Err(format!("expected Variable for $Foo::x lhs, got {other:?}").into()),
     }
 
     Ok(())
@@ -269,33 +276,33 @@ fn hir_canonical_qualified_var_is_package_kind() -> Result<(), String> {
 // ── 7. `state $x; $x++;` — state storage, RMW ────────────────────────────────
 
 #[test]
-fn hir_canonical_state_var_and_postfix_increment() -> Result<(), String> {
+fn hir_canonical_state_var_and_postfix_increment() -> Result<(), Box<dyn std::error::Error>> {
     // $x++ is ReadModifyWrite — $x is read, incremented, written back.
     let file = parse("state $x; $x++;");
-    let body = root_body(&file);
-    let root = body.block(body.root_block).expect("root block");
+    let body = root_body(&file)?;
+    let root = body.block(body.root_block).ok_or("root block")?;
     assert_eq!(root.stmts.len(), 2, "must have 2 statements");
 
     // First stmt: state $x declaration
-    let stmt1 = body.stmt(root.stmts[0]).expect("stmt1");
+    let stmt1 = body.stmt(root.stmts[0]).ok_or("stmt1")?;
     match stmt1 {
         HirStmt::Let { storage, name, .. } => {
             assert_eq!(name.as_str(), "x");
             assert!(matches!(storage, DeclStorageClass::State), "must be State storage");
         }
-        other => return Err(format!("expected Let for state $x, got {other:?}")),
+        other => return Err(format!("expected Let for state $x, got {other:?}").into()),
     }
 
     // Second stmt: $x++ (postfix increment = ReadModifyWrite)
-    let stmt2 = body.stmt(root.stmts[1]).expect("stmt2");
+    let stmt2 = body.stmt(root.stmts[1]).ok_or("stmt2")?;
     let expr_id = match stmt2 {
         HirStmt::Expr(id) => *id,
-        other => return Err(format!("expected Expr stmt for $x++, got {other:?}")),
+        other => return Err(format!("expected Expr stmt for $x++, got {other:?}").into()),
     };
 
     // The postfix increment must result in a ReadModifyWrite node
     // (either Assign{ReadModifyWrite} or Unary{ReadModifyWrite})
-    let expr = body.expr(expr_id).expect("expr");
+    let expr = body.expr(expr_id).ok_or("expr")?;
     let is_rmw = match expr {
         HirExpr::Assign { mode, .. } => matches!(mode, AssignMode::ReadModifyWrite),
         HirExpr::Unary { mode, .. } => matches!(mode, UnaryMode::ReadModifyWrite),
@@ -305,7 +312,7 @@ fn hir_canonical_state_var_and_postfix_increment() -> Result<(), String> {
             // as long as we don't emit a wrong fact
             return Ok(());
         }
-        other => return Err(format!("expected Assign or Unary for $x++, got {other:?}")),
+        other => return Err(format!("expected Assign or Unary for $x++, got {other:?}").into()),
     };
     assert!(is_rmw, "$x++ must be ReadModifyWrite");
 
@@ -315,7 +322,7 @@ fn hir_canonical_state_var_and_postfix_increment() -> Result<(), String> {
 // ── 8. `sub foo { my $x = $y; }` — subroutine body is a separate owned body ─
 
 #[test]
-fn hir_canonical_sub_body_is_owned() -> Result<(), String> {
+fn hir_canonical_sub_body_is_owned() -> Result<(), Box<dyn std::error::Error>> {
     let file = parse("sub foo { my $x = $y; }");
 
     // The file must have a sub body with owner Subroutine { name: Some("foo") }
@@ -324,23 +331,23 @@ fn hir_canonical_sub_body_is_owned() -> Result<(), String> {
         .iter()
         .find(|b| matches!(&b.owner, BodyOwnerKind::Subroutine { name } if name.as_deref() == Some("foo")));
 
-    let sub_body = sub_body.expect("must find a body owned by sub foo");
+    let sub_body = sub_body.ok_or("must find a body owned by sub foo")?;
     assert_eq!(
         sub_body.owner,
         BodyOwnerKind::Subroutine { name: Some("foo".to_string()) },
         "subroutine body owner must be Subroutine {{ name: Some(\"foo\") }}"
     );
 
-    let root = sub_body.block(sub_body.root_block).expect("sub root block");
+    let root = sub_body.block(sub_body.root_block).ok_or("sub root block")?;
     assert!(!root.stmts.is_empty(), "sub body must have at least one statement");
 
-    let stmt = sub_body.stmt(root.stmts[0]).expect("sub stmt");
+    let stmt = sub_body.stmt(root.stmts[0]).ok_or("sub stmt")?;
     match stmt {
         HirStmt::Let { name, storage, .. } => {
             assert_eq!(name.as_str(), "x");
             assert!(matches!(storage, DeclStorageClass::My));
         }
-        other => return Err(format!("expected Let inside sub body, got {other:?}")),
+        other => return Err(format!("expected Let inside sub body, got {other:?}").into()),
     }
 
     Ok(())
@@ -349,7 +356,7 @@ fn hir_canonical_sub_body_is_owned() -> Result<(), String> {
 // ── 9. Recovery: `my $x = ;` — no exact fact through recovery ────────────────
 
 #[test]
-fn hir_canonical_recovery_no_exact_fact() {
+fn hir_canonical_recovery_no_exact_fact() -> Result<(), Box<dyn std::error::Error>> {
     // A syntactically broken initializer: `my $x = ;`
     // The body must not pretend the assignment was successful.
     // Either: init is None (declaration without init), OR
@@ -357,23 +364,22 @@ fn hir_canonical_recovery_no_exact_fact() {
     // What must NOT happen: a Variable(Write) + Variable(Read) pair claiming
     // the assignment is fully known.
     let file = parse("my $x = ;");
-    let body = root_body(&file);
-    let root = body.block(body.root_block).expect("root block");
+    let body = root_body(&file)?;
+    let root = body.block(body.root_block).ok_or("root block")?;
 
     if root.stmts.is_empty() {
         // Parser produced nothing — acceptable (recovery ate the whole stmt)
-        return;
+        return Ok(());
     }
-
-    let stmt = body.stmt(root.stmts[0]).expect("stmt");
+    let stmt = body.stmt(root.stmts[0]).ok_or("stmt")?;
     match stmt {
         HirStmt::Let { init, .. } => {
             // If there's an init expression, it must not be a clean Assign with
             // a real Variable on the RHS — the RHS must be Opaque or absent.
             if let Some(init_id) = init {
-                let init_expr = body.expr(*init_id).expect("init expr");
+                let init_expr = body.expr(*init_id).ok_or("init expr")?;
                 if let HirExpr::Assign { rhs, .. } = init_expr {
-                    let rhs_expr = body.expr(*rhs).expect("rhs expr");
+                    let rhs_expr = body.expr(*rhs).ok_or("rhs expr")?;
                     assert!(
                         matches!(rhs_expr, HirExpr::Opaque { .. }),
                         "recovery RHS must be Opaque (no exact fact), got {rhs_expr:?}"
@@ -385,42 +391,44 @@ fn hir_canonical_recovery_no_exact_fact() {
         }
         HirStmt::Expr(expr_id) => {
             // Fallback path: the whole thing became an Expr stmt — must be opaque
-            let expr = body.expr(*expr_id).expect("expr");
+            let expr = body.expr(*expr_id).ok_or("expr")?;
             // Opaque is fine; a clean Assign would be wrong
             if let HirExpr::Assign { rhs, .. } = expr {
-                let rhs_expr = body.expr(*rhs).expect("rhs expr");
+                let rhs_expr = body.expr(*rhs).ok_or("rhs expr")?;
                 assert!(
                     matches!(rhs_expr, HirExpr::Opaque { .. }),
                     "recovery path must not emit a real RHS fact, got {rhs_expr:?}"
                 );
             }
         }
-        _ => return,
+        _ => return Ok(()),
     }
+    Ok(())
 }
 
 // ── 10. Unsupported parent with known child — child still emitted ─────────────
 
 #[test]
-fn hir_canonical_unsupported_parent_known_child_emitted() -> Result<(), String> {
+fn hir_canonical_unsupported_parent_known_child_emitted() -> Result<(), Box<dyn std::error::Error>>
+{
     // A call like `foo($x)` — the call itself is Opaque in the body model,
     // but the argument `$x` should still be emitted as a Variable(Read) child.
     // This verifies that Opaque nodes don't swallow their known children.
     let file = parse("foo($x);");
-    let body = root_body(&file);
-    let root = body.block(body.root_block).expect("root block");
+    let body = root_body(&file)?;
+    let root = body.block(body.root_block).ok_or("root block")?;
 
     if root.stmts.is_empty() {
         return Ok(());
     }
 
-    let stmt = body.stmt(root.stmts[0]).expect("stmt");
+    let stmt = body.stmt(root.stmts[0]).ok_or("stmt")?;
     let expr_id = match stmt {
         HirStmt::Expr(id) => *id,
-        other => return Err(format!("expected Expr stmt, got {other:?}")),
+        other => return Err(format!("expected Expr stmt, got {other:?}").into()),
     };
 
-    let expr = body.expr(expr_id).expect("expr");
+    let expr = body.expr(expr_id).ok_or("expr")?;
     // The call may be Opaque or a modeled Call node.
     // If it's Opaque, we need to check that $x is still in the arena
     // (the body was still populated with the argument's subtree).
@@ -445,6 +453,77 @@ fn hir_canonical_unsupported_parent_known_child_emitted() -> Result<(), String> 
     Ok(())
 }
 
+/// Select the expression a sub body's second statement contributes.
+///
+/// `sub foo { my $x = 1; $x }` lowers the use-site to a bare `Expr`, but a
+/// parser that merges the declaration and the use emits a single `Let` whose
+/// `init` carries the same expression. Both shapes are answerable; anything
+/// else (including a `Let` with no init) has nothing to check.
+///
+/// Shared so the `Let` arm is not tolerance-only dead code in the regression
+/// guard below: `hir_canonical_merged_let_second_stmt_yields_its_init_expr`
+/// drives that arm with a fixture that actually produces it, and fails if the
+/// arm stops answering.
+fn second_stmt_expr_id(stmt: &HirStmt) -> Option<HirExprId> {
+    match stmt {
+        HirStmt::Expr(id) => Some(*id),
+        HirStmt::Let { init: Some(id), .. } => Some(*id),
+        _ => None,
+    }
+}
+
+// ── 11a. The merged-`Let` arm of `second_stmt_expr_id` ───────────────────────
+//
+// `sub foo { my $x = 1; my $y = $x; }` lowers BOTH statements to `Let`, so the
+// second one is exactly the merged shape the regression guard tolerates. That
+// guard cannot fail if the arm breaks — losing the arm makes it return early
+// and pass vacuously — so the arm is pinned here instead, where a `None` is an
+// error rather than an early success.
+
+#[test]
+fn hir_canonical_merged_let_second_stmt_yields_its_init_expr()
+-> Result<(), Box<dyn std::error::Error>> {
+    let file = parse("sub foo { my $x = 1; my $y = $x; }");
+
+    let sub_body = file
+        .bodies
+        .iter()
+        .find(|b| matches!(&b.owner, BodyOwnerKind::Subroutine { name } if name.as_deref() == Some("foo")))
+        .ok_or("must find body for sub foo")?;
+    let root = sub_body.block(sub_body.root_block).ok_or("sub root block")?;
+    assert!(root.stmts.len() >= 2, "fixture must lower to at least two statements");
+
+    let stmt2 = sub_body.stmt(root.stmts[1]).ok_or("second stmt")?;
+    assert!(
+        matches!(stmt2, HirStmt::Let { init: Some(_), .. }),
+        "fixture must produce a `Let` carrying an init; got {stmt2:?}",
+    );
+
+    let expr_id = second_stmt_expr_id(stmt2)
+        .ok_or("the merged-`Let` arm must answer with the init expression id")?;
+    // The init lowers to the whole `$y = $x` assignment, so the `$x` read is
+    // its rhs rather than the init node itself.
+    let init = sub_body.expr(expr_id).ok_or("init expr")?;
+    let HirExpr::Assign { rhs, .. } = init else {
+        return Err(format!("init must lower to an Assign; got {init:?}").into());
+    };
+    let read = sub_body.expr(*rhs).ok_or("assign rhs")?;
+    match read {
+        HirExpr::Variable(v) => {
+            assert_eq!(v.name, "x", "rhs of `my $y = $x` must reference $x");
+            assert!(
+                matches!(v.kind, VariableKind::Lexical),
+                "$x read in the init must resolve Lexical; got {:?}",
+                v.kind
+            );
+        }
+        other => {
+            return Err(format!("assign rhs must lower to Variable($x); got {other:?}").into());
+        }
+    }
+    Ok(())
+}
+
 // ── 11. Sub-body lexical resolution (scope-chain regression guard) ────────────
 //
 // THE guard for MUST-FIX #1: before the fix, BodyBuilder2 always started at
@@ -455,7 +534,7 @@ fn hir_canonical_unsupported_parent_known_child_emitted() -> Result<(), String> 
 // sub correctly resolves `$x` at the use-site to VariableKind::Lexical.
 
 #[test]
-fn hir_canonical_sub_body_lexical_resolution() {
+fn hir_canonical_sub_body_lexical_resolution() -> Result<(), Box<dyn std::error::Error>> {
     let file = parse("sub foo { my $x = 1; $x }");
 
     // Find the body for sub foo.
@@ -463,29 +542,20 @@ fn hir_canonical_sub_body_lexical_resolution() {
         .bodies
         .iter()
         .find(|b| matches!(&b.owner, BodyOwnerKind::Subroutine { name } if name.as_deref() == Some("foo")))
-        .expect("must find body for sub foo");
+        .ok_or("must find body for sub foo")?;
 
-    let root = sub_body.block(sub_body.root_block).expect("sub root block");
+    let root = sub_body.block(sub_body.root_block).ok_or("sub root block")?;
     // Should have 2 statements: `my $x = 1` and the bare `$x` expression
     assert!(root.stmts.len() >= 2, "sub body must have at least 2 stmts (decl + use)");
 
     // Second statement: bare `$x` usage — must resolve to VariableKind::Lexical
     // (not Package, which would mean the scope-chain fix didn't work).
-    let stmt2 = sub_body.stmt(root.stmts[1]).expect("second stmt");
-    let expr_id = match stmt2 {
-        HirStmt::Expr(id) => *id,
-        HirStmt::Let { init, .. } => {
-            // Tolerate if the parser merged both into one Let — check the init
-            if let Some(id) = init {
-                *id
-            } else {
-                return; // no init to check
-            }
-        }
-        _ => return,
+    let stmt2 = sub_body.stmt(root.stmts[1]).ok_or("second stmt")?;
+    let Some(expr_id) = second_stmt_expr_id(stmt2) else {
+        return Ok(()); // no expression to check in this shape
     };
 
-    let expr = sub_body.expr(expr_id).expect("second expr");
+    let expr = sub_body.expr(expr_id).ok_or("second expr")?;
     match expr {
         HirExpr::Variable(v) => {
             assert_eq!(v.name, "x", "second stmt must reference $x");
@@ -504,12 +574,13 @@ fn hir_canonical_sub_body_lexical_resolution() {
             let _ = other;
         }
     }
+    Ok(())
 }
 
 // ── 12. Method body end-to-end ────────────────────────────────────────────────
 
 #[test]
-fn hir_canonical_method_body_owned() {
+fn hir_canonical_method_body_owned() -> Result<(), Box<dyn std::error::Error>> {
     // Perl 5.38+ class/method syntax. The parser produces a Method node inside
     // a Class node. The second pass must register it as BodyOwnerKind::Method.
     let file =
@@ -530,7 +601,7 @@ fn hir_canonical_method_body_owned() {
             BodyOwnerKind::Method { name: "greet".to_string() },
             "method body owner must be Method {{ name: \"greet\" }}"
         );
-        let root = method_body.block(method_body.root_block).expect("method root block");
+        let root = method_body.block(method_body.root_block).ok_or("method root block")?;
         assert!(!root.stmts.is_empty(), "method body must have at least one statement");
     }
     // Always assert at least the root body exists (second pass ran successfully)
@@ -539,12 +610,13 @@ fn hir_canonical_method_body_owned() {
         file.body_model_version, HIR_BODY_MODEL_VERSION,
         "lower_ast must publish the current body model version"
     );
+    Ok(())
 }
 
 // ── 13. Anonymous sub body ────────────────────────────────────────────────────
 
 #[test]
-fn hir_canonical_anonymous_sub_body() {
+fn hir_canonical_anonymous_sub_body() -> Result<(), Box<dyn std::error::Error>> {
     // `my $f = sub { my $y = 2; $y }` — the anonymous sub has Subroutine{name:None}
     let file = parse("my $f = sub { my $y = 2; $y }");
 
@@ -554,21 +626,22 @@ fn hir_canonical_anonymous_sub_body() {
         .find(|b| matches!(&b.owner, BodyOwnerKind::Subroutine { name } if name.is_none()));
 
     let anon_body =
-        anon_body.expect("must find an anonymous subroutine body (Subroutine{name:None})");
+        anon_body.ok_or("must find an anonymous subroutine body (Subroutine{name:None})")?;
     assert_eq!(
         anon_body.owner,
         BodyOwnerKind::Subroutine { name: None },
         "anonymous sub owner must be Subroutine {{ name: None }}"
     );
 
-    let root = anon_body.block(anon_body.root_block).expect("anon sub root block");
+    let root = anon_body.block(anon_body.root_block).ok_or("anon sub root block")?;
     assert!(!root.stmts.is_empty(), "anonymous sub body must have at least one statement");
+    Ok(())
 }
 
 // ── 14. Nested subs — both bodies registered ─────────────────────────────────
 
 #[test]
-fn hir_canonical_nested_subs_both_registered() {
+fn hir_canonical_nested_subs_both_registered() -> Result<(), Box<dyn std::error::Error>> {
     // `sub outer { my $x=1; sub inner { $x } }` — both outer and inner bodies
     // must be registered. inner's $x may be Package (no closure capture yet)
     // but the body structure must exist.
@@ -592,12 +665,13 @@ fn hir_canonical_nested_subs_both_registered() {
         BodyOwnerKind::ProgramRoot,
         "index 0 must be program root body"
     );
+    Ok(())
 }
 
 // ── 15. Multiple subs — ordinal stability ────────────────────────────────────
 
 #[test]
-fn hir_canonical_multiple_subs_ordinal_stability() {
+fn hir_canonical_multiple_subs_ordinal_stability() -> Result<(), Box<dyn std::error::Error>> {
     // `sub foo{} sub bar{} sub foo{}` → 3 distinct body_owners keys + 4 bodies
     // (root + 3 sub bodies).
     let file = parse("sub foo {} sub bar {} sub foo {}");
@@ -612,6 +686,7 @@ fn hir_canonical_multiple_subs_ordinal_stability() {
         4,
         "must have 4 body_owners keys (ProgramRoot + foo@0 + bar@0 + foo@1)"
     );
+    Ok(())
 }
 
 // ── 16. Postfix `$x++` → UnaryMode::ReadModifyWrite ─────────────────────────
@@ -621,27 +696,26 @@ fn hir_canonical_multiple_subs_ordinal_stability() {
 // and verifies the Unary node's mode is actually ReadModifyWrite (not just "not wrong").
 
 #[test]
-fn hir_canonical_postfix_increment_is_unary_rmw() {
+fn hir_canonical_postfix_increment_is_unary_rmw() -> Result<(), Box<dyn std::error::Error>> {
     let file = parse("$x++;");
-    let body = root_body(&file);
-    let root = body.block(body.root_block).expect("root block");
+    let body = root_body(&file)?;
+    let root = body.block(body.root_block).ok_or("root block")?;
 
     if root.stmts.is_empty() {
         // Parser recovery ate the statement — acceptable
-        return;
+        return Ok(());
     }
-
-    let stmt = body.stmt(root.stmts[0]).expect("stmt");
+    let stmt = body.stmt(root.stmts[0]).ok_or("stmt")?;
     let expr_id = match stmt {
         HirStmt::Expr(id) => *id,
         other => {
             // Unexpected stmt shape — not a regression in access-mode
             let _ = other;
-            return;
+            return Ok(());
         }
     };
 
-    let expr = body.expr(expr_id).expect("expr");
+    let expr = body.expr(expr_id).ok_or("expr")?;
     match expr {
         HirExpr::Unary { mode, op, .. } => {
             assert!(
@@ -658,12 +732,13 @@ fn hir_canonical_postfix_increment_is_unary_rmw() {
             let _ = other;
         }
     }
+    Ok(())
 }
 
 // ── 17. Recovery in sub body — no exact fact ─────────────────────────────────
 
 #[test]
-fn hir_canonical_recovery_in_sub_body() {
+fn hir_canonical_recovery_in_sub_body() -> Result<(), Box<dyn std::error::Error>> {
     // Mirror of test 9 but inside a sub scope — the scope-chain fix must not
     // cause broken recovery behaviour.
     let file = parse("sub foo { my $x = ; }");
@@ -675,21 +750,20 @@ fn hir_canonical_recovery_in_sub_body() {
 
     let sub_body = match sub_body {
         Some(b) => b,
-        None => return, // parser recovery produced no sub body — acceptable
+        None => return Ok(()), // parser recovery produced no sub body — acceptable
     };
 
-    let root = sub_body.block(sub_body.root_block).expect("sub root block");
+    let root = sub_body.block(sub_body.root_block).ok_or("sub root block")?;
     if root.stmts.is_empty() {
-        return;
+        return Ok(());
     }
-
-    let stmt = sub_body.stmt(root.stmts[0]).expect("stmt");
+    let stmt = sub_body.stmt(root.stmts[0]).ok_or("stmt")?;
     match stmt {
         HirStmt::Let { init, .. } => {
             if let Some(init_id) = init {
-                let init_expr = sub_body.expr(*init_id).expect("init expr");
+                let init_expr = sub_body.expr(*init_id).ok_or("init expr")?;
                 if let HirExpr::Assign { rhs, .. } = init_expr {
-                    let rhs_expr = sub_body.expr(*rhs).expect("rhs expr");
+                    let rhs_expr = sub_body.expr(*rhs).ok_or("rhs expr")?;
                     assert!(
                         matches!(rhs_expr, HirExpr::Opaque { .. }),
                         "recovery RHS in sub body must be Opaque, got {rhs_expr:?}"
@@ -698,44 +772,44 @@ fn hir_canonical_recovery_in_sub_body() {
             }
         }
         HirStmt::Expr(expr_id) => {
-            let expr = sub_body.expr(*expr_id).expect("expr");
+            let expr = sub_body.expr(*expr_id).ok_or("expr")?;
             if let HirExpr::Assign { rhs, .. } = expr {
-                let rhs_expr = sub_body.expr(*rhs).expect("rhs expr");
+                let rhs_expr = sub_body.expr(*rhs).ok_or("rhs expr")?;
                 assert!(
                     matches!(rhs_expr, HirExpr::Opaque { .. }),
                     "recovery path in sub body must not emit real RHS fact, got {rhs_expr:?}"
                 );
             }
         }
-        _ => return,
+        _ => return Ok(()),
     }
+    Ok(())
 }
 
 // ── 18. Chained compound LHS — Opaque fail-closed ────────────────────────────
 
 #[test]
-fn hir_canonical_compound_assign_subscript_lhs_opaque() {
+fn hir_canonical_compound_assign_subscript_lhs_opaque() -> Result<(), Box<dyn std::error::Error>> {
     // `$arr[$i] += 1` — the LHS is a subscript expression, not a plain Variable.
     // The lowerer must not emit a false Variable fact; it must fall back to Opaque
     // for the subscript LHS (fail-closed).
     let file = parse("$arr[$i] += 1;");
-    let body = root_body(&file);
-    let root = body.block(body.root_block).expect("root block");
+    let body = root_body(&file)?;
+    let root = body.block(body.root_block).ok_or("root block")?;
 
     if root.stmts.is_empty() {
-        return;
+        return Ok(());
     }
-
-    let stmt = body.stmt(root.stmts[0]).expect("stmt");
+    let stmt = body.stmt(root.stmts[0]).ok_or("stmt")?;
     let expr_id = match stmt {
         HirStmt::Expr(id) => *id,
         other => {
             let _ = other;
-            return;
+            return Ok(());
         }
     };
 
-    let expr = body.expr(expr_id).expect("expr");
+    let expr = body.expr(expr_id).ok_or("expr")?;
     match expr {
         HirExpr::Assign { lhs, mode, .. } => {
             // mode must be RMW for +=
@@ -745,7 +819,7 @@ fn hir_canonical_compound_assign_subscript_lhs_opaque() {
             );
             // LHS must NOT be a clean Variable — it's a subscript.
             // Acceptable shapes: Opaque, or a modeled subscript node.
-            let lhs_expr = body.expr(*lhs).expect("lhs expr");
+            let lhs_expr = body.expr(*lhs).ok_or("lhs expr")?;
             assert!(
                 !matches!(lhs_expr, HirExpr::Variable(v) if v.name == "arr"),
                 "subscript LHS `$arr[$i]` must not be lowered as a bare Variable($arr); \
@@ -758,4 +832,5 @@ fn hir_canonical_compound_assign_subscript_lhs_opaque() {
             let _ = other;
         }
     }
+    Ok(())
 }

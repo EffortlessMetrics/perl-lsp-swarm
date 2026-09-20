@@ -27,6 +27,9 @@ ignore = [
 [licenses]
 allow = [
     "MIT",
+    # MIT-0 (MIT No Attribution): OSI-approved, strictly more permissive than
+    # MIT; required by jsonschema's borrow-or-share transitive dep (#12156).
+    "MIT-0",
     "Apache-2.0",
     "Apache-2.0 WITH LLVM-exception",
     "BSD-2-Clause",
@@ -94,13 +97,16 @@ skip = [
     # 1.3.0 — bindgen 0.72 (xtask codegen) pins shlex 1.x. 2.0.1 — cc 1.x (build scripts) uses 2.x.
     { crate = "shlex@1.3.0", reason = "bindgen 0.72 (xtask) pins shlex 1.x; cc 1.x build scripts use 2.x" },
 
-    # wit-bindgen: 0.51 vs 0.57 split (WASI component model).
-    # 0.51.0 — wasip3 (getrandom 0.4 tree) pins wit-bindgen 0.51. 0.57.1 — wasip2 (getrandom 0.3 tree) uses 0.57.
-    { crate = "wit-bindgen@0.51.0", reason = "wasip3 (getrandom 0.4 tree) pins wit-bindgen 0.51; wasip2 uses 0.57" },
-
     # syn: 2.x vs 3.x split (ecosystem transition).
     # 2.0.117 — most crates use syn 2.x. 3.0.2 — clap_derive (via criterion) pulls syn 3.x.
     { crate = "syn@2.0.117", reason = "most crates use syn 2.x; clap_derive (criterion) pulls 3.x" },
+
+    # similar: 2.7.0 is selected by insta; xtask directly selects 3.x
+    # (similar = "3.1" in xtask/Cargo.toml, currently resolving to 3.2.0) for
+    # policy/output tooling. This is a test/tooling-only split, not product
+    # runtime weight. Owner: dependency hygiene. Revisit when insta adopts
+    # similar 3.x or xtask no longer needs its direct 3.x API.
+    { crate = "similar@2.7.0", reason = "insta selects similar 2.7.0; xtask directly selects similar 3.x for tooling" },
 ]
 
 # Windows platform crate duplicates: windows-sys 0.52 (ring 0.17 tree) pulls in

@@ -13,6 +13,7 @@ pub struct CiRouteArgs {
     pub receipt: PathBuf,
     pub summary: PathBuf,
     pub changed_files: Vec<String>,
+    pub envelope_version: String,
 }
 
 /// Cap on the number of coverage packs that will be selected for a single PR.
@@ -26,10 +27,23 @@ const TEST_SUPPORT_CRATE_PREFIXES: &[&str] = &[
     "crates/perl-test-must/",
 ];
 
+/// The single envelope version the `ci route` producer is willing to emit.
+///
+/// This is intentionally a single-current-version check, not a multi-version
+/// allowlist: `route_receipt` has exactly one serializer/shape (v1). Admitting
+/// a second id by merely appending a literal would stamp a v1-shaped payload
+/// under a v2 label. A future v2 requires an explicitly versioned
+/// serializer/schema contract plus a compatibility test, at which point this
+/// check becomes a dispatch per accepted version. Until then
+/// `envelope_version_admission_is_single_current_version` pins the allowlist
+/// to one entry so the append-literal shortcut fails fast.
+const CURRENT_ENVELOPE_VERSION: &str = "ci-route.v1";
+const SUPPORTED_ENVELOPE_VERSIONS: &[&str] = &[CURRENT_ENVELOPE_VERSION];
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "snake_case")]
 struct CiRouteReceipt {
-    schema_version: &'static str,
+    schema_version: String,
     provider_action: &'static str,
     claim_boundary: &'static str,
     base: String,
@@ -179,6 +193,29 @@ const XTASK_FILE_POLICY_PACK: ProofPack = ProofPack {
     ],
 };
 
+const TAUTOLOGY_CHECK_PACK: ProofPack = ProofPack {
+    id: "tautology-check-focused",
+    commands: &[
+        "cargo test -p xtask --bin xtask --profile agent --locked check_tautology -- --nocapture",
+        "cargo run -p xtask --profile agent --locked -- check-tautology --check",
+    ],
+};
+
+const XTASK_PRODUCT_TOPOLOGY_PACK: ProofPack = ProofPack {
+    id: "xtask-product-topology",
+    commands: &[
+        "cargo test -p xtask --bin product-topology --profile agent --locked -- --nocapture",
+        "cargo test -p xtask --test product_topology_cli --profile agent --locked -- --nocapture",
+    ],
+};
+
+const XTASK_PARSER_TDD_FACADE_GUARD_PACK: ProofPack = ProofPack {
+    id: "xtask-parser-tdd-facade-guard",
+    commands: &[
+        "cargo test -p xtask --test parser_tdd_facade_consumers --profile agent --locked -- --nocapture",
+    ],
+};
+
 const COMPLETION_CORE_PACK: ProofPack = ProofPack {
     id: "completion-core",
     commands: &[
@@ -198,8 +235,17 @@ const CI_POLICY_PACK: ProofPack = ProofPack {
     id: "ci-policy-focused",
     commands: &[
         "python -m unittest scripts/ci/test_ci_classify.py",
+        "python -m unittest scripts/ci/test_docker_publish_metadata.py",
+        "python -m unittest scripts/ci/test_docker_publish_topology.py",
         "cargo xtask workflow-trigger-lint --policy .ci/policies/required-checks.toml --receipt target/receipts/workflow-trigger-lint.json",
         "cargo test -p xtask --test quality_ci_wiring_policy --profile agent --locked -- --nocapture",
+        // The #5432 shadow measurement lane is manual-only, so ordinary CI
+        // never executes it. These three targets are the only thing standing
+        // between that lane and silent drift, and compiling them is not
+        // running them.
+        "cargo test -p xtask --test release_artifact_size_shadow_workflow --profile agent --locked -- --nocapture",
+        "cargo test -p xtask --test release_artifact_size_stage_script --profile agent --locked -- --nocapture",
+        "cargo test -p xtask --test release_artifact_size_smoke_script --profile agent --locked -- --nocapture",
     ],
 };
 
@@ -431,6 +477,11 @@ const GENERATE_BADGES_WRAPPER_PACK: ProofPack = ProofPack {
     commands: &["bash scripts/tests/test-generate-badges-wrapper.sh"],
 };
 
+const RIPR_BADGE_ENDPOINTS_PACK: ProofPack = ProofPack {
+    id: "ripr-badge-endpoints-focused",
+    commands: &["python scripts/tests/test-generate-badges.py"],
+};
+
 const IGNORED_TEST_COUNT_WRAPPER_PACK: ProofPack = ProofPack {
     id: "ignored-test-count-wrapper-focused",
     commands: &["bash scripts/tests/test-ignored-test-count-wrapper.sh"],
@@ -480,12 +531,19 @@ const GENERAL_RUST_PACK: ProofPack = ProofPack {
 };
 
 pub fn run(args: CiRouteArgs) -> Result<()> {
+    if args.envelope_version != CURRENT_ENVELOPE_VERSION {
+        bail!(
+            "unsupported envelope_version `{}`; supported versions: {}",
+            args.envelope_version,
+            SUPPORTED_ENVELOPE_VERSIONS.join(", ")
+        );
+    }
     let changed_files = if args.changed_files.is_empty() {
         git_changed_files(&args.base, &args.head)?
     } else {
         normalize_changed_files(args.changed_files)
     };
-    let receipt = route_receipt(&args.base, &args.head, changed_files)?;
+    let receipt = route_receipt(&args.base, &args.head, changed_files, &args.envelope_version)?;
     write_receipt(&args.receipt, &receipt)?;
     let markdown = render_summary(&args.receipt, &args.summary, &receipt);
     write_text(&args.summary, &markdown)?;
@@ -522,7 +580,12 @@ fn normalize_changed_files(files: Vec<String>) -> Vec<String> {
         .collect()
 }
 
-fn route_receipt(base: &str, head: &str, changed_files: Vec<String>) -> Result<CiRouteReceipt> {
+fn route_receipt(
+    base: &str,
+    head: &str,
+    changed_files: Vec<String>,
+    envelope_version: &str,
+) -> Result<CiRouteReceipt> {
     let mut route = RouteBuilder::default();
     route.add_pack(PREFLIGHT_PACK);
 
@@ -592,7 +655,7 @@ fn route_receipt(base: &str, head: &str, changed_files: Vec<String>) -> Result<C
     };
 
     Ok(CiRouteReceipt {
-        schema_version: "ci-route.v1",
+        schema_version: envelope_version.to_string(),
         provider_action: "changed_file_proof_pack_route",
         claim_boundary: "Advisory changed-file coverage routing; selected coverage pack commands feed manual routed coverage diagnostics",
         base: base.to_string(),
@@ -687,6 +750,35 @@ fn route_file(file: &str, route: &mut RouteBuilder) {
         return route.add_coverage_pack("patch-coverage-xtask-file-policy");
     }
 
+    if file == "xtask/src/tasks/check_tautology.rs"
+        || file.starts_with("xtask/src/tasks/check_tautology/")
+        || file == "policy/tautology-dispositions.toml"
+    {
+        route.add_surface("tautology-check");
+        route.add_pack(TAUTOLOGY_CHECK_PACK);
+        return route.add_coverage_pack("patch-coverage-tautology-check");
+    }
+
+    // #13491: the staged topology contract is a checker, its CLI proof, and the
+    // policy file that *is* its content. The policy file has to match here
+    // rather than fall through to the generic `policy/` arm below, or editing
+    // the contract itself selects the broad CI-policy pack and never runs the
+    // topology commands.
+    if file == "xtask/src/bin/product-topology.rs"
+        || file == "xtask/tests/product_topology_cli.rs"
+        || file == "policy/product-topology.toml"
+    {
+        route.add_surface("xtask-product-topology");
+        route.add_pack(XTASK_PRODUCT_TOPOLOGY_PACK);
+        return route.add_coverage_pack("patch-coverage-xtask-product-topology");
+    }
+
+    if file == "xtask/tests/parser_tdd_facade_consumers.rs" {
+        route.add_surface("xtask-parser-tdd-facade-guard");
+        route.add_pack(XTASK_PARSER_TDD_FACADE_GUARD_PACK);
+        return route.add_coverage_pack("patch-coverage-xtask-parser-tdd-facade-guard");
+    }
+
     if file.starts_with("crates/perl-lsp-rs-core/src/providers/completion/") {
         route.add_surface("completion-core");
         route.add_pack(COMPLETION_CORE_PACK);
@@ -706,11 +798,24 @@ fn route_file(file: &str, route: &mut RouteBuilder) {
         || file.starts_with("policy/")
         || file == "scripts/ci/ci_classify.py"
         || file == "scripts/ci/test_ci_classify.py"
+        || file == "scripts/ci/docker_publish_metadata.py"
+        || file == "scripts/ci/test_docker_publish_metadata.py"
+        || file == "scripts/ci/test_docker_publish_topology.py"
         || matches!(
             file,
             "xtask/tests/codecov_patch_gate_policy.rs"
                 | "xtask/tests/quality_ci_wiring_policy.rs"
                 | "xtask/tests/quality_gate_patch_coverage_cli_policy.rs"
+                // The #5432 shadow measurement lane: its adapters, the shared
+                // constants the lane and the instrument both read, and the
+                // contracts that bind them together.
+                | "scripts/ci/release_artifact_size_stage.sh"
+                | "scripts/ci/release_artifact_size_smoke.sh"
+                | "xtask/examples/release_artifact_size.rs"
+                | "xtask/src/bin/release_artifact_size/policy.rs"
+                | "xtask/tests/release_artifact_size_shadow_workflow.rs"
+                | "xtask/tests/release_artifact_size_stage_script.rs"
+                | "xtask/tests/release_artifact_size_smoke_script.rs"
         )
     {
         route.add_surface("ci-policy");
@@ -1088,6 +1193,13 @@ fn route_file(file: &str, route: &mut RouteBuilder) {
         return;
     }
 
+    if file == "scripts/generate-badges.py" || file == "scripts/tests/test-generate-badges.py" {
+        route.add_surface("ripr-badge-endpoints");
+        route.add_pack(RIPR_BADGE_ENDPOINTS_PACK);
+        route.add_coverage_pack("patch-coverage-ripr-badge-endpoints");
+        return;
+    }
+
     if file == "scripts/ignored-test-count.sh"
         || file == "scripts/tests/test-ignored-test-count-wrapper.sh"
     {
@@ -1205,6 +1317,7 @@ fn render_summary(receipt_path: &Path, summary_path: &Path, receipt: &CiRouteRec
     writeln!(markdown, "- receipt: `{}`", receipt_path.display()).ok();
     writeln!(markdown, "- summary: `{}`", summary_path.display()).ok();
     writeln!(markdown, "- estimated_lem: `{}`", receipt.estimated_lem).ok();
+    writeln!(markdown, "- envelope_version: `{}`", receipt.schema_version).ok();
     writeln!(markdown).ok();
 
     markdown_list(&mut markdown, "Changed Files", &receipt.changed_files);
@@ -1232,6 +1345,7 @@ fn refresh_command(receipt_path: &Path, summary_path: &Path, receipt: &CiRouteRe
     for file in &receipt.changed_files {
         write!(command, " --changed-file {}", shell_quote(file)).ok();
     }
+    write!(command, " --envelope-version {}", shell_quote(&receipt.schema_version)).ok();
     command
 }
 
@@ -1574,12 +1688,11 @@ fn changed_crates(paths: &[String]) -> Vec<String> {
     let mut seen = BTreeSet::new();
     let mut crates = Vec::new();
     for path in paths {
-        if is_lcov_source_path(path) {
-            if let Some(name) = crate_name_from_source_path(path) {
-                if seen.insert(name.to_string()) {
-                    crates.push(name.to_string());
-                }
-            }
+        if is_lcov_source_path(path)
+            && let Some(name) = crate_name_from_source_path(path)
+            && seen.insert(name.to_string())
+        {
+            crates.push(name.to_string());
         }
     }
     crates
@@ -1672,6 +1785,7 @@ mod tests {
             "origin/main",
             "HEAD",
             vec!["xtask/src/tasks/supported_editor_inline_smoke.rs".to_string()],
+            "ci-route.v1",
         )?;
 
         assert_eq!(receipt.changed_surfaces, vec!["xtask-supported-editor-inline-smoke"]);
@@ -1706,6 +1820,7 @@ mod tests {
             "origin/main",
             "HEAD",
             vec!["xtask/src/tasks/semantic_inline_receipts.rs".to_string()],
+            "ci-route.v1",
         )?;
 
         assert_eq!(receipt.changed_surfaces, vec!["xtask-semantic-inline-receipts"]);
@@ -1729,6 +1844,7 @@ mod tests {
             "origin/main",
             "HEAD",
             vec!["docs/development/INLINE_COMPLETION_ROADMAP.md".to_string()],
+            "ci-route.v1",
         )?;
 
         assert_eq!(receipt.changed_surfaces, vec!["docs"]);
@@ -1744,8 +1860,12 @@ mod tests {
 
     #[test]
     fn route_receipt_maps_ci_route_files_to_focused_non_lcov_route_pack() -> Result<()> {
-        let receipt =
-            route_receipt("origin/main", "HEAD", vec!["xtask/src/tasks/ci_route.rs".to_string()])?;
+        let receipt = route_receipt(
+            "origin/main",
+            "HEAD",
+            vec!["xtask/src/tasks/ci_route.rs".to_string()],
+            "ci-route.v1",
+        )?;
 
         assert_eq!(receipt.changed_surfaces, vec!["ci-routing"]);
         assert!(proof_pack_ids(&receipt).contains(&"ci-route-receipt"));
@@ -1758,12 +1878,40 @@ mod tests {
         Ok(())
     }
 
+    /// Each of the three topology files must select the topology surface.
+    /// `policy/product-topology.toml` is the one that can regress silently: it
+    /// also matches the generic `policy/` arm, so if the topology arm is ever
+    /// moved below it, editing the contract's own content would select the
+    /// broad CI-policy pack and never run the topology commands.
+    #[test]
+    fn route_receipt_maps_product_topology_files_to_the_topology_surface() -> Result<()> {
+        for file in [
+            "xtask/src/bin/product-topology.rs",
+            "xtask/tests/product_topology_cli.rs",
+            "policy/product-topology.toml",
+        ] {
+            let receipt =
+                route_receipt("origin/main", "HEAD", vec![file.to_string()], "ci-route.v1")?;
+            assert_eq!(
+                receipt.changed_surfaces,
+                vec!["xtask-product-topology"],
+                "{file} selected the wrong surface"
+            );
+            assert!(
+                proof_pack_ids(&receipt).contains(&"xtask-product-topology"),
+                "{file} did not select the topology proof pack"
+            );
+        }
+        Ok(())
+    }
+
     #[test]
     fn route_receipt_maps_codecov_router_script_to_focused_non_lcov_route_pack() -> Result<()> {
         let receipt = route_receipt(
             "origin/main",
             "HEAD",
             vec!["scripts/ci/route-codecov-packs.py".to_string()],
+            "ci-route.v1",
         )?;
 
         assert_eq!(receipt.changed_surfaces, vec!["ci-routing"]);
@@ -1789,6 +1937,7 @@ mod tests {
             "origin/main",
             "HEAD",
             vec!["xtask/tests/quality_ci_wiring_policy.rs".to_string()],
+            "ci-route.v1",
         )?;
 
         assert_eq!(receipt.changed_surfaces, vec!["ci-policy"]);
@@ -1803,9 +1952,43 @@ mod tests {
     }
 
     #[test]
+    fn ci_route_receipt_maps_parser_tdd_facade_guard_to_focused_non_lcov_pack() -> Result<()> {
+        let receipt = route_receipt(
+            "origin/main",
+            "HEAD",
+            vec!["xtask/tests/parser_tdd_facade_consumers.rs".to_string()],
+            "ci-route.v1",
+        )?;
+
+        assert_eq!(receipt.changed_surfaces, vec!["xtask-parser-tdd-facade-guard"]);
+        assert!(proof_pack_ids(&receipt).contains(&"xtask-parser-tdd-facade-guard"));
+        assert!(receipt.required_proof_packs.iter().any(|pack| {
+            pack.id == "xtask-parser-tdd-facade-guard"
+                && pack.commands.iter().any(|command| {
+                    command
+                        == "cargo test -p xtask --test parser_tdd_facade_consumers --profile agent --locked -- --nocapture"
+                })
+        }));
+        assert!(receipt.coverage_pack_selector.is_empty());
+        assert!(receipt.coverage_proof_packs.is_empty());
+        assert_eq!(
+            receipt
+                .skipped_by_policy
+                .get("patch-coverage-xtask-parser-tdd-facade-guard")
+                .map(String::as_str),
+            Some(NON_LCOV_COVERAGE_SKIP_REASON)
+        );
+        Ok(())
+    }
+
+    #[test]
     fn ci_route_receipt_maps_ci_classifier_script_to_focused_policy_pack() -> Result<()> {
-        let receipt =
-            route_receipt("origin/main", "HEAD", vec!["scripts/ci/ci_classify.py".to_string()])?;
+        let receipt = route_receipt(
+            "origin/main",
+            "HEAD",
+            vec!["scripts/ci/ci_classify.py".to_string()],
+            "ci-route.v1",
+        )?;
 
         assert_eq!(receipt.changed_surfaces, vec!["ci-policy"]);
         assert!(proof_pack_ids(&receipt).contains(&"ci-policy-focused"));
@@ -1831,6 +2014,7 @@ mod tests {
             "origin/main",
             "HEAD",
             vec!["scripts/ci/emit_ci_actuals.py".to_string()],
+            "ci-route.v1",
         )?;
 
         assert_eq!(receipt.changed_surfaces, vec!["ci-actuals"]);
@@ -1852,8 +2036,12 @@ mod tests {
 
     #[test]
     fn ci_route_receipt_maps_ripr_summary_script_to_focused_non_lcov_summary_pack() -> Result<()> {
-        let receipt =
-            route_receipt("origin/main", "HEAD", vec!["scripts/ci/ripr_summary.py".to_string()])?;
+        let receipt = route_receipt(
+            "origin/main",
+            "HEAD",
+            vec!["scripts/ci/ripr_summary.py".to_string()],
+            "ci-route.v1",
+        )?;
 
         assert_eq!(receipt.changed_surfaces, vec!["ripr-summary"]);
         assert!(proof_pack_ids(&receipt).contains(&"ripr-summary-focused"));
@@ -1879,6 +2067,7 @@ mod tests {
             "origin/main",
             "HEAD",
             vec!["scripts/ci/learned_estimate.py".to_string()],
+            "ci-route.v1",
         )?;
 
         assert_eq!(receipt.changed_surfaces, vec!["learned-estimate"]);
@@ -1904,6 +2093,7 @@ mod tests {
             "origin/main",
             "HEAD",
             vec!["scripts/ci/validate_risk_packs.py".to_string()],
+            "ci-route.v1",
         )?;
 
         assert_eq!(receipt.changed_surfaces, vec!["risk-packs-validator"]);
@@ -1932,6 +2122,7 @@ mod tests {
             "origin/main",
             "HEAD",
             vec!["scripts/ci/validate_gate_lane_mapping.py".to_string()],
+            "ci-route.v1",
         )?;
 
         assert_eq!(receipt.changed_surfaces, vec!["gate-lane-mapping"]);
@@ -1957,6 +2148,7 @@ mod tests {
             "origin/main",
             "HEAD",
             vec!["scripts/ci/validate_trust_lanes.py".to_string()],
+            "ci-route.v1",
         )?;
 
         assert_eq!(receipt.changed_surfaces, vec!["trust-lanes-validator"]);
@@ -1985,6 +2177,7 @@ mod tests {
             "origin/main",
             "HEAD",
             vec!["scripts/ci/receipts-to-junit.py".to_string()],
+            "ci-route.v1",
         )?;
 
         assert_eq!(receipt.changed_surfaces, vec!["receipts-junit"]);
@@ -2010,6 +2203,7 @@ mod tests {
             "origin/main",
             "HEAD",
             vec!["scripts/ci/check_perl_lsp_rs_core_package.py".to_string()],
+            "ci-route.v1",
         )?;
 
         assert_eq!(receipt.changed_surfaces, vec!["core-package-validator"]);
@@ -2039,6 +2233,7 @@ mod tests {
             "origin/main",
             "HEAD",
             vec!["scripts/ci/aggregate_lane_history.py".to_string()],
+            "ci-route.v1",
         )?;
 
         assert_eq!(receipt.changed_surfaces, vec!["aggregate-lane-history"]);
@@ -2063,8 +2258,12 @@ mod tests {
 
     #[test]
     fn ci_route_receipt_maps_pr_plan_to_focused_non_lcov_pack() -> Result<()> {
-        let receipt =
-            route_receipt("origin/main", "HEAD", vec!["scripts/ci/pr_plan.py".to_string()])?;
+        let receipt = route_receipt(
+            "origin/main",
+            "HEAD",
+            vec!["scripts/ci/pr_plan.py".to_string()],
+            "ci-route.v1",
+        )?;
 
         assert_eq!(receipt.changed_surfaces, vec!["pr-plan"]);
         assert!(proof_pack_ids(&receipt).contains(&"pr-plan-focused"));
@@ -2086,8 +2285,12 @@ mod tests {
 
     #[test]
     fn ci_route_receipt_maps_clean_tmp_targets_to_focused_non_lcov_pack() -> Result<()> {
-        let receipt =
-            route_receipt("origin/main", "HEAD", vec!["scripts/clean-tmp-targets.sh".to_string()])?;
+        let receipt = route_receipt(
+            "origin/main",
+            "HEAD",
+            vec!["scripts/clean-tmp-targets.sh".to_string()],
+            "ci-route.v1",
+        )?;
 
         assert_eq!(receipt.changed_surfaces, vec!["clean-tmp-targets"]);
         assert!(proof_pack_ids(&receipt).contains(&"clean-tmp-targets-focused"));
@@ -2113,6 +2316,7 @@ mod tests {
             "origin/main",
             "HEAD",
             vec!["scripts/cleanup-completed-worktrees.sh".to_string()],
+            "ci-route.v1",
         )?;
 
         assert_eq!(receipt.changed_surfaces, vec!["cleanup-completed-worktrees"]);
@@ -2144,6 +2348,7 @@ mod tests {
                 "scripts/swarm-clean".to_string(),
                 "scripts/tests/test_swarm_doctor.sh".to_string(),
             ],
+            "ci-route.v1",
         )?;
 
         assert_eq!(receipt.changed_surfaces, vec!["swarm-cleanup"]);
@@ -2170,8 +2375,12 @@ mod tests {
 
     #[test]
     fn ci_route_receipt_maps_pre_merge_check_to_focused_non_lcov_pack() -> Result<()> {
-        let receipt =
-            route_receipt("origin/main", "HEAD", vec!["scripts/pre-merge-check.sh".to_string()])?;
+        let receipt = route_receipt(
+            "origin/main",
+            "HEAD",
+            vec!["scripts/pre-merge-check.sh".to_string()],
+            "ci-route.v1",
+        )?;
 
         assert_eq!(receipt.changed_surfaces, vec!["pre-merge-check"]);
         assert!(proof_pack_ids(&receipt).contains(&"pre-merge-check-focused"));
@@ -2193,8 +2402,12 @@ mod tests {
 
     #[test]
     fn ci_route_receipt_maps_pr_overlap_to_focused_non_lcov_pack() -> Result<()> {
-        let receipt =
-            route_receipt("origin/main", "HEAD", vec!["scripts/pr_overlap.py".to_string()])?;
+        let receipt = route_receipt(
+            "origin/main",
+            "HEAD",
+            vec!["scripts/pr_overlap.py".to_string()],
+            "ci-route.v1",
+        )?;
 
         assert_eq!(receipt.changed_surfaces, vec!["pr-overlap"]);
         assert!(proof_pack_ids(&receipt).contains(&"pr-overlap-focused"));
@@ -2220,6 +2433,7 @@ mod tests {
             "origin/main",
             "HEAD",
             vec!["scripts/control-plane-lock.sh".to_string()],
+            "ci-route.v1",
         )?;
 
         assert_eq!(receipt.changed_surfaces, vec!["control-plane-lock"]);
@@ -2242,8 +2456,12 @@ mod tests {
 
     #[test]
     fn ci_route_receipt_maps_agent_preflight_to_focused_non_lcov_pack() -> Result<()> {
-        let receipt =
-            route_receipt("origin/main", "HEAD", vec!["scripts/agent-preflight.sh".to_string()])?;
+        let receipt = route_receipt(
+            "origin/main",
+            "HEAD",
+            vec!["scripts/agent-preflight.sh".to_string()],
+            "ci-route.v1",
+        )?;
 
         assert_eq!(receipt.changed_surfaces, vec!["agent-preflight"]);
         assert!(proof_pack_ids(&receipt).contains(&"agent-preflight-focused"));
@@ -2269,6 +2487,7 @@ mod tests {
             "origin/main",
             "HEAD",
             vec!["scripts/ci-audit-workflows.py".to_string()],
+            "ci-route.v1",
         )?;
 
         assert_eq!(receipt.changed_surfaces, vec!["ci-audit-workflows-shim"]);
@@ -2293,8 +2512,12 @@ mod tests {
 
     #[test]
     fn ci_route_receipt_maps_doc_claims_shim_to_focused_non_lcov_pack() -> Result<()> {
-        let receipt =
-            route_receipt("origin/main", "HEAD", vec!["scripts/check-doc-claims.py".to_string()])?;
+        let receipt = route_receipt(
+            "origin/main",
+            "HEAD",
+            vec!["scripts/check-doc-claims.py".to_string()],
+            "ci-route.v1",
+        )?;
 
         assert_eq!(receipt.changed_surfaces, vec!["doc-claims-shim"]);
         assert!(proof_pack_ids(&receipt).contains(&"doc-claims-shim-focused"));
@@ -2320,6 +2543,7 @@ mod tests {
             "origin/main",
             "HEAD",
             vec!["scripts/check_features_invariants.py".to_string()],
+            "ci-route.v1",
         )?;
 
         assert_eq!(receipt.changed_surfaces, vec!["features-invariants-shim"]);
@@ -2344,8 +2568,12 @@ mod tests {
 
     #[test]
     fn ci_route_receipt_maps_debt_report_shim_to_focused_non_lcov_pack() -> Result<()> {
-        let receipt =
-            route_receipt("origin/main", "HEAD", vec!["scripts/debt-report.py".to_string()])?;
+        let receipt = route_receipt(
+            "origin/main",
+            "HEAD",
+            vec!["scripts/debt-report.py".to_string()],
+            "ci-route.v1",
+        )?;
 
         assert_eq!(receipt.changed_surfaces, vec!["debt-report-shim"]);
         assert!(proof_pack_ids(&receipt).contains(&"debt-report-shim-focused"));
@@ -2367,8 +2595,12 @@ mod tests {
 
     #[test]
     fn ci_route_receipt_maps_debt_pr_summary_shim_to_focused_non_lcov_pack() -> Result<()> {
-        let receipt =
-            route_receipt("origin/main", "HEAD", vec!["scripts/debt-pr-summary.py".to_string()])?;
+        let receipt = route_receipt(
+            "origin/main",
+            "HEAD",
+            vec!["scripts/debt-pr-summary.py".to_string()],
+            "ci-route.v1",
+        )?;
 
         assert_eq!(receipt.changed_surfaces, vec!["debt-pr-summary-shim"]);
         assert!(proof_pack_ids(&receipt).contains(&"debt-pr-summary-shim-focused"));
@@ -2397,6 +2629,7 @@ mod tests {
             "origin/main",
             "HEAD",
             vec!["scripts/update-current-status.py".to_string()],
+            "ci-route.v1",
         )?;
 
         assert_eq!(receipt.changed_surfaces, vec!["update-current-status-shim"]);
@@ -2425,6 +2658,7 @@ mod tests {
             "origin/main",
             "HEAD",
             vec!["scripts/update-parser-matrix.py".to_string()],
+            "ci-route.v1",
         )?;
 
         assert_eq!(receipt.changed_surfaces, vec!["update-parser-matrix-shim"]);
@@ -2449,8 +2683,12 @@ mod tests {
 
     #[test]
     fn ci_route_receipt_maps_preflight_wrapper_to_focused_non_lcov_pack() -> Result<()> {
-        let receipt =
-            route_receipt("origin/main", "HEAD", vec!["scripts/preflight.sh".to_string()])?;
+        let receipt = route_receipt(
+            "origin/main",
+            "HEAD",
+            vec!["scripts/preflight.sh".to_string()],
+            "ci-route.v1",
+        )?;
 
         assert_eq!(receipt.changed_surfaces, vec!["preflight-wrapper"]);
         assert!(proof_pack_ids(&receipt).contains(&"preflight-wrapper-focused"));
@@ -2472,8 +2710,12 @@ mod tests {
 
     #[test]
     fn ci_route_receipt_maps_install_githooks_wrapper_to_focused_non_lcov_pack() -> Result<()> {
-        let receipt =
-            route_receipt("origin/main", "HEAD", vec!["scripts/install-githooks.sh".to_string()])?;
+        let receipt = route_receipt(
+            "origin/main",
+            "HEAD",
+            vec!["scripts/install-githooks.sh".to_string()],
+            "ci-route.v1",
+        )?;
 
         assert_eq!(receipt.changed_surfaces, vec!["install-githooks-wrapper"]);
         assert!(proof_pack_ids(&receipt).contains(&"install-githooks-wrapper-focused"));
@@ -2498,8 +2740,12 @@ mod tests {
 
     #[test]
     fn ci_route_receipt_maps_e2e_gate_wrapper_to_focused_non_lcov_pack() -> Result<()> {
-        let receipt =
-            route_receipt("origin/main", "HEAD", vec!["scripts/e2e-gate.sh".to_string()])?;
+        let receipt = route_receipt(
+            "origin/main",
+            "HEAD",
+            vec!["scripts/e2e-gate.sh".to_string()],
+            "ci-route.v1",
+        )?;
 
         assert_eq!(receipt.changed_surfaces, vec!["e2e-gate-wrapper"]);
         assert!(proof_pack_ids(&receipt).contains(&"e2e-gate-wrapper-focused"));
@@ -2521,8 +2767,12 @@ mod tests {
 
     #[test]
     fn ci_route_receipt_maps_execute_gate_wrapper_to_focused_non_lcov_pack() -> Result<()> {
-        let receipt =
-            route_receipt("origin/main", "HEAD", vec!["scripts/execute-gate.sh".to_string()])?;
+        let receipt = route_receipt(
+            "origin/main",
+            "HEAD",
+            vec!["scripts/execute-gate.sh".to_string()],
+            "ci-route.v1",
+        )?;
 
         assert_eq!(receipt.changed_surfaces, vec!["execute-gate-wrapper"]);
         assert!(proof_pack_ids(&receipt).contains(&"execute-gate-wrapper-focused"));
@@ -2547,8 +2797,12 @@ mod tests {
 
     #[test]
     fn ci_route_receipt_maps_run_gates_wrapper_to_focused_non_lcov_pack() -> Result<()> {
-        let receipt =
-            route_receipt("origin/main", "HEAD", vec!["scripts/run-gates.sh".to_string()])?;
+        let receipt = route_receipt(
+            "origin/main",
+            "HEAD",
+            vec!["scripts/run-gates.sh".to_string()],
+            "ci-route.v1",
+        )?;
 
         assert_eq!(receipt.changed_surfaces, vec!["run-gates-wrapper"]);
         assert!(proof_pack_ids(&receipt).contains(&"run-gates-wrapper-focused"));
@@ -2570,8 +2824,12 @@ mod tests {
 
     #[test]
     fn ci_route_receipt_maps_gate_local_wrapper_to_focused_non_lcov_pack() -> Result<()> {
-        let receipt =
-            route_receipt("origin/main", "HEAD", vec!["scripts/gate-local.sh".to_string()])?;
+        let receipt = route_receipt(
+            "origin/main",
+            "HEAD",
+            vec!["scripts/gate-local.sh".to_string()],
+            "ci-route.v1",
+        )?;
 
         assert_eq!(receipt.changed_surfaces, vec!["gate-local-wrapper"]);
         assert!(proof_pack_ids(&receipt).contains(&"gate-local-wrapper-focused"));
@@ -2593,8 +2851,12 @@ mod tests {
 
     #[test]
     fn ci_route_receipt_maps_list_gates_wrapper_to_focused_non_lcov_pack() -> Result<()> {
-        let receipt =
-            route_receipt("origin/main", "HEAD", vec!["scripts/list-gates.py".to_string()])?;
+        let receipt = route_receipt(
+            "origin/main",
+            "HEAD",
+            vec!["scripts/list-gates.py".to_string()],
+            "ci-route.v1",
+        )?;
 
         assert_eq!(receipt.changed_surfaces, vec!["list-gates-wrapper"]);
         assert!(proof_pack_ids(&receipt).contains(&"list-gates-wrapper-focused"));
@@ -2621,6 +2883,7 @@ mod tests {
             "origin/main",
             "HEAD",
             vec!["scripts/forbid-fatal-constructs.sh".to_string()],
+            "ci-route.v1",
         )?;
 
         assert_eq!(receipt.changed_surfaces, vec!["forbid-fatal-constructs-wrapper"]);
@@ -2645,8 +2908,12 @@ mod tests {
 
     #[test]
     fn ci_route_receipt_maps_dead_code_wrapper_to_focused_non_lcov_pack() -> Result<()> {
-        let receipt =
-            route_receipt("origin/main", "HEAD", vec!["scripts/dead-code-check.sh".to_string()])?;
+        let receipt = route_receipt(
+            "origin/main",
+            "HEAD",
+            vec!["scripts/dead-code-check.sh".to_string()],
+            "ci-route.v1",
+        )?;
 
         assert_eq!(receipt.changed_surfaces, vec!["dead-code-wrapper"]);
         assert!(proof_pack_ids(&receipt).contains(&"dead-code-wrapper-focused"));
@@ -2672,6 +2939,7 @@ mod tests {
             "origin/main",
             "HEAD",
             vec!["scripts/check-rust-toolchain.sh".to_string()],
+            "ci-route.v1",
         )?;
 
         assert_eq!(receipt.changed_surfaces, vec!["check-toolchain-wrapper"]);
@@ -2700,6 +2968,7 @@ mod tests {
             "origin/main",
             "HEAD",
             vec!["scripts/test-lsp-cancellation.sh".to_string()],
+            "ci-route.v1",
         )?;
 
         assert_eq!(receipt.changed_surfaces, vec!["lsp-cancellation-wrapper"]);
@@ -2725,8 +2994,12 @@ mod tests {
 
     #[test]
     fn ci_route_receipt_maps_test_capped_wrapper_to_focused_non_lcov_pack() -> Result<()> {
-        let receipt =
-            route_receipt("origin/main", "HEAD", vec!["scripts/test-capped.sh".to_string()])?;
+        let receipt = route_receipt(
+            "origin/main",
+            "HEAD",
+            vec!["scripts/test-capped.sh".to_string()],
+            "ci-route.v1",
+        )?;
 
         assert_eq!(receipt.changed_surfaces, vec!["test-capped-wrapper"]);
         assert!(proof_pack_ids(&receipt).contains(&"test-capped-wrapper-focused"));
@@ -2748,8 +3021,12 @@ mod tests {
 
     #[test]
     fn ci_route_receipt_maps_test_e2e_capped_wrapper_to_focused_non_lcov_pack() -> Result<()> {
-        let receipt =
-            route_receipt("origin/main", "HEAD", vec!["scripts/test-e2e-capped.sh".to_string()])?;
+        let receipt = route_receipt(
+            "origin/main",
+            "HEAD",
+            vec!["scripts/test-e2e-capped.sh".to_string()],
+            "ci-route.v1",
+        )?;
 
         assert_eq!(receipt.changed_surfaces, vec!["test-e2e-capped-wrapper"]);
         assert!(proof_pack_ids(&receipt).contains(&"test-e2e-capped-wrapper-focused"));
@@ -2774,8 +3051,12 @@ mod tests {
 
     #[test]
     fn ci_route_receipt_maps_ci_cost_monitor_wrapper_to_focused_non_lcov_pack() -> Result<()> {
-        let receipt =
-            route_receipt("origin/main", "HEAD", vec!["scripts/ci-cost-monitor.sh".to_string()])?;
+        let receipt = route_receipt(
+            "origin/main",
+            "HEAD",
+            vec!["scripts/ci-cost-monitor.sh".to_string()],
+            "ci-route.v1",
+        )?;
 
         assert_eq!(receipt.changed_surfaces, vec!["ci-cost-monitor-wrapper"]);
         assert!(proof_pack_ids(&receipt).contains(&"ci-cost-monitor-wrapper-focused"));
@@ -2804,6 +3085,7 @@ mod tests {
             "origin/main",
             "HEAD",
             vec!["scripts/build-timing-receipt.sh".to_string()],
+            "ci-route.v1",
         )?;
 
         assert_eq!(receipt.changed_surfaces, vec!["build-timing-receipt-wrapper"]);
@@ -2832,6 +3114,7 @@ mod tests {
             "origin/main",
             "HEAD",
             vec!["scripts/compare-build-timing.sh".to_string()],
+            "ci-route.v1",
         )?;
 
         assert_eq!(receipt.changed_surfaces, vec!["compare-build-timing-wrapper"]);
@@ -2860,6 +3143,7 @@ mod tests {
             "origin/main",
             "HEAD",
             vec!["scripts/check-coverage-baseline.sh".to_string()],
+            "ci-route.v1",
         )?;
 
         assert_eq!(receipt.changed_surfaces, vec!["coverage-baseline-script"]);
@@ -2887,6 +3171,7 @@ mod tests {
             "origin/main",
             "HEAD",
             vec!["scripts/update-coverage-baseline.sh".to_string()],
+            "ci-route.v1",
         )?;
 
         assert_eq!(receipt.changed_surfaces, vec!["update-coverage-baseline-script"]);
@@ -2912,8 +3197,12 @@ mod tests {
 
     #[test]
     fn ci_route_receipt_maps_generate_receipt_script_to_focused_non_lcov_pack() -> Result<()> {
-        let receipt =
-            route_receipt("origin/main", "HEAD", vec!["scripts/generate-receipt.sh".to_string()])?;
+        let receipt = route_receipt(
+            "origin/main",
+            "HEAD",
+            vec!["scripts/generate-receipt.sh".to_string()],
+            "ci-route.v1",
+        )?;
 
         assert_eq!(receipt.changed_surfaces, vec!["generate-receipt-script"]);
         assert!(proof_pack_ids(&receipt).contains(&"generate-receipt-script-focused"));
@@ -2938,8 +3227,12 @@ mod tests {
 
     #[test]
     fn ci_route_receipt_maps_quick_receipts_wrapper_to_focused_non_lcov_pack() -> Result<()> {
-        let receipt =
-            route_receipt("origin/main", "HEAD", vec!["scripts/quick-receipts.sh".to_string()])?;
+        let receipt = route_receipt(
+            "origin/main",
+            "HEAD",
+            vec!["scripts/quick-receipts.sh".to_string()],
+            "ci-route.v1",
+        )?;
 
         assert_eq!(receipt.changed_surfaces, vec!["quick-receipts-wrapper"]);
         assert!(proof_pack_ids(&receipt).contains(&"quick-receipts-wrapper-focused"));
@@ -2964,8 +3257,12 @@ mod tests {
 
     #[test]
     fn ci_route_receipt_maps_publish_receipts_wrapper_to_focused_non_lcov_pack() -> Result<()> {
-        let receipt =
-            route_receipt("origin/main", "HEAD", vec!["scripts/publish-receipts.sh".to_string()])?;
+        let receipt = route_receipt(
+            "origin/main",
+            "HEAD",
+            vec!["scripts/publish-receipts.sh".to_string()],
+            "ci-route.v1",
+        )?;
 
         assert_eq!(receipt.changed_surfaces, vec!["publish-receipts-wrapper"]);
         assert!(proof_pack_ids(&receipt).contains(&"publish-receipts-wrapper-focused"));
@@ -2990,8 +3287,12 @@ mod tests {
 
     #[test]
     fn ci_route_receipt_maps_generate_badges_wrapper_to_focused_non_lcov_pack() -> Result<()> {
-        let receipt =
-            route_receipt("origin/main", "HEAD", vec!["scripts/generate-badges.sh".to_string()])?;
+        let receipt = route_receipt(
+            "origin/main",
+            "HEAD",
+            vec!["scripts/generate-badges.sh".to_string()],
+            "ci-route.v1",
+        )?;
 
         assert_eq!(receipt.changed_surfaces, vec!["generate-badges-wrapper"]);
         assert!(proof_pack_ids(&receipt).contains(&"generate-badges-wrapper-focused"));
@@ -3015,11 +3316,39 @@ mod tests {
     }
 
     #[test]
+    fn ci_route_receipt_maps_both_ripr_badge_python_paths_to_focused_non_lcov_pack() -> Result<()> {
+        for path in ["scripts/generate-badges.py", "scripts/tests/test-generate-badges.py"] {
+            let receipt =
+                route_receipt("origin/main", "HEAD", vec![path.to_string()], "ci-route.v1")?;
+            assert_eq!(receipt.changed_surfaces, vec!["ripr-badge-endpoints"]);
+            assert!(proof_pack_ids(&receipt).contains(&"ripr-badge-endpoints-focused"));
+            assert!(receipt.required_proof_packs.iter().any(|pack| {
+                pack.id == "ripr-badge-endpoints-focused"
+                    && pack
+                        .commands
+                        .iter()
+                        .any(|command| command == "python scripts/tests/test-generate-badges.py")
+            }));
+            assert!(receipt.coverage_pack_selector.is_empty());
+            assert!(receipt.coverage_proof_packs.is_empty());
+            assert_eq!(
+                receipt
+                    .skipped_by_policy
+                    .get("patch-coverage-ripr-badge-endpoints")
+                    .map(String::as_str),
+                Some(NON_LCOV_COVERAGE_SKIP_REASON)
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
     fn ci_route_receipt_maps_ignored_test_count_wrapper_to_focused_non_lcov_pack() -> Result<()> {
         let receipt = route_receipt(
             "origin/main",
             "HEAD",
             vec!["scripts/ignored-test-count.sh".to_string()],
+            "ci-route.v1",
         )?;
 
         assert_eq!(receipt.changed_surfaces, vec!["ignored-test-count-wrapper"]);
@@ -3050,8 +3379,7 @@ mod tests {
             vec![
                 "crates/perl-lsp-rs-core/src/providers/completion/completion/import_map/used_modules.rs"
                     .to_string(),
-            ],
-        )?;
+            ], "ci-route.v1")?;
 
         assert_eq!(receipt.changed_surfaces, vec!["completion-core"]);
         assert!(proof_pack_ids(&receipt).contains(&"completion-core"));
@@ -3266,9 +3594,13 @@ mod tests {
                 "patch-coverage-xtask-gates",
                 "patch-coverage-xtask-ci-explain",
                 "patch-coverage-xtask-file-policy",
+                "patch-coverage-tautology-check",
                 "patch-coverage-completion-core",
                 "patch-coverage-ux-scenario",
                 "patch-coverage-ci-policy",
+                "patch-coverage-xtask-parser-semantic-facade-guard",
+                "patch-coverage-xtask-product-topology",
+                "patch-coverage-xtask-parser-tdd-facade-guard",
                 "patch-coverage-ci-route",
                 "patch-coverage-ci-actuals",
                 "patch-coverage-ripr-summary",
@@ -3314,6 +3646,7 @@ mod tests {
                 "patch-coverage-quick-receipts-wrapper",
                 "patch-coverage-publish-receipts-wrapper",
                 "patch-coverage-generate-badges-wrapper",
+                "patch-coverage-ripr-badge-endpoints",
                 "patch-coverage-ignored-test-count-wrapper",
                 "patch-coverage-swarm-summary-wrapper",
                 "patch-coverage-workspace-exclusions-wrapper",
@@ -3335,9 +3668,12 @@ mod tests {
             "patch-coverage-xtask-gates",
             "patch-coverage-xtask-ci-explain",
             "patch-coverage-xtask-file-policy",
+            "patch-coverage-tautology-check",
             "patch-coverage-completion-core",
             "patch-coverage-ux-scenario",
             "patch-coverage-ci-policy",
+            "patch-coverage-xtask-parser-semantic-facade-guard",
+            "patch-coverage-xtask-parser-tdd-facade-guard",
             "patch-coverage-ci-route",
             "patch-coverage-ci-actuals",
             "patch-coverage-ripr-summary",
@@ -3383,6 +3719,7 @@ mod tests {
             "patch-coverage-quick-receipts-wrapper",
             "patch-coverage-publish-receipts-wrapper",
             "patch-coverage-generate-badges-wrapper",
+            "patch-coverage-ripr-badge-endpoints",
             "patch-coverage-ignored-test-count-wrapper",
             "patch-coverage-swarm-summary-wrapper",
             "patch-coverage-workspace-exclusions-wrapper",
@@ -3423,6 +3760,10 @@ mod tests {
         );
         assert_eq!(
             skipped.get("patch-coverage-ci-policy").map(String::as_str),
+            Some(NON_LCOV_COVERAGE_SKIP_REASON)
+        );
+        assert_eq!(
+            skipped.get("patch-coverage-xtask-parser-tdd-facade-guard").map(String::as_str),
             Some(NON_LCOV_COVERAGE_SKIP_REASON)
         );
         assert_eq!(
@@ -3673,6 +4014,7 @@ mod tests {
                 "crates/perl-lsp-rs-core/tests/inline_completion_ux_fixtures.rs".to_string(),
                 "xtask/src/tasks/inline_completion_quality.rs".to_string(),
             ],
+            "ci-route.v1",
         )?;
 
         assert_eq!(
@@ -3712,6 +4054,7 @@ mod tests {
             "origin/main",
             "HEAD",
             vec!["crates/perl-lsp-rs-core/src/providers/inline_completion/mod.rs".to_string()],
+            "ci-route.v1",
         )?;
 
         assert_eq!(receipt.changed_surfaces, vec!["inline-core"]);
@@ -3738,6 +4081,7 @@ mod tests {
             "origin/main",
             "HEAD",
             vec!["xtask/src/tasks/inline_completion_quality.rs".to_string()],
+            "ci-route.v1",
         )?;
 
         assert_eq!(receipt.changed_surfaces, vec!["xtask-inline-completion-quality"]);
@@ -3763,6 +4107,7 @@ mod tests {
             "origin/main",
             "HEAD",
             vec!["xtask/src/tasks/native_tooling.rs".to_string()],
+            "ci-route.v1",
         )?;
 
         assert_eq!(receipt.changed_surfaces, vec!["xtask-native-tooling"]);
@@ -3791,8 +4136,12 @@ mod tests {
 
     #[test]
     fn ci_route_receipt_maps_gates_to_lcov_pack() -> Result<()> {
-        let receipt =
-            route_receipt("origin/main", "HEAD", vec!["xtask/src/tasks/gates.rs".to_string()])?;
+        let receipt = route_receipt(
+            "origin/main",
+            "HEAD",
+            vec!["xtask/src/tasks/gates.rs".to_string()],
+            "ci-route.v1",
+        )?;
 
         assert_eq!(receipt.changed_surfaces, vec!["xtask-gates"]);
         assert!(proof_pack_ids(&receipt).contains(&"xtask-gates"));
@@ -3824,6 +4173,7 @@ mod tests {
             "origin/main",
             "HEAD",
             vec!["xtask/src/tasks/file_policy.rs".to_string()],
+            "ci-route.v1",
         )?;
 
         assert_eq!(receipt.changed_surfaces, vec!["xtask-file-policy"]);
@@ -3838,6 +4188,7 @@ mod tests {
             "origin/main",
             "HEAD",
             vec!["xtask/src/tasks/file_policy.rs".to_string()],
+            "ci-route.v1",
         )?;
 
         assert_eq!(receipt.changed_surfaces, vec!["xtask-file-policy"]);
@@ -3865,11 +4216,37 @@ mod tests {
     }
 
     #[test]
+    fn ci_route_receipt_maps_tautology_checker_to_focused_pack() -> Result<()> {
+        let receipt = route_receipt(
+            "origin/main",
+            "HEAD",
+            vec!["xtask/src/tasks/check_tautology/mod.rs".to_string()],
+            "ci-route.v1",
+        )?;
+
+        assert_eq!(receipt.changed_surfaces, vec!["tautology-check"]);
+        assert!(proof_pack_ids(&receipt).contains(&"tautology-check-focused"));
+        assert_eq!(receipt.coverage_pack_selector, vec!["patch-coverage-tautology-check"]);
+        assert!(receipt.required_proof_packs.iter().any(|pack| {
+            pack.id == "tautology-check-focused"
+                && pack.commands.iter().any(|command| {
+                    command
+                        == "cargo test -p xtask --bin xtask --profile agent --locked check_tautology -- --nocapture"
+                })
+                && pack.commands.iter().any(|command| {
+                    command == "cargo run -p xtask --profile agent --locked -- check-tautology --check"
+                })
+        }));
+        Ok(())
+    }
+
+    #[test]
     fn ci_route_file_policy_route_does_not_shadow_completion_provider() -> Result<()> {
         let receipt = route_receipt(
             "origin/main",
             "HEAD",
             vec!["crates/perl-lsp-rs-core/src/providers/completion/mod.rs".to_string()],
+            "ci-route.v1",
         )?;
 
         assert_eq!(receipt.changed_surfaces, vec!["completion-core"]);
@@ -3884,6 +4261,7 @@ mod tests {
             "origin/main",
             "HEAD",
             vec!["xtask/tests/semantic_inline_receipts_cli.rs".to_string()],
+            "ci-route.v1",
         )?;
 
         assert_eq!(receipt.changed_surfaces, vec!["xtask-semantic-inline-receipts"]);
@@ -3902,8 +4280,12 @@ mod tests {
 
     #[test]
     fn ci_route_summary_reports_docs_only_without_coverage_packs() -> Result<()> {
-        let receipt =
-            route_receipt("origin/main", "HEAD", vec!["docs/release notes.md".to_string()])?;
+        let receipt = route_receipt(
+            "origin/main",
+            "HEAD",
+            vec!["docs/release notes.md".to_string()],
+            "ci-route.v1",
+        )?;
         let summary = render_summary(
             Path::new("target/receipts/ci route.json"),
             Path::new("target/receipts/ci route.md"),
@@ -3916,7 +4298,7 @@ mod tests {
         assert!(summary.contains("`codecov-patch-95`: docs-only change"));
         assert!(
             summary.contains(
-                "cargo xtask ci route --base origin/main --head HEAD --receipt 'target/receipts/ci route.json' --summary 'target/receipts/ci route.md' --changed-file 'docs/release notes.md'"
+                "cargo xtask ci route --base origin/main --head HEAD --receipt 'target/receipts/ci route.json' --summary 'target/receipts/ci route.md' --changed-file 'docs/release notes.md' --envelope-version ci-route.v1"
             )
         );
         Ok(())
@@ -3934,6 +4316,7 @@ mod tests {
             receipt: receipt_path.clone(),
             summary: summary_path.clone(),
             changed_files: vec!["xtask\\src\\tasks\\supported_editor_inline_smoke.rs".to_string()],
+            envelope_version: "ci-route.v1".to_string(),
         })?;
 
         let value: Value = serde_json::from_str(&fs::read_to_string(receipt_path)?)?;
@@ -3963,8 +4346,121 @@ mod tests {
         assert!(summary.contains("patch-coverage-xtask-supported-editor-inline-smoke"));
         assert!(summary.contains("supported_editor_inline_smoke"));
         assert!(summary.contains("cargo xtask ci route --base origin/main --head HEAD"));
+        assert!(summary.contains("- envelope_version: `ci-route.v1`"));
         assert!(
             summary.contains("--changed-file xtask/src/tasks/supported_editor_inline_smoke.rs")
+        );
+        assert!(summary.contains("--envelope-version ci-route.v1"));
+        Ok(())
+    }
+
+    /// Regression guard for #15390: the producer-side `--envelope-version` CLI
+    /// flag must propagate through `CiRouteArgs` into both the receipt
+    /// `schema_version` field and the rendered Markdown's `envelope_version`
+    /// summary line. The supported-version allowlist is intentionally tiny
+    /// (only `ci-route.v1`) so this test cannot drift into a tautology by
+    /// echoing the producer's own default literal.
+    #[test]
+    fn ci_route_command_propagates_envelope_version_to_receipt_and_summary() -> Result<()> {
+        let temp = TempDir::new()?;
+        let receipt_path = temp.path().join("ci-route.json");
+        let summary_path = temp.path().join("ci-route.md");
+
+        run(CiRouteArgs {
+            base: "origin/main".to_string(),
+            head: "HEAD".to_string(),
+            receipt: receipt_path.clone(),
+            summary: summary_path.clone(),
+            changed_files: vec!["xtask\\src\\tasks\\supported_editor_inline_smoke.rs".to_string()],
+            envelope_version: "ci-route.v1".to_string(),
+        })?;
+
+        let value: Value = serde_json::from_str(&fs::read_to_string(&receipt_path)?)?;
+        assert_eq!(
+            value
+                .get("schema_version")
+                .and_then(Value::as_str)
+                .ok_or_else(|| eyre!("missing schema_version"))?,
+            "ci-route.v1",
+            "receipt schema_version must equal the validated envelope_version arg"
+        );
+
+        let summary = fs::read_to_string(&summary_path)?;
+        assert!(
+            summary.contains("- envelope_version: `ci-route.v1`"),
+            "summary must surface the envelope_version line so the markdown is honest about the producer's choice"
+        );
+        assert!(
+            summary.contains("--envelope-version ci-route.v1"),
+            "refresh command in summary must carry --envelope-version so re-running reproduces the same envelope"
+        );
+        Ok(())
+    }
+
+    /// Regression guard for #15390: an unknown `--envelope-version` value
+    /// must fail closed at the producer so a future v2 envelope cannot be
+    /// silently emitted under a wrong-version label.
+    #[test]
+    fn ci_route_command_rejects_unsupported_envelope_version() -> Result<()> {
+        let temp = TempDir::new()?;
+        let receipt_path = temp.path().join("ci-route.json");
+        let summary_path = temp.path().join("ci-route.md");
+
+        let err = run(CiRouteArgs {
+            base: "origin/main".to_string(),
+            head: "HEAD".to_string(),
+            receipt: receipt_path.clone(),
+            summary: summary_path.clone(),
+            changed_files: vec!["xtask\\src\\tasks\\supported_editor_inline_smoke.rs".to_string()],
+            envelope_version: "ci-route.v2-not-yet-shipped".to_string(),
+        })
+        .expect_err("unknown envelope_version must fail closed");
+
+        let message = format!("{err:#}");
+        assert!(
+            message.contains("unsupported envelope_version"),
+            "error must name the unsupported value class, got: {message}"
+        );
+        assert!(
+            message.contains("ci-route.v2-not-yet-shipped"),
+            "error must echo the rejected value verbatim so the operator can correct it, got: {message}"
+        );
+        assert!(
+            message.contains("ci-route.v1"),
+            "error must list the supported allowlist so the operator can recover, got: {message}"
+        );
+
+        // The receipt and summary files must NOT exist when run() fails closed.
+        assert!(!receipt_path.exists(), "no receipt file on rejection");
+        assert!(!summary_path.exists(), "no summary file on rejection");
+        Ok(())
+    }
+
+    /// Structural guard: envelope admission is a single-current-version check
+    /// until a versioned emitter exists. `route_receipt` has one
+    /// serializer/shape, so admitting a second id by appending a literal
+    /// would stamp a v1-shaped payload under a v2 label. This test fails if
+    /// a second allowlisted id appears without a per-version dispatch.
+    #[test]
+    fn envelope_version_admission_is_single_current_version() -> Result<()> {
+        assert_eq!(
+            CURRENT_ENVELOPE_VERSION, "ci-route.v1",
+            "current envelope version must stay pinned until a versioned emitter lands"
+        );
+        assert_eq!(
+            SUPPORTED_ENVELOPE_VERSIONS,
+            &[CURRENT_ENVELOPE_VERSION],
+            "do not admit a second envelope id by appending a literal; add a versioned serializer/dispatch first"
+        );
+        let receipt = route_receipt(
+            "origin/main",
+            "HEAD",
+            vec!["docs/development/ROADMAP.md".to_string()],
+            CURRENT_ENVELOPE_VERSION,
+        )?;
+        assert_eq!(
+            receipt.schema_version, CURRENT_ENVELOPE_VERSION,
+            "single-version emitter must stamp the current version verbatim"
         );
         Ok(())
     }
@@ -3987,6 +4483,7 @@ mod tests {
                 "crates/perl-dap/src/debug_adapter/frames.rs".to_string(),
                 "crates/perl-dap/tests/dap_adapter_tests.rs".to_string(),
             ],
+            "ci-route.v1",
         )?;
 
         let rust_pack = receipt
@@ -4063,6 +4560,7 @@ mod tests {
                 "crates/perl-lsp-rs/src/runtime/language/symbols.rs".to_string(),
                 "crates/perl-lsp-rs/tests/lsp_folding_ranges_test.rs".to_string(),
             ],
+            "ci-route.v1",
         )?;
 
         let rust_pack = receipt
@@ -4099,6 +4597,7 @@ mod tests {
                 "crates/perl-lsp-rs/tests/multi_root_workspace_tests.rs".to_string(),
                 "crates/perl-lsp-ux-tests/src/lib.rs".to_string(),
             ],
+            "ci-route.v1",
         )?;
 
         let rust_pack = receipt
@@ -4181,8 +4680,12 @@ mod tests {
     #[test]
     fn ci_route_rust_focused_pack_lib_only_when_no_src_crate_change() -> Result<()> {
         // xtask/src/ change — crate_name_from_source_path returns None.
-        let receipt =
-            route_receipt("origin/main", "HEAD", vec!["xtask/src/tasks/ci_route.rs".to_string()])?;
+        let receipt = route_receipt(
+            "origin/main",
+            "HEAD",
+            vec!["xtask/src/tasks/ci_route.rs".to_string()],
+            "ci-route.v1",
+        )?;
 
         // rust-focused pack selected (xtask/src/ is an lcov source path).
         let rust_pack = receipt
@@ -4222,14 +4725,18 @@ mod tests {
     // coverage_packs_skipped, coverage_pack_skip_reason). The integration-test
     // variants in coverage_proof_measure_only_red_tdd.rs exercise the same
     // behavior through the CLI binary (fixture_opaque to ripr). These lib tests
-    // call route_receipt() directly so ripr can trace the oracle through the
+    // call route_receipt() with "ci-route.v1" directly so ripr can trace the oracle through the
     // assertion. Resolves the fixture_opaque weakly_exposed seams at
     // ci_route.rs:561 and ci_route.rs:567 introduced by PR #1470.
 
     #[test]
     fn routing_classification_is_routing_skip_for_docs_only_change() -> Result<()> {
-        let receipt =
-            route_receipt("origin/main", "HEAD", vec!["docs/development/ROADMAP.md".to_string()])?;
+        let receipt = route_receipt(
+            "origin/main",
+            "HEAD",
+            vec!["docs/development/ROADMAP.md".to_string()],
+            "ci-route.v1",
+        )?;
         assert_eq!(
             receipt.routing_classification, "routing_skip",
             "docs-only change has no coverable production code — must be routing_skip"
@@ -4246,6 +4753,7 @@ mod tests {
             "origin/main",
             "HEAD",
             vec!["crates/perl-parser/src/lib.rs".to_string()],
+            "ci-route.v1",
         )?;
         assert_eq!(
             receipt.routing_classification, "routed",
@@ -4259,8 +4767,12 @@ mod tests {
     #[test]
     fn coverage_packs_skipped_is_zero_when_under_cap() -> Result<()> {
         // A single-file change will select at most one pack — well under the cap.
-        let receipt =
-            route_receipt("origin/main", "HEAD", vec!["crates/perl-lexer/src/lib.rs".to_string()])?;
+        let receipt = route_receipt(
+            "origin/main",
+            "HEAD",
+            vec!["crates/perl-lexer/src/lib.rs".to_string()],
+            "ci-route.v1",
+        )?;
         assert_eq!(
             receipt.coverage_packs_skipped, 0,
             "single-file change must not skip any packs (under cap)"
@@ -4275,12 +4787,20 @@ mod tests {
     #[test]
     fn coverage_pack_cap_field_is_always_present_in_receipt() -> Result<()> {
         // coverage_pack_cap must be present in all routing outcomes (routed, routing_skip).
-        let routed =
-            route_receipt("origin/main", "HEAD", vec!["xtask/src/tasks/ci_route.rs".to_string()])?;
+        let routed = route_receipt(
+            "origin/main",
+            "HEAD",
+            vec!["xtask/src/tasks/ci_route.rs".to_string()],
+            "ci-route.v1",
+        )?;
         assert_eq!(routed.coverage_pack_cap, COVERAGE_PACK_CAP);
 
-        let skip =
-            route_receipt("origin/main", "HEAD", vec!["scripts/install-githooks.sh".to_string()])?;
+        let skip = route_receipt(
+            "origin/main",
+            "HEAD",
+            vec!["scripts/install-githooks.sh".to_string()],
+            "ci-route.v1",
+        )?;
         assert_eq!(skip.coverage_pack_cap, COVERAGE_PACK_CAP);
         Ok(())
     }

@@ -64,7 +64,7 @@ Building from source (Rust 1.95+) works on any Rust-supported platform.
 
 ### Which Perl versions does perl-lsp support?
 
-The parser targets Perl 5.8 through 5.40. This includes:
+The parser targets Perl 5.8 through 5.42. This includes:
 
 - All core syntax from Perl 5.8+
 - Modern features: `say`, `given`/`when`, `state`, `fc`
@@ -72,7 +72,7 @@ The parser targets Perl 5.8 through 5.40. This includes:
 - `use v5.38; class ...` object syntax (partial support)
 - Moose, Moo, and common OO frameworks (detection-level support)
 
-This claim is backed by a visible CI workflow: [Perl Version Matrix](https://github.com/EffortlessMetrics/perl-lsp/actions/workflows/perl-version-matrix.yml). It runs version-gated Perl syntax probes on every Perl minor from 5.8 through 5.40, and also runs a Rust smoke test on both edge versions (5.8 and 5.40).
+This claim is backed by a visible CI workflow: [Perl Version Matrix](https://github.com/EffortlessMetrics/perl-lsp/actions/workflows/perl-version-matrix.yml). It runs version-gated Perl syntax probes on every Perl minor from 5.8 through 5.42, and also runs a Rust smoke test on 5.8 and 5.40.
 
 If you encounter a Perl construct that fails to parse, [report it](https://github.com/EffortlessMetrics/perl-lsp/issues) with a minimal example.
 
@@ -86,22 +86,34 @@ Yes. The parser targets Perl 5.8 as the minimum and handles most idioms from tha
 
 ### Which editors work with perl-lsp?
 
-Any editor with LSP client support works. Point it at `perllsp --stdio`:
+`perllsp --stdio` speaks standard LSP, but a server implementation alone does
+not prove that every editor has a valid registration, install path, or tested
+host journey. Current setup paths include:
 
-- **VS Code** — native extension with auto-download, UI settings, and DAP debugging
-- **Trae (ByteDance)** — VS Code-compatible setup (extension or generic LSP command)
-- **Neovim** — via `nvim-lspconfig` (`perl_ls` server)
-- **Emacs** — via `eglot` or `lsp-mode`
-- **Helix** — via `languages.toml`
-- **Zed** — via a Perl extension (see [ZED_SETUP.md](../EDITORS/ZED_SETUP.md))
-- **Sublime Text** — via the LSP package
-- **Kate**, **Lapce**, **Kakoune** — any editor with a generic LSP client
+- **VS Code** — repository-maintained extension with managed binary installation
+- **Trae (ByteDance)** — VS Code-compatible setup; host-specific behavior remains separately bounded
+- **Neovim** — generic LSP configuration
+- **Emacs** — `eglot` or `lsp-mode`
+- **Helix** — `languages.toml`
+- **Sublime Text** — the LSP package
+- **Vim and coc.nvim** — generic LSP configuration
 
-See [EDITOR_SETUP.md](../how-to/EDITOR_SETUP.md) for editor-specific configuration.
+Zed is **planned / not proven**. The public Zed Perl extension currently
+registers `perlnavigator-server` for Perl Navigator and `perl-lsp` for
+`tree-sitter-perl/perl-tree-sitter-lsp`; it does not register the EffortlessMetrics
+`perllsp` server ID. Do not repoint that independent `perl-lsp` ID to
+`perllsp`. See [ZED_SETUP.md](../EDITORS/ZED_SETUP.md) for the current boundary
+and prepared upstream candidate.
+
+See [EDITOR_SETUP.md](../how-to/EDITOR_SETUP.md) for editor-specific configuration
+and evidence boundaries.
 
 ### Can I use it without VS Code?
 
-Yes. The VS Code extension is the easiest path, but `perllsp --stdio` is a plain LSP server that works with any compliant client. The extension is a convenience layer on top of the same binary.
+Yes, when your editor has a valid generic-LSP or extension route for launching
+`perllsp --stdio`. The VS Code extension is the easiest packaged path. Other
+hosts need their own setup and evidence; standard protocol compatibility is not
+an automatic all-editor support claim.
 
 ### Does it support debugging (DAP)?
 
@@ -159,7 +171,7 @@ See [CONFIG.md](CONFIG.md) for the full configuration reference.
 
 ### Where is feature coverage tracked?
 
-`features.toml` is the canonical source. Computed metrics live in `docs/project/CURRENT_STATUS.md`.
+`features.toml` is the canonical source. Computed metrics live in `docs/project/CURRENT_STATUS.md` .
 
 ---
 

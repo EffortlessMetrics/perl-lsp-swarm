@@ -1,0 +1,27 @@
+{
+  "schema": "train_edge_contract.v1",
+  "schema_version": 1,
+  "contract_id": "invalid-unknown-edge-kind",
+  "programme": { "name": "invalid-examples" },
+  "propositions": [
+    { "id": "P_a", "claim_ceiling": "A only." },
+    { "id": "P_b", "claim_ceiling": "B only." }
+  ],
+  "edges": [
+    {
+      "source": "P_a",
+      "kind": "depends_on",
+      "target": "P_b",
+      "provenance": "unqualified dependency that flattens the shared distinctions"
+    }
+  ],
+  "claim_profiles": [
+    {
+      "id": "invalid_profile",
+      "version": 1,
+      "required": ["P_a"],
+      "allowed_terminal_limitation_states": ["not_proven"],
+      "claim_ceiling": "Invalid example only."
+    }
+  ]
+}

@@ -1,0 +1,9 @@
+project: vscode
+component: Developer experience
+kind: Added
+body: Added a typed structurally redacted support-packet model for public-beta issue reproduction without log scraping.
+time: 2026-08-13T10:51:00Z
+custom:
+  PR: 7879
+  Slug: vscode-support-packet-model
+  Breaking: "no"

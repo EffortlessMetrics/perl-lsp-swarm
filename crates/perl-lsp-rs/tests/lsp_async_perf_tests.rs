@@ -151,7 +151,7 @@ fn test_parser_no_cancellation_token_unchanged_behaviour() {
 /// Uses the debouncer directly (unit level) to avoid filesystem I/O in the test.
 #[test]
 fn test_file_watcher_debouncer_coalesces_50_rapid_events() {
-    use perl_lsp::runtime::file_watcher_debounce::FileWatcherDebouncer;
+    use perl_lsp::runtime::file_watcher_debounce::{FileWatcherDebouncer, WatcherAdmission};
 
     let call_count = Arc::new(AtomicUsize::new(0));
     let total_uris = Arc::new(AtomicUsize::new(0));
@@ -165,7 +165,11 @@ fn test_file_watcher_debouncer_coalesces_50_rapid_events() {
 
     // Simulate a git checkout: 50 file changes arriving within a few milliseconds
     for i in 0..50usize {
-        debouncer.schedule(&format!("file:///workspace/file{i}.pl"));
+        assert_eq!(
+            debouncer.try_schedule(&format!("file:///workspace/file{i}.pl")),
+            WatcherAdmission::Accepted,
+            "fresh URI {i} must be admitted"
+        );
     }
 
     // Wait for the debounce window to expire and the batch to fire
@@ -212,7 +216,7 @@ fn test_file_watcher_debouncer_wired_through_server() {
 /// Verify that duplicate URIs within the debounce window are deduplicated.
 #[test]
 fn test_file_watcher_debouncer_deduplicates_same_uri() {
-    use perl_lsp::runtime::file_watcher_debounce::FileWatcherDebouncer;
+    use perl_lsp::runtime::file_watcher_debounce::{FileWatcherDebouncer, WatcherAdmission};
 
     let uri_counts: Arc<std::sync::Mutex<Vec<usize>>> = Arc::new(std::sync::Mutex::new(vec![]));
     let uc = Arc::clone(&uri_counts);
@@ -222,8 +226,17 @@ fn test_file_watcher_debouncer_deduplicates_same_uri() {
     });
 
     // Schedule the same URI 20 times — should deduplicate to 1
-    for _ in 0..20 {
-        debouncer.schedule("file:///workspace/same.pl");
+    assert_eq!(
+        debouncer.try_schedule("file:///workspace/same.pl"),
+        WatcherAdmission::Accepted,
+        "first schedule admits the subject"
+    );
+    for _ in 1..20 {
+        assert_eq!(
+            debouncer.try_schedule("file:///workspace/same.pl"),
+            WatcherAdmission::Coalesced,
+            "repeat schedules coalesce"
+        );
     }
 
     let counts = wait_for_debounce_counts(&uri_counts, Duration::from_secs(1));

@@ -1,31 +1,35 @@
-//! Outcome categories for differential parser testing.
+//! Legacy outcome categories for differential parser testing.
 //!
-//! Each test case records a [`Verdict`] for each parser.  The verdict is not
-//! just pass/fail - it classifies *how* the parser handled the input.  This
-//! makes the disagreement table the durable artifact: when a parser improves,
-//! the expected verdict changes intentionally rather than silently.
+//! [`Verdict`] predates the generic evidence model. Some current adapters still
+//! project clean parser acceptance to `Correct` for compatibility, so this enum
+//! is not authoritative for new comparison, accuracy, or cleanliness claims.
+//! New code uses [`HarnessOutcome`](crate::HarnessOutcome),
+//! [`SubjectDisposition`](crate::SubjectDisposition), and an independent
+//! [`ScoredComparison`](crate::ScoredComparison).
 
 use std::fmt;
 
-/// Outcome category for a single parser on a single input.
+/// Legacy outcome category for a single parser on a single input.
 ///
-/// Each variant captures a distinct failure mode (or success mode).  The
-/// expected verdict for every (case, parser) combination is recorded in the
-/// test and must be updated intentionally when parser behaviour changes.
+/// Existing tests record this value for compatibility. The `Correct` variant
+/// is historically overloaded and may mean only that the parser accepted the
+/// input without its designated error signal. It must not be used as a new
+/// correctness assertion without an independent observer and reviewed
+/// expectation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Verdict {
-    /// Parser produced a structurally correct AST for this input.
+    /// Legacy success-shaped value.
     ///
-    /// "Correct" means: the key structural property (e.g. heredoc body is
-    /// non-empty, format declaration has body lines, `${^MATCH}` is a single
-    /// variable, etc.) is satisfied.
+    /// Some old call sites use this for a structurally checked result; others
+    /// receive it from clean parser acceptance alone. New comparison code must
+    /// not infer correctness from this variant.
     Correct,
 
     /// Parser accepted the input but the AST is plausibly wrong.
     ///
     /// Example: Pest parses `map { a => $_ }` as a hash-ref rather than a
-    /// block - the parse succeeds, but the semantic interpretation is wrong.
+    /// block—the parse succeeds, but the semantic interpretation is wrong.
     WrongButPlausible,
 
     /// Parser accepted the input but key content is silently absent.
@@ -33,27 +37,25 @@ pub enum Verdict {
     /// Example: Pest accepts `<<A\nbody\nA\n` but the heredoc body is empty.
     SilentlyEmpty,
 
-    /// Parser returned an error for this input.
+    /// Legacy parser-error-shaped value.
     ///
-    /// Used for inputs that *should* produce an error (garbage inputs) and
-    /// for parsers that legitimately reject hard-but-valid Perl.
+    /// This projection may combine rejection, recovery, setup, unsupported,
+    /// process, and instrument states. New code must use the generic evidence
+    /// axes instead.
     Errors,
 
-    /// Parser panicked on this input (caught with `std::panic::catch_unwind`).
-    ///
-    /// A crash is always a bug in the parser.  The test records it rather than
-    /// propagating the panic, so one crash does not kill the whole suite.
+    /// Parser or in-process harness panicked and the legacy harness caught it.
     Crashes,
 }
 
 impl fmt::Display for Verdict {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Correct => write!(f, "Correct"),
-            Self::WrongButPlausible => write!(f, "WrongButPlausible"),
-            Self::SilentlyEmpty => write!(f, "SilentlyEmpty"),
-            Self::Errors => write!(f, "Errors"),
-            Self::Crashes => write!(f, "Crashes"),
+            Self::Correct => write!(formatter, "Correct"),
+            Self::WrongButPlausible => write!(formatter, "WrongButPlausible"),
+            Self::SilentlyEmpty => write!(formatter, "SilentlyEmpty"),
+            Self::Errors => write!(formatter, "Errors"),
+            Self::Crashes => write!(formatter, "Crashes"),
         }
     }
 }

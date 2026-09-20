@@ -1,0 +1,138 @@
+{
+  "schema_version": "close_proof_contract_fixture.v1",
+  "provenance": {
+    "captured_at": "2026-08-21",
+    "sources": [],
+    "subject_shas": [],
+    "boundary": "Immutable bounded structured excerpts of historical GitHub subjects. The fixture proves schema-level dispositions only; semantic completion evaluation belongs to CP03 (#10382)."
+  },
+  "contract": {
+    "schema_version": "issue_contract.v1",
+    "repository": "effortlessmetrics/perl-lsp-swarm",
+    "issue_number": 9000011,
+    "title": "programme(close-proof): land the full semantic close evaluator programme",
+    "kind": "controller",
+    "required_proof_level": "controller_fan_in",
+    "allowed_close_modes": [
+      "completed",
+      "phase_complete_issue_remains_open",
+      "superseded",
+      "true_duplicate",
+      "not_planned"
+    ],
+    "denominator": [
+      {
+        "row_id": "controller.childset.terminal",
+        "statement": "Both mandatory child claims are terminally dispositioned.",
+        "required_proof_level": "mechanism"
+      },
+      {
+        "row_id": "controller.fanin.evidence",
+        "statement": "Controller-owned fan-in evidence binds child outcomes to the programme row.",
+        "required_proof_level": "controller_fan_in"
+      }
+    ],
+    "negative_controls": [
+      {
+        "control_id": "nc.child-count-insufficient",
+        "guards_row_id": "controller.fanin.evidence",
+        "description": "Child count alone cannot establish controller completion."
+      }
+    ],
+    "mandatory_children": [
+      {
+        "repository": "effortlessmetrics/perl-lsp-swarm",
+        "number": 9000012
+      },
+      {
+        "repository": "effortlessmetrics/perl-lsp-swarm",
+        "number": 9000013
+      }
+    ],
+    "transfer_policy": {
+      "permitted": false,
+      "conditions": []
+    },
+    "domain_evidence_refs": [],
+    "identity": {
+      "issue_body_digest": "000000000000000000000000000000000000000000000000000000000089544b",
+      "denominator_digest": "460847ca55f2db66fe5a685564129497c6ef53434115f4f1b68fc30ebb78c5cc",
+      "accepted_ruling": null
+    }
+  },
+  "cases": [
+    {
+      "case_id": "pr-9001011-child-count-only",
+      "description": "All children terminal but controller-owned fan-in missing: invalid.",
+      "packet": {
+        "schema_version": "issue_close_proof.v1",
+        "repository": "effortlessmetrics/perl-lsp-swarm",
+        "issue_number": 9000011,
+        "requested_close_mode": "completed",
+        "contract_binding": {
+          "contract_issue_body_digest": "000000000000000000000000000000000000000000000000000000000089544b",
+          "contract_denominator_digest": "460847ca55f2db66fe5a685564129497c6ef53434115f4f1b68fc30ebb78c5cc",
+          "accepted_ruling_digest": null
+        },
+        "candidate_pr": 9001011,
+        "landed_subjects": [],
+        "landing_content_proof": [],
+        "established_claims": [],
+        "explicitly_not_established_claims": [],
+        "row_dispositions": {
+          "controller.childset.terminal": {
+            "disposition": "proven_current_main",
+            "evidence": {
+              "producer": "xtask-pr-close-proof",
+              "subject": "0000000000000000000000000000000000015f9b",
+              "content_digest": "00000000000000000000000000000000000000000000000000000000000dbc15",
+              "reference": "child packets #9001012/#9001013 receipts"
+            }
+          },
+          "controller.fanin.evidence": {
+            "disposition": "not_proven",
+            "reason": "child count alone does not establish controller fan-in."
+          }
+        },
+        "negative_control_dispositions": {
+          "nc.child-count-insufficient": {
+            "state": "failed",
+            "reason": "no fan-in evidence was produced alongside the child closures."
+          }
+        },
+        "child_dispositions": [
+          {
+            "child": {
+              "repository": "effortlessmetrics/perl-lsp-swarm",
+              "number": 9000012
+            },
+            "state": {
+              "state": "closed_by_packet",
+              "packet_subject": "PR #9001012"
+            }
+          },
+          {
+            "child": {
+              "repository": "effortlessmetrics/perl-lsp-swarm",
+              "number": 9000013
+            },
+            "state": {
+              "state": "closed_by_packet",
+              "packet_subject": "PR #9001013"
+            }
+          }
+        ],
+        "duplicate_of": null,
+        "verdict": {
+          "pr_scope": "pass",
+          "issue_close": "invalid",
+          "reasons": [
+            "A controller cannot complete from child count without fan-in rows."
+          ]
+        }
+      },
+      "expected_pr_scope": "pass",
+      "expected_issue_close": "invalid"
+    }
+  ]
+}

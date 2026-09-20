@@ -5,7 +5,7 @@ use super::outbound::OutboundSink;
 #[cfg(feature = "workspace")]
 use super::types::ServerRequestId;
 #[cfg(feature = "workspace")]
-use perl_parser::workspace_index::IndexState;
+use perl_workspace::workspace_index::IndexState;
 #[cfg(feature = "workspace")]
 use serde_json::json;
 
@@ -28,6 +28,8 @@ fn index_readiness_payload(state: &IndexState) -> serde_json::Value {
         IndexState::Degraded { reason, .. } => {
             (false, "ready_limited", Some(format!("{reason:?}")))
         }
+        // Forward-compatible fallback for future variants (#2898)
+        _ => (false, "unknown", None),
     };
 
     let mut payload = json!({
@@ -43,7 +45,7 @@ fn index_readiness_payload(state: &IndexState) -> serde_json::Value {
 #[cfg(all(test, feature = "workspace"))]
 mod tests {
     use super::index_readiness_payload;
-    use perl_parser::workspace_index::{DegradationReason, IndexState, ResourceKind};
+    use perl_workspace::workspace_index::{DegradationReason, IndexState, ResourceKind};
     use std::time::Instant;
 
     #[test]

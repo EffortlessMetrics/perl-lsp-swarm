@@ -1,0 +1,35 @@
+{
+  "schema_version": "semantic_close_containment_fixture.v1",
+  "provenance": {
+    "captured_at": "2026-08-21",
+    "sources": [
+      "https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/8035"
+    ],
+    "subject_shas": [],
+    "boundary": "Immutable bounded structured excerpts; canonical GitHub subjects and exact candidate SHAs are retained. The fixture proves only the CP00 contradiction class."
+  },
+  "repository": "effortlessmetrics/perl-lsp-swarm",
+  "pull_request": {
+    "number": 990003,
+    "title": "chore(program): reconcile complete controller fan-in (#8035)",
+    "body": "## Governing contract\n\nSemantic close packet for #8035: `.spec/8035/issue-close-proof.json`.\n\n## Claim Boundary\n\nThe packet is supplied for semantic evaluation; CP00 does not decide whether it is sufficient.\n\nCloses #8035."
+  },
+  "issues": [
+    {
+      "repository": "effortlessmetrics/perl-lsp-swarm",
+      "number": 8035,
+      "title": "program(workspace-source): eliminate generation-zero live publication and accepted-store candidate contamination",
+      "body": "## Role\n\nThis is the accepted workspace-source currentness controller, not a coding PR unit.\n\n## Acceptance\n\nAll fan-in rows require semantic close proof."
+    }
+  ],
+  "expected": {
+    "aggregate_code": "PASS_NO_HIGH_CONFIDENCE_CONTRADICTION",
+    "rows": [
+      {
+        "repository": "effortlessmetrics/perl-lsp-swarm",
+        "issue_number": 8035,
+        "code": "PASS_NO_HIGH_CONFIDENCE_CONTRADICTION"
+      }
+    ]
+  }
+}

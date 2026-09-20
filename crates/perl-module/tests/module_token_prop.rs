@@ -1,5 +1,5 @@
-use perl_module::name::legacy_package_separator;
-use perl_module::token::{contains_module_token, replace_module_token};
+use perl_module::legacy_package_separator;
+use perl_module::{contains_module_token, replace_module_token};
 use proptest::prelude::*;
 
 fn module_name_strategy() -> impl Strategy<Value = String> {

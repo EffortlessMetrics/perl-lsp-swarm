@@ -1,0 +1,9 @@
+project: product
+component: Developer experience
+kind: Fixed
+body: "AST s-expression rendering now carries declaration attributes: `my $x :shared = 1` no longer renders identically to `my $x = 1`, so snapshot fixtures, incremental-parse comparisons, and diagnostics can observe and assert attributes instead of silently dropping them."
+time: 2026-08-20T00:15:00Z
+custom:
+  PR: "11739"
+  Slug: ast-v2-sexp-declaration-attributes
+  Breaking: "no"

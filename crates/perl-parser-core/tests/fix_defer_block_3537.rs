@@ -91,10 +91,10 @@ fn test_defer_not_a_function_call() {
     // Walk and verify there's no FunctionCall named "defer"
     let mut found_defer_call = false;
     fn walk(node: &perl_parser_core::Node, found: &mut bool) {
-        if let NodeKind::FunctionCall { name, .. } = &node.kind {
-            if name == "defer" {
-                *found = true;
-            }
+        if let NodeKind::FunctionCall { name, .. } = &node.kind
+            && name == "defer"
+        {
+            *found = true;
         }
         node.for_each_child(|child| walk(child, found));
     }

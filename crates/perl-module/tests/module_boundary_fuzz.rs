@@ -1,6 +1,4 @@
-use perl_module::boundary::{
-    contains_standalone_module_token, find_standalone_module_token_ranges,
-};
+use perl_module::{contains_standalone_module_token, find_standalone_module_token_ranges};
 
 fn next_u64(state: &mut u64) -> u64 {
     *state ^= *state >> 12;

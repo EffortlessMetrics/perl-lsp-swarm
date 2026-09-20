@@ -46,7 +46,7 @@ process_data($items);
             new_text: "process".to_string(),
         };
         must(apply_edits(&mut state, &[edit]));
-        black_box(&state.ast);
+        black_box(&state.snapshot().parse_output().ast);
     });
     perf_scorecard::record_metric("incremental_small_edit", metric);
 
@@ -61,7 +61,7 @@ process_data($items);
                     new_text: "process".to_string(),
                 };
                 must(apply_edits(&mut state, &[edit]));
-                black_box(&state.ast);
+                black_box(&state.snapshot().parse_output().ast);
             },
             BatchSize::SmallInput,
         );
@@ -97,14 +97,14 @@ process_data($items);
 
     let metric = perf_scorecard::sample_metric(30, || {
         let state = IncrementalState::new(black_box(source.clone()));
-        black_box(&state.ast);
+        black_box(&state.snapshot().parse_output().ast);
     });
     perf_scorecard::record_metric("cold_parse", metric);
 
     c.bench_function("full reparse", |b| {
         b.iter(|| {
             let state = IncrementalState::new(black_box(source.clone()));
-            black_box(&state.ast);
+            black_box(&state.snapshot().parse_output().ast);
         })
     });
 }
@@ -155,7 +155,7 @@ process_data($items);
     let metric = perf_scorecard::sample_metric(35, || {
         let mut state = IncrementalState::new(source.clone());
         must(apply_edits(&mut state, &[]));
-        black_box(&state.ast);
+        black_box(&state.snapshot().parse_output().ast);
     });
     perf_scorecard::record_metric("warm_reparse", metric);
 
@@ -166,7 +166,7 @@ process_data($items);
                 // Empty edit list triggers the warm full_reparse path
                 // without recreating the outer IncrementalState allocation.
                 must(apply_edits(&mut state, &[]));
-                black_box(&state.ast);
+                black_box(&state.snapshot().parse_output().ast);
             },
             BatchSize::SmallInput,
         );
@@ -202,7 +202,7 @@ print "$x $y $z\n";
             },
         ];
         must(apply_edits(&mut state, &edits));
-        black_box(&state.ast);
+        black_box(&state.snapshot().parse_output().ast);
     });
     perf_scorecard::record_metric("incremental_multiple_edits", metric);
 
@@ -225,7 +225,7 @@ print "$x $y $z\n";
                     },
                 ];
                 must(apply_edits(&mut state, &edits));
-                black_box(&state.ast);
+                black_box(&state.snapshot().parse_output().ast);
             },
             BatchSize::SmallInput,
         );

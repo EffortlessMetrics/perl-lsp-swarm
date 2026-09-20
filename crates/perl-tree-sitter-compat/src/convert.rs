@@ -1,6 +1,6 @@
 //! Convert a native parse into a tree-sitter-compatible [`TsNode`] tree.
 
-use perl_parser_core::{Node, Parser};
+use perl_parser_core::{Node, ParseError, Parser};
 use perl_workspace_core::Utf8LineIndex;
 
 use crate::node::{TsNode, TsPoint, pascal_to_snake};
@@ -9,27 +9,69 @@ use crate::node::{TsNode, TsPoint, pascal_to_snake};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TreeError {
     /// The source could not be parsed as Perl.
-    ParseFailed,
+    ///
+    /// `offset` and `kind` are taken from the native parser diagnostic. Budget
+    /// failures (`nesting_too_deep`, `recursion_depth_exhausted`, …) often have
+    /// no byte offset; `kind` still distinguishes those variants.
+    ParseFailed {
+        /// Byte offset recorded by the native parser, when that failure carries one.
+        offset: Option<usize>,
+        /// Native parser error variant token (`syntax_error`, `nesting_too_deep`, …).
+        ///
+        /// Future `ParseError` variants that this adapter has not named yet are
+        /// projected as `unknown:{native Debug}` so they do not collapse together.
+        kind: String,
+    },
 }
 
 impl std::fmt::Display for TreeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::ParseFailed => write!(f, "could not parse source as Perl"),
+            Self::ParseFailed { offset: Some(offset), kind } => {
+                write!(f, "could not parse source as Perl ({kind} at byte {offset})")
+            }
+            Self::ParseFailed { offset: None, kind } => {
+                write!(f, "could not parse source as Perl ({kind})")
+            }
         }
     }
 }
 
 impl std::error::Error for TreeError {}
 
+fn tree_error_from_parse_error(error: ParseError) -> TreeError {
+    TreeError::ParseFailed { offset: error.location(), kind: parse_error_kind(&error) }
+}
+
+fn parse_error_kind(error: &ParseError) -> String {
+    match error {
+        ParseError::UnexpectedEof => "unexpected_eof".to_owned(),
+        ParseError::UnexpectedToken { .. } => "unexpected_token".to_owned(),
+        ParseError::SyntaxError { .. } => "syntax_error".to_owned(),
+        ParseError::Advisory { .. } => "advisory".to_owned(),
+        ParseError::LexerError { .. } => "lexer_error".to_owned(),
+        ParseError::RecursionLimit => "recursion_limit".to_owned(),
+        ParseError::RecursionDepthExhausted { .. } => "recursion_depth_exhausted".to_owned(),
+        ParseError::InvalidNumber { .. } => "invalid_number".to_owned(),
+        ParseError::InvalidString => "invalid_string".to_owned(),
+        ParseError::UnclosedDelimiter { .. } => "unclosed_delimiter".to_owned(),
+        ParseError::InvalidRegex { .. } => "invalid_regex".to_owned(),
+        ParseError::NestingTooDeep { .. } => "nesting_too_deep".to_owned(),
+        ParseError::Cancelled => "cancelled".to_owned(),
+        ParseError::Recovered { .. } => "recovered".to_owned(),
+        other => format!("unknown:{other:?}"),
+    }
+}
+
 /// Parse Perl `source` and return its tree-sitter-compatible tree.
 ///
 /// # Errors
-/// Returns [`TreeError::ParseFailed`] when the parser cannot produce a tree.
+/// Returns [`TreeError::ParseFailed`] when the parser cannot produce a tree,
+/// carrying the native diagnostic's offset (when present) and kind.
 pub fn parse_to_tree(source: &str) -> Result<TsNode, TreeError> {
     let ast = {
         let mut parser = Parser::new(source);
-        parser.parse().map_err(|_| TreeError::ParseFailed)?
+        parser.parse().map_err(tree_error_from_parse_error)?
     };
     let line_index = Utf8LineIndex::new(source);
     Ok(to_ts_node(&ast, &line_index))
@@ -94,8 +136,36 @@ mod tests {
     }
 
     #[test]
+    fn parse_failed_payload_distinguishes_located_native_errors() {
+        // Mapper-level offset proof: `ParseError::syntax` carries a location, but
+        // `Parser::parse()` currently returns `Err` only for budget failures whose
+        // `location()` is `None`. Live `parse_to_tree` discrimination is the
+        // adapter integration test (kind, and offset when the native error has one).
+        let early = tree_error_from_parse_error(ParseError::syntax("early failure", 3));
+        let late = tree_error_from_parse_error(ParseError::syntax("late failure", 19));
+        assert_ne!(early, late, "same kind at different offsets must remain distinct");
+        assert_eq!(
+            early,
+            TreeError::ParseFailed { offset: Some(3), kind: "syntax_error".to_owned() }
+        );
+        assert_eq!(
+            late,
+            TreeError::ParseFailed { offset: Some(19), kind: "syntax_error".to_owned() }
+        );
+    }
+
+    #[test]
     fn tree_error_displays_readably() {
-        assert_eq!(TreeError::ParseFailed.to_string(), "could not parse source as Perl");
+        assert_eq!(
+            TreeError::ParseFailed { offset: None, kind: "nesting_too_deep".to_owned() }
+                .to_string(),
+            "could not parse source as Perl (nesting_too_deep)"
+        );
+        assert_eq!(
+            TreeError::ParseFailed { offset: Some(12), kind: "syntax_error".to_owned() }
+                .to_string(),
+            "could not parse source as Perl (syntax_error at byte 12)"
+        );
     }
 
     fn has_node_starting_on_row(node: &TsNode, row: u32) -> bool {

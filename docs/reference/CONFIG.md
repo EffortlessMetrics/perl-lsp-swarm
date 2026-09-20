@@ -15,7 +15,6 @@ configuration.
 - [Workspace Settings (LSP)](#workspace-settings-lsp)
   - [perl.workspace](#perlworkspace)
   - [perl.inlayHints](#perlinlayhints)
-  - [perl.testRunner](#perltestrunner)
   - [perl.formatting](#perlformatting)
   - [perl.perlcritic](#perlperlcritic)
   - [perl.critic](#perlcritic)
@@ -48,7 +47,6 @@ All LSP workspace settings live under the `perl` namespace:
   "perl": {
     "workspace": { "includePaths": ["lib"] },
     "inlayHints": { "enabled": true },
-    "testRunner": { "command": "prove" },
     "formatting": { "engine": "native" },
     "perlcritic": { "enabled": false },
     "critic": { "engine": "legacy" },
@@ -110,7 +108,7 @@ scoping tiers:
   per-folder effective workspace config, so two folders can have completely
   different include paths without interacting.
 - **Server-global** — `[diagnostics]`, `[critic]`, `[features]`, `[formatting]`,
-  `[ai_completion]`, and `[next_edit]`. These target the single shared
+  and `[ai_completion]`. These target the single shared
   `ServerConfig`, so they are inherently server-wide rather than per-folder.
 
 Because the server-global sections are shared, two folders that set the **same**
@@ -138,7 +136,7 @@ per folder. See [Configuration Precedence](#configuration-precedence).
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `include_paths` | `string[]` | `[]` | Additional include paths for module resolution, relative to workspace root. An empty list leaves the built-in defaults (`lib`, `.`, `local/lib/perl5`) unchanged. |
-| `version` | `string` | (none) | Perl version hint, e.g. `"5.38"`. Parsed but not yet wired to diagnostics; reserved for future use. |
+| `version` | `string` | (none) | Per-folder Perl version hint, e.g. `"5.38"`, used as the PL900 fallback target when source has no `use VERSION` declaration. Malformed values produce an actionable configuration diagnostic and are never used as a fallback target. |
 
 #### `[diagnostics]` — Linting
 
@@ -185,7 +183,7 @@ for every shipped rule (ID, category, severity, and which of the `recommended` /
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `enabled` | `boolean` | (unset) | Enable or disable LSP formatting. When unset, the server default (`true`) applies. |
-| `engine` | `"native"`, `"compat"`, `"perltidy-compat"`, `"external-legacy"`, `"external-perltidy"`, `"perltidy"`, `"off"`, `"disabled"`, or `"none"` | `"native"` | Selects the formatter engine. `native` runs the Rust-native formatter, `compat` / `perltidy-compat` run native formatting with compatibility defaults, `external-*` / `perltidy` use the external perltidy adapter, and `off` / `disabled` / `none` disable formatting. Unrecognized values are ignored and a warning is logged. |
+| `engine` | `"native"`, `"external-legacy"`, `"external-perltidy"`, `"perltidy"`, `"off"`, `"disabled"`, or `"none"` | `"native"` | Selects the formatter engine. `native` runs the Rust-native formatter, `external-*` / `perltidy` use the external perltidy adapter, and `off` / `disabled` / `none` disable formatting. Unrecognized values are ignored and a warning is logged. The retired `"compat"` / `"perltidy-compat"` tokens (#7129) are rejected the same way; they never had behavior of their own, and the deprecation window (#15624) closed before any release accepted them. |
 | `perltidy_profile` | `string` | (unset) | Path to a `.perltidyrc` profile. Used by the external perltidy adapter and by compatibility reporting. |
 | `perltidy_maximum_line_length` | `integer` | (unset) | Maximum line length for formatting compatibility options. |
 | `perltidy_indent_columns` | `integer` | (unset) | Indent width in spaces. |
@@ -207,7 +205,8 @@ for every shipped rule (ID, category, severity, and which of the `recommended` /
 # All keys are optional. Unknown keys are silently ignored.
 
 [perl]
-# Perl version hint (reserved for future diagnostic targeting)
+# Per-folder PL900 fallback target when source has no `use VERSION` declaration.
+# Source declarations win; invalid values fail closed.
 version = "5.38"
 
 # Module search paths relative to workspace root.
@@ -477,66 +476,11 @@ Maximum character length for a single hint label before it is truncated.
 
 ---
 
-### perl.testRunner
-
-Configuration for the integrated test runner (Test::More, Test2, prove).
-
-#### `perl.testRunner.enabled`
-
-| Property | Value |
-|---|---|
-| Type | `boolean` |
-| Default | `true` |
-
-Enable the integrated test runner. When `false`, test-related code lenses and
-commands are suppressed.
-
-#### `perl.testRunner.command`
-
-| Property | Value |
-|---|---|
-| Type | `string` |
-| Default | `"perl"` |
-
-Executable used to run tests. Common values: `"perl"`, `"prove"`.
-
-#### `perl.testRunner.args`
-
-| Property | Value |
-|---|---|
-| Type | `string[]` |
-| Default | `[]` |
-
-Additional arguments passed to the test command.
-
-#### `perl.testRunner.timeout`
-
-| Property | Value |
-|---|---|
-| Type | `number` (milliseconds) |
-| Default | `60000` |
-
-Maximum time to wait for a test run before the server considers it timed out.
-
-```json
-{
-  "perl": {
-    "testRunner": {
-      "enabled": true,
-      "command": "prove",
-      "args": ["-l", "-v"],
-      "timeout": 120000
-    }
-  }
-}
-```
-
----
-
 ### perl.formatting
 
 Controls LSP document and range formatting. Native formatting is built into the
-server; external perltidy is available as an explicit compatibility adapter.
+server. External perltidy remains available only through trusted project
+configuration, not generic client settings.
 
 #### `perl.formatting.enabled`
 
@@ -552,33 +496,21 @@ edits regardless of the selected engine.
 
 | Property | Value |
 |---|---|
-| Type | `"native"\|"compat"\|"external-perltidy"\|"off"` |
+| Type | `"native"\|"off"` |
 | Default | `"native"` |
 
 Formatter engine for LSP formatting requests:
 
 - `native` uses the Rust-native formatter.
-- `compat` uses the native formatter with compatibility-oriented defaults.
-- `external-perltidy` shells out through the legacy perltidy adapter.
 - `off` disables formatting.
 
-The TOML parser also accepts compatibility aliases such as `perltidy-compat`,
-`external-legacy`, `perltidy`, `disabled`, and `none`.
+The retired `"compat"` alias is rejected here (#7129/#15624): it never
+selected a different engine or produced different output — it always ran the
+native formatter. Set the value to `"native"` instead.
 
-#### `perl.formatting.profile`
-
-| Property | Value |
-|---|---|
-| Type | `string` |
-| Default | (none) |
-
-Path to a `.perltidyrc` profile. This is used by the external perltidy adapter
-and by native-tooling compatibility reports. Run
-`perllsp --perltidy-compat-report .perltidyrc` for an installed-binary
-migration check, or `cargo xtask native-format perltidy-compat --profile
-.perltidyrc` when you need a JSON/Markdown receipt in this repository. The
-Markdown report includes a suggested native `[formatting]` snippet for
-compatible options and lists external-only options separately.
+External formatter aliases are project-configuration values, not accepted
+through the generic LSP client-settings channel. Use the project `[formatting]`
+configuration above when legacy perltidy execution is explicitly required.
 
 #### `perl.formatting.maximumLineLength`
 
@@ -598,7 +530,7 @@ Maximum line length for formatting compatibility options.
 
 Indent width in spaces. When unset, formatting uses the editor-supplied
 `tabSize` from the `textDocument/formatting` request. When set, the configured
-width wins over `tabSize` on both the native and external perltidy paths.
+width wins over `tabSize` for the native formatting path.
 
 #### Additional formatting compatibility options
 
@@ -611,13 +543,15 @@ The server also accepts:
 - `perl.formatting.addTrailingCommas`
 - `perl.formatting.verticalAlignment`
 - `perl.formatting.blockCommentIndentation`
-- `perl.formatting.extraArgs`
 - `perl.formatting.timeoutSecs`
 
-Some options are native compatibility hints; others only affect the external
-perltidy adapter. Use `perllsp --perltidy-compat-report .perltidyrc` or the
-receipt-backed native-tooling compatibility reports to classify a specific
-`.perltidyrc` before switching a project.
+These are native compatibility hints on the generic client-settings channel.
+External perltidy profile and argument settings are project-only: configure
+`perltidy_profile` and `perltidy_extra_args` in the trusted project
+`[formatting]` section above. They are not accepted as generic client settings.
+Use `perllsp --perltidy-compat-report .perltidyrc` or the receipt-backed
+native-tooling compatibility reports to classify a specific `.perltidyrc`
+before switching a project.
 
 ```json
 {
@@ -877,9 +811,11 @@ Flags passed when launching the `perllsp` executable. Source:
 
 | Flag | Description |
 |---|---|
-| `--check <files...>` | Validate Perl files and report parse errors to stdout |
-| `--check-project [dir]` | Scan a project directory and print parsability summary (defaults to `.`) |
+| `--check <files...>` | Native in-process parser check of listed files (does not execute project Perl) |
+| `--check-project [dir]` | Native parsability report (80% threshold; not a strict all-clean check; defaults to `.`) |
 | `--completion <shell>` | Print shell completion script (`bash`, `zsh`, `fish`, `powershell`) |
+
+Native vs real-Perl checking, exits, and examples: [Checking Perl files](CHECKING.md).
 
 Examples:
 
@@ -888,8 +824,8 @@ perllsp --stdio                         # stdio mode (default)
 perllsp --stdio --log                   # with logging to stderr
 perllsp --socket --port 9257            # TCP socket mode
 perllsp --stdio --feature-profile prod  # production feature profile
-perllsp --check lib/MyModule.pm         # batch syntax check
-perllsp --check-project lib/            # project-wide parsability scan
+perllsp --check lib/MyModule.pm         # native listed-file parser check
+perllsp --check-project lib/            # native parsability report (80%)
 perllsp --info                          # print server information
 perllsp --completion bash >> ~/.bashrc  # install bash completions
 ```
@@ -1121,7 +1057,7 @@ launch `perllsp --stdio`.
 |---|---|---|---|
 | `perl-lsp.enableSemanticTokens` | `boolean` | `true` | Enhanced syntax highlighting. |
 | `perl-lsp.enableFormatting` | `boolean` | `true` | Document formatting. Native formatting is built in; external perltidy is compatibility mode. |
-| `perl-lsp.formatOnSave` | `boolean` | `false` | Auto-format on save. |
+| `perl-lsp.formatOnSave` | `boolean` | `false` | Auto-format on save. The extension formats through the whole-document provider; server-owned `willSaveWaitUntil` formatting is withdrawn (#11955) until #8092 proves one save owner. |
 | `perl-lsp.enableTestIntegration` | `boolean` | `true` | Test::More and Test2 integration. |
 | `perl-lsp.autoPopulateNewFiles` | `boolean` | `true` | Insert package boilerplate into new `.pm` files and Test::More boilerplate into new `.t` files. Files with existing content are not modified. |
 
@@ -1302,12 +1238,6 @@ perllsp --features-json --feature-profile production
 {
   "perl": {
     "workspace": { "useSystemInc": false },
-    "testRunner": {
-      "enabled": true,
-      "command": "prove",
-      "args": ["-l", "-v", "--timer"],
-      "timeout": 300000
-    },
     "perlcritic": { "enabled": true }
   }
 }
@@ -1353,21 +1283,36 @@ Helix has built-in Perl language support, but its default Perl language server i
 language:
 
 ```toml
-[language-server.perl-lsp]
+[language-server.perllsp]
 command = "perllsp"
 args = ["--stdio"]
 
 [[language]]
 name = "perl"
-language-servers = ["perl-lsp"]
+language-servers = ["perllsp"]
+roots = [".perl-lsp.toml", "Makefile.PL", "Build.PL", "cpanfile", "dist.ini"]
+file-types = [
+  "pl",
+  "pm",
+  "t",
+  "psgi",
+  { glob = "latexmkrc" },
+  { glob = ".latexmkrc" },
+]
+shebangs = ["perl"]
 
-[language-server.perl-lsp.config.perl.workspace]
+[language-server.perllsp.config.perl.workspace]
 includePaths = ["lib", ".", "local/lib/perl5"]
 useSystemInc = false
 
-[language-server.perl-lsp.config.perl.inlayHints]
+[language-server.perllsp.config.perl.inlayHints]
 enabled = true
 ```
+
+Helix's built-in `perl` entry also owns Raku/NQP/P6 file extensions, so the
+`file-types` narrowing above keeps the Perl 5 server off Raku-family files. The
+checked base registration is
+[`docs/examples/helix/languages.toml`](../examples/helix/languages.toml).
 
 #### Zed (`settings.json`)
 

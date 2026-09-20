@@ -41,6 +41,7 @@ pub fn scope_issues_to_diagnostics(issues: Vec<ScopeIssue>) -> Vec<Diagnostic> {
             | IssueKind::UninitializedVariable
             | IssueKind::FeatureNotEnabled => DiagnosticSeverity::Warning,
             IssueKind::CaptureVarWithoutRegexMatch => DiagnosticSeverity::Information,
+            _ => DiagnosticSeverity::Error, // Forward-compatible fallback (#2898)
         };
 
         let code = match issue.kind {
@@ -62,6 +63,7 @@ pub fn scope_issues_to_diagnostics(issues: Vec<ScopeIssue>) -> Vec<Diagnostic> {
             // keeps both `say` diagnostics under one consistent code.
             IssueKind::FeatureNotEnabled => DiagnosticCode::VersionIncompatFeature,
             IssueKind::UnresolvedQualifiedCall => DiagnosticCode::UnresolvedQualifiedCall,
+            _ => DiagnosticCode::ParseError, // Forward-compatible fallback (#2898)
         };
 
         let related_info = build_scope_related_info(&issue);
@@ -79,6 +81,8 @@ pub fn scope_issues_to_diagnostics(issues: Vec<ScopeIssue>) -> Vec<Diagnostic> {
                 Vec::new()
             },
             suggestion,
+            fixable: matches!(code, DiagnosticCode::VariableRedeclaration),
+            critic_observation: None,
         });
     }
 
@@ -135,6 +139,22 @@ pub fn scope_issues_to_diagnostics(issues: Vec<ScopeIssue>) -> Vec<Diagnostic> {
 ///   plausibly provided by a dynamic import or string-eval sub declaration.
 pub fn scope_issues_to_diagnostics_with_semantics<Q: SemanticQueries>(
     issues: Vec<ScopeIssue>,
+    file_id: FileId,
+    semantic_queries: &Q,
+) -> Vec<Diagnostic> {
+    scope_issues_to_diagnostics_with_semantics_ref(&issues, file_id, semantic_queries)
+}
+
+/// Borrowing form of [`scope_issues_to_diagnostics_with_semantics`].
+///
+/// Carries the whole implementation; the owning form above is a thin shim that
+/// keeps the published signature. A caller reading issues out of a shared,
+/// generation-owned `DocumentDiagnosticAnalysis` (#7286) has only a borrow and
+/// must not deep-clone the whole issue list per evaluation to call this --
+/// which is free, because nothing here moves out of an issue: every field is
+/// either `Copy` or read through a reference.
+pub(crate) fn scope_issues_to_diagnostics_with_semantics_ref<Q: SemanticQueries>(
+    issues: &[ScopeIssue],
     file_id: FileId,
     semantic_queries: &Q,
 ) -> Vec<Diagnostic> {
@@ -233,6 +253,7 @@ pub fn scope_issues_to_diagnostics_with_semantics<Q: SemanticQueries>(
             | IssueKind::UninitializedVariable
             | IssueKind::FeatureNotEnabled => DiagnosticSeverity::Warning,
             IssueKind::CaptureVarWithoutRegexMatch => DiagnosticSeverity::Information,
+            _ => DiagnosticSeverity::Error, // Forward-compatible fallback (#2898)
         };
 
         let code = match issue.kind {
@@ -254,12 +275,13 @@ pub fn scope_issues_to_diagnostics_with_semantics<Q: SemanticQueries>(
             // keeps both `say` diagnostics under one consistent code.
             IssueKind::FeatureNotEnabled => DiagnosticCode::VersionIncompatFeature,
             IssueKind::UnresolvedQualifiedCall => DiagnosticCode::UnresolvedQualifiedCall,
+            _ => DiagnosticCode::ParseError, // Forward-compatible fallback (#2898)
         };
 
-        let mut related_info = build_scope_related_info(&issue);
+        let mut related_info = build_scope_related_info(issue);
         if issue.kind == IssueKind::UnquotedBareword {
             add_visible_symbol_trust_boundary_related_info(
-                &issue,
+                issue,
                 &mut related_info,
                 visible_symbol_diagnostic_trust(
                     semantic_queries,
@@ -269,13 +291,13 @@ pub fn scope_issues_to_diagnostics_with_semantics<Q: SemanticQueries>(
                 ),
             );
         }
-        let suggestion = build_scope_suggestion(&issue);
+        let suggestion = build_scope_suggestion(issue);
 
         diagnostics.push(Diagnostic {
             range: issue.range,
             severity,
             code: Some(code.as_str().to_string()),
-            message: build_enhanced_scope_message(&issue),
+            message: build_enhanced_scope_message(issue),
             related_information: related_info,
             tags: if matches!(issue.kind, IssueKind::UnusedVariable | IssueKind::UnusedParameter) {
                 vec![DiagnosticTag::Unnecessary]
@@ -283,6 +305,8 @@ pub fn scope_issues_to_diagnostics_with_semantics<Q: SemanticQueries>(
                 Vec::new()
             },
             suggestion,
+            fixable: matches!(code, DiagnosticCode::VariableRedeclaration),
+            critic_observation: None,
         });
     }
 
@@ -477,6 +501,7 @@ fn build_scope_related_info(issue: &ScopeIssue) -> Vec<RelatedInformation> {
                 message: format!("💡 Define sub '{}' in its package or correct the call", issue.variable_name),
             },
         ],
+        _ => Vec::new(), // Forward-compatible fallback (#2898)
     }
 }
 
@@ -555,6 +580,8 @@ fn build_scope_suggestion(issue: &ScopeIssue) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    use perl_test_must::must_some_with;
+
     use super::*;
     use perl_semantic_facts::{
         AnchorId, Confidence, DefinitionCandidate, EntityFact, EntityId, FileId, OccurrenceFact,
@@ -706,33 +733,33 @@ mod tests {
     // ── Helper ──
 
     fn undeclared_issue(name: &str, range: (usize, usize)) -> ScopeIssue {
-        ScopeIssue {
-            kind: IssueKind::UndeclaredVariable,
-            variable_name: name.to_string(),
-            line: 1,
+        ScopeIssue::new(
+            IssueKind::UndeclaredVariable,
+            name,
+            1,
             range,
-            description: format!("Variable '{}' not declared", name),
-        }
+            format!("Variable '{}' not declared", name),
+        )
     }
 
     fn unused_issue(name: &str, range: (usize, usize)) -> ScopeIssue {
-        ScopeIssue {
-            kind: IssueKind::UnusedVariable,
-            variable_name: name.to_string(),
-            line: 1,
+        ScopeIssue::new(
+            IssueKind::UnusedVariable,
+            name,
+            1,
             range,
-            description: format!("Variable '{}' unused", name),
-        }
+            format!("Variable '{}' unused", name),
+        )
     }
 
     fn bareword_issue(name: &str, range: (usize, usize)) -> ScopeIssue {
-        ScopeIssue {
-            kind: IssueKind::UnquotedBareword,
-            variable_name: name.to_string(),
-            line: 1,
+        ScopeIssue::new(
+            IssueKind::UnquotedBareword,
+            name,
+            1,
             range,
-            description: format!("Bareword '{}' not allowed under 'use strict'", name),
-        }
+            format!("Bareword '{}' not allowed under 'use strict'", name),
+        )
     }
 
     /// Stub that returns `Some` from `dynamic_callable_may_be_visible_at`
@@ -1352,5 +1379,80 @@ mod tests {
             "UnusedVariable should NOT be suppressed by dynamic callable evidence"
         );
         Ok(())
+    }
+    #[test]
+    fn undeclared_variable_without_candidates_keeps_actionable_fallback() {
+        let diagnostic = must_some_with(
+            scope_issues_to_diagnostics_with_semantics(
+                vec![undeclared_issue("$cont", (10, 15))],
+                FileId(1),
+                &NullStubQueries,
+            )
+            .into_iter()
+            .next(),
+            "one issue should produce one diagnostic",
+        );
+
+        assert_eq!(
+            diagnostic.message,
+            "Variable '$cont' is used but not declared -- add 'my $cont' to declare it in this scope"
+        );
+        assert_eq!(diagnostic.suggestion.as_deref(), Some("Add 'my $cont;' before this line"));
+        assert!(
+            !diagnostic.message.to_ascii_lowercase().contains("did you mean"),
+            "the no-candidate baseline must not fabricate a nearest-match hint"
+        );
+    }
+
+    #[test]
+    fn undeclared_variable_diagnostic_uses_the_offending_name_not_description_text() {
+        let issue = ScopeIssue::new(
+            IssueKind::UndeclaredVariable,
+            "$cont",
+            1,
+            (10, 15),
+            "unrelated analyzer description",
+        );
+
+        let diagnostic = must_some_with(
+            scope_issues_to_diagnostics_with_semantics(vec![issue], FileId(1), &NullStubQueries)
+                .into_iter()
+                .next(),
+            "one issue should produce one diagnostic",
+        );
+
+        assert!(
+            diagnostic.message.contains("$cont"),
+            "diagnostic must identify the offending variable: {}",
+            diagnostic.message
+        );
+        assert!(
+            !diagnostic.message.contains("unrelated analyzer description"),
+            "diagnostic should remain owned by the diagnostic projection"
+        );
+    }
+
+    #[test]
+    fn unrelated_diagnostic_kinds_do_not_receive_nearest_match_language() {
+        let diagnostic = must_some_with(
+            scope_issues_to_diagnostics_with_semantics(
+                vec![bareword_issue("pritn", (10, 14))],
+                FileId(1),
+                &NullStubQueries,
+            )
+            .into_iter()
+            .next(),
+            "one issue should produce one diagnostic",
+        );
+
+        assert!(
+            diagnostic.message.contains("Bareword 'pritn'"),
+            "bareword diagnostic should retain its own message: {}",
+            diagnostic.message
+        );
+        assert!(
+            !diagnostic.message.to_ascii_lowercase().contains("did you mean"),
+            "nearest-match language must not leak into unsupported diagnostic kinds"
+        );
     }
 }

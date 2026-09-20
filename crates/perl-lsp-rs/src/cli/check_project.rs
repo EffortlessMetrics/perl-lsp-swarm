@@ -391,6 +391,9 @@ fn remediation_hint_for_category(category: &str) -> Option<&'static str> {
 
 #[cfg(test)]
 mod tests {
+    // Test assertions favor `expect()` with a descriptive message over
+    // silent unwraps; the workspace-wide deny is a production-code rule.
+    #![allow(clippy::expect_used)]
     use super::{
         RenderedError, categorize_error, is_vendored_dir_name, remediation_hint_for_category,
     };

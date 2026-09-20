@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Added
+body: "Claude Code integration now has an evidence-backed `perl-lsp-rs` ↔ `perllsp` compatibility contract that distinguishes proven compatible, proven incompatible, and not-yet-proven pairs instead of inferring support from matching version numbers."
+time: 2026-08-13T11:29:00Z
+custom:
+  PR: "7924"
+  Slug: claude-plugin-server-compat
+  Breaking: "no"

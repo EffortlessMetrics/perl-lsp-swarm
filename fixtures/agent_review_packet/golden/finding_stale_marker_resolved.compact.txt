@@ -1,0 +1,9 @@
+REVIEW FINDING example-train/R_service_marker/N_service_marker_probe/FIND-marker-tree-comparison | packet example-train/R_service_marker/N_service_marker_probe/2026-08-24T00:00:00Z@b31d5e9a2
+LENS: semantic_correctness | OUTCOME: resolved_current_head [advisory] | FINAL: resolved_on_current_head
+EVIDENCE:
+  cargo test -p xtask --bin xtask service_marker_probe --locked@b31d5e9a2 [focused_test_observation]: The stale-marker falsifier initially compared marker presence instead of recorded tree; the focused test passed for a marker recorded against another tree.
+  invert tree comparison mutation@b31d5e9a2 [mutation_observation]: Inverting the comparison flips both focused tests red, proving the comparison is load-bearing after repair.
+ACTION: Bind the mismatch to the recorded-tree versus observed-tree comparison and reject alternate-tree markers in the same change.
+RESOLVED-AT: b31d5e9a2
+RESOLUTION-EVIDENCE: cargo test -p xtask --bin xtask service_marker_probe --locked@b31d5e9a2 (after repair) [focused_test_receipt]
+RESOLUTION-EVIDENCE: invert tree comparison mutation red@b31d5e9a2 [mutation_receipt]

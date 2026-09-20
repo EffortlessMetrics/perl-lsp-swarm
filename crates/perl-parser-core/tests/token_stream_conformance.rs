@@ -15,7 +15,7 @@ fn parser_kinds_for(input: &str) -> Vec<TokenKind> {
         raw.push(token);
     }
 
-    TokenStream::lexer_tokens_to_parser_tokens(raw).into_iter().map(|t| t.kind).collect()
+    TokenStream::lexer_tokens_to_parser_tokens(raw).into_iter().map(|t| t.kind()).collect()
 }
 
 fn converted_kind(token_type: TokenType, text: &str) -> Option<TokenKind> {
@@ -27,7 +27,7 @@ fn converted_kind(token_type: TokenType, text: &str) -> Option<TokenKind> {
     }])
     .into_iter()
     .next()
-    .map(|token| token.kind)
+    .map(|token| token.kind())
 }
 
 fn delimiter_token_type(kind: TokenKind) -> Option<TokenType> {
@@ -81,6 +81,24 @@ fn canonical_delimiter_spellings_convert_from_raw_lexer_tokens() {
             );
         }
     }
+}
+
+#[test]
+fn data_marker_newline_in_span_keeps_mapped_kind() {
+    // The lexer covers the terminator in the DataMarker span while `text` is
+    // only the marker spelling (`__DATA__\n` vs `__DATA__`). Constructor
+    // honesty must not turn that into EOF.
+    let converted = TokenStream::lexer_tokens_to_parser_tokens(vec![LexerToken {
+        token_type: TokenType::DataMarker(Arc::from("__DATA__")),
+        text: Arc::from("__DATA__"),
+        start: 0,
+        end: 9,
+    }]);
+    assert_eq!(converted.len(), 1);
+    assert_eq!(converted[0].kind(), TokenKind::DataMarker);
+    assert_eq!(&*converted[0].text, "__DATA__");
+    assert_eq!(converted[0].start(), 0);
+    assert_eq!(converted[0].end(), 8);
 }
 
 #[test]
@@ -165,7 +183,7 @@ fn hash_and_sub_sigils_as_identifier_tokens_keep_sigil_kind() {
     ];
     let kinds = TokenStream::lexer_tokens_to_parser_tokens(raw)
         .into_iter()
-        .map(|t| t.kind)
+        .map(|t| t.kind())
         .collect::<Vec<_>>();
     assert_eq!(
         kinds,

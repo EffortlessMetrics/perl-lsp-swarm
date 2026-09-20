@@ -133,7 +133,11 @@ fn skip_until_with_budget_reaches_eof() -> Result<(), Box<dyn std::error::Error>
 
 #[test]
 fn skip_until_with_budget_exhaustion() -> Result<(), Box<dyn std::error::Error>> {
-    let budget = ParseBudget { max_tokens_skipped: 1, ..ParseBudget::strict() };
+    let budget = {
+        let mut b = ParseBudget::strict();
+        b.max_tokens_skipped = 1;
+        b
+    };
     let mut ctx = ParserContext::new("foo bar baz qux ;".to_string());
     let mut tracker = BudgetTracker::new();
 

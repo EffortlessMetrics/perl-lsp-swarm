@@ -4,6 +4,10 @@
 **Feature**: gap(security): module resolution has no signature or provenance verification for Perl modules
 **Issue**: [GitHub #3621](https://github.com/EffortlessMetrics/perl-lsp/issues/3621)
 
+> Historical design record. The implemented scope is the opt-in,
+> filesystem-only `perl-module` marker API. The `IncRoot` field, LSP setting,
+> diagnostics, and trust-gating acceptance items below remain future work.
+
 ---
 
 ## Feature Description

@@ -151,12 +151,12 @@ impl DocumentParser {
         match self {
             DocumentParser::Full { content, ast } => {
                 // Full document replacement
-                if let Some(change) = changes.first() {
-                    if let Some(text) = change["text"].as_str() {
-                        *content = text.to_string();
-                        let mut parser = Parser::new(content);
-                        *ast = parser.parse().ok().map(Arc::new);
-                    }
+                if let Some(change) = changes.first()
+                    && let Some(text) = change["text"].as_str()
+                {
+                    *content = text.to_string();
+                    let mut parser = Parser::new(content);
+                    *ast = parser.parse().ok().map(Arc::new);
                 }
                 Ok(())
             }
@@ -223,7 +223,7 @@ mod tests {
 
     #[test]
     fn test_lsp_pos_to_byte() {
-        let text = "Hello\nWorld\n";
+        let text = "Hello\nWørld\n";
         let rope = Rope::from_str(text);
 
         // Start of document
@@ -232,13 +232,13 @@ mod tests {
         // Start of second line
         assert_eq!(lsp_pos_to_byte(&rope, 1, 0), 6);
 
-        // Middle of second line
-        assert_eq!(lsp_pos_to_byte(&rope, 1, 3), 9);
+        // After `Wø`: the UTF-16 character position is 2 while the byte offset is 9.
+        assert_eq!(lsp_pos_to_byte(&rope, 1, 2), 9);
     }
 
     #[test]
     fn test_byte_to_lsp_pos() {
-        let text = "Hello\nWorld\n";
+        let text = "Hello\nWørld\n";
         let rope = Rope::from_str(text);
 
         // Start of document
@@ -247,8 +247,8 @@ mod tests {
         // Start of second line
         assert_eq!(byte_to_lsp_pos(&rope, 6), (1, 0));
 
-        // Middle of second line
-        assert_eq!(byte_to_lsp_pos(&rope, 9), (1, 3));
+        // Byte offset after `Wø` must convert to UTF-16 character 2, not byte column 3.
+        assert_eq!(byte_to_lsp_pos(&rope, 9), (1, 2));
     }
 
     #[test]

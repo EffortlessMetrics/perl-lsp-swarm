@@ -1,0 +1,260 @@
+{
+  "lifecycle": {
+    "graceful_cleanup_claimed": false
+  },
+  "roles": [
+    {
+      "obligation": "Bounded evidence workers may gather receipts; they never review.",
+      "required": false,
+      "role": "evidence_worker"
+    },
+    {
+      "obligation": "A train-graph specialist joins only when the probe touches shared edge vocabulary.",
+      "required": false,
+      "role": "specialist"
+    },
+    {
+      "obligation": "An independent challenger attempts the weak-oracle, wrong-subject, and duplicate-authority escapes named by this packet.",
+      "required": true,
+      "role": "adversarial_challenger"
+    },
+    {
+      "obligation": "The builder states the exact proposition and its falsifiers before independent review.",
+      "required": true,
+      "role": "builder_self_review"
+    }
+  ],
+  "obligations": {
+    "change_fragments": [],
+    "docs_projections": [],
+    "generated_artifacts": [
+      {
+        "identity": "second-run no-diff@b31d5e9a2",
+        "ref": "docs/policy/NON_RUST_INVENTORY.md"
+      }
+    ],
+    "tests_mutations": [
+      {
+        "identity": "cargo test -p xtask --bin xtask service_marker_probe --locked@b31d5e9a2",
+        "ref": "xtask service_marker_probe focused tests"
+      }
+    ],
+    "fixture_expectation_manifests": [
+      {
+        "identity": "sha256:4b1e",
+        "ref": "fixtures/service_marker_probe/stale_marker.v1.json"
+      }
+    ],
+    "spec_ledger_ids": []
+  },
+  "old_paths": [
+    {
+      "owner": "#10858",
+      "disposition": "removed",
+      "seam": "marker_freshness_check"
+    }
+  ],
+  "negative_controls": [
+    {
+      "checks": {
+        "alternate_subject_exclusion": {
+          "evidence": "The control binds the marker to the observed tree identity; alternate-tree markers fail.",
+          "status": "established"
+        },
+        "independent_expectation_source": {
+          "evidence": "No-mismatch expectation is the literal absence in the fixture, independent of probe output.",
+          "status": "established"
+        },
+        "correct_subject_and_generation": {
+          "evidence": "The current marker fixture is hand-authored against the observed tree.",
+          "status": "established"
+        },
+        "passes_only_intended_implementation": {
+          "evidence": "The control distinguishes fresh from stale by tree identity, not by file presence.",
+          "status": "established"
+        },
+        "red_before_or_mutation_evidence": {
+          "evidence": "Inverting the tree comparison flips this control red together with the stale-marker falsifier.",
+          "status": "established"
+        },
+        "exists": {
+          "evidence": "Positive-control test feeds a current marker and asserts no mismatch.",
+          "status": "established"
+        }
+      },
+      "falsifier_id": "F_fresh_marker_passes"
+    },
+    {
+      "checks": {
+        "alternate_subject_exclusion": {
+          "evidence": "A marker file recorded against a different tree is rejected, so an unrelated fresh file cannot satisfy the test.",
+          "status": "established"
+        },
+        "independent_expectation_source": {
+          "evidence": "Expected mismatch values are literal fixture expectations authored before the implementation.",
+          "status": "established"
+        },
+        "correct_subject_and_generation": {
+          "evidence": "The fixture is a hand-written stale marker, not output generated from the probe under test.",
+          "status": "established"
+        },
+        "passes_only_intended_implementation": {
+          "evidence": "The test asserts the typed mismatch enum variant, not a log line or exit-count proxy.",
+          "status": "established"
+        },
+        "red_before_or_mutation_evidence": {
+          "evidence": "Deleting the emission path turns the focused stale-marker test red before the module lands.",
+          "status": "established"
+        },
+        "exists": {
+          "evidence": "service_marker_probe focused test exists at head b31d5e9a2 and runs in the focused route.",
+          "status": "established"
+        }
+      },
+      "falsifier_id": "F_marker_missing_fails"
+    }
+  ],
+  "lenses": [
+    {
+      "reason": "No release, publication, or external stage is claimed by this candidate.",
+      "applicability": "not_applicable",
+      "lens": "release_external_boundary"
+    },
+    {
+      "refinements": [
+        {
+          "statement": "New fixture files obligate allowlist entries and a second-run no-diff inventory regeneration.",
+          "id": "R_inventory_regeneration"
+        }
+      ],
+      "applicability": "required",
+      "lens": "spec_test_docs_consistency"
+    },
+    {
+      "reason": "The probe runs inside the repository-owned xtask binary on the same toolchain as its tests.",
+      "applicability": "not_applicable",
+      "lens": "platform_runtime_portability"
+    },
+    {
+      "reason": "The probe allocates no persistent resources; there is no retention or cleanup path to challenge.",
+      "applicability": "not_applicable",
+      "lens": "resource_retention_cleanup"
+    },
+    {
+      "reason": "The probe reads repository-local marker files only; no external input, secret, or trust boundary is crossed.",
+      "applicability": "not_applicable",
+      "lens": "security_trust_boundary"
+    },
+    {
+      "applicability": "required",
+      "lens": "lifecycle_currentness_concurrency"
+    },
+    {
+      "applicability": "required",
+      "lens": "subject_evidence_identity"
+    },
+    {
+      "refinements": [
+        {
+          "statement": "train_edge_contract.v1 remains the sole shared edge/profile vocabulary owner; the probe must not redefine it.",
+          "id": "R_train_edge_authority"
+        }
+      ],
+      "applicability": "required",
+      "lens": "architecture_authority_duplication"
+    },
+    {
+      "refinements": [
+        {
+          "statement": "One typed mismatch finding per stale marker; count or fingerprint change alone is not repair evidence.",
+          "id": "R_marker_typing"
+        }
+      ],
+      "applicability": "required",
+      "lens": "semantic_correctness"
+    }
+  ],
+  "challenge": {
+    "stage_questions": [
+      {
+        "question": "Does any existing authority already own marker-freshness semantics such that this probe duplicates it instead of consuming it?",
+        "id": "Q_probe_authority_duplication"
+      },
+      {
+        "question": "Does the probe compare the marker's recorded tree against the observed tree rather than marker presence, so an alternate freshly-generated marker file cannot satisfy the test?",
+        "id": "Q_marker_tree_binding"
+      }
+    ],
+    "falsifiers": [
+      {
+        "statement": "A fresh marker must not emit a finding; the positive control feeds a current marker and asserts no mismatch.",
+        "stage": "unit",
+        "id": "F_fresh_marker_passes"
+      },
+      {
+        "statement": "A stale service marker that the probe accepts is a defect: the focused test feeds one stale marker and asserts the typed mismatch is emitted.",
+        "stage": "unit",
+        "id": "F_marker_missing_fails"
+      }
+    ],
+    "primary_proposition": "The service-marker probe emits one typed mismatch finding per stale marker on the current observed tree, and no other module acquires marker-freshness authority."
+  },
+  "subject": {
+    "changed": {
+      "migrated_seams": [
+        "marker_freshness_check"
+      ],
+      "evidence": [
+        {
+          "identity": "non-rust inventory second-run no-diff@b31d5e9a2",
+          "kind": "generation_receipt"
+        },
+        {
+          "identity": "cargo test -p xtask --bin xtask service_marker_probe --locked@b31d5e9a2",
+          "kind": "focused_test_receipt"
+        }
+      ],
+      "authorities": [
+        {
+          "subject": "regenerated inventory",
+          "ref": "docs/policy/NON_RUST_INVENTORY.md"
+        },
+        {
+          "subject": "focused stale-marker fixture",
+          "ref": "fixtures/service_marker_probe/stale_marker.v1.json"
+        },
+        {
+          "subject": "new probe module",
+          "ref": "xtask/src/tasks/service_marker_probe.rs"
+        }
+      ]
+    },
+    "live_observation": {
+      "collision_state": "single writer; no competing candidate branch",
+      "candidate_identity": "PR #12301 head b31d5e9a2",
+      "digest": "sha256:77aa",
+      "candidate_state": "observed"
+    },
+    "builder_packet": {
+      "digest": "sha256:1c0f",
+      "contract": "agent_implementation_packet.v1"
+    },
+    "owning_issue": "#10858",
+    "programme": {
+      "profile": "read_only_reviewer",
+      "proposition": "P_service_marker_probe",
+      "stage": "R_service_marker_probe",
+      "name": "example-train"
+    },
+    "repository": {
+      "diff": "sha256:9f2c41ab",
+      "tree": "b31d5e9a2^{tree}",
+      "head": "b31d5e9a2",
+      "base": "a277266c5",
+      "name": "perl-lsp-swarm"
+    }
+  },
+  "packet_id": "example-train/R_service_marker/N_service_marker_probe/2026-08-24T00:00:00Z",
+  "schema_version": 1,
+  "schema": "agent_review_packet.v1"
+}

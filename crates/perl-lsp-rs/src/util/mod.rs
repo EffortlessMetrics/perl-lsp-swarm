@@ -8,12 +8,9 @@ pub mod uri;
 
 pub use command_timeout::run_command_with_timeout;
 
-use std::io;
-use std::path::Path;
-
 use lsp_types::Position;
-use perl_module::reference::extract_module_reference as extract_module_reference_at_cursor;
-use perl_module::reference::extract_module_reference_extended as extract_module_reference_extended_at_cursor;
+use perl_module::extract_module_reference as extract_module_reference_at_cursor;
+use perl_module::extract_module_reference_extended as extract_module_reference_extended_at_cursor;
 use perl_position_tracking::offset_to_utf16_line_col;
 
 // Re-export engine utilities
@@ -88,68 +85,6 @@ pub fn escape_markdown_text(text: &str) -> String {
         }
     }
     result
-}
-
-/// Decode source text bytes while handling common editor encodings.
-///
-/// Behavior:
-/// - UTF-8 with optional BOM
-/// - UTF-16 LE/BE when BOM is present (odd-length payloads fall back to
-///   Latin-1 decoding of the original bytes rather than silently
-///   truncating the trailing byte)
-/// - Latin-1 byte-preserving fallback for non-UTF8 legacy files
-pub fn decode_text_bytes(bytes: &[u8]) -> String {
-    if bytes.starts_with(&[0xEF, 0xBB, 0xBF])
-        && let Ok(utf8) = std::str::from_utf8(&bytes[3..])
-    {
-        return utf8.to_string();
-    }
-
-    if bytes.starts_with(&[0xFF, 0xFE])
-        && let Some(decoded) = decode_utf16_lossy(&bytes[2..], true)
-    {
-        return decoded;
-    }
-    // Odd-length UTF-16 payload — fall through to latin-1 on the full bytes.
-
-    if bytes.starts_with(&[0xFE, 0xFF])
-        && let Some(decoded) = decode_utf16_lossy(&bytes[2..], false)
-    {
-        return decoded;
-    }
-    // Odd-length UTF-16 payload — fall through to latin-1 on the full bytes.
-
-    match std::str::from_utf8(bytes) {
-        Ok(utf8) => utf8.to_string(),
-        Err(_) => bytes.iter().map(|byte| char::from(*byte)).collect(),
-    }
-}
-
-/// Read a text file and decode it with [`decode_text_bytes`].
-pub fn read_text_file_with_encoding(path: &Path) -> io::Result<String> {
-    std::fs::read(path).map(|bytes| decode_text_bytes(&bytes))
-}
-
-/// Decode a UTF-16 byte payload (BOM already stripped) into a String.
-///
-/// Returns `None` when the payload has an odd byte length, since UTF-16
-/// code units are always 2 bytes and a dangling odd byte indicates
-/// corrupted or mis-detected input. Callers should fall back to another
-/// decoder in that case rather than silently truncating the trailing byte.
-fn decode_utf16_lossy(bytes: &[u8], little_endian: bool) -> Option<String> {
-    if !bytes.len().is_multiple_of(2) {
-        return None;
-    }
-    let mut words = Vec::with_capacity(bytes.len() / 2);
-    for pair in bytes.chunks_exact(2) {
-        let word = if little_endian {
-            u16::from_le_bytes([pair[0], pair[1]])
-        } else {
-            u16::from_be_bytes([pair[0], pair[1]])
-        };
-        words.push(word);
-    }
-    Some(String::from_utf16_lossy(&words))
 }
 
 /// Convert byte offset to UTF-16 column position
@@ -450,6 +385,28 @@ pub fn get_text_around_offset(content: &str, offset: usize, radius: usize) -> St
     get_text_window_around_offset(content, offset, radius).1
 }
 
+/// Return the byte start of the line containing `offset`, and that whole line.
+///
+/// Unlike [`get_text_window_around_offset`], which clips to a fixed radius, this
+/// never truncates the line. Use it when the caller must see a *complete* token to
+/// classify it correctly and that token cannot span a line break -- a Perl
+/// `::`-qualified name, for example. A radius window can end in the middle of such
+/// a name and make a later component look like the final one.
+///
+/// `offset` is clamped into range and walked back to a UTF-8 character boundary, so
+/// an offset landing inside a multi-byte character cannot panic. Lines are split on
+/// `\n`, which is single-byte, so the returned bounds are always char boundaries.
+/// A trailing `\r` is left on the slice; qualified-name scanning stops at it anyway.
+pub fn line_window_around_offset(content: &str, offset: usize) -> (usize, &str) {
+    let mut offset = offset.min(content.len());
+    while offset > 0 && !content.is_char_boundary(offset) {
+        offset -= 1;
+    }
+    let start = content[..offset].rfind('\n').map_or(0, |index| index + 1);
+    let end = content[offset..].find('\n').map_or(content.len(), |index| offset + index);
+    (start, &content[start..end])
+}
+
 /// Get text around an offset position and return the adjusted byte start.
 pub fn get_text_window_around_offset(
     content: &str,
@@ -603,9 +560,10 @@ pub fn offset_to_position(content: &str, offset: usize) -> Position {
 mod tests {
     use super::{
         arg_starts_in_call_body, arg_starts_top_level, byte_to_line_col, byte_to_utf16_col,
-        decode_text_bytes, escape_markdown_text, extract_module_reference, find_matching_paren,
-        get_text_around_offset, get_text_window_around_offset, offset_to_position,
-        position_to_offset, slice_in_range, slice_until_stmt_end, smart_arg_anchor,
+        escape_markdown_text, extract_module_reference, find_matching_paren,
+        get_text_around_offset, get_text_window_around_offset, line_window_around_offset,
+        offset_to_position, position_to_offset, slice_in_range, slice_until_stmt_end,
+        smart_arg_anchor,
     };
     use lsp_types::Position;
 
@@ -728,6 +686,48 @@ mod tests {
     }
 
     #[test]
+    fn line_window_around_offset_returns_the_whole_line_however_long() {
+        // The point of this helper: a line far longer than any fixed radius comes
+        // back complete, so a caller classifying a `::`-qualified name sees all of it.
+        let long = format!("My::{}::process();", "A".repeat(200));
+        let content = format!("package main;\n{long}\nmy $x = 1;\n");
+        let line_start = "package main;\n".len();
+
+        let (start, line) = line_window_around_offset(&content, line_start + 4);
+
+        assert_eq!(start, line_start);
+        assert_eq!(line, long, "the full line must be returned, not a clipped window");
+    }
+
+    #[test]
+    fn line_window_around_offset_handles_first_last_and_unterminated_lines() {
+        let content = "alpha\nbeta\ngamma";
+
+        assert_eq!(line_window_around_offset(content, 0), (0, "alpha"));
+        // Offset at the newline itself still belongs to the line it terminates.
+        assert_eq!(line_window_around_offset(content, 5), (0, "alpha"));
+        assert_eq!(line_window_around_offset(content, 6), (6, "beta"));
+        // Final line has no trailing newline.
+        assert_eq!(line_window_around_offset(content, 12), (11, "gamma"));
+        // Offset past the end clamps rather than panicking.
+        assert_eq!(line_window_around_offset(content, 9999), (11, "gamma"));
+    }
+
+    #[test]
+    fn line_window_around_offset_snaps_offsets_inside_multibyte_characters() {
+        let content = "let 🦀 = 1;\nnext";
+        let crab_start = "let ".len();
+
+        // An offset landing inside the 4-byte crab must not panic and must resolve
+        // to that character's own line.
+        for inside in 1.."🦀".len() {
+            let (start, line) = line_window_around_offset(content, crab_start + inside);
+            assert_eq!(start, 0);
+            assert_eq!(line, "let 🦀 = 1;");
+        }
+    }
+
+    #[test]
     fn slice_in_range_snaps_utf8_cut_points() {
         let text = "🦀abc";
 
@@ -747,39 +747,6 @@ mod tests {
         assert_eq!(start, 0);
         assert_eq!(end, 0);
         assert!(slice.is_empty());
-    }
-
-    #[test]
-    fn decode_text_bytes_supports_utf16_le_bom() {
-        let bytes = [0xFF, 0xFE, b'P', 0x00, b'e', 0x00, b'r', 0x00, b'l', 0x00];
-        assert_eq!(decode_text_bytes(&bytes), "Perl");
-    }
-
-    #[test]
-    fn decode_text_bytes_falls_back_to_latin1() {
-        let bytes = [0x63, 0x61, 0x66, 0xE9];
-        assert_eq!(decode_text_bytes(&bytes), "café");
-    }
-
-    /// Regression: UTF-16 LE BOM followed by an odd number of payload bytes
-    /// must not panic or silently truncate the trailing byte.
-    #[test]
-    fn decode_text_bytes_handles_odd_length_utf16_le() {
-        // BOM (2 bytes) + 3 payload bytes = odd-length UTF-16 payload.
-        let bytes = [0xFF, 0xFE, 0x6D, 0x00, 0x79];
-        let decoded = decode_text_bytes(&bytes);
-        // Must return something (not panic); falls back to latin-1 of
-        // the full original bytes so the caller still sees the content.
-        assert!(!decoded.is_empty());
-    }
-
-    /// Regression: UTF-16 BE BOM followed by an odd number of payload bytes
-    /// must not panic or silently truncate the trailing byte.
-    #[test]
-    fn decode_text_bytes_handles_odd_length_utf16_be() {
-        let bytes = [0xFE, 0xFF, 0x00, 0x6D, 0x00];
-        let decoded = decode_text_bytes(&bytes);
-        assert!(!decoded.is_empty());
     }
 
     #[test]
@@ -861,37 +828,5 @@ mod tests {
         let text = "Résumé: *important*";
         let escaped = escape_markdown_text(text);
         assert_eq!(escaped, r"Résumé: \*important\*");
-    }
-
-    #[test]
-    fn read_text_file_with_encoding_handles_latin1_corpus_fixture()
-    -> Result<(), Box<dyn std::error::Error>> {
-        // test_corpus/legacy_encoding.pl is a genuinely non-UTF8 Latin-1
-        // encoded file (single-byte 0xE9/0xE0, NOT the 2-byte UTF-8 sequences
-        // for é/à) — it must fail `str::from_utf8` and exercise the per-byte
-        // Latin-1 fallback branch in `decode_text_bytes`, not the UTF-8 fast
-        // path. The LSP must be able to open and parse such files without
-        // crashing.
-        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../test_corpus/legacy_encoding.pl");
-        if !fixture.exists() {
-            return Ok(()); // fixture may not be present in all build environments
-        }
-        let raw = std::fs::read(&fixture)?;
-        assert!(
-            std::str::from_utf8(&raw).is_err(),
-            "fixture must be genuinely invalid UTF-8 so this test exercises the \
-             Latin-1 fallback path, not the UTF-8 fast path"
-        );
-        let content = super::read_text_file_with_encoding(&fixture)?;
-        assert!(
-            content.contains("package Encoding::Legacy"),
-            "Latin-1 file must parse the ASCII portions correctly"
-        );
-        assert!(
-            content.contains("caf\u{E9}"),
-            "Latin-1 byte 0xE9 must round-trip as Unicode U+00E9 (é)"
-        );
-        Ok(())
     }
 }

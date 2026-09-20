@@ -10,11 +10,44 @@ import { jest } from '@jest/globals';
 
 export const Uri = {
   parse: (value: string) => ({ toString: () => value, fsPath: value }),
-  file: (path: string) => ({ toString: () => `file://${path}`, fsPath: path }),
+  file: (path: string) => ({ toString: () => `file://${path}`, fsPath: path, scheme: 'file' }),
 };
 
 export class ThemeColor {
   constructor(public id: string) {}
+}
+
+export class Position {
+  constructor(
+    public readonly line: number,
+    public readonly character: number,
+  ) {}
+}
+
+export class Location {
+  constructor(
+    public readonly uri: unknown,
+    public readonly range: unknown,
+  ) {}
+}
+
+/**
+ * Records the insertions staged on it.
+ *
+ * `workspace.applyEdit` is a stub that reports success without inspecting its
+ * argument, so the edit object is the only place a test can observe which URIs
+ * a code path actually decided to write to.
+ */
+export class WorkspaceEdit {
+  public readonly inserts: Array<{
+    uri: { fsPath: string };
+    position: Position;
+    newText: string;
+  }> = [];
+
+  insert(uri: { fsPath: string }, position: Position, newText: string): void {
+    this.inserts.push({ uri, position, newText });
+  }
 }
 
 export enum StatusBarAlignment {
@@ -158,13 +191,41 @@ const _commands = new Map<string, CommandCallback>();
 export const commands = {
   registerCommand: jest.fn((command: string, callback: CommandCallback) => {
     _commands.set(command, callback);
-    return { dispose: jest.fn() };
+    return {
+      // Real extension-host semantics: disposing a registration unregisters the
+      // command, so a later executeCommand cannot reach a disposed callback.
+      // The identity guard keeps a stale disposable from unregistering a newer
+      // registration of the same command (for example after a retry).
+      dispose: jest.fn(() => {
+        if (_commands.get(command) === callback) {
+          _commands.delete(command);
+        }
+      }),
+    };
   }),
   executeCommand: jest.fn(async (command: string, ...args: unknown[]) => {
     const handler = _commands.get(command);
     if (handler) return handler(...args);
   }),
 };
+
+/**
+ * Test-only view of the mocked command registry: the commands a disposed
+ * extension registration can no longer reach (#7855).
+ */
+export function _registeredCommandsForTest(): string[] {
+  return [..._commands.keys()];
+}
+
+/**
+ * Test-only identity view of the mocked command registry: which exact
+ * callback the host would currently dispatch for each command. Lets a test
+ * prove a retry REPLACED a stale registration instead of merely re-registering
+ * alongside it (#7855).
+ */
+export function _registeredCommandEntriesForTest(): Map<string, CommandCallback> {
+  return new Map(_commands);
+}
 
 function createMockOutputChannel() {
   const appendLine = jest.fn();
@@ -199,10 +260,25 @@ export const window = {
   showTextDocument: jest.fn(async () => undefined),
   withProgress: jest.fn(async (_options: unknown, task: ProgressTask) => {
     const progress = { report: jest.fn() };
-    const token = { isCancellationRequested: false };
+    // A real progress token also exposes onCancellationRequested; code under
+    // test may subscribe to it for the duration of the operation.
+    const token = {
+      isCancellationRequested: false,
+      onCancellationRequested: jest.fn(() => ({ dispose: jest.fn() })),
+    };
     return task(progress, token);
   }),
   activeTextEditor: undefined as { document: unknown } | undefined,
+  createWebviewPanel: jest.fn(() => ({
+    reveal: jest.fn(),
+    dispose: jest.fn(),
+    onDidDispose: jest.fn(() => ({ dispose: jest.fn() })),
+    title: '',
+    webview: { html: '' },
+  })),
+  // Server-demand deferral (#8180) arms this listener so a Perl document
+  // restored with the window still starts the language server.
+  onDidChangeActiveTextEditor: jest.fn(() => ({ dispose: jest.fn() })),
 };
 
 export const workspace = {
@@ -213,9 +289,9 @@ export const workspace = {
     update: jest.fn(),
   })),
   createFileSystemWatcher: jest.fn(() => ({
-    onDidCreate: jest.fn(),
-    onDidChange: jest.fn(),
-    onDidDelete: jest.fn(),
+    onDidCreate: jest.fn(() => ({ dispose: jest.fn() })),
+    onDidChange: jest.fn(() => ({ dispose: jest.fn() })),
+    onDidDelete: jest.fn(() => ({ dispose: jest.fn() })),
     dispose: jest.fn(),
   })),
   onDidOpenTextDocument: jest.fn(() => ({ dispose: jest.fn() })),
@@ -230,6 +306,7 @@ export const workspace = {
   ),
   asRelativePath: jest.fn((uri: { fsPath: string }) => uri.fsPath),
   textDocuments: [],
+  decode: jest.fn(async (content: Uint8Array) => Buffer.from(content).toString('utf8')),
   findFiles: jest.fn(async () => []),
   openTextDocument: jest.fn(async (value: string | { fsPath: string }) => ({
     uri: typeof value === 'string' ? { fsPath: value } : value,
@@ -305,6 +382,12 @@ export class DebugAdapterExecutable {
 export const env = {
   clipboard: { writeText: jest.fn() },
   openExternal: jest.fn(),
+  /**
+   * Extension-host session identity for the managed host-reference wiring
+   * (#10083). Tests that simulate a second window can overwrite it before
+   * exercising reference persistence.
+   */
+  sessionId: 'mock-extension-host-session',
 };
 
 export const extensions = {
@@ -317,6 +400,13 @@ export class Disposable {
   dispose() {
     this.callOnDispose();
   }
+}
+
+export class RelativePattern {
+  constructor(
+    public base: unknown,
+    public pattern: string,
+  ) {}
 }
 
 export class EventEmitter {
@@ -338,6 +428,14 @@ export enum ConfigurationTarget {
   WorkspaceFolder = 3,
 }
 
+export const ViewColumn = {
+  Active: -1,
+  Beside: -2,
+  One: 1,
+  Two: 2,
+  Three: 3,
+};
+
 export const languages = {
   onDidChangeDiagnostics: jest.fn(() => ({ dispose: jest.fn() })),
   getDiagnostics: jest.fn(() => [] as Array<[unknown, unknown[]]>),
@@ -345,4 +443,5 @@ export const languages = {
   registerFoldingRangeProvider: jest.fn(() => ({ dispose: jest.fn() })),
   registerCodeActionsProvider: jest.fn(() => ({ dispose: jest.fn() })),
   registerDefinitionProvider: jest.fn(() => ({ dispose: jest.fn() })),
+  setLanguageConfiguration: jest.fn(() => ({ dispose: jest.fn() })),
 };

@@ -1,0 +1,22 @@
+# Canonical manual Helix registration for perllsp.
+#
+# This deliberately narrows Helix's combined `perl` entry to reviewed Perl 5
+# file families so Raku/NQP/P6 files do not launch the Perl 5 server.
+
+[language-server.perllsp]
+command = "perllsp"
+args = ["--stdio"]
+
+[[language]]
+name = "perl"
+language-servers = ["perllsp"]
+roots = [".perl-lsp.toml", "Makefile.PL", "Build.PL", "cpanfile", "dist.ini"]
+file-types = [
+  "pl",
+  "pm",
+  "t",
+  "psgi",
+  { glob = "latexmkrc" },
+  { glob = ".latexmkrc" },
+]
+shebangs = ["perl"]

@@ -1,0 +1,85 @@
+schema = 1
+
+[[lint]]
+name = "clippy::format_in_format_args"
+level = "deny"
+status = "tracked"
+class = "reviewability"
+reason = "Nested formatting obscures review and allocation behavior."
+
+[[lint]]
+name = "clippy::to_string_in_format_args"
+level = "deny"
+status = "tracked"
+class = "reviewability"
+reason = "Formatting should avoid unnecessary string allocation."
+
+[[lint]]
+name = "clippy::unused_format_specs"
+level = "deny"
+status = "tracked"
+class = "reviewability"
+reason = "Unused format specs hide formatting mistakes."
+
+[[lint]]
+name = "clippy::unnecessary_debug_formatting"
+level = "warn"
+status = "tracked"
+class = "reviewability"
+reason = "Path and OS-string formatting should use display when possible."
+
+[[lint]]
+name = "clippy::uninlined_format_args"
+level = "warn"
+status = "tracked"
+class = "reviewability"
+reason = "Inline format arguments improve reviewability."
+
+[[lint]]
+name = "clippy::manual_let_else"
+level = "warn"
+status = "tracked"
+class = "reviewability"
+reason = "let-else clarifies early-return control flow."
+
+[[lint]]
+name = "clippy::manual_ok_or"
+level = "warn"
+status = "tracked"
+class = "reviewability"
+reason = "Use standard Option-to-Result conversion helpers."
+
+[[lint]]
+name = "clippy::manual_strip"
+level = "warn"
+status = "tracked"
+class = "reviewability"
+reason = "Prefix and suffix stripping should use standard checked helpers."
+
+[[lint]]
+name = "clippy::manual_split_once"
+level = "warn"
+status = "tracked"
+class = "reviewability"
+reason = "Use split_once when parsing two-part strings."
+
+[[lint]]
+name = "clippy::manual_is_variant_and"
+level = "warn"
+status = "tracked"
+class = "reviewability"
+reason = "Use is_some_and or is_ok_and to encode variant predicates."
+
+[[lint]]
+name = "clippy::filter_map_next"
+level = "warn"
+status = "tracked"
+class = "reviewability"
+reason = "Use find_map for first-success searches."
+
+[[lint]]
+name = "clippy::flat_map_option"
+level = "warn"
+status = "tracked"
+class = "reviewability"
+reason = "Use filter_map when flattening Options from iterators."

@@ -1,4 +1,5 @@
 use crate::types::Variable;
+use crate::value::PerlValue;
 use std::collections::HashMap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -9,11 +10,38 @@ pub(super) enum VariableCacheKind {
     EvaluateResult,
 }
 
+/// One retained cache row: the policy-neutral (decimal) protocol row plus the
+/// typed value captured at acquisition time, when one exists (#9588).
+///
+/// The display `value` in `row` is always the default rendering; a request's
+/// DAP `ValueFormat` is projected from `typed` at response time only, so
+/// formatting can never leak into the cache or change row identity. Rows
+/// without typed facts (frame arguments, fallback placeholders, opaque
+/// evaluate results) project to their cached display unchanged under any
+/// format.
+#[derive(Debug, Clone)]
+pub(super) struct CachedVariable {
+    pub(super) row: Variable,
+    pub(super) typed: Option<PerlValue>,
+}
+
+impl CachedVariable {
+    /// Wraps an untyped row (no typed numeric authority retained).
+    pub(super) fn untyped(row: Variable) -> Self {
+        Self { row, typed: None }
+    }
+
+    /// Wraps a row with its typed value.
+    pub(super) fn typed(row: Variable, typed: PerlValue) -> Self {
+        Self { row, typed: Some(typed) }
+    }
+}
+
 #[derive(Debug, Clone)]
 struct VariableCacheEntry {
     kind: VariableCacheKind,
-    full: Vec<Variable>,
-    page_slices: HashMap<(usize, usize), Vec<Variable>>,
+    full: Vec<CachedVariable>,
+    page_slices: HashMap<(usize, usize), Vec<CachedVariable>>,
 }
 
 #[derive(Debug, Default)]
@@ -30,7 +58,7 @@ impl VariableCache {
         &mut self,
         reference: i32,
         kind: VariableCacheKind,
-        variables: Vec<Variable>,
+        variables: Vec<CachedVariable>,
     ) {
         let _ = self.entries.insert(
             reference,
@@ -43,7 +71,7 @@ impl VariableCache {
         reference: i32,
         start: usize,
         count: usize,
-    ) -> Option<Vec<Variable>> {
+    ) -> Option<Vec<CachedVariable>> {
         let entry = self.entries.get_mut(&reference)?;
         let key = (start, count);
         if let Some(cached) = entry.page_slices.get(&key) {
@@ -72,11 +100,15 @@ impl VariableCache {
                     .values()
                     .filter(|entry| entry.kind == VariableCacheKind::EvaluateResult),
             )
-            .flat_map(|entry| entry.full.iter())
+            .flat_map(|entry| entry.full.iter().map(|cached| &cached.row))
     }
 }
 
-pub(super) fn slice_variables(variables: &[Variable], start: usize, count: usize) -> Vec<Variable> {
+pub(super) fn slice_variables(
+    variables: &[CachedVariable],
+    start: usize,
+    count: usize,
+) -> Vec<CachedVariable> {
     variables.iter().skip(start).take(count).cloned().collect()
 }
 
@@ -84,8 +116,8 @@ pub(super) fn slice_variables(variables: &[Variable], start: usize, count: usize
 mod tests {
     use super::*;
 
-    fn make_variable(name: &str) -> Variable {
-        Variable {
+    fn make_variable(name: &str) -> CachedVariable {
+        CachedVariable::untyped(Variable {
             name: name.to_string(),
             value: "test".to_string(),
             type_: None,
@@ -93,7 +125,7 @@ mod tests {
             named_variables: None,
             indexed_variables: None,
             evaluate_name: None,
-        }
+        })
     }
 
     /// all_variables() includes EvaluateResult-kind entries.

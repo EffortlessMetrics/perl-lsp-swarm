@@ -1,0 +1,394 @@
+{
+  "schema_version": 1,
+  "dependencies": [
+    {
+      "name": "anyhow",
+      "classification": "incremental_parser",
+      "disposition": "review",
+      "owner": "#6701",
+      "target_owner": "#6975",
+      "contexts": [
+        "normal"
+      ],
+      "optional": true,
+      "exit_condition": "Replace broad errors with parser-owned types where the canonical incremental API crosses public boundaries.",
+      "pending": {
+        "reason": "The canonical incremental API is still converging, so the parser-owned error and index surface cannot be settled from PF01.",
+        "resolves_when": "#6975 lands the canonical incremental contract."
+      }
+    },
+    {
+      "name": "criterion",
+      "classification": "test_dev_only",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "contexts": [
+        "dev"
+      ],
+      "optional": false,
+      "exit_condition": "Remain a benchmark-only dependency without entering the facade's production graph."
+    },
+    {
+      "name": "insta",
+      "classification": "test_dev_only",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "contexts": [
+        "dev"
+      ],
+      "optional": false,
+      "exit_condition": "Remain a snapshot-assertion dependency confined to parser test targets."
+    },
+    {
+      "name": "lsp-types",
+      "classification": "workspace_or_lsp_adapter",
+      "disposition": "move",
+      "owner": "#2477",
+      "target_owner": "#7063",
+      "contexts": [
+        "normal"
+      ],
+      "optional": true,
+      "exit_condition": "Remove from the minimal parser dependency graph; retain only in bounded compatibility adapters."
+    },
+    {
+      "name": "perl-ast",
+      "classification": "compatibility_reexport",
+      "disposition": "review",
+      "owner": "#2477",
+      "target_owner": "#7063",
+      "contexts": [
+        "normal"
+      ],
+      "optional": false,
+      "exit_condition": "Retain only where the facade requires the v2 compatibility surface; otherwise consume parser-core AST authority.",
+      "pending": {
+        "reason": "PF01 is inventory-only and cannot change the facade boundary; the staged compatibility decision belongs to the #7063 migration leaves.",
+        "resolves_when": "A #7063 migration leaf lands the recorded exit condition for this row."
+      }
+    },
+    {
+      "name": "perl-corpus",
+      "classification": "test_dev_only",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "contexts": [
+        "dev"
+      ],
+      "optional": false,
+      "exit_condition": "Remain a corpus fixture dependency that does not grant the facade corpus authority."
+    },
+    {
+      "name": "perl-lexer",
+      "classification": "parser_kernel",
+      "disposition": "retain",
+      "owner": "#6698",
+      "target_owner": "perl-parser-core",
+      "contexts": [
+        "normal"
+      ],
+      "optional": false,
+      "exit_condition": "Remain below the facade as the canonical lexer dependency."
+    },
+    {
+      "name": "perl-line-index",
+      "classification": "incremental_parser",
+      "disposition": "retain",
+      "owner": "#6701",
+      "target_owner": "#6975",
+      "contexts": [
+        "normal"
+      ],
+      "optional": true,
+      "exit_condition": "Remain optional and reachable only through the canonical incremental feature."
+    },
+    {
+      "name": "perl-lsp-rs-core",
+      "classification": "product_composition",
+      "disposition": "review",
+      "owner": "#11373",
+      "target_owner": "#9875",
+      "contexts": [
+        "dev"
+      ],
+      "optional": false,
+      "exit_condition": "Break the facade test-surface dependency on the LSP product crate or record it as an accepted bounded cycle owned by the parser LSP inventory.",
+      "pending": {
+        "reason": "perl-parser test-depends on the perl-lsp-rs-core product crate while that crate depends on perl-parser, so the facade's own test surface closes an LSP/provider dependency cycle that the parser LSP inventory owns.",
+        "resolves_when": "#9875 inventories the parser LSP/provider edges and names this cycle's owner."
+      }
+    },
+    {
+      "name": "perl-module",
+      "classification": "product_composition",
+      "disposition": "move",
+      "owner": "#2477",
+      "target_owner": "#7063",
+      "contexts": [
+        "normal"
+      ],
+      "optional": false,
+      "exit_condition": "Move module/project composition above the parser contract unless a parser-owned type is proven necessary."
+    },
+    {
+      "name": "perl-parser-core",
+      "classification": "parser_kernel",
+      "disposition": "retain",
+      "owner": "#6698",
+      "target_owner": "perl-parser-core",
+      "contexts": [
+        "normal"
+      ],
+      "optional": false,
+      "exit_condition": "Remain the canonical parser kernel beneath the facade."
+    },
+    {
+      "name": "perl-semantic-analyzer",
+      "classification": "product_composition",
+      "disposition": "move",
+      "owner": "#2477",
+      "target_owner": "#7063",
+      "contexts": [
+        "normal"
+      ],
+      "optional": false,
+      "exit_condition": "Remove from the minimal parser attachment point and compose explicitly above parser output."
+    },
+    {
+      "name": "perl-source-identity",
+      "classification": "parser_output_contract",
+      "disposition": "retain",
+      "owner": "#7001",
+      "target_owner": "perl-parser",
+      "contexts": [
+        "normal"
+      ],
+      "optional": false,
+      "exit_condition": "Remain the canonical source_identity.v1 content identity consumed by the generation-bound ParseSnapshot (#7652)."
+    },
+    {
+      "name": "perl-tdd-support",
+      "classification": "product_composition",
+      "disposition": "move",
+      "owner": "#2477",
+      "target_owner": "#7063",
+      "contexts": [
+        "normal"
+      ],
+      "optional": false,
+      "exit_condition": "Move TDD product composition out of the minimal parser dependency set."
+    },
+    {
+      "name": "perl-test-generators",
+      "classification": "test_dev_only",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "contexts": [
+        "dev"
+      ],
+      "optional": false,
+      "exit_condition": "Remain a test-generation dependency that does not grant the facade TDD output authority."
+    },
+    {
+      "name": "perl-uri",
+      "classification": "test_dev_only",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "contexts": [
+        "dev"
+      ],
+      "optional": false,
+      "exit_condition": "Remain a URI helper used only by parser test targets."
+    },
+    {
+      "name": "perl-workspace",
+      "classification": "workspace_or_lsp_adapter",
+      "disposition": "move",
+      "owner": "#2477",
+      "target_owner": "#7063",
+      "contexts": [
+        "normal"
+      ],
+      "optional": false,
+      "exit_condition": "Remove from the minimal parser attachment point and compose explicitly above parser output."
+    },
+    {
+      "name": "proptest",
+      "classification": "test_dev_only",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "contexts": [
+        "dev"
+      ],
+      "optional": false,
+      "exit_condition": "Remain a property-testing dependency confined to parser test targets."
+    },
+    {
+      "name": "regex",
+      "classification": "product_composition",
+      "disposition": "review",
+      "owner": "#2477",
+      "target_owner": "#7063",
+      "contexts": [
+        "dev",
+        "normal"
+      ],
+      "optional": false,
+      "exit_condition": "Move product helpers out or document the exact parser-owned use.",
+      "pending": {
+        "reason": "PF01 is inventory-only and cannot change the facade boundary; the staged compatibility decision belongs to the #7063 migration leaves.",
+        "resolves_when": "A #7063 migration leaf lands the recorded exit condition for this row."
+      }
+    },
+    {
+      "name": "ropey",
+      "classification": "parser_output_contract",
+      "disposition": "review",
+      "owner": "#2477",
+      "target_owner": "#7063",
+      "contexts": [
+        "normal"
+      ],
+      "optional": false,
+      "exit_condition": "Retain only if canonical parser/edit contracts require it; otherwise move to document adapters.",
+      "pending": {
+        "reason": "PF01 is inventory-only and cannot change the facade boundary; the staged compatibility decision belongs to the #7063 migration leaves.",
+        "resolves_when": "A #7063 migration leaf lands the recorded exit condition for this row."
+      }
+    },
+    {
+      "name": "rstest",
+      "classification": "test_dev_only",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "contexts": [
+        "dev"
+      ],
+      "optional": false,
+      "exit_condition": "Remain a test-parameterization dependency confined to parser test targets."
+    },
+    {
+      "name": "rustc-hash",
+      "classification": "parser_kernel",
+      "disposition": "retain",
+      "owner": "#2477",
+      "target_owner": "perl-parser",
+      "contexts": [
+        "normal"
+      ],
+      "optional": false,
+      "exit_condition": "Retain as an implementation dependency while deterministic public ordering remains explicit."
+    },
+    {
+      "name": "serde",
+      "classification": "parser_output_contract",
+      "disposition": "retain",
+      "owner": "#2477",
+      "target_owner": "perl-parser",
+      "contexts": [
+        "normal"
+      ],
+      "optional": false,
+      "exit_condition": "Retain only for parser-owned serialized contracts."
+    },
+    {
+      "name": "serde_json",
+      "classification": "compatibility_reexport",
+      "disposition": "review",
+      "owner": "#2477",
+      "target_owner": "#7063",
+      "contexts": [
+        "normal"
+      ],
+      "optional": false,
+      "exit_condition": "Keep only where parser-owned public contracts require JSON rather than product adapters.",
+      "pending": {
+        "reason": "PF01 is inventory-only and cannot change the facade boundary; the staged compatibility decision belongs to the #7063 migration leaves.",
+        "resolves_when": "A #7063 migration leaf lands the recorded exit condition for this row."
+      }
+    },
+    {
+      "name": "serial_test",
+      "classification": "test_dev_only",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "contexts": [
+        "dev"
+      ],
+      "optional": false,
+      "exit_condition": "Remain a test-serialization dependency confined to parser test targets."
+    },
+    {
+      "name": "static_assertions",
+      "classification": "test_dev_only",
+      "disposition": "retain",
+      "owner": "#13774",
+      "target_owner": "perl-parser",
+      "contexts": [
+        "dev"
+      ],
+      "optional": false,
+      "exit_condition": "Remain a compile-time trait-bound assertion macro confined to parser test targets."
+    },
+    {
+      "name": "tempfile",
+      "classification": "test_dev_only",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "contexts": [
+        "dev"
+      ],
+      "optional": false,
+      "exit_condition": "Remain a temporary-filesystem dependency confined to parser test targets."
+    },
+    {
+      "name": "thiserror",
+      "classification": "parser_output_contract",
+      "disposition": "retain",
+      "owner": "#2477",
+      "target_owner": "perl-parser",
+      "contexts": [
+        "normal"
+      ],
+      "optional": false,
+      "exit_condition": "Retain for parser-owned typed errors."
+    },
+    {
+      "name": "tracing",
+      "classification": "incremental_parser",
+      "disposition": "review",
+      "owner": "#6701",
+      "target_owner": "#6975",
+      "contexts": [
+        "normal"
+      ],
+      "optional": true,
+      "exit_condition": "Remain optional and avoid making instrumentation part of parser result semantics.",
+      "pending": {
+        "reason": "The canonical incremental API is still converging, so the parser-owned error and index surface cannot be settled from PF01.",
+        "resolves_when": "#6975 lands the canonical incremental contract."
+      }
+    },
+    {
+      "name": "url",
+      "classification": "workspace_or_lsp_adapter",
+      "disposition": "move",
+      "owner": "#2477",
+      "target_owner": "#7063",
+      "contexts": [
+        "normal"
+      ],
+      "optional": false,
+      "exit_condition": "Keep URI policy above the parser source identity unless a parser-owned use is proven."
+    }
+  ]
+}

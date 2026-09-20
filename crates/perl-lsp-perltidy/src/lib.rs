@@ -11,6 +11,7 @@
 #![cfg_attr(test, allow(clippy::panic, clippy::unwrap_used, clippy::expect_used))]
 #![warn(rust_2018_idioms)]
 #![warn(missing_docs)]
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
 use perl_subprocess_runtime::SubprocessRuntime;
 use serde::{Deserialize, Serialize};
@@ -21,9 +22,12 @@ use std::sync::Arc;
 pub mod native;
 
 pub use native::{
-    BracePlacement, ElsePlacement, FinalNewline, FormatConfig, FormatDiagnostic,
-    FormatDiagnosticSeverity, FormatDoc, FormatResult, FormatterMode, KeywordSpacing,
-    NativeFormatter, PerlFormatter, TextEdit, TextPosition, TextRange, TrailingComma,
+    BracePlacement, COUNTER_CLOCK_TAG, COUNTER_SCHEMA_V1, ElsePlacement, FinalNewline,
+    FormatConfig, FormatDiagnostic, FormatDiagnosticSeverity, FormatDoc, FormatResult,
+    FormatterMode, KeywordSpacing, MAX_REPLACEMENT_BYTES_PER_SOURCE_BYTE_V1, NativeFormatter,
+    NativePipelineCounters, PerlFormatter, PipelineCollectorScope, SCALING_ABSOLUTE_SLACK_V1,
+    SCALING_RATIO_BOUND_V1, TextEdit, TextPosition, TextRange, TrailingComma,
+    exceeds_replacement_envelope_v1,
 };
 
 /// Configuration for perltidy.
@@ -228,8 +232,8 @@ impl PerlTidyFormatter {
     #[must_use]
     pub fn with_os_runtime(config: PerlTidyConfig) -> Self {
         use perl_subprocess_runtime::OsSubprocessRuntime;
-        // OsSubprocessRuntime::with_timeout panics on zero; clamp to 1s so
-        // misconfigured clients do not crash the language server process.
+        // OsSubprocessRuntime::with_timeout normalizes zero to 1s; clamp here
+        // as well so the formatter's floor is explicit at its own seam.
         let timeout = config.timeout_secs.max(1);
         Self::new(config, Arc::new(OsSubprocessRuntime::with_timeout(timeout)))
     }
@@ -456,10 +460,10 @@ fn apply_delimiter_events_with_state(
     for delimiter in significant_delimiters_with_state(line, state) {
         match delimiter {
             opening @ ('{' | '(' | '[') => delimiter_stack.push(opening),
-            closer @ ('}' | ')' | ']') => {
-                if delimiter_stack.last().copied().and_then(matching_closer) == Some(closer) {
-                    delimiter_stack.pop();
-                }
+            closer @ ('}' | ')' | ']')
+                if delimiter_stack.last().copied().and_then(matching_closer) == Some(closer) =>
+            {
+                delimiter_stack.pop();
             }
             _ => {}
         }

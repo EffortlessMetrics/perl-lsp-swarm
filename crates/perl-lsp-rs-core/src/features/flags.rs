@@ -33,7 +33,18 @@ pub struct AdvertisedFeatures {
     /// Full document formatting with perltidy integration
     pub formatting: bool,
     /// Range-specific formatting for selected code sections
+    ///
+    /// Withdrawn from every profile (#11955) until #9317 (single range) and
+    /// #7089 (multi-range) land their exact geometry and outcome contracts.
+    /// Must stay aligned with the `lsp.range_formatting` /
+    /// `lsp.ranges_formatting` catalog rows.
     pub range_formatting: bool,
+    /// On-type formatting advertisement bit
+    ///
+    /// Withdrawn from every profile (#11955) until #9320 lands the proven
+    /// on-type route. Kept as an explicit projection field so runtime gating
+    /// never infers on-type availability from whole-document formatting.
+    pub on_type_formatting: bool,
     /// Symbol renaming with workspace-wide updates
     pub rename: bool,
     /// Code folding for improved Perl script navigation
@@ -131,8 +142,6 @@ pub struct BuildFlags {
     pub moniker: bool,
     /// Document color provider compilation flag for color swatches in strings and comments
     pub document_color: bool,
-    /// Source organize imports capability (GA-lock excludes this)
-    pub source_organize_imports: bool,
     /// Document formatting provider compilation flag
     pub formatting: bool,
     /// Range formatting provider compilation flag
@@ -161,6 +170,7 @@ impl BuildFlags {
             code_lens: self.code_lens,
             formatting: self.formatting,
             range_formatting: self.range_formatting,
+            on_type_formatting: self.on_type_formatting,
             rename: self.rename,
             folding_range: self.folding_range,
             selection_range: self.selection_ranges,
@@ -292,7 +302,16 @@ impl BuildFlags {
         ids
     }
 
-    /// Default production-ready capabilities.
+    /// Default supported public-beta capabilities.
+    ///
+    /// Keep this as an explicit baseline rather than deriving it from [`Self::all`].
+    /// A newly added preview flag therefore cannot silently enter production.
+    ///
+    /// Secondary formatting routes (`range_formatting`, `on_type_formatting`)
+    /// are withdrawn here (#11955): their exact geometry, currentness, and
+    /// outcome policy are not proven. Restoration is owned by #9317 (single
+    /// range), #7089 (multi-range), and #9320 (on-type); until then no
+    /// profile may re-advertise or re-arm them.
     pub fn production() -> Self {
         Self {
             completion: true,
@@ -312,20 +331,19 @@ impl BuildFlags {
             rename: true,
             document_links: true,
             selection_ranges: true,
-            on_type_formatting: true,
+            on_type_formatting: false,
             code_lens: true,
             call_hierarchy: true,
             type_hierarchy: true,
             linked_editing: true,
             inline_completion: true,
             inline_values: true,
-            notebook_document_sync: true,
-            notebook_cell_execution: true,
+            notebook_document_sync: false,
+            notebook_cell_execution: false,
             moniker: true,
             document_color: true,
-            source_organize_imports: true,
             formatting: true,
-            range_formatting: true,
+            range_formatting: false,
             folding_range: true,
             signature_help: true,
             document_highlight: true,
@@ -333,45 +351,12 @@ impl BuildFlags {
         }
     }
 
-    /// All capabilities for testing.
+    /// All in-tree capabilities, including explicit preview features.
     pub fn all() -> Self {
-        Self {
-            completion: true,
-            hover: true,
-            definition: true,
-            type_definition: true,
-            implementation: true,
-            references: true,
-            document_symbol: true,
-            workspace_symbol: true,
-            inlay_hints: true,
-            pull_diagnostics: true,
-            workspace_symbol_resolve: true,
-            semantic_tokens: true,
-            code_actions: true,
-            execute_command: true,
-            rename: true,
-            document_links: true,
-            selection_ranges: true,
-            on_type_formatting: true,
-            code_lens: true,
-            call_hierarchy: true,
-            type_hierarchy: true,
-            linked_editing: true,
-            inline_completion: true,
-            inline_values: true,
-            notebook_document_sync: true,
-            notebook_cell_execution: true,
-            moniker: true,
-            document_color: true,
-            source_organize_imports: true,
-            formatting: true,
-            range_formatting: true,
-            folding_range: true,
-            signature_help: true,
-            document_highlight: true,
-            declaration: true,
-        }
+        let mut flags = Self::production();
+        flags.notebook_document_sync = true;
+        flags.notebook_cell_execution = true;
+        flags
     }
 
     /// Conservative GA-lock capabilities.
@@ -394,20 +379,19 @@ impl BuildFlags {
             rename: true,
             document_links: true,
             selection_ranges: true,
-            on_type_formatting: true,
+            on_type_formatting: false,
             code_lens: true,
             call_hierarchy: true,
             type_hierarchy: true,
             linked_editing: true,
             inline_completion: true,
             inline_values: false,
-            notebook_document_sync: true,
-            notebook_cell_execution: true,
+            notebook_document_sync: false,
+            notebook_cell_execution: false,
             moniker: true,
             document_color: true,
-            source_organize_imports: true,
             formatting: true,
-            range_formatting: true,
+            range_formatting: false,
             folding_range: true,
             signature_help: true,
             document_highlight: true,
@@ -478,20 +462,19 @@ mod tests {
                 rename: true,
                 document_links: true,
                 selection_ranges: true,
-                on_type_formatting: true,
+                on_type_formatting: false,
                 code_lens: true,
                 call_hierarchy: true,
                 type_hierarchy: true,
                 linked_editing: true,
                 inline_completion: true,
                 inline_values: true,
-                notebook_document_sync: true,
-                notebook_cell_execution: true,
+                notebook_document_sync: false,
+                notebook_cell_execution: false,
                 moniker: true,
                 document_color: true,
-                source_organize_imports: true,
                 formatting: true,
-                range_formatting: true,
+                range_formatting: false,
                 folding_range: true,
                 signature_help: true,
                 document_highlight: true,
@@ -509,7 +492,8 @@ mod tests {
         assert!(ga.hover);
         assert!(ga.definition);
         assert!(ga.formatting, "ga-lock should include formatting");
-        assert!(ga.range_formatting, "ga-lock should include range_formatting");
+        assert!(!ga.range_formatting, "ga-lock must keep withdrawn range_formatting off");
+        assert!(!ga.on_type_formatting, "ga-lock must keep withdrawn on_type_formatting off");
         assert!(!ga.inline_values, "ga-lock should exclude inline_values");
     }
 
@@ -535,7 +519,9 @@ mod tests {
         assert!(all.rename);
         assert!(all.document_links);
         assert!(all.selection_ranges);
-        assert!(all.on_type_formatting);
+        // Withdrawn routes (#11955) stay off even in the preview profile;
+        // restoration is method-local via #9317/#7089/#9320.
+        assert!(!all.on_type_formatting, "withdrawn on_type_formatting stays off");
         assert!(all.code_lens);
         assert!(all.call_hierarchy);
         assert!(all.type_hierarchy);
@@ -546,9 +532,9 @@ mod tests {
         assert!(all.notebook_cell_execution);
         assert!(all.moniker);
         assert!(all.document_color);
-        assert!(all.source_organize_imports);
         assert!(all.formatting);
-        assert!(all.range_formatting);
+        assert!(!all.range_formatting, "withdrawn range_formatting stays off in every profile");
+        assert!(!all.on_type_formatting, "withdrawn on_type_formatting stays off in every profile");
         assert!(all.folding_range);
         assert!(all.signature_help);
         assert!(all.document_highlight);
@@ -662,8 +648,40 @@ mod tests {
         let all = BuildFlags::all();
         assert!(prod.formatting);
         assert!(all.formatting);
-        assert!(prod.range_formatting);
-        assert!(all.range_formatting);
+        assert!(!prod.range_formatting);
+        assert!(!all.range_formatting);
+        assert!(!prod.on_type_formatting);
+        assert!(!all.on_type_formatting);
+    }
+
+    /// Route-withdrawal contract (#11955): no profile may emit feature IDs for
+    /// the withdrawn secondary formatting surfaces, and the advertised
+    /// projection must not promise them either. Restoration owners are
+    /// #9317/#7089/#9320; until they land, this test is the drift guard.
+    #[test]
+    fn secondary_edit_routes_are_withdrawn_from_every_profile_and_projection() {
+        let withdrawn = [
+            crate::features::ids::LSP_RANGE_FORMATTING,
+            crate::features::ids::LSP_RANGES_FORMATTING,
+            crate::features::ids::LSP_ON_TYPE_FORMATTING,
+        ];
+        for profile in [
+            BuildFlags::production(),
+            BuildFlags::ga_lock(),
+            BuildFlags::all(),
+            BuildFlags::default(),
+        ] {
+            let ids = profile.to_feature_ids();
+            for id in withdrawn {
+                assert!(
+                    !ids.contains(&id),
+                    "withdrawn route id {id} must not be emitted by any profile"
+                );
+            }
+            let adv = profile.to_advertised_features();
+            assert!(!adv.range_formatting, "range advertisement must stay off");
+            assert!(!adv.on_type_formatting, "on-type advertisement must stay off");
+        }
     }
 
     #[test]

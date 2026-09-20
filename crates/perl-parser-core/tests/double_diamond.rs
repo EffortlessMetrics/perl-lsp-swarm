@@ -14,8 +14,8 @@ use perl_tdd_support::must;
 fn parse_first_expr(source: &str) -> Result<NodeKind, String> {
     let mut parser = Parser::new(source);
     let ast = must(parser.parse());
-    match ast.kind {
-        NodeKind::Program { ref statements } => {
+    match &ast.kind {
+        NodeKind::Program { statements } => {
             let stmt = statements.first().ok_or_else(|| "no statements".to_string())?;
             match &stmt.kind {
                 NodeKind::ExpressionStatement { expression } => Ok(expression.kind.clone()),

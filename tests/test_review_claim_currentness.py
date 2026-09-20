@@ -242,17 +242,6 @@ Visible context after the comment.
             claim_digest.claim_digest(second)["digest"],
         )
 
-    def test_live_reader_normalizes_null_body_to_empty_text(self) -> None:
-        completed = subprocess.CompletedProcess(
-            args=[], returncode=0, stdout="", stderr=""
-        )
-        with patch.object(claim_digest.subprocess, "run", return_value=completed) as run:
-            body = claim_digest._read_live_pr_body("123", "owner/repo")
-
-        self.assertEqual(body, "")
-        command = run.call_args.args[0]
-        self.assertIn('.body // ""', command)
-
     def test_currentness_checker_matches_trusted_head_and_claim(self) -> None:
         body = self.body()
         completed = self.run_checker(
@@ -261,9 +250,9 @@ Visible context after the comment.
             emit_json=True,
         )
 
-        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(completed.returncode, 3, completed.stderr)
         result = json.loads(completed.stdout)
-        self.assertEqual(result["result"], "current")
+        self.assertEqual(result["result"], "historical_match")
         self.assertEqual(result["trusted_receipts"], 1)
         self.assertEqual(result["untrusted_receipts"], 0)
         self.assertEqual(result["invalid_receipts"], 0)
@@ -348,8 +337,10 @@ Visible context after the comment.
 
     def test_currentness_checker_is_not_applicable_without_review_receipts(self) -> None:
         completed = self.run_checker(self.body(), [], emit_json=True)
-        self.assertEqual(completed.returncode, 0, completed.stderr)
-        self.assertEqual(json.loads(completed.stdout)["result"], "not_applicable")
+        self.assertEqual(completed.returncode, 3, completed.stderr)
+        self.assertEqual(
+            json.loads(completed.stdout)["result"], "historical_not_applicable"
+        )
 
     def test_currentness_checker_rejects_moved_candidate_snapshot(self) -> None:
         completed = self.run_checker(
@@ -449,133 +440,19 @@ Visible context after the comment.
         self.assertEqual(completed.returncode, 2)
         self.assertIn("requires the --comment-id", completed.stderr)
 
-    def test_review_done_updates_exact_returned_comment_id(self) -> None:
+    def test_review_lifecycle_writer_fails_closed(self) -> None:
         bash = shutil.which("bash")
-        jq = shutil.which("jq")
-        if bash is None or jq is None:
-            self.skipTest("bash and jq are required for the review receipt integration test")
+        if bash is None:
+            self.skipTest("bash is required for the retired review command test")
 
-        with tempfile.TemporaryDirectory() as temp:
-            root = Path(temp)
-            fake_bin = root / "bin"
-            fake_bin.mkdir()
-            state = root / "comments.json"
-            state.write_text("[]\n", encoding="utf-8")
-            gh = fake_bin / "gh"
-            gh.write_text(
-                r'''#!/usr/bin/env bash
-set -euo pipefail
-state="${FAKE_GH_STATE:?}"
-if [[ "$1" == "api" && "$2" == "-X" && "$3" == "POST" ]]; then
-  endpoint="$4"; shift 4
-  body=""; jq_filter=""
-  while [[ $# -gt 0 ]]; do
-    case "$1" in
-      --raw-field) body="${2#body=}"; shift 2 ;;
-      --jq) jq_filter="$2"; shift 2 ;;
-      *) shift ;;
-    esac
-  done
-  next_id="$(jq '([.[].id] | max // 100) + 1' "$state")"
-  repo_path="${endpoint%%/issues/*}"
-  rest="${endpoint#*/issues/}"
-  issue_no="${rest%%/*}"
-  tmp="${state}.tmp"
-  jq --argjson id "$next_id" --arg body "$body" --arg issue_url "https://api.github.com/${repo_path}/issues/${issue_no}" \
-    '. + [{id:$id, body:$body, user:{login:"owner"}, author_association:"OWNER", issue_url:$issue_url}]' "$state" > "$tmp"
-  mv "$tmp" "$state"
-  if [[ "$jq_filter" == ".id" ]]; then printf '%s\n' "$next_id"; else jq --argjson id "$next_id" '.[] | select(.id==$id)' "$state"; fi
-  exit 0
-fi
-if [[ "$1" == "api" && "$2" == repos/*/issues/comments/* && $# -eq 2 ]]; then
-  id="${2##*/}"
-  jq --argjson id "$id" '.[] | select(.id==$id)' "$state"
-  exit 0
-fi
-if [[ "$1" == "api" && "$2" == "-X" && "$3" == "PATCH" ]]; then
-  endpoint="$4"; shift 4
-  body=""
-  while [[ $# -gt 0 ]]; do
-    case "$1" in
-      --raw-field) body="${2#body=}"; shift 2 ;;
-      *) shift ;;
-    esac
-  done
-  id="${endpoint##*/}"
-  tmp="${state}.tmp"
-  jq --argjson id "$id" --arg body "$body" 'map(if .id==$id then .body=$body else . end)' "$state" > "$tmp"
-  mv "$tmp" "$state"
-  jq --argjson id "$id" '.[] | select(.id==$id)' "$state"
-  exit 0
-fi
-echo "unexpected fake gh invocation: $*" >&2
-exit 2
-''',
-                encoding="utf-8",
-            )
-            gh.chmod(0o755)
-
-            env = os.environ.copy()
-            env["FAKE_GH_STATE"] = str(state)
-            env["PATH"] = f"{fake_bin}{os.pathsep}{env.get('PATH', '')}"
-            common = [
-                "--pr",
-                "7",
-                "--kind",
-                "standard",
-                "--reviewer",
-                "reviewer",
-                "--repo",
-                "owner/repo",
-                "--head",
-                "abc123",
-                "--claim-digest",
-                "claim123",
-            ]
-
-            started = subprocess.run(
-                [bash, str(REVIEW_RUNNER), "review-start", *common],
-                env=env,
-                check=False,
-                capture_output=True,
-                text=True,
-            )
-            self.assertEqual(started.returncode, 0, started.stderr)
-            prefix = "comment_id="
-            comment_id = started.stdout.split(prefix, maxsplit=1)[1].split()[0]
-            running = json.loads(state.read_text(encoding="utf-8"))
-            self.assertEqual(len(running), 1)
-            self.assertIn('"status":"running"', running[0]["body"])
-            self.assertIn('"comment_id":"101"', running[0]["body"])
-
-            copied_id = int(comment_id) + 1
-            copied = dict(running[0])
-            copied["id"] = copied_id
-            copied["user"] = {"login": "other-owner"}
-            running.append(copied)
-            state.write_text(json.dumps(running), encoding="utf-8")
-
-            completed = subprocess.run(
-                [
-                    bash,
-                    str(REVIEW_RUNNER),
-                    "review-done",
-                    *common,
-                    "--comment-id",
-                    comment_id,
-                ],
-                env=env,
-                check=False,
-                capture_output=True,
-                text=True,
-            )
-            self.assertEqual(completed.returncode, 0, completed.stderr)
-            comments = json.loads(state.read_text(encoding="utf-8"))
-            original = next(item for item in comments if item["id"] == int(comment_id))
-            copied = next(item for item in comments if item["id"] == copied_id)
-            self.assertIn('"status":"done"', original["body"])
-            self.assertNotIn('"status":"running"', original["body"])
-            self.assertIn('"status":"running"', copied["body"])
+        completed = subprocess.run(
+            [bash, str(REVIEW_RUNNER), "review-done", "--dry-run"],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(completed.returncode, 2, completed.stderr)
+        self.assertIn("RETIRED", completed.stderr)
 
 
 if __name__ == "__main__":

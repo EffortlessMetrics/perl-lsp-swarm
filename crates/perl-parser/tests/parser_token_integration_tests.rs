@@ -44,9 +44,16 @@ fn parses_empty_sigil_brace() {
     for expr in ["${}", "@{}", "%{}"] {
         let src = format!("my $x = {};", expr);
         let mut parser = Parser::new(&src);
-        let result = parser.parse();
-        // Parser should handle this gracefully even if semantically invalid
-        assert!(result.is_ok() || result.is_err(), "Parser should not panic on {}", expr);
+        let _ = parser.parse();
+        // Empty sigil+brace is invalid Perl. The parser recovers instead of bailing
+        // out (so `parse()` still returns `Ok`), which means the recorded diagnostics
+        // are the only meaningful signal: the construct must be reported, not silently
+        // accepted.
+        assert!(
+            !parser.errors().is_empty(),
+            "empty sigil+brace {} must be diagnosed, not silently accepted",
+            expr
+        );
     }
 }
 

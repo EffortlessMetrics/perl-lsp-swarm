@@ -60,34 +60,5 @@
     "protocol_crash_count",
     "unexplained_empty_count"
   ],
-  "error_waivers": [
-    {
-      "project": "mojolicious",
-      "journey": "edit_burst_completion",
-      "expected_error_class": "request_superseded",
-      "issue": 4050,
-      "expires_after": "2026-08-11"
-    },
-    {
-      "project": "dancer2",
-      "journey": "edit_burst_completion",
-      "expected_error_class": "request_superseded",
-      "issue": 4050,
-      "expires_after": "2026-08-11"
-    },
-    {
-      "project": "catalyst",
-      "journey": "edit_burst_completion",
-      "expected_error_class": "request_superseded",
-      "issue": 4050,
-      "expires_after": "2026-08-11"
-    },
-    {
-      "project": "plain_modern_oo",
-      "journey": "edit_burst_completion",
-      "expected_error_class": "request_superseded",
-      "issue": 4050,
-      "expires_after": "2026-08-11"
-    }
-  ]
+  "error_waivers": []
 }

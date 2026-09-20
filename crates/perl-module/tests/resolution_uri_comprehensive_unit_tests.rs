@@ -4,7 +4,7 @@
 //! of [`resolve_module_uri`], edge cases (empty inputs, special characters,
 //! path traversal), and timeout behavior.
 
-use perl_module::resolution::uri::{ModuleUriResolution, resolve_module_uri};
+use perl_module::{ModuleUriResolution, resolve_module_uri};
 use perl_tdd_support::{must, must_some};
 use std::path::PathBuf;
 use std::time::Duration;

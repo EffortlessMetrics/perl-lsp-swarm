@@ -1,0 +1,35 @@
+{
+  "schema_version": "semantic_close_containment_fixture.v1",
+  "provenance": {
+    "captured_at": "2026-08-21",
+    "sources": [
+      "https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/10413"
+    ],
+    "subject_shas": [],
+    "boundary": "Immutable bounded structured excerpts; canonical GitHub subjects and exact candidate SHAs are retained. The fixture proves only the CP00 contradiction class."
+  },
+  "repository": "effortlessmetrics/perl-lsp-swarm",
+  "pull_request": {
+    "number": 990005,
+    "title": "fix(parser): reject one malformed delimiter (#9000001)",
+    "body": "## Claim Boundary\n\nThe one malformed-delimiter defect and its negative control are complete.\n\nCloses #9000001."
+  },
+  "issues": [
+    {
+      "repository": "effortlessmetrics/perl-lsp-swarm",
+      "number": 9000001,
+      "title": "fix(parser): reject one malformed delimiter",
+      "body": "## Acceptance\n\nThe named malformed delimiter is rejected and the valid neighboring form still parses."
+    }
+  ],
+  "expected": {
+    "aggregate_code": "PASS_NO_HIGH_CONFIDENCE_CONTRADICTION",
+    "rows": [
+      {
+        "repository": "effortlessmetrics/perl-lsp-swarm",
+        "issue_number": 9000001,
+        "code": "PASS_NO_HIGH_CONFIDENCE_CONTRADICTION"
+      }
+    ]
+  }
+}

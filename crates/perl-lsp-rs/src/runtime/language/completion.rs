@@ -26,7 +26,8 @@ use crate::{
 use perl_lexer::LSP_RUNTIME_COMPLETION_KEYWORDS;
 #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
 use perl_lsp_rs_core::providers::completion::completion_shadow::completion_visibility_shadow;
-use perl_module::resolution::{IncRoot, IncRootKind};
+use perl_lsp_rs_core::providers::dancer2::Dancer2CompletionCandidate;
+use perl_module::{IncRoot, IncRootKind};
 use serde_json::{Value, json};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -71,6 +72,80 @@ static COMPLETION_ANALYSIS_STARTED_OBSERVER: std::sync::Mutex<
 // `COMPLETION_ANALYSIS_STARTED_OBSERVER`, which only `pub(crate)` in-crate test
 // code can reach), so under a plain `expose_lsp_test_api`-only build (no
 // `cfg(test)`) this would otherwise be genuinely unused (clippy::dead_code).
+
+/// Documentation string for one Dancer2 keyword completion item.
+///
+/// Availability is read from the candidate, which phrased it from the position
+/// that offered the keyword. It must not be re-derived from
+/// [`Dancer2CompletionCandidate::scope`]: that discriminant records the
+/// reviewed *contract* scope, and since #13604 `RouteHandlerOnly` is satisfied
+/// by an admitted hook handler as well as a route handler. Matching on it here
+/// said "route handler only" on the very item the canonical request-context
+/// query had just decided to offer *because* the position was a hook,
+/// contradicting the item's own `detail`.
+///
+/// Named rather than inlined so that agreement is testable without standing up
+/// an activated workspace.
+fn dancer2_keyword_documentation(candidate: &Dancer2CompletionCandidate) -> String {
+    format!("Dancer2 DSL keyword ({}); canonical import fact", candidate.availability)
+}
+
+/// Word prefix for the Dancer2 keyword gate (mirrors the core provider's
+/// `word_prefix` shape; kept local to avoid widening the core API).
+fn dancer2_word_prefix(source: &str, position: usize) -> (String, usize) {
+    let bounded = &source[..position.min(source.len())];
+    let start = bounded
+        .char_indices()
+        .rev()
+        .take_while(|(_, character)| character.is_alphanumeric() || *character == '_')
+        .last()
+        .map(|(index, _)| index)
+        .unwrap_or(position);
+    (bounded[start..].to_string(), start)
+}
+
+/// Whether the text before the cursor ends inside a quoted string.
+fn dancer2_line_starts_in_string(before_cursor: &str) -> bool {
+    let mut quote: Option<char> = None;
+    for character in before_cursor.chars() {
+        match quote {
+            Some(open) if character == open => quote = None,
+            Some(_) => {}
+            None if character == '\'' || character == '"' => quote = Some(character),
+            None => {}
+        }
+    }
+    quote.is_some()
+}
+
+/// `(package, name)` pairs of subroutine declarations in the file.
+///
+/// Shadowing is package-scoped: a `sub get` in one package does not own the
+/// name for a Dancer2-activated sibling package.
+pub(crate) fn dancer2_declared_sub_names(
+    node: &perl_parser::ast::Node,
+) -> std::collections::HashSet<(String, String)> {
+    let mut names = std::collections::HashSet::new();
+    fn walk(
+        node: &perl_parser::ast::Node,
+        package: &mut String,
+        names: &mut std::collections::HashSet<(String, String)>,
+    ) {
+        if let perl_parser::ast::NodeKind::Package { name, .. } = &node.kind {
+            *package = name.clone();
+        }
+        if let perl_parser::ast::NodeKind::Subroutine { name: Some(name), .. } = &node.kind {
+            names.insert((package.clone(), name.clone()));
+        }
+        for child in node.children() {
+            walk(child, package, names);
+        }
+    }
+    let mut package = "main".to_string();
+    walk(node, &mut package, &mut names);
+    names
+}
+
 #[cfg(test)]
 pub(crate) fn set_completion_analysis_started_observer(
     uri: &str,
@@ -213,8 +288,45 @@ fn sort_and_cap_completions(
     let mut completions =
         perl_lsp_rs_core::providers::completion_item::deduplicate_and_sort(completions);
     let is_incomplete = completions.len() > cap;
+    if is_incomplete {
+        reserve_fundamental_constructs(&mut completions, cap);
+    }
     completions.truncate(cap);
     (completions, is_incomplete)
+}
+
+/// Guarantee the fundamental control-flow constructs a seat in a truncated
+/// page (#11858). The evidence ranking orders candidates by semantic fit with
+/// the label as a late tiebreaker, so for an empty prefix — where hundreds of
+/// items tie and fall through to alphabetical order — a 100-item page becomes
+/// an arbitrary alphabetical window: file-test operators fill it and every
+/// control-flow keyword sorts past the cut. `is_incomplete` already tells
+/// compliant clients to re-query, but the initial page must still show the
+/// constructs a user is most likely to type next. Each construct label absent
+/// from the page swaps its best-ranked candidate into a tail slot — bounded
+/// to [`FUNDAMENTAL_CONSTRUCT_LABELS`], ordering-preserving otherwise.
+fn reserve_fundamental_constructs(
+    completions: &mut [crate::completion::CompletionItem],
+    cap: usize,
+) {
+    use perl_lsp_rs_core::providers::completion::FUNDAMENTAL_CONSTRUCT_LABELS;
+    // `completionCap` is configurable and may be smaller than the reserve
+    // list — stop at zero tail slots instead of underflowing (#11863 review).
+    let mut tail_slot = cap;
+    for label in FUNDAMENTAL_CONSTRUCT_LABELS {
+        if tail_slot == 0 {
+            break;
+        }
+        if completions[..cap].iter().any(|c| c.label.as_ref() == *label) {
+            continue;
+        }
+        let Some(offset) = completions[cap..].iter().position(|c| c.label.as_ref() == *label)
+        else {
+            continue;
+        };
+        tail_slot -= 1;
+        completions.swap(tail_slot, cap + offset);
+    }
 }
 
 impl LspServer {
@@ -830,6 +942,78 @@ impl LspServer {
         }
     }
 
+    /// Adds canonical Dancer2 keyword completions (#8928).
+    ///
+    /// Offers imported default-DSL keywords from the canonical import facts
+    /// under exact activation only. Ranking keeps ordinary results ahead
+    /// (keyword items carry a trailing sort key), locally declared
+    /// subroutine names win over same-named keywords, and the slice stays
+    /// silent in member-access, string, and `use`/`require` contexts.
+    fn add_dancer2_keyword_completions(
+        &self,
+        completions: &mut Vec<crate::completion::CompletionItem>,
+        uri: &str,
+        text: &str,
+        offset: usize,
+        snapshot: &crate::state::ParsedSnapshot,
+        ast: &perl_parser::ast::Node,
+    ) {
+        use perl_lsp_rs_core::providers::dancer2::keyword_completion_candidates;
+        use std::borrow::Cow;
+
+        // Word prefix gating: keywords are offered only against a non-empty
+        // identifier prefix so an empty prefix page is never swamped.
+        let (prefix, token_start) = dancer2_word_prefix(text, offset);
+        if prefix.is_empty() {
+            return;
+        }
+        // No keywords in member-access position, module-import position, or
+        // string contexts.
+        if Self::is_member_subscript_completion_context(&text[..offset], token_start) {
+            return;
+        }
+        if Self::is_module_import_completion_context(text, offset) {
+            return;
+        }
+        if text[..offset].lines().next_back().is_some_and(dancer2_line_starts_in_string) {
+            return;
+        }
+        let Some((context, package)) =
+            self.dancer2_package_at(uri, text, snapshot.content_hash(), ast, offset)
+        else {
+            return;
+        };
+        let declared = dancer2_declared_sub_names(ast);
+        let candidates = keyword_completion_candidates(
+            &context.activations,
+            &context.facts,
+            &package,
+            offset,
+            &|name| declared.contains(&(package.clone(), name.to_string())),
+        );
+        for candidate in candidates {
+            if !candidate.label.starts_with(prefix.as_str()) {
+                continue;
+            }
+            completions.push(crate::completion::CompletionItem {
+                label: Cow::Owned(candidate.label.clone()),
+                kind: crate::completion::CompletionItemKind::Keyword,
+                detail: Some(Cow::Owned(candidate.detail.clone())),
+                documentation: Some(Cow::Owned(dancer2_keyword_documentation(&candidate))),
+                insert_text: None,
+                insert_text_format: crate::completion::InsertTextFormat::PlainText,
+                // Keywords sort after every ordinary result: the framework
+                // slice must never outrank lexical/workspace candidates.
+                sort_text: Some(Cow::Owned(format!("zzz-dancer2-{}", candidate.label))),
+                filter_text: None,
+                additional_edits: Vec::new(),
+                text_edit_range: None,
+                commit_characters: None,
+                label_details: None,
+            });
+        }
+    }
+
     /// Adds workspace-index completions.
     ///
     /// Takes the request's shared `@INC` context rather than a loose
@@ -856,6 +1040,13 @@ impl LspServer {
                 let index = coordinator.index();
 
                 let text_before = &doc_text[..offset.min(doc_text.len())];
+                // Method context survives once a method name is partially typed:
+                // `$obj->` and `$obj->co` are both method-completion positions,
+                // while `$x->[0]` or plain identifiers are not.
+                let is_method_completion =
+                    text_before.trim_end().rsplit_once("->").is_some_and(|(_, suffix)| {
+                        suffix.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+                    });
                 let prefix = text_before
                     .chars()
                     .rev()
@@ -900,6 +1091,14 @@ impl LspServer {
                     }
                 };
 
+                // URI identity in this repository is `perl_uri::uri_key`, not raw
+                // string equality: a client may spell the open document
+                // `file://localhost/...`, or with different Windows drive-letter
+                // casing, than the form it was indexed under. Comparing raw
+                // strings would classify the document's own variables as
+                // cross-file and needlessly qualify them.
+                let doc_uri_key = self.normalize_uri_key(doc_uri);
+
                 let qualified_variable_symbols =
                     Self::qualified_variable_workspace_symbols(index, &prefix);
                 let replace_prefix_range = (offset.saturating_sub(prefix.len()), offset);
@@ -910,11 +1109,71 @@ impl LspServer {
                 let mut seen: HashSet<String> =
                     completions.iter().map(|completion| completion.label.to_string()).collect();
 
+                // The runtime pass has no receiver facts of its own. When the
+                // core provider already attached receiver evidence to this
+                // response, keep its quiet name-only extras; otherwise label
+                // callable candidates honestly instead of emitting an
+                // unlabelled dynamic-boundary insertion (issue #11158).
+                let receiver_evidence_present = completions.iter().any(|completion| {
+                    completion.detail.as_deref().is_some_and(|detail| detail.contains("receiver:"))
+                });
+
                 for symbol in workspace_symbols {
                     if should_continue.is_some_and(|check| !check()) {
                         return;
                     }
                     if seen.contains(&symbol.name) {
+                        continue;
+                    }
+
+                    // The runtime workspace pass is a name-only fallback. It
+                    // has no import/reachability facts for callable and value
+                    // symbols, so emitting these as bare insertions can leave
+                    // an unimported cross-file reference in the document.
+                    // The core provider owns import-aware, current-file, and
+                    // qualified completions for these kinds; retain only the
+                    // module-name kinds here (issue #11158).
+                    if !is_method_completion
+                        && matches!(
+                            symbol.kind,
+                            crate::workspace_index::SymbolKind::Subroutine
+                                | crate::workspace_index::SymbolKind::Method
+                                | crate::workspace_index::SymbolKind::Constant
+                                | crate::workspace_index::SymbolKind::Export
+                        )
+                    {
+                        continue;
+                    }
+
+                    // Variables were left out of the withdrawal above, so a
+                    // cross-file value symbol still escaped the same way
+                    // (issue #11937). A file-local `my`/`state` variable has no
+                    // package-visible name at all: it is reachable from another
+                    // document under neither a bare nor a qualified spelling, so
+                    // the name-only fallback must withdraw it outright.
+                    // Raw equality first so the common same-spelling case costs
+                    // no normalization; equal raw strings always share a key.
+                    let is_cross_file_variable =
+                        matches!(symbol.kind, crate::workspace_index::SymbolKind::Variable(_))
+                            && symbol.uri.as_str() != doc_uri
+                            && self.normalize_uri_key(&symbol.uri) != doc_uri_key;
+                    if is_cross_file_variable && symbol.is_lexical {
+                        continue;
+                    }
+
+                    // Same-document lexicals are owned by cursor-visibility
+                    // admission (#8941): the core provider paths already emitted
+                    // every cursor-visible same-document variable matching this
+                    // prefix, so anything reaching this fallback was rejected
+                    // before candidate construction (sibling/child/ended scope,
+                    // future declaration). Re-admitting it here would encode an
+                    // invisible lexical as a low-priority workspace candidate,
+                    // which admission forbids at any rank.
+                    let is_same_document_lexical_variable =
+                        matches!(symbol.kind, crate::workspace_index::SymbolKind::Variable(_))
+                            && !is_cross_file_variable
+                            && symbol.is_lexical;
+                    if is_same_document_lexical_variable {
                         continue;
                     }
 
@@ -960,13 +1219,40 @@ impl LspServer {
 
                     let label = symbol.name.clone();
                     let qualified_name = Self::workspace_symbol_qualified_name(&symbol);
-                    let detail = Some(qualified_name.clone());
+                    let detail = if !receiver_evidence_present
+                        && matches!(
+                            symbol.kind,
+                            crate::workspace_index::SymbolKind::Subroutine
+                                | crate::workspace_index::SymbolKind::Method
+                                | crate::workspace_index::SymbolKind::Constant
+                                | crate::workspace_index::SymbolKind::Export
+                        ) {
+                        // Callable kinds only reach this pass through the
+                        // method-completion gate above, which carries no
+                        // receiver evidence; say so on the item.
+                        Some(format!("{qualified_name} — receiver: unknown, low confidence"))
+                    } else {
+                        Some(qualified_name.clone())
+                    };
                     // Invariant: text_edit_range.is_some() ⟺ insert_text is the
                     // fully-qualified name.  The serializer (completion_item_to_lsp_value)
                     // depends on this to locate the newText from `item["insertText"]`.
-                    let (insert_text, text_edit_range) = if qualified_variable_context
-                        && matches!(symbol.kind, crate::workspace_index::SymbolKind::Variable(_))
-                    {
+                    //
+                    // A package variable owned by another document is only
+                    // truthful as a fully qualified insertion: this pass holds
+                    // no import facts, so it cannot know that a bare spelling
+                    // resolves in the current document, and under `use strict`
+                    // an unimported bare insertion is a compile error. Qualified
+                    // access needs no import, so it is correct whether or not
+                    // the defining module is used here (issue #11937).
+                    let insert_variable_qualified =
+                        is_cross_file_variable && symbol.container_name.is_some();
+                    let (insert_text, text_edit_range) = if insert_variable_qualified
+                        || (qualified_variable_context
+                            && matches!(
+                                symbol.kind,
+                                crate::workspace_index::SymbolKind::Variable(_)
+                            )) {
                         (Some(qualified_name), Some(replace_prefix_range))
                     } else {
                         (Some(label.clone()), None)
@@ -1082,7 +1368,7 @@ impl LspServer {
 
     /// Format type information concisely for completion detail
     pub(crate) fn format_type_for_detail(t: &crate::type_inference::PerlType) -> String {
-        use perl_parser::type_inference::PerlType;
+        use perl_semantic_analyzer::analysis::type_inference::PerlType;
         match t {
             PerlType::Scalar(_) => "scalar".to_string(),
             PerlType::Array(_) => "array".to_string(),
@@ -1224,6 +1510,22 @@ impl LspServer {
         item
     }
 
+    fn empty_completion_list() -> Value {
+        json!({"isIncomplete": false, "items": []})
+    }
+
+    fn publish_completion_answer(&self, uri: &str, generation: Option<u32>, value: Value) -> Value {
+        match generation {
+            Some(generation) => self.publish_user_answer_value(
+                uri,
+                generation,
+                value,
+                Self::empty_completion_list(),
+            ),
+            None => Self::empty_completion_list(),
+        }
+    }
+
     /// Handle completion request
     pub(crate) fn handle_completion(
         &self,
@@ -1269,9 +1571,12 @@ impl LspServer {
             // just this one -- for the full analysis duration below.
             let timing_on = crate::runtime::timing::is_enabled();
             let t_lock_start = std::time::Instant::now();
-            let doc_owned = {
+            let (doc_owned, captured_generation) = {
                 let documents = self.documents_guard();
-                self.get_document(&documents, uri).cloned()
+                match self.get_document(&documents, uri) {
+                    Some(doc) => (Some(doc.clone()), Some(doc.current_generation())),
+                    None => (None, None),
+                }
             };
             // documents guard dropped here
             if timing_on {
@@ -1301,18 +1606,26 @@ impl LspServer {
                 // #5411 fixed for goto-definition -- a position the naive
                 // quote-counter classifies as both comment and string would
                 // wrongly skip this guard.
-                if perl_lsp_rs_core::providers::rename::is_in_comment(offset, &doc.text) {
+                if super::navigation::is_in_comment_naive(offset, &doc.text) {
                     break 'completion_response None;
                 }
 
-                let ast_available = doc.current_parsed().is_some_and(|p| p.ast().is_some());
+                // Prefer the generation-current snapshot; fall back to the latest
+                // published one when the current generation has no snapshot yet
+                // (e.g. the workspace indexer bumped the generation before the
+                // completion request arrived, leaving `current_parsed()` empty).
+                // For completions, a slightly-stale AST is always more useful than
+                // the symbol-table-free `lexical_complete` fallback (#11858).
+                // Full-sync desynchronization is not pending parse: predecessor
+                // AST must not answer the user (#8129).
+                let parsed = doc.parsed_for_user_answers();
+                let ast_available = parsed.as_ref().is_some_and(|p| p.ast().is_some());
 
                 // One `@INC` context per request, shared by the module roots
                 // below and the workspace-symbol filter further down (#1684).
                 let inc_context = RequestIncContext::new(self, uri, &doc.text, offset);
 
                 // Get completions, with fallback for missing AST
-                let parsed = doc.current_parsed();
                 #[cfg_attr(not(feature = "workspace"), allow(unused_mut))]
                 let mut completions = if let Some(ast) = parsed.as_ref().and_then(|p| p.ast()) {
                     let (include_paths, system_inc_paths, include_system_inc) =
@@ -1395,18 +1708,22 @@ impl LspServer {
                     }
 
                     base_completions
+                } else if doc.full_sync_required() {
+                    Vec::new()
                 } else {
                     // Fallback: provide basic keyword completions when AST is unavailable
                     self.lexical_complete(&doc.text, offset, Some(uri))
                 };
 
-                self.add_declared_dependency_completions(
-                    &mut completions,
-                    &doc.text,
-                    uri,
-                    offset,
-                    None,
-                );
+                if !doc.full_sync_required() {
+                    self.add_declared_dependency_completions(
+                        &mut completions,
+                        &doc.text,
+                        uri,
+                        offset,
+                        None,
+                    );
+                }
 
                 // Add workspace-wide completions using routing policy
                 #[cfg(feature = "workspace")]
@@ -1507,11 +1824,15 @@ impl LspServer {
                 ));
             }
             if let Some(response) = response {
-                return Ok(Some(response));
+                return Ok(Some(self.publish_completion_answer(
+                    uri,
+                    captured_generation,
+                    response,
+                )));
             }
         }
 
-        Ok(Some(json!({"isIncomplete": false, "items": []})))
+        Ok(Some(Self::empty_completion_list()))
     }
 
     /// Handle completion request with cancellation support
@@ -1602,9 +1923,12 @@ impl LspServer {
             // below.
             let timing_on = crate::runtime::timing::is_enabled();
             let t_lock_start = std::time::Instant::now();
-            let doc_owned = {
+            let (doc_owned, captured_generation) = {
                 let documents = self.documents_guard();
-                self.get_document(&documents, uri).cloned()
+                match self.get_document(&documents, uri) {
+                    Some(doc) => (Some(doc.clone()), Some(doc.current_generation())),
+                    None => (None, None),
+                }
             };
             // documents guard dropped here
             if timing_on {
@@ -1649,8 +1973,7 @@ impl LspServer {
                 // #5411 fixed for goto-definition -- a position the naive
                 // quote-counter classifies as both comment and string would
                 // wrongly skip this guard.
-                let in_comment =
-                    perl_lsp_rs_core::providers::rename::is_in_comment(offset, &doc.text);
+                let in_comment = super::navigation::is_in_comment_naive(offset, &doc.text);
 
                 // Test-only rendezvous: gives a regression test a
                 // deterministic window to land a cancellation here instead
@@ -1676,7 +1999,16 @@ impl LspServer {
                     break 'completion_response None;
                 }
 
-                let ast_available = doc.current_parsed().is_some_and(|p| p.ast().is_some());
+                // Prefer the generation-current snapshot; fall back to the latest
+                // published one when the current generation has no snapshot yet
+                // (e.g. the workspace indexer bumped the generation before the
+                // completion request arrived, leaving `current_parsed()` empty).
+                // For completions, a slightly-stale AST is always more useful than
+                // the symbol-table-free `lexical_complete` fallback (#11858).
+                // Full-sync desynchronization is not pending parse: predecessor
+                // AST must not answer the user (#8129).
+                let parsed = doc.parsed_for_user_answers();
+                let ast_available = parsed.as_ref().is_some_and(|p| p.ast().is_some());
 
                 // Create optimized cancellation callback with reduced frequency
                 // Performance optimization: reduced overhead from 16.66% to <10%
@@ -1697,7 +2029,6 @@ impl LspServer {
                 let inc_context = RequestIncContext::new(self, uri, &doc.text, offset);
 
                 // Get completions with optimized cancellation support
-                let parsed = doc.current_parsed();
                 let mut completions = if let Some(ast) = parsed.as_ref().and_then(|p| p.ast()) {
                     let (include_paths, system_inc_paths, include_system_inc) =
                         self.module_completion_roots(&inc_context);
@@ -1737,6 +2068,8 @@ impl LspServer {
                         Some(uri),
                         &cancel_fn,
                     )
+                } else if doc.full_sync_required() {
+                    Vec::new()
                 } else {
                     self.lexical_complete(&doc.text, offset, Some(uri))
                 };
@@ -1751,13 +2084,15 @@ impl LspServer {
                 }
 
                 let should_continue = || !token.is_cancelled_relaxed();
-                self.add_declared_dependency_completions(
-                    &mut completions,
-                    &doc.text,
-                    uri,
-                    offset,
-                    Some(&should_continue),
-                );
+                if !doc.full_sync_required() {
+                    self.add_declared_dependency_completions(
+                        &mut completions,
+                        &doc.text,
+                        uri,
+                        offset,
+                        Some(&should_continue),
+                    );
+                }
 
                 #[cfg(feature = "workspace")]
                 self.add_runtime_workspace_completions(
@@ -1773,6 +2108,22 @@ impl LspServer {
                         message: "Request cancelled during completion enrichment".to_string(),
                         data: None,
                     });
+                }
+
+                // Canonical Dancer2 keyword slice (#8928): imported
+                // default-DSL keywords under exact activation, ranked after
+                // ordinary results; zero framework output without activation.
+                if let Some(snapshot) = parsed.as_ref()
+                    && let Some(ast) = snapshot.ast()
+                {
+                    self.add_dancer2_keyword_completions(
+                        &mut completions,
+                        uri,
+                        &doc.text,
+                        offset,
+                        snapshot,
+                        ast,
+                    );
                 }
 
                 let (completions, is_incomplete) =
@@ -1867,10 +2218,14 @@ impl LspServer {
                 ))
             };
             if let Some(response) = response {
-                return Ok(Some(response));
+                return Ok(Some(self.publish_completion_answer(
+                    uri,
+                    captured_generation,
+                    response,
+                )));
             }
 
-            Ok(Some(json!({"isIncomplete": false, "items": []})))
+            Ok(Some(Self::empty_completion_list()))
         } else {
             self.handle_completion(params)
         }
@@ -2070,11 +2425,17 @@ impl LspServer {
         params: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
         let Some(mut item) = params else {
-            return Ok(None);
+            return Err(crate::protocol::invalid_params("Missing completion item parameters"));
         };
 
         // Extract the label and kind upfront (clone to avoid borrow issues)
-        let label = item.get("label").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let label = item
+            .get("label")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                crate::protocol::invalid_params("Missing or invalid completion item label")
+            })?
+            .to_string();
         let kind = item.get("kind").and_then(|v| v.as_u64()).unwrap_or(0);
         let has_doc = item.get("documentation").is_some();
         let label_details_support = self.client_capabilities.lock().label_details_support;
@@ -2218,8 +2579,84 @@ mod tests {
     // Tests are permitted to use `.expect()` on Result/Option per the repo's
     // coding standards (unlike production code, where it is banned).
     #![allow(clippy::expect_used)]
+    #![expect(
+        clippy::panic,
+        reason = "test-only barrier failure is a hard test error, not a production path"
+    )]
 
     use super::*;
+
+    /// Render the documentation the runtime would show for `keyword` at the
+    /// byte offset of `needle`, using a candidate the *provider* actually
+    /// built. Constructing one by hand here would assert only that a
+    /// formatter interpolates its argument; going through the provider is
+    /// what makes the scope/availability divergence real.
+    fn rendered_documentation(source: &'static str, needle: &str, keyword: &str) -> String {
+        use perl_lsp_rs_core::providers::dancer2::{
+            RuntimeDancer2Module, canonical_file_facts, file_activations,
+            keyword_completion_candidates,
+        };
+        use perl_semantic_facts::{FileId, SourceGeneration};
+
+        let mut parser = perl_parser_core::Parser::new(source);
+        let ast = parser.parse().expect("fixture must parse");
+        let module = RuntimeDancer2Module::new("lib/Dancer2.pm", "1.1.1");
+        let activations = file_activations(
+            &ast,
+            source,
+            FileId(1),
+            Some(&module),
+            &SourceGeneration::known("g1"),
+        );
+        let facts = canonical_file_facts(&ast, FileId(1), &activations);
+        let offset = source.find(needle).expect("fixture offset");
+        let candidates =
+            keyword_completion_candidates(&activations, &facts, "main", offset, &|_| false);
+        let candidate = candidates
+            .into_iter()
+            .find(|candidate| candidate.label == keyword)
+            .expect("keyword offered at this position");
+        dancer2_keyword_documentation(&candidate)
+    }
+
+    /// The rendered documentation must not contradict the position that
+    /// offered the keyword. This is the discriminating case: the reviewed
+    /// contract scope on this candidate is still `RouteHandlerOnly` while the
+    /// position is an admitted hook, so a renderer that matches on the
+    /// discriminant produces "route handler only" here and disagrees with the
+    /// item's own `detail` (#13604).
+    #[test]
+    fn keyword_documentation_follows_availability_not_the_scope_discriminant() {
+        let documentation = rendered_documentation(
+            "use Dancer2;\nhook before => sub { my $r = request; };\n",
+            "request;",
+            "request",
+        );
+        assert!(
+            !documentation.contains("route handler only"),
+            "documentation contradicts the offering position: {documentation}"
+        );
+        assert!(
+            documentation.contains("hook handler"),
+            "documentation should name the hook position: {documentation}"
+        );
+    }
+
+    /// Not a blanket rename: inside a route handler the documentation still
+    /// says route, so the wording tracks the owning context rather than
+    /// having become a constant that merely avoids the failing substring.
+    #[test]
+    fn keyword_documentation_still_names_a_route_handler() {
+        let documentation = rendered_documentation(
+            "use Dancer2;\nget '/x' => sub { my $p = params; };\n",
+            "params;",
+            "params",
+        );
+        assert!(
+            documentation.contains("route handler"),
+            "documentation should name the route position: {documentation}"
+        );
+    }
 
     fn explain_provider_decision(
         server: &LspServer,
@@ -2234,6 +2671,83 @@ mod tests {
             })))?
             .ok_or("missing explain-provider-decision response")?;
         Ok(response)
+    }
+
+    /// #11858: a truncated page must not silently omit every Keyword or
+    /// Snippet item when such items exist beyond the cap — for an empty
+    /// prefix the alphabetical tiebreak otherwise turns the page into an
+    /// arbitrary a–g window with no control-flow keywords at all.
+    #[test]
+    fn completion_cap_backfills_fundamental_kinds() {
+        let item = |label: &str, kind: CompletionItemKind| crate::completion::CompletionItem {
+            label: label.to_string().into(),
+            kind,
+            detail: None,
+            documentation: None,
+            insert_text: None,
+            sort_text: None,
+            filter_text: None,
+            additional_edits: Vec::new(),
+            text_edit_range: None,
+            commit_characters: None,
+            insert_text_format: InsertTextFormat::PlainText,
+            label_details: None,
+        };
+
+        // 104 same-ranked a–g items fill a 100 page alphabetically; BOTH
+        // reserved constructs ("while", and the "if" snippet — labeled exactly
+        // as the real provider labels it) sort past the cut, so each must be
+        // swapped in by the reserve. The a–g function range deliberately
+        // excludes any label that could accidentally contain them.
+        let mut candidates: Vec<_> = ('a'..='g')
+            .flat_map(|c| {
+                (0..15).map(move |n| item(&format!("{c}{n:02}"), CompletionItemKind::Function))
+            })
+            .collect();
+        candidates.push(item("while", CompletionItemKind::Keyword));
+        candidates.push(item("if", CompletionItemKind::Snippet));
+
+        let (page, is_incomplete) = sort_and_cap_completions(candidates, 100);
+
+        assert!(is_incomplete);
+        let labels: Vec<&str> = page.iter().map(|c| c.label.as_ref()).collect();
+        assert!(labels.contains(&"while"), "page must reserve the 'while' keyword");
+        assert!(labels.contains(&"if"), "page must reserve the 'if' snippet");
+        // Bounded: one tail slot per swapped construct.
+        assert_eq!(page.len(), 100);
+        assert_eq!(page.iter().filter(|c| c.kind == CompletionItemKind::Function).count(), 98);
+    }
+
+    /// `completionCap` is configurable; a cap smaller than the reserve list
+    /// must clamp the reserve instead of underflowing the tail slot (#11863
+    /// review).
+    #[test]
+    fn completion_cap_smaller_than_reserve_clamps() {
+        let item = |label: &str| crate::completion::CompletionItem {
+            label: label.to_string().into(),
+            kind: CompletionItemKind::Function,
+            detail: None,
+            documentation: None,
+            insert_text: None,
+            sort_text: None,
+            filter_text: None,
+            additional_edits: Vec::new(),
+            text_edit_range: None,
+            commit_characters: None,
+            insert_text_format: InsertTextFormat::PlainText,
+            label_details: None,
+        };
+        let mut candidates: Vec<_> = ('a'..='z').map(|c| item(&c.to_string())).collect::<Vec<_>>();
+        for construct in ["if", "else", "elsif", "unless", "while", "until", "for", "foreach"] {
+            candidates.push(item(construct));
+        }
+
+        // cap 3 with 11 absent reserve labels: must not panic, must fill only
+        // 3 reserve slots, and the page must still be exactly the cap.
+        let (page, is_incomplete) = sort_and_cap_completions(std::mem::take(&mut candidates), 3);
+        assert!(is_incomplete);
+        assert_eq!(page.len(), 3);
+        assert!(page.iter().all(|c| c.label.as_ref() != "zzz"));
     }
 
     #[test]
@@ -3125,6 +3639,166 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn completion_does_not_use_predecessor_ast_while_full_sync_required()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::default();
+        let uri = "file:///workspace/desync_completion.pl";
+        let v1 = "package DesyncCompletion;\nsub unique_pred_for_desync {}\nunique_pred_for_des\n";
+        let v2 = "package DesyncCompletion;\nsub unique_recovered_for_desync {}\nunique_recovered_for_des\n";
+
+        server.test_apply_did_open(uri, v1, 1)?;
+        server.test_index_file_in_building_state(uri, v1).map_err(std::io::Error::other)?;
+        server.test_simulate_indexing_complete();
+
+        server.handle_completion(Some(json!({
+            "textDocument": { "uri": uri, "version": 1 },
+            "position": { "line": 2, "character": 20 }
+        })))?;
+        let fresh = explain_provider_decision(&server, "completion")?;
+        let fresh_receipt = fresh
+            .get("request_receipt")
+            .and_then(Value::as_object)
+            .ok_or("missing fresh completion request receipt")?;
+        assert_eq!(
+            fresh_receipt.get("ast_available").and_then(Value::as_bool),
+            Some(true),
+            "parsed document must expose AST to completion: {fresh:?}"
+        );
+
+        server.handle_did_change(Some(json!({
+            "textDocument": { "uri": uri, "version": 2 },
+            "contentChanges": [{
+                "range": {
+                    "start": { "line": 1, "character": 4 },
+                    "end": { "line": 1, "character": 25 }
+                },
+                "text": "renamed"
+            }]
+        })))?;
+
+        server.handle_completion(Some(json!({
+            "textDocument": { "uri": uri, "version": 2 },
+            "position": { "line": 2, "character": 20 }
+        })))?;
+        let desync = explain_provider_decision(&server, "completion")?;
+        let desync_receipt = desync
+            .get("request_receipt")
+            .and_then(Value::as_object)
+            .ok_or("missing desync completion request receipt")?;
+        assert_eq!(
+            desync_receipt.get("ast_available").and_then(Value::as_bool),
+            Some(false),
+            "predecessor AST must not answer completion while Full-sync is required: {desync:?}"
+        );
+        assert_eq!(
+            desync_receipt.get("workspace_index_state").and_then(Value::as_str),
+            Some("none"),
+            "desynchronized document must disable workspace-index completion: {desync:?}"
+        );
+        assert_eq!(
+            desync_receipt.get("item_count").and_then(Value::as_u64),
+            Some(0),
+            "lexical and declared-dependency fallbacks must not answer from last-good text: {desync:?}"
+        );
+
+        server.test_apply_did_change(uri, v2, 3)?;
+        let recovered_gen = {
+            let docs = server.documents.lock();
+            docs.get(uri).ok_or("recovered completion document")?.current_generation()
+        };
+        server.test_index_live_file(uri, v2, recovered_gen).map_err(std::io::Error::other)?;
+        server.test_simulate_indexing_complete();
+
+        server.handle_completion(Some(json!({
+            "textDocument": { "uri": uri, "version": 3 },
+            "position": { "line": 2, "character": 25 }
+        })))?;
+        let recovered = explain_provider_decision(&server, "completion")?;
+        let recovered_receipt = recovered
+            .get("request_receipt")
+            .and_then(Value::as_object)
+            .ok_or("missing recovered completion request receipt")?;
+        assert_eq!(
+            recovered_receipt.get("ast_available").and_then(Value::as_bool),
+            Some(true),
+            "full-document recovery must restore AST-backed completion: {recovered:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn completion_does_not_publish_in_flight_predecessor_after_violation()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::default();
+        let uri = "file:///workspace/inflight_completion.pl";
+        let predecessor =
+            "package InflightCompletion;\nsub unique_pred_for_inflight {}\nunique_pred_for_inf\n";
+
+        server.test_apply_did_open(uri, predecessor, 1)?;
+        let snapshot = server
+            .snapshot_user_answer_text(uri)
+            .ok_or("open document must have a usable user-answer snapshot")?;
+        let computed = server
+            .handle_completion(Some(json!({
+                "textDocument": { "uri": uri, "version": 1 },
+                "position": { "line": 2, "character": 19 }
+            })))?
+            .ok_or("in-flight completion must return a result")?;
+        let live_labels = completion_item_labels(&computed)?;
+        assert!(
+            live_labels.iter().any(|label| label.contains("unique_pred_for_inflight")),
+            "in-flight completion must see the predecessor subroutine: {computed}"
+        );
+
+        server.handle_did_change(Some(json!({
+            "textDocument": { "uri": uri, "version": 2 },
+            "contentChanges": [{
+                "range": {
+                    "start": { "line": 1, "character": 4 },
+                    "end": { "line": 1, "character": 28 }
+                },
+                "text": "renamed"
+            }]
+        })))?;
+        assert!(
+            !server.user_answer_text_is_current(uri, snapshot.generation),
+            "ranged violation must invalidate the captured user-answer generation"
+        );
+        let published = server.publish_completion_answer(uri, Some(snapshot.generation), computed);
+        let published_labels = completion_item_labels(&published)?;
+        assert!(
+            published_labels.is_empty(),
+            "in-flight predecessor completions must not publish after invalidation: {published}"
+        );
+
+        let live = server
+            .handle_completion(Some(json!({
+                "textDocument": { "uri": uri, "version": 2 },
+                "position": { "line": 2, "character": 19 }
+            })))?
+            .ok_or("live completion must return a result")?;
+        let live_after = completion_item_labels(&live)?;
+        assert!(
+            live_after.is_empty(),
+            "live completion after Full-sync violation must fail closed: {live}"
+        );
+        Ok(())
+    }
+
+    fn completion_item_labels(value: &Value) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+        let items = value
+            .get("items")
+            .and_then(Value::as_array)
+            .ok_or("completion must return an items array")?;
+        Ok(items
+            .iter()
+            .filter_map(|item| item.get("label").and_then(Value::as_str))
+            .map(str::to_string)
+            .collect())
+    }
+
     #[test]
     fn completion_provider_decision_claim_boundary_requires_shadow_receipt()
     -> Result<(), Box<dyn std::error::Error>> {
@@ -3540,7 +4214,7 @@ mod tests {
     fn shared_request_context_is_built_once_for_both_completion_consumers()
     -> Result<(), Box<dyn std::error::Error>> {
         use crate::runtime::routing::IndexAccessMode;
-        use perl_parser::workspace_index::IndexCoordinator;
+        use perl_workspace::workspace_index::IndexCoordinator;
         use std::sync::Arc;
         use tempfile::TempDir;
         use url::Url;
@@ -3613,7 +4287,7 @@ mod tests {
     fn no_inc_context_is_assembled_when_no_consumer_needs_one()
     -> Result<(), Box<dyn std::error::Error>> {
         use crate::runtime::routing::IndexAccessMode;
-        use perl_parser::workspace_index::IndexCoordinator;
+        use perl_workspace::workspace_index::IndexCoordinator;
         use std::sync::Arc;
         use tempfile::TempDir;
         use url::Url;
@@ -3709,7 +4383,7 @@ mod tests {
     #[test]
     fn test_module_completion_roots_match_effective_inc_context_for_workspace_doc()
     -> Result<(), Box<dyn std::error::Error>> {
-        use perl_module::resolution::IncRootKind;
+        use perl_module::IncRootKind;
         use tempfile::TempDir;
         use url::Url;
 
@@ -4703,7 +5377,7 @@ mod tests {
     // =========================================================================
 
     /// With two registered workspace folders, add_runtime_workspace_completions
-    /// computes doc_folder_filter = Some(folder-a) and rejects the sub from
+    /// computes doc_folder_filter = Some(folder-a) and rejects the variable from
     /// folder-b via the Strategy-B continue branch.
     ///
     /// Covered changed lines:
@@ -4713,10 +5387,10 @@ mod tests {
     ///   536-543  !workspace_folder_matches_doc_uri -> trace + continue
     #[cfg(feature = "workspace")]
     #[test]
-    fn strategy_b_multi_folder_filters_cross_folder_sub() {
+    fn strategy_b_multi_folder_filters_cross_folder_var() {
         use crate::runtime::routing::IndexAccessMode;
         use crate::runtime::workspace_folder::WorkspaceFolderState;
-        use perl_parser::workspace_index::IndexCoordinator;
+        use perl_workspace::workspace_index::IndexCoordinator;
         use std::sync::Arc;
 
         let server = LspServer::default();
@@ -4727,17 +5401,17 @@ mod tests {
         }
 
         let coordinator = Arc::new(IndexCoordinator::new());
-        // Add a non-module (Sub) symbol from folder-b — it should be filtered out.
+        // Add a preserved non-callable (Variable) symbol from folder-b — it should be filtered out.
         let _ = coordinator.index().index_file_str(
             "file:///project/folder-b/lib/B.pm",
             "package B;
-sub cross_folder_sub_b { 1 }
+our $cross_folder_var_b;
 1;
 ",
         );
         coordinator.transition_to_ready(1, 1);
 
-        let doc_text = "my $x = cr";
+        let doc_text = "my $x = $cross";
         let doc_uri = "file:///project/folder-a/script.pl";
         let inc_context = RequestIncContext::new(&server, doc_uri, doc_text, doc_text.len());
         let mut completions = Vec::new();
@@ -4750,8 +5424,8 @@ sub cross_folder_sub_b { 1 }
 
         let names: Vec<&str> = completions.iter().map(|c| c.label.as_ref()).collect();
         assert!(
-            !names.contains(&"cross_folder_sub_b"),
-            "Strategy-B must reject cross_folder_sub_b from folder-b when doc is in folder-a;              got completions: {names:?}"
+            !names.contains(&"$cross_folder_var_b"),
+            "Strategy-B must reject $cross_folder_var_b from folder-b when doc is in folder-a;              got completions: {names:?}"
         );
     }
 
@@ -4766,7 +5440,7 @@ sub cross_folder_sub_b { 1 }
     fn strategy_b_single_folder_skips_filter_includes_symbol() {
         use crate::runtime::routing::IndexAccessMode;
         use crate::runtime::workspace_folder::WorkspaceFolderState;
-        use perl_parser::workspace_index::IndexCoordinator;
+        use perl_workspace::workspace_index::IndexCoordinator;
         use std::sync::Arc;
 
         let server = LspServer::default();
@@ -4777,17 +5451,20 @@ sub cross_folder_sub_b { 1 }
         }
 
         let coordinator = Arc::new(IndexCoordinator::new());
-        // Symbol at a path outside folder-a — still included because filter is None.
+        // A non-callable symbol at a path outside folder-a — still included
+        // because filter is None.  Subroutine candidates are intentionally
+        // withdrawn by #11158 before Strategy-B, so use an `our` variable to
+        // keep this test focused on the single-folder no-filter branch.
         let _ = coordinator.index().index_file_str(
             "file:///project/folder-b/lib/B.pm",
             "package B;
-sub single_root_sub { 1 }
+our $single_root_var;
 1;
 ",
         );
         coordinator.transition_to_ready(1, 1);
 
-        let doc_text = "single";
+        let doc_text = "$single";
         let doc_uri = "file:///project/folder-a/script.pl";
         let inc_context = RequestIncContext::new(&server, doc_uri, doc_text, doc_text.len());
         let mut completions = Vec::new();
@@ -4800,8 +5477,303 @@ sub single_root_sub { 1 }
 
         let names: Vec<&str> = completions.iter().map(|c| c.label.as_ref()).collect();
         assert!(
-            names.contains(&"single_root_sub"),
+            names.contains(&"$single_root_var"),
             "single-folder workspace must not filter by folder (doc_folder_filter = None);              got completions: {names:?}"
         );
+    }
+
+    // =========================================================================
+    // #11937 — the runtime workspace fallback must not present a cross-file
+    // variable as a bare, unimported insertion. `Variable` was omitted from the
+    // #11158 withdrawal, so it escaped the gate its sibling kinds pass through.
+    // =========================================================================
+
+    /// Build a server + index holding one module with an `our` package variable
+    /// and a `my` lexical, then run the workspace fallback over `doc_text`.
+    #[cfg(feature = "workspace")]
+    fn run_workspace_pass_over_secrets_module(
+        doc_uri: &str,
+        doc_text: &str,
+        extra_doc_source: Option<&str>,
+    ) -> Vec<(String, Option<String>, Option<(usize, usize)>)> {
+        use crate::runtime::routing::IndexAccessMode;
+        use crate::runtime::workspace_folder::WorkspaceFolderState;
+        use perl_workspace::workspace_index::IndexCoordinator;
+        use std::sync::Arc;
+
+        let server = LspServer::default();
+        server
+            .workspace_folders
+            .lock()
+            .push(WorkspaceFolderState::new("file:///project".to_string()));
+
+        let coordinator = Arc::new(IndexCoordinator::new());
+        let _ = coordinator.index().index_file_str(
+            "file:///project/lib/Secrets.pm",
+            "package Secrets;\nour $api_token = 1;\nmy $private_token = 2;\n1;\n",
+        );
+        if let Some(source) = extra_doc_source {
+            // Index under the canonical key so a caller can pass an equivalent
+            // but differently spelled `doc_uri` and still be the same document.
+            let _ = coordinator.index().index_file_str(&perl_uri::uri_key(doc_uri), source);
+        }
+        coordinator.transition_to_ready(1, 1);
+
+        let inc_context = RequestIncContext::new(&server, doc_uri, doc_text, doc_text.len());
+        let mut completions = Vec::new();
+        server.add_runtime_workspace_completions(
+            &mut completions,
+            &inc_context,
+            &IndexAccessMode::Full(&coordinator),
+            None,
+        );
+        completions
+            .iter()
+            .map(|c| {
+                (
+                    c.label.to_string(),
+                    c.insert_text.as_ref().map(|t| t.to_string()),
+                    c.text_edit_range,
+                )
+            })
+            .collect()
+    }
+
+    /// A package variable owned by an unimported module must be inserted fully
+    /// qualified. Accepting the previous bare `$api_token` in a `use strict`
+    /// document is a compile error: `Global symbol "$api_token" requires
+    /// explicit package name`.
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn cross_file_package_variable_is_offered_only_as_a_qualified_insertion() {
+        let items = run_workspace_pass_over_secrets_module(
+            "file:///project/bin/app.pl",
+            "use strict;\n$api",
+            None,
+        );
+
+        let (label, insert_text, text_edit_range) = items
+            .iter()
+            .find(|(label, _, _)| label == "$api_token")
+            .cloned()
+            .unwrap_or_else(|| panic!("expected the `$api_token` candidate; got {items:?}"));
+
+        assert_eq!(label, "$api_token", "the label stays bare so the candidate is still findable");
+        assert_eq!(
+            insert_text.as_deref(),
+            Some("$Secrets::api_token"),
+            "the document never imports Secrets, so only a qualified insertion resolves"
+        );
+        assert!(
+            text_edit_range.is_some(),
+            "a qualified insert_text must carry a replace range \
+             (the serializer's text_edit_range <=> qualified invariant)"
+        );
+    }
+
+    /// The same escape on a non-sigil prefix: `token` matches both variables by
+    /// name, and neither may come back as a bare cross-file insertion.
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn cross_file_variable_on_a_bare_word_prefix_is_never_inserted_bare() {
+        let items = run_workspace_pass_over_secrets_module(
+            "file:///project/bin/app.pl",
+            "use strict;\ntoken",
+            None,
+        );
+
+        for (label, insert_text, _) in &items {
+            if !label.starts_with(['$', '@', '%']) {
+                continue;
+            }
+            assert_ne!(
+                insert_text.as_deref(),
+                Some(label.as_str()),
+                "cross-file variable {label} must not be inserted bare; got {items:?}"
+            );
+        }
+    }
+
+    /// A `my` lexical in another file is reachable under no spelling at all —
+    /// not bare, and not qualified either. It must be withdrawn, not requalified.
+    ///
+    /// The `$api_token` assertion is the vacuity guard: it proves the pass ran
+    /// and did find symbols in this module, so the absence below is a decision
+    /// rather than an empty result.
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn cross_file_lexical_variable_is_withdrawn_entirely() {
+        let items = run_workspace_pass_over_secrets_module(
+            "file:///project/bin/app.pl",
+            "use strict;\ntoken",
+            None,
+        );
+        let labels: Vec<&str> = items.iter().map(|(label, _, _)| label.as_str()).collect();
+
+        assert!(
+            labels.contains(&"$api_token"),
+            "vacuity guard: the pass must still surface the package variable; got {items:?}"
+        );
+        assert!(
+            !labels.contains(&"$private_token"),
+            "a cross-file `my` lexical has no package-visible name and must be withdrawn; \
+             got {items:?}"
+        );
+    }
+
+    /// Qualification is scoped to *cross-file* variables. A variable the open
+    /// document declares itself is correctly spelled bare, and must stay that way.
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn variable_declared_in_the_open_document_stays_bare() {
+        let doc_uri = "file:///project/bin/app.pl";
+        let items = run_workspace_pass_over_secrets_module(
+            doc_uri,
+            "package App;\nour $api_local = 1;\n$api",
+            Some("package App;\nour $api_local = 1;\n"),
+        );
+
+        let (_, insert_text, text_edit_range) =
+            items.iter().find(|(label, _, _)| label == "$api_local").cloned().unwrap_or_else(
+                || panic!("expected the same-document `$api_local`; got {items:?}"),
+            );
+
+        assert_eq!(
+            insert_text.as_deref(),
+            Some("$api_local"),
+            "a variable declared in the open document is already in scope bare"
+        );
+        assert!(text_edit_range.is_none(), "a bare insert_text must carry no replace range");
+    }
+
+    /// A same-document `my` lexical rejected by cursor-visibility admission
+    /// (#8941) must stay withdrawn in the runtime workspace fallback: the core
+    /// provider already emitted every visible same-document variable matching
+    /// this prefix, so anything reaching this pass was rejected before
+    /// candidate construction. Re-admitting it here would encode an invisible
+    /// lexical as a low-priority workspace candidate.
+    ///
+    /// The prefix is the bare sigil `$`, so the candidate set is exactly the
+    /// variables under assertion. The two vacuity guards pin the neighbors the
+    /// skip must NOT swallow — the same-document `our` stays bare and the
+    /// cross-file `our` stays qualified in the very same response — so the
+    /// withdrawal below is a decision, not an empty or over-broad gate.
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn same_document_lexical_variable_is_withdrawn_from_runtime_fallback() {
+        let items = run_workspace_pass_over_secrets_module(
+            "file:///project/bin/app.pl",
+            "package App;\nmy $same_doc_lexical = 3;\nour $api_local = 1;\n$",
+            Some("package App;\nmy $same_doc_lexical = 3;\nour $api_local = 1;\n"),
+        );
+        let labels: Vec<&str> = items.iter().map(|(label, _, _)| label.as_str()).collect();
+
+        assert!(
+            !labels.contains(&"$same_doc_lexical"),
+            "a same-document `my` lexical withdrawn by cursor-visibility admission must not \
+             re-enter through the runtime fallback; got {items:?}"
+        );
+
+        let (_, our_insert, our_range) =
+            items.iter().find(|(label, _, _)| label == "$api_local").cloned().unwrap_or_else(
+                || panic!("vacuity guard: expected the same-document `$api_local`; got {items:?}"),
+            );
+        assert_eq!(
+            our_insert.as_deref(),
+            Some("$api_local"),
+            "a same-document `our` variable stays bare (current behavior)"
+        );
+        assert!(our_range.is_none(), "a bare insertion carries no replace range");
+
+        let (_, cross_file_insert, _) =
+            items.iter().find(|(label, _, _)| label == "$api_token").cloned().unwrap_or_else(
+                || panic!("vacuity guard: expected the cross-file `$api_token`; got {items:?}"),
+            );
+        assert_eq!(
+            cross_file_insert.as_deref(),
+            Some("$Secrets::api_token"),
+            "a cross-file `our` variable stays qualified in the same response"
+        );
+    }
+
+    /// Same-document identity is `perl_uri::uri_key`, not raw string equality.
+    ///
+    /// A client may spell the open document differently from the form it was
+    /// indexed under; comparing raw strings would call the document's own
+    /// variable cross-file and qualify it needlessly.
+    ///
+    /// Both spellings below are exercised because they separate the candidate
+    /// comparisons differently, measured against the `url` crate:
+    ///
+    /// | pair | `Url` eq | `uri_key` eq |
+    /// |---|---|---|
+    /// | `file://localhost/p/a.pl` vs `file:///p/a.pl` | true | true |
+    /// | `file:///C:/p/a.pl` vs `file:///c:/p/a.pl` | **false** | true |
+    ///
+    /// The Windows case is therefore the one that also rules out a
+    /// `Url`-equality implementation, not merely the raw-string one. `uri_key`
+    /// additionally folds non-`localhost` loopback authorities (`127.0.0.1`,
+    /// `::1`), which `Url` does not.
+    ///
+    /// The `$api_token` assertion is the vacuity guard: the genuinely
+    /// cross-file variable is still qualified in the very same response, so
+    /// this is a normalization result rather than a disabled guard.
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn same_document_identity_survives_an_equivalent_uri_spelling() {
+        for doc_uri in [
+            "file://localhost/project/bin/app.pl",
+            // Differs from its indexed key only by drive-letter case.
+            "file:///C:/project/bin/app.pl",
+        ] {
+            let items = run_workspace_pass_over_secrets_module(
+                doc_uri,
+                "package App;\nour $api_local = 1;\n$api",
+                Some("package App;\nour $api_local = 1;\n"),
+            );
+
+            let (_, insert_text, text_edit_range) = items
+                .iter()
+                .find(|(label, _, _)| label == "$api_local")
+                .cloned()
+                .unwrap_or_else(|| {
+                    panic!("expected the same-document `$api_local` for {doc_uri}; got {items:?}")
+                });
+            assert_eq!(
+                insert_text.as_deref(),
+                Some("$api_local"),
+                "{doc_uri} is the same document as its indexed key"
+            );
+            assert!(text_edit_range.is_none());
+
+            let (_, cross_file_insert, _) =
+                items.iter().find(|(label, _, _)| label == "$api_token").cloned().unwrap_or_else(
+                    || panic!("vacuity guard: expected `$api_token` for {doc_uri}; got {items:?}"),
+                );
+            assert_eq!(
+                cross_file_insert.as_deref(),
+                Some("$Secrets::api_token"),
+                "a genuinely cross-file variable is still qualified in the same response"
+            );
+        }
+    }
+
+    /// The pre-existing qualified-prefix route (`$Secrets::api`) is unchanged.
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn qualified_variable_prefix_route_is_unchanged() {
+        let items = run_workspace_pass_over_secrets_module(
+            "file:///project/bin/app.pl",
+            "use strict;\n$Secrets::api",
+            None,
+        );
+
+        let (_, insert_text, text_edit_range) =
+            items.iter().find(|(label, _, _)| label == "$api_token").cloned().unwrap_or_else(
+                || panic!("expected `$api_token` from the qualified route; got {items:?}"),
+            );
+
+        assert_eq!(insert_text.as_deref(), Some("$Secrets::api_token"));
+        assert!(text_edit_range.is_some());
     }
 }

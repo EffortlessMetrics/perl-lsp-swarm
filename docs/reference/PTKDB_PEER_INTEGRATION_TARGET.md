@@ -1,235 +1,231 @@
 # ptkdb Peer Integration Target
 
-What a future `Devel::ptkdb` patch needs to implement to cooperate live with
-`perl-lsp`'s DAP server. The point of the [peer protocol](EXTERNAL_DEBUGGER_PEER_PROTOCOL.md)
-is that this list is **small** — ptkdb stays ptkdb, and `perl-dap` owns all DAP
-complexity.
+This document defines the smallest `Devel::ptkdb` partner behavior needed to
+cooperate with `perl-dap` without making ptkdb implement DAP.
 
-> "We are not asking ptkdb to become our tool. We built a small, tested seam so
-> ptkdb can remain ptkdb, and perl-lsp can expose it cleanly to editors."
+**Current status**: the host protocol is implemented. The repository's Perl
+reference fixture now also contains an authenticated, headless-tested mirror
+adapter for an explicitly marked, ptkdb-shaped `Devel::ptkdb 1.1091` reference
+harness. The adapter pins the CPAN distribution identity by SHA-256
+`889bfc25d107f46718963023cc9662d3d779896a48d729d0327beec0502c226e` and the
+module digest
+`2da4a792a732c134f8f4fa3b6b482da9e5df8dec8cd7ae424ad3b6e06c0bceab` as an
+explicit harness contract only. It never hashes or verifies a loaded
+`ptkdb.pm`: it refuses any present `%INC{'Devel/ptkdb.pm'}` entry (including
+false-valued ones) because Perl does not expose already-executed bytes.
+This is not stock-ptkdb + Tk support; issue #4786 owns that live receipt.
 
-## Minimum upstream ptkdb PR
+## Product boundary
 
-The host side of the live-peer wiring landed in [#3404](https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/3404)
-(mirror-mode launch wiring, tracked under [#3322](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3322)):
-`perl-dap` can bind a loopback listener, mint a session token, and expose the
-env-var rendezvous contract below to whatever process it launches. **This
-section is the small, copy-paste-able ask for the upstream ptkdb-side PR** that
-completes the other half — nothing here requires #3404 to have merged to be
-true (the wire shapes are stable), but the env contract only becomes reachable
-once it does.
-
-A [reference implementation](../../fixtures/debug-peer/perl/minimal_ptkdb_peer.pl)
-of exactly this checklist exists at `fixtures/debug-peer/perl/minimal_ptkdb_peer.pl`
-— copy it as a starting point; it is a teaching fixture, not production ptkdb
-code.
-
-### Checklist
-
-- [ ] **Detect `PERL_DAP_PEER`** at startup; if unset (or `PERL_DAP_PEER_MODE`
-      is not `mirror`), do nothing and behave exactly as ptkdb does today.
-- [ ] **Open a TCP socket** to the `HOST:PORT` in `PERL_DAP_PEER`.
-- [ ] **Send `peer/hello`** (include `token` from `PERL_DAP_PEER_TOKEN` when
-      it is set — the host rejects the handshake without a matching token).
-- [ ] **Emit `debugger/output`** whenever the debuggee prints.
-- [ ] **Emit `debugger/stopped`** on every stop (breakpoint, step, entry, ...).
-- [ ] **Exit cleanly on disconnect** — a closed socket (clean EOF) from the
-      host means the session is over; do not treat it as an error.
-- [ ] **Ignore peer mode unless `mirror`** — `cooperative`/`dapControlled` are
-      future work; a v1 patch only needs to speak mirror.
-- [ ] **No DAP implementation required** — ptkdb never needs to know what DAP,
-      `launch.json`, or an LSP client even are.
-
-### Env-var contract
-
-| Variable               | Set by  | Meaning                                                        |
-| ----------------------- | ------- | --------------------------------------------------------------- |
-| `PERL_DAP_PEER`         | host    | `HOST:PORT` the peer connects back to (loopback only)            |
-| `PERL_DAP_PEER_TOKEN`   | host    | Per-session shared secret; optional, but if the host minted one, `peer/hello` **must** echo it back exactly or the handshake is rejected |
-| `PERL_DAP_PEER_MODE`    | host    | Control mode for this session; `mirror` is the only mode a v1 ptkdb patch needs to handle |
-
-(Source: `ENV_PEER_ADDR` / `ENV_PEER_TOKEN` / `ENV_PEER_MODE` in
-`crates/perl-dap/src/backend/peer_launch.rs`, landed in #3404.)
-
-### Exact payload shapes
-
-Framing is `Content-Length`-headed JSON, byte-identical to the LSP/DAP base
-protocol (`Content-Length: <N>\r\n\r\n<N bytes of JSON>`, no `Content-Type`
-header, no trailing newline). Golden fixtures for all of these live in
-[`fixtures/debug-peer/`](../../fixtures/debug-peer/).
-
-**`peer/hello` request** (peer → host; `token` is omitted entirely, not sent
-as `null`, when the host minted no token — see
-`crates/perl-dap/src/peer_protocol/payloads.rs::HelloArgs`):
-
-```json
-{
-  "type": "request",
-  "seq": 1,
-  "command": "peer/hello",
-  "arguments": {
-    "peer": "Devel::ptkdb",
-    "peerVersion": "1.1091",
-    "protocolVersion": "perl-debug-peer-v1",
-    "token": "deadbeefcafef00ddeadbeefcafef00d",
-    "capabilities": {}
-  }
-}
+```text
+IDE / DAP client
+        │ DAP
+        ▼
+perl-dap                    ← remains the DAP server
+        │ Perl Debugger Peer Protocol
+        ▼
+Devel::ptkdb                ← optional, explicit, unbundled peer
+        │
+        ▼
+debuggee
 ```
 
-`capabilities` may be `{}` — every field defaults to `false`, which is a
-complete and honest report for a peer that only emits `output`/`stopped`.
+The native `perl-dap` path remains the default. ptkdb is not bundled,
+auto-installed, auto-selected, or required.
 
-**`peer/hello` response** (host → peer; reject the session if `success` is
-`false` and read `message` for why — bad token, unsupported
-`protocolVersion`, or a replayed handshake):
+## Minimum upstream ptkdb patch: `mirror_minimum`
 
-```json
-{
-  "type": "response",
-  "seq": 1,
-  "requestSeq": 1,
-  "success": true,
-  "command": "peer/hello",
-  "body": {
-    "protocolVersion": "perl-debug-peer-v1",
-    "sessionId": "perl-dap-peer-127.0.0.1:49321",
-    "capabilities": { "wantsBreakpoints": true, "wantsStack": true,
-                       "wantsVariables": true, "wantsOutput": true,
-                       "wantsSourceFacts": true }
-  }
-}
+A complete first partner needs only to:
+
+- do nothing unless `PERL_DAP_PEER` is set and `PERL_DAP_PEER_MODE=mirror`;
+- connect to the loopback `HOST:PORT` in `PERL_DAP_PEER`;
+- send one authenticated `peer/hello` using the per-session token;
+- advertise only capabilities actually implemented by that ptkdb build;
+- emit `debugger/output` for debuggee output;
+- emit `debugger/stopped` for every real stop;
+- emit `debugger/terminated` when the debuggee/debugger ends;
+- treat clean host EOF/disconnect as normal session completion;
+- leave normal ptkdb behavior unchanged when the rendezvous variables are absent.
+
+This level does **not** require ptkdb to accept editor control, install
+breakpoints, list variables, or evaluate expressions. The ptkdb UI remains
+authoritative and the editor mirrors state.
+
+## Repository implementation substrate
+
+[`minimal_ptkdb_peer.pl`](../../fixtures/debug-peer/perl/minimal_ptkdb_peer.pl)
+now has two explicit modes:
+
+- **executed directly**: the existing synthetic reference peer, useful for
+  reading and exercising the wire contract without ptkdb;
+- **loaded from `.ptkdbrc`**: an experimental mirror adapter for an explicitly
+  marked reference harness exposing the `Devel::ptkdb 1.1091`-shaped surface.
+
+The loaded mode requires a 32-hex session token, accepts only an IPv4 loopback
+rendezvous in `mirror` mode, sends an empty capability set, and uses deadline-guarded peer I/O (with
+  nonblocking sockets where the Perl platform exposes that mode). It wraps the
+  explicitly marked reference harness's `Devel::ptkdb::set_file` while preserving
+  the original method and emits `debugger/stopped` only when that method is
+  reached from `DB::DB` (a depth-1 caller gate). That gate is an explicit
+  constraint of this marked reference harness, not evidence that real ptkdb
+  wrappers preserve stopped events at other caller depths; the depth-independent
+  live stop authority remains #7349. An `END` hook emits one best-effort, bounded
+  `debugger/terminated` event.
+
+A `.ptkdbrc` can load the reference adapter by absolute path. The path is
+still user-selected; the adapter is not an installer or package manager:
+
+```perl
+my $perl_dap_peer = '/absolute/path/to/minimal_ptkdb_peer.pl';
+do $perl_dap_peer or die $@ || $!;
 ```
 
-**`debugger/output` event** (peer → host,
-`OutputEventBody` in `payloads.rs`):
+The reference harness must expose both `$Devel::ptkdb::VERSION = '1.1091'` and
+`$Devel::ptkdb::PERL_DAP_MIRROR_SOURCE =
+'CPAN:AEPAGE/Devel-ptkdb-1.1091'` plus
+`$Devel::ptkdb::PERL_DAP_MIRROR_SHA256` equal to the pinned module digest. A
+The adapter does not activate when `%INC` reports a loaded `Devel/ptkdb.pm`:
+Perl does not expose the bytes already executed, so hashing that mutable path
+would not bind provenance to the loaded artifact. The adapter therefore accepts
+only the explicit no-`%INC` headless harness contract; loaded stock modules fail
+closed before any connection or method wrap. When the rendezvous variables
+are absent, loaded mode is a silent no-op. A version/source mismatch or
+malformed/authentication contract leaves the harness untouched and reports one
+narrow diagnostic on stderr.
 
-```json
-{
-  "type": "event",
-  "seq": 2,
-  "event": "debugger/output",
-  "body": { "category": "stdout", "output": "some debuggee output\n" }
-}
+The current adapter emits debugger-console connection output, harness stop
+locations, and termination. It does **not** yet tee debuggee stdout/stderr into
+`debugger/output`, answer inspection requests, or accept control requests.
+Those missing behaviors keep #7349 and #4786 open.
+
+The Rust integration test exercises the adapter against the real authenticated
+host backend with a marked ptkdb-shaped harness. That proves the protocol,
+version/source gates for the headless harness, wrapper preservation, harness stop
+seam, and cleanup logic. It does not prove loaded-module provenance. This is not a stock ptkdb or Tk session and cannot promote compatibility.
+
+## Rendezvous environment
+
+| Variable | Meaning |
+|---|---|
+| `PERL_DAP_PEER` | Loopback `HOST:PORT` to connect to. |
+| `PERL_DAP_PEER_TOKEN` | Per-session bearer token echoed in `peer/hello`; required by the reference adapter. |
+| `PERL_DAP_PEER_MODE` | `mirror` for the initial integration. |
+
+The host rejects a mismatched protocol version or token. The peer must not log
+the token.
+
+## Protocol
+
+Messages use Content-Length-framed JSON:
+
+```text
+Content-Length: <bytes>\r\n
+\r\n
+<JSON payload>
 ```
 
-**`debugger/stopped` event** (peer → host, `StoppedEventBody`; `source`,
-`line`, `column` are optional but should be sent whenever known):
+The canonical schemas and examples live in:
 
-```json
-{
-  "type": "event",
-  "seq": 3,
-  "event": "debugger/stopped",
-  "body": {
-    "reason": "breakpoint",
-    "threadId": 1,
-    "source": { "path": "/work/script.pl" },
-    "line": 42,
-    "column": 1
-  }
-}
+- [`EXTERNAL_DEBUGGER_PEER_PROTOCOL.md`](EXTERNAL_DEBUGGER_PEER_PROTOCOL.md)
+- [`fixtures/debug-peer/`](../../fixtures/debug-peer/)
+- [`minimal_ptkdb_peer.pl`](../../fixtures/debug-peer/perl/minimal_ptkdb_peer.pl)
+
+The fixture remains reference/experimental integration code, not bundled stock
+ptkdb code. The absolute `.ptkdbrc` path and source marker do not establish a
+trusted distribution; do not present this adapter as safely distributable.
+
+## Capability promotion levels
+
+A real session begins with no assumed peer capabilities. The exact authenticated
+`peer/hello` determines the session contract.
+
+### Level 1 — `mirror_minimum`
+
+```text
+hello
+output
+stopped
+terminated
 ```
 
-### What ptkdb does NOT need to implement (v1)
+This is the only required first-partner level. The marked reference adapter has
+earned the handshake, debugger-console output, stopped, and terminated substrate; debuggee
+stdout/stderr mirroring and the live Tk receipt remain open.
 
-- `debugger/continue` / `debugger/next` / `debugger/stepIn` / `debugger/stepOut` / `debugger/pause`
-- `debugger/setBreakpoints` / `debugger/setFunctionBreakpoints`
-- `debugger/stackTrace` / `debugger/scopes` / `debugger/variables`
-- `debugger/evaluate`
+### Level 2 — `mirror_inspection`
 
-All of the above are deferred to a v2/v3 (`cooperative`/`dapControlled`
-control modes) once mirror-mode round-trips are proven live. A v1 patch that
-only ever sends `peer/hello`, `debugger/output`, and `debugger/stopped` is a
-complete, useful integration on its own: ptkdb stays ptkdb, and `perl-dap`
-handles everything DAP.
+Add individually proven support for:
 
-## Two ways to integrate
-
-### A. Live peer (the target)
-
-The rich path: ptkdb speaks the peer protocol over a socket.
-
-1. **Detect the rendezvous env** on startup:
-   ```
-   PERL_DAP_PEER=127.0.0.1:NNNN
-   PERL_DAP_PEER_TOKEN=...          # optional shared secret
-   PERL_DAP_PEER_MODE=mirror        # mirror | cooperative | dapControlled
-   ```
-2. **Open a TCP socket** to that address.
-3. **Send `peer/hello`** with the capabilities ptkdb actually has (see below).
-4. **Emit events** as the debugger UI drives execution:
-   - `debugger/stopped` on every stop (the most important one),
-   - `debugger/output` when the target prints,
-   - `debugger/terminated` on exit,
-   - optionally `debugger/sourceFacts` (breakable lines, subs).
-5. **Answer requests** when able: `debugger/stackTrace`, `scopes`, `variables`,
-   `evaluate`.
-6. **Accept control** (later / cooperative mode): `debugger/continue`, `next`,
-   `stepIn`, `stepOut`, `setBreakpoints`.
-
-Framing is `Content-Length`-headed JSON — the same as DAP, so any DAP codec
-works. Message shapes are in the [protocol spec](EXTERNAL_DEBUGGER_PEER_PROTOCOL.md)
-and the golden examples in [`fixtures/debug-peer/`](../../fixtures/debug-peer/).
-
-Realistic v1 capability report for ptkdb (verified against the ptkdb POD):
-
-```json
-{
-  "canContinue": true, "canStep": true, "canPause": true, "canEvaluate": true,
-  "canSetBreakpoints": true, "canSetFunctionBreakpoints": true,
-  "canConditionBreakpoints": true, "canListStack": true,
-  "canListVariables": true, "canReportSubroutines": true,
-  "canReportBreakableLines": true, "controlMode": "mirror"
-}
+```text
+stackTrace
+scopes
+variables
+evaluate
+source facts
 ```
 
-ptkdb documents conditional breakpoints, sub breakpoints, and expression
-evaluation — but **not** DAP-style logpoints, hit conditions, or data
-breakpoints, so those stay off and the host will not advertise them.
+Each operation needs exact ptkdb-version proof and honest failure behavior. No
+inspection capability is enabled from documentation alone.
 
-`mirror` mode is the friendliest first step: ptkdb's Tk UI stays authoritative
-and just *reports* state; the editor mirrors it. No fight over who owns stepping.
+### Level 3 — `cooperative_control`
 
-### B. `.ptkdbrc` bootstrap (works today, no ptkdb change)
+Add separately negotiated ownership for:
 
-Before any ptkdb patch exists, `perl-dap` can already drive ptkdb by generating
-a `.ptkdbrc` startup file. This is a compatibility bootstrap, not the live
-bridge. The generated file uses ptkdb's **documented** startup API (verified
-against [metacpan.org/pod/Devel::ptkdb](https://metacpan.org/pod/Devel::ptkdb)
-and the [ptkdb.pm source](https://metacpan.org/dist/Devel-ptkdb/source/ptkdb.pm)):
+```text
+setBreakpoints
+setFunctionBreakpoints
+continue
+next
+stepIn
+stepOut
+pause
+```
 
-| Purpose                     | ptkdb `.ptkdbrc` call                         |
-| --------------------------- | --------------------------------------------- |
-| Line breakpoint             | `brkpt($file, @lines)`                        |
-| Conditional breakpoint      | `condbrkpt($file, $line, $expr, ...)`         |
-| Break on named sub          | `brkonsub(@names)`                            |
-| Break on sub regex          | `brkonsub_regex(@regexes)`                    |
-| Watch / expression list     | `add_exprs(@expressions)`                     |
-| Suppress initial stop       | `$DB::no_stop_at_start = 1;`                  |
+The implementation must define what happens when the Tk UI and editor issue
+conflicting commands. Capability fields cannot substitute for that ownership
+contract.
 
-`.ptkdbrc` is `eval`'d as Perl (from `~/` or the invocation directory) before the
-first stop; the functions are called as bare package subs. `perl-dap` emits all
-interpolated data as single-quoted, escaped Perl literals so a crafted path or
-condition cannot inject code, and wraps each registration in `eval { ... }` so an
-unsupported call degrades gracefully.
+### Level 4 — `dap_controlled`
 
-Invocation: `perl -d:ptkdb script.pl`, with `PTKDB_DISPLAY` for remote/headless X.
+Editor-authoritative control is future work and not part of the initial ptkdb
+integration target.
 
-The renderer is `perl_dap::ptkdb_bootstrap` and consumes a
-[`DebugSessionPacket`](#session-packet).
+## `.ptkdbrc` bootstrap is separate
 
-## Session packet
+`perl-dap --ptkdb-bootstrap-rc PROGRAM` generates a one-way startup file using
+ptkdb's documented APIs. It is useful independently of a live peer, but it is
+not a bidirectional integration and cannot prove that ptkdb accepted each
+generated call.
 
-`perl-dap` can hand ptkdb a frozen, versioned description of the session —
-program, breakpoints, function breakpoints, watch expressions, and per-source
-facts (breakable lines, subroutines) — as `perl-lsp-debug-session-v1` JSON
-(`perl_dap::model::DebugSessionPacket`, built via
-`perl_dap::session_plan::DebugSessionPlanBuilder`). ptkdb can consume this via
-`.ptkdbrc` today, the peer protocol tomorrow, or a future ptkdb import command.
+The bootstrap and live peer therefore have separate user-facing names:
 
-## What ptkdb does *not* need to do
+```text
+ptkdb bootstrap                  best-effort setup helper
+ptkdb live peer experimental     authenticated bidirectional protocol
+```
 
-- Implement DAP.
-- Understand editors, `launch.json`, or LSP.
-- Support every DAP feature — capability negotiation is honest and per-peer.
+## Required live receipt
+
+Before the repository calls the live peer supported, #4786 must bind:
+
+- exact `perl-dap` artifact hash/version/SHA;
+- exact ptkdb source or distribution build;
+- Perl and Tk versions;
+- peer protocol version and negotiated capabilities;
+- real output/stopped/terminated outcomes;
+- any proven inspection/control outcomes;
+- token/version mismatch, malformed frame, peer crash, GUI close, debuggee exit,
+  timeout, and cleanup results;
+- the installed VSIX configuration used for the session.
+
+Fake-peer conformance establishes host correctness only. The new headless
+ptkdb-shaped plugin proof establishes the partner seam only. Neither can promote
+a live stock-ptkdb compatibility claim without the Tk receipt.
+
+## Non-goals
+
+- No DAP implementation in ptkdb.
+- No ptkdb bundle or automatic installation.
+- No replacement of the ptkdb GUI.
+- No cooperative or DAP-controlled claim in the first patch.
+- No requirement that optional partner work block the native debugger release.

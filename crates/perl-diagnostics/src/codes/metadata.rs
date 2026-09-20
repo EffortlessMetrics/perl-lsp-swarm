@@ -50,69 +50,6 @@ fn has_pm_file_extension(haystack: &str) -> bool {
 }
 
 impl DiagnosticCode {
-    /// Get the string representation of this code.
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Self::ParseError => "PL001",
-            Self::SyntaxError => "PL002",
-            Self::UnexpectedEof => "PL003",
-            Self::MissingStrict => "PL100",
-            Self::MissingWarnings => "PL101",
-            Self::UnusedVariable => "PL102",
-            Self::UndefinedVariable => "PL103",
-            Self::VariableShadowing => "PL104",
-            Self::VariableRedeclaration => "PL105",
-            Self::DuplicateParameter => "PL106",
-            Self::ParameterShadowsGlobal => "PL107",
-            Self::UnusedParameter => "PL108",
-            Self::UnquotedBareword => "PL109",
-            Self::UninitializedVariable => "PL110",
-            Self::MisspelledPragma => "PL111",
-            Self::CaptureVarWithoutRegexMatch => "PL112",
-            Self::MissingPackageDeclaration => "PL200",
-            Self::DuplicatePackage => "PL201",
-            Self::DuplicateSubroutine => "PL300",
-            Self::MissingReturn => "PL301",
-            Self::InvalidPrototype => "PL302",
-            Self::RoleConflict => "PL303",
-            Self::MissingPodCoverage => "PL304",
-            Self::UnresolvedQualifiedCall => "PL305",
-            Self::BarewordFilehandle => "PL400",
-            Self::TwoArgOpen => "PL401",
-            Self::ImplicitReturn => "PL402",
-            Self::AssignmentInCondition => "PL403",
-            Self::NumericComparisonWithUndef => "PL404",
-            Self::PrintfFormatMismatch => "PL405",
-            Self::UnreachableCode => "PL406",
-            Self::EvalErrorFlow => "PL407",
-            Self::DuplicateHashKey => "PL408",
-            Self::GotoUndefinedLabel => "PL409",
-            Self::LoopControlUndefinedLabel => "PL410",
-            Self::DeprecatedDefined => "PL500",
-            Self::DeprecatedArrayBase => "PL501",
-            Self::PhaseScopedStrictPragma => "PL502",
-            Self::PhaseScopedWarningsPragma => "PL503",
-            Self::SecurityStringEval => "PL600",
-            Self::SecurityBacktickExec => "PL601",
-            Self::SecuritySignalHandler => "PL602",
-            Self::SecuritySystemCall => "PL603",
-            Self::SecurityExecCall => "PL604",
-            Self::SecurityPipeOpen => "PL605",
-            Self::SecurityReadpipe => "PL606",
-            Self::UnusedImport => "PL700",
-            Self::ModuleNotFound => "PL701",
-            Self::SourceFilterModule => "PL702",
-            Self::HeredocInFormat => "PL800",
-            Self::HeredocInBegin => "PL801",
-            Self::HeredocDynamicDelimiter => "PL802",
-            Self::HeredocInSourceFilter => "PL803",
-            Self::HeredocInRegexCode => "PL804",
-            Self::HeredocInEval => "PL805",
-            Self::HeredocTiedHandle => "PL806",
-            Self::VersionIncompatFeature => "PL900",
-        }
-    }
-
     /// Get the documentation URL for this code, if available.
     pub fn documentation_url(&self) -> Option<&'static str> {
         let code = self.as_str();
@@ -164,6 +101,17 @@ impl DiagnosticCode {
             "PL604" => "https://docs.perl-lsp.org/errors/PL604",
             "PL605" => "https://docs.perl-lsp.org/errors/PL605",
             "PL606" => "https://docs.perl-lsp.org/errors/PL606",
+            // PL607 is the reviewed external-reference exception (#5035): the
+            // storyboarded `security.sql_injection` wire format pins
+            // codeDescription to the OWASP SQL injection reference
+            // (crates/perl-lsp-rs/tests/lsp_critical_user_stories.rs, "TEST 4:
+            // Security Vulnerability Detection"), so the href is the external
+            // security authority rather than a docs.perl-lsp.org error page.
+            // `documentation_url_format_consistency` carries this exception as
+            // an explicit allowlist so the deviation stays reviewed.
+            "PL607" => "https://owasp.org/www-community/attacks/SQL_Injection",
+            "PL608" => "https://docs.perl-lsp.org/errors/PL608",
+            "PL609" => "https://docs.perl-lsp.org/errors/PL609",
             "PL700" => "https://docs.perl-lsp.org/errors/PL700",
             "PL701" => "https://docs.perl-lsp.org/errors/PL701",
             "PL702" => "https://docs.perl-lsp.org/errors/PL702",
@@ -175,6 +123,14 @@ impl DiagnosticCode {
             "PL805" => "https://docs.perl-lsp.org/errors/PL805",
             "PL806" => "https://docs.perl-lsp.org/errors/PL806",
             "PL900" => "https://docs.perl-lsp.org/errors/PL900",
+            "PL1000" => "https://docs.perl-lsp.org/errors/PL1000",
+            "PL1001" => "https://docs.perl-lsp.org/errors/PL1001",
+            "PL1002" => "https://docs.perl-lsp.org/errors/PL1002",
+            "PL1003" => "https://docs.perl-lsp.org/errors/PL1003",
+            "PL1004" => "https://docs.perl-lsp.org/errors/PL1004",
+            "PL1005" => "https://docs.perl-lsp.org/errors/PL1005",
+            "PL1006" => "https://docs.perl-lsp.org/errors/PL1006",
+            "PL1007" => "https://docs.perl-lsp.org/errors/PL1007",
             _ => return None,
         })
     }
@@ -190,7 +146,9 @@ impl DiagnosticCode {
             | Self::VariableRedeclaration
             | Self::DuplicateParameter
             | Self::UnquotedBareword
-            | Self::UnresolvedQualifiedCall => DiagnosticSeverity::Error,
+            | Self::UnresolvedQualifiedCall
+            | Self::RegexModifierInvalid
+            | Self::RegexCaptureInvalid => DiagnosticSeverity::Error,
 
             // Warnings
             Self::MissingStrict
@@ -227,10 +185,17 @@ impl DiagnosticCode {
             | Self::SecurityExecCall
             | Self::SecurityPipeOpen
             | Self::SecurityReadpipe
+            | Self::SecuritySqlInjection
+            | Self::SecuritySubstitutionEval
+            | Self::SecurityEmbeddedRegexCode
             | Self::ModuleNotFound
             | Self::SourceFilterModule
             | Self::VersionIncompatFeature
-            | Self::EvalErrorFlow => DiagnosticSeverity::Warning,
+            | Self::EvalErrorFlow
+            | Self::RegexBacktrackingRisk
+            | Self::RegexModifierNoEffect
+            | Self::RegexModifierUnavailable
+            | Self::RegexCaptureUnavailable => DiagnosticSeverity::Warning,
 
             // Information
             Self::CaptureVarWithoutRegexMatch
@@ -240,7 +205,9 @@ impl DiagnosticCode {
             | Self::HeredocInSourceFilter
             | Self::HeredocInRegexCode
             | Self::HeredocInEval
-            | Self::HeredocTiedHandle => DiagnosticSeverity::Information,
+            | Self::HeredocTiedHandle
+            | Self::RegexAnalysisLimit
+            | Self::RegexAnalysisIncomplete => DiagnosticSeverity::Information,
 
             // Hints
             Self::MissingPodCoverage | Self::UnusedImport | Self::UnreachableCode => {
@@ -448,6 +415,22 @@ impl DiagnosticCode {
                 "`readpipe()` executes a shell command (equivalent to backticks/qx//). \
                 Use `open(my $fh, '-|', $cmd, @args)` or IPC::Run for safer command execution.",
             ),
+            Self::SecuritySqlInjection => Some(
+                "Interpolating or concatenating values into the SQL text passed to \
+                `prepare`/`do` allows crafted input to change the statement. \
+                Keep the SQL literal static and pass values as bind values: \
+                `$dbh->prepare('... WHERE id = ?')->execute($user_id)`.",
+            ),
+            Self::SecuritySubstitutionEval => Some(
+                "The `e`/`ee` modifier evaluates the substitution replacement as Perl code, \
+                like string `eval`. Compute the replacement without `/e`, or keep untrusted \
+                input out of the evaluated expression.",
+            ),
+            Self::SecurityEmbeddedRegexCode => Some(
+                "An embedded `(?{ ... })` or `(??{ ... })` block runs Perl code while \
+                the pattern is evaluated. Remove the code block from the regex or keep \
+                untrusted patterns away from it.",
+            ),
             Self::UnusedImport => Some(
                 "This module is imported but none of its exports appear to be used. \
                 Remove the `use` statement to reduce unnecessary dependencies.",
@@ -477,8 +460,8 @@ impl DiagnosticCode {
                 Avoid combining heredocs with source filters.",
             ),
             Self::HeredocInRegexCode => Some(
-                "Heredocs inside regex code blocks `(?{ ... })` can cause parsing failures. \
-                Move the heredoc content outside the regex.",
+                "Heredocs inside regex code blocks `(?{ ... })` or postponed code blocks \
+                `(??{ ... })` can cause parsing failures. Move the heredoc content outside the regex.",
             ),
             Self::HeredocInEval => Some(
                 "Heredocs inside string `eval` are fragile and error-prone. \
@@ -499,6 +482,43 @@ impl DiagnosticCode {
                 "Under `use strict`, package-qualified calls to undefined subroutines \
                 in an in-file package are flagged. Define the sub, correct the call, \
                 or load the package via `use`/`require` if it is external.",
+            ),
+            Self::RegexBacktrackingRisk => Some(
+                "A repeated group already contains a backtracking quantifier, so input \
+                that fails to match can take super-linear time. Make the inner quantifier \
+                possessive or atomic, or rewrite the group so only one part repeats.",
+            ),
+            Self::RegexAnalysisLimit => Some(
+                "Static analysis of this pattern stopped at a configured limit, so the \
+                rest of the pattern was not inspected. The pattern is not proven clean \
+                beyond this point.",
+            ),
+            Self::RegexModifierInvalid => Some(
+                "This modifier is not recognized, is repeated, conflicts with another \
+                modifier, or is not accepted for this operator. Remove it or use the \
+                modifier that applies to this quote-like operator.",
+            ),
+            Self::RegexModifierNoEffect => Some(
+                "Perl accepts this modifier here but it changes nothing. Remove it to \
+                say what the pattern actually does.",
+            ),
+            Self::RegexModifierUnavailable => Some(
+                "This modifier form needs a newer Perl version or a feature that is not \
+                enabled for this source. Raise the declared version, enable the feature, \
+                or use the form available under the current profile.",
+            ),
+            Self::RegexCaptureInvalid => Some(
+                "This capture name is not valid. Use a name that starts with a letter or \
+                underscore and continues with word characters.",
+            ),
+            Self::RegexCaptureUnavailable => Some(
+                "This capture form needs a newer Perl version or source UTF-8 semantics. \
+                Raise the declared version, add `use utf8;`, or use a plain numbered capture.",
+            ),
+            Self::RegexAnalysisIncomplete => Some(
+                "Static analysis could not finish for this pattern, so its findings are \
+                partial. Absence of a further finding here is not evidence that the \
+                pattern is clean.",
             ),
         }
     }
@@ -576,70 +596,6 @@ impl DiagnosticCode {
             Some(Self::DeprecatedDefined)
         } else {
             None
-        }
-    }
-
-    /// Try to parse a code string into a DiagnosticCode.
-    pub fn parse_code(code: &str) -> Option<Self> {
-        match code {
-            "PL001" => Some(Self::ParseError),
-            "PL002" => Some(Self::SyntaxError),
-            "PL003" => Some(Self::UnexpectedEof),
-            "PL100" => Some(Self::MissingStrict),
-            "PL101" => Some(Self::MissingWarnings),
-            "PL102" => Some(Self::UnusedVariable),
-            "PL103" => Some(Self::UndefinedVariable),
-            "PL104" => Some(Self::VariableShadowing),
-            "PL105" => Some(Self::VariableRedeclaration),
-            "PL106" => Some(Self::DuplicateParameter),
-            "PL107" => Some(Self::ParameterShadowsGlobal),
-            "PL108" => Some(Self::UnusedParameter),
-            "PL109" => Some(Self::UnquotedBareword),
-            "PL110" => Some(Self::UninitializedVariable),
-            "PL111" => Some(Self::MisspelledPragma),
-            "PL112" => Some(Self::CaptureVarWithoutRegexMatch),
-            "PL200" => Some(Self::MissingPackageDeclaration),
-            "PL201" => Some(Self::DuplicatePackage),
-            "PL300" => Some(Self::DuplicateSubroutine),
-            "PL301" => Some(Self::MissingReturn),
-            "PL302" => Some(Self::InvalidPrototype),
-            "PL303" => Some(Self::RoleConflict),
-            "PL304" => Some(Self::MissingPodCoverage),
-            "PL305" => Some(Self::UnresolvedQualifiedCall),
-            "PL400" => Some(Self::BarewordFilehandle),
-            "PL401" => Some(Self::TwoArgOpen),
-            "PL402" => Some(Self::ImplicitReturn),
-            "PL403" => Some(Self::AssignmentInCondition),
-            "PL404" => Some(Self::NumericComparisonWithUndef),
-            "PL405" => Some(Self::PrintfFormatMismatch),
-            "PL406" => Some(Self::UnreachableCode),
-            "PL407" => Some(Self::EvalErrorFlow),
-            "PL408" => Some(Self::DuplicateHashKey),
-            "PL409" => Some(Self::GotoUndefinedLabel),
-            "PL410" => Some(Self::LoopControlUndefinedLabel),
-            "PL500" => Some(Self::DeprecatedDefined),
-            "PL501" => Some(Self::DeprecatedArrayBase),
-            "PL502" => Some(Self::PhaseScopedStrictPragma),
-            "PL503" => Some(Self::PhaseScopedWarningsPragma),
-            "PL600" => Some(Self::SecurityStringEval),
-            "PL601" => Some(Self::SecurityBacktickExec),
-            "PL602" => Some(Self::SecuritySignalHandler),
-            "PL603" => Some(Self::SecuritySystemCall),
-            "PL604" => Some(Self::SecurityExecCall),
-            "PL605" => Some(Self::SecurityPipeOpen),
-            "PL606" => Some(Self::SecurityReadpipe),
-            "PL700" => Some(Self::UnusedImport),
-            "PL701" => Some(Self::ModuleNotFound),
-            "PL702" => Some(Self::SourceFilterModule),
-            "PL800" => Some(Self::HeredocInFormat),
-            "PL801" => Some(Self::HeredocInBegin),
-            "PL802" => Some(Self::HeredocDynamicDelimiter),
-            "PL803" => Some(Self::HeredocInSourceFilter),
-            "PL804" => Some(Self::HeredocInRegexCode),
-            "PL805" => Some(Self::HeredocInEval),
-            "PL806" => Some(Self::HeredocTiedHandle),
-            "PL900" => Some(Self::VersionIncompatFeature),
-            _ => None,
         }
     }
 }

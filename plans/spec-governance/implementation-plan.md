@@ -76,7 +76,7 @@ caps, permitted-lane rules, hazard-class completeness). CI executes proof
 - LSP/DAP/parser contract reasoning
 - API duplicate/caller searches
 - Lane IDs and WIP caps
-- RTK-prefix command policy
+- Direct-command policy
 - Tests-exist-and-pass verification
 - Spec/test/code semantic three-way agreement (owned by `spec-test-code-match`)
 - Live GitHub state (PR status, CI checks, labels)

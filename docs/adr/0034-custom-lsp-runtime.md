@@ -5,6 +5,38 @@
 **Decision Makers**: Perl LSP Architecture Team
 **Related**: [ADR-0031](0031-async-runtime-concurrent-dispatch.md), [ADR-0016](0016-feature-governance.md), [ADR-0019](0019-security-first-dap.md), [CUSTOM_LSP_RUNTIME.md](../project/CUSTOM_LSP_RUNTIME.md)
 
+## Currentness note (2026-08-15, issue #7385)
+
+The decision below still holds: the project owns its LSP runtime rather than adopting a
+general-purpose framework. Two parts of this ADR are now archaeology and must not be read as
+current implementation guidance.
+
+**The microcrate layout described under "Chosen Architecture" no longer exists.** None of
+`perl-lsp-protocol`, `perl-lsp-transport`, `perl-content-length-framing`, `perl-lsp-cancellation`,
+or `perl-lsp-launcher` is a crate in this workspace. Protocol types, transport, and framing live in
+`crates/perl-lsp-rs-core/src/{protocol,transport}`; the server runtime lives in
+`crates/perl-lsp-rs/src/runtime/`. The table records the shape the decision was made in, not where
+code is today.
+
+**The synchronous-runtime framing is superseded** by the bounded-concurrency scheduler in ADR-0031.
+
+What remains reusable from this decision is not the crate layout. It is the **state-coherence,
+terminality, and testability contract**: ordered mutation/read scheduling, supersession and
+freshness identity, explicit request terminal state, and delivery fate for required output.
+
+Ownership of the lower connection substrate — framing, transport, and the JSON-RPC connection loop —
+is **unresolved** pending the substrate bakeoff in #9360. This ADR is not evidence that the current
+connection implementation survives that decision. All of the following remain legitimate outcomes:
+
+- a full extracted generic runtime;
+- a generic runtime that internally wraps an adopted substrate;
+- a coherence-only library over someone else's connection layer;
+- no public framework at all.
+
+The executable ownership map governing that extraction is
+`xtask/tests/lsp_runtime_ownership_ledger.rs` (issue #7385). Module and dependency dispositions
+belong there, not in this ADR.
+
 ## Context
 
 `perl-lsp` implements its own protocol, transport, cancellation, and dispatch stack instead of

@@ -1,0 +1,29 @@
+{
+  "schema": "train_edge_contract.v1",
+  "schema_version": 1,
+  "contract_id": "invalid-missing-reason-class",
+  "programme": { "name": "invalid-examples" },
+  "propositions": [
+    { "id": "P_a", "claim_ceiling": "A only." }
+  ],
+  "edges": [],
+  "claim_profiles": [
+    {
+      "id": "invalid_profile",
+      "version": 1,
+      "required": ["P_a"],
+      "allowed_terminal_limitation_states": ["not_proven"],
+      "claim_ceiling": "Invalid example only."
+    }
+  ],
+  "projection": {
+    "proposition_states": [
+      {
+        "id": "P_a",
+        "implementation": { "terminal": false },
+        "evidence": { "terminal": true },
+        "proposition": { "terminal": true, "derives_from": "verified_proposition" }
+      }
+    ]
+  }
+}

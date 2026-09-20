@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Fixed
+body: Go-to-definition on the quoted path of a literal require (require "Foo/Bar.pm") now resolves to the module file through the position-aware @INC resolver instead of returning nothing (#12559).
+time: 2026-08-25T21:39:42Z
+custom:
+  PR: "12559"
+  Slug: literal-require-goto-definition
+  Breaking: "no"

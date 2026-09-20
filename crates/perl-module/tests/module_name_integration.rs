@@ -1,6 +1,4 @@
-use perl_module::name::{
-    legacy_package_separator, module_variant_pairs, normalize_package_separator,
-};
+use perl_module::{legacy_package_separator, module_variant_pairs, normalize_package_separator};
 
 fn apply_variant_pairs(line: &str, old_module: &str, new_module: &str) -> String {
     let mut rewritten = line.to_string();

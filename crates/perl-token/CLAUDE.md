@@ -32,7 +32,7 @@ This is a pure definition crate with no external dependencies.
 | Type | Purpose |
 |------|---------|
 | `TokenKind` | Enum of all Perl token types (~80 variants) |
-| `Token` | Token with kind, `Arc<str>` text, and byte start/end positions |
+| `Token` | Token with kind, `Arc<str>` text, and private byte span (`start()` / `end()`) |
 
 ### Token Categories
 
@@ -50,11 +50,12 @@ This is a pure definition crate with no external dependencies.
 ```rust
 use perl_token::{Token, TokenKind};
 
-let tok = Token::new(TokenKind::ScalarSigil, "$", 0, 1);
-assert_eq!(tok.kind, TokenKind::ScalarSigil);
+let tok = Token::new_checked(TokenKind::ScalarSigil, "$", 0, 1).expect("valid token");
+assert_eq!(tok.kind(), TokenKind::ScalarSigil);
+assert_eq!(tok.start(), 0);
 
 // TokenKind is Copy + Eq, suitable for match arms
-match tok.kind {
+match tok.kind() {
     TokenKind::Identifier => { /* ... */ },
     TokenKind::ScalarSigil => { /* ... */ },
     _ => {}
@@ -66,4 +67,6 @@ match tok.kind {
 - Changes to `TokenKind` variants propagate to all lexer and parser crates
 - Keep enum variants organized by category with doc comments
 - `Token.text` uses `Arc<str>` for cheap cloning during lookahead and buffering
-- No `Span` struct -- positions are stored as `start`/`end` fields on `Token`
+- Byte geometry is private. `kind()` is a read accessor so empty-span policy cannot be bypassed by assignment; use `with_kind` to change kind. External crates use `start()` / `end()` and checked constructors; reversed spans are rejected rather than clamped
+- Empty spans are allowed only for `Eof` and `Unknown`, and those empty tokens must still have empty text
+- `text.len()` must equal `end - start`; constructors reject source-inconsistent tokens rather than storing mismatched text and span width

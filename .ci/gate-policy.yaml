@@ -454,6 +454,31 @@ gates:
     planning:
       role: always_on
 
+  # Issue #1269 action item 3: a new parallel-unsafe test function (process
+  # env or CWD mutation without `#[serial]`-family serialization or an
+  # adjudicated row in ci/serial_test_identities.json) must not enter the
+  # workspace. The gate is fail-closed on NEW identities; repairing a
+  # registered site requires retiring its row, so the accepted set only
+  # shrinks. The 35 seeded rows are the measured current-main residual census
+  # at 94e099747f (env/cwd signals; port binds and static counters are
+  # documented non-goals in the lint module).
+  - name: serial_test_ratchet
+    tier: pr_fast
+    description: "Ratchet parallel-unsafe test serialization (#[serial] policy, #1269)"
+    required: true
+    command: just ci-serial-test-ratchet
+    timeout_seconds: 120
+    retry_count: 0
+    budgets:
+      max_duration_ms: 90000
+    quarantine: false
+    tags:
+      - policy
+      - tests
+      - ratchet
+    planning:
+      role: always_on
+
   - name: release_history_check
     tier: pr_fast
     description: "Check release-history drift"
@@ -467,6 +492,22 @@ gates:
     tags:
       - release
       - hygiene
+    planning:
+      role: always_on
+
+  - name: source_commit_api_check
+    tier: pr_fast
+    description: "Validate source-commit API callers against the owner ledger"
+    required: true
+    command: python3 scripts/ci/check_source_commit_api.py
+    timeout_seconds: 30
+    retry_count: 0
+    budgets:
+      max_duration_ms: 10000
+    quarantine: false
+    tags:
+      - workspace
+      - caller-ledger
     planning:
       role: always_on
 
@@ -535,25 +576,103 @@ gates:
     planning:
       role: rust_scoped
 
-  - name: inline_completion_contract
+  # NOTE (#6845): the former `inline_completion_contract` gate chained four
+  # Cargo commands with `&&`, masking which of the four contracts failed and
+  # preventing later contracts from running after an earlier failure.
+  # Replaced with four independent gates so each contract has its own receipt
+  # row, timing, result class, and narrow rerun.  The gate runner continues
+  # after any single failure, so all four results are always recorded.
+  # inline_completion_registration/core budgets (#11797): PR Smoke uses a
+  # per-run CARGO_TARGET_DIR (`pr-smoke-${run_id}-${run_attempt}`), while the
+  # shared Rust cache covers dependencies rather than reusing target artifacts
+  # across runs. The separate "Warm xtask" step prebuilds xtask only; it is
+  # not a cold-cache acceptance receipt for these package tests. The raised
+  # 240s / 210000ms values are policy bounds informed by the reported timeout
+  # family, and retry_count: 1 permits a second attempt to reuse artifacts
+  # created in the same run. Hosted receipts remain authoritative for whether
+  # a current PR reaches the test binary within those bounds.
+  # Enforcement note: like every budgets.max_duration_ms row in this policy,
+  # the soft ceiling is declarative only - the runner enforces
+  # timeout_seconds (see the NOTE near the budgets schema below); hosted CI
+  # receipts and reviewers own any budget observation.
+  - name: inline_completion_registration
     tier: pr_fast
-    description: "Inline-completion registration, capability, snapshot, and core provider contracts"
+    description: "Inline-completion provider registration tests (lsp_inline_completion_registration_tests)"
     required: true
-    command: >-
-      cargo test -p perl-lsp-rs --locked --test lsp_inline_completion_registration_tests &&
-      cargo test -p perl-lsp-rs --locked --test lsp_registration_tests &&
-      cargo test -p perl-lsp-rs --locked --test lsp_cap_snap &&
-      cargo test -p perl-lsp-rs-core --locked --lib inline_completion
-    timeout_seconds: 600
-    retry_count: 0
+    command: cargo test -p perl-lsp-rs --locked --test lsp_inline_completion_registration_tests
+    timeout_seconds: 240
+    retry_count: 1
     budgets:
-      max_duration_ms: 540000
+      max_duration_ms: 210000
     quarantine: false
     tags:
       - test
       - lsp
       - inline-completion
+      - registration
+    planning:
+      role: rust_package_scoped
+      packages:
+        - perl-lsp-rs
+        - perl-lsp-rs-core
+
+  - name: lsp_registration_contract
+    tier: pr_fast
+    description: "LSP capability registration contract (lsp_registration_tests)"
+    required: true
+    command: cargo test -p perl-lsp-rs --locked --test lsp_registration_tests
+    timeout_seconds: 150
+    retry_count: 0
+    budgets:
+      max_duration_ms: 135000
+    quarantine: false
+    tags:
+      - test
+      - lsp
+      - registration
       - protocol
+    planning:
+      role: rust_package_scoped
+      packages:
+        - perl-lsp-rs
+        - perl-lsp-rs-core
+
+  - name: lsp_capability_snapshots
+    tier: pr_fast
+    description: "LSP capability snapshot contract — detects capability-negotiation drift (lsp_cap_snap)"
+    required: true
+    command: cargo test -p perl-lsp-rs --locked --test lsp_cap_snap
+    timeout_seconds: 150
+    retry_count: 0
+    budgets:
+      max_duration_ms: 135000
+    quarantine: false
+    tags:
+      - test
+      - lsp
+      - capability
+      - snapshot
+    planning:
+      role: rust_package_scoped
+      packages:
+        - perl-lsp-rs
+        - perl-lsp-rs-core
+
+  - name: inline_completion_core
+    tier: pr_fast
+    description: "Core inline-completion provider lib tests (perl-lsp-rs-core::inline_completion)"
+    required: true
+    command: cargo test -p perl-lsp-rs-core --locked --lib inline_completion
+    timeout_seconds: 240
+    retry_count: 1
+    budgets:
+      max_duration_ms: 210000
+    quarantine: false
+    tags:
+      - test
+      - lsp
+      - inline-completion
+      - core
     planning:
       role: rust_package_scoped
       packages:
@@ -585,7 +704,11 @@ gates:
     tier: pr_fast
     description: "Clippy lints on core library crates (not full workspace)"
     required: true
-    # Core crates only for speed; full workspace in merge_gate
+    # Core crates only for speed. The full-workspace run is `clippy_full`,
+    # which is also `pr_fast` -- no gate in any tier runs clippy at
+    # merge_gate, and none runs `-D warnings` outside library targets
+    # (#11736). `clippy_full` does lint `--bins`, but only under
+    # `-D clippy::unwrap_used -D clippy::expect_used`.
     command: >-
       cargo clippy
       -p perl-parser -p perl-lexer -p perl-parser-core
@@ -646,17 +769,22 @@ gates:
 
   - name: compile_all_targets
     tier: pr_fast
-    description: "Compile all workspace targets (lib/bin/tests/benches) to catch integration and bench bit-rot; also validates all-features paths"
+    description: "Compile workspace targets, example test modules, and wire-free parser profiles without running tests"
     required: true
     # NOTE (#4642): this is a COMPILE-ONLY gate — it never runs tests. It catches
     # build/bit-rot in `tests/` and bench targets but not runtime failures.
     command: just check-all-targets
-    # Two full-workspace cargo check passes (default + all-features) require more time
-    # than the original 180s budget on a fresh CI runner. Aligned with unit_scoped budget.
-    timeout_seconds: 600
+    # The recipe now runs five Cargo commands: default/all-feature workspace
+    # checks, example test compilation, and two wire-free parser checks. Main
+    # receipts from runs 34976694456 and 34992022773 show the first three
+    # stages consuming about 580s; the 600s watchdog then kills a parser-profile
+    # check. Preserve all five commands and allow a bounded 15m cold-build
+    # window. Hosted receipts remain the runtime acceptance evidence.
+    # max_duration_ms is a declarative soft budget, not the enforced watchdog.
+    timeout_seconds: 900
     retry_count: 0
     budgets:
-      max_duration_ms: 540000
+      max_duration_ms: 780000
     quarantine: false
     tags:
       - compile
@@ -677,10 +805,14 @@ gates:
       cargo clippy
       --workspace --bins --locked --no-deps
       -- -D clippy::unwrap_used -D clippy::expect_used
-    timeout_seconds: 300
+    # 600s/480000ms: cold-runner clippy over 1307 production files measured
+    # ~272s before timing out at the old 300s envelope (#13292-era meta-shard
+    # redness); the lint content itself is clean, so the envelope was the
+    # binding constraint.
+    timeout_seconds: 600
     retry_count: 0
     budgets:
-      max_duration_ms: 240000
+      max_duration_ms: 480000
       max_warnings: 0
     quarantine: false
     tags:
@@ -690,17 +822,287 @@ gates:
     planning:
       role: always_on
 
+  - name: clippy_tests_kernel
+    tier: pr_fast
+    description: "Clippy --all-targets on the known-clean staged cohort (37/48 crates): required within the pr_fast runner for test/bench/example code in these crates (#11736)"
+    required: true
+    # (#11736): The workspace lints in Cargo.toml deny `unwrap_used`, `expect_used`,
+    # and `panic` but the existing clippy gates use `--lib` only, so these denials
+    # never apply to `tests/`, `benches/`, `examples/`, or `#[cfg(test)]` modules.
+    #
+    # This gate covers a staged cohort of crates confirmed clean under
+    # `--all-targets -D warnings -A missing_docs`. The cohort is additive: add
+    # crates here only after they pass the command below locally.
+    # This is a scoped cohort assertion, not an exhaustive workspace clean/dirty
+    # census. The target-kind lint policy decision has landed in
+    # docs/CLIPPY_POLICY.md ("Target-kind lint contract"): print_stdout and
+    # print_stderr are intentional in tests//examples/ (encoded as file-scoped
+    # reasoned #[expect]s, never config or gate flags); the panic family stays
+    # denied everywhere. The remaining 12 crates carry measured repair tranches
+    # tracked on #11736 (2026-08-23 census on 470277161, warn-neutralized
+    # disjoint-unit method: 3195 test-context findings across those 14 crates;
+    # production --lib/--bins pass clean except one xtask
+    # lines_filter_map_ok). A crate joins when its measured residual under the
+    # contract is zero; see the admission protocol in CLIPPY_POLICY.md.
+    #
+    # This gate is executed by the advisory PR Smoke job, like the other pr_fast
+    # gates. `required: true` makes the pr_fast runner fail on a violation; it
+    # is not itself a branch-protection context.
+    #
+    # Current-main cohort verification: exact gate rerun on 2026-08-22 against
+    # base b38568b082a733dfac7b3da76eb626b77f8a9616; this is scoped proof for
+    # the 32 selectors below.
+    # Writer proof result: PASS in 4s, within the 480s/400000ms budget.
+    #   2026-08-19 batch (post-fix, PR #11742): perl-token, perl-position-tracking,
+    #     perl-uri, perl-tdd-support, perl-test-must, perl-ast-v2 (1 clone-on-copy
+    #     batch fixed), perl-symbol (1 expect_used fixed)
+    #   2026-08-21 batch (measured clean, no fixes needed): perl-ast,
+    #     perl-semantic-facts, perl-source-identity, perl-line-index,
+    #     perl-workspace, perl-semantic-analyzer, perl-diagnostics,
+    #     perl-lsp-perltidy, perl-subprocess-runtime, perl-test-facts,
+    #     perl-parser-bench, perl-core-test-runner, perl-parser-pest,
+    #     perl-parser-comparison, tree-sitter-perl-c, perl-incremental-parsing,
+    #     tree-sitter-perl-rs, perl-release-readiness, perl-workspace-core,
+    #     perl-tree-sitter-compat
+    #   2026-08-21 batch (9 mechanical findings fixed, see PR for #11736):
+    #     perl-module (items_after_test_module + collapsible_if),
+    #     perl-pod (2 needless_borrow), perl-pragma (unfulfilled_lint_expectation +
+    #     bool_assert_comparison), perl-test-generators (2 collapsible_if),
+    #     perl-core-harness-types (expect_err_on_result)
+    #   2026-08-25 batch (residual tranches repaired, see PR for #11736):
+    #     perllsp (3 expect_err replaced with typed let-else bail, 2 unused
+    #     bindings dropped, 1 deferred-init binding), perl-regex (8 Option::expect
+    #     in cfg(test) replaced with must_some_with via a new perl-test-must
+    #     dev-dependency). The two fresh regressions inside the existing cohort
+    #     (perl-semantic-analyzer too_many_arguments from #12334,
+    #     perl-semantic-facts explicit_auto_deref) were repaired on main itself
+    #     (#12395, #12398), so this batch's duplicate fixes were dropped during
+    #     the merge with e40c2a386. Exact extended-cohort rerun PASS on this
+    #     branch.
+    #   2026-08-25 batch (parked tranches unblocked and repaired, see PR for
+    #     #11736): perl-ci-hygiene (expect_err in commands/doc_links.rs cfg(test)
+    #     replaced with a match returning a typed Err; 12 Regex::new unwrap() in
+    #     main.rs cfg(test) propagated via eyre `?`, matching the module's
+    #     Result<()> convention), perl-lexer (3 Option::expect in
+    #     lexer_slash_timeout_tests + 2 in hang_risk_regex_literal_tests replaced
+    #     with ok_or()? per each file's TestResult convention; 3 panic fallbacks
+    #     and 2 fixture-offset expects in lexer_robustness_tests replaced with
+    #     the file's established assert!-then-if-let pattern). The parked
+    #     perl-lexer tranche census predated #12534; current-main findings differ
+    #     (collapsible_if/assertions_on_constants no longer present). Prerequisite
+    #     verification on 6ec7242bd: lexer_robustness_tests green twice,
+    #     check-panic-test exit 0. Exact extended-cohort rerun PASS on this
+    #     branch.
+    #   2026-09-05 batch (#11688): perl-lsp-rs-core admitted. Measured 434
+    #     findings on af4dccc6c (the ~154 recorded on #12000 in August is a
+    #     stale census; main moved). Repaired to zero: 243 unwrap/expect sites
+    #     routed to perl_test_must helpers off clippy's own JSON primary spans,
+    #     so the receiver boundary is exact; 206 `.expect*("...")` context
+    #     strings land in `_with` variants and the 37 bare helpers are exactly
+    #     the 37 `.unwrap()`/`.unwrap_err()` sites that carried no message
+    #     (#14291's context-loss defect cannot recur under that identity). 86
+    #     bool_assert_comparison plus mechanical classes took clippy's
+    #     machine-applicable replacements; 49 panic-family sites were removed by
+    #     real assertions and projections, never suppressed, per the
+    #     panic-stays-denied-everywhere contract. Two narrow reasoned
+    #     #[expect(dead_code)] remain: the #9662/#8032 inventory ledger rows and
+    #     an inherent-vs-blanket specialization fallback arm; deleting either
+    #     would destroy evidence rather than remove dead code. Exact
+    #     extended-cohort rerun PASS on this branch (exit 0, 2m19s, within the
+    #     480s/400000ms envelope); cargo test -p perl-lsp-rs-core --all-targets
+    #     --locked = 5244 passed / 0 failed across 100 targets.
+    #     ADMISSION BOUNDARY: this crate's measured residual is zero under the
+    #     cohort contract, but four blanket test-module masks predating this
+    #     work (semantic_snapshot.rs:2417, semantic_construction.rs:1338,
+    #     providers/formatting/formatting.rs:1091, and
+    #     protocol/final_surface_inventory/tests.rs:7) suppress unwrap_used /
+    #     expect_used / panic in their modules. A --force-warn remeasurement
+    #     that pierces them reports 321 further findings the gate cannot see
+    #     (166 unwrap-on-Result, 49 expect_err, 43 expect-on-Result, 31
+    #     unwrap_err, 15 unwrap-on-Option, 9 panic, 8 expect-on-Option). None
+    #     were added here and none are masked by this change; they are
+    #     inherited debt. So this row ratchets the measured surface only, and
+    #     does not assert that perl-lsp-rs-core is free of the panic family.
+    #     Removing those masks is a separate tranche on #11688.
+    # SUPERSEDED ADMISSION: the 2026-09-05 batch also added -p perl-lsp-rs-core
+    # to the strict list below, but main's stack-increment admission boundary
+    # (#15677) now classifies it in CLIPPY_TESTS_KERNEL_RESIDUAL_PACKAGES; the
+    # residual lane owns its clippy status, so that selector is not restored.
+    #   2026-09-16 batch (measured clean, no fixes needed, PR #15028):
+    #     perl-operation-trace — new Tier-1 leaf crate; passes the exact kernel
+    #     command locally on the integrated candidate head. The partition check
+    #     (msrv_authority_sync / gate-policy) requires every workspace package
+    #     to carry a clippy all-target disposition, so the crate joins the
+    #     cohort in the same PR that adds it to the workspace.
+    command: >-
+      cargo clippy
+      -p perl-token
+      -p perl-position-tracking
+      -p perl-uri
+      -p perl-tdd-support
+      -p perl-test-must
+      -p perl-ast-v2
+      -p perl-symbol
+      -p perl-ast
+      -p perl-semantic-facts
+      -p perl-source-identity
+      -p perl-line-index
+      -p perl-workspace
+      -p perl-semantic-analyzer
+      -p perl-diagnostics
+      -p perl-lsp-perltidy
+      -p perl-subprocess-runtime
+      -p perl-test-facts
+      -p perl-parser-bench
+      -p perl-core-test-runner
+      -p perl-parser-pest
+      -p perl-parser-comparison
+      -p tree-sitter-perl-c
+      -p perl-incremental-parsing
+      -p tree-sitter-perl-rs
+      -p perl-release-readiness
+      -p perl-workspace-core
+      -p perl-tree-sitter-compat
+      -p perl-module
+      -p perl-pod
+      -p perl-pragma
+      -p perl-test-generators
+      -p perl-core-harness-types
+      -p perl-regex
+      -p perllsp
+      -p perl-lexer
+      -p perl-ci-hygiene
+      -p perl-operation-trace
+      --all-targets --locked
+      -- -D warnings -A missing_docs
+    # Budget: measured ~80s locally with warm dependencies and cold check
+    # fingerprints for the 32-crate cohort (~1s fully warm); scaled from the
+    # previous 7-crate envelope and kept below the compile_all_targets
+    # ceiling (900s / 780000ms), which compiles strictly more work. The
+    # 2026-08-25 additions pull in perl-lsp-rs/perl-lsp-rs-core libraries
+    # through perllsp; clippy emits metadata only (no linking), and
+    # clippy_full already lints those libraries inside its 300s envelope,
+    # so the dominant new cost stays within existing measured ceilings.
+    # The PR Smoke run carrying this change produces the authoritative
+    # cold-runner number requested on #11736; if it exceeds the envelope,
+    # split perllsp into its own sharded kernel lane rather than raising
+    # this budget.
+    timeout_seconds: 480
+    retry_count: 0
+    budgets:
+      max_duration_ms: 400000
+      max_warnings: 0
+    quarantine: false
+    tags:
+      - lint
+      - clippy
+      - tests
+    planning:
+      role: always_on
+
+  # ── Focused control-plane owner proofs (#13698) ────────────────────────────
+  # #13698: main run 33128026402 spent ~22 minutes inside the shared PR-fast
+  # runner before its only failure — the deterministic `ci_subject`
+  # digest-oracle fixture defect — surfaced from `unit_routed_full`, the broad
+  # routed unit cohort (today the only pr_fast gate that executes xtask's
+  # `tests/` suites). These focused owner gates run their owners' fast
+  # deterministic proofs BEFORE that cohort, and (`short_circuit: true`) stop
+  # the remaining plan on a blocking failure, so a control-plane regression is
+  # reported without paying the cohort's full build/test budget first.
+  #
+  # Routing stays exact-subject: `rust_package_scoped` selects each gate only
+  # when ci-scope picks `xtask` — the owner crate of the CI-subject, route
+  # plan, gate-runner, workflow-policy, generated-inventory, and badge-producer
+  # proofs — so product-only diffs pay nothing for control-plane proofs
+  # (falsifier 2). Neither gate duplicates another pr_fast gate: `unit_scoped`
+  # runs `--lib` only and already covers the xtask library surface early, and
+  # `unit_routed_full` runs `--tests` only, so the bin and `ci_subject` targets
+  # are covered nowhere else in this tier. The broad cohort below is untouched
+  # and remains the authoritative backstop: a focused pass never removes it
+  # (falsifier 4), and a focused pass followed by a cohort failure still reds
+  # the run with both dispositions recorded (falsifier 3). No timeout was
+  # raised and no required gate became advisory (acceptance).
+  - name: ci_subject_digest_oracle
+    tier: pr_fast
+    description: "Focused immutable-subject digest-oracle proof (#13698): ci_subject owns the ci-subject.v1 receipt digest/envelope classification and its independent fixture oracle"
+    required: true
+    command: cargo test -p xtask --locked --test ci_subject
+    timeout_seconds: 300
+    retry_count: 0
+    budgets:
+      max_duration_ms: 240000
+    quarantine: false
+    short_circuit: true
+    tags:
+      - test
+      - focused
+      - ci-subject
+      - digest-oracle
+    planning:
+      role: rust_package_scoped
+      packages:
+        - xtask
+
+  - name: unit_control_plane_bins
+    tier: pr_fast
+    description: "Focused control-plane owner proof (#13698): xtask bin unit tests for the gate runner, route plan/ci-scope, and workflow policy/trigger-lint owner modules (the generated-inventory and badge owners keep their proof in the broad tests cohort)"
+    required: true
+    # Owner-module filters, not the whole 3000-test bin suite: the projection
+    # is exactly the four control-plane owners that publish `#[test]`
+    # functions in the `--bin xtask` target (`tasks::gates::`,
+    # `tasks::ci_scope::`, `tasks::workflow_policy_lint::`,
+    # `tasks::workflow_trigger_lint::`). #13698's two remaining owners — the
+    # generated-file inventory and the badge producer — have no bin-target
+    # unit tests, so naming them here would project a false denominator
+    # (#14409 review); their proof lives in the `xtask/tests/` integration
+    # suites that the broad `unit_routed_full` cohort (`--tests`) still runs.
+    # The filter set also excludes suites with known environment-sensitive
+    # process-timeout tests (e.g. cpan_corpus) so the focused gate stays
+    # deterministic. The pinning test in xtask/src/tasks/gates.rs pins this
+    # command, so module drift fails the focused gate's own proof before CI.
+    command: "cargo test -p xtask --locked --bin xtask -- tasks::gates:: tasks::ci_scope:: tasks::workflow_policy_lint:: tasks::workflow_trigger_lint:: -- --test-threads=1"
+    timeout_seconds: 600
+    retry_count: 0
+    budgets:
+      max_duration_ms: 480000
+    quarantine: false
+    short_circuit: true
+    tags:
+      - test
+      - focused
+      - control-plane
+    planning:
+      role: rust_package_scoped
+      packages:
+        - xtask
   - name: unit_routed_full
     tier: pr_fast
     description: "Scoped routed integration tests for ci-scope selected crates (required test gate for #1470 coupling; --tests runs tests/ directories, catching runtime assertion failures not reachable by --lib)"
     required: true
-    # NOTE (#4642): this is the only pr_fast gate that RUNS `tests/` integration
-    # tests, and it is scope-aware (`{package_args}`): it only executes the
-    # `tests/` suite for crates whose source is touched by the PR diff. A
-    # regression in an untouched crate's `tests/` directory sails through pr_fast
-    # and is only caught at the merge-gate full suite. This deferral is the
-    # structural reason false-confidence patterns in `tests/` went undetected.
-    command: cargo test --locked --tests {package_args}
+    # NOTE (#4642, corrected #11694): this is the only pr_fast gate that RUNS
+    # `tests/` integration tests, and it is scope-aware (`{package_args}`): it
+    # only executes the `tests/` suite for crates whose source is touched by the
+    # PR diff. A regression in an untouched crate's `tests/` directory sails
+    # through pr_fast. This deferral is the structural reason false-confidence
+    # patterns in `tests/` went undetected.
+    #
+    # This NOTE previously said such a regression "is only caught at the
+    # merge-gate full suite". That is false for the five `--lib`-only merge
+    # gates listed under `tier: merge_gate` below -- `--lib` excludes `tests/`
+    # entirely, so for those crates NO gate executes the integration suite on
+    # any bounded schedule. Coverage depends on some future PR happening to
+    # touch the crate. There is no scheduled backstop either: ci-nightly runs
+    # four targeted commands and flake-detection is `--workspace --lib`.
+    #
+    # #11614 is the confirmed consequence -- `incremental_full_parse_equivalence`
+    # sat red on main until a diff finally touched its crate. See #11694 for the
+    # per-gate inventory and #11708 for the currently-red suites this exposed.
+    # Build the server binary first: binary_version_test (and every suite
+    # that spawns perllsp) resolves the binary through PERL_LSP_BIN ->
+    # CARGO_BIN_EXE -> target/debug/perllsp -> PATH -> cargo-run fallback;
+    # without a prebuilt binary the fallback compile exceeds the test's own
+    # initialize timeout and reds the gate nondeterministically (#9464).
+    command: cargo build -p perllsp --locked && cargo test --locked --tests {package_args}
     # PR #1585 produced timeout-only receipts at 600s and 900s for the
     # perl-lsp-rs/perl-lsp-rs-core/xtask route. Keep the required --tests proof
     # bounded while matching the PR Smoke watchdog for the heavier routed path.
@@ -721,10 +1123,116 @@ gates:
   # ===========================================================================
   # Full verification required before merging. Can be slower but must be thorough.
 
+  # Gate #11933: wire expose_lsp_test_api feature combinations so the
+  # pending-parse freshness test suite and related gap-simulation test suites
+  # cannot rot silently. These files are gated behind cfg(feature = …) and
+  # were never compiled by default CI builds, allowing expectations to drift
+  # from live semantic-token and hover behavior.
+  #
+  # workspace + expose_lsp_test_api family
+  # (pending_parse_provider_freshness_tests.rs, post_edit_index_staleness_tests.rs,
+  #  navigation_same_document_toctou_regression_tests.rs)
+  - name: pending_parse_freshness
+    tier: merge_gate
+    description: >-
+      Compiles and runs the pending-parse gap suites that would otherwise rot
+      behind workspace+expose_lsp_test_api (#11933). pending_parse_provider
+      covers hover, definition, references, semantic tokens, signature help,
+      rename, safe-delete, symbols and completion during a forced gap;
+      navigation TOCTOU covers type-definition and implementation;
+      post_edit_index_staleness covers definition only. Coverage is per-suite,
+      not five provider families across all three.
+    required: true
+    # RUST_TEST_THREADS=2 is the project-documented constraint for perl-lsp-rs
+    # (see crates/perl-lsp-rs/CLAUDE.md). --features must include both workspace
+    # and expose_lsp_test_api or all three suites compile to zero tests silently.
+    command: >-
+      env RUST_TEST_THREADS=2
+      cargo test -p perl-lsp-rs --locked
+      --features workspace,expose_lsp_test_api
+      --test pending_parse_provider_freshness_tests
+      --test post_edit_index_staleness_tests
+      --test navigation_same_document_toctou_regression_tests
+      -- --test-threads=2
+    timeout_seconds: 300
+    retry_count: 1
+    budgets:
+      max_duration_ms: 270000
+    quarantine: false
+    tags:
+      - test
+      - lsp
+      - freshness
+      - pending-parse
+      - expose-test-api
+    planning:
+      role: rust_package_scoped
+      packages:
+        - perl-lsp-rs
+        - perl-lsp-rs-core
+
+  # expose_lsp_test_api only family
+  # (pull_diagnostics_freshness_tests.rs)
+  - name: pull_diagnostics_freshness
+    tier: merge_gate
+    description: >-
+      Panic and compile regression coverage for the pull-diagnostic path behind
+      expose_lsp_test_api (#11933). NOT a freshness proof: the three concurrent
+      cells synchronise with a 2ms sleep and assert only that a well-formed
+      result comes back, so deleting the generation guard would leave them
+      green. Making this discriminating needs the toctou_hook_lock barrier
+      pattern at the snapshot->publish seam; tracked under #13346.
+    required: true
+    command: >-
+      env RUST_TEST_THREADS=2
+      cargo test -p perl-lsp-rs --locked
+      --features expose_lsp_test_api
+      --test pull_diagnostics_freshness_tests
+      -- --test-threads=2
+    timeout_seconds: 240
+    # retry_count only re-runs a gate that hit `timeout_seconds`:
+    # run_shell_command_with_retries retries on `execution.timed_out` and
+    # returns immediately on any other non-zero exit (xtask/src/tasks/gates.rs).
+    # It therefore cannot re-roll a failed assertion, so it does not mask this
+    # suite's sleep-synchronised cells; what it does cover is a cold compile of
+    # the expose_lsp_test_api feature combination exceeding 240s, which is why
+    # every unit_* merge-gate entry carries it.
+    retry_count: 1
+    budgets:
+      max_duration_ms: 210000
+    quarantine: false
+    tags:
+      - test
+      - lsp
+      - freshness
+      - diagnostics
+      - expose-test-api
+    planning:
+      role: rust_package_scoped
+      packages:
+        - perl-lsp-rs
+        - perl-lsp-rs-core
+
   - name: unit_foundation_full
     tier: merge_gate
     description: "Foundation token/AST workspace library tests"
     required: true
+    # `--lib` excludes tests/. 103 integration targets in these crates are
+    # executed by no gate on a bounded schedule -- only when a PR diff happens
+    # to touch the crate, via unit_routed_full. Recorded per #11694; flipping
+    # this to --tests is blocked on the red suites in #11708.
+    #   perl-ast                     14
+    #   perl-ast-v2                   2
+    #   perl-incremental-parsing      8
+    #   perl-line-index               4
+    #   perl-parser-pest              4
+    #   perl-pod                      2
+    #   perl-position-tracking        7
+    #   perl-pragma                   7
+    #   perl-regex                   16
+    #   perl-symbol                  19
+    #   perl-token                   12  (1 covered by explicit --test elsewhere)
+    #   perl-uri                      8
     command: >-
       cargo test --locked --lib
       -p perl-ast -p perl-ast-v2
@@ -744,13 +1252,47 @@ gates:
       - unit
       - workspace
 
+  # perl-parser's `incremental` feature is not in its default set, so a plain
+  # `cargo test -p perl-parser` compiles every `#[cfg(feature = "incremental")]`
+  # test out of existence. The lib selection below therefore names the feature
+  # explicitly (qualified, because more than one package is selected): feature-on
+  # is a strict superset — 227 lib tests become 334 — for roughly 4.7s.
+  #
+  # The second invocation runs the incremental integration targets that no gate
+  # reached. `parser_integration` already executes three of them with the feature
+  # on via its manifest (parser.incremental.integration / .accuracy /
+  # .parse_output), so they are deliberately not repeated here.
+  #
+  # Four incremental targets are deliberately excluded because they assert over
+  # wall-clock samples and are not merge oracles: incremental_edge_cases_test,
+  # incremental_comprehensive_test, incremental_performance_tests, and
+  # incremental_statistical_validation_test. That exclusion is recorded here so
+  # "not run" stays visible rather than silently uncompiled (#9795); the
+  # unsatisfiable distribution-shape assertion inside the last of them is tracked
+  # by #9831.
   - name: unit_parser_stack_full
     tier: merge_gate
-    description: "Parser, lexer, and parser-core library tests"
+    description: "Parser, lexer, and parser-core library tests, deterministic AST/error-recovery snapshot proof, plus deterministic incremental integration targets"
     required: true
     command: >-
       cargo test --locked --lib
       -p perl-parser -p perl-lexer -p perl-parser-core
+      --features perl-parser/incremental
+      -- --test-threads=4
+      &&
+      cargo test --locked -p perl-parser --features incremental
+      --test advanced_reuse_analyzer_heuristics_tests
+      --test ast_snap
+      --test facade_pattern_edge_cases
+      --test g2_api_regression_guards
+      --test incremental_edit_set_normalization
+      --test incremental_parsing_tests
+      --test incremental_regression_slices
+      --test incremental_state_read_only_authority
+      --test mutation_hardening_tests
+      --test ripr_seam_proof_concept_ast_invariant_contract
+      --test vstring_incremental_tests
+      --test wave4_completion_absorption_tests
       -- --test-threads=4
     timeout_seconds: 180
     retry_count: 1
@@ -780,10 +1322,40 @@ gates:
     planning:
       role: always_on
 
+  - name: parser_behavior_proof
+    tier: merge_gate
+    description: "Parser behavior-proof admission: registry validity and validator falsifiers (#6908)"
+    required: true
+    command: >-
+      cargo test -p xtask --bin parser-behavior-proof --locked &&
+      cargo run -p xtask --bin parser-behavior-proof --locked --
+      --receipt target/receipts/parser-behavior-proof.json
+    timeout_seconds: 600
+    retry_count: 0
+    budgets:
+      max_duration_ms: 480000
+    quarantine: false
+    tags:
+      - test
+      - parser
+      - policy
+    planning:
+      role: always_on
+
   - name: unit_analysis_full
     tier: merge_gate
     description: "Semantic analysis, workspace, diagnostics, and refactoring library tests"
     required: true
+    # `--lib` excludes tests/. 183 integration targets in these crates are
+    # executed by no gate on a bounded schedule -- only when a PR diff happens
+    # to touch the crate, via unit_routed_full. Recorded per #11694; flipping
+    # this to --tests is blocked on the red suites in #11708.
+    #   perl-corpus                  14
+    #   perl-diagnostics             11
+    #   perl-module                  71
+    #   perl-semantic-analyzer       45
+    #   perl-semantic-facts           3
+    #   perl-workspace               39
     command: >-
       cargo test --locked --lib
       -p perl-corpus -p perl-diagnostics
@@ -837,6 +1409,11 @@ gates:
     tier: merge_gate
     description: "LSP core library tests (heaviest single crate in the LSP surface)"
     required: true
+    # `--lib` excludes tests/. 82 integration targets in these crates are
+    # executed by no gate on a bounded schedule -- only when a PR diff happens
+    # to touch the crate, via unit_routed_full. Recorded per #11694; flipping
+    # this to --tests is blocked on the red suites in #11708.
+    #   perl-lsp-rs-core             82
     command: >-
       cargo test --locked --lib
       -p perl-lsp-rs-core
@@ -855,6 +1432,15 @@ gates:
     tier: merge_gate
     description: "LSP server, editor UX, perltidy, and subprocess library tests"
     required: true
+    # `--lib` excludes tests/. 356 integration targets in these crates are
+    # executed by no gate on a bounded schedule -- only when a PR diff happens
+    # to touch the crate, via unit_routed_full. Recorded per #11694; flipping
+    # this to --tests is blocked on the red suites in #11708.
+    #   perl-lsp-perltidy            10
+    #   perl-lsp-rs                 253  (19 covered by explicit --test elsewhere)
+    #   perl-lsp-ux-tests            82
+    #   perl-subprocess-runtime       3
+    #   perllsp                       8  (1 covered by explicit --test elsewhere)
     command: >-
       cargo test --locked --lib
       -p perl-lsp-perltidy -p perl-lsp-rs
@@ -873,18 +1459,49 @@ gates:
 
   - name: unit_dap_support_full
     tier: merge_gate
-    description: "DAP, CI hygiene, test support, and tree-sitter workspace library tests"
+    description: "DAP, CI hygiene, test support, and tree-sitter workspace tests; Linux does not prove Windows-only pause runtime"
     required: true
+    # Keep the broad support-crate portion --lib-only because the remaining
+    # integration suites are tracked red debt (#11708). The four perl-dap
+    # test-helpers targets below are healthy and must be executed explicitly:
+    # `cargo test --tests` otherwise skips them silently when the feature is off
+    # (#14333). Recorded per #11694; flipping the broad support-crate portion to
+    # --tests is blocked on the red suites in #11708.
+    # pr_fast residual: unit_routed_full still runs the perl-dap leg without
+    # `--features test-helpers`, so these four targets stay absent from the
+    # pr_fast lane; closing that leg is tracked in #14458.
+    #   perl-ci-hygiene               6
+    #   perl-dap                    115
+    #   perl-tdd-support              4
+    #   perl-test-generators          2
+    #   perl-test-must                2
+    #   tree-sitter-perl-c            6
+    #   tree-sitter-perl-rs           8
+    # The command is retried once only after a watchdog timeout. Two attempts
+    # at 450s plus the Linux watchdog's 75s TERM/KILL grace per attempt consume
+    # 1050s, leaving ample room inside the workflow's 1800s shard watchdog for
+    # the terminal gate receipt, summary, and cleanup. Do not increase this
+    # ceiling without revisiting that outer watchdog contract.
+    # Claim boundary: on Linux `#[cfg(windows)]` removes the Windows-only
+    # pause test before compilation, so this row runs only non-Windows tests
+    # and does not prove Windows pause behavior; that remains a Windows proof
+    # obligation.
     command: >-
       cargo test --locked --lib
       -p perl-ci-hygiene -p perl-dap
       -p perl-tdd-support -p perl-test-generators -p perl-test-must
       -p tree-sitter-perl-c -p tree-sitter-perl-rs
+      -- --test-threads=4 &&
+      cargo test --locked --features test-helpers -p perl-dap
+      --test eval_ref_cache_miss_resume_tests
+      --test dap_evaluate_comprehensive_tests
+      --test dap_variable_reference_hardening_tests
+      --test pause_signal_delivery_tests
       -- --test-threads=4
-    timeout_seconds: 300
+    timeout_seconds: 450
     retry_count: 1
     budgets:
-      max_duration_ms: 240000
+      max_duration_ms: 360000
     quarantine: false
     tags:
       - test
@@ -893,26 +1510,67 @@ gates:
 
   - name: lsp_smoke
     tier: merge_gate
-    description: "Deterministic LSP semantic-definition and initialize-contract tests"
+    description: "Deterministic LSP semantic-definition and initialize-contract tests (atomic children, #8063)"
     required: true
-    # Single-threaded for determinism. Keep the wire-shape regression focused:
-    # this target contains many API contracts, but only textDocumentSync owns
-    # the reviewed recurrence claim in #6776.
+    # Atomic, bounded, independently terminal (#8063): the old composite
+    # (`cargo build && cargo test && cargo test`) under one 300s watchdog
+    # could only ever report `lsp_smoke = timeout`, erasing every child
+    # verdict — the symptom behind the #9601 fleet timeouts and the #8053
+    # classification pain.
+    #
+    # The xtask harness (`xtask/src/tasks/lsp_smoke_atomic.rs`) executes nine
+    # children, each with its own bounded timeout and typed terminal status.
+    # Behavior children run the PREBUILT test binary directly (the path the
+    # compile child's `--no-run` output names) — never cargo again: the first
+    # hosted run of a cargo-per-child shape rebuilt units every re-entry and
+    # each watchdog kill corrupted cargo fingerprints, cascading into four
+    # consecutive child timeouts (PR #12091 run 32681631693)
+    # (PASS / ASSERTION_FAILURE / REQUEST_TIMEOUT / TEARDOWN_TIMEOUT /
+    # PROCESS_EXIT / COMPILE_FAILURE / INSTRUMENT_FAILURE / CANCELLED /
+    # NOT_PROVEN): the perllsp prebuild (#9677 keeps this mandatory) blocks
+    # only server-dependent semantic behavior, while the in-process API child
+    # remains independently provable; the two
+    # per-target `--no-run` compiles, the four named semantic-definition
+    # cases, the client-support registry suite (one grouped child — shared
+    # registry-drift failure surface, no sibling suppression), and the
+    # textDocumentSync camelCase contract (#6776). A compile/setup failure
+    # marks dependents NOT_PROVEN; one hanging child cannot consume the
+    # evidence surface; behavior children run prebuilt, single-threaded
+    # (`--test-threads=1`) for determinism; setup/compile children use
+    # default build parallelism (`CARGO_BUILD_JOBS=1` only slowed compilation).
+    #
+    # Per-child budgets: 300s setup/compile (the old composite's whole-gate
+    # budget; the incident compile measured ~219s and sibling unit gates
+    # finish in 173-243s including compiles; default build parallelism — not
+    # the old CARGO_BUILD_JOBS=1 — cuts the cold-compile wall), 120s behavior.
+    #
+    # The 720s declared gate timeout is the suite runaway bound sized to the
+    # hosted envelope. On Linux the shared gate watchdog adds a 75s TERM/KILL
+    # grace to its Rust backstop after the declared execution window. This is
+    # NOT the arithmetic sum
+    # of child budgets (3 x 2 x 300s retrying
+    # compiles + 6 x 120s behavior = 2520s worst case): this gate runs third
+    # in the `lsp` CI Gate shard behind unit_lsp_core_full and unit_lsp_full
+    # (typically 173-243s each) under the shard runner's 1800s inner watchdog
+    # (scripts/ci/run_gate_shard.py + the `timeout 1800s` step guard), leaving
+    # lsp_smoke roughly 720s in a typical hosted run. If either the gate guard
+    # or the shard watchdog pre-empts the suite, the child receipt — persisted
+    # after every child — retains completed children and marks the
+    # running/remaining ones CANCELLED with explicit execution marks.
+    #
+    # retry_count is deliberately absent: retry policy is executable only
+    # inside the harness, where it is typed — setup/compile children retry a
+    # watchdog timeout once (#10023 compile-overrun remedy, attempts
+    # retained), and behavior children never retry (a prebuilt-binary timeout
+    # is genuine test evidence a rerun must not erase). A gate-level
+    # `retry_count` here would rerun the whole suite on outer timeout.
     command: >-
-      env -u RUSTC_WRAPPER
-      RUST_TEST_THREADS=1 CARGO_BUILD_JOBS=1
-      cargo test -p perl-lsp-rs --test semantic_definition --locked
-      -- --test-threads=1
-      &&
-      env -u RUSTC_WRAPPER
-      RUST_TEST_THREADS=1 CARGO_BUILD_JOBS=1
-      cargo test -p perl-lsp-rs --test lsp_api_contracts --locked
-      test_text_document_sync_option_keys_use_lsp_camel_case
-      -- --exact --test-threads=1
-    timeout_seconds: 300
-    retry_count: 1
+      cargo run --locked -p xtask
+      -- lsp-smoke-atomic
+      --receipt target/receipts/artifacts/lsp_smoke_children.json
+    timeout_seconds: 720
     budgets:
-      max_duration_ms: 240000
+      max_duration_ms: 576000
     quarantine: false
     tags:
       - test
@@ -1045,6 +1703,7 @@ gates:
       cargo xtask check-semantic-token-classes &&
       cargo xtask check-workspace-symbol-classes &&
       cargo xtask check-provider-promotion-ledger &&
+      cargo xtask check-code-action-generation-ledger &&
       cargo xtask check-provider-confidence-matrix &&
       cargo xtask check-native-product-surface --strict &&
       bash scripts/check-version-sync.sh &&
@@ -1114,7 +1773,7 @@ gates:
 
   - name: non_rust_inventory_check
     tier: merge_gate
-    description: "Scan and classify tracked non-Rust files without requiring a race-prone snapshot match"
+    description: "Classify the current tracked tree, emit retained inventory evidence, and reject newly added unclassified paths"
     required: true
     command: cargo xtask non-rust inventory --check
     timeout_seconds: 300
@@ -1126,6 +1785,123 @@ gates:
       - policy
       - docs
       - generated
+
+  - name: docs_agents_contract_workflows
+    tier: merge_gate
+    description: "Assert each registered docs/agents contract workflow still exists (deletion cannot silently stop enforcement)"
+    required: true
+    # Invoked as a script, not `python3 -m unittest …`: the shard runner
+    # rejects `-m` as an unsupported nested interpreter command.
+    command: python3 tests/test_docs_agents_contract_workflows.py
+    timeout_seconds: 30
+    retry_count: 0
+    budgets:
+      max_duration_ms: 10000
+    quarantine: false
+    tags:
+      - policy
+      - ci
+      - docs
+
+  - name: must_context_check
+    tier: merge_gate
+    # ADVISORY on landing (#14291). The blocking-failure filter in
+    # `xtask/src/tasks/gates.rs` is `required.unwrap_or(true)`, so a
+    # `required: false` member runs on every PR and reports without failing the
+    # shard. That is deliberate for a brand-new guard: it needs a period of
+    # real hosted traffic before a false positive can block anyone's merge. The
+    # known false-positive shape is documented in
+    # `crates/perl-ci-hygiene/src/commands/must_context.rs` (unrelated edits
+    # sharing one zero-context hunk); its remedy is always one line. Promoting
+    # this to `required: true` is a separate, evidenced decision.
+    description: "Report changes that drop an .expect(\"…\") explanation into a bare perl-test-must helper"
+    required: false
+    command: cargo xtask ci-hygiene check-must-context
+    # Matches non_rust_inventory_check, the sibling `cargo xtask ...` gate in
+    # this shard: the cost is the cargo invocation, not the scan itself.
+    timeout_seconds: 300
+    retry_count: 0
+    budgets:
+      max_duration_ms: 240000
+    quarantine: false
+    tags:
+      - policy
+      - tests
+
+  # #13774: before this route existed, nothing in the repository ever ran
+  # `cargo test --doc` — not a gate, not a workflow, not a `justfile` recipe.
+  # Every `compile_fail` doctest was therefore documentation that looked like
+  # proof: reintroducing the construct one forbids left CI fully green.
+  #
+  # The package list is bounded on purpose rather than `--workspace`. Measured
+  # on 1da8ec61, a workspace-wide `--doc` run is 162 passed / 15 failed / 169
+  # ignored across 33 packages carrying doctests; the 15 failures are ordinary
+  # examples in perl-dap (11), perl-parser-core (3), and perl-lsp-rs-core (1),
+  # none of which carry a `compile_fail` contract. Those are tracked
+  # separately and are not this route's claim.
+  #
+  # The list is a floor, not a snapshot: `doctest_enforcement` fails the
+  # policy shard if any package grows a `compile_fail` fence without being
+  # added here, so the gap cannot silently reopen.
+  #
+  # Note: `[lib] doctest = false` does NOT exclude a package from this route.
+  # Measured on the pinned toolchain, that field only removes doctests from
+  # the default `cargo test` target selection; an explicit `--doc` collects
+  # them regardless. The real exclusion is a non-default feature, which is why
+  # perl-parser's `incremental` contracts were migrated to a gate-run target
+  # instead of being selected here.
+  - name: doctest_contract_proof
+    tier: merge_gate
+    description: "Execute doctests for the packages carrying compile_fail contracts, so negative type-level invariants are enforced rather than merely documented"
+    required: true
+    command: >-
+      cargo test --locked --doc
+      -p perl-token
+      -p perl-module
+      -p perl-corpus
+      -p perl-evidence-envelope
+      -p xtask
+    timeout_seconds: 300
+    retry_count: 0
+    budgets:
+      max_duration_ms: 240000
+    quarantine: false
+    tags:
+      - test
+      - doctest
+      - contract
+      - ratchet
+
+  - name: doctest_enforcement
+    tier: merge_gate
+    description: "Ratchet: every compile_fail doctest contract must sit inside the doctest_contract_proof route (#13774)"
+    required: true
+    command: cargo xtask ci-hygiene check-doctest-enforcement
+    # Matches must_context_check, the sibling `cargo xtask ci-hygiene ...`
+    # gate in this shard: the cost is the cargo invocation, not the scan.
+    timeout_seconds: 300
+    retry_count: 0
+    budgets:
+      max_duration_ms: 240000
+    quarantine: false
+    tags:
+      - policy
+      - doctest
+      - ratchet
+
+  - name: lint_policy
+    tier: merge_gate
+    description: "Validate the workspace Clippy lint policy against its catalog and ledgers"
+    required: true
+    command: cargo xtask check-lint-policy
+    timeout_seconds: 300
+    retry_count: 0
+    budgets:
+      max_duration_ms: 240000
+    quarantine: false
+    tags:
+      - policy
+      - lint
 
   # Guards the MSRV declared by Cargo.toml, rust-toolchain.toml, this file's
   # global.toolchain.msrv, and the pinned matrix legs below. #6106 exists
@@ -1152,6 +1928,183 @@ gates:
       - policy
       - version
       - hygiene
+
+  # The compiler concept ledger (#6657) and proof policy (#6689) are fail-closed
+  # contracts: they reject untracked concept rows, unknown proof classes, circular
+  # gold, and stale generated status docs. Nothing executed either validator until
+  # this gate existed, so the fail-closed claim was inert and the committed status
+  # docs could drift silently against their contracts. Two gates rather than one
+  # `&&` chain, for the same reason policy_checks was decomposed: a chained
+  # command stops reporting once an early link fails.
+  - name: compiler_concept_ledger
+    tier: merge_gate
+    description: "Validate contracts/compiler/perl_compiler_concepts.v1.toml and its generated status doc"
+    required: true
+    command: cargo run --locked -p xtask --bin compiler-concepts -- --check
+    timeout_seconds: 300
+    retry_count: 0
+    budgets:
+      max_duration_ms: 240000
+    quarantine: false
+    tags:
+      - policy
+      - contract
+      - generated
+
+  # The compiler performance receipt (#9311) is a fail-closed contract in the
+  # same family as compiler_concept_ledger above: it rejects counters published
+  # without measurement, a cache hit without validated currentness, contradictory
+  # stage states, and unpinned artifact identities. Nothing executed it until this
+  # gate existed, so its enforcement claim was inert — and the non-Rust allowlist
+  # rows for the schema and both fixtures name this command as their coverage,
+  # which is only true if something runs it. Runs in the `policy` shard.
+  - name: compiler_performance_receipt_contract
+    tier: merge_gate
+    description: "Prove the compiler performance receipt contract discriminates — the falsifiers for every schema, typed, and cross-field rule — then validate the committed schema and every receipt fixture against it"
+    required: true
+    # The falsifiers run here, not only the validator. Review found that deleting
+    # a schema-only rule — the cache reuse conditional, say — left the validator
+    # green, because both committed fixtures are positive receipts that satisfy
+    # the schema either way. A gate that only runs the validator therefore proves
+    # the fixtures conform, not that the contract still forbids what it claims to.
+    # The controls are what discriminate, so the gate carries them.
+    # A cargo name filter that matches nothing exits 0 having run zero tests, so
+    # this command alone could pass with the control suite renamed away. The floor
+    # that stops that lives in the validator (`validate_control_suite`), not here:
+    # the gate-policy shell vocabulary deliberately admits no variable assignment,
+    # command substitution, grouping, brace or bracket expansion, so the count
+    # cannot be asserted in this string. `check-...` runs second and fails if the
+    # suite is gone or gutted. What the pair proves is narrower than "the controls
+    # ran": the source declares a floor of them and whatever the filter matched
+    # passed. Neither half counts executed tests, so a control excluded by `cfg`
+    # on some platform still counts toward the floor.
+    command: cargo test -p xtask --bin xtask compiler_performance_receipt --locked && cargo xtask check-compiler-performance-receipt
+    # 600s/540000ms matches unit_scoped and parser_behavior_proof, the sibling
+    # required gates that compile a test harness. Measured at 350s from a clean
+    # xtask (both the test harness and the bin built from scratch, deps cached);
+    # the validator and its control suite run in well under a second. The
+    # control count is owned by CONTROL_SUITE_FLOOR in the module, not restated here.
+    timeout_seconds: 600
+    retry_count: 0
+    budgets:
+      max_duration_ms: 540000
+    quarantine: false
+    tags:
+      - policy
+      - compiler
+      - contract
+
+  - name: release_trust_invariants
+    tier: merge_gate
+    description: "Validate policy/release-trust-invariants.v1.json and its generated status projection"
+    required: true
+    command: cargo xtask release-trust-invariants check
+    timeout_seconds: 300
+    retry_count: 0
+    budgets:
+      max_duration_ms: 240000
+    quarantine: false
+    tags:
+      - policy
+      - contract
+      - generated
+      - release
+
+  - name: compiler_proof_policy
+    tier: merge_gate
+    description: "Validate contracts/compiler/perl_compiler_proof_policy.v1.toml against the concept ledger and its generated status doc"
+    required: true
+    command: cargo run --locked -p xtask --bin compiler-proof-policy -- --check
+    timeout_seconds: 300
+    retry_count: 0
+    budgets:
+      max_duration_ms: 240000
+    quarantine: false
+    tags:
+      - policy
+      - contract
+      - generated
+
+  - name: compiler_concept_proof
+    tier: merge_gate
+    description: "Validate the one-to-one concept proof-obligation matrix against the ledger and proof policy, and its generated status doc"
+    required: true
+    command: cargo run --locked -p xtask --bin compiler-concept-proof -- --check
+    timeout_seconds: 300
+    retry_count: 0
+    budgets:
+      max_duration_ms: 240000
+    quarantine: false
+    tags:
+      - policy
+      - contract
+      - generated
+
+  # The Kubernetes DAP workspace-profile contract (#10112) is fail-closed: it
+  # rejects every unsupported network/service/sidecar/operator topology and
+  # verifies each typed rejection class against a deterministic negative
+  # fixture. Nothing executed the validator until this gate existed, so the
+  # committed status doc and the fixture matrix could drift silently.
+  - name: kubernetes_dap_profiles
+    tier: merge_gate
+    description: "Validate contracts/dap/kubernetes_dap_workspace_profile.v1.toml, its fixtures, and its generated status doc"
+    required: true
+    command: cargo run --locked -p xtask --bin kubernetes-dap-profiles -- --check
+    timeout_seconds: 300
+    retry_count: 0
+    budgets:
+      max_duration_ms: 240000
+    quarantine: false
+    tags:
+      - policy
+      - contract
+      - generated
+
+  # Overlay on the #6657/#6689 derived capability state. It does not replace
+  # the concept ledger, proof-policy, or per-class matrix gates: those still
+  # admit or reject individual cells. This gate only rejects marking the
+  # postfix statement-modifier umbrella / capability docs complete while
+  # required non-HIR layers remain missing (#13281).
+  - name: postfix_capability_closure
+    tier: merge_gate
+    description: "Reject HIR-only completion claims for control.postfix_modifier capability docs (#13281)"
+    required: true
+    command: >-
+      cargo test -p xtask --bin postfix-capability-closure --locked &&
+      cargo run --locked -p xtask --bin postfix-capability-closure -- --check
+    timeout_seconds: 300
+    retry_count: 0
+    budgets:
+      max_duration_ms: 240000
+    quarantine: false
+    tags:
+      - policy
+      - contract
+      - compiler
+
+  # The agent-ledger contract (#15380) is fail-closed: `cargo xtask
+  # agent ledgers validate` rejects malformed ledger rows, unknown envelope
+  # versions, and schema drift in docs/agents/ledgers/*.jsonl. Only the
+  # validator's unit-test module ran in CI until this gate existed, so the CLI
+  # was never invoked against the committed files and ledger drift was
+  # silently absorbed. Runs in the `policy` shard. Note the Clap hierarchy
+  # is `agent ledgers validate` (AgentCommand::Ledgers) — the dashed
+  # `agent-ledgers` form is not a registered subcommand (exit 2).
+  - name: agent_ledgers_validate
+    tier: merge_gate
+    description: "Validate docs/agents/ledgers/*.jsonl against the agent-ledger contract"
+    required: true
+    command: cargo xtask agent ledgers validate --format json
+    # 300s to match the sibling `cargo xtask ...` gates in this shard. The
+    # validator itself is near-instant; the cost is the cargo invocation.
+    timeout_seconds: 300
+    retry_count: 0
+    budgets:
+      max_duration_ms: 240000
+    quarantine: false
+    tags:
+      - policy
+      - contract
 
   # NOTE (2026-08-10, #6261): demoted to advisory (required: false). No workflow
   # shard executes this gate; wire into parser_stack or corpus shard before
@@ -1227,21 +2180,6 @@ gates:
     tags:
       - lockfile
       - hygiene
-
-  - name: published_crate_count
-    tier: merge_gate
-    description: "Ratchet: published crate count must not exceed baseline"
-    required: true
-    command: cargo xtask published-crate-count
-    timeout_seconds: 30
-    retry_count: 0
-    budgets:
-      max_duration_ms: 5000
-    quarantine: true  # Until collapse completes (~30-31 crates)
-    tags:
-      - ratchet
-      - microcrate
-      - collapse
 
   # ===========================================================================
   # Tier: nightly
@@ -1718,7 +2656,6 @@ workflow_integration:
   job_mapping:
     ci-gate:
       gates:
-        - fmt
         - ignored_tests_check_refs
         - clippy_full
         - unit_foundation_full
@@ -1726,14 +2663,27 @@ workflow_integration:
         - unit_lsp_core_full
         - unit_lsp_full
         - unit_dap_support_full
-        - compile_all_targets
+        # compile_all_targets is intentionally absent (#15638): the required
+        # `check-all-targets` workflow job owns it; the meta-shard copy was a
+        # deterministic timeout duplicate. Lane mapping lives in
+        # scripts/ci/validate_gate_lane_mapping.py.
         - common_corpus_clean
         - lsp_smoke
+        - pending_parse_freshness
+        - pull_diagnostics_freshness
         - docs_build
         - non_rust_inventory_check
         - v2_bundle_sync
         - nested_lock_check
-        - published_crate_count
+        - doctest_contract_proof
+        - doctest_enforcement
+        - published_crate_count_pr_fast
+        - agent_ledgers_validate
+      # `compile_all_targets` is not listed here since #15638: the meta shard
+      # no longer executes it (the required `Compile All Targets (bit-rot
+      # guard)` job owns the property), and this mapping must not claim
+      # matrix execution that no longer exists. The gate row itself remains
+      # in tier pr_fast for local pr-fast and advisory pr-smoke shift-left.
       # Note: PR Smoke owns clippy_core/unit_core/parser stack. Parser audit,
       # v2 parity, workflow audit, and full policy closeout remain defined but
       # are too long for the bounded merge-blocking workflow shard.
@@ -1756,6 +2706,20 @@ workflow_integration:
 # Track significant changes to this policy.
 
 version_history:
+  - version: "1.3.0"
+    date: "2026-09-14"
+    changes:
+      - "Add doctest_contract_proof and doctest_enforcement merge_gate entries (#13774). Before them nothing in the repository ever ran `cargo test --doc`, so every `compile_fail` doctest — the only idiom here for a negative type-level contract — was documentation that looked like proof. Measured on 1da8ec61: `cargo test --workspace --doc` is 162 passed / 15 failed / 169 ignored across the 33 packages that carry doctests."
+      - "doctest_contract_proof runs a bounded package list rather than --workspace. The 15 failures are ordinary examples in perl-dap (11), perl-parser-core (3), and perl-lsp-rs-core (1); none of those packages carries a `compile_fail` contract, so they are separate residual work rather than this route's claim."
+      - "doctest_enforcement is the ratchet that keeps the bounded list a floor: it fails when a package grows a `compile_fail` fence without being added to the route, when the route stops passing --doc, when the route selects no package, when the route is demoted, quarantined, or unrequired, when the inventory cannot read a member manifest or source file (fail closed), and when the route is deleted. All are proven by mutation or unit falsifier, not assertion."
+      - "`[lib] doctest = false` is deliberately NOT treated as an exclusion. Measured on the pinned 1.95.0 toolchain, that field only removes doctests from the default `cargo test` target selection; an explicit --doc collects them regardless (perl-parser-core declares it and still reports 18 passed / 3 failed). The real exclusion is a non-default feature, which is why perl-parser's `incremental` compile_fail contracts were migrated to a gate-run target instead of being selected here."
+      - "unit_parser_stack_full gains --test incremental_state_read_only_authority, the migrated home of those contracts."
+  - version: "1.2.0"
+    date: "2026-08-24"
+    changes:
+      - "Add pending_parse_freshness and pull_diagnostics_freshness merge_gate entries (#11933): wire workspace+expose_lsp_test_api and expose_lsp_test_api feature combinations into mandatory CI so gap-simulation suites cannot rot silently"
+      - "Both gate descriptions were narrowed to compile/panic regression coverage after review: the pull-diagnostic concurrent cells assert only a well-formed result and cannot prove stale-snapshot rejection. .ci/GATE_REGISTRY.toml and gate-policy.yaml now carry the same narrowed wording; neither is an optimistic claim over the other. Restoring a stale-rejection claim requires the barrier work under #13346."
+      - "pull_diagnostics_freshness keeps retry_count: 1. A review round set it to 0 on the theory that a retry could re-roll its sleep-synchronised cells; the shard runner only retries on watchdog timeout and returns immediately on any other non-zero exit, so retry cannot mask an assertion failure. It covers cold compilation of the feature combination, which is why every unit_* merge-gate entry carries it."
   - version: "1.1.0"
     date: "2026-08-10"
     changes:

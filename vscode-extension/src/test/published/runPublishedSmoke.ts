@@ -10,16 +10,130 @@ import {
   runTests,
 } from '@vscode/test-electron';
 import { resolveVSCodeTestVersion } from '../vscodeHostVersion';
-import { writeHostResolutionFailureReceipt } from '../vscodeHostResolution';
+import { downloadVsCodeHostOrWriteFailureReceipt } from '../vscodeHostResolution';
 import { runWithoutForcedWorkspaceTrust } from '../runVsCodeTests';
 import { workspaceSmokeLaunchArgs, workspaceSmokeTrustMode } from '../workspaceSmokeOptions';
 
 const EXTENSION_ID = 'EffortlessMetrics.perl-lsp-rs';
 
+class CandidateBoundPlatformUnavailableError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'CandidateBoundPlatformUnavailableError';
+  }
+}
+
 type ExtensionSource = 'marketplace' | 'open-vsx' | 'vsix';
 
 function envValue(name: string): string {
   return process.env[name]?.trim() ?? '';
+}
+
+export interface CandidateBoundInstallContext {
+  source: ExtensionSource;
+  version: string;
+  vsixPath: string;
+  candidateBound: boolean;
+}
+
+export function assertCandidateBoundInstallSource({
+  source,
+  version,
+  vsixPath,
+  candidateBound,
+}: CandidateBoundInstallContext): void {
+  if (!candidateBound) {
+    return;
+  }
+  if (source === 'marketplace') {
+    throw new Error(
+      version
+        ? 'Candidate-bound installed acceptance refuses Marketplace installs because the installed extension VSIX digest cannot be observed; use source=vsix with an exact VSIX path and observed digest.'
+        : 'Candidate-bound installed acceptance refuses Marketplace latest; use source=vsix with an exact VSIX path and observed digest.',
+    );
+  }
+  if (source === 'open-vsx' && !version) {
+    throw new Error(
+      'Candidate-bound installed acceptance requires an exact Open VSX version so the downloaded VSIX can be observed and hashed.',
+    );
+  }
+  if (source === 'vsix' && !vsixPath) {
+    throw new Error(
+      'Candidate-bound installed acceptance requires PERL_LSP_PUBLISHED_VSIX_PATH for an observed VSIX artifact.',
+    );
+  }
+}
+
+export function assertCandidateBoundPlatform(
+  platform: string,
+  candidateBound: boolean,
+  completeCandidateIdentity = false,
+): void {
+  if (candidateBound && platform === 'win32' && !completeCandidateIdentity) {
+    throw new CandidateBoundPlatformUnavailableError(
+      'Candidate-bound Windows installed acceptance requires candidate ID, artifact-set ID, frozen product SHA, and artifact manifest before bundled-server digest binding.',
+    );
+  }
+  if (candidateBound && platform !== 'linux' && platform !== 'win32') {
+    throw new CandidateBoundPlatformUnavailableError(
+      `Candidate-bound installed acceptance is supported only on Linux and Windows; refusing ${platform} bundled-server digest binding.`,
+    );
+  }
+}
+
+function smokePlatformLabel(): string {
+  switch (process.platform) {
+    case 'win32':
+      return 'windows';
+    case 'darwin':
+      return 'macos';
+    case 'linux':
+      return 'linux';
+    default:
+      return process.platform;
+  }
+}
+
+function smokeReceiptLabel(): string {
+  const label = envValue('PERL_LSP_SMOKE_SOURCE_LABEL') || 'packaged-bundle';
+  if (!/^[A-Za-z0-9_-]+$/.test(label)) {
+    throw new Error(`Smoke receipt label must be a single safe path component, got ${label}`);
+  }
+  return label;
+}
+
+function configureInstalledAcceptanceReceipt(
+  extensionTestsEnv: NodeJS.ProcessEnv,
+  receiptsRoot: string,
+): void {
+  if (process.env.PERL_LSP_PACKAGED_BUNDLE_SMOKE !== '1') {
+    return;
+  }
+
+  const candidateId = envValue('PERL_LSP_CANDIDATE_ID');
+  const artifactSetId = envValue('PERL_LSP_ARTIFACT_SET_ID');
+  const frozenProductSha = envValue('PERL_LSP_CURRENT_SOURCE_SHA');
+  const artifactManifest = envValue('PERL_LSP_CANDIDATE_ARTIFACT_MANIFEST');
+  const candidateIdentityPresent = Boolean(
+    candidateId || artifactSetId || frozenProductSha || artifactManifest,
+  );
+  if (
+    candidateIdentityPresent &&
+    (!candidateId || !artifactSetId || !frozenProductSha || !artifactManifest)
+  ) {
+    throw new Error(
+      'Candidate-bound packaged smoke requires candidate ID, frozen product SHA, artifact-set ID, and artifact manifest together.',
+    );
+  }
+  if (candidateIdentityPresent) {
+    const label = smokeReceiptLabel();
+    extensionTestsEnv.PERL_LSP_VERIFIED_OUTPUT = path.join(
+      receiptsRoot,
+      label,
+      smokePlatformLabel(),
+      'verified_child_receipt.json',
+    );
+  }
 }
 
 function toolchainNpmVersion(): string {
@@ -131,6 +245,57 @@ async function downloadFileWithRetry(url: string, destination: string): Promise<
   throw new Error(`Failed to download published extension from ${url}\n${lastFailure}`);
 }
 
+export interface PublishedInstallAttemptResult {
+  status: number | null;
+  error?: NodeJS.ErrnoException | undefined;
+  stdout?: string | null | undefined;
+  stderr?: string | null | undefined;
+}
+
+export function isDeterministicPublishedInstallFailure(
+  result: PublishedInstallAttemptResult,
+): boolean {
+  if (result.status === 0) {
+    return false;
+  }
+  const output = `${result.stdout ?? ''}\n${result.stderr ?? ''}`;
+  return (
+    result.status === 127 ||
+    result.error?.code === 'ENOENT' ||
+    /error while loading shared libraries:|cannot open shared object file/i.test(output) ||
+    /To use Visual Studio Code with the Windows Subsystem for Linux/i.test(output)
+  );
+}
+
+export async function retryPublishedInstall(
+  install: () => PublishedInstallAttemptResult,
+  wait: (milliseconds: number) => Promise<void> = sleep,
+): Promise<void> {
+  let lastFailure = '';
+  for (let attempt = 1; attempt <= 12; attempt += 1) {
+    const result = install();
+    if (result.status === 0) {
+      return;
+    }
+    lastFailure = [
+      `attempt ${attempt}`,
+      `exit ${result.status ?? 'unknown'}`,
+      result.error instanceof Error ? result.error.message : '',
+      result.stdout,
+      result.stderr,
+    ]
+      .filter(Boolean)
+      .join('\n');
+    if (isDeterministicPublishedInstallFailure(result)) {
+      throw new Error(`Published extension install failed deterministically\n${lastFailure}`);
+    }
+    if (attempt < 12) {
+      await wait(20_000);
+    }
+  }
+  throw new Error(`Failed to install published extension after 12 attempts\n${lastFailure}`);
+}
+
 async function resolveInstallTarget(source: ExtensionSource, tempDir: string): Promise<string> {
   const version = envValue('PERL_LSP_PUBLISHED_EXTENSION_VERSION');
   const extensionId = envValue('PERL_LSP_PUBLISHED_EXTENSION_ID') || EXTENSION_ID;
@@ -187,34 +352,23 @@ async function installExtension(
   ];
   const command = process.platform === 'win32' ? process.env.ComSpec || 'cmd.exe' : cliPath;
   const commandArgs = process.platform === 'win32' ? ['/d', '/s', '/c', cliPath, ...args] : args;
-  let lastFailure = '';
-
-  for (let attempt = 1; attempt <= 12; attempt += 1) {
-    const result = spawnSync(command, commandArgs, {
-      encoding: 'utf8',
-      windowsHide: true,
+  try {
+    await retryPublishedInstall(() => {
+      const result = spawnSync(command, commandArgs, {
+        encoding: 'utf8',
+        windowsHide: true,
+      });
+      return {
+        status: result.status,
+        error: result.error,
+        stdout: result.stdout,
+        stderr: result.stderr,
+      };
     });
-
-    if (result.status === 0) {
-      return;
-    }
-
-    lastFailure = [
-      `attempt ${attempt}`,
-      `exit ${result.status ?? 'unknown'}`,
-      result.error instanceof Error ? result.error.message : '',
-      result.stdout,
-      result.stderr,
-    ]
-      .filter(Boolean)
-      .join('\n');
-
-    if (attempt < 12) {
-      await sleep(20_000);
-    }
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`Failed to install published extension ${installTarget}\n${message}`);
   }
-
-  throw new Error(`Failed to install published extension ${installTarget}\n${lastFailure}`);
 }
 
 function configureCurrentSourceSmoke(
@@ -247,8 +401,78 @@ function configureCurrentSourceSmoke(
   process.env.PERL_LSP_PUBLISHED_EXTENSIONS_DIR = extensionsDir;
 }
 
+/**
+ * Fixed installed-profile settings for the packaged activation-failure journey
+ * (#7856): the same isolated profile is shared by the failure leg and the
+ * retry leg, so both must resolve the server from the packaged bundle with
+ * downloads disabled — the retry receipt proves the activated server IS the
+ * bundled candidate, never an ambient or downloaded binary.
+ */
+function configureActivationFailureSmoke(userDataDir: string): void {
+  if (process.env.PERL_LSP_ACTIVATION_FAILURE_SMOKE !== '1') {
+    return;
+  }
+  const settingsDir = path.join(userDataDir, 'User');
+  fs.mkdirSync(settingsDir, { recursive: true });
+  const settings: Record<string, unknown> = {
+    'perl-lsp.autoDownload': false,
+    'perl-lsp.serverPath': '',
+    'perl-lsp.includePaths': [],
+    'perl-lsp.critic.enabled': false,
+    'update.showReleaseNotes': false,
+  };
+  fs.writeFileSync(path.join(settingsDir, 'settings.json'), JSON.stringify(settings, null, 2));
+}
+
+/**
+ * Fixed installed-profile settings for the packaged crash-recovery journey
+ * (#7848): both legs share one isolated profile and must resolve the server
+ * from the packaged bundle with downloads disabled, so every generation the
+ * journey kills and every replacement it observes IS the bundled candidate —
+ * never an ambient or downloaded binary.
+ */
+function configureCrashRecoverySmoke(userDataDir: string): void {
+  if (process.env.PERL_LSP_CRASH_RECOVERY_SMOKE !== '1') {
+    return;
+  }
+  const settingsDir = path.join(userDataDir, 'User');
+  fs.mkdirSync(settingsDir, { recursive: true });
+  const settings: Record<string, unknown> = {
+    'perl-lsp.autoDownload': false,
+    'perl-lsp.serverPath': '',
+    'perl-lsp.includePaths': [],
+    'perl-lsp.critic.enabled': false,
+    'update.showReleaseNotes': false,
+  };
+  fs.writeFileSync(path.join(settingsDir, 'settings.json'), JSON.stringify(settings, null, 2));
+}
+
 async function main(): Promise<void> {
   const source = publishedSource();
+  const version = envValue('PERL_LSP_PUBLISHED_EXTENSION_VERSION');
+  const candidateBound = Boolean(
+    envValue('PERL_LSP_CANDIDATE_ID') ||
+    envValue('PERL_LSP_ARTIFACT_SET_ID') ||
+    envValue('PERL_LSP_CURRENT_SOURCE_SHA') ||
+    envValue('PERL_LSP_CANDIDATE_ARTIFACT_MANIFEST'),
+  );
+  const completeCandidateIdentity = [
+    envValue('PERL_LSP_CANDIDATE_ID'),
+    envValue('PERL_LSP_ARTIFACT_SET_ID'),
+    envValue('PERL_LSP_CURRENT_SOURCE_SHA'),
+    envValue('PERL_LSP_CANDIDATE_ARTIFACT_MANIFEST'),
+  ].every(Boolean);
+  assertCandidateBoundPlatform(
+    process.platform === 'linux' ? 'linux' : process.platform,
+    candidateBound,
+    completeCandidateIdentity,
+  );
+  assertCandidateBoundInstallSource({
+    source,
+    version,
+    vsixPath: envValue('PERL_LSP_PUBLISHED_VSIX_PATH'),
+    candidateBound,
+  });
   const vscodeVersion = resolveVSCodeTestVersion(process.env.PERL_LSP_VSCODE_VERSION);
   const toolchainNodeVersion = process.version;
   const toolchainNpmVersionValue = toolchainNpmVersion();
@@ -263,10 +487,25 @@ async function main(): Promise<void> {
   if (!fs.existsSync(workspacePath)) {
     throw new Error(`Configured smoke workspace does not exist: ${workspacePath}`);
   }
-  const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-published-smoke-user-'));
-  const extensionsDir = fs.mkdtempSync(
-    path.join(os.tmpdir(), 'perl-lsp-published-smoke-extensions-'),
-  );
+  // The activation-failure journey (#7856) shares one isolated profile across
+  // its failure and retry legs (the explicit reload path reuses the installed
+  // profile): when the orchestrator provides explicit profile directories they
+  // are used as-is and their lifecycle stays owned by the orchestrator.
+  const sharedUserDataDir = envValue('PERL_LSP_SMOKE_USER_DATA_DIR');
+  const sharedExtensionsDir = envValue('PERL_LSP_SMOKE_EXTENSIONS_DIR');
+  if (Boolean(sharedUserDataDir) !== Boolean(sharedExtensionsDir)) {
+    throw new Error(
+      'PERL_LSP_SMOKE_USER_DATA_DIR and PERL_LSP_SMOKE_EXTENSIONS_DIR must be provided together for a shared smoke profile.',
+    );
+  }
+  const userDataDir = sharedUserDataDir
+    ? path.resolve(sharedUserDataDir)
+    : fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-published-smoke-user-'));
+  const extensionsDir = sharedExtensionsDir
+    ? path.resolve(sharedExtensionsDir)
+    : fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-published-smoke-extensions-'));
+  fs.mkdirSync(userDataDir, { recursive: true });
+  fs.mkdirSync(extensionsDir, { recursive: true });
   const downloadDir = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-published-smoke-download-'));
   const harnessExtensionPath = path.resolve(process.cwd(), 'src/test/published/harness');
   const extensionTestsPath = path.resolve(__dirname, './suite');
@@ -284,25 +523,19 @@ async function main(): Promise<void> {
   }
 
   try {
-    let vscodeExecutablePath: string;
-    try {
-      vscodeExecutablePath = await downloadAndUnzipVSCode({ version: vscodeVersion });
-    } catch (error: unknown) {
-      try {
-        writeHostResolutionFailureReceipt(receiptsRoot, vscodeVersion, error);
-      } catch (receiptError: unknown) {
-        const detail = receiptError instanceof Error ? receiptError.message : String(receiptError);
-        process.stderr.write(`Unable to write VS Code host-resolution receipt: ${detail}\n`);
-      }
-      throw error;
-    }
+    const { executablePath: vscodeExecutablePath } = await downloadVsCodeHostOrWriteFailureReceipt(
+      receiptsRoot,
+      vscodeVersion,
+      downloadAndUnzipVSCode,
+    );
     const installTarget = await resolveInstallTarget(source, downloadDir);
     configureCurrentSourceSmoke(userDataDir, extensionsDir, workspaceTrustMode);
+    configureActivationFailureSmoke(userDataDir);
+    configureCrashRecoverySmoke(userDataDir);
     await installExtension(vscodeExecutablePath, installTarget, userDataDir, extensionsDir);
     const vsixSha256 = selectedVsixSha256(installTarget);
     const extensionTestsEnv: NodeJS.ProcessEnv = {
       ...process.env,
-      PERL_LSP_EXTENSION_TEST_SKIP_STARTUP: '1',
       PERL_LSP_PUBLISHED_EXTENSION_ID: envValue('PERL_LSP_PUBLISHED_EXTENSION_ID') || EXTENSION_ID,
       PERL_LSP_PUBLISHED_EXTENSION_SOURCE: source,
       PERL_LSP_SMOKE_RECEIPTS_DIR: receiptsRoot,
@@ -311,6 +544,12 @@ async function main(): Promise<void> {
       PERL_LSP_TOOLCHAIN_NPM_VERSION: toolchainNpmVersionValue,
       PERL_LSP_VSCODE_VERSION: vscodeVersion,
     };
+    if (process.env.PERL_LSP_TEST_EXPLORER_SMOKE !== '1') {
+      extensionTestsEnv.PERL_LSP_EXTENSION_TEST_SKIP_STARTUP = '1';
+    } else {
+      delete extensionTestsEnv.PERL_LSP_EXTENSION_TEST_SKIP_STARTUP;
+    }
+    configureInstalledAcceptanceReceipt(extensionTestsEnv, receiptsRoot);
     if (vsixSha256 === undefined) {
       delete extensionTestsEnv.PERL_LSP_VSIX_SHA256;
     } else {
@@ -334,7 +573,12 @@ async function main(): Promise<void> {
       await runTests(testOptions);
     }
   } finally {
-    for (const directory of [generatedWorkspacePath, userDataDir, extensionsDir, downloadDir]) {
+    // Shared profile directories belong to the orchestrator that created
+    // them; this invocation only reuses them across its legs.
+    const ownedDirectories = sharedUserDataDir
+      ? [generatedWorkspacePath, downloadDir]
+      : [generatedWorkspacePath, userDataDir, extensionsDir, downloadDir];
+    for (const directory of ownedDirectories) {
       if (!directory) {
         continue;
       }
@@ -348,8 +592,10 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((error: unknown) => {
-  const message = error instanceof Error ? error.message : String(error);
-  process.stderr.write(`${message}\n`);
-  process.exit(1);
-});
+if (require.main === module) {
+  main().catch((error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error);
+    process.stderr.write(`${message}\n`);
+    process.exit(error instanceof CandidateBoundPlatformUnavailableError ? 2 : 1);
+  });
+}

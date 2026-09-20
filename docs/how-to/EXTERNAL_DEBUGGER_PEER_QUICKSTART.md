@@ -1,145 +1,174 @@
-# External Debugger Peer — Quickstart
+# External Debugger Peer — Experimental Quickstart
 
-`perl-dap` can act as a **host** for an external Perl debugger engine (e.g.
-`Devel::ptkdb`) instead of driving `perl -d` itself. Your editor keeps speaking
-DAP; `perl-dap` translates DAP ↔ the small **Perl Debugger Peer Protocol** and
-lets the external engine own the actual debug session.
+`perl-dap` can host an explicitly selected external Perl debugger engine while
+remaining the Debug Adapter Protocol server seen by the editor.
 
-This page is the first-mile guide. For the wire format see
-[EXTERNAL_DEBUGGER_PEER_PROTOCOL.md](../reference/EXTERNAL_DEBUGGER_PEER_PROTOCOL.md);
-for the design rationale and what was deliberately deferred see
-[EXTERNAL_DEBUGGER_PEER_DECISIONS.md](../reference/EXTERNAL_DEBUGGER_PEER_DECISIONS.md);
-to make a *new* engine speak the protocol see
-[DEBUGGER_BACKEND_AUTHORS.md](DEBUGGER_BACKEND_AUTHORS.md).
+The native `perl-dap` runtime is the default and does not require an external
+peer. This page covers optional interoperability only.
 
-> The default, always-available debugger is the native `perl -d` adapter — see
-> the [DAP User Guide](../tutorials/DAP_USER_GUIDE.md). You only need this page if
-> you want to cooperate with an external engine.
+## Current support boundary
 
-## What you can do today
+| Surface | Current status | User meaning |
+|---|---|---|
+| Native `perl-dap` | Preview product default | Use the normal Perl launch/attach configurations. |
+| Debug-session plan JSON | Available helper | Inspect source facts and planned breakpoints without starting another debugger. |
+| ptkdb `.ptkdbrc` bootstrap | Best-effort compatibility helper | Generates escaped startup calls; it does not prove ptkdb accepted every call. |
+| Live peer host protocol | **Experimental / developer preview** | Proven against repository fake/reference peers. |
+| Marked ptkdb-shaped `Devel::ptkdb 1.1091` reference adapter | **Implementation substrate available** | Authenticated headless proof covers the harness stop seam and cleanup; no source provenance or live Tk receipt. |
+| Stock `Devel::ptkdb` live peer | **Not yet proven** | Requires an explicit plugin load plus the real ptkdb/Tk/VSIX receipt owned by #4786. |
 
-| Surface | Status | Command |
-|---------|--------|---------|
-| `.ptkdbrc` bootstrap | ✅ shippable | `perl-dap --ptkdb-bootstrap-rc PROGRAM` |
-| Session plan (JSON) | ✅ shippable | `perl-dap --debug-session-plan PROGRAM` |
-| DAP ↔ peer bridge | ✅ against a peer that speaks the protocol | `perl-dap --external-peer HOST:PORT` |
-| Live stock `Devel::ptkdb` | ⏳ pending the ptkdb-side patch | — |
+No external peer is bundled, installed, detected into use, or selected from PATH.
+The editor configuration must choose it explicitly.
 
-The bridge is proven end-to-end against an in-repo fake ptkdb peer. Pointing it
-at a **stock** `Devel::ptkdb` needs a thin ptkdb-side patch that teaches ptkdb to
-speak the peer protocol — tracked in
-[PTKDB_PEER_INTEGRATION_TARGET.md](../reference/PTKDB_PEER_INTEGRATION_TARGET.md).
-Until that lands, `--debug-session-plan` (§2) is the genuinely useful standalone
-tool; the `.ptkdbrc` bootstrap (§1) is a minimal, extend-it-yourself starting point.
+## Choose the right surface
 
-## 1. Generate a `.ptkdbrc` bootstrap (no bridge needed)
+### Native debugging
 
-Emit a `Devel::ptkdb` bootstrap file for a program and run it under ptkdb the
-ordinary way:
+For normal debugging, use the [DAP User Guide](../tutorials/DAP_USER_GUIDE.md).
+Do not configure an external peer merely because ptkdb is installed.
+
+### Inspect a session plan
+
+```bash
+perl-dap --debug-session-plan path/to/script.pl
+```
+
+This emits a stable `perl-lsp-debug-session-v1` document containing the program,
+source facts, and any configured breakpoint/watch information available to the
+builder. It does not launch ptkdb.
+
+### Generate a ptkdb bootstrap
 
 ```bash
 perl-dap --ptkdb-bootstrap-rc path/to/script.pl > .ptkdbrc
 perl -d:ptkdb path/to/script.pl
 ```
 
-`ptkdb` reads `.ptkdbrc` from the current directory before the first stop. The
-generated file is plain Perl (safely escaped). It registers any line/subroutine
-breakpoints and watch expressions carried in the session plan, each wrapped in
-`eval { ... }` so an unsupported ptkdb call degrades gracefully. Built from the
-bare `--ptkdb-bootstrap-rc PROGRAM` (which takes no breakpoint flags yet), it is
-a **minimal valid** `.ptkdbrc` — extend it with your own ptkdb breakpoints, or
-use `--debug-session-plan` (below) to see the breakable lines and subroutines
-`perl-lsp` found and pick where to break.
+The generated file:
 
-## 2. Inspect the session plan (JSON)
+- escapes interpolated values as single-quoted Perl literals;
+- wraps registrations in `eval { ... }` so one unavailable ptkdb call does not
+  abort the whole startup file;
+- may seed line/subroutine breakpoints and watch expressions present in the
+  session packet.
 
-See exactly what `perl-lsp` derives for a program — breakable lines, subroutines,
-include paths — as a stable `perl-lsp-debug-session-v1` document:
+This is one-way setup. Without read-back from ptkdb, the product can claim only
+that it generated the calls—not that every breakpoint or watch was installed.
+
+### Load the experimental reference mirror adapter
+
+The repository's
+[`minimal_ptkdb_peer.pl`](../../fixtures/debug-peer/perl/minimal_ptkdb_peer.pl)
+can also be loaded from `.ptkdbrc` as an experimental adapter for the marked
+reference harness:
+
+```perl
+my $perl_dap_peer = '/absolute/path/to/minimal_ptkdb_peer.pl';
+do $perl_dap_peer or die $@ || $!;
+```
+
+This mode is intentionally narrow and is not a pinned or distributable stock
+ptkdb plugin:
+
+- it activates only for a ptkdb-shaped headless harness that exposes
+  `Devel::ptkdb 1.1091` and the exact pinned contract SHA-256 digests, when a trusted host launcher has
+  supplied `PERL_DAP_PEER`, a 32-hex `PERL_DAP_PEER_TOKEN`, and
+  `PERL_DAP_PEER_MODE=mirror`;
+- it advertises no inspection or control capabilities;
+- it preserves the harness's original `set_file` method and reports the supplied
+  file and line when `DB::DB` reaches the marked stop path;
+- it emits debugger-console connection output and one bounded termination event;
+- it is a silent no-op when the rendezvous environment is absent.
+
+The adapter refuses activation when `%INC` reports that a `Devel/ptkdb.pm` file
+was loaded. Perl does not provide the bytes already executed, and hashing the
+mutable `%INC` path later would not prove the loaded artifact. This keeps the
+contract limited to the explicit headless harness until a load-time artifact
+binding is available.
+
+It does not yet mirror debuggee stdout/stderr, answer stack/scopes/variables, or
+accept stepping and breakpoint commands. The repository test uses a
+  ptkdb-shaped headless harness, not stock ptkdb or Tk. This is implementation
+  evidence for the next live test, not a compatibility verdict or a ready-made default
+editor configuration.
+
+### Exercise the experimental live peer host
+
+For a peer implementation that already speaks the Perl Debugger Peer Protocol:
 
 ```bash
-perl-dap --debug-session-plan path/to/script.pl
+perl-dap --external-peer 127.0.0.1:5000
 ```
 
-```json
-{
-  "schema": "perl-lsp-debug-session-v1",
-  "program": "path/to/script.pl",
-  "breakpoints": [],
-  "source_facts": {
-    "path/to/script.pl": {
-      "breakable_line_candidates": [2, 3, 5, 6, 7, 8, 10, 11],
-      "subroutines": [{ "name": "greet", "start_line": 5, "end_line": 8 }]
-    }
-  }
-}
-```
+The editor speaks DAP over stdio. `perl-dap` connects to the peer and translates
+between DAP and the backend-neutral debugger model.
 
-This is handy for scripting, for feeding another tool, or for verifying which
-lines `perl-lsp` considers breakable before you set a breakpoint.
-
-## 3. Bridge an editor to a running peer
-
-If you have a debugger engine listening on a socket and speaking the peer
-protocol, bridge your editor to it. `perl-dap` connects **out** to the peer and
-speaks DAP to the editor.
-
-**stdio (the usual case — the editor spawns `perl-dap`):**
+Listen mode is also available for development/protocol work:
 
 ```bash
-perl-dap --external-peer 127.0.0.1:13604
+perl-dap --stdio --external-peer-listen 127.0.0.1
 ```
 
-**socket (the editor connects to `perl-dap` on a TCP port):**
+These commands prove the host implementation, not stock ptkdb compatibility.
+Use them only with a peer build whose exact protocol version and capabilities
+are known. The listen authority mints the token; a peer launcher must pass the
+complete environment contract to the ptkdb process without logging the token.
 
-```bash
-perl-dap --socket --port 13603 --external-peer 127.0.0.1:13604
+## Capability levels
+
+A peer session starts with no assumed capabilities. The authenticated
+`peer/hello` message determines what that exact peer can do.
+
+### `mirror_minimum`
+
+The first useful partner level is:
+
+```text
+peer/hello
+debugger/output
+debugger/stopped
+debugger/terminated
 ```
 
-Only capabilities the peer actually advertises in its handshake are surfaced to
-the editor (mirror-mode honesty): `perl-dap` never claims a control command the
-peer didn't offer. A malformed frame or a peer that stops responding fails fast
-rather than hanging.
+The external UI owns execution control; the editor mirrors state. No stepping,
+breakpoint mutation, stack, variables, or evaluate capability is implied.
 
-### From VS Code
+### `mirror_inspection`
 
-Add a launch config that selects the external backend. The extension passes it
-through to `perl-dap --external-peer`:
+Stack, scopes, variables, source, or evaluate may be enabled only when the live
+peer advertises each operation and a real partner build proves it.
 
-```jsonc
-{
-  "type": "perl",
-  "request": "attach",
-  "name": "Perl: External Debugger Peer (ptkdb)",
-  "debuggerBackend": "external",
-  "externalDebugger": {
-    "kind": "ptkdb",
-    "mode": "connect",
-    "control": "mirror",
-    "host": "127.0.0.1",
-    "port": 13604
-  }
-}
-```
+### `cooperative_control`
 
-Or the shorthand `"externalPeer": "127.0.0.1:13604"` on the config. Pick
-**"External Debugger Peer (ptkdb)"** from *Perl: Create Debug Configuration* to
-scaffold it. Only `mode: "connect"` with a concrete port is wired today;
-`listen`/`launchPeer` and `port: 0` fall back to the native adapter rather than
-failing.
+Continue, step, pause, and breakpoint synchronization require separate ownership
+rules and per-capability proof. They are not part of the initial ptkdb claim.
 
-## Troubleshooting
+### `dap_controlled`
 
-| Symptom | Cause / fix |
-|---------|-------------|
-| `failed to connect to debugger peer` | No peer is listening at `HOST:PORT`. Start the engine first, then launch the bridge. |
-| `no editor connected within …` | Socket mode: the editor never connected on `--port`. Check the port matches the editor's config. |
-| Selecting the ptkdb config runs the native adapter | `mode` is `listen`/`launchPeer`, or `port` is `0` — these aren't wired yet. Use `mode: "connect"` with a real port. |
-| Control buttons (step/pause) are greyed out | The peer didn't advertise those capabilities — mirror-mode honesty. Drive them from the peer's own UI. |
+Editor-authoritative control is future work and must not be inferred from the
+presence of modeled protocol fields.
 
-## See also
+## Failure behavior
 
-- [DAP User Guide](../tutorials/DAP_USER_GUIDE.md) — the default native debugger
-- [EXTERNAL_DEBUGGER_PEER_PROTOCOL.md](../reference/EXTERNAL_DEBUGGER_PEER_PROTOCOL.md) — the wire protocol
-- [EXTERNAL_DEBUGGER_PEER_DECISIONS.md](../reference/EXTERNAL_DEBUGGER_PEER_DECISIONS.md) — design decisions and deferrals
-- [DEBUGGER_BACKEND_AUTHORS.md](DEBUGGER_BACKEND_AUTHORS.md) — implement a new backend
-- [PTKDB_PEER_INTEGRATION_TARGET.md](../reference/PTKDB_PEER_INTEGRATION_TARGET.md) — the ptkdb-side integration checklist
+The peer path is bounded by:
+
+- protocol-version validation and token validation whenever the host mints one;
+- a required authenticated token for the reference adapter;
+- connection, read, write, request, and handshake timeouts;
+- explicit capability intersection;
+- clean socket/thread/process teardown;
+- visible errors for unsupported configuration shapes.
+
+A peer failure does not silently fall back to another external implementation.
+Users can return to the native debugger by choosing the normal native launch
+configuration.
+
+## References
+
+- [Peer protocol](../reference/EXTERNAL_DEBUGGER_PEER_PROTOCOL.md)
+- [Current design decisions](../reference/EXTERNAL_DEBUGGER_PEER_DECISIONS.md)
+- [Minimum ptkdb-side target](../reference/PTKDB_PEER_INTEGRATION_TARGET.md)
+- [Backend author guide](DEBUGGER_BACKEND_AUTHORS.md)
+- #4786 — real ptkdb partner implementation and proof
+- #7349 — authenticated `mirror_minimum` partner slice
+- #7276 — pre-proof product/UX claim boundary

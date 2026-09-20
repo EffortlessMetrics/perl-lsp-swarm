@@ -1,0 +1,70 @@
+{
+  "schema_version": 1,
+  "case_id": "D26-clamp-default-range-semantics-swap",
+  "family": "boundary_data_semantics_theater",
+  "purpose": "Invalid ranges silently clamped/defaulted/emptied change observable semantics without an accepted contract.",
+  "incident_reference": null,
+  "subject": {
+    "scope": "workspace",
+    "target_kinds": [
+      "lib",
+      "bin",
+      "test"
+    ],
+    "profile": "all",
+    "platforms": [
+      "linux",
+      "windows",
+      "macos"
+    ],
+    "features": "default"
+  },
+  "governed_lint": null,
+  "dishonest_mutation": {
+    "kind": "source-snippet",
+    "language": "rust",
+    "trigger_evidence": [
+      ".min(end)",
+      "end.max(start)",
+      "silently reordered"
+    ],
+    "content": "pub fn window(start: usize, end: usize) -> (usize, usize) {\n    (start.min(end), end.max(start)) // invalid input silently reordered\n}\n",
+    "sha256": "29ccd7705df7e76316c3a2e93685137867b754c00e72fe2ece25d54fa7cbefe2"
+  },
+  "rejecting_authority": {
+    "status": "pending_owner",
+    "owner_issue": 9850,
+    "unresolved_reason": "Range-semantics preservation has no governing leaf; numeric cohort assignment owned by programme controller."
+  },
+  "expected_result": {
+    "result_class": "reject",
+    "reason_code": "range_semantics_default_substitution"
+  },
+  "positive_counterpart": {
+    "sanctioned_evidence": [
+      "RangeError",
+      "start <= end"
+    ],
+    "note": "Invalid order is a typed error.",
+    "content": "pub fn window(start: usize, end: usize) -> Result<(usize, usize), RangeError> {\n    if start <= end { Ok((start, end)) } else { Err(RangeError) }\n}\n",
+    "sha256": "7d874321a282cbb736f369427c81548da5d9fd45aa77eb57e46ccdd1aff3aa05"
+  },
+  "applicability": {
+    "packet_classes": [
+      "qualification",
+      "foundation",
+      "migration",
+      "activation",
+      "review"
+    ],
+    "domains": [
+      "clippy-core"
+    ]
+  },
+  "delta_provenance": {
+    "change_reason": "initial corpus freeze (#11649)",
+    "owning_issue": 11649,
+    "historical_interpretability": true
+  },
+  "claim_boundary": "Frozen as review-facing identity; automation pending."
+}

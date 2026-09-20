@@ -263,17 +263,16 @@ impl IgnoredTestGuardian {
             .pre_commit
             .documentation_requirements
             .require_issue_reference
+            && !test_info.ignore_reason.contains('#')
+            && !test_info.ignore_reason.contains("issue")
         {
-            if !test_info.ignore_reason.contains('#') && !test_info.ignore_reason.contains("issue")
-            {
-                errors.push("Ignored test must reference an issue".to_string());
-            }
+            errors.push("Ignored test must reference an issue".to_string());
         }
 
-        if self.governance.quality_gates.pre_commit.documentation_requirements.require_timeline {
-            if test_info.target_timeline.as_secs() == 0 {
-                errors.push("target implementation timeline must be specified".to_string());
-            }
+        if self.governance.quality_gates.pre_commit.documentation_requirements.require_timeline
+            && test_info.target_timeline.as_secs() == 0
+        {
+            errors.push("target implementation timeline must be specified".to_string());
         }
 
         if self
@@ -282,10 +281,9 @@ impl IgnoredTestGuardian {
             .pre_commit
             .documentation_requirements
             .require_success_criteria
+            && test_info.success_criteria.is_empty()
         {
-            if test_info.success_criteria.is_empty() {
-                errors.push("success criteria must be specified".to_string());
-            }
+            errors.push("success criteria must be specified".to_string());
         }
 
         // Validate complexity assessment
@@ -295,12 +293,10 @@ impl IgnoredTestGuardian {
             .pre_commit
             .documentation_requirements
             .require_complexity_assessment
+            && test_info.complexity == ComplexityLevel::Low
+            && test_info.target_timeline > Duration::from_hours(168)
         {
-            if test_info.complexity == ComplexityLevel::Low
-                && test_info.target_timeline > Duration::from_hours(168)
-            {
-                warnings.push("Low complexity test should have shorter timeline".to_string());
-            }
+            warnings.push("Low complexity test should have shorter timeline".to_string());
         }
 
         ValidationResult {
@@ -412,11 +408,11 @@ impl IgnoredTestGuardian {
         }
 
         // Deduct for old tests
-        if let Ok(duration) = SystemTime::now().duration_since(test_info.last_assessed) {
-            if duration > Duration::from_hours(2160) {
-                // 90 days
-                score -= 25.0;
-            }
+        if let Ok(duration) = SystemTime::now().duration_since(test_info.last_assessed)
+            && duration > Duration::from_hours(2160)
+        {
+            // 90 days
+            score -= 25.0;
         }
 
         // Bonus for well-documented tests

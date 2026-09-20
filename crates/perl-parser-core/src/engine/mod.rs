@@ -13,9 +13,14 @@ pub use crate::syntax::heredoc as heredoc_collector;
 /// Core parser implementation for Perl source.
 pub mod parser;
 /// Parser context with error recovery support.
+///
+/// Parallel AST-v2 helper, not the production `Parser` operation context
+/// (#8757). Retirement is #8700 B04 / #7105.
 pub mod parser_context;
 /// Position tracking types and UTF-16 mapping utilities.
 pub mod position;
+/// Parser-owned canonical regex-analysis entry points and output wrapper.
+pub mod regex_retention;
 /// Parser for Perl quote and quote-like operators (internal module, previously `perl-quote`).
 pub use crate::syntax::quote as quote_parser;
 /// Pragma tracking for `use` and related directives.

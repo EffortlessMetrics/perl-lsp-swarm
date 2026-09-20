@@ -40,7 +40,6 @@
 //! (GUIDANCE_STYLE's fifth, safety/irreversibility posture) is reserved for
 //! a staged-secret hazard; no check in this program asserts one.
 
-use crate::tasks::changelog::{self, Fragment};
 use crate::tasks::ci_policy::{
     ALLOWED_FROM_RAW_PATTERN, FROM_RAW_PATTERN, SEARCH_ROOTS, is_disallowed_from_raw_line,
 };
@@ -207,7 +206,6 @@ pub fn run_named_check(name: &str, tree_oid: Option<&str>) -> Result<CommitCheck
         "staged_config_syntax" => staged_config_syntax_at(&root, tree_oid),
         "forbidden_machine_paths" => forbidden_machine_paths_at(&root, tree_oid),
         "staged_oversized_or_binary" => staged_oversized_or_binary_at(&root, tree_oid),
-        "changie_fragment_staged" => changie_fragment_staged_at(&root, tree_oid),
         "rustfmt_staged" => rustfmt_staged_at(&root, tree_oid),
         "from_raw_staged" => from_raw_staged_at(&root, tree_oid),
         other => bail!("unknown commit-tier check '{other}'"),
@@ -714,141 +712,8 @@ fn staged_oversized_or_binary_at(
 // 7. Changie fragment syntax (staged) — dry-render deferred to pre-push (#3985)
 // =============================================================================
 
-fn is_fragment_path(path: &str) -> bool {
-    let prefix = format!("{}/", changelog::UNRELEASED_DIR);
-    // Extension match is case-insensitive (`.YAML`/`.Yml` are valid on
-    // case-insensitive/case-preserving filesystems and git tracks them
-    // byte-for-byte) — only the directory prefix stays case-sensitive,
-    // matching how git itself treats POSIX paths.
-    let lower = path.to_ascii_lowercase();
-    path.starts_with(&prefix) && (lower.ends_with(".yaml") || lower.ends_with(".yml"))
-}
-
-/// Read and parse `.changie.yaml` from the pinned staged tree, not the
-/// working-tree filesystem. A staged fragment must be validated against the
-/// config that's actually part of THIS commit's snapshot — if `.changie.yaml`
-/// has unstaged edits (or a staged edit not yet reflected on disk in some
-/// other workflow), `changelog::load_config` reading straight off disk would
-/// validate staged fragment content against a config that isn't the one
-/// being committed, silently blocking a legitimately-valid staged fragment
-/// or passing an invalid one, depending on which way the unstaged edit
-/// drifted.
-fn load_staged_changie_config(root: &Path, tree_oid: &str) -> Result<changelog::ChangieConfig> {
-    let text = match staged::read_staged_path_text(root, changelog::CHANGIE_CONFIG, Some(tree_oid))?
-    {
-        StagedPathText::Present(text) => text,
-        StagedPathText::Binary => {
-            bail!("staged {} is not valid UTF-8", changelog::CHANGIE_CONFIG)
-        }
-        StagedPathText::Absent => {
-            bail!("staged {} was not found in the staged tree", changelog::CHANGIE_CONFIG)
-        }
-    };
-    changelog::parse_config(&text)
-        .with_context(|| format!("failed to parse staged {}", changelog::CHANGIE_CONFIG))
-}
-
-fn changie_fragment_staged_at(root: &Path, tree_oid: Option<&str>) -> Result<CommitCheckOutcome> {
-    let tree_oid = resolve_tree_oid(root, tree_oid)?;
-    let paths = staged::staged_diff_paths(root, Some(&tree_oid))?;
-    let fragment_paths: Vec<String> = paths.into_iter().filter(|p| is_fragment_path(p)).collect();
-
-    if fragment_paths.is_empty() {
-        return Ok(CommitCheckOutcome::Pass("no staged Changie fragments".to_string()));
-    }
-
-    let cfg = load_staged_changie_config(root, &tree_oid)
-        .context("failed to load staged .changie.yaml")?;
-    let mut blocked = Vec::new();
-    // Paths actually read and schema-checked -- distinct from
-    // `fragment_paths`, which (since issue #4031 item 5) can also contain
-    // paths staged for DELETION. A deleted fragment never reaches
-    // `read_staged_path_text`'s `Present` arm, so it must not be counted
-    // among "N fragments parse and pass schema validation" below (issue
-    // #4031 item 5/6 interaction: a deleted fragment validated nothing).
-    let mut validated = Vec::new();
-    for path in &fragment_paths {
-        match staged::read_staged_path_text(root, path, Some(&tree_oid))? {
-            StagedPathText::Present(text) => {
-                validated.push(path.clone());
-                match serde_yaml_ng::from_str::<Fragment>(&text) {
-                    Err(err) => blocked.push(format!("{path}: malformed YAML — {err}")),
-                    Ok(frag) => {
-                        let findings = changelog::validate_fragment(&frag, &cfg);
-                        if !findings.is_empty() {
-                            blocked.push(format!("{path}: {}", findings.join("; ")));
-                        }
-                    }
-                }
-            }
-            // Issue #4031 item 1: a non-UTF-8 fragment must surface as a
-            // finding, not be silently skipped — `continue`-ing here
-            // reported a malformed Changie fragment as schema-valid.
-            StagedPathText::Binary => {
-                blocked.push(format!(
-                    "{path}: staged content is not valid UTF-8, cannot parse as a Changie \
-                     fragment"
-                ));
-            }
-            // A deleted fragment (issue #4031 item 5) has nothing to
-            // validate -- legitimately nothing to report, and NOT counted
-            // as "validated" either.
-            StagedPathText::Absent => {}
-        }
-    }
-
-    if !blocked.is_empty() {
-        return Ok(CommitCheckOutcome::Flagged(CheckReport {
-            check: "changie_fragment_staged".to_string(),
-            posture: Posture::Blocked,
-            result: format!("{} staged Changie fragment(s) fail schema validation", blocked.len()),
-            why: "a malformed fragment fails silently at release-batch time instead of at commit \
-                  time"
-                .to_string(),
-            affected: blocked,
-            fix: Some(
-                "run `changie new` to regenerate the fragment interactively, or fix the reported \
-                 field"
-                    .to_string(),
-            ),
-            rerun: rerun_for("changie_fragment_staged"),
-            what_remains: "full `changie batch --dry-run` render is deferred to pre-push (#3985), \
-                           where the working checkout is authoritative"
-                .to_string(),
-        }));
-    }
-
-    if validated.is_empty() {
-        // Every fragment path in this commit was a staged DELETION (issue
-        // #4031 item 5) -- nothing was actually read or schema-checked, so
-        // this is a clean no-op, not a "parses and passes" claim about
-        // content that no longer exists.
-        return Ok(CommitCheckOutcome::Pass(
-            "no staged Changie fragments requiring validation (all were deletions)".to_string(),
-        ));
-    }
-
-    Ok(CommitCheckOutcome::Flagged(CheckReport {
-        check: "changie_fragment_staged".to_string(),
-        posture: Posture::NotProven,
-        result: format!(
-            "{} staged Changie fragment(s) parse and pass schema validation",
-            validated.len()
-        ),
-        why: "schema validity doesn't prove the fragment renders through `changie batch` — that \
-              step needs the full working checkout"
-            .to_string(),
-        affected: validated,
-        fix: None,
-        rerun: rerun_for("changie_fragment_staged"),
-        what_remains: "`changie batch --dry-run` render still required before merge (pre-push / \
-                       CI, #3985)"
-            .to_string(),
-    }))
-}
-
 // =============================================================================
-// 8. rustfmt --check on staged Rust (piped via stdin, not a temp-file
+// 7. rustfmt --check on staged Rust (piped via stdin, not a temp-file
 //    checkout of the blob)
 // =============================================================================
 
@@ -875,7 +740,7 @@ const RUSTFMT_CONFIG_FILE: &str = "rustfmt.toml";
 /// `rustfmt.toml` policy change with an unrelated unstaged edit sitting on
 /// top of it would check staged Rust blobs against a config that isn't the
 /// one actually being committed (the same class of drift the staged Changie
-/// config fix closes for `changie_fragment_staged_at`). `config_text: None`
+/// config validation closes). `config_text: None`
 /// means the tree has no `rustfmt.toml` at all — falls back to rustfmt's
 /// stock defaults, same as the pre-fix behavior for a config-less repo.
 ///
@@ -1978,193 +1843,6 @@ mod tests {
                 bail!("expected the unpinned (live-index) read to see the fix and pass: {report:?}")
             }
         }
-        Ok(())
-    }
-
-    #[test]
-    fn changie_fragment_staged_blocks_malformed_yaml() -> Result<()> {
-        let repo = TempRepo::init()?;
-        repo.write("README.md", "hello\n")?;
-        repo.add("README.md")?;
-        repo.commit("initial")?;
-
-        repo.write(".changes/unreleased/product-1-Added-000000.yaml", "kind: [unterminated\n")?;
-        repo.add(".changes/unreleased/product-1-Added-000000.yaml")?;
-
-        match changie_fragment_staged_at(repo.root(), None) {
-            Ok(CommitCheckOutcome::Flagged(report)) => {
-                assert_eq!(report.posture, Posture::Blocked);
-            }
-            // `.changie.yaml` doesn't exist in the staged tree of this bare
-            // temp repo, so `load_staged_changie_config` fails before it
-            // even gets to the malformed fragment — that's still a
-            // legitimate instrument-error Err, not a false pass, which is
-            // the property this test cares about (a real repo has
-            // `.changie.yaml` staged; see the next test for that path being
-            // exercised).
-            Err(_) => {}
-            Ok(CommitCheckOutcome::Pass(summary)) => {
-                bail!("expected malformed YAML to block or the config load to fail: {summary}")
-            }
-        }
-        Ok(())
-    }
-
-    const CHANGIE_CONFIG_FIXTURE: &str = "projects:\n  - key: product\ncomponents: []\nkinds:\n  - label: Added\nbody:\n  minLength: 0\n";
-
-    /// Issue #4031 item 1, decisive execution proof: a staged Changie
-    /// fragment that isn't valid UTF-8 must be reported as a finding, not
-    /// silently pass as schema-valid. Before the fix, `read_staged_path_text`
-    /// returning `None` hit a bare `continue`, which left the fragment out
-    /// of `blocked` entirely — reported as NotProven (schema-valid) instead
-    /// of the actual malformed content.
-    #[test]
-    fn changie_fragment_staged_flags_non_utf8_content_instead_of_silently_passing() -> Result<()> {
-        let repo = TempRepo::init()?;
-        repo.write(".changie.yaml", CHANGIE_CONFIG_FIXTURE)?;
-        repo.add(".changie.yaml")?;
-        repo.commit("initial")?;
-
-        repo.write_bytes(
-            ".changes/unreleased/product-1-Added-000000.yaml",
-            &[b'k', b'i', b'n', b'd', b':', 0xff, 0xfe],
-        )?;
-        repo.add(".changes/unreleased/product-1-Added-000000.yaml")?;
-
-        match changie_fragment_staged_at(repo.root(), None)? {
-            CommitCheckOutcome::Flagged(report) => {
-                assert_eq!(report.posture, Posture::Blocked);
-                assert!(
-                    report.affected.iter().any(|a| a.starts_with("product-1-Added-000000.yaml")
-                        || a.contains("product-1-Added-000000.yaml")),
-                    "expected the non-UTF-8 fragment to be reported as a finding: {:?}",
-                    report.affected
-                );
-            }
-            CommitCheckOutcome::Pass(summary) => {
-                bail!(
-                    "expected a non-UTF-8 staged fragment to be flagged, not silently passed: \
-                     {summary}"
-                )
-            }
-        }
-        Ok(())
-    }
-
-    /// Issue #4031 item 5, decisive execution proof: a staged DELETION of a
-    /// Changie fragment must not crash the check. Before the fix,
-    /// `staged_diff_paths`'s `ACMR`-only filter never surfaced a deleted
-    /// path here at all; the fix makes it reachable and correctly a no-op
-    /// (a deleted fragment isn't a new fragment to validate).
-    #[test]
-    fn changie_fragment_staged_skips_a_deleted_fragment_without_erroring() -> Result<()> {
-        let repo = TempRepo::init()?;
-        repo.write(".changie.yaml", CHANGIE_CONFIG_FIXTURE)?;
-        repo.add(".changie.yaml")?;
-        repo.write(
-            ".changes/unreleased/product-1-Added-000000.yaml",
-            "project: product\nkind: Added\nbody: something happened\n",
-        )?;
-        repo.add(".changes/unreleased/product-1-Added-000000.yaml")?;
-        repo.commit("initial")?;
-
-        repo.remove_cached(".changes/unreleased/product-1-Added-000000.yaml")?;
-
-        match changie_fragment_staged_at(repo.root(), None)? {
-            CommitCheckOutcome::Pass(_) => {}
-            CommitCheckOutcome::Flagged(report) => {
-                bail!(
-                    "expected a staged deletion of a fragment to be a clean no-op, not a \
-                     finding: {report:?}"
-                )
-            }
-        }
-        Ok(())
-    }
-
-    /// Mutation-checked regression proof for the deep-review send-back on
-    /// PR #4020 (bot thread, P2): `.changie.yaml` must be read from the
-    /// pinned STAGED tree, never `std::fs::read_to_string` against the
-    /// working-tree file. This stages a fragment that's valid under the
-    /// committed (and still-staged) config, then dirties the WORKING TREE's
-    /// `.changie.yaml` (unstaged) to drop the very project/kind the
-    /// fragment relies on. A check reading the working-tree file would
-    /// wrongly Block a legitimately-valid staged fragment; a check reading
-    /// the pinned tree must still see the original config and report
-    /// NotProven (schema-valid, dry-render deferred), not Blocked.
-    #[test]
-    fn changie_fragment_staged_reads_the_staged_config_not_an_unstaged_working_tree_edit()
-    -> Result<()> {
-        let repo = TempRepo::init()?;
-        repo.write(
-            ".changie.yaml",
-            "projects:\n  - key: product\ncomponents: []\nkinds:\n  - label: Added\nbody:\n  minLength: 0\n",
-        )?;
-        repo.add(".changie.yaml")?;
-        repo.commit("initial")?;
-
-        // Stage a fragment valid under the committed (and still-staged)
-        // config: project "product" and kind "Added" both exist.
-        repo.write(
-            ".changes/unreleased/product-1-Added-000000.yaml",
-            "project: product\nkind: Added\nbody: something happened\ncustom:\n  PR: \"1\"\n",
-        )?;
-        repo.add(".changes/unreleased/product-1-Added-000000.yaml")?;
-        let captured_oid = staged::staged_tree_oid(repo.root())?;
-
-        // Dirty the WORKING TREE's .changie.yaml (unstaged) to drop both
-        // the "product" project and the "Added" kind entirely -- simulating
-        // an in-progress, not-yet-staged edit to the config sitting on top
-        // of the index at the moment this check dispatches.
-        repo.write(
-            ".changie.yaml",
-            "projects: []\ncomponents: []\nkinds: []\nbody:\n  minLength: 0\n",
-        )?;
-
-        match changie_fragment_staged_at(repo.root(), Some(&captured_oid))? {
-            CommitCheckOutcome::Flagged(report) => {
-                assert_eq!(
-                    report.posture,
-                    Posture::NotProven,
-                    "expected the staged fragment to validate against the STAGED config (which \
-                     still has the product project and Added kind), not be blocked by an \
-                     unstaged edit that hasn't been committed to the index yet: {report:?}"
-                );
-            }
-            CommitCheckOutcome::Pass(summary) => {
-                bail!(
-                    "changie_fragment_staged_at should Flag (NotProven) when fragments were \
-                     checked, never bare-Pass: {summary}"
-                )
-            }
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn is_fragment_path_matches_only_unreleased_yaml() -> Result<()> {
-        assert!(is_fragment_path(".changes/unreleased/product-1-Added-000000.yaml"));
-        assert!(is_fragment_path(".changes/unreleased/product-1-Added-000000.yml"));
-        assert!(!is_fragment_path(".changes/samples/product-1-Added-000000.yaml"));
-        assert!(!is_fragment_path(".changes/unreleased/.gitkeep"));
-        assert!(!is_fragment_path("crates/foo/src/lib.rs"));
-        Ok(())
-    }
-
-    /// Regression for the deep-review send-back on PR #4020: the extension
-    /// half of the match must be case-insensitive (the directory-prefix
-    /// half deliberately stays case-sensitive, matching git's own
-    /// treatment of POSIX paths). Reverting the `.to_ascii_lowercase()` fix
-    /// makes this test fail — `.YAML`/`.Yml` would no longer match
-    /// `.ends_with(".yaml")`/`.ends_with(".yml")`.
-    #[test]
-    fn is_fragment_path_matches_extension_case_insensitively() -> Result<()> {
-        assert!(is_fragment_path(".changes/unreleased/product-1-Added-000000.YAML"));
-        assert!(is_fragment_path(".changes/unreleased/product-1-Added-000000.Yml"));
-        // The directory prefix stays case-sensitive: an uppercase
-        // "Unreleased" is a different (non-matching) path on a
-        // case-sensitive filesystem, same as git tracks it.
-        assert!(!is_fragment_path(".changes/Unreleased/product-1-Added-000000.yaml"));
         Ok(())
     }
 }

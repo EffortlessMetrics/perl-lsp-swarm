@@ -1,0 +1,461 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://effortlessmetrics.dev/perl-lsp/schemas/agent_review_packet.v1.schema.json",
+  "title": "Shared adversarial review-packet contract v1",
+  "description": "Programme-neutral contract rendering one already-selected candidate plus explicit supplied inputs into a model-neutral adversarial review challenge packet. The contract owns the closed lens/role/check vocabulary, the deterministic validation invariants, and the canonical machine/Markdown/compact projections including the closed seed falsification questions that no rendering may drop. It does not inspect GitHub, invoke models, submit reviews, retain review threads, decide mergeability, close issues, or persist any live review state. Programme trains supply stage propositions, exact subject identities, required lenses, falsifiers, proof identities, and terminal states; this contract validates and renders them. Packet instances are runtime-local outputs (stdout, caller-selected temporary paths, target/, CI artifacts) and are never tracked workflow state.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "schema_version",
+    "packet_id",
+    "subject",
+    "challenge",
+    "lenses",
+    "negative_controls",
+    "old_paths",
+    "obligations",
+    "roles",
+    "lifecycle"
+  ],
+  "properties": {
+    "schema": { "const": "agent_review_packet.v1" },
+    "schema_version": { "const": 1 },
+    "packet_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Stable identity of this review-packet projection, assigned by the composing caller."
+    },
+    "subject": { "$ref": "#/$defs/subject" },
+    "challenge": { "$ref": "#/$defs/challenge" },
+    "lenses": { "$ref": "#/$defs/lenses" },
+    "negative_controls": { "$ref": "#/$defs/negative_controls" },
+    "old_paths": { "$ref": "#/$defs/old_paths" },
+    "obligations": { "$ref": "#/$defs/obligations" },
+    "roles": { "$ref": "#/$defs/roles" },
+    "lifecycle": { "$ref": "#/$defs/lifecycle" },
+    "metadata": {
+      "type": "object",
+      "description": "Non-semantic caller metadata (e.g. observation timestamps). Excluded from canonical identity and from every projection; may never carry assignment, lease, reviewer, or live review state."
+    }
+  },
+  "$defs": {
+    "review_lens": {
+      "description": "Closed base review-lens vocabulary. Programme refinements attach inside a lens entry; a base lens may never be silently omitted.",
+      "enum": [
+        "semantic_correctness",
+        "architecture_authority_duplication",
+        "subject_evidence_identity",
+        "lifecycle_currentness_concurrency",
+        "security_trust_boundary",
+        "resource_retention_cleanup",
+        "platform_runtime_portability",
+        "spec_test_docs_consistency",
+        "release_external_boundary"
+      ]
+    },
+    "lens_applicability": {
+      "enum": ["required", "not_applicable"]
+    },
+    "review_role": {
+      "description": "Closed differentiated review-role vocabulary. The closure projection is derived over individual reviews and findings; it is not itself a role.",
+      "enum": ["builder_self_review", "adversarial_challenger", "specialist", "evidence_worker"]
+    },
+    "old_path_disposition": {
+      "description": "Closed typed result per migrated/replaced seam. A new authority beside an undispositioned old live path is not convergence.",
+      "enum": [
+        "removed",
+        "unreachable",
+        "compatibility_projection",
+        "historical_salvage_only",
+        "still_live_independent",
+        "unexpected_duplicate"
+      ]
+    },
+    "obligation_kind": {
+      "description": "Closed programme-supplied obligation families validated by the packet.",
+      "enum": [
+        "spec_ledger_ids",
+        "fixture_expectation_manifests",
+        "tests_mutations",
+        "generated_artifacts",
+        "docs_projections",
+        "change_fragments"
+      ]
+    },
+    "check_criterion": {
+      "description": "Closed negative-control audit criteria. A test name or fixture file alone is not proof that a falsifier is load-bearing; every criterion must be established with evidence.",
+      "enum": [
+        "exists",
+        "red_before_or_mutation_evidence",
+        "passes_only_intended_implementation",
+        "correct_subject_and_generation",
+        "independent_expectation_source",
+        "alternate_subject_exclusion"
+      ]
+    },
+    "check_status": {
+      "enum": ["established", "not_established"]
+    },
+    "candidate_state": {
+      "enum": ["not_observed", "observed"]
+    },
+    "subject": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "repository",
+        "programme",
+        "owning_issue",
+        "builder_packet",
+        "changed"
+      ],
+      "properties": {
+        "repository": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["name", "base", "head", "tree", "diff"],
+          "properties": {
+            "name": { "type": "string", "minLength": 1 },
+            "base": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Exact base the candidate is reviewed against."
+            },
+            "head": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Exact candidate head under review; a review of another head cannot satisfy a closure projection."
+            },
+            "tree": { "type": "string", "minLength": 1 },
+            "diff": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Exact diff identity (digest) of the reviewed changes; absence fails closed."
+            }
+          }
+        },
+        "programme": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["name", "stage", "proposition", "profile"],
+          "properties": {
+            "name": { "type": "string", "minLength": 1 },
+            "stage": { "type": "string", "minLength": 1 },
+            "proposition": { "type": "string", "minLength": 1 },
+            "profile": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Programme-local claim/profile id stating which review roles and lenses are required."
+            }
+          }
+        },
+        "owning_issue": { "type": "string", "minLength": 1 },
+        "builder_packet": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["contract", "digest"],
+          "properties": {
+            "contract": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Builder-side contract identity (e.g. agent_implementation_packet.v1) whose digest binds this review."
+            },
+            "digest": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Digest of the builder packet under review; a changed builder contract without a new digest invalidates the review."
+            }
+          }
+        },
+        "live_observation": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["candidate_state", "digest"],
+          "properties": {
+            "candidate_state": { "$ref": "#/$defs/candidate_state" },
+            "digest": { "type": "string", "minLength": 1 },
+            "candidate_identity": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Exact candidate identity; required when candidate_state is observed, forbidden when not_observed."
+            },
+            "collision_state": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Exact writer/collision observation; forbidden when candidate_state is not_observed."
+            }
+          },
+          "description": "Optional live-candidate observation. Absence or not_observed is a valid offline review packet; absence of knowledge must never be fabricated as vacancy."
+        },
+        "changed": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["authorities", "evidence", "migrated_seams"],
+          "properties": {
+            "authorities": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["ref", "subject"],
+                "properties": {
+                  "ref": { "type": "string", "minLength": 1 },
+                  "subject": { "type": "string", "minLength": 1 }
+                }
+              },
+              "description": "Changed authority identities (files/specs/tests/docs) the review must treat as the exact subject."
+            },
+            "evidence": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["kind", "identity"],
+                "properties": {
+                  "kind": { "type": "string", "minLength": 1 },
+                  "identity": { "type": "string", "minLength": 1 }
+                }
+              },
+              "description": "Current proof/receipt identities supplied by the caller; at least one is required."
+            },
+            "migrated_seams": {
+              "type": "array",
+              "items": { "type": "string", "minLength": 1 },
+              "description": "Seams this candidate claims to migrate or replace; each requires an old_paths disposition."
+            }
+          }
+        }
+      }
+    },
+    "challenge": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["primary_proposition", "falsifiers", "stage_questions"],
+      "properties": {
+        "primary_proposition": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The exact proposition this review would establish or refute; never the builder narrative."
+        },
+        "falsifiers": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "stage", "statement"],
+            "properties": {
+              "id": { "type": "string", "minLength": 1 },
+              "stage": { "type": "string", "minLength": 1 },
+              "statement": { "type": "string", "minLength": 1 }
+            }
+          },
+          "description": "Stage-specific falsifiers carried over from the builder packet; each requires a load-bearing negative-control audit row."
+        },
+        "stage_questions": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "question"],
+            "properties": {
+              "id": { "type": "string", "minLength": 1 },
+              "question": { "type": "string", "minLength": 1 }
+            }
+          },
+          "description": "Stage-specific falsification questions. A question that merely repeats the primary proposition or a generic statement is not a challenge."
+        }
+      },
+      "description": "The renderer always appends the closed seed falsification questions; they cannot disappear from any projection."
+    },
+    "lenses": {
+      "type": "array",
+      "minItems": 9,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["lens", "applicability"],
+        "properties": {
+          "lens": { "$ref": "#/$defs/review_lens" },
+          "applicability": { "$ref": "#/$defs/lens_applicability" },
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Required exactly when applicability is not_applicable; forbidden when required."
+          },
+          "refinements": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["id", "statement"],
+              "properties": {
+                "id": { "type": "string", "minLength": 1 },
+                "statement": { "type": "string", "minLength": 1 }
+              }
+            },
+            "description": "Programme-specific refinements; they narrow a lens, never weaken it."
+          }
+        }
+      },
+      "description": "Every closed base lens appears exactly once with explicit applicability; a required lens cannot be silently skipped."
+    },
+    "negative_controls": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["falsifier_id", "checks"],
+        "properties": {
+          "falsifier_id": { "type": "string", "minLength": 1 },
+          "checks": {
+            "type": "object",
+            "additionalProperties": false,
+            "minProperties": 6,
+            "required": [
+              "exists",
+              "red_before_or_mutation_evidence",
+              "passes_only_intended_implementation",
+              "correct_subject_and_generation",
+              "independent_expectation_source",
+              "alternate_subject_exclusion"
+            ],
+            "properties": {
+              "exists": { "$ref": "#/$defs/check_result" },
+              "red_before_or_mutation_evidence": { "$ref": "#/$defs/check_result" },
+              "passes_only_intended_implementation": { "$ref": "#/$defs/check_result" },
+              "correct_subject_and_generation": { "$ref": "#/$defs/check_result" },
+              "independent_expectation_source": { "$ref": "#/$defs/check_result" },
+              "alternate_subject_exclusion": { "$ref": "#/$defs/check_result" }
+            }
+          }
+        }
+      },
+      "description": "One audit row per declared falsifier. Every criterion must be established with evidence; a not_established criterion is a finding, never a pass."
+    },
+    "check_result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status"],
+      "properties": {
+        "status": { "$ref": "#/$defs/check_status" },
+        "evidence": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Required when status is established; forbidden redundancy is not checked, absence fails closed."
+        }
+      }
+    },
+    "old_paths": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["seam", "disposition"],
+        "properties": {
+          "seam": { "type": "string", "minLength": 1 },
+          "disposition": { "$ref": "#/$defs/old_path_disposition" },
+          "owner": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Required for compatibility_projection and still_live_independent."
+          },
+          "exit": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Planned exit; required for compatibility_projection."
+          }
+        }
+      },
+      "description": "Typed disposition per migrated/replaced seam. unexpected_duplicate is honest data that blocks closure; an unlisted migrated seam fails closed."
+    },
+    "obligations": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "spec_ledger_ids",
+        "fixture_expectation_manifests",
+        "tests_mutations",
+        "generated_artifacts",
+        "docs_projections",
+        "change_fragments"
+      ],
+      "properties": {
+        "spec_ledger_ids": { "$ref": "#/$defs/obligation_entries" },
+        "fixture_expectation_manifests": { "$ref": "#/$defs/obligation_entries" },
+        "tests_mutations": {
+          "$ref": "#/$defs/obligation_entries",
+          "minItems": 1,
+          "description": "At least one test/mutation obligation is required."
+        },
+        "generated_artifacts": { "$ref": "#/$defs/obligation_entries" },
+        "docs_projections": { "$ref": "#/$defs/obligation_entries" },
+        "change_fragments": { "$ref": "#/$defs/obligation_entries" }
+      },
+      "description": "Programme-supplied obligations; every declared entry carries its current identity. Stale or identity-less material is a finding, not an obligation entry."
+    },
+    "obligation_entries": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["ref", "identity"],
+        "properties": {
+          "ref": { "type": "string", "minLength": 1 },
+          "identity": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Current digest/receipt identity proving the obligation is current."
+          }
+        }
+      }
+    },
+    "roles": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["role", "required", "obligation"],
+        "properties": {
+          "role": { "$ref": "#/$defs/review_role" },
+          "required": {
+            "type": "boolean",
+            "description": "Whether the programme profile requires this role."
+          },
+          "obligation": {
+            "type": "string",
+            "minLength": 1,
+            "description": "What this role must establish; separate identities do not automatically prove independent reasoning."
+          }
+        }
+      },
+      "description": "Differentiated review roles the programme profile requires. Builder self-review alone cannot be the only required role: correlated builder/reviewer reads create false convergence."
+    },
+    "lifecycle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["graceful_cleanup_claimed"],
+      "properties": {
+        "graceful_cleanup_claimed": {
+          "type": "boolean",
+          "description": "Whether the candidate claims graceful lifecycle/cleanup success."
+        },
+        "force_path_excluded": {
+          "type": "boolean",
+          "description": "Whether force-kill/force-cleanup paths are discriminated from graceful success; required true when graceful cleanup is claimed."
+        },
+        "evidence": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Discriminating evidence; required when graceful cleanup is claimed."
+        }
+      },
+      "description": "Force cleanup must never be accepted as graceful lifecycle success."
+    }
+  }
+}

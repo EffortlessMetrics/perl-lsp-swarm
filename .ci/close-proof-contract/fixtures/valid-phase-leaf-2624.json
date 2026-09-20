@@ -1,0 +1,107 @@
+{
+  "schema_version": "close_proof_contract_fixture.v1",
+  "provenance": {
+    "captured_at": "2026-08-21",
+    "sources": [
+      "https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/2624"
+    ],
+    "subject_shas": [],
+    "boundary": "Immutable bounded structured excerpts of historical GitHub subjects. The fixture proves schema-level dispositions only; semantic completion evaluation belongs to CP03 (#10382)."
+  },
+  "contract": {
+    "schema_version": "issue_contract.v1",
+    "repository": "effortlessmetrics/perl-lsp-swarm",
+    "issue_number": 2624,
+    "title": "docs(parser): establish the Phase 1 advisory parser baseline",
+    "kind": "phase_leaf",
+    "required_proof_level": "representation",
+    "allowed_close_modes": [
+      "completed",
+      "phase_complete_issue_remains_open",
+      "superseded",
+      "true_duplicate",
+      "not_planned"
+    ],
+    "denominator": [
+      {
+        "row_id": "advisory.baseline.established",
+        "statement": "The Phase 1 advisory parser baseline is established and written down.",
+        "required_proof_level": "representation"
+      }
+    ],
+    "negative_controls": [
+      {
+        "control_id": "nc.no-editor-behavior-change",
+        "guards_row_id": "advisory.baseline.established",
+        "description": "Establishing the advisory baseline changes no editor behavior."
+      }
+    ],
+    "mandatory_children": [],
+    "transfer_policy": {
+      "permitted": false,
+      "conditions": []
+    },
+    "domain_evidence_refs": [],
+    "identity": {
+      "issue_body_digest": "0000000000000000000000000000000000000000000000000000000000000a40",
+      "denominator_digest": "ed522708ed855f430f8c0d4c6712a8bd6b7995c6c97199c55c9c2367a86e2240",
+      "accepted_ruling": null
+    }
+  },
+  "cases": [
+    {
+      "case_id": "pr-2700-phase-leaf-complete",
+      "description": "A Phase-1-only PR closes #2624 because its complete denominator is exactly that phase leaf.",
+      "packet": {
+        "schema_version": "issue_close_proof.v1",
+        "repository": "effortlessmetrics/perl-lsp-swarm",
+        "issue_number": 2624,
+        "requested_close_mode": "completed",
+        "contract_binding": {
+          "contract_issue_body_digest": "0000000000000000000000000000000000000000000000000000000000000a40",
+          "contract_denominator_digest": "ed522708ed855f430f8c0d4c6712a8bd6b7995c6c97199c55c9c2367a86e2240",
+          "accepted_ruling_digest": null
+        },
+        "candidate_pr": 2700,
+        "landed_subjects": [],
+        "landing_content_proof": [],
+        "established_claims": [
+          {
+            "statement": "The advisory baseline document exists and is referenced by the parser docs entry point.",
+            "covers_rows": [
+              "advisory.baseline.established"
+            ]
+          }
+        ],
+        "explicitly_not_established_claims": [],
+        "row_dispositions": {
+          "advisory.baseline.established": {
+            "disposition": "proven_current_main",
+            "evidence": {
+              "producer": "xtask-pr-close-proof",
+              "subject": "0000000000000000000000000000000000006681",
+              "content_digest": "0000000000000000000000000000000000000000000000000000000000040111",
+              "reference": "cargo xtask pr-close-proof --pr 2700"
+            }
+          }
+        },
+        "negative_control_dispositions": {
+          "nc.no-editor-behavior-change": {
+            "state": "verified"
+          }
+        },
+        "child_dispositions": [],
+        "duplicate_of": null,
+        "verdict": {
+          "pr_scope": "pass",
+          "issue_close": "valid",
+          "reasons": [
+            "The issue's complete denominator is the Phase 1 advisory baseline, which this PR proves."
+          ]
+        }
+      },
+      "expected_pr_scope": "pass",
+      "expected_issue_close": "valid"
+    }
+  ]
+}

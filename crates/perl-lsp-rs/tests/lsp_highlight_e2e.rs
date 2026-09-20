@@ -5,8 +5,8 @@ use support::lsp_client::LspClient;
 
 #[test]
 fn highlights_read_and_write() -> Result<(), Box<dyn std::error::Error>> {
-    let bin = env!("CARGO_BIN_EXE_perl-lsp");
-    let mut client = LspClient::spawn(bin)?;
+    let bin = support::product_binary_path()?;
+    let mut client = LspClient::spawn(&bin)?;
     let uri = "file:///test.pl";
     let source = "use strict; use warnings; my $x=1; $x++; print $x;\n";
 
@@ -73,8 +73,8 @@ fn highlights_read_and_write() -> Result<(), Box<dyn std::error::Error>> {
 
 #[test]
 fn highlights_across_scopes() -> Result<(), Box<dyn std::error::Error>> {
-    let bin = env!("CARGO_BIN_EXE_perl-lsp");
-    let mut client = LspClient::spawn(bin)?;
+    let bin = support::product_binary_path()?;
+    let mut client = LspClient::spawn(&bin)?;
     let uri = "file:///scope.pl";
     let source = r#"
 my $global = 1;
@@ -109,8 +109,8 @@ $global++;
 
 #[test]
 fn no_highlights_for_different_variables() -> Result<(), Box<dyn std::error::Error>> {
-    let bin = env!("CARGO_BIN_EXE_perl-lsp");
-    let mut client = LspClient::spawn(bin)?;
+    let bin = support::product_binary_path()?;
+    let mut client = LspClient::spawn(&bin)?;
     let uri = "file:///different.pl";
     let source = "my $foo = 1; my $bar = 2; $foo++; $bar++;\n";
 

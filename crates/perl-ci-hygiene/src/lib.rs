@@ -4,12 +4,14 @@
 //! The primary entry point is the binary in `main.rs`.
 
 #![warn(missing_docs)]
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
 use regex::Regex;
 use std::fs;
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
+pub mod doctest_enforcement;
 pub mod version_sync;
 
 /// Cargo package name for this crate, used to locate its build artifacts and source tree.

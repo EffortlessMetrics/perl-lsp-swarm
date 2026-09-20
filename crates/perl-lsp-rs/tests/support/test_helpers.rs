@@ -49,27 +49,27 @@ pub fn assert_hover_has_text(v: &Option<Value>) {
 
 /// Assert completion response has items with proper structure
 pub fn assert_completion_has_items(v: &Option<Value>) {
-    if let Some(completion) = v {
-        if !completion.is_null() {
-            // Handle LSP completion response format: either direct array or object with "items" field
-            let array = if let Some(items) = completion.get("items") {
-                must_some(items.as_array())
-            } else {
-                must_some(completion.as_array())
-            };
-            assert!(!array.is_empty(), "completion must have at least one item");
+    if let Some(completion) = v
+        && !completion.is_null()
+    {
+        // Handle LSP completion response format: either direct array or object with "items" field
+        let array = if let Some(items) = completion.get("items") {
+            must_some(items.as_array())
+        } else {
+            must_some(completion.as_array())
+        };
+        assert!(!array.is_empty(), "completion must have at least one item");
 
-            for item in array {
-                let obj = must_some(item.as_object());
-                assert!(obj.contains_key("label"), "completion item must have label");
+        for item in array {
+            let obj = must_some(item.as_object());
+            assert!(obj.contains_key("label"), "completion item must have label");
 
-                // Optional: check other fields if present
-                if let Some(kind) = obj.get("kind") {
-                    assert!(kind.is_number(), "completion kind must be number");
-                }
-                if let Some(detail) = obj.get("detail") {
-                    assert!(detail.is_string(), "completion detail must be string");
-                }
+            // Optional: check other fields if present
+            if let Some(kind) = obj.get("kind") {
+                assert!(kind.is_number(), "completion kind must be number");
+            }
+            if let Some(detail) = obj.get("detail") {
+                assert!(detail.is_string(), "completion detail must be string");
             }
         }
     }
@@ -113,51 +113,51 @@ fn assert_position_valid(position: &Value, context: &str) {
 
 /// Assert references are found with validation
 pub fn assert_references_found(v: &Option<Value>) {
-    if let Some(refs_val) = v {
-        if !refs_val.is_null() {
-            let refs = must_some(refs_val.as_array());
+    if let Some(refs_val) = v
+        && !refs_val.is_null()
+    {
+        let refs = must_some(refs_val.as_array());
 
-            // Validate each reference has required fields
-            for reference in refs {
-                let ref_obj = must_some(reference.as_object());
-                assert!(ref_obj.contains_key("uri"), "reference must have uri");
-                assert!(ref_obj.contains_key("range"), "reference must have range");
-                assert_range_valid(&ref_obj["range"], "reference range");
-            }
+        // Validate each reference has required fields
+        for reference in refs {
+            let ref_obj = must_some(reference.as_object());
+            assert!(ref_obj.contains_key("uri"), "reference must have uri");
+            assert!(ref_obj.contains_key("range"), "reference must have range");
+            assert_range_valid(&ref_obj["range"], "reference range");
         }
     }
 }
 
 /// Assert call hierarchy has items with proper structure
 pub fn assert_call_hierarchy_items(v: &Option<Value>, expected_name: Option<&str>) {
-    if let Some(ch_val) = v {
-        if !ch_val.is_null() {
-            let items = must_some(ch_val.as_array());
+    if let Some(ch_val) = v
+        && !ch_val.is_null()
+    {
+        let items = must_some(ch_val.as_array());
 
-            if !items.is_empty() {
-                // Validate each item has required fields
-                for item in items {
-                    let item_obj = must_some(item.as_object());
-                    assert!(item_obj.contains_key("name"), "call hierarchy item must have name");
-                    assert!(item_obj.contains_key("uri"), "call hierarchy item must have uri");
-                    assert!(item_obj.contains_key("range"), "call hierarchy item must have range");
+        if !items.is_empty() {
+            // Validate each item has required fields
+            for item in items {
+                let item_obj = must_some(item.as_object());
+                assert!(item_obj.contains_key("name"), "call hierarchy item must have name");
+                assert!(item_obj.contains_key("uri"), "call hierarchy item must have uri");
+                assert!(item_obj.contains_key("range"), "call hierarchy item must have range");
 
-                    // Either selectionRange or detail should be present
-                    let has_selection = item_obj.contains_key("selectionRange");
-                    let has_detail = item_obj.contains_key("detail");
-                    assert!(
-                        has_selection || has_detail,
-                        "call hierarchy item must have selectionRange or detail"
-                    );
-                }
+                // Either selectionRange or detail should be present
+                let has_selection = item_obj.contains_key("selectionRange");
+                let has_detail = item_obj.contains_key("detail");
+                assert!(
+                    has_selection || has_detail,
+                    "call hierarchy item must have selectionRange or detail"
+                );
+            }
 
-                // Check for expected name if provided
-                if let Some(name) = expected_name {
-                    let found = items.iter().any(|item| {
-                        item.get("name").and_then(|n| n.as_str()).is_some_and(|n| n == name)
-                    });
-                    assert!(found, "call hierarchy should contain '{}'", name);
-                }
+            // Check for expected name if provided
+            if let Some(name) = expected_name {
+                let found = items.iter().any(|item| {
+                    item.get("name").and_then(|n| n.as_str()).is_some_and(|n| n == name)
+                });
+                assert!(found, "call hierarchy should contain '{}'", name);
             }
         }
     }
@@ -165,27 +165,27 @@ pub fn assert_call_hierarchy_items(v: &Option<Value>, expected_name: Option<&str
 
 /// Assert folding ranges are valid
 pub fn assert_folding_ranges_valid(v: &Option<Value>) {
-    if let Some(ranges_val) = v {
-        if !ranges_val.is_null() {
-            let ranges = must_some(ranges_val.as_array());
-            assert!(!ranges.is_empty(), "should have at least one folding range");
+    if let Some(ranges_val) = v
+        && !ranges_val.is_null()
+    {
+        let ranges = must_some(ranges_val.as_array());
+        assert!(!ranges.is_empty(), "should have at least one folding range");
 
-            for range in ranges {
-                let obj = must_some(range.as_object());
+        for range in ranges {
+            let obj = must_some(range.as_object());
 
-                let start = must_some(obj.get("startLine").and_then(|v| v.as_u64()));
+            let start = must_some(obj.get("startLine").and_then(|v| v.as_u64()));
 
-                let end = must_some(obj.get("endLine").and_then(|v| v.as_u64()));
+            let end = must_some(obj.get("endLine").and_then(|v| v.as_u64()));
 
-                assert!(end > start, "folding range must span multiple lines");
+            assert!(end > start, "folding range must span multiple lines");
 
-                // Optional: check character positions if present
-                if let Some(start_char) = obj.get("startCharacter") {
-                    assert!(start_char.is_u64(), "startCharacter must be number");
-                }
-                if let Some(end_char) = obj.get("endCharacter") {
-                    assert!(end_char.is_u64(), "endCharacter must be number");
-                }
+            // Optional: check character positions if present
+            if let Some(start_char) = obj.get("startCharacter") {
+                assert!(start_char.is_u64(), "startCharacter must be number");
+            }
+            if let Some(end_char) = obj.get("endCharacter") {
+                assert!(end_char.is_u64(), "endCharacter must be number");
             }
         }
     }
@@ -193,23 +193,23 @@ pub fn assert_folding_ranges_valid(v: &Option<Value>) {
 
 /// Assert code actions are available with validation
 pub fn assert_code_actions_available(v: &Option<Value>) {
-    if let Some(actions) = v {
-        if !actions.is_null() {
-            let arr = must_some(actions.as_array());
+    if let Some(actions) = v
+        && !actions.is_null()
+    {
+        let arr = must_some(actions.as_array());
 
-            for action in arr {
-                let action_obj = must_some(action.as_object());
-                assert!(action_obj.contains_key("title"), "code action must have title");
+        for action in arr {
+            let action_obj = must_some(action.as_object());
+            assert!(action_obj.contains_key("title"), "code action must have title");
 
-                // Must have either command or edit
-                let has_command = action_obj.contains_key("command");
-                let has_edit = action_obj.contains_key("edit");
-                assert!(has_command || has_edit, "code action must have command or edit");
+            // Must have either command or edit
+            let has_command = action_obj.contains_key("command");
+            let has_edit = action_obj.contains_key("edit");
+            assert!(has_command || has_edit, "code action must have command or edit");
 
-                // If has kind, validate it's a string
-                if let Some(kind) = action_obj.get("kind") {
-                    assert!(kind.is_string(), "code action kind must be string");
-                }
+            // If has kind, validate it's a string
+            if let Some(kind) = action_obj.get("kind") {
+                assert!(kind.is_string(), "code action kind must be string");
             }
         }
     }

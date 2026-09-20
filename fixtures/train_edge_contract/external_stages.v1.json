@@ -1,0 +1,79 @@
+{
+  "schema": "train_edge_contract.v1",
+  "schema_version": 1,
+  "contract_id": "coc-external-stages.v1",
+  "programme": {
+    "name": "coc-examples",
+    "local_extension": "reviewed Coc example encoding #10858 fixture 5: external checkpoint stages stay distinct"
+  },
+  "external_subjects": [
+    {
+      "id": "ext_marketplace",
+      "kind": "extension marketplace listing"
+    }
+  ],
+  "propositions": [
+    {
+      "id": "P_public_artifact_release",
+      "claim_ceiling": "Public artifact release only; an internal packet or merged local PR never satisfies an external stage.",
+      "external_subject": "ext_marketplace"
+    },
+    {
+      "id": "P_release_packet_preparation",
+      "claim_ceiling": "Internal packet preparation only."
+    }
+  ],
+  "edges": [
+    {
+      "source": "P_public_artifact_release",
+      "kind": "requires_implementation",
+      "target": "P_release_packet_preparation",
+      "provenance": "release requires a prepared packet first"
+    },
+    {
+      "source": "P_public_artifact_release",
+      "kind": "external_checkpoint",
+      "target": "ext_marketplace",
+      "stage": "released_public_availability",
+      "provenance": "#10858 fixture 5: prepared is not submitted, accepted, released, or publicly installed"
+    }
+  ],
+  "claim_profiles": [
+    {
+      "id": "coc_public_artifact_core",
+      "version": 1,
+      "required": [
+        "P_public_artifact_release"
+      ],
+      "allowed_terminal_limitation_states": [
+        "pending_external_stage",
+        "not_proven"
+      ],
+      "claim_ceiling": "Public artifact only; internal preparation can never satisfy it."
+    }
+  ],
+  "projection": {
+    "proposition_states": [
+      {
+        "id": "P_public_artifact_release",
+        "implementation": { "terminal": true },
+        "evidence": { "terminal": false, "reason_class": "pending_external_stage" },
+        "proposition": { "terminal": false, "reason_class": "pending_external_stage" },
+        "external": { "terminal": false, "reason_class": "pending_external_stage" }
+      },
+      {
+        "id": "P_release_packet_preparation",
+        "implementation": { "terminal": true },
+        "evidence": { "terminal": true },
+        "proposition": { "terminal": true, "derives_from": "verified_proposition" }
+      }
+    ],
+    "external_stage_states": [
+      {
+        "subject": "ext_marketplace",
+        "stage_reached": "none",
+        "satisfied_by": "not_satisfied"
+      }
+    ]
+  }
+}

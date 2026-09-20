@@ -1072,20 +1072,20 @@ mod tests {
 
         // Verify via symbol_at that the dynamic boundary is detectable.
         let sym = queries.symbol_at(file_id, 25);
-        if let Some((_, occ)) = &sym {
-            if occ.kind == OccurrenceKind::DynamicBoundary {
-                // Dynamic boundary detected — diagnostics should suppress.
-                assert_eq!(
-                    occ.provenance,
-                    Provenance::DynamicBoundary,
-                    "dynamic boundary occurrence should have DynamicBoundary provenance"
-                );
-                assert_eq!(
-                    occ.confidence,
-                    Confidence::Low,
-                    "dynamic boundary occurrence should have Low confidence"
-                );
-            }
+        if let Some((_, occ)) = &sym
+            && occ.kind == OccurrenceKind::DynamicBoundary
+        {
+            // Dynamic boundary detected — diagnostics should suppress.
+            assert_eq!(
+                occ.provenance,
+                Provenance::DynamicBoundary,
+                "dynamic boundary occurrence should have DynamicBoundary provenance"
+            );
+            assert_eq!(
+                occ.confidence,
+                Confidence::Low,
+                "dynamic boundary occurrence should have Low confidence"
+            );
         }
         // Either way, the scorecard criterion is met: no exact warning for
         // dynamic boundary references.

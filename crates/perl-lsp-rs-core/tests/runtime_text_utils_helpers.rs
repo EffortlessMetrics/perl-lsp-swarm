@@ -47,23 +47,21 @@ fn finds_statement_start_after_semicolon_with_crlf() {
 }
 
 #[test]
-fn finds_pragma_and_import_insert_positions() {
+fn finds_pragma_insert_position() {
     let source = "#!/usr/bin/env perl\nuse strict;\nuse warnings;\nmy $x = 1;\n";
     let lines: Vec<String> = source.lines().map(ToString::to_string).collect();
     let helpers = TextEditHelpers::new(source, &lines);
 
     assert_eq!(helpers.find_pragma_insert_position(), 20);
-    assert_eq!(helpers.find_import_insert_position(), 46);
 }
 
 #[test]
-fn finds_pragma_and_import_insert_positions_with_crlf() {
+fn finds_pragma_insert_position_with_crlf() {
     let source = "#!/usr/bin/env perl\r\nuse strict;\r\nuse warnings;\r\nmy $x = 1;\r\n";
     let lines: Vec<String> = source.lines().map(ToString::to_string).collect();
     let helpers = TextEditHelpers::new(source, &lines);
 
     assert_eq!(helpers.find_pragma_insert_position(), 21);
-    assert_eq!(helpers.find_import_insert_position(), 49);
 }
 
 #[test]

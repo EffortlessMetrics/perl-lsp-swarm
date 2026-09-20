@@ -32,6 +32,10 @@ log.html
 sbom-*.json
 SHA256SUMS
 
+# Lite XL composed candidate trees and receipts (#11170), deterministic
+# and reproducible on demand via clients/lite-xl/compose.lua
+clients/lite-xl/generated/
+
 # Property test regression files
 **/tests/_proptest-regressions/
 
@@ -46,6 +50,8 @@ scripts/__pycache__/
 /.claude/worktrees/
 # Codex worktree metadata — ephemeral agent artifacts, never committed.
 /.codex-worktrees/
+# Linked worktrees created by docs/reference/WORKTREE_PROTOCOL.md — ephemeral, never committed.
+/.worktrees/
 /.claude/settings.local.json
 
 # Swarm ops — ignore the entire directory (contains repo mirror artifacts),
@@ -220,6 +226,8 @@ plans/*
 !plans/lsp-freshness/implementation-plan.md
 !plans/spec-governance/
 !plans/spec-governance/implementation-plan.md
+!plans/install-route-classification/
+!plans/install-route-classification/implementation-plan.md
 scanner_comparison/
 issue_updates/
 
@@ -274,3 +282,7 @@ test_corpus/workspaces/xlarge/bin/
 # Windows reserved device name — accidental redirect creates this file
 # on Windows; it cannot be opened or deleted normally (#5000).
 /nul
+
+# Staged Zed extension fixture builds locally (never committed).
+.ci/fixtures/zed-perl-upstream/zed-perl/Cargo.lock
+.ci/fixtures/zed-perl-upstream/zed-perl/target/

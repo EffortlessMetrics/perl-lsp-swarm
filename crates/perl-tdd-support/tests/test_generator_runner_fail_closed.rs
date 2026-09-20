@@ -3,6 +3,7 @@
 //! Slice 1 of #4948: this runner must never report success for work it did not perform.
 
 #![allow(deprecated, reason = "tests intentionally exercise deprecated test_generator::TestRunner")]
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
 use perl_tdd_support::must_err;
 use perl_tdd_support::test_generator::{TestExecutionError, TestRunner};

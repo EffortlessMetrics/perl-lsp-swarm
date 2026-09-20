@@ -1,0 +1,9 @@
+project: product
+component: Editor integrations
+kind: Added
+body: "Added a Zed defaults compatibility matrix and derived publication-order validator that preserve three independent Perl provider IDs, require a quiet final combination, prove explicit selection and no fallback, and prevent unresolved ordering from entering submission packets."
+time: 2026-08-13T23:45:00Z
+custom:
+  PR: 8379
+  Slug: zed-default-order
+  Breaking: "no"

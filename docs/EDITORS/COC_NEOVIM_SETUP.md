@@ -30,6 +30,7 @@ perllsp --info
 ```bash
 cargo install perllsp
 ```
+> The crates.io package `perl-lsp` is a different project, not this language server.
 
 ### Homebrew
 

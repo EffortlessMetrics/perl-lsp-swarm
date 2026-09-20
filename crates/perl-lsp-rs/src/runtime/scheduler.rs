@@ -317,10 +317,6 @@ pub(crate) struct Scheduler {
     workers: Vec<tokio::task::JoinHandle<()>>,
     /// Monotonic sequence assigned to mutations/lifecycle requests at ingress.
     mutation_seq_next: Arc<AtomicU64>,
-    /// Highest mutation sequence that has completed processing.
-    mutation_seq_done: Arc<AtomicU64>,
-    /// Wakes read workers waiting for earlier mutations to finish.
-    mutation_notify: Arc<Notify>,
     /// Server reference retained at the scheduler level so ingress paths
     /// (`send_read`) can snapshot document generation without waiting for a
     /// worker. Workers receive their own `Arc` clones via the spawn closures.
@@ -430,6 +426,22 @@ struct PendingRequestGuard {
     id: Option<JsonRpcId>,
 }
 
+struct AdmissionGuard {
+    server: Arc<LspServer>,
+    id: Option<JsonRpcId>,
+    armed: bool,
+}
+
+impl Drop for AdmissionGuard {
+    fn drop(&mut self) {
+        if self.armed
+            && let Some(id) = self.id.as_ref()
+        {
+            self.server.clear_request_pending(id);
+        }
+    }
+}
+
 impl Drop for PendingRequestGuard {
     fn drop(&mut self) {
         if let Some(id) = self.id.as_ref() {
@@ -470,22 +482,21 @@ impl Scheduler {
         ];
 
         // Install diagnostic debouncer now that server is wrapped in Arc.
-        // Use the runtime-configured interval so e2e mode (debounce=0) and
-        // user-tuned values from the CLI/env take effect.
-        let debounce_server = Arc::clone(&server);
-        let debounce_interval = server.runtime_tuning().diagnostic_debounce();
-        let debouncer = super::diagnostic_debounce::DiagnosticDebouncer::with_interval(
-            debounce_interval,
-            move |uri| {
-                debounce_server.publish_diagnostics(uri);
-            },
-        );
-        server.install_diagnostic_debouncer(debouncer);
+        // The wiring (weak capture, runtime-configured interval) lives on
+        // `LspServer` so the ownership contract it depends on is reachable
+        // from a test -- see #14539.
+        server.install_default_diagnostic_debouncer();
 
         // Install file watcher debouncer now that server is wrapped in Arc.
-        let fw_server = Arc::clone(&server);
+        // The callback captures the server weakly (#8064): the debouncer is
+        // owned by the server, so a strong capture would be an ownership
+        // cycle that keeps the server alive past teardown and allows
+        // post-shutdown publication.
+        let fw_server = Arc::downgrade(&server);
         let fw_debouncer = super::file_watcher_debounce::FileWatcherDebouncer::new(move |uris| {
-            fw_server.handle_watched_file_batch(uris);
+            if let Some(server) = fw_server.upgrade() {
+                server.handle_watched_file_batch(uris);
+            }
         });
         server.install_file_watcher_debouncer(fw_debouncer);
 
@@ -495,15 +506,7 @@ impl Scheduler {
         // mutation worker below only ever text-applies -- it never parses.
         server.install_default_parse_worker();
 
-        Self {
-            mutation_tx,
-            read_tx,
-            workers,
-            mutation_seq_next,
-            mutation_seq_done,
-            mutation_notify,
-            server,
-        }
+        Self { mutation_tx, read_tx, workers, mutation_seq_next, server }
     }
 
     /// Send a mutation or lifecycle request to the exclusive worker.
@@ -514,18 +517,20 @@ impl Scheduler {
         if let Some(id) = pending_id.as_ref() {
             self.server.mark_request_pending(id);
         }
+        // Reserve queue capacity before allocating the mutation sequence. If
+        // ingress is cancelled by a transport failure while waiting, no gap
+        // is introduced into the read barrier.
+        let mut admission = AdmissionGuard {
+            server: Arc::clone(&self.server),
+            id: pending_id.clone(),
+            armed: true,
+        };
+        let permit = self.mutation_tx.reserve().await.map_err(|_| ())?;
         let seq = self.mutation_seq_next.fetch_add(1, Ordering::SeqCst) + 1;
         let enqueued = std::time::Instant::now();
-        let result = self.mutation_tx.send(QueuedMutation { request, seq, enqueued }).await;
-        if result.is_err()
-            && let Some(id) = pending_id.as_ref()
-        {
-            self.server.clear_request_pending(id);
-        }
-        result.map_err(|_| {
-            self.mutation_seq_done.store(seq, Ordering::SeqCst);
-            self.mutation_notify.notify_waiters();
-        })
+        permit.send(QueuedMutation { request, seq, enqueued });
+        admission.armed = false;
+        Ok(())
     }
 
     /// Send a read-only request to the priority read pool.
@@ -539,22 +544,28 @@ impl Scheduler {
         if let Some(id) = pending_id.as_ref() {
             self.server.mark_request_pending(id);
         }
+        let mut admission = AdmissionGuard {
+            server: Arc::clone(&self.server),
+            id: pending_id.clone(),
+            armed: true,
+        };
         let wait_for_seq = self.mutation_seq_next.load(Ordering::SeqCst);
         let priority = request_priority(&request.method);
         let dedup_key = extract_dedup_key(&request.method, request.params.as_ref(), priority);
         let freshness =
             extract_freshness(&self.server, &request.method, request.params.as_ref(), priority);
         let arrival_seq = READ_ARRIVAL_SEQ.fetch_add(1, Ordering::Relaxed);
-        let result = self
-            .read_tx
-            .send(QueuedRead { request, wait_for_seq, priority, arrival_seq, dedup_key, freshness })
-            .await;
-        if result.is_err()
-            && let Some(id) = pending_id.as_ref()
-        {
-            self.server.clear_request_pending(id);
-        }
-        result.map_err(|_| ())
+        let permit = self.read_tx.reserve().await.map_err(|_| ())?;
+        permit.send(QueuedRead {
+            request,
+            wait_for_seq,
+            priority,
+            arrival_seq,
+            dedup_key,
+            freshness,
+        });
+        admission.armed = false;
+        Ok(())
     }
 
     /// Shut down all workers by dropping senders and awaiting completion.
@@ -800,6 +811,30 @@ impl Scheduler {
         Some(StaleReason::DocumentGenerationAdvanced { captured, current })
     }
 
+    /// Re-capture completion freshness after its ordered mutation barrier.
+    ///
+    /// Completion requests intentionally describe the document produced by
+    /// all preceding `didChange` notifications. Their ingress snapshot can be
+    /// stale by construction while those mutations are still queued, so the
+    /// barrier result becomes the baseline for dispatch and response delivery.
+    fn refresh_read_freshness(
+        server: &LspServer,
+        freshness: Option<&ReadFreshness>,
+    ) -> Option<ReadFreshness> {
+        let freshness = freshness?;
+        let (document_generation, document_version, document_instance) = server
+            .document_freshness(&freshness.uri)
+            .map_or((None, None, None), |(generation, version, instance)| {
+                (Some(generation), Some(version), Some(instance))
+            });
+        Some(ReadFreshness {
+            uri: freshness.uri.clone(),
+            document_generation,
+            document_instance,
+            document_version,
+        })
+    }
+
     fn send_response(outbound: &OutboundSender, response: JsonRpcResponse) {
         log_response(&response);
         let _ = outbound.send_response(response);
@@ -952,6 +987,9 @@ impl Scheduler {
         mutation_seq_done: &Arc<AtomicU64>,
         mutation_notify: &Arc<Notify>,
     ) {
+        let refresh_after_barrier =
+            queued.request.method == "textDocument/completion" && queued.wait_for_seq > 0;
+
         // Stale check 1: position dedupe — newer same-position request supersedes.
         if let Some(ref key) = queued.dedup_key
             && let Some(&latest) = latest_seq.get(key)
@@ -972,7 +1010,9 @@ impl Scheduler {
         // Stale check 2: generation freshness — document moved on between
         // ingress and dispatch. This catches the typing-storm case where
         // every keystroke produces a unique position dedup key.
-        if let Some(reason) = Self::stale_read_reason(server, queued.freshness.as_ref()) {
+        if !refresh_after_barrier
+            && let Some(reason) = Self::stale_read_reason(server, queued.freshness.as_ref())
+        {
             if let Some(id) = queued.request.id.as_ref() {
                 server.clear_request_pending(id);
             }
@@ -999,7 +1039,7 @@ impl Scheduler {
         // we can attribute the mutation-barrier wait to a concrete read request.
         let read_wait_method =
             crate::runtime::timing::is_enabled().then(|| queued.request.method.clone());
-        let freshness = queued.freshness.clone();
+        let mut freshness = queued.freshness.clone();
         let method = queued.request.method.clone();
         let id = queued.request.id.clone();
 
@@ -1036,6 +1076,10 @@ impl Scheduler {
                 ));
             }
 
+            if refresh_after_barrier {
+                freshness = Self::refresh_read_freshness(&srv, freshness.as_ref());
+            }
+
             if let Some(reason) = Self::stale_read_reason(&srv, freshness.as_ref()) {
                 if let Some(id) = id.as_ref() {
                     srv.clear_request_pending(id);
@@ -1068,7 +1112,8 @@ impl Scheduler {
                     // (for example, waiting for an AI completion backend). A
                     // mutation can advance the document generation while that
                     // work is running, so make the final send decision against
-                    // the same freshness snapshot used at dispatch ingress.
+                    // the freshness baseline established before the handler
+                    // (at ingress, or after the ordered completion barrier).
                     if response.error.as_ref().is_some_and(|error| error.code == REQUEST_CANCELLED)
                     {
                         // Preserve a cancellation response that the handler
@@ -1449,6 +1494,69 @@ mod tests {
         assert_eq!(mutation_seq_done.load(Ordering::SeqCst), 7);
     }
 
+    #[tokio::test(flavor = "current_thread")]
+    async fn cancelled_full_mutation_admission_keeps_sequence_and_pending_clean()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = Arc::new(crate::LspServer::new());
+        let (mutation_tx, mut mutation_rx) = tokio::sync::mpsc::channel(1);
+        mutation_tx
+            .send(QueuedMutation {
+                request: JsonRpcRequest {
+                    _jsonrpc: "2.0".to_string(),
+                    id: None,
+                    method: "textDocument/didChange".to_string(),
+                    params: None,
+                },
+                seq: 1,
+                enqueued: std::time::Instant::now(),
+            })
+            .await
+            .map_err(|_| "test queue fill failed")?;
+        let (read_tx, _read_rx) = tokio::sync::mpsc::channel(1);
+        let mutation_seq_next = Arc::new(AtomicU64::new(1));
+        let scheduler = Scheduler {
+            mutation_tx,
+            read_tx,
+            workers: Vec::new(),
+            mutation_seq_next: Arc::clone(&mutation_seq_next),
+            server: Arc::clone(&server),
+        };
+        let id = JsonRpcId::Integer(14168);
+        let request = JsonRpcRequest {
+            _jsonrpc: "2.0".to_string(),
+            id: Some(id.clone()),
+            method: "textDocument/didChange".to_string(),
+            params: None,
+        };
+        let pending = tokio::spawn(async move { scheduler.send_mutation(request).await });
+        let mut observed_pending = false;
+        for _ in 0..1000 {
+            if server.pending_request_ids.lock().contains(&id) {
+                observed_pending = true;
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        if !observed_pending {
+            pending.abort();
+            let _ = pending.await;
+            return Err("full admission test never observed its pending request".into());
+        }
+        pending.abort();
+        let _ = pending.await;
+        if server.pending_request_ids.lock().contains(&id) {
+            return Err("cancelled full admission leaked its pending request".into());
+        }
+        if mutation_seq_next.load(Ordering::SeqCst) != 1 {
+            return Err("cancelled full admission advanced mutation sequence".into());
+        }
+        let queued = mutation_rx.try_recv().map_err(|_| "queued mutation disappeared")?;
+        if queued.seq != 1 {
+            return Err(format!("queued mutation sequence changed to {}", queued.seq).into());
+        }
+        Ok(())
+    }
+
     // =====================================================================
     // Generation-aware freshness tests (PR 4 of 0.15.1 Neovim latency lane)
     // =====================================================================
@@ -1678,7 +1786,8 @@ mod tests {
             RequestPriority::Hover,
         ));
         assert_eq!(f.uri, "file:///x.pl");
-        assert_eq!(f.document_generation, Some(0));
+        // didOpen mints the first accepted document generation as 1 (#11305).
+        assert_eq!(f.document_generation, Some(1));
         assert_eq!(f.document_version, Some(1));
         Ok(())
     }
@@ -1883,22 +1992,25 @@ mod tests {
         let server = crate::LspServer::new();
         let uri = "file:///reason.pl";
         server.test_apply_did_open(uri, "my $a;\n", 1)?;
-        let freshness = make_freshness(uri, Some(0), Some(1));
+        // didOpen mints the first accepted generation as 1 (#11305).
+        let freshness = make_freshness(uri, Some(1), Some(1));
 
         assert_eq!(Scheduler::stale_read_reason(&server, Some(&freshness)), None);
 
         server.test_apply_did_change(uri, "my $aa;\n", 2)?;
         assert_eq!(
             Scheduler::stale_read_reason(&server, Some(&freshness)),
-            Some(StaleReason::DocumentGenerationAdvanced { captured: 0, current: 1 })
+            Some(StaleReason::DocumentGenerationAdvanced { captured: 1, current: 2 })
         );
         Ok(())
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn stale_read_cancelled_after_mutation_wait_before_handle_request()
-    -> Result<(), JsonRpcError> {
+    async fn completion_refreshes_freshness_after_ordered_mutation_wait()
+    -> Result<(), Box<dyn std::error::Error>> {
         let (server, output) = server_with_captured_output();
+        initialize_scheduler_test_server(&server)?;
+        output.lock().clear();
         let uri = "file:///mutation-wait-race.pl";
         server.test_apply_did_open(uri, &rapid_typing_source(1), 1)?;
 
@@ -1930,20 +2042,58 @@ mod tests {
         let completed =
             tokio::time::timeout(std::time::Duration::from_millis(500), in_flight.join_next())
                 .await;
-        assert!(completed.is_ok(), "read should cancel promptly after mutation barrier opens");
+        assert!(completed.is_ok(), "completion should run promptly after mutation barrier opens");
 
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         let bytes = output.lock().clone();
         let text = String::from_utf8_lossy(&bytes);
         assert!(
-            text.contains("document moved from generation 0 to 1"),
-            "post-wait stale read must send cancellation before handle_request; output={text}"
+            !text.contains("document moved from generation 0 to 1"),
+            "ordered mutations must become the completion freshness baseline; output={text}"
         );
         assert!(
-            !text.contains("result"),
-            "cancelled stale read must not run handle_request; output={text}"
+            text.contains("\"id\":77"),
+            "completion handler must answer after the ordered mutation barrier; output={text}"
         );
 
+        Ok(())
+    }
+
+    #[test]
+    fn refreshed_completion_rejects_a_later_mutation_at_delivery() -> Result<(), JsonRpcError> {
+        let (server, output) = server_with_captured_output();
+        let uri = "file:///completion-refresh-race.pl";
+        server.test_apply_did_open(uri, "my $value;\n", 1)?;
+        let ingress = must_some(extract_freshness(
+            &server,
+            "textDocument/completion",
+            Some(&position_params(uri)),
+            RequestPriority::Completion,
+        ));
+
+        server.test_apply_did_change(uri, "my $value = 1;\n", 2)?;
+        let refreshed = must_some(Scheduler::refresh_read_freshness(&server, Some(&ingress)));
+        assert_eq!(Scheduler::stale_read_reason(&server, Some(&refreshed)), None);
+
+        server.test_apply_did_change(uri, "my $value = 12;\n", 3)?;
+        assert_eq!(
+            Scheduler::send_response_if_fresh(
+                &server,
+                Some(&refreshed),
+                JsonRpcResponse {
+                    jsonrpc: "2.0",
+                    id: JsonRpcId::from_value(&serde_json::json!(78)),
+                    result: Some(serde_json::json!([])),
+                    error: None,
+                },
+            ),
+            Some(StaleReason::DocumentGenerationAdvanced { captured: 2, current: 3 })
+        );
+        let output = String::from_utf8_lossy(&output.lock().clone()).to_string();
+        assert!(
+            !output.contains("\"id\":78"),
+            "post-handler stale completion result must not be delivered; output={output}"
+        );
         Ok(())
     }
 
@@ -2213,10 +2363,10 @@ mod tests {
             RequestPriority::Hover,
         ));
         // Before fix: None (raw uppercase key misses normalized lowercase entry)
-        // After fix: Some(0)
+        // After fix: Some(1) — didOpen mints the first accepted generation (#11305)
         assert_eq!(
             f.document_generation,
-            Some(0),
+            Some(1),
             "mixed-case URI must resolve to open document generation"
         );
         Ok(())

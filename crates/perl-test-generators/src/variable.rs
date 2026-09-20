@@ -153,10 +153,10 @@ mod tests {
         fn numeric_special_variables_in_range(v in variable()) {
             // $1–$9 are capture variables; all numeric special vars from the
             // generator must be in the range 0–9.
-            if let Some(body) = v.strip_prefix('$') {
-                if let Ok(n) = body.parse::<u32>() {
-                    prop_assert!(n <= 9, "numeric capture variable out of range: {v}");
-                }
+            if let Some(body) = v.strip_prefix('$')
+                && let Ok(n) = body.parse::<u32>()
+            {
+                prop_assert!(n <= 9, "numeric capture variable out of range: {v}");
             }
         }
 

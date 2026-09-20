@@ -19,7 +19,7 @@ fn initializer(statement: &Node) -> Result<&Node, String> {
     }
 }
 
-fn source_text<'a>(source: &'a str, start: usize, end: usize) -> Result<&'a str, String> {
+fn source_text(source: &str, start: usize, end: usize) -> Result<&str, String> {
     source.get(start..end).ok_or_else(|| format!("invalid source span {start}..{end}"))
 }
 

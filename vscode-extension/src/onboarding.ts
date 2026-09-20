@@ -51,22 +51,28 @@ export const PERL_MISSING_MESSAGE =
   'and reload the window. ' +
   'For module resolution, you can also configure include paths in `.perl-lsp.toml` under `[perl] include_paths`.';
 
+/** User-facing boundary when the diagnostic instrument cannot establish a cause. */
+export const STARTUP_DIAGNOSTICS_UNAVAILABLE_MESSAGE =
+  'Perl Language Server failed to start, and the setup health check could not determine the cause. ' +
+  'Check the Output panel for details, then run the Health Check or reinstall the server binary.';
+
 /**
  * Given the results of a health check, return a specific user-facing error
- * string that names the root cause of an LSP startup failure.
+ * string when the evidence establishes a root cause.
  *
- * Priority: Perl missing > binary missing > unknown crash.
+ * Priority: explicit Perl error > explicit binary error > unavailable evidence
+ * > unknown crash with complete healthy checks.
  */
 export function classifyStartupFailure(results: HealthCheckResult[]): string {
   const perlResult = results.find((r) => r.label === 'Perl interpreter');
   const binaryResult = results.find((r) => r.label === 'LSP binary');
 
-  // Perl not found — highest priority, most actionable for the user.
-  if (!perlResult || (perlResult.ok === false && perlResult.status === HealthCheckStatus.Error)) {
+  // Report Perl missing only when the Perl check actually established an error.
+  if (perlResult?.ok === false && perlResult.status === HealthCheckStatus.Error) {
     return PERL_MISSING_MESSAGE;
   }
 
-  // LSP binary not found — Perl is present but the server binary is missing.
+  // LSP binary not found — use the explicit binary result rather than inference.
   if (
     binaryResult &&
     binaryResult.ok === false &&
@@ -81,7 +87,12 @@ export function classifyStartupFailure(results: HealthCheckResult[]): string {
     );
   }
 
-  // All checks passed — unknown crash (e.g. version mismatch, system ABI issue).
+  // Missing required result rows mean the instrument did not establish a cause.
+  if (!perlResult || !binaryResult) {
+    return STARTUP_DIAGNOSTICS_UNAVAILABLE_MESSAGE;
+  }
+
+  // All required checks completed without an explicit root cause — unknown crash.
   return (
     'Perl Language Server failed to start. ' +
     'Check the Output panel for details. ' +
@@ -361,11 +372,10 @@ export class OnboardingManager {
 
   /**
    * Run a targeted health check after an LSP startup failure and return a
-   * user-facing error string that names the specific root cause.
+   * user-facing error string that names a specific root cause when established.
    *
-   * Call this instead of surfacing the generic "restart server" message so
-   * users immediately know whether the problem is a missing Perl interpreter,
-   * a missing LSP binary, or an unknown crash.
+   * Missing or failed diagnostic evidence remains explicit rather than being
+   * converted into a missing-Perl diagnosis.
    *
    * @param serverPath  Path to the LSP binary, or `null` if unavailable.
    */
@@ -376,7 +386,7 @@ export class OnboardingManager {
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       this.outputChannel.appendLine(`[onboarding] Startup diagnostics failed: ${msg}`);
-      return PERL_MISSING_MESSAGE;
+      return STARTUP_DIAGNOSTICS_UNAVAILABLE_MESSAGE;
     }
   }
 

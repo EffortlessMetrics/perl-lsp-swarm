@@ -21,13 +21,24 @@ fn ws(path: &str) -> PathBuf {
 /// Count entries in the root `[workspace.metadata.publish.allow]` array — the live
 /// published-crate count, which the baseline file must match. Derived, not hard-coded,
 /// so an intentional change to the published set only edits Cargo.toml + the baseline file.
+///
+/// The allowlist is densely commented: most entries sit beside a `#` note recording where
+/// an absorbed crate went. Those comments are not entries, and one of them quotes an ADR
+/// section name (`PLSP-ADR-0006 "Scope boundary"`), so counting quotes across the whole
+/// block over-reports by one per quoted phrase. Strip each line's comment before counting.
 fn published_allowlist_count() -> std::io::Result<usize> {
     let root_toml = fs::read_to_string(ws("Cargo.toml"))?;
     let section = root_toml.split("[workspace.metadata.publish]").nth(1).unwrap_or("");
     let allow_start = section.find("allow = [").unwrap_or(0);
     let allow = &section[allow_start..];
     let allow_end = allow.find(']').unwrap_or(allow.len());
-    Ok(allow[..allow_end].matches('"').count() / 2)
+
+    let quotes: usize = allow[..allow_end]
+        .lines()
+        .map(|line| line.split('#').next().unwrap_or(""))
+        .map(|code| code.matches('"').count())
+        .sum();
+    Ok(quotes / 2)
 }
 
 // =============================================================================

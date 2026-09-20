@@ -10,7 +10,7 @@
 //! - SimpleIncrementalParser: initial, incremental, structural, default
 //! - CheckpointedIncrementalParser: parse, edit, stats, cache clear
 //! - IncrementalParserV2: value edits, whitespace, advanced reuse, metrics
-//! - IncrementalTree: node-map lookup, find_containing_node
+//! - IncrementalTree: canonical containment lookup, find_containing_node
 //! - IncrementalMetrics: efficiency, performance category
 //! - AdvancedReuseAnalyzer: reuse analysis, ReuseConfig, ReuseAnalysisResult
 //! - Integration: lsp_pos_to_byte, byte_to_lsp_pos, DocumentParser, IncrementalConfig
@@ -265,9 +265,21 @@ fn apply_edits_multiple_edits_triggers_full_reparse() -> Result<(), Box<dyn std:
 #[test]
 fn apply_edits_empty_list() -> Result<(), Box<dyn std::error::Error>> {
     let mut state = IncrementalState::new("my $x = 1;".to_string());
+    let output_before = format!("{:?}", state.parse_output());
     let result = apply_edits(&mut state, &[])?;
-    // Empty edits should still trigger full reparse (multiple=0 path)
-    assert!(!result.changed_ranges.is_empty());
+    // Empty edit list short-circuits: the ParseOutput is retained unchanged and
+    // no ranges are marked as reparsed.  This is the correct contract introduced
+    // in #7296 — a zero-edit call is a no-op, not a trigger for a full reparse.
+    assert!(
+        result.changed_ranges.is_empty(),
+        "empty edit list must not mark any range as reparsed, got {:?}",
+        result.changed_ranges
+    );
+    assert_eq!(
+        format!("{:?}", &result.parse_output()),
+        output_before,
+        "empty edit list must retain the previous parse output unchanged"
+    );
     Ok(())
 }
 
@@ -746,7 +758,7 @@ fn v2_parser_multiple_value_edits() {
 // =========================================================================
 
 #[test]
-fn incremental_tree_new_builds_node_map() {
+fn incremental_tree_new_performs_no_hidden_indexing() {
     let root = parse_ok("my $x = 1;");
     if let Ok(r) = root {
         let tree = IncrementalTree::new(r, "my $x = 1;".to_string());

@@ -1,0 +1,66 @@
+{
+  "schema_version": 1,
+  "record_id": "lsp-perllsp-unreleased__sublime-lsp-2.13.0__perllsp-0.17.0",
+  "package": {
+    "name": "LSP-perllsp",
+    "source_repository": "EffortlessMetrics/perl-lsp-swarm",
+    "source_path": "clients/sublime/LSP-perllsp",
+    "version": null,
+    "tree_sha256": null
+  },
+  "client": {
+    "name": "Sublime Text LSP",
+    "repository": "sublimelsp/LSP",
+    "version": "2.13.0",
+    "ref": "cc9f5201d9f053d9ab67aa0ea575b494fd133803"
+  },
+  "host": {
+    "product": "Sublime Text",
+    "build_constraint": ">=4070",
+    "platforms": [
+      "linux-arm64",
+      "linux-x64",
+      "osx-arm64",
+      "osx-x64",
+      "windows-x64"
+    ]
+  },
+  "server": {
+    "repository": "EffortlessMetrics/perl-lsp",
+    "version": "0.17.0",
+    "release_tag": "v0.17.0",
+    "manifest_path": "server-manifest.json",
+    "manifest_sha256": "36707195f6e7a9f665f7a28b16389f8789573d09e17675fdd667dba5c17449b9"
+  },
+  "compatibility": "not_proven",
+  "currentness": "not_proven",
+  "managed_policy": {
+    "selection": "pinned_manifest",
+    "allow_unreviewed_latest": false,
+    "offline_cache": "verified_exact_only",
+    "failed_update": "preserve_last_verified_compatible",
+    "external_binary_disposition": "not_proven",
+    "development_not_proven_allowed": true
+  },
+  "evidence": [
+    {
+      "kind": "static_package",
+      "reference": "#7840",
+      "actual_host": false,
+      "exact_pair": false,
+      "receipt_sha256": null
+    },
+    {
+      "kind": "exact_source_host_external_server",
+      "reference": "#7872",
+      "actual_host": true,
+      "exact_pair": false,
+      "receipt_sha256": null
+    }
+  ],
+  "limitations": [
+    "The current real-host receipt uses an exact current-source external server, not the pinned managed perllsp 0.17.0 release artifact.",
+    "The package has not been tagged or installed through Package Control.",
+    "Platform entries describe manifest reachability only; actual-host support remains separately receipted."
+  ]
+}

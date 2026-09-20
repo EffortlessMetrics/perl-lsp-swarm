@@ -1,0 +1,16 @@
+{
+  "nc01_basename_only_authorization.json": "insufficient_subject_identity",
+  "nc02_dirty_source_as_saved.json": "dirty_or_unsaved_source",
+  "nc03_compile_success_as_reload.json": "compile_success_as_reload_success",
+  "nc04_active_frame_accepted.json": "active_frame_in_target",
+  "nc05a_xs_module_admitted.json": "xs_or_native_module",
+  "nc05b_source_filter_module_admitted.json": "source_filter_or_compile_hook_boundary",
+  "nc05c_generated_source_admitted.json": "generated_or_eval_source",
+  "nc06_timeout_without_generation_advance.json": "possibly_applied_without_generation_advance",
+  "nc07_stale_identity_survives.json": "stale_identity_survives_possibly_applied",
+  "nc08a_raw_path_accepted.json": "raw_client_input_accepted",
+  "nc08b_debugger_command_accepted.json": "raw_client_input_accepted",
+  "nc08c_perl_expression_accepted.json": "raw_client_input_accepted",
+  "nc09_standard_capability_invented.json": "standard_capability_collision",
+  "nc10_availability_as_authority.json": "availability_as_product_authority"
+}

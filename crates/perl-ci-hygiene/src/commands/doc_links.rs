@@ -192,17 +192,17 @@ fn markdown_inline_link_targets(line: &str) -> Result<Vec<String>> {
     let mut targets = Vec::new();
     let mut i = 0;
     while i < bytes.len() {
-        if bytes[i] == b'[' && is_live_link_opener(bytes, i) {
-            if let Some(rest) = line.get(i..) {
-                if let Some(capture) = link_body.captures(rest) {
-                    if let Some(target) = capture.get(1) {
-                        targets.push(target.as_str().to_owned());
-                    }
-                    if let Some(full) = capture.get(0) {
-                        i += full.end();
-                        continue;
-                    }
-                }
+        if bytes[i] == b'['
+            && is_live_link_opener(bytes, i)
+            && let Some(rest) = line.get(i..)
+            && let Some(capture) = link_body.captures(rest)
+        {
+            if let Some(target) = capture.get(1) {
+                targets.push(target.as_str().to_owned());
+            }
+            if let Some(full) = capture.get(0) {
+                i += full.end();
+                continue;
             }
         }
         i += 1;
@@ -219,25 +219,24 @@ fn markdown_reference_link_labels(line: &str) -> Result<Vec<String>> {
     let mut labels = Vec::new();
     let mut i = 0;
     while i < bytes.len() {
-        if bytes[i] == b'[' && is_live_link_opener(bytes, i) {
-            if let Some(rest) = line.get(i..) {
-                if let Some(capture) = reference_link.captures(rest) {
-                    if capture.get(0).is_some_and(|full| full.start() == 0) {
-                        let text = capture.name("text").map(|m| m.as_str()).unwrap_or_default();
-                        let label = capture.name("label").map(|m| m.as_str()).unwrap_or_default();
-                        if label.is_empty() {
-                            if !text.is_empty() {
-                                labels.push(text.to_owned());
-                            }
-                        } else {
-                            labels.push(label.to_owned());
-                        }
-                        if let Some(full) = capture.get(0) {
-                            i += full.end();
-                            continue;
-                        }
-                    }
+        if bytes[i] == b'['
+            && is_live_link_opener(bytes, i)
+            && let Some(rest) = line.get(i..)
+            && let Some(capture) = reference_link.captures(rest)
+            && capture.get(0).is_some_and(|full| full.start() == 0)
+        {
+            let text = capture.name("text").map(|m| m.as_str()).unwrap_or_default();
+            let label = capture.name("label").map(|m| m.as_str()).unwrap_or_default();
+            if label.is_empty() {
+                if !text.is_empty() {
+                    labels.push(text.to_owned());
                 }
+            } else {
+                labels.push(label.to_owned());
+            }
+            if let Some(full) = capture.get(0) {
+                i += full.end();
+                continue;
             }
         }
         i += 1;
@@ -516,8 +515,15 @@ mod tests {
     #[test]
     fn check_doc_links_exact_error_variant() -> TestResult {
         let root = unique_temp_dir("exact-error-variant")?;
-        let err = check_doc_links(&root, Some("docs/does-not-exist"))
-            .expect_err("expected docs directory missing error");
+        let err = match check_doc_links(&root, Some("docs/does-not-exist")) {
+            Err(err) => err,
+            Ok(exit_code) => {
+                return Err(format!(
+                    "expected docs directory missing error, got exit code {exit_code}"
+                )
+                .into());
+            }
+        };
         let message = err.to_string();
         if !message.contains("Docs directory not found") || !message.contains("does-not-exist") {
             return Err(format!("unexpected missing-directory error: {message}").into());

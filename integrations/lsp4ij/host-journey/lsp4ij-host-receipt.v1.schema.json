@@ -1,0 +1,158 @@
+{
+  "$id": "https://github.com/EffortlessMetrics/perl-lsp-swarm/integrations/lsp4ij/host-journey/lsp4ij-host-receipt.v1.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "LSP4IJ real-host session receipt",
+  "description": "Evidence contract for one observed perllsp session inside a real IntelliJ-platform IDE with LSP4IJ. Every observation must carry live-wire-capture origin and a digest of the captured wire bytes; receipts that declare any other origin are synthetic and are forbidden for production closure.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "stage",
+    "source_sha",
+    "recorded_at",
+    "launch_spec_digest",
+    "host",
+    "lsp4ij_plugin",
+    "server_binary",
+    "session_initialize",
+    "repro_readiness",
+    "provider_taps",
+    "process_ledger"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "stage": { "const": "exact_source_local" },
+    "source_sha": { "pattern": "^[0-9a-f]{40}$", "type": "string" },
+    "recorded_at": { "format": "date-time", "type": "string" },
+    "launch_spec_digest": {
+      "description": "SHA-256 of the canonical launch-spec bytes used for this session; binds the observed run to its declared precondition.",
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "host": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["product", "build_number", "platform", "arch", "os_version", "jbr_version"],
+      "properties": {
+        "product": { "minLength": 1, "type": "string" },
+        "build_number": { "pattern": "^[A-Z]{2}-[0-9]{3,4}(\\.[0-9]+)+$", "type": "string" },
+        "platform": { "enum": ["linux", "macos", "windows"] },
+        "arch": { "enum": ["x64", "arm64"] },
+        "os_version": { "minLength": 1, "type": "string" },
+        "jbr_version": { "minLength": 1, "type": "string" }
+      }
+    },
+    "lsp4ij_plugin": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "version", "upstream_repository"],
+      "properties": {
+        "id": { "const": "com.redhat.devtools.lsp4ij" },
+        "version": { "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$", "type": "string" },
+        "upstream_repository": { "const": "redhat-developer/lsp4ij" },
+        "pinned_commit": { "pattern": "^[0-9a-f]{40}$", "type": "string" }
+      }
+    },
+    "server_binary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256", "command"],
+      "properties": {
+        "path": { "minLength": 1, "type": "string" },
+        "sha256": { "pattern": "^[0-9a-f]{64}$", "type": "string" },
+        "command": {
+          "maxItems": 2,
+          "minItems": 2,
+          "prefixItems": [
+            { "minLength": 1, "type": "string" },
+            { "const": "--stdio" }
+          ],
+          "type": "array"
+        }
+      }
+    },
+    "session_initialize": {
+      "description": "The captured initialize handshake: request bytes, response bytes, and the server capabilities the IDE actually observed.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["origin", "request_sha256", "response_sha256", "observed_capabilities"],
+      "properties": {
+        "origin": { "$ref": "#/$defs/capture_origin" },
+        "request_sha256": { "pattern": "^[0-9a-f]{64}$", "type": "string" },
+        "response_sha256": { "pattern": "^[0-9a-f]{64}$", "type": "string" },
+        "observed_capabilities": {
+          "description": "Presence map over the judged core-surface provider names (completion, hover, diagnostic, ...), mirroring the provider_taps enum; completion/hover/diagnostic are required true. Interpreted meanings stay owned by the client-support registry, not by this receipt.",
+          "additionalProperties": { "type": "boolean" },
+          "minProperties": 1,
+          "properties": {
+            "completion": { "const": true },
+            "diagnostic": { "const": true },
+            "hover": { "const": true }
+          },
+          "propertyNames": { "pattern": "^[a-zA-Z][A-Za-z]*$" },
+          "required": ["completion", "hover", "diagnostic"],
+          "type": "object"
+        }
+      }
+    },
+    "repro_readiness": {
+      "description": "Deterministic repro seam: fixture project opened through LSP4IJ and first diagnostics settled on the .pl subject.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["origin", "fixture_opened", "first_diagnostics_settled", "evidence_sha256"],
+      "properties": {
+        "origin": { "$ref": "#/$defs/capture_origin" },
+        "fixture_opened": { "const": true },
+        "first_diagnostics_settled": { "const": true },
+        "evidence_sha256": { "pattern": "^[0-9a-f]{64}$", "type": "string" }
+      }
+    },
+    "provider_taps": {
+      "minItems": 1,
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["provider", "file_suffix", "origin", "result_sha256"],
+        "properties": {
+          "provider": {
+            "enum": [
+              "completion",
+              "diagnostic",
+              "documentSymbol",
+              "formatting",
+              "hover",
+              "references",
+              "semanticTokens",
+              "signatureHelp"
+            ]
+          },
+          "file_suffix": { "enum": [".pl", ".pm", ".t"] },
+          "origin": { "$ref": "#/$defs/capture_origin" },
+          "latency_ms": { "minimum": 0, "type": "integer" },
+          "result_sha256": { "pattern": "^[0-9a-f]{64}$", "type": "string" }
+        }
+      }
+    },
+    "process_ledger": {
+      "description": "Fail-closed supervision seam (emacs host-run convention): every spawned perllsp pid is recorded and the shutdown is orderly.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["spawned_server_pids", "all_orderly_exited"],
+      "properties": {
+        "spawned_server_pids": {
+          "minItems": 1,
+          "type": "array",
+          "items": { "minimum": 1, "type": "integer" }
+        },
+        "all_orderly_exited": { "const": true }
+      }
+    }
+  },
+  "$defs": {
+    "capture_origin": {
+      "description": "Only live captures count as evidence. Any other value marks the receipt synthetic, which is forbidden for production closure.",
+      "enum": ["live_wire_capture"]
+    }
+  }
+}

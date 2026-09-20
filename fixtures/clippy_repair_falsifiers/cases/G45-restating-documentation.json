@@ -1,0 +1,69 @@
+{
+  "schema_version": 1,
+  "case_id": "G45-restating-documentation",
+  "family": "documentation_cargo_test_proof_theater",
+  "purpose": "Public documentation that only restates the identifier or says 'Returns the result' provides no usable contract.",
+  "incident_reference": null,
+  "subject": {
+    "scope": "perl-lsp-rs",
+    "target_kinds": [
+      "lib",
+      "bin",
+      "test"
+    ],
+    "profile": "all",
+    "platforms": [
+      "linux",
+      "windows",
+      "macos"
+    ],
+    "features": "default"
+  },
+  "governed_lint": null,
+  "dishonest_mutation": {
+    "kind": "source-snippet",
+    "language": "rust",
+    "trigger_evidence": [
+      "/// Returns the result.",
+      "normalize_uri"
+    ],
+    "content": "/// Returns the result.\npub fn normalize_uri(input: &str) -> Result<Uri, UriError> { normalize(input) }\n",
+    "sha256": "7ea8824f5e0492258ae5be0d60d38cac69e206f36425e16418636bc1e503b643"
+  },
+  "rejecting_authority": {
+    "status": "pending_owner",
+    "owner_issue": 11410,
+    "unresolved_reason": "Useful-documentation quality policy (#11410) open; presence-only checks exist (ci/check_missing_docs.sh)."
+  },
+  "expected_result": {
+    "result_class": "reject",
+    "reason_code": "restating_documentation"
+  },
+  "positive_counterpart": {
+    "sanctioned_evidence": [
+      "UnsupportedScheme",
+      "rejecting schemes outside the"
+    ],
+    "note": "Doc states behavior, errors, and guarantees it owns.",
+    "content": "/// Normalizes percent-encoded URI input, rejecting schemes outside the\n/// allowed set with [`UriError::UnsupportedScheme`].\npub fn normalize_uri(input: &str) -> Result<Uri, UriError> { normalize(input) }\n",
+    "sha256": "220e9a46a7badc22eb05fbde1b42bdd264dfdd72d1a264250751fe0def5465fe"
+  },
+  "applicability": {
+    "packet_classes": [
+      "qualification",
+      "foundation",
+      "migration",
+      "activation",
+      "review"
+    ],
+    "domains": [
+      "clippy-core"
+    ]
+  },
+  "delta_provenance": {
+    "change_reason": "initial corpus freeze (#11649)",
+    "owning_issue": 11649,
+    "historical_interpretability": true
+  },
+  "claim_boundary": "Presence gate stays; quality authority resolves under #11410/#2318."
+}

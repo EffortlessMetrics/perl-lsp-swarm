@@ -1,5 +1,9 @@
 # Live Signals vs Label Signals
 
+<!-- authority-status:v1 -->
+> **Status: historical.** Current authority: [GitHub surfaces](../agents/GITHUB_SURFACES.md).
+> Retained as historical design or mechanism evidence. Internal wording below that calls this document accepted, active doctrine, a north star, current instruction, or lifecycle authority is historical and must not route current work. See [Agent and maintainer authority status](../agents/AUTHORITY_STATUS.md).
+
 > For the umbrella concept — what an Octopus Cluster is, how the reconciler fits in, and the vocabulary these docs share — see [OCTOPUS_CLUSTER.md](OCTOPUS_CLUSTER.md).
 
 ## Principle

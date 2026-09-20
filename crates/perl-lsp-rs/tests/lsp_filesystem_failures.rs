@@ -338,8 +338,10 @@ fn test_broken_symlink() -> TestResult {
     #[cfg(windows)]
     {
         if let Err(err) = std::os::windows::fs::symlink_file(target, link) {
-            if err.raw_os_error() == Some(1314) {
-                eprintln!("Skipping broken symlink test on Windows without symlink privilege");
+            if perl_tdd_support::classify_symlink_error(&err).skip_visibly() {
+                // Typed skip: Windows os error 1314 only (symlink privilege
+                // absent without Developer Mode or elevation). Every other
+                // creation error fails the test below.
                 let _ = fs::remove_file(target);
                 return Ok(());
             }
@@ -487,24 +489,24 @@ fn test_special_filename_characters() -> TestResult {
         let file_path = &temp_dir.join(name);
 
         // Try to create file (may fail on some filesystems)
-        if fs::write(file_path, "print 'special';").is_ok() {
-            if let Ok(uri) = path_to_uri(file_path) {
-                send_notification(
-                    &server,
-                    json!({
-                        "jsonrpc": "2.0",
-                        "method": "textDocument/didOpen",
-                        "params": {
-                            "textDocument": {
-                                "uri": uri,
-                                "languageId": "perl",
-                                "version": 1,
-                                "text": "print 'special';"
-                            }
+        if fs::write(file_path, "print 'special';").is_ok()
+            && let Ok(uri) = path_to_uri(file_path)
+        {
+            send_notification(
+                &server,
+                json!({
+                    "jsonrpc": "2.0",
+                    "method": "textDocument/didOpen",
+                    "params": {
+                        "textDocument": {
+                            "uri": uri,
+                            "languageId": "perl",
+                            "version": 1,
+                            "text": "print 'special';"
                         }
-                    }),
-                );
-            }
+                    }
+                }),
+            );
         }
     }
 
@@ -858,24 +860,24 @@ fn test_device_files() -> TestResult {
 
     for device in device_files {
         let device_path = PathBuf::from(device);
-        if device_path.exists() {
-            if let Ok(uri) = path_to_uri(&device_path) {
-                send_notification(
-                    &server,
-                    json!({
-                        "jsonrpc": "2.0",
-                        "method": "textDocument/didOpen",
-                        "params": {
-                            "textDocument": {
-                                "uri": uri,
-                                "languageId": "perl",
-                                "version": 1,
-                                "text": ""
-                            }
+        if device_path.exists()
+            && let Ok(uri) = path_to_uri(&device_path)
+        {
+            send_notification(
+                &server,
+                json!({
+                    "jsonrpc": "2.0",
+                    "method": "textDocument/didOpen",
+                    "params": {
+                        "textDocument": {
+                            "uri": uri,
+                            "languageId": "perl",
+                            "version": 1,
+                            "text": ""
                         }
-                    }),
-                );
-            }
+                    }
+                }),
+            );
         }
     }
 

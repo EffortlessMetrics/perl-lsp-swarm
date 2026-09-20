@@ -286,11 +286,22 @@ fn test_perl_module_version_matches_workspace_version() -> Result<(), Box<dyn st
 
     let perl_module_cargo = fs::read_to_string(root.join("crates/perl-module/Cargo.toml"))?;
     let perl_module_value: toml::Value = toml::from_str(&perl_module_cargo)?;
-    let perl_module_version = perl_module_value
+    let declared_version = perl_module_value
         .get("package")
         .and_then(|value| value.get("version"))
-        .and_then(toml::Value::as_str)
         .ok_or("package.version missing from crates/perl-module/Cargo.toml")?;
+    // `version.workspace = true` inherits the workspace release line by
+    // construction, which satisfies the alignment contract more strongly
+    // than a duplicated literal.
+    if let Some(inherits) = declared_version.get("workspace").and_then(toml::Value::as_bool) {
+        if !inherits {
+            return Err("perl-module version inheritance must be enabled".into());
+        }
+        return Ok(());
+    }
+    let perl_module_version = declared_version
+        .as_str()
+        .ok_or("package.version must be a string or workspace-inherited")?;
 
     assert_eq!(
         perl_module_version, workspace_version,

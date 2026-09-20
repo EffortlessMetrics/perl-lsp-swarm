@@ -122,10 +122,10 @@ impl InferrerState {
             }
 
             // `$self` reference inside a method body.
-            NodeKind::Variable { sigil, name } if sigil == "$" && is_self_like_name(name) => {
-                if self.in_method {
-                    self.record_self_like_variable(node, Confidence::Medium);
-                }
+            NodeKind::Variable { sigil, name }
+                if sigil == "$" && is_self_like_name(name) && self.in_method =>
+            {
+                self.record_self_like_variable(node, Confidence::Medium);
             }
 
             _ => {}
@@ -177,13 +177,10 @@ impl InferrerState {
             // `bless $ref, 'Pkg'` — bless call.
             NodeKind::FunctionCall { name, args } if name == "bless" => {
                 // Second argument is the package name.
-                if let Some(pkg_node) = args.get(1) {
-                    if let Some(pkg) = string_value(pkg_node) {
-                        return Some(ValueShape::Object {
-                            package: pkg,
-                            confidence: Confidence::Low,
-                        });
-                    }
+                if let Some(pkg_node) = args.get(1)
+                    && let Some(pkg) = string_value(pkg_node)
+                {
+                    return Some(ValueShape::Object { package: pkg, confidence: Confidence::Low });
                 }
                 // `bless $ref` with no explicit package — uses current package.
                 if args.len() == 1 {
@@ -352,10 +349,10 @@ mod tests {
         expected_package: &str,
     ) -> Option<Confidence> {
         results.iter().find_map(|(_, shape)| {
-            if let ValueShape::Object { package, confidence } = shape {
-                if package == expected_package {
-                    return Some(*confidence);
-                }
+            if let ValueShape::Object { package, confidence } = shape
+                && package == expected_package
+            {
+                return Some(*confidence);
             }
             None
         })

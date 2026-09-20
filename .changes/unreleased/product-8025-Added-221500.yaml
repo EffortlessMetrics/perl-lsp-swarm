@@ -1,0 +1,12 @@
+project: product
+component: Editor Integrations
+kind: Added
+body: >-
+  Add a deterministic one-authority source manifest and export receipt for
+  transferring the reviewed LSP-perllsp package into its canonical public
+  repository.
+time: 2026-08-13T22:15:00Z
+custom:
+  PR: "8025"
+  Slug: sublime-package-source-authority
+  Breaking: "no"

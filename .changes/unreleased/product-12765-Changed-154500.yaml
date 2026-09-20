@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Changed
+body: Public perl-token constructors now require source text byte length to equal span width, including empty Eof and Unknown tokens. Retained public types keep their #2898 evolution dispositions; crate-private from_ordered and from_valid_parts stay off the public API. This is an intentional pre-1.0 public API break.
+time: 2026-08-26T15:45:00Z
+custom:
+  PR: "12765"
+  Slug: token-api-honesty
+  Breaking: "yes"

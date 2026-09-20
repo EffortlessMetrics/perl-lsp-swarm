@@ -65,8 +65,6 @@
     clippy::items_after_statements,
     clippy::return_self_not_must_use,
     clippy::unused_self,
-    clippy::collapsible_match,
-    clippy::collapsible_if,
     clippy::only_used_in_recursion,
     clippy::items_after_test_module,
     clippy::while_let_loop,
@@ -115,8 +113,8 @@ pub use engine::{error, parser, position};
 
 /// Recursive descent Perl parser with error recovery and AST generation.
 pub use core::{
-    ErrorCategory, ErrorClass, Node, NodeKind, ParseError, ParseOutput, ParseResult, Parser,
-    SourceLocation,
+    ErrorCategory, ErrorClass, Node, NodeKind, ParseDiagnosticAnchor, ParseError, ParseOutput,
+    ParseResult, Parser, ResolvedParseDiagnosticAnchor, SourceLocation,
 };
 /// Abstract Syntax Tree (AST) definitions for Perl parsing.
 pub use engine::ast;
@@ -181,8 +179,6 @@ pub mod heredoc_anti_patterns;
 pub use perl_parser_core::path_normalize;
 /// Workspace-bound path validation and traversal prevention (previously `perl-path-security`; from perl-parser-core).
 pub use perl_parser_core::path_security;
-/// Nearest-rank percentile helpers for integer latency samples (previously `perl-percentile`; from perl-parser-core).
-pub use perl_parser_core::percentile;
 /// Perl qualified-name parsing, splitting, and validation helpers (previously `perl-qualified-name`; from perl-parser-core).
 pub use perl_parser_core::qualified_name;
 /// Shared Perl source-file classification helpers (previously `perl-source-file`; from perl-parser-core).
@@ -238,7 +234,7 @@ pub use incremental::incremental_advanced_reuse;
 /// Checkpoint-based incremental parsing with rollback support.
 pub use incremental::incremental_checkpoint;
 #[cfg(feature = "incremental")]
-/// Document-level incremental parsing state management.
+/// Experimental IncrementalDocument generation: fail-closed full fresh parse.
 pub use incremental::incremental_document;
 #[cfg(feature = "incremental")]
 /// Edit representation and application for incremental updates.
@@ -288,8 +284,12 @@ pub use pragma_tracker::{PragmaState, PragmaTracker};
 /// Token types and token stream for lexer output.
 pub use token_stream::{Token, TokenKind, TokenStream};
 /// Trivia (whitespace/comments) attached to AST nodes.
+// Public compatibility export retained until canonical node attachment lands in #7101.
+#[allow(deprecated)]
 pub use trivia::{NodeWithTrivia, Trivia, TriviaToken};
 /// Trivia-preserving parser and formatting utilities.
+// Public compatibility export retained until downstream callers migrate to source_with_trivia.
+#[allow(deprecated)]
 pub use trivia_parser::{TriviaPreservingParser, format_with_trivia};
 
 // Incremental parsing exports (feature-gated)

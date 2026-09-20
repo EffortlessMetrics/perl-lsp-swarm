@@ -30,18 +30,21 @@
 //!
 //! | Case | v1 (tree-sitter-c) | v2 (Pest) | v3 (recursive-descent) |
 //! |------|-------------------|-----------|------------------------|
-//! | trailing_garbage | NoRecovery | PartialRecovery | PartialRecovery |
+//! | trailing_garbage | NoRecovery | PartialRecovery | FullRecovery |
 //! | unclosed_brace | PartialRecovery | NoRecovery | FullRecovery |
-//! | unclosed_string | NoRecovery | FullRecovery* | NoRecovery |
+//! | unclosed_string | NoRecovery | FullRecovery* | FullRecovery |
 //! | unclosed_quote_like | NoRecovery | NoRecovery | FullRecovery |
 //! | missing_semicolon | NoRecovery | FullRecovery* | FullRecovery |
 //! | mismatched_brackets | NoRecovery | FullRecovery* | FullRecovery |
 //! | truncated_heredoc | PartialRecovery | FullRecovery* | FullRecovery |
 //! | modern_class_syntax | NoRecovery | FullRecovery* | FullRecovery |
 //! | invalid_double_sigil | NoRecovery | FullRecovery* | FullRecovery |
-//! | multiple_errors | NoRecovery | PartialRecovery | NoRecovery |
+//! | multiple_errors | NoRecovery | PartialRecovery | PartialRecovery |
 //! | error_in_interpolated_string | NoRecovery | FullRecovery* | FullRecovery |
 //! | error_inside_block | PartialRecovery | FullRecovery* | FullRecovery |
+//!
+//! `*` marks a misleading signal: the markers are found as part of a wrong
+//! parse, not because the parser visibly recovered (see the v2 note below).
 //!
 //! # Surprising findings
 //!
@@ -60,10 +63,14 @@
 //! dangerous failure mode for an LSP parser: the client sees a "full" parse
 //! that is subtly wrong, not a visible error it can degrade gracefully.
 //!
-//! **v3 (recursive-descent) is the most reliably honest recoverer.**  It finds
-//! post-error code in most cases by explicitly synchronizing at statement
-//! boundaries, and unlike v2 it correctly surfaces the broken regions as
-//! `ERROR` nodes rather than silently misparse them.
+//! **v3 (recursive-descent) is the most reliable recoverer.**  It finds
+//! post-error code by explicitly synchronizing at statement boundaries, and
+//! unlike v2 it correctly surfaces broken regions as `ERROR` nodes rather
+//! than silently misparsing them.  Bare double-sigil garbage like `@@@` is
+//! rejected with an UnexpectedToken diagnostic and an explicit ERROR node
+//! before synchronization (issue #15750), so its `FullRecovery` verdicts are
+//! honest recovery, not silent misparses.
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
 use std::panic;
 
@@ -192,7 +199,10 @@ fn assert_recovery(
 /// **Observed verdicts:**
 /// - v1 (tree-sitter): NoRecovery - ERROR node absorbs all post-garbage tokens
 /// - v2 (Pest): PartialRecovery - recovers `suffix` but `@@@` disrupts the sub
-/// - v3 (recursive-descent): PartialRecovery - synchronizes but `@@@` disrupts `sub`
+/// - v3 (recursive-descent): FullRecovery - rejects the bare `@` sigil chain
+///   with an UnexpectedToken diagnostic and an ERROR node (issue #15750),
+///   then synchronizes to the next statement boundary and finds both
+///   markers
 #[test]
 fn recovery_01_trailing_garbage_mid_file() {
     let src = r#"
@@ -205,12 +215,19 @@ my $suffix = 3;
     let post_error = &["post_error_sub", "suffix"];
     let (v1, v2, v3) = measure_recovery(src, post_error);
     print_recovery_row("trailing_garbage_mid_file", &v1, &v2, &v3);
+    println!(
+        "    NOTE: v3 rejects the @@@ garbage with an UnexpectedToken diagnostic \
+         and an ERROR node (#15750), then synchronizes - this FullRecovery is \
+         honest recovery, unlike the misleading v2 signals elsewhere in the suite"
+    );
     // v1: ERROR node swallows all post-garbage tokens including the sub and suffix
     assert_recovery(&v1, &RecoveryVerdict::NoRecovery, "v1", "trailing_garbage_mid_file");
     // v2: partially misparses; finds `suffix` but not `post_error_sub`
     assert_recovery(&v2, &RecoveryVerdict::PartialRecovery, "v2", "trailing_garbage_mid_file");
-    // v3: synchronizes at statement boundaries; partial recovery
-    assert_recovery(&v3, &RecoveryVerdict::PartialRecovery, "v3", "trailing_garbage_mid_file");
+    // v3: rejects bare `@` chains with an ERROR node + UnexpectedToken
+    // diagnostic, then synchronizes to the next statement boundary and
+    // finds both `post_error_sub` and `suffix` (#15750).
+    assert_recovery(&v3, &RecoveryVerdict::FullRecovery, "v3", "trailing_garbage_mid_file");
 }
 
 // --- Recovery Case 2: Unclosed brace -----------------------------------------
@@ -249,14 +266,18 @@ my $after = 3;
 ///
 /// `my $x = "abc` (newline before close), then `sub after_string { return 1; }`.
 ///
-/// **Observed verdicts (surprising):**
+/// **Observed verdicts:**
 /// - v1 (tree-sitter): NoRecovery - remaining code absorbed into string node
 /// - v2 (Pest): FullRecovery* - misparses: string ends at newline, rest parsed as code
-/// - v3 (recursive-descent): NoRecovery - string absorbs remaining content
+/// - v3 (recursive-descent): FullRecovery - honest recovery: the unclosed string
+///   lexes as an unknown token, v3 emits error diagnostics, surfaces an explicit
+///   ERROR node, then resynchronizes at statement boundaries and parses the
+///   post-error statements correctly
 ///
 /// The v2 `FullRecovery` is a *misleading* signal: v2 implicitly terminates the
 /// string at the newline and continues parsing - finding `after_string` as code.
 /// This is a silent mismatch with Perl's actual semantics (strings span lines).
+/// v3's FullRecovery is honest: the error is diagnosed and surfaced, not hidden.
 #[test]
 fn recovery_03_unclosed_string() {
     let src = "my $before = 1;\nmy $x = \"abc\nmy $y = 2;\nsub after_string { return 1; }\n";
@@ -271,8 +292,9 @@ fn recovery_03_unclosed_string() {
     assert_recovery(&v1, &RecoveryVerdict::NoRecovery, "v1", "unclosed_string");
     // v2: silently terminates the string and finds after_string (wrong but found)
     assert_recovery(&v2, &RecoveryVerdict::FullRecovery, "v2", "unclosed_string");
-    // v3: string absorbs remaining content (same as v1 in this regard)
-    assert_recovery(&v3, &RecoveryVerdict::NoRecovery, "v3", "unclosed_string");
+    // v3: diagnoses the unclosed string (ERROR node + diagnostics) and
+    // resynchronizes at statement boundaries - honest recovery, like case 4
+    assert_recovery(&v3, &RecoveryVerdict::FullRecovery, "v3", "unclosed_string");
 }
 
 // --- Recovery Case 4: Unclosed quote-like ------------------------------------
@@ -483,11 +505,14 @@ my $end = 99;
 /// - v1 (tree-sitter): NoRecovery - large ERROR block swallows inter-error code
 /// - v2 (Pest): PartialRecovery - first error `@@@` causes partial damage;
 ///   some subsequent subs are found but not all
-/// - v3 (recursive-descent): NoRecovery - the unclosed string in error 2
-///   absorbs remaining content, preventing markers from surfacing
+/// - v3 (recursive-descent): PartialRecovery - errors are diagnosed (diagnostics
+///   for the unclosed string and the bracket mismatch) and v3 resynchronizes,
+///   finding `third_good` and `fourth_good`; `second_good` sits inside the
+///   damaged region and is not surfaced
 ///
 /// This is the hardest case: multiple error types compound each other.
-/// Neither v1 nor v3 fully survives three different error categories in one file.
+/// v1 does not survive three different error categories in one file; v3
+/// partially recovers with honest diagnostics.
 #[test]
 fn recovery_10_multiple_errors_across_file() {
     let src = r#"
@@ -515,8 +540,8 @@ sub fourth_good { return 4; }
     assert_recovery(&v1, &RecoveryVerdict::NoRecovery, "v1", "multiple_errors_across_file");
     // v2: partially survives - some markers found but not all
     assert_recovery(&v2, &RecoveryVerdict::PartialRecovery, "v2", "multiple_errors_across_file");
-    // v3: unclosed string absorbs remaining content, no markers found
-    assert_recovery(&v3, &RecoveryVerdict::NoRecovery, "v3", "multiple_errors_across_file");
+    // v3: errors diagnosed, partial statement-boundary recovery; 2 of 3 markers found
+    assert_recovery(&v3, &RecoveryVerdict::PartialRecovery, "v3", "multiple_errors_across_file");
 }
 
 // --- Recovery Case 11: Error in interpolated string --------------------------

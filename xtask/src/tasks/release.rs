@@ -159,9 +159,9 @@ fn package_vscode_extension(release_dir: &Path) -> Result<()> {
     }
 
     let output =
-        Command::new("npm").current_dir("vscode-extension").args(["run", "compile"]).output()?;
+        Command::new("npm").current_dir("vscode-extension").args(["run", "build"]).output()?;
     if !output.status.success() {
-        bail!("Failed to compile extension: {}", String::from_utf8_lossy(&output.stderr));
+        bail!("Failed to run checked extension build: {}", String::from_utf8_lossy(&output.stderr));
     }
 
     let output =

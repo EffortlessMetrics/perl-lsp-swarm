@@ -1,0 +1,130 @@
+{
+  "schema_version": 1,
+  "owner_issue": 6971,
+  "package": "perl-incremental-parsing",
+  "behavior_authority": false,
+  "canonical_owner": "perl-parser",
+  "classification_rule": "Every #[test] function inherits the disposition of its exact source target. New test or benchmark targets are rejected until classified here.",
+  "source_test_targets": [
+    {
+      "path": "src/lib.rs",
+      "scope": "all_tests_in_target",
+      "plane": "compatibility",
+      "disposition": "retain_compatibility_only",
+      "canonical_destination": "perl-parser public API contracts",
+      "owner_issue": 6971,
+      "claim_boundary": "re-export and compatibility smoke only; not behavioral authority"
+    }
+  ],
+  "test_targets": [
+    {
+      "path": "tests/authority_disposition_contract.rs",
+      "scope": "all_tests_in_target",
+      "plane": "compatibility",
+      "disposition": "retain_compatibility_only",
+      "canonical_destination": "this package authority gate",
+      "owner_issue": 6971,
+      "claim_boundary": "inventory completeness only"
+    },
+    {
+      "path": "tests/compatibility_forwarding.rs",
+      "scope": "all_tests_in_target",
+      "plane": "compatibility",
+      "disposition": "retain_compatibility_only",
+      "canonical_destination": "perl-parser incremental facade",
+      "owner_issue": 6971,
+      "claim_boundary": "type and result forwarding identity only"
+    },
+    {
+      "path": "tests/comprehensive_unit_tests.rs",
+      "scope": "all_tests_in_target",
+      "plane": "mixed_behavior",
+      "disposition": "migrate_then_reduce",
+      "canonical_destination": "perl-parser and lower owning crates",
+      "owner_issue": 6971,
+      "claim_boundary": "transitional evidence across canonical and experimental generations"
+    },
+    {
+      "path": "tests/coverage_gaps_unit_tests.rs",
+      "scope": "all_tests_in_target",
+      "plane": "mixed_behavior",
+      "disposition": "migrate_then_reduce",
+      "canonical_destination": "perl-parser focused API and branch contracts",
+      "owner_issue": 6971,
+      "claim_boundary": "coverage-gap tests do not define shipping behavior"
+    },
+    {
+      "path": "tests/extended_unit_tests.rs",
+      "scope": "all_tests_in_target",
+      "plane": "mixed_behavior",
+      "disposition": "migrate_then_reduce",
+      "canonical_destination": "perl-parser and lower owning crates",
+      "owner_issue": 6971,
+      "claim_boundary": "transitional behavioral evidence"
+    },
+    {
+      "path": "tests/incremental_efficiency_tests.rs",
+      "scope": "all_tests_in_target",
+      "plane": "metrics",
+      "disposition": "rewrite_or_quarantine",
+      "canonical_destination": "#7072 work receipts and #7099 benchmark regimes",
+      "owner_issue": 6707,
+      "claim_boundary": "historical efficiency and reuse fields are not avoided-parser-work evidence"
+    },
+    {
+      "path": "tests/incremental_full_parse_equivalence.rs",
+      "scope": "all_tests_in_target",
+      "plane": "equivalence",
+      "disposition": "migrate_then_remove",
+      "canonical_destination": "#7045 canonical differential harness",
+      "owner_issue": 2327,
+      "claim_boundary": "local projections cannot close full fresh/incremental equivalence"
+    },
+    {
+      "path": "tests/segment_cache_checkpoint_window_tests.rs",
+      "scope": "all_tests_in_target",
+      "plane": "experimental_checkpoint_cache",
+      "disposition": "quarantine_experimental",
+      "canonical_destination": "#6982/#6986 only after complete-state proof",
+      "owner_issue": 6704,
+      "claim_boundary": "experimental cache/checkpoint algorithm; non-production"
+    }
+  ],
+  "benchmarks": [
+    {
+      "path": "benches/incremental_parsing_benchmarks.rs",
+      "regime": "historical_mixed_incremental",
+      "disposition": "quarantine_and_rewrite",
+      "canonical_destination": "#7099 canonical regime benchmarks",
+      "owner_issue": 6707,
+      "claim_boundary": "may contain full parse, analysis, cloning, or experimental cache work; no shipping performance claim"
+    }
+  ],
+  "documents": [
+    {
+      "path": "README.md",
+      "disposition": "compatibility_boundary",
+      "owner_issue": 6971
+    },
+    {
+      "path": "BENCHMARK_REPORT.md",
+      "disposition": "historical_non_authoritative",
+      "owner_issue": 7081
+    },
+    {
+      "path": "benches/README.md",
+      "disposition": "historical_non_authoritative",
+      "owner_issue": 7099
+    },
+    {
+      "path": "CLAUDE.md",
+      "disposition": "migration_guidance",
+      "owner_issue": 6975
+    },
+    {
+      "path": "ROADMAP.md",
+      "disposition": "migration_guidance",
+      "owner_issue": 6975
+    }
+  ]
+}

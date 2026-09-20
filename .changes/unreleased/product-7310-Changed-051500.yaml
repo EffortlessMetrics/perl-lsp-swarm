@@ -1,0 +1,13 @@
+project: product
+component: Developer experience
+kind: Changed
+body: >-
+  Replace the superseded Devel::TSPerlDAP bundled-shim architecture with the
+  current native perl-dap design across the active architecture, book, and
+  security surfaces, and add a recurrence guard that distinguishes reviewed
+  archive references from active implementation guidance.
+time: 2026-08-12T05:15:00Z
+custom:
+  PR: "7310"
+  Slug: dap-archive-tsperldap
+  Breaking: "no"

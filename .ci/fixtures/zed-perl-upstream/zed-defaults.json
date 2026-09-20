@@ -1,0 +1,12 @@
+{
+  "languages": {
+    "Perl": {
+      "language_servers": [
+        "perlnavigator-server",
+        "!perl-lsp",
+        "!perllsp",
+        "..."
+      ]
+    }
+  }
+}

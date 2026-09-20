@@ -1,6 +1,6 @@
-use perl_module::import::{ModuleImportKind, parse_module_import_head};
-use perl_module::path::file_path_to_module_name;
-use perl_module::token::{contains_module_token, module_variant_pairs, replace_module_token};
+use perl_module::file_path_to_module_name;
+use perl_module::{ModuleImportKind, parse_module_import_head};
+use perl_module::{contains_module_token, module_variant_pairs, replace_module_token};
 
 fn rewrite_line_with_variant_pairs(line: &str, old_module: &str, new_module: &str) -> String {
     let mut rewritten = line.to_string();

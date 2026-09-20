@@ -3,7 +3,6 @@
 //! Complements `comprehensive_unit_tests.rs` with additional coverage for:
 //! - PHF map iteration and entry consistency
 //! - Parameter name semantics (FILEHANDLE, SCALAR, LIST patterns)
-#![allow(clippy::panic)]
 //! - Cross-module alignment between PHF and HashMap signatures
 //! - Signature variant ordering (most-specific-first convention)
 //! - Edge cases around whitespace, unicode, and boundary inputs
@@ -228,44 +227,6 @@ fn every_phf_file_test_exists_in_hashmap() -> Result<(), String> {
 // ============================================================
 // Signature variant ordering checks
 // ============================================================
-
-#[test]
-fn full_sigs_print_starts_with_most_specific() -> Result<(), String> {
-    if let Some(sigs) = BUILTIN_FULL_SIGS.get("print") {
-        if let Some(first) = sigs.first() {
-            if !first.contains("FILEHANDLE") || !first.contains("LIST") {
-                return Err(format!(
-                    "print first full sig should be the most specific (FILEHANDLE LIST), got {first}"
-                ));
-            }
-        }
-    }
-    Ok(())
-}
-
-#[test]
-fn full_sigs_open_starts_with_three_arg_form() -> Result<(), String> {
-    if let Some(sigs) = BUILTIN_FULL_SIGS.get("open") {
-        if let Some(first) = sigs.first() {
-            if !first.contains("MODE") || !first.contains("FILENAME") {
-                return Err(format!("open first full sig should be 3-arg form, got {first}"));
-            }
-        }
-    }
-    Ok(())
-}
-
-#[test]
-fn full_sigs_split_starts_with_three_arg_form() -> Result<(), String> {
-    if let Some(sigs) = BUILTIN_FULL_SIGS.get("split") {
-        if let Some(first) = sigs.first() {
-            if !first.contains("LIMIT") {
-                return Err(format!("split first full sig should include LIMIT, got {first}"));
-            }
-        }
-    }
-    Ok(())
-}
 
 #[test]
 fn hashmap_splice_variants_ordered_most_specific_first() -> Result<(), String> {

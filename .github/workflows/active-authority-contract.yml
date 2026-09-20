@@ -1,0 +1,69 @@
+name: Active Authority Contract
+
+# Check the short, high-retrieval maintainer and contributor entrypoints that
+# steer humans and coding agents. Historical documents are outside this workflow.
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'CONTRIBUTING.md'
+      - '.github/copilot-instructions.md'
+      - 'docs/reference/MAINTAINER_AGENT_DOCTRINE.md'
+      - 'docs/reference/WORKTREE_PROTOCOL.md'
+      - 'AGENTS.md'
+      - 'CLAUDE.md'
+      - '.agents/skills/**'
+      - '.claude/skills/**'
+      - '.claude/agents/**'
+      - 'docs/agents/DEVELOPMENT_METHOD.md'
+      - 'docs/agents/REVIEW_CURRENTNESS.md'
+      - 'docs/agents/SKILL_CONTRACT.md'
+      - 'justfile'
+      - '.gitignore'
+      - 'tests/test_active_authority_contract.py'
+      - 'tests/test_writer_authority_transfer_contract.py'
+      - '.github/workflows/active-authority-contract.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'CONTRIBUTING.md'
+      - '.github/copilot-instructions.md'
+      - 'docs/reference/MAINTAINER_AGENT_DOCTRINE.md'
+      - 'docs/reference/WORKTREE_PROTOCOL.md'
+      - 'AGENTS.md'
+      - 'CLAUDE.md'
+      - '.agents/skills/**'
+      - '.claude/skills/**'
+      - '.claude/agents/**'
+      - 'docs/agents/DEVELOPMENT_METHOD.md'
+      - 'docs/agents/REVIEW_CURRENTNESS.md'
+      - 'docs/agents/SKILL_CONTRACT.md'
+      - 'justfile'
+      - '.gitignore'
+      - 'tests/test_active_authority_contract.py'
+      - 'tests/test_writer_authority_transfer_contract.py'
+      - '.github/workflows/active-authority-contract.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: active-authority-contract-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  check:
+    name: Check active authority contract
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Check current maintainer entrypoints
+        # Kept on one line: test_workflow_runs_only_its_own_surface asserts the
+        # contiguous source substring "python3 -m unittest tests/test_active_authority_contract.py",
+        # which folded (>-) YAML would break.
+        run: python3 -m unittest tests/test_active_authority_contract.py tests/test_writer_authority_transfer_contract.py

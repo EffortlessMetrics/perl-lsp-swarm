@@ -5,40 +5,13 @@
 //! - DiagnosticTag
 //! - DiagnosticCode
 //! - DiagnosticCategory
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
 use perl_diagnostics::codes::{
     DiagnosticCategory, DiagnosticCode, DiagnosticSeverity, DiagnosticTag,
 };
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
-
-// ---------------------------------------------------------------------------
-// Helper: all DiagnosticCode variants for exhaustive iteration
-// ---------------------------------------------------------------------------
-
-const ALL_CODES: &[DiagnosticCode] = &[
-    DiagnosticCode::ParseError,
-    DiagnosticCode::SyntaxError,
-    DiagnosticCode::UnexpectedEof,
-    DiagnosticCode::MissingStrict,
-    DiagnosticCode::MissingWarnings,
-    DiagnosticCode::PhaseScopedStrictPragma,
-    DiagnosticCode::PhaseScopedWarningsPragma,
-    DiagnosticCode::UnusedVariable,
-    DiagnosticCode::UndefinedVariable,
-    DiagnosticCode::CaptureVarWithoutRegexMatch,
-    DiagnosticCode::MissingPackageDeclaration,
-    DiagnosticCode::DuplicatePackage,
-    DiagnosticCode::DuplicateSubroutine,
-    DiagnosticCode::MissingReturn,
-    DiagnosticCode::RoleConflict,
-    DiagnosticCode::InvalidPrototype,
-    DiagnosticCode::BarewordFilehandle,
-    DiagnosticCode::TwoArgOpen,
-    DiagnosticCode::ImplicitReturn,
-    DiagnosticCode::PrintfFormatMismatch,
-    DiagnosticCode::SecuritySignalHandler,
-];
 
 // ===========================================================================
 // DiagnosticSeverity tests
@@ -219,7 +192,7 @@ fn code_as_str_best_practices_range() -> Result<(), Box<dyn std::error::Error>> 
 
 #[test]
 fn code_display_matches_as_str() -> Result<(), Box<dyn std::error::Error>> {
-    for code in ALL_CODES {
+    for code in DiagnosticCode::ALL {
         assert_eq!(format!("{code}"), code.as_str());
     }
     Ok(())
@@ -231,7 +204,7 @@ fn code_display_matches_as_str() -> Result<(), Box<dyn std::error::Error>> {
 
 #[test]
 fn parse_code_round_trip_all_variants() -> Result<(), Box<dyn std::error::Error>> {
-    for code in ALL_CODES {
+    for code in DiagnosticCode::ALL {
         let parsed = DiagnosticCode::parse_code(code.as_str());
         assert_eq!(parsed, Some(*code), "round-trip failed for {}", code.as_str());
     }
@@ -371,9 +344,9 @@ fn tags_unused_variable_has_unnecessary() -> Result<(), Box<dyn std::error::Erro
 }
 
 #[test]
-fn tags_all_other_codes_empty() -> Result<(), Box<dyn std::error::Error>> {
-    for code in ALL_CODES {
-        if *code == DiagnosticCode::UnusedVariable {
+fn tags_are_empty_outside_the_tagged_codes() -> Result<(), Box<dyn std::error::Error>> {
+    for code in DiagnosticCode::ALL {
+        if TAGGED_CODES.contains(code) {
             continue;
         }
         assert!(
@@ -559,9 +532,11 @@ fn from_message_parse_error() -> Result<(), Box<dyn std::error::Error>> {
         DiagnosticCode::from_message("parse error near line 5"),
         Some(DiagnosticCode::ParseError)
     );
+    // "Syntax error" messages map to SyntaxError (PL002), not ParseError (PL001).
+    // Fixed in #2218: these are distinct codes with distinct semantics.
     assert_eq!(
         DiagnosticCode::from_message("Syntax error at line 10"),
-        Some(DiagnosticCode::ParseError)
+        Some(DiagnosticCode::SyntaxError)
     );
     Ok(())
 }
@@ -599,21 +574,20 @@ fn code_debug_contains_variant_name() -> Result<(), Box<dyn std::error::Error>> 
 fn code_hash_consistency() -> Result<(), Box<dyn std::error::Error>> {
     use std::collections::HashSet;
     let mut set = HashSet::new();
-    for code in ALL_CODES {
+    for code in DiagnosticCode::ALL {
         set.insert(*code);
     }
-    assert_eq!(set.len(), ALL_CODES.len());
+    assert_eq!(set.len(), DiagnosticCode::ALL.len());
     // Re-inserting shouldn't change length
-    for code in ALL_CODES {
+    for code in DiagnosticCode::ALL {
         set.insert(*code);
     }
-    assert_eq!(set.len(), ALL_CODES.len());
+    assert_eq!(set.len(), DiagnosticCode::ALL.len());
     Ok(())
 }
 
 #[test]
 fn code_equality() -> Result<(), Box<dyn std::error::Error>> {
-    assert_eq!(DiagnosticCode::ParseError, DiagnosticCode::ParseError);
     assert_ne!(DiagnosticCode::ParseError, DiagnosticCode::SyntaxError);
     Ok(())
 }
@@ -662,7 +636,7 @@ fn category_hash_consistency() -> Result<(), Box<dyn std::error::Error>> {
 fn all_code_strings_are_unique() -> Result<(), Box<dyn std::error::Error>> {
     use std::collections::HashSet;
     let mut seen = HashSet::new();
-    for code in ALL_CODES {
+    for code in DiagnosticCode::ALL {
         let s = code.as_str();
         assert!(seen.insert(s), "Duplicate code string: {} (variant {:?})", s, code);
     }
@@ -675,7 +649,7 @@ fn all_code_strings_are_unique() -> Result<(), Box<dyn std::error::Error>> {
 
 #[test]
 fn every_code_has_a_category() -> Result<(), Box<dyn std::error::Error>> {
-    for code in ALL_CODES {
+    for code in DiagnosticCode::ALL {
         // Just verify it doesn't panic and returns a valid category
         let _cat = code.category();
     }
@@ -688,7 +662,7 @@ fn every_code_has_a_category() -> Result<(), Box<dyn std::error::Error>> {
 
 #[test]
 fn every_code_has_a_severity() -> Result<(), Box<dyn std::error::Error>> {
-    for code in ALL_CODES {
+    for code in DiagnosticCode::ALL {
         let sev = code.severity();
         let lsp_val = sev.to_lsp_value();
         assert!(
@@ -707,7 +681,7 @@ fn every_code_has_a_severity() -> Result<(), Box<dyn std::error::Error>> {
 
 #[test]
 fn parse_code_as_str_bijection() -> Result<(), Box<dyn std::error::Error>> {
-    let code_strings: Vec<&str> = ALL_CODES.iter().map(|c| c.as_str()).collect();
+    let code_strings: Vec<&str> = DiagnosticCode::ALL.iter().map(|c| c.as_str()).collect();
     for s in &code_strings {
         let parsed = DiagnosticCode::parse_code(s);
         assert!(parsed.is_some(), "parse_code should accept {}", s);
@@ -721,14 +695,6 @@ fn parse_code_as_str_bijection() -> Result<(), Box<dyn std::error::Error>> {
 // ---------------------------------------------------------------------------
 
 // --- DiagnosticSeverity additional coverage ---
-
-#[test]
-fn severity_equality_same_variant() {
-    assert_eq!(DiagnosticSeverity::Error, DiagnosticSeverity::Error);
-    assert_eq!(DiagnosticSeverity::Warning, DiagnosticSeverity::Warning);
-    assert_eq!(DiagnosticSeverity::Information, DiagnosticSeverity::Information);
-    assert_eq!(DiagnosticSeverity::Hint, DiagnosticSeverity::Hint);
-}
 
 #[test]
 fn severity_inequality_different_variants() {
@@ -775,8 +741,6 @@ fn severity_information_lsp_value_is_3() -> Result<(), Box<dyn std::error::Error
 
 #[test]
 fn tag_equality_and_inequality() {
-    assert_eq!(DiagnosticTag::Unnecessary, DiagnosticTag::Unnecessary);
-    assert_eq!(DiagnosticTag::Deprecated, DiagnosticTag::Deprecated);
     assert_ne!(DiagnosticTag::Unnecessary, DiagnosticTag::Deprecated);
 }
 
@@ -972,12 +936,13 @@ fn from_message_avoids_embedded_phrase_false_positives() -> TestResult {
     Ok(())
 }
 
+/// Regression guard for issue #2218: "syntax error" messages must map to
+/// `SyntaxError` (PL002), not `ParseError` (PL001). Both are distinct codes.
 #[test]
-fn from_message_syntax_error_matches_parse_error() {
-    // "syntax error" in message triggers ParseError code
+fn from_message_syntax_error_maps_to_pl002() {
     assert_eq!(
         DiagnosticCode::from_message("syntax error near token"),
-        Some(DiagnosticCode::ParseError)
+        Some(DiagnosticCode::SyntaxError)
     );
 }
 
@@ -1195,10 +1160,27 @@ fn from_message_real_perl_defined_deprecated() {
 
 // --- DiagnosticCode: documentation_url coverage ---
 
+/// Reviewed external-reference exceptions to the docs.perl-lsp.org error-page
+/// convention (#5035). PL607's codeDescription href is pinned to the OWASP SQL
+/// injection reference by the storyboarded `security.sql_injection` wire format
+/// (crates/perl-lsp-rs/tests/lsp_critical_user_stories.rs, "TEST 4: Security
+/// Vulnerability Detection"). Any addition to this table must cite the
+/// authority that pins the external reference.
+const EXTERNAL_REFERENCE_URLS: &[(DiagnosticCode, &str)] = &[(
+    DiagnosticCode::SecuritySqlInjection,
+    "https://owasp.org/www-community/attacks/SQL_Injection",
+)];
+
 #[test]
 fn documentation_url_format_consistency() {
-    for code in ALL_CODES {
+    for code in DiagnosticCode::ALL {
         if let Some(url) = code.documentation_url() {
+            let reviewed_external = EXTERNAL_REFERENCE_URLS
+                .iter()
+                .any(|(exception, exception_url)| exception == code && *exception_url == url);
+            if reviewed_external {
+                continue;
+            }
             assert!(
                 url.starts_with("https://docs.perl-lsp.org/errors/"),
                 "unexpected url prefix for {}: {}",
@@ -1217,7 +1199,7 @@ fn documentation_url_format_consistency() {
 
 #[test]
 fn documentation_url_all_pl_codes_have_urls() {
-    for code in ALL_CODES {
+    for code in DiagnosticCode::ALL {
         if code.as_str().starts_with("PL") {
             assert!(
                 code.documentation_url().is_some(),
@@ -1232,7 +1214,7 @@ fn documentation_url_all_pl_codes_have_urls() {
 
 #[test]
 fn parser_category_codes_are_all_errors() {
-    for code in ALL_CODES {
+    for code in DiagnosticCode::ALL {
         if code.category() == DiagnosticCategory::Parser {
             assert_eq!(
                 code.severity(),
@@ -1246,18 +1228,28 @@ fn parser_category_codes_are_all_errors() {
 
 #[test]
 fn information_severity_codes_are_explicitly_tracked() {
-    let info_codes: Vec<_> = ALL_CODES
+    let info_codes: Vec<_> = DiagnosticCode::ALL
         .iter()
         .filter(|code| code.severity() == DiagnosticSeverity::Information)
         .collect();
-    assert_eq!(info_codes, vec![&DiagnosticCode::CaptureVarWithoutRegexMatch]);
+    let mut actual = info_codes.iter().map(|c| c.as_str()).collect::<Vec<_>>();
+    actual.sort_unstable();
+    // PL1001 (RegexAnalysisLimit) and PL1007 (RegexAnalysisIncomplete) joined
+    // with the regex-analysis block (#7024).
+    assert_eq!(
+        actual,
+        vec![
+            "PL1001", "PL1007", "PL112", "PL800", "PL801", "PL802", "PL803", "PL804", "PL805",
+            "PL806",
+        ]
+    );
 }
 
 // --- DiagnosticCode: Display trait ---
 
 #[test]
 fn display_all_codes_matches_as_str() {
-    for code in ALL_CODES {
+    for code in DiagnosticCode::ALL {
         assert_eq!(format!("{}", code), code.as_str());
     }
 }
@@ -1272,15 +1264,6 @@ fn display_used_in_format_string() {
 // --- DiagnosticCategory: equality and inequality ---
 
 #[test]
-fn category_equality() {
-    assert_eq!(DiagnosticCategory::Parser, DiagnosticCategory::Parser);
-    assert_eq!(DiagnosticCategory::StrictWarnings, DiagnosticCategory::StrictWarnings);
-    assert_eq!(DiagnosticCategory::PackageModule, DiagnosticCategory::PackageModule);
-    assert_eq!(DiagnosticCategory::Subroutine, DiagnosticCategory::Subroutine);
-    assert_eq!(DiagnosticCategory::BestPractices, DiagnosticCategory::BestPractices);
-}
-
-#[test]
 fn category_inequality_across_variants() {
     assert_ne!(DiagnosticCategory::Parser, DiagnosticCategory::StrictWarnings);
     assert_ne!(DiagnosticCategory::PackageModule, DiagnosticCategory::Subroutine);
@@ -1290,26 +1273,56 @@ fn category_inequality_across_variants() {
 // --- DiagnosticCategory: coverage of all codes ---
 
 #[test]
-fn all_six_categories_are_represented() {
+fn every_category_is_represented_by_the_registry() {
     use std::collections::HashSet;
-    let categories: HashSet<DiagnosticCategory> = ALL_CODES.iter().map(|c| c.category()).collect();
-    assert!(categories.contains(&DiagnosticCategory::Parser));
-    assert!(categories.contains(&DiagnosticCategory::StrictWarnings));
-    assert!(categories.contains(&DiagnosticCategory::PackageModule));
-    assert!(categories.contains(&DiagnosticCategory::Subroutine));
-    assert!(categories.contains(&DiagnosticCategory::BestPractices));
-    assert!(categories.contains(&DiagnosticCategory::Security));
-    assert_eq!(categories.len(), 6);
+    let categories: HashSet<DiagnosticCategory> =
+        DiagnosticCode::ALL.iter().map(|c| c.category()).collect();
+    for expected in [
+        DiagnosticCategory::Parser,
+        DiagnosticCategory::StrictWarnings,
+        DiagnosticCategory::PackageModule,
+        DiagnosticCategory::Subroutine,
+        DiagnosticCategory::BestPractices,
+        DiagnosticCategory::Deprecated,
+        DiagnosticCategory::Security,
+        DiagnosticCategory::Import,
+        DiagnosticCategory::Heredoc,
+        DiagnosticCategory::VersionCompatibility,
+        DiagnosticCategory::RegexAnalysis,
+    ] {
+        assert!(categories.contains(&expected), "no code carries {expected:?}");
+    }
+    assert_eq!(categories.len(), 11, "an unrepresented category was added");
 }
 
 // --- DiagnosticCode: tags exhaustive check ---
 
+/// Codes carrying a non-empty LSP tag set.
+///
+/// Held as an explicit inventory because it is a claim about the whole
+/// registry: the previous partial denominator asserted `UnusedVariable` was
+/// the only tagged code, which is false for PL108/PL700/PL406 and both
+/// deprecation codes.
+const TAGGED_CODES: &[DiagnosticCode] = &[
+    DiagnosticCode::UnusedVariable,
+    DiagnosticCode::UnusedParameter,
+    DiagnosticCode::UnreachableCode,
+    DiagnosticCode::DeprecatedDefined,
+    DiagnosticCode::DeprecatedArrayBase,
+    DiagnosticCode::UnusedImport,
+];
+
 #[test]
-fn only_unused_variable_has_non_empty_tags() {
+fn tagged_codes_are_exactly_the_declared_inventory() {
     let codes_with_tags: Vec<&DiagnosticCode> =
-        ALL_CODES.iter().filter(|c| !c.tags().is_empty()).collect();
-    assert_eq!(codes_with_tags.len(), 1);
-    assert_eq!(*codes_with_tags[0], DiagnosticCode::UnusedVariable);
+        DiagnosticCode::ALL.iter().filter(|c| !c.tags().is_empty()).collect();
+
+    let mut actual = codes_with_tags.iter().map(|c| c.as_str()).collect::<Vec<_>>();
+    let mut expected = TAGGED_CODES.iter().map(DiagnosticCode::as_str).collect::<Vec<_>>();
+    actual.sort_unstable();
+    expected.sort_unstable();
+
+    assert_eq!(actual, expected);
 }
 
 #[test]
@@ -1317,13 +1330,6 @@ fn unused_variable_tag_is_exactly_unnecessary() {
     let tags = DiagnosticCode::UnusedVariable.tags();
     assert_eq!(tags.len(), 1);
     assert_eq!(tags[0], DiagnosticTag::Unnecessary);
-}
-
-// --- Cross-cutting: ALL_CODES count ---
-
-#[test]
-fn all_codes_count_is_21() {
-    assert_eq!(ALL_CODES.len(), 21, "expected 21 diagnostic codes total");
 }
 
 // --- DiagnosticCode: parse_code boundary values ---
@@ -1373,7 +1379,7 @@ fn from_message_embedded_in_longer_text() {
 
 #[test]
 fn all_lsp_severity_values_are_valid() {
-    for code in ALL_CODES {
+    for code in DiagnosticCode::ALL {
         let val = code.severity().to_lsp_value();
         assert!(
             (1..=4).contains(&val),

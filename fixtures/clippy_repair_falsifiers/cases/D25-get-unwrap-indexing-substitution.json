@@ -1,0 +1,72 @@
+{
+  "schema_version": 1,
+  "case_id": "D25-get-unwrap-indexing-substitution",
+  "family": "boundary_data_semantics_theater",
+  "purpose": "Direct indexing rewritten as .get(...).unwrap() trades a bounds question for a governed panic path.",
+  "incident_reference": null,
+  "subject": {
+    "scope": "workspace",
+    "target_kinds": [
+      "lib",
+      "bin",
+      "test"
+    ],
+    "profile": "all",
+    "platforms": [
+      "linux",
+      "windows",
+      "macos"
+    ],
+    "features": "default"
+  },
+  "governed_lint": {
+    "lint": "clippy::unwrap_used",
+    "level_source": "Cargo.toml [workspace.lints.clippy]"
+  },
+  "dishonest_mutation": {
+    "kind": "source-snippet",
+    "language": "rust",
+    "trigger_evidence": [
+      ".get(",
+      ").unwrap()"
+    ],
+    "content": "pub fn priority(code: u8) -> u8 {\n    let table = [10u8, 20, 30];\n    table.get(code as usize).unwrap()\n}\n",
+    "sha256": "4f1711f19eb91161e9fb588b6bcd73a0112dc7bad3f92af7c0408d20c57edd45"
+  },
+  "rejecting_authority": {
+    "status": "bound",
+    "authority_kind": "cargo_lints",
+    "reference": "lint:clippy::unwrap_used"
+  },
+  "expected_result": {
+    "result_class": "reject",
+    "reason_code": "get_unwrap_indexing_theater"
+  },
+  "positive_counterpart": {
+    "sanctioned_evidence": [
+      "PriorityRangeError",
+      "copied()"
+    ],
+    "note": "Out-of-range becomes a typed refusal.",
+    "content": "pub fn priority(code: u8) -> Result<u8, PriorityRangeError> {\n    let table = [10u8, 20, 30];\n    table.get(code as usize).copied().ok_or(PriorityRangeError)\n}\n",
+    "sha256": "928c4007289695cb5259930f3fb0006b52b9605bfec6c54d9594cb64842c3be9"
+  },
+  "applicability": {
+    "packet_classes": [
+      "qualification",
+      "foundation",
+      "migration",
+      "activation",
+      "review"
+    ],
+    "domains": [
+      "clippy-core"
+    ]
+  },
+  "delta_provenance": {
+    "change_reason": "initial corpus freeze (#11649)",
+    "owning_issue": 11649,
+    "historical_interpretability": true
+  },
+  "claim_boundary": "unwrap_used deny catches the laundering today even though indexing_slicing activation (#11245) pends."
+}

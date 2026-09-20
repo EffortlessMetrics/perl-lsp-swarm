@@ -1,3 +1,4 @@
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 use std::process::Command;
 
 fn run_perllsp(args: &[&str]) -> Result<std::process::Output, Box<dyn std::error::Error>> {
@@ -133,6 +134,9 @@ fn unknown_completion_shell_reports_supported_values() -> Result<(), Box<dyn std
         stderr.contains("Supported: bash, zsh, fish, powershell"),
         "stderr should list supported shells"
     );
-    assert!(stderr.contains("Usage: perllsp"), "error help should use the facade name");
+    assert!(
+        stderr.contains("Run 'perllsp --help'"),
+        "error help should use the facade name: {stderr:?}"
+    );
     Ok(())
 }

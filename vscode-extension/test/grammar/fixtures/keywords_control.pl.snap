@@ -6,9 +6,7 @@
 #   ^^^^^^^^^^^ source.perl
 >package My::Module;
 #^^^^^^^ source.perl keyword.other.perl
-#       ^^^^^^^^^ source.perl
-#                ^^ source.perl keyword.operator.comparison.perl
-#                  ^^ source.perl
+#       ^^^^^^^^^^^^^ source.perl
 >
 >sub greet {
 #^^^ source.perl keyword.other.perl
@@ -121,9 +119,7 @@
 #               ^ source.perl
 #                ^ source.perl keyword.operator.assignment.perl
 #                 ^ source.perl
-#                  ^ source.perl keyword.operator.comparison.perl
-#                   ^^^^^ source.perl
-#                        ^ source.perl keyword.operator.comparison.perl
+#                  ^^^^^^^ source.perl string.other.readline.perl
 #                         ^^^^ source.perl
 >    chomp $line;
 #^^^^ source.perl

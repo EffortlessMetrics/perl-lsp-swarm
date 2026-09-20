@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "subject": {
+    "host": "vim",
+    "client": "prabirshrestha/vim-lsp",
+    "integration_mode": "generic_lsp",
+    "language_id": "perl",
+    "command": ["perllsp", "--stdio"]
+  },
+  "generations": {
+    "kinds": ["process", "host", "document", "root", "config"],
+    "old_new_binding_required": true,
+    "initialize_sequence": ["initialize", "initialized", "buffer_enabled"]
+  },
+  "stages": [
+    {"stage": "explicit_restart", "entry": "user_public_route", "old_generation": true, "cardinality": "new_generation_initialized_once", "disposition": "restart_executed_via_public_route"},
+    {"stage": "unexpected_exit", "entry": "unexpected_process_exit", "old_generation": true, "cardinality": "exit_disposition_bounded_once", "disposition": "exit_classified_never_first_launch"},
+    {"stage": "initialized_new_generation", "entry": "generation_replacement", "old_generation": true, "cardinality": "new_generation_initialized_once", "disposition": "initialize_readiness_not_bare_pid"},
+    {"stage": "document_replay", "entry": "generation_replacement", "old_generation": true, "cardinality": "open_documents_root_config_replayed_exact", "disposition": "replay_cardinality_observed"},
+    {"stage": "current_result", "entry": "generation_replacement", "old_generation": true, "cardinality": "current_result_from_current_generation_only", "disposition": "current_answer_verified_current_generation"},
+    {"stage": "old_generation_rejected", "entry": "generation_replacement", "old_generation": true, "cardinality": "old_generation_effect_rejected", "disposition": "old_effect_rejected_not_admitted"},
+    {"stage": "retry_or_manual_disposition", "entry": "recovery_disposition", "old_generation": true, "cardinality": "retry_bounded_or_manual_classified", "disposition": "manual_restart_never_relabeled_automatic"},
+    {"stage": "shutdown_cleanup", "entry": "host_shutdown_while_pending", "old_generation": true, "cardinality": "cleanup_settled_once", "disposition": "cleanup_settled_during_pending_recovery"}
+  ],
+  "claim_rules": {
+    "new_pid_is_not_recovery": true,
+    "process_start_is_not_initialize": true,
+    "clean_first_launch_is_not_recovery": true,
+    "manual_restart_is_not_automatic_recovery": true,
+    "server_restart_is_not_host_reopen": true,
+    "later_correct_answer_requires_current_generation": true,
+    "old_generation_effects_must_be_rejected": true,
+    "initialize_replay_current_result_rejection_cleanup_independent": true,
+    "same_contract_required_by": ["#11376", "#11378", "#11380", "#11372", "#10894"]
+  }
+}

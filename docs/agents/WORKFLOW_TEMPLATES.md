@@ -51,7 +51,7 @@ Schema: [pr-ledger.schema.json](pr-ledger.schema.json).
 
 **Evidence rules for "already-fixed" routing:**
 - Provide commit SHA on main that fixes it.
-- Run merge-base check; paste output.
+- Run the landing-proof check (`cargo xtask landing-proof --commit <sha> --canonical-main origin/main`); paste the receipt.
 - Do not route to close without both.
 
 **Output:** Labeled issue with routing decision. No ledger file — issues use

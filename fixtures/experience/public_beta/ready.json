@@ -181,11 +181,15 @@
       "owner_issue": "#4346",
       "artifact_path": "child_receipts/installed_acceptance.json",
       "schema_version": "installed_acceptance.v1",
-      "sha256": "8420720d0ae57982e188cb3f257851f62d93e4bbadc3c1fc711e7e9100dd4d41",
+      "sha256": "d042adb7f6d3482ba79a9dc1d5f1d72eac9586277c19773ddbbda58e738f6a5e",
       "candidate_id": "v0.18.0-rc1",
       "status": "pass",
       "claim_boundary": "Exact packaged VSIX and binary journey.",
-      "limitation": null
+      "limitation": null,
+      "artifact_hashes": {
+        "vsix_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "bundled_server_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      }
     },
     "first_useful_answer": {
       "owner_issue": "#4048",

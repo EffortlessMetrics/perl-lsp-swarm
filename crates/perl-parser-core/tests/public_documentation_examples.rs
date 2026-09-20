@@ -1,3 +1,5 @@
+#![allow(clippy::print_stderr)] // Intentional stderr diagnostics for documented example failures.
+#![allow(clippy::print_stdout)] // // Intentional stdout/stderr diagnostics for documented example outcomes.
 use perl_parser_core::syntax::error::ParseResult;
 
 fn report(result: ParseResult<()>) {

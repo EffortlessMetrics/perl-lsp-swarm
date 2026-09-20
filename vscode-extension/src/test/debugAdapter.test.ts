@@ -11,6 +11,8 @@ import {
   PerlDebugConfigurationProvider,
   buildDapExecutableArgs as productionBuildDapExecutableArgs,
   buildLaunchJsonContent,
+  canonicalizeWorkspaceRoot,
+  debugConfigTemplateChoices,
   hasLaunchJson,
   offerDebugConfigOnFirstPerlOpen,
   parseDebugTestLaunchTarget,
@@ -19,6 +21,9 @@ import {
   VSCODE_DEBUG_TEST_COMMAND,
   VSCODE_RUN_TEST_COMMAND,
 } from '../debugAdapter';
+import * as downloader from '../downloader';
+import { hostManagedCompatibilityKeys } from '../downloader';
+import { managedNamespaceDir } from '../managedStorageIdentity';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -26,6 +31,7 @@ import {
 interface LaunchConfiguration {
   type: string;
   request: string;
+  name?: string;
   host?: string;
   port?: number;
   externalPeer?: string;
@@ -36,11 +42,11 @@ interface LaunchJson {
   configurations: LaunchConfiguration[];
 }
 
-function makeContext(storagePath?: string): vscode.ExtensionContext {
+function makeContext(storagePath?: string, extensionPath?: string): vscode.ExtensionContext {
   const dir = storagePath ?? fs.mkdtempSync(path.join(os.tmpdir(), 'dap-test-'));
   return {
     globalStorageUri: { fsPath: dir } as vscode.Uri,
-    extensionPath: dir,
+    extensionPath: extensionPath ?? dir,
     subscriptions: [],
   } as unknown as vscode.ExtensionContext;
 }
@@ -49,17 +55,28 @@ function asDebugConfiguration(value: Record<string, unknown>): vscode.DebugConfi
   return value as unknown as vscode.DebugConfiguration;
 }
 
-function buildDapExecutableArgs(value: unknown): string[] {
+function buildDapExecutableArgs(value: unknown, hostWorkspaceRoot?: string): string[] {
   return productionBuildDapExecutableArgs(
     value as unknown as vscode.DebugConfiguration | undefined,
+    hostWorkspaceRoot,
   );
 }
 
-function required<T>(value: T | undefined, label: string): T {
-  if (value === undefined) {
+function required<T>(value: T | undefined | null, label: string): T {
+  if (value === undefined || value === null) {
     throw new Error(`Missing ${label}`);
   }
   return value;
+}
+
+function currentBundledDapDirectory(extensionDir: string): string {
+  const platform =
+    process.platform === 'linux'
+      ? downloader.detectMusl()
+        ? 'alpine'
+        : 'linux'
+      : process.platform;
+  return path.join(extensionDir, 'bin', `${platform}-${process.arch}`);
 }
 
 // ---------------------------------------------------------------------------
@@ -88,6 +105,41 @@ describe('PerlDebugConfigurationProvider', () => {
       expect(config.program).toBe('${file}');
 
       vscode.window.activeTextEditor = undefined;
+    });
+
+    test('fills in the same defaults for a perl5 alias editor (#7699)', () => {
+      const vscode = require('vscode');
+      vscode.window.activeTextEditor = {
+        document: { languageId: 'perl5', uri: { fsPath: '/test.pl' } },
+      };
+
+      const config = asDebugConfiguration({});
+      provider.resolveDebugConfiguration(undefined, config);
+
+      expect(config.type).toBe('perl');
+      expect(config.name).toBe('Launch Perl');
+      expect(config.request).toBe('launch');
+      expect(config.program).toBe('${file}');
+
+      vscode.window.activeTextEditor = undefined;
+    });
+
+    test('rewrites an explicit perl5 alias type onto the contributed perl debugger (#7699)', () => {
+      // Only `perl` is a contributed debugger, and only its contributor may
+      // register its descriptor factory: a `type: perl5` configuration must
+      // resolve to `perl` here, before VS Code looks the debugger up.
+      const config = asDebugConfiguration({
+        type: 'perl5',
+        request: 'launch',
+        name: 'Alias Debug',
+        program: '/my/script.pl',
+      });
+      provider.resolveDebugConfiguration(undefined, config);
+
+      expect(config.type).toBe('perl');
+      expect(config.request).toBe('launch');
+      expect(config.name).toBe('Alias Debug');
+      expect(config.program).toBe('/my/script.pl');
     });
 
     test('does not modify config with existing type/request/name', () => {
@@ -163,7 +215,7 @@ describe('PerlDebugConfigurationProvider', () => {
       expect((configs as vscode.DebugConfiguration[]).length).toBeGreaterThanOrEqual(3);
     });
 
-    test('includes launch, attach by TCP, and attach by PID templates', () => {
+    test('includes launch and attach-by-TCP templates, and no PID template (#8109)', () => {
       const configs = provider.provideDebugConfigurations(undefined) as vscode.DebugConfiguration[];
 
       const hasLaunch = configs.some((c) => c.request === 'launch');
@@ -172,7 +224,9 @@ describe('PerlDebugConfigurationProvider', () => {
 
       expect(hasLaunch).toBe(true);
       expect(hasTCPAttach).toBe(true);
-      expect(hasPIDAttach).toBe(true);
+      // #8109: the adapter refuses processId attach fail-closed, so no
+      // template may advertise it.
+      expect(hasPIDAttach).toBe(false);
     });
 
     test('all configurations have type "perl"', () => {
@@ -229,7 +283,7 @@ describe('PerlDebugAdapterDescriptorFactory', () => {
   });
 
   test('finds perl-dap in the auto-download directory', () => {
-    const binDir = path.join(tmpDir, 'bin', `${process.platform}-${process.arch}`);
+    const binDir = managedNamespaceDir(tmpDir, hostManagedCompatibilityKeys()[0]!)!;
     fs.mkdirSync(binDir, { recursive: true });
     const dapName = process.platform === 'win32' ? 'perl-dap.exe' : 'perl-dap';
     const dapPath = path.join(binDir, dapName);
@@ -249,8 +303,391 @@ describe('PerlDebugAdapterDescriptorFactory', () => {
     expect(result.command).toBe(dapPath);
   });
 
+  test('prefers the packaged perl-dap over a stale ambient adapter', () => {
+    const extensionDir = fs.mkdtempSync(path.join(tmpDir, 'extension-'));
+    const bundledDir = currentBundledDapDirectory(extensionDir);
+    const ambientDir = fs.mkdtempSync(path.join(tmpDir, 'ambient-'));
+    const dapName = process.platform === 'win32' ? 'perl-dap.exe' : 'perl-dap';
+    const bundledPath = path.join(bundledDir, dapName);
+    fs.mkdirSync(bundledDir, { recursive: true });
+    fs.writeFileSync(bundledPath, 'bundled dap');
+    fs.writeFileSync(path.join(ambientDir, dapName), 'stale ambient dap');
+    const managedDir = managedNamespaceDir(tmpDir, hostManagedCompatibilityKeys()[0]!)!;
+    fs.mkdirSync(managedDir, { recursive: true });
+    const managedPath = path.join(managedDir, dapName);
+    fs.writeFileSync(managedPath, 'stale managed dap');
+    if (process.platform !== 'win32') {
+      fs.chmodSync(bundledPath, 0o755);
+      fs.chmodSync(path.join(ambientDir, dapName), 0o755);
+      fs.chmodSync(managedPath, 0o755);
+    }
+
+    const ctx = makeContext(tmpDir, extensionDir);
+    const factory = new PerlDebugAdapterDescriptorFactory(ctx);
+    const originalPath = process.env.PATH;
+    const originalHome = process.env.HOME;
+    const originalCargo = process.env.CARGO_HOME;
+    process.env.PATH = ambientDir;
+    process.env.HOME = tmpDir;
+    process.env.CARGO_HOME = tmpDir;
+    try {
+      const result = factory.createDebugAdapterDescriptor(
+        {} as unknown as vscode.DebugSession,
+        undefined,
+      ) as vscode.DebugAdapterExecutable;
+      expect(result).toBeDefined();
+      expect(result.command).toBe(bundledPath);
+    } finally {
+      for (const [name, value] of [
+        ['PATH', originalPath],
+        ['HOME', originalHome],
+        ['CARGO_HOME', originalCargo],
+      ] as const) {
+        if (value === undefined) {
+          delete process.env[name];
+        } else {
+          process.env[name] = value;
+        }
+      }
+    }
+  });
+
+  const packagedHostCases = [
+    {
+      name: 'GNU x64',
+      platform: 'linux',
+      arch: 'x64',
+      musl: false,
+      metadata: 'linux-x64',
+      expected: 'linux-x64',
+    },
+    {
+      name: 'GNU arm64',
+      platform: 'linux',
+      arch: 'arm64',
+      musl: false,
+      metadata: 'linux-arm64',
+      expected: 'linux-arm64',
+    },
+    {
+      name: 'Alpine x64',
+      platform: 'linux',
+      arch: 'x64',
+      musl: true,
+      metadata: 'alpine-x64',
+      expected: 'alpine-x64',
+    },
+    {
+      name: 'Alpine arm64',
+      platform: 'linux',
+      arch: 'arm64',
+      musl: true,
+      metadata: 'alpine-arm64',
+      expected: 'alpine-arm64',
+    },
+    {
+      name: 'Windows x64',
+      platform: 'win32',
+      arch: 'x64',
+      musl: false,
+      metadata: 'win32-x64',
+      expected: 'win32-x64',
+    },
+    {
+      name: 'Windows arm64',
+      platform: 'win32',
+      arch: 'arm64',
+      musl: false,
+      metadata: 'win32-arm64',
+      expected: 'win32-arm64',
+      windowsSupport: 'windows-11-or-newer',
+    },
+    {
+      name: 'Windows arm64 selects emulated x64 on Windows 11',
+      platform: 'win32',
+      arch: 'arm64',
+      musl: false,
+      metadata: 'win32-x64',
+      expected: 'win32-x64',
+      windowsSupport: 'windows-11-or-newer',
+    },
+    {
+      name: 'Windows arm64 rejects emulated x64 on Windows 10',
+      platform: 'win32',
+      arch: 'arm64',
+      musl: false,
+      metadata: 'win32-x64',
+      expected: undefined,
+      windowsSupport: 'windows-10-or-earlier',
+    },
+    {
+      name: 'Windows arm64 rejects emulated x64 on unknown build',
+      platform: 'win32',
+      arch: 'arm64',
+      musl: false,
+      metadata: 'win32-x64',
+      expected: undefined,
+      windowsSupport: 'unknown',
+    },
+    {
+      name: 'Darwin x64',
+      platform: 'darwin',
+      arch: 'x64',
+      musl: false,
+      metadata: 'darwin-x64',
+      expected: 'darwin-x64',
+    },
+    {
+      name: 'Darwin arm64',
+      platform: 'darwin',
+      arch: 'arm64',
+      musl: false,
+      metadata: 'darwin-arm64',
+      expected: 'darwin-arm64',
+    },
+    {
+      name: 'Alpine metadata on GNU',
+      platform: 'linux',
+      arch: 'x64',
+      musl: false,
+      metadata: 'alpine-x64',
+      expected: undefined,
+    },
+    {
+      name: 'GNU metadata on Alpine',
+      platform: 'linux',
+      arch: 'x64',
+      musl: true,
+      metadata: 'linux-x64',
+      expected: undefined,
+    },
+    {
+      name: 'same-filename wrong OS',
+      platform: 'linux',
+      arch: 'x64',
+      musl: false,
+      metadata: 'darwin-x64',
+      expected: undefined,
+    },
+    {
+      name: 'same-filename wrong architecture',
+      platform: 'linux',
+      arch: 'arm64',
+      musl: false,
+      metadata: 'linux-x64',
+      expected: undefined,
+    },
+    {
+      name: 'Android refuses ordinary Linux package',
+      platform: 'linux',
+      arch: 'x64',
+      musl: false,
+      metadata: 'linux-x64',
+      environment: 'android',
+      expected: undefined,
+    },
+    {
+      name: 'Termux refuses ordinary Linux package',
+      platform: 'linux',
+      arch: 'x64',
+      musl: false,
+      metadata: 'linux-x64',
+      environment: 'termux',
+      expected: undefined,
+    },
+    {
+      name: 'unsupported host architecture',
+      platform: 'linux',
+      arch: 'ia32',
+      musl: false,
+      metadata: 'linux-x64',
+      expected: undefined,
+    },
+    {
+      name: 'missing metadata uses GNU host',
+      platform: 'linux',
+      arch: 'x64',
+      musl: false,
+      metadata: undefined,
+      expected: 'linux-x64',
+    },
+    {
+      name: 'local VSIX undefined target uses Alpine host',
+      platform: 'linux',
+      arch: 'x64',
+      musl: true,
+      metadata: 'undefined',
+      expected: 'alpine-x64',
+    },
+    {
+      name: 'Windows 11 arm64 missing metadata prefers native payload',
+      platform: 'win32',
+      arch: 'arm64',
+      musl: false,
+      metadata: undefined,
+      expected: 'win32-arm64',
+      windowsSupport: 'windows-11-or-newer',
+    },
+    {
+      name: 'Windows arm64 missing native metadata falls back to emulated payload',
+      platform: 'win32',
+      arch: 'arm64',
+      musl: false,
+      metadata: undefined,
+      expected: 'win32-x64',
+      windowsSupport: 'windows-11-or-newer',
+      removeTargets: ['win32-arm64'],
+    },
+    {
+      name: 'malformed package JSON uses host payload',
+      platform: 'linux',
+      arch: 'x64',
+      musl: false,
+      metadata: undefined,
+      malformed: true,
+      expected: 'linux-x64',
+    },
+  ];
+
+  test.each(packagedHostCases)('packaged factory: $name', (row) => {
+    const originalPlatform = required(
+      Object.getOwnPropertyDescriptor(process, 'platform'),
+      'platform descriptor',
+    );
+    const originalArch = required(
+      Object.getOwnPropertyDescriptor(process, 'arch'),
+      'arch descriptor',
+    );
+    const extensionDir = path.join(tmpDir, 'extension');
+    const targets = [
+      'linux-x64',
+      'linux-arm64',
+      'alpine-x64',
+      'alpine-arm64',
+      'darwin-x64',
+      'darwin-arm64',
+      'win32-x64',
+      'win32-arm64',
+    ];
+    const payloadPath = (target: string): string =>
+      path.join(
+        extensionDir,
+        'bin',
+        target,
+        target.startsWith('win32-') ? 'perl-dap.exe' : 'perl-dap',
+      );
+    // Both compatible and incompatible files exist, including identical names
+    // on Darwin/Linux. A missing wrong-target file cannot make refusal pass.
+    for (const target of targets) {
+      const file = payloadPath(target);
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      if (!row.removeTargets?.includes(target)) {
+        fs.writeFileSync(file, `${target} packaged adapter`);
+        fs.chmodSync(file, 0o755);
+      }
+    }
+    fs.writeFileSync(
+      path.join(extensionDir, 'package.json'),
+      row.malformed ? '{' : JSON.stringify({ __metadata: { targetPlatform: row.metadata } }),
+    );
+    const managedPath = path.join(
+      tmpDir,
+      row.platform === 'win32' ? 'managed-dap.exe' : 'managed-dap',
+    );
+    fs.writeFileSync(managedPath, 'compatible fallback adapter');
+    fs.chmodSync(managedPath, 0o755);
+    // Managed resolution is a separate contract. This fixture proves which
+    // actual file the registered factory selects, not managed namespace policy.
+    const managedSpy = jest
+      .spyOn(downloader.BinaryDownloader, 'getLocalDapPath')
+      .mockReturnValue(managedPath);
+    const muslSpy = jest.spyOn(downloader, 'detectMusl').mockReturnValue(row.musl);
+    const windowsSupportSpy = jest
+      .spyOn(downloader, 'classifyWindowsArm64Support')
+      .mockReturnValue((row.windowsSupport ?? 'not-applicable') as downloader.WindowsArm64Support);
+    const androidSpy = jest
+      .spyOn(downloader, 'isAndroidEnvironment')
+      .mockReturnValue(row.environment === 'android');
+    const termuxSpy = jest
+      .spyOn(downloader, 'isTermuxEnvironment')
+      .mockReturnValue(row.environment === 'termux');
+    const vscodeApi = require('vscode') as { workspace: { getConfiguration: jest.Mock } };
+    const getConfiguration = vscodeApi.workspace.getConfiguration;
+    const previousConfiguration = getConfiguration.getMockImplementation();
+    // A conflicting managed-download override must not select a packaged ABI.
+    getConfiguration.mockImplementation(() => ({
+      get: (key: string) => {
+        if (key !== 'linuxLibc') throw new Error(`Unexpected configuration key: ${key}`);
+        return row.musl ? 'gnu' : 'musl';
+      },
+    }));
+    try {
+      Object.defineProperty(process, 'platform', { value: row.platform, configurable: true });
+      Object.defineProperty(process, 'arch', { value: row.arch, configurable: true });
+      const factory = new PerlDebugAdapterDescriptorFactory(makeContext(tmpDir, extensionDir));
+      const result = factory.createDebugAdapterDescriptor(
+        {} as unknown as vscode.DebugSession,
+        undefined,
+      ) as vscode.DebugAdapterExecutable;
+      expect(result.command).toBe(row.expected ? payloadPath(row.expected) : managedPath);
+      if (row.expected) expect(managedSpy).not.toHaveBeenCalled();
+      else expect(managedSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      Object.defineProperty(process, 'platform', originalPlatform);
+      Object.defineProperty(process, 'arch', originalArch);
+      managedSpy.mockRestore();
+      muslSpy.mockRestore();
+      windowsSupportSpy.mockRestore();
+      androidSpy.mockRestore();
+      termuxSpy.mockRestore();
+      if (previousConfiguration) getConfiguration.mockImplementation(previousConfiguration);
+      else getConfiguration.mockReset();
+    }
+  });
+
+  test('finds the packaged perl-dap with no ambient search path', () => {
+    const extensionDir = fs.mkdtempSync(path.join(tmpDir, 'extension-'));
+    const bundledDir = currentBundledDapDirectory(extensionDir);
+    const dapName = process.platform === 'win32' ? 'perl-dap.exe' : 'perl-dap';
+    const bundledPath = path.join(bundledDir, dapName);
+    fs.mkdirSync(bundledDir, { recursive: true });
+    fs.writeFileSync(bundledPath, 'bundled dap');
+    if (process.platform !== 'win32') {
+      fs.chmodSync(bundledPath, 0o755);
+    }
+
+    const ctx = makeContext(tmpDir, extensionDir);
+    const factory = new PerlDebugAdapterDescriptorFactory(ctx);
+    const originalPath = process.env.PATH;
+    const originalHome = process.env.HOME;
+    const originalCargo = process.env.CARGO_HOME;
+    process.env.PATH = '';
+    process.env.HOME = tmpDir;
+    process.env.CARGO_HOME = tmpDir;
+    try {
+      const result = factory.createDebugAdapterDescriptor(
+        {} as unknown as vscode.DebugSession,
+        undefined,
+      ) as vscode.DebugAdapterExecutable;
+      expect(result).toBeDefined();
+      expect(result.command).toBe(bundledPath);
+    } finally {
+      for (const [name, value] of [
+        ['PATH', originalPath],
+        ['HOME', originalHome],
+        ['CARGO_HOME', originalCargo],
+      ] as const) {
+        if (value === undefined) {
+          delete process.env[name];
+        } else {
+          process.env[name] = value;
+        }
+      }
+    }
+  });
+
   test('descriptor includes RUST_LOG=debug environment variable', () => {
-    const binDir = path.join(tmpDir, 'bin', `${process.platform}-${process.arch}`);
+    const binDir = managedNamespaceDir(tmpDir, hostManagedCompatibilityKeys()[0]!)!;
     fs.mkdirSync(binDir, { recursive: true });
     const dapName = process.platform === 'win32' ? 'perl-dap.exe' : 'perl-dap';
     const dapPath = path.join(binDir, dapName);
@@ -271,7 +708,7 @@ describe('PerlDebugAdapterDescriptorFactory', () => {
   });
 
   test('passes --external-peer through to the descriptor when the session sets externalPeer', () => {
-    const binDir = path.join(tmpDir, 'bin', `${process.platform}-${process.arch}`);
+    const binDir = managedNamespaceDir(tmpDir, hostManagedCompatibilityKeys()[0]!)!;
     fs.mkdirSync(binDir, { recursive: true });
     const dapName = process.platform === 'win32' ? 'perl-dap.exe' : 'perl-dap';
     const dapPath = path.join(binDir, dapName);
@@ -292,7 +729,7 @@ describe('PerlDebugAdapterDescriptorFactory', () => {
   });
 
   test('uses empty args for a plain launch session', () => {
-    const binDir = path.join(tmpDir, 'bin', `${process.platform}-${process.arch}`);
+    const binDir = managedNamespaceDir(tmpDir, hostManagedCompatibilityKeys()[0]!)!;
     fs.mkdirSync(binDir, { recursive: true });
     const dapName = process.platform === 'win32' ? 'perl-dap.exe' : 'perl-dap';
     const dapPath = path.join(binDir, dapName);
@@ -311,6 +748,87 @@ describe('PerlDebugAdapterDescriptorFactory', () => {
 
     expect(result.args).toEqual([]);
   });
+
+  test('descriptor forwards the session workspace folder as the trusted root', () => {
+    const binDir = managedNamespaceDir(tmpDir, hostManagedCompatibilityKeys()[0]!)!;
+    fs.mkdirSync(binDir, { recursive: true });
+    const dapName = process.platform === 'win32' ? 'perl-dap.exe' : 'perl-dap';
+    const dapPath = path.join(binDir, dapName);
+    fs.writeFileSync(dapPath, '#!/bin/sh\necho ok');
+    if (process.platform !== 'win32') {
+      fs.chmodSync(dapPath, 0o755);
+    }
+
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'dap-ws-'));
+    try {
+      const ctx = makeContext(tmpDir);
+      const factory = new PerlDebugAdapterDescriptorFactory(ctx);
+      const session = {
+        configuration: { request: 'launch', program: path.join(workspace, 'x.pl') },
+        workspaceFolder: { uri: { fsPath: workspace } },
+      };
+      const result = factory.createDebugAdapterDescriptor(
+        session as unknown as vscode.DebugSession,
+        undefined,
+      ) as vscode.DebugAdapterExecutable;
+
+      expect(result.args).toEqual(['--trusted-root', fs.realpathSync(workspace)]);
+    } finally {
+      fs.rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  // Mutation-think: if the guard at the top of createDebugAdapterDescriptor
+  // were removed (or demoted to a warning that still spawns native), each case
+  // below would return a DebugAdapterExecutable instead of undefined and fail
+  // the `toBeUndefined()` assertion; if the typed reason were dropped from the
+  // message, `stringContaining(reason)` would fail even though the descriptor
+  // still refused.
+  test.each([
+    [
+      {
+        externalPeer: '127.0.0.1:13604',
+        debuggerBackend: 'external',
+        externalDebugger: { mode: 'connect', port: 13604 },
+      },
+      'not both',
+    ],
+    [
+      {
+        debuggerBackend: 'external',
+        externalDebugger: { mode: 'connect', control: 'cooperative', port: 13604 },
+      },
+      'Only mirror control',
+    ],
+    [{ externalDebugger: { mode: 'connect', port: 13604 } }, 'requires debuggerBackend="external"'],
+  ])(
+    'factory refuses an invalid explicit backend selection end-to-end and spawns nothing %#',
+    (configuration, reason) => {
+      const binDir = managedNamespaceDir(tmpDir, hostManagedCompatibilityKeys()[0]!)!;
+      fs.mkdirSync(binDir, { recursive: true });
+      const dapName = process.platform === 'win32' ? 'perl-dap.exe' : 'perl-dap';
+      fs.writeFileSync(path.join(binDir, dapName), '#!/bin/sh\necho ok');
+
+      const ctx = makeContext(tmpDir);
+      const factory = new PerlDebugAdapterDescriptorFactory(ctx);
+      const vscodeMock = require('vscode');
+      const session = { configuration };
+
+      const result = factory.createDebugAdapterDescriptor(
+        session as unknown as vscode.DebugSession,
+        undefined,
+      );
+
+      expect(result).toBeUndefined();
+      expect(vscodeMock.window.showErrorMessage).toHaveBeenCalledWith(
+        expect.stringContaining('Perl debugger configuration error'),
+        // No action buttons: this refusal is terminal, not an install offer.
+      );
+      const [message] = vscodeMock.window.showErrorMessage.mock.calls.at(-1) as [string];
+      expect(message).toContain(reason as string);
+      expect(message).toContain('Native debugging was not started.');
+    },
+  );
 });
 
 // ---------------------------------------------------------------------------
@@ -408,13 +926,93 @@ describe('buildLaunchJsonContent', () => {
     expect(cfg.port).toBe(13603);
   });
 
-  test('remote-ssh template produces attach config with configurable host', () => {
-    const content = buildLaunchJsonContent('remote-ssh');
+  test('remote-tcp-attach template produces a normal TCP attach config (#9868)', () => {
+    const content = buildLaunchJsonContent('remote-tcp-attach');
     const parsed = JSON.parse(content) as LaunchJson;
-    const cfg = required(parsed.configurations[0], 'remote-ssh configuration');
+    const cfg = required(parsed.configurations[0], 'remote-tcp-attach configuration');
     expect(cfg.type).toBe('perl');
     expect(cfg.request).toBe('attach');
-    expect(typeof cfg.host).toBe('string');
+    // Safe default endpoint compatible with an existing local port forward,
+    // not a placeholder remote SSH target.
+    expect(cfg.name).toBe('Perl: Remote TCP Attach');
+    expect(cfg.host).toBe('localhost');
+    expect(cfg.port).toBe(13603);
+  });
+
+  test('legacy remote-ssh selector aliases the same honest TCP attach config (#9868)', () => {
+    const legacy = buildLaunchJsonContent('remote-ssh');
+    expect(legacy).toBe(buildLaunchJsonContent('remote-tcp-attach'));
+  });
+
+  test('all template uses the corrected remote TCP attach name and copy (#9868)', () => {
+    const content = buildLaunchJsonContent('all');
+    const parsed = JSON.parse(content) as LaunchJson;
+    const names = parsed.configurations.map((config) => config.name);
+    expect(names).toContain('Perl: Remote TCP Attach');
+    expect(content).not.toContain('Remote (SSH)');
+    expect(content).not.toContain('remote-host');
+  });
+
+  test('wizard copy never claims built-in SSH or tunnel ownership (#9868)', () => {
+    const choices = debugConfigTemplateChoices();
+    expect(choices.length).toBeGreaterThan(0);
+    for (const choice of choices) {
+      const copy = `${choice.label} ${choice.description} ${choice.detail}`;
+      expect(copy).not.toMatch(/ssh/i);
+      expect(copy).not.toMatch(/\btunnel\b/i);
+    }
+    // Every generated configuration stays free of SSH/tunnel claims too.
+    const templates = [
+      'launch-script',
+      'attach-process',
+      'remote-tcp-attach',
+      'external-peer',
+      'all',
+    ];
+    for (const template of templates) {
+      expect(buildLaunchJsonContent(template)).not.toMatch(/ssh/i);
+      expect(buildLaunchJsonContent(template)).not.toMatch(/\btunnel\b/i);
+    }
+  });
+
+  test('remote TCP attach copy stays inside the accepted attach surface (#9868, #5257)', () => {
+    const choices = debugConfigTemplateChoices();
+    const remote = choices.find((choice) => choice.template === 'remote-tcp-attach');
+    expect(remote).toBeDefined();
+    const copy = `${required(remote, 'remote-tcp-attach choice').label} ${
+      required(remote, 'remote-tcp-attach choice').description
+    } ${required(remote, 'remote-tcp-attach choice').detail}`;
+    // Adapter validation resolves the host and refuses private/link-local
+    // addresses, so the copy must not invite a "direct" non-loopback endpoint.
+    expect(copy).not.toMatch(/\bdirect(ly)?\b/i);
+    // The supported remote route is a user-run port forward to loopback, and
+    // the non-loopback private-host refusal is stated, not implied.
+    expect(copy).toMatch(/port forward/i);
+    expect(copy).toMatch(/loopback/i);
+    expect(copy).toMatch(/private\/link-local/i);
+  });
+
+  test('remote-tcp-attach wizard default round-trips resolveDebugConfiguration unchanged (#9868)', () => {
+    const content = buildLaunchJsonContent('remote-tcp-attach');
+    const parsed = JSON.parse(content) as LaunchJson;
+    const config = asDebugConfiguration(
+      parsed.configurations[0] as unknown as Record<string, unknown>,
+    );
+    const provider = new PerlDebugConfigurationProvider();
+    const result = provider.resolveDebugConfiguration(undefined, config);
+    // The attach path must resolve synchronously to the same config object.
+    if (!result || typeof (result as { then?: unknown }).then === 'function') {
+      throw new Error('resolveDebugConfiguration must resolve synchronously for attach configs');
+    }
+    const resolved = result as vscode.DebugConfiguration;
+    // The wizard default is a loopback endpoint and the provider passes it
+    // through unchanged; any private-host refusal happens at the adapter
+    // boundary (pinned Rust-side by crates/perl-dap/tests/tcp_attach_tests.rs).
+    expect(resolved).toBe(config);
+    expect(resolved.type).toBe('perl');
+    expect(resolved.request).toBe('attach');
+    expect(resolved.host).toBe('localhost');
+    expect(resolved.port).toBe(13603);
   });
 
   test('all template produces multiple configurations', () => {
@@ -588,6 +1186,65 @@ describe('buildDapExecutableArgs', () => {
     expect(buildDapExecutableArgs({ debuggerBackend: 'native', program: '/x.pl' })).toEqual([]);
     expect(buildDapExecutableArgs({ request: 'launch', program: '/x.pl' })).toEqual([]);
   });
+
+  test('native editor sessions receive host-owned workspace authority', () => {
+    expect(buildDapExecutableArgs({ request: 'launch', program: '/x.pl' }, '/workspace')).toEqual([
+      '--trusted-root',
+      '/workspace',
+    ]);
+  });
+
+  test('a symlinked workspace root is canonicalized before handoff', () => {
+    const real = fs.mkdtempSync(path.join(os.tmpdir(), 'dap-real-'));
+    const link = `${real}-link`;
+    try {
+      fs.symlinkSync(real, link, 'dir');
+    } catch {
+      // Windows CI without symlink privilege cannot create the link; the
+      // fallback path (unresolvable input passes through) is covered below.
+      expect(canonicalizeWorkspaceRoot(`${real}-missing`)).toBe(`${real}-missing`);
+      return;
+    }
+    try {
+      expect(canonicalizeWorkspaceRoot(link)).toBe(fs.realpathSync(real));
+      expect(buildDapExecutableArgs({ request: 'launch' }, link)).toEqual([
+        '--trusted-root',
+        fs.realpathSync(real),
+      ]);
+    } finally {
+      fs.rmSync(link, { recursive: true, force: true });
+      fs.rmSync(real, { recursive: true, force: true });
+    }
+  });
+
+  test('never emits an editor --socket or --port flag', () => {
+    const configs: Array<Record<string, unknown> | undefined> = [
+      undefined,
+      { request: 'launch', program: '/x.pl' },
+      { externalPeer: 'localhost:9000' },
+      {
+        debuggerBackend: 'external',
+        externalDebugger: { host: '127.0.0.1', port: 13604 },
+      },
+      {
+        debuggerBackend: 'external',
+        externalDebugger: { mode: 'listen', host: '127.0.0.1' },
+      },
+      {
+        debuggerBackend: 'external',
+        externalDebugger: {
+          mode: 'listen',
+          host: '127.0.0.1',
+          port: 0,
+        },
+      },
+    ];
+    for (const config of configs) {
+      const args = buildDapExecutableArgs(config);
+      expect(args).not.toContain('--socket');
+      expect(args).not.toContain('--port');
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -647,6 +1304,24 @@ describe('offerDebugConfigOnFirstPerlOpen', () => {
     const doc = { languageId: 'perl' };
     await offerDebugConfigOnFirstPerlOpen(doc as vscode.TextDocument);
     expect(vscode.window.showInformationMessage).not.toHaveBeenCalled();
+  });
+
+  test('shows the same onboarding prompt for a perl5 alias document (#7699)', async () => {
+    // Runs before any test that trips the once-per-session prompt flag, so the
+    // alias itself must pass the language gate for the prompt to appear.
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'onboard-perl5-'));
+    try {
+      vscode.workspace.workspaceFolders = [{ uri: { fsPath: tmpDir }, name: 'test' }];
+      const doc = { languageId: 'perl5' };
+      await offerDebugConfigOnFirstPerlOpen(doc as vscode.TextDocument);
+      expect(vscode.window.showInformationMessage).toHaveBeenCalledWith(
+        expect.stringContaining('debug configuration'),
+        expect.any(String),
+        expect.any(String),
+      );
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
   });
 
   test('shows onboarding prompt for perl document in workspace without launch.json', async () => {

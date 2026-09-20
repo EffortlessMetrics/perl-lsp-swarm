@@ -100,10 +100,81 @@ fn parse_panic_site_old_style(rest: &str) -> Option<String> {
 /// Check whether a gate command is a `cargo test`-class command.
 ///
 /// Returns `true` for commands whose first word-token is `cargo` and second is `test`,
-/// ignoring leading whitespace and path prefixes.
+/// ignoring leading whitespace and path prefixes. A leading `env` invocation
+/// (optionally followed by `-u NAME` unset flags and/or `NAME=VALUE`
+/// assignments, per env(1)'s `[flags/assignments] command` grammar) is
+/// transparent: the merge-gate `lsp_smoke` gate runs its test binary as
+/// `env -u RUSTC_WRAPPER cargo test ...`, and its log is as much a cargo
+/// test log as any other.
 pub fn is_cargo_test_command(command: &str) -> bool {
-    let mut tokens = command.split_whitespace();
-    let first = tokens.next().unwrap_or("");
-    let is_cargo = first == "cargo" || first.ends_with("/cargo") || first.ends_with("\\cargo");
+    // Gate commands may chain setup steps ahead of the test invocation (for
+    // example `cargo build -p perllsp --locked && cargo test ...`). The test
+    // output whose failures must be extracted comes from the final segment,
+    // so recognition applies to the last `&&`-separated segment.
+    let final_segment = command.split("&&").last().unwrap_or("").trim();
+    let mut tokens = final_segment.split_whitespace();
+    let mut first = tokens.next().unwrap_or("");
+    if first == "env" {
+        // Skip env(1) arguments until the wrapped command: assignments
+        // (`NAME=VALUE`), single-token options, and option+argument pairs
+        // such as `-u NAME`. Anything else begins the wrapped command.
+        loop {
+            let token = tokens.next().unwrap_or("");
+            if token.is_empty() {
+                return false;
+            }
+            if token.contains('=') || (token.starts_with('-') && token != "-") {
+                if matches!(token, "-u" | "--unset") {
+                    tokens.next();
+                }
+                continue;
+            }
+            first = token;
+            break;
+        }
+    }
+    let is_cargo = first == "cargo" || first.ends_with("/cargo") || first.contains("\\cargo");
     is_cargo && tokens.next().is_some_and(|t| t == "test")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::log_reaches_test_execution;
+    use color_eyre::eyre::Result;
+    use std::fs;
+
+    const CARGO_TEST_COMMAND: &str = "cargo test -p xtask --locked";
+
+    #[test]
+    fn invalid_utf8_line_does_not_hide_a_later_libtest_marker() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let log_path = temp.path().join("gate-invalid-utf8.log");
+        let mut with_marker = b"   Compiling xtask v0.17.0\n".to_vec();
+        with_marker.extend_from_slice(&[0xff, 0xfe, b'\n']);
+        with_marker.extend_from_slice(b"running 2 tests\n");
+        fs::write(&log_path, with_marker)?;
+
+        assert_eq!(
+            log_reaches_test_execution(CARGO_TEST_COMMAND, &log_path)?,
+            Some(true),
+            "an invalid UTF-8 line before a later libtest marker must not end the scan"
+        );
+
+        let mut compile_only = b"   Compiling xtask v0.17.0\n".to_vec();
+        compile_only.extend_from_slice(&[0xff, 0xfe, b'\n']);
+        fs::write(&log_path, compile_only)?;
+        assert_eq!(
+            log_reaches_test_execution(CARGO_TEST_COMMAND, &log_path)?,
+            Some(false),
+            "invalid UTF-8 without a later marker remains measured compile-only"
+        );
+
+        assert!(
+            log_reaches_test_execution(CARGO_TEST_COMMAND, &temp.path().join("missing.log"))
+                .is_err(),
+            "an unreadable log must remain instrumentation-unknown"
+        );
+
+        Ok(())
+    }
 }

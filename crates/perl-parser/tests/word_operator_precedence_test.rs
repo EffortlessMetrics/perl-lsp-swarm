@@ -21,8 +21,12 @@ fn test_or_lower_than_assignment() -> Result<(), Box<dyn std::error::Error>> {
     // Check that 'or' is at the top level by examining the S-expression
     let sexp = ast.to_sexp();
     assert!(sexp.contains("(binary_or"));
-    assert!(sexp.contains("(assignment_assign (variable $ a) (number 1))"));
-    assert!(sexp.contains("(assignment_assign (variable $ b) (number 2))"));
+    assert!(sexp.contains(
+        "(assignment_assign (op =) (lhs (variable (sigil $) (name a))) (rhs (number (value 1))))"
+    ));
+    assert!(sexp.contains(
+        "(assignment_assign (op =) (lhs (variable (sigil $) (name b))) (rhs (number (value 2))))"
+    ));
     Ok(())
 }
 
@@ -36,8 +40,12 @@ fn test_and_lower_than_assignment() -> Result<(), Box<dyn std::error::Error>> {
     // Check that 'and' is at the top level by examining the S-expression
     let sexp = ast.to_sexp();
     assert!(sexp.contains("(binary_and"));
-    assert!(sexp.contains("(assignment_assign (variable $ a) (number 1))"));
-    assert!(sexp.contains("(assignment_assign (variable $ b) (number 2))"));
+    assert!(sexp.contains(
+        "(assignment_assign (op =) (lhs (variable (sigil $) (name a))) (rhs (number (value 1))))"
+    ));
+    assert!(sexp.contains(
+        "(assignment_assign (op =) (lhs (variable (sigil $) (name b))) (rhs (number (value 2))))"
+    ));
     Ok(())
 }
 
@@ -51,7 +59,7 @@ fn test_not_in_assignment() -> Result<(), Box<dyn std::error::Error>> {
     // Check that assignment contains 'not' as its RHS
     let sexp = ast.to_sexp();
     assert!(sexp.contains("(assignment_assign"));
-    assert!(sexp.contains("(unary_not (number 0))"));
+    assert!(sexp.contains("(unary_not (op not) (operand (number (value 0))))"));
     Ok(())
 }
 
@@ -65,9 +73,11 @@ fn test_or_and_precedence() -> Result<(), Box<dyn std::error::Error>> {
 
     let sexp = ast.to_sexp();
     // The top level should be 'or'
-    assert!(sexp.starts_with("(source_file (binary_or"));
+    assert!(
+        sexp.starts_with("(source_file (statements (expression_statement (expression (binary_or")
+    );
     // The left side of 'or' should be an 'and' expression
-    assert!(sexp.contains("(binary_and (assignment_assign"));
+    assert!(sexp.contains("(binary_and (op and) (left (assignment_assign"));
     Ok(())
 }
 
@@ -80,8 +90,8 @@ fn test_statement_with_or_modifier() -> Result<(), Box<dyn std::error::Error>> {
 
     let sexp = ast.to_sexp();
     assert!(sexp.contains("(binary_or"));
-    assert!(sexp.contains("(call open"));
-    assert!(sexp.contains("(call die"));
+    assert!(sexp.contains("(call (name open)"));
+    assert!(sexp.contains("(call (name die)"));
     Ok(())
 }
 
@@ -107,7 +117,7 @@ fn test_not_not_double_negation() -> Result<(), Box<dyn std::error::Error>> {
     let ast = parser.parse()?;
 
     let sexp = ast.to_sexp();
-    assert!(sexp.contains("(unary_not (unary_not"));
+    assert!(sexp.contains("(unary_not (op not) (operand (unary_not"));
     Ok(())
 }
 
@@ -120,8 +130,12 @@ fn test_xor_precedence() -> Result<(), Box<dyn std::error::Error>> {
 
     let sexp = ast.to_sexp();
     assert!(sexp.contains("(binary_xor"));
-    assert!(sexp.contains("(assignment_assign (variable $ a) (number 1))"));
-    assert!(sexp.contains("(assignment_assign (variable $ b) (number 2))"));
+    assert!(sexp.contains(
+        "(assignment_assign (op =) (lhs (variable (sigil $) (name a))) (rhs (number (value 1))))"
+    ));
+    assert!(sexp.contains(
+        "(assignment_assign (op =) (lhs (variable (sigil $) (name b))) (rhs (number (value 2))))"
+    ));
     Ok(())
 }
 
@@ -166,7 +180,7 @@ fn test_print_stderr_comma_or_die() -> Result<(), Box<dyn std::error::Error>> {
     let sexp = ast.to_sexp();
     // Top-level should be `or` — the call is on the left, die on the right
     assert!(sexp.contains("(binary_or"), "expected binary_or at top level, got: {sexp}");
-    assert!(sexp.contains("(call print"), "expected (call print ...), got: {sexp}");
+    assert!(sexp.contains("(call (name print)"), "expected (call (name print) ...), got: {sexp}");
     Ok(())
 }
 
@@ -182,6 +196,6 @@ fn test_word_not_as_terminator() -> Result<(), Box<dyn std::error::Error>> {
     // `or` at top level, `not` on the RHS
     assert!(sexp.contains("(binary_or"), "expected binary_or, got: {sexp}");
     assert!(sexp.contains("(unary_not"), "expected unary_not on RHS, got: {sexp}");
-    assert!(sexp.contains("(call open"), "expected (call open ...), got: {sexp}");
+    assert!(sexp.contains("(call (name open)"), "expected (call (name open) ...), got: {sexp}");
     Ok(())
 }

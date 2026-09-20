@@ -1,5 +1,5 @@
-use perl_module::path::file_path_to_module_name;
-use perl_module::rename::{apply_module_rename_edits, plan_module_rename_edits};
+use perl_module::file_path_to_module_name;
+use perl_module::{apply_module_rename_edits, plan_module_rename_edits};
 
 #[test]
 fn rewrites_imports_from_path_derived_module_names() {

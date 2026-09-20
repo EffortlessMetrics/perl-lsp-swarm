@@ -9,7 +9,10 @@
 //!    drives the drop counter up and never hangs.
 
 use super::DapMessage;
-use super::sync_utils::{EventDispatchResult, dispatch_event, dropped_output_event_count};
+use super::sync_utils::{
+    DapMessageWithEpoch, EventDispatchResult, dispatch_event, dropped_output_event_count,
+};
+use perl_tdd_support::must;
 use std::sync::mpsc::sync_channel;
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -18,7 +21,7 @@ use std::time::Duration;
 /// `output` events are dropped (non-blocking) when the bounded queue is full.
 #[test]
 fn output_drop_when_queue_full() {
-    let (tx, rx) = sync_channel::<DapMessage>(2);
+    let (tx, rx) = sync_channel::<DapMessageWithEpoch>(2);
     let seq = Mutex::new(0i64);
 
     let r1 = dispatch_event(&tx, &seq, "output", None);
@@ -44,7 +47,7 @@ fn output_drop_when_queue_full() {
 /// a slot opens in the bounded queue.
 #[test]
 fn lifecycle_blocks_until_drain() {
-    let (tx, rx) = sync_channel::<DapMessage>(1);
+    let (tx, rx) = sync_channel::<DapMessageWithEpoch>(1);
     let seq = Arc::new(Mutex::new(0i64));
 
     // Fill the single queue slot with an output event
@@ -67,22 +70,19 @@ fn lifecycle_blocks_until_drain() {
     thread::sleep(Duration::from_millis(50));
 
     // Drain one slot — the blocked lifecycle send must unblock
-    let _ =
-        rx.recv_timeout(Duration::from_secs(2)).expect("queued output event must be receivable");
+    let _ = must(rx.recv_timeout(Duration::from_secs(2)));
 
     // Helper must have completed and returned Sent
-    let result = helper.join().expect("helper thread must not panic");
+    let result = must(helper.join());
     assert_eq!(result, EventDispatchResult::Sent, "lifecycle event must be sent once a slot opens");
 
     // The `stopped` event must now be in the channel
-    let msg = rx
-        .recv_timeout(Duration::from_secs(2))
-        .expect("stopped event must be received after drain");
+    let msg = must(rx.recv_timeout(Duration::from_secs(2)));
     match msg {
-        DapMessage::Event { event, .. } => {
+        (DapMessage::Event { event, .. }, _) => {
             assert_eq!(event, "stopped", "received event must be 'stopped'");
         }
-        other => panic!("Expected stopped event, got {other:?}"),
+        (other, _) => must(Err::<(), _>(format!("Expected stopped event, got {other:?}"))),
     }
 }
 
@@ -95,7 +95,7 @@ fn slow_writer_queue_stays_bounded() {
     const FLOOD: usize = 10_000;
 
     // `_rx` is intentionally not drained — simulates a slow or blocked writer
-    let (tx, _rx) = sync_channel::<DapMessage>(CAPACITY);
+    let (tx, _rx) = sync_channel::<DapMessageWithEpoch>(CAPACITY);
     let seq = Mutex::new(0i64);
 
     let before = dropped_output_event_count();

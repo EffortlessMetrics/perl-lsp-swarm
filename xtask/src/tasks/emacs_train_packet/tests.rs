@@ -1,0 +1,1464 @@
+//! Falsifier suite for the E06 actor-packet adapter (#11719).
+//!
+//! Every test builds a synthetic tree (never the real repository) so the
+//! laws are exercised against deliberately wrong inputs: a missing required
+//! input must refuse with the exact typed reason instead of rendering
+//! plausible prose, and every happy path must render deterministically
+//! through the shared #10872/#10881 contracts unchanged. The real-tree
+//! denominator check runs in CI via
+//! `cargo xtask integration emacs train packets --check`, not here.
+
+use std::collections::BTreeMap;
+use std::path::Path;
+use std::sync::atomic::{AtomicU32, Ordering};
+
+use color_eyre::eyre::{Context, Result};
+use serde_json::{Value, json};
+
+use super::test_support::{
+    disposition_record, disposition_record_for, parse_specs_ledger, specs_ledger,
+    write_canonical_specs_ledger, write_json, write_text,
+};
+use super::*;
+use crate::tasks::agent_implementation_packet::PacketProjection;
+use crate::tasks::emacs_train_context::digest::title_fingerprint;
+use crate::tasks::emacs_train_context::resolve::{
+    LEDGER_RELATIVE_PATH, MANIFEST_RELATIVE_PATH, MAPPING_RELATIVE_PATH, load_inputs_with_git,
+};
+use crate::tasks::emacs_train_specs::DEFAULT_LEDGER_PATH as SPECS_LEDGER_RELATIVE_PATH;
+
+static FIXTURE_COUNTER: AtomicU32 = AtomicU32::new(0);
+
+/// Synthetic fixture tree bound to a drop guard: the directory is removed
+/// when the test's `root` binding falls out of scope instead of accumulating
+/// in the OS temp directory across runs with fresh process ids.
+struct FixtureTree(tempfile::TempDir);
+
+impl std::ops::Deref for FixtureTree {
+    type Target = Path;
+
+    fn deref(&self) -> &Path {
+        self.0.path()
+    }
+}
+
+fn fixture_tree(label: &str) -> Result<FixtureTree> {
+    let unique = FIXTURE_COUNTER.fetch_add(1, Ordering::SeqCst);
+    let dir = tempfile::Builder::new()
+        .prefix(&format!("emacs-pkt-{label}-{unique}-"))
+        .tempdir()
+        .context("creating the synthetic fixture tree")?;
+    let root = dir.path();
+    std::fs::create_dir_all(root.join(".spec/11716-emacs-support-architecture"))?;
+    std::fs::create_dir_all(root.join(".spec/9001-sub"))?;
+    std::fs::write(root.join("AGENTS.md"), "# fixture repository instructions\n")?;
+    std::fs::write(
+        root.join(".spec/11716-emacs-support-architecture/context.md"),
+        "# fixture architecture\n",
+    )?;
+    Ok(FixtureTree(dir))
+}
+
+/// Deterministic fixture git identity: synthetic trees are not repositories.
+fn fixture_git() -> (String, String) {
+    ("a".repeat(40), "5".repeat(40))
+}
+
+fn make_node(node_id: &str, issue: u64, role: &str, disposition: &str) -> Value {
+    json!({
+        "node_id": node_id,
+        "issue": issue,
+        "title": format!("fixture node {node_id}"),
+        "title_fingerprint": title_fingerprint(&format!("fixture node {node_id}")),
+        "aliases": [],
+        "train_role": role,
+        "lane": "adapter-eglot",
+        "chain": {"home": "emacs-support", "controller": "CTRL"},
+        "one_pr_outcome": "fixture bounded outcome for the packet adapter",
+        "authority_before": "none",
+        "authority_after": format!("fixture authority after {node_id}"),
+        "buildable": true,
+        "dependencies": [],
+        "claim_ceiling": "fixture ceiling; no Emacs packet schema, no model invocation",
+        "writer": {
+            "conflict_key": format!("emacs.fixture.{node_id}"),
+            "parallel_group": "A",
+            "stack_relation": "none"
+        },
+        "consumed_authorities": ["#10872", "#10881"],
+        "allowed_components": [format!("fixture.adapter.{node_id}")],
+        "forbidden_adjacent_owners": ["leaf execution (covered trains)"],
+        "spec": {
+            "disposition": disposition,
+            "owner": node_id,
+            "stale_policy": "E01R classifies movement",
+            "spec_authority": "#11717"
+        },
+        "first_falsifier": "An Emacs-local packet schema duplicates the shared contracts.",
+        "controls": {
+            "positive": "packets satisfy the shared schemas unchanged",
+            "opposite": "an Emacs-local packet schema",
+            "stale": "packets stale after contract revision",
+            "wrong_subject": "a packet embedding live state",
+            "fault": "rendering rendered as pass on fault",
+            "mutation": "a packet field fabricated"
+        },
+        "proof": {"focused": "focused adapter contract test", "routed": "routed proof per POLICY"},
+        "review_forward": {"questions": [], "lenses": []},
+        "obligations": {
+            "schema": "adapter contract over #10872/#10881 payloads",
+            "generated": "none",
+            "docs": "contract notes",
+            "changelog": "none (internal contract)",
+            "receipt": "none"
+        },
+        "exits": {
+            "old_path": "none (new surface)",
+            "compatibility": "none",
+            "supersession": "supersession via E01R",
+            "transfer": "transfer with manifest revision"
+        },
+        "rollback": {
+            "rollback": "revert adapter; actors re-derive packets",
+            "return_to_issue": "return here when shared contracts move",
+            "not_proven": "missing or partial evidence stays not_proven, never pass",
+            "stop": "stop before invocation, mutation or scheduling"
+        },
+        "successors": [],
+        "identity_fields": ["node_id"],
+        "limitations": ["fixture limitation"]
+    })
+}
+
+fn make_manifest(nodes: &[Value]) -> Value {
+    json!({
+        "schema": "emacs_train.v1",
+        "schema_version": 1,
+        "programme": {
+            "parent_programme_issue": 7979,
+            "controller_issue": 8706,
+            "home_programme": "emacs-support",
+            "durable_architecture_issue": 11716,
+            "durable_architecture_bundle": ".spec/11716-emacs-support-architecture",
+            "method_authority": "#3983"
+        },
+        "authority_planes": [],
+        "train_role_vocabulary": [],
+        "evidence_semantics": {
+            "not_proven_law": "np", "optional_visibility": "ov", "metadata_only_rule": "mo"
+        },
+        "external_authorities": [],
+        "open_decisions_routed_elsewhere": [],
+        "existing_candidate_adoption": {
+            "node": "FIXT", "candidate_pull": 8026,
+            "confirm_with": "#10930", "rule": "fixture"
+        },
+        "nodes": nodes,
+        "supersessions": [],
+        "revision_governance": {
+            "owner_node": "E01R", "owner_issue": 11770,
+            "invalidates": "i", "never": "n", "metadata_only": "m"
+        },
+        "limitations": []
+    })
+}
+
+fn make_mapping(node_mappings: &[Value]) -> Value {
+    json!({
+        "schema": "emacs_train_context_mappings.v1",
+        "schema_version": 1,
+        "consumed_manifest": {
+            "bundle": ".spec/10918-emacs-train-graph", "schema": "emacs_train.v1"
+        },
+        "consumed_ledger": {
+            "bundle": ".spec/11770-emacs-train-revisions", "schema": "emacs_train_revision.v1"
+        },
+        "population_ownership": {
+            "engine": 9000, "substrate_population": 9002, "projection_population": 9003
+        },
+        "bounds": {
+            "max_components_per_node": 4, "max_tests_per_node": 4,
+            "max_read_set": 4, "max_write_set": 4, "max_not_authority": 4
+        },
+        "nodes": node_mappings
+    })
+}
+
+fn mapped_node_entry(node_id: &str, with_test: bool) -> Value {
+    json!({
+        "node_id": node_id,
+        "status": "mapped",
+        "components": [{
+            "component_id": format!("fixture.adapter.{node_id}"),
+            "role": "production",
+            "kind": "rust_source",
+            "path": format!("src/{}.rs", node_id.to_lowercase()),
+            "symbol": format!("compose_fixture_{node_id}"),
+            "symbol_kind": "rust_item",
+            "client_family": null,
+            "notes": null
+        }],
+        "tests": if with_test {
+            json!([{"path": "tests/adapter_contract.rs", "selector": "fixture_packet_law", "kind": "falsifier"}])
+        } else {
+            json!([])
+        },
+        "generated": [],
+        "read_set": ["AGENTS.md"],
+        "write_set": [format!("src/{}.rs", node_id.to_lowercase())],
+        "not_authority": [],
+        "specs": [],
+        "write_set_note": null,
+        "no_production_component_reason": null,
+        "blocker": null
+    })
+}
+
+fn unmapped_node_entry(node_id: &str) -> Value {
+    json!({
+        "node_id": node_id,
+        "status": "unmapped",
+        "components": [],
+        "tests": [],
+        "generated": [],
+        "read_set": [],
+        "write_set": [],
+        "not_authority": [],
+        "specs": [],
+        "write_set_note": null,
+        "no_production_component_reason": null,
+        "blocker": {
+            "reason": "fixture mapping gap owned elsewhere",
+            "owner_issue": 9001,
+            "action": "return_to_issue"
+        }
+    })
+}
+
+/// Build the standard fixture tree: SUB (implementation leaf, mapped with a
+/// test surface) and OTHER (unmapped). Writes the E02 ledger with records
+/// for the given nodes.
+fn load_fixture_inputs(
+    root: &Path,
+    manifest_nodes: &[Value],
+    mapping_nodes: &[Value],
+    ledger_records: &[Value],
+) -> Result<AdapterInputs> {
+    load_fixture_inputs_with_manifest(root, manifest_nodes, |_| {}, mapping_nodes, ledger_records)
+}
+
+/// Variant that lets a test adjust the manifest document (e.g. declare an
+/// external authority) before the engine loads it.
+fn load_fixture_inputs_with_manifest(
+    root: &Path,
+    manifest_nodes: &[Value],
+    mutate_manifest: impl FnOnce(&mut Value),
+    mapping_nodes: &[Value],
+    ledger_records: &[Value],
+) -> Result<AdapterInputs> {
+    let mut manifest = make_manifest(manifest_nodes);
+    mutate_manifest(&mut manifest);
+    write_json(root, MANIFEST_RELATIVE_PATH, &manifest)?;
+    write_json(
+        root,
+        LEDGER_RELATIVE_PATH,
+        &json!({"schema": "emacs_train_revision.v1", "revisions": [
+            {
+                "entry_id": "REV-001", "sequence": 1, "revision_kind": "insert",
+                "semantic_class": "node_add",
+                "graph_effect": {"added_nodes": ["SUB"], "wiring": []},
+                "successors": [],
+                "invalidations": [
+                    {"surface": "live_packet", "subjects": ["SUB"], "basis": "fixture"}
+                ]
+            }
+        ]}),
+    )?;
+    for node_id in
+        manifest_nodes.iter().filter_map(|node| node.get("node_id")).filter_map(Value::as_str)
+    {
+        let lower = node_id.to_lowercase();
+        write_text(
+            root,
+            &format!("src/{lower}.rs"),
+            &format!("pub fn compose_fixture_{node_id}() {{}}\n"),
+        )?;
+    }
+    write_text(root, "tests/adapter_contract.rs", "#[test] fn fixture_packet_law() {}\n")?;
+    write_json(root, MAPPING_RELATIVE_PATH, &make_mapping(mapping_nodes))?;
+    // The E02 ledger must be written through the canonical serializer: the
+    // adapter gate enforces the L12 canonical-bytes law on the exact bytes.
+    write_canonical_specs_ledger(
+        root,
+        &parse_specs_ledger(ledger_records).with_context(|| "building the fixture E02 ledger")?,
+    )?;
+    let engine = load_inputs_with_git(root, Some(fixture_git()))
+        .with_context(|| "loading fixture engine inputs")?;
+    complete_adapter_inputs(root, engine)
+}
+
+fn default_fixture(root: &Path) -> Result<AdapterInputs> {
+    load_fixture_inputs(
+        root,
+        &[
+            make_node("SUB", 9001, "implementation", "ISSUE_PLAN_SUFFICIENT"),
+            make_node("OTHER", 9010, "implementation", "ISSUE_PLAN_SUFFICIENT"),
+        ],
+        &[mapped_node_entry("SUB", true), unmapped_node_entry("OTHER")],
+        &[
+            disposition_record("SUB", 9001, "ISSUE_PLAN_SUFFICIENT"),
+            disposition_record("OTHER", 9010, "ISSUE_PLAN_SUFFICIENT"),
+        ],
+    )
+}
+
+/// An explicit complete observation that no candidate owns this claim.
+///
+/// #11719 admits a coding packet only against a current observation. Vacancy
+/// must be *observed and supplied*, never inferred from a missing flag, so the
+/// happy-path tests state it here instead of leaving `live` as `None`.
+///
+/// The shared #10872 vocabulary is `not_observed | observed`, and `observed`
+/// requires a non-empty `candidate_identity` -- so an observed vacancy is
+/// recorded as the caller's exact statement of what the sweep found, not as an
+/// absent field.
+fn observed_vacant() -> LiveObservation {
+    LiveObservation {
+        candidate_state: "observed".to_string(),
+        // A digest `parse_live_observation` accepts: the all-zero placeholder
+        // is refused there, so a fixture using it would admit packets against
+        // an observation the CLI can never supply.
+        digest: "sha256:5f3a1c0e9b7d24486ac1f0e2d93b8570cc41a6e28d5f9017b3e4c6a8d0f21b95"
+            .to_string(),
+        candidate_identity: Some(
+            "no candidate: no open PR or dirty checkout owns this claim".to_string(),
+        ),
+        collision_state: None,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// A supplied observation must be evidence, not a shape. `--live-observation`
+// is a public flag and the composition fixture is a checked-in path, so a
+// placeholder that reaches a `ready` packet reintroduces the assumed vacancy
+// the live gate exists to forbid -- one layer down, as text.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn an_all_zero_observation_digest_is_refused_as_a_placeholder() -> Result<()> {
+    let root = fixture_tree("zero-digest")?;
+    write_json(
+        &root,
+        "observation.json",
+        &json!({
+            "candidate_state": "observed",
+            "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+            "candidate_identity": "no candidate",
+        }),
+    )?;
+
+    let failure = parse_live_observation(&root.join("observation.json"))
+        .expect_err("a placeholder digest is not evidence");
+    let rendered = format!("{failure:#}");
+    assert!(rendered.contains("binds to nothing"), "{rendered}");
+    Ok(())
+}
+
+#[test]
+fn a_nonzero_observation_digest_is_accepted() -> Result<()> {
+    // Negative control: the guard must reject placeholders, not every digest.
+    let root = fixture_tree("real-digest")?;
+    write_json(
+        &root,
+        "observation.json",
+        &json!({
+            "candidate_state": "observed",
+            "digest": "sha256:5f3a1c0e9b7d24486ac1f0e2d93b8570cc41a6e28d5f9017b3e4c6a8d0f21b95",
+            "candidate_identity": "PR #8800",
+        }),
+    )?;
+
+    let live = parse_live_observation(&root.join("observation.json"))?;
+    assert_eq!(live.candidate_state, "observed");
+    Ok(())
+}
+
+#[test]
+fn an_unknown_observation_field_is_refused_rather_than_dropped() -> Result<()> {
+    let root = fixture_tree("unknown-field")?;
+    write_json(
+        &root,
+        "observation.json",
+        &json!({
+            "candidate_state": "observed",
+            "digest": "sha256:5f3a1c0e9b7d",
+            "candidate_identity": "PR #8800",
+            "colision_state": "none",
+        }),
+    )?;
+
+    let failure = parse_live_observation(&root.join("observation.json"))
+        .expect_err("a misspelled fact must not vanish");
+    let rendered = format!("{failure:#}");
+    assert!(rendered.contains("colision_state"), "{rendered}");
+    Ok(())
+}
+
+#[test]
+fn the_committed_composition_fixture_parses_and_states_what_it_is() -> Result<()> {
+    // The fixture unblocks the CI render step, so its own identity travels into
+    // every packet it composes. It must not claim an observation that no code
+    // performs.
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("xtask manifest directory has a repository parent")
+        .join("fixtures/emacs_train_packet/observed_no_candidate.v1.json");
+
+    let live = parse_live_observation(&path)?;
+    let identity = live.candidate_identity.clone().unwrap_or_default();
+    assert!(identity.contains("synthetic"), "{identity}");
+    assert!(
+        !identity.contains("sweep observed"),
+        "the fixture must not assert an observation that never happens: {identity}"
+    );
+    Ok(())
+}
+
+#[test]
+fn reconcile_refuses_a_candidate_without_a_state() -> Result<()> {
+    // An absent state must not be recorded as an observed `state_unspecified`.
+    let root = fixture_tree("reconcile-no-state")?;
+    let inputs = default_fixture(&root)?;
+    let candidates = json!([{"identity": "PR #8800", "facts": "dirty unique work"}]);
+    let refusal = compose_reconcile_packet(&root, &inputs, "SUB", Some(&candidates))
+        .err()
+        .expect("a missing state must refuse");
+    assert_eq!(refusal.code, "MALFORMED_CANDIDATE_FACTS", "{}", refusal.line());
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// #11719: "No live observation means no coding packet assuming vacancy."
+// A coding packet admits a repository writer, so it must not be composable
+// against an unobserved claim -- and `not_observed` records that nobody
+// looked, which is not the same as looking and finding nothing.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn coding_packet_without_live_observation_refuses_fail_closed() -> Result<()> {
+    let root = fixture_tree("no-live")?;
+    let inputs = default_fixture(&root)?;
+    for profile in ["coding_agent_bounded", "coding_agent_strong"] {
+        let refusal = compose_builder_packet(&root, &inputs, "SUB", profile, None)
+            .err()
+            .unwrap_or_else(|| panic!("{profile} must not assume the claim is vacant"));
+        assert_eq!(refusal.code, "NO_LIVE_OBSERVATION", "{}", refusal.line());
+    }
+    Ok(())
+}
+
+#[test]
+fn not_observed_live_state_is_not_evidence_of_vacancy() -> Result<()> {
+    let root = fixture_tree("not-observed")?;
+    let inputs = default_fixture(&root)?;
+    let live = LiveObservation {
+        candidate_state: "not_observed".to_string(),
+        digest: "sha256:0000000000000000".to_string(),
+        candidate_identity: None,
+        collision_state: None,
+    };
+    let refusal =
+        compose_builder_packet(&root, &inputs, "SUB", "coding_agent_bounded", Some(&live))
+            .err()
+            .expect("not_observed must never admit a coding packet");
+    assert_eq!(refusal.code, "NO_LIVE_OBSERVATION", "{}", refusal.line());
+    assert!(refusal.detail.contains("absence of knowledge is never vacancy"), "{}", refusal.detail);
+    Ok(())
+}
+
+#[test]
+fn review_and_reconcile_routes_are_not_blocked_by_the_live_gate() -> Result<()> {
+    // Neither route emits a coding packet or a repository write boundary, so
+    // the live gate must not refuse a read-only review for want of an
+    // observation it never acts on.
+    let root = fixture_tree("anchored")?;
+    let inputs = default_fixture(&root)?;
+    let candidates = json!([
+        {"identity": "PR #8800", "state": ["stale_base", "dirty_or_unpushed_unique_work"], "facts": "dirty unique work"}
+    ]);
+    let doc = compose_reconcile_packet(&root, &inputs, "SUB", Some(&candidates))
+        .map_err(|refusal| color_eyre::eyre::eyre!("unexpected refusal: {}", refusal.line()))?;
+    assert_eq!(doc["frontier"]["decision"], "blocked");
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// The reconciliation adjudication is over the candidates' facts, so the facts
+// must reach the packet and its frontier identity. Two sets differing only in
+// facts must never render the same bytes.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn reconcile_binds_the_supplied_candidate_facts_into_the_packet_and_digest() -> Result<()> {
+    let root = fixture_tree("reconcile-facts")?;
+    let inputs = default_fixture(&root)?;
+
+    let render = |facts: &str| -> Result<(String, String, String)> {
+        let candidates = json!([
+            {"identity": "PR #8800 (tooling/sub-claim)", "state": ["stale_base", "dirty_or_unpushed_unique_work"], "facts": facts}
+        ]);
+        let doc = compose_reconcile_packet(&root, &inputs, "SUB", Some(&candidates))
+            .map_err(|refusal| color_eyre::eyre::eyre!("unexpected refusal: {}", refusal.line()))?;
+        Ok((
+            render_builder_packet(&doc, PacketProjection::Machine)?,
+            doc["frontier"]["digest"].as_str().unwrap_or_default().to_string(),
+            doc["frontier"]["blocking_edges"][0]["reason"].as_str().unwrap_or_default().to_string(),
+        ))
+    };
+
+    let (bytes_a, digest_a, reason_a) = render("dirty unique work, unpushed")?;
+    let (bytes_b, digest_b, _) = render("clean, fully pushed, superseded")?;
+
+    assert!(reason_a.contains("dirty unique work, unpushed"), "{reason_a}");
+    assert_ne!(bytes_a, bytes_b, "candidate facts must change the rendered packet");
+    assert_ne!(digest_a, digest_b, "candidate facts must change the frontier identity");
+    Ok(())
+}
+
+#[test]
+fn reconcile_refuses_incomplete_or_duplicate_candidate_facts() -> Result<()> {
+    let root = fixture_tree("reconcile-malformed")?;
+    let inputs = default_fixture(&root)?;
+    let cases = [
+        json!([]),
+        json!([{"identity": "PR #8800", "state": "stale_base"}]),
+        json!([
+            {"identity": "PR #8800", "state": "stale_base", "facts": "a"},
+            {"identity": "PR #8800", "state": "stale_base", "facts": "b"}
+        ]),
+    ];
+    for candidates in cases {
+        let refusal = compose_reconcile_packet(&root, &inputs, "SUB", Some(&candidates))
+            .err()
+            .unwrap_or_else(|| panic!("incomplete candidate facts must refuse: {candidates}"));
+        assert_eq!(refusal.code, "MALFORMED_CANDIDATE_FACTS", "{}", refusal.line());
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Falsifier 1 + 3: a complete-input node renders a shared-contract packet
+// (zero drift) and identical inputs produce identical canonical bytes.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn complete_node_renders_shared_contract_packet_deterministically() -> Result<()> {
+    let root = fixture_tree("happy")?;
+    let inputs = default_fixture(&root)?;
+    let live = observed_vacant();
+    let doc = compose_builder_packet(&root, &inputs, "SUB", "coding_agent_bounded", Some(&live))
+        .map_err(|refusal| color_eyre::eyre::eyre!("unexpected refusal: {}", refusal.line()))?;
+    assert_eq!(doc["schema"], BUILDER_CONTRACT, "the payload must be the shared #10872 contract");
+    let first = render_builder_packet(&doc, PacketProjection::Machine)?;
+    let second = render_builder_packet(&doc, PacketProjection::Machine)?;
+    assert_eq!(first, second, "identical inputs must produce byte-identical packets");
+    // Re-composition from the same inputs is byte-stable too.
+    let doc_again =
+        compose_builder_packet(&root, &inputs, "SUB", "coding_agent_bounded", Some(&live))
+            .map_err(|refusal| color_eyre::eyre::eyre!("unexpected refusal: {}", refusal.line()))?;
+    assert_eq!(first, render_builder_packet(&doc_again, PacketProjection::Machine)?);
+    // Emacs supplies fields only: no Emacs-local schema identity anywhere.
+    assert!(first.find("emacs_packet").is_none());
+    assert!(first.find("emacs-local").is_none());
+    // Honest offline observation: the packet carries exactly the observation
+    // the caller supplied and never invents one of its own.
+    assert_eq!(doc["live_observation"]["candidate_state"], "observed");
+    assert_eq!(
+        doc["live_observation"]["candidate_identity"],
+        live.candidate_identity.clone().unwrap_or_default()
+    );
+    assert_eq!(doc["work"]["profile_decision"]["selected_value"], "ISSUE_PLAN_SUFFICIENT");
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Falsifier 2: every missing-input class refuses with the exact reason.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn missing_spec_disposition_fails_the_load_with_the_exact_node() -> Result<()> {
+    let root = fixture_tree("no-spec")?;
+    let failure = match load_fixture_inputs(
+        &root,
+        &[make_node("SUB", 9001, "implementation", "ISSUE_PLAN_SUFFICIENT")],
+        &[mapped_node_entry("SUB", true)],
+        &[], // no E02 record for SUB
+    ) {
+        Err(failure) => failure,
+        Ok(inputs) => {
+            match compose_builder_packet(&root, &inputs, "SUB", "coding_agent_bounded", None) {
+                // Defense-in-depth: a hand-constructed ledger hole still refuses
+                // with the typed per-node reason instead of prose.
+                Err(refusal) => panic!("unexpected typed refusal path: {}", refusal.line()),
+                Ok(_) => panic!("a missing checked disposition must never compose a packet"),
+            }
+        }
+    };
+    let rendered = format!("{failure:#}");
+    assert!(rendered.contains(SPECS_LEDGER_RELATIVE_PATH), "{rendered}");
+    // The full E02 gate surfaces the law violation: the denominator law names
+    // the exact node that carries no compiled disposition.
+    assert!(rendered.contains("L02-denominator [SUB]"), "{rendered}");
+    assert!(rendered.contains("no compiled disposition"), "{rendered}");
+    Ok(())
+}
+
+#[test]
+fn controller_node_never_receives_a_coding_packet() -> Result<()> {
+    let root = fixture_tree("controller")?;
+    let inputs = load_fixture_inputs(
+        &root,
+        &[make_node("CTRL", 9005, "controller", "CONTROLLER_NO_CODING_SPEC")],
+        &[mapped_node_entry("CTRL", true)],
+        &[disposition_record_for("CTRL", 9005, "controller", "CONTROLLER_NO_CODING_SPEC", None)],
+    )?;
+    for profile in ["coding_agent_bounded", "coding_agent_strong"] {
+        let refusal = compose_builder_packet(&root, &inputs, "CTRL", profile, None)
+            .expect_err("a controller/fan-in node must never receive a coding packet");
+        assert_eq!(refusal.code, "PROFILE_NOT_PERMITTED", "{profile}");
+        assert!(refusal.detail.contains("controller"));
+    }
+    Ok(())
+}
+
+#[test]
+fn mapping_gap_context_refuses_with_typed_blocker() -> Result<()> {
+    let root = fixture_tree("gap")?;
+    let inputs = default_fixture(&root)?;
+    let refusal = compose_builder_packet(&root, &inputs, "OTHER", "coding_agent_bounded", None)
+        .expect_err("an unmapped exact-tree context must refuse");
+    assert_eq!(refusal.code, "CONTEXT_MAPPING_GAP");
+    assert!(refusal.detail.contains("fixture mapping gap owned elsewhere"));
+    assert!(refusal.detail.contains("#9001"));
+    Ok(())
+}
+
+#[test]
+fn external_hard_dependency_refuses_rather_than_assuming_currency() -> Result<()> {
+    let root = fixture_tree("ext-dep")?;
+    let mut node = make_node("SUB", 9001, "implementation", "ISSUE_PLAN_SUFFICIENT");
+    node["dependencies"] = json!([
+        {"target": "#9999", "class": "hard", "provenance": "fixture"}
+    ]);
+    // The E02 manifest laws require every dependency target to resolve: the
+    // external authority is declared, so the manifest itself is valid and the
+    // *adapter* must refuse because nothing supplied observes it as current.
+    let inputs = load_fixture_inputs_with_manifest(
+        &root,
+        &[node],
+        |manifest| {
+            manifest["external_authorities"] =
+                json!([{"id": "#9999", "subject": "fixture external authority"}]);
+        },
+        &[mapped_node_entry("SUB", true)],
+        &[disposition_record("SUB", 9001, "ISSUE_PLAN_SUFFICIENT")],
+    )?;
+    let refusal = compose_builder_packet(&root, &inputs, "SUB", "coding_agent_bounded", None)
+        .expect_err("an unverifiable external hard dependency must refuse");
+    assert_eq!(refusal.code, "HARD_DEPENDENCY_NOT_CURRENT");
+    assert!(refusal.detail.contains("#9999"));
+    assert!(refusal.detail.contains("#10923/#10930"));
+    Ok(())
+}
+
+#[test]
+fn blocking_disposition_refuses_coding() -> Result<()> {
+    let root = fixture_tree("not-proven")?;
+    let inputs = load_fixture_inputs(
+        &root,
+        &[make_node("SUB", 9001, "implementation", "NOT_PROVEN")],
+        &[mapped_node_entry("SUB", true)],
+        &[disposition_record_for(
+            "SUB",
+            9001,
+            "implementation",
+            "NOT_PROVEN",
+            Some("fixture reviewed exit reason"),
+        )],
+    )?;
+    let refusal = compose_builder_packet(&root, &inputs, "SUB", "coding_agent_bounded", None)
+        .expect_err("a NOT_PROVEN disposition must refuse a coding packet");
+    assert_eq!(refusal.code, "SPEC_DISPOSITION_NOT_BUILDER");
+    assert!(refusal.detail.contains("NOT_PROVEN"));
+    Ok(())
+}
+
+#[test]
+fn maintainer_profile_is_not_permitted_for_ordinary_coding_nodes() -> Result<()> {
+    let root = fixture_tree("maintainer")?;
+    let inputs = default_fixture(&root)?;
+    let refusal = compose_builder_packet(&root, &inputs, "SUB", "maintainer_external_action", None)
+        .expect_err("a coding leaf with no declared external action must refuse the profile");
+    assert_eq!(refusal.code, "PROFILE_NOT_PERMITTED");
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Review packet: independent challenge surface, supplied facts only.
+// ---------------------------------------------------------------------------
+
+fn fixture_head() -> String {
+    fixture_git().0
+}
+
+/// Compose the exact builder packet a review challenges: the bounded coding
+/// packet for SUB against an observed vacancy, round-tripped through JSON
+/// bytes the way a `--builder-packet` CLI file arrives, so the review binds
+/// supplied bytes rather than a live reference.
+fn review_builder_packet(root: &Path, inputs: &AdapterInputs) -> Result<Value> {
+    let doc = compose_builder_packet(
+        root,
+        inputs,
+        "SUB",
+        "coding_agent_bounded",
+        Some(&observed_vacant()),
+    )
+    .map_err(|refusal| color_eyre::eyre::eyre!("unexpected refusal: {}", refusal.line()))?;
+    let bytes = serde_json::to_vec(&doc)?;
+    Ok(serde_json::from_slice(&bytes)?)
+}
+
+fn review_facts(builder: Value) -> ReviewFacts {
+    ReviewFacts {
+        base: "base0".into(),
+        head: fixture_head(),
+        diff: "sha256:dd".into(),
+        controls: complete_controls(),
+        builder_packet: Some(builder),
+    }
+}
+
+fn complete_controls() -> BTreeMap<String, BTreeMap<String, Value>> {
+    let criteria = [
+        "exists",
+        "red_before_or_mutation_evidence",
+        "passes_only_intended_implementation",
+        "correct_subject_and_generation",
+        "independent_expectation_source",
+        "alternate_subject_exclusion",
+    ];
+    let mut controls = BTreeMap::new();
+    for falsifier in ["F_first", "F_opposite", "F_stale", "F_wrong_subject", "F_fault"] {
+        let mut map = BTreeMap::new();
+        for criterion in criteria {
+            map.insert(
+                criterion.to_string(),
+                json!({
+                    "status": "established",
+                    "evidence": format!("fixture evidence for {falsifier}/{criterion}")
+                }),
+            );
+        }
+        controls.insert(falsifier.to_string(), map);
+    }
+    controls
+}
+
+#[test]
+fn review_packet_requires_supplied_candidate_identity_and_controls() -> Result<()> {
+    let root = fixture_tree("review-missing")?;
+    let inputs = default_fixture(&root)?;
+    let empty = ReviewFacts {
+        base: String::new(),
+        head: String::new(),
+        diff: String::new(),
+        controls: BTreeMap::new(),
+        builder_packet: None,
+    };
+    let refusal = compose_review_packet(&root, &inputs, "SUB", &empty)
+        .expect_err("offline review must refuse without facts");
+    assert_eq!(refusal.code, "MISSING_CANDIDATE_IDENTITY");
+
+    let partial = ReviewFacts {
+        base: "base0".into(),
+        head: fixture_head(),
+        diff: "sha256:dd".into(),
+        controls: BTreeMap::new(),
+        builder_packet: None,
+    };
+    let refusal = compose_review_packet(&root, &inputs, "SUB", &partial)
+        .expect_err("missing controls must refuse");
+    assert_eq!(refusal.code, "MISSING_NEGATIVE_CONTROL_EVIDENCE");
+
+    let uncovered = ReviewFacts {
+        base: "base0".into(),
+        head: fixture_head(),
+        diff: "sha256:dd".into(),
+        controls: {
+            let mut controls = complete_controls();
+            controls.remove("F_stale");
+            controls
+        },
+        builder_packet: Some(review_builder_packet(&root, &inputs)?),
+    };
+    let refusal = compose_review_packet(&root, &inputs, "SUB", &uncovered)
+        .expect_err("an uncovered falsifier must refuse");
+    assert_eq!(refusal.code, "CONTROL_FALSIFIER_UNCOVERED");
+    assert!(refusal.detail.contains("F_stale"));
+    Ok(())
+}
+
+#[test]
+fn review_packet_refuses_unestablished_control_evidence() -> Result<()> {
+    let root = fixture_tree("review-not-established")?;
+    let inputs = default_fixture(&root)?;
+    let mut controls = complete_controls();
+    controls
+        .get_mut("F_first")
+        .expect("F_first row")
+        .insert("exists".to_string(), json!({"status": "not_established", "evidence": "gap"}));
+    let facts = ReviewFacts {
+        base: "base0".into(),
+        head: fixture_head(),
+        diff: "sha256:dd".into(),
+        controls,
+        builder_packet: Some(review_builder_packet(&root, &inputs)?),
+    };
+    let refusal = compose_review_packet(&root, &inputs, "SUB", &facts)
+        .expect_err("unestablished evidence is a finding, never a pass");
+    assert_eq!(refusal.code, "CONTROL_NOT_ESTABLISHED");
+    assert!(refusal.detail.contains("exists"));
+    Ok(())
+}
+
+#[test]
+fn review_packet_renders_shared_review_contract_deterministically() -> Result<()> {
+    let root = fixture_tree("review-happy")?;
+    let inputs = default_fixture(&root)?;
+    let builder = review_builder_packet(&root, &inputs)?;
+    let facts = review_facts(builder.clone());
+    let doc = compose_review_packet(&root, &inputs, "SUB", &facts)
+        .map_err(|refusal| color_eyre::eyre::eyre!("unexpected refusal: {}", refusal.line()))?;
+    assert_eq!(doc["schema"], REVIEW_CONTRACT);
+    let first =
+        render_review_packet(&doc, crate::tasks::agent_review_packet::ReviewProjection::Machine)?;
+    let second =
+        render_review_packet(&doc, crate::tasks::agent_review_packet::ReviewProjection::Machine)?;
+    assert_eq!(first, second);
+    // The reviewer surface challenges; it does not mirror the builder.
+    assert!(
+        doc["challenge"]["primary_proposition"]
+            .as_str()
+            .expect("proposition")
+            .contains("authority")
+    );
+    assert!(first.contains("Q_one_authority"));
+    // FC1: the recorded digest identifies the exact supplied bytes. Recompute
+    // it from the supplied packet's own machine rendering: a digest of a
+    // rebuilt packet could not match, because the rebuild embeds different
+    // inputs.
+    let expected = render_builder_packet(&builder, PacketProjection::Machine)?;
+    assert_eq!(
+        doc["subject"]["builder_packet"]["digest"].as_str().unwrap_or_default(),
+        format!("sha256:{}", short(&sha256_hex(expected.as_bytes()), 16)),
+        "the review must bind the supplied builder bytes"
+    );
+    // And the digest follows the bytes, not the node: the same node with a
+    // different observed vacancy composes different bytes and must record a
+    // different digest.
+    let other_live = LiveObservation {
+        candidate_identity: Some("no candidate: a different sweep statement".to_string()),
+        ..observed_vacant()
+    };
+    let other =
+        compose_builder_packet(&root, &inputs, "SUB", "coding_agent_bounded", Some(&other_live))
+            .map_err(|refusal| color_eyre::eyre::eyre!("unexpected refusal: {}", refusal.line()))?;
+    let other_facts = review_facts(serde_json::from_slice(&serde_json::to_vec(&other)?)?);
+    let other_doc = compose_review_packet(&root, &inputs, "SUB", &other_facts)
+        .map_err(|refusal| color_eyre::eyre::eyre!("unexpected refusal: {}", refusal.line()))?;
+    assert_ne!(
+        doc["subject"]["builder_packet"]["digest"],
+        other_doc["subject"]["builder_packet"]["digest"],
+        "different builder bytes must record a different digest"
+    );
+    Ok(())
+}
+
+#[test]
+fn review_packet_requires_the_exact_builder_packet() -> Result<()> {
+    // FC1: without the packet that assigned the work there is nothing to
+    // challenge. The adapter refuses rather than rebuilding a packet that
+    // merely resembles the one under review.
+    let root = fixture_tree("review-missing-builder")?;
+    let inputs = default_fixture(&root)?;
+    let facts = ReviewFacts {
+        base: "base0".into(),
+        head: fixture_head(),
+        diff: "sha256:dd".into(),
+        controls: complete_controls(),
+        builder_packet: None,
+    };
+    let refusal = compose_review_packet(&root, &inputs, "SUB", &facts)
+        .expect_err("a review without the exact builder packet must refuse");
+    assert_eq!(refusal.code, "MISSING_BUILDER_PACKET");
+    assert!(refusal.detail.contains("--builder-packet"), "{}", refusal.line());
+    Ok(())
+}
+
+#[test]
+fn review_packet_refuses_a_builder_packet_for_another_subject() -> Result<()> {
+    // A packet for another node -- or in a profile this node does not permit
+    // -- is a different packet's evidence, even when it validates.
+    let root = fixture_tree("review-wrong-subject")?;
+    let inputs = default_fixture(&root)?;
+    let builder = review_builder_packet(&root, &inputs)?;
+
+    let mut other_node = builder.clone();
+    other_node["packet_id"] = json!("emacs-train/OTHER/coding_agent_bounded");
+    let refusal = compose_review_packet(&root, &inputs, "SUB", &review_facts(other_node))
+        .expect_err("another node's packet must refuse");
+    assert_eq!(refusal.code, "BUILDER_PACKET_SUBJECT_MISMATCH");
+
+    let mut wrong_profile = builder;
+    wrong_profile["packet_id"] = json!("emacs-train/SUB/maintainer_external_action");
+    wrong_profile["work"]["profile"] = json!("maintainer_external_action");
+    let refusal = compose_review_packet(&root, &inputs, "SUB", &review_facts(wrong_profile))
+        .expect_err("an unpermitted profile must refuse");
+    assert_eq!(refusal.code, "BUILDER_PACKET_SUBJECT_MISMATCH");
+    Ok(())
+}
+
+#[test]
+fn review_packet_refuses_a_builder_packet_from_another_tree() -> Result<()> {
+    // The review binds one exact tree: a packet composed against a different
+    // checkout cannot anchor this review even when everything else matches.
+    // The tampered packet stays internally consistent (every tree site moves
+    // together, so the shared contract still accepts it) but no longer binds
+    // the observed checkout.
+    fn retree(value: &mut Value, old: &str, new: &str) {
+        match value {
+            Value::String(text) if text.contains(old) => *text = text.replace(old, new),
+            Value::Array(items) => items.iter_mut().for_each(|item| retree(item, old, new)),
+            Value::Object(map) => map.values_mut().for_each(|item| retree(item, old, new)),
+            _ => {}
+        }
+    }
+    let root = fixture_tree("review-wrong-tree")?;
+    let inputs = default_fixture(&root)?;
+    let mut builder = review_builder_packet(&root, &inputs)?;
+    retree(&mut builder, &fixture_head(), &"f".repeat(40));
+    assert_eq!(builder["repository"]["observed_tree"].as_str().unwrap_or_default(), "f".repeat(40));
+    let refusal = compose_review_packet(&root, &inputs, "SUB", &review_facts(builder))
+        .expect_err("a packet from another tree must refuse");
+    assert_eq!(refusal.code, "BUILDER_PACKET_TREE_MISMATCH");
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Reconciliation packet: no live observation means a typed refusal.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn reconcile_refuses_without_supplied_candidates_and_blocks_with_them() -> Result<()> {
+    let root = fixture_tree("reconcile")?;
+    let inputs = default_fixture(&root)?;
+    let refusal = compose_reconcile_packet(&root, &inputs, "SUB", None)
+        .expect_err("no live observation means no reconcile packet assuming vacancy");
+    assert_eq!(refusal.code, "NO_LIVE_OBSERVATION");
+
+    let candidates = json!([
+        {"identity": "PR #8800 (tooling/sub-claim)", "state": ["stale_base", "dirty_or_unpushed_unique_work"], "facts": "dirty unique work"}
+    ]);
+    let doc = compose_reconcile_packet(&root, &inputs, "SUB", Some(&candidates))
+        .map_err(|refusal| color_eyre::eyre::eyre!("unexpected refusal: {}", refusal.line()))?;
+    assert_eq!(doc["schema"], BUILDER_CONTRACT);
+    assert_eq!(
+        doc["actor"]["write_boundary"], "none",
+        "reconciliation carries no coding authority"
+    );
+    assert_eq!(doc["frontier"]["decision"], "blocked");
+    assert_eq!(doc["frontier"]["blocking_edges"][0]["edge"], "PR #8800 (tooling/sub-claim)");
+    render_builder_packet(&doc, PacketProjection::Machine)?;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Review-finding regressions.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn spec_only_hard_dependency_does_not_count_as_landed() -> Result<()> {
+    let root = fixture_tree("spec-dep")?;
+    // DEP holds only ISSUE_PLAN_SUFFICIENT (specability, not landing) and is
+    // unmapped, so its E04 context is a gap; SUB hard-depends on it. The
+    // mapped/non-gap case is the sibling test below.
+    let mut dep = make_node("DEP", 9101, "implementation", "ISSUE_PLAN_SUFFICIENT");
+    dep["train_role"] = json!("stable_contract");
+    dep["successors"] = json!(["SUB"]);
+    let mut sub = make_node("SUB", 9001, "implementation", "ISSUE_PLAN_SUFFICIENT");
+    sub["dependencies"] = json!([{"target": "DEP", "class": "hard", "provenance": "fixture"}]);
+    let inputs = load_fixture_inputs(
+        &root,
+        &[sub, dep],
+        &[mapped_node_entry("SUB", true), unmapped_node_entry("DEP")],
+        &[
+            disposition_record("SUB", 9001, "ISSUE_PLAN_SUFFICIENT"),
+            disposition_record_for("DEP", 9101, "stable_contract", "ISSUE_PLAN_SUFFICIENT", None),
+        ],
+    )?;
+    let refusal = compose_builder_packet(&root, &inputs, "SUB", "coding_agent_bounded", None)
+        .expect_err("a spec-only disposition on a hard dependency must not count as landed");
+    assert_eq!(refusal.code, "HARD_DEPENDENCY_NOT_CURRENT");
+    assert!(refusal.detail.contains("specability"), "detail: {}", refusal.detail);
+    Ok(())
+}
+
+#[test]
+fn landed_contract_hard_dependency_admits_the_packet() -> Result<()> {
+    let root = fixture_tree("landed-dep")?;
+    let mut dep = make_node("DEP", 9101, "implementation", "EXISTING_CONTRACT_SUFFICIENT");
+    // A landed contract exits the train: the historical role is the only role
+    // whose E02 vocabulary carries EXISTING_CONTRACT_SUFFICIENT.
+    dep["train_role"] = json!("historical");
+    dep["successors"] = json!(["SUB"]);
+    let mut sub = make_node("SUB", 9001, "implementation", "ISSUE_PLAN_SUFFICIENT");
+    sub["dependencies"] = json!([{"target": "DEP", "class": "hard", "provenance": "fixture"}]);
+    let inputs = load_fixture_inputs(
+        &root,
+        &[sub, dep],
+        &[mapped_node_entry("SUB", true), mapped_node_entry("DEP", true)],
+        &[
+            disposition_record("SUB", 9001, "ISSUE_PLAN_SUFFICIENT"),
+            disposition_record_for("DEP", 9101, "historical", "EXISTING_CONTRACT_SUFFICIENT", None),
+        ],
+    )?;
+    let live = observed_vacant();
+    let doc = compose_builder_packet(&root, &inputs, "SUB", "coding_agent_bounded", Some(&live))
+        .map_err(|refusal| color_eyre::eyre::eyre!("unexpected refusal: {}", refusal.line()))?;
+    assert_eq!(doc["frontier"]["decision"], "ready");
+    Ok(())
+}
+
+#[test]
+fn duplicate_or_mismatched_ledger_records_fail_the_load() -> Result<()> {
+    let root = fixture_tree("dup-ledger")?;
+    // The base tree passes the full E02 gate before the hand-edit.
+    load_fixture_inputs(
+        &root,
+        &[make_node("SUB", 9001, "implementation", "ISSUE_PLAN_SUFFICIENT")],
+        &[mapped_node_entry("SUB", true)],
+        &[disposition_record("SUB", 9001, "ISSUE_PLAN_SUFFICIENT")],
+    )?;
+    // A second, stale record for the same node must not be silently trusted.
+    // The hand-edited ledger is rewritten through the canonical serializer so
+    // the only law it breaks is L03-exactly-one.
+    let mut ledger =
+        parse_specs_ledger(&[disposition_record("SUB", 9001, "ISSUE_PLAN_SUFFICIENT")])?;
+    ledger.records.push(ledger.records[0].clone());
+    write_canonical_specs_ledger(&root, &ledger)?;
+    let engine = load_inputs_with_git(&root, Some(fixture_git()))?;
+    let failure = match complete_adapter_inputs(&root, engine) {
+        Err(failure) => failure,
+        Ok(_) => panic!("duplicate E02 records must fail the adapter load"),
+    };
+    let rendered = format!("{failure:#}");
+    assert!(rendered.contains("duplicate record for one node"), "{rendered}");
+    Ok(())
+}
+
+#[test]
+fn stale_hand_edited_disposition_fails_the_full_e02_gate() -> Result<()> {
+    let root = fixture_tree("stale-disposition")?;
+    // The structural read the adapter ran before #15842 accepts this ledger:
+    // schema/version hold, no duplicates, the record matches the manifest
+    // node's issue, and the denominator is covered. Coding-profile admission
+    // nevertheless flowed from its dispositions, so a hand-edited
+    // manifest-provenance record that disagrees with the manifest-embedded
+    // disposition could silently change which profiles a node admits. The
+    // full E02 gate refuses it (L10) instead.
+    load_fixture_inputs(
+        &root,
+        &[make_node("SUB", 9001, "implementation", "ISSUE_PLAN_SUFFICIENT")],
+        &[mapped_node_entry("SUB", true)],
+        &[disposition_record("SUB", 9001, "ISSUE_PLAN_SUFFICIENT")],
+    )?;
+    let ledger =
+        parse_specs_ledger(&[disposition_record("SUB", 9001, "EXISTING_CONTRACT_SUFFICIENT")])?;
+    write_canonical_specs_ledger(&root, &ledger)?;
+    let engine = load_inputs_with_git(&root, Some(fixture_git()))?;
+    let failure = match complete_adapter_inputs(&root, engine) {
+        Err(failure) => failure,
+        Ok(_) => {
+            panic!("a stale manifest-provenance disposition must fail the adapter load")
+        }
+    };
+    let rendered = format!("{failure:#}");
+    assert!(rendered.contains("L10-provenance [SUB]"), "{rendered}");
+    assert!(rendered.contains("re-adjudicate explicitly"), "{rendered}");
+    Ok(())
+}
+
+#[test]
+fn review_head_must_bind_the_observed_checkout() -> Result<()> {
+    let root = fixture_tree("head-mismatch")?;
+    let inputs = default_fixture(&root)?;
+    let facts = ReviewFacts {
+        base: "base0".into(),
+        head: "deadbeef".to_string(),
+        diff: "sha256:dd".into(),
+        controls: complete_controls(),
+        builder_packet: None,
+    };
+    let refusal = compose_review_packet(&root, &inputs, "SUB", &facts)
+        .expect_err("a head from another tree must refuse");
+    assert_eq!(refusal.code, "HEAD_TREE_MISMATCH");
+    Ok(())
+}
+
+#[test]
+fn eligibility_refusals_are_distinct_from_instrument_failures() -> Result<()> {
+    for code in [
+        "MISSING_SPEC_DISPOSITION",
+        "PROFILE_NOT_PERMITTED",
+        "SPEC_DISPOSITION_NOT_BUILDER",
+        "CONTEXT_MAPPING_GAP",
+        "HARD_DEPENDENCY_NOT_CURRENT",
+        "NO_WRITE_SURFACE",
+        // `run_packets_check` bails as an instrument failure without this one,
+        // so dropping it from the matcher must fail this suite.
+        "NO_LIVE_OBSERVATION",
+    ] {
+        assert!(is_eligibility_refusal(code), "{code} must be a typed eligibility refusal");
+    }
+    for code in [
+        "SHARED_CONTRACT_VALIDATION_FAILED",
+        "NODE_RESOLUTION_FAILED",
+        "CONTEXT_RESOLUTION_FAILED",
+        "BUILDER_PACKET_INVALID",
+        // Review-route input and binding refusals: the review challenges one
+        // exact supplied packet, so a missing or misbound packet is an
+        // instrument-class failure of the invocation, not a denominator
+        // eligibility blocker.
+        "MISSING_BUILDER_PACKET",
+        "BUILDER_PACKET_SUBJECT_MISMATCH",
+        "BUILDER_PACKET_TREE_MISMATCH",
+    ] {
+        assert!(!is_eligibility_refusal(code), "{code} is an instrument failure, not eligibility");
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Falsifier 4: the #12181 E06-consumer fixture round-trips through the same
+// shared validation/rendering entry this adapter consumes.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn e06_consumer_fixture_round_trips_through_the_adapter_entry() -> Result<()> {
+    let root = crate::utils::project_root()?;
+    let fixture =
+        root.join("fixtures/agent_implementation_packet/consumer_emacs_e06_shape.v1.json");
+    let bytes =
+        std::fs::read(&fixture).with_context(|| format!("reading {}", fixture.display()))?;
+    let doc: Value = serde_json::from_slice(&bytes)?;
+    let machine = render_builder_packet(&doc, PacketProjection::Machine)
+        .with_context(|| "the E06 consumer fixture must satisfy the shared contract unchanged")?;
+    let markdown = render_builder_packet(&doc, PacketProjection::Markdown)?;
+    let compact = render_builder_packet(&doc, PacketProjection::Compact)?;
+    assert!(machine.contains("agent_implementation_packet.v1"));
+    assert!(!markdown.is_empty() && !compact.is_empty());
+    Ok(())
+}
+
+#[test]
+fn review_packet_without_a_test_obligation_refuses() -> Result<()> {
+    // `MISSING_TEST_OBLIGATION` had no invocation site: it could have been
+    // deleted or weakened to always-pass without failing this suite.
+    //
+    // Two asymmetries found while writing it are reported rather than changed
+    // here. The guard lives only on the review route, so a *coding* packet is
+    // still issued for a mapped node whose `tests` array is empty. And
+    // `NO_WRITE_SURFACE` still has no test because it is unreachable: it needs
+    // both an empty write set and no production component, and the upstream E04
+    // population mapping (laws L06-L09) rejects such a document before this
+    // layer ever sees it.
+    let root = fixture_tree("review-no-test-obligation")?;
+    let inputs = load_fixture_inputs(
+        &root,
+        &[make_node("SUB", 9001, "implementation", "ISSUE_PLAN_SUFFICIENT")],
+        &[mapped_node_entry("SUB", false)],
+        &[disposition_record("SUB", 9001, "ISSUE_PLAN_SUFFICIENT")],
+    )?;
+    let facts = ReviewFacts {
+        base: "base0".into(),
+        head: fixture_head(),
+        diff: "sha256:dd".into(),
+        controls: complete_controls(),
+        builder_packet: Some(review_builder_packet(&root, &inputs)?),
+    };
+    let refusal = compose_review_packet(&root, &inputs, "SUB", &facts)
+        .expect_err("a node with no test obligation must refuse a review packet");
+    assert_eq!(refusal.code, "MISSING_TEST_OBLIGATION");
+    Ok(())
+}
+
+#[test]
+fn candidate_state_must_come_from_the_closed_vocabulary() -> Result<()> {
+    // Without the vocabulary check there is nothing for this to assert: any
+    // token was accepted, and the frontier digest then content-addressed the
+    // packet to a state no instrument in this repository can produce or read
+    // back. `open_stale_base` is the value this PR's own fixtures used before
+    // the check landed, and it is not in the law.
+    let root = fixture_tree("candidate-vocabulary")?;
+    let inputs = default_fixture(&root)?;
+    for unknown in ["open_stale_base", "open", "stale-base", "plausible_nonsense"] {
+        let candidates = json!([
+            {"identity": "PR #8800", "state": unknown, "facts": "dirty unique work"}
+        ]);
+        let refusal = compose_reconcile_packet(&root, &inputs, "SUB", Some(&candidates))
+            .expect_err("an unknown candidate state must refuse");
+        assert_eq!(refusal.code, "MALFORMED_CANDIDATE_FACTS");
+        assert!(
+            refusal.detail.contains(unknown),
+            "the refusal must name the rejected flag, got: {}",
+            refusal.detail
+        );
+    }
+
+    // A flag the law does define is accepted, so the guard cannot pass by
+    // refusing everything.
+    let accepted = json!([
+        {"identity": "PR #8800", "state": "stale_base", "facts": "dirty unique work"}
+    ]);
+    compose_reconcile_packet(&root, &inputs, "SUB", Some(&accepted))
+        .map_err(|refusal| color_eyre::eyre::eyre!("unexpected refusal: {}", refusal.line()))?;
+    Ok(())
+}
+
+#[test]
+fn candidate_state_flags_are_independent_and_order_insensitive() -> Result<()> {
+    // The law records `candidate_flags: Vec<String>` -- independent flags, not
+    // one collapsed signal -- so a candidate may carry several, and the packet
+    // identity must not depend on the order they arrive in.
+    let root = fixture_tree("candidate-flag-set")?;
+    let inputs = default_fixture(&root)?;
+    let render = |flags: Value| -> Result<String> {
+        let candidates = json!([
+            {"identity": "PR #8800", "state": flags, "facts": "dirty unique work"}
+        ]);
+        let doc = compose_reconcile_packet(&root, &inputs, "SUB", Some(&candidates))
+            .map_err(|refusal| color_eyre::eyre::eyre!("unexpected refusal: {}", refusal.line()))?;
+        Ok(doc["frontier"]["digest"].as_str().unwrap_or_default().to_string())
+    };
+
+    let forward = render(json!(["stale_base", "dirty_or_unpushed_unique_work"]))?;
+    let reversed = render(json!(["dirty_or_unpushed_unique_work", "stale_base"]))?;
+    assert_eq!(forward, reversed, "flag order must not change the packet identity");
+
+    // A different flag set is a different candidate, so it must not collide.
+    let single = render(json!(["stale_base"]))?;
+    assert_ne!(forward, single, "dropping a flag must change the frontier digest");
+
+    // One unknown flag in an otherwise valid set still refuses.
+    let mixed = json!([
+        {"identity": "PR #8800", "state": ["stale_base", "open"], "facts": "x"}
+    ]);
+    let refusal = compose_reconcile_packet(&root, &inputs, "SUB", Some(&mixed))
+        .expect_err("one unknown flag must refuse the whole set");
+    assert_eq!(refusal.code, "MALFORMED_CANDIDATE_FACTS");
+    Ok(())
+}
+
+#[test]
+fn a_resolvable_dependency_context_is_not_landing_evidence() -> Result<()> {
+    // The sibling test above covers a dependency whose E04 context is a gap.
+    // This is the case that used to be admitted: DEP is fully mapped, so its
+    // context resolves, and that was read as landing evidence. A resolvable
+    // context proves only that the dependency's declared surfaces exist on the
+    // observed tree -- surfaces can exist while the behavior behind them is
+    // still being built -- so it must not establish currentness on its own.
+    let root = fixture_tree("mapped-dep")?;
+    let mut dep = make_node("DEP", 9101, "implementation", "ISSUE_PLAN_SUFFICIENT");
+    dep["train_role"] = json!("stable_contract");
+    dep["successors"] = json!(["SUB"]);
+    let mut sub = make_node("SUB", 9001, "implementation", "ISSUE_PLAN_SUFFICIENT");
+    sub["dependencies"] = json!([{"target": "DEP", "class": "hard", "provenance": "fixture"}]);
+    let inputs = load_fixture_inputs(
+        &root,
+        &[sub, dep],
+        &[mapped_node_entry("SUB", true), mapped_node_entry("DEP", true)],
+        &[
+            disposition_record("SUB", 9001, "ISSUE_PLAN_SUFFICIENT"),
+            disposition_record_for("DEP", 9101, "stable_contract", "ISSUE_PLAN_SUFFICIENT", None),
+        ],
+    )?;
+    let refusal = compose_builder_packet(&root, &inputs, "SUB", "coding_agent_bounded", None)
+        .expect_err("a resolvable dependency context must not count as landing evidence");
+    assert_eq!(refusal.code, "HARD_DEPENDENCY_NOT_CURRENT");
+    assert!(
+        refusal.detail.contains("not that the work landed"),
+        "the refusal must distinguish existing surfaces from landed work, got: {}",
+        refusal.detail
+    );
+
+    // Negative control: a declared-landed contract still admits, so the guard
+    // cannot pass by blocking every hard dependency.
+    let inputs_landed = load_fixture_inputs(
+        &root,
+        &[
+            {
+                let mut sub = make_node("SUB", 9001, "implementation", "ISSUE_PLAN_SUFFICIENT");
+                sub["dependencies"] =
+                    json!([{"target": "DEP", "class": "hard", "provenance": "fixture"}]);
+                sub
+            },
+            {
+                let mut dep =
+                    make_node("DEP", 9101, "implementation", "EXISTING_CONTRACT_SUFFICIENT");
+                dep["train_role"] = json!("historical");
+                dep["successors"] = json!(["SUB"]);
+                dep
+            },
+        ],
+        &[mapped_node_entry("SUB", true), mapped_node_entry("DEP", true)],
+        &[
+            disposition_record("SUB", 9001, "ISSUE_PLAN_SUFFICIENT"),
+            disposition_record_for("DEP", 9101, "historical", "EXISTING_CONTRACT_SUFFICIENT", None),
+        ],
+    )?;
+    compose_builder_packet(
+        &root,
+        &inputs_landed,
+        "SUB",
+        "coding_agent_bounded",
+        Some(&observed_vacant()),
+    )
+    .map_err(|refusal| color_eyre::eyre::eyre!("unexpected refusal: {}", refusal.line()))?;
+    Ok(())
+}
+
+#[test]
+fn candidate_order_does_not_change_the_reconcile_packet() -> Result<()> {
+    // The supplied array is an unordered set: the same two candidates listed
+    // either way round must adjudicate to the same packet. Before the sort,
+    // both the frontier digest and the rendered bytes followed arrival order.
+    let root = fixture_tree("candidate-order")?;
+    let inputs = default_fixture(&root)?;
+    let first = json!({"identity": "PR #8800", "state": "stale_base", "facts": "unpushed work"});
+    let second =
+        json!({"identity": "PR #8801", "state": "dirty_or_unpushed_unique_work", "facts": "wip"});
+
+    let render = |candidates: Value| -> Result<(String, String)> {
+        let doc = compose_reconcile_packet(&root, &inputs, "SUB", Some(&candidates))
+            .map_err(|refusal| color_eyre::eyre::eyre!("unexpected refusal: {}", refusal.line()))?;
+        let bytes = render_builder_packet(&doc, PacketProjection::Machine)?;
+        Ok((doc["frontier"]["digest"].as_str().unwrap_or_default().to_string(), bytes))
+    };
+
+    let (forward_digest, forward_bytes) = render(json!([first.clone(), second.clone()]))?;
+    let (reversed_digest, reversed_bytes) = render(json!([second, first]))?;
+
+    assert_eq!(
+        forward_digest, reversed_digest,
+        "candidate order must not change the frontier digest"
+    );
+    assert_eq!(forward_bytes, reversed_bytes, "candidate order must not change packet bytes");
+    Ok(())
+}
+
+#[test]
+fn a_reported_collision_state_is_recorded_without_refusing_a_coding_packet() -> Result<()> {
+    // FC2: `collision_state` is untyped free text, not a collision boolean.
+    // The shared #10872 vocabulary has no typed collision signal, so a
+    // non-empty value reports `one-writer-active-no-collision` exactly as
+    // readily as a genuine collision -- refusing every non-empty value blocks
+    // writers on observations that explicitly report no collision. The adapter
+    // therefore admits, carries the report in the packet evidence, and records
+    // writer ownership as unproven.
+    let root = fixture_tree("reported-collision")?;
+    let inputs = default_fixture(&root)?;
+    let digest =
+        "sha256:5f3a1c0e9b7d24486ac1f0e2d93b8570cc41a6e28d5f9017b3e4c6a8d0f21b95".to_string();
+    let live_no_collision = LiveObservation {
+        candidate_state: "observed".to_string(),
+        digest: digest.clone(),
+        candidate_identity: Some("PR #8800 (tooling/sub-claim)".to_string()),
+        // The exact shared-contract shape the owner confirmed must not refuse.
+        collision_state: Some("one-writer-active-no-collision".to_string()),
+    };
+    let doc = compose_builder_packet(
+        &root,
+        &inputs,
+        "SUB",
+        "coding_agent_bounded",
+        Some(&live_no_collision),
+    )
+    .map_err(|refusal| color_eyre::eyre::eyre!("unexpected refusal: {}", refusal.line()))?;
+    assert_eq!(
+        doc["live_observation"]["collision_state"].as_str().unwrap_or_default(),
+        "one-writer-active-no-collision",
+        "the report must travel in the packet evidence"
+    );
+
+    // A free-text collision report admits too, but writer ownership beyond the
+    // packet stays explicitly unproven rather than silently assumed.
+    let contested = LiveObservation {
+        collision_state: Some("a second writer holds an open PR on this claim".to_string()),
+        ..live_no_collision
+    };
+    let doc =
+        compose_builder_packet(&root, &inputs, "SUB", "coding_agent_bounded", Some(&contested))
+            .map_err(|refusal| color_eyre::eyre::eyre!("unexpected refusal: {}", refusal.line()))?;
+    let unproven = doc["work"]["unproven"].as_array().cloned().unwrap_or_default();
+    assert!(
+        unproven.iter().filter_map(Value::as_str).any(|entry| entry.contains("ownership")
+            && entry.contains("a second writer holds an open PR on this claim")),
+        "the collision report must be recorded as unproven ownership, got: {unproven:?}"
+    );
+
+    // Negative control: the same observation with no collision reported still
+    // admits, so the recording cannot pass by refusing every observation.
+    let uncontested = LiveObservation { collision_state: None, ..contested };
+    compose_builder_packet(&root, &inputs, "SUB", "coding_agent_bounded", Some(&uncontested))
+        .map_err(|refusal| color_eyre::eyre::eyre!("unexpected refusal: {}", refusal.line()))?;
+    Ok(())
+}
+
+#[test]
+fn distinct_nodes_never_share_a_proposition_id() -> Result<()> {
+    // Real witness: SUBJ_E and SUBJ_L share their first 48 normalized outcome
+    // characters, so a slug-only id conflated their work for every
+    // proposition-keyed consumer.
+    let root = fixture_tree("proposition-identity")?;
+    let shared = "Materialize the exact released and pinned source artifacts for the train.";
+    let mut first = make_node("SUBJ_E", 9001, "implementation", "ISSUE_PLAN_SUFFICIENT");
+    first["one_pr_outcome"] = json!(shared);
+    let mut second = make_node("SUBJ_L", 9002, "implementation", "ISSUE_PLAN_SUFFICIENT");
+    second["one_pr_outcome"] = json!(shared);
+    let inputs = load_fixture_inputs(
+        &root,
+        &[first, second],
+        &[mapped_node_entry("SUBJ_E", true), mapped_node_entry("SUBJ_L", true)],
+        &[
+            disposition_record("SUBJ_E", 9001, "ISSUE_PLAN_SUFFICIENT"),
+            disposition_record("SUBJ_L", 9002, "ISSUE_PLAN_SUFFICIENT"),
+        ],
+    )?;
+
+    let id_of = |node: &str| -> Result<String> {
+        let doc = compose_builder_packet(
+            &root,
+            &inputs,
+            node,
+            "coding_agent_bounded",
+            Some(&observed_vacant()),
+        )
+        .map_err(|refusal| color_eyre::eyre::eyre!("unexpected refusal: {}", refusal.line()))?;
+        Ok(doc["work"]["proposition_id"].as_str().unwrap_or_default().to_string())
+    };
+
+    let left = id_of("SUBJ_E")?;
+    let right = id_of("SUBJ_L")?;
+    assert_ne!(left, right, "nodes sharing an outcome prefix must not share a proposition id");
+    Ok(())
+}

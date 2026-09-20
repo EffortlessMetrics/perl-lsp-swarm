@@ -1,6 +1,4 @@
-use perl_module::boundary::{
-    contains_standalone_module_token, find_standalone_module_token_ranges,
-};
+use perl_module::{contains_standalone_module_token, find_standalone_module_token_ranges};
 
 #[test]
 fn given_direct_import_line_when_module_token_is_standalone_then_match_is_found() {

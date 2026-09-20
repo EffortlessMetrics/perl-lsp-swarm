@@ -1,5 +1,6 @@
 [package]
 name = "perl-parser"
+autobenches = false
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -44,6 +45,7 @@ lsp-types = { workspace = true, optional = true }
 url.workspace = true
 rustc-hash = "2.1.2"
 # Core dependencies for position mapping (unconditional, all targets)
+perl-source-identity.workspace = true
 ropey.workspace = true
 
 
@@ -94,7 +96,7 @@ slow_tests = []  # Enable slow stress tests (deep nesting, etc.)
 doc-coverage = []  # SPEC-149 documentation coverage tests
 
 [dev-dependencies]
-insta = { version = "1.47.2", features = ["yaml"] }
+insta = { workspace = true, features = ["yaml"] }
 criterion.workspace = true
 perl-uri = { workspace = true }
 regex.workspace = true
@@ -105,6 +107,8 @@ rstest = "0.26.1"
 perl-corpus = { workspace = true }
 perl-lsp-rs-core = { workspace = true }
 perl-test-generators = { workspace = true }
+# Compile-time trait-bound contracts for tests/incremental_state_read_only_authority.rs (#13774).
+static_assertions.workspace = true
 
 [[bench]]
 name = "parser_benchmark"
@@ -123,8 +127,27 @@ harness = false
 name = "cpan_patterns_benchmark"
 harness = false
 
+# Criterion benches: `harness = false` is REQUIRED for every bench that the
+# nightly "Performance Benchmarks" job invokes with `-- --noplot` (a
+# Criterion-only flag). Without an explicit [[bench]] stanza these targets fall
+# back to libtest autodiscovery (harness = true), and libtest rejects the flag:
+#   error: Unrecognized option: 'noplot'
+# See fuzz-informed CI diagnosis 2026-08-26; positions_bench and
+# substitution_performance were silently autodiscovered before this stanza.
+[[bench]]
+name = "positions_bench"
+harness = false
+
+[[bench]]
+name = "substitution_performance"
+harness = false
+
 [[example]]
 name = "test_incremental_v2"
+required-features = ["incremental"]
+
+[[test]]
+name = "incremental_parse_snapshot"
 required-features = ["incremental"]
 
 # Edge case test examples

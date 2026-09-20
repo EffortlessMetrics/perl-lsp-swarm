@@ -30,6 +30,19 @@ Source: `vscode-extension/package.json`
 
 Source: downstream template in `redhat-developer/lsp4ij`
 
+This section describes the **release-artifact contract** that LSP4IJ material
+can consume. It does not prove that LSP4IJ selected the managed installer path
+or that `perl-dap` works through an actual IntelliJ debugger session.
+
+- #7876 owns the exact managed-installer/platform selection contract and the
+  external/PATH-versus-managed evidence split, including reconciliation of any
+  release-topology target mismatch before a new platform is presented as a
+  complete managed downstream row.
+- #7877 owns actual debugger initialize/launch/breakpoint/stack/scopes/variables/
+  step/cleanup behavior.
+- [`INTELLIJ_DAP_SETUP.md`](../EDITORS/INTELLIJ_DAP_SETUP.md) documents the
+  user-facing evidence boundary.
+
 The installer expects each `EffortlessMetrics/perl-lsp` release archive to
 contain the DAP binary alongside the LSP server.
 
@@ -55,9 +68,16 @@ Expected extracted binaries (each archive unpacks to a
 
 On Unix and macOS the binaries must carry the executable bit. Every archive is
 listed in the consolidated top-level `SHA256SUMS` published with the release.
+That release manifest existing does **not** prove that the current LSP4IJ
+generic installer consumes or independently verifies it before execution; the
+managed-installer receipt must record that disposition explicitly.
 
 ## Maintaining this contract
 
 When release packaging changes (target triples, archive layout, binary names),
 update **both** this file and `downstream-dap-integrations.json`, then run the
 artifact check against a freshly built `dist/` to confirm they still agree.
+
+Keep artifact-contract maintenance separate from host support promotion: a
+correct archive layout cannot satisfy the #7877 IntelliJ/LSP4IJ debugger
+journey by itself.

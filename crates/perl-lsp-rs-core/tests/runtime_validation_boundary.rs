@@ -2,14 +2,15 @@
 //!
 //! Complements the inline happy-path tests in lib.rs by targeting:
 //! - Exact boundary values (max_file_size_bytes from perl-lsp-limits, MAX_PATH_LENGTH, line length 100_000)
-//! - Every disallowed condition in validate_file_content and validate_lsp_request
-//! - All suspicious patterns in the content filter
+//! - Every disallowed condition in validate_file_content, the generic request
+//!   admission layer, and the document-sync sink validators (#8895)
+//! - The absence of any generic parameter content scanner
 //! - sanitize_string: exactly which characters are kept vs removed
 //! - validate_file_path: extension filtering
 
-use perl_lsp_rs_core::protocol::capabilities::get_supported_commands;
 use perl_lsp_rs_core::runtime::input_validation::{
-    sanitize_string, validate_file_content, validate_lsp_request,
+    sanitize_string, validate_buffer_line_lengths, validate_document_uri, validate_file_content,
+    validate_request_admission,
 };
 use perl_lsp_rs_core::runtime::limits::max_file_size_bytes;
 use std::path::Path;
@@ -100,15 +101,15 @@ fn validate_file_content_long_line_on_second_line_errors() {
 
 // ---------------------------------------------------------------------------
 // validate_file_content: content-pattern scanning was REMOVED (issue #5256
-// follow-up). `validate_file_content`'s only production caller is the
-// `textDocument/didOpen`/`didChange`/`didSave` buffer path in
-// `lsp_validation.rs`, where `content` is the user's own editor buffer, not
-// an attacker-controlled file read off disk. Scanning it for HTML/script-like
-// substrings made the server refuse to open every Mason file (Mason component
-// blocks open with `<%`) and any Perl heredoc that emits `<script>` HTML.
-// These tests now assert the opposite of the old behavior — the content is
-// ACCEPTED — to guard against the pattern scan being silently reintroduced
-// on this buffer-validation path.
+// follow-up). Since #8895 the function has no production caller at all: the
+// `textDocument/didOpen`/`didChange`/`didSave` buffer boundary applies its
+// own configured size and binary-content guards in the perl-lsp-rs sync
+// sink. Buffer content is the user's own editor source, not an
+// attacker-controlled file read off disk; scanning it for HTML/script-like
+// substrings made the server refuse to open every Mason file (Mason
+// component blocks open with `<%`) and any Perl heredoc that emits
+// `<script>` HTML. These tests assert the opposite of the old behavior —
+// the content is ACCEPTED — so a pattern scan cannot silently return.
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -164,146 +165,221 @@ fn validate_file_content_accepts_uppercase_javascript_protocol() -> anyhow::Resu
 }
 
 // ---------------------------------------------------------------------------
-// validate_lsp_request: method validation
+// validate_request_admission: method-name and payload resource bounds
+//
+// Admission is protocol-generic only (issue #8895). Any JSON-RPC method string
+// within the length bound is admissible; parameter content is never scanned.
 // ---------------------------------------------------------------------------
 
 #[test]
-fn validate_lsp_request_known_methods_are_ok() -> anyhow::Result<()> {
+fn admission_known_methods_are_ok() -> anyhow::Result<()> {
     let params = serde_json::json!({});
-    validate_lsp_request("textDocument/didChange", &params)?;
-    validate_lsp_request("textDocument/didSave", &params)?;
-    validate_lsp_request("$/perl-lsp/clientResponse", &params)?;
+    validate_request_admission("textDocument/didChange", &params)?;
+    validate_request_admission("textDocument/didSave", &params)?;
+    validate_request_admission("$/perl-lsp/clientResponse", &params)?;
+    Ok(())
+}
+
+/// A valid custom extension method carrying punctuation outside the old
+/// project-specific allowlist must pass admission (issue #8895 negative
+/// control 2: rejecting such a method reintroduces the charset policy).
+#[test]
+fn validate_request_admission_accepts_punctuation_outside_old_allowlist() -> anyhow::Result<()> {
+    let params = serde_json::json!({});
+    for method in
+        ["custom/fmt.v2:preview", "vendor/method+suffix", "text/(x) [y] {z}", "space separated"]
+    {
+        validate_request_admission(method, &params).map_err(|e| {
+            anyhow::anyhow!("method `{method}` must pass structural admission: {e}")
+        })?;
+    }
     Ok(())
 }
 
 #[test]
-fn validate_lsp_request_method_over_100_chars_errors() {
+fn admission_method_over_100_chars_errors() {
     let method = "a".repeat(101);
     let params = serde_json::json!({});
-    let result = validate_lsp_request(&method, &params);
+    let result = validate_request_admission(&method, &params);
     assert!(result.is_err(), "method name > 100 chars must be rejected");
 }
 
 #[test]
-fn validate_lsp_request_method_exactly_100_chars_is_ok() -> anyhow::Result<()> {
-    // Method of exactly 100 alphanumeric chars — should pass if no special chars
-    // Note: method must use chars that satisfy: alphanumeric || '/' || '$' || '-'
+fn admission_method_exactly_100_chars_is_ok() -> anyhow::Result<()> {
     let method = "a".repeat(100);
     let params = serde_json::json!({});
-    validate_lsp_request(&method, &params)?;
+    validate_request_admission(&method, &params)?;
     Ok(())
 }
 
+/// Negative control (issue #8895 #1): no generic `<script>`/`javascript:`
+/// substring scan may exist over arbitrary params. Browser-dangerous strings
+/// in inert param payloads must be accepted by admission; only a sink that
+/// renders such content into an active surface may refuse it.
 #[test]
-fn validate_lsp_request_unknown_method_with_javascript_in_params_errors() {
-    let method = "someOther/Method";
-    let params = serde_json::json!({ "url": "javascript:void(0)" });
-    let result = validate_lsp_request(method, &params);
-    assert!(result.is_err(), "unknown method with javascript: in params must be rejected");
-}
-
-#[test]
-fn validate_lsp_request_unknown_method_with_script_tag_in_params_errors() {
-    let method = "someOther/Method";
-    let params = serde_json::json!({ "text": "<script>alert(1)</script>" });
-    let result = validate_lsp_request(method, &params);
-    assert!(result.is_err(), "unknown method with <script> in params must be rejected");
-}
-
-// ---------------------------------------------------------------------------
-// validate_lsp_request: narrowed content-pattern scan (issue #5256 follow-up)
-//
-// `textDocument/codeAction` and `completionItem/resolve` are exempted from
-// the catch-all content-pattern scan because they legitimately carry content
-// derived from user source (a diagnostic message quoting source text, or POD
-// documentation) that can contain `<script`/`javascript:` substrings without
-// being an attack on the server.
-// ---------------------------------------------------------------------------
-
-#[test]
-fn validate_lsp_request_code_action_with_script_like_diagnostic_message_is_ok() -> anyhow::Result<()>
-{
-    let method = "textDocument/codeAction";
-    let params = serde_json::json!({
-        "textDocument": {"uri": "file:///test.pl"},
-        "range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 0}},
-        "context": {
-            "diagnostics": [{
-                "message": "unexpected token near print '<script>alert(1)</script>';",
-                "range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 0}}
-            }]
-        }
-    });
-    validate_lsp_request(method, &params)?;
-    Ok(())
-}
-
-#[test]
-fn validate_lsp_request_completion_item_resolve_with_pod_documentation_is_ok() -> anyhow::Result<()>
-{
-    let method = "completionItem/resolve";
-    let params = serde_json::json!({
-        "label": "some_sub",
-        "documentation": "See also javascript: URIs are unrelated; this quotes <script> from POD."
-    });
-    validate_lsp_request(method, &params)?;
-    Ok(())
-}
-
-#[test]
-fn validate_lsp_request_text_document_with_invalid_uri_scheme_errors() {
-    let method = "textDocument/didOpen";
-    let params = serde_json::json!({
-        "textDocument": {
-            "uri": "ftp://example.com/script.pl",
-            "text": "print 1;"
-        }
-    });
-    let result = validate_lsp_request(method, &params);
-    assert!(result.is_err(), "non-file:// URI scheme must be rejected for textDocument requests");
-}
-
-#[test]
-fn validate_lsp_request_text_document_with_untitled_uri_is_ok() -> anyhow::Result<()> {
-    let method = "textDocument/didOpen";
-    let params = serde_json::json!({
-        "textDocument": {
-            "uri": "untitled:Untitled-1",
-            "text": "print 1;"
-        }
-    });
-    validate_lsp_request(method, &params)?;
-    Ok(())
-}
-
-#[test]
-fn validate_lsp_request_execute_command_all_allowed_commands_pass() -> anyhow::Result<()> {
-    let advertised = perl_lsp_rs_core::protocol::capabilities::get_supported_commands();
-
-    for command in advertised {
-        let method = "workspace/executeCommand";
-        let params = serde_json::json!({ "command": command });
-        validate_lsp_request(method, &params).map_err(|e| {
-            anyhow::anyhow!("Advertised command '{command}' should be allowed but got: {e}")
+fn arbitrary_params_with_browser_dangerous_substrings_are_accepted() -> anyhow::Result<()> {
+    let cases = [
+        ("someOther/Method", serde_json::json!({ "url": "javascript:void(0)" })),
+        ("someOther/Method", serde_json::json!({ "text": "<script>alert(1)</script>" })),
+        ("workspace/symbol", serde_json::json!({ "query": "<script>alert('xss')</script>" })),
+    ];
+    for (method, params) in cases {
+        validate_request_admission(method, &params).map_err(|e| {
+            anyhow::anyhow!("{method} params are inert data and must not be content-scanned: {e}")
         })?;
     }
+    Ok(())
+}
 
-    // These are client-owned compatibility commands and intentionally are not
-    // part of the server capability list.
-    let client_owned = [
-        "perl.formatDocument",
-        "perl.extractVariable",
-        "perl.extractSubroutine",
-        "perl.optimizeImports",
-    ];
+// ---------------------------------------------------------------------------
+// Document-sync URI policy (moved out of generic preflight by #8895)
+// ---------------------------------------------------------------------------
 
-    for command in client_owned {
-        let method = "workspace/executeCommand";
-        let params = serde_json::json!({ "command": command });
-        validate_lsp_request(method, &params)
-            .map_err(|e| anyhow::anyhow!("Command '{command}' should be allowed but got: {e}"))?;
+#[test]
+fn validate_document_uri_accepts_supported_schemes() -> anyhow::Result<()> {
+    for uri in [
+        "file:///test.pl",
+        "untitled:Untitled-1",
+        "opencode:/w/lib/My.pm",
+        "vscode-notebook-cell://wsl%2bubuntu/home/u/nb.ipynb#C1",
+    ] {
+        validate_document_uri(uri)
+            .map_err(|e| anyhow::anyhow!("{uri} must be accepted at the sync sink: {e}"))?;
     }
     Ok(())
+}
+
+#[test]
+fn validate_buffer_line_lengths_boundary() {
+    let max_line = "x".repeat(100_000);
+    assert!(validate_buffer_line_lengths(&max_line).is_ok());
+    assert!(
+        validate_buffer_line_lengths(&"x".repeat(100_001)).is_err(),
+        "a line over MAX_LINE_LENGTH must be rejected"
+    );
+}
+
+#[test]
+fn validate_document_uri_rejects_unresolvable_scheme() {
+    for uri in
+        ["ftp://example.com/script.pl", "https://example.com/test.pl", "http://example.com/t.pl"]
+    {
+        assert!(
+            validate_document_uri(uri).is_err(),
+            "non-resolvable URI scheme `{uri}` must be rejected at the sync sink"
+        );
+    }
+}
+
+#[test]
+fn validate_document_uri_rejects_overlong_uri() {
+    let uri = format!("file:///{}", "a".repeat(5000));
+    assert!(validate_document_uri(&uri).is_err(), "overlong URI must be rejected");
+}
+
+// ---------------------------------------------------------------------------
+// Resource bounds remain explicit after the layering (#8895 acceptance):
+// the flat serialized-params ceiling binds non-text-sync methods, while the
+// text-sync ceiling is deliberate headroom above the configured file limit —
+// the *precise* file limit is sink authority (store-without-parse guard in
+// `perl-lsp-rs` text_sync), not a structural rejection.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn non_text_sync_params_keep_the_flat_one_megabyte_bound() {
+    // Negative control: oversized generic params are still rejected by the
+    // explicit structural bound. The relaxed ceiling is scoped to text
+    // synchronization; an arbitrary method must not gain it.
+    let params = serde_json::json!({ "blob": "a".repeat(1_000_001) });
+    assert!(
+        validate_request_admission("custom/whatever", &params).is_err(),
+        "non-text-sync methods must keep the flat MAX_PARAMS_SIZE bound"
+    );
+}
+
+#[test]
+fn text_sync_params_at_the_configured_file_limit_are_accepted() -> anyhow::Result<()> {
+    // A document exactly at the configured file limit must survive structural
+    // admission. Sized from the live limit rather than a literal so the test
+    // tracks configuration instead of pinning today's default.
+    let text = document_of_len(max_file_size_bytes());
+    for method in ["textDocument/didOpen", "textDocument/didChange", "textDocument/didSave"] {
+        let params = serde_json::json!({
+            "textDocument": { "uri": "file:///big.pl", "text": text }
+        });
+        validate_request_admission(method, &params).map_err(|e| {
+            anyhow::anyhow!("{method} rejected a document at the configured file limit: {e}")
+        })?;
+    }
+    Ok(())
+}
+
+#[test]
+fn text_sync_params_over_the_configured_file_limit_are_a_sink_authority_concern() {
+    // Structural admission carries headroom above the configured limit so the
+    // sync sink can apply its own configured guard; it must not silently
+    // re-import the old preflight rejection here.
+    let text = document_of_len(max_file_size_bytes() + 1);
+    let params = serde_json::json!({
+        "textDocument": { "uri": "file:///toobig.pl", "text": text }
+    });
+    assert!(
+        validate_request_admission("textDocument/didOpen", &params).is_ok(),
+        "admission must leave over-limit documents to the sync sink's configured guard"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Item-bearing methods carry server-authored source-derived content.
+//
+// Under #8895 there is no exemption list to maintain because there is no scan:
+// these payloads must simply be admitted like any other well-formed params.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn item_bearing_methods_accept_source_derived_content() {
+    // One payload shape per method, each carrying the substrings the removed
+    // catch-all arm used to scan for, placed in the field that method uses.
+    let cases: &[(&str, serde_json::Value)] = &[
+        (
+            "textDocument/codeAction",
+            serde_json::json!({
+                "context": {"diagnostics": [{"message": "near print '<script>x</script>'"}]}
+            }),
+        ),
+        (
+            "codeAction/resolve",
+            serde_json::json!({
+                "title": "Fix",
+                "command": {"title": "run <script>", "arguments": ["javascript:void 0"]}
+            }),
+        ),
+        (
+            "completionItem/resolve",
+            serde_json::json!({"label": "f", "documentation": "POD quoting <script>"}),
+        ),
+        (
+            "inlayHint/resolve",
+            serde_json::json!({"label": "<script", "tooltip": "javascript: in POD"}),
+        ),
+        ("documentLink/resolve", serde_json::json!({"tooltip": "see <script> tag docs"})),
+        (
+            "codeLens/resolve",
+            serde_json::json!({"command": {"title": "<script>", "arguments": ["javascript:"]}}),
+        ),
+    ];
+
+    let mut rejected = Vec::new();
+    for (method, params) in cases {
+        if validate_request_admission(method, params).is_err() {
+            rejected.push(*method);
+        }
+    }
+    assert!(
+        rejected.is_empty(),
+        "these item-bearing methods carry server-authored source text and must not be \
+         content-scanned, but were rejected: {rejected:?}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -366,42 +442,13 @@ fn sanitize_string_all_safe_returns_unchanged() {
 }
 
 // ---------------------------------------------------------------------------
-// executeCommand validation must accept everything the server advertises.
-//
-// `validate_lsp_request` became reachable from dispatch preflight in #5256.
-// Before that it was dead code, so a drift between the advertised command set
-// and the validation allowlist was invisible. Once reachable, any advertised
-// command missing from the allowlist is rejected with -32600 *before* dispatch
-// — the server refusing work it just told the client it could do.
-//
-// At the time this guard was added the allowlist was missing 13 of the 20
-// advertised commands: every `run*` and `debug*` command plus `goToTest`,
-// `goToImplementation`, and `explainProviderDecision`.
-// ---------------------------------------------------------------------------
-
-#[test]
-fn every_advertised_command_passes_validation() {
-    let mut rejected = Vec::new();
-    for command in get_supported_commands() {
-        let params = serde_json::json!({ "command": command, "arguments": [] });
-        if validate_lsp_request("workspace/executeCommand", &params).is_err() {
-            rejected.push(command);
-        }
-    }
-    assert!(
-        rejected.is_empty(),
-        "these commands are advertised in the executeCommand capability but \
-         rejected by validation, so the server would refuse them before dispatch: {rejected:?}"
-    );
-}
-
-// ---------------------------------------------------------------------------
-// The generic params-size guard must not undercut the configured file limit.
+// Shared helper for the resource-bound tests above.
 //
 // MAX_PARAMS_SIZE is 1,000,000; the default maxFileSizeBytes is 1,048,576. A
-// document in that band was rejected by the params guard before the configured
-// file limit was consulted — and on didOpen/didChange, which are notifications,
-// that rejection is silent, so the document is simply never stored.
+// document in that band used to be rejected by the params guard before the
+// configured file limit was consulted — and on didOpen/didChange, which are
+// notifications, that rejection is silent, so the document is simply never
+// stored.
 // ---------------------------------------------------------------------------
 
 /// Build a document of exactly `len` bytes shaped like real source: short
@@ -413,122 +460,4 @@ fn document_of_len(len: usize) -> String {
     text.push_str(&"b".repeat(len - text.len()));
     debug_assert_eq!(text.len(), len);
     text
-}
-
-#[test]
-fn text_sync_params_at_the_configured_file_limit_are_accepted() -> anyhow::Result<()> {
-    // A document exactly at the configured file limit must survive the params
-    // guard. Sized from the live limit rather than a literal so the test tracks
-    // configuration instead of pinning today's default.
-    let text = document_of_len(max_file_size_bytes());
-    for method in ["textDocument/didOpen", "textDocument/didChange", "textDocument/didSave"] {
-        let params = serde_json::json!({
-            "textDocument": { "uri": "file:///big.pl", "text": text }
-        });
-        validate_lsp_request(method, &params).map_err(|e| {
-            anyhow::anyhow!("{method} rejected a document at the configured file limit: {e}")
-        })?;
-    }
-    Ok(())
-}
-
-#[test]
-fn text_sync_params_over_the_configured_file_limit_are_rejected() {
-    // Negative control: raising the ceiling for text sync must not remove the
-    // bound. One byte over the configured file limit is still refused.
-    let text = document_of_len(max_file_size_bytes() + 1);
-    let params = serde_json::json!({
-        "textDocument": { "uri": "file:///toobig.pl", "text": text }
-    });
-    assert!(
-        validate_lsp_request("textDocument/didOpen", &params).is_err(),
-        "a document over the configured file limit must still be rejected"
-    );
-}
-
-#[test]
-fn non_text_sync_params_keep_the_flat_one_megabyte_bound() {
-    // The relaxed ceiling is scoped to text synchronization; an arbitrary
-    // method must not gain it.
-    let params = serde_json::json!({ "blob": "a".repeat(1_000_001) });
-    assert!(
-        validate_lsp_request("custom/whatever", &params).is_err(),
-        "non-text-sync methods must keep the flat MAX_PARAMS_SIZE bound"
-    );
-}
-
-// ---------------------------------------------------------------------------
-// Every LSP method whose params are *items* must skip the content scan.
-//
-// These round-trip content the server authored from the user's own source
-// (diagnostic messages, POD documentation, hint labels and tooltips, command
-// titles). The catch-all `<script`/`javascript:` scan rejects such payloads
-// with -32600 — the same false-positive class that made the server refuse
-// every Mason buffer on didOpen.
-// ---------------------------------------------------------------------------
-
-#[test]
-fn item_bearing_methods_accept_source_derived_content() {
-    // One payload shape per method, each carrying the substrings the catch-all
-    // arm scans for, placed in the field that method actually uses.
-    let cases: &[(&str, serde_json::Value)] = &[
-        (
-            "textDocument/codeAction",
-            serde_json::json!({
-                "context": {"diagnostics": [{"message": "near print '<script>x</script>'"}]}
-            }),
-        ),
-        (
-            "codeAction/resolve",
-            serde_json::json!({
-                "title": "Fix",
-                "command": {"title": "run <script>", "arguments": ["javascript:void 0"]}
-            }),
-        ),
-        (
-            "completionItem/resolve",
-            serde_json::json!({"label": "f", "documentation": "POD quoting <script>"}),
-        ),
-        (
-            "inlayHint/resolve",
-            serde_json::json!({"label": "<script", "tooltip": "javascript: in POD"}),
-        ),
-        ("documentLink/resolve", serde_json::json!({"tooltip": "see <script> tag docs"})),
-        (
-            "codeLens/resolve",
-            serde_json::json!({"command": {"title": "<script>", "arguments": ["javascript:"]}}),
-        ),
-    ];
-
-    let mut rejected = Vec::new();
-    for (method, params) in cases {
-        if validate_lsp_request(method, params).is_err() {
-            rejected.push(*method);
-        }
-    }
-    assert!(
-        rejected.is_empty(),
-        "these item-bearing methods carry server-authored source text and must not be \
-         content-scanned, but were rejected: {rejected:?}"
-    );
-}
-
-#[test]
-fn arbitrary_method_still_gets_the_content_scan() {
-    // Negative control: the exemption is a named list, not a hole in the scan.
-    let params = serde_json::json!({"expression": "<script>alert(1)</script>"});
-    assert!(
-        validate_lsp_request("custom/eval", &params).is_err(),
-        "the catch-all content scan must still fire for non-exempt methods"
-    );
-}
-
-#[test]
-fn unknown_command_is_still_rejected() {
-    // Negative control: the union must not have become an accept-everything gate.
-    let params = serde_json::json!({ "command": "perl.notARealCommand", "arguments": [] });
-    assert!(
-        validate_lsp_request("workspace/executeCommand", &params).is_err(),
-        "an unadvertised, undispatchable command must still be rejected"
-    );
 }

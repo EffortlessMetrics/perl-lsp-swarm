@@ -27,6 +27,8 @@ pub enum DiagnosticCategory {
     Heredoc,
     /// Version compatibility (PL900-PL999)
     VersionCompatibility,
+    /// Canonical regex-analysis findings (PL1000-PL1099)
+    RegexAnalysis,
 }
 
 impl fmt::Display for DiagnosticCategory {
@@ -42,6 +44,7 @@ impl fmt::Display for DiagnosticCategory {
             Self::Import => write!(f, "Import"),
             Self::Heredoc => write!(f, "Heredoc"),
             Self::VersionCompatibility => write!(f, "Version Compatibility"),
+            Self::RegexAnalysis => write!(f, "Regex Analysis"),
         }
     }
 }
@@ -95,6 +98,15 @@ impl DiagnosticCode {
 
             Self::VersionIncompatFeature => DiagnosticCategory::VersionCompatibility,
 
+            Self::RegexBacktrackingRisk
+            | Self::RegexAnalysisLimit
+            | Self::RegexModifierInvalid
+            | Self::RegexModifierNoEffect
+            | Self::RegexModifierUnavailable
+            | Self::RegexCaptureInvalid
+            | Self::RegexCaptureUnavailable
+            | Self::RegexAnalysisIncomplete => DiagnosticCategory::RegexAnalysis,
+
             Self::DeprecatedDefined | Self::DeprecatedArrayBase => DiagnosticCategory::Deprecated,
 
             Self::SecurityStringEval
@@ -103,7 +115,10 @@ impl DiagnosticCode {
             | Self::SecuritySystemCall
             | Self::SecurityExecCall
             | Self::SecurityPipeOpen
-            | Self::SecurityReadpipe => DiagnosticCategory::Security,
+            | Self::SecurityReadpipe
+            | Self::SecuritySqlInjection
+            | Self::SecuritySubstitutionEval
+            | Self::SecurityEmbeddedRegexCode => DiagnosticCategory::Security,
 
             Self::UnusedImport | Self::ModuleNotFound | Self::SourceFilterModule => {
                 DiagnosticCategory::Import

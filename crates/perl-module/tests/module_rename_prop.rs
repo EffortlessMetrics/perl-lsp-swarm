@@ -1,4 +1,4 @@
-use perl_module::rename::{apply_module_rename_edits, plan_module_rename_edits};
+use perl_module::{apply_module_rename_edits, plan_module_rename_edits};
 use proptest::prelude::*;
 
 fn module_name_strategy() -> impl Strategy<Value = String> {

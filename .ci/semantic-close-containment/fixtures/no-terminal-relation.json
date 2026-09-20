@@ -1,0 +1,22 @@
+{
+  "schema_version": "semantic_close_containment_fixture.v1",
+  "provenance": {
+    "captured_at": "2026-08-21",
+    "sources": [
+      "https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/10413"
+    ],
+    "subject_shas": [],
+    "boundary": "Immutable bounded structured excerpts; canonical GitHub subjects and exact candidate SHAs are retained. The fixture proves only the CP00 contradiction class."
+  },
+  "repository": "effortlessmetrics/perl-lsp-swarm",
+  "pull_request": {
+    "number": 990006,
+    "title": "docs: explain the close-proof policy (#10413)",
+    "body": "## Claim Boundary\n\nDocumentation only.\n\nAdvances #10413.\n\n```text\nCloses #10413\n```"
+  },
+  "issues": [],
+  "expected": {
+    "aggregate_code": "PASS_NOT_APPLICABLE",
+    "rows": []
+  }
+}

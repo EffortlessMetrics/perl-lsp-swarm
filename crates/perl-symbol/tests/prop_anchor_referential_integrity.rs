@@ -6,6 +6,7 @@
 //! EntityFact has an `anchor_id` referencing an AnchorFact in the same result
 //! set. Every emitted OccurrenceFact has an `anchor_id` referencing an
 //! AnchorFact in the same result set.
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
 use perl_semantic_facts::{AnchorId, EntityId, FileId};
 use perl_symbol::{
@@ -230,7 +231,7 @@ proptest! {
             .map(|(i, r)| (r.qualified_name.clone(), EntityId(i as u64 + 100)))
             .collect();
 
-        let facts = symbol_refs_to_semantic_facts(&refs, file_id, &entity_map);
+        let facts = symbol_refs_to_semantic_facts(&refs, file_id, &entity_map, &BTreeMap::new());
         let known_anchors = anchor_id_set(&facts.anchors);
 
         for occurrence in &facts.occurrences {

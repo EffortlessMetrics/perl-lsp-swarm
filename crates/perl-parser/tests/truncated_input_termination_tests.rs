@@ -25,24 +25,28 @@ const SHORT_TIMEOUT_MS: u64 = 500;
 
 /// Helper to run parser with timeout - detects infinite loops.
 ///
-/// Returns `Ok(())` if the parser terminates within the timeout (regardless of parse success/failure).
+/// Returns `Ok(error_count)` if the parser terminates within the timeout, where
+/// `error_count` is the number of diagnostics the parser recorded.
 /// Returns `Err` if the parser hangs (timeout exceeded).
+///
+/// Note: this parser recovers rather than bailing out, so `parse()` returns `Ok`
+/// even for badly malformed input; the recorded diagnostics are the meaningful
+/// signal, which is why the count — not `Result::is_ok` — is reported here.
 ///
 /// Note: On timeout, the spawned thread continues running until it naturally terminates.
 /// This is acceptable for tests since the process exits afterward.
-fn parse_with_timeout(code: &str, timeout_ms: u64) -> Result<(), String> {
+fn parse_with_timeout(code: &str, timeout_ms: u64) -> Result<usize, String> {
     let code_owned = code.to_string();
     let (tx, rx) = mpsc::channel();
 
     thread::spawn(move || {
         let mut parser = Parser::new(&code_owned);
-        let result = parser.parse();
-        // Send whether parse succeeded (we don't care about the result, just termination)
-        let _ = tx.send(result.is_ok());
+        let _ = parser.parse();
+        let _ = tx.send(parser.errors().len());
     });
 
     match rx.recv_timeout(Duration::from_millis(timeout_ms)) {
-        Ok(_) => Ok(()),
+        Ok(error_count) => Ok(error_count),
         Err(_) => {
             // Format error message with truncated input for readability
             let display_code =
@@ -52,14 +56,25 @@ fn parse_with_timeout(code: &str, timeout_ms: u64) -> Result<(), String> {
     }
 }
 
-/// Helper that uses the default timeout
+/// Helper that uses the default timeout. Only termination is required; truncated
+/// input is expected to produce diagnostics.
 fn must_terminate(code: &str) {
-    parse_with_timeout(code, DEFAULT_TIMEOUT_MS).unwrap_or_else(|e| perl_tdd_support::must(Err(e)));
+    let _: usize = parse_with_timeout(code, DEFAULT_TIMEOUT_MS)
+        .unwrap_or_else(|e| perl_tdd_support::must(Err(e)));
 }
 
 /// Helper for short-timeout cases
 fn must_terminate_fast(code: &str) {
-    parse_with_timeout(code, SHORT_TIMEOUT_MS).unwrap_or_else(|e| perl_tdd_support::must(Err(e)));
+    let _: usize = parse_with_timeout(code, SHORT_TIMEOUT_MS)
+        .unwrap_or_else(|e| perl_tdd_support::must(Err(e)));
+}
+
+/// Helper that requires the parser to terminate *and* accept the input without
+/// recording any diagnostic.
+fn must_parse_clean(code: &str) {
+    let error_count = parse_with_timeout(code, DEFAULT_TIMEOUT_MS)
+        .unwrap_or_else(|e| perl_tdd_support::must(Err(e)));
+    assert_eq!(error_count, 0, "valid code must still parse without diagnostics: {:?}", code);
 }
 
 /// Test truncated subroutine declarations - the original "sub (" hang case
@@ -447,18 +462,15 @@ fn valid_code_still_works() {
         "sub foo($x, $y) { return $x + $y; }",
         // Complete block with nested control flow
         "if ($x) { while ($y) { print 1; } }",
-        // Orphan brace recovery (should produce error node but terminate)
-        "} }",
     ];
 
     for code in valid_cases {
-        let mut parser = Parser::new(code);
-        // Should complete without hanging
-        let result = parser.parse();
-        // We don't necessarily require success (some cases may error),
-        // but they must terminate
-        assert!(result.is_ok() || result.is_err(), "Parse must return a result for: {:?}", code);
+        must_parse_clean(code);
     }
+
+    // Orphan brace recovery is a different claim: it need only terminate, since
+    // recovery legitimately reports diagnostics for this input.
+    must_terminate("} }");
 }
 
 /// Test that heredocs ending exactly at EOF work correctly

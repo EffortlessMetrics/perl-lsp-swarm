@@ -31,6 +31,8 @@ mod dedup;
 mod diagnostics;
 /// Diagnostics shadow compare and cutover paths for undefined-symbol diagnostics.
 pub mod diagnostics_shadow;
+/// Generation-owned, transport-neutral document diagnostic analysis (#7286).
+pub mod document_analysis;
 /// Dynamic boundary acceptance test fixtures (Req 23.1–23.8).
 #[cfg(test)]
 mod dynamic_boundary_acceptance;
@@ -44,6 +46,9 @@ mod internal_types;
 pub(crate) mod lints;
 /// Parse error to diagnostic conversion
 mod parse_errors;
+
+/// Canonical regex-diagnostic projection from the parser-retained analysis (#7024).
+pub mod regex_canonical;
 /// Scoped package-graph builder for cross-file PL303 role-conflict diagnostics.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod role_graph_scope;
@@ -52,9 +57,18 @@ pub mod scope;
 /// AST walker utilities
 mod walker;
 
+/// Proof-only premise predicate for #7286's malformed-document contracts; see
+/// `diagnostics::parse_errors_suppress_semantic_analysis`. Never present in a
+/// production build.
+#[cfg(any(test, feature = "test-instrumentation"))]
+pub use diagnostics::parse_errors_suppress_semantic_analysis;
 pub use diagnostics::{DiagnosticsProvider, build_parse_error_hint};
+pub use document_analysis::DocumentDiagnosticAnalysis;
 pub use heredoc_antipatterns::detect_heredoc_antipatterns;
-pub use internal_types::{Diagnostic, DiagnosticTag, RelatedInformation};
+pub use internal_types::{
+    Diagnostic, DiagnosticTag, RelatedInformation, critic_overlap_observations,
+    take_critic_overlap_observations,
+};
 pub use parse_errors::{parse_error_code, parse_error_severity};
 pub use perl_diagnostics::codes::DiagnosticSeverity;
 
@@ -69,6 +83,7 @@ pub use lints::role_conflicts;
 pub use lints::security;
 pub use lints::strict_warnings;
 pub use lints::unreachable_code;
+pub use lints::unreachable_code_disposition;
 pub use lints::unused_imports;
 pub use lints::version_compat;
 

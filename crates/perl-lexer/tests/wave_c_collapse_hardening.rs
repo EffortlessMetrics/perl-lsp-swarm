@@ -229,7 +229,7 @@ fn token_stream_lives_in_perl_parser_core() {
 
     let mut stream = TokenStream::new("my $x = 42;");
     // Resolving `stream.peek()` proves the full module path is wired.
-    assert!(matches!(stream.peek(), Ok(t) if t.kind == TokenKind::My));
+    assert!(matches!(stream.peek(), Ok(t) if t.kind() == TokenKind::My));
 }
 
 #[test]

@@ -8,6 +8,20 @@ This directory contains **24 test fixture files** totaling **~21,863 lines** of 
 
 ## Fixture Organization
 
+### 0. ValueFormat Public Stdio Proof Fixture (1 file)
+
+#### `value_format_stdio_matrix.pl` (~110 lines)
+- **Purpose**: Exact public stdio proof fixture for #9590 — one real `perl -d` session
+  covering every `ValueFormat` value class (integers incl. i64::MAX/MIN, NV float,
+  numeric-looking string, Unicode string, undef, array/hash previews, reference,
+  overloaded object, tied scalar) plus file-based side-effect canaries
+  (tied FETCH/STORE, overload stringification) that must stay empty.
+- **Test Scenarios**: STOP1 (`$VF::stop1 = 1;`) baseline/hex/no-leak/mutation rows;
+  STOP2 (`$VF::stop2 = 1;`) fresh-value rows; stale-handle rows after resume.
+- **Usage**: `cargo test -p perl-dap --test dap_value_format_stdio_proof`
+- **Notes**: Lexical set is minimal on purpose — the locals dump must finish well
+  inside the adapter's bounded acquisition window on slow hosts.
+
 ### 1. Breakpoint Matrix Test Scripts (6 files)
 
 Located in: `crates/perl-dap/tests/fixtures/`
@@ -79,15 +93,15 @@ Located in: `crates/perl-dap/tests/fixtures/golden_transcripts/`
 
 All golden transcripts follow DAP 1.x protocol specification with proper seq numbering, request/response/event types.
 
-#### `initialize_sequence.json` (48 lines)
+#### `initialize_sequence.json` (67 lines)
 - **Purpose**: Standard DAP initialization handshake
 - **Message Flow**:
   1. Initialize request (seq 1)
   2. Initialize response (seq 1, request_seq 1)
   3. Initialized event (seq 2)
-- **Capabilities**: ConfigurationDoneRequest, EvaluateForHovers, SetVariable, ConditionalBreakpoints
+- **Capabilities**: handshake excerpt; named fields must match live initialize (`supportsValueFormattingOptions` stays false under #9581)
 - **AC Coverage**: AC13 - Initialize protocol
-- **Usage**: `cargo test -p perl-dap --test dap_golden_transcript_tests -- test_golden_transcript_hello_world`
+- **Usage**: `cargo test -p perl-dap --test dap_golden_transcript_tests -- initialize_sequence_named_fields_match_live_and_keep_value_format_floor`
 
 #### `launch_attach_sequence.json` (51 lines)
 - **Purpose**: Launch configuration and program start

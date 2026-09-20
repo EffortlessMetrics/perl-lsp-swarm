@@ -51,6 +51,10 @@ GATE_TO_LANE_MAP: dict[str, dict[str, Any]] = {
     "layer_check": {"lanes": ["pr_smoke"]},
     "published_crate_count_pr_fast": {"lanes": ["pr_smoke"]},
     "release_history_check": {"lanes": ["pr_smoke"]},
+    "source_commit_api_check": {"lanes": ["pr_smoke", "merge_gate_shards"]},
+    # The serialization ratchet runs in pr-fast and again in the required
+    # merge-gate policy shard, so both execution lanes own its economics.
+    "serial_test_ratchet": {"lanes": ["pr_smoke", "merge_gate_shards"]},
     # Arrived from the release lineage in the reconciliation merge (#4976). The
     # gate was defined in .ci/gate-policy.yaml there but never mapped here, so
     # this validator failed the moment both files met. tier: pr_fast, and it is
@@ -60,7 +64,21 @@ GATE_TO_LANE_MAP: dict[str, dict[str, Any]] = {
     "unit_scoped": {"lanes": ["pr_smoke"]},
     "check_tests_scoped": {"lanes": ["pr_smoke"]},
     "unit_routed_full": {"lanes": ["pr_smoke"]},
-    "inline_completion_contract": {"lanes": ["pr_smoke"]},
+    # The gate runs inside the existing pr-fast invocation in advisory
+    # `pr-smoke`; it is not a separate workflow or receipt-producing lane.
+    "clippy_tests_kernel": {"lanes": ["pr_smoke"]},
+    # Focused control-plane owner proofs (#13698). Declared immediately before
+    # `unit_routed_full` in gate-policy.yaml so a deterministic control-plane
+    # defect surfaces (and short-circuits the cohort) before the broad run;
+    # both roll up under the same advisory pr_smoke lane.
+    "ci_subject_digest_oracle": {"lanes": ["pr_smoke"]},
+    "unit_control_plane_bins": {"lanes": ["pr_smoke"]},
+    # Former `inline_completion_contract` (&&-composite, issue #6845) split
+    # into four independent gates.  All four remain in the pr_smoke tier lane.
+    "inline_completion_registration": {"lanes": ["pr_smoke"]},
+    "lsp_registration_contract": {"lanes": ["pr_smoke"]},
+    "lsp_capability_snapshots": {"lanes": ["pr_smoke"]},
+    "inline_completion_core": {"lanes": ["pr_smoke"]},
     "inline_completion_quality_receipt": {"lanes": ["pr_smoke"]},
 
     # core / foundation gates roll up under merge_gate_shards
@@ -71,10 +89,31 @@ GATE_TO_LANE_MAP: dict[str, dict[str, Any]] = {
     "unit_foundation_full": {"lanes": ["merge_gate_shards"]},
     "unit_parser_stack_full": {"lanes": ["merge_gate_shards"]},
     "parser_integration": {"lanes": ["merge_gate_shards"]},
+    "parser_behavior_proof": {"lanes": ["merge_gate_shards"]},
     "unit_analysis_full": {"lanes": ["merge_gate_shards"]},
     "unit_lsp_core_full": {"lanes": ["merge_gate_shards"]},
     "unit_lsp_full": {"lanes": ["merge_gate_shards"]},
     "unit_dap_support_full": {"lanes": ["merge_gate_shards"]},
+    # #11933 freshness gates run in the same required `lsp` merge-gate shard as
+    # unit_lsp_full/unit_lsp_core_full, so they share that shard's economics.
+    "pending_parse_freshness": {"lanes": ["merge_gate_shards"]},
+    "pull_diagnostics_freshness": {"lanes": ["merge_gate_shards"]},
+    # The must-context guard runs in the required merge-gate shard. Keep this
+    # explicit so gate-policy additions cannot silently leave the
+    # policy/economics mapping incomplete.
+    "must_context_check": {"lanes": ["merge_gate_shards"]},
+    # Always-running required existence check for docs/agents contract
+    # workflows (#14628). Lives in the policy shard so deleting one of those
+    # path-filtered workflows cannot silently stop enforcement.
+    "docs_agents_contract_workflows": {"lanes": ["merge_gate_shards"]},
+    # #13774: the doctest route executes the workspace's compile_fail contracts
+    # in the required policy shard, and the ratchet keeps the route's package
+    # list a floor. Both ride the same shard, so both share its economics.
+    "doctest_contract_proof": {"lanes": ["merge_gate_shards"]},
+    "doctest_enforcement": {"lanes": ["merge_gate_shards"]},
+    # The agent-ledger validator (#15380) runs in the required merge-gate
+    # policy shard, so it shares that shard's economics.
+    "agent_ledgers_validate": {"lanes": ["merge_gate_shards"]},
     "compile_all_targets": {"lanes": ["check_all_targets"]},
     "lsp_smoke": {"lanes": ["ux_tests"]},
 
@@ -93,7 +132,15 @@ GATE_TO_LANE_MAP: dict[str, dict[str, Any]] = {
     "nested_lock_check": {"lanes": ["pr_smoke"]},
     "agent_context_coverage": {"lanes": ["merge_gate_shards"]},
     "non_rust_inventory_check": {"lanes": ["merge_gate_shards"]},
+    "lint_policy": {"lanes": ["merge_gate_shards"]},
     "msrv_authority_sync": {"lanes": ["merge_gate_shards"]},
+    "compiler_concept_ledger": {"lanes": ["merge_gate_shards"]},
+    "compiler_performance_receipt_contract": {"lanes": ["merge_gate_shards"]},
+    "kubernetes_dap_profiles": {"lanes": ["merge_gate_shards"]},
+    "compiler_proof_policy": {"lanes": ["merge_gate_shards"]},
+    "compiler_concept_proof": {"lanes": ["merge_gate_shards"]},
+    "postfix_capability_closure": {"lanes": ["merge_gate_shards"]},
+    "release_trust_invariants": {"lanes": ["merge_gate_shards"]},
 
     # commit-tier staged-tree hygiene (local pre-commit; not CI)
     "staged_tree_identity": {"lanes": ["commit_checks"]},
@@ -110,7 +157,6 @@ GATE_TO_LANE_MAP: dict[str, dict[str, Any]] = {
     # release-adjacent gates
     "adr_link_check": {"lanes": ["docs_gate"]},
     "docs_build": {"lanes": ["docs_gate"]},
-    "published_crate_count": {"lanes": ["release_check"]},
     "release_build": {"lanes": ["release_check"]},
     "inline_completion_binary_smoke": {"lanes": ["release_check"]},
     "version_sync": {"lanes": ["release_check"]},

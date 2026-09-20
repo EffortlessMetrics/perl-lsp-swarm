@@ -1,6 +1,5 @@
 ---
 source: crates/tree-sitter-perl-rs/tests/snapshots.rs
-assertion_line: 56
 expression: sexp
 ---
-(source_file (package Animal) (sub new ()(block (my_declaration ((variable $ class) (variable % args))(variable @ _)) (expression_statement (call bless ((hash ) (variable $ class)))))) (sub speak ()(block (return (string_interpolated "\"...\"")))) (sub name ()(block (return (arrow_hash_deref (binary_[] (variable $ _) (number 0)) (identifier name))))))
+(source_file (statements (package (name Animal))) (statements (sub (name new) (body (block (statements (my_declaration (declarator my) (variable (variable (sigil $) (name class))) (variable (variable (sigil %) (name args))) (initializer (variable (sigil @) (name _))))) (statements (expression_statement (expression (call (name bless) (args (hash)) (args (variable (sigil $) (name class))))))))))) (statements (sub (name speak) (body (block (statements (return (value (string_interpolated (value "\"...\"") (interpolated true))))))))) (statements (sub (name name) (body (block (statements (return (value (arrow_hash_deref (op ->{}) (left (binary_[] (op []) (left (variable (sigil $) (name _))) (right (number (value 0))))) (right (identifier (name name))))))))))))

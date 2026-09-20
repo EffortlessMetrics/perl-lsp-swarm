@@ -15,7 +15,7 @@ fn parser_kinds_for(input: &str) -> Vec<TokenKind> {
         raw.push(token);
     }
 
-    TokenStream::lexer_tokens_to_parser_tokens(raw).into_iter().map(|token| token.kind).collect()
+    TokenStream::lexer_tokens_to_parser_tokens(raw).into_iter().map(|token| token.kind()).collect()
 }
 
 #[test]

@@ -1,0 +1,122 @@
+{
+  "schema_version": "close_proof_contract_fixture.v1",
+  "provenance": {
+    "captured_at": "2026-08-21",
+    "sources": [
+      "https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3020"
+    ],
+    "subject_shas": [],
+    "boundary": "Immutable bounded structured excerpts of historical GitHub subjects. The fixture proves schema-level dispositions only; semantic completion evaluation belongs to CP03 (#10382)."
+  },
+  "contract": {
+    "schema_version": "issue_contract.v1",
+    "repository": "effortlessmetrics/perl-lsp-swarm",
+    "issue_number": 3020,
+    "title": "test(quality): remove panic! from test code via the maintained check-panic-test ratchet",
+    "kind": "leaf",
+    "required_proof_level": "mechanism",
+    "allowed_close_modes": [
+      "completed",
+      "phase_complete_issue_remains_open",
+      "superseded",
+      "true_duplicate",
+      "not_planned"
+    ],
+    "denominator": [
+      {
+        "row_id": "panic-free.ratchet.enforced",
+        "statement": "The check-panic-test ratchet keeps maintained test code panic-free.",
+        "required_proof_level": "mechanism"
+      },
+      {
+        "row_id": "violation.detector.coverage",
+        "statement": "The violation detector covers committed test code.",
+        "required_proof_level": "mechanism"
+      }
+    ],
+    "negative_controls": [
+      {
+        "control_id": "nc.new-panic-fails-ci",
+        "guards_row_id": "panic-free.ratchet.enforced",
+        "description": "A new panic! in covered test code fails CI."
+      }
+    ],
+    "mandatory_children": [],
+    "transfer_policy": {
+      "permitted": false,
+      "conditions": []
+    },
+    "domain_evidence_refs": [],
+    "identity": {
+      "issue_body_digest": "0000000000000000000000000000000000000000000000000000000000000bcc",
+      "denominator_digest": "0ebb5102e6610a1c73e846806d69c189493f7106c26fd018eda8f1a0163eea50",
+      "accepted_ruling": null
+    }
+  },
+  "cases": [
+    {
+      "case_id": "pr-3100-single-pr-completes",
+      "description": "An ordinary atomic issue whose single PR proves every required row.",
+      "packet": {
+        "schema_version": "issue_close_proof.v1",
+        "repository": "effortlessmetrics/perl-lsp-swarm",
+        "issue_number": 3020,
+        "requested_close_mode": "completed",
+        "contract_binding": {
+          "contract_issue_body_digest": "0000000000000000000000000000000000000000000000000000000000000bcc",
+          "contract_denominator_digest": "0ebb5102e6610a1c73e846806d69c189493f7106c26fd018eda8f1a0163eea50",
+          "accepted_ruling_digest": null
+        },
+        "candidate_pr": 3100,
+        "landed_subjects": [],
+        "landing_content_proof": [],
+        "established_claims": [
+          {
+            "statement": "The ratchet is enforced and the detector covers committed test code.",
+            "covers_rows": [
+              "panic-free.ratchet.enforced",
+              "violation.detector.coverage"
+            ]
+          }
+        ],
+        "explicitly_not_established_claims": [],
+        "row_dispositions": {
+          "panic-free.ratchet.enforced": {
+            "disposition": "proven_current_main",
+            "evidence": {
+              "producer": "xtask-pr-close-proof",
+              "subject": "00000000000000000000000000000000000075f9",
+              "content_digest": "0000000000000000000000000000000000000000000000000000000000049bc1",
+              "reference": "cargo xtask pr-close-proof --pr 3100"
+            }
+          },
+          "violation.detector.coverage": {
+            "disposition": "proven_current_main",
+            "evidence": {
+              "producer": "xtask-pr-close-proof",
+              "subject": "00000000000000000000000000000000000075fa",
+              "content_digest": "0000000000000000000000000000000000000000000000000000000000049bcb",
+              "reference": "cargo xtask pr-close-proof --pr 3100"
+            }
+          }
+        },
+        "negative_control_dispositions": {
+          "nc.new-panic-fails-ci": {
+            "state": "verified"
+          }
+        },
+        "child_dispositions": [],
+        "duplicate_of": null,
+        "verdict": {
+          "pr_scope": "pass",
+          "issue_close": "valid",
+          "reasons": [
+            "One PR proves every required row of this ordinary atomic issue."
+          ]
+        }
+      },
+      "expected_pr_scope": "pass",
+      "expected_issue_close": "valid"
+    }
+  ]
+}

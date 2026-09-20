@@ -2,4 +2,4 @@
 source: crates/perl-parser/tests/ast_snap.rs
 expression: "parse_sexp(\"print $msg if $enabled; warn $msg unless $quiet;\")"
 ---
-(source_file (statement_modifier_if (expression_statement (call print ((variable $ msg)))) (variable $ enabled)) (statement_modifier_unless (expression_statement (call warn ((variable $ msg)))) (variable $ quiet)))
+(source_file (statements (statement_modifier_if (modifier if) (statement (expression_statement (expression (call (name print) (args (variable (sigil $) (name msg))))))) (condition (variable (sigil $) (name enabled))))) (statements (statement_modifier_unless (modifier unless) (statement (expression_statement (expression (call (name warn) (args (variable (sigil $) (name msg))))))) (condition (variable (sigil $) (name quiet))))))

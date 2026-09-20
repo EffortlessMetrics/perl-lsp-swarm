@@ -5,6 +5,7 @@
 //! **Property 4: Adapter Determinism** — For any set of SymbolDecls and a FileId,
 //! running `symbol_decls_to_semantic_facts` twice with the same inputs produces
 //! identical output. Same for `symbol_refs_to_semantic_facts`.
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
 use perl_semantic_facts::{EntityId, FileId};
 use perl_symbol::{
@@ -206,8 +207,8 @@ proptest! {
             .map(|(i, r)| (r.qualified_name.clone(), EntityId(i as u64 + 100)))
             .collect();
 
-        let first = symbol_refs_to_semantic_facts(&refs, file_id, &entity_map);
-        let second = symbol_refs_to_semantic_facts(&refs, file_id, &entity_map);
+        let first = symbol_refs_to_semantic_facts(&refs, file_id, &entity_map, &BTreeMap::new());
+        let second = symbol_refs_to_semantic_facts(&refs, file_id, &entity_map, &BTreeMap::new());
         prop_assert_eq!(&first, &second, "SymbolRefSemanticFacts differed across two runs");
     }
 }

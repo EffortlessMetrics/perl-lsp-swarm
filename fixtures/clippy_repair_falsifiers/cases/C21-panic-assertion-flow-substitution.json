@@ -1,0 +1,72 @@
+{
+  "schema_version": 1,
+  "case_id": "C21-panic-assertion-flow-substitution",
+  "family": "lost_work_error_obligation_theater",
+  "purpose": "Replacing recoverable error flow with panic/assert collapses typed refusals into process aborts.",
+  "incident_reference": null,
+  "subject": {
+    "scope": "workspace",
+    "target_kinds": [
+      "lib",
+      "bin",
+      "test"
+    ],
+    "profile": "all",
+    "platforms": [
+      "linux",
+      "windows",
+      "macos"
+    ],
+    "features": "default"
+  },
+  "governed_lint": {
+    "lint": "clippy::panic",
+    "level_source": "Cargo.toml [workspace.lints.clippy]"
+  },
+  "dishonest_mutation": {
+    "kind": "source-snippet",
+    "language": "rust",
+    "trigger_evidence": [
+      ".expect(\"config must exist\")",
+      "expect(\"config must validate\")"
+    ],
+    "content": "pub fn load_config(path: &std::path::Path) -> Config {\n    let raw = std::fs::read_to_string(path).expect(\"config must exist\");\n    serde_json::from_str(&raw).expect(\"config must validate\")\n}\n",
+    "sha256": "af5036382165620db47e8aa7bdabf49e2fa865810920fff630215c8843673fa9"
+  },
+  "rejecting_authority": {
+    "status": "bound",
+    "authority_kind": "cargo_lints",
+    "reference": "lint:clippy::expect_used"
+  },
+  "expected_result": {
+    "result_class": "reject",
+    "reason_code": "panic_assertion_substitution"
+  },
+  "positive_counterpart": {
+    "sanctioned_evidence": [
+      "color_eyre::Result",
+      "fs::read_to_string(path)?"
+    ],
+    "note": "IO and parse failures stay typed with context.",
+    "content": "pub fn load_config(path: &std::path::Path) -> color_eyre::Result<Config> {\n    let raw = std::fs::read_to_string(path)?;\n    Ok(serde_json::from_str(&raw)?)\n}\n",
+    "sha256": "aad7d0d784114e9ae7b84f8867e4b9564354cba71ef7bec2cf10d91bb3dfa6b4"
+  },
+  "applicability": {
+    "packet_classes": [
+      "qualification",
+      "foundation",
+      "migration",
+      "activation",
+      "review"
+    ],
+    "domains": [
+      "clippy-core"
+    ]
+  },
+  "delta_provenance": {
+    "change_reason": "initial corpus freeze (#11649)",
+    "owning_issue": 11649,
+    "historical_interpretability": true
+  },
+  "claim_boundary": "panic/todo/unimplemented/expect_used deny everywhere including tests (panic_free_tests=true)."
+}

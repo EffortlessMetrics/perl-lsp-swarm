@@ -120,7 +120,14 @@ pub struct InlineCompletionUxHarness {
 }
 
 impl InlineCompletionUxHarness {
-    /// Boot a harness, initialize the server, enable AI streaming, and open a document.
+    /// Boot a harness, initialize the server, send the generic-client AI
+    /// enablement attempt, and open a document.
+    ///
+    /// Since #4997 the didChangeConfiguration payload below is rejected by
+    /// the server: no generic LSP settings channel can arm remote AI egress
+    /// or toggle streaming authorization. The payload is kept deliberately so
+    /// UX scenarios exercise the deterministic-fallback path users actually
+    /// get after an unauthorized activation attempt.
     pub fn start(uri: &str, text: &str) -> Result<Self, String> {
         let mut harness = LspHarness::new();
         harness.initialize_default()?;

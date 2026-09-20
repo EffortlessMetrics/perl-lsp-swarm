@@ -20,7 +20,7 @@
 //!
 //! Each snapshot entry records:
 //! - `fixture_id` — stable identifier for the source fixture
-//! - `source_hash` — within-build-deterministic hash of the source text (hex, lowercase)
+//! - `source_hash` — stable, versioned digest of the source text (hex, lowercase)
 //! - `hir_schema_version` — monotonic HIR schema model version string
 //! - `hir_summary` — deterministic structural summary of the lowered `HirFile`
 //!
@@ -29,6 +29,8 @@
 //! are stable across semantics-preserving reformatting.
 
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
+use std::fmt;
 
 /// Monotonic HIR schema version string, bumped whenever the lowering model
 /// changes in a way that alters snapshot structure.
@@ -36,6 +38,22 @@ use serde::{Deserialize, Serialize};
 /// Snapshots recorded under a different version are considered stale and must
 /// be regenerated before comparison.
 pub const HIR_SCHEMA_VERSION: &str = "hir.v1";
+
+/// Wire-schema discriminator for portable source digests and path-relative fixture IDs.
+pub const SNAPSHOT_SCHEMA: &str = "semantic_snapshot.v2";
+
+/// KPI discriminator for the semantic snapshot stability rail.
+pub const SNAPSHOT_KPI: &str = "semantic_snapshot_stability_rate";
+
+/// Canonical claim boundary accepted by generation and check mode.
+pub const SNAPSHOT_CLAIM_BOUNDARY: &str = concat!(
+    "Snapshot proves deterministic HIR stability only. ",
+    "This is NOT curated-gold correctness. ",
+    "Curated gold (independent human labeling) is a separate, future schema.",
+);
+
+/// Stable source-digest algorithm recorded by snapshot manifests.
+pub const SOURCE_HASH_ALGORITHM: &str = "fnv1a-128.v1";
 
 /// A deterministic structural summary of one lowered `HirFile`.
 ///
@@ -46,6 +64,7 @@ pub const HIR_SCHEMA_VERSION: &str = "hir.v1";
 /// NOTE: proves stability, not correctness. Curated-gold assertions belong in
 /// a separate schema.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct HirSummary {
     /// Total number of HIR items lowered from the file.
     pub item_count: usize,
@@ -73,15 +92,13 @@ pub struct HirSummary {
 /// uniquely. A check-mode comparison fails when the recorded summary differs
 /// from the freshly computed one, indicating HIR drift.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SnapshotEntry {
-    /// Stable fixture identifier (matches the fixture filename stem).
+    /// Stable fixture identifier: normalized path relative to the fixture root.
     pub fixture_id: String,
-    /// Within-build-deterministic hash of the fixture source text (lowercase hex, no prefix).
+    /// Stable source digest (32 lowercase hexadecimal characters, no prefix).
     ///
-    /// Computed via [`source_hash`]. **Not** SHA-256, **not** stable across Rust
-    /// versions or platforms — suitable only for within-environment drift detection.
-    /// FIXME: if cross-version or cross-machine snapshot persistence is ever required,
-    /// migrate to a named stable digest (e.g. the `sha2` crate).
+    /// Computed via [`source_hash`] using [`SOURCE_HASH_ALGORITHM`].
     pub source_hash: String,
     /// HIR schema version at snapshot generation time.
     pub hir_schema_version: String,
@@ -91,22 +108,84 @@ pub struct SnapshotEntry {
     pub hir_summary: HirSummary,
 }
 
+/// Exact-set validation failure for a recorded/fresh snapshot comparison.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SnapshotSetError {
+    /// The recorded manifest contains no entries.
+    EmptyRecorded,
+    /// The freshly computed population contains no entries.
+    EmptyFresh,
+    /// The recorded manifest contains the same fixture ID more than once.
+    DuplicateRecorded {
+        /// Duplicated fixture ID.
+        fixture_id: String,
+    },
+    /// The freshly computed population contains the same fixture ID more than once.
+    DuplicateFresh {
+        /// Duplicated fixture ID.
+        fixture_id: String,
+    },
+    /// A recorded fixture is absent from the freshly computed population.
+    MissingFresh {
+        /// Recorded fixture ID absent from the fresh population.
+        fixture_id: String,
+    },
+    /// A fresh fixture is absent from the recorded manifest.
+    UnexpectedFresh {
+        /// Fresh fixture ID absent from the recorded manifest.
+        fixture_id: String,
+    },
+}
+
+impl fmt::Display for SnapshotSetError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::EmptyRecorded => formatter.write_str("recorded snapshot manifest is empty"),
+            Self::EmptyFresh => formatter.write_str("fresh snapshot fixture population is empty"),
+            Self::DuplicateRecorded { fixture_id } => {
+                write!(formatter, "duplicate recorded snapshot fixture ID: {fixture_id}")
+            }
+            Self::DuplicateFresh { fixture_id } => {
+                write!(formatter, "duplicate fresh snapshot fixture ID: {fixture_id}")
+            }
+            Self::MissingFresh { fixture_id } => {
+                write!(
+                    formatter,
+                    "recorded snapshot fixture is missing from fresh input: {fixture_id}"
+                )
+            }
+            Self::UnexpectedFresh { fixture_id } => {
+                write!(
+                    formatter,
+                    "fresh snapshot fixture is absent from recorded manifest: {fixture_id}"
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for SnapshotSetError {}
+
 /// A snapshot manifest collecting all snapshot entries for a corpus slice.
 ///
 /// Written by the `generate-semantic-snapshot` xtask subcommand in generate
 /// mode, and read in check mode to detect HIR drift.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SnapshotManifest {
-    /// Schema discriminator — always `"semantic_snapshot.v1"`.
+    /// Schema discriminator — always [`SNAPSHOT_SCHEMA`].
     pub schema: String,
     /// KPI name for this stability rail.
     ///
-    /// Always `"semantic_snapshot_stability_rate"`. NOT `"semantic_gold_pass_rate"`.
+    /// Always [`SNAPSHOT_KPI`]. NOT `"semantic_gold_pass_rate"`.
     pub kpi: String,
     /// Claim boundary: this proves stability, not correctness.
     pub claim_boundary: String,
     /// HIR schema version used for all entries in this manifest.
     pub hir_schema_version: String,
+    /// Named, versioned source-digest algorithm used by every entry.
+    pub source_hash_algorithm: String,
     /// Date of last generation (ISO 8601 `YYYY-MM-DD`).
     pub generated_on: String,
     /// Snapshot entries, one per fixture in the corpus slice.
@@ -117,29 +196,77 @@ impl SnapshotManifest {
     /// Create a new manifest with the correct schema discriminators.
     pub fn new(generated_on: String) -> Self {
         Self {
-            schema: "semantic_snapshot.v1".to_string(),
-            kpi: "semantic_snapshot_stability_rate".to_string(),
-            claim_boundary: concat!(
-                "Snapshot proves deterministic HIR stability only. ",
-                "This is NOT curated-gold correctness. ",
-                "Curated gold (independent human labeling) is a separate, future schema.",
-            )
-            .to_string(),
+            schema: SNAPSHOT_SCHEMA.to_string(),
+            kpi: SNAPSHOT_KPI.to_string(),
+            claim_boundary: SNAPSHOT_CLAIM_BOUNDARY.to_string(),
             hir_schema_version: HIR_SCHEMA_VERSION.to_string(),
+            source_hash_algorithm: SOURCE_HASH_ALGORITHM.to_string(),
             generated_on,
             entries: Vec::new(),
         }
     }
 
+    /// Validate that recorded and fresh entries form the same non-empty unique ID set.
+    ///
+    /// This is deliberately separate from content comparison. A missing, added,
+    /// or duplicated fixture is a population-integrity failure, not HIR drift.
+    pub fn validate_exact_entry_set(
+        &self,
+        fresh_entries: &[SnapshotEntry],
+    ) -> Result<(), SnapshotSetError> {
+        if self.entries.is_empty() {
+            return Err(SnapshotSetError::EmptyRecorded);
+        }
+        if fresh_entries.is_empty() {
+            return Err(SnapshotSetError::EmptyFresh);
+        }
+
+        let mut recorded_ids = BTreeSet::new();
+        let mut duplicate_recorded = BTreeSet::new();
+        for entry in &self.entries {
+            if !recorded_ids.insert(entry.fixture_id.as_str()) {
+                duplicate_recorded.insert(entry.fixture_id.as_str());
+            }
+        }
+        if let Some(fixture_id) = duplicate_recorded.first() {
+            return Err(SnapshotSetError::DuplicateRecorded {
+                fixture_id: (*fixture_id).to_string(),
+            });
+        }
+
+        let mut fresh_ids = BTreeSet::new();
+        let mut duplicate_fresh = BTreeSet::new();
+        for entry in fresh_entries {
+            if !fresh_ids.insert(entry.fixture_id.as_str()) {
+                duplicate_fresh.insert(entry.fixture_id.as_str());
+            }
+        }
+        if let Some(fixture_id) = duplicate_fresh.first() {
+            return Err(SnapshotSetError::DuplicateFresh { fixture_id: (*fixture_id).to_string() });
+        }
+
+        if let Some(fixture_id) = recorded_ids.difference(&fresh_ids).next() {
+            return Err(SnapshotSetError::MissingFresh { fixture_id: (*fixture_id).to_string() });
+        }
+        if let Some(fixture_id) = fresh_ids.difference(&recorded_ids).next() {
+            return Err(SnapshotSetError::UnexpectedFresh {
+                fixture_id: (*fixture_id).to_string(),
+            });
+        }
+
+        Ok(())
+    }
+
     /// Compute the `semantic_snapshot_stability_rate` KPI.
     ///
-    /// Returns `(stable_count, total_count, rate)`. A stable snapshot is one
-    /// where the freshly computed summary matches the recorded summary.
+    /// Returns `(stable_count, total_count, rate)`. The KPI fails closed to zero
+    /// when the recorded and fresh populations are empty, duplicated, or unequal.
     pub fn stability_rate(&self, fresh_entries: &[SnapshotEntry]) -> (usize, usize, f64) {
         let total = self.entries.len();
-        if total == 0 {
-            return (0, 0, 1.0);
+        if self.validate_exact_entry_set(fresh_entries).is_err() {
+            return (0, total, 0.0);
         }
+
         let stable = self
             .entries
             .iter()
@@ -157,94 +284,35 @@ impl SnapshotManifest {
     }
 }
 
-/// Compute a within-build-deterministic hash of a source string.
+/// Compute the stable FNV-1a 128-bit digest of a source string.
 ///
-/// Returns lowercase hex without any prefix. The output is 32 characters
-/// (two concatenated 64-bit `DefaultHasher` values encoded as 16-hex-char each).
-///
-/// # Stability caveats
-///
-/// `std::collections::hash_map::DefaultHasher` is **not** SHA-256, **not** FNV,
-/// and **not** stable across Rust versions or platforms — its output can change
-/// between Rust releases or between machines. This function is intentionally
-/// scoped to **within-environment drift detection** (the snapshot rail defined by
-/// PLSP-SPEC-0033 needs only within-run consistency).
-///
-/// FIXME: if cross-version or cross-machine snapshot persistence is ever required,
-/// replace this with a named stable digest (e.g. the `sha2` crate).
+/// The algorithm identity is [`SOURCE_HASH_ALGORITHM`]. Output is exactly 32
+/// lowercase hexadecimal characters and is stable across Rust versions,
+/// operating systems, and CPU architectures.
+#[must_use]
 pub fn source_hash(source: &str) -> String {
-    // Uses two independent DefaultHasher seeds to spread 128 bits of hash output
-    // while staying dependency-free. This is sufficient for within-build drift
-    // detection — it is NOT a cryptographic or cross-platform hash.
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
+    const OFFSET_BASIS: u128 = 0x6c62_272e_07bb_0142_62b8_2175_6295_c58d;
+    const PRIME: u128 = 0x0000_0000_0100_0000_0000_0000_0000_013b;
 
-    // Two independent seeds for 128-bit spread (reduces collisions for small
-    // fixtures while staying dependency-free).
-    let mut h1 = DefaultHasher::new();
-    source.hash(&mut h1);
-    let d1 = h1.finish();
-
-    let mut h2 = DefaultHasher::new();
-    // Mix in a second constant to differentiate h2 from h1.
-    0x9e3779b97f4a7c15u64.hash(&mut h2);
-    source.hash(&mut h2);
-    let d2 = h2.finish();
-
-    format!("{d1:016x}{d2:016x}")
+    let hash = source
+        .as_bytes()
+        .iter()
+        .fold(OFFSET_BASIS, |hash, byte| (hash ^ u128::from(*byte)).wrapping_mul(PRIME));
+    format!("{hash:032x}")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn source_hash_is_deterministic() {
-        let s = "package Foo; sub bar { return 1; } 1;";
-        assert_eq!(source_hash(s), source_hash(s));
-    }
-
-    #[test]
-    fn source_hash_differs_for_different_sources() {
-        let a = source_hash("my $x = 1;");
-        let b = source_hash("my $y = 2;");
-        assert_ne!(a, b, "distinct sources must produce distinct hashes");
-    }
-
-    #[test]
-    fn source_hash_len_is_32() {
-        // Two 64-bit values → 16 hex chars each → 32 total.
-        assert_eq!(source_hash("hello").len(), 32);
-    }
-
-    #[test]
-    fn manifest_schema_discriminators() {
-        let m = SnapshotManifest::new("2026-06-21".to_string());
-        assert_eq!(m.schema, "semantic_snapshot.v1");
-        assert_eq!(m.kpi, "semantic_snapshot_stability_rate");
-        assert_eq!(m.hir_schema_version, HIR_SCHEMA_VERSION);
-        assert!(m.claim_boundary.contains("stability"), "claim boundary must mention stability");
-        assert!(m.claim_boundary.contains("NOT"), "claim boundary must disclaim gold/correctness");
-    }
-
-    #[test]
-    fn stability_rate_empty_manifest() {
-        let m = SnapshotManifest::new("2026-06-21".to_string());
-        let (stable, total, rate) = m.stability_rate(&[]);
-        assert_eq!(stable, 0);
-        assert_eq!(total, 0);
-        assert!((rate - 1.0).abs() < f64::EPSILON);
-    }
-
-    #[test]
-    fn stability_rate_all_match() {
-        let entry = SnapshotEntry {
-            fixture_id: "foo".to_string(),
-            source_hash: "abc".to_string(),
+    fn sample_entry(fixture_id: &str) -> SnapshotEntry {
+        SnapshotEntry {
+            fixture_id: fixture_id.to_string(),
+            source_hash: format!("hash-{fixture_id}"),
             hir_schema_version: HIR_SCHEMA_VERSION.to_string(),
             hir_summary: HirSummary {
-                item_count: 2,
-                item_kind_sequence: vec!["SubDecl".to_string(), "LiteralExpr".to_string()],
+                item_count: 1,
+                item_kind_sequence: vec!["LiteralExpr".to_string()],
                 scope_count: 1,
                 binding_count: 0,
                 package_count: 0,
@@ -253,49 +321,153 @@ mod tests {
                 module_request_count: 0,
                 dynamic_boundary_count: 0,
             },
-        };
-        let mut m = SnapshotManifest::new("2026-06-21".to_string());
-        m.entries.push(entry.clone());
+        }
+    }
 
-        let (stable, total, rate) = m.stability_rate(&[entry]);
+    fn manifest_with(entries: Vec<SnapshotEntry>) -> SnapshotManifest {
+        let mut manifest = SnapshotManifest::new("2026-06-21".to_string());
+        manifest.entries = entries;
+        manifest
+    }
+
+    #[test]
+    fn source_hash_is_deterministic() {
+        let source = "package Foo; sub bar { return 1; } 1;";
+        assert_eq!(source_hash(source), source_hash(source));
+    }
+
+    #[test]
+    fn source_hash_differs_for_different_sources() {
+        let first = source_hash("my $x = 1;");
+        let second = source_hash("my $y = 2;");
+        assert_ne!(first, second, "distinct sources must produce distinct hashes");
+    }
+
+    #[test]
+    fn source_hash_matches_portable_known_vector() {
+        assert_eq!(source_hash("hello"), "e3e1efd54283d94f7081314b599d31b3");
+    }
+
+    #[test]
+    fn manifest_schema_discriminators() {
+        let manifest = SnapshotManifest::new("2026-06-21".to_string());
+        assert_eq!(manifest.schema, SNAPSHOT_SCHEMA);
+        assert_eq!(manifest.kpi, SNAPSHOT_KPI);
+        assert_eq!(manifest.claim_boundary, SNAPSHOT_CLAIM_BOUNDARY);
+        assert_eq!(manifest.hir_schema_version, HIR_SCHEMA_VERSION);
+        assert_eq!(manifest.source_hash_algorithm, SOURCE_HASH_ALGORITHM);
+    }
+
+    #[test]
+    fn versioned_snapshot_types_reject_unknown_fields() {
+        let entry = sample_entry("foo");
+        let manifest = manifest_with(vec![entry.clone()]);
+
+        let mut manifest_value = serde_json::to_value(&manifest).expect("serialize manifest");
+        manifest_value["semantic_correctness"] = serde_json::json!(true);
+        assert!(serde_json::from_value::<SnapshotManifest>(manifest_value).is_err());
+
+        let mut entry_value = serde_json::to_value(&entry).expect("serialize entry");
+        entry_value["source_path"] = serde_json::json!("/tmp/foo.pl");
+        assert!(serde_json::from_value::<SnapshotEntry>(entry_value).is_err());
+
+        let mut summary_value =
+            serde_json::to_value(&entry.hir_summary).expect("serialize HIR summary");
+        summary_value["semantic_pass"] = serde_json::json!(true);
+        assert!(serde_json::from_value::<HirSummary>(summary_value).is_err());
+    }
+
+    #[test]
+    fn stability_rate_empty_manifest_fails_closed() {
+        let manifest = SnapshotManifest::new("2026-06-21".to_string());
+        let (stable, total, rate) = manifest.stability_rate(&[]);
+        assert_eq!(stable, 0);
+        assert_eq!(total, 0);
+        assert!(rate.abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn exact_entry_set_rejects_empty_fresh_population() {
+        let manifest = manifest_with(vec![sample_entry("foo")]);
+        assert_eq!(manifest.validate_exact_entry_set(&[]), Err(SnapshotSetError::EmptyFresh));
+    }
+
+    #[test]
+    fn exact_entry_set_rejects_duplicate_recorded_id() {
+        let entry = sample_entry("foo");
+        let manifest = manifest_with(vec![entry.clone(), entry]);
+        assert_eq!(
+            manifest.validate_exact_entry_set(&[sample_entry("foo")]),
+            Err(SnapshotSetError::DuplicateRecorded { fixture_id: "foo".to_string() })
+        );
+    }
+
+    #[test]
+    fn exact_entry_set_rejects_duplicate_fresh_id() {
+        let entry = sample_entry("foo");
+        let manifest = manifest_with(vec![entry.clone()]);
+        assert_eq!(
+            manifest.validate_exact_entry_set(&[entry.clone(), entry]),
+            Err(SnapshotSetError::DuplicateFresh { fixture_id: "foo".to_string() })
+        );
+    }
+
+    #[test]
+    fn exact_entry_set_rejects_missing_fresh_id() {
+        let manifest = manifest_with(vec![sample_entry("foo"), sample_entry("bar")]);
+        assert_eq!(
+            manifest.validate_exact_entry_set(&[sample_entry("foo")]),
+            Err(SnapshotSetError::MissingFresh { fixture_id: "bar".to_string() })
+        );
+    }
+
+    #[test]
+    fn exact_entry_set_rejects_unexpected_fresh_id() {
+        let manifest = manifest_with(vec![sample_entry("foo")]);
+        assert_eq!(
+            manifest.validate_exact_entry_set(&[sample_entry("foo"), sample_entry("bar")]),
+            Err(SnapshotSetError::UnexpectedFresh { fixture_id: "bar".to_string() })
+        );
+    }
+
+    #[test]
+    fn stability_rate_all_match() {
+        let entry = sample_entry("foo");
+        let manifest = manifest_with(vec![entry.clone()]);
+
+        let (stable, total, rate) = manifest.stability_rate(&[entry]);
         assert_eq!(stable, 1);
         assert_eq!(total, 1);
         assert!((rate - 1.0).abs() < f64::EPSILON);
     }
 
     #[test]
+    fn stability_rate_population_mismatch_fails_closed() {
+        let manifest = manifest_with(vec![sample_entry("foo")]);
+        let (stable, total, rate) =
+            manifest.stability_rate(&[sample_entry("foo"), sample_entry("bar")]);
+        assert_eq!(stable, 0);
+        assert_eq!(total, 1);
+        assert!(rate.abs() < f64::EPSILON);
+    }
+
+    #[test]
     fn stability_rate_mismatch_on_drift() {
-        let recorded = SnapshotEntry {
-            fixture_id: "foo".to_string(),
-            source_hash: "abc".to_string(),
-            hir_schema_version: HIR_SCHEMA_VERSION.to_string(),
-            hir_summary: HirSummary {
-                item_count: 2,
-                item_kind_sequence: vec!["SubDecl".to_string()],
-                scope_count: 1,
-                binding_count: 0,
-                package_count: 0,
-                slot_count: 0,
-                directive_count: 0,
-                module_request_count: 0,
-                dynamic_boundary_count: 0,
-            },
-        };
+        let recorded = sample_entry("foo");
         let drifted = SnapshotEntry {
             hir_summary: HirSummary {
-                item_count: 5, // changed
+                item_count: 5,
                 item_kind_sequence: vec!["SubDecl".to_string(), "PackageDecl".to_string()],
                 scope_count: 2,
                 ..recorded.hir_summary.clone()
             },
             ..recorded.clone()
         };
-        let mut m = SnapshotManifest::new("2026-06-21".to_string());
-        m.entries.push(recorded);
-        let (stable, total, rate) = m.stability_rate(&[drifted]);
+        let manifest = manifest_with(vec![recorded]);
+        let (stable, total, rate) = manifest.stability_rate(&[drifted]);
         assert_eq!(stable, 0);
         assert_eq!(total, 1);
-        assert!((rate - 0.0).abs() < f64::EPSILON);
+        assert!(rate.abs() < f64::EPSILON);
     }
 
     #[test]

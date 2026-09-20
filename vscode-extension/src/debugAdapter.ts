@@ -1,7 +1,18 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
-import { BinaryDownloader } from './downloader';
+import {
+  BinaryDownloader,
+  classifyWindowsArm64Support,
+  detectMusl,
+  isAndroidEnvironment,
+  isTermuxEnvironment,
+} from './downloader';
+import {
+  CANONICAL_PERL_LANGUAGE_ID,
+  PERL_ALIAS_LANGUAGE_ID,
+  isPerlLanguageId,
+} from './languageIdentity';
 
 const SERVER_DEBUG_TEST_COMMAND = 'perl.debugTest';
 export const VSCODE_DEBUG_TEST_COMMAND = 'perl-lsp.debugTest';
@@ -14,6 +25,47 @@ export interface DebugTestLaunchTarget {
   args: string[];
 }
 
+function packagedDapTargetDirectoryForContext(
+  context: vscode.ExtensionContext,
+  isExecutable: (filePath: string) => boolean,
+): string | undefined {
+  const arch = process.arch === 'arm64' ? 'arm64' : process.arch === 'x64' ? 'x64' : undefined;
+  const hostTargets =
+    process.platform === 'linux' && arch && !isAndroidEnvironment() && !isTermuxEnvironment()
+      ? [`${detectMusl() ? 'alpine' : 'linux'}-${arch}`]
+      : process.platform === 'darwin' && arch
+        ? [`darwin-${arch}`]
+        : process.platform === 'win32' && arch
+          ? arch === 'arm64'
+            ? [
+                'win32-arm64',
+                ...(classifyWindowsArm64Support() === 'windows-11-or-newer' ? ['win32-x64'] : []),
+              ]
+            : ['win32-x64']
+          : [];
+  const dapName = process.platform === 'win32' ? 'perl-dap.exe' : 'perl-dap';
+
+  let packagedTarget: unknown;
+  try {
+    const packageJson = JSON.parse(
+      fs.readFileSync(path.join(context.extensionPath, 'package.json'), 'utf8'),
+    ) as { __metadata?: { targetPlatform?: unknown } };
+    packagedTarget = packageJson.__metadata?.targetPlatform;
+    if (
+      typeof packagedTarget === 'string' &&
+      /^(?:linux|alpine|darwin|win32)-(?:x64|arm64)$/.test(packagedTarget)
+    ) {
+      return hostTargets.includes(packagedTarget) ? packagedTarget : undefined;
+    }
+  } catch {
+    // Development test fixtures may omit package.json; inspect known payloads.
+  }
+
+  return hostTargets.find((target) =>
+    isExecutable(path.join(context.extensionPath, 'bin', target, dapName)),
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Debug configuration wizard helpers (exported for unit testing)
 // ---------------------------------------------------------------------------
@@ -22,9 +74,17 @@ export interface DebugTestLaunchTarget {
 export type DebugConfigTemplate =
   | 'launch-script'
   | 'attach-process'
-  | 'remote-ssh'
+  | 'remote-tcp-attach'
   | 'external-peer'
   | 'all';
+
+/**
+ * Deprecated selector retained as a compatibility alias for `remote-tcp-attach`
+ * (#9868): the wizard never persisted template ids, but earlier extensions and
+ * tests could pass `remote-ssh` programmatically. It produces the same honest
+ * TCP-attach configuration — never an SSH-owned tunnel.
+ */
+export type LegacyDebugConfigTemplate = 'remote-ssh';
 
 /**
  * Build the content of a `.vscode/launch.json` file for the given template.
@@ -51,11 +111,15 @@ export function buildLaunchJsonContent(template: DebugConfigTemplate | string): 
     timeout: 5000,
   };
 
-  const remoteSSH = {
+  // #9868: this is an ordinary DAP TCP attach. perl-lsp does not create, own,
+  // or verify any SSH tunnel. Attach validation accepts loopback endpoints —
+  // run a port forward you control for a remote debuggee — and refuses
+  // private/link-local hosts at attach time (#5257).
+  const remoteTcpAttach = {
     type: 'perl',
     request: 'attach',
-    name: 'Perl: Remote (SSH)',
-    host: 'remote-host',
+    name: 'Perl: Remote TCP Attach',
+    host: 'localhost',
     port: 13603,
     timeout: 10000,
   };
@@ -63,10 +127,10 @@ export function buildLaunchJsonContent(template: DebugConfigTemplate | string): 
   const externalPeer = {
     type: 'perl',
     request: 'attach',
-    name: 'Perl: External Debugger Peer (ptkdb)',
-    // perl-dap bridges DAP ↔ the Perl Debugger Peer Protocol, driving the
-    // external engine (e.g. Devel::ptkdb) listening at HOST:PORT.
-    externalPeer: 'localhost:9000',
+    name: 'Perl: External Debugger Peer (experimental)',
+    // This host path is proven against repository fake/reference peers. A stock
+    // Devel::ptkdb build still needs the partner-side protocol patch and receipt.
+    externalPeer: '127.0.0.1:13604',
   };
 
   let configurations: object[];
@@ -75,14 +139,16 @@ export function buildLaunchJsonContent(template: DebugConfigTemplate | string): 
     case 'attach-process':
       configurations = [attachProcess];
       break;
+    // 'remote-ssh' is a legacy alias for the same honest TCP attach (#9868).
+    case 'remote-tcp-attach':
     case 'remote-ssh':
-      configurations = [remoteSSH];
+      configurations = [remoteTcpAttach];
       break;
     case 'external-peer':
       configurations = [externalPeer];
       break;
     case 'all':
-      configurations = [launchScript, attachProcess, remoteSSH, externalPeer];
+      configurations = [launchScript, attachProcess, remoteTcpAttach, externalPeer];
       break;
     case 'launch-script':
     default:
@@ -103,6 +169,63 @@ export function hasLaunchJson(workspaceRoot: string): boolean {
   } catch {
     return false;
   }
+}
+
+/**
+ * The wizard's template choices as pure data (exported so unit tests can pin
+ * the user-facing copy, #9868).
+ *
+ * The remote entry deliberately describes an ordinary DAP TCP attach to a
+ * loopback endpoint, typically exposed by a port forward the user runs. The
+ * adapter resolves the configured host and refuses private/link-local
+ * addresses at attach time (#5257), so no choice copy may claim direct
+ * non-loopback reachability. perl-lsp never creates, owns, or verifies an SSH
+ * connection or tunnel, so no choice copy may claim otherwise.
+ */
+export interface DebugConfigTemplateChoice {
+  label: string;
+  description: string;
+  detail: string;
+  template: DebugConfigTemplate;
+}
+
+export function debugConfigTemplateChoices(): DebugConfigTemplateChoice[] {
+  return [
+    {
+      label: '$(play) Launch Script',
+      description: 'Run the active Perl file under the debugger',
+      detail: 'Adds a "Launch Script" configuration — the most common starting point.',
+      template: 'launch-script',
+    },
+    {
+      label: '$(plug) Attach to Process',
+      description: 'Connect to a running Perl process over TCP',
+      detail: 'Adds an "Attach" configuration targeting localhost:13603.',
+      template: 'attach-process',
+    },
+    {
+      label: '$(remote) Remote TCP Attach',
+      description:
+        'Attach to a Perl debugger endpoint over TCP via loopback (run a port forward for a remote debuggee)',
+      detail:
+        'Adds a remote TCP attach configuration. Attach validation refuses private/link-local hosts (LAN or VPN addresses), so keep the host on loopback — such as localhost for a port forward you run to the debuggee.',
+      template: 'remote-tcp-attach',
+    },
+    {
+      label: '$(beaker) External Debugger Peer (experimental)',
+      description: 'Connect to a peer implementation that already speaks the peer protocol',
+      detail:
+        'Developer preview. Host behavior is proven against repository peers; stock Devel::ptkdb compatibility is not yet proven.',
+      template: 'external-peer',
+    },
+    {
+      label: '$(list-flat) All Templates',
+      description: 'Include native, attach, remote, and experimental peer configurations',
+      detail:
+        'Launch Script + Attach to Process + Remote TCP Attach + External Debugger Peer (experimental).',
+      template: 'all',
+    },
+  ];
 }
 
 /**
@@ -172,39 +295,7 @@ export async function createDebugConfigWizard(): Promise<void> {
     detail: string;
   }
 
-  const templateItems: TemplateItem[] = [
-    {
-      label: '$(play) Launch Script',
-      description: 'Run the active Perl file under the debugger',
-      detail: 'Adds a "Launch Script" configuration — the most common starting point.',
-      template: 'launch-script',
-    },
-    {
-      label: '$(plug) Attach to Process',
-      description: 'Connect to a running Perl process over TCP',
-      detail: 'Adds an "Attach" configuration targeting localhost:13603.',
-      template: 'attach-process',
-    },
-    {
-      label: '$(remote) Remote (SSH)',
-      description: 'Attach to a remote Perl process via SSH tunnel',
-      detail: 'Adds a remote attach configuration — edit the host to match your SSH target.',
-      template: 'remote-ssh',
-    },
-    {
-      label: '$(debug-console) External Debugger Peer (ptkdb)',
-      description: 'Bridge to an external Perl debugger engine over the peer protocol',
-      detail:
-        'Adds an "External Debugger Peer" configuration — perl-dap bridges DAP to a running Devel::ptkdb-style engine at HOST:PORT.',
-      template: 'external-peer',
-    },
-    {
-      label: '$(list-flat) All Templates',
-      description: 'Include all three configurations',
-      detail: 'Launch Script + Attach to Process + Remote (SSH) — a good starting point.',
-      template: 'all',
-    },
-  ];
+  const templateItems: TemplateItem[] = debugConfigTemplateChoices();
 
   const selected = await vscode.window.showQuickPick(templateItems, {
     placeHolder: 'Choose a debug configuration template',
@@ -256,7 +347,7 @@ export async function offerDebugConfigOnFirstPerlOpen(
   if (_debugConfigPromptShown) {
     return;
   }
-  if (document.languageId !== 'perl') {
+  if (!isPerlLanguageId(document.languageId)) {
     return;
   }
 
@@ -417,19 +508,131 @@ function isConnectablePort(port: unknown): port is number {
   return typeof port === 'number' && Number.isInteger(port) && port > 0 && port <= 65535;
 }
 
+function hasOwn(object: object, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(object, key);
+}
+
 /**
- * Resolve the external-peer `HOST:PORT` a debug config asks perl-dap to connect
- * to, or `undefined` if the config does not (or cannot) request the bridge.
+ * Return the reason an explicitly selected non-native debugger configuration
+ * cannot be honored, or `undefined` when it is valid or native.
  *
- * Two config shapes are accepted, so both the launch.json wizard template and
- * the richer schema shipped in `package.json` drive the same bridge:
- * - flat: `externalPeer: "HOST:PORT"`
- * - structured: `debuggerBackend: "external"` + `externalDebugger: { host, port }`
- *   (the shipped ptkdb config). Only the implemented `connect` rendezvous with a
- *   concrete non-zero port yields an address here; `listen` is handled separately
- *   by {@link resolveExternalPeerListenBind}, and `launchPeer`/`port: 0` (connect)
- *   resolve to `undefined` (native adapter) rather than fabricating an
- *   unconnectable `--external-peer host:0`.
+ * The descriptor factory uses this before spawning `perl-dap`. An invalid or
+ * unsupported external selection must stop the launch; it must not become an
+ * empty argv list that silently starts the native debugger instead.
+ */
+export function externalDebuggerConfigurationError(
+  config: vscode.DebugConfiguration | undefined,
+): string | undefined {
+  if (!config) {
+    return undefined;
+  }
+
+  const backend = config.debuggerBackend;
+  const hasFlatPeer = hasOwn(config, 'externalPeer');
+
+  if (backend === 'ptkdb-bootstrap') {
+    return (
+      'The VS Code adapter does not yet wire debuggerBackend="ptkdb-bootstrap". ' +
+      'Generate the bootstrap explicitly with perl-dap --ptkdb-bootstrap-rc.'
+    );
+  }
+
+  if (backend !== undefined && !['native', 'external'].includes(String(backend))) {
+    return `Unsupported debuggerBackend value: ${String(backend)}`;
+  }
+
+  if (hasFlatPeer && backend === 'native') {
+    return 'externalPeer conflicts with debuggerBackend="native"';
+  }
+
+  const requestsExternal = hasFlatPeer || backend === 'external';
+  if (!requestsExternal) {
+    // A dangling structured selection without an explicit external backend
+    // would otherwise collapse into native debugging while appearing wired up.
+    if (hasOwn(config, 'externalDebugger')) {
+      return (
+        'externalDebugger requires debuggerBackend="external" to take effect; ' +
+        'this configuration would otherwise silently use native debugging'
+      );
+    }
+    return undefined;
+  }
+
+  if (hasFlatPeer && backend === 'external') {
+    return 'Use either externalPeer or debuggerBackend="external" with externalDebugger, not both';
+  }
+
+  if (hasFlatPeer) {
+    if (typeof config.externalPeer !== 'string') {
+      return 'externalPeer must be a HOST:PORT string';
+    }
+    const match = PEER_ADDR_RE.exec(config.externalPeer.trim());
+    if (!match || !isConnectablePort(Number(match[2]))) {
+      return 'externalPeer must use a hostname or IPv4 address and a port in 1..=65535';
+    }
+    return undefined;
+  }
+
+  if (
+    !config.externalDebugger ||
+    typeof config.externalDebugger !== 'object' ||
+    Array.isArray(config.externalDebugger)
+  ) {
+    return 'debuggerBackend="external" requires an externalDebugger object';
+  }
+
+  const external = config.externalDebugger as {
+    control?: unknown;
+    host?: unknown;
+    kind?: unknown;
+    mode?: unknown;
+    port?: unknown;
+  };
+  if (
+    external.kind !== undefined &&
+    (typeof external.kind !== 'string' || !['ptkdb', 'custom'].includes(external.kind))
+  ) {
+    return `Unsupported externalDebugger.kind value: ${String(external.kind)} (expected "ptkdb" or "custom")`;
+  }
+  const mode = typeof external.mode === 'string' ? external.mode : 'connect';
+  const control = typeof external.control === 'string' ? external.control : 'mirror';
+  const host =
+    typeof external.host === 'string' && external.host.trim() ? external.host.trim() : '127.0.0.1';
+
+  if (host.includes(':') || /\s/.test(host)) {
+    return 'externalDebugger.host must be a hostname or IPv4 address without whitespace';
+  }
+  if (control !== 'mirror') {
+    return 'Only mirror control is currently behavior-backed for external debugger peers';
+  }
+
+  if (mode === 'connect') {
+    if (!isConnectablePort(external.port)) {
+      return 'externalDebugger connect mode requires a port in 1..=65535';
+    }
+    return undefined;
+  }
+
+  if (mode === 'listen') {
+    // Rejected at configuration time (#7313 review): perl-dap mints the
+    // session token internally and deliberately never logs it, so a peer
+    // started separately by the operator can never present the authenticated
+    // `peer/hello`. Until a credential-delivery path exists, keep this mode
+    // out of the advertised surface instead of letting the session hang until
+    // the handshake timeout.
+    return 'externalDebugger mode="listen" is not wired yet: perl-dap cannot deliver the peer session token to a separately launched debugger';
+  }
+
+  if (mode === 'launchPeer') {
+    return 'externalDebugger mode="launchPeer" is not implemented';
+  }
+
+  return `Unsupported externalDebugger mode: ${String(mode)}`;
+}
+
+/**
+ * Resolve the external-peer `HOST:PORT` a valid debug config asks perl-dap to
+ * connect to, or `undefined` when the config does not request connect mode.
  */
 function resolveExternalPeerAddress(
   config: vscode.DebugConfiguration | undefined,
@@ -440,13 +643,9 @@ function resolveExternalPeerAddress(
 
   const flat = config.externalPeer;
   if (typeof flat === 'string') {
-    const m = PEER_ADDR_RE.exec(flat.trim());
-    // Validate the port range too, not just the shape, so `host:0` (and
-    // out-of-range ports) fall back to the native adapter — consistent with
-    // the structured shape below — rather than spawning an unconnectable
-    // `--external-peer host:0` that then fails with a transport error.
-    if (m && isConnectablePort(Number(m[2]))) {
-      return `${m[1]}:${Number(m[2])}`;
+    const match = PEER_ADDR_RE.exec(flat.trim());
+    if (match && isConnectablePort(Number(match[2]))) {
+      return `${match[1]}:${Number(match[2])}`;
     }
   }
 
@@ -455,16 +654,19 @@ function resolveExternalPeerAddress(
     config.externalDebugger &&
     typeof config.externalDebugger === 'object'
   ) {
-    const ext = config.externalDebugger as { host?: unknown; port?: unknown; mode?: unknown };
-    const mode = typeof ext.mode === 'string' ? ext.mode : 'connect';
-    const host = typeof ext.host === 'string' && ext.host.trim() ? ext.host.trim() : '127.0.0.1';
+    const external = config.externalDebugger as { host?: unknown; port?: unknown; mode?: unknown };
+    const mode = typeof external.mode === 'string' ? external.mode : 'connect';
+    const host =
+      typeof external.host === 'string' && external.host.trim()
+        ? external.host.trim()
+        : '127.0.0.1';
     if (
       mode === 'connect' &&
-      isConnectablePort(ext.port) &&
+      isConnectablePort(external.port) &&
       !host.includes(':') &&
       !/\s/.test(host)
     ) {
-      return `${host}:${ext.port}`;
+      return `${host}:${external.port}`;
     }
   }
 
@@ -472,14 +674,8 @@ function resolveExternalPeerAddress(
 }
 
 /**
- * Resolve the `HOST[:PORT]` bind spec for a `mode: "listen"` external-peer
- * config, or `undefined` when the config is not a listen-mode external config.
- *
- * In listen mode `perl-dap` binds a loopback listener and waits for the peer to
- * connect back (mirror-mode launch wiring). Unlike `connect`, `port: 0` is valid
- * here — it asks perl-dap to allocate an ephemeral port — so the bind spec is a
- * bare `HOST` (ephemeral) or `HOST:PORT` (fixed). The host is validated (no `:`
- * or whitespace) so it cannot smuggle extra argv tokens.
+ * Resolve the `HOST[:PORT]` bind spec for a valid `mode: "listen"`
+ * external-peer config, or `undefined` for another mode.
  */
 function resolveExternalPeerListenBind(
   config: vscode.DebugConfiguration | undefined,
@@ -492,32 +688,30 @@ function resolveExternalPeerListenBind(
   ) {
     return undefined;
   }
-  const ext = config.externalDebugger as { host?: unknown; port?: unknown; mode?: unknown };
-  if (ext.mode !== 'listen') {
+  const external = config.externalDebugger as { host?: unknown; port?: unknown; mode?: unknown };
+  if (external.mode !== 'listen') {
     return undefined;
   }
-  const host = typeof ext.host === 'string' && ext.host.trim() ? ext.host.trim() : '127.0.0.1';
+  const host =
+    typeof external.host === 'string' && external.host.trim() ? external.host.trim() : '127.0.0.1';
   if (host.includes(':') || /\s/.test(host)) {
     return undefined;
   }
-  // port 0 / absent ⇒ allocate ephemeral (bare host); a concrete port is appended.
-  return isConnectablePort(ext.port) ? `${host}:${ext.port}` : host;
+  // Port 0 or an absent port asks perl-dap to allocate an ephemeral port.
+  return isConnectablePort(external.port) ? `${host}:${external.port}` : host;
 }
 
 /**
- * Build the argv `perl-dap` is spawned with, from a resolved debug config.
+ * Build the argv `perl-dap` is spawned with from a validated debug config.
  *
- * When the config requests an external debugger peer, the adapter is launched in
- * the matching external-peer mode so it drives an external Perl debugger engine
- * (e.g. Devel::ptkdb) over the Perl Debugger Peer Protocol while VS Code speaks
- * DAP over stdio:
- * - `connect` (see {@link resolveExternalPeerAddress}) ⇒ `--external-peer HOST:PORT`
- * - `listen` (see {@link resolveExternalPeerListenBind}) ⇒ `--external-peer-listen HOST[:PORT]`
- *
- * Any config that does not resolve to one of these runs the native adapter with
- * no extra args rather than passing an unvalidated value through.
+ * The descriptor factory calls [`externalDebuggerConfigurationError`] first.
+ * This function intentionally remains a pure argv projection for unit tests and
+ * callers that have already validated the explicit backend selection.
  */
-export function buildDapExecutableArgs(config: vscode.DebugConfiguration | undefined): string[] {
+export function buildDapExecutableArgs(
+  config: vscode.DebugConfiguration | undefined,
+  hostWorkspaceRoot?: string,
+): string[] {
   const peer = resolveExternalPeerAddress(config);
   if (peer) {
     return ['--external-peer', peer];
@@ -526,7 +720,25 @@ export function buildDapExecutableArgs(config: vscode.DebugConfiguration | undef
   if (listen) {
     return ['--external-peer-listen', listen];
   }
+  // The editor workspace is host-owned startup authority. Supplying it to
+  // perl-dap keeps native launches usable without allowing launch.json data to
+  // create or widen authority. The root is canonicalized first: the native
+  // adapter rejects symlink roots, so forwarding the link would refuse every
+  // launch in a symlinked workspace instead of debugging it.
+  if (hostWorkspaceRoot && hostWorkspaceRoot.trim().length > 0) {
+    return ['--trusted-root', canonicalizeWorkspaceRoot(hostWorkspaceRoot.trim())];
+  }
   return [];
+}
+
+/** Resolve symlinks/aliases in a host workspace root, falling back to the
+ * trimmed input when resolution fails (missing dir, permissions). */
+export function canonicalizeWorkspaceRoot(root: string): string {
+  try {
+    return fs.realpathSync(root);
+  } catch {
+    return root;
+  }
 }
 
 export class PerlDebugAdapterDescriptorFactory implements vscode.DebugAdapterDescriptorFactory {
@@ -536,7 +748,15 @@ export class PerlDebugAdapterDescriptorFactory implements vscode.DebugAdapterDes
     session: vscode.DebugSession,
     _executable: vscode.DebugAdapterExecutable | undefined,
   ): vscode.ProviderResult<vscode.DebugAdapterDescriptor> {
-    // Try to find perl-dap in PATH or use bundled version
+    const configurationError = externalDebuggerConfigurationError(session?.configuration);
+    if (configurationError) {
+      void vscode.window.showErrorMessage(
+        `Perl debugger configuration error: ${configurationError} Native debugging was not started.`,
+      );
+      return undefined;
+    }
+
+    // Try to find perl-dap in PATH or use bundled version.
     const dapPath = this.findDebugAdapter();
 
     if (!dapPath) {
@@ -558,14 +778,32 @@ export class PerlDebugAdapterDescriptorFactory implements vscode.DebugAdapterDes
       return undefined;
     }
 
-    const args = buildDapExecutableArgs(session?.configuration);
+    const args = buildDapExecutableArgs(
+      session?.configuration,
+      session?.workspaceFolder?.uri.fsPath,
+    );
     return new vscode.DebugAdapterExecutable(dapPath, args, {
       env: { ...process.env, RUST_LOG: 'debug' },
     });
   }
 
   private findDebugAdapter(): string | undefined {
-    // First, check the auto-download directory (ships with perl-lsp)
+    const binary = process.platform === 'win32' ? 'perl-dap.exe' : 'perl-dap';
+
+    // Prefer the adapter shipped by this extension. This keeps a clean
+    // installed profile bound to the package it just loaded instead of an
+    // unrelated adapter found in managed storage or PATH.
+    const targetDirectory = packagedDapTargetDirectoryForContext(this.context, (candidate) =>
+      this.isExecutable(candidate),
+    );
+    if (targetDirectory) {
+      const bundledDap = path.join(this.context.extensionPath, 'bin', targetDirectory, binary);
+      if (this.isExecutable(bundledDap)) {
+        return bundledDap;
+      }
+    }
+
+    // Next, check the auto-download directory (ships with perl-lsp)
     const downloadedDap = BinaryDownloader.getLocalDapPath(this.context);
     if (this.isExecutable(downloadedDap)) {
       return downloadedDap;
@@ -578,7 +816,6 @@ export class PerlDebugAdapterDescriptorFactory implements vscode.DebugAdapterDes
     }
 
     // Otherwise, check common installation locations
-    const binary = process.platform === 'win32' ? 'perl-dap.exe' : 'perl-dap';
     const possiblePaths: string[] = [
       path.join(process.env.HOME || '', '.cargo', 'bin', binary),
       path.join(process.env.CARGO_HOME || '', 'bin', binary),
@@ -587,9 +824,9 @@ export class PerlDebugAdapterDescriptorFactory implements vscode.DebugAdapterDes
       possiblePaths.push('/usr/local/bin/perl-dap', '/usr/bin/perl-dap');
     }
 
-    for (const p of possiblePaths) {
-      if (this.isExecutable(p)) {
-        return p;
+    for (const candidate of possiblePaths) {
+      if (this.isExecutable(candidate)) {
+        return candidate;
       }
     }
 
@@ -652,10 +889,19 @@ export class PerlDebugConfigurationProvider implements vscode.DebugConfiguration
     config: vscode.DebugConfiguration,
     _token?: vscode.CancellationToken,
   ): vscode.ProviderResult<vscode.DebugConfiguration> {
+    // Alias debug contract (#7699): a `type: perl5` launch configuration
+    // resolves onto the one contributed `perl` debugger. Only `perl` is a
+    // contributed debugger, and only its contributor may register its
+    // descriptor factory — registering one for `perl5` throws at
+    // activation — so the alias is rewritten here, before VS Code looks
+    // the debugger up for the resolved configuration.
+    if (config.type === PERL_ALIAS_LANGUAGE_ID) {
+      config.type = CANONICAL_PERL_LANGUAGE_ID;
+    }
     // If launch.json is missing or empty
     if (!config.type && !config.request && !config.name) {
       const editor = vscode.window.activeTextEditor;
-      if (editor && editor.document.languageId === 'perl') {
+      if (editor && isPerlLanguageId(editor.document.languageId)) {
         config.type = 'perl';
         config.name = 'Launch Perl';
         config.request = 'launch';
@@ -664,7 +910,14 @@ export class PerlDebugConfigurationProvider implements vscode.DebugConfiguration
     }
 
     if (config.request === 'attach') {
-      // Attach supports either processId or host/port.
+      // TCP host/port is the only supported attach mode: the adapter refuses
+      // processId attach fail-closed (#8109), so no template, snippet, or
+      // schema here advertises it. External-peer fields are validated
+      // separately by the descriptor factory.
+      // Preserve an explicit legacy processId unchanged when forwarding an
+      // existing configuration for adapter diagnostics; never default it into
+      // the TCP host/port path. The adapter owns the deterministic #8109
+      // refusal for that compatibility input.
       if (config.processId === undefined || config.processId === null) {
         if (!config.host) {
           config.host = 'localhost';
@@ -717,12 +970,6 @@ export class PerlDebugConfigurationProvider implements vscode.DebugConfiguration
         port: 13603,
         timeout: 5000,
       },
-      {
-        type: 'perl',
-        request: 'attach',
-        name: 'Attach by Process ID',
-        processId: 12345,
-      },
     ];
   }
 }
@@ -734,6 +981,16 @@ export function activateDebugger(context: vscode.ExtensionContext) {
 
   const factory = new PerlDebugAdapterDescriptorFactory(context);
   context.subscriptions.push(vscode.debug.registerDebugAdapterDescriptorFactory('perl', factory));
+
+  // Alias debug contract (#7699): a `type: perl5` launch configuration is
+  // owned by this provider for resolution (so onDebugResolve:perl5 has an
+  // owner) and rewritten to the contributed `perl` type there, which routes
+  // it to the one canonical factory below. Registering a descriptor factory
+  // for `perl5` is forbidden — only the contributor of a debugger may
+  // register its factory, and this package contributes exactly one debugger.
+  context.subscriptions.push(
+    vscode.debug.registerDebugConfigurationProvider(PERL_ALIAS_LANGUAGE_ID, provider),
+  );
 
   // Register debug commands
   context.subscriptions.push(

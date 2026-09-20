@@ -47,6 +47,15 @@ pub struct DocumentStore {
     documents: Arc<RwLock<HashMap<String, Document>>>,
 }
 
+/// Result of atomically accepting a candidate document.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum DocumentCommitResult {
+    /// The candidate replaced or opened the document.
+    Accepted,
+    /// The candidate was older than the tracked document version.
+    RejectedStale,
+}
+
 impl DocumentStore {
     /// Create a new empty store
     pub fn new() -> Self {
@@ -84,6 +93,35 @@ impl DocumentStore {
             true
         } else {
             false
+        }
+    }
+
+    /// Atomically decide whether a candidate may become the stored document.
+    /// Tracked callers enforce monotonic versions; untracked callers explicitly
+    /// represent refreshes and bypass that numeric check.
+    pub fn accept_candidate(
+        &self,
+        uri: String,
+        version: i32,
+        text: String,
+        enforce_version: bool,
+    ) -> DocumentCommitResult {
+        let key = Self::uri_key(&uri);
+        let Ok(mut docs) = self.documents.write() else {
+            return DocumentCommitResult::RejectedStale;
+        };
+        match docs.get_mut(&key) {
+            Some(doc) if enforce_version && version < doc.version => {
+                DocumentCommitResult::RejectedStale
+            }
+            Some(doc) => {
+                doc.update(version, text);
+                DocumentCommitResult::Accepted
+            }
+            None => {
+                docs.insert(key, Document::new(uri, version, text));
+                DocumentCommitResult::Accepted
+            }
         }
     }
 
@@ -279,6 +317,25 @@ mod tests {
         let doc = must_some(store.get(&uri));
         assert_eq!(doc.version, 3);
         assert_eq!(doc.text(), "current");
+    }
+
+    #[test]
+    fn test_accept_candidate_separates_tracked_and_untracked_versions() {
+        let store = DocumentStore::new();
+        let uri = "file:///candidate.pl".to_string();
+        store.open(uri.clone(), 9, "current".to_string());
+
+        assert_eq!(
+            store.accept_candidate(uri.clone(), 8, "stale".to_string(), true),
+            DocumentCommitResult::RejectedStale
+        );
+        assert_eq!(
+            store.accept_candidate(uri.clone(), 1, "refresh".to_string(), false),
+            DocumentCommitResult::Accepted
+        );
+        let doc = must_some(store.get(&uri));
+        assert_eq!(doc.version, 1);
+        assert_eq!(doc.text(), "refresh");
     }
 
     #[test]

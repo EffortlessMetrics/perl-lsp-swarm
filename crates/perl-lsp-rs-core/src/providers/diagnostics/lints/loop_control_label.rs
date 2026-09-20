@@ -82,6 +82,8 @@ pub fn check_loop_control_labels(
                         .to_string(),
             }],
             tags: Vec::new(),
+            fixable: false,
+            critic_observation: None,
             suggestion: Some(format!(
                 "Define a `{label_name}:` label on the intended enclosing loop, or write `{op};` to target the innermost loop"
             )),

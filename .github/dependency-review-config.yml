@@ -19,6 +19,11 @@ vulnerability-check: true
 license-check: true
 allow-licenses:
   - MIT
+  # MIT-0 (MIT No Attribution): OSI-approved, strictly more permissive than
+  # MIT. Required on the protected base so #12470 can land jsonschema's
+  # borrow-or-share transitive dep (#12156); that PR makes the matching
+  # deny.toml admission on its own branch.
+  - MIT-0
   - Apache-2.0
   - Apache-2.0 WITH LLVM-exception
   - BSD-2-Clause
@@ -28,6 +33,18 @@ allow-licenses:
   - CC0-1.0
   - Zlib
   - CDLA-Permissive-2.0
+  # Development publishing tooling only (ovsx, Eclipse's own Open VSX CLI):
+  # never linked into or distributed with the product. ovsx@1.0.2 already
+  # carried EPL-2.0; the bump only made the delta gate see the license.
+  - EPL-2.0
+
+# ovsx is Eclipse's own Open VSX publishing CLI: a devDependency used only
+# by the check:openvsx script, never linked into or distributed with the
+# product. ovsx@1.0.2 already carried EPL-2.0; the bump only made the delta
+# gate see the license. The exemption is per-package so EPL-2.0 stays denied
+# for every other dependency (#10939).
+allow-dependencies-licenses:
+  - pkg:npm/ovsx
 
 comment-summary-in-pr: never
 show-openssf-scorecard: true

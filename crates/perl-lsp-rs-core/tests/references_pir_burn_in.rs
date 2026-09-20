@@ -64,14 +64,13 @@ fn burn_in_compiler_is_subset_of_legacy() {
                 let mut legacy: Vec<(usize, usize)> = Vec::new();
                 let mut anchored = false;
                 for f in body.facts.iter().filter(|f| &f.name.name == name) {
-                    if let Some(r) = f.source_anchor.range.as_ref() {
-                        if let Some(found) = find_references_single_file(&output.ast, r.start) {
-                            if !found.is_empty() {
-                                legacy = found;
-                                anchored = true;
-                                break;
-                            }
-                        }
+                    if let Some(r) = f.source_anchor.range.as_ref()
+                        && let Some(found) = find_references_single_file(&output.ast, r.start)
+                        && !found.is_empty()
+                    {
+                        legacy = found;
+                        anchored = true;
+                        break;
                     }
                 }
                 if !anchored {

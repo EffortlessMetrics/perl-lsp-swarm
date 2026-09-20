@@ -1,0 +1,13 @@
+{
+  "name": "indeterminate_transport_loss",
+  "fixture_class": "transport loss at the boundary itself; possibly applied from the first post-boundary instant",
+  "phase": "runtime_mutation_begins",
+  "outcome": {
+    "kind": "indeterminate_possibly_applied",
+    "failure_phase": "runtime_mutation_begins",
+    "cause": "transport_loss_after_mutation_began"
+  },
+  "expected_generation_effect": "advance",
+  "expected_phase_valid": true,
+  "expected_clean_projection": false
+}

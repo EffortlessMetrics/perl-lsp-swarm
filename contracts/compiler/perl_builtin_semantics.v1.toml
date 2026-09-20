@@ -1,0 +1,169 @@
+schema_version = "perl_builtin_semantics.v1"
+catalog_id = "perl_builtin_semantics_seed_v1"
+controller_issue = "#6679"
+coverage_scope = "First bounded builtin/list-operator semantic catalog for seven high-leverage forms; not complete CORE coverage."
+claim_boundary = "Catalog rows describe argument, hidden-state, effect, and capability contracts. Every row remains catalog_only and non-executable until HIR/PIR/EIR proof lands."
+complete = false
+
+[[builtins]]
+builtin_id = "core.defined"
+name = "defined"
+forms = ["defined EXPR", "defined"]
+classification = "named_unary"
+recognition = "parser_builtin_or_core_qualified"
+perl_version_min = "5.0.0"
+arguments = [
+  { role = "value", context = "scalar", access = "read", cardinality = "zero_or_one" },
+]
+implicit_operands = ["topic_when_omitted"]
+result_behavior = "scalar_boolean"
+side_effects = []
+boundaries = ["tie_magic"]
+capabilities = []
+control_effect = "ordinary"
+hir_pir_lowering = "catalog_only"
+eir_profile = "boundary"
+proof = "missing"
+owner_issue = "#6679"
+evidence = ["perldoc:perlfunc#defined"]
+claim_boundary = "This seed covers ordinary value and omitted-topic forms; code-slot definition checks remain separately unproven, and tied or magical values remain boundary-qualified."
+
+[[builtins]]
+builtin_id = "core.grep"
+name = "grep"
+forms = ["grep BLOCK LIST", "grep EXPR,LIST"]
+classification = "list_operator"
+recognition = "parser_builtin_or_core_qualified"
+perl_version_min = "5.0.0"
+arguments = [
+  { role = "predicate", context = "callback", access = "read", cardinality = "exactly_one" },
+  { role = "input_list", context = "list", access = "read", cardinality = "zero_or_more" },
+]
+implicit_operands = ["topic_alias_per_iteration"]
+result_behavior = "scalar_count_or_list"
+side_effects = ["callback_invocation", "topic_localization"]
+boundaries = ["dynamic_callback"]
+capabilities = []
+control_effect = "ordinary"
+hir_pir_lowering = "catalog_only"
+eir_profile = "boundary"
+proof = "missing"
+owner_issue = "#6679"
+evidence = ["perldoc:perlfunc#grep"]
+claim_boundary = "The predicate executes with an aliased localized topic; arbitrary callback behavior is not statically executed."
+
+[[builtins]]
+builtin_id = "core.map"
+name = "map"
+forms = ["map BLOCK LIST", "map EXPR,LIST"]
+classification = "list_operator"
+recognition = "parser_builtin_or_core_qualified"
+perl_version_min = "5.0.0"
+arguments = [
+  { role = "mapper", context = "callback", access = "read", cardinality = "exactly_one" },
+  { role = "input_list", context = "list", access = "read", cardinality = "zero_or_more" },
+]
+implicit_operands = ["topic_alias_per_iteration"]
+result_behavior = "scalar_count_or_list"
+side_effects = ["callback_invocation", "topic_localization"]
+boundaries = ["dynamic_callback"]
+capabilities = []
+control_effect = "ordinary"
+hir_pir_lowering = "catalog_only"
+eir_profile = "boundary"
+proof = "missing"
+owner_issue = "#6679"
+evidence = ["perldoc:perlfunc#map"]
+claim_boundary = "The mapper may emit zero or more values per input and executes with an aliased localized topic."
+
+[[builtins]]
+builtin_id = "core.print"
+name = "print"
+forms = ["print FILEHANDLE LIST", "print LIST", "print"]
+classification = "special_syntax"
+recognition = "parser_builtin_or_core_qualified"
+perl_version_min = "5.0.0"
+arguments = [
+  { role = "filehandle", context = "filehandle", access = "write", cardinality = "zero_or_one" },
+  { role = "values", context = "list", access = "read", cardinality = "zero_or_more" },
+]
+implicit_operands = ["selected_output_handle", "topic_when_omitted"]
+result_behavior = "scalar_boolean"
+side_effects = ["stream_write", "interpreter_state_read"]
+boundaries = ["io", "selected_handle_state", "output_separators", "overload"]
+capabilities = ["io"]
+control_effect = "ordinary"
+hir_pir_lowering = "catalog_only"
+eir_profile = "boundary"
+proof = "missing"
+owner_issue = "#6679"
+evidence = ["perldoc:perlfunc#print"]
+claim_boundary = "FILEHANDLE syntax is not an ordinary first argument; omitted handle/topic and output separators are hidden interpreter state, and host IO remains capability-bound."
+
+[[builtins]]
+builtin_id = "core.push"
+name = "push"
+forms = ["push ARRAY,LIST"]
+classification = "builtin"
+recognition = "parser_builtin_or_core_qualified"
+perl_version_min = "5.0.0"
+arguments = [
+  { role = "target_array", context = "place", access = "read_modify_write", cardinality = "exactly_one" },
+  { role = "values", context = "list", access = "read", cardinality = "zero_or_more" },
+]
+implicit_operands = []
+result_behavior = "scalar_count"
+side_effects = ["container_mutation"]
+boundaries = ["tie_magic"]
+capabilities = []
+control_effect = "ordinary"
+hir_pir_lowering = "catalog_only"
+eir_profile = "boundary"
+proof = "missing"
+owner_issue = "#6679"
+evidence = ["perldoc:perlfunc#push"]
+claim_boundary = "The target is an array place mutated once; tied or magical containers remain an explicit hidden-effect boundary."
+
+[[builtins]]
+builtin_id = "core.scalar"
+name = "scalar"
+forms = ["scalar EXPR"]
+classification = "named_unary"
+recognition = "parser_builtin_or_core_qualified"
+perl_version_min = "5.0.0"
+arguments = [
+  { role = "value", context = "scalar", access = "read", cardinality = "exactly_one" },
+]
+implicit_operands = []
+result_behavior = "scalar_value"
+side_effects = []
+boundaries = []
+capabilities = []
+control_effect = "ordinary"
+hir_pir_lowering = "catalog_only"
+eir_profile = "boundary"
+proof = "missing"
+owner_issue = "#6679"
+evidence = ["perldoc:perlfunc#scalar"]
+claim_boundary = "The catalog records scalar context demand only; it does not invent runtime coercion or a constant value."
+
+[[builtins]]
+builtin_id = "core.wantarray"
+name = "wantarray"
+forms = ["wantarray"]
+classification = "special_syntax"
+recognition = "parser_builtin_or_core_qualified"
+perl_version_min = "5.0.0"
+arguments = []
+implicit_operands = ["caller_context"]
+result_behavior = "context_tri_state"
+side_effects = ["interpreter_state_read"]
+boundaries = ["interpreter_state"]
+capabilities = ["interpreter_state"]
+control_effect = "ordinary"
+hir_pir_lowering = "catalog_only"
+eir_profile = "boundary"
+proof = "missing"
+owner_issue = "#6679"
+evidence = ["perldoc:perlfunc#wantarray"]
+claim_boundary = "The result depends on the caller's active context and cannot be resolved from local syntax alone."

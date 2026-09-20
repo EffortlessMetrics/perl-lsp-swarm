@@ -1,0 +1,249 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://effortlessmetrics.dev/perl-lsp/schemas/stage_closure_projection.v1.schema.json",
+  "title": "Shared advisory stage closure-projection contract v1",
+  "description": "Programme-neutral contract projecting one stage's advisory closure eligibility from explicit supplied facts: reviewed packet/builder digests, current-head currentness, individual review-role terminality, finding resolution, load-bearing negative controls, old-path disposition, generated-output currentness, external-stage observation, and lifecycle discrimination. Eligibility is deterministically derived from the facts and the composer's assertion must match the derivation. The projection is advisory only: it is not merge authorization, not external/public-stage authorization, and not another prose review. Live review/candidate authorities (#3693/#6060 and programme observers) remain the current review authorities. Projection instances are runtime-local outputs, never tracked live state.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "schema_version",
+    "projection_id",
+    "reviewed",
+    "currentness",
+    "review_state",
+    "controls",
+    "external_stage",
+    "lifecycle",
+    "eligibility",
+    "authorization",
+    "merge_authorized"
+  ],
+  "properties": {
+    "schema": { "const": "stage_closure_projection.v1" },
+    "schema_version": { "const": 1 },
+    "projection_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Stable identity of this closure projection, assigned by the composing caller."
+    },
+    "reviewed": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "packet_id",
+        "packet_digest",
+        "builder_packet_digest",
+        "reviewed_head",
+        "reviewed_base",
+        "claim_ceiling"
+      ],
+      "properties": {
+        "packet_id": { "type": "string", "minLength": 1 },
+        "packet_digest": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Digest of the review packet this projection is derived over."
+        },
+        "builder_packet_digest": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Builder-packet digest bound by the reviewed packet."
+        },
+        "reviewed_head": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Head the review was performed against."
+        },
+        "reviewed_base": { "type": "string", "minLength": 1 },
+        "claim_ceiling": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Claim ceiling as reviewed; a widened current ceiling is claim widening."
+        }
+      }
+    },
+    "currentness": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["head", "base", "tree", "packet_digest", "builder_packet_digest", "claim_ceiling"],
+      "properties": {
+        "head": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Currently observed candidate head; must match the reviewed head."
+        },
+        "base": { "type": "string", "minLength": 1 },
+        "tree": { "type": "string", "minLength": 1 },
+        "packet_digest": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Digest of the review packet the current observation is anchored to."
+        },
+        "builder_packet_digest": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Currently observed builder-packet digest; a change invalidates the review without a new packet."
+        },
+        "claim_ceiling": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Currently observed claim ceiling; must not widen after review."
+        }
+      }
+    },
+    "review_state": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["roles", "findings"],
+      "properties": {
+        "roles": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["role", "required", "state"],
+            "properties": {
+              "role": { "$ref": "#/$defs/review_role" },
+              "required": { "type": "boolean" },
+              "state": { "$ref": "#/$defs/role_state" },
+              "reference": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Identity of the individual review fulfilling the role; required when state is terminal."
+              },
+              "reason": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Required exactly when state is not_applicable."
+              }
+            }
+          },
+          "description": "Terminality of each programme-required review role."
+        },
+        "findings": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["finding_id", "material", "outcome", "state"],
+            "properties": {
+              "finding_id": { "type": "string", "minLength": 1 },
+              "material": {
+                "type": "boolean",
+                "description": "Whether the finding is material for this stage's closure."
+              },
+              "outcome": { "$ref": "#/$defs/finding_outcome" },
+              "state": { "$ref": "#/$defs/closure_finding_state" }
+            }
+          },
+          "description": "Individual findings this projection is derived over; duplicate finding identities fail closed."
+        }
+      }
+    },
+    "controls": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "negative_controls_load_bearing",
+        "old_paths_dispositioned",
+        "generated_outputs_current",
+        "generated_identities"
+      ],
+      "properties": {
+        "negative_controls_load_bearing": {
+          "type": "boolean",
+          "description": "Must be true; non-load-bearing controls block the projection entirely."
+        },
+        "old_paths_dispositioned": {
+          "type": "boolean",
+          "description": "Must be true; an undispositioned old live path blocks the projection."
+        },
+        "generated_outputs_current": {
+          "type": "boolean",
+          "description": "Must be true; stale required generated material blocks the projection."
+        },
+        "generated_identities": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "description": "Current identities of the required generated outputs; required non-empty when generated_outputs_current is true."
+        }
+      }
+    },
+    "external_stage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["claimed", "observed"],
+      "properties": {
+        "claimed": {
+          "type": "boolean",
+          "description": "Whether the candidate claims an external/public stage."
+        },
+        "observed": {
+          "type": "boolean",
+          "description": "Whether the external/public stage was actually observed."
+        },
+        "evidence": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Observation evidence; required when an external stage is both claimed and observed."
+        }
+      },
+      "description": "An external/public stage is never inferred from an internal merge."
+    },
+    "lifecycle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["graceful_cleanup_claimed", "force_path_excluded"],
+      "properties": {
+        "graceful_cleanup_claimed": { "type": "boolean" },
+        "force_path_excluded": {
+          "type": "boolean",
+          "description": "Must be true when graceful cleanup is claimed; force cleanup is never graceful lifecycle success."
+        }
+      }
+    },
+    "eligibility": {
+      "$ref": "#/$defs/closure_eligibility",
+      "description": "Advisory eligibility, deterministically derived from the supplied facts; the composer's assertion must match the derivation."
+    },
+    "authorization": { "const": "advisory_only" },
+    "merge_authorized": {
+      "const": false,
+      "description": "Closed: an advisory closure projection never authorizes merge."
+    },
+    "metadata": {
+      "type": "object",
+      "description": "Non-semantic caller metadata; excluded from canonical identity and projections."
+    }
+  },
+  "$defs": {
+    "review_role": {
+      "enum": ["builder_self_review", "adversarial_challenger", "specialist", "evidence_worker"]
+    },
+    "role_state": {
+      "description": "Terminality of one review role in this projection. Pending required roles make the projection honestly not eligible.",
+      "enum": ["terminal", "pending", "not_applicable"]
+    },
+    "finding_outcome": {
+      "enum": [
+        "material_blocker",
+        "bounded_follow_up",
+        "question_requires_evidence",
+        "claim_narrowing_required",
+        "stale_or_wrong_subject",
+        "instrument_failure",
+        "no_finding",
+        "resolved_current_head"
+      ]
+    },
+    "closure_finding_state": {
+      "description": "State of one finding within this projection. Open material or instrument-failure findings make the projection honestly not eligible.",
+      "enum": ["resolved_on_current_head", "open", "narrowed", "withdrawn"]
+    },
+    "closure_eligibility": {
+      "enum": ["closure_eligible", "not_eligible"]
+    }
+  }
+}

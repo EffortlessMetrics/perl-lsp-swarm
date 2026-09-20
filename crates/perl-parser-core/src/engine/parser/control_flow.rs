@@ -526,7 +526,7 @@ impl<'a> Parser<'a> {
         let start = self.current_position();
         // Consume 'return' via consume_token so `last_end_position` advances past
         // the keyword; capture its end for the valueless fallback span (#4861).
-        let return_end = self.consume_token()?.end;
+        let return_end = self.consume_token()?.end();
 
         // Check if we have a value to return - only stop at clear ends or statement modifiers.
         // Word operators (or, and, xor) belong to the enclosing statement, not the return value.
@@ -558,7 +558,7 @@ impl<'a> Parser<'a> {
         let start = self.current_position();
         // Consume 'return' via consume_token so `last_end_position` advances past
         // the keyword; capture its end for the valueless fallback span (#4861).
-        let return_end = self.consume_token()?.end;
+        let return_end = self.consume_token()?.end();
 
         // Determine whether there is a return value.
         // Stop at all expression-level boundaries as well as statement-level ones.
@@ -586,7 +586,7 @@ impl<'a> Parser<'a> {
 
     /// Parse eval expression/block
     fn parse_eval(&mut self) -> ParseResult<Node> {
-        let start = self.consume_token()?.start; // consume 'eval'
+        let start = self.consume_token()?.start(); // consume 'eval'
 
         // Eval can take either a block or a string expression
         if self.peek_kind() == Some(TokenKind::LeftBrace) {
@@ -617,15 +617,38 @@ impl<'a> Parser<'a> {
     /// 2. For the plain-Identifier case, inspect the fully-parsed target to distinguish
     ///    Label (plain Identifier node) from Expr (complex expression like `E . $suffix`).
     fn parse_goto(&mut self) -> ParseResult<Node> {
-        let start = self.consume_token()?.start; // consume 'goto'
+        let goto_token = self.consume_token()?; // consume 'goto'
+        let start = goto_token.start();
         self.mark_not_stmt_start();
 
         // Phase 1: Quick detection of & (always Sub form)
         let starts_with_ampersand = self.peek_kind() == Some(TokenKind::BitwiseAnd);
 
         // Parse the target as an assignment-level expression (not full comma
-        // expression) to avoid consuming surrounding list separators.
-        let target = self.parse_assignment()?;
+        // expression) to avoid consuming surrounding list separators.  A
+        // targetless `goto` (`goto;`, `foo and goto;`, `goto if $x;`) is
+        // valid Perl: the omission is legal, not a broken operand, so emit
+        // the dedicated childless `TargetlessGoto` node with no diagnostic
+        // (#15742). Genuinely missing operands elsewhere keep the blocking
+        // recovery via `recover_missing_infix_rhs` (#13489 review).
+        let target = if self.is_infix_rhs_absent() {
+            None
+        } else if let Some(missing) = self.recover_missing_infix_rhs(start) {
+            Some(missing)
+        } else {
+            Some(self.parse_assignment()?)
+        };
+
+        let Some(target) = target else {
+            // Span the consumed `goto` keyword so downstream ranges
+            // (semantic tokens, hover, diagnostics) anchor to the real
+            // source text instead of a zero-width point (#15742 review).
+            return Ok(Node::new(
+                NodeKind::TargetlessGoto {},
+                SourceLocation { start, end: goto_token.end() },
+            ));
+        };
+
         let end = target.location.end;
 
         // Phase 2: Determine form based on parsed target (and whether it started with &)
@@ -652,7 +675,7 @@ impl<'a> Parser<'a> {
 
     /// Parse `defer { ... }` block (Perl 5.36+ experimental, stable in 5.40)
     pub(crate) fn parse_defer(&mut self) -> ParseResult<Node> {
-        let start = self.consume_token()?.start; // consume 'defer'
+        let start = self.consume_token()?.start(); // consume 'defer'
         let block = self.parse_block()?;
         let end = block.location.end;
         Ok(Node::new(NodeKind::Defer { block: Box::new(block) }, SourceLocation { start, end }))
@@ -660,7 +683,7 @@ impl<'a> Parser<'a> {
 
     /// Parse try/catch/finally block
     fn parse_try(&mut self) -> ParseResult<Node> {
-        let start = self.consume_token()?.start; // consume 'try'
+        let start = self.consume_token()?.start(); // consume 'try'
 
         // Parse the try body
         let body = self.parse_block()?;
@@ -761,7 +784,7 @@ impl<'a> Parser<'a> {
 
     /// Parse do expression/block
     fn parse_do(&mut self) -> ParseResult<Node> {
-        let start = self.consume_token()?.start; // consume 'do'
+        let start = self.consume_token()?.start(); // consume 'do'
 
         // Do can take either a block or a string (filename)
         if self.peek_kind() == Some(TokenKind::LeftBrace) {
@@ -779,7 +802,7 @@ impl<'a> Parser<'a> {
 
     /// Parse given statement
     fn parse_given_statement(&mut self) -> ParseResult<Node> {
-        let start = self.consume_token()?.start; // consume 'given'
+        let start = self.consume_token()?.start(); // consume 'given'
 
         // Parse the expression in parentheses
         self.expect(TokenKind::LeftParen)?;
@@ -830,11 +853,17 @@ impl<'a> Parser<'a> {
                     }
                     Err(e) => {
                         // Don't recover from these — propagate immediately.
+                        // `DoWhileTrailingBlock` joins them: the trailing block
+                        // after a do-while condition has no recovery that stays
+                        // honest about source that real `perl` refuses to
+                        // compile (#15649).
                         if matches!(
                             e,
                             ParseError::RecursionLimit
+                                | ParseError::RecursionDepthExhausted { .. }
                                 | ParseError::NestingTooDeep { .. }
                                 | ParseError::Cancelled
+                                | ParseError::DoWhileTrailingBlock { .. }
                         ) {
                             return Err(e);
                         }
@@ -870,7 +899,7 @@ impl<'a> Parser<'a> {
 
     /// Parse when statement
     fn parse_when_statement(&mut self) -> ParseResult<Node> {
-        let start = self.consume_token()?.start; // consume 'when'
+        let start = self.consume_token()?.start(); // consume 'when'
 
         // Parse the condition in parentheses
         self.expect(TokenKind::LeftParen)?;
@@ -901,7 +930,7 @@ impl<'a> Parser<'a> {
         // Record a descriptive error
         self.record_error(ParseError::syntax(
             "'else' without preceding 'if' or 'unless'",
-            else_token.start,
+            else_token.start(),
         ));
 
         // Try to consume the block so we don't leave it orphaned
@@ -947,7 +976,7 @@ impl<'a> Parser<'a> {
         // Record a descriptive error
         self.record_error(ParseError::syntax(
             "'elsif' without preceding 'if' or 'unless'",
-            elsif_token.start,
+            elsif_token.start(),
         ));
 
         // Parse the elsif condition
@@ -1016,7 +1045,7 @@ impl<'a> Parser<'a> {
 
     /// Parse default statement
     fn parse_default_statement(&mut self) -> ParseResult<Node> {
-        let start = self.consume_token()?.start; // consume 'default'
+        let start = self.consume_token()?.start(); // consume 'default'
 
         // Parse the body block
         let body = self.parse_block()?;
@@ -1089,5 +1118,95 @@ mod goto_form_tests {
         let mut parser = Parser::new("goto &handler;");
         let ast = must(parser.parse());
         assert!(ast.to_sexp().contains("goto"), "sexp must render the goto node");
+    }
+
+    /// Find the first node whose kind matches the predicate; used by the
+    /// targetless-goto tests to assert the new variant is emitted.
+    fn find_kind<F>(node: &Node, pred: &F) -> Option<NodeKind>
+    where
+        F: Fn(&NodeKind) -> bool,
+    {
+        if pred(&node.kind) {
+            return Some(node.kind.clone());
+        }
+        for child in node.children() {
+            if let Some(k) = find_kind(child, pred) {
+                return Some(k);
+            }
+        }
+        None
+    }
+
+    fn first_targetless_kind(source: &str) -> Option<NodeKind> {
+        let mut parser = Parser::new(source);
+        let ast = must(parser.parse());
+        find_kind(&ast, &|k| matches!(k, NodeKind::TargetlessGoto { .. }))
+    }
+
+    #[test]
+    fn parse_goto_bare_emits_targetless_variant() {
+        // `goto;` — Perl accepts the omission; parser emits the new
+        // childless `TargetlessGoto` node instead of fabricating a
+        // `MissingExpression` operand.
+        let kind = first_targetless_kind("goto;").expect("`goto;` must produce a TargetlessGoto");
+        assert!(matches!(kind, NodeKind::TargetlessGoto { .. }));
+    }
+
+    #[test]
+    fn parse_goto_short_circuit_targetless_emits_variant() {
+        // `foo and goto;` — same omission accepted inside a short-circuit
+        // expression form.
+        let kind = first_targetless_kind("foo and goto;")
+            .expect("short-circuit goto must produce a TargetlessGoto");
+        assert!(matches!(kind, NodeKind::TargetlessGoto { .. }));
+    }
+
+    #[test]
+    fn parse_goto_statement_modifier_targetless_emits_variant() {
+        // `goto if 0;` — same omission accepted after a statement modifier.
+        let kind = first_targetless_kind("goto if 0;")
+            .expect("modifier goto must produce a TargetlessGoto");
+        assert!(matches!(kind, NodeKind::TargetlessGoto { .. }));
+    }
+
+    #[test]
+    fn parse_goto_targeted_still_emits_goto_variant() {
+        // `goto LABEL;` — targeted form keeps the existing `Goto` variant
+        // and must not be collapsed into the targetless one.
+        let mut parser = Parser::new("goto LABEL;");
+        let ast = must(parser.parse());
+        let mut found_goto = false;
+        let mut found_targetless = false;
+        fn walk(node: &Node, found_goto: &mut bool, found_targetless: &mut bool) {
+            match &node.kind {
+                NodeKind::Goto { .. } => *found_goto = true,
+                NodeKind::TargetlessGoto { .. } => *found_targetless = true,
+                _ => {}
+            }
+            for child in node.children() {
+                walk(child, found_goto, found_targetless);
+            }
+        }
+        walk(&ast, &mut found_goto, &mut found_targetless);
+        assert!(found_goto, "targeted goto must still produce a Goto node");
+        assert!(!found_targetless, "targeted goto must not produce a TargetlessGoto");
+    }
+
+    #[test]
+    fn parse_goto_targetless_sexp_renders_grammar_kind() {
+        // The S-expression for a bare `goto;` must surface the new
+        // grammar atom `goto_targetless`, with no fabricated operand or
+        // child payload.
+        let mut parser = Parser::new("goto;");
+        let ast = must(parser.parse());
+        let sexp = ast.to_sexp();
+        assert!(
+            sexp.contains("goto_targetless"),
+            "sexp must render the new variant atom, got: {sexp}"
+        );
+        assert!(
+            !sexp.contains("missing_expression"),
+            "sexp must not fabricate a missing_expression operand, got: {sexp}"
+        );
     }
 }

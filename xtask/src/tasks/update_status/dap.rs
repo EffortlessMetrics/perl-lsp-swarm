@@ -69,6 +69,9 @@ pub(super) fn count_dap_tests(root: &Path) -> DapTestCounts {
                         && !e.file_name().to_string_lossy().starts_with("breakpoints_multiline")
                         && !e.file_name().to_string_lossy().starts_with("breakpoints_pod")
                         && e.file_name().to_string_lossy() != "dap_real_session_data.pl"
+                        // `value_format_stdio_matrix.pl` backs `dap_value_format_stdio_proof`,
+                        // not the five-fixture launch scorecard in `dap_scorecard_harness.rs`.
+                        && e.file_name().to_string_lossy() != "value_format_stdio_matrix.pl"
                 })
                 .count()
         })
@@ -148,7 +151,7 @@ fn session_table_from_receipt(receipt: Option<&ScorecardReceipt>) -> String {
                 | Attach success rate (TCP loopback) | receipt missing (`cargo test -p perl-dap --test dap_scorecard_harness -- --nocapture`) | ≥ 80 % | SKIP |\n\
                 | Variables pane correctness (real session) | receipt missing | expected named variables in scope | SKIP |\n\
                 | Evaluate correctness (real session) | receipt missing | evaluate($x + 1) => 42 | SKIP |\n\
-                | Deep truncation/pagination correctness | receipt missing | page [250..274] over @big | SKIP |\n\
+                | Deep truncation/pagination correctness | receipt missing | no fabricated @big contents or counts (#7358) | SKIP |\n\
                 | Memory footprint baseline (portable proxy) | receipt missing | best-effort baseline | SKIP |"
             .to_string();
     };
@@ -161,7 +164,7 @@ fn session_table_from_receipt(receipt: Option<&ScorecardReceipt>) -> String {
          | Attach success rate (TCP loopback) | {}{} | ≥ {} % | {} |\n\
          | Variables pane correctness (real session) | {} | expected named variables in scope | {} |\n\
          | Evaluate correctness (real session) | {} | evaluate($x + 1) => 42 | {} |\n\
-         | Deep truncation/pagination correctness | {} | page [250..274] over @big | {} |\n\
+         | Deep truncation/pagination correctness | {} | no fabricated @big contents or counts (#7358) | {} |\n\
          | Memory footprint baseline (portable proxy) | {} | best-effort baseline | {} |",
         format_rate(&receipt.attach),
         availability_note,
@@ -232,14 +235,60 @@ mod tests {
     fn test_count_dap_tests() -> Result<()> {
         let root = crate::utils::project_root()?;
         let counts = count_dap_tests(&root);
+        const SCORECARD_FIXTURES: &[&str] =
+            &["args.pl", "breakpoints_begin_end.pl", "eval.pl", "hello.pl", "loops.pl"];
+        let fixture_dir = root.join("crates/perl-dap/tests/fixtures");
+        for name in SCORECARD_FIXTURES {
+            assert!(
+                fixture_dir.join(name).is_file(),
+                "launch-scorecard DAP fixture {name} must remain present"
+            );
+        }
         assert!(
-            counts.integration_test_targets >= 1,
-            "expected at least 1 [[test]] target in perl-dap/Cargo.toml, got {}",
-            counts.integration_test_targets
+            fixture_dir.join("value_format_stdio_matrix.pl").is_file(),
+            "stdio-proof fixture must remain present but is not a launch-scorecard fixture"
+        );
+        // The manifest is the authority for how many [[test]] targets exist;
+        // a bare integer here went stale twice in three days (#8758, #9069;
+        // #14642). Check the counter against an independent TOML parse of the
+        // same manifest, so a counting defect (e.g. matching `[[test]]` inside
+        // a comment or missing a target) is still caught without restating a
+        // fact the manifest already carries.
+        let manifest = fs::read_to_string(root.join("crates/perl-dap/Cargo.toml"))?;
+        let parsed: toml::Value = toml::from_str(&manifest)?;
+        let declared: Vec<&str> = parsed
+            .get("test")
+            .and_then(toml::Value::as_array)
+            .map(|targets| {
+                targets.iter().filter_map(|t| t.get("name").and_then(toml::Value::as_str)).collect()
+            })
+            .unwrap_or_default();
+        assert!(
+            !declared.is_empty(),
+            "perl-dap/Cargo.toml must declare explicit [[test]] targets with names"
         );
         assert_eq!(
-            counts.scorecard_fixtures, 5,
-            "expected 5 scorecard fixtures (hello, loops, eval, args, breakpoints_begin_end), got {}",
+            counts.integration_test_targets,
+            declared.len(),
+            "count_dap_tests disagrees with the parsed [[test]] targets in perl-dap/Cargo.toml"
+        );
+        // Named targets whose landing issues bound them to this ratchet: a
+        // count alone cannot prove they are still present.
+        for target in [
+            "error_class_fixed_origin", // #8739
+            "debugger_output_origin",   // #8746
+            "backend_error_class",      // #8758
+        ] {
+            assert!(
+                declared.contains(&target),
+                "expected a [[test]] target named {target} in perl-dap/Cargo.toml"
+            );
+        }
+        assert_eq!(
+            counts.scorecard_fixtures,
+            SCORECARD_FIXTURES.len(),
+            "expected {} launch-scorecard fixtures (hello, loops, eval, args, begin_end), got {}",
+            SCORECARD_FIXTURES.len(),
             counts.scorecard_fixtures
         );
         Ok(())

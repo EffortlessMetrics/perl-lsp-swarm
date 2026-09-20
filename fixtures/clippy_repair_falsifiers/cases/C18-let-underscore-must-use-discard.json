@@ -1,0 +1,69 @@
+{
+  "schema_version": 1,
+  "case_id": "C18-let-underscore-must-use-discard",
+  "family": "lost_work_error_obligation_theater",
+  "purpose": "let _ = or drop() erasing must-use values (futures, join handles, send results) discards obligations the gate denies.",
+  "incident_reference": null,
+  "subject": {
+    "scope": "workspace",
+    "target_kinds": [
+      "lib",
+      "bin",
+      "test"
+    ],
+    "profile": "all",
+    "platforms": [
+      "linux",
+      "windows",
+      "macos"
+    ],
+    "features": "default"
+  },
+  "governed_lint": null,
+  "dishonest_mutation": {
+    "kind": "source-snippet",
+    "language": "rust",
+    "trigger_evidence": [
+      "let _ = worker",
+      "join obligation erased"
+    ],
+    "content": "use std::thread;\n\npub fn spawn_worker() {\n    let worker = thread::spawn(|| heavy_compute());\n    let _ = worker; // join obligation erased\n}\n\nfn heavy_compute() -> u32 { 41 + 1 }\n",
+    "sha256": "223127fdd884f106cece574aad58fbddeedbfa987e8127e083db073d6c5578ad"
+  },
+  "rejecting_authority": {
+    "status": "bound",
+    "authority_kind": "gate_command",
+    "reference": "gate:clippy_full"
+  },
+  "expected_result": {
+    "result_class": "reject",
+    "reason_code": "must_use_discard_theater"
+  },
+  "positive_counterpart": {
+    "sanctioned_evidence": [
+      "handle.join()",
+      "thread::Result<u32>"
+    ],
+    "note": "Handle joined; result observed or handled.",
+    "content": "use std::thread;\n\npub fn spawn_worker() -> thread::Result<u32> {\n    let handle = thread::spawn(|| heavy_compute());\n    handle.join()\n}\n\nfn heavy_compute() -> u32 { 41 + 1 }\n",
+    "sha256": "3096e2ddf3c8bc6683eda9c8215599737ef707c052e9603510c7cc0c2576cdf9"
+  },
+  "applicability": {
+    "packet_classes": [
+      "qualification",
+      "foundation",
+      "migration",
+      "activation",
+      "review"
+    ],
+    "domains": [
+      "clippy-core"
+    ]
+  },
+  "delta_provenance": {
+    "change_reason": "initial corpus freeze (#11649)",
+    "owning_issue": 11649,
+    "historical_interpretability": true
+  },
+  "claim_boundary": "-D warnings promotes rustc unused_must_use inside clippy_full; deliberate-discard contracts refine under #11236."
+}

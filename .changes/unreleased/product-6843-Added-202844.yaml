@@ -1,0 +1,9 @@
+project: product
+component: Developer experience
+kind: Added
+body: Added a checked provider fact-read inventory that names current producers, proof assumptions, readiness inputs, fallback behavior, duplicate semantic interpretation, and migration owners before semantic-port cutover.
+time: 2026-08-11T20:28:44Z
+custom:
+  PR: "6843"
+  Slug: provider-fact-read-inventory
+  Breaking: "no"

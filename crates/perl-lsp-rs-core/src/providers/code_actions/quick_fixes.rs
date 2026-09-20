@@ -7,10 +7,8 @@ use std::collections::HashMap;
 use super::types::{
     CodeAction, CodeActionEdit, CodeActionKind, QuickFixDiagnostic, QuickFixMetadata,
 };
-use crate::providers::import_management::guess_module_for_function;
 use crate::providers::rename::TextEdit;
 use perl_diagnostics::codes::DiagnosticCode;
-use perl_lexer::is_builtin;
 use perl_parser::ast_utils::{find_declaration_position, get_indent_at};
 use perl_parser_core::{Node, NodeKind, SourceLocation};
 
@@ -1420,7 +1418,7 @@ pub fn fix_parse_error(
                 is_preferred: true,
             });
         }
-        "PL001" | "PL002"
+        "PL001" | "PL002" | "PL003"
             if diagnostic.message.to_ascii_lowercase().contains("missing semicolon") =>
         {
             // PL001/PL002 are general parse error codes. When the message indicates a missing
@@ -1432,11 +1430,28 @@ pub fn fix_parse_error(
                     .map(|p| range_start + p)
                     .unwrap_or(source.len());
 
-                // Insert before trailing whitespace
+                // Insert before trailing whitespace. When the diagnostic
+                // range itself sits at EOF (PL003's shape), range_start is at
+                // or past the content end, so the trim must be bounded by the
+                // start of source rather than by range_start — otherwise the
+                // semicolon lands after the trailing newline (#12798).
+                let trim_floor = if range_start >= source.len() { 0 } else { range_start };
                 let mut end_pos = line_end;
-                while end_pos > range_start && source.as_bytes()[end_pos - 1].is_ascii_whitespace()
-                {
+                while end_pos > trim_floor && source.as_bytes()[end_pos - 1].is_ascii_whitespace() {
                     end_pos -= 1;
+                }
+
+                // A trailing line comment swallows a semicolon appended after
+                // it (`my $value = 1 # why;` — the statement never
+                // terminates). In the EOF case insert before the comment
+                // instead, then re-trim the whitespace ahead of it (#12803).
+                if trim_floor == 0
+                    && let Some(comment_start) = trailing_line_comment_start(&source[..end_pos])
+                {
+                    end_pos = comment_start;
+                    while end_pos > 0 && source.as_bytes()[end_pos - 1].is_ascii_whitespace() {
+                        end_pos -= 1;
+                    }
                 }
 
                 actions.push(CodeAction {
@@ -1452,6 +1467,27 @@ pub fn fix_parse_error(
                     is_preferred: true,
                 });
             }
+        }
+        "PL003" => {
+            // Unexpected EOF has no interior delimiter location. Offer the
+            // bounded fallback only when source evidence supports an
+            // unclosed block; PL003 also covers incomplete strings and other
+            // delimiters where adding a brace would be unrelated.
+            if !has_unclosed_brace(source) {
+                return actions;
+            }
+            actions.push(CodeAction {
+                title: "Add closing brace at end of file".to_string(),
+                kind: CodeActionKind::QuickFix,
+                diagnostics: vec![code.to_string()],
+                edit: CodeActionEdit {
+                    changes: vec![TextEdit {
+                        location: SourceLocation { start: source.len(), end: source.len() },
+                        new_text: "\n}".to_string(),
+                    }],
+                },
+                is_preferred: true,
+            });
         }
         "parse-error-unclosedstring" => {
             // Add closing quote
@@ -1526,6 +1562,113 @@ pub fn fix_parse_error(
     }
 
     actions
+}
+
+/// Conservatively detect an unmatched block opener without treating braces in
+/// ordinary quoted strings or comments as block structure. False negatives are
+/// intentional: PL003 does not carry delimiter-kind metadata, so uncertainty
+/// must suppress the edit rather than authorize an unrelated token.
+fn has_unclosed_brace(source: &str) -> bool {
+    let mut depth = 0usize;
+    let mut paren_depth = 0usize;
+    let mut bracket_depth = 0usize;
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut escaped = false;
+    let mut in_comment = false;
+
+    let mut chars = source.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if in_comment {
+            if ch == '\n' {
+                in_comment = false;
+            }
+            continue;
+        }
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if (in_single || in_double) && ch == '\\' {
+            escaped = true;
+            continue;
+        }
+        if !in_double && ch == '\'' {
+            in_single = !in_single;
+            continue;
+        }
+        if !in_single && ch == '"' {
+            in_double = !in_double;
+            continue;
+        }
+        if !in_single && !in_double && ch == '#' {
+            in_comment = true;
+            continue;
+        }
+        if !in_single && !in_double && ch == '/' {
+            // Regex and substitution delimiters need Perl-aware lexing.
+            return false;
+        }
+        if !in_single && !in_double && ch == '<' && chars.peek() == Some(&'<') {
+            // Heredocs can contain arbitrary brace text until a later
+            // terminator, so the source is ambiguous without lexer facts.
+            return false;
+        }
+        if in_single || in_double {
+            continue;
+        }
+        match ch {
+            '{' => depth += 1,
+            '}' => depth = depth.saturating_sub(1),
+            '(' => paren_depth += 1,
+            ')' => paren_depth = paren_depth.saturating_sub(1),
+            '[' => bracket_depth += 1,
+            ']' => bracket_depth = bracket_depth.saturating_sub(1),
+            _ => {}
+        }
+    }
+
+    depth == 1 && paren_depth == 0 && bracket_depth == 0 && !in_single && !in_double && !in_comment
+}
+
+/// Byte offset of the first `#` that starts a line comment inside `slice`,
+/// tracking single/double quotes and backslash escapes. A `#` immediately
+/// preceded by `$` is skipped: `$#foo` is the last-index sigil, not a
+/// comment. Returns `None` when the slice has no comment opener, so callers
+/// can distinguish "no trailing comment" from "comment at offset 0".
+fn trailing_line_comment_start(slice: &str) -> Option<usize> {
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut escaped = false;
+    let mut previous: Option<char> = None;
+
+    for (index, ch) in slice.char_indices() {
+        if escaped {
+            escaped = false;
+            previous = Some(ch);
+            continue;
+        }
+        if (in_single || in_double) && ch == '\\' {
+            escaped = true;
+            previous = Some(ch);
+            continue;
+        }
+        if !in_double && ch == '\'' {
+            in_single = !in_single;
+            previous = Some(ch);
+            continue;
+        }
+        if !in_single && ch == '"' {
+            in_double = !in_double;
+            previous = Some(ch);
+            continue;
+        }
+        if !in_single && !in_double && ch == '#' && previous != Some('$') {
+            return Some(index);
+        }
+        previous = Some(ch);
+    }
+    None
 }
 
 /// Fix unused parameter by adding underscore prefix
@@ -2301,10 +2444,8 @@ fn split_two_top_level_args(input: &str) -> Option<(&str, &str)> {
             '\'' | '"' | '`' => quote = Some(ch),
             '(' | '[' | '{' => depth += 1,
             ')' | ']' | '}' => depth = depth.saturating_sub(1),
-            ',' if depth == 0 => {
-                if split.replace(idx).is_some() {
-                    return None;
-                }
+            ',' if depth == 0 && split.replace(idx).is_some() => {
+                return None;
             }
             _ => {}
         }
@@ -2319,42 +2460,6 @@ fn split_two_top_level_args(input: &str) -> Option<(&str, &str)> {
     }
 
     Some((first, second))
-}
-
-/// Remove an unused `use Module;` import statement (PL700).
-///
-/// When a module is imported but never referenced in the file, this fix
-/// deletes the entire `use Module;` line so no blank line is left behind.
-/// The module name is extracted from the diagnostic message
-/// (`"Module 'Foo::Bar' appears to be unused"`).
-pub fn fix_unused_import(source: &str, diagnostic: &QuickFixDiagnostic) -> Vec<CodeAction> {
-    let Some((line_start, line_end)) = diagnostic_line_range(source, diagnostic.range) else {
-        return Vec::new();
-    };
-    let Some(line_text) = source.get(line_start..line_end) else {
-        return Vec::new();
-    };
-    if !line_text.trim_start().starts_with("use ") {
-        return Vec::new();
-    }
-
-    let title = diagnostic.message.split('\'').nth(1).map_or_else(
-        || "Remove unused import".to_string(),
-        |module| format!("Remove unused 'use {module};'"),
-    );
-
-    vec![CodeAction {
-        title,
-        kind: CodeActionKind::QuickFix,
-        diagnostics: vec![DiagnosticCode::UnusedImport.as_str().to_string()],
-        edit: CodeActionEdit {
-            changes: vec![TextEdit {
-                location: SourceLocation { start: line_start, end: line_end },
-                new_text: String::new(),
-            }],
-        },
-        is_preferred: true,
-    }]
 }
 
 /// Remove a deprecated `$[ = 0;` array-base variable assignment (PL501).
@@ -2686,109 +2791,4 @@ fn valid_diagnostic_range(source: &str, range: (usize, usize)) -> Option<(usize,
         return None;
     }
     Some((start, end))
-}
-
-/// Offer "Import 'Module'" for an unquoted-bareword function call (PL109).
-///
-/// Resolves the symbol name at the diagnostic range against the static
-/// symbol-to-module map ([`guess_module_for_function`]).  Returns a QuickFix
-/// action inserting `use Module;\n` after the last existing `use` / `require`
-/// line when:
-///
-/// - The symbol maps to a known module.
-/// - The symbol is not a Perl built-in function.
-/// - `use Module` (or `use Module qw(...)`) is not already present in source.
-///
-/// Returns an empty `Vec` for builtins, already-imported modules, and symbols
-/// not in the static map.
-pub fn fix_import_for_bareword_function(
-    source: &str,
-    diagnostic: &QuickFixDiagnostic,
-) -> Vec<CodeAction> {
-    let (start, end) = match valid_diagnostic_range(source, diagnostic.range) {
-        Some(r) => r,
-        None => return Vec::new(),
-    };
-
-    let symbol = source[start..end].trim();
-    if symbol.is_empty() {
-        return Vec::new();
-    }
-
-    // Skip Perl built-ins -- they never need an import.
-    if is_builtin(symbol) {
-        return Vec::new();
-    }
-
-    // Resolve to a module using the static map.
-    let module = match guess_module_for_function(symbol) {
-        Some(m) => m,
-        None => return Vec::new(),
-    };
-
-    // Skip when the module is already imported to avoid duplicates.
-    // A simple substring check covers both `use JSON;` and `use JSON qw(...)`.
-    let use_marker = format!("use {}", module);
-    if source.contains(&use_marker) {
-        return Vec::new();
-    }
-
-    // Find the insert position: after the last `use` / `require` line.
-    let insert_pos = import_block_end(source);
-
-    vec![CodeAction {
-        title: format!("Import '{}'", module),
-        kind: CodeActionKind::QuickFix,
-        diagnostics: vec![DiagnosticCode::UnquotedBareword.as_str().to_string()],
-        edit: CodeActionEdit {
-            changes: vec![TextEdit {
-                location: SourceLocation { start: insert_pos, end: insert_pos },
-                new_text: format!("use {};\n", module),
-            }],
-        },
-        is_preferred: false,
-    }]
-}
-
-/// Compute the byte offset at which a new `use` statement should be inserted.
-///
-/// Scans from the top of the file, skipping over:
-/// - A shebang (`#!`) line
-/// - Contiguous `use` and `require` statements (and blank/comment lines between them)
-///
-/// Returns the offset immediately after the last matching line (i.e. the
-/// position at which to insert, so the new line appears *after* existing imports).
-fn import_block_end(source: &str) -> usize {
-    let mut pos = 0;
-    // Skip shebang line if present.
-    if source.starts_with("#!") {
-        pos = source.find('\n').map(|p| p + 1).unwrap_or(source.len());
-    }
-
-    let mut last_use_end = pos;
-    let mut cursor = pos;
-
-    loop {
-        let rest = &source[cursor..];
-        let line_len = rest.find('\n').map(|p| p + 1).unwrap_or(rest.len());
-        if line_len == 0 {
-            break;
-        }
-
-        let line = &rest[..line_len];
-        let trimmed = line.trim();
-
-        if trimmed.starts_with("use ") || trimmed.starts_with("require ") {
-            last_use_end = cursor + line_len;
-        } else if trimmed.is_empty() || trimmed.starts_with('#') {
-            // Allow blank lines and comments within the import block.
-        } else {
-            // First non-import, non-blank, non-comment line: stop.
-            break;
-        }
-
-        cursor += line_len;
-    }
-
-    last_use_end
 }

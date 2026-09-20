@@ -13,6 +13,7 @@
 //! | [`Node`] / [`NodeKind`] | AST node and its discriminant (re-exported from `perl-ast`) |
 //! | [`ParseError`] | Syntax error collected during parsing |
 //! | [`ParseOutput`] | AST + diagnostics bundle for IDE workflows |
+//! | [`RegexParseOutput`] | Parse output plus source-generation-bound regex analysis |
 //! | [`Token`] / [`TokenKind`] | Lexer tokens consumed by the parser |
 //! | [`SourceLocation`] | Byte-offset span for every node |
 //!
@@ -24,10 +25,7 @@
 //! let mut parser = Parser::new("my $x = 42;");
 //! let ast = parser.parse().expect("should parse");
 //!
-//! // The root is always a Program node
 //! assert!(matches!(ast.kind, NodeKind::Program { .. }));
-//!
-//! // Non-fatal errors are collected, not returned as Err
 //! assert!(parser.errors().is_empty());
 //! ```
 //!
@@ -39,8 +37,6 @@
 //!
 //! let mut parser = Parser::new("if (");
 //! let output = parser.parse_with_recovery();
-//!
-//! // Always returns an AST (possibly with ERROR nodes)
 //! assert!(!output.diagnostics.is_empty());
 //! ```
 
@@ -67,8 +63,6 @@
     clippy::items_after_statements,
     clippy::return_self_not_must_use,
     clippy::unused_self,
-    clippy::collapsible_match,
-    clippy::collapsible_if,
     clippy::only_used_in_recursion,
     clippy::items_after_test_module,
     clippy::while_let_loop,
@@ -86,6 +80,9 @@
 
 /// Builtin function signatures and metadata.
 pub use perl_lexer::builtins;
+/// Structured decoding of a Perl interpreter invocation into source fragments
+/// and switch facts.
+pub mod command_line;
 /// Parser engine components and supporting utilities.
 pub mod engine;
 /// Normalized high-level constructs lowered from the parser AST.
@@ -96,6 +93,8 @@ pub mod pir;
 pub mod syntax;
 /// Token stream and trivia utilities for the parser.
 pub mod tokens;
+/// Bounded, non-executing evaluation of source expressions.
+pub mod value_analysis;
 
 /// Index into the diagnostics array in [`ParseOutput`] (from `ast_v2`).
 pub use ast_v2::{DiagnosticId, MissingKind};
@@ -104,40 +103,55 @@ pub use engine::ast;
 /// Experimental second-generation AST (work in progress).
 pub use engine::ast_v2;
 /// Parser context with error recovery support.
+///
+/// Not the production parse-operation authority. See the module docs.
 pub use engine::parser_context;
 /// Pragma tracking for `use` and related directives.
 pub use engine::pragma_tracker;
 /// Parser for Perl quote and quote-like operators.
 pub use engine::quote_parser;
+/// Parser entry points that retain source-generation-bound regex analysis.
+pub use engine::regex_retention::{
+    RegexParseOutput, RetainedRegexSession, parse_source_with_cancellation_and_regex_analysis,
+    parse_source_with_regex_analysis, parse_tokens_with_regex_analysis,
+};
 /// Legacy module aliases for moved engine components.
 pub use engine::{error, parser, position};
 /// Parser utilities and helpers.
 pub use perl_lexer::tokenizer::util;
-/// Edit tracking for incremental parsing (internal module, previously `perl-edit`).
+/// Edit tracking for incremental parsing.
 pub use syntax::edit;
-/// Heredoc content collector with FIFO ordering and indent stripping (internal module, previously `perl-heredoc`).
+/// Heredoc content collector with FIFO ordering and indent stripping.
 pub use syntax::heredoc as heredoc_collector;
-/// Secure workspace-relative path normalization (previously `perl-path-normalize`).
+/// Secure workspace-relative path normalization.
 pub use syntax::path_normalize;
-/// Workspace-bound path validation and traversal prevention (previously `perl-path-security`).
+/// Workspace-bound path validation and traversal prevention.
 pub use syntax::path_security;
-/// Percentile helpers for integer metric samples (previously `perl-percentile`).
-pub use syntax::percentile;
-/// Perl qualified-name parsing, splitting, and validation helpers (previously `perl-qualified-name`).
+/// Perl qualified-name parsing, splitting, and validation helpers.
 pub use syntax::qualified_name;
 /// Canonical qw/q/qq operator content extractor shared across the workspace.
 pub use syntax::quote::{parse_quote_operator_content, parse_qw_words};
+/// Source-generation-bound regex analysis records and freshness identities.
+pub use syntax::regex_analysis::{
+    REGEX_ANALYSIS_MODEL_VERSION, RegexAnalysisAvailability, RegexAnalysisFamily, RegexAnalysisId,
+    RegexAnalysisRecord, RegexAnalysisTable, RegexSourceDigest, RetainedRegexPatternAnalysis,
+};
 /// Generation-bound lexical source region index.
 pub use syntax::source_context::{
-    RangeClassification, SourceRegion, SourceRegionIndex, SourceRegionKind,
+    RangeClassification, SourceRangeClassification, SourceRegion, SourceRegionIndex,
+    SourceRegionKind,
 };
-/// Perl source-file classification helpers (previously `perl-source-file`).
+/// Perl source-file classification helpers.
 pub use syntax::source_file;
-/// Text-line cursor and boundary helpers (previously `perl-text-line`).
+/// Text-line cursor and boundary helpers.
 pub use syntax::text_line;
 
 /// Recursive-descent parser -- the main entry point for parsing Perl source.
 pub use engine::parser::Parser;
+/// Immutable production parser configuration identity (#8757).
+pub use engine::parser::ParserConfigIdentity;
+/// Identity of one production parse operation (#8757).
+pub use engine::parser::ParserOperationId;
 
 /// Lower-tier checkpointed token replay for incremental parser clients.
 pub mod incremental;
@@ -164,26 +178,30 @@ pub use error::classifier::{RecoverySalvageMetrics, classify_recovery_salvage};
 /// Parse error, budget, and output types.
 pub use error::{
     BudgetTracker, ErrorCategory, ErrorClass, ParseBudget, ParseDiagnosticSeverity, ParseError,
-    ParseOutput, ParseResult, RecoverySalvageClass, RecoverySalvageProfile,
+    ParseOutput, ParseResult, ParseStopCause, RecoverySalvageClass, RecoverySalvageProfile,
 };
 
 /// Builtin function signature lookup tables.
 pub use builtins::builtin_signatures;
-/// Perfect hash function (PHF) based builtin signature lookup.
+/// Perfect hash function based builtin signature lookup.
 pub use builtins::builtin_signatures_phf;
 
 /// Token stream module for lexer-to-parser bridge.
 pub use tokens::token_stream;
 /// Lightweight token wrapper for AST integration.
 pub use tokens::token_wrapper;
-/// Trivia (whitespace and comments) representation.
+/// Trivia values and compatibility lexer utilities.
 pub use tokens::trivia;
-/// Trivia-preserving parser and formatting utilities.
+/// Canonical parser-backed trivia preservation utilities.
 pub use tokens::trivia_parser;
 
 /// Individual token, its classification, and the streaming iterator.
 pub use token_stream::{Token, TokenKind, TokenStream};
-/// Trivia types attached to AST nodes for formatting preservation.
+/// Legacy AST-v2 trivia container plus trivia token types.
+#[allow(deprecated)]
 pub use trivia::{NodeWithTrivia, Trivia, TriviaToken};
-/// Trivia-preserving parser and source formatting helper.
-pub use trivia_parser::{TriviaPreservingParser, format_with_trivia};
+/// Canonical parser-backed trivia surface and exact-source projections.
+#[allow(deprecated)]
+pub use trivia_parser::{
+    TriviaParseOutput, TriviaPreservingParser, format_with_trivia, source_with_trivia,
+};

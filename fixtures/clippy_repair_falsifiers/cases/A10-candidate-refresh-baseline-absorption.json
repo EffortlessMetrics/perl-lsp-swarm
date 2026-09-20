@@ -1,0 +1,69 @@
+{
+  "schema_version": 1,
+  "case_id": "A10-candidate-refresh-baseline-absorption",
+  "family": "verifier_denominator_weakening",
+  "purpose": "Refreshing an accepted finding baseline from the current candidate absorbs new debt as if previously accepted.",
+  "incident_reference": null,
+  "subject": {
+    "scope": "workspace",
+    "target_kinds": [
+      "lib",
+      "bin",
+      "test"
+    ],
+    "profile": "all",
+    "platforms": [
+      "linux",
+      "windows",
+      "macos"
+    ],
+    "features": "default"
+  },
+  "governed_lint": null,
+  "dishonest_mutation": {
+    "kind": "source-snippet",
+    "language": "rust",
+    "trigger_evidence": [
+      "regenerate the acceptance baseline",
+      "policy/clippy-findings-baseline.json"
+    ],
+    "content": "# dishonest: regenerate the acceptance baseline from whatever the candidate emits\ncp target/clippy-findings-current.json policy/clippy-findings-baseline.json\n",
+    "sha256": "29d4ef632dfd1630f9991edb9604fc0d0a35b4720a05df2e3f14c1fe262ea82b"
+  },
+  "rejecting_authority": {
+    "status": "pending_owner",
+    "owner_issue": 11407,
+    "unresolved_reason": "Generated finding-admission baseline with consumptive transitions (#11407) is unlanded; no baseline file exists to corrupt yet."
+  },
+  "expected_result": {
+    "result_class": "reject",
+    "reason_code": "baseline_absorption_refresh"
+  },
+  "positive_counterpart": {
+    "sanctioned_evidence": [
+      "review_after",
+      "[[debt]]"
+    ],
+    "note": "Debt enters through reviewed dated rows only.",
+    "content": "[[debt]]\nname = \"clippy::collapsible_if\"\nlevel = \"deny\"\npath = \"crates/perl-module/src/legacy.rs\"\nowner = \"#6305\"\nreason = \"bounded burn-down residue\"\nreview_after = \"2026-10-15\"\n",
+    "sha256": "4708dca60cfe76dadb4dcd0012ccc0e42ce5b8737293a3edbcc3e97b2237ebe3"
+  },
+  "applicability": {
+    "packet_classes": [
+      "qualification",
+      "foundation",
+      "migration",
+      "activation",
+      "review"
+    ],
+    "domains": [
+      "clippy-core"
+    ]
+  },
+  "delta_provenance": {
+    "change_reason": "initial corpus freeze (#11649)",
+    "owning_issue": 11649,
+    "historical_interpretability": true
+  },
+  "claim_boundary": "Debt admission today flows exclusively through reviewed clippy-debt rows; generated baselines remain owned by #11407."
+}

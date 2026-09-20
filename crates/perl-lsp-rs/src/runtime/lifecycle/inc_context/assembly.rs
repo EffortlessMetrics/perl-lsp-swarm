@@ -1,5 +1,5 @@
 use super::super::super::{LspServer, source_path_from_uri};
-use perl_module::resolution::use_lib::{
+use perl_module::{
     no_lib_cancelled_paths_at_offset, resolve_use_lib_paths_from_source,
     resolve_use_lib_paths_from_source_at_offset,
 };

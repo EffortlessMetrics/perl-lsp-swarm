@@ -14,7 +14,7 @@ mod tests {
     fn parse_first_stmt(code: &str) -> Node {
         let ast = parse_program(code);
         let sexp = ast.to_sexp();
-        let NodeKind::Program { mut statements } = ast.kind else {
+        let NodeKind::Program { mut statements } = ast.into_parts().0 else {
             panic!("Expected Program with statements, got: {sexp}");
         };
         if statements.is_empty() {
@@ -32,12 +32,10 @@ mod tests {
 
     /// Helper: extract expression from an ExpressionStatement.
     fn unwrap_expr_stmt(stmt: Node) -> Node {
-        let NodeKind::ExpressionStatement { expression } = stmt.kind else {
-            panic!(
-                "Expected ExpressionStatement, got {} (sexp: {})",
-                stmt.kind.kind_name(),
-                stmt.to_sexp()
-            );
+        let kind_name = stmt.kind.kind_name();
+        let sexp = stmt.to_sexp();
+        let NodeKind::ExpressionStatement { expression } = stmt.into_parts().0 else {
+            panic!("Expected ExpressionStatement, got {kind_name} (sexp: {sexp})");
         };
         *expression
     }
@@ -212,7 +210,7 @@ mod tests {
         let expr = unwrap_expr_stmt(parse_first_stmt(code));
         let sexp = expr.to_sexp();
         assert!(
-            sexp.contains("call") || sexp.contains("Call"),
+            sexp.contains("amper_sub") || sexp.contains("amper_call") || sexp.contains("call"),
             "Expected some call form for &$coderef(), got: {}",
             sexp,
         );
@@ -280,23 +278,15 @@ mod tests {
         // Drill into the AST to find the FunctionCall with name "->()"
         let ast = parse_program(code);
         let mut found = false;
-        if let NodeKind::Program { ref statements } = ast.kind {
-            if let Some(stmt) = statements.first() {
-                if let NodeKind::VariableDeclaration { initializer: Some(ref init), .. } = stmt.kind
-                {
-                    if let NodeKind::FunctionCall { ref name, ref args } = init.kind {
-                        assert_eq!(name, "->()");
-                        // callee ($callback) + arg (42)
-                        assert_eq!(
-                            args.len(),
-                            2,
-                            "Expected callee + 1 arg, got {} args",
-                            args.len()
-                        );
-                        found = true;
-                    }
-                }
-            }
+        if let NodeKind::Program { ref statements } = ast.kind
+            && let Some(stmt) = statements.first()
+            && let NodeKind::VariableDeclaration { initializer: Some(ref init), .. } = stmt.kind
+            && let NodeKind::FunctionCall { ref name, ref args } = init.kind
+        {
+            assert_eq!(name, "->()");
+            // callee ($callback) + arg (42)
+            assert_eq!(args.len(), 2, "Expected callee + 1 arg, got {} args", args.len());
+            found = true;
         }
         assert!(
             found,

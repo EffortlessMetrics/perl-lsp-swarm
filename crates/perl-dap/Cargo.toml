@@ -15,6 +15,7 @@ categories = ["development-tools::debugging", "command-line-utilities"]
 include = [
   "src/**",
   "build.rs",
+  "build_catalog.rs",
   "features_sot.toml",
   "Cargo.toml",
   "README.md",
@@ -33,9 +34,17 @@ path = "src/lib.rs"
 # JSON serialization
 serde = { workspace = true }
 serde_json.workspace = true
+perl-source-identity = { workspace = true }
 
 # Error handling
 anyhow.workspace = true
+
+# Stable authority/digest identities for the launch-authority contract (#8656,
+# previously the #9590 public stdio proof receipt dev-dependency)
+sha2.workspace = true
+
+# OS-backed entropy for external-peer session bearer tokens (#6949)
+getrandom = "0.4.2"
 
 # Regex for parsing debugger output
 regex.workspace = true
@@ -75,9 +84,11 @@ criterion.workspace = true
 tempfile.workspace = true
 
 perl-tdd-support = { workspace = true }
+perl-test-must = { workspace = true }
 
 # Serial test execution for env-mutating tests (prevents races on PLENV_*, PERLBREW_*, PATH)
 serial_test = "4.0.1"
+toml = "1.1.2"
 
 [build-dependencies]
 # Wave Final PR B: perl-feature-catalog absorbed; build.rs uses inline catalog via include!()
@@ -85,37 +96,30 @@ serde = { workspace = true, features = ["derive"] }
 toml = "1.1.2"
 
 [target.'cfg(unix)'.dependencies]
-nix = { version = "0.31.3", features = ["signal"] }  # For SIGINT handling (AC9)
+nix = { version = "0.31.3", features = ["signal", "poll"] }  # For SIGINT handling (AC9) and bounded stdio polling
 
 [target.'cfg(windows)'.dependencies]
-winapi = { version = "0.3.9", features = ["processthreadsapi", "winnt", "handleapi"] }  # For read-only process existence checks (AC9, #3028)
+winapi = { version = "0.3.9", features = ["processthreadsapi", "winnt", "handleapi", "namedpipeapi", "jobapi2", "tlhelp32", "fileapi", "winbase"] }  # For bounded test-process-tree cleanup and pipe polling
+
+[target.'cfg(unix)'.dev-dependencies]
+libc = "0.2"
 
 [features]
-default = ["dap-phase1", "dap-phase2", "dap-phase3"]
-# DAP implementation phases (TDD scaffold tests)
-dap-phase1 = []  # AC1-AC4: Bridge to Perl::LanguageServer
+# The shipped package contains the native adapter only. External implementations
+# are repository-only conformance or explicit peer integrations, not Cargo features.
+default = ["dap-phase2", "dap-phase3"]
 dap-phase2 = []  # AC5-AC16: Native adapter, integration tests, performance, security
 dap-phase3 = []  # AC17-AC19: Non-regression, dependency management, packaging
 # Gates test-seed helpers (push_recent_output_line_for_test, seed_*_for_test) so they
-# are excluded from production builds.  Integration tests that use them must be run
+# are excluded from production builds. Integration tests that use them must be run
 # with --features test-helpers (or have required-features = ["test-helpers"] in Cargo.toml).
 test-helpers = []
 
 # Test targets with acceptance criteria mapping
 [[test]]
-name = "bridge_adapter_unit_tests"
-path = "tests/bridge_adapter_unit_tests.rs"
-# Unit tests for BridgeAdapter lifecycle (bridge_adapter.rs)
-
-[[test]]
 name = "protocol_edge_case_tests"
 path = "tests/protocol_edge_case_tests.rs"
 # Protocol edge cases: malformed JSON, missing fields, boundary values
-
-[[test]]
-name = "bridge_integration_tests"
-path = "tests/bridge_integration_tests.rs"
-# AC1-AC4: Bridge to Perl::LanguageServer DAP
 
 [[test]]
 name = "dap_adapter_tests"
@@ -188,9 +192,16 @@ path = "tests/dap_non_regression_tests.rs"
 # AC:17 Phase 3 non-regression: protocol shape, seq monotonicity, capabilities consistency (#435)
 
 [[test]]
+name = "dap_capability_advertising_tests"
+path = "tests/dap_capability_advertising_tests.rs"
+# Capability refusal proof uses the stopped-session test helper.
+required-features = ["test-helpers"]
+
+[[test]]
 name = "dap_step_through_tests"
 path = "tests/dap_step_through_tests.rs"
 # AC:3535 Comprehensive step-through debugging tests: stepIn, stepOut, stepOver, continue, pause, gotoTargets, cancel
+required-features = ["test-helpers"]
 
 [[test]]
 name = "dap_syntax_check_tests"
@@ -376,6 +387,21 @@ path = "tests/wave_h_platform_edge_cases.rs"
 # Green TDD: edge cases and boundary conditions for platform module
 
 [[test]]
+name = "error_class_fixed_origin"
+path = "tests/error_class_fixed_origin.rs"
+# #8739: exhaustive ErrorClass matrix for fixed-origin DAP operational errors
+
+[[test]]
+name = "debugger_output_origin"
+path = "tests/debugger_output_origin.rs"
+# #8746: originated stack/variable parse classification by caller-supplied origin
+
+[[test]]
+name = "backend_error_class"
+path = "tests/backend_error_class.rs"
+# #8758: a peer-reported failure is a reported outcome, never an adapter bug
+
+[[test]]
 name = "wave_h_security_edge_cases"
 path = "tests/wave_h_security_edge_cases.rs"
 # Green TDD: edge cases and boundary conditions for security module
@@ -429,7 +455,8 @@ path = "benches/dap_benchmarks.rs"
 harness = false
 
 [package.metadata.docs.rs]
-all-features = true
+no-default-features = true
+features = ["dap-phase2", "dap-phase3"]
 rustdoc-args = ["--cfg", "docsrs"]
 
 [lints]

@@ -1,0 +1,69 @@
+{
+  "schema_version": 1,
+  "case_id": "E33-type-alias-only-hiding",
+  "family": "structural_ownership_theater",
+  "purpose": "Type aliases introduced only to duck under complexity thresholds relocate complexity without removing it.",
+  "incident_reference": null,
+  "subject": {
+    "scope": "workspace",
+    "target_kinds": [
+      "lib",
+      "bin",
+      "test"
+    ],
+    "profile": "all",
+    "platforms": [
+      "linux",
+      "windows",
+      "macos"
+    ],
+    "features": "default"
+  },
+  "governed_lint": null,
+  "dishonest_mutation": {
+    "kind": "source-snippet",
+    "language": "rust",
+    "trigger_evidence": [
+      "pub type HandlerTable",
+      "dyn FnMut(&mut Lexer<'_>)"
+    ],
+    "content": "pub type HandlerTable<'a> = std::collections::HashMap<\n    &'a str,\n    Box<dyn FnMut(&mut Lexer<'_>) -> Result<Token<'_>, LexError> + Send + 'a>,\n>;\n",
+    "sha256": "5cf84db911678ee5f3112d622461226c60b50029236d66f822cd378b44dfd1e6"
+  },
+  "rejecting_authority": {
+    "status": "pending_owner",
+    "owner_issue": 11338,
+    "unresolved_reason": "Complexity-threshold ratchet (#11338) open; alias detection is review-side today."
+  },
+  "expected_result": {
+    "result_class": "reject",
+    "reason_code": "alias_only_complexity_hiding"
+  },
+  "positive_counterpart": {
+    "sanctioned_evidence": [
+      "struct HandlerTable<'a> { inner:",
+      "register(&mut self"
+    ],
+    "note": "A newtype owns behavior, not just a spelling.",
+    "content": "pub struct HandlerTable<'a> { inner: std::collections::HashMap<&'a str, Handler<'a>> }\nimpl<'a> HandlerTable<'a> {\n    pub fn register(&mut self, name: &'a str, handler: Handler<'a>) { self.inner.insert(name, handler); }\n}\n",
+    "sha256": "1da7377fff19b502507e3848f52525e5b1ee3e72c42b4ef5efffc3e050b4d62b"
+  },
+  "applicability": {
+    "packet_classes": [
+      "qualification",
+      "foundation",
+      "migration",
+      "activation",
+      "review"
+    ],
+    "domains": [
+      "clippy-core"
+    ]
+  },
+  "delta_provenance": {
+    "change_reason": "initial corpus freeze (#11649)",
+    "owning_issue": 11649,
+    "historical_interpretability": true
+  },
+  "claim_boundary": "Distinguishes meaningful domain aliases from threshold evasion."
+}

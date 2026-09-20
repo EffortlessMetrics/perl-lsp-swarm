@@ -3,6 +3,7 @@
 //! These tests drive branch arms that are structurally reachable but not
 //! exercised by any other test suite.  Each test includes a comment
 //! identifying the exact source site it covers.
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
 use perl_regex::{RegexAnalyzer, RegexValidator};
 

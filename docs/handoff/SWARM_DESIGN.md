@@ -1,5 +1,9 @@
 # Swarm Agent Architecture for Claude Code
 
+<!-- authority-status:v1 -->
+> **Status: historical.** Current authority: [Development method](../agents/DEVELOPMENT_METHOD.md).
+> Retained as historical design or mechanism evidence. Internal wording below that calls this document accepted, active doctrine, a north star, current instruction, or lifecycle authority is historical and must not route current work. See [Agent and maintainer authority status](../agents/AUTHORITY_STATUS.md).
+
 A design for running continuous, self-improving, highly-parallel development swarms using Claude Code's agent teams, subagents, worktree isolation, skills, hooks, GitHub-native tracking, and cross-session memory.
 
 ## Problem Statement

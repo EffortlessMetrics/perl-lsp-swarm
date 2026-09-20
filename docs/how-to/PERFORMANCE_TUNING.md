@@ -271,9 +271,6 @@ This guide provides strategies to optimize performance for different scenarios.
     },
     "inlayHints": {
       "enabled": false
-    },
-    "testRunner": {
-      "enabled": false
     }
   }
 }
@@ -310,9 +307,6 @@ This guide provides strategies to optimize performance for different scenarios.
       "resolutionTimeout": 25
     },
     "inlayHints": {
-      "enabled": false
-    },
-    "testRunner": {
       "enabled": false
     }
   }
@@ -385,9 +379,6 @@ This guide provides strategies to optimize performance for different scenarios.
     "inlayHints": {
       "enabled": true,
       "chainedHints": true
-    },
-    "testRunner": {
-      "enabled": true
     }
   }
 }
@@ -462,9 +453,6 @@ This guide provides strategies to optimize performance for different scenarios.
     },
     "inlayHints": {
       "enabled": false
-    },
-    "testRunner": {
-      "enabled": false
     }
   }
 }
@@ -533,9 +521,6 @@ This guide provides strategies to optimize performance for different scenarios.
       "resolutionTimeout": 25
     },
     "inlayHints": {
-      "enabled": false
-    },
-    "testRunner": {
       "enabled": false
     }
   }
@@ -632,12 +617,6 @@ For maximum features with acceptable performance:
       "typeHints": true,
       "chainedHints": true,
       "maxLength": 50
-    },
-    "testRunner": {
-      "enabled": true,
-      "command": "prove",
-      "args": ["-l", "-v", "--timer"],
-      "timeout": 120000
     },
     "limits": {
       "workspaceSymbolCap": 500,

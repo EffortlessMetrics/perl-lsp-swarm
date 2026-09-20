@@ -67,6 +67,8 @@ pub fn detect_dead_code(
             message,
             related_information: Vec::new(),
             tags: vec![DiagnosticTag::Unnecessary],
+            fixable: false,
+            critic_observation: None,
             suggestion: Some(format!(
                 "Remove unused {} '{}'",
                 message_prefix.to_lowercase().trim_start_matches("unused "),

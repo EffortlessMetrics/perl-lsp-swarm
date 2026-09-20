@@ -1,0 +1,112 @@
+{
+  "schema_version": "close_proof_contract_fixture.v1",
+  "provenance": {
+    "captured_at": "2026-08-21",
+    "sources": [
+      "https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/5231",
+      "https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/5968"
+    ],
+    "subject_shas": [],
+    "boundary": "Immutable bounded structured excerpts of historical GitHub subjects. The fixture proves schema-level dispositions only; semantic completion evaluation belongs to CP03 (#10382)."
+  },
+  "contract": {
+    "schema_version": "issue_contract.v1",
+    "repository": "effortlessmetrics/perl-lsp-swarm",
+    "issue_number": 5231,
+    "title": "refactor(engine): retire absorbed-engine API surface retained by the surviving successor",
+    "kind": "migration",
+    "required_proof_level": "connected_route",
+    "allowed_close_modes": [
+      "completed",
+      "phase_complete_issue_remains_open",
+      "superseded",
+      "true_duplicate",
+      "not_planned"
+    ],
+    "denominator": [
+      {
+        "row_id": "absorbed-api.retired.current-main",
+        "statement": "Absorbed successor engine APIs are retired on current main.",
+        "required_proof_level": "connected_route"
+      },
+      {
+        "row_id": "predecessor.crate.removed",
+        "statement": "Historical predecessor crate surface is removed.",
+        "required_proof_level": "mechanism"
+      }
+    ],
+    "negative_controls": [],
+    "mandatory_children": [],
+    "transfer_policy": {
+      "permitted": true,
+      "conditions": [
+        "destination owns the identical retirement proposition",
+        "destination contract identity is current at packet generation"
+      ]
+    },
+    "domain_evidence_refs": [],
+    "identity": {
+      "issue_body_digest": "000000000000000000000000000000000000000000000000000000000000146f",
+      "denominator_digest": "fde7ee1c3c158f883c5939dc7e71afe17fd6b9eee03d226dda4f3b28f387a9a5",
+      "accepted_ruling": null
+    }
+  },
+  "cases": [
+    {
+      "case_id": "pr-5968-predecessor-deletion-collapse",
+      "description": "Historical PR #5968 offered predecessor crate deletion as completion of surviving successor retirement.",
+      "packet": {
+        "schema_version": "issue_close_proof.v1",
+        "repository": "effortlessmetrics/perl-lsp-swarm",
+        "issue_number": 5231,
+        "requested_close_mode": "completed",
+        "contract_binding": {
+          "contract_issue_body_digest": "000000000000000000000000000000000000000000000000000000000000146f",
+          "contract_denominator_digest": "fde7ee1c3c158f883c5939dc7e71afe17fd6b9eee03d226dda4f3b28f387a9a5",
+          "accepted_ruling_digest": null
+        },
+        "candidate_pr": 5968,
+        "landed_subjects": [
+          "000000000000000000000000000000000000e921"
+        ],
+        "landing_content_proof": [],
+        "established_claims": [
+          {
+            "statement": "The historical predecessor crate is deleted from the tree.",
+            "covers_rows": [
+              "predecessor.crate.removed"
+            ]
+          }
+        ],
+        "explicitly_not_established_claims": [],
+        "row_dispositions": {
+          "absorbed-api.retired.current-main": {
+            "disposition": "not_proven",
+            "reason": "predecessor crate deletion does not prove surviving absorbed-API retirement."
+          },
+          "predecessor.crate.removed": {
+            "disposition": "removed_surface_with_proof",
+            "proof": {
+              "producer": "xtask-pr-close-proof",
+              "subject": "000000000000000000000000000000000000e921",
+              "content_digest": "0000000000000000000000000000000000000000000000000000000000091b51",
+              "reference": "git ancestry receipt for the predecessor deletion"
+            }
+          }
+        },
+        "negative_control_dispositions": {},
+        "child_dispositions": [],
+        "duplicate_of": null,
+        "verdict": {
+          "pr_scope": "pass",
+          "issue_close": "invalid",
+          "reasons": [
+            "Predecessor deletion cannot satisfy successor retirement; the correct relation is Refs #5231."
+          ]
+        }
+      },
+      "expected_pr_scope": "pass",
+      "expected_issue_close": "invalid"
+    }
+  ]
+}

@@ -11,22 +11,8 @@
 //! These tests are RED against the current parser and MUST become GREEN after the fix.
 
 mod cpan_test_helpers;
-use cpan_test_helpers::*;
 use perl_parser_core::{NodeKind, Parser};
 use perl_tdd_support::must;
-
-/// Parse source and extract top-level statement kinds.
-/// Useful for verifying that statements are present in the AST (not swallowed).
-fn statement_kinds(src: &str) -> Vec<String> {
-    let mut parser = Parser::new(src);
-    let ast = must(parser.parse());
-    match &ast.kind {
-        NodeKind::Program { statements } => {
-            statements.iter().map(|stmt| format!("{:?}", stmt.kind)).collect()
-        }
-        _ => vec![],
-    }
-}
 
 /// Count how many statements are present at the top level.
 fn statement_count(src: &str) -> usize {
@@ -48,7 +34,7 @@ fn has_subroutine(src: &str, expected_name: &str) -> bool {
         match &node.kind {
             NodeKind::Program { statements } => statements.iter().any(|stmt| find_sub(stmt, name)),
             NodeKind::Subroutine { name: sub_name, .. } => {
-                sub_name.as_ref().map_or(false, |n| n == name)
+                sub_name.as_ref().is_some_and(|n| n == name)
             }
             _ => false,
         }

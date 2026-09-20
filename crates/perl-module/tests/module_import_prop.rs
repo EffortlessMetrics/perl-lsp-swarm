@@ -1,4 +1,4 @@
-use perl_module::import::{ModuleImportKind, parse_module_import_head};
+use perl_module::{ModuleImportKind, parse_module_import_head};
 use proptest::prelude::*;
 
 fn module_name_strategy() -> impl Strategy<Value = String> {

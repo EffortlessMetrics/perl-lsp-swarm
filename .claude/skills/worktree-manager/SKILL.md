@@ -15,6 +15,9 @@ Git and GitHub remain authoritative for repository, branch, candidate, PR, revie
 - one writer mutates each current candidate branch/worktree at a time;
 - allocate only for a named mutation claim; read-only inspection of GitHub or source needs no worktree;
 - check host capacity before allocating, and wait rather than allocating past it — a saturated host makes local timings, flake rates, and command timeouts untrustworthy, so over-allocating destroys evidence rather than just slowing work (see `orchestrate-work` capacity admission);
+- a lane that allocates a worktree removes it on completion: lane briefs should carry
+  this as a requirement, and a lane ending without releasing must say why in its typed
+  return — dead lanes cannot release themselves, so residue is expected, not exceptional;
 - before removing or reusing a slot, read its status, untracked files, branch, HEAD, upstream, and lock; check for unpushed or detached commits and for unique changes against current default-branch state; preserve a branch or patch for anything ambiguous, and re-read immediately before deletion;
 - inspect actual Git branch/worktree state and current GitHub state before relying on cached slot metadata;
 - an absent, stale, or corrupt helper state file may be repaired or discarded;
@@ -38,3 +41,24 @@ python3 scripts/worktree-manager.py cleanup
 `allocate` checks whether the requested branch already exists on `origin` and fails closed if it cannot verify the remote state. A genuinely new branch is based on freshly fetched default-branch state. The managed pool lives outside the tracked repository by default, under `<repo-parent>/<repo-name>-worktrees/`.
 
 Use `scripts/cleanup-completed-worktrees.sh` for a one-off prune that does not need reusable-slot bookkeeping. When helper output conflicts with Git or GitHub, Git and GitHub win; repair or discard the helper state and continue.
+
+## Orphan sweep
+
+Lanes killed by usage limits or restarts never release their worktrees. Sweep
+periodically and after landing waves:
+
+1. list candidates by branch recency (`git for-each-ref --sort=-committerdate
+   refs/heads/` cross-referenced with `git worktree list` and the on-disk slot
+   directories);
+2. remove a tree only when it holds no state existing elsewhere — no untracked files,
+   no unpushed commits, no detached HEAD outside the base — or when the owning lane was
+   explicitly abandoned;
+3. `bash scripts/cleanup-completed-worktrees.sh --dry-run` approximates this predicate,
+   but its landed test accepts any merged PR on the branch *name*, so a reused or
+   locally-advanced branch can be planned for removal with its only reference —
+   verify the plan against step 2 yourself and re-read each worktree immediately
+   before deletion (same rule as slot removal).
+
+The sweep composes with the per-slot safety rules above rather than replacing them.
+Durable tooling for verified orphan reaping and checkout/capacity integrity is owned
+by issues #11606 and #3957; this skill carries only the guidance.

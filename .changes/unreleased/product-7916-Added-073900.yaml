@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Added
+body: "`perllsp` now has a Rust-owned Claude Code integration lifecycle with an idempotent `setup claude` surface and a read-only `doctor --client claude` diagnostic boundary, keeping marketplace/plugin state out of shell wrappers and prompt logic."
+time: 2026-08-13T11:39:00Z
+custom:
+  PR: "7916"
+  Slug: claude-rust-setup-lifecycle
+  Breaking: "no"

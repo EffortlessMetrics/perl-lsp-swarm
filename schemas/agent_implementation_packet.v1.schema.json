@@ -1,0 +1,502 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://effortlessmetrics.dev/perl-lsp/schemas/agent_implementation_packet.v1.schema.json",
+  "title": "Shared bounded builder-packet contract v1",
+  "description": "Programme-neutral contract converting one already-selected programme node plus explicit supplied inputs into a model-neutral bounded coding-agent work packet. The contract owns the closed field vocabulary, deterministic validation invariants, and canonical machine/Markdown/compact projections. It does not select nodes, evaluate readiness, observe GitHub, assign agents, track leases or live state, or perform any merge/release/external action. Programme adapters compose packet documents from their own authorities and may add stricter local fields without weakening the shared meanings. Packet instances are runtime-local outputs (stdout, caller-selected temporary paths, target/, CI artifacts) and are never tracked workflow state.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "schema_version",
+    "packet_id",
+    "repository",
+    "programme",
+    "work",
+    "actor",
+    "frontier",
+    "current_tree_probe",
+    "authorities",
+    "surfaces",
+    "proof",
+    "verification",
+    "delivery",
+    "stop"
+  ],
+  "properties": {
+    "schema": { "const": "agent_implementation_packet.v1" },
+    "schema_version": { "const": 1 },
+    "packet_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Stable identity of this packet projection, assigned by the composing caller."
+    },
+    "repository": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "observed_tree"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "observed_tree": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Exact tree/SHA the supplied proofs were observed against."
+        }
+      }
+    },
+    "programme": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "manifest", "manifest_version"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "manifest": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Stable train manifest identity this node was selected from."
+        },
+        "manifest_version": { "type": "string", "minLength": 1 }
+      }
+    },
+    "work": { "$ref": "#/$defs/work" },
+    "actor": { "$ref": "#/$defs/actor" },
+    "frontier": { "$ref": "#/$defs/frontier" },
+    "current_tree_probe": { "$ref": "#/$defs/current_tree_probe" },
+    "live_observation": {
+      "$ref": "#/$defs/live_observation",
+      "description": "Optional live-candidate observation. Absence or candidate_state=not_observed is a valid offline packet; absence of knowledge must never be fabricated as vacancy."
+    },
+    "authorities": { "$ref": "#/$defs/authority_map" },
+    "surfaces": { "$ref": "#/$defs/surfaces" },
+    "proof": { "$ref": "#/$defs/proof" },
+    "verification": { "$ref": "#/$defs/verification" },
+    "delivery": { "$ref": "#/$defs/delivery" },
+    "stop": { "$ref": "#/$defs/stop" },
+    "metadata": {
+      "type": "object",
+      "description": "Non-semantic caller metadata (e.g. observation timestamps). Excluded from canonical identity and from every projection; may never carry assignment, lease, or agent state."
+    }
+  },
+  "$defs": {
+    "node_kind": {
+      "description": "Closed work-node vocabulary. Only a bounded implementation leaf is direct builder work; controller and fan_in nodes require an explicit programme-manifest bounded-leaf declaration.",
+      "enum": ["bounded_implementation_leaf", "controller", "fan_in"]
+    },
+    "profile_conditionality": {
+      "description": "Whether the selected claim profile is conditional in the programme manifest. Explicit and required: absent conditionality is ambiguity, not a default.",
+      "type": "boolean"
+    },
+    "frontier_decision": {
+      "enum": ["ready", "blocked"]
+    },
+    "authority_group": {
+      "enum": [
+        "must_be_current",
+        "may_be_mined",
+        "must_not_be_reimplemented",
+        "consumer_fan_in",
+        "external_manual_owner"
+      ]
+    },
+    "proof_kind": {
+      "description": "Closed provenance of an authority's currentness. A historical branch is never a landed authority; only current-tree/spec/frontier/live anchors may be described as current.",
+      "enum": [
+        "current_tree_probe",
+        "spec_disposition",
+        "frontier_digest",
+        "live_observation",
+        "historical_branch",
+        "external_owner_note"
+      ]
+    },
+    "candidate_state": {
+      "enum": ["not_observed", "observed"]
+    },
+    "verification_scope": {
+      "description": "Closed verification-route scopes. Focused proof is always first; generation steps are mandatory where generated artifacts are touched.",
+      "enum": [
+        "focused_proof",
+        "generation",
+        "architecture_policy",
+        "file_policy",
+        "docs_check",
+        "format",
+        "clippy",
+        "typecheck",
+        "diff_check"
+      ]
+    },
+    "old_path_disposition": {
+      "enum": ["none", "replaced", "reused", "retired", "superseded"]
+    },
+    "permitted_terminal_action": {
+      "description": "Closed terminal actions a packet may authorize. Empty means the actor must stop at a reviewable draft PR and handoff.",
+      "enum": ["merge_after_review", "external_submission", "release_publication"]
+    },
+    "write_boundary": {
+      "enum": ["none", "repository_candidate_branch"]
+    },
+    "work": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "owning_issue",
+        "node_id",
+        "proposition_id",
+        "profile",
+        "profile_conditional",
+        "node_kind",
+        "result_sentence",
+        "claim_ceiling",
+        "unproven",
+        "non_goals",
+        "successors"
+      ],
+      "properties": {
+        "owning_issue": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Issue/controller that owns the selected node."
+        },
+        "node_id": { "type": "string", "minLength": 1 },
+        "proposition_id": { "type": "string", "minLength": 1 },
+        "profile": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Programme-local claim/profile id (e.g. coding_agent_bounded)."
+        },
+        "profile_conditional": { "$ref": "#/$defs/profile_conditionality" },
+        "profile_decision": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["selecting_authority", "selected_value"],
+          "properties": {
+            "selecting_authority": { "type": "string", "minLength": 1 },
+            "selected_value": { "type": "string", "minLength": 1 }
+          },
+          "description": "Required exactly when profile_conditional is true; forbidden otherwise."
+        },
+        "node_kind": { "$ref": "#/$defs/node_kind" },
+        "bounded_leaf_manifest_ref": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Manifest row that explicitly defines a bounded implementation leaf for a controller/fan_in node; required only for non-leaf kinds."
+        },
+        "result_sentence": { "type": "string", "minLength": 1 },
+        "claim_ceiling": { "type": "string", "minLength": 1 },
+        "unproven": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "description": "What explicitly remains unproven after this packet's PR."
+        },
+        "non_goals": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "successors": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "description": "Successor or transfer owners after delivery."
+        }
+      }
+    },
+    "actor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["role", "write_boundary"],
+      "properties": {
+        "role": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Programme-local actor profile id; the shared layer never normalizes it."
+        },
+        "write_boundary": { "$ref": "#/$defs/write_boundary" }
+      }
+    },
+    "frontier": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["decision", "digest", "blocking_edges"],
+      "properties": {
+        "decision": { "$ref": "#/$defs/frontier_decision" },
+        "digest": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Digest of the supplied offline frontier decision."
+        },
+        "blocking_edges": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["edge", "reason"],
+            "properties": {
+              "edge": { "type": "string", "minLength": 1 },
+              "reason": { "type": "string", "minLength": 1 }
+            }
+          },
+          "description": "Exact blocking edges; required non-empty exactly when decision is blocked."
+        }
+      }
+    },
+    "current_tree_probe": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["subject", "result", "digest"],
+      "properties": {
+        "subject": { "type": "string", "minLength": 1 },
+        "result": { "type": "string", "minLength": 1 },
+        "digest": { "type": "string", "minLength": 1 }
+      }
+    },
+    "live_observation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["candidate_state", "digest"],
+      "properties": {
+        "candidate_state": { "$ref": "#/$defs/candidate_state" },
+        "digest": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Digest of the supplied live observation."
+        },
+        "candidate_identity": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Exact candidate identity; required when candidate_state is observed, forbidden when not_observed."
+        },
+        "collision_state": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Exact writer/collision observation; forbidden when candidate_state is not_observed."
+        }
+      }
+    },
+    "authority_map": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "must_be_current",
+        "may_be_mined",
+        "must_not_be_reimplemented",
+        "consumer_fan_in",
+        "external_manual_owner"
+      ],
+      "properties": {
+        "must_be_current": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/authority_entry" },
+          "description": "Authorities described as landed/current; each carries a currentness proof anchored to the observed tree."
+        },
+        "may_be_mined": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/authority_entry" },
+          "description": "Salvageable historical work; never a currentness authority."
+        },
+        "must_not_be_reimplemented": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/authority_entry" }
+        },
+        "consumer_fan_in": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/authority_entry" },
+          "description": "Consumers/fan-in that run after this PR."
+        },
+        "external_manual_owner": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/authority_entry" }
+        }
+      }
+    },
+    "authority_entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ref", "subject", "proof_kind"],
+      "properties": {
+        "ref": { "type": "string", "minLength": 1 },
+        "subject": { "type": "string", "minLength": 1 },
+        "proof_kind": { "$ref": "#/$defs/proof_kind" },
+        "proof_tree": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Tree the proof was observed against. Required for current_tree_probe anchors in must_be_current and must equal repository.observed_tree; historical branches anchor to their own tree and are barred from must_be_current."
+        },
+        "proof_digest": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Digest of the supplied currentness proof. Required for digest-anchored landed authorities (spec_disposition, frontier_digest, live_observation) in must_be_current."
+        }
+      }
+    },
+    "surfaces": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "implementation_paths",
+        "tests_fixtures",
+        "generated_artifacts",
+        "docs_fragments",
+        "writer_slots",
+        "forbidden_adjacent"
+      ],
+      "properties": {
+        "implementation_paths": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "description": "Inspection hints; never stale line-level patch instructions."
+        },
+        "tests_fixtures": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+        "generated_artifacts": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "description": "Generated/schema/spec artifacts touched; each obligates a generation verification step with second-run no-diff."
+        },
+        "docs_fragments": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+        "writer_slots": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["key", "paths"],
+            "properties": {
+              "key": { "type": "string", "minLength": 1 },
+              "paths": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } }
+            }
+          },
+          "description": "Known writer slots/conflict keys; overlapping keys or paths fail closed instead of staying hidden."
+        },
+        "forbidden_adjacent": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "description": "Forbidden adjacent authorities/surfaces."
+        }
+      }
+    },
+    "proof": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "falsifiers",
+        "positive_discriminator",
+        "mutation_controls",
+        "terminal_outcomes"
+      ],
+      "properties": {
+        "falsifiers": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "stage", "statement"],
+            "properties": {
+              "id": { "type": "string", "minLength": 1 },
+              "stage": { "type": "string", "minLength": 1 },
+              "statement": { "type": "string", "minLength": 1 }
+            }
+          },
+          "description": "Cheapest discriminating stage-specific falsifiers. Generic 'add tests'/'run the workspace' statements fail closed."
+        },
+        "positive_discriminator": { "type": "string", "minLength": 1 },
+        "mutation_controls": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "terminal_outcomes": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 },
+          "description": "Terminal outcome vocabulary for this packet's result."
+        },
+        "cleanup_retention": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Cleanup/retention proof where applicable."
+        }
+      }
+    },
+    "verification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["steps"],
+      "properties": {
+        "steps": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["command_id", "command", "scope"],
+            "properties": {
+              "command_id": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Repository-owned command/policy identity the literal is bound to."
+              },
+              "command": { "type": "string", "minLength": 1 },
+              "scope": { "$ref": "#/$defs/verification_scope" },
+              "second_run_no_diff": {
+                "type": "boolean",
+                "description": "Step proves a second run produces no diff; required on the generation step covering each generated artifact."
+              }
+            }
+          },
+          "description": "Focused proof first; broad or generic-only routes fail closed."
+        }
+      }
+    },
+    "delivery": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "definition",
+        "branch_suggestion",
+        "pr_title_suggestion",
+        "pr_body_fields",
+        "old_path_disposition",
+        "limitations",
+        "remaining_blocker_or_next"
+      ],
+      "properties": {
+        "definition": {
+          "const": "reviewable_draft_pr_and_handoff",
+          "description": "Closed. A local diff, helper-only substrate, unpushed commit, or unrelated green check is not delivered."
+        },
+        "branch_suggestion": { "type": "string", "minLength": 1 },
+        "pr_title_suggestion": { "type": "string", "minLength": 1 },
+        "pr_body_fields": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "old_path_disposition": { "$ref": "#/$defs/old_path_disposition" },
+        "limitations": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+        "remaining_blocker_or_next": { "type": "string", "minLength": 1 }
+      }
+    },
+    "stop": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["conditions", "permitted_terminal_actions"],
+      "properties": {
+        "conditions": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "permitted_terminal_actions": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/permitted_terminal_action" },
+          "description": "Empty by default: stop at the reviewable draft PR. Any entry requires an explicit authority reference."
+        },
+        "authority": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Actor contract/authority that explicitly permits the listed terminal actions; required non-empty exactly when permitted_terminal_actions is non-empty."
+        }
+      }
+    }
+  }
+}

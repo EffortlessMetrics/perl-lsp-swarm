@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Fixed
+body: "Fix two perl-regex event-scanner honesty defects: (1) scan \\Q...\\E bodies for Perl variable interpolation and record it as a quoted-literal runtime-text fact without degrading capture-numbering confidence, because the interpolated value is quoted before regex interpretation and cannot inject captures; escaped sigils (\\Q\\$x\\E, \\Q\\@x\\E) and backslash parity are resolved by escape pairs, and only genuinely interpolating sigils are recorded; (2) mark embedded-code constructs without a closing ) as malformed rather than silently treating them as well-formed. The PR also adds a missing regression proof for s///c (without /g), whose behavior was already correct on the base."
+time: 2026-08-15T12:00:00Z
+custom:
+  PR: "9768"
+  Slug: perl-regex-event-scanner-honesty
+  Breaking: "no"

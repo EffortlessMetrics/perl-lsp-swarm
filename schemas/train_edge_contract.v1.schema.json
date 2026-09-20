@@ -1,0 +1,324 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://effortlessmetrics.dev/perl-lsp/schemas/train_edge_contract.v1.schema.json",
+  "title": "Shared typed train edge and claim-profile contract v1",
+  "description": "Programme-neutral semantic base for dependency, claim, fan-in, external-checkpoint and sidecar relationships between implementation-train propositions. The contract is a closed shared vocabulary plus deterministic validation invariants. It does not define a universal train manifest, node vocabulary, frontier, live observer, support evaluator, scheduler, work database, or release authority. Programme manifests embed or adapt it and may add stricter local fields without changing the shared meaning. No mutable GitHub, check, run, or receipt state may be embedded.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "schema_version", "contract_id", "programme", "propositions", "edges", "claim_profiles"],
+  "properties": {
+    "schema": { "const": "train_edge_contract.v1" },
+    "schema_version": { "const": 1 },
+    "contract_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Stable identity of this embedding/adaptation of the shared contract."
+    },
+    "programme": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "local_extension": {
+          "type": "string",
+          "description": "Declares that the embedding adds stricter local fields; the shared meaning is unchanged."
+        }
+      }
+    },
+    "authorities": {
+      "type": "array",
+      "description": "Selecting authorities that may activate conditional relationships. Conditional gates fail closed when their selecting authority is not declared here.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "subject"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "subject": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "external_subjects": {
+      "type": "array",
+      "description": "External subjects referenced by external_checkpoint edges. Programme schemas may add exact external subject fields locally.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "kind"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "kind": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "propositions": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/proposition" }
+    },
+    "edges": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/edge" }
+    },
+    "claim_profiles": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/claim_profile" }
+    },
+    "projection": {
+      "type": "object",
+      "description": "Optional deterministic snapshot of independently tracked states used by fixture evaluation. Four tracks stay independent: implementation currentness, evidence currentness, proposition/cell state, and external/manual state. The shared layer never derives one track from another.",
+      "additionalProperties": false,
+      "properties": {
+        "proposition_states": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/proposition_state" }
+        },
+        "external_stage_states": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/external_stage_state" }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "edge_kind": {
+      "description": "Closed shared edge vocabulary.",
+      "enum": [
+        "requires_implementation",
+        "requires_behavior_for_claim",
+        "conditional_release_gate",
+        "consumes_if_available",
+        "fan_in",
+        "external_checkpoint",
+        "nonblocking_sidecar"
+      ]
+    },
+    "external_checkpoint_stage": {
+      "description": "Closed common external stages. An internal packet or merged local PR cannot satisfy any of them.",
+      "enum": [
+        "manual_authorization",
+        "external_submission",
+        "external_acceptance",
+        "released_public_availability"
+      ]
+    },
+    "reason_class": {
+      "description": "Closed base reason traits for non-success states. Exact domain vocabularies remain programme-local; local classes map to exactly one base trait.",
+      "enum": [
+        "not_proven",
+        "pending_external_stage",
+        "explicit_limitation",
+        "out_of_scope",
+        "superseded"
+      ]
+    },
+    "derives_from": {
+      "description": "Closed provenance of a terminal proposition state. Only independently verified propositions may satisfy fan-in composition; closed issues, merged pull requests, workflow runs, and file state never manufacture child success.",
+      "enum": [
+        "verified_proposition",
+        "closed_issue",
+        "merged_pull_request",
+        "workflow_run",
+        "file_state"
+      ]
+    },
+    "proposition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "claim_ceiling"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "claim_ceiling": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Programme-owned ceiling text; the shared layer never edits it."
+        },
+        "local_role": {
+          "type": "string",
+          "description": "Programme-local role vocabulary; never normalized by the shared layer."
+        },
+        "external_subject": {
+          "type": "string",
+          "description": "References external_subjects[].id when this proposition tracks an external subject."
+        }
+      }
+    },
+    "edge": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source", "kind", "target"],
+      "properties": {
+        "source": { "type": "string", "minLength": 1 },
+        "kind": { "$ref": "#/$defs/edge_kind" },
+        "target": { "type": "string", "minLength": 1 },
+        "claim_profile": {
+          "type": "string",
+          "minLength": 1,
+          "description": "requires_behavior_for_claim only: the named claim/profile that cannot be promoted until the predecessor behavior/evidence is current."
+        },
+        "selecting_authority": {
+          "type": "string",
+          "minLength": 1,
+          "description": "conditional_release_gate only: must reference authorities[].id."
+        },
+        "selected_value": {
+          "type": "string",
+          "minLength": 1,
+          "description": "conditional_release_gate only: the exact selected decision value."
+        },
+        "selection_subject": {
+          "type": "string",
+          "minLength": 1,
+          "description": "conditional_release_gate only: the exact decision envelope subject."
+        },
+        "active_predecessor": {
+          "type": "string",
+          "minLength": 1,
+          "description": "conditional_release_gate only: the proposition that becomes a requirement only while the selection is current."
+        },
+        "invalidation_rule": {
+          "type": "string",
+          "minLength": 1,
+          "description": "conditional_release_gate only: how a stale selection fails closed."
+        },
+        "children": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 },
+          "description": "fan_in only: independently terminal child propositions."
+        },
+        "satisfaction_source": {
+          "const": "independently_terminal_child_propositions",
+          "description": "fan_in only: closed; fan-in never creates implementation or manufactures child success from issue, PR, workflow, or file state."
+        },
+        "stage": {
+          "$ref": "#/$defs/external_checkpoint_stage",
+          "description": "external_checkpoint only: the exact external stage required."
+        },
+        "provenance": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Programme-local provenance of the edge; preserved unchanged by shared validation."
+        }
+      }
+    },
+    "claim_profile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "version", "required", "allowed_terminal_limitation_states", "claim_ceiling"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "version": { "type": "integer", "minimum": 1 },
+        "selecting_authority": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Required only where the profile itself is conditional; must reference authorities[].id."
+        },
+        "selection_subject": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Required only where the profile itself is conditional; pairing rule enforced by validation."
+        },
+        "required": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 },
+          "description": "Required proposition IDs. A nonblocking_sidecar source (the sidecar proposition) entering this set is invalid; the core target it points at stays a legitimate requirement."
+        },
+        "allowed_terminal_limitation_states": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/reason_class" },
+          "description": "Base reason traits the programme accepts as explicit terminal limitation states without converting them to pass."
+        },
+        "claim_ceiling": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Programme-owned ceiling text."
+        }
+      }
+    },
+    "track_state": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["terminal"],
+      "properties": {
+        "terminal": {
+          "type": "boolean",
+          "description": "True only when this independently tracked state has terminally passed."
+        },
+        "reason_class": {
+          "$ref": "#/$defs/reason_class",
+          "description": "Required semantics: when terminal is false the reason trait must be present; enforced by the validator."
+        },
+        "derives_from": {
+          "$ref": "#/$defs/derives_from",
+          "description": "proposition track only: only verified_proposition may carry terminal true."
+        }
+      }
+    },
+    "proposition_state": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "implementation", "evidence", "proposition"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "implementation": { "$ref": "#/$defs/track_state" },
+        "evidence": { "$ref": "#/$defs/track_state" },
+        "proposition": { "$ref": "#/$defs/track_state" },
+        "external": { "$ref": "#/$defs/track_state" }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "proposition": {
+                "properties": { "terminal": { "const": true } },
+                "required": ["terminal"]
+              }
+            },
+            "required": ["proposition"]
+          },
+          "then": {
+            "properties": {
+              "proposition": {
+                "required": ["derives_from"],
+                "properties": { "derives_from": { "const": "verified_proposition" } }
+              }
+            }
+          }
+        }
+      ],
+      "description": "Terminal proposition success must declare independently verified provenance; undeclared provenance is not proven. The implementation/evidence/external currentness tracks stay independent and do not declare fan-in provenance."
+    },
+    "external_stage_state": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["subject", "stage_reached", "satisfied_by"],
+      "properties": {
+        "subject": {
+          "type": "string",
+          "minLength": 1,
+          "description": "References external_subjects[].id."
+        },
+        "stage_reached": {
+          "enum": [
+            "none",
+            "manual_authorization",
+            "external_submission",
+            "external_acceptance",
+            "released_public_availability"
+          ],
+          "description": "Highest externally observed stage. Internal packet or merged local PR state can never set this beyond none."
+        },
+        "satisfied_by": {
+          "enum": ["not_satisfied", "external_observation"],
+          "description": "Closed. Internal state cannot satisfy an external stage; a prepared internal packet is not submitted, accepted, released, or publicly installed."
+        }
+      }
+    }
+  }
+}

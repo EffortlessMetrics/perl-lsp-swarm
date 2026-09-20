@@ -1,0 +1,35 @@
+{
+  "schema_version": "semantic_close_containment_fixture.v1",
+  "provenance": {
+    "captured_at": "2026-08-21",
+    "sources": [
+      "https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/10413"
+    ],
+    "subject_shas": [],
+    "boundary": "Immutable bounded structured excerpts; canonical GitHub subjects and exact candidate SHAs are retained. The fixture proves only the CP00 contradiction class."
+  },
+  "repository": "effortlessmetrics/perl-lsp-swarm",
+  "pull_request": {
+    "number": 990008,
+    "title": "fix(runtime): land one row while retaining the same owner (#9000102)",
+    "body": "## Claim Boundary\n\nOne bounded row is complete.\n\n## Remaining work\n\nThe other required denominator rows remain tracked on #9000102.\n\nCloses #9000102."
+  },
+  "issues": [
+    {
+      "repository": "effortlessmetrics/perl-lsp-swarm",
+      "number": 9000102,
+      "title": "fix(runtime): complete the five-row mutation cohort",
+      "body": "## Acceptance\n\nAll five current mutation rows are proved."
+    }
+  ],
+  "expected": {
+    "aggregate_code": "FAIL_REMAINING_WORK_SAME_ISSUE",
+    "rows": [
+      {
+        "repository": "effortlessmetrics/perl-lsp-swarm",
+        "issue_number": 9000102,
+        "code": "FAIL_REMAINING_WORK_SAME_ISSUE"
+      }
+    ]
+  }
+}

@@ -1,0 +1,9 @@
+project: vscode
+component: Packaging and distribution
+kind: Added
+body: Added the checked, fail-closed workspace-host target decision used to distinguish exact release targets from unsupported architecture, Android/Termux, unresolved libc, and topology-drift states. Production downloader wiring follows in the closing #9844 slice.
+time: 2026-08-15T23:40:00Z
+custom:
+  PR: 10001
+  Slug: vscode-managed-host-target-core
+  Breaking: "no"

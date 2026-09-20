@@ -16,8 +16,10 @@ mod client_requests;
 mod constructors;
 pub(crate) mod diagnostic_debounce;
 pub(crate) mod diagnostics;
+mod diagnostics_sink;
 mod dispatch;
 mod document_access;
+mod document_symbols_sink;
 /// File discovery abstraction for workspace scanning
 pub mod file_discovery;
 /// File watcher change debouncer for bulk operation handling
@@ -25,18 +27,27 @@ pub mod file_watcher_debounce;
 mod language;
 mod latency;
 mod lifecycle;
+mod metadata_invalidation;
 mod notebook;
 pub(crate) mod outbound;
 #[allow(unused_imports)]
 use outbound::OutboundSink;
+pub(crate) mod parse_effect_contract;
 pub(crate) mod parse_worker;
 #[cfg(feature = "workspace")]
 pub(crate) mod readiness;
 mod refresh;
+mod resolve_session;
 /// Routing module for lifecycle-aware index access
 pub mod routing;
+/// Ownership boundary for application background-worker execution lifetime,
+/// cancellation, join, and settlement (#10024).
+pub(crate) mod runtime_services;
+#[cfg(all(test, feature = "workspace"))]
+mod scan_gate_observation;
 pub(crate) mod scheduler;
 mod serving;
+mod session_warning_dedup;
 pub(crate) mod stream_session;
 mod symbol_extraction;
 mod test_api;
@@ -45,11 +56,31 @@ mod text_sync;
 /// `PERL_LSP_TIMING` phase-1 instrumentation sink (opt-in span timings).
 pub(crate) mod timing;
 mod types;
+pub(crate) mod v0_18_text_sync_envelope;
 mod window;
 mod workspace;
 mod workspace_folder;
 #[cfg(feature = "workspace")]
 mod workspace_progress;
+
+#[cfg(test)]
+mod active_document_readiness_tests;
+#[cfg(test)]
+mod diagnostics_sink_tests;
+#[cfg(test)]
+mod document_symbols_sink_tests;
+#[cfg(test)]
+mod metadata_invalidation_tests;
+#[cfg(test)]
+mod open_buffer_authority_tests;
+#[cfg(test)]
+mod runtime_services_tests;
+#[cfg(test)]
+mod session_warning_dedup_tests;
+
+// Test/pressure observation of the bounded session-warning dedup store (#9769).
+#[cfg(any(test, feature = "expose_lsp_test_api"))]
+pub use session_warning_dedup::{SessionWarningDedupSnapshot, SessionWarningFamilyCounters};
 
 // Re-export protocol types for backward compatibility
 // Tests and external code import these from perl_lsp::
@@ -58,12 +89,19 @@ pub use crate::protocol::{JsonRpcError, JsonRpcId, JsonRpcRequest, JsonRpcRespon
 // Re-export window types for public API
 pub use window::{MessageType, ShowDocumentOptions};
 
-use perl_lsp_rs_core::tooling::performance::{AstCache, SymbolIndex};
-use perl_lsp_rs_core::tooling::perl_critic::BuiltInAnalyzer;
+use perl_lsp_rs_core::tooling::performance::SymbolIndex;
 use perl_parser::{
     Parser,
     ast::{Node, NodeKind},
-    declaration::ParentMap,
+};
+use perl_semantic_analyzer::analysis::declaration::ParentMap;
+
+#[cfg(any(test, feature = "expose_lsp_test_api"))]
+pub(crate) struct WorkspaceTopologyTransitionGate {
+    pub(crate) started: std::sync::mpsc::Sender<()>,
+    pub(crate) release: std::sync::mpsc::Receiver<()>,
+}
+use perl_tdd_support::{
     tdd_basic::TestGenerator,
     test_runner::{TestKind, TestRunner},
 };
@@ -86,7 +124,6 @@ use crate::features::{
     code_lens_provider::{CodeLensProvider, get_shebang_lens, resolve_code_lens},
     diagnostics::{DiagnosticSeverity as InternalDiagnosticSeverity, DiagnosticsProvider},
     document_highlight::DocumentHighlightProvider,
-    formatting::{CodeFormatter, FormattingOptions},
     implementation_provider::ImplementationProvider,
     type_hierarchy::TypeHierarchyProvider,
 };
@@ -118,8 +155,8 @@ use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::io::{self, BufRead, BufReader, Read, Write};
+use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
-#[cfg(any(test, feature = "expose_lsp_test_api"))]
 use std::sync::atomic::AtomicU64;
 use std::sync::{
     Arc, Weak,
@@ -128,11 +165,11 @@ use std::sync::{
 use url::Url;
 
 #[cfg(feature = "workspace")]
-use perl_parser::workspace_index::{
+use perl_position_tracking::{WireLocation, WirePosition, WireRange};
+#[cfg(feature = "workspace")]
+use perl_workspace::workspace_index::{
     IndexCoordinator, LspWorkspaceSymbol, WorkspaceIndex, uri_to_fs_path,
 };
-#[cfg(feature = "workspace")]
-use perl_position_tracking::{WireLocation, WirePosition, WireRange};
 
 #[cfg(feature = "workspace")]
 use crate::fallback::text::extract_text_based_symbols;
@@ -151,6 +188,9 @@ pub struct LspServer {
     initialize_requested: AtomicBool,
     /// Whether the server is initialized
     initialized: AtomicBool,
+    /// Server-owned coordinate authority, published only after initialize succeeds.
+    pub(crate) position_encoding_session_context:
+        Mutex<Option<lifecycle::position_encoding::PositionEncodingSessionContext>>,
     /// Whether shutdown was received (for LSP-compliant exit handling)
     shutdown_received: AtomicBool,
     /// Pending `window/logMessage` text to emit once the client has sent the
@@ -161,8 +201,6 @@ pub struct LspServer {
     /// Index coordinator for workspace-wide features with lifecycle management
     #[cfg(feature = "workspace")]
     pub(crate) index_coordinator: Option<Arc<IndexCoordinator>>,
-    /// AST cache for performance
-    ast_cache: Arc<AstCache>,
     /// Symbol index for fast lookups
     symbol_index: Arc<Mutex<SymbolIndex>>,
     /// Server configuration
@@ -175,8 +213,10 @@ pub struct LspServer {
     ///
     /// `Drop` swaps `outbound` with a closed sender, drops the live sender to
     /// close the channel, then joins this thread so buffered bytes are flushed
-    /// before the server is deallocated.
-    outbound_writer_handle: Option<std::thread::JoinHandle<()>>,
+    /// before the server is deallocated. The join resolves to the writer's
+    /// terminal outcome; Drop records it as structured settlement evidence
+    /// (#8402).
+    outbound_writer_handle: Option<std::thread::JoinHandle<outbound::WriterTerminalOutcome>>,
     /// Client capabilities (behind mutex for interior mutability — written once during initialize)
     client_capabilities: Mutex<ClientCapabilities>,
     /// Cancelled request IDs
@@ -193,6 +233,52 @@ pub struct LspServer {
     /// workspaces with per-folder configuration. The old string-based approach
     /// is maintained via `workspace_folder_uris()` for backward compatibility.
     workspace_folders: Arc<Mutex<Vec<WorkspaceFolderState>>>,
+    /// Monotonic workspace-topology generation for folder transitions.
+    pub(crate) workspace_topology_generation: Arc<AtomicU32>,
+    /// False while folder membership and matching configuration are published.
+    pub(crate) workspace_topology_stable: Arc<AtomicBool>,
+    /// Monotonic configuration/ownership generation for diagnostic snapshots.
+    pub(crate) workspace_identity_generation: Arc<AtomicU64>,
+    /// Monotonic generation for dependency and environment facts derived from
+    /// project metadata (#13640).
+    ///
+    /// Advanced once per coalesced watcher batch that actually refreshed at
+    /// least one folder, so a burst of metadata writes is one observable
+    /// refresh rather than one per event.
+    pub(crate) dependency_facts_generation: Arc<AtomicU64>,
+    /// Workspace folder URIs holding at least one metadata source that could
+    /// not be read, whose previous facts are therefore retained rather than
+    /// observed (#13640).
+    ///
+    /// A folder is marked only when a metadata file exists but cannot be read
+    /// as text. An open buffer is *not* stale: its staged text is the
+    /// authority, so buffer-derived facts are current. The marker is cleared
+    /// by the next refresh in which every source resolves.
+    pub(crate) stale_dependency_facts: Arc<Mutex<std::collections::BTreeSet<String>>>,
+
+    /// Serializes a whole metadata refresh: buffer snapshot *and* apply.
+    ///
+    /// `refresh_project_metadata_facts` snapshots open-document text before
+    /// taking `workspace_folders`, because taking `documents` inside the
+    /// folder lock would invert the established `documents -> workspace_folders`
+    /// order. That hoist leaves a gap: two concurrent refreshes (a watcher
+    /// batch and a `didChange`, say) can snapshot in one order and apply in
+    /// the other, letting an older buffer snapshot commit last and overwrite
+    /// newer dependency facts until the next event.
+    ///
+    /// Holding this for the whole refresh closes that gap without nesting the
+    /// two locks: it is always acquired *before* `documents` and
+    /// `workspace_folders` and only by this one route, so it cannot
+    /// participate in a cycle. A refresh that waits here then snapshots after
+    /// the previous one has fully applied, so the last refresh to run always
+    /// reads current buffer state.
+    pub(crate) metadata_refresh_serialization: Arc<Mutex<()>>,
+    /// Serializes workspace identity invalidation with diagnostic publication.
+    pub(crate) workspace_identity_lock: Arc<Mutex<()>>,
+    /// Project configuration discovered for an unregistered single-file document.
+    single_file_project_config: Arc<Mutex<Option<perl_lsp_rs_core::config::ProjectConfig>>>,
+    /// Generation for the retained single-file project configuration authority.
+    single_file_project_config_generation: Arc<AtomicU64>,
     /// Root path for module resolution
     root_path: Arc<Mutex<Option<PathBuf>>>,
     /// `.perltidyrc` profile path discovered from the workspace root during
@@ -207,6 +293,12 @@ pub struct LspServer {
     advertised_features: Mutex<crate::protocol::capabilities::AdvertisedFeatures>,
     /// Canonical feature IDs emitted by the most recent initialize response.
     advertised_feature_ids: Mutex<Vec<&'static str>>,
+    /// Accepted text-sync session contract plus the digest of the exact
+    /// `InitializeResult` built from it (#9378). `None` until initialize is
+    /// accepted; set exactly once, and never replaced or partially altered.
+    /// The immutable contract is the single authority for the wire sync kind
+    /// and position encoding — no other field may carry a competing value.
+    text_sync_session: Mutex<Option<lifecycle::session_contract::AcceptedTextSyncSession>>,
     /// Client supports pull diagnostics
     client_supports_pull_diags: Arc<AtomicBool>,
     /// Workspace configuration for module resolution
@@ -214,6 +306,23 @@ pub struct LspServer {
     /// Perl settings extracted from `initializationOptions` during initialize.
     /// Kept as a base config layer below `.perl-lsp.toml` and `workspace/configuration`.
     initialization_options_perl_settings: Arc<Mutex<Option<Value>>>,
+    /// Most recent perl settings payload received via `workspace/didChangeConfiguration`.
+    /// Replayed on top of merged project config by
+    /// [`crate::runtime::lifecycle::workspace::load_and_apply_project_config`] so that
+    /// tier-3 client values (documented as layered above TOML) survive a folder
+    /// removal when the remaining folders have no `.perl-lsp.toml` to re-apply
+    /// them, and so that project-owned fields are reset back to defaults before
+    /// the merged TOML is applied (issue #15715).
+    last_client_settings: Arc<Mutex<Option<Value>>>,
+    /// Snapshot of `ServerConfig` captured after tier-1 (`initializationOptions`)
+    /// is applied in [`super::workspace::handle_initialize`] and updated whenever
+    /// tier-3 (`didChangeConfiguration`) arrives. Represents the
+    /// `defaults + tier-1 + tier-3` baseline that survives
+    /// `load_and_apply_project_config`'s per-call reset; without it, a
+    /// removed folder's tier-2 contribution would persist on the server-global
+    /// layer because `merged.apply_to_server_config` only writes present
+    /// fields (issue #15715).
+    server_config_baseline: Arc<Mutex<Option<perl_lsp_rs_core::config::ServerConfig>>>,
     /// Atomic counter for generating unique request IDs
     next_request_id: Arc<AtomicI32>,
     /// Pending workspace/configuration reverse requests keyed by request ID.
@@ -225,23 +334,39 @@ pub struct LspServer {
     progress_token_to_request: Arc<Mutex<HashMap<String, JsonRpcId>>>,
     /// Refresh controller for debounced client refresh requests
     refresh_controller: refresh::RefreshController,
-    /// Diagnostic publication debouncer (installed after Arc wrapping in Scheduler::new)
-    diagnostic_debouncer: Mutex<Option<diagnostic_debounce::DiagnosticDebouncer>>,
-    /// Off-lock async parse worker (#3396 Phase 3), installed after Arc
-    /// wrapping in `Scheduler::new` (production) or explicitly by tests
-    /// that want to exercise the real async gap. `None` means the
-    /// synchronous fallback path is active -- see
-    /// `LspServer::install_default_parse_worker` and
-    /// `handle_did_change_with_cancellation`.
-    parse_worker_handle: Mutex<Option<Arc<parse_worker::ParseWorker>>>,
-    /// File watcher change debouncer (installed after Arc wrapping in Scheduler::new)
-    file_watcher_debouncer: Mutex<Option<file_watcher_debounce::FileWatcherDebouncer>>,
+    /// Accepted-ticket push-diagnostics sink (#11673): per-URI record of the
+    /// last committed `publishDiagnostics` ticket + monotonic sequence. The
+    /// irreversible outbound enqueue for parser-triggered replacements/clears
+    /// happens inside this sink's critical section -- see
+    /// [`diagnostics_sink`].
+    push_diagnostics_sink: diagnostics_sink::PushDiagnosticsSink,
+    /// Ownership boundary for application background-worker execution
+    /// lifetime, cancellation, join, and settlement (#10024).
+    ///
+    /// Owns the diagnostic publication debouncer, the off-lock async parse
+    /// worker (#3396 Phase 3), and the file watcher change debouncer --
+    /// each installed after Arc wrapping in `Scheduler::new` (production) or
+    /// explicitly by tests that want to exercise the real async gap. A
+    /// `None` worker slot means the synchronous fallback path is active --
+    /// see `LspServer::install_default_parse_worker` and
+    /// `handle_did_change_with_cancellation`. This does NOT own semantic
+    /// readiness/currentness/publication state (`indexing_in_progress`,
+    /// `indexing_rescan_pending`, `indexing_transition_lock`,
+    /// `pending_index_task_count`, `parse_cancel_flags` stay below, per the
+    /// #10024 hard boundary).
+    runtime_services: runtime_services::RuntimeServices,
     /// Notebook document store (LSP 3.17)
     pub(crate) notebook_store: notebook::NotebookStore,
     /// Trace level set by client via $/setTrace (off, messages, verbose)
     trace_level: Arc<Mutex<String>>,
     /// Stream session manager for progressive inline completion.
     stream_session_manager: stream_session::StreamSessionManager,
+    /// Session-keyed resolve-envelope authenticator owned by this connection
+    /// (#8342). Constructed at the connection boundary with fresh
+    /// process-random keys; taken and destroyed by the `shutdown` request so
+    /// every old envelope becomes unverifiable. `None` after teardown.
+    pub(crate) resolve_session_authenticator:
+        Mutex<Option<perl_lsp_rs_core::protocol::resolve_envelope::SessionResolveAuthenticator>>,
     /// Runtime feature profile selected by launch arguments or compiled default.
     feature_profile: FeatureProfile,
     /// Runtime workload tuning (e2e mode, diagnostic scope, debounce, indexing gates).
@@ -306,6 +431,14 @@ pub struct LspServer {
     /// setting the old flag to `true` interrupts the in-progress parse
     /// cooperatively (via `Parser::check_cancelled`).
     pub(crate) parse_cancel_flags: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
+    /// Explicit backing-file transitions observed for open documents (#8041).
+    ///
+    /// Keyed by normalized URI. An external filesystem event may change what
+    /// backs an open document's path, but it must never replace the open
+    /// buffer as the authoritative source. This map records the transition so
+    /// `didSave`/`didClose` can complete the authority handoff
+    /// deterministically instead of guessing from a fresh `path.exists()`.
+    pub(crate) backing_file_transitions: Arc<Mutex<HashMap<String, BackingFileTransition>>>,
     /// Pull diagnostics orchestrator for coordinating diagnostic operations.
     pub(crate) pull_diagnostics_orchestrator: PullDiagnosticsOrchestrator,
     /// Guard that prevents concurrent workspace indexing scans.
@@ -319,8 +452,21 @@ pub struct LspServer {
     #[cfg(feature = "workspace")]
     indexing_rescan_pending: Arc<AtomicBool>,
     /// Serializes the active/pending indexing handoff at scan completion.
-    #[cfg(feature = "workspace")]
     indexing_transition_lock: Arc<Mutex<()>>,
+    /// One-shot barrier used only by the workspace-transition race proof.
+    #[cfg(any(test, feature = "expose_lsp_test_api"))]
+    pub(crate) workspace_transition_test_gate:
+        Arc<std::sync::Mutex<Option<WorkspaceTopologyTransitionGate>>>,
+    /// Test-only gate fired inside the startup scan's per-file commit
+    /// critical section, after `indexing_transition_lock` is acquired
+    /// (#13308).
+    #[cfg(all(feature = "workspace", any(test, feature = "expose_lsp_test_api")))]
+    indexing_commit_gate:
+        Arc<std::sync::Mutex<Option<crate::runtime::readiness::WorkspaceIndexingStartGate>>>,
+    /// One-shot, instance-owned observation for the next admitted unit-test scan.
+    #[cfg(all(test, feature = "workspace"))]
+    indexing_scan_observation:
+        Arc<Mutex<Option<scan_gate_observation::ScanObservationRegistration>>>,
     /// One-time guard for the `window/showMessage` permission-denied warning.
     ///
     /// Set to `true` after the first permission-denied file is encountered during
@@ -337,64 +483,46 @@ pub struct LspServer {
     /// process-level `Once`) so that each `LspServer` instance tracks its own
     /// session independently.
     pub(crate) root_undetected_shown: Arc<AtomicBool>,
-    /// Shared Perl::Critic analyzer for the diagnostic pipeline.
-    ///
-    /// Lazily initialized on first use and reused across diagnostic cycles so
-    /// the per-instance violation cache survives between `textDocument/didChange`
-    /// events.  `invalidate_cache` is called on `didChange`; the whole entry is
-    /// reset to `None` when `perlcritic_enabled`, `perlcritic_severity`, or
-    /// `perlcritic_profile` changes via `didChangeConfiguration`.
-    ///
-    /// Only present on non-WASM targets (subprocess execution is unavailable
-    /// on WASM).
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) critic_analyzer: Mutex<Option<crate::perl_critic::CriticAnalyzer>>,
-    /// Subprocess runtime override for the `CriticAnalyzer`.
-    ///
-    /// When `Some`, the lazy-init path in `collect_external_perlcritic_diagnostics`
-    /// uses this runtime instead of `OsSubprocessRuntime`.  Always `None` in
-    /// production; set to a `MockSubprocessRuntime` by the test helper
-    /// `LspServer::test_install_mock_critic_runtime` so that tests can exercise
-    /// the full diagnostic pipeline without spawning a real `perlcritic` process.
-    ///
-    /// Using a separate runtime override (rather than pre-building the analyzer)
-    /// ensures that config-sensitive values such as the auto-discovered
-    /// `.perlcriticrc` profile path are still resolved at analysis time.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) critic_runtime_override:
+    /// Test-only subprocess runtime override for formatter construction.
+    #[cfg(any(test, feature = "expose_lsp_test_api"))]
+    pub(crate) formatter_runtime_override:
         Mutex<Option<std::sync::Arc<dyn perl_subprocess_runtime::SubprocessRuntime>>>,
-    /// When `true`, skip the `command_exists("perlcritic")` guard during
-    /// diagnostic collection.  Always present on non-WASM targets but only
-    /// settable to `true` through the test API exposed via
-    /// `#[cfg(any(test, feature = "expose_lsp_test_api"))]`.
+    /// Typed, bounded dedup state for user-facing session warnings (#9769).
     ///
-    /// Initialized to `false`; only the test helper methods flip this.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) skip_perlcritic_command_check: AtomicBool,
-    /// When `true`, force the perlcritic availability check to report that the
-    /// binary is missing.  Always `false` in production; only the test API can
-    /// set this flag so unavailable-binary tests do not depend on PATH.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) force_perlcritic_command_unavailable: AtomicBool,
-    /// Deduplication set for workspace-scoped Perl::Critic warning notifications.
-    ///
-    /// Keys are stable identifiers (for example, `missing-binary` or
-    /// `missing-profile:/abs/path`) so repeated diagnostic cycles do not spam
-    /// users with identical `window/showMessage` warnings.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) critic_workspace_warnings_sent: Mutex<std::collections::HashSet<String>>,
-    /// Deduplication set for invalid enum warnings from editor-provided settings.
-    ///
-    /// The same client payload can arrive through initialization, configuration
-    /// pulls, and repeated `didChangeConfiguration` notifications. Warn once per
-    /// setting/value pair per server session so a typo is visible without toast spam.
-    pub(crate) client_setting_warnings_sent: Mutex<std::collections::HashSet<String>>,
+    /// Governs whether a repeated Perl::Critic, invalid-client-setting, or AI
+    /// backend warning should be suppressed for the same reviewed subject.
+    /// Retains only fixed-size fingerprint identities under an explicit
+    /// per-family hard cap; it never holds semantic state and never
+    /// influences configuration, diagnostics, provider, or readiness truth.
+    pub(crate) session_warning_dedup: session_warning_dedup::SessionWarningDedupStore,
     /// Test-only hook invoked after push diagnostics capture their document
     /// snapshot and before the stale-generation guard decides whether to
     /// publish. This keeps concurrency boundary tests deterministic without
     /// adding production synchronization.
     #[cfg(test)]
     pub(crate) diagnostic_after_snapshot_hook: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
+    /// Accepted-ticket document-symbol sink (#11674): per-URI record of the
+    /// last committed local symbol ticket + monotonic sequence. The
+    /// irreversible `symbol_index` replacement/clear for parser-triggered
+    /// paths happens inside this sink's critical section -- see
+    /// [`document_symbols_sink`]. The committed identity is also the anchor
+    /// #6729's document-symbol result-ID row must consume.
+    document_symbols_sink: document_symbols_sink::DocumentSymbolsSink,
+    /// Accepted-ticket active-document parser readiness (#11675): one
+    /// generation-owned state per open document, minted only when the exact
+    /// accepted ticket plus every required core effect outcome is current.
+    /// The `perl-lsp/active-document-ready` notification is a projection of
+    /// this state -- see [`readiness`].
+    pub(crate) active_document_readiness: readiness::ActiveDocumentParserReadiness,
+    /// Test-only barrier between symbol extraction and the sink-boundary
+    /// mutation (#11674 falsifiers).
+    #[cfg(test)]
+    document_symbols_before_commit_hook: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
+    /// Test-only barrier inside the sink boundary: fires after the currency
+    /// precheck passes and before the serialized install, so falsifiers can
+    /// race the exact validation -> mutation window (#11674 review barrier).
+    #[cfg(test)]
+    document_symbols_before_install_hook: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
     /// Optional AI inline-completion backend.
     ///
     /// When `Some`, the `handle_inline_completion` handler will attempt
@@ -403,12 +531,6 @@ pub struct LspServer {
     pub(crate) ai_inline_backend: Mutex<
         Option<Arc<dyn perl_lsp_rs_core::providers::inline_completion::InlineCompletionBackend>>,
     >,
-    /// Deduplication set for user-facing AI backend warnings.
-    ///
-    /// Authentication failures are actionable but can recur on every
-    /// completion request. Keep the notification session-scoped so a broken
-    /// credential does not spam the editor while preserving one clear signal.
-    pub(crate) ai_backend_warnings_sent: Mutex<HashSet<String>>,
     /// When `true`, eagerly maintain the per-document incremental parsing state
     /// (`incremental_doc` / `incremental_state`) inside the `didChange` mutation
     /// critical section.
@@ -466,6 +588,12 @@ pub struct RuntimePressureSnapshot {
     pub pending_index_tasks: usize,
     /// Number of unique file-watcher URIs waiting in the debounce window.
     pub file_watcher_pending_uris: usize,
+    /// Number of file-watcher URIs currently inside a dispatched batch.
+    ///
+    /// Moving work from pending to active never reports zero total watcher
+    /// pressure (#8064): during a long batch this stays non-zero while
+    /// [`Self::file_watcher_pending_uris`] drains.
+    pub file_watcher_active_subjects: usize,
     /// Number of unique diagnostic URIs waiting in the debounce window.
     pub diagnostic_debounce_pending_uris: usize,
     /// Number of workspace/configuration requests waiting for client replies.
@@ -488,6 +616,31 @@ unsafe impl Sync for LspServer {}
 
 // Note: DocumentState, ServerConfig, and normalize_package_separator are
 // imported from crate::lsp::state::{document, config}
+
+/// Explicit backing-file transition recorded for an open document (#8041).
+///
+/// The authoritative input for an open document is always its editor buffer.
+/// External filesystem events may still change what backs the document's
+/// path; this state records that transition so `didSave` and `didClose` can
+/// complete the authority handoff deterministically:
+///
+/// - [`BackingFileTransition::Changed`] — disk bytes moved on while the
+///   buffer stayed authoritative (watched CHANGED/CREATED was deliberately
+///   not indexed). Close must reload the file from current disk under
+///   closed-file authority; save re-coheres disk with the buffer.
+/// - [`BackingFileTransition::Deleted`] — the backing file is gone. The
+///   buffer keeps authority; save can recreate it, close removes the
+///   remaining subject.
+/// - [`BackingFileTransition::RenamedOrMoved`] — the backing path moved
+///   to `new_uri` via a client file-operation notification. The buffer stays
+///   bound to its original URI until client document lifecycle resolves the
+///   handoff.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum BackingFileTransition {
+    Changed,
+    Deleted,
+    RenamedOrMoved { new_uri: String },
+}
 
 // =========================================================================
 // Core accessors and server lifecycle
@@ -565,35 +718,45 @@ impl LspServer {
     /// The provider error is intentionally not included in the editor-facing
     /// message: provider responses may contain sensitive or noisy details.
     /// The detailed error remains available to the debug log at the call site.
+    /// Suppression identity is the reviewed auth code alone, retained in the
+    /// bounded session-warning dedup store (#9769) and cleared when a
+    /// configuration notification starts a new user-visible session.
     pub(crate) fn notify_ai_auth_failure(&self) {
-        let mut warnings = self.ai_backend_warnings_sent.lock();
-        if warnings.contains("auth") {
-            return;
-        }
-        warnings.insert("auth".to_string());
-
-        if let Err(error) = self.show_message(
-            MessageType::Warning,
-            "AI inline completion authentication failed. Check the configured API key and provider settings.",
-        ) {
-            warnings.remove("auth");
-            tracing::warn!(%error, "failed to notify client about AI authentication failure");
+        let identity = session_warning_dedup::SessionWarningIdentity::subjectless(
+            session_warning_dedup::SessionWarningCode::AiBackendAuthFailure,
+        );
+        // Decide + send + rollback under one family-lock hold (#9769): a
+        // concurrent auth failure must never suppress against an identity
+        // whose send has not succeeded yet.
+        let decision = self.session_warning_dedup.emit_once_with(
+            session_warning_dedup::SessionWarningFamily::AiBackend,
+            identity,
+            || {
+                self.show_message(
+                    MessageType::Warning,
+                    "AI inline completion authentication failed. Check the configured API key and provider settings.",
+                )
+                .is_ok()
+            },
+        );
+        if !matches!(decision, session_warning_dedup::SessionWarningDecision::Suppress) {
+            tracing::debug!(?decision, "AI auth failure warning emission decided");
         }
     }
 
-    /// Runtime feature gate for future next-edit suggestions.
+    /// Runtime feature gate for the internal next-edit scaffold.
     ///
-    /// This boundary is intentionally default-off. Even when explicit config
-    /// enables the gate, the current runtime still reports that no editor-visible
-    /// next-edit provider is registered.
+    /// Structurally default-off (#8311): the next-edit setting is no longer
+    /// public configuration and no editor-visible next-edit provider is
+    /// registered, so the runtime gate has no enabling input. Legacy
+    /// `nextEdit` configuration payloads are ignored with a bounded
+    /// deprecation reason by the config layer and can never report ready or
+    /// enabled. Dev harnesses exercise the explicit gate directly against the
+    /// provider (xtask `semantic-inline-next-edit`), never through this path.
     pub(crate) fn next_edit_feature_gate(
         &self,
     ) -> perl_lsp_rs_core::providers::inline_completion::NextEditFeatureGate {
-        if self.config.lock().next_edit.enabled {
-            perl_lsp_rs_core::providers::inline_completion::NextEditFeatureGate::explicit_enabled()
-        } else {
-            perl_lsp_rs_core::providers::inline_completion::NextEditFeatureGate::default()
-        }
+        perl_lsp_rs_core::providers::inline_completion::NextEditFeatureGate::default()
     }
 
     /// Evaluate the next-edit scaffold against runtime configuration.
@@ -612,16 +775,29 @@ impl LspServer {
 
     /// Refresh the AI inline-completion backend based on current configuration.
     ///
-    /// When `ai_completion.enabled` is `true` and the API key environment variable
-    /// resolves to a non-empty string, constructs an `OpenAiProvider` and stores it.
-    /// Otherwise clears the backend to `None`, disabling AI completions.
+    /// Construction requires BOTH an effective enabled flag and an accepted
+    /// [`perl_lsp_rs_core::config::AiActivationAuthority::TrustedUserOperator`]
+    /// activation (#4997): a raw `ai_completion.enabled` bit alone is not
+    /// authority, because generic client channels could previously reach it.
+    /// When the API key environment variable resolves to a non-empty string,
+    /// constructs an `OpenAiProvider` and stores it. Otherwise clears the
+    /// backend to `None`, disabling AI completions.
+    ///
+    /// No production channel currently admits trusted activation (the
+    /// server-owned operator adapter is #10817), so remote construction fails
+    /// closed in production; tests admit activation through
+    /// `AiCompletionConfig::admit_trusted_user_operator_activation`.
     ///
     /// Called during initialization (after project config is loaded) and on every
     /// `didChangeConfiguration` notification that touches the `aiCompletion` section.
     pub(crate) fn refresh_ai_backend(&self) {
         let ai_config = self.config.lock().ai_completion.clone();
 
-        if !ai_config.enabled {
+        let trusted_activation = matches!(
+            ai_config.activation_authority,
+            perl_lsp_rs_core::config::AiActivationAuthority::TrustedUserOperator
+        );
+        if !ai_config.enabled || !trusted_activation {
             *self.ai_inline_backend.lock() = None;
             return;
         }
@@ -634,6 +810,47 @@ impl LspServer {
             return;
         };
 
+        let provider_config = Self::ai_provider_config(&ai_config, api_key);
+
+        // The token bucket is the requests-per-second control. Its burst is a
+        // refill allowance, NOT a concurrency ceiling: a token is consumed at
+        // dispatch and never returned, so burst alone cannot bound how many
+        // requests are simultaneously active. `maxInflight` is enforced by the
+        // provider's InflightGate above. The allowance is left at its
+        // historical value so this change does not alter rate-limit behavior.
+        let rate_limit_burst = ai_config.max_inflight.max(1);
+        let limiter = Arc::new(perl_lsp_rs_core::providers::ai::RateLimiter::new(
+            ai_config.rate_limit_rps,
+            rate_limit_burst,
+        ));
+
+        let provider =
+            perl_lsp_rs_core::providers::ai::OpenAiProvider::new(provider_config, limiter);
+        *self.ai_inline_backend.lock() = Some(Arc::new(provider));
+
+        tracing::info!(endpoint = %ai_config.endpoint, model = %ai_config.model, "AI inline completion backend configured");
+    }
+
+    /// Translate the workspace AI configuration into the provider's own config.
+    ///
+    /// Split out of [`Self::refresh_ai_backend`] so the field-by-field
+    /// translation is directly testable. The live-concurrency ceiling (`#8300`)
+    /// is the reason: it is a single assignment, and dropping it would silently
+    /// restore the original defect — the provider would fall back to
+    /// `OpenAiConfig::new`'s default of 1 while the configured value still
+    /// reached only the rate limiter. Nothing observable at the LSP boundary
+    /// would change, because the backend is installed behind a trait object
+    /// with no way to read the gate back, so the omission would not fail a
+    /// test.
+    ///
+    /// Activation authority, credential resolution, and backend lifetime are
+    /// not this function's concern — see [`Self::refresh_ai_backend`], which
+    /// decides whether a provider may be constructed at all before calling
+    /// this.
+    pub(crate) fn ai_provider_config(
+        ai_config: &perl_lsp_rs_core::config::AiCompletionConfig,
+        api_key: String,
+    ) -> perl_lsp_rs_core::providers::ai::OpenAiConfig {
         let mut provider_config = perl_lsp_rs_core::providers::ai::OpenAiConfig::new(
             ai_config.endpoint.clone(),
             ai_config.model.clone(),
@@ -643,17 +860,10 @@ impl LspServer {
         provider_config.api_key_header = ai_config.api_key_header.clone();
         provider_config.api_key_prefix = ai_config.api_key_prefix.clone();
         provider_config.local_model_mode = ai_config.local_model_mode;
-
-        let limiter = Arc::new(perl_lsp_rs_core::providers::ai::RateLimiter::new(
-            ai_config.rate_limit_rps,
-            ai_config.max_inflight,
-        ));
-
-        let provider =
-            perl_lsp_rs_core::providers::ai::OpenAiProvider::new(provider_config, limiter);
-        *self.ai_inline_backend.lock() = Some(Arc::new(provider));
-
-        tracing::info!(endpoint = %ai_config.endpoint, model = %ai_config.model, "AI inline completion backend configured");
+        // Live concurrency ceiling. The provider builds its gate from this, so
+        // the gate's lifetime is this backend generation's (#8300).
+        provider_config.max_inflight = ai_config.max_inflight;
+        provider_config
     }
 
     /// Get the subprocess runtime for external tool execution (perltidy, perlcritic).
@@ -684,7 +894,7 @@ impl LspServer {
         &self.stream_session_manager
     }
 
-    pub(crate) fn uri_key_variants(&self, uri: &str) -> Vec<String> {
+    pub(crate) fn uri_key_variants(uri: &str) -> Vec<String> {
         fn push_unique(keys: &mut Vec<String>, key: String) {
             if !keys.iter().any(|existing| existing == &key) {
                 keys.push(key);
@@ -718,14 +928,14 @@ impl LspServer {
 
         let mut uri_keys = Vec::new();
         push_unique(&mut uri_keys, uri.to_string());
-        push_unique(&mut uri_keys, self.normalize_uri_key(uri));
+        push_unique(&mut uri_keys, perl_uri::uri_key(uri));
 
         if let Some(path) = source_path_from_uri(uri)
             && let Ok(file_url) = url::Url::from_file_path(&path)
         {
             let file_uri = file_url.to_string();
             push_unique(&mut uri_keys, file_uri.clone());
-            push_unique(&mut uri_keys, self.normalize_uri_key(&file_uri));
+            push_unique(&mut uri_keys, perl_uri::uri_key(&file_uri));
         }
 
         for key in uri_keys.clone() {
@@ -733,6 +943,65 @@ impl LspServer {
         }
 
         uri_keys
+    }
+
+    /// Whether any URI spelling variant of `uri` is present in a raw open
+    /// documents map.
+    ///
+    /// Shared by `document_is_open` and contexts that hold the `documents`
+    /// handle without an `LspServer` — the indexing thread's reclassification
+    /// authority must apply the same open-buffer denominator as the watcher
+    /// seams (#14186).
+    pub(crate) fn documents_open_in(documents: &HashMap<String, DocumentState>, uri: &str) -> bool {
+        Self::uri_key_variants(uri).iter().any(|key| documents.contains_key(key))
+    }
+
+    /// Whether a document is currently open for `uri`.
+    ///
+    /// Resolves through the filesystem-aware denominator shared with
+    /// backing-transition recording ([`Self::uri_key_variants`]): percent-
+    /// encoded or otherwise equivalent spellings of the same physical path
+    /// (`uri_to_fs_path` identity) must observe the open document even though
+    /// `DocumentStore::uri_key` preserves percent-encoded path triplets.
+    pub(crate) fn document_is_open(&self, uri: &str) -> bool {
+        let documents = self.documents.lock();
+        Self::documents_open_in(&documents, uri)
+    }
+
+    /// Record (or overwrite) the backing-file transition for an open
+    /// document's URI.
+    ///
+    /// The marker lands under every filesystem-equivalent key so the
+    /// save/close handoff finds it through whichever spelling the open
+    /// document was registered under. Overwriting is deliberate: a later
+    /// event supersedes earlier ones (delete followed by external recreate
+    /// degrades to ``Changed``, whose close-time reload reads whatever
+    /// currently exists).
+    pub(crate) fn record_backing_file_transition(
+        &self,
+        uri: &str,
+        transition: BackingFileTransition,
+    ) {
+        let mut transitions = self.backing_file_transitions.lock();
+        for key in Self::uri_key_variants(uri) {
+            transitions.insert(key, transition.clone());
+        }
+    }
+
+    /// Take the pending backing-file transition for `uri`, if any.
+    ///
+    /// Taking consumes the record: each transition is resolved exactly once
+    /// by `didSave`/`didClose` so stale markers cannot leak into a successor
+    /// session. All filesystem-equivalent keys are swept together so one
+    /// consume cannot leave alias-spelled duplicates behind.
+    pub(crate) fn take_backing_file_transition(&self, uri: &str) -> Option<BackingFileTransition> {
+        let keys = Self::uri_key_variants(uri);
+        let mut transitions = self.backing_file_transitions.lock();
+        let taken = keys.iter().find_map(|key| transitions.remove(key));
+        for key in &keys {
+            transitions.remove(key);
+        }
+        taken
     }
 
     /// Evict open-document session state for a URI without deleting workspace
@@ -743,13 +1012,14 @@ impl LspServer {
     /// normalized keys so URI spelling differences do not retain per-document
     /// caches after close.
     pub(crate) fn evict_open_document_session_state(&self, uri: &str) {
-        let uri_keys = self.uri_key_variants(uri);
+        let uri_keys = Self::uri_key_variants(uri);
         self.evict_use_lib_hir_cache(uri);
 
         for key in &uri_keys {
             self.stream_sessions().cancel_for_uri(key);
-            self.ast_cache.remove(key);
             self.clear_document_symbols(key);
+            // A closed document has no live readiness claim (#11675).
+            self.remove_active_document_readiness(key);
         }
 
         {
@@ -780,21 +1050,46 @@ impl LspServer {
         for key in &uri_keys {
             if let Some(path) = source_path_from_uri(key) {
                 self.pod_cache.lock().remove(&path);
-
-                #[cfg(not(target_arch = "wasm32"))]
-                self.pull_diagnostics_orchestrator.invalidate_file_cache(&path);
             }
         }
     }
 
     /// Evict all state for a file that no longer exists in the workspace.
+    ///
+    /// Open-buffer authority (#8041): when a document is still open for
+    /// `uri`, this removes only backing-file-derived state (workspace index
+    /// entries and path-keyed caches) and records an explicit
+    /// [`BackingFileTransition::Deleted`] so save/close can complete the
+    /// handoff. The open document, its text, client version, generation, and
+    /// session caches stay untouched — a watched disk deletion must not evict
+    /// unsaved editor source.
     pub(crate) fn evict_deleted_file_state(&self, uri: &str) {
-        let uri_keys = self.uri_key_variants(uri);
+        let uri_keys = Self::uri_key_variants(uri);
         #[cfg(feature = "workspace")]
         if let Some(coordinator) = self.coordinator() {
             for key in &uri_keys {
                 coordinator.index().remove_file(key);
             }
+            // Catch-all watcher/file-operation contract (#13308, #14186
+            // review): a deleted directory URI must also evict every indexed
+            // descendant; the exact-URI eviction above cannot reach them.
+            // Open descendants record the same Deleted backing handoff as
+            // this exact-URI seam (#14074 review).
+            self.evict_index_descendants(uri, None);
+        }
+
+        if self.document_is_open(uri) {
+            self.record_backing_file_transition(uri, BackingFileTransition::Deleted);
+            for key in &uri_keys {
+                if let Some(path) = source_path_from_uri(key) {
+                    self.pod_cache.lock().remove(&path);
+                }
+            }
+            tracing::debug!(
+                uri,
+                "backing file deleted while document open; open buffer remains authoritative (#8041)"
+            );
+            return;
         }
 
         self.evict_open_document_session_state(uri);
@@ -802,7 +1097,15 @@ impl LspServer {
 
     /// Evict open-document state and workspace index state for a removed folder.
     pub(crate) fn evict_workspace_folder_state(&self, folder_uri: &str) {
-        let folder_keys = self.uri_key_variants(folder_uri);
+        // Metadata staleness is folder-scoped, so it is evicted here rather
+        // than at the one current call site: this is the single place that
+        // owns folder eviction, so a future remover cannot miss it (#13640).
+        // Without this the set grows across add/remove cycles and a folder
+        // re-added under the same URI inherits the previous incarnation's
+        // stale flag even when its disk state is fresh.
+        self.stale_dependency_facts.lock().remove(folder_uri);
+
+        let folder_keys = Self::uri_key_variants(folder_uri);
         let docs_to_evict = {
             let documents = self.documents.lock();
             documents
@@ -845,23 +1148,28 @@ impl LspServer {
         }
     }
 
+    /// Whether a diagnostic debouncer is currently installed, forwarded to
+    /// the `RuntimeServices` owner that holds the slot (#10024). Replaces the
+    /// direct `self.diagnostic_debouncer` field read this refactor removed.
+    #[cfg(test)]
+    pub(crate) fn diagnostic_debouncer_is_installed(&self) -> bool {
+        self.runtime_services.diagnostic_debouncer_is_installed()
+    }
+
     /// Capture test/debug counters for async task and debounce pressure.
     #[cfg(any(test, feature = "expose_lsp_test_api"))]
     pub fn runtime_pressure_snapshot(&self) -> RuntimePressureSnapshot {
-        let diagnostic_debounce_pending_uris = self
-            .diagnostic_debouncer
-            .lock()
-            .as_ref()
-            .map_or(0, diagnostic_debounce::DiagnosticDebouncer::pending_uris);
-        let file_watcher_pending_uris = self
-            .file_watcher_debouncer
-            .lock()
-            .as_ref()
-            .map_or(0, file_watcher_debounce::FileWatcherDebouncer::pending_uris);
+        let diagnostic_debounce_pending_uris =
+            self.runtime_services.diagnostic_debounce_pending_uris();
+        let watcher_pressure = self.runtime_services.file_watcher_pressure();
+        let file_watcher_pending_uris = watcher_pressure.as_ref().map_or(0, |p| p.pending_subjects);
 
         RuntimePressureSnapshot {
             pending_index_tasks: self.pending_index_task_count.load(Ordering::SeqCst),
             file_watcher_pending_uris,
+            file_watcher_active_subjects: watcher_pressure
+                .as_ref()
+                .map_or(0, |p| p.active_subjects),
             diagnostic_debounce_pending_uris,
             pending_workspace_configuration_requests: self
                 .pending_workspace_configuration_requests
@@ -1235,19 +1543,67 @@ impl LspServer {
     }
 
     /// Install the diagnostic debouncer (called from Scheduler::new after Arc wrapping).
+    ///
+    /// The previous debouncer, if any, is released *after* the lock. Its `Drop`
+    /// joins the debounce worker, and that worker's `publish_fn` re-enters
+    /// `LspServer`; dropping it in place would hold this server-wide mutex
+    /// across a thread join. Today's production callback happens not to take
+    /// this lock, but nothing enforces that -- a callback reaching
+    /// `runtime_pressure_snapshot` or `publish_diagnostics_debounced` would
+    /// deadlock. Ordering the release out of the critical section removes the
+    /// invariant instead of relying on it.
     pub(crate) fn install_diagnostic_debouncer(
         &self,
         debouncer: diagnostic_debounce::DiagnosticDebouncer,
     ) {
-        *self.diagnostic_debouncer.lock() = Some(debouncer);
+        self.runtime_services.install_diagnostic_debouncer(debouncer);
+    }
+
+    /// Install the production diagnostic debouncer (called from
+    /// `Scheduler::new` after `Arc` wrapping).
+    ///
+    /// Requires `Arc<Self>` because the debounce worker's `publish_fn` calls
+    /// back into `LspServer` from its own thread -- the same shape as
+    /// `install_default_parse_worker` below, and for the same reason.
+    ///
+    /// The callback captures `Weak<Self>`, not `Arc<Self>` (#14539). The
+    /// debouncer is owned by the server, so a strong capture would close an
+    /// ownership cycle -- `LspServer -> diagnostic_debouncer ->
+    /// DiagnosticDebouncer -> worker thread closure -> Arc<LspServer>` --
+    /// that no teardown path can break: the worker only stops on
+    /// `DiagnosticDebouncer::drop`, which is only reachable through the
+    /// server's own drop. `install_file_watcher_debouncer`'s callback is
+    /// weak for the identical reason (#8064).
+    ///
+    /// Because the callback is weak, the worker's shutdown drain is a clean
+    /// no-op during real server teardown: by the time this debouncer is
+    /// dropped as a field of `LspServer`, the strong count is already zero
+    /// and `upgrade()` returns `None`. Pending diagnostics are discarded
+    /// rather than published at teardown, which is the intended boundary --
+    /// there is no live server left to publish to.
+    ///
+    /// The interval comes from the active `RuntimeTuning` so e2e mode
+    /// (debounce=0) and user-tuned CLI/env values take effect.
+    pub(crate) fn install_default_diagnostic_debouncer(self: &Arc<Self>) {
+        let cb_server = Arc::downgrade(self);
+        let interval = self.runtime_tuning().diagnostic_debounce();
+        let debouncer =
+            diagnostic_debounce::DiagnosticDebouncer::with_interval(interval, move |uri| {
+                // Break the Arc cycle: if the server has been dropped
+                // (shutdown path), skip the publication cleanly.
+                if let Some(server) = cb_server.upgrade() {
+                    server.publish_diagnostics(uri);
+                }
+            });
+        self.install_diagnostic_debouncer(debouncer);
     }
 
     /// Publish diagnostics with trailing-edge debouncing.
     ///
-    /// If a debouncer is installed (normal runtime via Scheduler), the publication
-    /// is deferred until a quiet period elapses. If no debouncer is installed
-    /// (unit tests that construct LspServer directly), falls through to immediate
-    /// publication.
+    /// If a working debouncer is installed (normal runtime via Scheduler), the
+    /// publication is deferred until a quiet period elapses. If no debouncer is
+    /// installed, or its worker has already become unavailable, falls through to
+    /// immediate publication.
     ///
     /// When [`RuntimeTuning::diagnostic_debounce_is_immediate`] is true (e.g. e2e
     /// mode), the debouncer is bypassed and diagnostics publish synchronously —
@@ -1258,11 +1614,7 @@ impl LspServer {
             self.publish_diagnostics(uri);
             return;
         }
-        let guard = self.diagnostic_debouncer.lock();
-        if let Some(ref d) = *guard {
-            d.schedule(uri);
-        } else {
-            drop(guard);
+        if !self.runtime_services.schedule_diagnostic_debounce(uri) {
             self.publish_diagnostics(uri);
         }
     }
@@ -1339,7 +1691,6 @@ impl LspServer {
         };
         let worker = parse_worker::ParseWorker::spawn_with_pending_count_hooks(
             Arc::clone(&self.documents),
-            Arc::clone(&self.ast_cache),
             on_published,
             on_activated,
             on_settled,
@@ -1349,13 +1700,12 @@ impl LspServer {
         // `self.parse_worker().is_some()` to decide whether to enqueue
         // instead of parsing inline, and an installed-but-threadless worker
         // would silently accept jobs no thread will ever process -- a
-        // permanent stall instead of a crash. Leaving `parse_worker_handle`
-        // as `None` here keeps the existing synchronous fallback path (the
-        // one hundreds of unit tests and any editor session already
-        // exercise) as the effective behavior instead.
-        if worker.is_operational() {
-            *self.parse_worker_handle.lock() = Some(Arc::new(worker));
-        } else {
+        // permanent stall instead of a crash. `RuntimeServices` leaves the
+        // worker slot `None` here (keeping the existing synchronous fallback
+        // path -- the one hundreds of unit tests and any editor session
+        // already exercise) and retains the outcome as `InstrumentFailed`
+        // instead of only logging it (#10024).
+        if !self.runtime_services.install_parse_worker(worker) {
             tracing::error!(
                 "parse worker pool failed to spawn any threads; \
                  falling back to the synchronous parse path"
@@ -1364,9 +1714,11 @@ impl LspServer {
     }
 
     /// The installed off-lock parse worker, if any. `None` means the
-    /// synchronous fallback path is active.
+    /// synchronous fallback path is active. A pool whose threads have all
+    /// exited is treated the same as no installed worker, so edits cannot be
+    /// accepted into a queue that nobody can drain.
     pub(crate) fn parse_worker(&self) -> Option<Arc<parse_worker::ParseWorker>> {
-        self.parse_worker_handle.lock().clone()
+        self.runtime_services.parse_worker()
     }
 
     /// Install the file watcher debouncer (called from Scheduler::new after Arc wrapping).
@@ -1374,21 +1726,20 @@ impl LspServer {
         &self,
         debouncer: file_watcher_debounce::FileWatcherDebouncer,
     ) {
-        *self.file_watcher_debouncer.lock() = Some(debouncer);
+        self.runtime_services.install_file_watcher_debouncer(debouncer);
     }
 
     /// Schedule a file watcher URI for debounced batch processing.
     ///
-    /// Returns `true` if a debouncer is installed (production runtime) and the
-    /// URI was queued, `false` if no debouncer is present (unit-test path).
+    /// Returns `true` only when the URI is genuinely queued for debounced
+    /// processing (accepted, or coalesced into an already-pending subject).
+    /// Returns `false` when no debouncer is installed (unit-test path) or the
+    /// debouncer reports a degraded admission — worker spawn failure,
+    /// saturated pending set, or shutdown — so callers fall back to immediate
+    /// synchronous processing instead of losing events behind false success
+    /// (#8064).
     pub fn schedule_file_watcher_uri(&self, uri: &str) -> bool {
-        let guard = self.file_watcher_debouncer.lock();
-        if let Some(ref d) = *guard {
-            d.schedule(uri);
-            true
-        } else {
-            false
-        }
+        self.runtime_services.schedule_file_watcher_uri(uri)
     }
 }
 
@@ -1427,6 +1778,7 @@ mod tests {
             current_package: Some("Demo".to_string()),
             variables: vec!["$got".to_string()],
             imports: vec!["strict".to_string(), "warnings".to_string()],
+            ..PreparedInlineCompletionContext::default()
         }
     }
 
@@ -1581,6 +1933,104 @@ mod tests {
     }
 
     #[test]
+    fn parse_worker_selection_falls_back_after_pool_shutdown() {
+        let server = Arc::new(LspServer::new());
+        server.install_default_parse_worker();
+        let worker = server.parse_worker().expect("default parse worker must install");
+
+        worker.request_shutdown();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while worker.is_operational() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "parse worker threads did not stop after shutdown"
+            );
+            std::thread::yield_now();
+        }
+
+        assert!(
+            server.parse_worker().is_none(),
+            "a stopped parse worker must select the synchronous fallback"
+        );
+
+        let uri = "file:///shutdown-fallback.pl";
+        server
+            .test_apply_did_open(uri, "my $x = 1;\n", 1)
+            .expect("didOpen must establish the fallback document");
+        server
+            .test_apply_did_change(uri, "my $x = 2;\n", 2)
+            .expect("didChange must parse synchronously after shutdown");
+        let documents = server.documents.lock();
+        let document = documents.get(uri).expect("fallback document must be retained");
+        // didOpen accepts its first snapshot at FIRST_ACCEPTED_DOCUMENT_GENERATION;
+        // the didChange above advances exactly one generation past it. Asserting
+        // the first generation instead would pass when the fallback published
+        // nothing at all, which is the opposite of this test's claim.
+        let changed_generation = crate::state::FIRST_ACCEPTED_DOCUMENT_GENERATION.get() + 1;
+        assert_eq!(
+            document.current_parsed().map(|snapshot| snapshot.generation()),
+            Some(changed_generation),
+            "the synchronous fallback must publish the changed generation"
+        );
+    }
+
+    /// An edit admitted by the real parse worker must carry pending readiness
+    /// for its own generation before the job can publish; otherwise the
+    /// worker's `mark_active_document_parser_accepted` finds no matching entry
+    /// and the client never receives the edit's ready notification (#11675).
+    /// Fails when the per-generation install in `handle_did_change_with_cancellation`
+    /// is removed: the readiness table then holds no entry for the changed
+    /// generation.
+    #[test]
+    fn admitted_async_edit_carries_readiness_for_its_generation() {
+        let server = Arc::new(LspServer::new());
+        server.install_default_parse_worker();
+        assert!(server.parse_worker().is_some(), "default parse worker must install");
+
+        let uri = "file:///async-readiness.pl";
+        server
+            .test_apply_did_open(uri, "my $x = 1;\n", 1)
+            .expect("didOpen must establish the document");
+        assert!(
+            server.test_wait_for_parse_worker_settled(uri, std::time::Duration::from_secs(5)),
+            "didOpen parse must settle"
+        );
+        server
+            .test_apply_did_change(uri, "my $x = 2;\n", 2)
+            .expect("didChange must be admitted by the running worker");
+        assert!(
+            server.test_wait_for_parse_worker_settled(uri, std::time::Duration::from_secs(5)),
+            "didChange parse must settle"
+        );
+
+        let changed_generation = crate::state::FIRST_ACCEPTED_DOCUMENT_GENERATION.get() + 1;
+        let normalized = server.normalize_uri_key(uri);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let observed = loop {
+            let observed = server.test_active_document_readiness(&normalized);
+            match observed {
+                Some((state, generation, _))
+                    if generation == changed_generation && state != "pending_parser" =>
+                {
+                    break Some((state, generation));
+                }
+                _ if std::time::Instant::now() >= deadline => {
+                    break observed.map(|(state, generation, _)| (state, generation));
+                }
+                _ => std::thread::yield_now(),
+            }
+        };
+        let (state, generation) =
+            observed.expect("the admitted edit must own a readiness entry for its generation");
+        assert_eq!(generation, changed_generation, "readiness must track the admitted generation");
+        assert_ne!(
+            state, "pending_parser",
+            "the worker's accepted parse must advance readiness past pending"
+        );
+        assert_ne!(state, "unavailable_terminal", "a clean parse must not be terminal");
+    }
+
+    #[test]
     fn next_edit_runtime_boundary_defaults_disabled() {
         let server = LspServer::new();
 
@@ -1594,9 +2044,13 @@ mod tests {
     }
 
     #[test]
-    fn next_edit_runtime_boundary_honors_explicit_config_without_provider_registration() {
+    fn next_edit_runtime_boundary_ignores_legacy_config_key() {
         let server = LspServer::new();
 
+        // #8311: the legacy `nextEdit` key must fail closed on the live
+        // configuration channel. Supplying it cannot enable the gate, change
+        // its source, or move the scaffold response out of Disabled, so it
+        // can never report ready or enabled.
         server.handle_did_change_configuration(Some(json!({
             "settings": {
                 "perl": {
@@ -1608,28 +2062,12 @@ mod tests {
         })));
 
         let gate = server.next_edit_feature_gate();
-        assert!(gate.enabled);
-        assert_eq!(gate.source, NextEditGateSource::ExplicitConfig);
+        assert!(!gate.enabled);
+        assert_eq!(gate.source, NextEditGateSource::DefaultOff);
 
         let response = server.next_edit_scaffold_response(next_edit_test_context());
-        assert_eq!(response.status, NextEditStatus::RuntimeProviderNotRegistered);
+        assert_eq!(response.status, NextEditStatus::Disabled);
         assert!(response.suggestions.is_empty());
-    }
-
-    #[test]
-    fn next_edit_runtime_boundary_can_be_disabled_after_explicit_config() {
-        let server = LspServer::new();
-
-        server.handle_did_change_configuration(Some(json!({
-            "settings": {
-                "perl": {
-                    "nextEdit": {
-                        "enabled": true
-                    }
-                }
-            }
-        })));
-        assert!(server.next_edit_feature_gate().enabled);
 
         server.handle_did_change_configuration(Some(json!({
             "settings": {
@@ -1707,6 +2145,39 @@ mod tests {
         Ok(())
     }
 
+    /// Caller-side half of admission truthfulness (#8064): every degraded
+    /// disposition must surface as `false` from `schedule_file_watcher_uri`
+    /// so the didChangeWatchedFiles handler takes the immediate-processing
+    /// seam (workspace.rs) instead of losing events behind apparent queueing.
+    #[test]
+    fn schedule_file_watcher_uri_falls_back_on_degraded_admissions() {
+        use file_watcher_debounce::FileWatcherDebouncer;
+
+        // Unavailable: worker spawn failure.
+        let server = LspServer::new();
+        server.install_file_watcher_debouncer(FileWatcherDebouncer::unavailable_for_test());
+        assert!(!server.schedule_file_watcher_uri("file:///degraded/unavailable.pl"));
+        assert_eq!(
+            server.runtime_pressure_snapshot().file_watcher_pending_uris,
+            0,
+            "rejected admission must not absorb the event into pending state"
+        );
+
+        // Overflowed: saturated pending set refuses new subjects.
+        let server = LspServer::new();
+        server.install_file_watcher_debouncer(FileWatcherDebouncer::saturated_for_test(|_| {}));
+        assert!(
+            server.schedule_file_watcher_uri("file:///degraded/cap0.pl"),
+            "first subject fits the tiny cap"
+        );
+        assert!(!server.schedule_file_watcher_uri("file:///degraded/overflow.pl"));
+
+        // ShuttingDown: after teardown, late events are refused.
+        assert!(server.runtime_services.file_watcher_debouncer_installed(), "debouncer installed");
+        server.runtime_services.shutdown_file_watcher_debouncer_for_test();
+        assert!(!server.schedule_file_watcher_uri("file:///degraded/late.pl"));
+    }
+
     #[test]
     fn source_path_from_uri_accepts_absolute_filesystem_paths()
     -> Result<(), Box<dyn std::error::Error>> {
@@ -1732,19 +2203,103 @@ mod tests {
     }
 
     #[test]
-    fn end_position_handles_trailing_final_newline() {
+    fn eof_offset_projection_preserves_terminal_line_identity() {
+        use ropey::Rope;
+        use std::sync::Arc;
+
         let server = LspServer::new();
-        let content = "package Foo;\n";
-        let pos = server.get_document_end_position(content);
-        assert_eq!(pos, json!({"line": 1, "character": 0}));
+
+        let lf = "package Foo;\n";
+        let crlf = "package Foo;\r\n";
+        let bare_cr = "a\rb";
+        for (uri, content) in [
+            ("file:///eof-lf.pl", lf),
+            ("file:///eof-crlf.pl", crlf),
+            ("file:///eof-cr.pl", bare_cr),
+        ] {
+            server.documents.lock().insert(
+                uri.to_string(),
+                DocumentState::from_parts(
+                    Rope::from_str(content),
+                    content.to_string(),
+                    1,
+                    Arc::new(AtomicU32::new(0)),
+                ),
+            );
+        }
+
+        let documents = server.documents.lock();
+        let lf_doc = documents.get("file:///eof-lf.pl").expect("lf doc");
+        let crlf_doc = documents.get("file:///eof-crlf.pl").expect("crlf doc");
+        let cr_doc = documents.get("file:///eof-cr.pl").expect("cr doc");
+
+        // A terminal separator ends the last content line, so true EOF sits on
+        // the final empty line (#10220): byte length alone would report (0, N).
+        assert_eq!(server.offset_to_pos16(lf_doc, lf.len()), (1, 0));
+        assert_eq!(server.offset_to_pos16(crlf_doc, crlf.len()), (1, 0));
+        // Bare CR is source content under the LF-delimited source-line
+        // contract, so EOF remains on the first line after three UTF-16
+        // units.
+        assert_eq!(server.offset_to_pos16(cr_doc, bare_cr.len()), (0, 3));
     }
 
     #[test]
-    fn end_position_handles_missing_final_newline() {
+    fn eof_offset_projection_counts_utf16_not_bytes() {
+        use ropey::Rope;
+        use std::sync::Arc;
+
         let server = LspServer::new();
-        let content = "package Foo;";
-        let pos = server.get_document_end_position(content);
-        assert_eq!(pos, json!({"line": 0, "character": content.len()}));
+        let text = "#!/usr/bin/perl😀"; // 15 ASCII chars + one non-BMP char
+        server.documents.lock().insert(
+            "file:///eof-emoji.pl".to_string(),
+            DocumentState::from_parts(
+                Rope::from_str(text),
+                text.to_string(),
+                1,
+                Arc::new(AtomicU32::new(0)),
+            ),
+        );
+        let documents = server.documents.lock();
+        let doc = documents.get("file:///eof-emoji.pl").expect("emoji doc");
+        // The source is 19 bytes long; the wire position counts UTF-16 units.
+        assert_eq!(server.offset_to_pos16(doc, text.len()), (0, 17));
+    }
+
+    #[test]
+    fn lifecycle_eof_projection_agrees_with_formatter_geometry() {
+        use ropey::Rope;
+        use std::sync::Arc;
+
+        let server = LspServer::new();
+        // Bare-CR sources are deliberately absent: the formatter's
+        // `SourceGeometry`/`true_eof_position` still admits bare CR as a
+        // separator, which is a legacy provider surface outside the #4973
+        // LF-delimited source-line contract and owned by the downstream
+        // geometry migration issues. Parity is asserted only where both
+        // authorities share the LF contract.
+        let sources =
+            ["", "package Foo;", "package Foo;\n", "a\r\n", "#!/usr/bin/perl😀", "x\n\r\nz"];
+        for (idx, content) in sources.iter().enumerate() {
+            let uri = format!("file:///eof-parity-{idx}.pl");
+            server.documents.lock().insert(
+                uri.clone(),
+                DocumentState::from_parts(
+                    Rope::from_str(content),
+                    (*content).to_string(),
+                    1,
+                    Arc::new(AtomicU32::new(0)),
+                ),
+            );
+            let documents = server.documents.lock();
+            let doc = documents.get(&uri).expect("parity doc");
+            let projected = server.offset_to_pos16(doc, content.len());
+            let range = FormatRange::whole_document(content);
+            assert_eq!(
+                projected,
+                (range.end.line, range.end.character),
+                "lifecycle EOF projection diverges from formatter geometry for {content:?}"
+            );
+        }
     }
 
     #[test]
@@ -1761,30 +2316,71 @@ mod tests {
             DocumentState::from_parts(rope, text.to_string(), 1, Arc::new(AtomicU32::new(0))),
         );
 
-        let result =
-            server.handle_code_actions_pragmas(Some(json!({"textDocument": {"uri": uri}})));
-        if let Ok(Some(result)) = result {
-            if let Some(actions) = result.as_array() {
-                assert!(!actions.is_empty());
-                let edit = &actions[0]["edit"]["changes"][uri][0]["range"];
-                let end = server.get_document_end_position(text);
-                assert_eq!(edit["start"], end);
-                assert_eq!(edit["end"], end);
-            }
-        }
+        let result = server
+            .handle_code_actions_pragmas(Some(json!({"textDocument": {"uri": uri}})))
+            .expect("pragma code action handler must succeed");
+        let result = result.expect("handler must return an action response");
+        let actions = result.as_array().expect("response must be an action array");
+        assert!(!actions.is_empty(), "missing pragma must yield an action");
+        let edit = &actions[0]["edit"]["changes"][uri][0]["range"];
+        let expected_end = json!({"line": 0, "character": text.chars().count()});
+        assert_eq!(edit["start"], expected_end);
+        assert_eq!(edit["end"], expected_end);
     }
 
     #[test]
-    fn formatting_edit_has_correct_end_position() {
-        let code = "sub test{my$x=1;return$x;}";
-        let server = LspServer::new();
-        let end = server.get_document_end_position(code);
-        let range = FormatRange::whole_document(code);
+    fn code_action_append_projects_utf16_eof_not_byte_columns() {
+        use ropey::Rope;
+        use std::sync::Arc;
 
-        if let (Some(line), Some(character)) = (end["line"].as_u64(), end["character"].as_u64()) {
-            assert_eq!(range.end.line, line as u32);
-            assert_eq!(range.end.character, character as u32);
-        }
+        let server = LspServer::new();
+        let uri = "file:///utf16-eof.pl";
+        // Unterminated shebang: pragma insertion lands at true EOF, and the
+        // tail is a non-BMP character so byte counting and UTF-16 disagree.
+        let text = "#!/usr/bin/perl😀";
+        let rope = Rope::from_str(text);
+        server.documents.lock().insert(
+            uri.to_string(),
+            DocumentState::from_parts(rope, text.to_string(), 1, Arc::new(AtomicU32::new(0))),
+        );
+
+        let result = server
+            .handle_code_actions_pragmas(Some(json!({"textDocument": {"uri": uri}})))
+            .expect("pragma code action handler must succeed");
+        let result = result.expect("handler must return an action response");
+        let actions = result.as_array().expect("response must be an action array");
+        assert!(!actions.is_empty(), "missing pragma must yield an action");
+        let edit = &actions[0]["edit"]["changes"][uri][0]["range"];
+        // Byte columns would report character 19; true EOF is unit 17.
+        assert_eq!(edit["start"], json!({"line": 0, "character": 17}));
+        assert_eq!(edit["end"], json!({"line": 0, "character": 17}));
+    }
+
+    #[test]
+    fn code_action_append_projects_bare_cr_separator_before_eof() {
+        use ropey::Rope;
+        use std::sync::Arc;
+
+        let server = LspServer::new();
+        let uri = "file:///bare-cr-eof.pl";
+        // Lone CR is source content under the LF-delimited source-line
+        // contract, so true EOF remains on line 0.
+        let text = "#!/usr/bin/perl\rwarn 'x';";
+        let rope = Rope::from_str(text);
+        server.documents.lock().insert(
+            uri.to_string(),
+            DocumentState::from_parts(rope, text.to_string(), 1, Arc::new(AtomicU32::new(0))),
+        );
+
+        let result = server
+            .handle_code_actions_pragmas(Some(json!({"textDocument": {"uri": uri}})))
+            .expect("pragma code action handler must succeed");
+        let result = result.expect("handler must return an action response");
+        let actions = result.as_array().expect("response must be an action array");
+        assert!(!actions.is_empty(), "missing pragma must yield an action");
+        let edit = &actions[0]["edit"]["changes"][uri][0]["range"];
+        assert_eq!(edit["start"], json!({"line": 0, "character": 25}));
+        assert_eq!(edit["end"], json!({"line": 0, "character": 25}));
     }
 
     #[test]
@@ -1895,6 +2491,18 @@ model = "gpt-4"
         )?;
 
         let server = LspServer::new();
+        // Configure a fully usable user-level transport (endpoint + resolvable
+        // credential) so the only thing preventing construction is activation
+        // authority. With an empty endpoint this assertion would pass for the
+        // wrong reason (#4997: the oracle must not depend on a missing
+        // destination or missing secret).
+        {
+            let mut config = server.config.lock();
+            config.ai_completion.endpoint =
+                "https://connector.example/v1/chat/completions".to_string();
+            config.ai_completion.model = "custom-code-model".to_string();
+            config.ai_completion.api_key_env = KEY_ENV.to_string();
+        }
         let workspace_uri =
             url::Url::from_directory_path(temp.path()).map_err(|_| "bad folder uri")?.to_string();
         {
@@ -1918,6 +2526,115 @@ model = "gpt-4"
         Ok(())
     }
 
+    /// Security regression (issue #4997): generic client channels —
+    /// `workspace/didChangeConfiguration` and `initializationOptions` — must
+    /// not arm remote AI egress even when a complete, usable transport
+    /// (endpoint + resolvable credential) is already configured. The oracle
+    /// is zero backend construction with the destination and secret present,
+    /// so the assertion cannot pass for the wrong reason. Provider/model
+    /// payloads must likewise fail to select anything.
+    #[test]
+    fn generic_client_channels_cannot_arm_or_select_ai_backend()
+    -> Result<(), Box<dyn std::error::Error>> {
+        const KEY_ENV: &str = "PERL_LSP_TEST_GENERIC_CHANNEL_KEY";
+        let _env_guard = AiTestEnvGuard::set(KEY_ENV, "generic-channel-key")?;
+
+        let server = LspServer::new();
+        // Preconfigure the transport exactly as a legitimate user-level
+        // setup would, so the only thing that can prevent construction is
+        // missing activation authority.
+        {
+            let mut config = server.config.lock();
+            config.ai_completion.endpoint =
+                "https://connector.example/v1/chat/completions".to_string();
+            config.ai_completion.model = "custom-code-model".to_string();
+            config.ai_completion.api_key_env = KEY_ENV.to_string();
+        }
+
+        let hostile_shapes: Vec<serde_json::Value> = vec![
+            json!({
+                "aiCompletion": {
+                    "enabled": true,
+                    "provider": "openai",
+                    "model": "attacker-model",
+                    "streaming": { "enabled": true }
+                }
+            }),
+            json!({ "aiCompletion": { "enabled": true } }),
+            json!({ "aiCompletion": { "provider": "openai", "model": "attacker-model" } }),
+        ];
+
+        for shape in &hostile_shapes {
+            // didChangeConfiguration shape.
+            server.config.lock().update_from_value(shape);
+            // initializationOptions shape uses the same parser; exercise it
+            // through a fresh payload application to keep both entry points
+            // covered by one matrix.
+            server.refresh_ai_backend();
+
+            let config = server.config.lock();
+            assert!(
+                server.ai_backend().is_none(),
+                "generic payload {shape} must not construct an outbound backend",
+            );
+            assert_eq!(
+                config.ai_completion.activation_authority,
+                perl_lsp_rs_core::config::AiActivationAuthority::Unavailable,
+                "generic payload {shape} must not admit activation authority",
+            );
+            assert!(
+                !config.ai_completion.enabled && !config.ai_completion.user_enabled,
+                "generic payload {shape} must not arm effective or user flags",
+            );
+            assert_eq!(
+                config.ai_completion.provider, "openai_compat",
+                "generic payload {shape} must not select provider",
+            );
+            assert_eq!(
+                config.ai_completion.model, "custom-code-model",
+                "generic payload {shape} must not move the accepted model",
+            );
+        }
+
+        // Hostile traffic must also not clear accepted trusted state.
+        {
+            let mut config = server.config.lock();
+            config.ai_completion.user_enabled = true;
+            config.ai_completion.admit_trusted_user_operator_activation();
+        }
+        server.config.lock().update_from_value(&json!({
+            "aiCompletion": {
+                "enabled": false,
+                "provider": "openai",
+                "model": "attacker-model",
+                "streaming": { "enabled": false }
+            }
+        }));
+        {
+            let config = server.config.lock();
+            assert_eq!(
+                config.ai_completion.activation_authority,
+                perl_lsp_rs_core::config::AiActivationAuthority::TrustedUserOperator,
+                "unauthorized disable traffic must not clear accepted activation",
+            );
+            assert!(
+                config.ai_completion.user_enabled,
+                "unauthorized traffic must not clear the accepted user enable",
+            );
+        }
+        server.refresh_ai_backend();
+        assert!(
+            server.ai_backend().is_some(),
+            "accepted trusted activation with usable transport must still construct",
+        );
+        Ok(())
+    }
+
+    /// Positive control for #4997: a legitimate trusted user/operator
+    /// activation plus a fully configured transport (endpoint + resolvable
+    /// credential) must still construct the backend. Without this companion,
+    /// the hostile-input regressions could be green merely because remote
+    /// construction is impossible in every direction.
     #[test]
     fn refresh_ai_backend_installs_connector_auth_backend() -> Result<(), Box<dyn std::error::Error>>
     {
@@ -1937,11 +2654,92 @@ model = "gpt-4"
                 api_key_prefix: None,
                 ..AiCompletionConfig::default()
             };
+            config.ai_completion.admit_trusted_user_operator_activation();
         }
 
         server.refresh_ai_backend();
 
         assert!(server.ai_backend().is_some());
+        Ok(())
+    }
+
+    /// The production wiring for `#8300`: a configured `maxInflight` must reach
+    /// the provider's gate, not only the rate limiter.
+    ///
+    /// This is the line the issue is actually about. Before it existed,
+    /// `ai_config.max_inflight` was passed *only* as the token bucket's burst,
+    /// which bounds starts-per-second rather than live requests. Deleting
+    /// `provider_config.max_inflight = ai_config.max_inflight` restores exactly
+    /// that defect while every other test in the tree stays green, because the
+    /// backend is installed behind `Arc<dyn InlineCompletionBackend>` and the
+    /// gate cannot be read back through it. Hence a config-level assertion.
+    #[test]
+    fn ai_provider_config_carries_the_configured_inflight_ceiling()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let ai_config = AiCompletionConfig {
+            endpoint: "https://api.example/v1/chat/completions".to_string(),
+            model: "custom-code-model".to_string(),
+            timeout_ms: 1_800,
+            max_inflight: 3,
+            ..AiCompletionConfig::default()
+        };
+
+        let provider_config = LspServer::ai_provider_config(&ai_config, "test-key".to_string());
+
+        if provider_config.max_inflight != 3 {
+            return Err(std::io::Error::other(
+                "a configured maxInflight must reach the provider, not just the rate limiter",
+            )
+            .into());
+        }
+        // Negative control on the assertion itself: 3 must not be the default,
+        // or this test would pass with the assignment removed.
+        if perl_lsp_rs_core::providers::ai::OpenAiConfig::new(
+            ai_config.endpoint.clone(),
+            ai_config.model.clone(),
+            "test-key".to_string(),
+            ai_config.timeout_ms,
+        )
+        .max_inflight
+            == 3
+        {
+            return Err(std::io::Error::other(
+                "the constructor default must differ from the configured value",
+            )
+            .into());
+        }
+        Ok(())
+    }
+
+    /// The translation must not quietly drop the other transport fields either.
+    #[test]
+    fn ai_provider_config_carries_the_transport_fields() -> Result<(), Box<dyn std::error::Error>> {
+        let ai_config = AiCompletionConfig {
+            endpoint: "http://127.0.0.1:11434/v1/chat/completions".to_string(),
+            model: "local-model".to_string(),
+            api_key_header: "x-api-key".to_string(),
+            api_key_prefix: None,
+            timeout_ms: 900,
+            local_model_mode: true,
+            max_inflight: 2,
+            ..AiCompletionConfig::default()
+        };
+
+        let provider_config = LspServer::ai_provider_config(&ai_config, "local-key".to_string());
+
+        if provider_config.endpoint != ai_config.endpoint
+            || provider_config.model != ai_config.model
+            || provider_config.api_key != "local-key"
+            || provider_config.api_key_header != "x-api-key"
+            || provider_config.api_key_prefix.is_some()
+            || provider_config.timeout_ms != 900
+            || !provider_config.local_model_mode
+            || provider_config.max_inflight != 2
+        {
+            return Err(
+                std::io::Error::other("provider transport fields were not preserved").into()
+            );
+        }
         Ok(())
     }
 

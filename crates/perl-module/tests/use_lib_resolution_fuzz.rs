@@ -1,8 +1,6 @@
 use std::path::Path;
 
-use perl_module::resolution::use_lib::{
-    extract_use_lib_operations, extract_use_lib_paths, resolve_use_lib_paths,
-};
+use perl_module::{extract_use_lib_operations, extract_use_lib_paths, resolve_use_lib_paths};
 
 fn fuzz_string(state: &mut u64, max_len: usize) -> String {
     *state ^= *state << 13;
@@ -33,6 +31,15 @@ fn fuzz_string(state: &mut u64, max_len: usize) -> String {
         out.push(char::from(byte));
     }
     out
+}
+
+fn fuzz_path(state: &mut u64) -> String {
+    let segment: String = fuzz_string(state, 24)
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric() || matches!(*ch, '_' | '-'))
+        .collect();
+    let segment = if segment.is_empty() { "fallback" } else { segment.as_str() };
+    format!("lib/{segment}")
 }
 
 #[test]
@@ -72,8 +79,8 @@ fn fuzz_use_lib_parser_and_resolver_preserve_core_invariants() {
 
         for op in &ops {
             match op {
-                perl_module::resolution::use_lib::UseLibAction::Add(op_paths)
-                | perl_module::resolution::use_lib::UseLibAction::Remove(op_paths) => {
+                perl_module::UseLibAction::Add(op_paths)
+                | perl_module::UseLibAction::Remove(op_paths) => {
                     for op_path in op_paths {
                         assert!(
                             !op_path.path.is_empty(),
@@ -83,5 +90,37 @@ fn fuzz_use_lib_parser_and_resolver_preserve_core_invariants() {
                 }
             }
         }
+    }
+}
+
+#[test]
+fn fuzz_leading_begin_wrapper_preserves_static_pragma_operations() {
+    let mut seed = 0xB16B_00B5_1AC0_11EC_u64;
+
+    for _ in 0..2_000 {
+        let first = fuzz_path(&mut seed);
+        let second = fuzz_path(&mut seed);
+        let selector = seed;
+        let pragma = match selector % 5 {
+            0 => format!("use lib '{first}';"),
+            1 => format!("use lib qw({first} {second});"),
+            2 => format!("no lib '{first}';"),
+            3 => format!("use lib \"{first}\";"),
+            _ => format!("no lib \"{first}\";"),
+        };
+        let wrapped = match (selector >> 2) % 4 {
+            0 => format!("BEGIN {{ {pragma}\n}}\n"),
+            1 => format!("BEGIN\n{{\n{pragma}\n}}\n"),
+            2 => format!("BEGIN # compile-time phase\n{{ {pragma}\n}}\n"),
+            _ => format!("BEGIN\n{{\n# static include roots\n{pragma}\n}}\n"),
+        };
+
+        let expected = extract_use_lib_operations(&pragma);
+        assert!(!expected.is_empty(), "generated pragma must be static: {pragma:?}");
+        assert_eq!(
+            extract_use_lib_operations(&wrapped),
+            expected,
+            "leading BEGIN wrapper changed pragma operations; wrapped={wrapped:?}"
+        );
     }
 }

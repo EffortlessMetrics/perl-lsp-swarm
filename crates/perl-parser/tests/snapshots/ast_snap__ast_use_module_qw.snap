@@ -1,5 +1,5 @@
 ---
-source: crates/perl-parser/tests/ast_snapshot_tests.rs
+source: crates/perl-parser/tests/ast_snap.rs
 expression: "parse_sexp(\"use List::Util qw(sum min max first);\")"
 ---
-(source_file (use List::Util (qw(sum min max first))))
+(source_file (statements (use (module List::Util) (args "qw(sum min max first)"))))

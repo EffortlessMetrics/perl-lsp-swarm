@@ -77,7 +77,7 @@ copy_development_doc() {
             -e 's#../reference/COMMANDS_REFERENCE.md#https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/reference/COMMANDS_REFERENCE.md#g' \
             -e 's#../tutorials/LSP_DEVELOPMENT_GUIDE.md#https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/tutorials/LSP_DEVELOPMENT_GUIDE.md#g' \
             -e 's#CURRENT_STATUS.md#https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/project/CURRENT_STATUS.md#g' \
-            -e 's#\](..\/project\/ROADMAP\.md\)#\](https:\/\/github.com\/EffortlessMetrics\/perl-lsp-swarm\/blob\/main\/docs\/project\/ROADMAP.md\)#g'
+            -e 's#](\.\.\/project\/ROADMAP\.md)#](https:\/\/github.com\/EffortlessMetrics\/perl-lsp-swarm\/blob\/main\/docs\/project\/ROADMAP.md)#g'
     fi
 }
 
@@ -147,7 +147,9 @@ copy_doc "$DOCS_DIR/reference/CRATE_ARCHITECTURE_DAP.md" "$BOOK_SRC/architecture
 
 # Developer Guides section
 echo "Setting up Developer Guides..."
-copy_doc "$REPO_ROOT/CONTRIBUTING.md" "$BOOK_SRC/developer/contributing.md"
+# contributing.md is a committed canonical-pointer stub. Do not replace it with
+# root CONTRIBUTING.md: repository-relative links would resolve under the book
+# tree, and the copied workflow would drift independently between population runs.
 copy_doc "$DOCS_DIR/reference/COMMANDS_REFERENCE.md" "$BOOK_SRC/developer/commands-reference.md"
 copy_testing_doc "$DOCS_DIR/tutorials/COMPREHENSIVE_TESTING_GUIDE.md" "$BOOK_SRC/developer/testing-guide.md"
 copy_doc "$DOCS_DIR/reference/TEST_INFRASTRUCTURE_GUIDE.md" "$BOOK_SRC/developer/test-infrastructure.md"

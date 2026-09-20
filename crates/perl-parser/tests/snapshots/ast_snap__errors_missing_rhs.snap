@@ -1,5 +1,6 @@
 ---
-source: crates/perl-parser/tests/ast_snapshot_tests.rs
+source: crates/perl-parser/tests/ast_snap.rs
+assertion_line: 301
 expression: "parse_errors(\"my $x = ;\")"
 ---
-Recovered from MissingOperand at InfixRhs (position 6)
+Missing operand in expression

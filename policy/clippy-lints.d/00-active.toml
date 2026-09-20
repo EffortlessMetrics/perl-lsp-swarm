@@ -1,0 +1,163 @@
+schema = 1
+
+[[lint]]
+name = "rust::unexpected_cfgs"
+level = "warn"
+status = "active"
+class = "workspace"
+reason = "Keep cfg spelling drift visible while preserving the repository-specific cfg allowlist in Cargo.toml."
+
+[[lint]]
+name = "clippy::dbg_macro"
+level = "deny"
+status = "active"
+class = "panic"
+reason = "Debug macros are not a reviewable diagnostics path."
+
+[[lint]]
+name = "clippy::todo"
+level = "deny"
+status = "active"
+class = "panic"
+reason = "TODO execution paths are not allowed in production or tests."
+
+[[lint]]
+name = "clippy::unimplemented"
+level = "deny"
+status = "active"
+class = "panic"
+reason = "Unimplemented execution paths are not allowed in production or tests."
+
+[[lint]]
+name = "clippy::panic"
+level = "deny"
+status = "active"
+class = "panic"
+reason = "Parser, LSP, DAP, and test code should return structured errors rather than abort execution."
+
+[[lint]]
+name = "clippy::unwrap_used"
+level = "deny"
+status = "active"
+class = "panic"
+reason = "No unchecked Result or Option collapse in production or tests."
+
+[[lint]]
+name = "clippy::expect_used"
+level = "deny"
+status = "active"
+class = "panic"
+reason = "Expect messages are not a substitute for typed error handling or test helpers."
+
+[[lint]]
+name = "clippy::await_holding_lock"
+level = "deny"
+status = "active"
+class = "async"
+reason = "Do not hold locks across await points."
+
+[[lint]]
+name = "clippy::await_holding_refcell_ref"
+level = "deny"
+status = "active"
+class = "async"
+reason = "Do not hold RefCell borrows across await points."
+
+[[lint]]
+name = "clippy::mutex_atomic"
+level = "warn"
+status = "active"
+class = "async"
+reason = "Primitive mutex candidates remain visible while #9884 classifies compound invariants and memory-order requirements before any atomic conversion."
+
+[[lint]]
+name = "clippy::collapsible_if"
+level = "deny"
+status = "active"
+class = "style"
+reason = "Activated by #6305 after the 293-site burn-down (#6375-#6380), a warn-forced zero-finding all-targets remeasurement, and 38 fresh test-target fixes; historical blanket allows still mask 257 force-warn-measured sites owned by #12730-#12736."
+
+[[lint]]
+name = "clippy::collapsible_match"
+level = "deny"
+status = "active"
+class = "style"
+reason = "Activated by #6113 after the behavior-preserving collapse of all measured sites and removal of the workspace allow plus six crate-root and one test-target masks."
+
+[[lint]]
+name = "clippy::decimal_bitwise_operands"
+level = "deny"
+status = "active"
+class = "numeric"
+reason = "Make bit masks visually inspectable. Activated by #9894 after a zero-site confirmation on a complete workspace --all-targets measurement (force-warn pierces allows)."
+
+[[lint]]
+name = "clippy::duration_suboptimal_units"
+level = "warn"
+status = "active"
+class = "readability"
+reason = "Make durations legible without mental unit conversion."
+
+[[lint]]
+name = "clippy::needless_type_cast"
+level = "warn"
+status = "active"
+class = "numeric"
+reason = "Keep stale numeric type drift visible without claiming every boundary cast should be removed."
+
+[[lint]]
+name = "clippy::manual_ilog2"
+level = "deny"
+status = "active"
+class = "numeric"
+reason = "Promoted to deny by #9896 after zero-site confirmation on current all-targets; prefer the standard integer logarithm helper where domain and failure semantics match."
+
+[[lint]]
+name = "clippy::manual_take"
+level = "deny"
+status = "active"
+class = "reviewability"
+reason = "Promoted to deny by #1802 after zero-site confirmation on current all-targets; std::mem::take or Option::take must be used explicitly."
+
+[[lint]]
+name = "clippy::unnecessary_trailing_comma"
+level = "warn"
+status = "active"
+class = "readability"
+reason = "Keep generated and hand-written format macro calls clean."
+
+[[lint]]
+name = "clippy::wildcard_imports"
+level = "warn"
+status = "active"
+class = "reviewability"
+reason = "Production wildcard imports remain visible while #2895 owns measured cleanup and the final deny ratchet."
+
+[[lint]]
+name = "clippy::print_stderr"
+level = "deny"
+status = "active"
+class = "reviewability"
+reason = "Library code must use tracing rather than direct stderr, with only narrow reasoned boundary expectations."
+
+[[lint]]
+name = "clippy::print_stdout"
+level = "deny"
+status = "active"
+class = "reviewability"
+reason = "Library code must use tracing rather than direct stdout, with intentional CLI output bounded at its owner."
+
+[[lint]]
+name = "clippy::disallowed_fields"
+level = "deny"
+status = "active"
+configuration_state = "empty-by-design"
+class = "architecture"
+reason = "The deny mechanism is active, while the protected-field set remains deliberately empty until a separately reviewed selector lands; the configuration marker prevents that zero denominator from being mistaken for effective field protection."
+
+[[lint]]
+name = "clippy::ptr_arg"
+level = "deny"
+status = "active"
+class = "api"
+reason = "Activated by #2313 after a zero-site force-warn all-targets measurement on current main; public APIs must prefer &str, &[T], and &Path over &String, &Vec<T>, and &PathBuf parameters."

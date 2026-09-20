@@ -3,7 +3,7 @@
 ## Phase 1 (shipped)
 
 - `Parser` / `Tree` / `Node<'tree>` types with tree-sitter-compatible API shape
-- `to_sexp()` — tree-sitter-compatible S-expression output
+- `to_sexp()` — native debug S-expression (not a Tree-sitter CST; see issue 8047)
 - `kind()`, `native_kind()`, `grammar_kind()`, `child_count()`, `child()`, `children()` — tree traversal
 - `start_byte()`, `end_byte()`, `start_position()`, `end_position()`, `utf8_text()` — source location and extraction
 - `is_leaf()`, `inner()`, `tree_source()` — utility and escape hatch
@@ -39,6 +39,13 @@ capture-vs-capture operands and `any-*` variants remain unsupported. The reposit
 through `QueryCursor` as a compatibility probe. Semantic matches for its `comment`, `pod`,
 `substitution_regexp`, `heredoc_token`, and `heredoc_content` patterns remain out of scope
 because those node kinds are not exposed by the current native AST.
+
+### Semantic overlay (shipped behind `semantic-overlay`)
+
+The experimental file-local definition, visible-import, and pragma-state queries are opt-in.
+The default and `queries`-only feature graphs remain parser-only; enabling `semantic-overlay`
+adds the `perl-module`, `perl-pragma`, and `perl-semantic-analyzer` dependencies and exposes
+`Tree::semantic_overlay()`, `SemanticOverlay`, `OverlayDefinition`, and `VisibleImport`.
 
 ## Known limitations
 

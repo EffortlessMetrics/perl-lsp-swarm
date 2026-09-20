@@ -19,14 +19,14 @@ mod tests {
         });
         if let NodeKind::Program { statements } = &ast.kind {
             let stmt = &statements[0];
-            if let NodeKind::ExpressionStatement { expression } = &stmt.kind {
-                if let NodeKind::Binary { op, right, .. } = &expression.kind {
-                    assert_eq!(op, "=~");
-                    if let NodeKind::Regex { pattern, .. } = &right.kind {
-                        assert_eq!(pattern, "!pattern!");
-                    } else {
-                        unreachable!("Expected Regex node, got {:?}", right.kind);
-                    }
+            if let NodeKind::ExpressionStatement { expression } = &stmt.kind
+                && let NodeKind::Binary { op, right, .. } = &expression.kind
+            {
+                assert_eq!(op, "=~");
+                if let NodeKind::Regex { pattern, .. } = &right.kind {
+                    assert_eq!(pattern, "!pattern!");
+                } else {
+                    unreachable!("Expected Regex node, got {:?}", right.kind);
                 }
             }
         }
@@ -43,12 +43,12 @@ mod tests {
         });
         if let NodeKind::Program { statements } = &ast.kind {
             let stmt = &statements[0];
-            if let NodeKind::ExpressionStatement { expression } = &stmt.kind {
-                if let NodeKind::Binary { op, right, .. } = &expression.kind {
-                    assert_eq!(op, "=~");
-                    if let NodeKind::Regex { pattern, .. } = &right.kind {
-                        assert_eq!(pattern, "{pat{tern}}");
-                    }
+            if let NodeKind::ExpressionStatement { expression } = &stmt.kind
+                && let NodeKind::Binary { op, right, .. } = &expression.kind
+            {
+                assert_eq!(op, "=~");
+                if let NodeKind::Regex { pattern, .. } = &right.kind {
+                    assert_eq!(pattern, "{pat{tern}}");
                 }
             }
         }
@@ -65,18 +65,17 @@ mod tests {
         });
         if let NodeKind::Program { statements } = &ast.kind {
             let stmt = &statements[0];
-            if let NodeKind::ExpressionStatement { expression } = &stmt.kind {
-                if let NodeKind::Binary { op, right, .. } = &expression.kind {
-                    assert_eq!(op, "=~");
-                    if let NodeKind::Substitution { pattern, replacement, modifiers, .. } =
-                        &right.kind
-                    {
-                        assert_eq!(pattern, "old");
-                        assert_eq!(replacement, "new");
-                        assert!(modifiers.contains('g'));
-                    } else {
-                        unreachable!("Expected Substitution node, got {:?}", right.kind);
-                    }
+            if let NodeKind::ExpressionStatement { expression } = &stmt.kind
+                && let NodeKind::Binary { op, right, .. } = &expression.kind
+            {
+                assert_eq!(op, "=~");
+                if let NodeKind::Substitution { pattern, replacement, modifiers, .. } = &right.kind
+                {
+                    assert_eq!(pattern, "old");
+                    assert_eq!(replacement, "new");
+                    assert!(modifiers.contains('g'));
+                } else {
+                    unreachable!("Expected Substitution node, got {:?}", right.kind);
                 }
             }
         }
@@ -93,10 +92,10 @@ mod tests {
         });
         if let NodeKind::Program { statements } = &ast.kind {
             let stmt = &statements[0];
-            if let NodeKind::ExpressionStatement { expression } = &stmt.kind {
-                if let NodeKind::Regex { modifiers, .. } = &expression.kind {
-                    assert_eq!(modifiers, "i");
-                }
+            if let NodeKind::ExpressionStatement { expression } = &stmt.kind
+                && let NodeKind::Regex { modifiers, .. } = &expression.kind
+            {
+                assert_eq!(modifiers, "i");
             }
         }
     }
@@ -112,11 +111,11 @@ mod tests {
         });
         if let NodeKind::Program { statements } = &ast.kind {
             let stmt = &statements[0];
-            if let NodeKind::ExpressionStatement { expression } = &stmt.kind {
-                if let NodeKind::Regex { pattern, modifiers, .. } = &expression.kind {
-                    assert_eq!(pattern, "/pattern/");
-                    assert_eq!(modifiers, "i");
-                }
+            if let NodeKind::ExpressionStatement { expression } = &stmt.kind
+                && let NodeKind::Regex { pattern, modifiers, .. } = &expression.kind
+            {
+                assert_eq!(pattern, "/pattern/");
+                assert_eq!(modifiers, "i");
             }
         }
     }

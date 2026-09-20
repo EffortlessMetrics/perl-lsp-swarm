@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Added
+body: "Perl regex capture groups are now modeled from source with explicit numbering, named-capture families, and per-declaration confidence, so named, numbered, nested, duplicate, and branch-reset captures keep their real identity and unknown numbering is reported honestly instead of guessed."
+time: 2026-08-15T09:00:00Z
+custom:
+  PR: "7243"
+  Slug: regex-source-backed-captures
+  Breaking: "no"

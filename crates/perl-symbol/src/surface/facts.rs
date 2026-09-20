@@ -54,10 +54,18 @@ pub struct SymbolRefSemanticFacts {
 /// `entity_ids_by_qualified_name` provides entity IDs already minted for
 /// declarations in this or other files; unresolved references produce
 /// occurrences without `entity_id` and emit no reference edge.
+///
+/// `dispatch_only_entity_ids` carries additional lookup entries -- such as
+/// inherited method aliases -- that bind only `->` dispatch references
+/// ([`SymbolRefKind::MethodCall`] / [`SymbolRefKind::StaticMethodCall`]):
+/// `Child->method()` resolves through `@ISA`, while `Child::method()` and
+/// `\&Child::method` name a concrete subroutine and must not silently bind
+/// a parent's method entity.
 pub fn symbol_refs_to_semantic_facts(
     refs: &[SymbolRef],
     file_id: FileId,
     entity_ids_by_qualified_name: &BTreeMap<String, EntityId>,
+    dispatch_only_entity_ids: &BTreeMap<String, EntityId>,
 ) -> SymbolRefSemanticFacts {
     let mut anchors = Vec::with_capacity(refs.len());
     let mut occurrences = Vec::with_capacity(refs.len());
@@ -85,7 +93,17 @@ pub fn symbol_refs_to_semantic_facts(
             confidence,
         });
 
-        let entity_id = entity_ids_by_qualified_name.get(&symbol_ref.qualified_name).copied();
+        let entity_id = entity_ids_by_qualified_name
+            .get(&symbol_ref.qualified_name)
+            .or_else(|| {
+                matches!(
+                    symbol_ref.kind,
+                    SymbolRefKind::MethodCall | SymbolRefKind::StaticMethodCall
+                )
+                .then(|| dispatch_only_entity_ids.get(&symbol_ref.qualified_name))
+                .flatten()
+            })
+            .copied();
         let occurrence_id = OccurrenceId(stable_id(
             "occurrence",
             &symbol_ref.qualified_name,
@@ -401,7 +419,8 @@ mod tests {
             anchor_span: Some((over.saturating_add(5), over.saturating_add(10))),
         }];
 
-        let facts = symbol_refs_to_semantic_facts(&refs, FileId(7), &BTreeMap::new());
+        let facts =
+            symbol_refs_to_semantic_facts(&refs, FileId(7), &BTreeMap::new(), &BTreeMap::new());
         let anchor = must_some(facts.anchors.first());
         assert_eq!(anchor.span_start_byte, u32::MAX, "start must saturate, not wrap");
         assert_eq!(anchor.span_end_byte, u32::MAX, "end must saturate, not wrap");
@@ -699,7 +718,7 @@ mod tests {
         entity_map.insert("Foo::new".to_string(), EntityId(43));
         entity_map.insert("Foo::callback".to_string(), EntityId(44));
 
-        let facts = symbol_refs_to_semantic_facts(&refs, FileId(7), &entity_map);
+        let facts = symbol_refs_to_semantic_facts(&refs, FileId(7), &entity_map, &BTreeMap::new());
         assert_eq!(facts.anchors.len(), 6);
         assert_eq!(facts.occurrences.len(), 6);
         assert_eq!(facts.reference_edges.len(), 3);
@@ -760,16 +779,11 @@ mod tests {
         // For each entity with an anchor, verify that the anchor carries the correct file_id.
         for entity in &facts.entities {
             if let Some(anchor_id) = entity.anchor_id {
-                let matching_anchor = facts
-                    .anchors
-                    .iter()
-                    .find(|anchor| anchor.id == anchor_id)
-                    .expect("entity's anchor_id must match an anchor in facts");
-
-                // Key assertion: the anchor's file_id must match the file_id passed in.
+                let matching_anchor = facts.anchors.iter().find(|anchor| anchor.id == anchor_id);
                 assert_eq!(
-                    matching_anchor.file_id, test_file_id,
-                    "anchor's file_id must match the input file_id"
+                    matching_anchor.map(|anchor| anchor.file_id),
+                    Some(test_file_id),
+                    "anchor's file_id must match the input file_id, and the anchor must exist"
                 );
             }
         }

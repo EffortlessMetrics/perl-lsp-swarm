@@ -1,0 +1,12 @@
+{
+  "name": "refusal_advances_nothing",
+  "fixture_class": "deterministic refusal before any attempt; failed eligibility changes no runtime state",
+  "phase": "admission",
+  "outcome": {
+    "kind": "refused",
+    "disposition": "not_loaded"
+  },
+  "expected_generation_effect": "none",
+  "expected_phase_valid": true,
+  "expected_clean_projection": true
+}

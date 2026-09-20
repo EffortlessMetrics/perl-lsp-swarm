@@ -1,163 +1,67 @@
-# perl-lsp Sync Protocol
+# perl-lsp publication sync protocol
 
-`perl-lsp-swarm` is the active development source of truth. `perl-lsp` is the
-release, history, and canonical package-lineage repo.
+`perl-lsp-swarm` is the active development source of truth.
+It owns active product implementation, proof, release preparation, and the
+current sync protocol.
+`perl-lsp` is the release, history, and canonical package-lineage repo.
+It is the publication repository and owns public release lineage and
+publication-specific governance.
 
-This protocol is control-plane documentation only. It does not change branch
-protection, CI workflows, release automation, package publication, or provider
-behavior.
+This document is the canonical stable contract for history-preserving
+`perl-lsp-swarm` → `perl-lsp` release syncs. The copy of this document present
+in `perl-lsp` is a snapshot promoted with the last sync; current protocol
+authority remains here in swarm.
 
-## Source of Truth
+For the copy-safe operator procedure, use
+[`docs/how-to/PUBLICATION_SYNC.md`](../how-to/PUBLICATION_SYNC.md). Exact SHAs,
+digests, release names, translations, exclusions, and receipts belong in the
+per-release transaction artifacts described in
+[`docs/swarm/source-syncs/README.md`](source-syncs/README.md), not in this
+stable protocol.
 
-| Repo | Authority |
-|---|---|
-| `perl-lsp-swarm/main` | Active development, agent lanes, proof receipts, spec hardening, promotion-ledger work, cleanup trains, compiler substrate work |
-| `perl-lsp/master` | Release lineage, historical upstream, user-facing package lineage, emergency release fixes, curated sync target |
+## Repository authority
 
-Default routing:
+| Repository | Authority |
+| --- | --- |
+| `perl-lsp-swarm/main` | Active development; product implementation, tests, compiler/LSP/DAP work, proof, freeze, release preparation, and current sync protocol |
+| `perl-lsp/master` | Release lineage; publication-specific workflows/policy, public package lineage, and bounded emergency release fixes |
+
+Normal product work starts and converges in swarm. Do not maintain parallel
+implementation queues in both repositories.
+
+An emergency product fix may begin in `perl-lsp` only when release safety
+requires it. Mirror or supersede the product/test effect in swarm immediately
+and invalidate any affected prepared-release evidence. Publication-repository
+history may legitimately contain release-lineage-only changes that do not
+belong in swarm.
+
+## Sync-boundary invariant
+
+The invariant is **not** “`perl-lsp/master` may never be ahead of swarm.”
+Release lineage and publication governance can legitimately make it ahead.
+
+At the final publication-sync boundary, every `perl-lsp`-unique product or test
+change since the last completed reconciliation boundary must have a terminal,
+evidence-backed disposition. There must be:
 
 ```text
-new development -> perl-lsp-swarm
-curated release sync -> perl-lsp
-emergency release fix -> perl-lsp, then immediate swarm mirror/sync
+zero unclassified release-repository product/test work
+zero required product/test behavior that exists only in perl-lsp
+zero unresolved architecture decision hidden inside an accepted sync ledger
 ```
 
-## Swarm-First Promotion Policy
+The canonical reconciliation command is `cargo xtask sync-divergence`. Its
+three subjects have distinct meanings:
 
-Do not mirror every `perl-lsp-swarm` PR into `perl-lsp`.
-
-`perl-lsp-swarm` is the development and proof queue. `perl-lsp` is the release
-surface. Old-repo PRs should be opened only at deliberate promotion points:
-
-- release prep
-- urgent install, setup, docs, or user-facing correction
-- dependency or release blocker
-- security fix
-- settled batch of swarm changes
-- post-release backport or channel repair
-
-Do not open speculative implementation PRs in `perl-lsp`. Do not duplicate
-active swarm work into the old repo while the swarm PR is still the canonical
-review surface.
-
-When the same work appears in both repositories:
-
-1. Pick the canonical swarm PR or issue.
-2. Preserve any useful commits, tests, review notes, or reproduction details by
-   porting them back to the swarm surface when they are still relevant.
-3. Close old-repo duplicates with a pointer to the canonical swarm PR or issue.
-4. Do not treat the old-repo duplicate as a release sync unless it meets one of
-   the deliberate promotion points above.
-
-The goal is a smaller source-of-truth queue, not two queues carrying the same
-development work.
-
-## Hard Invariant
-
-`perl-lsp/master` must not be ahead of `perl-lsp-swarm/main`.
-
-Before merging any `perl-lsp` PR, one of these must be true:
-
-1. The same change is already present in `perl-lsp-swarm/main`.
-2. A swarm sync PR that includes the change is ready to merge first.
-3. The change is an emergency release fix and a swarm mirror PR is opened before
-   the old-repo PR is treated as complete.
-
-If this invariant is uncertain, stop and sync swarm first.
-
-## Sync Directions
-
-### Swarm to perl-lsp
-
-Use for curated release syncs.
-
-Required before opening the old-repo sync PR:
-
-- list included swarm PRs
-- list excluded swarm PRs and why
-- run the relevant support/provider/status checks in swarm
-- preserve release notes and package-lineage docs
-- state whether the sync changes user-facing package behavior
-- run `cargo xtask sync-divergence check` against the target first parent and
-  attach its source-sync receipt
-
-The old-repo PR body must link to the swarm source PRs and list verification.
-
-#### Mechanics: history-preserving complete-tree merge
-
-The two repos are **content-synced-divergent** — they share an old merge-base but
-have since diverged with real work on both sides, so there is no clean
-fast-forward. Use a **complete-tree merge**: take swarm's whole tree, but record
-both histories via a 2-parent merge commit.
-
-```bash
-# in the perl-lsp checkout, on a fresh sync branch off origin/master:
-git fetch swarm main                              # refresh the swarm remote-tracking ref
-git checkout -B release/sync-vX.Y.Z origin/master
-git merge -s ours --no-commit swarm/main          # record BOTH parents, keep our tree for now
-git read-tree -u --reset swarm/main               # set the tree to swarm's COMPLETE content
-# EXCLUDE swarm-internal harness (restore perl-lsp's own, drop swarm-only scripts):
-git rm -rq .claude && git checkout origin/master -- .claude
-git rm -q scripts/agent-cleanup.ps1 scripts/agent-preflight.ps1 scripts/swarm-clean
-git add -A && git commit -m "release: history-preserving merge sync swarm/main (X.Y.Z) -> master"
+```text
+--source   exact swarm commit used for patch equivalence
+--boundary last completed reconciliation boundary; history limit only
+--target   exact perl-lsp release head being judged
 ```
 
-**Why complete-tree, not per-file.** `git merge -X theirs` resolves *per file*,
-mixing swarm's version of some files in a diverged crate with perl-lsp's version
-of others — leaving the crate referencing methods that no longer exist (observed
-on a 0.17.0 sync: `perl-dap` failed with E0599 ×6). `read-tree --reset
-swarm/main` takes swarm's tree **whole**, so every crate is internally
-consistent (swarm's tree already passed swarm CI). The `-s ours --no-commit`
-step records both parents without letting the "ours" strategy keep perl-lsp's
-tree.
-
-**Verify before pushing to the canonical repo:**
-
-- `git log -1 --format='%p' | wc -w` → **2** (both parents recorded).
-- `git diff --name-only HEAD swarm/main` → only the EXCLUDE paths differ.
-- `cargo check --workspace; echo "EXIT=$?"` → **EXIT=0**. Capture cargo's *own*
-  exit — do **not** pipe cargo through `tail`/`head`, which replaces cargo's exit
-  code with the pager's `0` and hides a real build failure.
-- Confirm swarm/main is the *current* GitHub HEAD, not a stale local ref:
-  `gh api repos/EffortlessMetrics/perl-lsp-swarm/commits/main --jq .sha`.
-
-**EXCLUDE** (swarm-internal, not for the release repo): `.claude/` agent harness
-(restore perl-lsp's own), swarm-only scripts (`agent-cleanup.ps1`,
-`agent-preflight.ps1`, `swarm-clean`). **PRESERVE** perl-lsp release-lineage:
-`docs/releases/vX.Y.*.md`, `RELEASE_HISTORY.md` (swarm carries these too once
-synced, so the complete-tree merge keeps them).
-
-### perl-lsp to Swarm
-
-Use only for emergency release fixes or old-repo-only markers.
-
-Required before merging old `perl-lsp` work:
-
-- verify the same content exists in swarm, or merge a swarm mirror PR first
-- keep the old-repo PR scoped to release-lineage work
-- run the narrowest old-repo validation for the changed files
-- run the corresponding swarm validation after the mirror
-
-Source-to-swarm sync PRs should use merge commits when commit ancestry matters.
-Do not squash source-sync PRs that are meant to prove `source/master` ancestry.
-
-### Sync-divergence preflight
-
-Before a swarm-to-source promotion, compute target-unique commits with the
-protocol's `git cherry` comparison from the last common sync base to the first
-parent of the target sync merge. Run:
-
-```bash
-cargo xtask sync-divergence check \
-  --base <last-common-sync-base> \
-  --source <swarm-main-ref> \
-  --target <source-sync-first-parent> \
-  --ledger docs/swarm/source-syncs/<sync>-reconciliation.json \
-  --receipt docs/swarm/source-syncs/<sync>-receipt.json
-```
-
-The check ignores merge commits, and requires every other `+` result from
-`git cherry` to have a ledger row with one of these classifications:
+The checker computes target-unique non-merge commits with the resolved source
+as `git cherry`'s upstream and the boundary only as the lower history limit.
+Its accepted terminal dispositions are:
 
 ```text
 port_to_swarm
@@ -167,118 +71,243 @@ deliberately_abandoned
 release_lineage_only
 ```
 
-The `--source` value must resolve to a commit in the repository running the
-check. Missing or otherwise invalid refs fail closed and are recorded in the
-receipt, so a stale or malformed source ref cannot be mistaken for a valid
-promotion input.
+Unresolved decisions remain blockers; they are not a sixth successful
+disposition. Required ports/equivalents must be reachable from the final
+prepared swarm subject before the final ledger can pass.
 
-The checker also resolves `--base` and `--target` before invoking Git and passes
-the resolved base as `git cherry`'s explicit limit, keeping the comparison
-bounded to the intended base-to-target range.
+## Release transaction identities
 
-`release_lineage_only` is an explicit exclusion, not an implicit escape hatch.
-Missing rows, unclassified rows, invalid classifications, missing evidence, or
-ledger rows that are not target-unique non-merge commits fail the command. The
-JSON receipt records the target-unique commits and their classifications so a
-promotion can be audited after the source tree is replaced.
+Use immutable identities once the final release transaction begins:
 
-**Reconciling accumulated perl-lsp-unique work.** When `perl-lsp/master` has
-drifted ahead with parallel work (release-lineage aside), identify the genuine
-unique set with:
+```text
+R  = exact perl-lsp/master release base
+S  = exact prepared swarm commit
+P  = exact reviewed projected publication tree
+J0 = core two-parent join: parents [R, S], tree P
+J  = publication-sync PR head: audited join plus the committed control packet
+M  = landed GitHub merge-commit wrapper on perl-lsp/master
+```
+
+The current protected publication check stores the packet under
+`.github/publication-sync/`. Because a commit cannot contain its own SHA, the
+packet's `sync_join_sha` identifies `J0`, the core join. The PR head `J` has the
+same ordered parents and commit identity as `J0`, but its tree additionally
+contains exactly these control files:
+
+```text
+.github/publication-sync/packet.yaml
+.github/publication-sync/reconciliation-ledger.json
+.github/publication-sync/projection-manifest.json
+```
+
+The live `Publication Sync Contract` re-derives `J0` from `J`, proves the
+projection tree, and rejects extra control-directory content.
+
+The expected protected-PR graph is therefore:
+
+```text
+               M
+              / \
+             R   J
+                / \
+               R   S
+
+J minus the control directory re-derives J0
+parents(J0) = [R, S]
+tree(J0) = P
+```
+
+Do not collapse these identities into one ambiguous `release_repo_sha`.
+Downstream release rehearsal consumes landed `M`; ancestry/projection proof
+retains `J0` and `J`.
+
+## Complete-tree rule
+
+#### Mechanics: history-preserving complete-tree merge
+
+The publication product tree starts from the complete prepared swarm tree.
+Do not use a normal recursive/per-file merge as the product projection.
+
+A previous release sync demonstrated the failure mode: per-file conflict
+resolution mixed incompatible files inside `perl-dap`, producing missing-method
+errors even though Git had resolved the text conflicts. The correct mechanism
+records both parents while replacing the merge tree with the complete prepared
+swarm tree before applying publication-specific projection.
+
+Conceptually:
 
 ```bash
-git cherry -v swarm/main origin/master | grep '^+' \
-  | grep -ivE 'mirror|^queue:|Merge pull request|^release:'
+git merge -s ours --no-commit swarm/main
+git read-tree -u --reset swarm/main
 ```
 
-In practice this set is dominated by **new files** (e.g. `test(ux): lock …`
-behavior receipts), which port to swarm as additions rather than a
-conflict-merge. Bring them back so swarm becomes the superset and the
-[Hard Invariant](#hard-invariant) is restored. Note that a complete-tree
-swarm→perl-lsp release sync intentionally takes swarm's whole tree, so any
-perl-lsp-unique work not yet in swarm is dropped from the *release tree* (it
-survives in history via the merge's perl-lsp parent) until this reverse step
-lands it in swarm — do the reverse step, or accept that work ships a later
-release.
+These stable topology markers use `swarm/main` to name the development source;
+an actual release transaction replaces that moving ref with the pinned `S`:
 
-## Cadence
+```bash
+git switch -c release/sync-vX.Y.Z "$R"
+git merge --no-ff --no-commit -s ours "$S"
+git read-tree -u --reset "$S"
+# Apply only the reviewed publication projection.
+# Add the exact publication-sync control packet.
+git commit -m "release: history-preserving publication sync vX.Y.Z"
+```
 
-Routine cadence:
+The exact per-release tooling/packet owns the concrete projection operations.
+Do not restore historical files ad hoc during conflict resolution.
+
+## Publication projection rule
+
+The default publication tree is `S`. Every intentional deviation from `S`
+must be declared before the join in the reviewed, digest-bound publication
+projection manifest.
+
+Typical classes include:
+
+- repository or branch context;
+- public links and issue references;
+- public release wording and claims;
+- publication-repository release lineage/governance;
+- swarm-only development/control surfaces;
+- generated publication context;
+- installer/archive/VSIX identity composition.
+
+Historical v0.17 exclusions such as particular agent directories or cleanup
+scripts are evidence about that transaction only. They are **not** a permanent
+exclude list. A current release reuses an exclusion only when the current
+manifest explicitly owns and proves it.
+
+No manifest exclusion may conceal current product or test divergence. Product
+or test repair returns to swarm, lands there, and invalidates affected prepared
+inputs.
+
+## Protected landing
+
+`perl-lsp/master` requires the repository-owned check named exactly:
 
 ```text
-merge in swarm
-batch into curated release sync
-open old-repo sync PR
-verify release-lineage gates
-merge old-repo sync
-tag or publish only with explicit release approval
+Publication Sync Contract
 ```
 
-Emergency cadence:
+The live implementation is read-only and has two modes:
 
 ```text
-open old-repo emergency PR
-open or merge swarm mirror first
-merge old-repo emergency PR only after the invariant is preserved
-run post-merge support/provider/status checks
+ordinary PR
+→ deterministic not_applicable success
+
+explicit publication-sync PR
+→ fail closed on packet, ancestry, projection, digest, or no-publish failure
 ```
 
-## Pre-Cut Verification (release repo)
+Sync mode requires both repository-owned markers:
 
-The cut (tag + publish to crates.io / marketplace / Open VSX / Docker) is
-**irreversible**. Before dispatching `release-orchestration.yml`, confirm on the
-release repo (`perl-lsp`):
+1. the PR introduces or changes `.github/publication-sync/packet.yaml`; and
+2. the PR template field says `Publication-sync PR (yes/no): yes`.
 
-- The sync PR is merged; `perl-lsp/master` HEAD is the 2-parent sync commit at
-  the target version (`[workspace.package].version` and `CHANGELOG.md` show a
-  dated `## [X.Y.Z]`).
-- Publish secrets are reachable where the cut runs. Repo-level `gh secret list`
-  may show only a subset, and org/environment secrets are not listable without
-  `admin:org`. The strongest evidence is a **prior successful release**:
-  `gh run list --workflow=release-orchestration.yml` and
-  `gh run list --workflow=publish-crates.yml` showing past `success` from
-  `master` means the full chain (CARGO_REGISTRY_TOKEN, VSCE_PAT, OVSX_PAT,
-  DOCKER_USERNAME/PASSWORD) is wired.
-- `release-orchestration.yml` is present with inputs `version`, `prerelease`,
-  `skip_crates`, `skip_extension`, `skip_docker`. If a single channel fails
-  mid-cut, re-dispatch with that channel's `skip_*` set rather than re-tagging.
+A title substring is not authority. Missing, stale, blocked, `not_proven`,
+cancelled, timed-out, or instrument-failed required evidence cannot become
+success.
 
-Tag, publish, and GitHub release creation still require explicit approval per
-[Branch Protection Expectations](#branch-protection-expectations).
+The actual publication-sync PR must land with **Create a merge commit**.
+Ordinary repository PRs continue to use their normal merge policy; this
+transaction is the exception because squash/rebase would destroy the ancestry
+it exists to preserve.
 
-## Docs That Must Stay Aligned
+At merge time use expected-head compare-and-swap protection. This is merge-race
+safety, not review-currentness ceremony.
 
-- `docs/swarm/operating-model.md`
-- `docs/swarm/review-rules.md`
-- `docs/swarm/sync-protocol.md`
-- `docs/project/status/development-moved-to-perl-lsp-swarm.md`
-- `docs/project/status/real_perl_editor_trust_v1.md`
-- `docs/project/status/provider_promotion_ledger.md`
+After GitHub creates `M`, run the contract's post-merge verifier and prove:
 
-Live development selection is reconstructed from current GitHub state and is not
-a sync-protocol artifact.
+```text
+J is an ancestor of M
+tree(M) == tree(J)
+R is an ancestor of M
+S is an ancestor of M
+current perl-lsp/master == M
+```
 
-Do not duplicate generated status tables. Link to the status source instead.
+## Review currentness
 
-## Branch Protection Expectations
+Exact Git/tree identities are load-bearing evidence for the release transaction.
+They do not imply that every unrelated commit invalidates every review judgment.
 
-This document does not configure branch protection.
+Refresh only affected dimensions:
 
-Expected policy:
+- changed `R` → rebuild/recheck the join against the new release base;
+- changed `S` → rerun final reconciliation, projection, and affected release proof;
+- changed reconciliation digest → re-adjudicate affected release-only work;
+- changed projection manifest or expected tree → rerun projection/join review;
+- conflict/integration repair → review the affected interaction;
+- unrelated work outside the frozen transaction → no ceremonial full re-review.
 
-- `perl-lsp-swarm/main` remains the development integration branch.
-- `perl-lsp/master` accepts curated syncs and release-lineage work only.
-- Required checks must be green before merge unless a documented emergency
-  exception exists.
-- Branch deletion, force-push, history rewrite, tagging, package publish, and
-  GitHub release creation still require explicit approval.
+Once final `R` and `S` are pinned, do not silently refresh them. A deliberate
+repin starts a new transaction attempt and invalidates dependent packet bytes.
 
-## Completion Criteria
+## No-publish boundary
 
-A sync is complete only when:
+The sync operation is reversible repository integration. It is not the release
+cut.
 
-- the target PR is merged
-- the source/target invariant is checked
-- required support/provider/status receipts are still valid
-- any excluded work is listed
-- release or publish claims are not made without explicit approval
+During sync:
+
+```yaml
+published_channels: []
+release_cut: false
+```
+
+No tag, GitHub Release, crates.io publication, Marketplace/Open VSX publish,
+container push, package-manager publication, or other public channel mutation
+belongs in the sync workflow or PR.
+
+The exact landed `M` is handed to the no-publish candidate rehearsal. Public
+publication remains a later, explicitly authorized transaction.
+
+## Per-release lifecycle
+
+Every release follows the same high-level lifecycle:
+
+```text
+preliminary release-only comparison
+→ port/resolve real product/test divergence in swarm
+→ freeze product
+→ prepare exact S
+→ pin exact R
+→ final blocker-free reconciliation
+→ final publication projection P
+→ build J0/J and committed control packet
+→ open protected perl-lsp sync PR
+→ Publication Sync Contract + substantive review
+→ merge by merge commit under expected-head guard
+→ record/verify M
+→ build exact no-publish candidate from M
+```
+
+The copy-safe commands, stop conditions, recovery matrix, and transaction file
+layout are in the publication-sync how-to.
+
+## Versioned enforcement
+
+The currently deployed publication check was introduced for the v0.18 RC and
+its packet/schema constants are release-pinned. Before a later release reuses
+the mechanism, either:
+
+- roll the validator/schema/tests to that release under a reviewed control PR;
+  or
+- land a separately reviewed release-parameterized schema that preserves the
+  same fail-closed subject/digest rules.
+
+Do not copy an old release packet and edit only the version string.
+
+## Completion criteria
+
+A publication sync is complete only when:
+
+- final reconciliation is blocker-free for exact `R` and `S`;
+- every publication-tree deviation from `S` is manifest-owned;
+- `J0` has ordered parents `[R, S]` and tree `P`;
+- `J` contains only `P` plus the exact control directory;
+- `Publication Sync Contract` passes on the declared PR;
+- the PR lands with merge-commit method and expected-head protection;
+- post-merge verification proves `J` survives in `M` with identical landed tree;
+- exact `M` is recorded for the no-publish candidate;
+- no public channel mutated during the sync.

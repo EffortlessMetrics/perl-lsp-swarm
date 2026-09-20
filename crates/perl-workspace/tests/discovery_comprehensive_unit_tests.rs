@@ -136,11 +136,11 @@ fn discover_perl_files_excluded_count_matches_non_perl_visible_files() -> TestRe
     Ok(())
 }
 
-// --- Symlink behavior (follow_links is false) ---
+// --- Symlink behavior (follow_links is true) ---
 
 #[cfg(unix)]
 #[test]
-fn discover_perl_files_does_not_follow_symlinks() -> TestResult {
+fn discover_perl_files_follows_symlinked_directories() -> TestResult {
     let tmp = TempDir::new()?;
     let root = tmp.path();
 
@@ -149,10 +149,10 @@ fn discover_perl_files_does_not_follow_symlinks() -> TestResult {
     std::os::unix::fs::symlink(root.join("real"), root.join("links/real_link"))?;
 
     let result = discover_perl_files(root);
-    // Should only find the real file, not the symlink target
+    // The linked library tree should be discoverable through its workspace path.
     let paths_with_link: Vec<_> =
         result.files.iter().filter(|p| p.to_string_lossy().contains("links/real_link")).collect();
-    assert!(paths_with_link.is_empty(), "symlinked directories should not be followed");
+    assert_eq!(paths_with_link.len(), 1, "symlinked directories should be followed");
     Ok(())
 }
 
@@ -338,8 +338,6 @@ fn discovery_result_debug_format_is_not_empty() -> TestResult {
 
 #[test]
 fn discovery_method_eq_symmetry() {
-    assert_eq!(DiscoveryMethod::Git, DiscoveryMethod::Git);
-    assert_eq!(DiscoveryMethod::Walk, DiscoveryMethod::Walk);
     assert_ne!(DiscoveryMethod::Git, DiscoveryMethod::Walk);
     assert_ne!(DiscoveryMethod::Walk, DiscoveryMethod::Git);
 }

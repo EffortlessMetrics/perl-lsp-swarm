@@ -1,0 +1,14 @@
+{
+  "name": "nc06_timeout_without_generation_advance",
+  "control": 6,
+  "op": "apply_generation_effect",
+  "input": {
+    "outcome": {
+      "kind": "indeterminate_possibly_applied",
+      "failure_phase": "runtime_acknowledgement_read_back",
+      "cause": "timeout_after_mutation_began"
+    },
+    "claimed_effect": "none"
+  },
+  "expected_error": "possibly_applied_without_generation_advance"
+}

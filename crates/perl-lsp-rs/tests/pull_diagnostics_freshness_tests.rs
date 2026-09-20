@@ -45,6 +45,10 @@ fn fresh_server() -> LspServer {
         "rootUri": null,
         "workspaceFolders": null
     })));
+    // Bind an owning folder authority (#7480): pull result IDs are composed
+    // from the complete report subject and are only minted when the owning
+    // root authority is known.
+    server.test_set_root_path(std::env::temp_dir().join("plsw-pull-freshness-root"));
     server
 }
 
@@ -406,7 +410,7 @@ fn pull_document_diagnostic_stays_fresh_during_pending_parse_gap() -> TestResult
     server.test_apply_text_change_without_reparse(uri, "my $x =;\n", 2)?;
     assert_eq!(
         server.test_document_generation(uri),
-        Some(1),
+        Some(2),
         "helper must bump the generation without republishing"
     );
 
@@ -455,7 +459,7 @@ fn pull_document_diagnostic_does_not_report_a_fixed_syntax_error_as_current_duri
     server.test_apply_text_change_without_reparse(uri, "my $x = 1;\n", 2)?;
     assert_eq!(
         server.test_document_generation(uri),
-        Some(1),
+        Some(2),
         "helper must bump the generation without republishing"
     );
 
@@ -515,7 +519,7 @@ fn pull_workspace_diagnostic_omits_gapped_doc_from_items() -> TestResult {
     // Open the pending-parse gap without changing the text's parse-error
     // content, so a leaked stale/empty report would be observably wrong.
     server.test_apply_text_change_without_reparse(uri, "my $x =;\n", 2)?;
-    assert_eq!(server.test_document_generation(uri), Some(1));
+    assert_eq!(server.test_document_generation(uri), Some(2));
 
     let resp = server.test_handle_workspace_diagnostic(Some(json!({
         "previousResultIds": [ { "uri": uri, "value": prev_result_id } ]
@@ -584,6 +588,110 @@ fn pull_workspace_diagnostic_resumes_after_pending_parse_gap_closes() -> TestRes
         !items.iter().any(|d| d.get("code").and_then(|c| c.as_str()) == Some("PL001")),
         "the syntax error was fixed before the gap closed, so the resumed report \
          must not carry a parse-error (PL001) diagnostic; got: {items:?}"
+    );
+
+    Ok(())
+}
+
+// ── complete-subject result identity (#7480) ─────────────────────────────────
+
+/// Extract the `resultId` string from a pull-diagnostic response, if present.
+fn pull_result_id(response: Option<serde_json::Value>) -> Option<String> {
+    response?.get("resultId")?.as_str().map(str::to_string)
+}
+
+/// Full → unchanged → full roundtrip over the complete subject:
+///
+/// 1. first pull returns `full` with a reusable resultId;
+/// 2. an identical second pull with that prior ID returns `unchanged`;
+/// 3. a behavior-bearing configuration movement (critic severity) over
+///    identical bytes supersedes: `full` again with a NEW resultId;
+/// 4. the new subject is stable: echoing its ID returns `unchanged`.
+#[test]
+fn pull_document_result_id_roundtrip_with_config_supersession() -> TestResult {
+    let server = fresh_server();
+    let uri = "file:///plsw_7480_roundtrip.pl";
+
+    server.test_configure_perlcritic(true, 3, None);
+    server.test_apply_did_open(uri, "my $x = 1;\n", 1)?;
+
+    let first = server.test_handle_document_diagnostic(Some(json!({
+        "textDocument": { "uri": uri }
+    })))?;
+    let id_a =
+        pull_result_id(first.clone()).ok_or("first full pull must carry a reusable resultId")?;
+    assert_eq!(
+        first.and_then(|v| v.get("kind").and_then(|k| k.as_str()).map(str::to_string)),
+        Some("full".to_string()),
+        "first pull must be a full report"
+    );
+
+    let unchanged = server.test_handle_document_diagnostic(Some(json!({
+        "textDocument": { "uri": uri },
+        "previousResultId": id_a,
+    })))?;
+    assert_eq!(
+        unchanged.as_ref().and_then(|v| v.get("kind")).and_then(|k| k.as_str()),
+        Some("unchanged"),
+        "identical complete subject must return unchanged; got: {unchanged:?}"
+    );
+    assert_eq!(
+        pull_result_id(unchanged).as_deref(),
+        Some(id_a.as_str()),
+        "unchanged must echo the composed subject ID"
+    );
+
+    // Behavior-bearing configuration movement over identical bytes.
+    server.test_configure_perlcritic(true, 4, None);
+    let superseded = server.test_handle_document_diagnostic(Some(json!({
+        "textDocument": { "uri": uri },
+        "previousResultId": id_a,
+    })))?;
+    let id_b = pull_result_id(superseded.clone())
+        .ok_or("config-moved pull must still be a reusable full report")?;
+    assert_eq!(
+        superseded.as_ref().and_then(|v| v.get("kind")).and_then(|k| k.as_str()),
+        Some("full"),
+        "configuration movement must supersede the prior result"
+    );
+    assert_ne!(id_a, id_b, "moved configuration must produce a different resultId");
+
+    // The new subject is stable.
+    let settled = server.test_handle_document_diagnostic(Some(json!({
+        "textDocument": { "uri": uri },
+        "previousResultId": id_b,
+    })))?;
+    assert_eq!(
+        settled.as_ref().and_then(|v| v.get("kind")).and_then(|k| k.as_str()),
+        Some("unchanged"),
+        "the moved subject must be stable on the next pull"
+    );
+
+    Ok(())
+}
+
+/// A client-held resultId minted under a foreign scheme never authorizes
+/// `unchanged`: the envelope degrades to `full` (#7480 negative control).
+#[test]
+fn pull_document_foreign_schema_prior_degrades_to_full() -> TestResult {
+    let server = fresh_server();
+    let uri = "file:///plsw_7480_foreign_prior.pl";
+
+    server.test_apply_did_open(uri, "my $x = 1;\n", 1)?;
+
+    let resp = server.test_handle_document_diagnostic(Some(json!({
+        "textDocument": { "uri": uri },
+        "previousResultId": "5d41402abc4b2a76b9719d911017c592",
+    })))?;
+
+    assert_eq!(
+        resp.as_ref().and_then(|v| v.get("kind")).and_then(|k| k.as_str()),
+        Some("full"),
+        "unknown-schema prior IDs must produce full, not unchanged; got: {resp:?}"
+    );
+    assert!(
+        pull_result_id(resp).is_some(),
+        "the fresh complete subject is reusable, so full carries a new resultId"
     );
 
     Ok(())

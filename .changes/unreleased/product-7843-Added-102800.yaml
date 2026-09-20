@@ -1,0 +1,9 @@
+project: product
+component: Compatibility
+kind: Added
+body: Add a bounded actual-Neovim support-floor/current-stable compatibility matrix.
+time: 2026-08-13T10:28:00Z
+custom:
+  PR: "7843"
+  Slug: neovim-version-matrix
+  Breaking: "no"

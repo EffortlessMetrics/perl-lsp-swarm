@@ -19,6 +19,7 @@ struct GatePolicyDoc {
 struct PolicyGate {
     name: String,
     tier: String,
+    description: String,
     #[serde(default = "default_true")]
     required: bool,
     #[serde(default)]
@@ -26,6 +27,8 @@ struct PolicyGate {
     #[serde(default)]
     quarantine: bool,
     timeout_seconds: Option<u64>,
+    #[serde(default)]
+    retry_count: Option<u32>,
     budgets: Option<GateBudgets>,
     planning: Option<GatePlanning>,
 }
@@ -264,44 +267,108 @@ fn parser_integration_gate_is_required_and_manifest_driven()
     Ok(())
 }
 
+/// (issue #6845) The former `inline_completion_contract` gate chained four
+/// Cargo commands with `&&`, masking which contract failed and preventing
+/// later contracts from running. It is now one ordered four-row family:
+/// every change to either owning package selects every child. The family
+/// envelope was re-sized for cold-cache PR Smoke compilation (#11797): the
+/// two members that compile the perl-lsp-rs-core dependency graph
+/// (`inline_completion_registration`, `inline_completion_core`) carry
+/// 240s/210000ms each, while `lsp_registration_contract` and
+/// `lsp_capability_snapshots` keep their original 150s/135000ms, for a
+/// 780-second timeout / 690000ms budget envelope.
 #[test]
-fn inline_completion_contract_scope_stays_on_lsp_crates() -> Result<(), Box<dyn std::error::Error>>
-{
+fn inline_completion_gates_are_split_scoped_ordered_and_budgeted()
+-> Result<(), Box<dyn std::error::Error>> {
     let root = project_root();
     let policy_path = root.join(".ci/gate-policy.yaml");
     let content = fs::read_to_string(policy_path)?;
     let parsed: GatePolicyDoc = serde_yaml_ng::from_str(&content)?;
 
+    let ordered_names: Vec<String> = parsed.gates.iter().map(|gate| gate.name.clone()).collect();
     let gates: HashMap<_, _> =
         parsed.gates.into_iter().map(|gate| (gate.name.clone(), gate)).collect();
 
-    let contract =
-        gates.get("inline_completion_contract").ok_or("missing inline_completion_contract gate")?;
-    let contract_planning =
-        contract.planning.as_ref().ok_or("inline_completion_contract missing planning")?;
+    assert!(
+        !gates.contains_key("inline_completion_contract"),
+        "inline_completion_contract must be removed — the && composite masks children"
+    );
 
-    assert_eq!(contract.tier, "pr_fast");
-    assert!(contract.required, "inline_completion_contract must stay PR-blocking");
-    assert!(
-        contract.timeout_seconds.unwrap_or_default() >= 600,
-        "inline_completion_contract timeout must include cold CI compile headroom"
+    let expected: &[(&str, &str)] = &[
+        (
+            "inline_completion_registration",
+            "cargo test -p perl-lsp-rs --locked --test lsp_inline_completion_registration_tests",
+        ),
+        (
+            "lsp_registration_contract",
+            "cargo test -p perl-lsp-rs --locked --test lsp_registration_tests",
+        ),
+        ("lsp_capability_snapshots", "cargo test -p perl-lsp-rs --locked --test lsp_cap_snap"),
+        (
+            "inline_completion_core",
+            "cargo test -p perl-lsp-rs-core --locked --lib inline_completion",
+        ),
+    ];
+    let expected_names: Vec<_> = expected.iter().map(|(name, _)| *name).collect();
+    let family_start = ordered_names
+        .windows(expected_names.len())
+        .position(|window| window.iter().eq(expected_names.iter()))
+        .ok_or("inline-completion gate family must be contiguous and ordered")?;
+    assert_eq!(
+        ordered_names.get(family_start + expected_names.len()).map(String::as_str),
+        Some("inline_completion_quality_receipt"),
+        "quality receipt must remain the family boundary immediately after the four children"
     );
-    assert!(
-        contract.budgets.as_ref().and_then(|budget| budget.max_duration_ms).unwrap_or_default()
-            >= 540_000,
-        "inline_completion_contract duration budget must reflect observed cold PR-fast runtime"
+
+    let mut timeout_total = 0_u64;
+    let mut budget_total = 0_u64;
+    for &(gate_name, expected_command) in expected {
+        let gate = gates
+            .get(gate_name)
+            .ok_or_else(|| format!("gate '{gate_name}' not found in gate-policy.yaml"))?;
+        let planning = gate
+            .planning
+            .as_ref()
+            .ok_or_else(|| format!("gate '{gate_name}' missing planning field"))?;
+
+        assert_eq!(gate.tier, "pr_fast", "gate '{gate_name}' must remain in pr_fast");
+        assert!(
+            gate.required,
+            "gate '{gate_name}' must remain required within the pr_fast runner; this does not claim GitHub protection"
+        );
+        assert_eq!(planning.role, "rust_package_scoped");
+        assert_eq!(
+            planning.packages,
+            vec!["perl-lsp-rs", "perl-lsp-rs-core"],
+            "every child must be selected by a change to either formerly governed package"
+        );
+        assert_eq!(gate.command, expected_command);
+        assert!(!gate.command.contains("&&"));
+        timeout_total += gate.timeout_seconds.ok_or("child timeout must be explicit")?;
+        budget_total += gate
+            .budgets
+            .as_ref()
+            .and_then(|budget| budget.max_duration_ms)
+            .ok_or("child budget must be explicit")?;
+    }
+    // 240 + 150 + 150 + 240: the two perl-lsp-rs-core-compiling members were
+    // re-sized for cold-cache PR Smoke compilation (#11797); the two smaller
+    // lsp_registration_contract / lsp_capability_snapshots members keep the
+    // original split envelope. Pinning the exact sum keeps any future drift
+    // in any member a deliberate, review-visible change.
+    assert_eq!(timeout_total, 780, "family hard timeout must match the #11797 cold-cache sizing");
+    assert_eq!(
+        budget_total, 690_000,
+        "family duration budget must match the #11797 cold-cache sizing"
     );
-    assert_eq!(contract_planning.role, "rust_package_scoped");
-    assert_eq!(contract_planning.packages, vec!["perl-lsp-rs", "perl-lsp-rs-core"]);
 
     let quality = gates
         .get("inline_completion_quality_receipt")
         .ok_or("missing inline_completion_quality_receipt gate")?;
     let quality_planning =
         quality.planning.as_ref().ok_or("inline_completion_quality_receipt missing planning")?;
-
     assert_eq!(quality.tier, "pr_fast");
-    assert!(quality.required, "inline_completion_quality_receipt must stay PR-blocking");
+    assert!(quality.required, "quality receipt must remain required within pr_fast");
     assert_eq!(quality_planning.role, "rust_package_scoped");
     assert_eq!(quality_planning.packages, vec!["perl-lsp-rs-core", "xtask"]);
 
@@ -327,6 +394,8 @@ fn gate_registry_alignment_prevents_stale_parser_wiring() -> Result<(), Box<dyn 
         ("parser_corpus_ratchet", "parser-corpus-ratchet"),
         ("cpan_corpus_ratchet", "cpan-corpus-ratchet"),
         ("parser_audit_closeout", "parser-audit-closeout"),
+        ("pending_parse_freshness", "pending-parse-freshness"),
+        ("pull_diagnostics_freshness", "pull-diagnostics-freshness"),
     ];
 
     for (policy_name, registry_id) in pairs {
@@ -374,6 +443,167 @@ fn package_args(command: &str) -> Vec<String> {
         .filter_map(|(index, _)| tokens.get(index + 1))
         .map(|package| (*package).to_string())
         .collect()
+}
+
+const DAP_HELPER_TARGETS: [&str; 4] = [
+    "eval_ref_cache_miss_resume_tests",
+    "dap_evaluate_comprehensive_tests",
+    "dap_variable_reference_hardening_tests",
+    "pause_signal_delivery_tests",
+];
+
+fn dap_helper_command_error(command: &str) -> Option<String> {
+    let tokens: Vec<&str> = command.split_whitespace().collect();
+    let separator_count = tokens.iter().filter(|token| **token == "&&").count();
+    if separator_count != 1 {
+        return Some("DAP helper command must have exactly one && separator".to_string());
+    }
+    if tokens.iter().any(|token| matches!(*token, ";" | "||")) {
+        return Some("DAP helper command must not swallow failures".to_string());
+    }
+
+    let separator = tokens.iter().position(|token| *token == "&&")?;
+    let helper_tokens = &tokens[separator + 1..];
+
+    // Cargo's `--` boundary: everything after the first standalone `--` is
+    // harness arguments, not package/target selection. Selectors are only
+    // honored in the pre-`--` prefix, and selector-shaped words in the
+    // harness region are refused, so relocating a required selector behind
+    // `--` cannot keep this contract green.
+    let harness_start = helper_tokens.iter().position(|token| *token == "--");
+    let (selection_tokens, harness_tokens) = match harness_start {
+        Some(boundary) => (&helper_tokens[..boundary], &helper_tokens[boundary + 1..]),
+        None => (helper_tokens, &helper_tokens[helper_tokens.len()..]),
+    };
+    if harness_tokens
+        .iter()
+        .any(|token| *token == "--test" || *token == "-p" || *token == "--features")
+    {
+        return Some(
+            "DAP helper command must keep package/target selection before `--`".to_string(),
+        );
+    }
+
+    if !selection_tokens.windows(2).any(|window| window[0] == "-p" && window[1] == "perl-dap") {
+        return Some("DAP helper command must target perl-dap".to_string());
+    }
+    if !selection_tokens
+        .windows(2)
+        .any(|window| window[0] == "--features" && window[1] == "test-helpers")
+    {
+        return Some("DAP helper command must enable test-helpers".to_string());
+    }
+
+    for target in DAP_HELPER_TARGETS {
+        let occurrences = selection_tokens
+            .windows(2)
+            .filter(|window| window[0] == "--test" && window[1] == target)
+            .count();
+        if occurrences != 1 {
+            return Some(format!("DAP helper command must bind exactly one --test {target}"));
+        }
+    }
+    // Exact target set: an additional `--test` pair would silently widen
+    // this supposedly exact gate while every named pair still binds once.
+    let selector_count = selection_tokens.windows(2).filter(|window| window[0] == "--test").count();
+    if selector_count != DAP_HELPER_TARGETS.len() {
+        return Some(format!(
+            "DAP helper command must bind exactly {} --test targets",
+            DAP_HELPER_TARGETS.len()
+        ));
+    }
+    None
+}
+
+fn dap_support_gate(root: &PathBuf) -> Result<PolicyGate, Box<dyn std::error::Error>> {
+    let content = fs::read_to_string(root.join(".ci/gate-policy.yaml"))?;
+    let parsed: GatePolicyDoc = serde_yaml_ng::from_str(&content)?;
+    parsed
+        .gates
+        .into_iter()
+        .find(|gate| gate.name == "unit_dap_support_full")
+        .ok_or_else(|| "missing unit_dap_support_full gate".into())
+}
+
+#[test]
+fn dap_support_gate_binds_all_helper_targets_and_propagates_failures()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = project_root();
+    let gate = dap_support_gate(&root)?;
+    assert_eq!(gate.tier, "merge_gate");
+    assert!(gate.required, "DAP support gate must stay required");
+    assert!(!gate.quarantine, "DAP support gate must not be quarantined");
+    assert!(
+        gate.description.contains("Windows-only pause runtime"),
+        "the Linux claim boundary must remain explicit"
+    );
+    if let Some(error) = dap_helper_command_error(&gate.command) {
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, error).into());
+    }
+
+    for target in DAP_HELPER_TARGETS {
+        let mutated = gate.command.replacen(&format!(" --test {target}"), "", 1);
+        assert!(
+            dap_helper_command_error(&mutated).is_some(),
+            "removing {target} must fail the policy contract"
+        );
+    }
+    let missing_feature = gate.command.replace("--features test-helpers", "--features default");
+    assert!(dap_helper_command_error(&missing_feature).is_some());
+    let swallowed_failure = gate.command.replacen("&&", ";", 1);
+    assert!(dap_helper_command_error(&swallowed_failure).is_some());
+    // Cargo `--` boundary mutation: the ONLY copy of a required selector is
+    // moved behind the harness separator. Removing it from the selection
+    // region keeps the exact-occurrence check satisfied under a
+    // boundary-blind validator, so this mutation specifically protects the
+    // selection/harness split.
+    let relocated = format!(
+        "{} --test pause_signal_delivery_tests",
+        gate.command.replacen(" --test pause_signal_delivery_tests", "", 1),
+    );
+    assert!(
+        dap_helper_command_error(&relocated).is_some(),
+        "selector behind `--` must fail the policy contract"
+    );
+    // Exact target set: an extra `--test` pair widens the gate and must fail.
+    let widened = gate.command.replace(
+        "--test eval_ref_cache_miss_resume_tests",
+        "--test eval_ref_cache_miss_resume_tests --test extra_target_tests",
+    );
+    assert!(
+        dap_helper_command_error(&widened).is_some(),
+        "expanding the target set must fail the policy contract"
+    );
+    Ok(())
+}
+
+#[test]
+fn dap_support_retry_envelope_leaves_terminal_receipt_headroom()
+-> Result<(), Box<dyn std::error::Error>> {
+    const SHARD_WATCHDOG_SECONDS: u64 = 1_800;
+    const LINUX_CLEANUP_GRACE_SECONDS: u64 = 75;
+    const TERMINAL_RECEIPT_RESERVE_SECONDS: u64 = 120;
+    const EXPECTED_TIMEOUT_SECONDS: u64 = 450;
+    const EXPECTED_BUDGET_MS: u64 = 360_000;
+
+    let root = project_root();
+    let gate = dap_support_gate(&root)?;
+    assert_eq!(gate.timeout_seconds, Some(EXPECTED_TIMEOUT_SECONDS));
+    assert_eq!(gate.retry_count, Some(1));
+    let attempts = u64::from(gate.retry_count.unwrap_or_default()) + 1;
+    let worst_case = attempts * (EXPECTED_TIMEOUT_SECONDS + LINUX_CLEANUP_GRACE_SECONDS);
+    assert!(
+        worst_case + TERMINAL_RECEIPT_RESERVE_SECONDS <= SHARD_WATCHDOG_SECONDS,
+        "retry envelope must leave time for terminal receipts"
+    );
+    assert_eq!(gate.budgets.and_then(|budgets| budgets.max_duration_ms), Some(EXPECTED_BUDGET_MS));
+
+    let workflow = fs::read_to_string(root.join(".github/workflows/ci.yml"))?;
+    assert!(
+        workflow.contains("timeout --signal=TERM --kill-after=30s 1800s"),
+        "the policy test must bind its envelope to the shard watchdog"
+    );
+    Ok(())
 }
 
 /// The LSP unit lanes must partition `LSP_UNIT_SURFACE` exactly: every crate
@@ -528,9 +758,11 @@ fn lsp_unit_lanes_share_ceiling_and_budget() -> Result<(), Box<dyn std::error::E
     );
 
     // Keep the budget:ceiling ratio in line with the sibling test lanes.
-    // unit_analysis_full, unit_dap_support_full, and lsp_smoke all sit at
-    // exactly 0.80 (240000/300s), as do both LSP lanes (336000/420s). The
-    // enforced band below is deliberately wider than that single observed
+    // unit_analysis_full and unit_dap_support_full sit at 0.80, as do both
+    // LSP lanes (336000/420s). lsp_smoke keeps its 0.80 declared budget
+    // (576000/720s); the shared Linux watchdog's 75s Rust backstop grace is
+    // cleanup allowance, not a reason to shorten the execution window.
+    // The enforced band below is deliberately wider than that single observed
     // value so a considered retune does not trip the guard, but narrow enough
     // to catch a budget set without reference to its ceiling. One band, stated
     // once: the assertion, this comment, and the failure message must agree.
@@ -544,6 +776,182 @@ fn lsp_unit_lanes_share_ceiling_and_budget() -> Result<(), Box<dyn std::error::E
          {MIN_BUDGET_RATIO:.2}-{MAX_BUDGET_RATIO:.2} band; the sibling test lanes \
          all sit at 0.80"
     );
+
+    Ok(())
+}
+
+/// #8063: `lsp_smoke` must stay one atomic-child harness invocation — never a
+/// `&&` composite — with an outer runaway guard that accounts for the shared
+/// watchdog's cleanup grace rather than pretending to cover the sum of all
+/// child budgets, and with no gate-level `retry_count` (retry policy is
+/// executable only inside the typed child harness, where setup/compile
+/// watchdog timeouts retry once and behavior children never retry). The child
+/// set itself is pinned by the xtask bin tests
+/// (`lsp_smoke_atomic::tests::child_set_is_pinned_and_ordered`).
+#[test]
+fn lsp_smoke_is_atomic_bounded_and_independently_terminal() -> Result<(), Box<dyn std::error::Error>>
+{
+    let root = project_root();
+    let policy_path = root.join(".ci/gate-policy.yaml");
+    let content = fs::read_to_string(policy_path)?;
+    let parsed: GatePolicyDoc = serde_yaml_ng::from_str(&content)?;
+
+    let gate = parsed
+        .gates
+        .into_iter()
+        .find(|gate| gate.name == "lsp_smoke")
+        .ok_or("missing lsp_smoke gate")?;
+
+    assert_eq!(gate.tier, "merge_gate");
+    assert!(gate.required, "lsp_smoke must stay PR-blocking");
+    let command = gate.command.trim().to_string();
+    assert_eq!(
+        command,
+        "cargo run --locked -p xtask -- lsp-smoke-atomic \
+         --receipt target/receipts/artifacts/lsp_smoke_children.json",
+        "lsp_smoke must invoke the atomic child harness, not a composite"
+    );
+    assert!(!command.contains("&&"), "the #8063 decomposition forbids composites");
+
+    assert!(
+        gate.retry_count.is_none(),
+        "gate-level retry_count must stay absent: a whole-suite rerun on outer \
+         timeout is exactly the twice-retried-600s fleet symptom #8063 fixes"
+    );
+
+    // Outer runaway guard: 720s is the declared execution window. The Linux
+    // helper's 75s Rust backstop grace is cleanup allowance after that window,
+    // not a reason to shorten it. This is deliberately NOT the worst-case sum
+    // of child budgets (3 x 2 x 300s retrying compiles + 6 x 120s behavior =
+    // 2520s): the guard bounds the suite and leaves CANCELLED marks in the
+    // child receipt, it does not promise unreachable headroom.
+    assert_eq!(
+        gate.timeout_seconds,
+        Some(720),
+        "declared outer guard must preserve the full hosted lsp execution window"
+    );
+    let budget = gate
+        .budgets
+        .and_then(|budgets| budgets.max_duration_ms)
+        .ok_or("lsp_smoke must declare a duration budget")?;
+    assert_eq!(budget, 576_000, "budget must stay at the 0.80 ratio (576000/720s)");
+
+    Ok(())
+}
+
+/// Parse the `--features a,b` list out of a gate command.
+fn declared_features(command: &str) -> Vec<String> {
+    let mut tokens = command.split_whitespace();
+    let mut features = Vec::new();
+    while let Some(token) = tokens.next() {
+        if token == "--features"
+            && let Some(list) = tokens.next()
+        {
+            features.extend(list.split(',').map(str::to_string));
+        }
+    }
+    features.sort();
+    features.dedup();
+    features
+}
+
+/// Parse the `--test <name>` targets out of a gate command.
+fn declared_test_targets(command: &str) -> Vec<String> {
+    let mut tokens = command.split_whitespace();
+    let mut targets = Vec::new();
+    while let Some(token) = tokens.next() {
+        if token == "--test"
+            && let Some(name) = tokens.next()
+        {
+            targets.push(name.to_string());
+        }
+    }
+    targets
+}
+
+/// Extract the features named by a test file's crate-level `#![cfg(...)]`.
+fn cfg_required_features(source: &str) -> Vec<String> {
+    let Some(line) = source.lines().find(|line| line.trim_start().starts_with("#![cfg(")) else {
+        return Vec::new();
+    };
+    let mut features = Vec::new();
+    let mut rest = line;
+    while let Some(at) = rest.find("feature = \"") {
+        rest = &rest[at + "feature = \"".len()..];
+        if let Some(end) = rest.find('"') {
+            features.push(rest[..end].to_string());
+            rest = &rest[end..];
+        } else {
+            break;
+        }
+    }
+    features.sort();
+    features.dedup();
+    features
+}
+
+/// `cargo test --test <suite>` exits 0 and reports green when the suite's
+/// `#![cfg(...)]` is unsatisfied — it simply runs zero tests.  So the
+/// #11933 freshness gates only detect cfg-gated rot while their commands
+/// still carry every feature the suites require.  Bind the two together
+/// here, where it costs nothing, rather than trusting the hosted run.
+#[test]
+fn freshness_gate_commands_satisfy_every_named_suite_cfg() -> Result<(), Box<dyn std::error::Error>>
+{
+    let root = project_root();
+    let content = fs::read_to_string(root.join(".ci/gate-policy.yaml"))?;
+    let parsed: GatePolicyDoc = serde_yaml_ng::from_str(&content)?;
+    let gates: HashMap<_, _> =
+        parsed.gates.into_iter().map(|gate| (gate.name.clone(), gate)).collect();
+
+    for gate_name in ["pending_parse_freshness", "pull_diagnostics_freshness"] {
+        let gate = gates.get(gate_name).ok_or(format!("missing {gate_name} gate"))?;
+        assert_eq!(gate.tier, "merge_gate", "{gate_name} must stay a merge gate");
+        assert!(gate.required, "{gate_name} must stay PR-blocking to prevent silent rot");
+        assert!(!gate.quarantine, "{gate_name} must not be quarantined");
+
+        let features = declared_features(&gate.command);
+        let targets = declared_test_targets(&gate.command);
+        let expected_targets: &[&str] = match gate_name {
+            "pending_parse_freshness" => &[
+                "pending_parse_provider_freshness_tests",
+                "post_edit_index_staleness_tests",
+                "navigation_same_document_toctou_regression_tests",
+            ],
+            "pull_diagnostics_freshness" => &["pull_diagnostics_freshness_tests"],
+            _ => unreachable!("loop only names the two freshness gates"),
+        };
+        assert_eq!(
+            targets,
+            expected_targets.iter().map(|name| (*name).to_string()).collect::<Vec<_>>(),
+            "{gate_name} must keep its named --test targets; dropping a suite is the same \
+             silent-rot class as dropping a feature flag — the remaining command still \
+             exits 0"
+        );
+
+        for target in &targets {
+            let source_path = root.join(format!("crates/perl-lsp-rs/tests/{target}.rs"));
+            let source = fs::read_to_string(&source_path).map_err(|error| {
+                format!("{gate_name} names {target}, but {}: {error}", source_path.display())
+            })?;
+            let required = cfg_required_features(&source);
+            assert!(
+                !required.is_empty(),
+                "{target} has no crate-level #![cfg(feature = ...)]; either it is no longer \
+                 cfg-gated and {gate_name} should stop claiming to protect it from cfg rot, \
+                 or the gate is guarding the wrong file"
+            );
+            for feature in &required {
+                assert!(
+                    features.contains(feature),
+                    "{gate_name} runs {target}, which is gated behind feature {feature:?}, \
+                     but the gate command declares --features {features:?}. The suite would \
+                     compile to zero tests and the gate would still report green — the exact \
+                     #11933 failure mode this gate exists to catch."
+                );
+            }
+        }
+    }
 
     Ok(())
 }

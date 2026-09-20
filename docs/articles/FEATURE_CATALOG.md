@@ -74,13 +74,13 @@ Diagnostics report problems in your code as you edit.
 
 **Code Actions** (`lsp.code_action`) / **Code Action Resolve** (`lsp.code_action_resolve`) — context-sensitive suggestions for fixing or improving code. Examples: organize imports, add missing `use` statements, modernize old Perl idioms, apply quick fixes for diagnostics. `resolve` fetches the full edit for a code action when selected.
 
-**Formatting** (`lsp.formatting`) — formats the entire document using the native Rust formatter, with explicit Perl::Tidy compatibility available for projects that need legacy output.
+**Formatting** (`lsp.formatting`) — formats the entire document using the native Rust formatter, with explicit Perl::Tidy compatibility available for projects that need legacy output. This is currently the only live edit-producing formatting route.
 
-**Range Formatting** (`lsp.range_formatting`) — formats a selected range rather than the entire file.
+**Range Formatting** (`lsp.range_formatting`) — WITHDRAWN (#11955): the route refuses requests until #9317 lands its exact geometry contract; not advertised.
 
-**Multi-Range Formatting** (`lsp.ranges_formatting`) — formats multiple non-contiguous ranges in a single operation (LSP 3.18 `textDocument/rangesFormatting`).
+**Multi-Range Formatting** (`lsp.ranges_formatting`) — WITHDRAWN (#11955): the route refuses requests until #7089 lands its atomic composition contract; not advertised.
 
-**On-Type Formatting** (`lsp.on_type_formatting`) — applies auto-formatting as you type. Handles auto-indentation after entering `{`, `;`, or `\n`.
+**On-Type Formatting** (`lsp.on_type_formatting`) — WITHDRAWN (#11955): the route refuses requests until #9320 lands the proven cutover; not advertised.
 
 **Linked Editing** (`lsp.linked_editing_range`) — simultaneously edits all occurrences of a token when one is changed. Useful for editing matching delimiters or synchronized variable names.
 
@@ -112,7 +112,7 @@ These features maintain the server's view of open files in sync with the editor.
 
 **Will Save** (`lsp.will_save`) — notifies the server just before a file is saved. Allows the server to intercept and add pre-save behavior.
 
-**Will Save Wait Until** (`lsp.will_save_wait_until`) — a synchronous variant: the editor waits for the server to respond before completing the save. Used for format-on-save (the server returns the formatted edits, which the editor applies before writing).
+**Will Save Wait Until** (`lsp.will_save_wait_until`) — WITHDRAWN (#11955): the server refuses this edit-producing route until #8092 proves one save owner. Editors can still format on save through the whole-document provider.
 
 ---
 

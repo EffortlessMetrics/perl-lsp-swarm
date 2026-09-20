@@ -2,7 +2,7 @@
 //!
 //! Provides cross-file renaming functionality using the workspace index.
 
-use perl_parser::workspace_index::{SymKind, SymbolKey, WorkspaceIndex};
+use perl_workspace::workspace_index::{SymKind, SymbolKey, WorkspaceIndex};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::fmt;
@@ -190,6 +190,8 @@ pub fn build_rename_edit(
                 replacement
             }
             SymKind::Pack => new_name_bare.to_string(),
+            // Forward-compatible fallback for future variants (#2898)
+            _ => new_name_bare.to_string(),
         };
 
         grouped.entry(loc.uri.clone()).or_default().push(TextEdit {

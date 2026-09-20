@@ -1,7 +1,7 @@
-use perl_module::import::parse_module_import_head;
-use perl_module::import_match::line_references_module_import;
-use perl_module::path::file_path_to_module_name;
-use perl_module::token::{module_variant_pairs, replace_module_token};
+use perl_module::file_path_to_module_name;
+use perl_module::line_references_module_import;
+use perl_module::parse_module_import_head;
+use perl_module::{module_variant_pairs, replace_module_token};
 
 fn rewrite_line_with_target_match(line: &str, old_module: &str, new_module: &str) -> String {
     let mut rewritten = line.to_string();

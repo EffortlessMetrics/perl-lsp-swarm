@@ -1,3 +1,4 @@
+#![allow(clippy::print_stderr)] // // Intentional stderr diagnostics: per-case parse errors are printed inline.
 mod cpan_test_helpers;
 use cpan_test_helpers::*;
 

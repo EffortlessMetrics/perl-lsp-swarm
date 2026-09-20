@@ -2,9 +2,9 @@ use regex::Regex;
 use std::collections::VecDeque;
 
 use super::regexes::{
-    ANSI_ESCAPE_RE, ASSIGNMENT_OPS_RE, CONTEXT_RE, DANGEROUS_OPS_RE, DEREF_RE, ERROR_RE,
-    EXCEPTION_RE, FUNCTION_BREAKPOINT_NAME_RE, GLOB_RE, INC_RE, PROMPT_RE, REGEX_MUTATION_RE,
-    SET_VARIABLE_NAME_RE, STACK_FRAME_RE, VARIABLE_RE, WARNING_RE,
+    ANSI_ESCAPE_RE, ASSIGNMENT_OPS_RE, CONTEXT_RE, DANGEROUS_OPS_RE, DEREF_RE, DIE_SUFFIX_RE,
+    ERROR_RE, EXCEPTION_RE, FUNCTION_BREAKPOINT_NAME_RE, GLOB_RE, INC_RE, PROMPT_RE,
+    REGEX_MUTATION_RE, SET_VARIABLE_NAME_RE, STACK_FRAME_RE, VARIABLE_RE, WARNING_RE,
 };
 
 pub(super) const DEBUG_SESSION_TERMINATE_WAIT_MS: u64 = 250;
@@ -25,7 +25,6 @@ const MAX_DEBUGGER_IDENTIFIER_LEN: usize = 512;
 #[derive(Debug, Clone)]
 pub(super) struct RecentOutputLine {
     pub(super) id: u64,
-    pub(super) raw: String,
     pub(super) normalized: String,
 }
 
@@ -49,11 +48,12 @@ pub(super) fn context_re() -> Option<&'static Regex> {
             //   main::(/path/to/file.pl:42):
             //   main::(C:\Windows\path\file.pl:42):
             //
-            // File paths may contain `:` on Windows (drive letter prefix such as `C:\`).
-            // The path-capturing groups allow a `:` only when it is immediately followed
-            // by a non-digit, non-space character — matching `C:\path` but not the `:42`
-            // line-number separator.
-            Regex::new(r"^(?:(?P<func>[A-Za-z_][\w:]*?)(?:::)?(?:\((?P<file>[^:)\s]+(?::[^:)\d\s][^:)\s]*)*):(?P<line>\d+)\):?|__ANON__)|main::(?:\()?(?P<file2>[^:)\s]+(?::[^:)\d\s][^:)\s]*)*)(?:\))?:(?P<line2>\d+):?)")
+            // File paths may contain spaces, parentheses, and `:` (including a
+            // Windows drive prefix). A lazy capture expands to the final
+            // `:<line>` delimiter required by the end anchor, preserving those
+            // characters even when a filename contains an earlier `:digits)`
+            // sequence and retaining the legacy optional `)` fallback.
+            Regex::new(r"^(?:(?P<func>[A-Za-z_][\w:]*?)(?:::)?(?:\((?P<file>.+?):(?P<line>\d+)\):?|__ANON__)|main::(?:\()?(?P<file2>.+?)(?:\))?:(?P<line2>\d+):?)(?:\t.*)?$")
         })
         .as_ref()
         .ok()
@@ -61,6 +61,23 @@ pub(super) fn context_re() -> Option<&'static Regex> {
 
 pub(super) fn prompt_re() -> Option<&'static Regex> {
     PROMPT_RE.get_or_init(|| Regex::new(r"^\s*DB<?\d*>?\s*$")).as_ref().ok()
+}
+
+/// Match the bare location-suffix line perl5db's `__DIE__`/`__WARN__` handlers
+/// print after the message line (` at /path/file.pl line 5.`).
+///
+/// Stock `perl -d` installs `DB::dbdie`/`DB::dbwarn` handlers that report an
+/// uncaught `die` (or a `warn`) as the message line followed by this
+/// suffix-only line — including for `die "msg\n"` whose own text carries no
+/// suffix. A `print` of identical text never triggers the handler, and a
+/// `die` caught by `eval` propagates silently, so this line is the stream
+/// signal that the debugger's condition handler actually fired. The reader
+/// trims leading whitespace before analysis, so the pattern anchors at `^at`.
+pub(super) fn die_suffix_re() -> Option<&'static Regex> {
+    DIE_SUFFIX_RE
+        .get_or_init(|| Regex::new(r"^at\s+(?P<file>\S+)\s+line\s+(?P<line>\d+)\.?$"))
+        .as_ref()
+        .ok()
 }
 
 pub(super) fn stack_frame_re() -> Option<&'static Regex> {

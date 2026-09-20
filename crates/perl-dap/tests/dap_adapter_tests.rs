@@ -6,12 +6,12 @@
 
 #[cfg(feature = "dap-phase2")]
 mod dap_phase2_tests {
-    use anyhow::Result;
+    use anyhow::{Result, ensure};
     use perl_dap::breakpoints::BreakpointStore;
-    use perl_dap::debug_adapter::{DapMessage, DebugAdapter};
+    use perl_dap::debug_adapter::{DapMessage, DapMessageWithEpoch, DebugAdapter};
     use perl_dap::platform::normalize_path;
     use perl_dap::protocol::{SetBreakpointsArguments, Source, SourceBreakpoint};
-    use perl_dap::{BridgeAdapter, create_attach_json_snippet, create_launch_json_snippet};
+    use perl_dap::{create_attach_json_snippet, create_launch_json_snippet};
     use serde_json::{Value, json};
     use std::io::Write;
     use std::path::PathBuf;
@@ -19,9 +19,10 @@ mod dap_phase2_tests {
     use std::time::{Duration, Instant};
     use tempfile::NamedTempFile;
 
-    fn create_test_adapter() -> (DebugAdapter, Receiver<DapMessage>) {
+    fn create_test_adapter() -> (DebugAdapter, Receiver<DapMessageWithEpoch>) {
         let (tx, rx) = sync_channel(64);
         let mut adapter = DebugAdapter::new();
+        crate::install_unbounded_test_authority(&adapter);
         adapter.set_event_sender(tx);
         (adapter, rx)
     }
@@ -58,7 +59,7 @@ mod dap_phase2_tests {
 
         let initialized = rx.recv_timeout(Duration::from_millis(200))?;
         match initialized {
-            DapMessage::Event { event, .. } => assert_eq!(event, "initialized"),
+            (DapMessage::Event { event, .. }, _) => assert_eq!(event, "initialized"),
             _ => anyhow::bail!("expected initialized event"),
         }
 
@@ -78,6 +79,7 @@ mod dap_phase2_tests {
         assert!(serialized.contains("\"command\":\"threads\""));
 
         let mut adapter = DebugAdapter::new();
+        crate::install_unbounded_test_authority(&adapter);
         let response = adapter.handle_request(7, "threads", None);
         match response {
             DapMessage::Response { request_seq, command, success, .. } => {
@@ -91,33 +93,30 @@ mod dap_phase2_tests {
         Ok(())
     }
 
-    /// Tests feature spec: DAP_IMPLEMENTATION_SPECIFICATION.md#ac6-perl-shim-integration
-    #[tokio::test]
+    /// Tests the native attach configuration surface without activating a legacy bridge.
+    #[test]
     // AC:6
-    async fn test_perl_shim_integration() -> Result<()> {
-        // Bridge adapter remains available for Perl::LanguageServer-based workflows.
-        let _bridge = BridgeAdapter::new();
-
+    fn test_native_attach_configuration_integration() -> Result<()> {
         let attach_snippet = create_attach_json_snippet();
         let attach: Value = serde_json::from_str(&attach_snippet)?;
         assert_eq!(attach["request"], "attach");
         assert_eq!(attach["type"], "perl");
         assert!(attach.get("host").is_some());
         assert!(attach.get("port").is_some());
-
         Ok(())
     }
 
     /// Tests feature spec: DAP_IMPLEMENTATION_SPECIFICATION.md#ac7-breakpoint-management
     #[tokio::test]
     // AC:7
-    async fn test_breakpoint_management_with_ast_validation() -> Result<()> {
+    async fn test_breakpoint_management_with_ast_validation_pending_engine_ack() -> Result<()> {
         let mut fixture = NamedTempFile::new()?;
         fixture.write_all(b"# comment line\nmy $x = 1;\nprint $x;\n")?;
         fixture.flush()?;
         let fixture_path = fixture.path().to_string_lossy().to_string();
 
         let mut adapter = DebugAdapter::new();
+        crate::install_unbounded_test_authority(&adapter);
         let response = adapter.handle_request(
             1,
             "setBreakpoints",
@@ -133,14 +132,34 @@ mod dap_phase2_tests {
             .get("breakpoints")
             .and_then(Value::as_array)
             .ok_or_else(|| anyhow::anyhow!("missing breakpoints array"))?;
-        assert_eq!(breakpoints.len(), 2);
-        assert!(
-            !breakpoints[0].get("verified").and_then(Value::as_bool).unwrap_or(true),
+        ensure!(breakpoints.len() == 2, "expected two breakpoint results");
+        let comment_breakpoint = breakpoints
+            .first()
+            .ok_or_else(|| anyhow::anyhow!("missing comment-line breakpoint result"))?;
+        let executable_breakpoint = breakpoints
+            .get(1)
+            .ok_or_else(|| anyhow::anyhow!("missing executable-line breakpoint result"))?;
+        ensure!(
+            !comment_breakpoint.get("verified").and_then(Value::as_bool).unwrap_or(true),
             "comment line should not be verified"
         );
-        assert!(
-            breakpoints[1].get("verified").and_then(Value::as_bool).unwrap_or(false),
-            "executable line should be verified"
+        let comment_message = comment_breakpoint
+            .get("message")
+            .and_then(Value::as_str)
+            .filter(|message| !message.is_empty())
+            .ok_or_else(|| anyhow::anyhow!("comment line must retain an AST rejection reason"))?;
+        ensure!(
+            comment_message != "Breakpoint is pending debugger launch",
+            "comment line must retain its static AST rejection reason"
+        );
+        ensure!(
+            !executable_breakpoint.get("verified").and_then(Value::as_bool).unwrap_or(true),
+            "executable line must remain pending until debugger acknowledgement"
+        );
+        ensure!(
+            executable_breakpoint.get("message").and_then(Value::as_str)
+                == Some("Breakpoint is pending debugger launch"),
+            "executable line must report its pending launch state"
         );
 
         Ok(())
@@ -182,9 +201,11 @@ mod dap_phase2_tests {
 
     /// Tests feature spec: DAP_IMPLEMENTATION_SPECIFICATION.md#ac8-stack-and-variables
     #[tokio::test]
+    #[ignore = "#10563: Retired: no-session scopes are now empty; current-frame admission is covered by perl-dap unit tests."]
     // AC:8
     async fn test_stack_trace_and_scopes() -> Result<()> {
         let mut adapter = DebugAdapter::new();
+        crate::install_unbounded_test_authority(&adapter);
 
         let stack = adapter.handle_request(1, "stackTrace", Some(json!({ "threadId": 1 })));
         let body = expect_response(stack, "stackTrace", true)?
@@ -213,17 +234,18 @@ mod dap_phase2_tests {
 
     /// Tests feature spec: DAP_IMPLEMENTATION_SPECIFICATION.md#ac8-lazy-variable-expansion
     ///
-    /// Uses variablesReference=13 (Globals scope, frame_id=1) which always returns at
-    /// least one variable in fallback mode (`$_`).  Locals scope (ref=11) now returns
-    /// empty in fallback mode when the B module is unavailable (issue #1006 — honest
-    /// empty rather than fake `$self`/`@_` placeholders), so this test uses Globals to
-    /// verify the expansion round-trip shape.
+    /// Uses variablesReference=13 (Globals scope, frame_id=1) with no live debugger
+    /// session, and proves the paginated request path answers successfully with an
+    /// honest empty scope. Extends issue #1006 — which established that fabricating
+    /// `$self`/`@_` for Locals is misleading — to Package and Globals, whose
+    /// representative `$VERSION`/`$_` entries were equally indistinguishable from
+    /// observed debuggee state.
     #[tokio::test]
     // AC:8
     async fn test_lazy_variable_expansion() -> Result<()> {
         let mut adapter = DebugAdapter::new();
+        crate::install_unbounded_test_authority(&adapter);
         // ref=13: frame_id=1, Globals scope (frame_id*10+3 = 13).
-        // Globals fallback returns `$_` = "undef" with variables_reference=0.
         let root = adapter.handle_request(
             1,
             "variables",
@@ -239,30 +261,14 @@ mod dap_phase2_tests {
             .get("variables")
             .and_then(Value::as_array)
             .ok_or_else(|| anyhow::anyhow!("variables array missing"))?;
-        // Globals fallback always returns at least `$_`.
+
+        // The request must still succeed and carry a well-formed (empty) array rather
+        // than failing or omitting the field.
         assert!(
-            !vars.is_empty(),
-            "Globals scope fallback must return at least one variable ($_ = undef)"
+            vars.is_empty(),
+            "Globals scope without a live session must expand to nothing, not to \
+             placeholders indistinguishable from observed state; got: {vars:?}"
         );
-
-        let child_ref = vars
-            .iter()
-            .find_map(|v| v.get("variablesReference").and_then(Value::as_i64))
-            .unwrap_or(0);
-        assert!(child_ref >= 0);
-
-        if child_ref > 0 {
-            let child = adapter.handle_request(
-                2,
-                "variables",
-                Some(json!({
-                    "variablesReference": child_ref,
-                    "start": 0,
-                    "count": 20
-                })),
-            );
-            let _ = expect_response(child, "variables", true)?;
-        }
 
         Ok(())
     }
@@ -273,6 +279,7 @@ mod dap_phase2_tests {
     // AC:9
     async fn test_execution_control_operations() -> Result<()> {
         let mut adapter = DebugAdapter::new();
+        crate::install_unbounded_test_authority(&adapter);
 
         let cont = adapter.handle_request(1, "continue", Some(json!({ "threadId": 1 })));
         let _ = expect_response(cont, "continue", false)?;
@@ -294,6 +301,7 @@ mod dap_phase2_tests {
     // AC:9
     async fn test_pause_interrupt_handling() -> Result<()> {
         let mut adapter = DebugAdapter::new();
+        crate::install_unbounded_test_authority(&adapter);
         let pause = adapter.handle_request(1, "pause", Some(json!({ "threadId": 1 })));
         match pause {
             DapMessage::Response { success, command, message, .. } => {
@@ -315,6 +323,7 @@ mod dap_phase2_tests {
     // AC:10
     async fn test_evaluate_in_frame_context() -> Result<()> {
         let mut adapter = DebugAdapter::new();
+        crate::install_unbounded_test_authority(&adapter);
         let resp = adapter.handle_request(
             1,
             "evaluate",
@@ -341,6 +350,7 @@ mod dap_phase2_tests {
     // AC:10
     async fn test_safe_evaluation_mode() -> Result<()> {
         let mut adapter = DebugAdapter::new();
+        crate::install_unbounded_test_authority(&adapter);
 
         let blocked = adapter.handle_request(
             1,
@@ -423,4 +433,27 @@ mod dap_phase2_tests {
 
         Ok(())
     }
+}
+
+/// Install an explicitly unbounded startup authority (#8656).
+///
+/// These tests exercise debugging workflows, not the launch-authority
+/// contract. Without an installed authority every launch is refused, so each
+/// adapter opts into unbounded mode with a visible test acknowledgement.
+fn install_unbounded_test_authority(adapter: &perl_dap::DebugAdapter) {
+    use perl_dap::{
+        LaunchAuthority, LaunchAuthoritySource, LaunchAuthorityStartup, UnboundedAcknowledgement,
+    };
+    use perl_tdd_support::must_with;
+    let authority = must_with(
+        LaunchAuthority::resolve(&LaunchAuthorityStartup {
+            trusted_roots: Vec::new(),
+            allow_unbounded: Some(UnboundedAcknowledgement::new(
+                LaunchAuthoritySource::CommandLine,
+                "test: unbounded session",
+            )),
+        }),
+        "test authority resolution",
+    );
+    adapter.set_launch_authority(authority);
 }

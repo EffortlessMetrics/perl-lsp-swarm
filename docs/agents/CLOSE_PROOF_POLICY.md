@@ -23,28 +23,63 @@ shell command that was not run.
 
 ---
 
+## Three Distinct Proof Layers
+
+Close proof is not one thing. This policy distinguishes three layers, and no
+layer may substitute for another:
+
+1. **Landing proof** — is the commit an ancestor of canonical main?
+   Proven by `cargo xtask landing-proof`, which emits a versioned
+   `landing_proof.v1` receipt.
+2. **Content-survival proof** — does the landed substance still exist in the
+   current tree? Proven by `cargo xtask landing-proof --substance-grep <string>`
+   (Rule 3).
+3. **Semantic close proof** — is the *issue* contract actually satisfied
+   (every acceptance row proven on current main)? Owned by the semantic-close
+   contract and evaluator, not by this command.
+
+**Landing and content survival are necessary but never sufficient for a
+semantic close.** Every `landing_proof.v1` receipt reports
+`semantic_completion: "not_evaluated"`: a reachable commit never authorizes an
+issue close, and neither does surviving content. Reachability emits no
+issue-close authorization in either direction — it is evidence consumed by the
+semantic-close layer, nothing more.
+
+### Command naming and caller disposition
+
+The canonical command is `cargo xtask landing-proof`. The former spelling
+`cargo xtask pr-close-proof` was **removed, not aliased** (#10381): the caller
+inventory found no live workflow, script, skill, or doc invoking the old
+spelling — only the command registration itself, its own docs, and immutable
+historical regression fixtures (`.ci/close-proof-contract/`), which are
+preserved verbatim as history. Historical close comments and receipts that
+cite the old spelling remain valid as historical evidence; new evidence must
+use `landing-proof` and the `landing_proof.v1` receipt.
+
+---
+
 ## Required Proof for Every Close
 
 ### Rule 1 — Merge-base proof is mandatory
 
 Any close that claims "superseded", "already landed", or "duplicate of merged
-PR" **MUST** include the following command's output pasted verbatim in the
-close comment:
+PR" **MUST** include landing-proof evidence and separate semantic completion
+evidence. The landing proof alone is not sufficient.
 
 ```bash
-git merge-base --is-ancestor <commit-sha> origin/main && echo "ANCESTOR" || echo "NOT ANCESTOR"
+cargo xtask landing-proof --commit <commit-sha> --canonical-main origin/main --format json
 ```
 
 **Commit existence on a branch is NOT evidence of landing on main.** A commit
 that exists on `feat/X` but not in `origin/main` ancestry is not landed. The
-command above is the minimum proof.
+command above is the minimum landing proof.
 
 The close comment must contain a block like:
 
 ```
-Merge-base proof:
-  Command: git merge-base --is-ancestor abc1234 origin/main && echo ANCESTOR || echo NOT ANCESTOR
-  Output:  ANCESTOR
+Landing proof:
+  Command: cargo xtask landing-proof --commit abc1234 --canonical-main origin/main --format json
+  Output:  {"schema_version":"landing_proof.v1","commit_reachable":true,"semantic_completion":"not_evaluated",...}
   Verified: 2026-06-07
 ```
 
@@ -58,20 +93,22 @@ is in ancestry; the PR number alone does not prove it.
 Landed-via proof:
   PR: #N
   Merge commit: <sha>
-  Verified in ancestry: git merge-base --is-ancestor <sha> origin/main → ANCESTOR
+  Verified in ancestry: landing-proof reports commit_reachable=true
 ```
 
 ### Rule 3 — Substance check when content may have been overwritten
 
 When the cited commit is in ancestry but the content may have changed since,
-grep the distinctive content in the current tree:
+check that the distinctive content survives in the current tree:
 
 ```bash
-git grep "<distinctive-string>" -- HEAD
+cargo xtask landing-proof --commit <sha> --canonical-main origin/main \
+  --substance-grep "<distinctive-string>"
 ```
 
-If the grep returns nothing, the content was overwritten. Do not close —
-reland or update the tracking issue instead.
+If `content_survives` is `false`, the content was overwritten. Do not close —
+reland or update the tracking issue instead. Content survival is still only
+the content-survival layer: it never authorizes a semantic close by itself.
 
 **2026-06-06 incident classes that require this check:**
 
@@ -121,13 +158,17 @@ independently. Both agents' output is cited in the close comment.
 ```markdown
 Closing as superseded by #N / already landed in <commit>.
 
-**Merge-base proof**
-Command: `git merge-base --is-ancestor <sha> origin/main && echo ANCESTOR || echo NOT ANCESTOR`
-Output: `ANCESTOR`
+**Landing proof**
+Command: `cargo xtask landing-proof --commit <sha> --canonical-main origin/main --format json`
+Output: `{"schema_version":"landing_proof.v1","commit_reachable":true,"semantic_completion":"not_evaluated",...}`
 
 **Substance check** (if applicable)
-Command: `git grep "<distinctive-string>" HEAD`
-Output: `<file>:<line>:<match>`
+Command: `cargo xtask landing-proof --commit <sha> --canonical-main origin/main --substance-grep "<distinctive-string>"`
+Output: `"content_survives":true`
+
+**Semantic completion evidence**
+<separate evidence from the semantic-close layer; landing/content proof
+above is not semantic completion>
 
 **Second-pass verification**
 Verified independently by: <agent-role>
@@ -140,7 +181,7 @@ Verdict: CONFIRMED LANDED
 
 ## When Proof Is Not Obtainable
 
-If the closer agent cannot run `git merge-base` (no repo access, API-only
-context), the close must be deferred. Post a comment describing what would
+If the closer agent cannot run `cargo xtask landing-proof` (no repo access,
+API-only context), the close must be deferred. Post a comment describing what would
 need to be verified, assign the `needs-plan-review` label, and route to an
 agent with repo access. Do not close speculatively.

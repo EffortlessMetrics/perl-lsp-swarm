@@ -25,8 +25,8 @@
 //! Key properties:
 //! - `Parser::parse()` returns `Option<Tree>` — `None` only on complete parse failure.
 //!   The v3 parser is highly error-tolerant and almost always produces a partial tree.
-//! - `Node::to_sexp()` delegates to `perl_ast::Node::to_sexp()` for tree-sitter-compatible
-//!   S-expression output.
+//! - `Node::to_sexp()` delegates to `perl_ast::Node::to_sexp()` for a native debug
+//!   S-expression. Tree-sitter compatibility CST serialization is issue 8047.
 //! - `Node::kind()` returns the tree-sitter grammar-canonical kind string.
 //! - `Node::start_byte()` / `Node::end_byte()` expose the `SourceLocation` byte offsets.
 //! - `Node::children()` and `Node::child()` mirror tree-sitter traversal conventions.
@@ -50,12 +50,15 @@
 )]
 
 use perl_ast::{Node as AstNode, NodeKind};
+#[cfg(feature = "semantic-overlay")]
 use perl_module::parse_module_import_head;
 use perl_parser_core::{
-    ParseOutput, Parser as CoreParser,
+    ParseOutput, ParseStopCause, Parser as CoreParser,
     incremental::{FallbackReason as CoreFallbackReason, IncrementalEdit, IncrementalState},
 };
+#[cfg(feature = "semantic-overlay")]
 use perl_pragma::{PragmaState, PragmaTracker};
+#[cfg(feature = "semantic-overlay")]
 use perl_semantic_analyzer::semantic::SemanticModel;
 use std::ops::{ControlFlow, Range};
 
@@ -139,16 +142,26 @@ impl Parser {
     /// Parse `source` and preserve recovery diagnostics and catastrophic failures.
     ///
     /// A recovered parse returns `tree: Some(_)` with one or more diagnostics. A
-    /// catastrophic failure returns `tree: None` and a typed [`ParseFailure`]. Existing
+    /// terminal failure returns `tree: None`. `failure` contains a typed
+    /// [`ParseFailure`] when the facade can represent the terminal cause. Existing
     /// callers that only need the compatibility `Option` API can continue using
     /// [`parse`][Parser::parse].
     pub fn parse_detailed(&mut self, source: &str) -> ParseOutcome {
         let mut core = CoreParser::new(source);
-        let ParseOutput { ast, diagnostics, terminated_early, .. } = core.parse_with_recovery();
-        let failure = terminated_early
-            .then(|| diagnostics.iter().find_map(ParseFailure::from_diagnostic))
-            .flatten();
-        let tree = failure.is_none().then(|| tree_from_parts(ast, source, diagnostics.clone()));
+        let output = core.parse_with_recovery();
+        // `stop_cause` is the authority: `perl-parser-core` sets it at the exact
+        // branch that terminates the parse and documents that "the diagnostic
+        // population never determines the stop cause". Scanning `diagnostics`
+        // instead mis-reports a recovered-then-terminated parse as whatever was
+        // recovered first.
+        let stop_cause = output.stop_cause();
+        let ParseOutput { ast, diagnostics, .. } = output;
+        let failure =
+            stop_cause.and_then(|cause| ParseFailure::from_stop_cause(cause, &diagnostics));
+        // Withhold the tree on the invariant (`stop_cause.is_some() ==
+        // terminated_early()`), not on whether the cause could be classified, so
+        // an unclassifiable terminal cause can never publish a partial tree.
+        let tree = stop_cause.is_none().then(|| tree_from_parts(ast, source, diagnostics.clone()));
 
         ParseOutcome { tree, diagnostics, failure }
     }
@@ -436,18 +449,39 @@ pub enum ParseFailure {
 }
 
 impl ParseFailure {
-    fn from_diagnostic(diagnostic: &ParseDiagnostic) -> Option<Self> {
-        match diagnostic {
-            ParseDiagnostic::RecursionLimit => Some(Self::RecursionLimit),
-            ParseDiagnostic::NestingTooDeep { depth, max_depth } => {
-                Some(Self::NestingTooDeep { depth: *depth, max_depth: *max_depth })
+    /// Classify the parser's terminal stop cause.
+    ///
+    /// Returns `None` when the terminal cause explicitly forbids facade
+    /// classification, or when an uncategorized cause has no diagnostic to
+    /// attach. Callers must still treat the parse as terminated; therefore
+    /// [`Parser::parse_detailed`] can return `tree: None, failure: None` while
+    /// preserving diagnostics.
+    fn from_stop_cause(cause: ParseStopCause, diagnostics: &[ParseDiagnostic]) -> Option<Self> {
+        match cause {
+            ParseStopCause::Cancelled => Some(Self::Cancelled),
+            // Both the unit `RecursionLimit` and the fielded
+            // `RecursionDepthExhausted` budget paths arrive here. This is
+            // deliberately NOT `NestingTooDeep`: that belongs to the structural
+            // guards, and `ParseError::RecursionDepthExhausted` forbids
+            // "relabeling expression-recursion exhaustion as structural
+            // nesting" (#12952; taxonomy settled by #14342).
+            ParseStopCause::RecursionBudgetExhausted { .. } => Some(Self::RecursionLimit),
+            ParseStopCause::NestingOrDepthBudgetExhausted { limit, usage } => {
+                Some(Self::NestingTooDeep { depth: usage, max_depth: limit })
             }
-            ParseDiagnostic::Cancelled => Some(Self::Cancelled),
-            _ => Some(Self::Other { diagnostic: diagnostic.clone() }),
+            // This sentinel deliberately carries no facade classification and
+            // forbids callers from inferring one from preserved diagnostics.
+            ParseStopCause::FutureTypedTerminal => None,
+            // Other uncategorized terminal causes report the terminal diagnostic,
+            // which the parser appends last, rather than the first recovered one.
+            _ => {
+                diagnostics.last().map(|diagnostic| Self::Other { diagnostic: diagnostic.clone() })
+            }
         }
     }
 }
 
+#[cfg(feature = "semantic-overlay")]
 /// Experimental semantic overlay query handle.
 ///
 /// This API is intentionally limited while the facade integration is in development.
@@ -458,6 +492,7 @@ pub struct SemanticOverlay<'tree> {
     tree: &'tree Tree,
 }
 
+#[cfg(feature = "semantic-overlay")]
 /// Symbol definition returned by [`SemanticOverlay`] queries.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
@@ -474,6 +509,7 @@ pub struct OverlayDefinition {
     pub end_byte: usize,
 }
 
+#[cfg(feature = "semantic-overlay")]
 /// Import statement visible at a specific source offset.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
@@ -557,11 +593,13 @@ impl Tree {
     }
 
     /// Returns the experimental semantic overlay query handle for this tree.
+    #[cfg(feature = "semantic-overlay")]
     pub fn semantic_overlay(&self) -> SemanticOverlay<'_> {
         SemanticOverlay { tree: self }
     }
 }
 
+#[cfg(feature = "semantic-overlay")]
 impl<'tree> SemanticOverlay<'tree> {
     /// Resolve a symbol definition at a byte offset in the source.
     pub fn definition_at_offset(&self, offset: usize) -> Option<OverlayDefinition> {
@@ -668,10 +706,11 @@ impl<'tree> Node<'tree> {
         ast_has_error(self.inner)
     }
 
-    /// Returns a tree-sitter-compatible S-expression for this node and its subtree.
+    /// Returns the native debug S-expression for this node and its subtree.
     ///
-    /// Delegates to `perl_ast::Node::to_sexp()`. Example output:
-    /// `(source_file (my_declaration (variable $ x) (number 42)))`.
+    /// Delegates to [`perl_ast::Node::to_sexp`]. This is a non-normative debug
+    /// projection, not a Tree-sitter compatibility CST. Compatibility serialization
+    /// is tracked on issue 8047 (`perl-tree-sitter-compat`).
     pub fn to_sexp(&self) -> String {
         self.inner.to_sexp()
     }
@@ -961,6 +1000,7 @@ fn ast_child_with_field(node: &AstNode, index: usize) -> Option<(Option<FieldId>
     found
 }
 
+#[cfg(feature = "semantic-overlay")]
 fn collect_visible_use_imports(
     node: &AstNode,
     source: &str,
@@ -1273,13 +1313,16 @@ mod tests {
 
     #[test]
     fn test_grammar_kind_double_paren_edge_case() {
-        // Test that grammar_kind() remains independent of the double-paren sexp form.
-        // VariableWithAttributes produces ((variable $ foo) (attributes :lvalue))
+        // Test that grammar_kind() remains independent of native debug sexp payloads.
+        // VariableWithAttributes nests the variable child and an attributes payload.
         let mut p = Parser::new();
         let tree = must_some(p.parse("my ($x : lvalue);"));
         let root = tree.root_node();
         let sexp = root.to_sexp();
-        assert!(sexp.contains("((variable"), "sexp should include the double-paren variable form");
+        assert!(
+            sexp.contains("(variable_with_attributes") && sexp.contains("(attributes"),
+            "sexp should nest attributes under the owning node, got: {sexp}"
+        );
         let declaration =
             must_some(root.children().find(|node| node.grammar_kind() == "my_declaration"));
         let variable = must_some(
@@ -1705,5 +1748,105 @@ mod tests {
         // Should be back at root
         assert_eq!(cursor.node().grammar_kind(), "source_file");
         assert_eq!(depth, 0, "should have gone back up to root (depth 0)");
+    }
+
+    // Focused discriminators for `ParseFailure::from_stop_cause` (the #12952
+    // RIPR seams). `tests/parse_failure_taxonomy.rs` activates only the
+    // recursion and nesting arms through `parse_detailed`; the cancellation
+    // and catch-all arms have no public-API activation because the facade
+    // exposes no cancellation token, so they are pinned here directly.
+    // Failures propagate rather than panic, per the repository lint policy.
+    type StopCauseResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
+
+    #[test]
+    fn cancellation_classifies_as_cancelled() -> StopCauseResult {
+        let failure = ParseFailure::from_stop_cause(ParseStopCause::Cancelled, &[]);
+
+        match failure {
+            Some(ParseFailure::Cancelled) => Ok(()),
+            other => Err(format!("cancellation must classify as Cancelled, got {other:?}").into()),
+        }
+    }
+
+    #[test]
+    fn recursion_budget_exhaustion_classifies_as_recursion_limit() -> StopCauseResult {
+        let cause = ParseStopCause::RecursionBudgetExhausted { limit: Some(128), usage: Some(129) };
+        let failure = ParseFailure::from_stop_cause(cause, &[]);
+
+        match failure {
+            Some(ParseFailure::RecursionLimit) => Ok(()),
+            other => Err(format!(
+                "recursion budget exhaustion must classify as RecursionLimit, not {other:?}"
+            )
+            .into()),
+        }
+    }
+
+    #[test]
+    fn nesting_budget_exhaustion_classifies_as_nesting_too_deep() -> StopCauseResult {
+        let cause = ParseStopCause::NestingOrDepthBudgetExhausted { limit: 64, usage: 65 };
+        let failure = ParseFailure::from_stop_cause(cause, &[]);
+
+        match failure {
+            Some(ParseFailure::NestingTooDeep { depth: 65, max_depth: 64 }) => Ok(()),
+            other => Err(format!(
+                "nesting budget exhaustion must classify as NestingTooDeep, got {other:?}"
+            )
+            .into()),
+        }
+    }
+
+    #[test]
+    fn uncategorized_cause_reports_the_terminal_diagnostic() -> StopCauseResult {
+        let diagnostic =
+            ParseDiagnostic::SyntaxError { message: "terminal".to_string(), location: 7 };
+        let failure = ParseFailure::from_stop_cause(
+            ParseStopCause::HeredocBudgetExhausted { limit: 512, usage: 600 },
+            std::slice::from_ref(&diagnostic),
+        );
+
+        match failure {
+            Some(ParseFailure::Other { diagnostic: reported }) => {
+                assert_eq!(reported.to_string(), diagnostic.to_string());
+                Ok(())
+            }
+            other => Err(format!(
+                "an uncategorized cause must report the terminal diagnostic, got {other:?}"
+            )
+            .into()),
+        }
+    }
+
+    #[test]
+    fn future_typed_terminal_does_not_infer_failure_from_diagnostics() -> StopCauseResult {
+        let diagnostic =
+            ParseDiagnostic::SyntaxError { message: "recovered".to_string(), location: 7 };
+        let failure = ParseFailure::from_stop_cause(
+            ParseStopCause::FutureTypedTerminal,
+            std::slice::from_ref(&diagnostic),
+        );
+
+        match failure {
+            None => Ok(()),
+            other => Err(format!(
+                "FutureTypedTerminal must not infer a failure from diagnostics; \
+                 parse_detailed withholds the tree independently, got {other:?}"
+            )
+            .into()),
+        }
+    }
+
+    #[test]
+    fn uncategorized_cause_without_diagnostics_withholds_the_failure() -> StopCauseResult {
+        let failure = ParseFailure::from_stop_cause(ParseStopCause::LexerBudgetExhausted, &[]);
+
+        match failure {
+            None => Ok(()),
+            other => Err(format!(
+                "an uncategorized cause with no recorded diagnostic must yield no failure; the \
+                 tree is withheld on the stop cause instead, got {other:?}"
+            )
+            .into()),
+        }
     }
 }

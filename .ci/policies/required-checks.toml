@@ -1,85 +1,281 @@
-version = 1
-source = "ruleset-conventional"
+version = 2
+source = "github-enforcement-union"
 
-# `[[check]]` entries are consumed by workflow-trigger-lint for required-style
-# workflow shape. `[[checks]]` entries are the merge-ready / branch-protection
-# status context inventory; only entries with `required = true` are treated as
-# required by `cargo xtask merge-ready`.
+# `[[check]]` is workflow-trigger-lint input. Its `required` bit means the
+# workflow receives the required-workflow trigger contract; it does not claim
+# GitHub branch protection or ruleset enforcement.
 
 [[check]]
 name = "CI Gate"
 workflow = ".github/workflows/ci.yml"
 required = true
-
+contract_role = "required-workflow-shape"
 
 [[check]]
 name = "Methodology Gate"
 workflow = ".github/workflows/methodology-gate.yml"
 required = false
+contract_role = "advisory-workflow-shape"
+
+[[check]]
+name = "Semantic Close Containment"
+workflow = ".github/workflows/semantic-close-containment.yml"
+required = false
+contract_role = "advisory-workflow-shape"
+
+[[check]]
+name = "Authority Transfer Review"
+workflow = ".github/workflows/authority-transfer-review.yml"
+required = false
+contract_role = "advisory-workflow-shape"
+
+# `[[checks]]` is the emitted status-context inventory. The fields answer
+# different questions and must not be inferred from each other:
+#
+# - producer: repository-owned workflow job or external integration
+# - workflow_result: whether a repository job propagates or continues on failure
+# - events: workflow events on which this context is expected to be reachable
+# - policy_role / required: repository merge-policy role
+# - applicability: always, conditional, planned, or not applicable
+# - enforcement: claimed classic-protection/ruleset source
+# - classic_app_id: explicit classic-protection GitHub App binding
+# - ruleset_integration_id: explicit ruleset integration binding
+#
+# Producer and enforcement binding are separate axes. Neither binding is
+# inferred from the workflow, job, producer class, or context name.
+
+[[checks]]
+name = "Non-Rust policy exact-tree"
+producer = "repository-job"
+workflow = ".github/workflows/non-rust-policy.yml"
+job = "exact-tree"
+workflow_result = "propagate"
+events = ["pull_request_target", "merge_group", "push", "workflow_dispatch"]
+required = false
+policy_role = "advisory"
+applicability = "always-or-scoped-noop"
+enforcement = "neither"
+reason = "Shadow exact-tree policy evaluator; advisory until canaries and ruleset promotion complete."
 
 [[checks]]
 name = "Perl LSP Rust Small Result"
+producer = "repository-job"
 workflow = ".github/workflows/em-ci-routed-rust.yml"
+job = "rust-small-result"
+workflow_result = "propagate"
+events = ["pull_request", "merge_group", "workflow_dispatch"]
 required = true
-enforcement = "github-branch-protection"
-reason = "Live main protection requires the routed Rust aggregate before merge."
+policy_role = "required"
+applicability = "always-or-scoped-noop"
+enforcement = "github-ruleset"
+ruleset_integration_id = 15368
+reason = "Live main ruleset (id 16664791) requires the routed Rust aggregate and its recorded-main-red refusal before merge, bound to the GitHub Actions integration."
 
 [[checks]]
 name = "ripr+ New Gap Gate"
+producer = "repository-job"
 workflow = ".github/workflows/ripr.yml"
+job = "ripr"
+workflow_result = "propagate"
+events = ["pull_request", "merge_group", "workflow_dispatch"]
 required = true
-enforcement = "github-branch-protection"
-reason = "Deterministic RIPR receipts are required; named new gaps in changed production files block, while sensor availability remains advisory."
+policy_role = "required"
+applicability = "always-or-scoped-noop"
+enforcement = "github-ruleset"
+ruleset_integration_id = 15368
+reason = "Live main ruleset (id 16664791) requires deterministic RIPR receipts from the GitHub Actions integration; named new gaps in changed production files block, while sensor availability remains advisory."
 
 [[checks]]
 name = "Compile All Targets (bit-rot guard)"
+producer = "repository-job"
 workflow = ".github/workflows/ci.yml"
+job = "check-all-targets"
+workflow_result = "propagate"
+events = ["pull_request", "merge_group", "push", "workflow_dispatch"]
 required = true
+policy_role = "required"
+applicability = "conditional"
 enforcement = "github-ruleset"
-reason = "Live main ruleset (id 16664791) requires all targets to compile before merge, catching integration-test and bench bit-rot."
+ruleset_integration_id = 15368
+reason = "Live main ruleset (id 16664791) requires all targets to compile before merge, bound to the GitHub Actions integration (check-run read-back on main PR heads observed app.id 15368 for this context); workflow prerequisites control when the job is selected (#15348)."
 
 [[checks]]
 name = "Conflict marker check"
+producer = "repository-job"
 workflow = ".github/workflows/ci.yml"
+job = "conflict-markers"
+workflow_result = "propagate"
+events = ["pull_request", "merge_group", "push", "workflow_dispatch"]
 required = true
+policy_role = "required"
+applicability = "conditional"
 enforcement = "github-ruleset"
-reason = "Live main ruleset (id 16664791) requires the conflict-marker scan job before merge."
+ruleset_integration_id = 15368
+reason = "Live main ruleset (id 16664791) requires the conflict-marker scan job before merge, bound to the GitHub Actions integration (check-run read-back on main PR heads observed app.id 15368 for this context); workflow prerequisites control when the job is selected (#15348)."
 
 [[checks]]
 name = "validate-title"
+producer = "repository-job"
 workflow = ".github/workflows/pr-title-check.yml"
+job = "validate-title"
+workflow_result = "propagate"
+events = ["pull_request_target", "workflow_dispatch"]
 required = true
+policy_role = "required"
+applicability = "always-or-scoped-noop"
 enforcement = "github-ruleset"
-reason = "Live main ruleset (id 16664791) requires PR title validation before merge."
+ruleset_integration_id = 15368
+reason = "Live main ruleset (id 16664791) requires PR title validation before merge, bound to the GitHub Actions integration (check-run read-back on main PR heads observed app.id 15368 for this context) (#15348)."
+
+[[checks]]
+name = "Rust formatting"
+producer = "repository-job"
+workflow = ".github/workflows/ci.yml"
+job = "rust-formatting"
+workflow_result = "propagate"
+events = ["pull_request", "merge_group", "push", "workflow_dispatch"]
+required = false
+policy_role = "advisory"
+applicability = "always-or-scoped-noop"
+enforcement = "neither"
+reason = "Advisory receipt-producing dedicated formatter context. Live merge blocking is owned by the required Perl LSP Rust Small Result path (#9127/#12320). Duplicate meta-shard fmt execution is retired by #9959. Settings-app promotion of this context remains #7087 and is not claimed here."
 
 [[checks]]
 name = "Codecov / Patch 95"
+producer = "repository-job"
 workflow = ".github/workflows/ci-nightly.yml"
+job = "test-coverage"
+workflow_result = "propagate"
+events = ["schedule", "workflow_dispatch"]
 required = false
-enforcement = "advisory-nightly-or-manual"
-reason = "Coverage is advisory and expensive; RIPR+ plus focused tests are the required PR proof."
+policy_role = "advisory"
+applicability = "conditional"
+enforcement = "neither"
+reason = "Coverage is advisory and expensive; the workflow selects it only for scheduled or explicitly manual coverage runs."
 
 [[checks]]
 name = "codecov/patch"
+producer = "external"
 workflow = "codecov"
 required = false
-enforcement = "advisory-nightly-or-manual"
-reason = "External Codecov telemetry may report coverage, but it must not block normal PR or merge-queue flow."
+policy_role = "informational"
+applicability = "conditional"
+enforcement = "neither"
+reason = "External Codecov telemetry is not merge authority."
 
 [[checks]]
 name = "tokmd Review Cockpit"
+producer = "repository-job"
 workflow = ".github/workflows/tokmd.yml"
-# Phase 1: advisory-only (visibility gate, no merge blocking).
-# Promotion to required = true tracked in #4993 (Phase 2/3).
+job = "analyze"
+workflow_result = "propagate"
+events = ["pull_request", "workflow_dispatch"]
+required = false
+policy_role = "advisory"
+applicability = "conditional"
+enforcement = "neither"
+reason = "Review cockpit visibility remains advisory and is selected by label or manual dispatch."
 
 [[checks]]
-name = "PR Smoke"
+name = "PR Smoke (Fast Feedback, advisory)"
+producer = "repository-job"
 workflow = ".github/workflows/ci.yml"
+job = "pr-smoke"
+workflow_result = "continue"
+events = ["pull_request", "merge_group", "push", "workflow_dispatch"]
+required = false
+policy_role = "advisory"
+applicability = "conditional"
+enforcement = "neither"
+reason = "The pr_fast runner may fail selected inner gates, but its containing GitHub job continues on error and is not protected."
 
 [[checks]]
 name = "UX Regression Tests"
-workflow = ".github/workflows/ux-regression-gate.yml"
+producer = "repository-job"
+workflow = ".github/workflows/ci.yml"
+job = "ux-tests"
+workflow_result = "propagate"
+events = ["pull_request", "merge_group", "push", "workflow_dispatch"]
+required = false
+policy_role = "advisory"
+applicability = "conditional"
+enforcement = "neither"
+reason = "UX regression evidence is visible and contributes to the advisory CI aggregate but is not itself protected."
 
 [[checks]]
-name = "Merge Gate"
+name = "CI Gate (Advisory Aggregate)"
+producer = "repository-job"
 workflow = ".github/workflows/ci.yml"
+job = "merge-gate"
+workflow_result = "propagate"
+events = ["pull_request", "merge_group", "push", "workflow_dispatch"]
+required = false
+policy_role = "advisory"
+applicability = "always-or-scoped-noop"
+enforcement = "neither"
+reason = "#12911 hardens this candidate-controlled aggregate for advisory diagnostics only; trusted enforcement requires the separate organization-ruleset workflow plan."
+
+[[checks]]
+name = "Gate Enforcement Contract"
+producer = "repository-job"
+workflow = ".github/workflows/gate-enforcement-contract.yml"
+job = "contract"
+workflow_result = "propagate"
+events = ["pull_request", "merge_group", "push", "workflow_dispatch"]
+required = false
+policy_role = "advisory"
+applicability = "always-or-scoped-noop"
+enforcement = "neither"
+reason = "The static contract reports repository policy drift but is not yet protected by GitHub."
+
+[[checks]]
+name = "Semantic close containment (advisory)"
+producer = "repository-job"
+workflow = ".github/workflows/semantic-close-containment.yml"
+job = "containment"
+workflow_result = "propagate"
+events = ["pull_request_target", "workflow_dispatch"]
+required = false
+policy_role = "advisory"
+applicability = "always-or-scoped-noop"
+enforcement = "neither"
+reason = "CP00 containment guard (#10413) fails internally contradictory terminal close relations and NOT_PROVEN evidence before semantic evaluation; required-promotion review stays under #10168."
+
+[[checks]]
+name = "Authority Transfer Review"
+producer = "repository-job"
+workflow = ".github/workflows/authority-transfer-review.yml"
+job = "authority-transfer-review"
+workflow_result = "propagate"
+events = ["pull_request_target", "workflow_dispatch"]
+required = false
+policy_role = "advisory"
+applicability = "always-or-scoped-noop"
+enforcement = "neither"
+reason = "AR02 advisory exact-head review-context check (#11795): reports PASS_NOT_APPLICABLE or typed non-green verdicts per governed #11793 surface row; required-promotion review stays under #11796."
+
+[[checks]]
+name = "Public API Surface (facade PR)"
+producer = "repository-job"
+workflow = ".github/workflows/ci.yml"
+job = "public-api-pr"
+workflow_result = "propagate"
+events = ["pull_request"]
+required = false
+policy_role = "advisory"
+applicability = "conditional"
+enforcement = "neither"
+reason = "#2266 auto-runs the cargo-public-api baseline ratchet when a PR touches a published facade surface or .ci/public-api-baselines/; out-of-scope diffs settle as green scoped-noops so a later ruleset promotion resolves cleanly instead of pending forever."
+
+[[checks]]
+name = "Semver Compatibility (facade PR)"
+producer = "repository-job"
+workflow = ".github/workflows/ci.yml"
+job = "semver-pr"
+workflow_result = "continue"
+events = ["pull_request"]
+required = false
+policy_role = "advisory"
+applicability = "conditional"
+enforcement = "neither"
+reason = "#2266 auto-runs cargo-semver-checks against the newest canonical release tag for the five published parser-stack crates; stays advisory (continue-on-error) until baseline confidence supports hard-gating."

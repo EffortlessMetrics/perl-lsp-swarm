@@ -1,0 +1,9 @@
+project: vscode
+component: Performance and reliability
+kind: Changed
+body: Added a transactional activation resource owner with deterministic rollback and idempotent deactivation.
+time: 2026-08-13T11:15:00Z
+custom:
+  PR: 7918
+  Slug: vscode-activation-transaction-owner
+  Breaking: "no"

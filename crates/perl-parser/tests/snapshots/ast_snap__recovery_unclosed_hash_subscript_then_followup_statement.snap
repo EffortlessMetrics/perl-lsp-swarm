@@ -2,4 +2,4 @@
 source: crates/perl-parser/tests/ast_snap.rs
 expression: "parse_sexp(\"my $x = $h{foo;\\nmy $y = 2;\")"
 ---
-(source_file (my_declaration (variable $ x)(binary_{} (variable $ h) (identifier foo))) (my_declaration (variable $ y)(number 2)))
+(source_file (statements (my_declaration (declarator my) (variable (variable (sigil $) (name x))) (initializer (binary_{} (op {}) (left (variable (sigil $) (name h))) (right (identifier (name foo))))))) (statements (my_declaration (declarator my) (variable (variable (sigil $) (name y))) (initializer (number (value 2))))))

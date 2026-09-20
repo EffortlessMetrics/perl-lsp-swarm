@@ -945,12 +945,13 @@ fn os_runtime_timeout_fires_for_slow_command() -> Result<(), Box<dyn std::error:
     let result = runtime.run_command("sleep", &["10"], None);
     let elapsed = start.elapsed();
     assert!(result.is_err(), "expected timeout error, got success");
-    let err = result.unwrap_err();
-    assert!(
-        err.message.contains("timed out"),
-        "expected 'timed out' in error message, got: {}",
-        err.message
-    );
+    if let Err(err) = result {
+        assert!(
+            err.message.contains("timed out"),
+            "expected 'timed out' in error message, got: {}",
+            err.message
+        );
+    }
     assert!(elapsed.as_secs() < 4, "timeout took too long: {}ms", elapsed.as_millis());
     Ok(())
 }
@@ -978,12 +979,16 @@ fn os_runtime_no_timeout_still_works() -> Result<(), Box<dyn std::error::Error>>
 
 #[cfg(all(not(target_arch = "wasm32"), not(windows)))]
 #[test]
-#[should_panic(expected = "timeout_secs must be greater than zero")]
-fn os_runtime_with_timeout_zero_panics() {
+fn os_runtime_with_timeout_zero_normalizes_to_one_second() -> Result<(), Box<dyn std::error::Error>>
+{
     use perl_subprocess_runtime::OsSubprocessRuntime;
-    // A zero-second timeout would time out every command immediately.
-    // The constructor rejects it explicitly to surface caller bugs early.
-    let _ = OsSubprocessRuntime::with_timeout(0);
+    // A zero-second timeout is normalized to one second rather than rejected,
+    // so construction cannot panic and a fast command still completes.
+    let runtime = OsSubprocessRuntime::with_timeout(0);
+    let output = runtime.run_command("echo", &["normalized"], None)?;
+    assert!(output.success(), "normalized zero-timeout command failed: {}", output.stderr_lossy());
+    assert_eq!(output.stdout_lossy().trim(), "normalized");
+    Ok(())
 }
 
 #[cfg(all(not(target_arch = "wasm32"), not(windows)))]

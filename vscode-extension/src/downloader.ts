@@ -5,12 +5,42 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
 import * as os from 'os';
-import { promisify } from 'util';
 import * as child_process from 'child_process';
-import * as tar from 'tar';
-import AdmZip from 'adm-zip';
-
-const execFile = promisify(child_process.execFile);
+import { BoundedJsonStatusError, fetchBoundedJson } from './boundedHttpJson';
+import { downloadBoundedFile, unlinkPartialDownloadDest } from './boundedFileDownload';
+import { extractManagedArchive } from './managedArchiveExtract';
+import {
+  MANAGED_ARCHIVE_MAX_COMPRESSED_BYTES,
+  MANAGED_CHECKSUM_FILE_MAX_BYTES,
+} from './managedArchiveSafetyPolicy';
+import type { ManagedCandidateManifest } from './managedCacheProtocol';
+import {
+  collectStaleManagedCandidates,
+  commitManagedCandidateSelection,
+  enumerateManagedCandidateCatalog,
+  readManagedCurrentSelection,
+  readSessionManagedHostReference,
+  writeInstalledManagedCandidateManifest,
+} from './managedCandidateRuntime';
+import { resolveManagedCandidateForHost } from './managedCandidateSelection';
+import { buildManagedReleaseExpectation, toManagedReleaseRecords } from './managedReleaseAdapter';
+import {
+  selectManagedRelease,
+  type ManagedReleaseChannel,
+  type ManagedReleaseExpectation,
+  type RefusedManagedRelease,
+} from './managedReleaseSelector';
+import {
+  admissibleManagedCompatibilityKeys,
+  buildManagedCompatibilityKey,
+  classifyLegacyManagedCandidate,
+  legacyManagedBaseDir,
+  managedNamespaceDir,
+  managedUpdateCheckStateKey,
+  probeBinaryIdentity,
+  LEGACY_UPDATE_CHECK_STATE_KEY,
+  type ManagedEmulation,
+} from './managedStorageIdentity';
 
 interface ReleaseAsset {
   name: string;
@@ -20,9 +50,31 @@ interface ReleaseAsset {
 interface Release {
   tag_name: string;
   prerelease?: boolean;
+  draft?: boolean;
   /** Synthetic metadata produced for an internal download mirror. */
   internal?: boolean;
   assets: ReleaseAsset[];
+}
+
+/**
+ * Validate release metadata before any asset selection reads it. Remote JSON is
+ * untrusted input, so shape is checked rather than asserted with a cast.
+ */
+function isReleaseShape(value: unknown): value is Release {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return false;
+  }
+  const candidate = value as Partial<Release>;
+  return (
+    typeof candidate.tag_name === 'string' &&
+    Array.isArray(candidate.assets) &&
+    candidate.assets.every(
+      (asset) =>
+        Boolean(asset) &&
+        typeof asset.name === 'string' &&
+        typeof asset.browser_download_url === 'string',
+    )
+  );
 }
 
 // Retry budget for transient managed-install file locks. Total wait grows to
@@ -223,15 +275,70 @@ export async function copyManagedFileWithRetry(
   }
 }
 
-function githubApiHeaders(url: string, includeAuth = true): Record<string, string> {
+/** Only requests to this origin may carry the GitHub API bearer credential. */
+const GITHUB_API_ORIGIN = 'https://api.github.com/';
+
+/**
+ * Why a managed-release request did or did not carry GitHub API credentials.
+ *
+ * Certificate validation (`http.proxyStrictSSL`) and credential attachment are
+ * two separate policies. They used to share one boolean by accident: the
+ * strict-TLS flag was passed positionally into an `includeAuth` parameter, so
+ * editing either policy silently moved the other and nothing in the code named
+ * the rule being applied (#15493). Resolving the decision into this disposition
+ * keeps the two policies independent and lets callers explain the outcome.
+ */
+export type GitHubAuthDisposition =
+  | 'sent'
+  | 'no_token'
+  | 'not_github_api_host'
+  | 'withheld_unverified_tls';
+
+/** The GitHub token this host offers, if any. */
+export function readGitHubToken(): string | undefined {
+  return process.env.GITHUB_TOKEN || process.env.GH_TOKEN || undefined;
+}
+
+/**
+ * Decide whether one managed-release request may carry the GitHub credential.
+ *
+ * `withheld_unverified_tls` is a deliberate refusal, not a side effect: with
+ * `http.proxyStrictSSL` disabled the connection's certificate is not validated,
+ * so any host able to intercept it could read a bearer token. The request still
+ * proceeds, unauthenticated and subject to the anonymous rate limit.
+ */
+export function resolveGitHubAuthDisposition(params: {
+  readonly url: string;
+  readonly hasToken: boolean;
+  readonly strictTls: boolean;
+}): GitHubAuthDisposition {
+  if (!params.url.startsWith(GITHUB_API_ORIGIN)) {
+    return 'not_github_api_host';
+  }
+  if (!params.hasToken) {
+    return 'no_token';
+  }
+  if (!params.strictTls) {
+    return 'withheld_unverified_tls';
+  }
+  return 'sent';
+}
+
+/**
+ * Headers for one managed-release API request. The credential rides on the
+ * already-resolved disposition, so this builder makes no policy decision.
+ */
+function githubApiHeaders(authDisposition: GitHubAuthDisposition): Record<string, string> {
   const headers: Record<string, string> = {
     'User-Agent': 'vscode-perl-lsp',
     Accept: 'application/vnd.github+json',
   };
 
-  const token = process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
-  if (includeAuth && token && url.startsWith('https://api.github.com/')) {
-    headers.Authorization = `Bearer ${token}`;
+  if (authDisposition === 'sent') {
+    const token = readGitHubToken();
+    if (token) {
+      headers.Authorization = `Bearer ${token}`;
+    }
   }
 
   return headers;
@@ -271,6 +378,106 @@ export function findReleaseAssetName(
   }
 
   return undefined;
+}
+
+/**
+ * Result of looking an asset up in a `sha256sum(1)`-format SHA256SUMS manifest
+ * (#9839). `absent` means no well-formed entry names the requested asset;
+ * `conflicting` means several well-formed entries name it; both are fail-closed
+ * outcomes for the caller.
+ */
+export type Sha256SumsLookup =
+  | { status: 'found'; digest: string }
+  | { status: 'absent' }
+  | { status: 'malformed' }
+  | { status: 'conflicting' };
+
+// A genuine `sha256sum` entry anchors the 64-hex digest at the start of the
+// line, requires whitespace between digest and file field, and optionally
+// carries coreutils' binary-mode marker (outside the file field). Anything
+// else never supplies a digest (#9839).
+const SHA256_SUMS_ENTRY = /^(\S+)[ \t]+(?:\*?)(.*)$/;
+const SHA256_DIGEST = /^[0-9a-f]{64}$/;
+
+/**
+ * Resolve the expected SHA-256 digest for `assetName` from a SHA256SUMS text.
+ *
+ * Anchored whole-token verification (#9839): an entry counts only when its
+ * leading token is exactly a SHA-256 digest and its file field exactly equals
+ * `assetName`. Lines that merely contain the asset name or a digest string as
+ * a substring cannot satisfy verification.
+ */
+export function lookupSha256SumsDigest(checksums: string, assetName: string): Sha256SumsLookup {
+  const digests = new Set<string>();
+  let matchingEntries = 0;
+  let malformedEntries = 0;
+
+  for (const rawLine of checksums.split('\n')) {
+    const line = rawLine.replace(/\r$/, '');
+    const entry = SHA256_SUMS_ENTRY.exec(line);
+
+    if (!entry) {
+      continue;
+    }
+
+    const [, digestToken, fileName] = entry;
+
+    if (!digestToken || fileName !== assetName) {
+      continue;
+    }
+
+    matchingEntries += 1;
+    if (!SHA256_DIGEST.test(digestToken)) {
+      malformedEntries += 1;
+      continue;
+    }
+    digests.add(digestToken.toLowerCase());
+  }
+
+  if (matchingEntries === 0) {
+    return { status: 'absent' };
+  }
+
+  if (matchingEntries > 1) {
+    return { status: 'conflicting' };
+  }
+
+  if (malformedEntries > 0) {
+    return { status: 'malformed' };
+  }
+
+  const [resolvedDigest] = digests;
+
+  if (!resolvedDigest) {
+    return { status: 'absent' };
+  }
+
+  return { status: 'found', digest: resolvedDigest };
+}
+
+/**
+ * Map a managed-release-selector refusal to the established user-facing error
+ * messages (#9925). The stable-channel `no_compatible_release` message is
+ * pinned by existing behavior; every other refusal surfaces the selector's
+ * typed detail instead of a route-local guess.
+ */
+function describeManagedReleaseRefusal(
+  refusal: RefusedManagedRelease,
+  channel: ManagedReleaseChannel,
+): string {
+  if (refusal.reason === 'no_compatible_release' && channel === 'stable') {
+    return 'No stable release found';
+  }
+  switch (refusal.reason) {
+    case 'no_compatible_release':
+      return `No compatible managed release found: ${refusal.detail}`;
+    case 'release_metadata_not_proven':
+      return `Managed release metadata is not proven: ${refusal.detail}`;
+    case 'configured_incompatible':
+      return `Configured release is not compatible: ${refusal.detail}`;
+    case 'invalid_policy':
+      return `Invalid managed release policy: ${refusal.detail}`;
+  }
 }
 
 /**
@@ -316,11 +523,239 @@ export function compareVersions(a: string, b: string): -1 | 0 | 1 {
   return 0;
 }
 
+export function isTermuxEnvironment(): boolean {
+  return Boolean(
+    process.env.TERMUX_VERSION ||
+    process.env.PREFIX?.includes('/com.termux/') ||
+    fs.existsSync('/data/data/com.termux/files/usr'),
+  );
+}
+
+export function isAndroidEnvironment(): boolean {
+  if (process.platform !== 'linux') {
+    return false;
+  }
+
+  return (
+    typeof process.env.ANDROID_ROOT === 'string' ||
+    typeof process.env.ANDROID_DATA === 'string' ||
+    typeof process.env.TERMUX_VERSION === 'string' ||
+    os.release().toLowerCase().includes('android')
+  );
+}
+
+export function detectMusl(): boolean {
+  const ldd = child_process.spawnSync('ldd', ['--version'], {
+    encoding: 'utf8',
+    timeout: 1000,
+  });
+  const lddOutput = `${ldd.stdout ?? ''}${ldd.stderr ?? ''}`.toLowerCase();
+  if (lddOutput.includes('musl')) {
+    return true;
+  }
+  if (lddOutput.includes('glibc') || lddOutput.includes('gnu libc')) {
+    return false;
+  }
+
+  const getconf = child_process.spawnSync('getconf', ['GNU_LIBC_VERSION'], {
+    encoding: 'utf8',
+    timeout: 1000,
+  });
+  if (getconf.status === 0) {
+    return false;
+  }
+
+  // Check for Alpine or musl when active-libc probes are unavailable.
+  if (fs.existsSync('/etc/alpine-release')) {
+    return true;
+  }
+
+  // Check for musl libc
+  const muslLibs = [
+    '/lib/libc.musl-x86_64.so.1',
+    '/lib/libc.musl-aarch64.so.1',
+    '/lib/ld-musl-x86_64.so.1',
+    '/lib/ld-musl-aarch64.so.1',
+  ];
+
+  return muslLibs.some((lib) => fs.existsSync(lib));
+}
+
+type TargetLog = (message: string) => void;
+
+/**
+ * Environment probes used by target resolution.
+ *
+ * Kept injectable because target resolution is the one place where a test must
+ * be able to describe a host it is not running on — a GNU host proving musl
+ * behavior, for instance.
+ */
+export interface PlatformDetectionSeams {
+  isTermux(): boolean;
+  isAndroid(): boolean;
+  detectMusl(): boolean;
+}
+
+const DEFAULT_PLATFORM_DETECTION: PlatformDetectionSeams = {
+  isTermux: isTermuxEnvironment,
+  isAndroid: isAndroidEnvironment,
+  detectMusl,
+};
+
+export function resolveLinuxLibcTarget(
+  log: TargetLog,
+  seams: PlatformDetectionSeams = DEFAULT_PLATFORM_DETECTION,
+): 'gnu' | 'musl' {
+  const config = vscode.workspace.getConfiguration('perl-lsp');
+  const rawValue = config.get<string>('linuxLibc', 'auto');
+  const value = rawValue.trim().toLowerCase();
+
+  if (value === 'gnu' || value === 'glibc') {
+    return 'gnu';
+  }
+
+  if (value === 'musl') {
+    return 'musl';
+  }
+
+  if (value !== 'auto') {
+    log(`Unknown perl-lsp.linuxLibc value "${rawValue}", falling back to auto`);
+  }
+
+  return seams.detectMusl() ? 'musl' : 'gnu';
+}
+
+/**
+ * The target triple this host prefers, independent of any release's asset list.
+ *
+ * Module-level because managed-state resolution needs it from static call
+ * sites that have no downloader instance: the storage namespace is a property
+ * of the host's compatibility identity, not of who happens to be asking.
+ */
+export function resolvePlatformTarget(
+  log: TargetLog,
+  seams: PlatformDetectionSeams = DEFAULT_PLATFORM_DETECTION,
+): string {
+  const platform = process.platform;
+  const arch = process.arch;
+
+  // Map Node.js platform/arch to exact cargo-dist target triples
+  if (platform === 'darwin') {
+    return arch === 'arm64' ? 'aarch64-apple-darwin' : 'x86_64-apple-darwin';
+  } else if (platform === 'linux') {
+    // Check Termux first: isTermuxEnvironment() is the authoritative Termux
+    // detector.  isAndroidEnvironment() also matches TERMUX_VERSION and would
+    // shadow this branch if checked first, routing to the old arch-map path
+    // instead of the uniform `${archPrefix}-linux-android` form.
+    const archPrefix = arch === 'arm64' ? 'aarch64' : 'x86_64';
+    if (seams.isTermux()) {
+      return `${archPrefix}-linux-android`;
+    }
+    if (seams.isAndroid()) {
+      const androidArchMap: Record<string, string> = {
+        arm64: 'aarch64-linux-android',
+        x64: 'x86_64-linux-android',
+        ia32: 'i686-linux-android',
+        arm: 'armv7-linux-androideabi',
+      };
+      return androidArchMap[arch] ?? `${arch}-linux-android`;
+    }
+    const libc = resolveLinuxLibcTarget(log, seams);
+    log(`Linux binary target libc: ${libc}`);
+    return `${archPrefix}-unknown-linux-${libc}`;
+  } else if (platform === 'win32') {
+    // The *preferred* target, which is not necessarily the one downloaded.
+    // Windows builds both x86_64-pc-windows-msvc and, since #5208, a native
+    // aarch64-pc-windows-msvc, so ARM64 prefers the native build here.
+    //
+    // Whether that asset exists in a given release is decided later by
+    // selectWindowsArm64Target, against that release's actual asset list.
+    // This function has no asset list, so it must not reject anything: the
+    // Windows 10 ARM64 rejection belongs on the emulation fallback path
+    // only, and applying it here refused installs that work (#6196).
+    if (arch === 'arm64') {
+      return WINDOWS_ARM64_TARGET;
+    }
+    return WINDOWS_X64_TARGET;
+  }
+
+  // Fallback to the old logic
+  const platformMap: Record<string, string> = {
+    darwin: 'apple-darwin',
+    linux: 'unknown-linux-gnu',
+    win32: 'pc-windows-msvc',
+  };
+
+  const archMap: Record<string, string> = {
+    x64: 'x86_64',
+    arm64: 'aarch64',
+  };
+
+  const rustPlatform = platformMap[platform] || platform;
+  const rustArch = archMap[arch] || arch;
+
+  return `${rustArch}-${rustPlatform}`;
+}
+
+/**
+ * Compatibility keys this host may consume, most preferred first.
+ *
+ * Resolution walks this list; installation writes into exactly one of its
+ * entries. A host with more than one admissible key (Windows ARM64) can hold a
+ * native and an emulated candidate side by side without either overwriting the
+ * other's `current` pointer.
+ */
+export function hostManagedCompatibilityKeys(
+  log: TargetLog = () => {},
+  seams: PlatformDetectionSeams = DEFAULT_PLATFORM_DETECTION,
+): string[] {
+  return admissibleManagedCompatibilityKeys(
+    process.platform,
+    process.arch,
+    resolvePlatformTarget(log, seams),
+  );
+}
+
+/** Schema for the per-install record binding bytes to the namespace holding them. */
+export interface ManagedInstallTargetRecord {
+  schema_version: 'managed_install_target.v1';
+  compatibility_key: string;
+  target: string;
+  emulation: ManagedEmulation | null;
+}
+
+export const MANAGED_INSTALL_TARGET_FILE = 'target.json';
+
+/**
+ * Namespace for a host whose target triple is not canonical.
+ *
+ * Such a host cannot share bytes with anything, so it gets its own quarantined
+ * namespace rather than being folded into a neighbour's.
+ */
+export const UNSUPPORTED_COMPATIBILITY_KEY = 'unsupported-host-target';
+
 export class BinaryDownloader {
   private static readonly REPO_OWNER = 'EffortlessMetrics';
   private static readonly REPO_NAME = 'perl-lsp';
   private static readonly BINARY_NAME = 'perllsp';
+  /** Release metadata envelope. Real GitHub release JSON is far below this. */
+  private static readonly MAX_RELEASE_METADATA_BYTES = 1024 * 1024;
   private lastErrorMessage: string | undefined;
+  /**
+   * The credential disposition of a release-metadata request that was refused
+   * with HTTP 403, if one was. Only that request can carry credentials, so only
+   * it can produce a credential-related remedy.
+   */
+  private releaseMetadata403Disposition: GitHubAuthDisposition | undefined;
+  /**
+   * True only while this instance is inside its own download run.
+   *
+   * `checkForUpdateSilent` reaches `fetchReleaseMetadata` too, outside the
+   * singleflight contract. Today every caller builds it a fresh downloader, so
+   * it cannot reach another run's record — but that is an accident of call-site
+   * arrangement, not a rule. Gating the write on the owned run makes it one.
+   */
+  private ownedDownloadRunActive = false;
 
   constructor(
     private readonly context: vscode.ExtensionContext,
@@ -333,6 +768,34 @@ export class BinaryDownloader {
 
   getLastErrorMessage(): string | undefined {
     return this.lastErrorMessage;
+  }
+
+  /** The GitHub API endpoint that lists this product's releases. */
+  private static releasesApiUrl(): string {
+    return `${GITHUB_API_ORIGIN}repos/${BinaryDownloader.REPO_OWNER}/${BinaryDownloader.REPO_NAME}/releases`;
+  }
+
+  /**
+   * Remedy sentence for an HTTP 403 from the release API.
+   *
+   * "Set GITHUB_TOKEN" is wrong advice for a user who already set one and had
+   * it withheld because certificate validation is off (#15493): the setting to
+   * change is `http.proxyStrictSSL`, not the environment.
+   *
+   * The remedy follows the request that was actually refused, not the current
+   * settings. A 403 can also come from the archive or checksum download, which
+   * never carry credentials; re-enabling certificate validation would not
+   * change those, so they keep the generic advice.
+   */
+  private rateLimitRemedy(): string {
+    if (this.releaseMetadata403Disposition === 'withheld_unverified_tls') {
+      return (
+        'The release check ran without your GitHub token because "http.proxyStrictSSL" is disabled, ' +
+        'which turns off certificate validation; re-enable it so the token can be used over a verified connection.'
+      );
+    }
+
+    return 'Wait a few minutes, or set the GITHUB_TOKEN environment variable to increase your rate limit.';
   }
 
   async ensureBinary(forceDownload = false): Promise<string | null> {
@@ -358,6 +821,11 @@ export class BinaryDownloader {
       );
     }
 
+    // Clear the 403 record here rather than on entry: a force call that joins
+    // an in-flight ensure sits in the await above while that other run records
+    // its own metadata disposition. Resetting on entry would both leak that
+    // value into this run's remedy and wipe the in-flight run's own record.
+    this.releaseMetadata403Disposition = undefined;
     const promise = this.runEnsureBinary(forceDownload);
     activeManagedInstall = { promise, reason: myReason };
     try {
@@ -370,6 +838,15 @@ export class BinaryDownloader {
   }
 
   private async runEnsureBinary(forceDownload: boolean): Promise<string | null> {
+    this.ownedDownloadRunActive = true;
+    try {
+      return await this.runEnsureBinaryInner(forceDownload);
+    } finally {
+      this.ownedDownloadRunActive = false;
+    }
+  }
+
+  private async runEnsureBinaryInner(forceDownload: boolean): Promise<string | null> {
     const config = vscode.workspace.getConfiguration('perl-lsp');
     const channel = config.get<string>('channel', 'latest');
     const versionTag = config.get<string>('versionTag', '');
@@ -448,11 +925,14 @@ export class BinaryDownloader {
         }
         buttons = ['Install Manually'];
       } else if (errorMsg.includes('HTTP 403')) {
-        // GitHub rate limit or auth failure
-        message =
-          'perl-lsp: Download blocked (HTTP 403 — GitHub rate limit). ' +
-          'Wait a few minutes, or set the GITHUB_TOKEN environment variable to increase your rate limit. ' +
-          manualInstallNote;
+        // GitHub rate limit or auth failure. The banner follows the remedy: a
+        // withheld credential is not a rate-limit story, so it must not be
+        // labelled as one.
+        const withheldCredential = this.releaseMetadata403Disposition === 'withheld_unverified_tls';
+        const banner = withheldCredential
+          ? 'perl-lsp: Download blocked (HTTP 403 — request was unauthenticated).'
+          : 'perl-lsp: Download blocked (HTTP 403 — GitHub rate limit).';
+        message = `${banner} ${this.rateLimitRemedy()} ${manualInstallNote}`;
         buttons = ['Install Manually', 'View Logs'];
       } else if (errorMsg.includes('HTTP 404')) {
         // Release or asset not found
@@ -512,7 +992,9 @@ export class BinaryDownloader {
       async (progress, token) => {
         // Get latest release info
         progress.report({ increment: 0, message: 'Fetching release information...' });
-        const release = await this.getLatestRelease();
+        // Pass the progress token so a cancel during the metadata request is
+        // observed while it is in flight, not only after it returns.
+        const release = await this.getLatestRelease(30000, token);
 
         if (token.isCancellationRequested) {
           throw new Error('Download cancelled');
@@ -520,6 +1002,10 @@ export class BinaryDownloader {
 
         // Determine platform and architecture
         let target = this.getPlatformTarget();
+        // Non-null only when the selected target needs a host compatibility
+        // shim to run. It is part of the candidate's storage identity, because
+        // an emulated candidate is not interchangeable with a native one.
+        let emulation: ManagedEmulation | null = null;
 
         // Try multiple naming patterns for our release format
         const ext = process.platform === 'win32' ? '.zip' : '.tar.gz';
@@ -534,6 +1020,7 @@ export class BinaryDownloader {
           // exist, so do not let the native preference turn a working mirror
           // into an unverified ARM64 URL.
           target = WINDOWS_X64_TARGET;
+          emulation = 'windows-arm64-emulation';
         } else if (process.platform === 'win32' && process.arch === 'arm64') {
           const selection = selectWindowsArm64Target(release.assets, release.tag_name, ext);
           this.outputChannel.appendLine(`Windows ARM64: ${selection.reason}`);
@@ -541,6 +1028,15 @@ export class BinaryDownloader {
             throw new Error(selection.error);
           }
           target = selection.target;
+          emulation = selection.emulated ? 'windows-arm64-emulation' : null;
+        }
+
+        const compatibilityKey = buildManagedCompatibilityKey({ target, emulation });
+        if (compatibilityKey === null) {
+          throw new Error(
+            `Refusing to install: "${target}" is not a canonical compatibility target, ` +
+              'so managed state cannot be namespaced safely.',
+          );
         }
 
         const assetName = findReleaseAssetName(release.assets, release.tag_name, target, ext);
@@ -578,7 +1074,14 @@ export class BinaryDownloader {
         try {
           // Download binary archive
           progress.report({ increment: 10, message: 'Downloading binary...' });
-          await this.downloadFile(asset.browser_download_url, archivePath);
+          await this.downloadFile(
+            asset.browser_download_url,
+            archivePath,
+            30000,
+            5,
+            MANAGED_ARCHIVE_MAX_COMPRESSED_BYTES,
+            token,
+          );
 
           if (token.isCancellationRequested) {
             throw new Error('Download cancelled');
@@ -591,24 +1094,38 @@ export class BinaryDownloader {
 
           progress.report({ increment: 40, message: 'Verifying checksum...' });
           const checksumPath = path.join(tempDir, 'SHA256SUMS');
-          await this.downloadFile(checksumAsset.browser_download_url, checksumPath);
+          await this.downloadFile(
+            checksumAsset.browser_download_url,
+            checksumPath,
+            30000,
+            5,
+            MANAGED_CHECKSUM_FILE_MAX_BYTES,
+            token,
+          );
 
-          // Find the checksum line for our file
-          const checksums = fs.readFileSync(checksumPath, 'utf8');
-          const lines = checksums.split('\n');
-          const checksumLine = lines.find((line) => line.includes(assetName));
+          // Find the checksum entry for our file
+          const sumsEntry = lookupSha256SumsDigest(
+            fs.readFileSync(checksumPath, 'utf8'),
+            assetName,
+          );
 
-          if (!checksumLine) {
-            throw new Error(
-              `Security check failed: Checksum for ${assetName} not found in SHA256SUMS file.`,
-            );
-          }
-
-          const expectedChecksum = checksumLine.split(/\s+/)[0]?.toLowerCase();
-          if (!expectedChecksum) {
-            throw new Error(
-              `Security check failed: Checksum for ${assetName} is malformed in SHA256SUMS.`,
-            );
+          let expectedChecksum: string;
+          switch (sumsEntry.status) {
+            case 'found':
+              expectedChecksum = sumsEntry.digest;
+              break;
+            case 'conflicting':
+              throw new Error(
+                `Security check failed: Conflicting checksum entries for ${assetName} in SHA256SUMS.`,
+              );
+            case 'malformed':
+              throw new Error(
+                `Security check failed: Malformed checksum entry for ${assetName} in SHA256SUMS.`,
+              );
+            case 'absent':
+              throw new Error(
+                `Security check failed: Checksum for ${assetName} not found in SHA256SUMS file.`,
+              );
           }
           const actualChecksum = await this.calculateSHA256(archivePath);
 
@@ -619,46 +1136,28 @@ export class BinaryDownloader {
           }
           this.outputChannel.appendLine('Checksum verified successfully');
 
-          // Extract archive
+          // Inspect then extract only the documented executables (#7432).
           progress.report({ increment: 30, message: 'Extracting binary...' });
           const extractDir = path.join(tempDir, 'extracted');
-          fs.mkdirSync(extractDir);
-
-          // Choose extraction method based on file extension
-          if (assetName.endsWith('.tar.gz')) {
-            await tar.x({
-              file: archivePath,
-              cwd: extractDir,
-            });
-          } else if (assetName.endsWith('.zip')) {
-            await new Promise<void>((resolve, reject) => {
-              const zip = new AdmZip(archivePath);
-              zip.extractAllToAsync(extractDir, true, true, (error) => {
-                if (error) {
-                  reject(error);
-                } else {
-                  resolve();
-                }
-              });
-            });
-          } else if (assetName.endsWith('.tar.xz')) {
-            // Fallback to system tar for .tar.xz (node-tar doesn't support xz)
-            await execFile('tar', ['-xJf', archivePath, '-C', extractDir]);
-          } else {
+          const format = assetName.endsWith('.zip')
+            ? 'zip'
+            : assetName.endsWith('.tar.gz')
+              ? 'tar.gz'
+              : null;
+          if (format === null) {
             throw new Error(`Unsupported archive format: ${assetName}`);
           }
-
-          // Find the binary
-          const binaryNames =
-            process.platform === 'win32'
-              ? ['perllsp.exe', 'perl-lsp.exe']
-              : ['perllsp', 'perl-lsp'];
-          const extractedBinary =
-            binaryNames.map((name) => this.findBinary(extractDir, name)).find(Boolean) ?? null;
-
-          if (!extractedBinary) {
-            throw new Error('Binary not found in archive');
+          if (token.isCancellationRequested) {
+            throw new Error('Download cancelled');
           }
+          const extracted = await extractManagedArchive({
+            archivePath,
+            extractDir,
+            format,
+            windows: format === 'zip',
+            cancellationToken: token,
+          });
+          const extractedBinary = extracted.serverPath;
 
           // Move to final location. Each install lands in a unique
           // versioned dir so a forced reinstall while perllsp.exe is
@@ -666,13 +1165,14 @@ export class BinaryDownloader {
           // active install is selected by an atomically-committed
           // pointer file at the base dir.
           progress.report({ increment: 15, message: 'Installing binary...' });
-          const baseDir = this.getManagedBaseDir();
+          const baseDir = this.getManagedBaseDirForKey(compatibilityKey);
           if (!fs.existsSync(baseDir)) {
             fs.mkdirSync(baseDir, { recursive: true });
           }
           const installDirName = this.buildVersionedInstallDirName(release.tag_name);
           const installDir = path.join(baseDir, installDirName);
           fs.mkdirSync(installDir, { recursive: true });
+          this.writeInstallTargetRecord(installDir, compatibilityKey, target, emulation);
 
           const binaryName = process.platform === 'win32' ? 'perllsp.exe' : 'perllsp';
           const finalPath = path.join(installDir, binaryName);
@@ -686,9 +1186,10 @@ export class BinaryDownloader {
             fs.chmodSync(finalPath, 0o755);
           }
 
-          // Best-effort: copy perl-dap if found in archive
+          // Best-effort: copy perl-dap when the archive carried exactly one.
           const dapName = process.platform === 'win32' ? 'perl-dap.exe' : 'perl-dap';
-          const extractedDap = this.findBinary(extractDir, dapName);
+          const extractedDap = extracted.dapPath;
+          let installedDapPath: string | null = null;
           if (extractedDap) {
             const dapDest = path.join(installDir, dapName);
             try {
@@ -698,17 +1199,40 @@ export class BinaryDownloader {
               if (process.platform !== 'win32') {
                 fs.chmodSync(dapDest, 0o755);
               }
+              installedDapPath = dapDest;
               this.outputChannel.appendLine(`Debug adapter installed to: ${dapDest}`);
             } catch (e) {
               this.outputChannel.appendLine(`Note: could not install perl-dap: ${e}`);
             }
           }
 
-          // Atomically activate the new install. Old install dirs stay
-          // on disk for one generation as a fallback, then get pruned.
-          this.commitVersionedInstall(installDirName);
-          this.outputChannel.appendLine(`Active managed install: ${installDirName}`);
-          this.pruneOldVersionedInstalls(baseDir, installDirName);
+          // Mint the immutable candidate identity from the verified bytes
+          // (#10083): the archive checksum stands in for the release topology
+          // digest, and the installed binaries' digests bind the candidate to
+          // exactly the bytes this host will launch.
+          const perllspDigest = await this.calculateSHA256(finalPath);
+          const dapDigest =
+            installedDapPath === null ? null : await this.calculateSHA256(installedDapPath);
+          const manifest = writeInstalledManagedCandidateManifest(
+            installDir,
+            {
+              release: release.tag_name,
+              version: release.tag_name,
+              target,
+              topology_digest: actualChecksum,
+              perllsp_digest: perllspDigest,
+              perl_dap_digest: dapDigest,
+            },
+            (message) => this.outputChannel.appendLine(`Note: ${message}`),
+          );
+
+          // Atomically activate the new install. The legacy `current` dir
+          // pointer stays authoritative for path resolution and rollback;
+          // the versioned selection record alongside it gives collectors and
+          // host selection the policy-governed view. Stale generations are
+          // then pruned only through the landed retention policy.
+          this.commitVersionedInstall(installDirName, compatibilityKey, manifest);
+          this.collectStaleManagedCandidates(baseDir);
 
           progress.report({ increment: 5, message: 'Complete!' });
           this.outputChannel.appendLine(`Binary installed to: ${finalPath}`);
@@ -726,9 +1250,24 @@ export class BinaryDownloader {
     );
   }
 
-  private async getLatestRelease(timeoutMs = 30000): Promise<Release> {
+  /**
+   * Select the managed release to download (#9925).
+   *
+   * Every managed route (first-use, repair, explicit and silent update
+   * checks) funnels through here, and this method funnels every selection
+   * through the one `selectManagedRelease` implementation (#9924). Transport
+   * stays bounded (`fetchBoundedJson`); the GitHub `/releases/latest`
+   * convenience endpoint and route-local first-element picks are gone — the
+   * list endpoint feeds the selector for both `stable` and `latest`, and the
+   * tag route's exact-tag response is validated by the selector instead of
+   * being trusted blindly.
+   */
+  private async getLatestRelease(
+    timeoutMs = 30000,
+    cancellationToken?: vscode.CancellationToken,
+  ): Promise<Release> {
     const config = vscode.workspace.getConfiguration('perl-lsp');
-    const channel = config.get<string>('channel', 'latest');
+    const channelSetting = config.get<string>('channel', 'latest');
     const versionTag = config.get<string>('versionTag', '');
     const downloadBaseUrl = config.get<string>('downloadBaseUrl', '');
 
@@ -737,112 +1276,181 @@ export class BinaryDownloader {
       return this.getInternalRelease(downloadBaseUrl, versionTag || 'latest');
     }
 
-    let url: string;
-    if (channel === 'tag' && versionTag) {
-      // Get specific release by tag
-      url = `https://api.github.com/repos/${BinaryDownloader.REPO_OWNER}/${BinaryDownloader.REPO_NAME}/releases/tags/${versionTag}`;
-    } else if (channel === 'stable') {
-      // Get latest non-prerelease
-      url = `https://api.github.com/repos/${BinaryDownloader.REPO_OWNER}/${BinaryDownloader.REPO_NAME}/releases`;
+    if (channelSetting !== 'stable' && channelSetting !== 'latest' && channelSetting !== 'tag') {
+      throw new Error(
+        `Unknown perl-lsp.channel ${JSON.stringify(channelSetting)}; expected stable, latest, or tag.`,
+      );
+    }
+    const channel: ManagedReleaseChannel = channelSetting;
+
+    const expectation = this.managedReleaseExpectation();
+    const isWindowsArm64 = process.platform === 'win32' && process.arch === 'arm64';
+    // On Windows ARM64 a release can serve this host natively or through the
+    // documented x64 emulation asset; the per-release choice stays with
+    // selectWindowsArm64Target after selection (#9844 boundary).
+    const assetTargetCandidates = isWindowsArm64
+      ? [WINDOWS_ARM64_TARGET, WINDOWS_X64_TARGET]
+      : [expectation.target];
+    const archiveExtension = process.platform === 'win32' ? '.zip' : '.tar.gz';
+
+    let url = '';
+    if (channel === 'tag') {
+      if (versionTag) {
+        // Get specific release by tag. The tag is user configuration, so it is
+        // encoded before it reaches the API path.
+        url = `${BinaryDownloader.releasesApiUrl()}/tags/${encodeURIComponent(versionTag)}`;
+      }
+      // A tag channel without versionTag performs no fetch: the selector's
+      // closed policy owns that refusal instead of a silent channel fallback.
     } else {
-      // Get latest release (including prereleases)
-      url = `https://api.github.com/repos/${BinaryDownloader.REPO_OWNER}/${BinaryDownloader.REPO_NAME}/releases/latest`;
+      // One list endpoint feeds the selector for both stable and latest.
+      url = BinaryDownloader.releasesApiUrl();
     }
 
-    return new Promise((resolve, reject) => {
-      const isHttps = url.startsWith('https:');
-      let timedOut = false;
-      let timeout: NodeJS.Timeout | undefined;
-      let request: http.ClientRequest | undefined;
-
-      const httpConfig = vscode.workspace.getConfiguration('http');
-      const proxyStrictSSL = httpConfig.get<boolean>('proxyStrictSSL', true);
-      const options = {
-        headers: githubApiHeaders(url, proxyStrictSSL),
-        rejectUnauthorized: proxyStrictSSL,
-      };
-
-      timeout = setTimeout(() => {
-        timedOut = true;
-        if (request) {
-          request.destroy();
+    let releases: Release[] = [];
+    if (url) {
+      const parsed = await this.fetchReleaseMetadata(url, timeoutMs, cancellationToken);
+      if (channel === 'tag') {
+        if (!isReleaseShape(parsed)) {
+          throw new Error('Release metadata response has an invalid schema');
         }
-        reject(new Error(`Release fetch timeout after ${timeoutMs / 1000} seconds`));
-      }, timeoutMs);
-
-      try {
-        request = this.httpGet(isHttps, url, options, (res) => {
-          let data = '';
-          res.on('data', (chunk) => (data += chunk));
-          res.on('end', () => {
-            if (timedOut) {
-              return;
-            }
-            if (timeout) {
-              clearTimeout(timeout);
-            }
-            try {
-              const parsed: unknown = JSON.parse(data);
-              if (
-                parsed &&
-                typeof parsed === 'object' &&
-                !Array.isArray(parsed) &&
-                'message' in parsed
-              ) {
-                const msg = parsed as { message: string };
-                if (msg.message.includes('Not Found')) {
-                  reject(new Error('No releases found'));
-                  return;
-                }
-                reject(new Error(`GitHub API error: ${msg.message}`));
-                return;
-              }
-              if (Array.isArray(parsed)) {
-                // For stable channel, find first non-prerelease
-                const releases = parsed as Release[];
-                const stableRelease = releases.find((r) => !r.prerelease);
-                if (stableRelease) {
-                  resolve(stableRelease);
-                } else {
-                  const fallbackRelease = releases[0];
-                  if (fallbackRelease) {
-                    resolve(fallbackRelease); // Fall back to latest
-                  } else {
-                    reject(new Error('No releases found'));
-                  }
-                }
-              } else {
-                resolve(parsed as Release);
-              }
-            } catch (e) {
-              reject(e);
-            }
-          });
-          res.on('error', (err) => {
-            if (timeout) {
-              clearTimeout(timeout);
-            }
-            if (!timedOut) {
-              reject(err);
-            }
-          });
-        });
-
-        request.on('error', (err) => {
-          if (timeout) {
-            clearTimeout(timeout);
-          }
-          if (!timedOut) {
-            reject(err);
-          }
-        });
-      } catch (err) {
-        if (timeout) {
-          clearTimeout(timeout);
+        releases = [parsed];
+      } else {
+        if (!Array.isArray(parsed)) {
+          throw new Error('Release metadata response has an invalid schema');
         }
-        reject(err);
+        // One malformed legacy entry must not abort every managed route:
+        // entries without a trustworthy tag/asset shape are quarantined out
+        // of the candidate set and logged, matching the adapter's treatment
+        // of unparseable tags.
+        const malformed = parsed.filter((entry) => !isReleaseShape(entry)).length;
+        if (malformed > 0) {
+          this.outputChannel.appendLine(
+            `Managed release metadata: quarantined ${malformed} malformed list entr${malformed === 1 ? 'y' : 'ies'}.`,
+          );
+        }
+        releases = parsed.filter(isReleaseShape);
       }
+    }
+
+    const conversion = toManagedReleaseRecords(
+      releases,
+      expectation,
+      assetTargetCandidates,
+      archiveExtension,
+      findReleaseAssetName,
+      channel,
+    );
+    if (conversion.droppedTags.length > 0) {
+      this.outputChannel.appendLine(
+        `Managed release metadata: quarantined unparseable tag(s): ${conversion.droppedTags.join(', ')}`,
+      );
+    }
+    const selection = selectManagedRelease({
+      expectation,
+      channel,
+      explicitTag: channel === 'tag' && versionTag ? versionTag : undefined,
+      releases: conversion.records,
     });
+    if (selection.kind === 'refused') {
+      throw new Error(describeManagedReleaseRefusal(selection, channel));
+    }
+
+    const selected = releases.find((release) => release.tag_name === selection.release.tagName);
+    if (!selected) {
+      throw new Error('Release metadata response has an invalid schema');
+    }
+    this.outputChannel.appendLine(
+      `Managed release selected: ${selected.tag_name} (reason: ${selection.reason})`,
+    );
+    return selected;
+  }
+
+  /** Extension identity facts for the managed-release expectation. */
+  private managedReleaseExpectation(): ManagedReleaseExpectation {
+    const packageJSON = (this.context.extension?.packageJSON ?? {}) as {
+      publisher?: string;
+      name?: string;
+      version?: string;
+    };
+    const extensionId =
+      packageJSON.publisher && packageJSON.name
+        ? `${packageJSON.publisher}.${packageJSON.name}`
+        : 'unknown';
+    return buildManagedReleaseExpectation({
+      extensionId,
+      extensionVersion: packageJSON.version ?? 'unknown',
+      hostTarget:
+        process.platform === 'win32' && process.arch === 'arm64'
+          ? WINDOWS_ARM64_TARGET
+          : this.getPlatformTarget(),
+    });
+  }
+
+  private async fetchReleaseMetadata(
+    url: string,
+    timeoutMs: number,
+    cancellationToken?: vscode.CancellationToken,
+  ): Promise<unknown> {
+    const isHttps = url.startsWith('https:');
+    const httpConfig = vscode.workspace.getConfiguration('http');
+    const proxyStrictSSL = httpConfig.get<boolean>('proxyStrictSSL', true);
+    const authDisposition = resolveGitHubAuthDisposition({
+      url,
+      hasToken: readGitHubToken() !== undefined,
+      strictTls: proxyStrictSSL,
+    });
+    if (authDisposition === 'withheld_unverified_tls') {
+      // Record the reason, never the credential.
+      this.outputChannel.appendLine(
+        'Managed release metadata: GitHub credentials withheld because "http.proxyStrictSSL" is disabled, ' +
+          'which turns off certificate validation. The request proceeds unauthenticated under the anonymous rate limit.',
+      );
+    }
+    const options = {
+      headers: githubApiHeaders(authDisposition),
+      rejectUnauthorized: proxyStrictSSL,
+    };
+
+    let parsed: unknown;
+    try {
+      parsed = await fetchBoundedJson<unknown>({
+        requestFactory: (listener) => this.httpGet(isHttps, url, options, listener),
+        timeoutMs,
+        maxBytes: BinaryDownloader.MAX_RELEASE_METADATA_BYTES,
+        cancellationToken,
+        operationName: 'Release fetch',
+      });
+    } catch (error) {
+      // Preserve the established message for a missing release.
+      if (error instanceof BoundedJsonStatusError && error.statusCode === 404) {
+        throw new Error('No releases found');
+      }
+      if (
+        error instanceof BoundedJsonStatusError &&
+        error.statusCode === 403 &&
+        this.ownedDownloadRunActive
+      ) {
+        // Remember the credential decision this refused request actually used.
+        // A later 403 from the archive or checksum download is a different
+        // request that never carries credentials, so it must not inherit this.
+        // Only a download run reports a remedy, so only a download run records
+        // one: a silent update check must not write into that run's state.
+        this.releaseMetadata403Disposition = authDisposition;
+      }
+      throw error;
+    }
+
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed) && 'message' in parsed) {
+      const message = (parsed as { message?: unknown }).message;
+      if (typeof message === 'string') {
+        if (message.includes('Not Found')) {
+          throw new Error('No releases found');
+        }
+        throw new Error(`GitHub API error: ${message}`);
+      }
+    }
+    return parsed;
   }
 
   private async getInternalRelease(baseUrl: string, version: string): Promise<Release> {
@@ -886,137 +1494,81 @@ export class BinaryDownloader {
     dest: string,
     timeoutMs = 30000,
     maxRedirects = 5,
+    maxBytes = MANAGED_ARCHIVE_MAX_COMPRESSED_BYTES,
+    cancellationToken?: vscode.CancellationToken,
   ): Promise<void> {
-    return new Promise((resolve, reject) => {
-      // Security check: Enforce HTTPS for remote URLs to prevent MITM attacks
-      try {
-        const parsedUrl = new URL(url);
+    try {
+      const parsedUrl = new URL(url);
 
-        // Only allow http: and https: protocols
-        if (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') {
-          reject(
-            new Error(
-              `Unsupported protocol: ${parsedUrl.protocol}. Only HTTP and HTTPS are allowed.`,
-            ),
-          );
-          return;
-        }
-
-        // Check for local addresses (full IPv4 loopback range 127.0.0.0/8)
-        // Note: URL.hostname normalizes IPv6 addresses and never includes brackets
-        const ipv4LoopbackRegex = /^127(?:\.(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)){3}$/;
-        const isLocal =
-          ['localhost', '::1'].includes(parsedUrl.hostname) ||
-          parsedUrl.hostname.endsWith('.localhost') ||
-          ipv4LoopbackRegex.test(parsedUrl.hostname);
-
-        if (parsedUrl.protocol === 'http:' && !isLocal) {
-          reject(
-            new Error(
-              `Security violation: Insecure HTTP download prevented for remote host: ${parsedUrl.hostname}. Use HTTPS or a local server.`,
-            ),
-          );
-          return;
-        }
-      } catch (e) {
-        reject(
-          new Error(
-            `Invalid URL format: ${url}. Error: ${e instanceof Error ? e.message : String(e)}`,
-          ),
+      if (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') {
+        throw new Error(
+          `Unsupported protocol: ${parsedUrl.protocol}. Only HTTP and HTTPS are allowed.`,
         );
-        return;
       }
 
-      const file = this.createWriteStream(dest);
-      let timedOut = false;
-      let timeout: NodeJS.Timeout | undefined;
+      // Check for local addresses (full IPv4 loopback range 127.0.0.0/8)
+      // Note: URL.hostname normalizes IPv6 addresses and never includes brackets
+      const ipv4LoopbackRegex = /^127(?:\.(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)){3}$/;
+      const isLocal =
+        ['localhost', '::1'].includes(parsedUrl.hostname) ||
+        parsedUrl.hostname.endsWith('.localhost') ||
+        ipv4LoopbackRegex.test(parsedUrl.hostname);
 
-      // Install the listener before any request activity. A refused request
-      // can destroy the stream before a response callback runs; leaving the
-      // stream unobserved turns a normal download failure into an unhandled
-      // ENOENT when a caller cleans up its temporary directory.
-      file.once('error', (err: NodeJS.ErrnoException) => {
-        if (timeout) {
-          clearTimeout(timeout);
+      if (parsedUrl.protocol === 'http:' && !isLocal) {
+        throw new Error(
+          `Security violation: Insecure HTTP download prevented for remote host: ${parsedUrl.hostname}. Use HTTPS or a local server.`,
+        );
+      }
+    } catch (e) {
+      if (
+        e instanceof Error &&
+        (e.message.startsWith('Unsupported protocol') || e.message.startsWith('Security violation'))
+      ) {
+        throw e;
+      }
+      throw new Error(
+        `Invalid URL format: ${url}. Error: ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
+
+    const httpConfig = vscode.workspace.getConfiguration('http');
+    const proxyStrictSSL = httpConfig.get<boolean>('proxyStrictSSL', true);
+    const options = {
+      headers: { 'User-Agent': 'vscode-perl-lsp' },
+      rejectUnauthorized: proxyStrictSSL,
+    };
+    const isHttps = url.startsWith('https:');
+    const bounded: Parameters<typeof downloadBoundedFile>[0] = {
+      requestFactory: (listener) => this.httpGet(isHttps, url, options, listener),
+      dest,
+      timeoutMs,
+      maxBytes,
+      operationName: 'Archive download',
+      maxRedirects,
+      followRedirect: async (location, remainingRedirects) => {
+        if (
+          isHttps &&
+          location.toLowerCase().startsWith('http:') &&
+          !location.toLowerCase().startsWith('https:')
+        ) {
+          throw new Error('Security violation: Redirect from HTTPS to HTTP prevented');
         }
-        this.removePartialFile(dest);
-        reject(err);
-      });
-
-      // Set timeout
-      timeout = setTimeout(() => {
-        timedOut = true;
-        file.destroy();
-        reject(new Error(`Download timeout after ${timeoutMs / 1000} seconds`));
-      }, timeoutMs);
-
-      // Honor VS Code proxy settings
-      const httpConfig = vscode.workspace.getConfiguration('http');
-      const proxyStrictSSL = httpConfig.get<boolean>('proxyStrictSSL', true);
-
-      const options = {
-        headers: { 'User-Agent': 'vscode-perl-lsp' },
-        rejectUnauthorized: proxyStrictSSL,
-      };
-
-      // Use appropriate module based on URL protocol
-      const isHttps = url.startsWith('https:');
-      const request = this.httpGet(isHttps, url, options, (response) => {
-        // Handle redirects
-        if (response.statusCode === 301 || response.statusCode === 302) {
-          clearTimeout(timeout);
-          file.destroy();
-          const newUrl = response.headers.location;
-          if (newUrl) {
-            // Security check: Prevent downgrade from HTTPS to HTTP
-            if (
-              isHttps &&
-              newUrl.toLowerCase().startsWith('http:') &&
-              !newUrl.toLowerCase().startsWith('https:')
-            ) {
-              reject(new Error('Security violation: Redirect from HTTPS to HTTP prevented'));
-              return;
-            }
-            if (maxRedirects <= 0) {
-              reject(new Error('Too many redirects'));
-              return;
-            }
-            this.downloadFile(newUrl, dest, timeoutMs, maxRedirects - 1)
-              .then(resolve)
-              .catch(reject);
-            return;
-          }
-        }
-
-        if (response.statusCode !== 200) {
-          clearTimeout(timeout);
-          file.destroy();
-          reject(new Error(`Failed to download: HTTP ${response.statusCode}`));
-          return;
-        }
-
-        response.pipe(file);
-
-        file.on('finish', () => {
-          if (!timedOut) {
-            clearTimeout(timeout);
-            file.close();
-            resolve();
-          }
-        });
-      });
-
-      request.on('error', (err) => {
-        clearTimeout(timeout);
-        file.destroy();
-        reject(err);
-      });
-
-      request.on('timeout', () => {
-        request.destroy();
-        reject(new Error('Request timeout'));
-      });
-    });
+        await this.downloadFile(
+          location,
+          dest,
+          timeoutMs,
+          remainingRedirects,
+          maxBytes,
+          cancellationToken,
+        );
+      },
+      createWriteStream: (filePath) => this.createWriteStream(filePath),
+      removePartialFile: (filePath) => this.removePartialFile(filePath),
+    };
+    if (cancellationToken !== undefined) {
+      bounded.cancellationToken = cancellationToken;
+    }
+    await downloadBoundedFile(bounded);
   }
 
   /**
@@ -1038,8 +1590,8 @@ export class BinaryDownloader {
     return fs.createWriteStream(dest);
   }
 
-  private removePartialFile(dest: string): void {
-    fs.unlink(dest, () => {});
+  private async removePartialFile(dest: string): Promise<void> {
+    unlinkPartialDownloadDest(dest);
   }
 
   private async calculateSHA256(filePath: string): Promise<string> {
@@ -1057,169 +1609,169 @@ export class BinaryDownloader {
   // build. The Windows 11 floor moved to selectWindowsArm64Target, where it
   // gates only the x64 emulation fallback (#6196).
   private getPlatformTarget(): string {
-    const platform = process.platform;
-    const arch = process.arch;
-
-    // Map Node.js platform/arch to exact cargo-dist target triples
-    if (platform === 'darwin') {
-      return arch === 'arm64' ? 'aarch64-apple-darwin' : 'x86_64-apple-darwin';
-    } else if (platform === 'linux') {
-      // Check Termux first: isTermuxEnvironment() is the authoritative Termux
-      // detector.  isAndroidEnvironment() also matches TERMUX_VERSION and would
-      // shadow this branch if checked first, routing to the old arch-map path
-      // instead of the uniform `${archPrefix}-linux-android` form.
-      const archPrefix = arch === 'arm64' ? 'aarch64' : 'x86_64';
-      if (this.isTermuxEnvironment()) {
-        return `${archPrefix}-linux-android`;
-      }
-      if (this.isAndroidEnvironment()) {
-        const androidArchMap: Record<string, string> = {
-          arm64: 'aarch64-linux-android',
-          x64: 'x86_64-linux-android',
-          ia32: 'i686-linux-android',
-          arm: 'armv7-linux-androideabi',
-        };
-        return androidArchMap[arch] ?? `${arch}-linux-android`;
-      }
-      const libc = this.getLinuxLibcTarget();
-      this.outputChannel.appendLine(`Linux binary target libc: ${libc}`);
-      return `${archPrefix}-unknown-linux-${libc}`;
-    } else if (platform === 'win32') {
-      // The *preferred* target, which is not necessarily the one downloaded.
-      // Windows builds both x86_64-pc-windows-msvc and, since #5208, a native
-      // aarch64-pc-windows-msvc, so ARM64 prefers the native build here.
-      //
-      // Whether that asset exists in a given release is decided later by
-      // selectWindowsArm64Target, against that release's actual asset list.
-      // This function has no asset list, so it must not reject anything: the
-      // Windows 10 ARM64 rejection belongs on the emulation fallback path
-      // only, and applying it here refused installs that work (#6196).
-      if (arch === 'arm64') {
-        return WINDOWS_ARM64_TARGET;
-      }
-      return WINDOWS_X64_TARGET;
-    }
-
-    // Fallback to the old logic
-    const platformMap: Record<string, string> = {
-      darwin: 'apple-darwin',
-      linux: 'unknown-linux-gnu',
-      win32: 'pc-windows-msvc',
-    };
-
-    const archMap: Record<string, string> = {
-      x64: 'x86_64',
-      arm64: 'aarch64',
-    };
-
-    const rustPlatform = platformMap[platform] || platform;
-    const rustArch = archMap[arch] || arch;
-
-    return `${rustArch}-${rustPlatform}`;
+    return resolvePlatformTarget(
+      (message) => this.outputChannel.appendLine(message),
+      this.platformDetectionSeams(),
+    );
   }
 
   private getLinuxLibcTarget(): 'gnu' | 'musl' {
-    const config = vscode.workspace.getConfiguration('perl-lsp');
-    const rawValue = config.get<string>('linuxLibc', 'auto');
-    const value = rawValue.trim().toLowerCase();
+    return resolveLinuxLibcTarget(
+      (message) => this.outputChannel.appendLine(message),
+      this.platformDetectionSeams(),
+    );
+  }
 
-    if (value === 'gnu' || value === 'glibc') {
-      return 'gnu';
-    }
-
-    if (value === 'musl') {
-      return 'musl';
-    }
-
-    if (value !== 'auto') {
-      this.outputChannel.appendLine(
-        `Unknown perl-lsp.linuxLibc value "${rawValue}", falling back to auto`,
-      );
-    }
-
-    return this.detectMusl() ? 'musl' : 'gnu';
+  /**
+   * Routes module-level target resolution back through this instance's own
+   * probe methods, so overriding a probe overrides every decision that
+   * consumes it.
+   */
+  private platformDetectionSeams(): PlatformDetectionSeams {
+    return {
+      isTermux: () => this.isTermuxEnvironment(),
+      isAndroid: () => this.isAndroidEnvironment(),
+      detectMusl: () => this.detectMusl(),
+    };
   }
 
   private isAndroidEnvironment(): boolean {
-    if (process.platform !== 'linux') {
-      return false;
-    }
-
-    return (
-      typeof process.env.ANDROID_ROOT === 'string' ||
-      typeof process.env.ANDROID_DATA === 'string' ||
-      typeof process.env.TERMUX_VERSION === 'string' ||
-      os.release().toLowerCase().includes('android')
-    );
+    return isAndroidEnvironment();
   }
 
   private detectMusl(): boolean {
-    const ldd = child_process.spawnSync('ldd', ['--version'], {
-      encoding: 'utf8',
-      timeout: 1000,
-    });
-    const lddOutput = `${ldd.stdout ?? ''}${ldd.stderr ?? ''}`.toLowerCase();
-    if (lddOutput.includes('musl')) {
-      return true;
-    }
-    if (lddOutput.includes('glibc') || lddOutput.includes('gnu libc')) {
-      return false;
-    }
-
-    const getconf = child_process.spawnSync('getconf', ['GNU_LIBC_VERSION'], {
-      encoding: 'utf8',
-      timeout: 1000,
-    });
-    if (getconf.status === 0) {
-      return false;
-    }
-
-    // Check for Alpine or musl when active-libc probes are unavailable.
-    if (fs.existsSync('/etc/alpine-release')) {
-      return true;
-    }
-
-    // Check for musl libc
-    const muslLibs = [
-      '/lib/libc.musl-x86_64.so.1',
-      '/lib/libc.musl-aarch64.so.1',
-      '/lib/ld-musl-x86_64.so.1',
-      '/lib/ld-musl-aarch64.so.1',
-    ];
-
-    return muslLibs.some((lib) => fs.existsSync(lib));
+    return detectMusl();
   }
 
   private isTermuxEnvironment(): boolean {
-    return Boolean(
-      process.env.TERMUX_VERSION ||
-      process.env.PREFIX?.includes('/com.termux/') ||
-      fs.existsSync('/data/data/com.termux/files/usr'),
+    return isTermuxEnvironment();
+  }
+
+  /**
+   * Root for managed installs owned by this host's preferred compatibility key:
+   * `globalStorage/.../managed/<compatibility-key>/`. Inside it, the active
+   * install is selected by the `current` pointer file.
+   *
+   * This is the *write* root. Resolution walks every admissible key, because a
+   * Windows ARM64 host may legitimately hold a native or an emulated candidate.
+   */
+  private getManagedBaseDir(): string {
+    return this.getManagedBaseDirForKey(this.getHostCompatibilityKey());
+  }
+
+  private getHostCompatibilityKey(): string {
+    const keys = hostManagedCompatibilityKeys(
+      (message) => this.outputChannel.appendLine(message),
+      this.platformDetectionSeams(),
+    );
+    // resolvePlatformTarget always yields a canonical triple, so the preferred
+    // key is present for every host the extension supports. The fallback keeps
+    // an exotic platform string out of the shared namespace root rather than
+    // silently writing managed state somewhere unnamed.
+    return keys[0] ?? UNSUPPORTED_COMPATIBILITY_KEY;
+  }
+
+  private getManagedBaseDirForKey(key: string): string {
+    return (
+      managedNamespaceDir(this.context.globalStorageUri.fsPath, key) ??
+      path.join(this.context.globalStorageUri.fsPath, 'managed', UNSUPPORTED_COMPATIBILITY_KEY)
     );
   }
 
   /**
-   * Root for managed installs: globalStorage/.../bin/<platform>-<arch>/.
-   * Inside this directory, the active install is selected by the `current`
-   * pointer file, falling back to a legacy flat layout (perllsp.exe at the
-   * top level) when the pointer is absent.
+   * Resolves the active managed install directory for this host.
+   *
+   * Admissible keys are walked in preference order. A namespace carrying a
+   * policy-governed selection record resolves through the landed host
+   * selection policy (#10083); namespaces without one (installs from before
+   * that wiring) keep the pointer-based check. When no compatibility-scoped
+   * namespace is populated, a pre-#9847 install may be adopted, but only
+   * after its own bytes are revalidated against the key — path shape alone
+   * never promotes legacy bytes (#9847).
    */
-  private getManagedBaseDir(): string {
-    return BinaryDownloader.computeManagedBaseDir(this.context);
-  }
-
-  private static computeManagedBaseDir(context: vscode.ExtensionContext): string {
-    return path.join(context.globalStorageUri.fsPath, 'bin', `${process.platform}-${process.arch}`);
+  private static readActiveManagedInstallDir(context: vscode.ExtensionContext): string | null {
+    const keys = hostManagedCompatibilityKeys();
+    const sessionId = vscode.env.sessionId;
+    for (const key of keys) {
+      const baseDir = managedNamespaceDir(context.globalStorageUri.fsPath, key);
+      if (baseDir === null) {
+        continue;
+      }
+      const governed = BinaryDownloader.resolvePolicyGovernedInstallDir(baseDir, key, sessionId);
+      if (governed !== 'no-policy-record' && governed !== 'refused') {
+        return governed;
+      }
+      // A namespace without a policy record keeps the legacy pointer
+      // behavior. A namespace WITH one is policy-governed: a refusal must
+      // not silently launch a candidate through the pointer the policy just
+      // declined, so the key is skipped and resolution continues (#10083).
+      if (governed === 'no-policy-record') {
+        const active = BinaryDownloader.readPointedInstallDir(baseDir);
+        if (active !== null && BinaryDownloader.installMatchesKey(active, key)) {
+          return active;
+        }
+      }
+    }
+    return BinaryDownloader.adoptLegacyManagedInstallDir(context, keys);
   }
 
   /**
-   * Reads the `current` pointer file at the managed base dir and returns the
-   * absolute path of the active install dir, or null if no pointer exists or
-   * the named subdir is missing or invalid. Pointer content is restricted to
-   * a single dir name with no separators or '..' components.
+   * Resolves one namespace's active install dir through the landed
+   * host-selection policy when the namespace carries a
+   * `managed_current_selection.v1` record (#10083).
+   *
+   * A session holding a `live` host reference stays bound to the exact
+   * candidate it launched (`bound_running`) even after another writer moved
+   * the shared default; fresh resolutions take `selected_current`, or the
+   * caller's most recently installed compatible candidate when current is
+   * unusable. Every other outcome is a refusal, never a pointer fallback:
+   * `restart_required` must not silently rebind a session whose live
+   * reference says another candidate may still be running, incomplete
+   * enumeration is not evidence, and a namespace disagreement means the dir
+   * is not this host's to launch.
    */
-  private static readActiveManagedInstallDir(context: vscode.ExtensionContext): string | null {
-    const baseDir = BinaryDownloader.computeManagedBaseDir(context);
+  private static resolvePolicyGovernedInstallDir(
+    baseDir: string,
+    key: string,
+    sessionId: string | undefined,
+  ): string | 'no-policy-record' | 'refused' {
+    const current = readManagedCurrentSelection(baseDir);
+    if (current === null) {
+      return 'no-policy-record';
+    }
+    const catalog = enumerateManagedCandidateCatalog(baseDir);
+    if (!catalog.complete) {
+      return 'refused';
+    }
+    const sessionReference =
+      sessionId === undefined ? null : readSessionManagedHostReference(baseDir, sessionId);
+    const runningCandidateId =
+      sessionReference !== null && sessionReference.state === 'live'
+        ? sessionReference.candidate_id
+        : null;
+    const outcome = resolveManagedCandidateForHost({
+      current,
+      candidates: catalog.entries,
+      compatible_candidate_ids: [...catalog.candidateDirs.keys()],
+      running_candidate_id: runningCandidateId,
+    });
+    if (!('candidate_id' in outcome) || outcome.kind === 'restart_required') {
+      return 'refused';
+    }
+    const dir = catalog.candidateDirs.get(outcome.candidate_id)?.[0];
+    if (dir === undefined || !BinaryDownloader.installMatchesKey(dir, key)) {
+      return 'refused';
+    }
+    return dir;
+  }
+
+  /**
+   * Reads a `current` pointer and returns the directory it names.
+   *
+   * Pointer content is restricted to a single dir name with no separators or
+   * '..' components.
+   */
+  private static readPointedInstallDir(baseDir: string): string | null {
     const pointerPath = path.join(baseDir, 'current');
     if (!fs.existsSync(pointerPath)) {
       return null;
@@ -1244,6 +1796,68 @@ export class BinaryDownloader {
   }
 
   /**
+   * Rejects an install whose own record disagrees with the namespace holding
+   * it. A namespace is only meaningful if nothing inside it can claim to be a
+   * different target; an install written before this record existed carries no
+   * claim and is accepted on the strength of its namespace.
+   */
+  private static installMatchesKey(installDir: string, key: string): boolean {
+    const recordPath = path.join(installDir, MANAGED_INSTALL_TARGET_FILE);
+    if (!fs.existsSync(recordPath)) {
+      return true;
+    }
+    try {
+      const record = JSON.parse(fs.readFileSync(recordPath, 'utf8')) as ManagedInstallTargetRecord;
+      return record.compatibility_key === key;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Revalidates a pre-#9847 `bin/<platform>-<arch>` install and returns it only
+   * when its bytes prove it is interchangeable with a candidate this host would
+   * install today.
+   *
+   * The legacy directory is never moved or deleted: a host that cannot prove
+   * compatibility simply downloads its own candidate, leaving the only
+   * known-good install intact for whichever host it actually belongs to.
+   */
+  private static adoptLegacyManagedInstallDir(
+    context: vscode.ExtensionContext,
+    keys: readonly string[],
+  ): string | null {
+    const legacyBase = legacyManagedBaseDir(
+      context.globalStorageUri.fsPath,
+      process.platform,
+      process.arch,
+    );
+    if (!fs.existsSync(legacyBase)) {
+      return null;
+    }
+    const binaryName = process.platform === 'win32' ? 'perllsp.exe' : 'perllsp';
+    const pointed = BinaryDownloader.readPointedInstallDir(legacyBase);
+    const legacyDirs = pointed === null ? [legacyBase] : [pointed, legacyBase];
+    for (const legacyDir of legacyDirs) {
+      const binaryPath = path.join(legacyDir, binaryName);
+      if (!fs.existsSync(binaryPath)) {
+        continue;
+      }
+      const observed = probeBinaryIdentity(binaryPath);
+      for (const key of keys) {
+        if (classifyLegacyManagedCandidate(observed, key) === 'adopt') {
+          return legacyDir;
+        }
+      }
+      // The first readable candidate decides: a second directory under the same
+      // legacy root holds the same host's bytes, so re-probing cannot change
+      // the verdict.
+      return null;
+    }
+    return null;
+  }
+
+  /**
    * Builds a unique install dir name from a release tag plus an ISO timestamp.
    * Uniqueness lets a forced reinstall of the same version land in a fresh
    * directory instead of overwriting the running binary on Windows.
@@ -1255,55 +1869,116 @@ export class BinaryDownloader {
   }
 
   /**
-   * Atomically updates the `current` pointer to a freshly populated install
-   * dir. The temp + rename pattern is the strongest form of "commit on
-   * success" we can use with no extra dependencies.
+   * Records which compatibility key owns this install.
+   *
+   * The namespace already encodes the key; this record is the cross-check that
+   * makes a namespace/candidate disagreement detectable instead of silent.
+   * Failure to write it is not fatal — an absent record simply leaves the
+   * namespace as the only claim.
    */
-  private commitVersionedInstall(installDirName: string): void {
-    const baseDir = this.getManagedBaseDir();
-    const pointerPath = path.join(baseDir, 'current');
-    const tmpPath = `${pointerPath}.tmp`;
-    fs.writeFileSync(tmpPath, `${installDirName}\n`, { encoding: 'utf8' });
-    fs.renameSync(tmpPath, pointerPath);
+  private writeInstallTargetRecord(
+    installDir: string,
+    compatibilityKey: string,
+    target: string,
+    emulation: ManagedEmulation | null,
+  ): void {
+    const record: ManagedInstallTargetRecord = {
+      schema_version: 'managed_install_target.v1',
+      compatibility_key: compatibilityKey,
+      target,
+      emulation,
+    };
+    try {
+      fs.writeFileSync(
+        path.join(installDir, MANAGED_INSTALL_TARGET_FILE),
+        `${JSON.stringify(record, null, 2)}\n`,
+        { encoding: 'utf8' },
+      );
+    } catch (e) {
+      this.outputChannel.appendLine(`Note: could not record managed install target: ${e}`);
+    }
   }
 
   /**
-   * Removes versioned install dirs older than the most recent two. Best
-   * effort only — failure to prune is logged but never propagates so it
-   * cannot mask install success.
-   *
-   * Keeps `currentName` plus one prior install for fallback recovery.
+   * Commits a freshly populated install dir: the versioned
+   * `managed_current_selection.v1` record first, then the legacy `current`
+   * dir pointer. Ordering is the consistency contract (#10083): when the
+   * selection record cannot be written (transient lock, full disk), the
+   * pointer is left unmoved so the previous selection stays authoritative
+   * in both records instead of the pointer claiming a new active install
+   * the policy would refuse. The temp + rename pattern is the strongest
+   * form of "commit on success" available with no extra dependencies, and
+   * the pointer lives inside the compatibility namespace, so committing here
+   * cannot move another target's selection.
    */
-  private pruneOldVersionedInstalls(baseDir: string, currentName: string): void {
-    let entries: { name: string; mtime: number }[] = [];
-    try {
-      entries = fs
-        .readdirSync(baseDir, { withFileTypes: true })
-        .filter((d) => d.isDirectory() && d.name !== currentName)
-        .map((d) => {
-          const full = path.join(baseDir, d.name);
-          let mtime = 0;
-          try {
-            mtime = fs.statSync(full).mtimeMs;
-          } catch {
-            /* ignore */
-          }
-          return { name: d.name, mtime };
-        })
-        .sort((a, b) => b.mtime - a.mtime);
-    } catch {
+  private commitVersionedInstall(
+    installDirName: string,
+    compatibilityKey?: string,
+    manifest?: ManagedCandidateManifest | null,
+  ): void {
+    const baseDir =
+      compatibilityKey === undefined
+        ? this.getManagedBaseDir()
+        : this.getManagedBaseDirForKey(compatibilityKey);
+    const pointerPath = path.join(baseDir, 'current');
+    if (manifest === null) {
+      // The install attempted to mint a candidate manifest and failed: a
+      // pointer move would activate an install the policy cannot see, which
+      // is the exact divergence the ordering contract exists to prevent.
+      // The landed dir stays on disk as an unreferenced fallback.
+      this.outputChannel.appendLine(
+        `Note: managed candidate manifest is absent for ${installDirName}; ` +
+          'activation refused, the previous selection stays authoritative.',
+      );
       return;
     }
-    // Keep most recent prior install; remove anything older.
-    for (const entry of entries.slice(1)) {
-      const target = path.join(baseDir, entry.name);
-      try {
-        fs.rmSync(target, { recursive: true, force: true });
-        this.outputChannel.appendLine(`Removed stale managed install: ${entry.name}`);
-      } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : String(err);
-        this.outputChannel.appendLine(`Could not remove stale install ${entry.name}: ${msg}`);
+    if (manifest !== undefined) {
+      const selection = commitManagedCandidateSelection(baseDir, manifest, (message) =>
+        this.outputChannel.appendLine(`Note: ${message}`),
+      );
+      if (selection === null) {
+        // Never move the pointer past a selection record the policy still
+        // refutes: the previous selection remains authoritative and the
+        // freshly landed dir stays on disk as an unreferenced fallback.
+        this.outputChannel.appendLine(
+          `Note: managed selection commit refused; activation pointer left unchanged (${installDirName} remains inactive).`,
+        );
+        return;
       }
+      this.outputChannel.appendLine(
+        `Managed current selection: generation ${selection.selection_generation} -> ${selection.candidate_id}`,
+      );
+    }
+    const tmpPath = `${pointerPath}.tmp`;
+    fs.writeFileSync(tmpPath, `${installDirName}\n`, { encoding: 'utf8' });
+    fs.renameSync(tmpPath, pointerPath);
+    this.outputChannel.appendLine(`Active managed install: ${installDirName}`);
+  }
+
+  /**
+   * Garbage-collects this namespace's proven-stale managed generations
+   * through the landed retention policy (#10083): enumeration of the
+   * candidate catalog, the current-selection record, and every persisted host
+   * reference, then deletion only of candidates classified
+   * `stale_unreferenced`. Recency never authorizes deletion; the
+   * immediately-prior generation is retained as the known-good fallback this
+   * runtime has always kept. Best effort — blocked or failed collection is
+   * logged but never propagates, so it cannot mask install success.
+   */
+  private collectStaleManagedCandidates(baseDir: string): void {
+    // The documented contract is "blocked or failed collection is logged but
+    // never propagates, so it cannot mask install success": enforce it here
+    // rather than trusting every layer below to stay non-throwing forever.
+    try {
+      const result = collectStaleManagedCandidates(baseDir, (message) =>
+        this.outputChannel.appendLine(message),
+      );
+      if (result.blockedReason !== null) {
+        this.outputChannel.appendLine(`Managed candidate GC skipped: ${result.blockedReason}.`);
+      }
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.outputChannel.appendLine(`Managed candidate GC failed: ${message}.`);
     }
   }
 
@@ -1328,7 +2003,16 @@ export class BinaryDownloader {
     if (activeDir) {
       return path.join(activeDir, dapName);
     }
-    return path.join(BinaryDownloader.computeManagedBaseDir(context), dapName);
+    return path.join(BinaryDownloader.hostManagedBaseDir(context), dapName);
+  }
+
+  /** The write root for this host, usable from static call sites. */
+  private static hostManagedBaseDir(context: vscode.ExtensionContext): string {
+    const key = hostManagedCompatibilityKeys()[0] ?? UNSUPPORTED_COMPATIBILITY_KEY;
+    return (
+      managedNamespaceDir(context.globalStorageUri.fsPath, key) ??
+      path.join(context.globalStorageUri.fsPath, 'managed', UNSUPPORTED_COMPATIBILITY_KEY)
+    );
   }
 
   /**
@@ -1374,14 +2058,24 @@ export class BinaryDownloader {
     if (intervalHours <= 0) {
       return;
     }
-    const lastCheck = this.context.globalState.get<number>('perl-lsp.lastUpdateCheck', 0);
+    // The check interval is a property of one target's managed row. A GNU host
+    // must not suppress a musl host's check merely because both hosts share
+    // one extension global state object (#9847). The unscoped pre-#9847 value
+    // is read once as a seed so upgrading does not force an immediate check.
+    const stateKey =
+      managedUpdateCheckStateKey(this.getHostCompatibilityKey()) ?? LEGACY_UPDATE_CHECK_STATE_KEY;
+    const scopedCheck = this.context.globalState.get<number>(stateKey, 0);
+    const lastCheck =
+      scopedCheck > 0
+        ? scopedCheck
+        : this.context.globalState.get<number>(LEGACY_UPDATE_CHECK_STATE_KEY, 0);
     const elapsedHours = (Date.now() - lastCheck) / (1000 * 60 * 60);
     if (elapsedHours < intervalHours) {
       return;
     }
 
     // Record that we checked (even if the check fails) to avoid hammering
-    await this.context.globalState.update('perl-lsp.lastUpdateCheck', Date.now());
+    await this.context.globalState.update(stateKey, Date.now());
 
     try {
       const localVersion = await this.getLocalVersion(binaryPath);
@@ -1438,22 +2132,5 @@ export class BinaryDownloader {
         resolve(parseLocalVersion(stdout));
       });
     });
-  }
-
-  private findBinary(dir: string, name: string): string | null {
-    const entries = fs.readdirSync(dir, { withFileTypes: true });
-
-    for (const entry of entries) {
-      const fullPath = path.join(dir, entry.name);
-
-      if (entry.isDirectory()) {
-        const found = this.findBinary(fullPath, name);
-        if (found) return found;
-      } else if (entry.name === name) {
-        return fullPath;
-      }
-    }
-
-    return null;
   }
 }

@@ -1,0 +1,69 @@
+{
+  "schema_version": 1,
+  "case_id": "E36-invariant-free-accessor",
+  "family": "structural_ownership_theater",
+  "purpose": "Accessors returning protected fields preserve no invariant and defeat the disallowed-fields seam.",
+  "incident_reference": null,
+  "subject": {
+    "scope": "workspace",
+    "target_kinds": [
+      "lib",
+      "bin",
+      "test"
+    ],
+    "profile": "all",
+    "platforms": [
+      "linux",
+      "windows",
+      "macos"
+    ],
+    "features": "default"
+  },
+  "governed_lint": null,
+  "dishonest_mutation": {
+    "kind": "source-snippet",
+    "language": "rust",
+    "trigger_evidence": [
+      "raw_token(&self)",
+      "protected field leaked verbatim"
+    ],
+    "content": "impl Session {\n    pub fn raw_token(&self) -> &Token { &self.token } // protected field leaked verbatim\n}\n",
+    "sha256": "41c04a8d169c476340230c0f282dafda27df08d46737cca53e45c30c6bcd0f53"
+  },
+  "rejecting_authority": {
+    "status": "pending_owner",
+    "owner_issue": 11255,
+    "unresolved_reason": "disallowed_fields selector activation (#11255) open; deny is live but the denylist is deliberately empty."
+  },
+  "expected_result": {
+    "result_class": "reject",
+    "reason_code": "invariant_free_accessor"
+  },
+  "positive_counterpart": {
+    "sanctioned_evidence": [
+      "token_fingerprint",
+      "self.token.fingerprint()"
+    ],
+    "note": "Accessor projects a safe view.",
+    "content": "impl Session {\n    pub fn token_fingerprint(&self) -> TokenFingerprint { self.token.fingerprint() }\n}\n",
+    "sha256": "10c9b66ad48001ea155f41485aec5345b8da1330ed66a6af553faad81a996a75"
+  },
+  "applicability": {
+    "packet_classes": [
+      "qualification",
+      "foundation",
+      "migration",
+      "activation",
+      "review"
+    ],
+    "domains": [
+      "clippy-core"
+    ]
+  },
+  "delta_provenance": {
+    "change_reason": "initial corpus freeze (#11649)",
+    "owning_issue": 11649,
+    "historical_interpretability": true
+  },
+  "claim_boundary": "Protected-fields programme (CLIPPY_PROTECTED_FIELDS.md) owns selector growth; accessor theater frozen here."
+}

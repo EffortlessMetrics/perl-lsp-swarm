@@ -13,8 +13,8 @@
 
 mod common;
 
-use common::{DapWorkflowSession, perl_available, workflow_timeout};
-use perl_dap::debug_adapter::{DapMessage, DebugAdapter};
+use common::{DapWorkflowSession, debuggee_perl_or_typed_skip, workflow_timeout};
+use perl_dap::debug_adapter::{DapMessage, DapMessageWithEpoch, DebugAdapter};
 use perl_tdd_support::must_some;
 use serde_json::{Value, json};
 use std::fs::write;
@@ -64,10 +64,10 @@ type TestResult = Result<(), Box<dyn std::error::Error>>;
 /// and each assertion documents the adapter contract it validates.
 #[test]
 fn test_lifecycle_full_ordered_sequence() -> TestResult {
-    if !perl_available() {
-        eprintln!("Skipping test_lifecycle_full_ordered_sequence - perl not available");
+    let Some(debuggee_perl) = debuggee_perl_or_typed_skip("test_lifecycle_full_ordered_sequence")
+    else {
         return Ok(());
-    }
+    };
 
     let workspace = tempdir()?;
     let script = workspace.path().join("lifecycle_matrix.pl");
@@ -83,7 +83,7 @@ fn test_lifecycle_full_ordered_sequence() -> TestResult {
 
     // ── Step 2: launch ─────────────────────────────────────────────
     // stopOnEntry=false: adapter does NOT emit stopped until configurationDone.
-    session.launch(&script_str)?;
+    session.launch_pinned(&debuggee_perl.binary, &script_str)?;
 
     // ── Step 3: setBreakpoints (verified=true) ──────────────────────────────────
     // DAP protocol ordering: setBreakpoints MUST be called before configurationDone.
@@ -210,12 +210,11 @@ fn test_lifecycle_full_ordered_sequence() -> TestResult {
 /// frames without a client request, this test would catch the race.
 #[test]
 fn test_lifecycle_stopped_event_precedes_stack_trace() -> TestResult {
-    if !perl_available() {
-        eprintln!(
-            "Skipping test_lifecycle_stopped_event_precedes_stack_trace - perl not available"
-        );
+    let Some(debuggee_perl) =
+        debuggee_perl_or_typed_skip("test_lifecycle_stopped_event_precedes_stack_trace")
+    else {
         return Ok(());
-    }
+    };
 
     let workspace = tempdir()?;
     let script = workspace.path().join("lifecycle_ordering.pl");
@@ -225,7 +224,7 @@ fn test_lifecycle_stopped_event_precedes_stack_trace() -> TestResult {
     let timeout = workflow_timeout();
     let mut session = DapWorkflowSession::new(timeout)?;
 
-    session.launch(&script_str)?;
+    session.launch_pinned(&debuggee_perl.binary, &script_str)?;
     session.set_breakpoints_checked(&script_str, &[BP_LINE])?;
     session.configuration_done()?;
 
@@ -257,15 +256,16 @@ fn test_lifecycle_stopped_event_precedes_stack_trace() -> TestResult {
     Ok(())
 }
 
-// ─── Test 3: scopes returns Locals AND Globals ─────────────────────────────────
+// ─── Test 3: scopes advertises the #10563 contract (Locals only) ─────────────
 
-/// Validates that `scopes` returns BOTH Locals and Globals scopes, and that the
-/// Locals scope contains a REAL named lexical variable from the user script.
+/// Validates that `scopes` advertises the current scope contract — Locals, with
+/// the retired Package/Globals scopes absent — and that the Locals scope
+/// contains a REAL named lexical variable from the user script.
 ///
-/// The DAP spec requires a `scopes` response for each frame; editors typically
-/// render Locals and Globals as separate expandable trees.  This test asserts
-/// that both scope references are positive and distinct, indicating non-empty,
-/// separate scope buckets.
+/// The DAP spec requires a `scopes` response for each frame. #10563 retired
+/// Package/Globals from the advertised contract, so this journey asserts the
+/// Locals reference is positive and the retired scope names stay unadvertised
+/// at a live stopped frame.
 ///
 /// Fixture layout (lifecycle_scopes.pl):
 ///   Line 1: use strict;
@@ -290,11 +290,11 @@ fn test_lifecycle_stopped_event_precedes_stack_trace() -> TestResult {
 /// is a regression guard: it will catch any future revert of the PADLIST walk that
 /// re-exposes the internal-frame bug.
 #[test]
-fn test_lifecycle_scopes_locals_and_globals() -> TestResult {
-    if !perl_available() {
-        eprintln!("Skipping test_lifecycle_scopes_locals_and_globals - perl not available");
+fn test_lifecycle_scopes_locals_contract() -> TestResult {
+    let Some(debuggee_perl) = debuggee_perl_or_typed_skip("test_lifecycle_scopes_locals_contract")
+    else {
         return Ok(());
-    }
+    };
 
     // Breakpoint line for THIS fixture only — one line past the first lexical
     // assignment so that `my $x = 10` has already executed when we stop.
@@ -302,7 +302,8 @@ fn test_lifecycle_scopes_locals_and_globals() -> TestResult {
 
     let workspace = tempdir()?;
     let script = workspace.path().join("lifecycle_scopes.pl");
-    // Script with an explicit `our` global so the Globals scope has at least one entry.
+    // Script keeps an explicit `our` global so this journey still witnesses how
+    // the advertised scope contract treats package-level variables.
     // Line layout (1-based):
     //   1: use strict;
     //   2: use warnings;
@@ -318,7 +319,7 @@ fn test_lifecycle_scopes_locals_and_globals() -> TestResult {
     let timeout = workflow_timeout();
     let mut session = DapWorkflowSession::new(timeout)?;
 
-    session.launch(&script_str)?;
+    session.launch_pinned(&debuggee_perl.binary, &script_str)?;
     let resolved = session.set_breakpoints_checked(&script_str, &[SCOPES_BP_LINE])?;
     let resolved_line =
         resolved.first().copied().ok_or("set_breakpoints_checked returned empty resolved lines")?;
@@ -343,19 +344,24 @@ fn test_lifecycle_scopes_locals_and_globals() -> TestResult {
         frame_info.frame_id
     );
 
-    // Globals scope: must be present and positive.
-    let globals_ref = session.scopes_globals_ref(frame_info.frame_id)?;
+    // #10563 scope contract: a live stopped frame advertises only Locals (plus
+    // Arguments when the frame has captured arguments). Package and Globals
+    // are intentionally not advertised, so this journey proves the retired
+    // scopes stay absent instead of expecting the pre-#10563 Globals entry.
+    let scopes_resp = session.request("scopes", Some(json!({"frameId": frame_info.frame_id})));
+    let scopes_body = session.expect_success(&scopes_resp, "scopes")?;
+    let advertised: Vec<&str> = scopes_body
+        .as_ref()
+        .and_then(|body| body.get("scopes"))
+        .and_then(Value::as_array)
+        .map(|scopes| {
+            scopes.iter().filter_map(|scope| scope.get("name").and_then(Value::as_str)).collect()
+        })
+        .unwrap_or_default();
     assert!(
-        globals_ref > 0,
-        "Globals scope variablesReference must be positive (frameId={})",
-        frame_info.frame_id
-    );
-
-    // Locals and Globals must have DIFFERENT references (no aliasing).
-    assert_ne!(
-        locals_ref, globals_ref,
-        "Locals and Globals variablesReference must be distinct \
-         (locals={locals_ref}, globals={globals_ref})"
+        !advertised.iter().any(|name| *name == "Globals" || *name == "Package"),
+        "#10563: Package/Globals scopes must stay unadvertised at a live stopped frame; \
+         got {advertised:?}"
     );
 
     // Locals must contain the real lexical `$x` (assigned at line 5).
@@ -380,12 +386,9 @@ fn test_lifecycle_scopes_locals_and_globals() -> TestResult {
          SCOPES_BP_LINE={SCOPES_BP_LINE}; got locals={locals:?}"
     );
 
-    // Globals must be non-empty (our $global = 42 is in scope).
-    let globals = session.variables(globals_ref)?;
-    assert!(
-        !globals.is_empty(),
-        "Globals scope variables must be non-empty (script declares `our $global`)"
-    );
+    // The Locals guards above are the part of this test that proves real
+    // inspection. Globals enumeration returns nothing at a live breakpoint
+    // (#10162), and since #10563 the Globals scope is not advertised at all.
 
     session.continue_exec(frame_info.thread_id)?;
     let _ = session.drain_until_event("terminated");
@@ -412,12 +415,11 @@ fn test_lifecycle_scopes_locals_and_globals() -> TestResult {
 /// currently expose a `terminate` handler beyond this natural-exit path.
 #[test]
 fn test_lifecycle_continue_leads_to_terminated_event() -> TestResult {
-    if !perl_available() {
-        eprintln!(
-            "Skipping test_lifecycle_continue_leads_to_terminated_event - perl not available"
-        );
+    let Some(debuggee_perl) =
+        debuggee_perl_or_typed_skip("test_lifecycle_continue_leads_to_terminated_event")
+    else {
         return Ok(());
-    }
+    };
 
     let workspace = tempdir()?;
     let script = workspace.path().join("lifecycle_exit.pl");
@@ -427,7 +429,7 @@ fn test_lifecycle_continue_leads_to_terminated_event() -> TestResult {
     let timeout = workflow_timeout();
     let mut session = DapWorkflowSession::new(timeout)?;
 
-    session.launch(&script_str)?;
+    session.launch_pinned(&debuggee_perl.binary, &script_str)?;
     session.set_breakpoints_checked(&script_str, &[BP_LINE])?;
     session.configuration_done()?;
 
@@ -460,10 +462,11 @@ fn test_lifecycle_continue_leads_to_terminated_event() -> TestResult {
 ///   name (string), value (string), variablesReference (number >= 0)
 #[test]
 fn test_lifecycle_variables_non_empty_at_stop() -> TestResult {
-    if !perl_available() {
-        eprintln!("Skipping test_lifecycle_variables_non_empty_at_stop - perl not available");
+    let Some(debuggee_perl) =
+        debuggee_perl_or_typed_skip("test_lifecycle_variables_non_empty_at_stop")
+    else {
         return Ok(());
-    }
+    };
 
     let workspace = tempdir()?;
     let script = workspace.path().join("lifecycle_vars.pl");
@@ -473,7 +476,7 @@ fn test_lifecycle_variables_non_empty_at_stop() -> TestResult {
     let timeout = workflow_timeout();
     let mut session = DapWorkflowSession::new(timeout)?;
 
-    session.launch(&script_str)?;
+    session.launch_pinned(&debuggee_perl.binary, &script_str)?;
     session.set_breakpoints_checked(&script_str, &[BP_LINE])?;
     session.configuration_done()?;
 
@@ -540,29 +543,232 @@ fn test_stacktrace_no_session_returns_empty() -> Result<(), Box<dyn std::error::
 // ─── Cleanup/teardown unit-level matrix (C1–C6) ──────────────────────────────
 //
 // These six tests exercise the lifecycle cleanup and teardown contracts at the
-// protocol level — no live Perl process required.  They complement the e2e
-// tests above by covering edge cells (terminate, attach→terminate, disconnect,
-// post-terminate requests, relaunch, restart) that cannot be exercised through
-// `DapWorkflowSession` without a real perl -d.
+// protocol level. C1, C2, C4, C5, and C6 need no live Perl process. C3 launches
+// a real stopOnEntry session so disconnect can observe genuine termination; it
+// uses `debuggee_perl_or_typed_skip` like the live-session tests above.
 //
 // Each test uses `make_adapter_with_rx` + `wait_cleanup_event` (defined below).
 
-fn make_adapter_with_rx() -> (DebugAdapter, Receiver<DapMessage>) {
+fn make_adapter_with_rx() -> (DebugAdapter, Receiver<DapMessageWithEpoch>) {
     let (tx, rx) = sync_channel(64);
     let mut adapter = DebugAdapter::new();
     adapter.set_event_sender(tx);
     (adapter, rx)
 }
 
+fn require_terminal_count(
+    rx: &Receiver<DapMessageWithEpoch>,
+    expected: usize,
+    context: &str,
+) -> TestResult {
+    let observed = rx
+        .try_iter()
+        .filter(
+            |message| matches!(message, (DapMessage::Event { event, .. }, _) if event == "terminated"),
+        )
+        .count();
+    if observed != expected {
+        return Err(
+            format!("{context}: expected {expected} terminal events, got {observed}").into()
+        );
+    }
+    Ok(())
+}
+
+fn require_lifecycle_response(response: DapMessage, command: &str, success: bool) -> TestResult {
+    match response {
+        DapMessage::Response { command: actual, success: actual_success, .. }
+            if actual == command && actual_success == success =>
+        {
+            Ok(())
+        }
+        other => Err(format!("expected {command} success={success}, got {other:?}").into()),
+    }
+}
+
+#[test]
+fn disconnect_terminal_initial_and_rejected_launch() -> TestResult {
+    for reject_launch in [false, true] {
+        let (mut adapter, rx) = make_adapter_with_rx();
+        require_lifecycle_response(
+            adapter.handle_request(1, "initialize", None),
+            "initialize",
+            true,
+        )?;
+        if reject_launch {
+            let response = adapter.handle_request(2, "launch", Some(json!({"program": ""})));
+            match response {
+                DapMessage::Response { success: false, message: Some(message), .. }
+                    if message.contains("No Perl script was specified") => {}
+                other => {
+                    return Err(format!("expected empty-program refusal, got {other:?}").into());
+                }
+            }
+        }
+        require_terminal_count(&rx, 0, "before first disconnect")?;
+        require_lifecycle_response(
+            adapter.handle_request(3, "disconnect", None),
+            "disconnect",
+            true,
+        )?;
+        require_terminal_count(&rx, 0, "first no-debuggee disconnect")?;
+        require_lifecycle_response(
+            adapter.handle_request(4, "disconnect", None),
+            "disconnect",
+            true,
+        )?;
+        require_terminal_count(&rx, 0, "duplicate disconnect")?;
+    }
+    Ok(())
+}
+
+#[test]
+fn disconnect_terminal_after_terminate_and_rejected_replacement() -> TestResult {
+    for reject_replacement in [false, true] {
+        let (mut adapter, rx) = make_adapter_with_rx();
+        require_lifecycle_response(
+            adapter.handle_request(1, "initialize", None),
+            "initialize",
+            true,
+        )?;
+        require_lifecycle_response(
+            adapter.handle_request(2, "terminate", None),
+            "terminate",
+            true,
+        )?;
+        require_terminal_count(&rx, 1, "initial terminate")?;
+        if reject_replacement {
+            let response = adapter.handle_request(3, "launch", Some(json!({"program": ""})));
+            match response {
+                DapMessage::Response { success: false, message: Some(message), .. }
+                    if message.contains("No Perl script was specified") => {}
+                other => return Err(format!("expected rejected replacement, got {other:?}").into()),
+            }
+            require_terminal_count(&rx, 0, "rejected replacement")?;
+        }
+        require_lifecycle_response(
+            adapter.handle_request(4, "disconnect", None),
+            "disconnect",
+            true,
+        )?;
+        require_terminal_count(&rx, 0, "disconnect after terminated lifecycle")?;
+        require_lifecycle_response(
+            adapter.handle_request(5, "terminate", None),
+            "terminate",
+            true,
+        )?;
+        require_terminal_count(&rx, 1, "repeated explicit terminate remains acknowledged")?;
+        require_lifecycle_response(
+            adapter.handle_request(6, "disconnect", None),
+            "disconnect",
+            true,
+        )?;
+        require_terminal_count(&rx, 0, "disconnect after repeated terminate")?;
+    }
+    Ok(())
+}
+
+#[test]
+fn disconnect_terminal_successful_replacement_reopens_lifecycle() -> TestResult {
+    let Some(_) =
+        debuggee_perl_or_typed_skip("disconnect_terminal_successful_replacement_reopens_lifecycle")
+    else {
+        return Ok(());
+    };
+    let workspace = tempdir()?;
+    let script = workspace.path().join("disconnect_replacement.pl");
+    write(&script, lifecycle_script_content())?;
+    let script_str = script.to_str().ok_or("replacement script path is not valid UTF-8")?;
+    let (mut adapter, rx) = make_adapter_with_rx();
+    require_lifecycle_response(adapter.handle_request(1, "initialize", None), "initialize", true)?;
+    require_lifecycle_response(adapter.handle_request(2, "terminate", None), "terminate", true)?;
+    require_terminal_count(&rx, 1, "close initial lifecycle")?;
+    for request_seq in [10, 20] {
+        let arguments = common::resolved_launch_arguments_for_test(script_str, None, true)?;
+        require_lifecycle_response(
+            adapter.handle_request(request_seq, "launch", Some(arguments)),
+            "launch",
+            true,
+        )?;
+        let deadline = std::time::Instant::now() + Duration::from_secs(1);
+        loop {
+            match rx.recv_timeout(deadline.saturating_duration_since(std::time::Instant::now())) {
+                Ok((DapMessage::Event { event, .. }, _)) if event == "terminated" => {
+                    return Err(
+                        "replacement terminated before establishing a stopped debuggee".into()
+                    );
+                }
+                Ok((DapMessage::Event { event, .. }, _)) if event == "stopped" => break,
+                Ok(_) => {}
+                Err(error) => return Err(format!("replacement did not stop: {error}").into()),
+            }
+        }
+        require_terminal_count(&rx, 0, "replacement is live")?;
+        require_lifecycle_response(
+            adapter.handle_request(request_seq + 1, "disconnect", None),
+            "disconnect",
+            true,
+        )?;
+        require_terminal_count(&rx, 1, "replacement disconnect")?;
+        require_lifecycle_response(
+            adapter.handle_request(request_seq + 2, "disconnect", None),
+            "disconnect",
+            true,
+        )?;
+        require_terminal_count(&rx, 0, "duplicate replacement disconnect")?;
+    }
+    Ok(())
+}
+
 /// Drain the event channel looking for an event with the given name, up to
 /// `timeout_ms` total. Returns the event body on match.
-fn wait_cleanup_event(rx: &Receiver<DapMessage>, name: &str, timeout_ms: u64) -> Option<Value> {
+fn wait_cleanup_event(
+    rx: &Receiver<DapMessageWithEpoch>,
+    name: &str,
+    timeout_ms: u64,
+) -> Option<Value> {
     let deadline = std::time::Instant::now() + Duration::from_millis(timeout_ms);
     while std::time::Instant::now() < deadline {
         let remaining = deadline.saturating_duration_since(std::time::Instant::now());
         match rx.recv_timeout(remaining) {
-            Ok(DapMessage::Event { event, body, .. }) if event == name => {
+            Ok((DapMessage::Event { event, body, .. }, _)) if event == name => {
                 return Some(body.unwrap_or(Value::Null));
+            }
+            Ok(_) => continue,
+            Err(_) => break,
+        }
+    }
+    None
+}
+
+/// Drain waiting for `name`, recording whether a terminal event was seen
+/// and discarded along the way. `terminated`/`exited` is once-only per
+/// session generation (#15887, same family as #15884): a fast-exiting
+/// debuggee can commit it during the `initialized`/`stopped` setup waits,
+/// in which case a later post-disconnect-only assert would spin out though
+/// the adapter behaved correctly. Callers assert at-least-once per
+/// generation instead of strictly-post-disconnect.
+fn wait_cleanup_event_track_terminal(
+    rx: &Receiver<DapMessageWithEpoch>,
+    name: &str,
+    timeout: Duration,
+    terminated_seen: &mut bool,
+) -> Option<Value> {
+    let deadline = std::time::Instant::now() + timeout;
+    while std::time::Instant::now() < deadline {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        match rx.recv_timeout(remaining) {
+            Ok((DapMessage::Event { event, body, .. }, _)) if event == name => {
+                if event == "terminated" || event == "exited" {
+                    *terminated_seen = true;
+                }
+                return Some(body.unwrap_or(Value::Null));
+            }
+            Ok((DapMessage::Event { event, .. }, _)) => {
+                if event == "terminated" || event == "exited" {
+                    *terminated_seen = true;
+                }
+                continue;
             }
             Ok(_) => continue,
             Err(_) => break,
@@ -653,38 +859,50 @@ fn test_terminate_preserves_breakpoints_but_replace_still_clears() -> TestResult
     Ok(())
 }
 
-// ── C2: attach then terminate cleanup ────────────────────────────────────────
+// ── C2: refused PID attach leaves no session to leak ─────────────────────────
 
-/// C2 — PID-attach session → terminate → session torn down, no leaked handle.
+/// C2 — PID-attach refusal (#8109) → no session created, no stopped event,
+/// and nothing leaked: subsequent `threads` stays empty.
 ///
-/// After terminate the session state is cleared and a "terminated" event is
-/// emitted. Subsequent `threads` calls return an empty list (no leaked attach
-/// thread), confirming the handle was released.
+/// #8109 removed the signal-control PID attach: process existence plus signal
+/// control never established a debugger transport, so the adapter must refuse
+/// the request instead of synthesizing a stopped session. The no-leak property
+/// this row guards is now that a refusal creates no session at all — later
+/// `threads` calls stay empty.
 #[test]
-fn test_attach_then_terminate_cleanup() -> TestResult {
+fn test_refused_pid_attach_leaves_no_session_to_leak() -> TestResult {
     let (mut adapter, rx) = make_adapter_with_rx();
 
-    // Attach in PID-signal-control mode.  #4638: use current process PID so
-    // verify_attach_target succeeds.
+    // Attach in PID-signal-control mode is refused fail-closed (#8109).
     let attach_response =
         adapter.handle_request(1, "attach", Some(json!({ "processId": std::process::id() })));
-    assert_cleanup_success(&attach_response, "attach")?;
+    match &attach_response {
+        DapMessage::Response { success, command, body, message, .. } => {
+            if *command != "attach" {
+                return Err(format!("expected attach response command, got {command}").into());
+            }
+            if *success {
+                return Err("PID attach must be refused (#8109)".into());
+            }
+            if body.is_some() {
+                return Err("refusal must not carry an attach body".into());
+            }
+            let msg = message.as_deref().ok_or("Expected refusal message")?;
+            if !msg.contains("not supported") {
+                return Err(format!("refusal must name the disposition: {msg}").into());
+            }
+        }
+        other => return Err(format!("Expected attach response, got {other:?}").into()),
+    }
 
-    // Drain the "stopped" event emitted by attach.
-    let _ = wait_cleanup_event(&rx, "stopped", 200);
-
-    // Terminate the attached session.
-    let term_response = adapter.handle_request(2, "terminate", None);
-    assert_cleanup_success(&term_response, "terminate")?;
-
-    // "terminated" event must arrive.
+    // No synthetic "stopped" event may be emitted by the refusal.
     assert!(
-        wait_cleanup_event(&rx, "terminated", 300).is_some(),
-        "terminate after attach must emit a terminated event"
+        wait_cleanup_event(&rx, "stopped", 200).is_none(),
+        "a refused PID attach must not emit a stopped event (#8109)"
     );
 
-    // The PID session is torn down — threads must return empty (no leaked handle).
-    let threads_response = adapter.handle_request(3, "threads", None);
+    // threads must return empty (no leaked PID session).
+    let threads_response = adapter.handle_request(2, "threads", None);
     match threads_response {
         DapMessage::Response { success: true, body: Some(ref body), .. } => {
             let threads = body
@@ -693,7 +911,7 @@ fn test_attach_then_terminate_cleanup() -> TestResult {
                 .ok_or("threads body must have threads array")?;
             assert!(
                 threads.is_empty(),
-                "after terminate, threads must be empty (no leaked PID session), got {threads:?}"
+                "after a refused PID attach, threads must be empty (no leaked session), got {threads:?}"
             );
         }
         DapMessage::Response { success: true, body: None, .. } => {
@@ -707,54 +925,96 @@ fn test_attach_then_terminate_cleanup() -> TestResult {
 
 // ── C3: disconnect clears active session ─────────────────────────────────────
 
-/// C3 — active session (with breakpoints configured) → disconnect → state
-/// cleared: "terminated" event emitted, subsequent stackTrace/modules return
+/// C3 — active launch-owned session → disconnect → state cleared:
+/// "terminated" event emitted, subsequent stackTrace/modules return
 /// protocol-safe responses (no panic).
+///
+/// Requires a pipe-capable Perl interpreter. Hosts without one skip via
+/// `debuggee_perl_or_typed_skip`, matching the other live-session tests.
 #[test]
 fn test_disconnect_clears_active_session() -> TestResult {
+    let Some(_) = debuggee_perl_or_typed_skip("test_disconnect_clears_active_session") else {
+        return Ok(());
+    };
+
     let (mut adapter, rx) = make_adapter_with_rx();
+    let workspace = tempdir()?;
+    let script = workspace.path().join("lifecycle_c3.pl");
+    write(&script, lifecycle_script_content())?;
+    let script_str = script.to_str().ok_or("C3 script path is not valid UTF-8")?;
 
-    // Simulate an "active" session: initialize, set breakpoints, configurationDone.
-    let _ = adapter.handle_request(1, "initialize", None);
-    let _ = wait_cleanup_event(&rx, "initialized", 100);
-
-    let _ = adapter.handle_request(
-        2,
-        "setBreakpoints",
-        Some(json!({
-            "source": { "path": "/tmp/test_lifecycle_c3.pl" },
-            "breakpoints": [{ "line": 10 }, { "line": 20 }]
-        })),
-    );
-
-    let _ = adapter.handle_request(3, "configurationDone", None);
+    // Establish a real active launch-owned session before disconnect. The pinned
+    // interpreter and stopOnEntry keep the child alive at the disconnect boundary.
+    let timeout = workflow_timeout();
+    let mut terminated_seen = false;
+    let initialize = adapter.handle_request(1, "initialize", None);
+    assert_cleanup_success(&initialize, "initialize")?;
+    if wait_cleanup_event_track_terminal(&rx, "initialized", timeout, &mut terminated_seen)
+        .is_none()
+    {
+        return Err("initialize must emit an initialized event".into());
+    }
+    let launch_args = common::resolved_launch_arguments_for_test(script_str, None, true)?;
+    let launch = adapter.handle_request(2, "launch", Some(launch_args));
+    assert_cleanup_success(&launch, "launch")?;
+    if wait_cleanup_event_track_terminal(&rx, "stopped", timeout, &mut terminated_seen).is_none() {
+        return Err("stopOnEntry launch must establish an active stopped session".into());
+    }
 
     // Disconnect.
-    let dc_response = adapter.handle_request(4, "disconnect", None);
+    let dc_response = adapter.handle_request(3, "disconnect", None);
     assert_cleanup_success(&dc_response, "disconnect")?;
 
-    // "terminated" event must be emitted.
+    // `terminated` is once-only per generation: it may already have been
+    // consumed during setup on a fast-exiting debuggee. Assert at-least-once
+    // per generation with a bounded grace drain (same discipline as
+    // `common::DapWorkflowSession::disconnect`), not strictly-post-disconnect.
+    let grace = timeout.min(Duration::from_secs(2));
+    let _ = wait_cleanup_event_track_terminal(&rx, "terminated", grace, &mut terminated_seen);
     assert!(
-        wait_cleanup_event(&rx, "terminated", 300).is_some(),
-        "disconnect must emit a terminated event"
+        terminated_seen,
+        "disconnect must yield a terminated event for the generation \
+         (already-consumed early termination counts)"
+    );
+    // At-most-once: no duplicate terminal event may be queued after accounting.
+    let duplicates = rx
+        .try_iter()
+        .filter(|message| {
+            matches!(message, (DapMessage::Event { event, .. }, _)
+                if event == "terminated" || event == "exited")
+        })
+        .count();
+    assert!(
+        duplicates == 0,
+        "terminated is once-only: duplicate terminal events queued after disconnect"
     );
 
-    // After disconnect, stackTrace must return a valid protocol Response (no panic).
-    let st_response = adapter.handle_request(5, "stackTrace", Some(json!({ "threadId": 1 })));
+    // After disconnect, stackTrace must prove the active session was cleared.
+    let st_response = adapter.handle_request(4, "stackTrace", Some(json!({ "threadId": 1 })));
     match st_response {
-        DapMessage::Response { command, .. } => {
+        DapMessage::Response { command, success: true, body: Some(body), .. } => {
             assert_eq!(command, "stackTrace", "stackTrace command must be echoed correctly");
+            let frames = body
+                .get("stackFrames")
+                .and_then(Value::as_array)
+                .ok_or("stackTrace after disconnect must include stackFrames")?;
+            if !frames.is_empty() {
+                return Err(format!(
+                    "stackTrace after disconnect must have empty stackFrames, got {frames:?}"
+                )
+                .into());
+            }
         }
         other => {
             return Err(format!(
-                "stackTrace after disconnect must return a Response, got {other:?}"
+                "stackTrace after disconnect must return a successful empty response, got {other:?}"
             )
             .into());
         }
     }
 
     // modules must not panic and must return a valid response.
-    let modules_response = adapter.handle_request(6, "modules", Some(json!({})));
+    let modules_response = adapter.handle_request(5, "modules", Some(json!({})));
     match modules_response {
         DapMessage::Response { .. } => {}
         other => {
@@ -905,11 +1165,11 @@ fn test_relaunch_after_terminate_no_stale_state() -> TestResult {
 /// C6 — restart without prior launch args → clean protocol error; adapter
 /// remains usable afterwards.
 ///
-/// `handle_restart` falls back to `last_launch_args` when no arguments are
-/// provided. Without a prior successful launch, `last_launch_args` is None and
-/// the handler must return a descriptive, non-panicking error. This locks the
-/// error-path behaviour and validates that restart does not crash or produce
-/// an opaque "Unknown command" response.
+/// #9581: restart is a floored secondary capability, so the dispatch gate
+/// rejects the request before `handle_restart` is ever reached — no stored
+/// launch args are consulted, no session/generation state is touched. This
+/// locks the explicit unsupported disposition and validates that restart does
+/// not crash or produce an opaque "Unknown command" response.
 #[test]
 fn test_restart_without_prior_launch_fails_gracefully() -> TestResult {
     let (mut adapter, _rx) = make_adapter_with_rx();
@@ -920,20 +1180,15 @@ fn test_restart_without_prior_launch_fails_gracefully() -> TestResult {
     match restart {
         DapMessage::Response { success, command, message, .. } => {
             assert_eq!(command, "restart", "command field must echo restart");
-            assert!(
-                !success,
-                "restart without prior launch must fail (no configuration to replay)"
-            );
+            assert!(!success, "restart without prior launch must fail (floored by #9581)");
             let msg = message.as_deref().unwrap_or("");
             assert!(
                 !msg.contains("Unknown command"),
                 "restart must route to its handler, not the unknown-command fallback: {msg}"
             );
             assert!(
-                msg.contains("no previous launch")
-                    || msg.contains("Cannot restart")
-                    || msg.contains("no launch configuration"),
-                "restart error must explain missing configuration, got: {msg}"
+                msg.contains("unsupported") && msg.contains("supportsRestartRequest"),
+                "restart error must be the explicit #9581 unsupported disposition, got: {msg}"
             );
         }
         other => {

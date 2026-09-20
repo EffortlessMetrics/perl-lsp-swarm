@@ -1,4 +1,26 @@
 #!/usr/bin/env python3
-from claim_digest import main
+"""Retired claim-digest command-line entry point.
 
-raise SystemExit(main())
+The claim_digest.py module remains readable for historical fixture and incident-analysis
+compatibility. It no longer has a public CLI role in review currentness.
+"""
+
+from __future__ import annotations
+
+import sys
+
+
+MESSAGE = """RETIRED: scripts/reviews/claim-digest no longer produces review authority.
+
+Use the provider-native review flow. Record useful claim boundaries directly in the PR,
+submit evidence-backed reviews and findings, and use the public review-convergence
+wrapper for current integration state.
+
+Historical claim-digest parsing remains available to compatibility tests through
+scripts/reviews/claim_digest.py; it is not a current review verdict or merge gate.
+"""
+
+
+if __name__ == "__main__":
+    print(MESSAGE, file=sys.stderr)
+    raise SystemExit(2)

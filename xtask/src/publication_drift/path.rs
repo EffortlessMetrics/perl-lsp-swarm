@@ -62,15 +62,15 @@ pub(super) fn normalize_release_version(raw: &str) -> Option<String> {
         return None;
     }
 
-    if let Some(prerelease) = prerelease {
-        if !valid_identifier_list(prerelease, true) {
-            return None;
-        }
+    if let Some(prerelease) = prerelease
+        && !valid_identifier_list(prerelease, true)
+    {
+        return None;
     }
-    if let Some(build) = build {
-        if !valid_identifier_list(build, false) {
-            return None;
-        }
+    if let Some(build) = build
+        && !valid_identifier_list(build, false)
+    {
+        return None;
     }
 
     let mut normalized = format!("{major}.{minor}.{patch}");
@@ -124,18 +124,9 @@ mod tests {
             valid_repository_path("xtask/src/publication_drift/mod.rs"),
             "canonical repository path must be accepted"
         );
-        for invalid in [
-            "",
-            "/abs",
-            "a//b",
-            "a/",
-            "../etc/passwd",
-            "a/./b",
-            "a/../b",
-            "a\\b",
-            "C:/x",
-            "a\0b",
-        ] {
+        for invalid in
+            ["", "/abs", "a//b", "a/", "../etc/passwd", "a/./b", "a/../b", "a\\b", "C:/x", "a\0b"]
+        {
             assert!(!valid_repository_path(invalid), "invalid path was accepted: {invalid:?}");
         }
     }
@@ -146,16 +137,9 @@ mod tests {
             valid_repository_slug("EffortlessMetrics/perl-lsp-swarm"),
             "canonical repository slug must be accepted"
         );
-        for invalid in [
-            "",
-            "owner",
-            "owner/",
-            "/repo",
-            "./repo",
-            "owner/..",
-            "a/b/c",
-            "own er/repo",
-        ] {
+        for invalid in
+            ["", "owner", "owner/", "/repo", "./repo", "owner/..", "a/b/c", "own er/repo"]
+        {
             assert!(!valid_repository_slug(invalid), "invalid slug was accepted: {invalid:?}");
         }
     }

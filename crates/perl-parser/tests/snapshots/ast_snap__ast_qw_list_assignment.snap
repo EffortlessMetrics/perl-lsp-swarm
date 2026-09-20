@@ -1,5 +1,5 @@
 ---
-source: crates/perl-parser/tests/ast_snapshot_tests.rs
+source: crates/perl-parser/tests/ast_snap.rs
 expression: "parse_sexp(\"my @days = qw(Mon Tue Wed Thu Fri);\")"
 ---
-(source_file (my_declaration (variable @ days)(array (string "Mon") (string "Tue") (string "Wed") (string "Thu") (string "Fri"))))
+(source_file (statements (my_declaration (declarator my) (variable (variable (sigil @) (name days))) (initializer (array (elements (string (value Mon))) (elements (string (value Tue))) (elements (string (value Wed))) (elements (string (value Thu))) (elements (string (value Fri))))))))

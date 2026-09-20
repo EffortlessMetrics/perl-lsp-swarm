@@ -2,6 +2,10 @@
 # scripts/agents/guard.sh
 set -euo pipefail
 
+# This file is a sourced helper; its Cargo commands are reached by
+# scripts/agents/run-tests.sh only after that entrypoint runs the shared guard.
+# cargo-toolchain-guard: exempt — the caller owns the single preflight guard.
+
 # ---------------------------
 # Defaults (override via env)
 # ---------------------------

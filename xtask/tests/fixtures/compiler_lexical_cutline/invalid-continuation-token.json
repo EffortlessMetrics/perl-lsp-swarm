@@ -1,0 +1,24 @@
+{
+  "schema_version": "compiler_lexical_cutline_cases.v1",
+  "manifest": "compiler-lexical-cutline-cases",
+  "issue": 12156,
+  "owner": "perl-lsp compiler program",
+  "status": "proof-definition",
+  "updated": "2026-08-25",
+  "claim_boundary": "invalid fixture: a client-carried preparation continuation token is forbidden",
+  "authorities": {},
+  "protocol_lifecycle": {
+    "prepare_rename_result_shapes": ["range", "range_placeholder", "default_behavior", "null"],
+    "rename_params_fields": ["textDocument", "position", "newName"],
+    "client_carried_continuation_token": "forbidden",
+    "preparation_continuation": "opaque-plan-token",
+    "stale_prior_observation_rule": "invalid fixture",
+    "correlation_outcomes": []
+  },
+  "vocabulary": {},
+  "fixtures": [],
+  "work_invariants": [],
+  "cases": [],
+  "mutations": [],
+  "test_targets": []
+}

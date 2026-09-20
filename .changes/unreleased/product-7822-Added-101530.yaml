@@ -1,0 +1,9 @@
+project: product
+component: Compatibility
+kind: Added
+body: Add the first actual nvim-dap receipt for the native perl-dap preview path.
+time: 2026-08-13T10:15:30Z
+custom:
+  PR: "7822"
+  Slug: neovim-dap-preview
+  Breaking: "no"

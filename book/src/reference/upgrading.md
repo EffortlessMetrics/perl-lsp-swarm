@@ -597,7 +597,7 @@ cargo doc --open
 
 ### Protocol Compliance
 
-**v0.9.x Compliance:**
+**v0.9.x Compliance** (historical declaration; evidence-backed status tracked in #6731):
 - **LSP Coverage**: 100% (53/53 advertised features)
 - **Protocol Compliance**: 100% (88/88 including plumbing)
 - **LSP Version**: 3.18
@@ -1070,7 +1070,7 @@ Compilation error
 ✅ **Refactoring Engine**: Extract method, inline variable, move code
 ✅ **Performance**: 3-200x faster symbol lookups and parsing
 ✅ **Security**: Path traversal and command injection protection
-✅ **LSP 3.18**: 100% protocol compliance, inlay hints, call hierarchy
+✅ **LSP 3.18**: 100% protocol compliance, inlay hints, call hierarchy (historical declaration; evidence-backed status tracked in #6731)
 ✅ **DAP Phase 1**: Native debugger with launch/breakpoints/step
 ✅ **Test Infrastructure**: Significantly faster test suite, adaptive threading
 

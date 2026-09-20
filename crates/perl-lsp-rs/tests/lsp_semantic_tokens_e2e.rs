@@ -7,8 +7,8 @@ use support::lsp_client::LspClient;
 #[test]
 
 fn semantic_tokens_expected_ranges() -> Result<(), Box<dyn std::error::Error>> {
-    let bin = env!("CARGO_BIN_EXE_perl-lsp");
-    let mut client = LspClient::spawn(bin)?;
+    let bin = support::product_binary_path()?;
+    let mut client = LspClient::spawn(&bin)?;
 
     let uri = "file:///semantic.pl";
     let source = "my $x = 1;\nsub foo { $x }\nfoo();\n";
@@ -57,7 +57,7 @@ fn semantic_tokens_expected_ranges() -> Result<(), Box<dyn std::error::Error>> {
         (1, 0, 3, 13),  // sub - keyword (index 13)
         (1, 4, 3, 7),   // foo - function (index 7)
         (1, 10, 2, 11), // $x - variable reference (index 11)
-        (2, 0, 5, 7),   // foo(); - function (index 7)
+        (2, 0, 3, 7),   // foo - function name only per #5077 (index 7)
     ];
 
     assert_eq!(tokens.len(), expected_non_overlapping.len(), "semantic token count mismatch");

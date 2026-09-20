@@ -88,7 +88,6 @@
 //! - **Cancellation aware**: Respects LSP cancellation for responsiveness
 //! - **Memory efficient**: Uses streaming iteration without loading all results
 
-pub(crate) mod auto_import;
 mod builtins;
 mod context;
 mod file_path;
@@ -96,7 +95,9 @@ mod functions;
 mod import_map;
 mod items;
 mod keywords;
+pub use keywords::FUNDAMENTAL_CONSTRUCT_LABELS;
 mod lexical_context;
+pub(crate) mod lexical_visibility;
 mod methods;
 mod packages;
 mod regex_patterns;
@@ -118,6 +119,7 @@ pub use self::workspace::collect_module_names_from_roots_with_cache;
 pub use self::xs_api::{add_xs_api_completions_for_prefix, get_xs_api_documentation, is_xs_source};
 
 use crate::providers::completion::module_scan_cache::ModuleCompletionScanCache;
+use import_map::RuntimeImportAuthority;
 use perl_parser_core::ast::Node;
 use perl_semantic_analyzer::class_model::{ClassModel, ClassModelBuilder, Framework};
 use perl_semantic_analyzer::semantic::{BuiltinDoc, get_moose_type_documentation};
@@ -175,6 +177,7 @@ pub struct CompletionProvider {
     type_engine: Option<TypeInferenceEngine>,
     workspace_index: Option<Arc<WorkspaceIndex>>,
     import_map: ImportMap,
+    runtime_imports: Vec<RuntimeImportAuthority>,
     /// Modules referenced by `use` statements in the buffer, regardless
     /// of explicit symbol lists. Used by the bounded Unknown-receiver
     /// method-completion fallback (#7929) — bare `use Foo;` *is*
@@ -250,6 +253,39 @@ fn is_method_receiver_char(ch: char) -> bool {
 
 fn next_char_boundary_after(source: &str, index: usize) -> usize {
     source[index..].chars().next().map_or(source.len(), |ch| index + ch.len_utf8())
+}
+
+/// Render one constructor parameter key as the Perl source to insert.
+///
+/// `=>` auto-quotes only a plain identifier. Every other key an
+/// `Object::Pad`/native `:param(...)` may legally carry has to be quoted, or
+/// Perl reads the inserted text as an expression or a variable rather than as
+/// the key. Verified on perl 5.38.2:
+///
+/// | inserted | result |
+/// |---|---|
+/// | `plain => 1` | the key `plain` |
+/// | `foo-bar => 1` | dies: `Bareword "foo" not allowed while "strict subs"` |
+/// | `Foo::bar => 1` | dies under `use strict` |
+/// | `$dyn => 1` | inserts the *value* of `$dyn`, not the key |
+///
+/// The label and filter text keep the decoded key so the item still reads and
+/// matches as the user wrote it; only the inserted source is quoted.
+fn constructor_key_insertion(key: &str) -> String {
+    if is_bareword_constructor_key(key) {
+        return format!("{key} => ");
+    }
+    // Single-quoted Perl strings treat only `\` and `'` as special.
+    let escaped = key.replace('\\', "\\\\").replace('\'', "\\'");
+    format!("'{escaped}' => ")
+}
+
+/// Return true when `=>` will auto-quote this key without altering it.
+fn is_bareword_constructor_key(key: &str) -> bool {
+    let mut chars = key.chars();
+    let Some(first) = chars.next() else { return false };
+    (first == '_' || first.is_ascii_alphabetic())
+        && chars.all(|character| character == '_' || character.is_ascii_alphanumeric())
 }
 
 fn word_prefix(source: &str, position: usize) -> (String, usize) {
@@ -379,6 +415,7 @@ impl CompletionProvider {
         let class_models = Self::build_class_models(ast);
         let type_engine = Self::build_type_engine(ast, workspace_index.is_some());
         let import_map = import_map::extract_import_map(ast);
+        let runtime_imports = import_map::extract_runtime_import_authority(ast);
         let used_modules = import_map::collect_used_module_names(ast);
         let pragma_map = perl_pragma::PragmaTracker::build(ast);
 
@@ -388,6 +425,7 @@ impl CompletionProvider {
             type_engine,
             workspace_index,
             import_map,
+            runtime_imports,
             used_modules,
             include_paths,
             system_inc_paths,
@@ -404,6 +442,19 @@ impl CompletionProvider {
     pub fn with_scan_cache(mut self, cache: Arc<ModuleCompletionScanCache>) -> Self {
         self.scan_cache = Some(cache);
         self
+    }
+
+    pub(super) fn import_state_at(&self, position: usize) -> (ImportMap, HashSet<String>) {
+        let mut import_map = self.import_map.clone();
+        let mut used_modules = self.used_modules.clone();
+        for runtime in self.runtime_imports.iter().filter(|runtime| runtime.end <= position) {
+            import_map
+                .entry(runtime.module.clone())
+                .or_default()
+                .extend(runtime.symbols.iter().cloned());
+            used_modules.insert(runtime.module.clone());
+        }
+        (import_map, used_modules)
     }
 
     fn extract_symbol_table(ast: &Node, source: &str) -> SymbolTable {
@@ -1559,7 +1610,8 @@ impl CompletionProvider {
             ),
         };
 
-        for field_name in model.object_pad_param_field_names() {
+        // `:param(external_name)` accepts `external_name`, not the field name.
+        for field_name in model.object_pad_constructor_param_names() {
             if !prefix.is_empty() && !field_name.starts_with(prefix) {
                 continue;
             }
@@ -1569,7 +1621,7 @@ impl CompletionProvider {
                 kind: CompletionItemKind::Property,
                 detail: Some(Cow::Owned(detail.clone())),
                 documentation: Some(Cow::Owned(documentation.clone())),
-                insert_text: Some(Cow::Owned(format!("{field_name} => "))),
+                insert_text: Some(Cow::Owned(constructor_key_insertion(field_name))),
                 sort_text: Some(Cow::Owned(format!("0f_{field_name}"))),
                 filter_text: Some(Cow::Owned(field_name.to_string())),
                 additional_edits: vec![],
@@ -1649,5 +1701,7 @@ impl CompletionProvider {
     }
 }
 
+#[cfg(test)]
+mod keyword_role_tests;
 #[cfg(test)]
 mod tests;

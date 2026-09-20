@@ -15,11 +15,15 @@ on:
       - 'crates/perl-lsp-rs/tests/snapshots/**'
       - 'docs/specs/PLSP-SPEC-0029-lsp-318-conformance-boundary.md'
       - 'docs/specs/lsp-318-conformance-matrix.md'
+      - 'docs/specs/lsp-318-closure-ownership.md'
       - 'xtask/src/main.rs'
       - 'xtask/src/tasks/mod.rs'
       - 'xtask/src/tasks/lsp_318_claims.rs'
       - 'xtask/src/tasks/lsp_318_matrix.rs'
       - 'xtask/tests/list_commands_cli.rs'
+      - 'xtask/tests/lsp_318_changelog_totality.rs'
+      - 'xtask/tests/lsp_318_closure_ownership.rs'
+      - 'xtask/tests/fixtures/lsp-318-changelog/**'
   push:
     branches: [main, master]
     paths:
@@ -35,11 +39,15 @@ on:
       - 'crates/perl-lsp-rs/tests/snapshots/**'
       - 'docs/specs/PLSP-SPEC-0029-lsp-318-conformance-boundary.md'
       - 'docs/specs/lsp-318-conformance-matrix.md'
+      - 'docs/specs/lsp-318-closure-ownership.md'
       - 'xtask/src/main.rs'
       - 'xtask/src/tasks/mod.rs'
       - 'xtask/src/tasks/lsp_318_claims.rs'
       - 'xtask/src/tasks/lsp_318_matrix.rs'
       - 'xtask/tests/list_commands_cli.rs'
+      - 'xtask/tests/lsp_318_changelog_totality.rs'
+      - 'xtask/tests/lsp_318_closure_ownership.rs'
+      - 'xtask/tests/fixtures/lsp-318-changelog/**'
   workflow_dispatch: {}
 
 concurrency:
@@ -58,7 +66,7 @@ jobs:
       CARGO_INCREMENTAL: "0"
     steps:
       - name: Checkout
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
@@ -67,6 +75,12 @@ jobs:
 
       - name: Check LSP 3.18 claim guard
         run: cargo xtask check-lsp-318-claims
+
+      - name: Check official LSP 3.18 changelog totality
+        run: cargo test -p xtask --test lsp_318_changelog_totality --locked
+
+      - name: Check unresolved LSP 3.18 closure ownership
+        run: cargo test -p xtask --test lsp_318_closure_ownership --locked
 
       - name: Check generated LSP 3.18 matrix
         run: cargo xtask generate-lsp-318-matrix --check

@@ -1,5 +1,12 @@
 # Import Optimizer Guide
 
+> **Withdrawn from live LSP surface (#8305).** The `source.organizeImports`
+> code action described below is not offered by the language server: its
+> line-oriented implementation could destroy executable statements between
+> import-looking lines. This guide remains for the `perl-refactoring`
+> library API only. The LSP action returns only after issue #10696 lands a
+> proven source-preserving cohort (#8319).
+
 ## Overview
 
 The import optimization system provides comprehensive analysis and optimization of Perl import statements.
@@ -201,6 +208,14 @@ fn handle_initialize(&self, _params: Option<Value>) -> Result<Option<Value>, Jso
 5. **Preview Changes**: Editor shows diff before applying optimizations
 
 ### Custom Import Fixes
+
+> **Withdrawn (#10690).** The missing-import quick fix shown below was built on
+> the hard-coded function→module affinity table in
+> `perl-parser::refactor::import_optimizer`. Per issue #10690 it no longer
+> appears on any LSP surface and must not be reconstructed until #790 lands
+> the exact candidate planner; the snippet remains as historical reference
+> only.
+
 ```rust
 // Generate specific import fix actions
 fn generate_import_fix_actions(&self, analysis: &ImportAnalysis) -> Vec<CodeAction> {
@@ -217,7 +232,9 @@ fn generate_import_fix_actions(&self, analysis: &ImportAnalysis) -> Vec<CodeActi
         });
     }
     
-    // Quick fix for missing imports
+    // Historical (withdrawn #10690): this branch derived missing-import
+    // quick fixes from the affinity table; no live surface may build them
+    // again until #790 replaces it.
     if !analysis.missing_imports.is_empty() {
         actions.push(CodeAction {
             title: format!("Add {} missing imports", analysis.missing_imports.len()),

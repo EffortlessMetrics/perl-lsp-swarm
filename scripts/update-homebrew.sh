@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Toolchain guard (#12593): refuse a stale non-rustup cargo before any build work.
+. "$(dirname -- "${BASH_SOURCE[0]}")/lib/cargo-toolchain-guard.sh" && cargo_toolchain_guard
+
 # Canonical implementation: cargo xtask update-homebrew.
 # Usage: ./scripts/update-homebrew.sh <v0.8.3>
 

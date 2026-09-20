@@ -155,21 +155,20 @@ fn batch_edits_with_independent_shifts_match_full_parse() -> TestResult {
 }
 
 #[test]
-fn out_of_range_edit_does_not_panic() -> TestResult {
-    // An edit whose start_byte and old_end_byte are both beyond the end of the
-    // source must be handled gracefully — no panic, no data loss.  Both byte
-    // values are clamped to source.len() inside apply_single_edit, turning this
-    // into an effective append.  The gap between start_byte and old_end_byte
-    // (1025 bytes) exceeds the 1024-byte single-edit fallback threshold, so the
-    // code path taken is: apply_single_edit (with clamped offsets) followed by
-    // full_reparse.
+fn out_of_range_edit_is_rejected_without_panic_or_mutation() -> TestResult {
+    // An edit whose old_end_byte runs past the end of the source is invalid.
+    // `validate_edits` rejects it up front rather than clamping the offsets into
+    // range: silently turning an out-of-range replacement into an append would
+    // resolve a caller's incoherent edit as a well-formed result, which is the
+    // honesty boundary the incremental authority is meant to hold.
+    //
+    // The guarantee proved here is threefold — no panic, an explicit error, and
+    // no partial mutation of the committed generation. Validation runs before
+    // any state transition, so the previous generation must survive intact.
     let source = "my $x = 1;\n".to_string();
     let mut state = IncrementalState::new(source.clone());
     let append = "print $x;\n";
 
-    // start_byte = source.len(), old_end_byte = source.len() + 1025 so that
-    // touched_bytes = max(1025, append.len()) = 1025 > 1024, triggering the
-    // large-edit fallback in apply_edits.
     let edit = Edit {
         start_byte: source.len(),
         old_end_byte: source.len() + 1025,
@@ -177,21 +176,45 @@ fn out_of_range_edit_does_not_panic() -> TestResult {
         new_text: append.to_string(),
     };
 
-    let result = apply_edits(&mut state, &[edit])?;
+    let before_tokens = token_signatures(&state);
+    let Err(error) = apply_edits(&mut state, &[edit]) else {
+        return Err("an edit reaching past the end of the source must be rejected".into());
+    };
 
-    // Full reparse must have fired (touched_bytes = 1025 > 1024 threshold).
-    assert_eq!(
-        result.reparsed_bytes,
-        state.source.len(),
-        "large out-of-range edit should trigger full reparse fallback"
+    assert!(
+        error.to_string().contains("is invalid for source length"),
+        "rejection must name the out-of-range range, got: {error}"
     );
-    // The clamped append must produce the correct combined source — no data corruption,
-    // no truncation, no duplication.
+    // No data loss: the committed generation is exactly what it was before.
+    assert_eq!(state.source, source, "a rejected edit must not mutate committed source");
+    assert_eq!(
+        token_signatures(&state),
+        before_tokens,
+        "a rejected edit must not mutate the committed token stream"
+    );
+    assert_equivalent_to_full_parse(&state);
+    Ok(())
+}
+
+#[test]
+fn in_range_append_at_end_of_source_matches_full_parse() -> TestResult {
+    // The valid counterpart to the rejection above: an append expressed as a
+    // zero-width edit at exactly source.len() is in range and must apply.
+    let source = "my $x = 1;\n".to_string();
+    let mut state = IncrementalState::new(source.clone());
+    let append = "print $x;\n";
+
+    let edit = Edit {
+        start_byte: source.len(),
+        old_end_byte: source.len(),
+        new_end_byte: source.len() + append.len(),
+        new_text: append.to_string(),
+    };
+
+    apply_edits(&mut state, &[edit])?;
+
     assert_eq!(state.source, format!("{source}{append}"));
-    // Token count must be non-zero: the combined source has real Perl statements.
-    assert!(!state.tokens.is_empty(), "token stream must be populated after out-of-range append");
-    // Note: assert_equivalent_to_full_parse is intentionally omitted because the large-edit
-    // path goes through full_reparse — its token stream is already a fresh lex, so a
-    // second fresh lex comparison would be trivially identical.
+    assert!(!state.tokens.is_empty(), "token stream must be populated after append");
+    assert_equivalent_to_full_parse(&state);
     Ok(())
 }

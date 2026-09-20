@@ -4,9 +4,9 @@
 
 ## 2026-01-24 - Keyboard Shortcuts for High-Frequency Actions
 **Learning:** High-frequency actions like "Run Tests" often lack default keybindings in extensions, forcing users to break flow and use the mouse or command palette. Adding standard shortcuts (e.g., `Shift+Alt+T`) significantly reduces friction for power users.
-**Action:** Always audit the "commands" list for high-frequency actions and propose consistent keybindings if missing.
-**Added keybindings:**
-- `Shift+Alt+O` - Organize imports
+**Action:** Audit the "commands" list for high-frequency actions and propose consistent keybindings only for capabilities that are currently implemented.
+**Currentness:** The legacy line-oriented `Organize imports` capability is withdrawn pending #8319/#10696. Do not add or recommend an `Organize imports` keybinding until the bounded replacement is admitted and the proven cutover lands.
+**Current keybindings:**
 - `Shift+Alt+T` - Run tests
 - `Shift+Alt+R` - Restart language server
 

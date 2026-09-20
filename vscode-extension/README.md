@@ -6,7 +6,7 @@
 [![crates.io downloads](https://img.shields.io/crates/d/perl-lsp-rs.svg?label=crates.io%20downloads)](https://crates.io/crates/perl-lsp-rs)
 <!-- perl-lsp:vs-marketplace-installs-badge:start -->
 
-[![VS Marketplace installs](https://img.shields.io/badge/VS%20Marketplace-313%20installs-0078D4)](https://marketplace.visualstudio.com/items?itemName=EffortlessMetrics.perl-lsp-rs)
+[![VS Marketplace Installs (manual)](https://img.shields.io/badge/VS%20Marketplace-707%20installs-0078D4)](https://marketplace.visualstudio.com/items?itemName=EffortlessMetrics.perl-lsp-rs)
 <!-- perl-lsp:vs-marketplace-installs-badge:end -->
 
 [![Open VSX downloads](https://img.shields.io/open-vsx/dt/EffortlessMetrics/perl-lsp-rs?label=Open%20VSX%20downloads)](https://open-vsx.org/extension/EffortlessMetrics/perl-lsp-rs)
@@ -41,7 +41,6 @@ for support-tier boundaries, explanations, previews, and copyable receipts.
 - **Preview Package Rename** -- Preview package/compiler-backed rename evidence without authorizing broad edits
 - **Extract Variable** -- Pull out expressions into named variables
 - **Extract Subroutine** -- Create functions from selected code blocks
-- **Organize Imports** -- Sort and clean `use` statements (`Shift+Alt+O`)
 
 ### Diagnostics and Quality
 
@@ -86,7 +85,7 @@ hover, and go-to-definition.
 - **Breakpoints** -- Set breakpoints with conditional support
 - **Step Debugging** -- Step into, over, and out of function calls
 - **Variable Inspection** -- View variables, watch expressions, and call stack
-- **Attach to Process** -- Debug running Perl processes by PID or TCP
+- **TCP Attach** -- Connect to a Perl debugger peer by host and port. Attaching by PID is not supported.
 
 Debugging is optional and powered by the managed `perl-dap` adapter shipped
 alongside the `perl-lsp` release artifacts -- the extension downloads it for you,
@@ -202,7 +201,7 @@ All settings are under the `perl-lsp.*` namespace. Open settings with `Ctrl+,` a
 | `perl-lsp.trace.server`          | `"off"`                      | LSP trace level for debugging: `off`, `messages`, `verbose`                                                                                                              |
 | `perl-lsp.featureProfile`        | `"auto"`                     | Runtime capability profile. Keep `auto` unless you need a specific compatibility profile                                                                                 |
 | `perl-lsp.downloadBaseUrl`       | `""`                         | Internal mirror URL for air-gapped deployments                                                                                                                           |
-| `perl-lsp.mcp.servers`           | `[]`                         | Optional MCP stdio server definitions (`label`, `command`, `args`, `cwd`, `env`, `version`, `enabled`) published to VS Code language models                              |
+| `perl-lsp.mcp.servers`           | `[]`                         | **Removed and inert.** The generic configured-command MCP passthrough is disabled; existing values are read by nothing and start no process                              |
 
 ### Internal / Air-Gapped Deployment
 
@@ -214,7 +213,6 @@ Use `Ctrl+Shift+P` (Command Palette) and search "Perl" to see all available comm
 
 | Action           | Shortcut              |
 | ---------------- | --------------------- |
-| Organize Imports | `Shift+Alt+O`         |
 | Run Tests        | `Shift+Alt+T`         |
 | Restart Server   | `Shift+Alt+R`         |
 | Format Document  | `Shift+Alt+F`         |
@@ -241,6 +239,22 @@ Use `Ctrl+Shift+P` (Command Palette) and search "Perl" to see all available comm
 - Built-in function signatures with parameter documentation
 - XS interface files (`.xs`) and SWIG interface files (`.i`) are associated with Perl for bundled syntax highlighting, including common SWIG directives and embedded C/C++ blocks
 
+### Language IDs
+
+- `perl` is the one language ID this extension contributes. Files classified as
+  `perl` (by extension, shebang, or filename) attach to the language client.
+- `perl5` is a **supported alias**, not a second language. This extension does
+  not contribute or assign `perl5`; the ID only appears when another extension
+  contributes it or you classify a file that way explicitly
+  (`files.associations`, _Change Language Mode_). Such buffers activate the
+  extension, attach to the same single language client, grammar, settings, and
+  server process, and receive the same commands as `perl` buffers: the bundled
+  TextMate grammar (`source.perl`) is declaratively bound to the `perl5`
+  language ID too, and every menu, keybinding, snippet, breakpoint, and
+  debug-resolution gate enumerates both IDs. There is no second server, dialect
+  mode, or configuration namespace for the alias
+  (see `src/languageIdentity.ts` and issue #7699).
+
 ## Commands
 
 Open the command palette (`Ctrl+Shift+P` / `Cmd+Shift+P`) and search for
@@ -263,12 +277,17 @@ Open the command palette (`Ctrl+Shift+P` / `Cmd+Shift+P`) and search for
 | **Perl: Show Perl Workspace Status**   | Show the current server, workspace, and diagnostic state   |
 | **Perl: Report Issue**                 | Open a pre-filled issue report                             |
 
+Run Health Check reports binary presence separately from language-server runtime
+health. If the configured executable exists but startup or initialization fails,
+the runtime check remains an error. When cleanup cannot be confirmed, restart is
+blocked and the notification directs you to reload the VS Code window before
+trying again; this avoids launching a second server over an unknown process.
+
 ### Editing and refactoring
 
 | Command                            | Description                                 |
 | ---------------------------------- | ------------------------------------------- |
 | **Perl: Format Document**          | Format the active document                  |
-| **Perl: Organize Use Statements**  | Sort and clean `use` statements             |
 | **Perl: Extract Variable**         | Extract the selection into a new variable   |
 | **Perl: Extract Method**           | Extract the selection into a new subroutine |
 | **Perl: Show Refactoring Options** | List refactorings available at the cursor   |
@@ -286,7 +305,7 @@ Open the command palette (`Ctrl+Shift+P` / `Cmd+Shift+P`) and search for
 
 | Command                       | Description                                                                                                        |
 | ----------------------------- | ------------------------------------------------------------------------------------------------------------------ |
-| **Perl: Check Syntax**        | Run a `perl -c` syntax check on the active file                                                                    |
+| **Perl: Check Syntax**        | Run PATH `perl -c` on the saved active file (executes compile-phase code; not a native `perllsp --check`)          |
 | **Perl: Run Critic**          | Run the critic over the active file — native by default                                                            |
 | **Perl: Set Critic Severity** | Choose the minimum critic severity to report — `5` reports only the most severe violations, `1` reports everything |
 
@@ -307,6 +326,7 @@ Open the command palette (`Ctrl+Shift+P` / `Cmd+Shift+P`) and search for
 | **Perl: Explain Provider Decision**      | Show why the last provider acted, fell back, or refused                                  |
 | **Perl: Copy Provider Decision Receipt** | Copy a structured local receipt for issue reports                                        |
 | **Perl: Show Workspace Trust Report**    | Show workspace roots, module resolution, index state, support tiers, and boundary policy |
+| **Perl: Show Coexistence Status**        | Explain detected competing Perl tooling providers; advisory only, nothing is changed     |
 | **Perl: Explain This Diagnostic**        | Explain PL701/PL109 diagnostics in the output channel when a receipt is available        |
 | **Perl: Explain Missing Module Lookup**  | Show the current missing-module `@INC` lookup state and setup boundary                   |
 | **Perl: Preview Safe Delete**            | Preview whether symbol deletion is allowed, blocked, or refused before editing           |

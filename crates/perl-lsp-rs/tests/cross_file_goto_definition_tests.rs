@@ -3,6 +3,7 @@
 //! Validates that go-to-definition navigates across files for:
 //! - `Package::function()` calls
 //! - `use Module` statements
+//! - literal `require "Path/To/Module.pm"` statements (#12559)
 //! - `$self->method()` calls
 
 mod support;
@@ -106,19 +107,19 @@ print "Result: $result\n";
     )?;
 
     // The result should be an array of locations
-    if let Some(locations) = result.as_array() {
-        if !locations.is_empty() {
-            let first = &locations[0];
-            assert_valid_location(first);
+    if let Some(locations) = result.as_array()
+        && !locations.is_empty()
+    {
+        let first = &locations[0];
+        assert_valid_location(first);
 
-            // Should point to the module file
-            let uri = first["uri"].as_str().ok_or("Expected URI")?;
-            assert!(
-                uri.contains("My/Utils.pm") || uri.contains("My%2FUtils.pm"),
-                "Definition should point to My/Utils.pm, got: {}",
-                uri
-            );
-        }
+        // Should point to the module file
+        let uri = first["uri"].as_str().ok_or("Expected URI")?;
+        assert!(
+            uri.contains("My/Utils.pm") || uri.contains("My%2FUtils.pm"),
+            "Definition should point to My/Utils.pm, got: {}",
+            uri
+        );
     }
 
     Ok(())
@@ -181,18 +182,18 @@ Demo::Worker::run();
     )?;
 
     // The result should navigate to Demo::Worker.pm
-    if let Some(locations) = result.as_array() {
-        if !locations.is_empty() {
-            let first = &locations[0];
-            assert_valid_location(first);
+    if let Some(locations) = result.as_array()
+        && !locations.is_empty()
+    {
+        let first = &locations[0];
+        assert_valid_location(first);
 
-            let uri = first["uri"].as_str().ok_or("Expected URI")?;
-            assert!(
-                uri.contains("Demo") && uri.contains("Worker"),
-                "Definition should point to Demo/Worker.pm, got: {}",
-                uri
-            );
-        }
+        let uri = first["uri"].as_str().ok_or("Expected URI")?;
+        assert!(
+            uri.contains("Demo") && uri.contains("Worker"),
+            "Definition should point to Demo/Worker.pm, got: {}",
+            uri
+        );
     }
 
     Ok(())
@@ -448,6 +449,385 @@ my $result = runtime_sum(1, 2, 3);
         "Definition should point to My/Runtime.pm, got: {}",
         uri
     );
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Test: issue #12559 — literal `require "Foo/Bar.pm"` goto-definition journeys
+// (#813 follow-through)
+// ---------------------------------------------------------------------------
+
+/// Issue #813's acceptance scenario: after `require "Foo/Bar.pm";`, goto-def on
+/// the qualified call `Foo::Bar::helper()` must navigate to lib/Foo/Bar.pm.
+#[test]
+fn go_to_definition_on_literal_require_qualified_call_navigates_to_source_module() -> TestResult {
+    let mut harness = LspHarness::new();
+    let workspace = TempWorkspace::new()?;
+
+    workspace.write(
+        "lib/Foo/Bar.pm",
+        r#"package Foo::Bar;
+use strict;
+use warnings;
+
+sub helper {
+    return 1;
+}
+
+1;
+"#,
+    )?;
+
+    harness.initialize_with_root(&workspace.root_uri, None)?;
+
+    let module_uri = workspace.uri("lib/Foo/Bar.pm");
+    let module_content = std::fs::read_to_string(workspace.dir.path().join("lib/Foo/Bar.pm"))
+        .map_err(|e| format!("failed to read module: {e}"))?;
+    harness.open(&module_uri, &module_content)?;
+
+    let caller = r#"#!/usr/bin/perl
+use strict;
+use warnings;
+
+require "Foo/Bar.pm";
+Foo::Bar::helper();
+"#;
+    let caller_uri = workspace.uri("app.pl");
+    harness.open(&caller_uri, caller)?;
+    harness.barrier();
+
+    let (line, character) = find_line_char(caller, "helper();")?;
+    let result = harness.request(
+        "textDocument/definition",
+        json!({
+            "textDocument": {"uri": caller_uri},
+            "position": {"line": line, "character": character}
+        }),
+    )?;
+
+    let locations = result.as_array().ok_or("expected location array")?;
+    assert!(
+        !locations.is_empty(),
+        "expected definition result for qualified call after literal require"
+    );
+
+    let first = &locations[0];
+    assert_valid_location(first);
+    let uri = first["uri"].as_str().ok_or("Expected URI")?;
+    assert!(
+        uri.contains("Foo/Bar.pm") || uri.contains("Foo%2FBar.pm"),
+        "Definition should point to Foo/Bar.pm, got: {uri}"
+    );
+
+    Ok(())
+}
+
+/// Cursor on/inside the `"Foo/Bar.pm"` string itself must resolve through the
+/// @INC-aware module resolver to the module file.
+#[test]
+fn go_to_definition_on_literal_require_string_navigates_to_module_file() -> TestResult {
+    let mut harness = LspHarness::new();
+    let workspace = TempWorkspace::new()?;
+
+    workspace.write(
+        "lib/Foo/Bar.pm",
+        r#"package Foo::Bar;
+use strict;
+use warnings;
+
+sub helper {
+    return 1;
+}
+
+1;
+"#,
+    )?;
+
+    harness.initialize_with_root(&workspace.root_uri, None)?;
+
+    let module_uri = workspace.uri("lib/Foo/Bar.pm");
+    let module_content = std::fs::read_to_string(workspace.dir.path().join("lib/Foo/Bar.pm"))
+        .map_err(|e| format!("failed to read module: {e}"))?;
+    harness.open(&module_uri, &module_content)?;
+
+    let caller = r#"#!/usr/bin/perl
+use strict;
+use warnings;
+
+require "Foo/Bar.pm";
+Foo::Bar::helper();
+"#;
+    let caller_uri = workspace.uri("app.pl");
+    harness.open(&caller_uri, caller)?;
+    harness.barrier();
+
+    let (line, character) = find_line_char(caller, "Foo/Bar.pm")?;
+    let result = harness.request(
+        "textDocument/definition",
+        json!({
+            "textDocument": {"uri": caller_uri},
+            "position": {"line": line, "character": character}
+        }),
+    )?;
+
+    let locations = result.as_array().ok_or("expected location array")?;
+    assert!(
+        !locations.is_empty(),
+        "expected definition result for cursor on the literal require path"
+    );
+
+    let first = &locations[0];
+    assert_valid_location(first);
+    let uri = first["uri"].as_str().ok_or("Expected URI")?;
+    assert!(
+        uri.contains("Foo/Bar.pm") || uri.contains("Foo%2FBar.pm"),
+        "Cursor-on-string definition should point to Foo/Bar.pm, got: {uri}"
+    );
+
+    Ok(())
+}
+
+/// A require of a nonexistent literal path must stay a typed non-resolution:
+/// the `UseModule` arm resolves through @INC only and returns an empty
+/// location list — never a guessed or index-fallback target.
+#[test]
+fn go_to_definition_on_literal_require_nonexistent_path_is_typed_non_resolution() -> TestResult {
+    let mut harness = LspHarness::new();
+    let workspace = TempWorkspace::new()?;
+
+    workspace.write(
+        "lib/Foo/Bar.pm",
+        r#"package Foo::Bar;
+use strict;
+use warnings;
+
+sub helper {
+    return 1;
+}
+
+1;
+"#,
+    )?;
+
+    harness.initialize_with_root(&workspace.root_uri, None)?;
+
+    let module_uri = workspace.uri("lib/Foo/Bar.pm");
+    let module_content = std::fs::read_to_string(workspace.dir.path().join("lib/Foo/Bar.pm"))
+        .map_err(|e| format!("failed to read module: {e}"))?;
+    harness.open(&module_uri, &module_content)?;
+
+    let caller = r#"#!/usr/bin/perl
+use strict;
+use warnings;
+
+require "No/Such/Module.pm";
+"#;
+    let caller_uri = workspace.uri("app.pl");
+    harness.open(&caller_uri, caller)?;
+    harness.barrier();
+
+    let (line, character) = find_line_char(caller, "No/Such/Module.pm")?;
+    let result = harness.request(
+        "textDocument/definition",
+        json!({
+            "textDocument": {"uri": caller_uri},
+            "position": {"line": line, "character": character}
+        }),
+    )?;
+
+    let locations = result
+        .as_array()
+        .ok_or("expected a typed (array) non-resolution result for a nonexistent require path")?;
+    assert!(
+        locations.is_empty(),
+        "nonexistent literal require path must stay a typed non-resolution, got: {locations:?}"
+    );
+
+    Ok(())
+}
+
+/// The literal-path journey must resolve through the position-aware @INC
+/// resolver, not an @INC-unaware file/index search: after a `no lib`
+/// cancellation of the workspace lib root, the existing module file must NOT
+/// be returned (#8537 contract applied to the literal require form).
+#[test]
+fn go_to_definition_on_literal_require_respects_no_lib_cancellation() -> TestResult {
+    let mut harness = LspHarness::new();
+    let workspace = TempWorkspace::new()?;
+
+    workspace.write(
+        "lib/Foo/Bar.pm",
+        r#"package Foo::Bar;
+use strict;
+use warnings;
+
+sub helper {
+    return 1;
+}
+
+1;
+"#,
+    )?;
+
+    harness.initialize_with_root(&workspace.root_uri, None)?;
+
+    let module_uri = workspace.uri("lib/Foo/Bar.pm");
+    let module_content = std::fs::read_to_string(workspace.dir.path().join("lib/Foo/Bar.pm"))
+        .map_err(|e| format!("failed to read module: {e}"))?;
+    harness.open(&module_uri, &module_content)?;
+
+    let caller = r#"#!/usr/bin/perl
+use strict;
+use warnings;
+
+use lib 'lib';
+no lib 'lib';
+require "Foo/Bar.pm";
+"#;
+    let caller_uri = workspace.uri("app.pl");
+    harness.open(&caller_uri, caller)?;
+    harness.barrier();
+
+    let (line, character) = find_line_char(caller, "Foo/Bar.pm")?;
+    let result = harness.request(
+        "textDocument/definition",
+        json!({
+            "textDocument": {"uri": caller_uri},
+            "position": {"line": line, "character": character}
+        }),
+    )?;
+
+    let locations = result
+        .as_array()
+        .ok_or("expected a typed (array) result for the no-lib literal require journey")?;
+    assert!(
+        locations.is_empty(),
+        "no lib cancellation must remove the module from @INC for the literal require form, got: {locations:?}"
+    );
+
+    Ok(())
+}
+
+/// A traversal-shaped literal path (`require "../../Escape.pm"`) is not a
+/// module name: it must stay a typed non-resolution and never feed the
+/// resolver's filesystem probes (external @INC roots join mapped relative
+/// paths without traversal validation).
+#[test]
+fn go_to_definition_on_literal_require_traversal_path_stays_non_resolution() -> TestResult {
+    let mut harness = LspHarness::new();
+    let workspace = TempWorkspace::new()?;
+
+    workspace.write(
+        "lib/Foo/Bar.pm",
+        r#"package Foo::Bar;
+use strict;
+use warnings;
+
+sub helper {
+    return 1;
+}
+
+1;
+"#,
+    )?;
+
+    harness.initialize_with_root(&workspace.root_uri, None)?;
+
+    let module_uri = workspace.uri("lib/Foo/Bar.pm");
+    let module_content = std::fs::read_to_string(workspace.dir.path().join("lib/Foo/Bar.pm"))
+        .map_err(|e| format!("failed to read module: {e}"))?;
+    harness.open(&module_uri, &module_content)?;
+
+    let caller = r#"#!/usr/bin/perl
+use strict;
+use warnings;
+
+require "../../Escape.pm";
+"#;
+    let caller_uri = workspace.uri("app.pl");
+    harness.open(&caller_uri, caller)?;
+    harness.barrier();
+
+    let (line, character) = find_line_char(caller, "Escape.pm")?;
+    let result = harness.request(
+        "textDocument/definition",
+        json!({
+            "textDocument": {"uri": caller_uri},
+            "position": {"line": line, "character": character}
+        }),
+    )?;
+
+    let locations = result.as_array().ok_or(
+        "expected a typed (array) non-resolution result for a traversal-shaped require path",
+    )?;
+    assert!(
+        locations.is_empty(),
+        "traversal-shaped literal require path must stay a typed non-resolution, got: {locations:?}"
+    );
+
+    Ok(())
+}
+
+/// Dynamic `require $var` is a documented boundary: goto-def must never guess
+/// the module file, even when a same-named module exists in the workspace.
+#[test]
+fn go_to_definition_on_dynamic_require_variable_does_not_guess_module_file() -> TestResult {
+    let mut harness = LspHarness::new();
+    let workspace = TempWorkspace::new()?;
+
+    workspace.write(
+        "lib/Foo/Bar.pm",
+        r#"package Foo::Bar;
+use strict;
+use warnings;
+
+sub helper {
+    return 1;
+}
+
+1;
+"#,
+    )?;
+
+    harness.initialize_with_root(&workspace.root_uri, None)?;
+
+    let module_uri = workspace.uri("lib/Foo/Bar.pm");
+    let module_content = std::fs::read_to_string(workspace.dir.path().join("lib/Foo/Bar.pm"))
+        .map_err(|e| format!("failed to read module: {e}"))?;
+    harness.open(&module_uri, &module_content)?;
+
+    let caller = r#"#!/usr/bin/perl
+use strict;
+use warnings;
+
+my $mod = "Foo/Bar.pm";
+require $mod;
+"#;
+    let caller_uri = workspace.uri("app.pl");
+    harness.open(&caller_uri, caller)?;
+    harness.barrier();
+
+    // Cursor on the `$mod` operand of the dynamic require.
+    let line = caller
+        .lines()
+        .position(|l| l.contains("require $mod"))
+        .ok_or("could not find dynamic require line in test source")?;
+    let character = caller
+        .lines()
+        .nth(line)
+        .and_then(|l| l.find("$mod"))
+        .ok_or("could not find $mod on dynamic require line")? as u32;
+    let result = harness.request(
+        "textDocument/definition",
+        json!({
+            "textDocument": {"uri": caller_uri},
+            "position": {"line": line as u32, "character": character}
+        }),
+    )?;
+
+    // Unresolved-or-variable-declaration is acceptable; a module-file guess is not.
+    assert_no_location_points_to(&result, "Foo/Bar.pm");
 
     Ok(())
 }
@@ -935,14 +1315,14 @@ my $valid = Base->validate();
         }),
     )?;
 
-    if let Some(locations) = result.as_array() {
-        if !locations.is_empty() {
-            let first = &locations[0];
-            assert_valid_location(first);
+    if let Some(locations) = result.as_array()
+        && !locations.is_empty()
+    {
+        let first = &locations[0];
+        assert_valid_location(first);
 
-            let uri = first["uri"].as_str().ok_or("Expected URI")?;
-            assert!(uri.contains("Base.pm"), "Definition should point to Base.pm, got: {}", uri);
-        }
+        let uri = first["uri"].as_str().ok_or("Expected URI")?;
+        assert!(uri.contains("Base.pm"), "Definition should point to Base.pm, got: {}", uri);
     }
 
     Ok(())
@@ -1569,7 +1949,7 @@ $cat->print_info;
 #[test]
 fn symbol_at_cursor_resolves_method_call() -> TestResult {
     use perl_parser::Parser;
-    use perl_parser::declaration::{current_package_at, symbol_at_cursor};
+    use perl_semantic_analyzer::analysis::declaration::{current_package_at, symbol_at_cursor};
 
     let code = r#"package MyClass;
 
@@ -1611,7 +1991,7 @@ sub main_work {
 #[test]
 fn symbol_at_cursor_resolves_constructor_assigned_method_call() -> TestResult {
     use perl_parser::Parser;
-    use perl_parser::declaration::{current_package_at, symbol_at_cursor};
+    use perl_semantic_analyzer::analysis::declaration::{current_package_at, symbol_at_cursor};
 
     let code = r#"package main;
 use Dog;
@@ -1637,7 +2017,7 @@ $dog->fetch('stick');
 #[test]
 fn symbol_at_cursor_resolves_constructor_assigned_bare_method_call() -> TestResult {
     use perl_parser::Parser;
-    use perl_parser::declaration::{current_package_at, symbol_at_cursor};
+    use perl_semantic_analyzer::analysis::declaration::{current_package_at, symbol_at_cursor};
 
     let code = r#"package main;
 use MooDog;
@@ -1667,7 +2047,7 @@ $dog->fetch;
 #[test]
 fn symbol_at_cursor_resolves_use_statement() -> TestResult {
     use perl_parser::Parser;
-    use perl_parser::declaration::{current_package_at, symbol_at_cursor};
+    use perl_semantic_analyzer::analysis::declaration::{current_package_at, symbol_at_cursor};
 
     let code = "use Data::Dumper;\nmy $x = 1;\n";
 
@@ -2023,7 +2403,7 @@ extends 'MyApp::User';
 #[test]
 fn symbol_at_cursor_resolves_package_method_call() -> TestResult {
     use perl_parser::Parser;
-    use perl_parser::declaration::{current_package_at, symbol_at_cursor};
+    use perl_semantic_analyzer::analysis::declaration::{current_package_at, symbol_at_cursor};
 
     let code = r#"package main;
 use MyModule;

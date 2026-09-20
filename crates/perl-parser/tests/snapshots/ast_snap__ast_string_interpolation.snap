@@ -1,5 +1,5 @@
 ---
-source: crates/perl-parser/tests/ast_snapshot_tests.rs
+source: crates/perl-parser/tests/ast_snap.rs
 expression: "parse_sexp(\"my $name = \\\"world\\\"; my $msg = \\\"Hello, $name!\\\";\")"
 ---
-(source_file (my_declaration (variable $ name)(string_interpolated "\"world\"")) (my_declaration (variable $ msg)(string_interpolated "\"Hello, $name!\"")))
+(source_file (statements (my_declaration (declarator my) (variable (variable (sigil $) (name name))) (initializer (string_interpolated (value "\"world\"") (interpolated true))))) (statements (my_declaration (declarator my) (variable (variable (sigil $) (name msg))) (initializer (string_interpolated (value "\"Hello, $name!\"") (interpolated true))))))

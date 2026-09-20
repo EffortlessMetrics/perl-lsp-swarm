@@ -15,6 +15,17 @@ A candidate publishes ready only when all applicable local preparation is curren
 - relevant negative, stale, failure, and recovery protection exists;
 - test hardening, simplification, and mutable local candidate review are complete;
 - the worktree contains no accidental or unsalvaged changes;
+- the published file set matches the intended worktree change set: before publishing
+  (or immediately after creation), compare `gh pr diff --name-only <n>` (or the created
+  PR's file list) against the intended changed paths — a squash or partial stage must
+  not silently drop an intended file (#12279 merged only `lower.rs` while its
+  consumer-test alignment stayed uncommitted and reddened main until #12357);
+- `cargo fmt -p <pkg> -- --check` passes at the branch head, and its merge-base result
+  is classified: post-#12320 the branch-only check is sufficient for gating, but the
+  base check names inherited base-redness honestly at publish time instead of
+  discovering it as a red required check after publishing (#12273/#12275 inherited
+  drift until #12278) — the head check is binding and the base check diagnostic, so a
+  drift-repair candidate whose base is red by construction still publishes (#12278);
 - the controlling issue, claim boundary, and governing contract are current;
 - Changie/changelog, support, migration, and release dispositions are complete or explicitly not applicable;
 - the candidate is one coherent acceptance-and-rollback claim.
@@ -36,6 +47,18 @@ For an existing draft, inspect that named condition. When it is complete, re-eva
 
 ## PR review index
 
+Proportionality mirrors `$review-pr`'s carve-out: a candidate whose cumulative diff is
+mechanical — generated regeneration, lint-site collapse, allowlist row removal,
+comment-only edits — may publish a reduced index of three sections: **Claim**,
+**Proof**, and **Non-goals**. The full index remains the default for anything crossing
+a production seam.
+
+The order is load-bearing: establish claim and authority before proof; trace the changed
+production path; record focused and affected proof with `pass` / `fail` / `not-run` /
+`NOT_PROVEN`; challenge a realistic wrong implementation with negative, stale,
+failure, recovery, or opposite-direction controls; simplify before publication; bound
+the claim and non-goals; then name risk, rollback, and review locations.
+
 ```markdown
 ## Claim
 ## Controlling issue
@@ -45,8 +68,8 @@ For an existing draft, inspect that named condition. When it is complete, re-eva
 ## Test hardening
 ## Simplification
 ## Deviations
-## What this establishes
-## What this does not establish
+## Claim Boundary
+## Non-goals
 ## Risk and rollback
 ## Review index
 ```
@@ -71,10 +94,14 @@ silent absorption by the author's next force-push, and diverges the author's loc
 from the PR head unnoticed. Each failure looks like the author's, because the branch
 still presents as one coherent candidate.
 
-Where a reviewer has already pushed, read what landed and verify it against observed
-behavior before adopting it — a reviewer's push carries no proof, so restate it — or
-replace it and say why in the thread. Treat the result as a new authored candidate and
-invalidate the affected review dimensions.
+Where another context has already pushed, first establish one writer before recovery
+mutation. That writer reads the foreign change and verifies its behavior before
+adopting it; unwanted behavior is repaired with a new commit and an explanation in the
+thread. Fast-forward onto the foreign head when possible. If the histories diverged,
+merge them so both published tips remain ancestors; do not rebase away or force-push
+over a foreign commit. Applicable user and repository authorization still governs the
+operation. Re-prove the affected dimensions and refresh the affected review; a second
+writer receives no recovery exception.
 
 Recreating a closed PR is separate. If the existing head and base branches still exist
 and GitHub permits reopening, reopen and preserve the review record. A fresh PR is needed

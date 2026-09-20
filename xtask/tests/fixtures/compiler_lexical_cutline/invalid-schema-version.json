@@ -1,0 +1,17 @@
+{
+  "schema_version": "compiler_lexical_cutline_cases.v2",
+  "manifest": "compiler-lexical-cutline-cases",
+  "issue": 12156,
+  "owner": "perl-lsp compiler program",
+  "status": "proof-definition",
+  "updated": "2026-08-25",
+  "claim_boundary": "invalid fixture: wrong schema_version must be rejected",
+  "authorities": {},
+  "protocol_lifecycle": {},
+  "vocabulary": {},
+  "fixtures": [],
+  "work_invariants": [],
+  "cases": [],
+  "mutations": [],
+  "test_targets": []
+}

@@ -1,0 +1,323 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:perl-lsp-swarm:spec:10097:loaded_module_reload:v1",
+  "title": "Loaded-module reload contract fixture documents (v1)",
+  "description": "Machine-checkable vocabulary and document shapes for the #10097 reload-contract corpus. This schema pins the closed vocabularies consumed by the executable authority in crates/perl-dap/src/reload/ and is kept in exact sync by a fixture-driven test. It is NOT a DAP wire format: wire registration, negotiation, and generated Rust/TypeScript contracts belong to #10138.",
+  "type": "object",
+  "oneOf": [
+    { "$ref": "#/$defs/classificationFixture" },
+    { "$ref": "#/$defs/transactionFixture" },
+    { "$ref": "#/$defs/negativeControl" }
+  ],
+  "$defs": {
+    "disposition": {
+      "description": "Closed 13-class eligibility disposition vocabulary. The initial admitted cohort is eligible_source_backed_perl_module only.",
+      "type": "string",
+      "enum": [
+        "eligible_source_backed_perl_module",
+        "not_loaded",
+        "source_not_exact_or_stale",
+        "dirty_or_unsaved_source",
+        "active_frame_in_target",
+        "main_program_not_module",
+        "xs_or_native_module",
+        "source_filter_or_compile_hook_boundary",
+        "generated_or_eval_source",
+        "ambiguous_runtime_mapping",
+        "outside_launch_authority",
+        "unsupported_runtime",
+        "not_stopped_or_not_command_ready"
+      ]
+    },
+    "moduleClassification": {
+      "type": "string",
+      "enum": [
+        "source_backed_perl_module",
+        "main_program",
+        "xs_or_native",
+        "source_filter_or_compile_hook",
+        "generated_or_eval"
+      ]
+    },
+    "phase": {
+      "description": "The eight transaction phases in frozen order; runtime_mutation_begins marks the possibly-applied boundary.",
+      "type": "string",
+      "enum": [
+        "admission",
+        "preflight",
+        "prepare",
+        "runtime_mutation_begins",
+        "runtime_acknowledgement_read_back",
+        "commit_generation",
+        "post_reload_reconciliation",
+        "terminal_projection"
+      ]
+    },
+    "preMutationCause": {
+      "type": "string",
+      "enum": ["prepare_failed", "cancelled_before_mutation_began"]
+    },
+    "indeterminateCause": {
+      "type": "string",
+      "enum": [
+        "timeout_after_mutation_began",
+        "transport_loss_after_mutation_began",
+        "ambiguous_acknowledgement",
+        "read_back_inconclusive"
+      ]
+    },
+    "outcomeKind": {
+      "type": "string",
+      "enum": [
+        "reloaded",
+        "refused",
+        "failed_before_mutation",
+        "indeterminate_possibly_applied"
+      ]
+    },
+    "generationEffect": {
+      "type": "string",
+      "enum": ["advance", "none"]
+    },
+    "dapObjectKind": {
+      "type": "string",
+      "enum": [
+        "frame_reference",
+        "scope_reference",
+        "variable_reference",
+        "evaluate_reference",
+        "module_id",
+        "loaded_source_observation",
+        "source_content_read",
+        "applied_breakpoint_installation",
+        "exception_and_current_stop_facts",
+        "retained_runtime_query_result",
+        "thread_reference",
+        "durable_client_breakpoint_configuration"
+      ]
+    },
+    "invalidationDisposition": {
+      "type": "string",
+      "enum": [
+        "always_stale",
+        "stale_when_generation_advanced",
+        "projection_reprojected",
+        "preserved_for_later_reconciliation"
+      ]
+    },
+    "mechanism": {
+      "type": "string",
+      "enum": [
+        "inc_deletion_and_require",
+        "do_or_require_helper",
+        "workspace_runtime_helper_observer",
+        "class_refresh_compatibility_subject"
+      ]
+    },
+    "mechanismClaim": {
+      "type": "string",
+      "enum": [
+        "available",
+        "compile_success_implies_reload_success",
+        "proves_package_replacement",
+        "availability_grants_product_authority",
+        "prompt_is_acknowledgement"
+      ]
+    },
+    "surfaceViolation": {
+      "type": "string",
+      "enum": [
+        "standard_family_collision",
+        "unnamespaced_family",
+        "unversioned_family",
+        "missing_correlation_identity",
+        "raw_client_input_accepted",
+        "standard_capability_collision",
+        "premature_capability_advertisement"
+      ]
+    },
+    "bindingError": {
+      "type": "string",
+      "enum": ["insufficient_subject_identity"]
+    },
+    "invalidationPlanError": {
+      "type": "string",
+      "enum": [
+        "stale_identity_survives_possibly_applied",
+        "durable_configuration_invalidated",
+        "thread_reference_not_projection"
+      ]
+    },
+    "mechanismError": {
+      "type": "string",
+      "enum": [
+        "compile_success_as_reload_success",
+        "package_replacement_claimed_without_proof",
+        "availability_as_product_authority",
+        "prompt_as_acknowledgement"
+      ]
+    },
+    "controlOp": {
+      "type": "string",
+      "enum": [
+        "admit",
+        "apply_generation_effect",
+        "bind_subject",
+        "validate_request_surface",
+        "verify_invalidation_plan",
+        "verify_mechanism_claims"
+      ]
+    },
+    "controlErrorCode": {
+      "description": "Every reason code a negative control can require. Includes the eligibility refusal codes (admission controls), the subject-binding, invalidation-plan, mechanism, and surface codes, and the two generation-law codes enforced by the fixture harness.",
+      "type": "string",
+      "enum": [
+        "active_frame_in_target",
+        "ambiguous_runtime_mapping",
+        "availability_as_product_authority",
+        "compile_success_as_reload_success",
+        "dirty_or_unsaved_source",
+        "durable_configuration_invalidated",
+        "eligible_source_backed_perl_module",
+        "generated_or_eval_source",
+        "generation_advanced_without_possibly_applied",
+        "insufficient_subject_identity",
+        "main_program_not_module",
+        "missing_correlation_identity",
+        "not_loaded",
+        "not_stopped_or_not_command_ready",
+        "outside_launch_authority",
+        "package_replacement_claimed_without_proof",
+        "possibly_applied_without_generation_advance",
+        "premature_capability_advertisement",
+        "prompt_as_acknowledgement",
+        "raw_client_input_accepted",
+        "source_filter_or_compile_hook_boundary",
+        "source_not_exact_or_stale",
+        "stale_identity_survives_possibly_applied",
+        "standard_capability_collision",
+        "standard_family_collision",
+        "thread_reference_not_projection",
+        "unnamespaced_family",
+        "unsupported_runtime",
+        "unversioned_family",
+        "xs_or_native_module"
+      ]
+    },
+    "admissionObservation": {
+      "type": "object",
+      "description": "Observed admission facts; each field is an independently observable fact and the classifier applies the frozen precedence.",
+      "required": [
+        "stopped_and_command_ready",
+        "runtime_supported",
+        "loaded_in_runtime",
+        "within_launch_authority",
+        "runtime_mapping_unambiguous",
+        "identity_binding_complete",
+        "identity_current",
+        "client_source_matches_saved",
+        "module_classification",
+        "active_frame_in_target"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "stopped_and_command_ready": { "type": "boolean" },
+        "runtime_supported": { "type": "boolean" },
+        "loaded_in_runtime": { "type": "boolean" },
+        "within_launch_authority": { "type": "boolean" },
+        "runtime_mapping_unambiguous": { "type": "boolean" },
+        "identity_binding_complete": {
+          "type": "boolean",
+          "description": "False for basename/package-only identity presentations."
+        },
+        "identity_current": {
+          "type": "boolean",
+          "description": "False when session/suspension/observation generations or the saved digest moved since binding."
+        },
+        "client_source_matches_saved": { "type": "boolean" },
+        "module_classification": { "$ref": "#/$defs/moduleClassification" },
+        "active_frame_in_target": { "type": "boolean" }
+      }
+    },
+    "classificationFixture": {
+      "type": "object",
+      "required": ["name", "fixture_class", "observation", "expected_disposition"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string" },
+        "fixture_class": {
+          "type": "string",
+          "description": "Which #10097 fixture class this document encodes."
+        },
+        "observation": { "$ref": "#/$defs/admissionObservation" },
+        "expected_disposition": { "$ref": "#/$defs/disposition" }
+      }
+    },
+    "transactionFixture": {
+      "type": "object",
+      "required": [
+        "name",
+        "phase",
+        "outcome",
+        "expected_generation_effect",
+        "expected_phase_valid",
+        "expected_clean_projection"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string" },
+        "phase": { "$ref": "#/$defs/phase" },
+        "outcome": { "$ref": "#/$defs/outcome" },
+        "expected_generation_effect": { "$ref": "#/$defs/generationEffect" },
+        "expected_phase_valid": { "type": "boolean" },
+        "expected_clean_projection": { "type": "boolean" }
+      }
+    },
+    "outcome": {
+      "type": "object",
+      "required": ["kind"],
+      "oneOf": [
+        {
+          "properties": { "kind": { "const": "reloaded" } },
+          "required": ["kind"]
+        },
+        {
+          "properties": {
+            "kind": { "const": "refused" },
+            "disposition": { "$ref": "#/$defs/disposition" }
+          },
+          "required": ["kind", "disposition"]
+        },
+        {
+          "properties": {
+            "kind": { "const": "failed_before_mutation" },
+            "failure_phase": { "$ref": "#/$defs/phase" },
+            "cause": { "$ref": "#/$defs/preMutationCause" }
+          },
+          "required": ["kind", "failure_phase", "cause"]
+        },
+        {
+          "properties": {
+            "kind": { "const": "indeterminate_possibly_applied" },
+            "failure_phase": { "$ref": "#/$defs/phase" },
+            "cause": { "$ref": "#/$defs/indeterminateCause" }
+          },
+          "required": ["kind", "failure_phase", "cause"]
+        }
+      ]
+    },
+    "negativeControl": {
+      "type": "object",
+      "description": "One failing input: the op must produce exactly expected_error. Input fields are op-specific; the executable harness in crates/perl-dap/src/reload/fixture_tests.rs constructs the typed inputs and enforces semantics.",
+      "required": ["name", "control", "op", "input", "expected_error"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string" },
+        "control": { "type": "integer", "minimum": 1, "maximum": 10 },
+        "op": { "$ref": "#/$defs/controlOp" },
+        "input": { "type": "object" },
+        "expected_error": { "$ref": "#/$defs/controlErrorCode" }
+      }
+    }
+  }
+}

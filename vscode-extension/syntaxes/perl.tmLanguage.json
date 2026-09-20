@@ -25,6 +25,9 @@
             "include": "#regex"
         },
         {
+            "include": "#readline"
+        },
+        {
             "include": "#operators"
         },
             {
@@ -233,8 +236,16 @@
         "operators": {
             "patterns": [
                 {
+                    "name": "keyword.operator.arrow.perl",
+                    "match": "->"
+                },
+                {
+                    "name": "keyword.operator.fat-comma.perl",
+                    "match": "=>"
+                },
+                {
                     "name": "keyword.operator.comparison.perl",
-                    "match": "(==|!=|<=>|<=|>=|<|>|eq|ne|cmp|le|ge|lt|gt|~~)"
+                    "match": "(==|!=|<=>|<=|>=|(?<!<)<(?![=])|(?<!>)>(?![=])|\\b(eq|ne|cmp|le|ge|lt|gt)\\b|~~)"
                 },
                 {
                     "name": "keyword.operator.assignment.perl",
@@ -255,14 +266,6 @@
                 {
                     "name": "keyword.operator.bitwise.perl",
                     "match": "(&|\\||\\^|~|<<|>>)"
-                },
-                {
-                    "name": "keyword.operator.arrow.perl",
-                    "match": "->"
-                },
-                {
-                    "name": "keyword.operator.fat-comma.perl",
-                    "match": "=>"
                 }
             ]
         },
@@ -332,6 +335,14 @@
                             "match": "\\\\."
                         }
                     ]
+                }
+            ]
+        },
+        "readline": {
+            "patterns": [
+                {
+                    "name": "string.other.readline.perl",
+                    "match": "<(?:STDIN|STDOUT|STDERR)>"
                 }
             ]
         },

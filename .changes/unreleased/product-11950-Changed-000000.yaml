@@ -1,0 +1,9 @@
+project: product
+component: Developer experience
+kind: Changed
+body: Split the gate-shard workflow-step extraction so a missing guarded runner step fails visibly instead of skipping and a terminal runner step extends to end-of-file, keeping the workflow-to-parser gate-policy contract check load-bearing when the step is last in ci.yml.
+time: 2026-08-23T00:00:00Z
+custom:
+  PR: "11950"
+  Slug: gate-shard-terminal-runner-step
+  Breaking: "no"

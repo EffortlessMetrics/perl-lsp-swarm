@@ -1,0 +1,110 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://effortlessmetrics.dev/contracts/actual_host_receipt.v1.schema.json",
+  "title": "Actual host compatibility receipt v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "receipt_version", "run_id", "timestamp", "editor", "client", "server", "platform", "workspace", "profile", "registration_state", "artifacts", "features", "state_machine"],
+  "properties": {
+    "schema_version": { "const": "actual_host_receipt.v1" },
+    "receipt_version": { "const": 1 },
+    "run_id": { "$ref": "#/$defs/nonempty" },
+    "timestamp": { "$ref": "#/$defs/nonempty" },
+    "editor": { "$ref": "#/$defs/editorIdentity" },
+    "client": { "$ref": "#/$defs/editorIdentity" },
+    "server": { "$ref": "#/$defs/serverIdentity" },
+    "platform": { "$ref": "#/$defs/platformIdentity" },
+    "workspace": { "$ref": "#/$defs/workspaceIdentity" },
+    "profile": { "$ref": "#/$defs/profileIdentity" },
+    "registration_state": {
+      "enum": ["manual_client_registration", "upstream_source_registration", "upstream_accepted_unreleased", "upstream_builtin_released"]
+    },
+    "artifacts": { "$ref": "#/$defs/artifacts" },
+    "features": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": { "$ref": "#/$defs/featureOutcome" }
+    },
+    "state_machine": { "$ref": "#/$defs/stateMachine" },
+    "extensions": {
+      "type": "object",
+      "propertyNames": { "pattern": "^[^.]+\\.[^.]+$" },
+      "additionalProperties": true
+    }
+  },
+  "$defs": {
+    "nonempty": { "type": "string", "minLength": 1 },
+    "editorIdentity": {
+      "type": "object", "additionalProperties": true,
+      "required": ["family", "version", "source"],
+      "properties": { "family": { "$ref": "#/$defs/nonempty" }, "version": { "$ref": "#/$defs/nonempty" }, "source": { "$ref": "#/$defs/nonempty" } }
+    },
+    "serverIdentity": {
+      "type": "object", "additionalProperties": true,
+      "required": ["path", "sha256", "version"],
+      "properties": { "path": { "$ref": "#/$defs/nonempty" }, "sha256": { "$ref": "#/$defs/nonempty" }, "version": { "$ref": "#/$defs/nonempty" } }
+    },
+    "platformIdentity": {
+      "type": "object", "additionalProperties": true,
+      "required": ["os", "arch"],
+      "properties": { "os": { "$ref": "#/$defs/nonempty" }, "arch": { "$ref": "#/$defs/nonempty" } }
+    },
+    "workspaceIdentity": {
+      "type": "object", "additionalProperties": true,
+      "required": ["root", "identity"],
+      "properties": { "root": { "$ref": "#/$defs/nonempty" }, "identity": { "$ref": "#/$defs/nonempty" } }
+    },
+    "profileIdentity": {
+      "type": "object", "additionalProperties": true,
+      "required": ["identity", "source"],
+      "properties": { "identity": { "$ref": "#/$defs/nonempty" }, "source": { "$ref": "#/$defs/nonempty" } }
+    },
+    "artifacts": {
+      "type": "object", "additionalProperties": true,
+      "required": ["client_log", "server_stderr"],
+      "properties": { "client_log": { "$ref": "#/$defs/nonempty" }, "server_stderr": { "$ref": "#/$defs/nonempty" } }
+    },
+    "featureOutcome": {
+      "type": "object", "additionalProperties": true,
+      "required": ["advertised", "observed", "outcome"],
+      "properties": {
+        "advertised": { "type": "boolean" },
+        "observed": { "type": "boolean" },
+        "outcome": { "enum": ["passed", "failed", "skipped"] },
+        "skip_classification": { "enum": ["unsupported", "harness_limit", "blocked", "not_applicable", "infra_blocked"] },
+        "reason": { "$ref": "#/$defs/nonempty" }
+      },
+      "allOf": [
+        { "if": { "properties": { "outcome": { "const": "skipped" } }, "required": ["outcome"] }, "then": { "required": ["skip_classification", "reason"] } },
+        { "if": { "properties": { "outcome": { "const": "passed" } }, "required": ["outcome"] }, "then": { "properties": { "observed": { "const": true } } } },
+        { "if": { "properties": { "observed": { "const": true } }, "required": ["observed"] }, "then": { "properties": { "advertised": { "const": true } } } }
+      ]
+    },
+    "terminalEvent": {
+      "type": "object", "additionalProperties": true,
+      "required": ["outcome"],
+      "properties": { "outcome": { "enum": ["ok", "unsupported", "not_applicable", "skipped", "failed"] }, "reason": { "$ref": "#/$defs/nonempty" } },
+      "allOf": [
+        { "if": { "properties": { "outcome": { "not": { "const": "ok" } } }, "required": ["outcome"] }, "then": { "required": ["reason"] } }
+      ]
+    },
+    "stateMachine": {
+      "type": "object", "additionalProperties": true,
+      "required": ["initialize", "initialized", "position_encoding", "diagnostics_mode", "diagnostics_response_form", "workspace_configuration", "register_capability", "watcher_behavior", "refresh", "shutdown", "exit", "orphan_result"],
+      "properties": {
+        "initialize": { "$ref": "#/$defs/terminalEvent" },
+        "initialized": { "$ref": "#/$defs/terminalEvent" },
+        "position_encoding": { "$ref": "#/$defs/nonempty" },
+        "diagnostics_mode": { "$ref": "#/$defs/nonempty" },
+        "diagnostics_response_form": { "$ref": "#/$defs/nonempty" },
+        "workspace_configuration": { "$ref": "#/$defs/terminalEvent" },
+        "register_capability": { "$ref": "#/$defs/terminalEvent" },
+        "watcher_behavior": { "$ref": "#/$defs/terminalEvent" },
+        "refresh": { "$ref": "#/$defs/terminalEvent" },
+        "shutdown": { "$ref": "#/$defs/terminalEvent" },
+        "exit": { "$ref": "#/$defs/terminalEvent" },
+        "orphan_result": { "enum": ["none", "orphan_detected"] }
+      }
+    }
+  }
+}

@@ -12,6 +12,8 @@
 //!
 //! - A typed [`ProjectModel`] with per-fact records for files, packages, and
 //!   symbols, plus explicit [`DynamicBoundary`]s and [`ModelLimitation`]s.
+//! - A pure, versioned [`ProjectEnvironmentSnapshot`] authority for project,
+//!   interpreter, include-root, build-system, and tool input decisions.
 //! - Deterministic, host-path-free identity ([`FileId`], [`PackageId`],
 //!   [`SymbolId`]) and content [`Digest`]s.
 //! - One internal range format ([`SourceRange`]): byte offsets + 0-based UTF-8
@@ -19,6 +21,10 @@
 //!   never stored here.
 //! - [`Provenance`] + [`Confidence`] + [`EvidenceSource`] on every fact.
 //! - A [`FactClasses`] selector so a request only pays for what it asks for.
+//! - A framework-neutral [`TestItemSnapshot`] contract that references the
+//!   canonical source-identity program without inventing path identity locally.
+//! - A canonical discovery producer that emits validated generation-bound
+//!   snapshots from accepted source, parser, and optional framework facts.
 //!
 //! # What it must never depend on
 //!
@@ -42,11 +48,15 @@
 //! ```
 
 #![warn(missing_docs)]
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
 pub mod boundary;
 pub mod builder;
+pub mod carmel;
 pub mod dist;
+pub mod dist_authoring;
 pub mod effects;
+pub mod environment;
 pub mod error;
 pub mod export;
 pub mod fact_classes;
@@ -54,15 +64,21 @@ pub mod file;
 pub mod id;
 pub mod import;
 mod import_walk;
+pub mod meta_yml;
 pub mod model;
 pub mod package;
 pub mod pod;
 pub mod provenance;
 pub mod range;
 pub mod relation;
+pub mod semantic_query_view;
+mod sha2;
 pub mod shard;
 pub mod symbol;
 pub mod test;
+pub mod test_command;
+pub mod test_item;
+pub mod test_item_discovery;
 
 /// The fact-schema version this crate emits. Bump on any breaking model change.
 pub const SCHEMA_VERSION: u32 = 2;
@@ -70,20 +86,84 @@ pub const SCHEMA_VERSION: u32 = 2;
 // ── Curated public surface ──────────────────────────────────────────────────
 pub use boundary::{DynamicBoundary, DynamicBoundaryKind};
 pub use builder::{ProjectModelRequest, build_project_model};
+pub use carmel::{
+    CarmelArtifactRoot, CarmelDetection, CarmelLockAttribution, MySetupFacts, detect_carmel,
+    parse_mysetup_environment,
+};
 pub use dist::{DistMetadataFacts, DistMetadataSource, Prereq};
+pub use dist_authoring::{
+    AuthoringPrereq, DistAuthoringBuildTool, DistAuthoringConflict, DistAuthoringFacts,
+    DistAuthoringSource, DistDeclaration, DistDeclarationKind, DistFactAgreement,
+    DistFactComparison, DistProvidesEntry, DistResource, compare_authoring_with_meta,
+    parse_build_pl, parse_dist_authoring, parse_dist_ini, parse_makefile_pl,
+};
 pub use effects::CompileEffectFacts;
+pub use environment::authorization::{
+    ActionableAuthority, AuthorizationActor, AuthorizationError, AuthorizationEvidence,
+    AuthorizationEvidenceId, AuthorizationFingerprint, AuthorizationOutcome, AuthorizationReason,
+    BoundGenerations, CapabilitySet, ClassifiedInput, ClassifiedInputId,
+    EXECUTION_AUTHORIZATION_SCHEMA_VERSION, EvidenceLimitation, ExecutionAuthorizationDecision,
+    ExecutionCapability, ExecutionIntent, ExecutionIntentId, ExecutionReasonClass,
+    InputDisposition, InputRiskClass, MAX_CLAIM_BOUNDARY_LEN, MAX_IDENTIFIER_LEN,
+    OPERATION_REGISTRY_VERSION, OperationProfile, OperationTrustRequirement, PolicyDenial,
+    PublicAuthorizationExplanation, RequiredScope, RevalidationRequirement, SessionOverride,
+    TrustScope, TrustScopeKind, authorize, operation_registry,
+};
+pub use environment::builder::{
+    AmbientEnvironmentObservation, BuildSystemFactDeclaration, EnvironmentInputReceipt,
+    EnvironmentRejectionReason, EnvironmentSnapshotReceipts, EnvironmentSnapshotSlot,
+    IncludeRootDeclaration, InterpreterDeclaration, Perl5LibDeclaration,
+    RejectedIncludeEntryReceipt, SnapshotInstallOutcome, SystemIncDeclaration,
+    WorkspaceEnvironmentDeclaration, rejected_include_entries,
+};
+pub use environment::{
+    BuildSystemFactRef, BuildSystemKind, EnvironmentBuildError, EnvironmentFingerprint,
+    EnvironmentInput, EnvironmentInputAuthority, EnvironmentInputId, EnvironmentInputState,
+    EnvironmentLimitation, EnvironmentPathRef, IncludeEntry, IncludeEntryRole,
+    InterpreterIdentityRef, PROJECT_ENVIRONMENT_SCHEMA_VERSION, ProjectEnvironmentSnapshot,
+    ProjectEnvironmentSnapshotBuilder, ProjectRoot, ProjectRootRole, PublicBuildSystemFactRef,
+    PublicEnvironmentInput, PublicInterpreterIdentityRef, PublicPathEntry,
+    PublicProjectEnvironmentReceipt, PublicToolCandidate, ToolCandidate, ToolCandidateRole,
+    WorkspaceTrust,
+};
 pub use error::{ModelLimitation, WorkspaceCoreError};
 pub use export::{ExportFact, ExportKind};
 pub use fact_classes::FactClasses;
 pub use file::{FileRecord, FileRole, ParseStatus};
 pub use id::{Digest, FileId, PackageId, SymbolId, fnv1a};
 pub use import::{ImportFact, ImportKind};
+pub use meta_yml::{
+    MetaYmlFinding, MetaYmlFindingKind, MetaYmlOutcome, MetaYmlParseState, parse_meta_yml,
+};
 pub use model::ProjectModel;
 pub use package::PackageRecord;
 pub use pod::{PodFact, PodSection, PodSectionKind};
 pub use provenance::{Confidence, EvidenceSource, Producer, Provenance};
 pub use range::{SourceRange, Utf8LineIndex};
 pub use relation::{RelationFact, RelationKind};
+pub use semantic_query_view::{
+    AnchorLookupWork, AnchorRow, CheckedBuildInput, DeclarationRow, FamilyWork, IndexAnswer,
+    IndexCompleteness, IndexCompletenessRef, NotProvenReason, SemanticQueryView, ShardIdentity,
+    SourceEntry, ViewRejection, ViewWorkReceipt,
+};
 pub use shard::{ProjectDelta, ProjectFactShard, ProjectShardState, ShardError};
 pub use symbol::{SymbolFactKind, SymbolRecord, Visibility};
 pub use test::TestFact;
+pub use test_command::{
+    GeneratedArtifact, GeneratedStateEvidence, GeneratedStateFreshness, GeneratedStateObservation,
+    GeneratedStateRequirement, PublicGeneratedStateRequirement, PublicTestCommandCandidate,
+    PublicTestCommandPlan, TEST_COMMAND_PLAN_SCHEMA_VERSION, TestCommandAdmission,
+    TestCommandCandidate, TestCommandPlan, TestCommandPlanError, TestIncludeMode, TestRunnerKind,
+    plan_test_commands,
+};
+pub use test_item::{
+    SOURCE_IDENTITY_REF_SCHEMA_VERSION, SourceIdentityRef, TEST_ITEM_SCHEMA_VERSION,
+    TestFrameworkIdentity, TestItem, TestItemCapabilities, TestItemDelta, TestItemDeltaError,
+    TestItemId, TestItemKind, TestItemName, TestItemPublicationError, TestItemSnapshot,
+    TestItemValidationError,
+};
+pub use test_item_discovery::{
+    CompatibilityMismatch, CompatibilityMismatchKind, NamedSubroutinePolicy, ParserBackedSubtest,
+    ParserBackedTree, TestItemDiscoveryError, TestItemDiscoveryRequest, compare_with_parser_backed,
+    discover_test_item_snapshot, parser_backed_subtests,
+};

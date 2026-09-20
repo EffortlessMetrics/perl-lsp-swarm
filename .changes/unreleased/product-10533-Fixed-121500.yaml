@@ -1,0 +1,9 @@
+project: product
+component: Developer experience
+kind: Fixed
+body: Restored the main clippy_full advisory gate by adding the sibling-bin `clippy::print_stdout` allow to the install-surface-inventory xtask binary.
+time: 2026-08-17T12:15:00Z
+custom:
+  PR: "10533"
+  Slug: install-surface-inventory-print-stdout-allow
+  Breaking: "no"

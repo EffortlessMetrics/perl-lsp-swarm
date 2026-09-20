@@ -16,6 +16,13 @@
 use perl_parser_core::path_security::{WorkspacePathError, validate_workspace_path};
 use std::path::{Path, PathBuf};
 
+pub mod launch_authority;
+
+pub use launch_authority::{
+    LaunchAuthority, LaunchAuthorityError, LaunchAuthorityMode, LaunchAuthorityReceipt,
+    LaunchAuthoritySource, LaunchAuthorityStartup, TrustedRoot, UnboundedAcknowledgement,
+};
+
 /// Security validation errors
 #[derive(Debug, PartialEq, thiserror::Error)]
 pub enum SecurityError {
@@ -42,21 +49,6 @@ pub enum SecurityError {
     /// Timeout exceeds maximum allowed value
     #[error("Timeout exceeds maximum allowed value: {0}ms")]
     ExcessiveTimeout(u32),
-}
-
-impl perl_parser_core::ErrorClass for SecurityError {
-    fn error_class(&self) -> perl_parser_core::ErrorCategory {
-        // All variants represent invalid or hostile input from launch
-        // configuration or evaluate arguments — user must correct.
-        match self {
-            Self::PathTraversalAttempt(_)
-            | Self::PathOutsideWorkspace(_)
-            | Self::SymlinkOutsideWorkspace(_)
-            | Self::InvalidPathCharacters
-            | Self::InvalidExpression
-            | Self::ExcessiveTimeout(_) => perl_parser_core::ErrorCategory::UserError,
-        }
-    }
 }
 
 /// Maximum allowed timeout in milliseconds (5 minutes)

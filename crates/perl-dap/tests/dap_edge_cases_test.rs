@@ -4,7 +4,7 @@
 //! output parsing to ensure robustness.
 
 use perl_dap::{DapMessage, DebugAdapter};
-use serde_json::json;
+use serde_json::{Value, json};
 use std::fs::write;
 use std::sync::mpsc::sync_channel;
 use tempfile::tempdir;
@@ -89,11 +89,32 @@ say "Done";
                 .ok_or("Expected breakpoints array")?;
             assert_eq!(breakpoints.len(), 3);
 
-            // All breakpoints should be present (verified depends on session)
-            for bp in breakpoints {
-                assert!(bp.get("line").is_some());
-                assert!(bp.get("id").is_some());
-            }
+            // #9578: conditional support is floored, so the two entries
+            // carrying `condition` — no matter how complex the expression —
+            // are refused per item with the conditional floor refusal instead
+            // of being stored, while the plain entry keeps its store identity.
+            assert_eq!(breakpoints[0].get("verified").and_then(Value::as_bool), Some(false));
+            let rejected_message = breakpoints[0]
+                .get("message")
+                .and_then(Value::as_str)
+                .ok_or("rejected entry must carry a message")?;
+            assert!(
+                rejected_message.contains("supportsConditionalBreakpoints"),
+                "expected the #9578 conditional floor refusal, got {rejected_message:?}"
+            );
+            // The plain entry keeps its store identity (its `verified` status
+            // still depends on AST validation of the line, as before).
+            assert!(breakpoints[1].get("id").is_some(), "stored plain entry keeps its id");
+            assert!(breakpoints[1].get("line").is_some());
+            assert_eq!(breakpoints[2].get("verified").and_then(Value::as_bool), Some(false));
+            let rejected_message_late = breakpoints[2]
+                .get("message")
+                .and_then(Value::as_str)
+                .ok_or("third rejected entry must carry a message")?;
+            assert!(
+                rejected_message_late.contains("supportsConditionalBreakpoints"),
+                "expected the #9578 conditional floor refusal on the third entry, got                  {rejected_message_late:?}"
+            );
         }
         _ => return Err("Expected successful setBreakpoints response".into()),
     }
@@ -238,6 +259,7 @@ fn test_dap_stack_trace_edge_cases() -> TestResult {
 }
 
 #[test]
+#[ignore = "#10563: Retired: arbitrary frame ids are not admitted without an exact stopped frame; overflow returns empty scopes."]
 fn test_dap_scopes_edge_cases() -> TestResult {
     let mut adapter = DebugAdapter::new();
 
@@ -288,6 +310,7 @@ fn test_dap_scopes_edge_cases() -> TestResult {
 }
 
 #[test]
+#[ignore = "#10563: Retired: arbitrary frame ids are not admitted without an exact stopped frame; overflow returns empty scopes."]
 fn test_dap_scopes_overflow_boundary() -> TestResult {
     let mut adapter = DebugAdapter::new();
 
@@ -460,11 +483,13 @@ fn test_dap_malformed_requests() -> TestResult {
 }
 
 #[test]
-fn test_dap_attach_process_id_mode() -> TestResult {
+fn test_dap_attach_process_id_mode_is_refused() -> TestResult {
     let mut adapter = DebugAdapter::new();
 
-    // PID attach should succeed in signal-control mode.
-    // #4638: use current process PID so verify_attach_target succeeds.
+    // #8109: PID attach must be refused fail-closed. Verifying process
+    // existence plus signal control never established a debugger transport or
+    // observed a stop transition, so the adapter must not report a successful
+    // attach or emit synthetic stopped events.
     let pid = std::process::id();
     let attach_args = json!({
         "processId": pid
@@ -473,12 +498,22 @@ fn test_dap_attach_process_id_mode() -> TestResult {
     let response = adapter.handle_request(1, "attach", Some(attach_args));
     match response {
         DapMessage::Response { success, command, body, message, .. } => {
-            assert_eq!(command, "attach");
-            assert!(success, "PID attach should succeed");
-            let body = body.ok_or("Expected attach body")?;
-            assert_eq!(body.get("processId").and_then(|v| v.as_u64()), Some(pid as u64));
-            let msg = message.ok_or("Expected attach message")?;
-            assert!(msg.contains("signal-control mode"));
+            if command != "attach" {
+                return Err(format!("expected attach response command, got {command}").into());
+            }
+            if success {
+                return Err("PID attach must be refused (#8109)".into());
+            }
+            if body.is_some() {
+                return Err("refusal must not carry an attach body".into());
+            }
+            let msg = message.ok_or("Expected refusal message")?;
+            if !msg.contains("not supported") {
+                return Err(format!("refusal must name the disposition: {msg}").into());
+            }
+            if !msg.contains("host") || !msg.contains("port") {
+                return Err(format!("refusal must provide TCP host/port guidance: {msg}").into());
+            }
         }
         _ => return Err("Expected attach response".into()),
     }

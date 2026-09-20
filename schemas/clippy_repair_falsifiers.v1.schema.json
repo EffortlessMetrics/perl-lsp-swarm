@@ -1,0 +1,199 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "schemas/clippy_repair_falsifiers.v1.schema.json",
+  "title": "clippy_repair_falsifiers.v1 corpus manifest and case documents",
+  "description": "Canonical shape for ClippyRepairFalsifierCorpusV1 (#11649). The Rust validator in xtask::clippy_repair_corpus is the enforcement authority; this schema documents the same contract for external consumers. Unknown fields are rejected by both.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "corpus", "producer_toolchain", "case_count", "cases"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "corpus": { "const": "ClippyRepairFalsifierCorpusV1" },
+    "producer_toolchain": { "type": "string", "pattern": "^1\\.[0-9]+$" },
+    "case_count": { "type": "integer", "minimum": 1 },
+    "cases": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["case_id", "family", "file", "packet_ready"],
+        "properties": {
+          "case_id": { "type": "string", "pattern": "^[A-G][0-9]{2}-[a-z0-9]+(-[a-z0-9]+)*$" },
+          "family": {
+            "enum": [
+              "verifier_denominator_weakening",
+              "count_identity_debt_substitution",
+              "lost_work_error_obligation_theater",
+              "boundary_data_semantics_theater",
+              "structural_ownership_theater",
+              "real_regression_10600_family",
+              "documentation_cargo_test_proof_theater"
+            ]
+          },
+          "file": { "type": "string", "pattern": "^cases/[A-G][0-9]{2}-[a-z0-9-]+\\.json$" },
+          "packet_ready": { "type": "boolean" }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "case": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "case_id",
+        "family",
+        "purpose",
+        "incident_reference",
+        "subject",
+        "governed_lint",
+        "dishonest_mutation",
+        "rejecting_authority",
+        "expected_result",
+        "positive_counterpart",
+        "applicability",
+        "delta_provenance",
+        "claim_boundary"
+      ],
+      "properties": {
+        "schema_version": { "const": 1 },
+        "case_id": { "type": "string", "pattern": "^[A-G][0-9]{2}-[a-z0-9]+(-[a-z0-9]+)*$" },
+        "family": { "$ref": "#/$defs/family" },
+        "purpose": { "type": "string", "minLength": 20 },
+        "incident_reference": { "type": ["string", "null"] },
+        "subject": { "$ref": "#/$defs/subject" },
+        "governed_lint": {
+          "oneOf": [
+            { "type": "null" },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["lint", "level_source"],
+              "properties": {
+                "lint": { "type": "string" },
+                "level_source": { "type": "string" }
+              }
+            }
+          ]
+        },
+        "dishonest_mutation": { "$ref": "#/$defs/snippet" },
+        "rejecting_authority": {
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["status", "authority_kind", "reference"],
+              "properties": {
+                "status": { "const": "bound" },
+                "authority_kind": {
+                  "enum": ["cargo_lints", "file_contract", "gate_command", "receipt_contract"]
+                },
+                "reference": { "type": "string", "minLength": 4 }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["status", "owner_issue", "unresolved_reason"],
+              "properties": {
+                "status": { "const": "pending_owner" },
+                "owner_issue": { "type": "integer", "minimum": 1 },
+                "unresolved_reason": { "type": "string", "minLength": 20 }
+              }
+            }
+          ]
+        },
+        "expected_result": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["result_class", "reason_code"],
+          "properties": {
+            "result_class": { "const": "reject" },
+            "reason_code": { "type": "string" }
+          }
+        },
+        "positive_counterpart": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["sanctioned_evidence", "note", "content", "sha256"],
+          "properties": {
+            "sanctioned_evidence": {
+              "type": "array",
+              "minItems": 1,
+              "items": { "type": "string", "minLength": 1 }
+            },
+            "note": { "type": "string" },
+            "content": { "type": "string" },
+            "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+          }
+        },
+        "applicability": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["packet_classes", "domains"],
+          "properties": {
+            "packet_classes": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "enum": ["qualification", "foundation", "migration", "activation", "review"]
+              }
+            },
+            "domains": { "type": "array", "minItems": 1, "items": { "type": "string" } }
+          }
+        },
+        "delta_provenance": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["change_reason", "owning_issue", "historical_interpretability"],
+          "properties": {
+            "change_reason": { "type": "string", "minLength": 1 },
+            "owning_issue": { "type": "integer", "minimum": 1 },
+            "historical_interpretability": { "type": "boolean" }
+          }
+        },
+        "claim_boundary": { "type": "string", "minLength": 20 }
+      }
+    },
+    "snippet": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "language", "trigger_evidence", "content", "sha256"],
+      "properties": {
+        "kind": { "const": "source-snippet" },
+        "language": { "type": "string" },
+        "trigger_evidence": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "content": { "type": "string" },
+        "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+      }
+    },
+    "subject": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["scope", "target_kinds", "profile", "platforms", "features"],
+      "properties": {
+        "scope": { "type": "string" },
+        "target_kinds": { "type": "array", "items": { "type": "string" } },
+        "profile": { "type": "string" },
+        "platforms": { "type": "array", "items": { "type": "string" } },
+        "features": { "type": "string" }
+      }
+    },
+    "family": {
+      "enum": [
+        "verifier_denominator_weakening",
+        "count_identity_debt_substitution",
+        "lost_work_error_obligation_theater",
+        "boundary_data_semantics_theater",
+        "structural_ownership_theater",
+        "real_regression_10600_family",
+        "documentation_cargo_test_proof_theater"
+      ]
+    }
+  }
+}

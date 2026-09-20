@@ -363,7 +363,7 @@ fn latest_check_run<'a>(runs: &'a [CheckRun], required: &RequiredContext) -> Opt
         .filter(|run| {
             required
                 .app_id
-                .map_or(true, |app_id| run.app.as_ref().is_some_and(|app| app.id == app_id))
+                .is_none_or(|app_id| run.app.as_ref().is_some_and(|app| app.id == app_id))
         })
         .max_by(|left, right| {
             left.started_at

@@ -26,6 +26,29 @@ if [ "$GIT_USER_NAME" = "Codex Release Validation" ] || \
     exit 1
 fi
 
+# Format the staged Rust diff before the gate inspects it.
+#
+# `rustfmt_staged` in the commit gate below blocks a commit whose staged Rust
+# would be reformatted. Formatting the diff first turns that block into a
+# self-heal: the common case (a few unformatted lines in the files you are
+# already committing) is fixed and re-staged instead of bouncing you out to
+# run a workspace-wide `cargo xtask fmt` by hand.
+#
+# Only fully staged files are rewritten. A file that is staged *and*
+# separately modified in the worktree is reported and left alone, so this can
+# never sweep unstaged work into the commit.
+#
+# Non-fatal on its own: if rustfmt is unavailable the gate below still blocks,
+# so a missing formatter cannot turn into a silently unformatted commit.
+#
+# A failed run leaves nothing half-done. Files are formatted in memory first,
+# and any write or re-stage failure restores the original bytes, so the
+# worktree and the index stay in step and the gate below judges the same tree
+# you started with. The one exception — a rollback that itself fails — is
+# reported by name in the command's own output above this warning.
+echo "Formatting staged Rust diff: cargo xtask fmt --staged"
+cargo xtask fmt --staged || echo "⚠️  staged formatting did not run; the commit gate below still applies"
+
 echo "Running exact staged commit gate: cargo xtask precommit"
 cargo xtask precommit
 "#;
@@ -33,7 +56,8 @@ cargo xtask precommit
     pub(super) fn print_install_summary() {
         println!("✅ Installed pre-commit and pre-push hooks");
         println!(
-            "   The pre-commit hook blocks placeholder identities, then runs 'cargo xtask precommit'"
+            "   The pre-commit hook blocks placeholder identities, formats the staged Rust diff \
+             ('cargo xtask fmt --staged'), then runs 'cargo xtask precommit'"
         );
         println!("   The pre-push hook runs 'nix develop -c just pr-fast' before each push");
         println!("   Skip with: git commit --no-verify / git push --no-verify");
@@ -230,10 +254,73 @@ if [ "$SINGLE_CRATE_ALL_UNDER_CRATES" = true ] && [ "$SINGLE_CRATE_COUNT" = "1" 
     echo "Single-crate push (${SINGLE_CRATE_DIR} -> ${SINGLE_CRATE_NAME}) — running targeted gate"
     echo "   (Skip with: git push --no-verify)"
     echo ""
+    # Clippy target selection follows the crate's CI cohort, because the tier
+    # is meant to narrow SCOPE (one crate instead of the workspace), not to
+    # apply a different contract than CI does.
+    #
+    # Cargo's default selection is lib + bins, so a bare `cargo clippy -p X`
+    # cannot see tests/, benches/ or examples/ at all. For a crate in the
+    # clippy_tests_kernel cohort that is a real hole: the #14549 regression was
+    # a duplicated #![deny(clippy::map_err_ignore)] in
+    # crates/perl-workspace-core/tests/, a file this tier never compiled, so it
+    # reached main and reddened the kernel gate for every PR.
+    #
+    # But --all-targets is NOT universally right here. The crates in
+    # CLIPPY_TESTS_KERNEL_RESIDUAL_PACKAGES (#15677, #15613) are deliberately
+    # outside that cohort because they retain measured test-target lint debt;
+    # CI lints them through clippy_strict, which is lib + bins. Applying
+    # --all-targets to those would fail every otherwise valid push on
+    # pre-existing findings that CI does not gate on.
+    #
+    # So read the cohort from the gate policy rather than assuming one answer,
+    # and match its exact lint flags. The list is parsed out of the
+    # clippy_tests_kernel command itself, so it cannot drift from what CI runs;
+    # unparseable or missing policy falls back to the narrower command.
+    #
+    # --locked on every command so a gate run cannot quietly rewrite Cargo.lock
+    # and have CI reject the push it just approved. Deliberately NOT
+    # --all-targets on cargo test: that flag drops doctests, which the current
+    # invocation does run.
+    clippy_tests_kernel_cohort() {
+        awk '
+            /^  - name: clippy_tests_kernel$/ { in_gate = 1; next }
+            in_gate && /^  - name: / { in_gate = 0 }
+            in_gate {
+                line = $0
+                sub(/^[[:space:]]+/, "", line)
+                sub(/[[:space:]]+$/, "", line)
+                # Whole-line match only: prose in this block mentions "-p <crate>"
+                # when narrating past admissions, and those must not count.
+                if (line ~ /^-p [A-Za-z0-9_-]+$/) { print substr(line, 4) }
+            }
+        ' "$1"
+    }
+
+    GATE_POLICY_FILE="$REPO_ROOT/.ci/gate-policy.yaml"
+    CLIPPY_ALL_TARGETS=false
+    if [ -f "$GATE_POLICY_FILE" ]; then
+        if clippy_tests_kernel_cohort "$GATE_POLICY_FILE" \
+            | grep -qxF "$SINGLE_CRATE_NAME" 2>/dev/null; then
+            CLIPPY_ALL_TARGETS=true
+        fi
+    fi
+
+    if [ "$CLIPPY_ALL_TARGETS" = true ]; then
+        echo "   clippy: --all-targets (crate is in the clippy_tests_kernel cohort)"
+    else
+        echo "   clippy: lib + bins (crate is outside the clippy_tests_kernel cohort)"
+    fi
+    echo ""
+
     run_single_crate_gate() {
-        cargo fmt -p "$SINGLE_CRATE_NAME" -- --check && \
-        cargo clippy -p "$SINGLE_CRATE_NAME" -- -D warnings && \
-        cargo test -p "$SINGLE_CRATE_NAME"
+        cargo fmt -p "$SINGLE_CRATE_NAME" -- --check || return
+        if [ "$CLIPPY_ALL_TARGETS" = true ]; then
+            cargo clippy -p "$SINGLE_CRATE_NAME" --all-targets --locked \
+                -- -D warnings -A missing_docs || return
+        else
+            cargo clippy -p "$SINGLE_CRATE_NAME" --locked -- -D warnings || return
+        fi
+        cargo test -p "$SINGLE_CRATE_NAME" --locked
     }
     GATE_LOG="$(mktemp -t perl-lsp-prepush.XXXXXX.log 2>/dev/null || mktemp)"
     trap 'rm -f "$GATE_LOG"' EXIT
@@ -462,10 +549,54 @@ mod tests {
             .find("cargo xtask precommit")
             .ok_or_else(|| color_eyre::eyre::eyre!("staged gate missing"))?;
         assert!(guard < gate);
+        // Note this asserts the absence of a bare workspace-wide `cargo fmt`.
+        // The staged formatter is `cargo xtask fmt --staged`, which does not
+        // match — see `pre_commit_formats_staged_diff_before_the_gate`.
         assert!(!hook.contains("cargo fmt"));
         assert!(!hook.contains("cargo clippy"));
         assert!(!hook.contains("cargo test"));
         assert!(!hook.contains("ripr"));
+        Ok(())
+    }
+
+    #[test]
+    fn pre_commit_never_publishes_the_non_rust_inventory_reference() {
+        // #14688: the tracked inventory Markdown is a default-branch
+        // publication, not branch merge authority. A hook that regenerates
+        // and stages it makes every independently based branch write the
+        // same whole-repository snapshot, which is exactly the conflict
+        // topology `xtask/tests/non_rust_inventory_conflict_topology.rs`
+        // rejects end to end.
+        let hook = pre_commit_hook_script();
+        assert!(
+            !hook.contains("non-rust inventory --write"),
+            "generated pre-commit hook must not publish the non-Rust inventory reference"
+        );
+        assert!(
+            !hook.contains("docs/policy/NON_RUST_INVENTORY.md"),
+            "generated pre-commit hook must not stage the published inventory reference"
+        );
+    }
+
+    #[test]
+    fn pre_commit_formats_staged_diff_before_the_gate() -> Result<()> {
+        // Ordering is the hook's contract: format the staged diff, then let the
+        // gate judge the result. Reversed, the gate would reject an index the
+        // very next step was about to fix. Nothing else asserted that the
+        // formatting step is present at all, so a reorder or a deletion would
+        // have gone unnoticed.
+        let hook = pre_commit_hook_script();
+        let guard = hook
+            .find("Refusing commit with placeholder git identity")
+            .ok_or_else(|| color_eyre::eyre::eyre!("placeholder identity guard missing"))?;
+        let format = hook
+            .find("cargo xtask fmt --staged")
+            .ok_or_else(|| color_eyre::eyre::eyre!("staged formatting step missing"))?;
+        let gate = hook
+            .find("cargo xtask precommit")
+            .ok_or_else(|| color_eyre::eyre::eyre!("staged gate missing"))?;
+        assert!(guard < format, "identity guard must run before staged formatting");
+        assert!(format < gate, "staged formatting must run before the commit gate");
         Ok(())
     }
 

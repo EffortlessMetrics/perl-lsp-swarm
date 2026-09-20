@@ -22,6 +22,7 @@ pub fn add_function_completions(
     for (name, symbols) in &symbol_table.symbols {
         for symbol in symbols {
             if (symbol.kind == SymbolKind::Subroutine || symbol.kind == SymbolKind::Constant)
+                && symbol_belongs_to_current_package(symbol, &context.current_package)
                 && name.starts_with(prefix_without_amp)
             {
                 let scope_sort_key =
@@ -59,4 +60,19 @@ pub fn add_function_completions(
             }
         }
     }
+}
+
+/// The legacy table also contains unresolved/synthesized symbols whose names
+/// came from another file's workspace facts. Only package-local definitions are
+/// safe to offer as bare calls from this producer; imported and qualified
+/// symbols are supplied by their dedicated completion paths.
+fn symbol_belongs_to_current_package(
+    symbol: &perl_semantic_analyzer::symbol::Symbol,
+    current_package: &str,
+) -> bool {
+    symbol.qualified_name == current_package
+        || symbol
+            .qualified_name
+            .strip_suffix(symbol.name.as_str())
+            .is_some_and(|package| package.strip_suffix("::") == Some(current_package))
 }

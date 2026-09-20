@@ -3,8 +3,8 @@
 //! This crate provides document link detection for Perl source files,
 //! identifying `use`, `require` module statements, POD links, and file includes.
 
-use perl_module::import::{ModuleImportKind, RequireForm, parse_module_import_head};
-use perl_module::path::module_name_to_path;
+use perl_module::module_name_to_path;
+use perl_module::{ModuleImportKind, RequireForm, parse_module_import_head};
 use perl_position_tracking::offset_to_utf16_line_col;
 use serde_json::{Value, json};
 use url::Url;
@@ -887,7 +887,7 @@ mod tests {
     #[test]
     fn module_runtime_literal_calls_emit_module_links() -> Result<(), String> {
         let text = "use_module('Foo::Bar');\nrequire_module(\"Baz::Qux\");\n";
-        let links = compute_links(uri(), &text, &[]);
+        let links = compute_links(uri(), text, &[]);
 
         let [first, second] = links.as_slice() else {
             return Err(format!("expected two links, got {links:?}"));

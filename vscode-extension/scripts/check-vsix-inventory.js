@@ -2,30 +2,10 @@
 
 const fs = require('fs');
 const path = require('path');
-const { spawnSync } = require('child_process');
+const { validateProjectionManifest, vsixName } = require('./package-vsix');
 
 const EXTENSION_ROOT = path.resolve(__dirname, '..');
 const BASELINE_PATH = path.join(__dirname, 'vsix-inventory-baseline.json');
-const VSCE_ENTRY = path.join(EXTENSION_ROOT, 'node_modules', '@vscode', 'vsce', 'vsce');
-
-function collectPackagedFiles() {
-  const result = spawnSync(process.execPath, [VSCE_ENTRY, 'ls'], {
-    cwd: EXTENSION_ROOT,
-    encoding: 'utf8',
-    windowsHide: true,
-  });
-  if (result.error) {
-    throw result.error;
-  }
-  if (result.status !== 0) {
-    throw new Error(`vsce ls failed: ${(result.stderr || result.stdout || '').trim()}`);
-  }
-  return result.stdout
-    .split(/\r?\n/)
-    .map((line) => line.trim().replaceAll('\\', '/'))
-    .filter((file) => file.length > 0)
-    .map((file) => ({ file, bytes: fs.statSync(path.join(EXTENSION_ROOT, file)).size }));
-}
 
 function summarizeInventory(entries) {
   const files = Object.fromEntries(entries.map(({ file, bytes }) => [file, bytes]));
@@ -37,16 +17,32 @@ function summarizeInventory(entries) {
   };
 }
 
+/**
+ * VS Code package platform, as minted by the release projection in
+ * `src/vsixPackageProjection.ts`. This is deliberately not `process.platform`:
+ * a musl Linux topology row packages as `alpine`, which Node never reports.
+ * @typedef {'linux' | 'alpine' | 'darwin' | 'win32'} BundlePlatform
+ */
+
+// A classifier that omits `alpine` reads every `bin/alpine-*/` payload as
+// platform-neutral, and therefore as a member of every target's package.
+const BUNDLE_PLATFORM_GROUP = '(linux|alpine|darwin|win32)';
+const PACKAGED_PLATFORM_PATTERN = new RegExp(`^bin/${BUNDLE_PLATFORM_GROUP}(?:-[^/]+)?/`);
+const PACKAGED_TARGET_PATTERN = new RegExp(`^bin/${BUNDLE_PLATFORM_GROUP}-([^/]+)/`);
+
 function platformForPackagedFile(file) {
-  const match = /^bin\/(linux|darwin|win32)(?:-[^/]+)?\//.exec(file);
+  const match = PACKAGED_PLATFORM_PATTERN.exec(file);
   return match ? match[1] : null;
 }
 
 function bundleTargetForPackagedFile(file) {
-  const match = /^bin\/(linux|darwin|win32)-([^/]+)\//.exec(file);
+  const match = PACKAGED_TARGET_PATTERN.exec(file);
   return match ? `${match[1]}-${match[2]}` : null;
 }
 
+/**
+ * @param {BundlePlatform | NodeJS.Platform} platform
+ */
 function baselineForPlatform(baseline, platform, arch = 'x64') {
   const target = `${platform}-${arch}`;
   const files = Object.fromEntries(
@@ -58,6 +54,9 @@ function baselineForPlatform(baseline, platform, arch = 'x64') {
   return summarizeInventory(Object.entries(files).map(([file, bytes]) => ({ file, bytes })));
 }
 
+/**
+ * @param {BundlePlatform | NodeJS.Platform} [platform]
+ */
 function compareInventory(actual, baseline, platform = process.platform, options = {}) {
   const allowedFiles = new Set(options.allowedFiles ?? []);
   const arch = options.arch ?? process.arch;
@@ -122,32 +121,135 @@ function compareInventory(actual, baseline, platform = process.platform, options
   return violations;
 }
 
+function classifyInventoryViolations(violations) {
+  if (violations.length === 0) {
+    return 'pass';
+  }
+  const sizeOnly = violations.every(
+    (violation) =>
+      /^total bytes grew from \d+ to \d+$/.test(violation) ||
+      /^file .+ grew from \d+ to \d+ bytes$/.test(violation),
+  );
+  return sizeOnly ? 'size_only' : 'structural';
+}
+
 function currentSourceBundleFile(platform = process.platform, arch = process.arch) {
   const binaryName = platform === 'win32' ? 'perllsp.exe' : 'perllsp';
   return `bin/${platform}-${arch}/${binaryName}`;
 }
 
-function main() {
-  const updateBaseline = process.argv.includes('--update-baseline');
+/** @returns {string[]} */
+function currentSourceBundleFiles(
+  platform = process.platform,
+  arch = process.arch,
+  includeDap = false,
+) {
+  const dapName = platform === 'win32' ? 'perl-dap.exe' : 'perl-dap';
+  return [
+    currentSourceBundleFile(platform, arch),
+    ...(includeDap ? [`bin/${platform}-${arch}/${dapName}`] : []),
+  ];
+}
+
+function parseArgs(argv) {
+  let updateBaseline = false;
+  /** @type {string | null} */
+  let vsixPath = null;
+  for (let index = 0; index < argv.length; index += 1) {
+    const argument = argv[index];
+    if (argument === '--update-baseline') {
+      if (updateBaseline) {
+        throw new Error('duplicate --update-baseline option');
+      }
+      updateBaseline = true;
+      continue;
+    }
+    if (argument === '--vsix') {
+      if (vsixPath !== null) {
+        throw new Error('duplicate --vsix option');
+      }
+      const value = argv[++index];
+      if (!value || value.startsWith('--')) {
+        throw new Error('--vsix requires a value');
+      }
+      vsixPath = path.resolve(EXTENSION_ROOT, value);
+      continue;
+    }
+    throw new Error(`Unknown argument: ${argument}`);
+  }
+  return { updateBaseline, vsixPath };
+}
+
+async function main() {
+  const { updateBaseline, vsixPath: requestedVsixPath } = parseArgs(process.argv.slice(2));
   const baseline =
     updateBaseline && !fs.existsSync(BASELINE_PATH)
       ? null
       : JSON.parse(fs.readFileSync(BASELINE_PATH, 'utf8'));
-  const actual = summarizeInventory(collectPackagedFiles());
+  const vsixPath = requestedVsixPath || path.join(EXTENSION_ROOT, vsixName);
+  const transition = require('./check-vsix-inventory-transition');
+  const actual = (await transition.collectArchiveInventory(vsixPath)).inventory;
   if (updateBaseline) {
     fs.writeFileSync(BASELINE_PATH, `${JSON.stringify(actual, null, 2)}\n`);
     process.stdout.write(`Updated ${BASELINE_PATH}\n`);
     return;
   }
-  const allowedFiles =
-    process.env.PERL_LSP_CURRENT_SOURCE_SMOKE === '1' ? [currentSourceBundleFile()] : [];
+  const manifestPath = (process.env.PERL_LSP_CANDIDATE_PAYLOAD_MANIFEST || '').trim();
+  const allowedFiles = [];
+  if (!manifestPath && process.env.PERL_LSP_CURRENT_SOURCE_SMOKE === '1') {
+    allowedFiles.push(
+      ...currentSourceBundleFiles(
+        process.platform,
+        process.arch,
+        process.env.PERL_LSP_CURRENT_SOURCE_DAP_STAGED === '1',
+      ),
+    );
+  }
+  if (manifestPath) {
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+    const projectionPath = (process.env.PERL_LSP_VSIX_PROJECTION_INPUT || '').trim();
+    if (!projectionPath) {
+      throw new Error('candidate payload manifest requires a projection input');
+    }
+    const projection = JSON.parse(fs.readFileSync(projectionPath, 'utf8'));
+    const target = (
+      process.env.PERL_LSP_VSCODE_TARGET ||
+      manifest?.package?.vscodeTargetId ||
+      ''
+    ).trim();
+    const validatedManifest = validateProjectionManifest(manifest, projection, target);
+    const inventorySha = validatedManifest.package.inventorySha256;
+    if (transition.semanticInventorySha256(actual) !== inventorySha) {
+      throw new Error('candidate payload manifest inventory SHA does not match the produced VSIX');
+    }
+    const members = [
+      validatedManifest.server?.member,
+      validatedManifest.dap?.payload?.member,
+    ].filter((member) => typeof member === 'string');
+    for (const member of members) {
+      const packagedFile = `bin/${target}/${member}`;
+      if (!Object.hasOwn(actual.files, packagedFile)) {
+        throw new Error(
+          `candidate payload member is missing from the produced VSIX: ${packagedFile}`,
+        );
+      }
+      allowedFiles.push(packagedFile);
+    }
+  }
   const violations = compareInventory(actual, baseline, process.platform, {
     allowedFiles,
     arch: process.arch,
   });
+  const classification = classifyInventoryViolations(violations);
   process.stdout.write(
     `${JSON.stringify(
-      { ...actual, baseline: BASELINE_PATH, platform: process.platform, violations },
+      {
+        ...actual,
+        baseline: BASELINE_PATH,
+        platform: process.platform,
+        classification,
+        violations,
+      },
       null,
       2,
     )}\n`,
@@ -157,20 +259,21 @@ function main() {
   }
 }
 
-if (require.main === module) {
-  try {
-    main();
-  } catch (error) {
-    process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
-    process.exitCode = 1;
-  }
-}
-
 module.exports = {
   baselineForPlatform,
+  classifyInventoryViolations,
   compareInventory,
   currentSourceBundleFile,
+  currentSourceBundleFiles,
   bundleTargetForPackagedFile,
   platformForPackagedFile,
+  parseArgs,
   summarizeInventory,
 };
+
+if (require.main === module) {
+  main().catch((error) => {
+    process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+    process.exitCode = 1;
+  });
+}

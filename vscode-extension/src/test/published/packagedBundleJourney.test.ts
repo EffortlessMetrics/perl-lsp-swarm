@@ -1,10 +1,31 @@
 import * as assert from 'assert';
-import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
+import { randomUUID } from 'crypto';
 import * as vscode from 'vscode';
-
-type ReceiptValue = Record<string, unknown>;
+import { runBoundedProcess } from '../../testAdapter';
+import {
+  assertProviderSucceeded,
+  assertDailyDriverRenameEdits,
+  debuggeeCreationTimeFromProbe,
+  bundledBinaryPath,
+  bundledDapPath,
+  bundledServerVersion,
+  pathsEquivalent,
+  platformLabel,
+  providerPosition,
+  providerResult,
+  receiptsDir,
+  observeActiveDocumentReadiness,
+  waitForActiveDocumentGeneration,
+  sha256,
+  waitForStartupMetrics,
+  scanBundledDapProcessIdentities,
+  parseLinuxProcessStat,
+  isLinuxProcessGoneError,
+  withTimeout,
+  type ReceiptValue,
+} from './journeySupport';
 
 interface VerifiedChildArtifact {
   owner_issue: '#4346';
@@ -16,36 +37,101 @@ interface VerifiedChildArtifact {
   status: 'pass' | 'limited' | 'blocked' | 'not_proven';
   claim_boundary: string;
   limitation: string | null;
+  source_receipt_sha256: string;
+  artifact_hashes: ArtifactHashes;
 }
 
-function platformLabel(): string {
-  switch (process.platform) {
-    case 'win32':
-      return 'windows';
-    case 'darwin':
-      return 'macos';
-    case 'linux':
-      return 'linux';
-    default:
-      return process.platform;
+interface CandidateArtifactManifest {
+  candidate_id: string;
+  frozen_product_sha: string;
+  artifact_set_id: string;
+  platform: string;
+  vsix_sha256: string;
+  bundled_server_sha256: string;
+}
+
+interface ArtifactHashes {
+  vsix_sha256: string;
+  bundled_server_sha256: string;
+}
+
+const SOURCE_CLAIM_BOUNDARY =
+  'Packaged VSIX and bundled-server journey exercised by the VS Code extension host.';
+
+function readinessDeferredProvider(label: string, reason: string): ReceiptValue {
+  return {
+    status: 'not_proven',
+    label,
+    reason,
+  };
+}
+
+function requireCandidateArtifactManifest(
+  observedVsixSha256: string | undefined,
+  observedBundledServerSha256: string,
+): CandidateArtifactManifest | undefined {
+  const serialized = process.env.PERL_LSP_CANDIDATE_ARTIFACT_MANIFEST?.trim();
+  const candidateId = process.env.PERL_LSP_CANDIDATE_ID?.trim();
+  const frozenProductSha = process.env.PERL_LSP_CURRENT_SOURCE_SHA?.trim();
+  const artifactSetId = process.env.PERL_LSP_ARTIFACT_SET_ID?.trim();
+  const candidateBound = Boolean(serialized || candidateId || frozenProductSha || artifactSetId);
+  if (!candidateBound) {
+    return undefined;
   }
+  assert.ok(serialized, 'candidate-bound packaged smoke requires an artifact manifest');
+  let manifest: CandidateArtifactManifest;
+  try {
+    manifest = JSON.parse(serialized) as CandidateArtifactManifest;
+  } catch (error: unknown) {
+    throw new Error(
+      `candidate artifact manifest must be valid JSON: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  for (const [field, value] of Object.entries(manifest)) {
+    assert.equal(typeof value, 'string', `candidate artifact manifest ${field} must be a string`);
+    assert.ok(value.trim(), `candidate artifact manifest ${field} is required`);
+  }
+  assert.equal(
+    manifest.candidate_id,
+    candidateId,
+    'candidate artifact manifest candidate mismatch',
+  );
+  assert.equal(
+    manifest.frozen_product_sha,
+    frozenProductSha,
+    'candidate artifact manifest frozen SHA mismatch',
+  );
+  assert.equal(
+    manifest.artifact_set_id,
+    artifactSetId,
+    'candidate artifact manifest artifact-set mismatch',
+  );
+  assert.equal(
+    manifest.platform,
+    platformLabel(),
+    'candidate artifact manifest platform mismatch; candidate-bound verification requires the host platform',
+  );
+  assert.match(manifest.vsix_sha256, /^[0-9a-f]{64}$/i, 'manifest VSIX SHA-256 is invalid');
+  assert.match(
+    manifest.bundled_server_sha256,
+    /^[0-9a-f]{64}$/i,
+    'manifest bundled-server SHA-256 is invalid',
+  );
+  assert.ok(observedVsixSha256, 'candidate-bound smoke could not observe a VSIX SHA-256');
+  assert.equal(
+    manifest.vsix_sha256,
+    observedVsixSha256,
+    'observed VSIX identity differs from manifest',
+  );
+  assert.equal(
+    manifest.bundled_server_sha256,
+    observedBundledServerSha256,
+    'observed bundled-server identity differs from manifest',
+  );
+  return manifest;
 }
 
-function receiptsDir(): string {
-  const root =
-    process.env.PERL_LSP_SMOKE_RECEIPTS_DIR ??
-    path.resolve(__dirname, '..', '..', '..', '..', 'target', 'receipts', 'vscode-smoke');
-  const label = process.env.PERL_LSP_SMOKE_SOURCE_LABEL ?? 'packaged-bundle';
-  const directory = path.join(root, label, platformLabel());
-  fs.mkdirSync(directory, { recursive: true });
-  return directory;
-}
-
-function sha256(filePath: string): string {
-  return crypto.createHash('sha256').update(fs.readFileSync(filePath)).digest('hex');
-}
-
-function writeVerifiedChildArtifact(receipt: ReceiptValue): void {
+function writeVerifiedChildArtifact(receipt: ReceiptValue, sourceReceiptPath: string): void {
   const outputPath = process.env.PERL_LSP_VERIFIED_OUTPUT;
   if (!outputPath) {
     return;
@@ -63,6 +149,19 @@ function writeVerifiedChildArtifact(receipt: ReceiptValue): void {
     ? receipt.known_limitations.filter((value): value is string => typeof value === 'string')
     : [];
   const outcome = receipt.outcome;
+  const artifactHashes = receipt.artifact_hashes;
+  assert.ok(
+    artifactHashes && typeof artifactHashes === 'object',
+    'packaged artifact hashes are required',
+  );
+  const vsixSha256 = (artifactHashes as Record<string, unknown>).vsix_sha256;
+  const bundledServerSha256 = (artifactHashes as Record<string, unknown>).bundled_server_sha256;
+  assert.match(vsixSha256 as string, /^[0-9a-f]{64}$/i, 'observed VSIX SHA-256 is required');
+  assert.match(
+    bundledServerSha256 as string,
+    /^[0-9a-f]{64}$/i,
+    'observed bundled-server SHA-256 is required',
+  );
   const mandatoryEvidenceIsMissing = knownLimitations.some(
     (limitation) =>
       limitation === 'DAP preview is not exercised by this slice.' ||
@@ -85,113 +184,176 @@ function writeVerifiedChildArtifact(receipt: ReceiptValue): void {
     frozen_product_sha: frozenProductSha,
     artifact_set_id: artifactSetId,
     status,
-    claim_boundary:
-      'Packaged VSIX and bundled-server journey exercised by the VS Code extension host.',
+    claim_boundary: SOURCE_CLAIM_BOUNDARY,
     limitation:
       knownLimitations.length > 0
         ? knownLimitations.join(' ')
         : status === 'blocked'
           ? 'The packaged journey reported one or more product blockers.'
           : null,
+    source_receipt_sha256: sha256(sourceReceiptPath),
+    artifact_hashes: {
+      vsix_sha256: vsixSha256 as string,
+      bundled_server_sha256: bundledServerSha256 as string,
+    },
   };
   fs.mkdirSync(path.dirname(outputPath), { recursive: true });
   fs.writeFileSync(outputPath, JSON.stringify(artifact, null, 2));
 }
 
-async function withTimeout<T>(
-  label: string,
-  operation: PromiseLike<T>,
-  timeoutMs: number,
-): Promise<T> {
-  let timeout: NodeJS.Timeout | undefined;
-  const timeoutPromise = new Promise<never>((_, reject) => {
-    timeout = setTimeout(
-      () => reject(new Error(`${label} timed out after ${timeoutMs}ms`)),
-      timeoutMs,
-    );
-  });
-  try {
-    return await Promise.race([Promise.resolve(operation), timeoutPromise]);
-  } finally {
-    if (timeout) {
-      clearTimeout(timeout);
-    }
+function recordPackagedDapEvidence(
+  extensionPath: string,
+  dapPath: string,
+  session: vscode.DebugSession,
+  exit: { code?: number; signal?: string },
+  debuggee: OwnedDebuggee,
+): void {
+  const receiptPath = path.join(receiptsDir(), 'packaged_bundle_journey_receipt.json');
+  if (!fs.existsSync(receiptPath)) {
+    throw new Error('packaged DAP evidence requires the bundled journey receipt');
   }
+  const receipt = JSON.parse(fs.readFileSync(receiptPath, 'utf8')) as ReceiptValue;
+  assert.match(process.env.PERL_LSP_CURRENT_SOURCE_SHA ?? '', /^[0-9a-f]{40}$/);
+  assert.ok(process.env.PERL_LSP_CANDIDATE_ID);
+  assert.ok(process.env.PERL_LSP_ARTIFACT_SET_ID);
+  const hashes =
+    receipt.artifact_hashes && typeof receipt.artifact_hashes === 'object'
+      ? (receipt.artifact_hashes as Record<string, unknown>)
+      : {};
+  hashes.dap_sha256 = sha256(dapPath);
+  hashes.vsix_sha256 ||= process.env.PERL_LSP_VSIX_SHA256 ?? null;
+  assert.match(String(hashes.vsix_sha256 ?? ''), /^[0-9a-f]{64}$/);
+  receipt.artifact_hashes = hashes;
+  if (Array.isArray(receipt.known_limitations)) {
+    const limitations = receipt.known_limitations.filter(
+      (limitation) => limitation !== 'DAP preview is not exercised by this slice.',
+    );
+    limitations.push(
+      'DAP startup and ordinary Stop are exercised; breakpoint, stepping, variables and evaluation semantics remain not proven.',
+    );
+    receipt.known_limitations = limitations;
+  }
+  receipt.dap_startup = {
+    extension_path: extensionPath,
+    adapter_path: dapPath,
+    session_id: session.id,
+    initialize_then_launch: true,
+    exit,
+    debuggee,
+    owned_process_cleanup: 'pass',
+    candidate_id: process.env.PERL_LSP_CANDIDATE_ID ?? null,
+    frozen_product_sha: process.env.PERL_LSP_CURRENT_SOURCE_SHA ?? null,
+    artifact_set_id: process.env.PERL_LSP_ARTIFACT_SET_ID ?? null,
+  };
+  fs.writeFileSync(receiptPath, JSON.stringify(receipt, null, 2));
+  writeVerifiedChildArtifact(receipt, receiptPath);
 }
 
-async function waitForStartupMetrics(
-  getMetrics: () => ReceiptValue,
-  timeoutMs: number,
-): Promise<ReceiptValue> {
-  const deadline = Date.now() + timeoutMs;
-  let metrics = getMetrics();
-  while (
-    Date.now() < deadline &&
-    [metrics.binary_resolution_status, metrics.server_start_status, metrics.initialize_status].some(
-      (status) => status === 'running',
+interface OwnedDebuggee {
+  pid: number;
+  creationTimeFileTime?: string;
+  creationIdentity?: string;
+}
+
+async function observeDebuggee(pid: number): Promise<OwnedDebuggee | null> {
+  assert.ok(Number.isSafeInteger(pid) && pid > 0, 'invalid owned debuggee PID');
+  const windows = process.platform === 'win32';
+  if (!windows && process.platform !== 'linux') return null;
+  if (!windows) {
+    const bootId = fs.readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim();
+    try {
+      const identity = parseLinuxProcessStat(
+        fs.readFileSync(`/proc/${pid}/stat`, 'utf8'),
+        pid,
+        bootId,
+      ).creationIdentity;
+      if (!identity) throw new Error('Linux debuggee identity is missing');
+      return { pid, creationIdentity: identity };
+    } catch (error: unknown) {
+      if (isLinuxProcessGoneError(error)) return null;
+      throw error;
+    }
+  }
+  const result = await runBoundedProcess(
+    'powershell.exe',
+    [
+      '-NoProfile',
+      '-NonInteractive',
+      '-Command',
+      `try { $observed = Get-Process -Id ${pid} -ErrorAction Stop; $observed.StartTime.ToFileTimeUtc().ToString(); exit 0 } catch { if ($_.FullyQualifiedErrorId -eq 'NoProcessFoundForGivenId,Microsoft.PowerShell.Commands.GetProcessCommand') { exit 0 }; Write-Error $_; exit 1 }`,
+    ],
+    {
+      shell: false,
+      windowsHide: true,
+      timeoutMs: 5000,
+      maxOutputBytes: 4096,
+      terminationGraceMs: 1000,
+      terminationWatchdogMs: 5000,
+    },
+  );
+  const creationTimeFileTime = debuggeeCreationTimeFromProbe(pid, result);
+  if (creationTimeFileTime === null) return null;
+  return { pid, creationTimeFileTime };
+}
+
+async function waitForDebuggee(pidFile: string): Promise<OwnedDebuggee> {
+  const deadline = Date.now() + 30_000;
+  while (Date.now() < deadline) {
+    if (fs.existsSync(pidFile)) {
+      const raw = fs.readFileSync(pidFile, 'utf8').trim();
+      if (/^\d+$/.test(raw)) {
+        const observed = await observeDebuggee(Number(raw));
+        if (observed) return observed;
+      }
+    }
+    await new Promise<void>((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error('debuggee did not publish a live process identity');
+}
+
+async function waitForDebuggeeExit(debuggee: OwnedDebuggee): Promise<void> {
+  const deadline = Date.now() + 30_000;
+  while (Date.now() < deadline) {
+    const observed = await observeDebuggee(debuggee.pid);
+    if (
+      !observed ||
+      (debuggee.creationIdentity
+        ? observed.creationIdentity !== debuggee.creationIdentity
+        : observed.creationTimeFileTime !== debuggee.creationTimeFileTime)
     )
-  ) {
-    await new Promise((resolve) => setTimeout(resolve, 100));
-    metrics = getMetrics();
+      return;
+    await new Promise<void>((resolve) => setTimeout(resolve, 100));
   }
-  return metrics;
+  throw new Error(`owned debuggee survived Stop: ${debuggee.pid}`);
 }
 
-function bundledBinaryPath(extensionPath: string): string {
-  const directory = path.join(extensionPath, 'bin', `${process.platform}-${process.arch}`);
-  const names =
-    process.platform === 'win32' ? ['perllsp.exe', 'perl-lsp.exe'] : ['perllsp', 'perl-lsp'];
-  const binary = names
-    .map((name) => path.join(directory, name))
-    .find((candidate) => fs.existsSync(candidate));
-  assert.ok(binary, `packaged VSIX must contain a bundled server in ${directory}`);
-  return binary;
-}
-
-async function providerResult(
-  label: string,
-  command: string,
-  ...args: unknown[]
-): Promise<ReceiptValue> {
-  const started = performance.now();
-  try {
-    const result = await withTimeout(
-      label,
-      vscode.commands.executeCommand(command, ...args),
-      15_000,
-    );
-    const record: ReceiptValue = {
-      status: 'ok',
-      duration_ms: Math.round(performance.now() - started),
-    };
-    if (Array.isArray(result)) {
-      record.item_count = result.length;
-    } else if (result && typeof result === 'object' && 'items' in result) {
-      const items = (result as { items?: unknown }).items;
-      record.item_count = Array.isArray(items) ? items.length : 0;
-    } else if (result === undefined || result === null) {
-      record.result = 'empty';
-    } else {
-      record.result = 'present';
+async function waitForNewPackagedDap(
+  directory: string,
+  baseline: Set<string>,
+  expectedPath: string,
+): Promise<{
+  pid: number;
+  path: string;
+  creationTimeFileTime?: string;
+  creationIdentity?: string;
+}> {
+  const deadline = Date.now() + 30_000;
+  while (Date.now() < deadline) {
+    const processes = await scanBundledDapProcessIdentities(directory);
+    const matches = processes.filter((entry) => {
+      const key = `${entry.pid}:${entry.creationIdentity ?? entry.creationTimeFileTime ?? ''}:${entry.path.toLowerCase()}`;
+      return !baseline.has(key) && pathsEquivalent(entry.path, expectedPath);
+    });
+    if (matches.length > 1) {
+      throw new Error(
+        `multiple new packaged DAP processes were observed: ${JSON.stringify(matches)}`,
+      );
     }
-    return record;
-  } catch (error: unknown) {
-    return {
-      status: 'error',
-      duration_ms: Math.round(performance.now() - started),
-      message: error instanceof Error ? error.message : String(error),
-    };
+    const match = matches[0];
+    if (match) return match;
+    await new Promise<void>((resolve) => setTimeout(resolve, 250));
   }
-}
-
-function providerPosition(document: vscode.TextDocument): vscode.Position {
-  const offset = document.getText().indexOf('$value');
-  assert.notEqual(offset, -1, 'packaged journey fixture must contain the $value probe');
-  return document.positionAt(offset);
-}
-
-function assertProviderSucceeded(label: string, result: ReceiptValue): void {
-  assert.notEqual(result.status, 'error', `${label}: ${JSON.stringify(result)}`);
+  throw new Error('packaged DAP process was not observed within 30 seconds');
 }
 
 suite('Packaged VSIX bundled-server journey', function () {
@@ -205,11 +367,18 @@ suite('Packaged VSIX bundled-server journey', function () {
     assert.ok(extension, 'packaged journey requires the installed extension');
 
     const bundledServerPath = bundledBinaryPath(extension.extensionPath);
-    const workspaceFile = path.join(workspacePath, 'packaged_daily_driver.pl');
-    fs.writeFileSync(
-      workspaceFile,
-      ['use strict;', 'use warnings;', '', 'my $value = 42;', 'print $value;', ''].join('\n'),
-    );
+    const expectedVersion = extension.packageJSON?.version ?? null;
+    const workspaceFile = path.join(workspacePath, `packaged_daily_driver_${randomUUID()}.pl`);
+    const fixtureText = [
+      'use strict;',
+      'use warnings;',
+      '',
+      'my $value = 42;',
+      'print $value;',
+      '',
+    ].join('\n');
+    fs.writeFileSync(workspaceFile, fixtureText, { flag: 'wx' });
+    let fixtureDocument: vscode.TextDocument | undefined;
 
     const config = vscode.workspace.getConfiguration('perl-lsp');
     const configurationContributions = extension.packageJSON?.contributes?.configuration;
@@ -256,46 +425,82 @@ suite('Packaged VSIX bundled-server journey', function () {
               indexReason?: string;
               fullyReady: boolean;
             };
+            waitForActiveDocumentReady?: (uri: string, timeoutMs?: number) => Promise<void>;
             stop?: () => Promise<void>;
           }
         | undefined;
       const activationCompleted = performance.now();
+      const bundledVersion = await bundledServerVersion(bundledServerPath);
+      const readinessBefore = activation?.getActiveDocumentReadiness?.() ?? null;
       const document = await vscode.workspace.openTextDocument(workspaceFile);
+      fixtureDocument = document;
       await vscode.window.showTextDocument(document);
       const position = providerPosition(document);
 
-      const immediate = {
-        completion: await providerResult(
-          'bundled completion',
-          'vscode.executeCompletionItemProvider',
-          document.uri,
-          position,
-        ),
-        hover: await providerResult(
-          'bundled hover',
-          'vscode.executeHoverProvider',
-          document.uri,
-          position,
-        ),
-        definition: await providerResult(
-          'bundled definition',
-          'vscode.executeDefinitionProvider',
-          document.uri,
-          position,
-        ),
-        references: await providerResult(
-          'bundled references',
-          'vscode.executeReferenceProvider',
-          document.uri,
-          position,
-          { includeDeclaration: true },
-        ),
-        symbols: await providerResult(
-          'bundled symbols',
-          'vscode.executeDocumentSymbolProvider',
-          document.uri,
-        ),
+      const generationWait = await waitForActiveDocumentGeneration(
+        activation?.getActiveDocumentReadiness,
+        typeof readinessBefore?.generation === 'number' ? readinessBefore.generation : undefined,
+        30_000,
+      );
+      const readiness =
+        generationWait?.status === 'not_proven'
+          ? generationWait
+          : await observeActiveDocumentReadiness(
+              activation?.waitForActiveDocumentReady,
+              document.uri.toString(),
+              30_000,
+            );
+      const readinessWait: ReceiptValue = {
+        scope: 'active_document',
+        uri: document.uri.toString(),
+        ...readiness,
       };
+      const readinessReady = readiness.status === 'ready';
+      const readinessAfter = activation?.getActiveDocumentReadiness?.() ?? null;
+      const readinessReason =
+        readinessWait.status === 'ready'
+          ? 'active-document readiness resolved before provider requests'
+          : `provider requests were withheld: ${String(readinessWait.reason ?? 'readiness unavailable')}`;
+      const readyProviders = readinessReady
+        ? {
+            completion: await providerResult(
+              'bundled completion',
+              'vscode.executeCompletionItemProvider',
+              document.uri,
+              position,
+            ),
+            hover: await providerResult(
+              'bundled hover',
+              'vscode.executeHoverProvider',
+              document.uri,
+              position,
+            ),
+            definition: await providerResult(
+              'bundled definition',
+              'vscode.executeDefinitionProvider',
+              document.uri,
+              position,
+            ),
+            references: await providerResult(
+              'bundled references',
+              'vscode.executeReferenceProvider',
+              document.uri,
+              position,
+              { includeDeclaration: true },
+            ),
+            symbols: await providerResult(
+              'bundled symbols',
+              'vscode.executeDocumentSymbolProvider',
+              document.uri,
+            ),
+          }
+        : {
+            completion: readinessDeferredProvider('bundled completion', readinessReason),
+            hover: readinessDeferredProvider('bundled hover', readinessReason),
+            definition: readinessDeferredProvider('bundled definition', readinessReason),
+            references: readinessDeferredProvider('bundled references', readinessReason),
+            symbols: readinessDeferredProvider('bundled symbols', readinessReason),
+          };
 
       const editStarted = performance.now();
       const edit = new vscode.WorkspaceEdit();
@@ -305,53 +510,83 @@ suite('Packaged VSIX bundled-server journey', function () {
       const afterEdit = {
         status: editApplied && editedText.includes('# packaged edit') ? 'ok' : 'error',
         duration_ms: Math.round(performance.now() - editStarted),
-        immediate_requery: await providerResult(
-          'bundled completion after edit',
-          'vscode.executeCompletionItemProvider',
-          document.uri,
-          position,
-        ),
+        immediate_requery: readinessReady
+          ? await providerResult(
+              'bundled completion after edit',
+              'vscode.executeCompletionItemProvider',
+              document.uri,
+              position,
+            )
+          : readinessDeferredProvider('bundled completion after edit', readinessReason),
       };
 
-      const formatting = await providerResult(
-        'bundled formatting',
-        'vscode.executeFormatDocumentProvider',
-        document.uri,
-        { tabSize: 4, insertSpaces: true },
-      );
+      const formatting = readinessReady
+        ? await providerResult(
+            'bundled formatting',
+            'vscode.executeFormatDocumentProvider',
+            document.uri,
+            { tabSize: 4, insertSpaces: true },
+          )
+        : readinessDeferredProvider('bundled formatting', readinessReason);
 
       const renameStarted = performance.now();
       let rename: ReceiptValue;
       try {
-        const result = (await withTimeout(
-          'bundled rename/refusal',
-          vscode.commands.executeCommand(
-            'vscode.executeDocumentRenameProvider',
-            document.uri,
-            position,
-            'renamed_value',
-          ),
-          15_000,
-        )) as vscode.WorkspaceEdit | undefined;
-        const entries = result?.entries() ?? [];
-        const workspaceResolved = path.resolve(workspacePath);
-        const workspacePrefix = workspaceResolved + path.sep;
-        const caseInsensitive = process.platform === 'win32' || process.platform === 'darwin';
-        const safe = entries.every(([uri]) => {
-          const resolved = path.resolve(uri.fsPath);
-          if (caseInsensitive) {
-            const normalized = resolved.toLowerCase();
-            const normalizedWorkspace = workspaceResolved.toLowerCase();
-            const normalizedPrefix = workspacePrefix.toLowerCase();
-            return normalized === normalizedWorkspace || normalized.startsWith(normalizedPrefix);
+        if (!readinessReady) {
+          rename = readinessDeferredProvider('bundled rename/refusal', readinessReason);
+        } else {
+          const result = (await withTimeout(
+            'bundled rename/refusal',
+            vscode.commands.executeCommand(
+              'vscode.executeDocumentRenameProvider',
+              document.uri,
+              position,
+              'renamed_value',
+            ),
+            15_000,
+          )) as vscode.WorkspaceEdit | undefined;
+          const entries = result?.entries() ?? [];
+          const safe =
+            entries.length === 1 &&
+            entries.every(([uri]) => uri.toString() === document.uri.toString());
+          rename = {
+            status: result ? (safe ? 'offered_not_applied' : 'unsafe_refusal') : 'safe_refusal',
+            edit_count: entries.length,
+            duration_ms: Math.round(performance.now() - renameStarted),
+          };
+          if (result && safe) {
+            const fixtureEntry = entries[0];
+            assert.ok(fixtureEntry, 'rename omitted fixture edits');
+            const textEdits = fixtureEntry[1];
+            const beforeRename = document.getText();
+            assertDailyDriverRenameEdits(beforeRename, textEdits);
+            // Apply only the independently checked text edits to this owned fixture.
+            // WorkspaceEdit.entries() cannot attest to opaque resource operations.
+            const checkedEdit = new vscode.WorkspaceEdit();
+            checkedEdit.set(document.uri, textEdits);
+            assert.ok(
+              await vscode.workspace.applyEdit(checkedEdit),
+              'rename text edits were rejected',
+            );
+            const expected = beforeRename
+              .replace('my $value = 42;', 'my $renamed_value = 42;')
+              .replace('print $value;', 'print $renamed_value;');
+            assert.equal(document.getText(), expected, 'applied rename changed unexpected text');
+            const requery = await providerResult(
+              'bundled hover after rename',
+              'vscode.executeHoverProvider',
+              document.uri,
+              providerPosition(document, '$renamed_value'),
+            );
+            assertProviderSucceeded('hover after rename', requery);
+            rename = {
+              status: 'applied_text_edits_verified',
+              edit_count: textEdits.length,
+              duration_ms: Math.round(performance.now() - renameStarted),
+              immediate_requery: requery,
+            };
           }
-          return resolved === workspaceResolved || resolved.startsWith(workspacePrefix);
-        });
-        rename = {
-          status: result ? (safe ? 'offered_not_applied' : 'unsafe_refusal') : 'safe_refusal',
-          edit_count: entries.length,
-          duration_ms: Math.round(performance.now() - renameStarted),
-        };
+        }
       } catch (error: unknown) {
         rename = {
           status: 'error',
@@ -364,7 +599,7 @@ suite('Packaged VSIX bundled-server journey', function () {
       const metrics = activation?.getLanguageClientStartupMetrics
         ? await waitForStartupMetrics(activation.getLanguageClientStartupMetrics, 30_000)
         : {};
-      const readiness = activation?.getActiveDocumentReadiness?.() ?? null;
+      const finalReadiness = activation?.getActiveDocumentReadiness?.() ?? null;
       const receipt: ReceiptValue = {
         schema_version: 1,
         outcome: 'completed',
@@ -376,9 +611,27 @@ suite('Packaged VSIX bundled-server journey', function () {
         server_identity: {
           path: bundledServerPath,
           source: 'packaged_vsix_bundle',
-          version: process.env.PERL_LSP_PUBLISHED_EXTENSION_VERSION ?? null,
+          version: bundledVersion.version ?? null,
+          expected_version: expectedVersion,
+          version_stdout: bundledVersion.stdout,
+          version_stderr: bundledVersion.stderr,
+          version_output_truncated: bundledVersion.output_truncated,
+          version_probe_termination_confirmed: bundledVersion.termination_confirmed,
+          version_match:
+            bundledVersion.status === 'ok' && expectedVersion !== null
+              ? bundledVersion.version === expectedVersion
+              : false,
+          activated_version: metrics.server_version ?? null,
+          activated_version_match:
+            bundledVersion.status === 'ok' &&
+            expectedVersion !== null &&
+            metrics.server_version === bundledVersion.version &&
+            metrics.server_version === expectedVersion,
+          activated_path: metrics.binary_resolution_path ?? null,
+          activated_path_match: pathsEquivalent(metrics.binary_resolution_path, bundledServerPath),
           startup_source: metrics.binary_resolution_source ?? null,
         },
+        claim_boundary: SOURCE_CLAIM_BOUNDARY,
         startup: metrics,
         vsix_identity: {
           extension_id: extension.id,
@@ -389,9 +642,18 @@ suite('Packaged VSIX bundled-server journey', function () {
         workspaces: [
           { path: workspacePath, mode: 'single-root', trust: vscode.workspace.isTrusted },
         ],
-        requests: { immediate, after_edit: afterEdit, formatting, rename },
+        requests: {
+          immediate: readyProviders,
+          immediate_phase: readinessReady ? 'after_active_document_readiness' : 'not_proven',
+          after_edit: afterEdit,
+          formatting,
+          rename,
+        },
         index_generation: 'not_observable_from_public_extension_api',
-        index_readiness: readiness ?? 'not_observable_from_public_extension_api',
+        readiness_wait: readinessWait,
+        readiness_before: readinessBefore ?? 'not_observable_from_public_extension_api',
+        readiness_after: readinessAfter ?? 'not_observable_from_public_extension_api',
+        index_readiness: finalReadiness ?? 'not_observable_from_public_extension_api',
         answering_tier: 'bundled_server_provider',
         fallback_or_refusal_reason:
           rename.status === 'safe_refusal' ? 'rename provider returned no edit' : null,
@@ -403,7 +665,12 @@ suite('Packaged VSIX bundled-server journey', function () {
         known_limitations: [
           'DAP preview is not exercised by this slice.',
           'The public VS Code API does not expose server index generation or semantic exactness.',
-          'A rename edit is never applied by this receipt; offered edits are checked for workspace containment first.',
+          ...(readinessReady
+            ? []
+            : [
+                'Active-document readiness did not resolve before provider requests; provider claims are not proven.',
+              ]),
+          'Rename proof applies independently checked text edits only to the two-occurrence fixture; resource operations, cross-file rename, and compiler semantic exactness are not proven.',
           ...(criticSettingRegistered
             ? []
             : [
@@ -414,6 +681,13 @@ suite('Packaged VSIX bundled-server journey', function () {
         diagnostics: { count: diagnostics.length },
         shutdown: 'pending',
       };
+
+      requireCandidateArtifactManifest(
+        typeof receipt.artifact_hashes === 'object' && receipt.artifact_hashes !== null
+          ? ((receipt.artifact_hashes as Record<string, unknown>).vsix_sha256 as string | undefined)
+          : undefined,
+        (receipt.artifact_hashes as Record<string, unknown>).bundled_server_sha256 as string,
+      );
 
       if (activation?.stop) {
         try {
@@ -428,18 +702,21 @@ suite('Packaged VSIX bundled-server journey', function () {
       }
 
       const providerResults = [
-        ['completion', immediate.completion],
-        ['hover', immediate.hover],
-        ['definition', immediate.definition],
-        ['references', immediate.references],
-        ['symbols', immediate.symbols],
+        ['completion', readyProviders.completion],
+        ['hover', readyProviders.hover],
+        ['definition', readyProviders.definition],
+        ['references', readyProviders.references],
+        ['symbols', readyProviders.symbols],
         ['completion after edit', afterEdit.immediate_requery],
         ['formatting', formatting],
         ['rename', rename],
       ] as const;
       const providerFailures = providerResults.filter(
         ([label, result]) =>
-          result.status === 'error' || (label === 'rename' && result.status === 'unsafe_refusal'),
+          result.status === 'error' ||
+          (label === 'rename' &&
+            (result.status === 'unsafe_refusal' ||
+              (readinessReady && result.status !== 'applied_text_edits_verified'))),
       );
       const lifecycleExpectations: Array<[string, string]> = [
         ['binary_resolution_source', 'bundled'],
@@ -457,19 +734,81 @@ suite('Packaged VSIX bundled-server journey', function () {
             metrics,
           },
         }));
+      const bundledVersionBlocker =
+        bundledVersion.status === 'error'
+          ? {
+              label: 'bundled_server_version',
+              result: {
+                expected: expectedVersion,
+                actual: null,
+                message: bundledVersion.message,
+                stdout: bundledVersion.stdout,
+                stderr: bundledVersion.stderr,
+                output_truncated: bundledVersion.output_truncated,
+                termination_confirmed: bundledVersion.termination_confirmed,
+              },
+            }
+          : expectedVersion === null || bundledVersion.version !== expectedVersion
+            ? {
+                label: 'bundled_server_version',
+                result: {
+                  expected: expectedVersion,
+                  actual: bundledVersion.version,
+                  stdout: bundledVersion.stdout,
+                  stderr: bundledVersion.stderr,
+                  output_truncated: bundledVersion.output_truncated,
+                  termination_confirmed: bundledVersion.termination_confirmed,
+                },
+              }
+            : null;
+      const activatedPath = metrics.binary_resolution_path;
+      const activatedPathBlocker = pathsEquivalent(activatedPath, bundledServerPath)
+        ? null
+        : {
+            label: 'activated_server_path',
+            result: {
+              expected: bundledServerPath,
+              actual: activatedPath ?? null,
+              source: metrics.binary_resolution_source ?? null,
+              message: 'initialized server path did not resolve to the packaged bundled binary',
+            },
+          };
+      const activatedVersion = metrics.server_version;
+      const activatedVersionBlocker =
+        bundledVersion.status !== 'ok' || expectedVersion === null || !activatedVersion
+          ? {
+              label: 'activated_server_version',
+              result: {
+                expected: expectedVersion ?? bundledVersion.version,
+                actual: activatedVersion ?? null,
+                message: 'initialized server did not report a comparable semantic version',
+              },
+            }
+          : activatedVersion !== bundledVersion.version || activatedVersion !== expectedVersion
+            ? {
+                label: 'activated_server_version',
+                result: {
+                  expected: { package: expectedVersion, bundled: bundledVersion.version },
+                  actual: activatedVersion,
+                  message: 'initialized server version disagrees with packaged identities',
+                },
+              }
+            : null;
       const productBlockers = [
+        ...(bundledVersionBlocker ? [bundledVersionBlocker] : []),
+        ...(activatedPathBlocker ? [activatedPathBlocker] : []),
+        ...(activatedVersionBlocker ? [activatedVersionBlocker] : []),
         ...lifecycleFailures,
         ...providerFailures.map(([label, result]) => ({ label, result })),
       ];
       receipt.outcome = productBlockers.length > 0 ? 'failed' : 'not_proven';
       receipt.product_blockers = productBlockers;
 
-      fs.writeFileSync(
-        path.join(receiptsDir(), 'packaged_bundle_journey_receipt.json'),
-        JSON.stringify(receipt, null, 2),
-      );
-      writeVerifiedChildArtifact(receipt);
+      const sourceReceiptPath = path.join(receiptsDir(), 'packaged_bundle_journey_receipt.json');
+      fs.writeFileSync(sourceReceiptPath, JSON.stringify(receipt, null, 2));
+      writeVerifiedChildArtifact(receipt, sourceReceiptPath);
 
+      assert.equal(productBlockers.length, 0, JSON.stringify(productBlockers));
       assert.equal(metrics.binary_resolution_source, 'bundled', JSON.stringify(metrics));
       assert.equal(metrics.binary_resolution_status, 'ok', JSON.stringify(metrics));
       assert.equal(metrics.server_start_status, 'ok', JSON.stringify(metrics));
@@ -479,12 +818,397 @@ suite('Packaged VSIX bundled-server journey', function () {
         assertProviderSucceeded(label, result);
       }
       assert.notEqual(rename.status, 'unsafe_refusal', JSON.stringify(rename));
+      if (readinessReady) {
+        assert.equal(rename.status, 'applied_text_edits_verified', JSON.stringify(rename));
+      }
     } finally {
-      await Promise.all(
-        inspectedSettings.map(({ key, value }) =>
-          config.update(key, value, vscode.ConfigurationTarget.Global),
-        ),
-      );
+      try {
+        if (fixtureDocument && !fixtureDocument.isClosed) {
+          await vscode.window.showTextDocument(fixtureDocument);
+          await vscode.commands.executeCommand('workbench.action.revertAndCloseActiveEditor');
+        }
+        assert.equal(fs.readFileSync(workspaceFile, 'utf8'), fixtureText);
+        const cleanup = new vscode.WorkspaceEdit();
+        cleanup.deleteFile(vscode.Uri.file(workspaceFile));
+        assert.ok(await vscode.workspace.applyEdit(cleanup), 'fixture deletion was rejected');
+        assert.ok(!fs.existsSync(workspaceFile), 'owned fixture remains after cleanup');
+      } finally {
+        await Promise.all(
+          inspectedSettings.map(({ key, value }) =>
+            config.update(key, value, vscode.ConfigurationTarget.Global),
+          ),
+        );
+      }
     }
+  });
+
+  test('starts and cleanly stops the packaged DAP on the host platform', async function () {
+    if (process.platform !== 'win32' && process.platform !== 'linux') {
+      this.skip();
+      return;
+    }
+    const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+    assert.ok(workspaceFolder, 'packaged DAP journey requires a workspace folder');
+    const extension = vscode.extensions.getExtension('EffortlessMetrics.perl-lsp-rs');
+    assert.ok(extension, 'packaged DAP journey requires the installed extension');
+    const extensionPath = extension.extensionPath;
+    const dapPath = bundledDapPath(extensionPath);
+    assert.ok(fs.existsSync(dapPath), `packaged DAP is missing: ${dapPath}`);
+    const expectedDapSha256 = sha256(dapPath);
+    const builtDapSha256 = process.env.PERL_LSP_DAP_SHA256?.trim();
+    if (process.platform === 'linux') {
+      assert.ok(builtDapSha256, 'Linux packaged DAP proof requires the built adapter SHA-256');
+    }
+    if (builtDapSha256) {
+      assert.match(builtDapSha256, /^[0-9a-f]{64}$/i, 'built DAP SHA-256 is invalid');
+      assert.equal(expectedDapSha256, builtDapSha256, 'installed DAP differs from built DAP input');
+    }
+    const dapDirectory = path.dirname(dapPath);
+    const beforeProcesses = await scanBundledDapProcessIdentities(dapDirectory);
+    const beforeKeys = new Set(
+      beforeProcesses.map(
+        (entry) =>
+          `${entry.pid}:${entry.creationIdentity ?? entry.creationTimeFileTime ?? ''}:${entry.path.toLowerCase()}`,
+      ),
+    );
+    const workspacePath = workspaceFolder.uri.fsPath;
+    const runId = randomUUID();
+    const program = path.join(workspacePath, `packaged_dap_${runId}.pl`);
+    const pidFile = path.join(workspacePath, `packaged_dap_${runId}.pid`);
+    const releaseFile = path.join(workspacePath, `packaged_dap_${runId}.release`);
+    const environmentFile = path.join(workspacePath, `packaged_dap_${runId}.env`);
+    let debuggee: OwnedDebuggee | undefined;
+    const subscriptions: vscode.Disposable[] = [];
+
+    let startedSession: vscode.DebugSession | undefined;
+    const responseOrder: string[] = [];
+    const requestCommands = new Map<number, string>();
+    const successfulStopResponses = new Set<string>();
+    let stopRequested = false;
+    const protocolTrace: Array<Record<string, unknown>> = [];
+    let adapterError: string | undefined;
+    let unexpectedException: string | undefined;
+    let adapterExit: { code?: number; signal?: string } | undefined;
+    let primaryFailure: unknown;
+    let primaryFailed = false;
+    let cleanupFailure: AggregateError | undefined;
+    let terminated = false;
+    let resolveStarted: ((session: vscode.DebugSession) => void) | undefined;
+    let resolveTerminated: (() => void) | undefined;
+    let resolveResponses: (() => void) | undefined;
+    let resolveExit: ((exit: { code?: number; signal?: string }) => void) | undefined;
+    const started = new Promise<vscode.DebugSession>((resolve) => {
+      resolveStarted = resolve;
+    });
+    const termination = new Promise<void>((resolve) => {
+      resolveTerminated = resolve;
+    });
+    const responses = new Promise<void>((resolve) => {
+      resolveResponses = resolve;
+    });
+    const exitEvent = new Promise<{ code?: number; signal?: string }>((resolve) => {
+      resolveExit = resolve;
+    });
+    try {
+      fs.writeFileSync(
+        program,
+        [
+          'use strict;',
+          'use warnings;',
+          'my ($pid_file, $release_file, $environment_file) = @ARGV;',
+          'open my $environment, q{>}, $environment_file or die "environment file: $!";',
+          'print {$environment} "PERL_RL=$ENV{PERL_RL}\nPERLDB_OPTS=$ENV{PERLDB_OPTS}\n"; close $environment or die "environment close: $!";',
+          'open my $pid, q{>}, $pid_file or die "pid file: $!";',
+          'print {$pid} $$; close $pid or die "pid close: $!";',
+          'my $deadline = time + 120;',
+          'while (!-e $release_file && time < $deadline) { select undef, undef, undef, 0.1; }',
+          'open my $ended, q{>}, $pid_file or die "exit marker: $!";',
+          'print {$ended} "completed-without-stop"; close $ended or die "exit marker close: $!";',
+          '',
+        ].join('\n'),
+        { flag: 'wx' },
+      );
+      subscriptions.push(
+        vscode.debug.onDidStartDebugSession((session) => {
+          if (
+            session.type === 'perl' &&
+            session.configuration.program === program &&
+            session.configuration.request === 'launch'
+          ) {
+            startedSession = session;
+            resolveStarted?.(session);
+          }
+        }),
+      );
+      subscriptions.push(
+        vscode.debug.onDidTerminateDebugSession((session) => {
+          if (session === startedSession) {
+            terminated = true;
+            resolveTerminated?.();
+          }
+        }),
+      );
+      subscriptions.push(
+        vscode.debug.registerDebugAdapterTrackerFactory('perl', {
+          createDebugAdapterTracker: (session) => {
+            if (
+              session.configuration.program !== program ||
+              session.configuration.request !== 'launch'
+            ) {
+              return undefined;
+            }
+            startedSession = session;
+            return {
+              onDidSendMessage: (message: unknown) => {
+                protocolTrace.push({ direction: 'out', message });
+                if (!message || typeof message !== 'object') return;
+                const record = message as {
+                  type?: unknown;
+                  event?: unknown;
+                  command?: unknown;
+                  success?: unknown;
+                  request_seq?: unknown;
+                  body?: unknown;
+                };
+                const body =
+                  record.body && typeof record.body === 'object'
+                    ? (record.body as { reason?: unknown })
+                    : undefined;
+                if (
+                  record.type === 'event' &&
+                  record.event === 'stopped' &&
+                  body?.reason === 'exception'
+                ) {
+                  unexpectedException = 'DAP stopped event reported reason=exception';
+                }
+                if (
+                  record.type === 'response' &&
+                  record.command === 'exceptionInfo' &&
+                  record.success === true
+                ) {
+                  unexpectedException = 'DAP exceptionInfo response was successful';
+                }
+                if (record.type !== 'response' || record.success !== true) return;
+                if (
+                  record.command === 'initialize' ||
+                  record.command === 'launch' ||
+                  record.command === 'terminate' ||
+                  record.command === 'disconnect'
+                ) {
+                  if (
+                    typeof record.request_seq !== 'number' ||
+                    requestCommands.get(record.request_seq) !== record.command
+                  ) {
+                    adapterError = 'DAP response did not match its live request';
+                    resolveResponses?.();
+                    return;
+                  }
+                  if (record.command === 'initialize' || record.command === 'launch') {
+                    responseOrder.push(record.command);
+                    if (responseOrder.length >= 2) resolveResponses?.();
+                  } else if (stopRequested) {
+                    successfulStopResponses.add(record.command);
+                  }
+                }
+              },
+              onError: (error: Error) => {
+                protocolTrace.push({ direction: 'error', message: error.message });
+                // VS Code 1.125's extension-host transport reports the
+                // expected stream close as a generic "read error".  It is
+                // harmless only after this session's disconnect response has
+                // been correlated; every earlier or different error remains
+                // a failure.  The adapter exit is checked below before this
+                // marker can affect the journey verdict.
+                if (error.message === 'read error' && successfulStopResponses.has('disconnect')) {
+                  return;
+                }
+                adapterError = error.message;
+              },
+              onExit: (code: number | undefined, signal: string | undefined) => {
+                adapterExit = {
+                  ...(code === undefined ? {} : { code }),
+                  ...(signal === undefined ? {} : { signal }),
+                };
+                protocolTrace.push({ direction: 'exit', ...adapterExit });
+                resolveExit?.(adapterExit);
+              },
+              onWillReceiveMessage: (message: unknown) => {
+                protocolTrace.push({ direction: 'in', message });
+                if (message && typeof message === 'object') {
+                  const request = message as { type?: unknown; seq?: unknown; command?: unknown };
+                  if (
+                    request.type === 'request' &&
+                    typeof request.seq === 'number' &&
+                    typeof request.command === 'string'
+                  ) {
+                    requestCommands.set(request.seq, request.command);
+                  }
+                }
+              },
+            };
+          },
+        }),
+      );
+      const startResult = await withTimeout(
+        'packaged DAP startDebugging',
+        vscode.debug.startDebugging(workspaceFolder, {
+          type: 'perl',
+          request: 'launch',
+          name: 'Packaged DAP startup',
+          program,
+          args: [pidFile, releaseFile, environmentFile],
+          env:
+            process.platform === 'win32'
+              ? { PERL_RL: 'Perl', perldb_opts: 'CommandSet=580 ReadLine=1' }
+              : { PERL_RL: 'Perl', PERLDB_OPTS: 'CommandSet=580 ReadLine=0' },
+          cwd: workspacePath,
+          stopOnEntry: false,
+        }),
+        30_000,
+      );
+      assert.equal(startResult, true, 'VS Code did not start the packaged DAP session');
+      const session = await withTimeout('packaged DAP session start', started, 30_000);
+      const matchingProcess = await waitForNewPackagedDap(dapDirectory, beforeKeys, dapPath);
+      assert.ok(
+        matchingProcess.creationIdentity ?? matchingProcess.creationTimeFileTime,
+        'packaged DAP process identity is required',
+      );
+      assert.equal(
+        sha256(matchingProcess.path),
+        expectedDapSha256,
+        'running DAP hash differs from package',
+      );
+      await withTimeout('packaged DAP initialize/launch', responses, 30_000);
+      assert.deepEqual(responseOrder.slice(0, 2), ['initialize', 'launch']);
+      assert.equal(
+        unexpectedException,
+        undefined,
+        unexpectedException ?? 'packaged DAP reported no unexpected exception',
+      );
+      debuggee = await waitForDebuggee(pidFile);
+      const childEnvironment = fs.readFileSync(environmentFile, 'utf8');
+      assert.match(childEnvironment, /^PERL_RL=Perl$/m);
+      if (process.platform === 'win32') {
+        assert.match(childEnvironment, /^PERLDB_OPTS=CommandSet=580 ReadLine=1 ReadLine=0$/m);
+      } else {
+        assert.match(childEnvironment, /^PERLDB_OPTS=CommandSet=580 ReadLine=0$/m);
+      }
+      stopRequested = true;
+      await withTimeout('packaged DAP stopDebugging', vscode.debug.stopDebugging(session), 30_000);
+      await withTimeout('packaged DAP termination event', termination, 30_000);
+      assert.equal(adapterError, undefined, adapterError ?? 'packaged DAP adapter error');
+      const observedExit = await withTimeout('packaged DAP adapter exit', exitEvent, 30_000);
+      adapterExit = observedExit;
+      assert.equal(
+        unexpectedException,
+        undefined,
+        unexpectedException ?? 'packaged DAP reported no unexpected exception',
+      );
+      assert.equal(adapterError, undefined, adapterError ?? 'packaged DAP adapter error');
+      assert.ok(
+        successfulStopResponses.has('disconnect'),
+        'ordinary Stop did not complete a correlated disconnect',
+      );
+      const adapterExitCode = observedExit.code;
+      assert.equal(
+        adapterExitCode,
+        0,
+        `packaged DAP exit was not clean: ${JSON.stringify(adapterExit)}`,
+      );
+      assert.equal(
+        adapterExit.signal,
+        undefined,
+        `packaged DAP was signaled: ${JSON.stringify(adapterExit)}`,
+      );
+      assert.equal(terminated, true);
+      await waitForDebuggeeExit(debuggee);
+      assert.equal(
+        fs.readFileSync(pidFile, 'utf8').trim(),
+        String(debuggee.pid),
+        'debuggee completed through its safety deadline instead of Stop',
+      );
+      const terminalEvents = protocolTrace.filter((entry) => {
+        const message = entry.message as { type?: string; event?: string } | undefined;
+        return (
+          entry.direction === 'out' && message?.type === 'event' && message.event === 'terminated'
+        );
+      });
+      assert.equal(terminalEvents.length, 1, 'expected one terminal event');
+      const remainingProcesses = await scanBundledDapProcessIdentities(dapDirectory);
+      assert.equal(
+        remainingProcesses.filter(
+          (process) =>
+            !beforeKeys.has(
+              `${process.pid}:${process.creationIdentity ?? process.creationTimeFileTime ?? ''}:${process.path.toLowerCase()}`,
+            ),
+        ).length,
+        0,
+        `packaged DAP process leaked: ${JSON.stringify(remainingProcesses)}`,
+      );
+    } catch (error) {
+      protocolTrace.push({ direction: 'failure', message: String(error) });
+      primaryFailed = true;
+      primaryFailure = error;
+    } finally {
+      const cleanupErrors: unknown[] = [];
+      if (fs.existsSync(program)) {
+        try {
+          fs.writeFileSync(releaseFile, 'release', { flag: 'wx' });
+        } catch (error) {
+          cleanupErrors.push(error);
+        }
+      }
+      if (startedSession && !terminated) {
+        await withTimeout(
+          'packaged DAP failure cleanup',
+          vscode.debug.stopDebugging(startedSession),
+          30_000,
+        ).catch((error: unknown) => cleanupErrors.push(error));
+        await withTimeout('packaged DAP failure termination', termination, 30_000).catch(
+          (error: unknown) => cleanupErrors.push(error),
+        );
+      }
+      if (debuggee)
+        await waitForDebuggeeExit(debuggee).catch((error: unknown) => cleanupErrors.push(error));
+      for (const subscription of subscriptions) {
+        try {
+          subscription.dispose();
+        } catch (error) {
+          cleanupErrors.push(error);
+        }
+      }
+      for (const file of [program, pidFile, releaseFile, environmentFile]) {
+        try {
+          fs.rmSync(file, { force: true });
+        } catch (error) {
+          cleanupErrors.push(error);
+        }
+      }
+      protocolTrace.push({ direction: 'cleanup', errors: cleanupErrors.map(String) });
+      try {
+        fs.mkdirSync(receiptsDir(), { recursive: true });
+        fs.writeFileSync(
+          path.join(receiptsDir(), 'packaged_dap_protocol_trace.json'),
+          JSON.stringify(protocolTrace, null, 2),
+        );
+      } catch (error) {
+        cleanupErrors.push(error);
+      }
+      if (cleanupErrors.length) {
+        cleanupFailure = new AggregateError(cleanupErrors, 'packaged DAP cleanup failed');
+      }
+    }
+    if (primaryFailed) {
+      if (cleanupFailure) {
+        throw new AggregateError(
+          [primaryFailure, ...cleanupFailure.errors],
+          'packaged DAP journey and cleanup failed',
+        );
+      }
+      throw primaryFailure;
+    }
+    if (cleanupFailure) throw cleanupFailure;
+    assert.ok(startedSession && adapterExit && debuggee);
+    recordPackagedDapEvidence(extensionPath, dapPath, startedSession, adapterExit, debuggee);
   });
 });

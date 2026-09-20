@@ -69,7 +69,7 @@ Arguments:
 Environment variables:
   SMOKE_INSTALL_ROOT    Override install dir  (default: auto tempdir)
   SMOKE_WORK_DIR        Override work dir     (default: auto tempdir)
-  SKIP_INSTALL          Set to 1 to skip cargo install steps (faster local iteration)
+  SKIP_INSTALL          Set to 1 to skip package installation steps (Cargo is still required)
   CARGO_INSTALL_OPTS    Extra flags passed to every `cargo install` call
 
 Examples:
@@ -144,6 +144,13 @@ setup_dirs
 
 SKIP_INSTALL="${SKIP_INSTALL:-0}"
 CARGO_INSTALL_OPTS="${CARGO_INSTALL_OPTS:-}"
+
+# Toolchain guard (#12593): every mode below invokes Cargo (SKIP_INSTALL only
+# skips package installation, not cargo init/test), so resolve the binary after
+# this script's PATH/CARGO_HOME setup and refuse stale cargo before any build
+# or test work.
+. "$(dirname -- "${BASH_SOURCE[0]}")/lib/cargo-toolchain-guard.sh"
+cargo_toolchain_guard
 
 # ---------------------------------------------------------------------------
 # Section 1: Binary crates — install + version check

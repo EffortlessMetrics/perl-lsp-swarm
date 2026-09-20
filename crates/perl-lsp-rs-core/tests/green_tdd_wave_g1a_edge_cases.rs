@@ -361,9 +361,12 @@ fn test_format_range_whole_document_trailing_newline() -> Result<(), Box<dyn std
 
     let content = "line1\nline2\n";
     let range = FormatRange::whole_document(content);
-    // Trailing newline creates an empty line 3, or not, depending on parsing.
-    // Verify behavior is consistent.
-    assert!(range.end.line >= 1);
+    // A terminal separator creates a final empty line, so the range must reach
+    // (2, 0) — line 2 exists and is empty. The previous `>= 1` assertion held
+    // for both the correct answer and the `str::lines()` answer of (1, 5), so
+    // it could not catch the range failing to own the terminal newline.
+    assert_eq!(range.end.line, 2);
+    assert_eq!(range.end.character, 0);
     Ok(())
 }
 

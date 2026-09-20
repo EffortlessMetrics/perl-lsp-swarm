@@ -1,7 +1,10 @@
 //! Parser context with error recovery support
 //!
-//! This module provides a parsing context that tracks errors, positions,
-//! and supports error recovery for IDE scenarios.
+//! Parallel AST-v2 / IDE-recovery helper. This is **not** the production
+//! parse-operation authority. Production [`crate::Parser`] owns one live
+//! operation context (#8757 / #8700 B01). Deletion or full entry-point
+//! migration is #8700 B04 / #7105. Do not treat [`ParserContext`] as an
+//! equally valid production budget authority.
 
 use crate::{
     error::{BudgetTracker, ParseBudget},
@@ -14,7 +17,11 @@ use perl_lexer::TokenType;
 use perl_position_tracking::LineStartsCache;
 use std::collections::VecDeque;
 
-/// Parser context with error tracking and recovery
+/// Parser context with error tracking and recovery.
+///
+/// Temporary disposition (#8700 B04): AST-v2 experiment and legacy
+/// compatibility helper. Not a production-operation identity. Production
+/// parses go through [`crate::Parser`].
 pub struct ParserContext {
     /// Token stream with positions
     tokens: VecDeque<TokenWithPosition>,

@@ -15,6 +15,7 @@ Get perl-lsp up and running in 5 minutes!
 ```bash
 cargo install perllsp
 ```
+> The crates.io package `perl-lsp` is a different project, not this language server.
 
 ### From Source
 

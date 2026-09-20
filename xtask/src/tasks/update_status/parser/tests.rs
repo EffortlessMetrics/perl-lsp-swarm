@@ -1,13 +1,15 @@
 use super::super::token;
 use super::accuracy::{
     ParserAccuracyArtifactSummary, ParserAccuracyDenominator, ParserAccuracyFamilySummary,
-    ParserAccuracyMetricSummary,
+    ParserAccuracyLegacyPopulation, ParserAccuracyMetricSummary,
 };
 use super::failure::{
     FailureCluster, build_failure_bucket_details, build_failure_worklist, classify_failure_bucket,
 };
 use super::*;
 use color_eyre::eyre::Result;
+
+use crate::tasks::parser_corpus_sweep::SCHEMA_VERSION;
 
 const PARSER_STATUS_MARKER_NAMES: [&str; 13] = [
     "PARSER_TRACKING_TABLE",
@@ -46,6 +48,31 @@ fn test_corpus_section_count() -> Result<()> {
     let root = crate::utils::project_root()?;
     let sections = count_corpus_sections(&root);
     assert!(sections > 0, "expected nonzero corpus sections");
+    Ok(())
+}
+
+#[test]
+fn test_corpus_section_count_includes_extensionless_documents() -> Result<()> {
+    let root = tempfile::tempdir()?;
+    let corpus = root.path().join("tree-sitter-perl/test/corpus");
+    std::fs::create_dir_all(&corpus)?;
+    // Tree-sitter corpus convention: every document in the directory is a
+    // corpus file regardless of filename; sections are delimited by `=` marker
+    // lines. The governed corpus mixes `.txt` and extensionless documents.
+    let sectioned_document = "================================================================================\n\
+         DOCUMENTED CASE\n\
+         ================================================================================\n\
+         code\n\
+         --------------------------------------------------------------------------------\n\
+         (source_file)\n";
+    std::fs::write(corpus.join("documented.txt"), sectioned_document)?;
+    std::fs::write(corpus.join("extensionless"), sectioned_document)?;
+
+    let sections = count_corpus_sections(root.path());
+    assert_eq!(
+        sections, 4,
+        "extensionless corpus documents must count toward the section denominator"
+    );
     Ok(())
 }
 
@@ -134,6 +161,182 @@ fn test_parser_nodekind_row_renders() -> Result<()> {
     );
     assert!(!result.contains("10/10"), "strict-clean no-receipt row must not show 10/10");
     Ok(())
+}
+
+/// The generated row must name what `corpus_audit` actually measured.
+///
+/// The old label, `Node-kind coverage`, reads as a proven-coverage claim over a
+/// NodeKind population and makes denominator substitution cheap. A wrong
+/// implementation this test rejects is one that renames the row but leaves the
+/// numerator unbounded, or that bounds it while dropping the gap detail (#13742).
+///
+/// The counts below are synthetic renderer input chosen to exercise the format
+/// contract, not the values any audit committed. They are deliberately unequal
+/// to whatever `docs/project/status/parser.md` currently carries: this test
+/// pins `{covered}/{total} ({pct:.1}%)` and the surrounding wording, while the
+/// committed row's numbers stay owned by `corpus_audit` and the post-merge
+/// regeneration. Reading a committed value out of this fixture would be wrong.
+#[test]
+fn test_parser_nodekind_row_is_named_and_bounded_as_project_corpus_reachability() -> Result<()> {
+    let summary = super::super::super::corpus_audit::StatusSummary {
+        total_files: 91,
+        ok_files: 91,
+        error_files: 0,
+        timeout_files: 0,
+        panic_files: 0,
+        test_corpus_files: 69,
+        perl_corpus_files: 22,
+        nodekind_covered: 65,
+        nodekind_total: 69,
+        nodekind_never_seen: 3,
+        nodekind_allowlisted_never_seen: 1,
+        nodekind_actionable_never_seen: 2,
+        ga_covered: 12,
+        ga_total: 12,
+    };
+    let metrics = ParserMetrics {
+        syntax_sections: 611,
+        system_receipt: None,
+        cpan_receipt: None,
+        project_corpus: Some(summary),
+        common_corpus_receipt: None,
+        common_corpus_pinned: 10,
+        performance_scorecard: None,
+        parser_accuracy: None,
+        token_metrics: token::token_metrics_fixture(),
+    };
+    let row = nodekind_row_from(&metrics)?;
+
+    assert!(
+        row.contains("**Project-corpus NodeKind reachability**"),
+        "row must name the population in the label itself, got: {row}"
+    );
+    assert!(
+        !row.contains("Node-kind coverage"),
+        "unqualified `Node-kind coverage` wording must not survive, got: {row}"
+    );
+    assert!(
+        row.contains("unique canonical NodeKind variants observed at least once"),
+        "note must identify the numerator as unique observed variants, got: {row}"
+    );
+    assert!(
+        row.contains("across successfully parsed files"),
+        "note must exclude failed, timed-out, and panicked files from the numerator, got: {row}"
+    );
+    assert!(
+        row.contains("broad project-corpus audit this row reports"),
+        "note must name the population without asserting freshness, got: {row}"
+    );
+    assert!(
+        row.contains("not parser-accuracy gold"),
+        "note must exclude parser-accuracy gold meaning, got: {row}"
+    );
+    assert!(
+        row.contains("not an occurrence count"),
+        "note must exclude occurrence-count meaning, got: {row}"
+    );
+
+    // The extraction population is a strict subset of the counted one: corpus
+    // discovery decodes with `from_utf8_lossy` and counts a non-UTF-8 fixture,
+    // while `extract_nodekinds_from_content` reads through `read_to_string` and
+    // silently contributes no kinds. The note must name that boundary rather
+    // than imply the numerator saw every counted file.
+    assert!(
+        row.contains("extraction skips files that do not decode as UTF-8"),
+        "note must name the UTF-8 extraction boundary, got: {row}"
+    );
+
+    // The row is an unversioned static projection regenerated after merge, so
+    // any committed instance ages. A freshness adjective would assert exactly
+    // the unearned evidence this note exists to prevent, so the note must not
+    // reintroduce one. Binding a receipt timestamp is #11588's claim.
+    for adjective in ["current", "latest", "up-to-date", "fresh"] {
+        assert!(
+            !row.contains(adjective),
+            "note must not assert freshness the static row cannot earn; found {adjective:?} in: {row}"
+        );
+    }
+
+    // The rename is presentation-only: the renderer's value format, the gap
+    // classification, and the source column must survive it unchanged. The
+    // numbers here are this test's synthetic input, not a committed audit value.
+    assert!(
+        row.contains("65/69 (94.2%)"),
+        "row must render {{covered}}/{{total}} ({{pct:.1}}%) unchanged, got: {row}"
+    );
+    assert!(
+        row.contains("2 actionable never-seen; 1 recovery-only allowlisted; 3 total never-seen"),
+        "row must preserve the existing gap detail, got: {row}"
+    );
+    assert!(row.contains("`corpus_audit`"), "row must preserve its source column, got: {row}");
+    Ok(())
+}
+
+/// Without a live repo scan the row states the metric's bounded meaning and
+/// reports `UNVERIFIED` — it must not fabricate a ratio for a population it
+/// never observed (#13742).
+#[test]
+fn test_parser_nodekind_row_unverified_states_scope_without_a_ratio() -> Result<()> {
+    let metrics = ParserMetrics {
+        syntax_sections: 611,
+        system_receipt: None,
+        cpan_receipt: None,
+        project_corpus: None,
+        common_corpus_receipt: None,
+        common_corpus_pinned: 10,
+        performance_scorecard: None,
+        parser_accuracy: None,
+        token_metrics: token::token_metrics_fixture(),
+    };
+    let row = nodekind_row_from(&metrics)?;
+
+    assert!(
+        row.contains("**Project-corpus NodeKind reachability**"),
+        "unverified row must use the same bounded label, got: {row}"
+    );
+    assert!(
+        !row.contains("Node-kind coverage"),
+        "unverified row must not use the old label: {row}"
+    );
+    assert!(row.contains("UNVERIFIED"), "unverified row must report UNVERIFIED, got: {row}");
+    assert!(
+        row.contains("live repo scan unavailable"),
+        "unverified row must keep its existing reason, got: {row}"
+    );
+    assert!(
+        !row.contains("current"),
+        "unverified row must not assert freshness either, got: {row}"
+    );
+    assert!(
+        row.contains("extraction skips files that do not decode as UTF-8"),
+        "unverified row must name the same extraction boundary, got: {row}"
+    );
+    assert!(
+        row.contains("across successfully parsed files"),
+        "unverified row must name the same successful-parse boundary, got: {row}"
+    );
+    assert!(
+        row.contains("not parser-accuracy gold and not an occurrence count"),
+        "unverified row must still bound the metric's meaning, got: {row}"
+    );
+    assert!(!row.contains('%'), "unverified row must not fabricate a ratio, got: {row}");
+    Ok(())
+}
+
+/// Extract the rendered `PARSER_NODEKIND_ROW` block so a row assertion cannot
+/// be satisfied by text some other row happens to contain.
+fn nodekind_row_from(metrics: &ParserMetrics) -> Result<String> {
+    let rendered = generate_parser_status(metrics, parser_status_template())?;
+    let begin = "<!-- BEGIN: PARSER_NODEKIND_ROW -->";
+    let end = "<!-- END: PARSER_NODEKIND_ROW -->";
+    let start = rendered
+        .find(begin)
+        .ok_or_else(|| color_eyre::eyre::eyre!("rendered status is missing {begin}"))?
+        + begin.len();
+    let stop = rendered
+        .find(end)
+        .ok_or_else(|| color_eyre::eyre::eyre!("rendered status is missing {end}"))?;
+    Ok(rendered[start..stop].trim().to_string())
 }
 
 #[test]
@@ -295,18 +498,41 @@ fn test_parser_accuracy_artifact_renders_denominator_and_metric_rows() -> Result
                     metric: "denominator_fixture_count".to_string(),
                     value: 2.0,
                     sample_count: 2,
+                    unmodeled_fields: serde_json::Map::new(),
                 },
                 ParserAccuracyMetricSummary::Measured {
                     metric: "line_construct_f1".to_string(),
                     value: 1.0,
                     sample_count: 6,
+                    unmodeled_fields: serde_json::Map::new(),
                 },
-                ParserAccuracyMetricSummary::Measured {
+                ParserAccuracyMetricSummary::InvestigationOnly {
                     metric: "whitespace_invariance_rate".to_string(),
                     value: 0.32,
                     sample_count: 44,
+                    transformation_profile: "trailing_horizontal_whitespace.legacy.v1".to_string(),
+                    evidence_class: "investigation_only".to_string(),
+                    terminal_disposition: "not_proven".to_string(),
+                    reason: "legacy_hash_oracle_untrusted".to_string(),
+                    packet_policy: "none".to_string(),
+                    floor_eligible: false,
+                    unknown_fields: serde_json::Map::new(),
                 },
             ],
+            legacy_population: ParserAccuracyLegacyPopulation {
+                transformation_profile: "trailing_horizontal_whitespace.legacy.v1".to_string(),
+                population_identity: format!("sha256:{}", "b".repeat(64)),
+                aggregate_metric: "whitespace_invariance_rate".to_string(),
+                quarantined_metrics: vec![
+                    "whitespace_invariance_rate".to_string(),
+                    "comment_invariance_rate".to_string(),
+                    "newline_style_invariance_rate".to_string(),
+                ],
+                population_total_count: 44,
+                population_applied_count: 44,
+                population_unclassified_count: 0,
+                manifest_schema_version: 1,
+            },
             failure_packets: vec![],
         }),
         token_metrics: token::token_metrics_fixture(),
@@ -329,8 +555,14 @@ fn test_parser_accuracy_artifact_renders_denominator_and_metric_rows() -> Result
         "measured accuracy scorer rows should render their values"
     );
     assert!(
-        result.contains("whitespace_invariance_rate=0.3 (trailing whitespace; n=44)"),
-        "whitespace invariance summary must disclose its sampled trailing-whitespace basis"
+        result.contains(
+            "whitespace_invariance_rate: investigation_only (not_proven; legacy_hash_oracle_untrusted; trailing_horizontal_whitespace.legacy.v1; observed=0.3; n=44)"
+        ),
+        "typed investigation rows must render their disposition from artifact fields"
+    );
+    assert!(
+        !result.contains("whitespace_invariance_rate=0.3"),
+        "legacy whitespace observations must not render as ordinary measured accuracy"
     );
     Ok(())
 }
@@ -381,8 +613,30 @@ fn test_read_parser_accuracy_artifact_loads_target_metrics() -> Result<()> {
       "reason": "line-level gold scorer is not wired yet",
       "sample_count": 0,
       "confidence": "low"
+    },
+    {
+      "state": "investigation_only",
+      "metric": "whitespace_invariance_rate",
+      "value": 0.0,
+      "sample_count": 1,
+      "transformation_profile": "trailing_horizontal_whitespace.legacy.v1",
+      "evidence_class": "investigation_only",
+      "terminal_disposition": "not_proven",
+      "reason": "legacy_hash_oracle_untrusted",
+      "packet_policy": "none",
+      "floor_eligible": false
     }
   ],
+  "legacy_population": {
+    "transformation_profile": "trailing_horizontal_whitespace.legacy.v1",
+    "population_identity": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "aggregate_metric": "whitespace_invariance_rate",
+    "quarantined_metrics": ["whitespace_invariance_rate", "comment_invariance_rate", "newline_style_invariance_rate"],
+    "population_total_count": 2,
+    "population_applied_count": 1,
+    "population_unclassified_count": 1,
+    "manifest_schema_version": 1
+  },
   "failure_packets": [],
   "gold_drift": {},
   "metric_runtime": {}
@@ -392,7 +646,53 @@ fn test_read_parser_accuracy_artifact_loads_target_metrics() -> Result<()> {
     let artifact = read_parser_accuracy_artifact(tmp.path())
         .ok_or_else(|| color_eyre::eyre::eyre!("valid parser accuracy artifact should load"))?;
     assert_eq!(artifact.denominator.fixture_count, 2);
-    assert_eq!(artifact.metrics.len(), 1);
+    assert_eq!(artifact.metrics.len(), 2);
+    assert_eq!(artifact.legacy_population.population_applied_count, 1);
+    Ok(())
+}
+
+#[test]
+fn test_read_parser_accuracy_artifact_rejects_missing_population_evidence() -> Result<()> {
+    let tmp = tempfile::tempdir()?;
+    let metrics_dir = tmp.path().join("target").join("metrics");
+    std::fs::create_dir_all(&metrics_dir)?;
+    // A pre-typing artifact without retained population evidence must not be
+    // silently consumed as current status input.
+    std::fs::write(
+        metrics_dir.join("parser_accuracy.json"),
+        r#"{
+  "schema_version": 1,
+  "subsystem": "parser_accuracy",
+  "generated_at": "2026-05-02T15:00:00Z",
+  "commit": "abc123",
+  "cadence": "pr",
+  "denominator": {
+    "fixture_count": 2,
+    "fixture_family_count": 2,
+    "scored_line_count": 3,
+    "scored_symbol_count": 2,
+    "fully_labeled_region_count": 1,
+    "partial_labeled_region_count": 1,
+    "unknown_region_count": 1,
+    "negative_region_count": 1,
+    "dynamic_boundary_case_count": 1,
+    "unsupported_construct_case_count": 0,
+    "real_project_file_count": 0,
+    "generated_fixture_count": 0,
+    "hand_labeled_fixture_count": 2
+  },
+  "families": [],
+  "metrics": [],
+  "failure_packets": [],
+  "gold_drift": {},
+  "metric_runtime": {}
+}"#,
+    )?;
+
+    assert!(
+        read_parser_accuracy_artifact(tmp.path()).is_none(),
+        "artifact without legacy population evidence must fail closed"
+    );
     Ok(())
 }
 
@@ -559,7 +859,7 @@ fn parser_failure_worklist_builds_cluster_and_bucket_details_with_populated_rece
     );
 
     let report = super::super::super::parser_corpus_sweep::SweepReport {
-        schema_version: "1".to_string(),
+        schema_version: SCHEMA_VERSION,
         commit: "abc".to_string(),
         timestamp: "2026-04-09T00:00:00Z".to_string(),
         corpus_profile: "system".to_string(),
@@ -643,7 +943,7 @@ fn parser_failure_worklist_replaces_cluster_and_bucket_status_markers() -> Resul
     use std::collections::BTreeMap;
 
     let report = super::super::super::parser_corpus_sweep::SweepReport {
-        schema_version: "1".to_string(),
+        schema_version: SCHEMA_VERSION,
         commit: "abc".to_string(),
         timestamp: "2026-04-09T00:00:00Z".to_string(),
         corpus_profile: "system".to_string(),
@@ -704,7 +1004,7 @@ fn parser_failure_worklist_handles_empty_buckets() {
     use std::collections::BTreeMap;
 
     let report = SweepReport {
-        schema_version: "1".to_string(),
+        schema_version: SCHEMA_VERSION,
         commit: "abc".to_string(),
         timestamp: "2026-04-09T00:00:00Z".to_string(),
         corpus_profile: "system".to_string(),
@@ -757,7 +1057,7 @@ fn parser_failure_worklist_handles_empty_buckets() {
 fn test_parser_strict_clean_row_with_receipt() -> Result<()> {
     use std::collections::BTreeMap;
     let receipt = super::super::super::parser_corpus_sweep::SweepReport {
-        schema_version: "1".to_string(),
+        schema_version: SCHEMA_VERSION,
         commit: "abc".to_string(),
         timestamp: "2026-04-11T00:00:00Z".to_string(),
         corpus_profile: "common".to_string(),
@@ -809,7 +1109,7 @@ fn test_parser_tracking_old_cpan_receipt_missing_recovery_shape_reports_insuffic
     use std::collections::BTreeMap;
 
     let receipt = super::super::super::parser_corpus_sweep::SweepReport {
-        schema_version: "1.2.0".to_string(),
+        schema_version: SCHEMA_VERSION,
         commit: "old".to_string(),
         timestamp: "2026-04-09T00:00:00Z".to_string(),
         corpus_profile: "cpan".to_string(),
@@ -952,7 +1252,7 @@ fn test_parser_error_density_and_salvage_rows_with_populated_receipt() -> Result
     use std::collections::BTreeMap;
 
     let report = super::super::super::parser_corpus_sweep::SweepReport {
-        schema_version: "1.3.0".to_string(),
+        schema_version: SCHEMA_VERSION,
         commit: "abc".to_string(),
         timestamp: "2026-04-09T00:00:00Z".to_string(),
         corpus_profile: "system".to_string(),
@@ -1013,7 +1313,7 @@ fn test_parser_error_density_row_no_dirty_files_reports_insufficient_data() -> R
     use std::collections::BTreeMap;
 
     let report = super::super::super::parser_corpus_sweep::SweepReport {
-        schema_version: "1.3.0".to_string(),
+        schema_version: SCHEMA_VERSION,
         commit: "abc".to_string(),
         timestamp: "2026-04-09T00:00:00Z".to_string(),
         corpus_profile: "system".to_string(),
@@ -1065,5 +1365,39 @@ fn test_parser_error_density_row_no_dirty_files_reports_insufficient_data() -> R
         ),
         "zero dirty files must not fabricate salvage rate"
     );
+    Ok(())
+}
+
+#[test]
+fn sweep_report_fixtures_share_envelope_schema_version() -> Result<()> {
+    // #15363: fixtures across this file share exactly one schema_version —
+    // the shared integer constant. The envelope is negotiated fail-closed:
+    // the current version carries recovery claims, legacy string versions are
+    // refused, and unknown integer versions parse without recovery claims.
+    assert_eq!(SCHEMA_VERSION, 1);
+
+    let dir = std::env::temp_dir().join(format!("lane3b-schema-{}", std::process::id()));
+    std::fs::create_dir_all(&dir)?;
+    let envelope = |version: &str| {
+        format!(
+            r#"{{"schema_version":{version},"commit":"abc","timestamp":"now","corpus_roots":[],"total_files":2,"files_unreadable":0,"clean_files":1,"files_with_errors":1,"total_error_nodes":1,"first_error_buckets":{{}},"elapsed_secs":1.0,"files_with_structured_recovery_only":1,"files_with_error_nodes":1,"files_with_catastrophic_parse_failure":0,"total_dirty_files":1}}"#
+        )
+    };
+    let shape_for = |body: String| -> Option<bool> {
+        let path = dir.join("envelope.json");
+        std::fs::write(&path, body).ok()?;
+        super::read_sweep_report(&path).map(|receipt| receipt.has_recovery_shape)
+    };
+
+    let current = shape_for(envelope("1")).expect("current envelope must load");
+    assert!(current, "current version must negotiate recovery shape");
+
+    let legacy = shape_for(envelope("\"1\""));
+    assert!(legacy.is_none(), "legacy string version must fail closed");
+
+    let unknown = shape_for(envelope("2")).expect("unknown integer version still parses");
+    assert!(!unknown, "unknown version must not render recovery claims");
+
+    let _ = std::fs::remove_dir_all(&dir);
     Ok(())
 }

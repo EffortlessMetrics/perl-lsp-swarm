@@ -17,7 +17,18 @@ use crate::{SubprocessError, SubprocessOutput, SubprocessRuntime};
 // are exported for test use on all platforms — not just Windows.  This lets
 // the ripr quality gate observe call paths on Linux CI runners.
 #[cfg(test)]
-pub(crate) use path_selection::{candidate_priority, select_path_candidate};
+pub(crate) use path_selection::candidate_priority;
+
+// `select_path_candidate` is the admission authority on every platform, but it
+// is reached differently: on Windows through `windows::resolve_windows_program`
+// (which imports it directly from `path_selection`), and on other platforms
+// through `crate::availability`.  Both apply the same absolute-only +
+// CWD-exclusion invariant, so neither platform grows a second policy.
+//
+// The re-export is therefore needed for the non-Windows production route and
+// for the cross-platform tests, but would be unused on a Windows build.
+#[cfg(any(test, not(windows)))]
+pub(crate) use path_selection::select_path_candidate;
 
 // `windows_program_priority` is the historical name for `candidate_priority`
 // used in Windows-specific tests.  Export it as an alias on Windows so tests
@@ -37,6 +48,8 @@ pub(super) fn resolve_windows_program_pub(program: &str) -> Option<String> {
     windows::resolve_windows_program(program)
 }
 
+const MIN_TIMEOUT_SECS: u64 = 1;
+
 /// Default implementation using `std::process::Command`.
 pub struct OsSubprocessRuntime {
     timeout_secs: Option<u64>,
@@ -50,7 +63,12 @@ impl OsSubprocessRuntime {
 
     /// Create a new OS subprocess runtime with the given wall-clock timeout.
     ///
-    /// If the subprocess does not complete within `timeout_secs` seconds the
+    /// A zero value is normalized to one second so direct construction cannot
+    /// panic. This generic constructor deliberately does not impose a product-
+    /// specific maximum; callers with a bounded interactive contract should use
+    /// [`Self::with_bounded_timeout`].
+    ///
+    /// If the subprocess does not complete within the normalized timeout the
     /// call returns a `SubprocessError` with a "timed out" message and attempts
     /// to terminate the spawned process before returning.
     ///
@@ -61,14 +79,18 @@ impl OsSubprocessRuntime {
     /// OS pipe buffer (~64 KiB on Linux), `run_command` will block in the write
     /// phase and the timeout will not fire. For typical Perl source files this
     /// is not a concern.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `timeout_secs` is zero (a zero-second timeout would time out
-    /// every command immediately and is almost certainly a caller bug).
     pub fn with_timeout(timeout_secs: u64) -> Self {
-        assert!(timeout_secs > 0, "timeout_secs must be greater than zero");
-        Self { timeout_secs: Some(timeout_secs) }
+        Self { timeout_secs: Some(timeout_secs.max(MIN_TIMEOUT_SECS)) }
+    }
+
+    /// Create a runtime using a caller-owned bounded timeout envelope.
+    ///
+    /// Both zero inputs are normalized to one second. The requested timeout is
+    /// then clamped to the normalized maximum, allowing each product surface to
+    /// define its own upper bound without changing unrelated subprocess users.
+    pub fn with_bounded_timeout(timeout_secs: u64, max_timeout_secs: u64) -> Self {
+        let max_timeout_secs = max_timeout_secs.max(MIN_TIMEOUT_SECS);
+        Self { timeout_secs: Some(timeout_secs.clamp(MIN_TIMEOUT_SECS, max_timeout_secs)) }
     }
 }
 
@@ -86,5 +108,31 @@ impl SubprocessRuntime for OsSubprocessRuntime {
         stdin: Option<&[u8]>,
     ) -> Result<SubprocessOutput, SubprocessError> {
         run_os_command(program, args, stdin, self.timeout_secs)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn generic_timeout_normalizes_zero_without_changing_large_valid_values() {
+        assert_eq!(OsSubprocessRuntime::with_timeout(0).timeout_secs, Some(1));
+        assert_eq!(OsSubprocessRuntime::with_timeout(1).timeout_secs, Some(1));
+        assert_eq!(OsSubprocessRuntime::with_timeout(10).timeout_secs, Some(10));
+        assert_eq!(OsSubprocessRuntime::with_timeout(u64::MAX).timeout_secs, Some(u64::MAX));
+    }
+
+    #[test]
+    fn bounded_timeout_uses_the_callers_envelope() {
+        assert_eq!(OsSubprocessRuntime::with_bounded_timeout(0, 300).timeout_secs, Some(1));
+        assert_eq!(OsSubprocessRuntime::with_bounded_timeout(1, 300).timeout_secs, Some(1));
+        assert_eq!(OsSubprocessRuntime::with_bounded_timeout(300, 300).timeout_secs, Some(300));
+        assert_eq!(OsSubprocessRuntime::with_bounded_timeout(301, 300).timeout_secs, Some(300));
+        assert_eq!(
+            OsSubprocessRuntime::with_bounded_timeout(u64::MAX, 300).timeout_secs,
+            Some(300)
+        );
+        assert_eq!(OsSubprocessRuntime::with_bounded_timeout(5, 0).timeout_secs, Some(1));
     }
 }

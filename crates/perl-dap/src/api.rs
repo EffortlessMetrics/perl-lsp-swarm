@@ -29,8 +29,9 @@ pub use crate::platform::{
 
 // Re-exports from stack module
 pub use crate::stack::{
-    FrameCategory, FrameClassifier, PerlFrameClassifier, PerlStackParser, StackParseError,
-    filter_user_visible_frames, is_internal_frame, is_internal_frame_name_and_path,
+    FixedOriginStackParseError, FrameCategory, FrameClassifier, PerlFrameClassifier,
+    PerlStackParser, StackParseError, filter_user_visible_frames, is_internal_frame,
+    is_internal_frame_name_and_path,
 };
 
 // Re-exports from types module
@@ -43,8 +44,8 @@ pub use crate::value::PerlValue;
 
 // Re-exports from variables module
 pub use crate::variables::{
-    PerlVariableRenderer, RenderedVariable, VariableParseError, VariableParser,
-    VariablePresentationHint, VariableRenderer,
+    FixedOriginVariableParseError, PerlVariableRenderer, RenderedVariable, VariableParseError,
+    VariableParser, VariablePresentationHint, VariableRenderer,
 };
 
 // Re-exports from security module

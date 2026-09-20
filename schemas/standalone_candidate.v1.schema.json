@@ -1,0 +1,94 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/EffortlessMetrics/perl-lsp-swarm/schemas/standalone_candidate.v1.schema.json",
+  "title": "standalone_candidate.v1",
+  "description": "Immutable manifest of one verified standalone installation candidate (#11179). Identity is recomputed over canonical bytes by the repository verifier; display version, directory name, or a single binary digest can never merge candidates. DAP preview maturity never weakens archive_pair_required integrity, and local-development builds are never authoritative candidate bytes.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "policy_version",
+    "route_mode",
+    "source_mode",
+    "transaction_id",
+    "attempt_id",
+    "created_by_operation",
+    "resolved_subject_digest",
+    "stage_dag_digest",
+    "release_display_version",
+    "release_topology_digest",
+    "target_platform",
+    "target_triple",
+    "target_libc",
+    "product_unit_disposition",
+    "dap_preview_maturity",
+    "candidate_generation",
+    "members",
+    "limitations",
+    "candidate_id",
+    "manifest_sha256"
+  ],
+  "properties": {
+    "schema_version": { "const": "standalone_candidate.v1" },
+    "policy_version": { "$ref": "#/$defs/bounded_text_64" },
+    "route_mode": { "enum": ["first_party_posix", "first_party_powershell"] },
+    "source_mode": {
+      "enum": ["release_archive", "exact_registry_source", "explicit_local_development"],
+      "description": "#11099 route vocabulary; explicit_local_development is rejected as durable candidate content."
+    },
+    "transaction_id": { "$ref": "#/$defs/bounded_id", "description": "#11099 transaction identity." },
+    "attempt_id": { "$ref": "#/$defs/bounded_id", "description": "#11099 attempt identity." },
+    "created_by_operation": { "enum": ["install", "repair", "update", "rollback"] },
+    "resolved_subject_digest": { "$ref": "#/$defs/sha256", "description": "#11099 resolved-subject digest." },
+    "stage_dag_digest": { "$ref": "#/$defs/sha256", "description": "Digest of the verified route-specific stage DAG that produced this candidate." },
+    "release_display_version": { "$ref": "#/$defs/bounded_text_64" },
+    "release_topology_digest": { "$ref": "#/$defs/sha256" },
+    "target_platform": { "$ref": "#/$defs/bounded_text_32" },
+    "target_triple": { "$ref": "#/$defs/bounded_text_64" },
+    "target_libc": { "enum": ["gnu", "musl", "msvc", "none"] },
+    "product_unit_disposition": {
+      "enum": ["archive_pair_required", "historical_server_only", "advanced_source_server_only"]
+    },
+    "dap_preview_maturity": {
+      "type": "boolean",
+      "description": "Records preview maturity only; it can never reduce the member requirements of archive_pair_required."
+    },
+    "candidate_generation": { "type": "integer", "minimum": 1 },
+    "members": { "type": "array", "minItems": 1, "maxItems": 2, "items": { "$ref": "#/$defs/member" } },
+    "limitations": {
+      "type": "array",
+      "maxItems": 8,
+      "items": { "type": "string", "minLength": 1, "maxLength": 512 }
+    },
+    "candidate_id": { "$ref": "#/$defs/sha256", "description": "Domain-separated digest over canonical content bytes; recomputed by the verifier." },
+    "manifest_sha256": { "$ref": "#/$defs/sha256", "description": "Domain-separated digest over canonical content bytes excluding the declared identity fields." }
+  },
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[0-9a-fA-F]{64}$" },
+    "bounded_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+    },
+    "bounded_text_32": { "type": "string", "minLength": 1, "maxLength": 32 },
+    "bounded_text_64": { "type": "string", "minLength": 1, "maxLength": 64 },
+    "member": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["role", "artifact_sha256", "observation_packet_sha256", "subject_binding"],
+      "properties": {
+        "role": { "enum": ["perllsp_server", "perl_dap_adapter"] },
+        "artifact_sha256": { "$ref": "#/$defs/sha256" },
+        "observation_packet_sha256": {
+          "$ref": "#/$defs/sha256",
+          "description": "Canonical executable observation packet digest."
+        },
+        "subject_binding": {
+          "$ref": "#/$defs/sha256",
+          "description": "Must equal resolved_subject_digest; members resolved from different subjects never compose."
+        }
+      }
+    }
+  }
+}

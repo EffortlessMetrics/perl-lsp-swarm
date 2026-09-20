@@ -1,6 +1,10 @@
 # ADR-0044: Octopus Cluster Orchestration Architecture
 
-**Status**: Accepted
+<!-- authority-status:v1 -->
+> **Status: superseded.** Current authority: [Development method](../agents/DEVELOPMENT_METHOD.md).
+> Retained as historical design or mechanism evidence. Internal wording below that calls this document accepted, active doctrine, a north star, current instruction, or lifecycle authority is historical and must not route current work. See [Agent and maintainer authority status](../agents/AUTHORITY_STATUS.md).
+
+**Status**: Superseded
 **Date**: 2026-04-28
 **Related**: [ADR-0033](0033-worktree-first-disposable-workers.md), [OCTOPUS_CLUSTER.md](../reference/OCTOPUS_CLUSTER.md), [ORCHESTRATION_DOCTRINE.md](../reference/ORCHESTRATION_DOCTRINE.md), [PIPELINE_GATES.md](../reference/PIPELINE_GATES.md), [LIVE_SIGNALS_VS_LABELS.md](../reference/LIVE_SIGNALS_VS_LABELS.md), [FAILURE_MODES.md](../reference/FAILURE_MODES.md)
 

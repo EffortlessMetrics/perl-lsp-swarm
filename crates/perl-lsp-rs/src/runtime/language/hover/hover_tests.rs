@@ -1,4 +1,6 @@
 use super::LspServer;
+use super::hover_extracted::HoverExtracted;
+use perl_parser_core::syntax::source_context::SourceRegionIndex;
 use perl_tdd_support::must_some;
 use serde_json::json;
 
@@ -331,11 +333,11 @@ fn require_module_scan_respects_static_module_token_boundaries() {
     let text = "require Local::Doc;\n";
     let token_start = must_some(text.find("Local"));
     let token_end = must_some(text.find(';'));
-    let head = must_some(perl_module::import::parse_module_import_head(text));
-    let span = must_some(perl_module::token_parser::parse_module_token(text, head.token_start));
+    let head = must_some(perl_module::parse_module_import_head(text));
+    let span = must_some(perl_module::parse_module_token(text, head.token_start));
 
-    assert_eq!(head.kind, perl_module::import::ModuleImportKind::Require);
-    assert_eq!(head.require_form(), Some(perl_module::import::RequireForm::ModuleName));
+    assert_eq!(head.kind, perl_module::ModuleImportKind::Require);
+    assert_eq!(head.require_form(), Some(perl_module::RequireForm::ModuleName));
     assert_eq!(head.token_start, token_start);
     assert_eq!(head.token_end, token_end);
     assert_eq!(span.end, head.token_end);
@@ -372,13 +374,49 @@ fn require_module_scan_rejects_non_module_suffixes() {
 }
 
 #[test]
+fn module_hover_lookup_boundary_rejects_emoji_for_use_and_require() {
+    use perl_parser::{Node, NodeKind, SourceLocation};
+
+    let unsafe_use = Node::new(
+        NodeKind::Use { module: "Foo::💥".to_string(), args: vec![], has_filter_risk: false },
+        SourceLocation { start: 0, end: 32 },
+    );
+    assert_eq!(LspServer::find_use_module_at_offset(&unsafe_use, 8), None);
+
+    let unsafe_require = "require Foo::💥;\n";
+    let unsafe_require_offset = must_some(unsafe_require.find('💥'));
+    assert_eq!(
+        LspServer::find_require_module_at_offset(unsafe_require, unsafe_require_offset),
+        None
+    );
+
+    let valid_use = Node::new(
+        NodeKind::Use {
+            module: "Δοκιμή::設定".to_string(), args: vec![], has_filter_risk: false
+        },
+        SourceLocation { start: 0, end: 32 },
+    );
+    assert_eq!(
+        LspServer::find_use_module_at_offset(&valid_use, 8).as_deref(),
+        Some("Δοκιμή::設定")
+    );
+
+    let valid_require = "require Δοκιμή::設定;\n";
+    let valid_require_offset = must_some(valid_require.find("Δοκιμή"));
+    assert_eq!(
+        LspServer::find_require_module_at_offset(valid_require, valid_require_offset).as_deref(),
+        Some("Δοκιμή::設定")
+    );
+}
+
+#[test]
 fn require_module_scan_has_explicit_boundary_discriminators() {
     let text = "require Local::Doc;\n";
-    let head = must_some(perl_module::import::parse_module_import_head(text));
-    let span = must_some(perl_module::token_parser::parse_module_token(text, 8));
+    let head = must_some(perl_module::parse_module_import_head(text));
+    let span = must_some(perl_module::parse_module_token(text, 8));
 
-    assert_eq!(head.kind, perl_module::import::ModuleImportKind::Require);
-    assert_eq!(head.require_form(), Some(perl_module::import::RequireForm::ModuleName));
+    assert_eq!(head.kind, perl_module::ModuleImportKind::Require);
+    assert_eq!(head.require_form(), Some(perl_module::RequireForm::ModuleName));
     assert_eq!(span.end, 18);
     assert_eq!(head.token_start, 8);
     assert_eq!(head.token_end, 18);
@@ -391,13 +429,13 @@ fn require_module_scan_has_explicit_boundary_discriminators() {
 #[test]
 fn require_module_boundary_predicates_are_explicit() {
     assert!(LspServer::is_static_require_module(
-        perl_module::import::ModuleImportKind::Require,
-        Some(perl_module::import::RequireForm::ModuleName)
+        perl_module::ModuleImportKind::Require,
+        Some(perl_module::RequireForm::ModuleName)
     ));
-    assert!(!LspServer::is_static_require_module(perl_module::import::ModuleImportKind::Use, None));
+    assert!(!LspServer::is_static_require_module(perl_module::ModuleImportKind::Use, None));
     assert!(!LspServer::is_static_require_module(
-        perl_module::import::ModuleImportKind::Require,
-        Some(perl_module::import::RequireForm::FilePath)
+        perl_module::ModuleImportKind::Require,
+        Some(perl_module::RequireForm::FilePath)
     ));
 
     assert!(!LspServer::cursor_spans_module_token(7, 8, 18));
@@ -764,6 +802,59 @@ fn method_modifier_hover_escapes_doc_markdown() {
 }
 
 #[test]
+fn method_modifier_hover_answers_on_quoted_target_in_string_region()
+-> Result<(), Box<dyn std::error::Error>> {
+    // #15425: the modifier's target name is a quoted string, so the
+    // generation-bound region index proves StringLiteral there — never Code
+    // (#4967). The modifier card must still answer: the synthetic modifier
+    // symbol spans the declaration head and its target is precisely this
+    // quoted token. Body strings, comments, POD, and heredocs keep failing
+    // closed.
+    let text = "package Demo::Modifiers;\nuse Moo;\nafter 'save' => sub {\n    my ($self) = @_;\n};\nmy $label = 'save';\n";
+    let server = LspServer::with_io(Box::new(std::io::empty()), Box::new(Vec::<u8>::new()));
+    let uri = "file:///modifier_target_island.pl".to_string();
+    server.did_open(json!({
+        "textDocument": {
+            "uri": uri,
+            "languageId": "perl",
+            "version": 1,
+            "text": text
+        }
+    }))?;
+
+    let save_col =
+        text.lines().nth(2).and_then(|line| line.find("save")).ok_or("no `save` on line 2")?;
+    let hover = must_some(server.handle_hover(Some(json!({
+        "textDocument": { "uri": uri },
+        "position": { "line": 2, "character": save_col }
+    })))?);
+    let value = must_some(hover["contents"]["value"].as_str());
+    assert!(
+        value.contains("Method Modifier") && value.contains("after"),
+        "quoted modifier target must answer the modifier card, got: {value}"
+    );
+
+    // A string literal in a plain assignment is NOT a modifier target: the
+    // modifier-symbol containment claim must stay scoped to the declaration
+    // head of a `modifier=`-attributed symbol.
+    let label_col =
+        text.lines().nth(5).and_then(|line| line.find("save")).ok_or("no `save` on line 5")?;
+    let plain_string_hover = server.handle_hover(Some(json!({
+        "textDocument": { "uri": uri },
+        "position": { "line": 5, "character": label_col }
+    })))?;
+    if let Some(hover) = plain_string_hover
+        && let Some(value) = hover["contents"]["value"].as_str()
+    {
+        assert!(
+            !value.contains("Method Modifier"),
+            "plain string literal must not answer the modifier card, got: {value}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
 fn hover_off_lock_analysis_emits_lock_hold_and_analyze_timing_spans()
 -> Result<(), Box<dyn std::error::Error>> {
     // #3396 Phase 4: `handle_hover` grabs the parsed snapshot + text under a
@@ -1096,4 +1187,119 @@ fn hover_trace_source_region_kind_is_not_shared_across_concurrent_requests() {
     for handle in handles {
         assert!(handle.join().is_ok(), "hover trace worker panicked");
     }
+}
+
+fn ranged_violation(uri: &str, version: i32) -> serde_json::Value {
+    json!({
+        "textDocument": { "uri": uri, "version": version },
+        "contentChanges": [{
+            "range": {
+                "start": { "line": 0, "character": 0 },
+                "end": { "line": 0, "character": 1 }
+            },
+            "text": "x"
+        }]
+    })
+}
+
+#[test]
+fn hover_does_not_publish_in_flight_predecessor_after_violation()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = LspServer::new();
+    let uri = "file:///workspace/inflight_hover.pl";
+    let predecessor = "require PredHoverMod;\n";
+
+    server.test_apply_did_open(uri, predecessor, 1)?;
+    let snapshot = server
+        .snapshot_user_answer_text(uri)
+        .ok_or("open document must have a usable user-answer snapshot")?;
+    let computed = must_some(server.handle_hover(Some(json!({
+        "textDocument": { "uri": uri },
+        "position": { "line": 0, "character": 10 }
+    })))?);
+    let value = must_some(computed["contents"]["value"].as_str());
+    assert!(
+        value.contains("PredHoverMod"),
+        "in-flight hover must see the predecessor module: {value}"
+    );
+
+    server.handle_did_change(Some(ranged_violation(uri, 2)))?;
+    assert!(
+        !server.user_answer_text_is_current(uri, snapshot.generation),
+        "ranged violation must invalidate the captured user-answer generation"
+    );
+    let published =
+        server.publish_user_answer_value(uri, snapshot.generation, computed, json!(null));
+    assert!(
+        published.is_null(),
+        "in-flight predecessor hover must not publish after invalidation: {published}"
+    );
+
+    let live = server.handle_hover(Some(json!({
+        "textDocument": { "uri": uri },
+        "position": { "line": 0, "character": 10 }
+    })))?;
+    assert!(
+        live.as_ref().is_none_or(serde_json::Value::is_null),
+        "live hover after Full-sync violation must fail closed: {live:?}"
+    );
+    Ok(())
+}
+
+/// `$!` interpolated inside a double-quoted string is a live variable
+/// reference and keeps its variable card; the same text single-quoted or
+/// escaped does not interpolate, and a bareword in the string stays
+/// suppressed (#14860, regression from #14160's proven-code gate).
+#[test]
+fn interpolated_string_variable_island_is_bounded() -> Result<(), Box<dyn std::error::Error>> {
+    // (source, needle, cursor byte offset within the needle, expected)
+    let cases: [(&str, &str, usize, bool); 19] = [
+        ("open my $fh, '<', 'x' or die \"Cannot open: $!\";\n", "$!", 0, true),
+        // Cursor on the punctuation, not the sigil.
+        ("open my $fh, '<', 'x' or die \"Cannot open: $!\";\n", "$!", 1, true),
+        ("print \"pid $$\\n\";\n", "$$", 0, true),
+        ("warn \"warnings are $^W\";\n", "$^W", 1, true),
+        ("warn \"warnings are $^W\";\n", "$^W", 2, true),
+        ("print \"last match ended at @+\";\n", "@+", 1, true),
+        ("print \"$!x\";\n", "$!", 2, false),
+        ("print \"@+x\";\n", "@+", 2, false),
+        ("print \"$!_\";\n", "$!", 2, false),
+        ("print \"$!é\";\n", "$!", 2, false),
+        ("print \"$!x\";\n", "$!", 0, true),
+        ("print \"$!x\";\n", "$!", 1, true),
+        ("print \"@+x\";\n", "@+", 1, true),
+        ("print \"@+;\";\n", "@+", 2, true),
+        // `\\$!` is an escaped backslash followed by a live `$!`.
+        ("my $msg = \"escaped slash \\\\$! text\";\n", "$!", 0, true),
+        ("my $msg = 'literal $! text';\n", "$!", 1, false),
+        // `\$!` is an escaped sigil: no interpolation.
+        ("my $msg = \"escaped \\$! text\";\n", "$!", 1, false),
+        ("my $msg = \"hash %! never interpolates\";\n", "%!", 1, false),
+        ("my $msg = \"call sprintf here\";\n", "sprintf", 0, false),
+    ];
+    for (text, needle, delta, expected) in cases {
+        let offset = must_some(text.find(needle)) + delta;
+        let index = SourceRegionIndex::build(text);
+        assert_eq!(
+            LspServer::token_is_interpolated_string_variable(Some(&index), text, offset),
+            expected,
+            "{text:?} at {needle:?}+{delta}"
+        );
+    }
+
+    let text = "open my $fh, '<', 'x' or die \"Cannot open: $!\";\n";
+    let index = SourceRegionIndex::build(text);
+    for delta in [0usize, 1] {
+        let offset = must_some(text.find("$!")) + delta;
+        let hover = LspServer::extract_token_hover("file:///t.pl", text, offset, Some(&index));
+        let HoverExtracted::Complete(card) = hover else {
+            return Err(format!(
+                "expected a complete `$!` card inside the interpolating string at +{delta}"
+            )
+            .into());
+        };
+        let value = must_some(card["contents"]["value"].as_str());
+        assert!(value.contains("errno"), "expected the `$!` card at +{delta}, got: {value}");
+    }
+    Ok(())
 }

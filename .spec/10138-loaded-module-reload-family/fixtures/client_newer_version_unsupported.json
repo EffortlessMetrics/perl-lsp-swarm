@@ -1,0 +1,35 @@
+{
+  "schema": "perl_dap.loaded_module_reload_family.vector.v1",
+  "name": "client_newer_version_unsupported",
+  "description": "A client declaring only an unknown newer family version fails closed with family_version_unsupported; version guessing is never negotiation.",
+  "negotiation": {
+    "client": {
+      "family": "perl-lsp/loadedModuleReload",
+      "versions": [
+        2
+      ]
+    },
+    "adapter": {
+      "epoch": 7,
+      "backed": true
+    }
+  },
+  "request": {
+    "family": "perl-lsp/loadedModuleReload",
+    "familyVersion": 2,
+    "sessionEpoch": 7,
+    "operationId": 44,
+    "subject": {
+      "moduleIdentity": "opaque-module-token-1a2b",
+      "savedSourceDigest": "sha256:0f12e4d6a9b8c7d5e3f1a0b9c8d7e6f5a4b3c2d1e0f9a8b7c6d5e4f3a2b1c0d",
+      "logicalSourceUri": "perl-lsp-subject:epoch=7;observation=3",
+      "observationGeneration": 3
+    }
+  },
+  "expect": {
+    "evaluation": "rejected",
+    "code": "family_version_unsupported",
+    "kind": "request_rejected",
+    "success": false
+  }
+}

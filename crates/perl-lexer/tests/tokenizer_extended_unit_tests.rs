@@ -8,9 +8,7 @@ use perl_lexer::tokenizer::token_wrapper::PositionTracker;
 use perl_lexer::tokenizer::util::{code_slice, find_data_marker_byte_lexed};
 use perl_parser_core::tokens::token_stream::TokenStream;
 use perl_parser_core::trivia::{Trivia, TriviaLexer, TriviaToken};
-use perl_parser_core::trivia_parser::{
-    TriviaParserContext, TriviaPreservingParser, format_with_trivia,
-};
+use perl_parser_core::trivia_parser::{TriviaPreservingParser, source_with_trivia};
 use perl_tdd_support::{must, must_some};
 use perl_token::TokenKind;
 
@@ -22,10 +20,10 @@ fn collect_kinds(src: &str) -> Vec<TokenKind> {
     let mut s = TokenStream::new(src);
     let mut kinds = Vec::new();
     while let Ok(t) = s.next() {
-        if t.kind == TokenKind::Eof {
+        if t.kind() == TokenKind::Eof {
             break;
         }
-        kinds.push(t.kind);
+        kinds.push(t.kind());
     }
     kinds
 }
@@ -34,7 +32,7 @@ fn collect_texts(src: &str) -> Vec<String> {
     let mut s = TokenStream::new(src);
     let mut texts = Vec::new();
     while let Ok(t) = s.next() {
-        if t.kind == TokenKind::Eof {
+        if t.kind() == TokenKind::Eof {
             break;
         }
         texts.push(t.text.to_string());
@@ -324,7 +322,7 @@ fn ext_keyword_text_preserved() -> Result<(), Box<dyn std::error::Error>> {
 fn ext_number_text_preserved() -> Result<(), Box<dyn std::error::Error>> {
     let mut s = TokenStream::new("3.14");
     let t = must(s.next());
-    assert_eq!(t.kind, TokenKind::Number);
+    assert_eq!(t.kind(), TokenKind::Number);
     assert_eq!(t.text.as_ref(), "3.14");
     Ok(())
 }
@@ -333,7 +331,7 @@ fn ext_number_text_preserved() -> Result<(), Box<dyn std::error::Error>> {
 fn ext_hex_number_text_preserved() -> Result<(), Box<dyn std::error::Error>> {
     let mut s = TokenStream::new("0xFF");
     let t = must(s.next());
-    assert_eq!(t.kind, TokenKind::Number);
+    assert_eq!(t.kind(), TokenKind::Number);
     Ok(())
 }
 
@@ -341,7 +339,7 @@ fn ext_hex_number_text_preserved() -> Result<(), Box<dyn std::error::Error>> {
 fn ext_octal_number_text_preserved() -> Result<(), Box<dyn std::error::Error>> {
     let mut s = TokenStream::new("0777");
     let t = must(s.next());
-    assert_eq!(t.kind, TokenKind::Number);
+    assert_eq!(t.kind(), TokenKind::Number);
     Ok(())
 }
 
@@ -349,7 +347,7 @@ fn ext_octal_number_text_preserved() -> Result<(), Box<dyn std::error::Error>> {
 fn ext_identifier_text_preserved() -> Result<(), Box<dyn std::error::Error>> {
     let mut s = TokenStream::new("$some_variable");
     let t = must(s.next());
-    assert_eq!(t.kind, TokenKind::Identifier);
+    assert_eq!(t.kind(), TokenKind::Identifier);
     // Verify text contains the variable name
     assert!(!t.text.is_empty());
     Ok(())
@@ -361,7 +359,7 @@ fn ext_operator_text_preserved() -> Result<(), Box<dyn std::error::Error>> {
     // skip 1
     let _ = must(s.next());
     let op = must(s.next());
-    assert_eq!(op.kind, TokenKind::Spaceship);
+    assert_eq!(op.kind(), TokenKind::Spaceship);
     assert_eq!(op.text.as_ref(), "<=>");
     Ok(())
 }
@@ -375,8 +373,8 @@ fn ext_token_start_end_offsets() -> Result<(), Box<dyn std::error::Error>> {
     let mut s = TokenStream::new("my $x");
     let t = must(s.next());
     // "my" starts at 0, ends at 2
-    assert_eq!(t.start, 0);
-    assert_eq!(t.end, 2);
+    assert_eq!(t.start(), 0);
+    assert_eq!(t.end(), 2);
     Ok(())
 }
 
@@ -384,10 +382,10 @@ fn ext_token_start_end_offsets() -> Result<(), Box<dyn std::error::Error>> {
 fn ext_token_offsets_with_leading_whitespace() -> Result<(), Box<dyn std::error::Error>> {
     let mut s = TokenStream::new("   42");
     let t = must(s.next());
-    assert_eq!(t.kind, TokenKind::Number);
+    assert_eq!(t.kind(), TokenKind::Number);
     // Starts after 3 spaces
-    assert_eq!(t.start, 3);
-    assert_eq!(t.end, 5);
+    assert_eq!(t.start(), 3);
+    assert_eq!(t.end(), 5);
     Ok(())
 }
 
@@ -397,12 +395,12 @@ fn ext_token_offsets_monotonically_increase() -> Result<(), Box<dyn std::error::
     let mut prev_end = 0;
     loop {
         let t = must(s.next());
-        if t.kind == TokenKind::Eof {
+        if t.kind() == TokenKind::Eof {
             break;
         }
-        assert!(t.start >= prev_end, "start {} < prev_end {}", t.start, prev_end);
-        assert!(t.end > t.start, "end {} <= start {}", t.end, t.start);
-        prev_end = t.end;
+        assert!(t.start() >= prev_end, "start {} < prev_end {}", t.start(), prev_end);
+        assert!(t.end() > t.start(), "end {} <= start {}", t.end(), t.start());
+        prev_end = t.end();
     }
     Ok(())
 }
@@ -587,7 +585,6 @@ fn ext_trivia_clone_and_eq() -> Result<(), Box<dyn std::error::Error>> {
     let t3 = Trivia::LineComment("# x".into());
     assert_ne!(t1, t3);
 
-    assert_eq!(Trivia::Newline, Trivia::Newline);
     Ok(())
 }
 
@@ -612,7 +609,7 @@ fn ext_trivia_token_new_and_fields() -> Result<(), Box<dyn std::error::Error>> {
 
 #[test]
 fn ext_trivia_lexer_tabs_as_whitespace() -> Result<(), Box<dyn std::error::Error>> {
-    let mut lexer = TriviaLexer::new("\t\tmy $x;".into());
+    let mut lexer = TriviaLexer::new("\t\tmy $x;");
     let (token, trivia) = must_some(lexer.next_token_with_trivia());
     // Leading trivia should capture tab whitespace
     assert!(!trivia.is_empty());
@@ -627,7 +624,7 @@ fn ext_trivia_lexer_tabs_as_whitespace() -> Result<(), Box<dyn std::error::Error
 #[test]
 fn ext_trivia_lexer_multiple_comments() -> Result<(), Box<dyn std::error::Error>> {
     let src = "# line1\n# line2\nmy $x;".to_string();
-    let mut lexer = TriviaLexer::new(src);
+    let mut lexer = TriviaLexer::new(&src);
     let (_, trivia) = must_some(lexer.next_token_with_trivia());
     let comment_count =
         trivia.iter().filter(|t| matches!(t.trivia, Trivia::LineComment(_))).count();
@@ -638,7 +635,7 @@ fn ext_trivia_lexer_multiple_comments() -> Result<(), Box<dyn std::error::Error>
 #[test]
 fn ext_trivia_lexer_newline_between_tokens() -> Result<(), Box<dyn std::error::Error>> {
     let src = "my\n$x".to_string();
-    let mut lexer = TriviaLexer::new(src);
+    let mut lexer = TriviaLexer::new(&src);
     // First token
     let _ = must_some(lexer.next_token_with_trivia());
     // Second token should have newline trivia
@@ -650,7 +647,7 @@ fn ext_trivia_lexer_newline_between_tokens() -> Result<(), Box<dyn std::error::E
 #[test]
 fn ext_trivia_lexer_pod_section() -> Result<(), Box<dyn std::error::Error>> {
     let src = "=pod\nsome docs\n=cut\nmy $x;".to_string();
-    let mut lexer = TriviaLexer::new(src);
+    let mut lexer = TriviaLexer::new(&src);
     let (_, trivia) = must_some(lexer.next_token_with_trivia());
     assert!(trivia.iter().any(|t| matches!(&t.trivia, Trivia::PodComment(_))));
     Ok(())
@@ -659,7 +656,7 @@ fn ext_trivia_lexer_pod_section() -> Result<(), Box<dyn std::error::Error>> {
 #[test]
 fn ext_trivia_lexer_no_trivia_for_plain_code() -> Result<(), Box<dyn std::error::Error>> {
     let src = "42".to_string();
-    let mut lexer = TriviaLexer::new(src);
+    let mut lexer = TriviaLexer::new(&src);
     let (token, trivia) = must_some(lexer.next_token_with_trivia());
     assert!(trivia.is_empty());
     assert!(matches!(token.token_type, perl_lexer::TokenType::Number(_)));
@@ -667,39 +664,35 @@ fn ext_trivia_lexer_no_trivia_for_plain_code() -> Result<(), Box<dyn std::error:
 }
 
 // ===================================================================
-// 10. TriviaParserContext
+// 10. Canonical trivia parser
 // ===================================================================
 
 #[test]
 fn ext_trivia_ctx_multiple_tokens() -> Result<(), Box<dyn std::error::Error>> {
-    let ctx = TriviaParserContext::new("my $x = 1;".into());
-    assert!(!ctx.is_eof());
+    let result = TriviaPreservingParser::new("my $x = 1;".into()).parse();
+    assert!(matches!(&result.parse.ast.kind, perl_parser_core::NodeKind::Program { .. }));
     Ok(())
 }
 
 #[test]
 fn ext_trivia_ctx_advance_through_eof() -> Result<(), Box<dyn std::error::Error>> {
-    let ctx = TriviaParserContext::new("my $x;".into());
-    assert!(!ctx.is_eof());
+    let result = TriviaPreservingParser::new("my $x;".into()).parse();
+    assert!(result.parse.diagnostics.is_empty());
     Ok(())
 }
 
 #[test]
 fn ext_trivia_ctx_comment_only_source() -> Result<(), Box<dyn std::error::Error>> {
-    // A source with only comments should either have tokens with trivia or be at EOF
-    let ctx = TriviaParserContext::new("# just a comment\n".into());
-    // It's valid to be at EOF since there are no meaningful tokens
-    // But there may be an EOF token with leading trivia
-    // Just verify no panic
-    let _ = ctx.is_eof();
+    let result = TriviaPreservingParser::new("# just a comment\n".into()).parse();
+    assert!(result.trivia.iter().any(|token| matches!(token.trivia, Trivia::LineComment(_))));
     Ok(())
 }
 
 #[test]
 fn ext_trivia_ctx_leading_trivia_captured() -> Result<(), Box<dyn std::error::Error>> {
-    let ctx = TriviaParserContext::new("  # comment\nmy $x;".into());
-    // Context should have tokens and not be at EOF
-    assert!(!ctx.is_eof());
+    let result = TriviaPreservingParser::new("  # comment\nmy $x;".into()).parse();
+    assert!(result.trivia.iter().any(|token| matches!(token.trivia, Trivia::Whitespace(_))));
+    assert!(result.trivia.iter().any(|token| matches!(token.trivia, Trivia::LineComment(_))));
     Ok(())
 }
 
@@ -714,7 +707,7 @@ fn ext_trivia_parser_preserves_shebang() -> Result<(), Box<dyn std::error::Error
     let result = parser.parse();
     // Shebang should appear in leading trivia
     assert!(
-        result.leading_trivia.iter().any(|t| {
+        result.trivia.iter().any(|t| {
             matches!(&t.trivia, Trivia::LineComment(s) if s.contains("#!/usr/bin/perl"))
         })
     );
@@ -729,7 +722,7 @@ fn ext_trivia_parser_preserves_inline_comment() -> Result<(), Box<dyn std::error
     // Should have at least one comment in the trivia
     assert!(
         result
-            .leading_trivia
+            .trivia
             .iter()
             .any(|t| { matches!(&t.trivia, Trivia::LineComment(s) if s.contains("set x")) })
     );
@@ -741,7 +734,7 @@ fn ext_trivia_parser_empty_produces_program() -> Result<(), Box<dyn std::error::
     let parser = TriviaPreservingParser::new(String::new());
     let result = parser.parse();
     // Node should be a Program
-    assert!(matches!(result.node.kind, perl_ast_v2::NodeKind::Program { .. }));
+    assert!(matches!(result.parse.ast.kind, perl_parser_core::NodeKind::Program { .. }));
     Ok(())
 }
 
@@ -749,7 +742,7 @@ fn ext_trivia_parser_empty_produces_program() -> Result<(), Box<dyn std::error::
 fn ext_trivia_parser_whitespace_only_source() -> Result<(), Box<dyn std::error::Error>> {
     let parser = TriviaPreservingParser::new("   \n\n  \t  ".into());
     let result = parser.parse();
-    assert!(matches!(result.node.kind, perl_ast_v2::NodeKind::Program { .. }));
+    assert!(matches!(result.parse.ast.kind, perl_parser_core::NodeKind::Program { .. }));
     Ok(())
 }
 
@@ -759,31 +752,30 @@ fn ext_trivia_parser_pod_in_middle() -> Result<(), Box<dyn std::error::Error>> {
     let parser = TriviaPreservingParser::new(src);
     let result = parser.parse();
     // POD should be in the trivia
-    assert!(result.leading_trivia.iter().any(|t| matches!(&t.trivia, Trivia::PodComment(_))));
+    assert!(result.trivia.iter().any(|t| matches!(&t.trivia, Trivia::PodComment(_))));
     Ok(())
 }
 
 // ===================================================================
-// 12. format_with_trivia
+// 12. source_with_trivia
 // ===================================================================
 
 #[test]
-fn ext_format_with_trivia_includes_leading() -> Result<(), Box<dyn std::error::Error>> {
+fn ext_source_with_trivia_includes_leading() -> Result<(), Box<dyn std::error::Error>> {
     let parser = TriviaPreservingParser::new("# comment\nmy $x;".into());
     let result = parser.parse();
-    let formatted = format_with_trivia(&result);
+    let formatted = source_with_trivia(&result);
     assert!(formatted.contains("# comment"));
     Ok(())
 }
 
 #[test]
-fn ext_format_with_trivia_empty_trivia() -> Result<(), Box<dyn std::error::Error>> {
+fn ext_source_with_trivia_empty_trivia() -> Result<(), Box<dyn std::error::Error>> {
     // Parse an empty source to get a program node with no trivia
     let parser = TriviaPreservingParser::new(String::new());
     let result = parser.parse();
-    let formatted = format_with_trivia(&result);
-    // Should contain the node debug output but no trivia
-    assert!(!formatted.is_empty());
+    let formatted = source_with_trivia(&result);
+    assert!(formatted.is_empty());
     Ok(())
 }
 
@@ -888,7 +880,7 @@ fn ext_single_character_input() -> Result<(), Box<dyn std::error::Error>> {
     // Various single-char inputs
     let mut s = TokenStream::new(";");
     let t = must(s.next());
-    assert_eq!(t.kind, TokenKind::Semicolon);
+    assert_eq!(t.kind(), TokenKind::Semicolon);
     Ok(())
 }
 

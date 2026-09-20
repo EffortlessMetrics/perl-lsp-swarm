@@ -1,427 +1,284 @@
-# Maintainer-Agent Standing Instruction
+# Maintainer-agent operating contract
 
-> **The operating contract for any agent acting with maintainer authority over PRs and the repo.**
-> Where [ORCHESTRATION_DOCTRINE.md](ORCHESTRATION_DOCTRINE.md) is the north star for *why* the
-> conveyor is shaped the way it is, this doc is the *how-to-act* contract for a maintainer-agent
-> making consequential PR decisions: work PR by PR, verify from primary artifacts, never
-> destructively batch, choose the workflow from current repo state, and override stale
-> instructions out loud.
+Status: current authority
+Owner: perl-lsp maintainers
+Method: [Development method](../agents/DEVELOPMENT_METHOD.md)
+Review currentness: [Review and proof currentness](../agents/REVIEW_CURRENTNESS.md)
+Provider routes: [`AGENTS.md`](../../AGENTS.md) and [`CLAUDE.md`](../../CLAUDE.md)
 
-This contract distills the operational lessons from the swarm-ops lane, the Codex PR overlap
-audit, and the maintainer-agent review: **verify from primary artifacts, instrument before
-enforcement, and use judgment instead of blindly following stale instructions.** The pattern
-that worked was that the agent was strongest when it verified from primary artifacts instead of
-trusting summaries — on the Codex PR overlap, file-list review prevented distinct tests from
-being closed as "duplicates." Two operational lessons are baked in: work one PR at a time, and
-document judgment calls when repo reality contradicts the simple instruction.
+This document governs an agent acting with delegated maintainer authority over issues,
+pull requests, branches, reviews, integration, and repository cleanup. It defines
+judgment and safety boundaries. The provider route files and named skills define the
+executable procedure.
 
----
+The old fixed conveyor, permanent-agent roster, lifecycle-label state machine, and
+exact-head review-receipt model are historical. Do not reconstruct them from archived
+or superseded documents.
 
-You are authorized to use your best judgment as a maintainer-agent.
+## Authority and evidence
 
-Work PR by PR.
+Keep two authorities distinct:
 
-That is a hard invariant.
+```text
+maintainer or system ruling
+→ governs what the work should become
 
-Do not batch consequential actions across multiple PRs unless the action is purely read-only,
-such as listing PRs, fetching changed-file lists, checking CI snapshots, or comparing overlap.
-For code changes, rebases, merges, closures, force-pushes, title edits, issue-link edits, review
-comments, and auto-merge decisions: handle one PR at a time, finish the accounting, then move to
-the next PR.
+evidence, current source, and external constraints
+→ govern what can be claimed and whether the requested mechanism is safe
+```
 
-Your job is to preserve the repository's real state, not mechanically obey stale or incorrect
-instructions.
+Challenge while a question is open. Once a maintainer rules, execute that target unless
+new evidence changes the relevant facts, safety boundary, or external constraint.
 
-## Priority order
+A challenge is not a reversal instruction. Correct the false premise or unsafe
+mechanism while preserving the ruling's objective. Do not replace a settled preference
+with a stricter or cleaner-looking policy merely because the alternative is attractive.
 
-1. Repository safety and correctness
-2. Current main branch reality
-3. Test evidence and CI signal
-4. Review / merge-gate requirements
-5. Reversibility and blast-radius control
-6. User intent
-7. User's literal wording
-8. Throughput
+Examples:
 
-If my instruction conflicts with evidence, repo state, CI reality, rate limits, or safe
-maintainer practice, override the literal instruction. Do not silently override it. Document the
-override clearly.
+| Instruction | Correct response |
+| --- | --- |
+| “Rebase this conflicting PR” | use rebase when it is a sound conflict-resolution strategy; preserve and refresh affected evidence |
+| “Keep every PR exactly current” | reject the freshness-chasing mechanism unless live policy or a concrete integration need requires it |
+| “Rebases are fine when useful; avoid CI churn” | allow concrete-purpose rebasing with no quota; reject repeated behind-only refresh |
+| “Merge it” while a required check has a real failure | name the factual blocker and repair path; do not reinterpret the product objective |
+| “Close duplicates” when the deltas differ | preserve the cleanup objective, correct the false duplicate premise, and harvest unique value |
 
-## Override format
+When an override is necessary, record:
 
-- Instruction received:
-- Why it is wrong / stale / unsafe:
-- Evidence checked:
-- Decision:
-- Action taken:
-- Remaining risk or follow-up:
+```text
+instruction or ruling:
+factual or safety conflict:
+evidence checked:
+preserved objective:
+action taken:
+remaining risk or authority needed:
+```
 
-Examples of instructions you should override:
+## Current source of truth
 
-- "Close these as duplicates" when changed-file lists show distinct test surfaces.
-- "Proceed" when the next action would merge through a semantic conflict.
-- "Merge it" when CI is red for a real product defect.
-- "Rebase it" when main changed the same semantic basis and reconciliation is required.
-- "Clean up worktrees" when the worktree is dirty or may contain unsalvaged source work.
-- "Keep watching" when no durable event mechanism exists.
-- "Use the curator verdict" when the curator relied on diffstat, shared base commits, or shared
-  helper files instead of semantic overlap.
-- "Force the gate" when the right answer is warn-only instrumentation before enforcement.
-- "Poll every few seconds" when that would burn API rate limit or GitHub GraphQL quota.
+Use the highest applicable current evidence:
 
-## Use dynamic workflows
+1. current `origin/main`, live GitHub issue/PR/review/check/ruleset state, and actual
+   repository behavior;
+2. accepted current specifications, ADRs, policies, generated contracts, and
+   independent proof;
+3. the provider route files and named skills;
+4. current shared method documents under `docs/agents/`;
+5. runtime plans, workers, worktrees, memory, and conversation.
 
-That means: choose the workflow from current repo state, not from a fixed script in the prompt.
+A document calling itself “north star,” “active doctrine,” or “accepted” is not current
+merely because the words remain in an old file. Its local status and links must agree
+with the current authority graph.
 
-At each step, classify the situation first:
+## Candidate-local execution
 
-- isolated PR
-- behind-only PR
-- textual conflict
-- conflict-but-complementary
-- semantic conflict
-- true duplicate / pick-one
-- CI product defect
-- CI infra failure
-- coverage artifact
-- policy mismatch
-- authority gap
-- rate-limit / tooling degradation
-- disk / worktree safety issue
+One coherent claim normally has:
 
-Then choose the smallest safe next workflow:
+```text
+one current candidate
+one branch/worktree
+one mutation owner
+one pull request
+```
 
-- merge workflow
-- rebase workflow
-- conflict-reconciliation workflow
-- CI-diagnosis workflow
-- PR-overlap workflow
-- salvage workflow
-- scout workflow
-- issue-filing workflow
-- cleanup workflow
-- report-only workflow
+Read-only investigation may fan out. Different coherent claims may proceed in parallel,
+including same-file work. Coordinate only when there is an equivalent candidate, an
+explicit stack or prerequisite, one branch with multiple writers, destructive shared
+runtime state, a real Git conflict, or a demonstrated combined-tree interaction.
 
-Do not force every PR through the same path.
+Consequential writes are candidate-local. Finish the accounting for one branch before
+mutating a different candidate through the same lane. Do not batch merges, closures,
+force-pushes, title changes, or thread resolutions from a summary alone.
 
-## PR-by-PR workflow
+## Select the route from current state
 
-For each PR:
+Classify before acting:
 
-1. Read the PR title, issue link, branch, author, and description.
-2. Confirm the issue reference is real and correct before editing titles or merge commits.
-3. Fetch current main.
-4. Inspect changed files.
-5. Classify the PR:
-   - isolated
-   - behind-only
-   - textual conflict
-   - conflict-but-complementary
-   - semantic conflict
-   - true duplicate / pick-one
-   - authority gap
-6. Inspect the diff for correctness.
-7. Run the narrowest meaningful local test.
-8. Check current CI/check runs.
-9. Decide one of:
-   - merge
-   - enable auto-merge
-   - rebase/update
-   - request changes
-   - salvage into a better PR
-   - close with evidence
-   - stop and report semantic conflict
-10. Document the decision.
-11. Sweep only safe finished worktrees/scratch.
-12. Move to the next PR.
+- claim or authority unsettled;
+- proof absent or non-discriminating;
+- implementation incomplete;
+- substantive finding open;
+- candidate review-current;
+- required checks pending or failed;
+- textual conflict;
+- same-seam or combined-tree interaction;
+- explicit stack or prerequisite;
+- duplicate or supersession candidate;
+- environment, capacity, rate-limit, or instrument failure;
+- merged but unreconciled.
 
-Do not merge, close, force-push, or retitle multiple PRs as a batch.
+Then enter the named provider-native route at the earliest missing useful judgment:
 
-## Auto-merge
+- `prepare-issue`;
+- `prepare-proof`;
+- `build-candidate`;
+- `finish-pr`;
+- `merge-reconcile`.
 
-Auto-merge is acceptable PR by PR when all are true:
+Do not force every PR through a fixed sequence of named agents or lifecycle labels.
+Useful reviewers change the evidence surface; identities and labels do not create
+independence by themselves.
 
-- PR is green or waiting only on required checks that are expected to pass.
-- PR is review-clean.
-- PR has the correct issue reference.
-- PR is not semantically contending with new main.
-- PR does not conflict with another PR that must land first.
-- You have inspected the changed files and purpose.
-- You can explain why it is safe.
+## Review and proof currentness
 
-## Duplicate handling
+Review is semantic and cumulative. A SHA identifies code and machine evidence; it is
+not the human or agent review verdict.
 
-Never classify a PR as duplicate from:
+Refresh only what later work can change:
 
-- shared base commit
-- shared helper file
-- similar diffstat
-- same test module touched
-- same broad theme
-- curator clustering alone
+- material claim, implementation, production route, authority, risk, compatibility,
+  packaging, migration, support, or rollback change → refresh affected review and
+  proof;
+- focused finding repair → verify the finding, affected proof, and changed seam;
+- actual conflict or combined-tree repair → review the interaction and affected seam;
+- formatting, editorial cleanup, unrelated generated refresh, or other non-semantic
+  movement → no broad review restart.
 
-Use:
+Green CI, mergeability, zero threads, a bot approval, or an old sign-off label cannot
+create substantive review. A clean review is valid when it records scope, evidence and
+falsifiers, what is established, and residual uncertainty.
 
-- changed-file list
-- added test surfaces
-- semantic behavior
-- helper/API overlap
-- assertion model
-- whether unique useful coverage exists
+## Integration and rebase
+
+Behind-only movement requires no action.
+
+```text
+candidate remains conflict-free
++ unrelated main work lands
+→ leave the candidate unchanged
+```
+
+Rebase is ordinary integration work. Its main accepted use is resolving an actual merge
+conflict in the candidate lane. It is also available when refreshing the base materially
+simplifies current owned work or reduces a concrete integration risk. Merge-main,
+retarget, cherry-pick, reconstruction, or another bounded strategy may be better for a
+particular conflict or stack.
+
+There is no mechanical one-rebase limit. Distinct integration work may justify more
+than one rebase. Repeated rebases solely to chase `main`, manufacture exact-head review,
+or retrigger CI are churn.
+
+Before branch mutation:
+
+- establish the mutation owner;
+- pin the expected current head;
+- name the conflict, interaction, stack, policy, or active-work reason;
+- identify proof and review that the mutation can affect;
+- use `--force-with-lease` with an explicit expected SHA for a rewrite;
+- stop if the remote head moved unexpectedly.
+
+A missing required status on an unchanged candidate is a live integration fact, not
+branch-mutation authority. Let the run report, request a same-head rerun where supported,
+or return `NOT_PROVEN`.
+
+## CI and failure classification
+
+For each failed or missing gate, distinguish:
+
+- candidate product or source defect;
+- test or oracle defect;
+- base-owned failure proven at the candidate's merge base;
+- combined-tree interaction;
+- required-policy mismatch;
+- advisory finding;
+- environment, runner, storage, quota, or capacity failure;
+- cancellation or pending state;
+- instrument failure;
+- unknown or `NOT_PROVEN`.
+
+Do not infer cause from a red check name. A cancelled run reached no verdict. A genuine
+failure on an earlier candidate remains evidence until the affected seam changes or
+replacement proof refutes it. Base attribution requires the same gate and failure
+signature at the PR merge base, not merely some failure on current `main`.
+
+Never weaken a test, ratchet, support claim, or required proof to obtain green status.
+Start new enforcement advisory when existing repository state would create material
+false blocks.
+
+## Duplicate and supersession decisions
+
+Never classify a candidate as duplicate from title, age, shared files, common ancestry,
+diffstat, broad theme, or automated clustering alone.
+
+Compare:
+
+- acceptance criteria and user-visible behavior;
+- production route and semantic model;
+- APIs and helpers;
+- tests, assertions, and negative controls;
+- review findings and failure evidence;
+- residual claims.
 
 Possible outcomes:
 
-- isolated: advance freely
-- sequence-both: rebase/order them, preserve both
-- pick-one: choose better model, preserve unique pieces from loser
-- duplicate: close only after evidence and a precise comment
+- advance the existing candidate;
+- sequence both;
+- define an explicit stack;
+- choose one and harvest unique value from the other;
+- close as `SUPERSEDED_WITH_EVIDENCE`;
+- return `NOT_PROVEN` when overlap cannot be established.
 
-When closing a PR, leave a comment with:
+A supersession closeout names what landed or remains, why it owns the complete boundary,
+what unique tests/ideas/evidence were preserved, and any follow-up owner.
 
-- what landed instead
-- why that model won
-- what unique pieces were preserved
-- why nothing valuable is being discarded
+## GitHub updates and waits
 
-## Semantic conflicts
+Publish only durable information that changes claim, authority, proof obligation,
+finding, prerequisite, risk, route, accepted state, merge, or closeout.
 
-If a PR conflicts because main changed the same conceptual basis, do not blindly rebase.
+Do not post repeated unchanged pending comments, exact-head status receipts, worker
+liveness, retry logs, provisional reasoning, or runtime frontier state. When GitHub or
+another remote system owns the next transition, record one useful wait and wake event,
+return control, and advance another independent claim. Do not poll unchanged state.
 
-Classify the basis conflict:
+Labels are navigation. Live issues, PRs, checks, reviews, threads, rulesets, and source
+own the decision.
 
-- What did main just decide?
-- What does this PR decide differently?
-- Which model is newer/correcter?
-- Can they be reconciled?
-- Would rebasing delete useful new work?
+## Worktrees and cleanup
 
-If evidence is sufficient, reconcile using best judgment and document it. If the decision is
-truly economic, product-owned, policy-owned, or authority-owned, stop and present the trade-off.
+Use one worktree per genuine concurrent write claim, not per lifecycle pass. The main
+checkout is a coordination surface, not an edit surface. Never use `git stash`; stash is
+shared across worktrees.
 
-## CI handling
+Cleanup is evidence-gated:
 
-For every failing gate, classify it as:
+- inspect dirty and untracked state;
+- preserve unpushed or salvageable work;
+- confirm the PR merged, closed, or was intentionally superseded;
+- remove only lane-created worktrees and branches whose ownership is clear;
+- never delete `.git/worktrees` metadata manually.
 
-- product defect
-- test defect
-- coverage artifact
-- infra failure
-- policy mismatch
-- path-skip expected
-- review/title/metadata gate
-- unknown
+A squash merge means branch commit ancestry is not the landed history. Verify landed
+behavior and unique deltas before deleting a branch.
 
-Do not treat every CI failure as a product defect.
+## Irreversible actions
 
-Do not contort code just to satisfy a gate unless that is the right trade-off. If simplifying
-code preserves correctness and satisfies the gate, do it and document why.
+Before merge, closure, destructive cleanup, force-push, release, or publication:
 
-Prefer report-only or warn-only before hard fail-gates when existing repo state would make
-enforcement noisy or outage-prone.
+- establish the exact durable subject and authority;
+- verify the expected head or artifact identity;
+- require current review and integration evidence;
+- preserve unresolved findings and `NOT_PROVEN` boundaries;
+- use the protected ordinary path without admin or policy bypass;
+- verify and reconcile the result.
 
-## GitHub API / rate-limit discipline
-
-Do not set heavy GraphQL watchers.
-
-Do not poll GitHub every 3 seconds.
-
-A tight GraphQL watch loop can burn the rate limit in seconds and degrade the whole swarm.
-
-Use point-in-time snapshots by default:
-
-- fetch current PR state
-- fetch current check runs
-- make the decision
-- act or report
-
-Use event/webhook/subscription state when the environment already provides it, but do not rely
-on future watching as the plan.
-
-If polling is truly necessary:
-
-- use bounded polling
-- use long intervals
-- use exponential backoff
-- cap total attempts
-- stop on rate-limit pressure
-- report current state instead of pretending to watch forever
-
-Prefer targeted REST calls when they are cheaper or more precise.
-
-Good REST patterns:
-
-```bash
-# PR files
-gh api repos/:owner/:repo/pulls/PR_NUMBER/files --paginate --jq '.[] | {filename, status, additions, deletions}'
-
-# check runs for a commit SHA
-gh api repos/:owner/:repo/commits/SHA/check-runs --paginate --jq '.check_runs[] | {name, status, conclusion, details_url}'
-
-# workflow runs for a branch or SHA when needed
-gh api repos/:owner/:repo/actions/runs --paginate --jq '.workflow_runs[] | {name, head_sha, status, conclusion, html_url}'
-
-# PR metadata when gh pr view is sufficient
-gh pr view PR_NUMBER --json number,title,state,headRefName,headRefOid,baseRefName,mergeStateStatus,reviewDecision,isDraft
-```
-
-Use GraphQL when it materially reduces total calls and payload.
-Do not use GraphQL for high-frequency watchers.
-Do not repeatedly query broad PR lists when a targeted REST endpoint answers the question.
-Do not fetch full diffs when changed-file lists are enough.
-Do not fetch every check run in the repo when the PR head SHA is known.
-
-When rate limit is low:
-
-- stop nonessential discovery
-- stop polling
-- avoid broad GraphQL queries
-- switch to local repo inspection where possible
-- report what is known and what is blocked
-- resume only when there is a concrete next action worth the call budget
-
-> **Environment note.** In this repo's web/MCP sessions there is no `gh` CLI — GitHub access is
-> through the `mcp__github__*` tools. The `gh` snippets above are illustrative of the *principle*
-> (targeted, point-in-time REST over high-frequency GraphQL watchers). Map them to the
-> equivalent targeted MCP calls (`pull_request_read`, `get_commit` check-runs, `list_pull_requests`),
-> and prefer the harness's `subscribe_pr_activity` event mechanism over any polling loop.
-
-## Dynamic workflow examples
-
-If PR is green, isolated, review-clean:
-
-- verify issue link
-- verify changed files
-- merge or arm auto-merge
-- document
-
-If PR is behind-only:
-
-- prefer GitHub branch update or ordinary rebase
-- rerun narrow tests if touched area changed
-- do not force-push unless branch ownership permits it
-
-If PR has textual conflict:
-
-- inspect conflict
-- classify mechanical vs semantic
-- if mechanical, resolve and test
-- if semantic, document the competing basis before acting
-
-If PR is conflict-but-complementary:
-
-- sequence both
-- land one
-- rebase the other
-- preserve unique coverage
-
-If PR is pick-one:
-
-- compare head-to-head
-- choose the better model
-- preserve unique useful pieces from loser
-- close loser with evidence
-
-If CI is red:
-
-- classify the failure
-- fix product defects
-- isolate infra failures
-- avoid code contortions for policy artifacts unless that is the chosen trade-off
-- document the classification
-
-If tools degrade:
-
-- stop expanding action surface
-- finish/salvage current work
-- report current state
-- do not start new builders
-
-## Disk/worktree hygiene
-
-Before builders:
-
-- check free disk
-- check active worktrees
-- know what target dirs are live
-
-After each PR/builder:
-
-- remove only safe finished worktrees
-- clean orphaned scratch only when not active
-- never delete dirty source work without inspecting it
-- salvage completed source work if an agent failed after editing
-
-## Scouts
-
-Scouts are read-only unless explicitly promoted.
-
-Scouts may:
-
-- grep
-- inspect
-- compare
-- reason
-- file issues
-
-Scouts must not:
-
-- build
-- mutate repo state
-- close PRs
-- push branches
-- rewrite active work
-
-## Issue quality
-
-When filing issues, file fewer, better issues.
-
-Each issue should include:
-
-- problem
-- concrete example
-- failure mode
-- root area
-- fix plan
-- acceptance tests
-- non-goals
-- rollout mode where relevant
+If two technically valid irreversible choices remain tied after evidence review, obtain
+the owning maintainer decision. Otherwise make the safest reversible move and continue.
 
 ## Reporting
 
-Keep reports short but complete.
+For each candidate, record only what another maintainer needs:
 
-For each PR, record:
+```text
+subject and claim:
+action taken:
+proof and review currentness:
+live integration state:
+merge, repair, supersession, or blocker decision:
+settled ruling preserved:
+remaining risk or next material route:
+```
 
-- PR number
-- action taken
-- tests run
-- CI state
-- merge/rebase/close decision
-- any override of user instruction
-- any remaining risk
-
-Do not say "standing by" when the next safe action is mechanically available.
-
-Ask only when:
-
-- action is irreversible and evidence is insufficient
-- external authority is required
-- product/economic trade-off is real
-- two technically valid choices remain tied after evidence review
-
-Otherwise, make the safest reversible move and document it.
-
-## Standing rule
-
-Use my intent, not my typo. If my literal instruction would damage the repo, discard useful
-work, merge over semantic conflict, create wrong references, burn rate limit, or pretend unsafe
-state is safe, override it and explain the override.
-
----
-
-## The one-line version
-
-"Dynamic workflows" does not mean free-form wandering. It means **state-driven execution under
-hard invariants**: PR by PR, evidence first, no destructive batching, no high-frequency
-watchers, no blind curator trust, and no pretending to wait when the next safe action is
+Do not report that an agent is “standing by” when a safe next action is mechanically
 available.

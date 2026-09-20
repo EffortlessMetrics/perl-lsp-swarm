@@ -5,7 +5,8 @@ This guide shows how to use `perllsp` from Emacs.
 ## Recommended Support Posture
 
 - **Primary path:** Eglot, especially on Emacs 29 or later
-- **Alternative path:** `lsp-mode`, for users already using that stack
+- **Alternative path:** manual `lsp-mode` registration for users already using
+  that stack
 
 Both clients launch the same server command:
 
@@ -19,8 +20,28 @@ perllsp --stdio
 - `perllsp` installed and available to Emacs
 - A Perl project opened from the project root
 
-Emacs 29 includes Eglot. If you use Emacs 28 or older, install Eglot separately
-or use `lsp-mode`.
+Emacs 29 includes Eglot. The repository's checked `lsp-mode` subjects are
+deliberately separate:
+
+- Released MELPA Stable `lsp-mode` 10.0.0 declares Emacs 28.1 or later.
+- The pinned upstream-source subject reports `lsp-mode` 10.0.1 and its Emacs
+  dependency minimum is unverified because the checked manifest does not record
+  a source-package minimum.
+
+The source header is not a released `lsp-mode` 10.0.1 package. For package
+metadata only, Emacs 28.1 and 28.2 fall within the released 10.0.0 line's
+declared range. Emacs 28.0 is below the released 10.0.0 minimum of 28.1 and is
+not covered. The checked `lsp-mode` rows do not cover Emacs 27 or older; those
+users need a separately validated compatible client package or an Emacs
+upgrade. These package metadata bounds do not by themselves prove the complete
+`perllsp` client journey.
+
+For discovery status, the repository's 2026-08-13 audit uses the [checked Emacs
+subject manifest](../../.ci/editor-clients/emacs-subjects.v1.json) as its
+package/source authority. That manifest links the released MELPA archive and
+pinned upstream source, but contains no built-in `perllsp` registration or
+stock-discovery proof. The stock-discovery status below is therefore unverified
+by this authority; the examples document manual registration only.
 
 Install `perllsp` using the project installation guide or README.
 
@@ -30,6 +51,7 @@ name belongs to a different project. Use:
 ```bash
 cargo install perllsp
 ```
+> The crates.io package `perl-lsp` is a different project, not this language server.
 
 Verify the server before changing Emacs configuration:
 
@@ -58,7 +80,9 @@ file associations:
 
 ## 1. Minimal Eglot Setup
 
-For Emacs 29+, add this to your Emacs config:
+For Emacs 29+, add this to your Emacs config. The stock Eglot discovery status
+for `perllsp` in Perl is unverified by the dated subject authority above, so the
+explicit server mapping below is the documented setup path:
 
 ```elisp
 (use-package eglot
@@ -163,7 +187,18 @@ built-in include paths are `lib`, `.`, and `local/lib/perl5`.
 
 ## 3. lsp-mode Alternative
 
-Use this path if you already prefer `lsp-mode`.
+Use this path if you already prefer `lsp-mode`. Current stock `lsp-mode` does
+not have a repository-backed built-in `perllsp` discovery proof in the dated
+subject authority above, so the manual client registration below is the current
+documented setup path.
+
+Keep the checked package identities separate: released MELPA Stable `lsp-mode`
+10.0.0 declares Emacs 28.1 or later, while the pinned upstream-source 10.0.1
+subject has an unverified Emacs dependency minimum in the checked manifest. Do
+not treat the source header as a released package or apply an unverified source
+minimum retroactively to the released 10.0.0 package. Both subjects still use
+the manual registration below; neither row is an actual-client support claim by
+itself.
 
 ```elisp
 (use-package lsp-mode
@@ -308,9 +343,15 @@ use an absolute path:
 
 ### Emacs starts the wrong Perl language server
 
-`lsp-mode` has existing Perl clients for other Perl language servers. If another
-Perl server starts instead of `perllsp`, raise the custom client's priority,
-disable the other Perl clients, or remove the other server binary from `PATH`.
+`lsp-mode` has existing Perl clients for other Perl language servers. Use
+`M-x lsp-describe-session` to identify the client/server that actually owns the
+workspace. If another Perl client wins, explicitly disable that client or
+select `perllsp` using the supported lsp-mode client-selection controls for your
+configuration. Treat `:priority` as a default selection mechanism, not as a
+value to increase indefinitely.
+
+For Eglot, inspect `M-x eglot-events-buffer` and `M-x eglot-stderr-buffer` to
+confirm the selected server process is `perllsp --stdio`.
 
 ### No diagnostics
 

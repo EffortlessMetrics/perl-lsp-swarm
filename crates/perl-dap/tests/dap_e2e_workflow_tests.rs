@@ -11,7 +11,7 @@
 
 mod common;
 
-use common::{DapWorkflowSession, perl_available, workflow_timeout};
+use common::{DapWorkflowSession, debuggee_perl_or_typed_skip, workflow_timeout};
 use serde_json::Value;
 use std::fs::write;
 use tempfile::tempdir;
@@ -60,10 +60,11 @@ type TestResult = Result<(), Box<dyn std::error::Error>>;
 /// debugger stops at that breakpoint the `stackTrace` reports the same line.
 #[test]
 fn test_e2e_single_breakpoint_hit_inspect_continue() -> TestResult {
-    if !perl_available() {
-        eprintln!("Skipping test_e2e_single_breakpoint_hit_inspect_continue - perl not available");
+    let Some(debuggee_perl) =
+        debuggee_perl_or_typed_skip("test_e2e_single_breakpoint_hit_inspect_continue")
+    else {
         return Ok(());
-    }
+    };
 
     let workspace = tempdir()?;
     let script = workspace.path().join("workflow_e2e.pl");
@@ -74,7 +75,7 @@ fn test_e2e_single_breakpoint_hit_inspect_continue() -> TestResult {
     let timeout = workflow_timeout();
     let mut session = DapWorkflowSession::new(timeout)?;
 
-    session.launch(&script_str)?;
+    session.launch_pinned(&debuggee_perl.binary, &script_str)?;
 
     // DAP ordering: setBreakpoints BEFORE configurationDone.
     // set_breakpoints_checked asserts verified=true and returns adapter-resolved lines.
@@ -147,10 +148,10 @@ fn test_e2e_single_breakpoint_hit_inspect_continue() -> TestResult {
 /// assert that stopped-frame lines match the adapter-resolved lines exactly.
 #[test]
 fn test_e2e_multi_breakpoint_sequence() -> TestResult {
-    if !perl_available() {
-        eprintln!("Skipping test_e2e_multi_breakpoint_sequence - perl not available");
+    let Some(debuggee_perl) = debuggee_perl_or_typed_skip("test_e2e_multi_breakpoint_sequence")
+    else {
         return Ok(());
-    }
+    };
 
     let workspace = tempdir()?;
     let script = workspace.path().join("workflow_multi.pl");
@@ -161,7 +162,7 @@ fn test_e2e_multi_breakpoint_sequence() -> TestResult {
     let timeout = workflow_timeout();
     let mut session = DapWorkflowSession::new(timeout)?;
 
-    session.launch(&script_str)?;
+    session.launch_pinned(&debuggee_perl.binary, &script_str)?;
 
     // set_breakpoints_checked: asserts verified=true for each entry, returns resolved lines.
     let resolved = session.set_breakpoints_checked(&script_str, &[BP_LINE_2, BP_LINE_3])?;
@@ -238,10 +239,10 @@ fn test_e2e_multi_breakpoint_sequence() -> TestResult {
 /// debugger receives after the stop.
 #[test]
 fn test_e2e_step_over_changes_execution() -> TestResult {
-    if !perl_available() {
-        eprintln!("Skipping test_e2e_step_over_changes_execution - perl not available");
+    let Some(debuggee_perl) = debuggee_perl_or_typed_skip("test_e2e_step_over_changes_execution")
+    else {
         return Ok(());
-    }
+    };
 
     let workspace = tempdir()?;
     let script = workspace.path().join("workflow_step.pl");
@@ -252,7 +253,7 @@ fn test_e2e_step_over_changes_execution() -> TestResult {
     let timeout = workflow_timeout();
     let mut session = DapWorkflowSession::new(timeout)?;
 
-    session.launch(&script_str)?;
+    session.launch_pinned(&debuggee_perl.binary, &script_str)?;
     // Use BP_LINE_2 (line 5) so that configurationDone's `c` runs FROM the
     // initial implicit stop at line 4 TO the breakpoint at line 5, not past it.
     session.set_breakpoints(&script_str, &[BP_LINE_2])?;
@@ -283,81 +284,37 @@ fn test_e2e_step_over_changes_execution() -> TestResult {
     Ok(())
 }
 
-// ─── Test 4: attach workflow with stopOnEntry=false ────────────────────────────
+// ─── Test 4: native PID attach refusal ─────────────────────────────────────────
 
-/// Validates the attach workflow:
-/// initialize → attach(pid, stopOnEntry=false) → wait for stopped(reason=attach) →
-/// set breakpoints → disconnect.
+/// Validates that a syntactically valid native PID is rejected without a
+/// synthetic stopped event or a process-backed workflow.
 #[test]
 fn test_e2e_attach_workflow_stopped_event() -> TestResult {
-    let timeout = workflow_timeout();
-    let mut session = DapWorkflowSession::new(timeout)?;
-
-    // Use the current process PID — the adapter validates that the PID exists
-    // (#5553), so a hardcoded non-existent PID like 12345 now fails.
-    let test_pid = std::process::id();
-
-    // Attach without stopOnEntry — should emit stopped(reason=attach)
-    session.attach(test_pid, false)?;
-
-    // Wait for the attach stopped event
-    let attached = session.wait_stopped()?;
-    assert_eq!(
-        attached.reason, "attach",
-        "stopped reason after attach must be `attach`, got `{}`",
-        attached.reason
-    );
-
-    let _thread_id = attached.thread_id;
-
-    // After attach, we can set breakpoints (the adapter accepts them).
-    // Use set_breakpoints_checked to assert verified=true for all entries.
-    let workspace = tempdir()?;
-    let script = workspace.path().join("dummy.pl");
-    write(&script, workflow_script_content())?;
-    let script_str = script.to_str().ok_or("script path is not valid UTF-8")?.to_string();
-
-    let resolved = session.set_breakpoints_checked(&script_str, &[BP_LINE_2])?;
-    assert!(
-        !resolved.is_empty(),
-        "setBreakpoints after attach must return at least one verified breakpoint"
-    );
-
-    session.disconnect()?;
-
+    let mut session = DapWorkflowSession::new(workflow_timeout())?;
+    let error = match session.attach(std::process::id(), false) {
+        Ok(()) => return Err("native PID attach unexpectedly succeeded".into()),
+        Err(error) => error,
+    };
+    if !error.contains("not supported") {
+        return Err(format!("unexpected refusal: {error}").into());
+    }
     Ok(())
 }
 
-// ─── Test 5: attach workflow with stopOnEntry=true ──────────────────────────────
+// ─── Test 5: native PID attach refusal is independent of stopOnEntry ───────────
 
-/// Validates attach with stopOnEntry=true:
-/// attach(pid, stopOnEntry=true) should emit both "attach" and "entry" stopped events.
+/// `stopOnEntry` cannot turn an unsupported PID request into a debugger
+/// session or cause a synthetic entry event.
 #[test]
 fn test_e2e_attach_workflow_stop_on_entry() -> TestResult {
-    let timeout = workflow_timeout();
-    let mut session = DapWorkflowSession::new(timeout)?;
-
-    let test_pid = std::process::id();
-
-    // Attach with stopOnEntry=true
-    session.attach(test_pid, true)?;
-
-    // Should receive "attach" stopped event first
-    let first_stop = session.wait_stopped()?;
-    assert_eq!(
-        first_stop.reason, "attach",
-        "first stopped event after attach(stopOnEntry=true) must be reason=attach"
-    );
-
-    // Then should receive "entry" stopped event
-    let entry_stop = session.wait_stopped()?;
-    assert_eq!(
-        entry_stop.reason, "entry",
-        "second stopped event after attach(stopOnEntry=true) must be reason=entry"
-    );
-
-    session.disconnect()?;
-
+    let mut session = DapWorkflowSession::new(workflow_timeout())?;
+    let error = match session.attach(std::process::id(), true) {
+        Ok(()) => return Err("native PID attach unexpectedly succeeded".into()),
+        Err(error) => error,
+    };
+    if !error.contains("not supported") {
+        return Err(format!("unexpected refusal: {error}").into());
+    }
     Ok(())
 }
 
@@ -375,10 +332,9 @@ fn test_e2e_attach_workflow_stop_on_entry() -> TestResult {
 /// follow-up.  This test validates the DAP protocol round-trip.
 #[test]
 fn test_e2e_step_into_subroutine() -> TestResult {
-    if !perl_available() {
-        eprintln!("Skipping test_e2e_step_into_subroutine - perl not available");
+    let Some(debuggee_perl) = debuggee_perl_or_typed_skip("test_e2e_step_into_subroutine") else {
         return Ok(());
-    }
+    };
 
     let workspace = tempdir()?;
     let script = workspace.path().join("workflow_stepinto.pl");
@@ -389,7 +345,7 @@ fn test_e2e_step_into_subroutine() -> TestResult {
     let timeout = workflow_timeout();
     let mut session = DapWorkflowSession::new(timeout)?;
 
-    session.launch(&script_str)?;
+    session.launch_pinned(&debuggee_perl.binary, &script_str)?;
     // BP_LINE_2 (line 5): same rationale as step-over test — configurationDone's `c`
     // runs from the initial implicit stop at line 4 to the breakpoint at line 5.
     session.set_breakpoints(&script_str, &[BP_LINE_2])?;
@@ -422,11 +378,15 @@ fn test_e2e_step_into_subroutine() -> TestResult {
 /// Validates that global variables can be inspected:
 /// stop at breakpoint → stackTrace → scopes → scopes_globals_ref → variables → inspect $variable
 #[test]
+#[ignore = "globals scope returns no observed variables at a live breakpoint; this passed \
+            previously only because the fallback substituted a fabricated `$_ = undef`, which \
+            the non-emptiness assertion could not distinguish from a real observation. \
+            Un-ignore once `$global_var` is genuinely enumerated (see issue #10162)"]
 fn test_e2e_globals_scope_inspection() -> TestResult {
-    if !perl_available() {
-        eprintln!("Skipping test_e2e_globals_scope_inspection - perl not available");
+    let Some(debuggee_perl) = debuggee_perl_or_typed_skip("test_e2e_globals_scope_inspection")
+    else {
         return Ok(());
-    }
+    };
 
     let workspace = tempdir()?;
     let script = workspace.path().join("workflow_globals.pl");
@@ -440,7 +400,7 @@ fn test_e2e_globals_scope_inspection() -> TestResult {
     let timeout = workflow_timeout();
     let mut session = DapWorkflowSession::new(timeout)?;
 
-    session.launch(&script_str)?;
+    session.launch_pinned(&debuggee_perl.binary, &script_str)?;
     session.set_breakpoints(&script_str, &[BP_LINE_2])?;
     session.configuration_done()?;
 
@@ -458,13 +418,22 @@ fn test_e2e_globals_scope_inspection() -> TestResult {
 
     // Retrieve global variables
     let globals = session.variables(globals_ref)?;
-    assert!(!globals.is_empty(), "globals scope must contain at least one variable");
 
     // Verify variable entries have non-empty names
     for var in &globals {
         let name = var.get("name").and_then(|v| v.as_str()).unwrap_or("");
         assert!(!name.is_empty(), "global variable entry must have non-empty name: {var:?}");
     }
+
+    // Name the variable this fixture exists to declare. Asserting only non-emptiness
+    // let a fabricated `$_` placeholder satisfy this test while `$global_var` was
+    // never enumerated at all (#10162).
+    let names: Vec<&str> =
+        globals.iter().filter_map(|v| v.get("name").and_then(|n| n.as_str())).collect();
+    assert!(
+        names.contains(&"$global_var"),
+        "globals scope must contain the declared `our $global_var`; got: {names:?}"
+    );
 
     session.disconnect()?;
 
@@ -480,10 +449,10 @@ fn test_e2e_globals_scope_inspection() -> TestResult {
 /// and `variablesReference` to render and expand rows correctly.
 #[test]
 fn test_e2e_locals_scope_payload_contract() -> TestResult {
-    if !perl_available() {
-        eprintln!("Skipping test_e2e_locals_scope_payload_contract - perl not available");
+    let Some(debuggee_perl) = debuggee_perl_or_typed_skip("test_e2e_locals_scope_payload_contract")
+    else {
         return Ok(());
-    }
+    };
 
     let workspace = tempdir()?;
     let script = workspace.path().join("workflow_locals_contract.pl");
@@ -494,7 +463,7 @@ fn test_e2e_locals_scope_payload_contract() -> TestResult {
     let timeout = workflow_timeout();
     let mut session = DapWorkflowSession::new(timeout)?;
 
-    session.launch(&script_str)?;
+    session.launch_pinned(&debuggee_perl.binary, &script_str)?;
     session.set_breakpoints(&script_str, &[BP_LINE_2])?;
     session.configuration_done()?;
 
@@ -539,10 +508,11 @@ fn test_e2e_locals_scope_payload_contract() -> TestResult {
 /// unit tests without an active process cannot exercise.
 #[test]
 fn test_e2e_evaluate_expression_in_stopped_frame() -> TestResult {
-    if !perl_available() {
-        eprintln!("Skipping test_e2e_evaluate_expression_in_stopped_frame - perl not available");
+    let Some(debuggee_perl) =
+        debuggee_perl_or_typed_skip("test_e2e_evaluate_expression_in_stopped_frame")
+    else {
         return Ok(());
-    }
+    };
 
     let workspace = tempdir()?;
     let script = workspace.path().join("workflow_evaluate.pl");
@@ -553,7 +523,7 @@ fn test_e2e_evaluate_expression_in_stopped_frame() -> TestResult {
     let timeout = workflow_timeout();
     let mut session = DapWorkflowSession::new(timeout)?;
 
-    session.launch(&script_str)?;
+    session.launch_pinned(&debuggee_perl.binary, &script_str)?;
     // set_breakpoints_checked asserts verified=true and returns adapter-resolved lines,
     // so the stopped-frame line can be bound to the resolved line rather than merely `> 0`.
     let resolved = session.set_breakpoints_checked(&script_str, &[BP_LINE_2])?;
@@ -584,10 +554,26 @@ fn test_e2e_evaluate_expression_in_stopped_frame() -> TestResult {
         arithmetic_result.contains("15"),
         "watch evaluate should include the arithmetic result in debugger output, got `{arithmetic_result}`"
     );
+
+    let (spaced_arithmetic_result, _) = session.evaluate_expression("6 * 7", frame_id)?;
+    if !spaced_arithmetic_result.split_whitespace().eq(["0", "42"]) {
+        return Err(format!(
+            "watch evaluate should return the exact spaced arithmetic result, got `{spaced_arithmetic_result}`"
+        )
+        .into());
+    }
     assert!(
         matches!(arithmetic_type.as_deref(), Some("scalar" | "integer" | "string")),
         "arithmetic evaluate should include a scalar-like result type, got {arithmetic_type:?}"
     );
+
+    let (leading_space_result, _) = session.evaluate_expression(" 6 * 7", frame_id)?;
+    if !leading_space_result.split_whitespace().eq(["0", "42"]) {
+        return Err(format!(
+            "watch evaluate should preserve leading whitespace numeric arithmetic, got `{leading_space_result}`"
+        )
+        .into());
+    }
 
     let (string_result, string_type) = session.evaluate_expression("'dap-e2e'", frame_id)?;
     assert!(

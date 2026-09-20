@@ -6,12 +6,12 @@
 ///
 /// Actual sexp output (verified with current parser):
 ///   for my ($x, $y) (@list) { }
-///   → (source_file (foreach (my_declaration ((variable $ x) (variable $ y)))
-///                            (variable @ list) (block )))
+///   → (source_file (foreach (my_declaration ((variable (sigil $) (name x)) (variable (sigil $) (name y))))
+///                            (variable (sigil @) (name list)) (block)))
 ///
 ///   foreach my ($k, $v) (%h) { }
-///   → (source_file (foreach (my_declaration ((variable $ k) (variable $ v)))
-///                            (variable % h) (block )))
+///   → (source_file (foreach (my_declaration ((variable (sigil $) (name k)) (variable (sigil $) (name v))))
+///                            (variable (sigil %) (name h)) (block)))
 use perl_parser_core::Parser;
 use perl_tdd_support::must;
 
@@ -52,12 +52,12 @@ fn test_for_my_two_vars_parses_without_error() -> Result<(), Box<dyn std::error:
 #[test]
 fn test_for_my_two_vars_contains_loop_vars() -> Result<(), Box<dyn std::error::Error>> {
     // Both $x and $y must appear in the sexp
-    // Sexp format: (my_declaration ((variable $ x) (variable $ y)))
+    // Sexp format: (my_declaration ((variable (sigil $) (name x)) (variable (sigil $) (name y))))
     let sexp = sexp_clean("for my ($x, $y) (@list) { }");
     assert!(sexp.contains("x"), "Expected 'x' in sexp: {}", sexp);
     assert!(sexp.contains("y"), "Expected 'y' in sexp: {}", sexp);
     // Must be a list declaration (parenthesized vars), not two separate Foreach nodes
-    assert!(sexp.contains("my_declaration"), "Expected my_declaration in sexp: {}", sexp,);
+    assert!(sexp.contains("my_declaration"), "Expected my_declaration in sexp: {}", sexp);
     Ok(())
 }
 
@@ -121,7 +121,7 @@ fn test_regression_c_style_for() -> Result<(), Box<dyn std::error::Error>> {
     );
     // Must produce a For (C-style) node (contains "(for " not starting with "(foreach ")
     // The sexp wraps in source_file, so we check the inner structure
-    assert!(sexp.contains("(for "), "Expected C-style for node, got: {}", sexp,);
+    assert!(sexp.contains("(for "), "Expected C-style for node, got: {}", sexp);
     Ok(())
 }
 

@@ -1,0 +1,38 @@
+{
+  "schema_version": "semantic_close_containment_fixture.v1",
+  "provenance": {
+    "captured_at": "2026-08-21",
+    "sources": [
+      "https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/5968",
+      "https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/5231"
+    ],
+    "subject_shas": [
+      "2b3ce43677fbe300e34ea9d78afde4035145f2cc"
+    ],
+    "boundary": "Immutable bounded structured excerpts; canonical GitHub subjects and exact candidate SHAs are retained. The fixture proves only the CP00 contradiction class."
+  },
+  "repository": "effortlessmetrics/perl-lsp-swarm",
+  "pull_request": {
+    "number": 5968,
+    "title": "refactor: delete dead perl-refactoring crate (#5840)",
+    "body": "## Summary\n\nThe `perl-refactoring` satellite crate was deleted after its code had been absorbed into `perl-parser::refactor`.\n\nCloses #5231."
+  },
+  "issues": [
+    {
+      "repository": "effortlessmetrics/perl-lsp-swarm",
+      "number": 5231,
+      "title": "refactor(library): retire the absorbed RefactoringEngine and correct LSP claims",
+      "body": "Historical deletion: #5968\n\n## Outcome\n\nRetire or deprecate the absorbed `perl_parser::refactor::RefactoringEngine`, correct public API baselines and LSP claims, and prove live providers do not invoke the filesystem-mutating engine.\n\n## Acceptance\n\n- Every engine operation has a disposition.\n- Public API and migration guidance are corrected.\n- Unsaved-buffer and no-mutation controls pass."
+    }
+  ],
+  "expected": {
+    "aggregate_code": "FAIL_PREDECESSOR_SUCCESSOR_COLLAPSE",
+    "rows": [
+      {
+        "repository": "effortlessmetrics/perl-lsp-swarm",
+        "issue_number": 5231,
+        "code": "FAIL_PREDECESSOR_SUCCESSOR_COLLAPSE"
+      }
+    ]
+  }
+}
