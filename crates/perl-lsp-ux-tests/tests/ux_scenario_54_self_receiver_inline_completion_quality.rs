@@ -49,6 +49,8 @@ struct SelfReceiverProbeReport {
     expected_insert_texts: Vec<&'static str>,
     missing_expected_insert_texts: Vec<&'static str>,
     forbidden_insert_texts: Vec<&'static str>,
+    probes_attempted: usize,
+    first_useful_candidate_seen: bool,
 }
 
 fn create_harness() -> Result<UxHarness> {
@@ -121,9 +123,12 @@ fn probe_self_receiver_inline_completion(harness: &UxHarness) -> Result<SelfRece
     // post-diagnostics, completion facts can land after the previous 5s
     // window closed (observed as a one-probe zero on a refreshed-base run).
     let deadline = Instant::now() + Duration::from_secs(30);
+    let mut probes_attempted: usize = 0;
+    let mut first_useful_candidate_seen = false;
     let items = loop {
         let items =
             harness.inline_completion_with_trigger_kind(SELF_RECEIVER_PATH, line, character, 1)?;
+        probes_attempted = probes_attempted.saturating_add(1);
         for item in &items {
             anyhow::ensure!(
                 item_has_inline_shape(item),
@@ -131,11 +136,13 @@ fn probe_self_receiver_inline_completion(harness: &UxHarness) -> Result<SelfRece
             );
         }
         let insert_texts = insert_texts_for(&items);
-        if EXPECTED_METHOD_INSERTS
+        let useful_now = EXPECTED_METHOD_INSERTS
             .iter()
-            .all(|expected| insert_texts.iter().any(|actual| actual == expected))
-            || Instant::now() >= deadline
-        {
+            .all(|expected| insert_texts.iter().any(|actual| actual == expected));
+        if useful_now {
+            first_useful_candidate_seen = true;
+        }
+        if useful_now || Instant::now() >= deadline {
             break items;
         }
         std::thread::sleep(Duration::from_millis(100));
@@ -161,6 +168,8 @@ fn probe_self_receiver_inline_completion(harness: &UxHarness) -> Result<SelfRece
         expected_insert_texts: EXPECTED_METHOD_INSERTS.to_vec(),
         missing_expected_insert_texts,
         forbidden_insert_texts,
+        probes_attempted,
+        first_useful_candidate_seen,
     })
 }
 
@@ -184,8 +193,15 @@ fn scenario_54_self_receiver_inline_completion_quality_receipt() {
             let harness = create_harness()?;
             harness.open_file(SELF_RECEIVER_PATH, SELF_RECEIVER_SOURCE)?;
             // Same readiness race as #15870: synchronize on the server's own
-            // analysis-readiness signal instead of a fixed sleep.
-            let _ = harness.wait_for_diagnostics(SELF_RECEIVER_PATH, Duration::from_secs(30));
+            // analysis-readiness signal instead of a fixed sleep. Also wait for
+            // the active-document indexing completion notification so the inline
+            // provider has the package-method facts available before we probe;
+            // without it, candidate_count is structurally zero on cold CI.
+            let diagnostics_received =
+                harness.wait_for_diagnostics(SELF_RECEIVER_PATH, Duration::from_secs(30));
+            let self_receiver_uri = harness.workspace.uri(SELF_RECEIVER_PATH);
+            let active_document_ready = harness
+                .wait_for_active_document_ready(&self_receiver_uri, Duration::from_secs(30));
 
             recorder.mark_request_start("dynamic_inline_registration");
             let dynamic_registration_seen = wait_for_inline_registration(&harness);
@@ -203,6 +219,8 @@ fn scenario_54_self_receiver_inline_completion_quality_receipt() {
                 "schema_version": 1,
                 "receipt": "self_receiver_inline_completion_quality",
                 "claim_boundary": "stdio inline-completion self-receiver quality receipt only; no provider behavior change, support-tier promotion, source mirror, release action, or AI behavior",
+                "diagnostics_received": diagnostics_received,
+                "active_document_ready": active_document_ready,
                 "dynamic_registration_seen": dynamic_registration_seen,
                 "receiver_probe": receiver_report,
             });
