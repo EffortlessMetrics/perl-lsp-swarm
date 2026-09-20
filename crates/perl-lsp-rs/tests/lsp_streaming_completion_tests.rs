@@ -591,6 +591,56 @@ mod mock_streaming_completion_tests {
         }
     }
 
+    /// A capture whose writer thread is held closed until the test opens it.
+    ///
+    /// Stalling the writer is the only way to make the *real* bounded outbound
+    /// channel genuinely fill, so `notify` fails with the same `WouldBlock` a
+    /// slow client produces in production rather than with an injected error.
+    #[derive(Clone)]
+    struct GatedOutputCapture {
+        inner: TestOutputCapture,
+        gate: Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>,
+    }
+
+    impl GatedOutputCapture {
+        fn new() -> Self {
+            Self {
+                inner: TestOutputCapture::new(),
+                gate: Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new())),
+            }
+        }
+
+        /// Let the writer thread drain everything queued so far, and everything
+        /// queued afterwards.
+        fn open(&self) -> Result<(), String> {
+            let (lock, signal) = &*self.gate;
+            let mut open = lock.lock().map_err(|_| "output gate poisoned".to_string())?;
+            *open = true;
+            drop(open);
+            signal.notify_all();
+            Ok(())
+        }
+    }
+
+    impl Write for GatedOutputCapture {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            let (lock, signal) = &*self.gate;
+            let mut open =
+                lock.lock().map_err(|_| std::io::Error::other("output gate poisoned"))?;
+            while !*open {
+                open =
+                    signal.wait(open).map_err(|_| std::io::Error::other("output gate poisoned"))?;
+            }
+            drop(open);
+            self.inner.buffer.lock().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
     fn parse_jsonrpc_frames(bytes: &[u8]) -> Vec<Value> {
         let mut framer = ContentLengthFramer::new();
         let mut messages = Vec::new();
@@ -603,6 +653,18 @@ mod mock_streaming_completion_tests {
         messages
     }
 
+    /// The `$/progress` frames captured so far for one token, without waiting.
+    fn progress_for_token(capture: &TestOutputCapture, token: &str) -> Vec<Value> {
+        capture
+            .messages()
+            .into_iter()
+            .filter(|msg| {
+                msg.get("method").and_then(|v| v.as_str()) == Some("$/progress")
+                    && msg.pointer("/params/token").and_then(|v| v.as_str()) == Some(token)
+            })
+            .collect()
+    }
+
     fn wait_for_progress_messages(
         capture: &TestOutputCapture,
         token: &str,
@@ -610,14 +672,7 @@ mod mock_streaming_completion_tests {
     ) -> Vec<Value> {
         let deadline = Instant::now() + timeout;
         loop {
-            let messages = capture.messages();
-            let matching: Vec<_> = messages
-                .into_iter()
-                .filter(|msg| {
-                    msg.get("method").and_then(|v| v.as_str()) == Some("$/progress")
-                        && msg.pointer("/params/token").and_then(|v| v.as_str()) == Some(token)
-                })
-                .collect();
+            let matching = progress_for_token(capture, token);
             let has_final = matching.iter().any(|msg| {
                 msg.pointer("/params/value/isFinal").and_then(Value::as_bool).unwrap_or(false)
             });
@@ -630,7 +685,13 @@ mod mock_streaming_completion_tests {
 
     fn create_server() -> (LspServer, TestOutputCapture) {
         let capture = TestOutputCapture::new();
-        let output = Box::new(capture.clone()) as Box<dyn Write + Send>;
+        let server = create_server_with_output(Box::new(capture.clone()));
+        (server, capture)
+    }
+
+    /// `create_server` over an arbitrary sink, so a test can supply one whose
+    /// writer thread it controls.
+    fn create_server_with_output(output: Box<dyn Write + Send>) -> LspServer {
         let server = LspServer::with_output(Arc::new(Mutex::new(output)));
 
         let init_request = JsonRpcRequest {
@@ -677,7 +738,7 @@ mod mock_streaming_completion_tests {
         };
         let _ = server.handle_request(config_request);
 
-        (server, capture)
+        server
     }
 
     /// Variant of `create_server` that arms AI through the trusted test API
@@ -933,6 +994,32 @@ mod mock_streaming_completion_tests {
         }
     }
 
+    /// A backend that ignores `StreamControl::Stop` and keeps sending final
+    /// chunks. Real providers honour `Stop`, so only the handler's own
+    /// settled-guard stands between this and a second terminal value.
+    struct MockDoubleFinalBackend;
+
+    impl perl_lsp_rs_core::providers::inline_completion::InlineCompletionBackend
+        for MockDoubleFinalBackend
+    {
+        fn stream(
+            &self,
+            _req: &perl_lsp_rs_core::providers::inline_completion::BackendRequest,
+            sink: &mut dyn FnMut(
+                perl_lsp_rs_core::providers::inline_completion::StreamChunk,
+            )
+                -> perl_lsp_rs_core::providers::inline_completion::StreamControl,
+        ) -> Result<(), perl_lsp_rs_core::providers::inline_completion::BackendError> {
+            for _ in 0..3 {
+                let _ = sink(perl_lsp_rs_core::providers::inline_completion::StreamChunk {
+                    text: "1;".to_string(),
+                    is_final: true,
+                });
+            }
+            Ok(())
+        }
+    }
+
     /// Backend that reports a saturated concurrency ceiling before emitting
     /// anything (`#8300`).
     struct MockSaturatedBackend;
@@ -953,7 +1040,7 @@ mod mock_streaming_completion_tests {
     }
 
     /// Emits one accepted chunk, then refuses the response on a resource
-    /// budget — the shape of a real endpoint that streams a legal prefix and
+    /// budget - the shape of a real endpoint that streams a legal prefix and
     /// then crosses a line, event, delta, or cumulative limit.
     struct MockBudgetExceededChunkBackend;
 
@@ -984,10 +1071,6 @@ mod mock_streaming_completion_tests {
 
     /// A backend error that produced no text must still reach the deterministic
     /// route on the streaming path, exactly as it does on the buffered one.
-    ///
-    /// Before this, only `BackendError::Provider` routed to fallback, so a
-    /// stream that terminated before emitting anything ended empty even with
-    /// fallback configured — the user got no suggestion at all.
     #[test]
     fn streaming_saturation_falls_back_to_deterministic_completions() -> TestResult {
         let (server, capture) = create_server();
@@ -1019,12 +1102,13 @@ mod mock_streaming_completion_tests {
         if items.is_empty() {
             return Err(std::io::Error::other(format!(
                 "a saturated stream with fallback enabled must emit deterministic completions, got: {items:?}"
-            )).into());
+            ))
+            .into());
         }
         Ok(())
     }
 
-    /// With fallback disabled the same saturation ends the stream empty — a
+    /// With fallback disabled the same saturation ends the stream empty - a
     /// typed final-empty decision, not a failure surfaced to the editor.
     #[test]
     fn streaming_saturation_without_fallback_ends_empty() -> TestResult {
@@ -1059,7 +1143,6 @@ mod mock_streaming_completion_tests {
         }
         Ok(())
     }
-
     struct MockAuthBackend;
 
     impl perl_lsp_rs_core::providers::inline_completion::InlineCompletionBackend for MockAuthBackend {
@@ -1270,7 +1353,7 @@ mod mock_streaming_completion_tests {
     }
 
     #[test]
-    fn completion_stream_cancel_storm_keeps_one_live_session() {
+    fn completion_stream_storm_retains_no_completed_sessions() {
         let (server, _capture) = create_server();
 
         let backend = MockChunkBackend {
@@ -1292,16 +1375,332 @@ mod mock_streaming_completion_tests {
             assert!(result.is_null(), "streaming completion should respond with null");
             assert_eq!(
                 server.memory_state_snapshot().stream_sessions,
-                1,
-                "same-key stream requests must replace the retained session instead of growing"
+                0,
+                "a completed stream must release its session rather than stay retained \
+                 until a later unrelated edit sweeps the URI"
             );
         }
 
         assert_eq!(
             server.memory_state_snapshot().stream_sessions,
-            1,
-            "a same-key cancel storm should converge to the latest live session only"
+            0,
+            "a request storm must leave the manager empty, not one retained entry"
         );
+    }
+
+    /// Every terminal disposition — accepted candidate, filtered-empty, and
+    /// backend failure — must release the manager entry. A retained
+    /// non-cancelled session was the leak this issue closes, so each path is
+    /// asserted separately rather than through one representative case.
+    #[test]
+    fn every_terminal_path_leaves_zero_retained_sessions() {
+        // Accepted candidate.
+        let (server, _capture) = create_server();
+        server.test_install_ai_backend(Some(Arc::new(MockChunkBackend {
+            chunks: vec!["1;"],
+            delays_ms: vec![0],
+        })));
+        let uri = "file:///streaming-terminal-accepted.pl";
+        open_doc(&server, uri, "my $value = ");
+        request_streaming_completion(&server, uri, 12, "terminal-accepted");
+        assert_eq!(
+            server.memory_state_snapshot().stream_sessions,
+            0,
+            "an accepted final must release the session"
+        );
+
+        // Filtered / empty final.
+        let (server, _capture) = create_server();
+        server.test_install_ai_backend(Some(Arc::new(MockChunkBackend {
+            chunks: vec!["my ("],
+            delays_ms: vec![0],
+        })));
+        let uri = "file:///streaming-terminal-filtered.pl";
+        open_doc(&server, uri, "my $value = ");
+        request_streaming_completion(&server, uri, 12, "terminal-filtered");
+        assert_eq!(
+            server.memory_state_snapshot().stream_sessions,
+            0,
+            "a filtered final must release the session"
+        );
+
+        // Backend failure.
+        let (server, _capture) = create_server();
+        server.test_install_ai_backend(Some(Arc::new(MockErrorChunkBackend)));
+        let uri = "file:///streaming-terminal-error.pl";
+        open_doc(&server, uri, "my $value = ");
+        request_streaming_completion(&server, uri, 12, "terminal-error");
+        assert_eq!(
+            server.memory_state_snapshot().stream_sessions,
+            0,
+            "a failed stream must release the session"
+        );
+    }
+
+    /// One document exposes one active ghost-text stream. A request at a new
+    /// cursor supersedes the earlier cursor's *in-flight* stream instead of
+    /// leaving independent backend work running at every position the user
+    /// visited.
+    ///
+    /// The two requests must genuinely overlap. Driven sequentially each one
+    /// completes and releases its own session before the next starts, so a
+    /// session count alone cannot tell document-scoped supersession from the
+    /// per-`SessionKey` behaviour it replaced — the discriminating observation
+    /// is that the earlier cursor's stream stops emitting.
+    #[test]
+    fn a_new_cursor_supersedes_the_prior_document_stream() -> Result<(), String> {
+        struct GatedFirstStreamBackend {
+            calls: std::sync::atomic::AtomicUsize,
+            first_ready: std::sync::mpsc::SyncSender<()>,
+            release_first: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
+            // 0 means the resumed callback never ran, 1 Stop, and 2 Continue.
+            resumed_control: Arc<std::sync::atomic::AtomicU8>,
+        }
+
+        impl perl_lsp_rs_core::providers::inline_completion::InlineCompletionBackend
+            for GatedFirstStreamBackend
+        {
+            fn stream(
+                &self,
+                _req: &perl_lsp_rs_core::providers::inline_completion::BackendRequest,
+                sink: &mut dyn FnMut(
+                    perl_lsp_rs_core::providers::inline_completion::StreamChunk,
+                ) -> perl_lsp_rs_core::providers::inline_completion::StreamControl,
+            ) -> Result<(), perl_lsp_rs_core::providers::inline_completion::BackendError>
+            {
+                let first = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0;
+                for (index, text) in ["fi", "find_", "find_user($id)"].into_iter().enumerate() {
+                    let stopped = matches!(
+                        sink(perl_lsp_rs_core::providers::inline_completion::StreamChunk {
+                            text: text.to_string(),
+                            is_final: index == 2,
+                        }),
+                        perl_lsp_rs_core::providers::inline_completion::StreamControl::Stop
+                    );
+                    if first && index == 1 {
+                        self.resumed_control.store(
+                            if stopped { 1 } else { 2 },
+                            std::sync::atomic::Ordering::SeqCst,
+                        );
+                    }
+                    if first && index == 0 {
+                        self.first_ready.send(()).map_err(|error| {
+                            perl_lsp_rs_core::providers::inline_completion::BackendError::Provider(
+                                format!("first-frame handshake receiver disappeared: {error}"),
+                            )
+                        })?;
+                        self.release_first
+                            .lock()
+                            .map_err(|error| {
+                                perl_lsp_rs_core::providers::inline_completion::BackendError::Provider(
+                                    format!("first-stream release gate poisoned: {error}"),
+                                )
+                            })?
+                            .recv_timeout(Duration::from_secs(10))
+                            .map_err(|error| {
+                                perl_lsp_rs_core::providers::inline_completion::BackendError::Provider(
+                                    format!("first-stream release was not received: {error}"),
+                                )
+                            })?;
+                    }
+                    if stopped {
+                        break;
+                    }
+                }
+                Ok(())
+            }
+        }
+
+        let (server, capture) = create_server();
+        let server = Arc::new(server);
+        let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
+        let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
+        let resumed_control = Arc::new(std::sync::atomic::AtomicU8::new(0));
+        server.test_install_ai_backend(Some(Arc::new(GatedFirstStreamBackend {
+            calls: std::sync::atomic::AtomicUsize::new(0),
+            first_ready: ready_tx,
+            release_first: std::sync::Mutex::new(release_rx),
+            resumed_control: Arc::clone(&resumed_control),
+        })));
+        let uri = "file:///streaming-supersede-cursor.pl";
+        open_doc(&server, uri, "my $obj = Package->");
+
+        let earlier_server = Arc::clone(&server);
+        let earlier = std::thread::Builder::new()
+            .name("earlier-inline-stream".to_string())
+            .spawn(move || {
+                request_streaming_completion(&earlier_server, uri, 19, "supersede-earlier-cursor")
+            })
+            .map_err(|error| format!("could not start earlier streaming request: {error}"))?;
+
+        // Do not admit the successor until the first callback completed and its
+        // backend is held at the release gate. No scheduler delay implies this.
+        let first_ready = ready_rx.recv_timeout(Duration::from_secs(10));
+        let later_result = if first_ready.is_ok() {
+            let later_server = Arc::clone(&server);
+            std::thread::Builder::new()
+                .name("later-inline-stream".to_string())
+                .spawn(move || {
+                    request_streaming_completion(&later_server, uri, 11, "supersede-later-cursor")
+                })
+                .map_err(|error| format!("could not start later streaming request: {error}"))
+                .and_then(|later| {
+                    later.join().map_err(|_| "later streaming request thread panicked".to_string())
+                })
+        } else {
+            Err("later request was not admitted without the first-frame handshake".to_string())
+        };
+
+        // Release and join before propagating any handshake, spawn, or request
+        // failure. The backend's gate timeout also bounds an abandoned wait.
+        let released = release_tx.send(());
+        let earlier_result = earlier.join();
+        first_ready
+            .map_err(|error| format!("earlier stream never reached its first frame: {error}"))?;
+        released
+            .map_err(|error| format!("could not release earlier streaming request: {error}"))?;
+        earlier_result.map_err(|_| "earlier streaming request thread panicked".to_string())?;
+        later_result?;
+
+        let resumed = resumed_control.load(std::sync::atomic::Ordering::SeqCst);
+        if resumed != 1 {
+            return Err(format!(
+                "superseded stream must receive Stop on its first resumed non-final callback; \
+                 observed {resumed} (0 = never called, 1 = Stop, 2 = Continue)"
+            ));
+        }
+        let earlier_progress = wait_for_progress_messages(
+            &capture,
+            "supersede-earlier-cursor",
+            Duration::from_millis(300),
+        );
+        let later_progress = wait_for_progress_messages(
+            &capture,
+            "supersede-later-cursor",
+            Duration::from_millis(300),
+        );
+        if earlier_progress.len() != 1 {
+            return Err(format!(
+                "earlier cursor must stop after its first frame: {earlier_progress:?}"
+            ));
+        }
+        if later_progress.is_empty() {
+            return Err("the current cursor's stream must still run".to_string());
+        }
+        let retained = server.memory_state_snapshot().stream_sessions;
+        if retained != 0 {
+            return Err(format!("neither cursor's session may survive; retained {retained}"));
+        }
+        Ok(())
+    }
+
+    /// Only frames the client actually observes may consume a sequence value.
+    /// Debounce coalescing previously allocated a sequence for a frame it then
+    /// suppressed, leaving an unexplained gap in the client's stream.
+    #[test]
+    fn coalesced_frames_consume_no_sequence_value() {
+        let (server, capture) = create_server();
+        set_streaming_debounce(&server, 1_000);
+
+        // The middle chunk is suppressed by the debounce interval.
+        let backend = MockChunkBackend { chunks: vec!["1", "1;", "1;"], delays_ms: vec![0, 0, 0] };
+        server.test_install_ai_backend(Some(Arc::new(backend)));
+
+        let uri = "file:///streaming-sequence-contiguous.pl";
+        open_doc(&server, uri, "my $value = ");
+        request_streaming_completion(&server, uri, 12, "stream-contiguous-1");
+
+        let progress =
+            wait_for_progress_messages(&capture, "stream-contiguous-1", Duration::from_millis(500));
+        assert_eq!(progress.len(), 2, "first and final updates should be emitted");
+
+        let sequences: Vec<u64> = progress
+            .iter()
+            .map(|frame| {
+                frame
+                    .pointer("/params/value/sequence")
+                    .and_then(Value::as_u64)
+                    .expect("every emitted frame carries a sequence")
+            })
+            .collect();
+        assert_eq!(
+            sequences,
+            vec![0, 1],
+            "emitted sequences must be contiguous: a suppressed frame consumed \
+             a sequence value the client never observed"
+        );
+    }
+
+    /// A backend that ignores `StreamControl::Stop` still cannot produce two
+    /// terminal values. This pins the settled-guard at the top of the chunk
+    /// sink, which is otherwise unreachable through the well-behaved mocks.
+    #[test]
+    fn a_stop_ignoring_backend_cannot_emit_a_second_final() {
+        let (server, capture) = create_server();
+        server.test_install_ai_backend(Some(Arc::new(MockDoubleFinalBackend)));
+
+        let uri = "file:///streaming-double-final.pl";
+        open_doc(&server, uri, "my $value = ");
+        request_streaming_completion(&server, uri, 12, "double-final");
+
+        let progress =
+            wait_for_progress_messages(&capture, "double-final", Duration::from_millis(500));
+        let finals = progress
+            .iter()
+            .filter(|frame| {
+                frame
+                    .pointer("/params/value/isFinal")
+                    .and_then(Value::as_bool)
+                    .is_some_and(|is_final| is_final)
+            })
+            .count();
+        assert_eq!(finals, 1, "a settled stream must refuse every later chunk");
+        assert_eq!(
+            server.memory_state_snapshot().stream_sessions,
+            0,
+            "the session is still released exactly once"
+        );
+    }
+
+    /// A stream emits exactly one terminal value, whatever the disposition.
+    #[test]
+    fn a_stream_emits_exactly_one_final_value() {
+        for (label, uri, backend) in [
+            (
+                "accepted",
+                "file:///streaming-one-final-accepted.pl",
+                Arc::new(MockChunkBackend { chunks: vec!["1", "1;"], delays_ms: vec![0, 0] })
+                    as Arc<
+                        dyn perl_lsp_rs_core::providers::inline_completion::InlineCompletionBackend,
+                    >,
+            ),
+            (
+                "backend error",
+                "file:///streaming-one-final-error.pl",
+                Arc::new(MockErrorChunkBackend)
+                    as Arc<
+                        dyn perl_lsp_rs_core::providers::inline_completion::InlineCompletionBackend,
+                    >,
+            ),
+        ] {
+            let (server, capture) = create_server();
+            server.test_install_ai_backend(Some(backend));
+            open_doc(&server, uri, "my $value = ");
+            let token = format!("one-final-{}", label.replace(' ', "-"));
+            request_streaming_completion(&server, uri, 12, &token);
+
+            let progress = wait_for_progress_messages(&capture, &token, Duration::from_millis(500));
+            let finals = progress
+                .iter()
+                .filter(|frame| {
+                    frame
+                        .pointer("/params/value/isFinal")
+                        .and_then(Value::as_bool)
+                        .is_some_and(|is_final| is_final)
+                })
+                .count();
+            assert_eq!(finals, 1, "{label}: exactly one final progress value must be emitted");
+        }
     }
 
     #[test]
@@ -1331,7 +1730,14 @@ mod mock_streaming_completion_tests {
             thread::sleep(Duration::from_millis(10));
         };
         assert!(!progress.is_empty());
+        // The intermediate frame legitimately carried the partial cumulative
+        // text: at that point the stream was still live.
         assert_eq!(progress[0]["params"]["value"]["items"][0]["insertText"], "1");
+        assert_eq!(
+            progress[0]["params"]["value"]["isFinal"], false,
+            "the partial frame is not the terminal value"
+        );
+
         let final_progress =
             progress.last().expect("error path should emit at least one progress frame");
         assert!(
@@ -1359,6 +1765,37 @@ mod mock_streaming_completion_tests {
         assert!(
             final_progress["params"]["value"]["sequence"].as_u64().is_some(),
             "final progress frame should carry sequence"
+        );
+    }
+
+    /// Negative control for the fallback half of the error contract: with
+    /// fallback disabled a failed stream terminates empty rather than
+    /// presenting anything it managed to collect before failing.
+    #[test]
+    fn backend_error_without_fallback_terminates_empty() {
+        let (server, capture) = create_server();
+        server.test_configure_ai_completion(true, false);
+        server.test_install_ai_backend(Some(Arc::new(MockErrorChunkBackend)));
+
+        let uri = "file:///streaming-error-no-fallback.pl";
+        open_doc(&server, uri, "my $value = ");
+        request_streaming_completion(&server, uri, 12, "stream-error-no-fallback");
+
+        let progress = wait_for_progress_messages(
+            &capture,
+            "stream-error-no-fallback",
+            Duration::from_millis(500),
+        );
+        let final_progress =
+            progress.last().expect("error path should emit a terminal progress frame");
+        assert_eq!(
+            final_progress["params"]["value"]["isFinal"], true,
+            "the last frame must be the terminal value"
+        );
+        assert_eq!(
+            final_progress["params"]["value"]["items"],
+            json!([]),
+            "a failed stream without fallback must revoke, not present partial text"
         );
     }
 
@@ -1807,5 +2244,179 @@ mod mock_streaming_completion_tests {
             value["items"].as_array().is_some_and(Vec::is_empty),
             "a filtered final without fallback must be final and empty"
         );
+    }
+
+    /// An intermediate `$/progress` frame that never reached the client stops
+    /// the backend mid-generation. The cumulative text left behind is a prefix
+    /// of a suggestion the provider was still writing, so the tail owner must
+    /// not publish it as a completed candidate.
+    ///
+    /// The backpressure is real, not injected: the writer thread is held closed
+    /// until the genuine 64-slot outbound channel fills and `notify` returns
+    /// `WouldBlock`. The backend then behaves compliantly -- it honours `Stop`
+    /// and returns `Ok(())` -- which is exactly what makes this indistinguishable
+    /// from a clean end of stream unless the truncation is recorded.
+    ///
+    /// The writer is released before the backend returns so the tail's own send
+    /// succeeds. That is the discriminating arrangement: with the channel still
+    /// full the tail could not publish anything and the defect would be
+    /// invisible.
+    #[test]
+    fn a_dropped_intermediate_frame_does_not_publish_truncated_text() -> Result<(), String> {
+        /// Emits growing parse-safe cumulative text until one frame is refused,
+        /// then parks so the test can drain the channel before the tail runs.
+        struct TruncatedByBackpressureBackend {
+            stopped_at: std::sync::mpsc::SyncSender<usize>,
+            release: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
+        }
+
+        impl perl_lsp_rs_core::providers::inline_completion::InlineCompletionBackend
+            for TruncatedByBackpressureBackend
+        {
+            fn stream(
+                &self,
+                _req: &perl_lsp_rs_core::providers::inline_completion::BackendRequest,
+                sink: &mut dyn FnMut(
+                    perl_lsp_rs_core::providers::inline_completion::StreamChunk,
+                ) -> perl_lsp_rs_core::providers::inline_completion::StreamControl,
+            ) -> Result<(), perl_lsp_rs_core::providers::inline_completion::BackendError>
+            {
+                use perl_lsp_rs_core::providers::inline_completion::{
+                    BackendError, StreamChunk, StreamControl,
+                };
+                // Comfortably more frames than the outbound channel can hold.
+                for index in 1..=400_usize {
+                    let control = sink(StreamChunk {
+                        text: format!("my $value = {};", "1".repeat(index)),
+                        is_final: false,
+                    });
+                    if matches!(control, StreamControl::Stop) {
+                        self.stopped_at.send(index).map_err(|error| {
+                            BackendError::Provider(format!(
+                                "stop handshake receiver disappeared: {error}"
+                            ))
+                        })?;
+                        self.release
+                            .lock()
+                            .map_err(|error| {
+                                BackendError::Provider(format!("release gate poisoned: {error}"))
+                            })?
+                            .recv_timeout(Duration::from_secs(10))
+                            .map_err(|error| {
+                                BackendError::Provider(format!(
+                                    "stopped stream was never released: {error}"
+                                ))
+                            })?;
+                        // A compliant backend that was asked to stop reports
+                        // success. Reporting an error here would let the
+                        // existing backend-failure branch mask the defect.
+                        return Ok(());
+                    }
+                }
+                Err(BackendError::Provider(
+                    "the outbound channel never refused a frame".to_string(),
+                ))
+            }
+        }
+
+        const TOKEN: &str = "stream-truncated-by-backpressure";
+
+        let capture = GatedOutputCapture::new();
+        let server = Arc::new(create_server_with_output(Box::new(capture.clone())));
+        set_streaming_debounce(&server, 0);
+
+        let (stopped_tx, stopped_rx) = std::sync::mpsc::sync_channel(1);
+        let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
+        server.test_install_ai_backend(Some(Arc::new(TruncatedByBackpressureBackend {
+            stopped_at: stopped_tx,
+            release: std::sync::Mutex::new(release_rx),
+        })));
+
+        let uri = "file:///streaming-truncated-by-backpressure.pl";
+        open_doc(&server, uri, "");
+
+        let request_server = Arc::clone(&server);
+        let request = thread::Builder::new()
+            .name("truncated-inline-stream".to_string())
+            .spawn(move || request_streaming_completion(&request_server, uri, 0, TOKEN))
+            .map_err(|error| format!("could not start the streaming request: {error}"))?;
+
+        let stopped_at = stopped_rx
+            .recv_timeout(Duration::from_secs(20))
+            .map_err(|error| format!("no frame was ever refused: {error}"));
+
+        // Release the writer whatever happened, so a failed handshake cannot
+        // leave the request thread parked on a full channel.
+        let opened = capture.open();
+        let stopped_at = stopped_at?;
+        opened?;
+
+        if stopped_at < 2 {
+            return Err(format!(
+                "the refused frame must follow at least one delivered frame; refused frame {stopped_at}"
+            ));
+        }
+
+        // The frames accepted before the refusal are exactly 1..stopped_at. Once
+        // the last of them has been written the channel is empty again, so the
+        // tail's own send can succeed.
+        let delivered = stopped_at - 1;
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            if progress_for_token(&capture.inner, TOKEN).len() >= delivered {
+                break;
+            }
+            if Instant::now() >= deadline {
+                return Err(format!("the writer never drained the {delivered} delivered frames"));
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+
+        release_tx
+            .send(())
+            .map_err(|error| format!("could not release the stopped backend: {error}"))?;
+        request.join().map_err(|_| "streaming request thread panicked".to_string())?;
+
+        let progress = wait_for_progress_messages(&capture.inner, TOKEN, Duration::from_secs(5));
+        let final_frame = progress
+            .iter()
+            .find(|msg| {
+                msg.pointer("/params/value/isFinal").and_then(Value::as_bool).unwrap_or(false)
+            })
+            .ok_or_else(|| format!("the stream never published a final frame: {progress:?}"))?;
+
+        let items = final_frame
+            .pointer("/params/value/items")
+            .and_then(Value::as_array)
+            .ok_or_else(|| format!("final frame carried no items array: {final_frame:?}"))?;
+        if !items.is_empty() {
+            return Err(format!(
+                "a stream truncated by an undelivered intermediate frame must not publish its \
+                 partial text as a completed suggestion; published {items:?}"
+            ));
+        }
+
+        // Negative control for the oracle: this text shape *is* admissible, so
+        // the empty final above is the truncation decision and not the
+        // candidate filter rejecting the content.
+        let last_delivered = progress
+            .iter()
+            .rev()
+            .find(|msg| {
+                !msg.pointer("/params/value/isFinal").and_then(Value::as_bool).unwrap_or(false)
+            })
+            .ok_or_else(|| format!("no intermediate frame was delivered: {progress:?}"))?;
+        let delivered_items = last_delivered
+            .pointer("/params/value/items")
+            .and_then(Value::as_array)
+            .ok_or_else(|| format!("delivered frame carried no items array: {last_delivered:?}"))?;
+        if delivered_items.is_empty() {
+            return Err(format!(
+                "the control is vacuous: the same text shape was already filtered before the \
+                 refusal: {last_delivered:?}"
+            ));
+        }
+
+        Ok(())
     }
 }
