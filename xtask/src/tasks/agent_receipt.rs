@@ -62,6 +62,16 @@ fn validate_core_fields(receipt: &AgentLeaseReceipt) -> Result<()> {
 }
 
 fn validate_against_lease(receipt: &AgentLeaseReceipt, lease: &AgentLease) -> Result<()> {
+    // Pin the lease envelope first: a v1 receipt pointing at a structurally
+    // compatible future lease must not validate under unsupported lease
+    // semantics. `read_lease` itself stays version-agnostic; the pin lives on
+    // the validating paths (`verify` pins it separately).
+    if lease.schema_version != SUPPORTED_SCHEMA_VERSION {
+        bail!(
+            "unsupported agent lease schema_version: {} (expected {SUPPORTED_SCHEMA_VERSION})",
+            lease.schema_version
+        );
+    }
     if receipt.task_id != lease.task.task_id {
         bail!("task_id mismatch: receipt={}, lease={}", receipt.task_id, lease.task.task_id);
     }
@@ -265,6 +275,25 @@ mod tests {
                 .ok_or_else(|| color_eyre::eyre::eyre!("{field} mismatch should be rejected"))?;
             assert!(err.to_string().contains(expected), "expected {field} mismatch, got {err}");
         }
+
+        Ok(())
+    }
+
+    #[test]
+    fn agent_receipt_rejects_future_lease_schema_version() -> Result<()> {
+        // A v1 receipt pointing at a structurally compatible future lease
+        // must not validate: authorizing it would run receipt semantics the
+        // v1 reader was never taught (#16012 review).
+        let receipt = valid_receipt("comment_upsert");
+        let mut lease = valid_lease(Utc::now() + Duration::days(1))?;
+        lease.schema_version = 2;
+        let err = validate_against_lease(&receipt, &lease).err().ok_or_else(|| {
+            color_eyre::eyre::eyre!("future lease schema_version should be rejected")
+        })?;
+        assert!(
+            err.to_string().contains("unsupported agent lease schema_version"),
+            "expected lease version rejection, got {err}"
+        );
 
         Ok(())
     }
