@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { coexistenceConflictKey } from '../coexistenceRegistry';
+import { coexistenceConflictKey, type CoexistenceFinding } from '../coexistenceRegistry';
 import {
   COEXISTENCE_CONFIGURATION_INPUTS,
   collectCoexistenceFindings,
@@ -343,6 +343,149 @@ describe('coexistence advisory flow (#7214)', () => {
     );
     expect(cleanReport).toContain('reviewed extension identities');
     expect(cleanReport).toContain('are not providers and are never reported as conflicts');
+  });
+
+  test('a host-wide setting conflict is reported once, not once per root (#16000)', async () => {
+    // One condition: the native critic is on (its default) while a reviewed
+    // critic-domain provider is installed. Nothing about it is folder-specific,
+    // so the two roots must not each restate it under their own identity.
+    extensionsMock.all = [NAVIGATOR];
+    workspaceMock.workspaceFolders = [
+      { name: 'root-a', uri: { fsPath: '/w/a', toString: () => 'file:///w/a' } },
+      { name: 'root-b', uri: { fsPath: '/w/b', toString: () => 'file:///w/b' } },
+    ];
+    configure({ 'critic.enabled': true, formatOnSave: false });
+
+    const findings = await collectCoexistenceFindings(makeContext(makeState()));
+    const critic = findings.filter(
+      (finding) => finding.conflictClass === 'native_critic_and_other_diagnostic_provider',
+    );
+
+    expect(critic).toHaveLength(1);
+    expect(critic[0]?.scopeKind).toBe('user');
+    expect(critic[0]?.folderName).toBeUndefined();
+    // #7214 negative control: no root may carry another root's conflict.
+    expect(findings.map((finding) => finding.folderName)).not.toContain('root-b');
+  });
+
+  test('one suppression clears a host-wide conflict across every root (#16000)', async () => {
+    extensionsMock.all = [NAVIGATOR];
+    workspaceMock.workspaceFolders = [
+      { name: 'root-a', uri: { fsPath: '/w/a', toString: () => 'file:///w/a' } },
+      { name: 'root-b', uri: { fsPath: '/w/b', toString: () => 'file:///w/b' } },
+      { name: 'root-c', uri: { fsPath: '/w/c', toString: () => 'file:///w/c' } },
+    ];
+    configure({ 'critic.enabled': true, formatOnSave: false });
+    const state = makeState();
+    const context = makeContext(state);
+
+    const before = await collectCoexistenceFindings(context);
+    const critic = before.find(
+      (finding) => finding.conflictClass === 'native_critic_and_other_diagnostic_provider',
+    );
+    expect(critic).toBeDefined();
+
+    // Exactly one "Disable for this exact conflict" action, as the advisory
+    // writes it for the finding the user was shown.
+    state.store.set(
+      `perl-lsp.coexistence.suppressed.${coexistenceConflictKey(critic as CoexistenceFinding)}`,
+      true,
+    );
+
+    showWarningMessage.mockResolvedValue(undefined);
+    await runCoexistenceAdvisory(context);
+
+    // The dismissed condition must be gone from the active set, not merely
+    // reduced from three per-root restatements to two.
+    const suppressedKeys = new Set(
+      [...state.store.keys()]
+        .filter((key) => key.startsWith('perl-lsp.coexistence.suppressed.'))
+        .map((key) => key.slice('perl-lsp.coexistence.suppressed.'.length)),
+    );
+    const after = await collectCoexistenceFindings(context);
+    const active = after.filter((finding) => !suppressedKeys.has(coexistenceConflictKey(finding)));
+
+    expect(
+      active.filter(
+        (finding) => finding.conflictClass === 'native_critic_and_other_diagnostic_provider',
+      ),
+    ).toEqual([]);
+    // And the count the user was shown reflects one remaining overlap.
+    const notified = showWarningMessage.mock.calls.map((call) => String(call[0]));
+    expect(notified.at(-1)).toContain('1 potential tooling overlap ');
+  });
+
+  test('a root naming a different owner keeps its own identity (#16000)', async () => {
+    // Two distinct retired critic-engine values: `legacy` host-wide and
+    // `external` under root-b. Same class and subject, different conditions —
+    // collapsing them would hide the root-b setting from its owner.
+    extensionsMock.all = [];
+    workspaceMock.workspaceFolders = [
+      { name: 'root-a', uri: { fsPath: '/w/a', toString: () => 'file:///w/a' } },
+      { name: 'root-b', uri: { fsPath: '/w/b', toString: () => 'file:///w/b' } },
+    ];
+    workspaceMock.getConfiguration.mockImplementation(
+      (section?: string, scope?: { uri?: { fsPath?: string } }) => ({
+        get: jest.fn((key: string, defaultValue?: unknown) =>
+          section === 'perl-lsp' && key === 'formatOnSave' ? false : defaultValue,
+        ),
+        inspect: jest.fn((key: string) =>
+          section === 'perl-lsp' && key === 'critic.engine'
+            ? {
+                globalValue: 'legacy',
+                ...(scope?.uri?.fsPath === '/w/b' ? { workspaceFolderValue: 'external' } : {}),
+              }
+            : undefined,
+        ),
+        update: jest.fn(),
+      }),
+    );
+
+    const findings = await collectCoexistenceFindings(makeContext(makeState()));
+    const stale = findings.filter(
+      (finding) => finding.conflictClass === 'legacy_first_party_critic_setting_active',
+    );
+
+    expect(stale).toHaveLength(2);
+    expect(stale.find((finding) => finding.scopeKind === 'user')?.otherOwner).toContain('legacy');
+    const folderScoped = stale.find((finding) => finding.scopeKind === 'workspace-folder');
+    expect(folderScoped?.folderName).toBe('root-b');
+    expect(folderScoped?.otherOwner).toContain('external');
+  });
+
+  test('a conflict enabled only by a folder override stays folder-scoped (#16000)', async () => {
+    // Host-wide the native critic is off, so there is no host-wide conflict;
+    // only root-b turns it on. That finding is genuinely root-b's and must
+    // survive with its exact identity.
+    extensionsMock.all = [NAVIGATOR];
+    workspaceMock.workspaceFolders = [
+      { name: 'root-a', uri: { fsPath: '/w/a', toString: () => 'file:///w/a' } },
+      { name: 'root-b', uri: { fsPath: '/w/b', toString: () => 'file:///w/b' } },
+    ];
+    workspaceMock.getConfiguration.mockImplementation(
+      (section?: string, scope?: { uri?: { fsPath?: string } }) => ({
+        get: jest.fn((key: string, defaultValue?: unknown) => {
+          if (section === 'perl-lsp' && key === 'critic.enabled') {
+            return scope?.uri?.fsPath === '/w/b';
+          }
+          if (section === 'perl-lsp' && key === 'formatOnSave') {
+            return false;
+          }
+          return defaultValue;
+        }),
+        inspect: jest.fn(() => undefined),
+        update: jest.fn(),
+      }),
+    );
+
+    const findings = await collectCoexistenceFindings(makeContext(makeState()));
+    const critic = findings.filter(
+      (finding) => finding.conflictClass === 'native_critic_and_other_diagnostic_provider',
+    );
+
+    expect(critic).toHaveLength(1);
+    expect(critic[0]?.scopeKind).toBe('workspace-folder');
+    expect(critic[0]?.folderName).toBe('root-b');
   });
 
   test('self extension is never its own conflict', async () => {
