@@ -3233,6 +3233,69 @@ impl<'ast> Visit<'ast> for NonLiteralExprProbe {
     fn visit_macro(&mut self, _: &'ast syn::Macro) {
         self.found = true;
     }
+
+    /// A procedural attribute macro is a `syn::Attribute`, not a `syn::Macro`,
+    /// so `visit_macro` never fires for it. `#[generate_runtime_path] struct S;`
+    /// can emit arbitrary code while the item reads as a bare declaration
+    /// (#16077 review).
+    ///
+    /// This is the one place the probe must whitelist rather than invert: every
+    /// declaration carries `///`, `#[cfg]` or `#[derive]`, so treating all
+    /// attributes as unreadable would empty the filter. Only attributes the
+    /// language itself defines, and which therefore cannot expand to code, are
+    /// accepted; anything else is an attribute macro or a derive helper whose
+    /// owner may expand to code, and the item stays in the blocking basis.
+    fn visit_attribute(&mut self, attr: &'ast syn::Attribute) {
+        if !inert_attribute(attr) {
+            self.found = true;
+            return;
+        }
+        syn::visit::visit_attribute(self, attr);
+    }
+}
+
+/// Built-in attributes that cannot expand to code.
+///
+/// `derive` is deliberately here. It does generate an `impl`, but excluding
+/// every deriving declaration would remove most of this filter's subject, and
+/// whether `ripr` attributes a derived impl's finding back to the deriving
+/// item's own line is a property of the external analyzer that this repository
+/// cannot observe. That residual is recorded on the PR rather than guessed at.
+/// Everything absent from this list — an attribute macro, a derive helper such
+/// as `#[serde(...)]`, anything a crate defines — keeps its item blocking.
+fn inert_attribute(attr: &syn::Attribute) -> bool {
+    const INERT: &[&str] = &[
+        "allow",
+        "automatically_derived",
+        "cfg",
+        "cfg_attr",
+        "cold",
+        "deny",
+        "deprecated",
+        "derive",
+        "doc",
+        "expect",
+        "export_name",
+        "forbid",
+        "inline",
+        "link_section",
+        "must_use",
+        "no_mangle",
+        "non_exhaustive",
+        "repr",
+        "track_caller",
+        "used",
+        "warn",
+    ];
+    // `clippy::…` and `rustfmt::…` are tool attributes: two segments, inert by
+    // definition, and never an attribute macro.
+    let mut segments = attr.path().segments.iter();
+    let Some(first) = segments.next() else { return false };
+    let first = first.ident.to_string();
+    if matches!(first.as_str(), "clippy" | "rustfmt") {
+        return true;
+    }
+    segments.next().is_none() && INERT.contains(&first.as_str())
 }
 
 impl<'ast> Visit<'ast> for DeclarationSeamCollector {
@@ -7090,6 +7153,44 @@ pub struct Pair; impl Pair { fn go(&self) -> bool { compute() } }
     /// starting with `Item::Macro` — added nothing to `executable` and let a
     /// declaration on the same physical line subtract the unscreened item's
     /// finding from a required gate.
+    /// #16077 review: a procedural attribute is a `syn::Attribute`, not a
+    /// `syn::Macro`, so `visit_macro` does not reach it. Only attributes the
+    /// language defines are accepted as inert; anything a crate defines may
+    /// expand to code and keeps its item blocking.
+    #[test]
+    fn declaration_seam_lines_keeps_declarations_carrying_attribute_macros() -> Result<()> {
+        let source = r##"pub const PLAIN: bool = true;
+/// Inert: a doc comment is an attribute the language defines.
+#[allow(dead_code)]
+pub const DOCUMENTED: bool = true;
+#[generate_runtime_path]
+pub struct Generated;
+#[serde(rename = "other")]
+pub struct Helper;
+"##;
+        let marked = declaration_seam_lines(source);
+
+        // Built-in attributes leave the declaration a seam, including the
+        // lines the attributes themselves occupy.
+        for line in [1, 2, 3, 4] {
+            if !marked.contains(&line) {
+                return Err(eyre!(
+                    "line {line} carries only built-in attributes and must stay a seam"
+                ));
+            }
+        }
+        // An attribute macro and a derive helper are both crate-defined, so
+        // neither the attribute line nor the item line may be subtracted.
+        for line in [5, 6, 7, 8] {
+            if marked.contains(&line) {
+                return Err(eyre!(
+                    "line {line} carries a crate-defined attribute and must stay in the blocking basis"
+                ));
+            }
+        }
+        Ok(())
+    }
+
     /// #16077 review: a macro is opaque tokens, not a `syn::Expr`. In type,
     /// pattern or expression position its expansion can carry a call the probe
     /// cannot read, so a declaration containing one must not be screened as
