@@ -60,6 +60,8 @@ jobs:
 
       - name: Decide whether full CI should run
         id: guard
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           if [ "${{ github.event_name }}" != "pull_request" ]; then
             echo "run_ci=true" >> "$GITHUB_OUTPUT"
