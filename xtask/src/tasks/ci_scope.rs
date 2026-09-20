@@ -1637,17 +1637,12 @@ mod tests {
             "no crate is touched, so direct_crates must be empty for the fallback path"
         );
         let crates = &output.platform_overrides.windows_test_crates;
-        assert!(
-            crates.iter().any(|c| c == "perl-dap"),
-            "perl-dap must be in the fallback windows_test_crates set, got {crates:?}"
-        );
-        assert!(
-            crates.iter().any(|c| c == "perl-uri"),
-            "perl-uri must remain in the fallback windows_test_crates set, got {crates:?}"
-        );
-        assert!(
-            crates.iter().any(|c| c == "perl-workspace"),
-            "perl-workspace must remain in the fallback windows_test_crates set, got {crates:?}"
+        // Exact set (the fallback list is sorted and deduped at construction):
+        // perl-dap must be present, and nothing may silently join or leave.
+        assert_eq!(
+            crates,
+            &vec!["perl-dap".to_string(), "perl-uri".to_string(), "perl-workspace".to_string(),],
+            "fallback windows_test_crates drifted, got {crates:?}"
         );
         Ok(())
     }
