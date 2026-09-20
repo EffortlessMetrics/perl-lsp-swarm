@@ -574,11 +574,17 @@ mod tests {
         let mut reader_bytes = Vec::new();
         let mut previous = previous;
         previous.read_to_end(&mut reader_bytes)?;
-        assert_eq!(reader_bytes, previous_bytes, "existing readers retain the old packet");
-        assert_ne!(std::fs::read(out)?, previous_bytes, "destination is replaced, not truncated");
-        assert!(std::fs::read_dir("target/ripr")?.filter_map(Result::ok).all(|entry| {
+        if reader_bytes != previous_bytes {
+            return Err(std::io::Error::other("existing readers did not retain the old packet"));
+        }
+        if std::fs::read(out)? == previous_bytes {
+            return Err(std::io::Error::other("destination was not replaced with the new packet"));
+        }
+        if !std::fs::read_dir("target/ripr")?.filter_map(Result::ok).all(|entry| {
             !entry.file_name().to_string_lossy().starts_with(".test-ripr-facts-atomic.json.tmp-")
-        }));
+        }) {
+            return Err(std::io::Error::other("temporary packet file was left behind"));
+        }
         let _ = std::fs::remove_file(out);
         Ok(())
     }
