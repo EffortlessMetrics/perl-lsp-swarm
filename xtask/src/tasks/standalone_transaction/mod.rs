@@ -583,7 +583,13 @@ fn bounded_text(value: &str, field: &str, max: usize) -> ContractResult<()> {
 pub fn canonical_json(value: &JsonValue) -> String {
     match value {
         JsonValue::Object(map) => {
-            let members: Vec<String> = map
+            // `preserve_order` (indexmap) can be unified into serde_json's map,
+            // making `iter()` insertion-ordered. Sort by key explicitly so
+            // equal objects with different input key order serialize to
+            // identical bytes — that is what "canonical" means here.
+            let mut entries: Vec<(&String, &JsonValue)> = map.iter().collect();
+            entries.sort_by(|a, b| a.0.cmp(b.0));
+            let members: Vec<String> = entries
                 .iter()
                 .map(|(key, item)| {
                     format!(
@@ -1976,6 +1982,12 @@ pub fn fold_terminal_outcome(
             ),
         );
     }
+    // Digest equality proves the receipts bind the settled subject, not that
+    // the subject still agrees with the intent: destination role, requested
+    // product unit, and target identity (including an explicit override) must
+    // be re-checked at the public fan-in exactly as resolution and fallback
+    // enforce them.
+    enforce_intent_subject_coherence(input.intent, input.subject)?;
 
     let mut validated_chain: Vec<(StageId, String)> = Vec::new();
     let mut executed: BTreeSet<StageId> = BTreeSet::new();
@@ -2077,6 +2089,23 @@ pub fn fold_terminal_outcome(
                 format!("stage {} produced more than one receipt", receipt.stage_id.as_str()),
             );
         }
+        // Terminal evidence truncates the chain: cancellation, timeout,
+        // instrument failure, and failure all stop downstream authorization,
+        // and no evidence — success, failure, or skip — may follow a
+        // terminal receipt, or post-failure noise could widen the digest or
+        // resurface later as composition input. This guard precedes the skip
+        // branch below, or an authorized not_applicable row would bypass it.
+        if let Some((terminal_stage, _)) = &blocked {
+            return violation(
+                ContractViolation::EvidenceAfterTerminalEvidence,
+                format!(
+                    "stage {} produced evidence after terminal evidence at {}; the validated \
+                     chain is truncated at the first terminal receipt",
+                    receipt.stage_id.as_str(),
+                    terminal_stage.as_str()
+                ),
+            );
+        }
         // Authorization and evidence shape for skips: a not_applicable
         // result is valid only on positively authorized DAG rows, and a
         // skipped stage consumes no predecessor evidence — it cites none.
@@ -2173,22 +2202,6 @@ pub fn fold_terminal_outcome(
                     "stage {} claimed success with {} instrument evidence",
                     receipt.stage_id.as_str(),
                     receipt.instrument_completeness.as_str()
-                ),
-            );
-        }
-        // Terminal evidence truncates the chain: cancellation, timeout,
-        // instrument failure, and failure all stop downstream authorization,
-        // and no evidence — success, failure, or skip — may follow a
-        // terminal receipt, or post-failure noise could widen the digest or
-        // resurface later as composition input.
-        if let Some((terminal_stage, _)) = &blocked {
-            return violation(
-                ContractViolation::EvidenceAfterTerminalEvidence,
-                format!(
-                    "stage {} produced evidence after terminal evidence at {}; the validated \
-                     chain is truncated at the first terminal receipt",
-                    receipt.stage_id.as_str(),
-                    terminal_stage.as_str()
                 ),
             );
         }

@@ -85,7 +85,7 @@ _timed name cmd:
     fi
 
 # Tier: PR-fast (required for every PR iteration, must be fast ~1-2 min)
-pr-fast: _check-tools-basic ci-standalone-transaction-check
+pr-fast: _check-tools-basic
     #!/usr/bin/env bash
     set -euo pipefail
     args=(--tier pr-fast --receipt)

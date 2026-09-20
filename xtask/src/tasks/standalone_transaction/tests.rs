@@ -206,7 +206,13 @@ fn every_field_of_the_intent_is_digest_load_bearing() {
         ),
         (
             "mode",
-            StandaloneInstallIntent { mode: InstallMode::ExactRegistrySource, ..base.clone() },
+            // A registry-source intent carries a not_applicable selector; the
+            // mutation must stay valid or the digest assertion is skipped.
+            StandaloneInstallIntent {
+                mode: InstallMode::ExactRegistrySource,
+                selector: ReleaseSelector::not_applicable(),
+                ..base.clone()
+            },
         ),
         (
             "selector",
@@ -1325,6 +1331,60 @@ fn fold_rejects_subject_dag_shape_mismatch() {
         folded(&intent, &archive_dag, &source_subject, &source_digest, |_| {}),
         ContractViolation::ModeMismatch,
     );
+
+    // The named DAG-mode guard itself: a registry intent folded against an
+    // archive DAG must be rejected by dag.mode != intent.mode, not only by a
+    // subject-side disagreement.
+    expect_violation(
+        folded(&source_intent, &archive_dag, &source_subject, &source_digest, |_| {}),
+        ContractViolation::ModeMismatch,
+    );
+}
+
+/// Fan-in coherence falsifier: receipts that pass `validate()` and bind the
+/// settled subject's digest still must not fold when the subject disagrees
+/// with the intent on destination role, product unit, or target identity —
+/// the same contract resolution and fallback enforce (#11099).
+#[test]
+fn fold_rejects_subject_intent_coherence_drift() {
+    // Destination role: the settled subject resolves UserLocal; folding it
+    // under an intent that moved to SystemShared must refuse even though
+    // every input validates and the subject digest still binds.
+    let mut intent = base_intent();
+    intent.destination_role = DestinationRole::SystemShared;
+    let (subject, subject_digest) = resolved_archive(&base_intent());
+    let dag = archive_dag(intent.requested_product_unit);
+    expect_violation(
+        folded(&intent, &dag, &subject, &subject_digest, |_| {}),
+        ContractViolation::OutcomeConflict,
+    );
+
+    // Product unit: a subject settled for the server+DAP pair cannot fold
+    // under an intent that requests the server-only unit. The DAG keeps the
+    // subject's unit so only the intent-side disagreement can refuse.
+    let mut intent = base_intent();
+    intent.requested_product_unit = ProductUnit::ServerOnly;
+    let (subject, subject_digest) = resolved_archive(&base_intent());
+    let dag = archive_dag(subject.product_unit());
+    expect_violation(
+        folded(&intent, &dag, &subject, &subject_digest, |_| {}),
+        ContractViolation::OutcomeConflict,
+    );
+
+    // Target identity: an intent whose target moved to Windows cannot fold
+    // the linux-gnu subject the receipts bind.
+    let mut intent = base_intent();
+    intent.target = TargetIdentity {
+        platform: Platform::Windows,
+        triple: "x86_64-pc-windows-msvc".into(),
+        libc: LibcDisposition::Msvc,
+    };
+    let (subject, subject_digest) = resolved_archive(&base_intent());
+    let dag = archive_dag(intent.requested_product_unit);
+    expect_violation(
+        folded(&intent, &dag, &subject, &subject_digest, |_| {}),
+        ContractViolation::OutcomeConflict,
+    );
 }
 
 /// A stage the settled subject binds policy-mandated evidence to can never
@@ -2013,10 +2073,14 @@ fn digests_are_domain_separated_across_purposes() {
     let subject_digest = domain_digest(SUBJECT_DIGEST_DOMAIN, payload);
     let receipt_digest = domain_digest(RECEIPT_DIGEST_DOMAIN, payload);
     let stage_set_digest = domain_digest(STAGE_SET_DIGEST_DOMAIN, payload);
-    assert_ne!(intent_digest, subject_digest);
-    assert_ne!(intent_digest, receipt_digest);
-    assert_ne!(subject_digest, receipt_digest);
-    assert_ne!(receipt_digest, stage_set_digest);
+    // Every domain pair must differ: any two domains collapsing into one would
+    // let a digest minted for one purpose stand in for another.
+    let digests = [&intent_digest, &subject_digest, &receipt_digest, &stage_set_digest];
+    for (index, left) in digests.iter().enumerate() {
+        for right in &digests[index + 1..] {
+            assert_ne!(left, right, "digest domains {index} and a later domain collided");
+        }
+    }
 }
 
 #[test]

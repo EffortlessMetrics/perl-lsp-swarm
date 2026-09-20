@@ -429,11 +429,17 @@ fn evidence_after_terminal_evidence_probe() -> ContractResult<()> {
     let subject_digest = subject.validate()?;
     let dag = dag_for(&intent);
     let mut receipts = green_chain(&intent, &subject, &subject_digest, &dag)?;
-    if let Some(receipt) = receipts.get_mut(4) {
+    // Cancel ChecksumIntegrity (index 2) so the authorized Provenance skip
+    // (index 3) arrives AFTER terminal evidence: the probe then exercises the
+    // post-terminal skip path directly, not only post-terminal success rows.
+    if let Some(receipt) = receipts.get_mut(2) {
         receipt.result = StageResult::Cancelled;
         receipt.reason = ReasonFamily::Cancelled;
         receipt.next_action = ActionClass::AbortInstall;
     }
+    // Truncate after the provenance skip so the first post-terminal receipt
+    // is the skip itself — later success rows cannot mask a skip bypass.
+    receipts.truncate(4);
     // Recompute citations from the mutated chain, exactly as an honest
     // composer would, so the probe isolates the truncation rule from
     // citation drift.
