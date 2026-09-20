@@ -4,7 +4,7 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-const SCHEMA_VERSION: &str = "1";
+pub const SCHEMA_VERSION: u32 = 1;
 const EVENT_PULL_REQUEST: &str = "pull_request";
 
 #[derive(Debug, Clone)]
@@ -56,7 +56,7 @@ pub enum Classification {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AggregatorReceipt {
     pub check: String,
-    pub schema_version: String,
+    pub schema_version: u32,
     pub event: String,
     pub verdict: Verdict,
     pub classification: Classification,
@@ -134,7 +134,7 @@ pub fn build_aggregator_receipt(config: &AggregateReceiptsConfig) -> Result<Aggr
 
     Ok(AggregatorReceipt {
         check: config.check.clone(),
-        schema_version: SCHEMA_VERSION.to_string(),
+        schema_version: SCHEMA_VERSION,
         event: EVENT_PULL_REQUEST.to_string(),
         verdict,
         classification,
