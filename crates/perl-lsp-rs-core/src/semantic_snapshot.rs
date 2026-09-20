@@ -1321,17 +1321,24 @@ impl SemanticSnapshotTerminalState {
 // no construction path produces yet. Dropping them would make the family
 // narrower than the predicate it mirrors, which is the error
 // `absent_terminal_state_covers_exactly_the_absent_family` exists to catch.
-//
-// The allow is scoped to `not(test)` on purpose: under `cfg(test)` it is off,
-// so the two staged variants are dead code unless a proof actually constructs
-// them -- which iterating the enum makes it do. A blanket `allow(dead_code)`
-// would silence that check too. Same `cfg_attr(not(test), allow(dead_code))`
-// shape this crate already uses in `providers::navigation::type_definition`.
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) enum AbsentTerminalState {
     /// No semantic result is available for this subject.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "policy:allow-16222-absent-family-staged: staged member of the absent family"
+        )
+    )]
     Unavailable,
     /// Construction was cancelled before it produced facts.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "policy:allow-16222-absent-family-staged: staged member of the absent family"
+        )
+    )]
     Cancelled,
     /// Construction stopped against its budget.
     BudgetExhausted,

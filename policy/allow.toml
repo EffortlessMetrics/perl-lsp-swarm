@@ -4508,3 +4508,26 @@ expires = "2026-12-20"
 ast_kind = "attribute"
 lint = "dead_code"
 target_fingerprint = "policy:allow-13855-staged-contract"
+
+# Staged members of the absent family; remove when a construction path produces
+# them, which the expectation itself will then report as unfulfilled (#16222).
+[[allow]]
+id = "allow-16222-absent-family-staged"
+kind = "lint_exception"
+family = "expect_attribute"
+path = "crates/perl-lsp-rs-core/src/semantic_snapshot.rs"
+owner = "core/maintainers"
+classification = "reviewed_exception"
+reason = "AbsentTerminalState mirrors SemanticSnapshotTerminalState::is_absent_family exactly, so it carries Unavailable and Cancelled although no construction path produces them yet. Narrowing the type to the constructed variants would make it narrower than the predicate it mirrors, which absent_terminal_state_covers_exactly_the_absent_family exists to catch. Scoped to the two staged variants and to not(test), and written as expect rather than allow: under cfg(test) the enum is iterated so every variant is constructed, and in production the expectation goes unfulfilled the moment a construction path produces either one."
+evidence = [
+  "issue:16222",
+  "test:crates/perl-lsp-rs-core/src/semantic_snapshot.rs::absent_terminal_state_covers_exactly_the_absent_family",
+]
+created = "2026-09-20"
+review_after = "2026-10-20"
+expires = "2026-12-20"
+
+[allow.selector]
+ast_kind = "attribute"
+lint = "dead_code"
+target_fingerprint = "policy:allow-16222-absent-family-staged"
