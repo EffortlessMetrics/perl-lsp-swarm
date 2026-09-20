@@ -86,6 +86,15 @@ const OWNERSHIP: &[OwnershipRow] = &[
         "#8386"
     ),
     row!(
+        "initialization_accepted",
+        ClientSession,
+        "AtomicBool",
+        "connection replacement",
+        "client session",
+        false,
+        "#8386"
+    ),
+    row!(
         "initialized",
         ClientSession,
         "AtomicBool",
@@ -237,6 +246,15 @@ const OWNERSHIP: &[OwnershipRow] = &[
         "initialize surface identity",
         false,
         "#8386"
+    ),
+    row!(
+        "text_sync_session",
+        ClientSession,
+        "Mutex<Option<AcceptedTextSyncSession>>",
+        "connection replacement",
+        "accepted text-sync session contract (#9378): immutable FULL + UTF-16 authority written once at initialize acceptance",
+        false,
+        "#9378"
     ),
     row!(
         "client_supports_pull_diags",
@@ -515,6 +533,33 @@ const OWNERSHIP: &[OwnershipRow] = &[
         "workspace identity generation",
         false,
         "#8385"
+    ),
+    row!(
+        "workspace_topology_generation",
+        WorkspaceServices,
+        "Arc<AtomicU32>",
+        "server instance drop",
+        "workspace-topology generation",
+        false,
+        "#9062"
+    ),
+    row!(
+        "workspace_topology_stable",
+        WorkspaceServices,
+        "Arc<AtomicBool>",
+        "server instance drop",
+        "workspace-topology publication stability",
+        false,
+        "#9062"
+    ),
+    row!(
+        "workspace_transition_test_gate",
+        WorkspaceServices,
+        "Arc<Mutex<Option>>",
+        "test gate release / server drop",
+        "workspace-transition race proof gate",
+        true,
+        "#9062"
     ),
     row!(
         "single_file_project_config",

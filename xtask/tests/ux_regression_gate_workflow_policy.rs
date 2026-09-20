@@ -154,7 +154,12 @@ fn failing_command_is_captured_and_emits_exact_subject_receipt_in_both_workflows
         assert_eq!(fs::read_to_string(receipt_path(temp.path(), "exit"))?, "23\n", "{file}");
 
         let payload = emit_receipt(temp.path())?;
-        assert_eq!(payload["schema_version"], 1, "{file}");
+        // Schema 2 adds the per-failing-test `failing_tests` array (#15988).
+        // This test's subject is the workflow policy — that both workflows capture a
+        // failing command and emit a receipt bound to the exact subject SHA — so the
+        // version is scaffolding here, not the claim. The claims below (exit status,
+        // captured log, result, blocking) are unchanged.
+        assert_eq!(payload["schema_version"], 2, "{file}");
         assert_eq!(payload["sha"], FIXED_SHA, "{file}");
         assert_eq!(payload["result"], "fail", "{file}");
         assert_eq!(payload["blocking"], true, "{file}");
