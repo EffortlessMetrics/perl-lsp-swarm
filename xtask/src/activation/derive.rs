@@ -898,15 +898,22 @@ fn raw_string_open(bytes: &[u8], i: usize) -> Option<(usize, usize)> {
 /// positions this copy proves are code rather than scanning this copy.
 fn code_only(text: &str) -> String {
     let mask = code_mask(text);
-    text.char_indices()
-        .flat_map(|(i, c)| {
-            if mask[i] || c == '\n' {
-                std::iter::once(c).collect::<Vec<_>>()
-            } else {
-                std::iter::repeat_n(' ', c.len_utf8()).collect()
+    // One preallocated buffer rather than a per-scalar collection: this runs
+    // over every compiled source file in the repository, so an allocation per
+    // character is an allocation per byte of the tree.
+    let mut code = String::with_capacity(text.len());
+    for (i, c) in text.char_indices() {
+        if mask[i] || c == '\n' {
+            code.push(c);
+        } else {
+            // A masked scalar becomes as many spaces as its UTF-8 width, so a
+            // byte offset into `code` still addresses the same byte of `text`.
+            for _ in 0..c.len_utf8() {
+                code.push(' ');
             }
-        })
-        .collect()
+        }
+    }
+    code
 }
 
 /// Every feature name this file gates on.
@@ -2364,9 +2371,40 @@ mod tests {
         assert_eq!(owners, Ok(vec![UNOWNED.to_string()]));
     }
 
+    /// The masked copy must be byte-for-byte as long as its input, because
+    /// `gated_features` reads the ORIGINAL text at offsets it found in the
+    /// copy. A masked scalar narrower than the one it replaced silently
+    /// shifts every offset after it.
+    ///
+    /// Asserted separately from any behaviour, because a drifted offset does
+    /// not reliably change the answer: it lands wherever it lands.
     #[test]
-    fn gated_features_preserves_offsets_after_multibyte_comments() -> Result<(), String> {
+    fn code_only_preserves_byte_length_across_multibyte_masking() -> Result<(), String> {
         let text = "// é\nconst enabled: bool = cfg!(feature = \"simd\");";
+        let masked = code_only(text);
+        if masked.len() != text.len() {
+            return Err(format!(
+                "code_only must not change byte length: input {} bytes, masked {} bytes",
+                text.len(),
+                masked.len()
+            ));
+        }
+        Ok(())
+    }
+
+    /// A drifted offset that lands on a `)` before the feature literal makes
+    /// `gated_features` return an EMPTY set rather than panicking, which is
+    /// the loss its own doc comment warns about: an unseen production gate
+    /// read as a test API.
+    ///
+    /// `foo()` supplies that earlier `)` and five box-drawing characters
+    /// supply ten bytes of drift. Fewer than five leaves the answer correct
+    /// by accident; beyond five the run alternates between this silent wrong
+    /// answer and a char-boundary panic, depending only on where the index
+    /// lands. A test anchored on the panic would prove less than this one.
+    #[test]
+    fn gated_features_survives_multibyte_drift_onto_an_earlier_paren() -> Result<(), String> {
+        let text = "// ─────\nlet e = foo() && cfg!(feature = \"simd\");";
         let actual = gated_features(text);
         let expected = BTreeSet::from(["simd".to_string()]);
         if actual != expected {
