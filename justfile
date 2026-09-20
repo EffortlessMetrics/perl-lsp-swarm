@@ -1466,6 +1466,8 @@ ci-policy:
     just ci-check-todos
     @python3 scripts/ci/test_validate_cargo_lock_conflict_policy.py
     @python3 scripts/ci/validate_cargo_lock_conflict_policy.py --repo-root .
+    @python3 scripts/ci/test_validate_cargo_feature_roles.py
+    @python3 scripts/ci/validate_cargo_feature_roles.py --repo-root .
     @cargo xtask check-from-raw
     @cargo xtask check-tautology --check
     @cargo xtask check-memory-lifecycle-policy
@@ -2380,7 +2382,11 @@ _public-api-filter raw out:
     set -euo pipefail
     # grep exits 1 on no matches; an empty result is classified as
     # INSTRUMENT-FAIL by the caller, so tolerate the exit code here.
-    grep -E '^(pub |(#\[[^]]*\][[:space:]]*)+pub )' "{{raw}}" > "{{out}}" || true
+    grep -E '^(pub |(#\[[^]]*\][[:space:]]*)+pub )' "{{raw}}" \
+        | sed -E \
+            -e 's#core::io::(write::|error::)?#std::io::#g' \
+            -e 's#alloc::io::buf_read::#std::io::#g' \
+        > "{{out}}" || true
 
 # Check public API surface of the ratcheted crates against committed baselines
 public-api-check:

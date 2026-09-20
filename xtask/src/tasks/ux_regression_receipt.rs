@@ -21,12 +21,71 @@ static PANIC_RE: LazyLock<Regex> = LazyLock::new(|| {
         .expect("panic regex must compile")
 });
 
+// Cargo prints one `---- <test name> stdout ----` block per failing test in its
+// trailing `failures:` report. Splitting on that header is what lets each failing
+// test be classified from its own evidence instead of from the whole log, where one
+// test's wording silently reclassifies another's (#15988).
+#[allow(clippy::expect_used, reason = "static LazyLock regex with known-good pattern")]
+static FAILURE_BLOCK_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?m)^-{4}\s+(\S+)\s+stdout\s+-{4}\s*$")
+        .expect("failure block header regex must compile")
+});
+
+// `WaitEnd::Deadline` is the one harness outcome documented to mean "nothing
+// decided": a live stream that simply did not produce the awaited observation in
+// time. `WaitEnd::describe` renders it with this exact wording, so matching it is
+// evidence from the harness rather than a guess about the wording of a panic.
+// See crates/perl-lsp-ux-tests/src/observation.rs.
+const DEADLINE_MARKER: &str = "deadline expired after";
+
 #[derive(Debug, Clone)]
 pub struct UxRegressionReceiptConfig {
     pub input: PathBuf,
     pub receipt: Option<PathBuf>,
     pub sha: Option<String>,
     pub exit_status_file: Option<PathBuf>,
+}
+
+/// Why one test failed, told apart by evidence inside that test's own output.
+///
+/// The gate's single whole-run `failure_class` cannot answer the question triage
+/// actually asks: did this change break something, or did a shared runner make a
+/// latency budget expire? Both render as a red check today (#15988). These variants
+/// separate the two where the log can prove it and, just as importantly, say so when
+/// it cannot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UxFailureMode {
+    /// A bounded wait expired with the stream still live. Nothing about the change
+    /// was decided; the observation simply did not arrive inside its budget.
+    BudgetExceeded,
+    /// An assertion compared a real observed value and rejected it. The change is
+    /// the subject; a co-tenant runner is not a sufficient explanation.
+    AssertionFailed,
+    /// An assertion failed on an absent or empty observation with no budget evidence
+    /// in the block. A genuine regression and an expired budget both look like this,
+    /// so the mode is reported rather than guessed. Resolving it needs the harness to
+    /// carry its `WaitEnd` outcome into the assertion message.
+    AssertionOnAbsentObservation,
+    /// The test panicked without an assertion: an unwrap, an index, a crash path.
+    Panic,
+    /// The block carried no evidence this classifier is willing to read.
+    Unknown,
+}
+
+/// One failing test and the evidence its own output carried.
+#[derive(Debug, Clone, Serialize)]
+pub struct UxFailingTest {
+    /// Fully qualified test name as cargo printed it.
+    pub name: String,
+    /// Mode inferred from this test's block alone.
+    pub mode: UxFailureMode,
+    /// True when `mode` rests on an explicit marker in the block rather than on the
+    /// absence of one. A consumer should treat a false here as "needs a human".
+    pub discriminated: bool,
+    /// The single line the mode was read from, for a reader who wants the receipt to
+    /// show its work.
+    pub evidence: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -39,6 +98,9 @@ pub struct UxRegressionReceipt {
     scenario_file: Option<String>,
     scenario: Option<String>,
     first_failing_test: Option<String>,
+    /// Per-test discrimination, one entry per `---- <name> stdout ----` block.
+    /// Additive: `failure_class` below keeps its existing whole-run meaning.
+    failing_tests: Vec<UxFailingTest>,
     result: String,
     failure_class: UxFailureClass,
     panic_location: Option<String>,
@@ -107,6 +169,7 @@ fn classify_with_exit_status(
     let workflow = first_failing_test.as_ref().and_then(|name| workflow_from_test_name(name));
 
     let failure_class = infer_failure_class(&classification_input(raw));
+    let failing_tests = discriminate_failing_tests(raw);
 
     let canonical_repro = first_failing_test.as_ref().map(|name| {
         format!("cargo test -p perl-lsp-ux-tests {name} -- --test-threads=1 --nocapture")
@@ -154,13 +217,16 @@ fn classify_with_exit_status(
 
     UxRegressionReceipt {
         kind: "ux_regression_receipt",
-        schema_version: 1,
+        // 2 adds `failing_tests`. Every field of version 1 keeps its meaning, so a
+        // reader that ignores the new array behaves exactly as it did before.
+        schema_version: 2,
         measured_at: Utc::now().to_rfc3339(),
         sha: sha.unwrap_or_else(|| "unknown".to_string()),
         workflow,
         scenario_file: scenario.clone(),
         scenario,
         first_failing_test,
+        failing_tests,
         result,
         failure_class,
         panic_location,
@@ -175,6 +241,150 @@ fn classify_with_exit_status(
         run_id: None,
         attempt: None,
         platform: None,
+    }
+}
+
+/// Split cargo's trailing failure report into one block per failing test and
+/// classify each from its own evidence.
+///
+/// Whole-log classification is what makes a latency timeout and a real regression
+/// indistinguishable: `infer_failure_class` scans the entire log, so one test
+/// mentioning a baseline reclassifies another test's expired budget. Per-block
+/// reading keeps each failure's evidence to itself.
+fn discriminate_failing_tests(raw: &str) -> Vec<UxFailingTest> {
+    // (test name, where its body starts, where the next header starts)
+    let mut headers: Vec<(String, usize, usize)> = Vec::new();
+    for capture in FAILURE_BLOCK_RE.captures_iter(raw) {
+        let (Some(header), Some(name)) = (capture.get(0), capture.get(1)) else {
+            continue;
+        };
+        headers.push((name.as_str().to_string(), header.end(), header.start()));
+    }
+    let mut spans: Vec<(String, usize, usize)> = Vec::new();
+    for (index, (name, body_start, _)) in headers.iter().enumerate() {
+        let body_end = headers
+            .get(index + 1)
+            .map_or(raw.len(), |(_, _, next_header_start)| *next_header_start);
+        spans.push((name.clone(), *body_start, body_end));
+    }
+
+    let mut discriminated: Vec<UxFailingTest> = Vec::new();
+    for (name, start, end) in spans {
+        if discriminated.iter().any(|existing| existing.name == name) {
+            continue;
+        }
+        let block = raw.get(start..end).unwrap_or_default();
+        let (mode, evidence) = classify_failure_mode(block_body(block));
+        discriminated.push(UxFailingTest {
+            name,
+            mode,
+            discriminated: mode_is_evidence_backed(mode),
+            evidence,
+        });
+    }
+
+    if !discriminated.is_empty() {
+        return discriminated;
+    }
+
+    // Cargo reported failures but printed no stdout block for them. Name the tests
+    // and admit the mode is unknown rather than borrowing the whole-log class.
+    for line in raw.lines() {
+        let Some(capture) = FAILED_TEST_RE.captures(line) else {
+            continue;
+        };
+        let Some(name) = capture.get(1) else {
+            continue;
+        };
+        let name = name.as_str().to_string();
+        if discriminated.iter().any(|existing| existing.name == name) {
+            continue;
+        }
+        discriminated.push(UxFailingTest {
+            name,
+            mode: UxFailureMode::Unknown,
+            discriminated: false,
+            evidence: None,
+        });
+    }
+    discriminated
+}
+
+/// Trim cargo's run-level trailer off the end of a block so the last failing test
+/// does not inherit the summary lines that follow every failure report.
+fn block_body(block: &str) -> &str {
+    let mut offset = 0usize;
+    for line in block.split_inclusive('\n') {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("failures:") || trimmed.starts_with("test result:") {
+            return block.get(..offset).unwrap_or(block);
+        }
+        offset += line.len();
+    }
+    block
+}
+
+/// Read one failing test's block and say what kind of failure it was.
+///
+/// Precedence is deliberate. A budget marker wins outright, because
+/// `WaitEnd::Deadline` is documented as the only outcome meaning "nothing decided" —
+/// once a bounded wait expired, whatever assertion fired afterwards was judging an
+/// observation that never arrived.
+fn classify_failure_mode(block: &str) -> (UxFailureMode, Option<String>) {
+    let mut assertion_line: Option<&str> = None;
+    let mut panic_line: Option<&str> = None;
+
+    for line in block.lines() {
+        let lower = line.to_ascii_lowercase();
+        if lower.contains(DEADLINE_MARKER)
+            || lower.contains("timed out after")
+            || lower.contains("timed out waiting")
+            || lower.contains("test timed out")
+        {
+            return (UxFailureMode::BudgetExceeded, Some(line.trim().to_string()));
+        }
+        if assertion_line.is_none() && lower.contains("assertion") && lower.contains("failed") {
+            assertion_line = Some(line);
+        }
+        if panic_line.is_none() && lower.contains("panicked at") {
+            panic_line = Some(line);
+        }
+    }
+
+    if let Some(line) = assertion_line {
+        let mode = if observation_reads_absent(block) {
+            UxFailureMode::AssertionOnAbsentObservation
+        } else {
+            UxFailureMode::AssertionFailed
+        };
+        return (mode, Some(line.trim().to_string()));
+    }
+    if let Some(line) = panic_line {
+        return (UxFailureMode::Panic, Some(line.trim().to_string()));
+    }
+    (UxFailureMode::Unknown, None)
+}
+
+/// True when the block shows the assertion rejecting an empty or missing value.
+///
+/// These renderings are exactly what a provider returns when its result never
+/// arrived, which is why a block matching this is reported as ambiguous instead of
+/// being called a regression.
+fn observation_reads_absent(block: &str) -> bool {
+    let lower = block.to_ascii_lowercase();
+    ["got []", "got {}", "got none", "left: []", "right: []", "left: {}", "was empty"]
+        .iter()
+        .any(|marker| lower.contains(marker))
+}
+
+/// Whether a mode rests on a marker that was present, rather than on one that was
+/// absent. A consumer should route anything false here to a human.
+const fn mode_is_evidence_backed(mode: UxFailureMode) -> bool {
+    match mode {
+        UxFailureMode::BudgetExceeded | UxFailureMode::AssertionFailed | UxFailureMode::Panic => {
+            true
+        }
+        UxFailureMode::AssertionOnAbsentObservation | UxFailureMode::Unknown => false,
     }
 }
 
@@ -700,5 +910,185 @@ test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out";
         assert_eq!(receipt.merge_action, "quarantine_or_fix_test");
 
         Ok(())
+    }
+    // ── #15988: budget-exceeded vs assertion-failed discrimination ──────────
+    //
+    // The gate fails identically whether a change broke a provider or a shared
+    // runner let a latency budget expire. These tests pin the difference to
+    // evidence inside each failing test's own block.
+
+    /// Cargo's trailing failure report for two tests that failed for genuinely
+    /// different reasons: one bounded wait expired, one assertion compared two real
+    /// values and rejected the observed one.
+    const TWO_FAILURES_LOG: &str = "running 2 tests\n\
+test ux_latency_raw_rpc::ux_latency_workspace_symbols_sees_open_document_symbols ... FAILED\n\
+test ux_scenario_14_inc_conformance::goto_definition_follows_include ... FAILED\n\
+\n\
+failures:\n\
+\n\
+---- ux_latency_raw_rpc::ux_latency_workspace_symbols_sees_open_document_symbols stdout ----\n\
+thread 'main' panicked at crates/perl-lsp-ux-tests/tests/ux_latency_raw_rpc.rs:352:5:\n\
+workspace/symbol wait ended: deadline expired after 5000ms with the stream still live\n\
+\n\
+---- ux_scenario_14_inc_conformance::goto_definition_follows_include stdout ----\n\
+thread 'main' panicked at crates/perl-lsp-ux-tests/tests/ux_scenario_14_inc_conformance.rs:88:5:\n\
+assertion `left == right` failed: goto-definition must follow the include path\n\
+  left: \"lib/App.pm\"\n\
+ right: \"lib/Base.pm\"\n\
+\n\
+failures:\n\
+    ux_latency_raw_rpc::ux_latency_workspace_symbols_sees_open_document_symbols\n\
+    ux_scenario_14_inc_conformance::goto_definition_follows_include\n\
+\n\
+test result: FAILED. 0 passed; 2 failed; 0 ignored";
+
+    #[test]
+    fn discriminates_an_expired_budget_from_a_real_assertion_failure() {
+        let receipt = classify(TWO_FAILURES_LOG, Some("sha".to_string()));
+        assert_eq!(receipt.failing_tests.len(), 2, "both failing tests must appear");
+
+        let budget = &receipt.failing_tests[0];
+        assert_eq!(
+            budget.name,
+            "ux_latency_raw_rpc::ux_latency_workspace_symbols_sees_open_document_symbols"
+        );
+        assert_eq!(
+            budget.mode,
+            UxFailureMode::BudgetExceeded,
+            "a WaitEnd::Deadline render means nothing about the change was decided"
+        );
+        assert!(budget.discriminated, "a deadline marker is evidence, not an inference");
+
+        let regression = &receipt.failing_tests[1];
+        assert_eq!(
+            regression.name,
+            "ux_scenario_14_inc_conformance::goto_definition_follows_include"
+        );
+        assert_eq!(
+            regression.mode,
+            UxFailureMode::AssertionFailed,
+            "an assertion over two real values is the change's own failure"
+        );
+        assert!(regression.discriminated);
+    }
+
+    #[test]
+    fn one_tests_wording_does_not_reclassify_another_tests_budget() {
+        // This is the #15988 defect in miniature. Whole-log classification sees the
+        // scenario-14 provider vocabulary and calls the entire run a provider
+        // regression, which buries the expired budget in the other block.
+        let receipt = classify(TWO_FAILURES_LOG, None);
+        assert!(
+            matches!(receipt.failure_class, UxFailureClass::ProviderRegression),
+            "whole-run class is unchanged by this slice, and is exactly the signal that misleads"
+        );
+        assert_eq!(
+            receipt.failing_tests[0].mode,
+            UxFailureMode::BudgetExceeded,
+            "per-test discrimination must survive the whole-run class"
+        );
+    }
+
+    #[test]
+    fn an_expired_budget_outranks_the_assertion_it_caused() {
+        // A wait that expires usually still ends in an assertion over the empty
+        // result. The budget is the cause; reporting the assertion would name the
+        // symptom and point triage at the change.
+        let log = "failures:\n\n\
+---- ux_latency_raw_rpc::hover stdout ----\n\
+wait ended: deadline expired after 5000ms with the stream still live\n\
+assertion failed: !hovers.is_empty()\n\
+\n\
+test result: FAILED. 0 passed; 1 failed";
+        let receipt = classify(log, None);
+        assert_eq!(receipt.failing_tests[0].mode, UxFailureMode::BudgetExceeded);
+        assert_eq!(
+            receipt.failing_tests[0].evidence.as_deref(),
+            Some("wait ended: deadline expired after 5000ms with the stream still live"),
+            "the receipt shows the line it read"
+        );
+    }
+
+    #[test]
+    fn an_assertion_on_an_empty_observation_is_reported_as_ambiguous() {
+        // Nothing in this block can tell a real regression from a budget that
+        // expired before the observation arrived. Saying so is the honest output.
+        let log = "failures:\n\n\
+---- ux_latency_raw_rpc::symbols stdout ----\n\
+thread 'main' panicked at crates/perl-lsp-ux-tests/tests/ux_latency_raw_rpc.rs:352:5:\n\
+assertion failed: workspace/symbol must find alpha from an opened e2e document; got []\n\
+\n\
+test result: FAILED. 0 passed; 1 failed";
+        let receipt = classify(log, None);
+        assert_eq!(
+            receipt.failing_tests[0].mode,
+            UxFailureMode::AssertionOnAbsentObservation,
+            "an empty observed value is the shape both causes produce"
+        );
+        assert!(
+            !receipt.failing_tests[0].discriminated,
+            "an ambiguous block must not claim to be discriminated"
+        );
+    }
+
+    #[test]
+    fn a_bare_panic_is_not_called_an_assertion() {
+        let log = "failures:\n\n\
+---- ux_scenario_01_startup::start stdout ----\n\
+thread 'main' panicked at crates/perl-lsp-ux-tests/tests/ux_scenario_01_startup.rs:12:9:\n\
+called `Option::unwrap()` on a `None` value\n\
+\n\
+test result: FAILED. 0 passed; 1 failed";
+        let receipt = classify(log, None);
+        assert_eq!(receipt.failing_tests[0].mode, UxFailureMode::Panic);
+    }
+
+    #[test]
+    fn the_last_block_does_not_inherit_the_run_summary() {
+        // Without trimming, the trailing `failures:` list and `test result:` line
+        // land inside the final block and can supply evidence the test never wrote.
+        let log = "failures:\n\n\
+---- ux_latency_raw_rpc::only stdout ----\n\
+some detail with no verdict in it\n\
+\n\
+failures:\n    ux_latency_raw_rpc::only\n\
+\n\
+test result: FAILED. 0 passed; 1 failed; timed out after 60s";
+        let receipt = classify(log, None);
+        assert_eq!(
+            receipt.failing_tests[0].mode,
+            UxFailureMode::Unknown,
+            "the summary's wording is not this test's evidence"
+        );
+    }
+
+    #[test]
+    fn failing_tests_is_empty_on_a_passing_run() {
+        let log = "running 3 tests\ntest ux_scenario_01_startup::start ... ok\ntest result: ok. 3 passed; 0 failed";
+        let receipt = classify(log, None);
+        assert_eq!(receipt.result, "pass");
+        assert!(receipt.failing_tests.is_empty(), "a passing run discriminates nothing");
+    }
+
+    #[test]
+    fn failures_without_stdout_blocks_are_named_but_not_classified() {
+        let log = "running 1 test\ntest ux_scenario_01_startup::start ... FAILED\ntest result: FAILED. 0 passed; 1 failed";
+        let receipt = classify(log, None);
+        assert_eq!(receipt.failing_tests.len(), 1);
+        assert_eq!(receipt.failing_tests[0].name, "ux_scenario_01_startup::start");
+        assert_eq!(receipt.failing_tests[0].mode, UxFailureMode::Unknown);
+        assert!(
+            !receipt.failing_tests[0].discriminated,
+            "no block means no evidence; the whole-run class must not be borrowed here"
+        );
+    }
+
+    #[test]
+    fn schema_version_records_the_additive_field() {
+        let receipt = classify("test result: ok. 1 passed; 0 failed", None);
+        assert_eq!(
+            receipt.schema_version, 2,
+            "consumers pinned to version 1 keep every field they already read"
+        );
     }
 }

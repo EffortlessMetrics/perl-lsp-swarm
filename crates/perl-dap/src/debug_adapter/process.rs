@@ -4358,11 +4358,32 @@ mod tests {
                     if reason != Some("breakpoint") {
                         return Err(format!("expected breakpoint stop, got {reason:?}"));
                     }
-                    let guard = lock_or_recover(&adapter.session, "test.session");
-                    let frame = guard
-                        .as_ref()
-                        .and_then(|session| session.stack_frames.first())
-                        .ok_or("breakpoint frame missing")?;
+                    // The fixture exits after ACTUAL_DONE. Under shard load the
+                    // reader may reap it between the stopped event and this read;
+                    // distinguish that from a session whose frames were never
+                    // published instead of collapsing both into one diagnosis.
+                    let deadline = Instant::now() + Duration::from_secs(5);
+                    let frame =
+                        loop {
+                            {
+                                let guard = lock_or_recover(&adapter.session, "test.session");
+                                match guard.as_ref() {
+                                    None => return Err(
+                                        "session was reaped before the breakpoint frame was read"
+                                            .into(),
+                                    ),
+                                    Some(session) => {
+                                        if let Some(frame) = session.stack_frames.first() {
+                                            break frame.clone();
+                                        }
+                                    }
+                                }
+                            }
+                            if Instant::now() >= deadline {
+                                return Err("breakpoint frame never published".into());
+                            }
+                            thread::sleep(Duration::from_millis(2));
+                        };
                     if frame.source.path != source_path || frame.line != 5 {
                         return Err(format!(
                             "breakpoint frame mismatch: path={}, line={}",
