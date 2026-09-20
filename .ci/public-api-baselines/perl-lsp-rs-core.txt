@@ -773,12 +773,12 @@ pub fn perl_lsp_rs_core::external_tools::external_tool_registry_json() -> core::
 pub fn perl_lsp_rs_core::external_tools::validate_external_tool_registry(registry: &[perl_lsp_rs_core::external_tools::ExternalToolPolicy]) -> core::result::Result<(), perl_lsp_rs_core::external_tools::ExternalToolRegistryError>
 pub mod perl_lsp_rs_core::feature_catalog
 pub enum perl_lsp_rs_core::feature_catalog::CatalogError
-pub perl_lsp_rs_core::feature_catalog::CatalogError::Io(core::io::error::Error)
+pub perl_lsp_rs_core::feature_catalog::CatalogError::Io(std::io::Error)
 pub perl_lsp_rs_core::feature_catalog::CatalogError::MissingOverride(std::path::PathBuf)
 pub perl_lsp_rs_core::feature_catalog::CatalogError::MissingSource(std::path::PathBuf)
 pub perl_lsp_rs_core::feature_catalog::CatalogError::Parse(toml::de::error::Error)
 pub perl_lsp_rs_core::feature_catalog::CatalogError::Validation(alloc::string::String)
-pub fn perl_lsp_rs_core::feature_catalog::CatalogError::from(source: core::io::error::Error) -> Self
+pub fn perl_lsp_rs_core::feature_catalog::CatalogError::from(source: std::io::Error) -> Self
 pub fn perl_lsp_rs_core::feature_catalog::CatalogError::from(source: toml::de::error::Error) -> Self
 pub fn perl_lsp_rs_core::feature_catalog::CatalogError::source(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>
 pub fn perl_lsp_rs_core::feature_catalog::CatalogError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
@@ -2806,9 +2806,9 @@ pub perl_lsp_rs_core::providers::ai::sse::SseEvent::data: alloc::string::String
 pub perl_lsp_rs_core::providers::ai::sse::SseEvent::event: alloc::string::String
 pub fn perl_lsp_rs_core::providers::sse::SseEvent::clone(&self) -> perl_lsp_rs_core::providers::sse::SseEvent
 pub fn perl_lsp_rs_core::providers::sse::SseEvent::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub struct perl_lsp_rs_core::providers::ai::sse::SseParser<R: alloc::io::buf_read::BufRead>
+pub struct perl_lsp_rs_core::providers::ai::sse::SseParser<R: std::io::BufRead>
 pub fn perl_lsp_rs_core::providers::sse::SseParser<R>::new(reader: R) -> Self
-pub fn perl_lsp_rs_core::providers::sse::SseParser<R>::next_event(&mut self) -> core::result::Result<core::option::Option<perl_lsp_rs_core::providers::sse::SseEvent>, core::io::error::Error>
+pub fn perl_lsp_rs_core::providers::sse::SseParser<R>::next_event(&mut self) -> core::result::Result<core::option::Option<perl_lsp_rs_core::providers::sse::SseEvent>, std::io::Error>
 pub enum perl_lsp_rs_core::providers::ai::DestinationError
 pub perl_lsp_rs_core::providers::ai::DestinationError::DisallowedAddress
 pub perl_lsp_rs_core::providers::ai::DestinationError::HttpsRequired
@@ -3570,6 +3570,16 @@ pub perl_lsp_rs_core::providers::diagnostics::diagnostics_shadow::DiagnosticsSha
 pub fn perl_lsp_rs_core::providers::diagnostics_shadow::DiagnosticsShadowResult::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_lsp_rs_core::providers::diagnostics::diagnostics_shadow::diagnostics_undefined_symbol_cutover<Q: perl_workspace::semantic::queries::SemanticQueries>(legacy_should_warn: bool, semantic_queries: &Q, symbol: &str, file_id: perl_semantic_facts::FileId, scope_id: core::option::Option<perl_semantic_facts::ScopeId>, byte_offset: u32, is_in_dynamic_scope: bool) -> perl_lsp_rs_core::providers::diagnostics_shadow::DiagnosticsCutoverOutcome
 pub fn perl_lsp_rs_core::providers::diagnostics::diagnostics_shadow::diagnostics_undefined_symbol_shadow<Q: perl_workspace::semantic::queries::SemanticQueries>(legacy_should_warn: bool, semantic_queries: &Q, symbol: &str, file_id: perl_semantic_facts::FileId, scope_id: core::option::Option<perl_semantic_facts::ScopeId>, byte_offset: u32) -> perl_lsp_rs_core::providers::diagnostics_shadow::DiagnosticsShadowResult
+pub mod perl_lsp_rs_core::providers::diagnostics::document_analysis
+pub struct perl_lsp_rs_core::providers::diagnostics::document_analysis::DocumentDiagnosticAnalysis
+pub fn perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysis::build(ast: &alloc::sync::Arc<perl_ast::ast::Node>, source: impl core::convert::Into<alloc::sync::Arc<str>>) -> Self
+pub fn perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysis::matches(&self, ast: &alloc::sync::Arc<perl_ast::ast::Node>, source: &str) -> bool
+pub fn perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysis::matches_node(&self, ast: &perl_ast::ast::Node, source: &str) -> bool
+pub fn perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysis::matches_source(&self, source: &str) -> bool
+pub fn perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysis::pragma_map(&self) -> &[(core::ops::range::Range<usize>, perl_pragma::PragmaState)]
+pub fn perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysis::scope_issues(&self) -> &[perl_semantic_analyzer::analysis::scope_analyzer::ScopeIssue]
+pub fn perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysis::symbol_table(&self) -> &perl_semantic_analyzer::analysis::symbol::SymbolTable
+pub fn perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysis::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub mod perl_lsp_rs_core::providers::diagnostics::missing_module
 #[non_exhaustive] pub struct perl_lsp_rs_core::providers::diagnostics::missing_module::ModuleSearchPathDisplay
 pub perl_lsp_rs_core::providers::diagnostics::missing_module::ModuleSearchPathDisplay::path: alloc::string::String
@@ -3687,13 +3697,26 @@ pub fn perl_lsp_rs_core::providers::DiagnosticsProvider::get_diagnostics_with_pa
 pub fn perl_lsp_rs_core::providers::DiagnosticsProvider::get_diagnostics_with_path_and_project_version(&self, ast: &alloc::sync::Arc<perl_ast::ast::Node>, parse_errors: &[perl_parser_core::syntax::error::ParseError], source: &str, module_resolver: core::option::Option<&dyn core::ops::function::Fn(&str, usize) -> bool>, module_search_paths: &[alloc::string::String], source_path: core::option::Option<&std::path::Path>, project_version: core::option::Option<&str>) -> alloc::vec::Vec<perl_lsp_rs_core::providers::Diagnostic>
 pub fn perl_lsp_rs_core::providers::DiagnosticsProvider::get_diagnostics_with_path_and_semantics<Q: perl_workspace::semantic::queries::SemanticQueries>(&self, ast: &alloc::sync::Arc<perl_ast::ast::Node>, parse_errors: &[perl_parser_core::syntax::error::ParseError], source: &str, module_resolver: core::option::Option<&dyn core::ops::function::Fn(&str, usize) -> bool>, module_search_paths: &[alloc::string::String], source_path: core::option::Option<&std::path::Path>, file_id: perl_semantic_facts::FileId, semantic_queries: &Q) -> alloc::vec::Vec<perl_lsp_rs_core::providers::Diagnostic>
 pub fn perl_lsp_rs_core::providers::DiagnosticsProvider::get_diagnostics_with_path_and_semantics_and_project_version<Q: perl_workspace::semantic::queries::SemanticQueries>(&self, ast: &alloc::sync::Arc<perl_ast::ast::Node>, parse_errors: &[perl_parser_core::syntax::error::ParseError], source: &str, module_resolver: core::option::Option<&dyn core::ops::function::Fn(&str, usize) -> bool>, module_search_paths: &[alloc::string::String], source_path: core::option::Option<&std::path::Path>, project_version: core::option::Option<&str>, file_id: perl_semantic_facts::FileId, semantic_queries: &Q) -> alloc::vec::Vec<perl_lsp_rs_core::providers::Diagnostic>
+pub fn perl_lsp_rs_core::providers::DiagnosticsProvider::get_diagnostics_with_path_and_semantics_with_analysis<Q: perl_workspace::semantic::queries::SemanticQueries>(&self, ast: &alloc::sync::Arc<perl_ast::ast::Node>, parse_errors: &[perl_parser_core::syntax::error::ParseError], source: &str, module_resolver: core::option::Option<&dyn core::ops::function::Fn(&str, usize) -> bool>, module_search_paths: &[alloc::string::String], source_path: core::option::Option<&std::path::Path>, file_id: perl_semantic_facts::FileId, semantic_queries: &Q, project_version: core::option::Option<&str>, analysis: core::option::Option<&perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysis>) -> alloc::vec::Vec<perl_lsp_rs_core::providers::Diagnostic>
+pub fn perl_lsp_rs_core::providers::DiagnosticsProvider::get_diagnostics_with_path_with_analysis(&self, ast: &alloc::sync::Arc<perl_ast::ast::Node>, parse_errors: &[perl_parser_core::syntax::error::ParseError], source: &str, module_resolver: core::option::Option<&dyn core::ops::function::Fn(&str, usize) -> bool>, module_search_paths: &[alloc::string::String], source_path: core::option::Option<&std::path::Path>, project_version: core::option::Option<&str>, analysis: core::option::Option<&perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysis>) -> alloc::vec::Vec<perl_lsp_rs_core::providers::Diagnostic>
 pub fn perl_lsp_rs_core::providers::DiagnosticsProvider::get_diagnostics_with_search_context(&self, ast: &alloc::sync::Arc<perl_ast::ast::Node>, parse_errors: &[perl_parser_core::syntax::error::ParseError], source: &str, module_resolver: core::option::Option<&dyn core::ops::function::Fn(&str, usize) -> bool>, module_search_context: &[perl_lsp_rs_core::providers::missing_module::ModuleSearchPathDisplay], source_path: core::option::Option<&std::path::Path>) -> alloc::vec::Vec<perl_lsp_rs_core::providers::Diagnostic>
 pub fn perl_lsp_rs_core::providers::DiagnosticsProvider::get_diagnostics_with_search_context_and_project_version(&self, ast: &alloc::sync::Arc<perl_ast::ast::Node>, parse_errors: &[perl_parser_core::syntax::error::ParseError], source: &str, module_resolver: core::option::Option<&dyn core::ops::function::Fn(&str, usize) -> bool>, module_search_context: &[perl_lsp_rs_core::providers::missing_module::ModuleSearchPathDisplay], source_path: core::option::Option<&std::path::Path>, project_version: core::option::Option<&str>) -> alloc::vec::Vec<perl_lsp_rs_core::providers::Diagnostic>
 pub fn perl_lsp_rs_core::providers::DiagnosticsProvider::get_diagnostics_with_search_context_and_semantics<Q: perl_workspace::semantic::queries::SemanticQueries>(&self, ast: &alloc::sync::Arc<perl_ast::ast::Node>, parse_errors: &[perl_parser_core::syntax::error::ParseError], source: &str, module_resolver: core::option::Option<&dyn core::ops::function::Fn(&str, usize) -> bool>, module_search_context: &[perl_lsp_rs_core::providers::missing_module::ModuleSearchPathDisplay], source_path: core::option::Option<&std::path::Path>, file_id: perl_semantic_facts::FileId, semantic_queries: &Q) -> alloc::vec::Vec<perl_lsp_rs_core::providers::Diagnostic>
 pub fn perl_lsp_rs_core::providers::DiagnosticsProvider::get_diagnostics_with_search_context_and_semantics_and_project_version<Q: perl_workspace::semantic::queries::SemanticQueries>(&self, ast: &alloc::sync::Arc<perl_ast::ast::Node>, parse_errors: &[perl_parser_core::syntax::error::ParseError], source: &str, module_resolver: core::option::Option<&dyn core::ops::function::Fn(&str, usize) -> bool>, module_search_context: &[perl_lsp_rs_core::providers::missing_module::ModuleSearchPathDisplay], source_path: core::option::Option<&std::path::Path>, project_version: core::option::Option<&str>, file_id: perl_semantic_facts::FileId, semantic_queries: &Q) -> alloc::vec::Vec<perl_lsp_rs_core::providers::Diagnostic>
+pub fn perl_lsp_rs_core::providers::DiagnosticsProvider::get_diagnostics_with_search_context_and_semantics_with_analysis<Q: perl_workspace::semantic::queries::SemanticQueries>(&self, ast: &alloc::sync::Arc<perl_ast::ast::Node>, parse_errors: &[perl_parser_core::syntax::error::ParseError], source: &str, module_resolver: core::option::Option<&dyn core::ops::function::Fn(&str, usize) -> bool>, module_search_context: &[perl_lsp_rs_core::providers::missing_module::ModuleSearchPathDisplay], source_path: core::option::Option<&std::path::Path>, file_id: perl_semantic_facts::FileId, semantic_queries: &Q, project_version: core::option::Option<&str>, analysis: core::option::Option<&perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysis>) -> alloc::vec::Vec<perl_lsp_rs_core::providers::Diagnostic>
+pub fn perl_lsp_rs_core::providers::DiagnosticsProvider::get_diagnostics_with_search_context_with_analysis(&self, ast: &alloc::sync::Arc<perl_ast::ast::Node>, parse_errors: &[perl_parser_core::syntax::error::ParseError], source: &str, module_resolver: core::option::Option<&dyn core::ops::function::Fn(&str, usize) -> bool>, module_search_context: &[perl_lsp_rs_core::providers::missing_module::ModuleSearchPathDisplay], source_path: core::option::Option<&std::path::Path>, project_version: core::option::Option<&str>, analysis: core::option::Option<&perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysis>) -> alloc::vec::Vec<perl_lsp_rs_core::providers::Diagnostic>
 pub fn perl_lsp_rs_core::providers::DiagnosticsProvider::new() -> Self
 pub fn perl_lsp_rs_core::providers::DiagnosticsProvider::with_regex_analysis(self, table: alloc::sync::Arc<perl_parser_core::syntax::regex_analysis::RegexAnalysisTable>) -> Self
 pub fn perl_lsp_rs_core::providers::DiagnosticsProvider::default() -> Self
+pub struct perl_lsp_rs_core::providers::diagnostics::DocumentDiagnosticAnalysis
+pub fn perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysis::build(ast: &alloc::sync::Arc<perl_ast::ast::Node>, source: impl core::convert::Into<alloc::sync::Arc<str>>) -> Self
+pub fn perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysis::matches(&self, ast: &alloc::sync::Arc<perl_ast::ast::Node>, source: &str) -> bool
+pub fn perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysis::matches_node(&self, ast: &perl_ast::ast::Node, source: &str) -> bool
+pub fn perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysis::matches_source(&self, source: &str) -> bool
+pub fn perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysis::pragma_map(&self) -> &[(core::ops::range::Range<usize>, perl_pragma::PragmaState)]
+pub fn perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysis::scope_issues(&self) -> &[perl_semantic_analyzer::analysis::scope_analyzer::ScopeIssue]
+pub fn perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysis::symbol_table(&self) -> &perl_semantic_analyzer::analysis::symbol::SymbolTable
+pub fn perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysis::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_lsp_rs_core::providers::diagnostics::RelatedInformation
 pub perl_lsp_rs_core::providers::diagnostics::RelatedInformation::location: (usize, usize)
 pub perl_lsp_rs_core::providers::diagnostics::RelatedInformation::message: alloc::string::String
@@ -3734,6 +3757,16 @@ pub perl_lsp_rs_core::providers::diagnostics_shadow::DiagnosticsShadowResult::re
 pub fn perl_lsp_rs_core::providers::diagnostics_shadow::DiagnosticsShadowResult::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_lsp_rs_core::providers::diagnostics_shadow::diagnostics_undefined_symbol_cutover<Q: perl_workspace::semantic::queries::SemanticQueries>(legacy_should_warn: bool, semantic_queries: &Q, symbol: &str, file_id: perl_semantic_facts::FileId, scope_id: core::option::Option<perl_semantic_facts::ScopeId>, byte_offset: u32, is_in_dynamic_scope: bool) -> perl_lsp_rs_core::providers::diagnostics_shadow::DiagnosticsCutoverOutcome
 pub fn perl_lsp_rs_core::providers::diagnostics_shadow::diagnostics_undefined_symbol_shadow<Q: perl_workspace::semantic::queries::SemanticQueries>(legacy_should_warn: bool, semantic_queries: &Q, symbol: &str, file_id: perl_semantic_facts::FileId, scope_id: core::option::Option<perl_semantic_facts::ScopeId>, byte_offset: u32) -> perl_lsp_rs_core::providers::diagnostics_shadow::DiagnosticsShadowResult
+pub mod perl_lsp_rs_core::providers::document_analysis
+pub struct perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysis
+pub fn perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysis::build(ast: &alloc::sync::Arc<perl_ast::ast::Node>, source: impl core::convert::Into<alloc::sync::Arc<str>>) -> Self
+pub fn perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysis::matches(&self, ast: &alloc::sync::Arc<perl_ast::ast::Node>, source: &str) -> bool
+pub fn perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysis::matches_node(&self, ast: &perl_ast::ast::Node, source: &str) -> bool
+pub fn perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysis::matches_source(&self, source: &str) -> bool
+pub fn perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysis::pragma_map(&self) -> &[(core::ops::range::Range<usize>, perl_pragma::PragmaState)]
+pub fn perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysis::scope_issues(&self) -> &[perl_semantic_analyzer::analysis::scope_analyzer::ScopeIssue]
+pub fn perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysis::symbol_table(&self) -> &perl_semantic_analyzer::analysis::symbol::SymbolTable
+pub fn perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysis::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub mod perl_lsp_rs_core::providers::document_highlight
 pub mod perl_lsp_rs_core::providers::document_highlight
 pub enum perl_lsp_rs_core::providers::document_highlight::DocumentHighlightKind
@@ -4114,6 +4147,18 @@ pub perl_lsp_rs_core::providers::htmx::HtmxAttributeSpec::name: &'static str
 pub fn perl_lsp_rs_core::providers::HtmxAttributeSpec::clone(&self) -> perl_lsp_rs_core::providers::HtmxAttributeSpec
 pub fn perl_lsp_rs_core::providers::HtmxAttributeSpec::eq(&self, other: &perl_lsp_rs_core::providers::HtmxAttributeSpec) -> bool
 pub fn perl_lsp_rs_core::providers::HtmxAttributeSpec::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_lsp_rs_core::providers::htmx::HtmxCatalogProvenance
+pub perl_lsp_rs_core::providers::htmx::HtmxCatalogProvenance::catalog_event_handler_name: &'static str
+pub perl_lsp_rs_core::providers::htmx::HtmxCatalogProvenance::contract_major: u32
+pub perl_lsp_rs_core::providers::htmx::HtmxCatalogProvenance::contract_minor: u32
+pub perl_lsp_rs_core::providers::htmx::HtmxCatalogProvenance::htmx_version: &'static str
+pub perl_lsp_rs_core::providers::htmx::HtmxCatalogProvenance::reference_commit: &'static str
+pub perl_lsp_rs_core::providers::htmx::HtmxCatalogProvenance::reference_url: &'static str
+pub perl_lsp_rs_core::providers::htmx::HtmxCatalogProvenance::reviewed_on: &'static str
+pub perl_lsp_rs_core::providers::htmx::HtmxCatalogProvenance::upstream_event_handler_name: &'static str
+pub fn perl_lsp_rs_core::providers::HtmxCatalogProvenance::clone(&self) -> perl_lsp_rs_core::providers::HtmxCatalogProvenance
+pub fn perl_lsp_rs_core::providers::HtmxCatalogProvenance::eq(&self, other: &perl_lsp_rs_core::providers::HtmxCatalogProvenance) -> bool
+pub fn perl_lsp_rs_core::providers::HtmxCatalogProvenance::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_lsp_rs_core::providers::htmx::HtmxHeaderSpec
 pub perl_lsp_rs_core::providers::htmx::HtmxHeaderSpec::direction: perl_lsp_rs_core::providers::HtmxHeaderDirection
 pub perl_lsp_rs_core::providers::htmx::HtmxHeaderSpec::documentation: &'static str
@@ -4122,6 +4167,7 @@ pub fn perl_lsp_rs_core::providers::HtmxHeaderSpec::clone(&self) -> perl_lsp_rs_
 pub fn perl_lsp_rs_core::providers::HtmxHeaderSpec::eq(&self, other: &perl_lsp_rs_core::providers::HtmxHeaderSpec) -> bool
 pub fn perl_lsp_rs_core::providers::HtmxHeaderSpec::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub const perl_lsp_rs_core::providers::htmx::HTMX_ATTRIBUTES: &[perl_lsp_rs_core::providers::HtmxAttributeSpec]
+pub const perl_lsp_rs_core::providers::htmx::HTMX_CATALOG_PROVENANCE: perl_lsp_rs_core::providers::HtmxCatalogProvenance
 pub const perl_lsp_rs_core::providers::htmx::HTMX_HEADERS: &[perl_lsp_rs_core::providers::HtmxHeaderSpec]
 pub const perl_lsp_rs_core::providers::htmx::MAX_MARKUP_SCAN_BYTES: usize
 pub fn perl_lsp_rs_core::providers::htmx::complete_attribute_names(source: &str, position: usize) -> core::option::Option<alloc::vec::Vec<perl_lsp_rs_core::providers::CompletionItem>>
@@ -5487,9 +5533,12 @@ pub fn perl_lsp_rs_core::providers::TypeHierarchyItem::deserialize<__D>(__deseri
 pub struct perl_lsp_rs_core::providers::navigation::TypeHierarchyProvider
 pub fn perl_lsp_rs_core::providers::TypeHierarchyProvider::c3_mro(&self, ast: &perl_ast::ast::Node, package: &str) -> alloc::vec::Vec<alloc::string::String>
 pub fn perl_lsp_rs_core::providers::TypeHierarchyProvider::find_subtypes(&self, ast: &perl_ast::ast::Node, item: &perl_lsp_rs_core::providers::TypeHierarchyItem) -> alloc::vec::Vec<perl_lsp_rs_core::providers::TypeHierarchyItem>
+pub fn perl_lsp_rs_core::providers::TypeHierarchyProvider::find_subtypes_with_cancellation(&self, ast: &perl_ast::ast::Node, item: &perl_lsp_rs_core::providers::TypeHierarchyItem, is_cancelled: &dyn core::ops::function::Fn() -> bool) -> core::result::Result<alloc::vec::Vec<perl_lsp_rs_core::providers::TypeHierarchyItem>, perl_lsp_rs_core::providers::TypeHierarchyCancelled>
 pub fn perl_lsp_rs_core::providers::TypeHierarchyProvider::find_supertypes(&self, ast: &perl_ast::ast::Node, item: &perl_lsp_rs_core::providers::TypeHierarchyItem) -> alloc::vec::Vec<perl_lsp_rs_core::providers::TypeHierarchyItem>
+pub fn perl_lsp_rs_core::providers::TypeHierarchyProvider::find_supertypes_with_cancellation(&self, ast: &perl_ast::ast::Node, item: &perl_lsp_rs_core::providers::TypeHierarchyItem, is_cancelled: &dyn core::ops::function::Fn() -> bool) -> core::result::Result<alloc::vec::Vec<perl_lsp_rs_core::providers::TypeHierarchyItem>, perl_lsp_rs_core::providers::TypeHierarchyCancelled>
 pub fn perl_lsp_rs_core::providers::TypeHierarchyProvider::new() -> Self
 pub fn perl_lsp_rs_core::providers::TypeHierarchyProvider::prepare(&self, ast: &perl_ast::ast::Node, code: &str, offset: usize) -> core::option::Option<alloc::vec::Vec<perl_lsp_rs_core::providers::TypeHierarchyItem>>
+pub fn perl_lsp_rs_core::providers::TypeHierarchyProvider::prepare_with_cancellation(&self, ast: &perl_ast::ast::Node, code: &str, offset: usize, is_cancelled: &dyn core::ops::function::Fn() -> bool) -> core::result::Result<core::option::Option<alloc::vec::Vec<perl_lsp_rs_core::providers::TypeHierarchyItem>>, perl_lsp_rs_core::providers::TypeHierarchyCancelled>
 pub fn perl_lsp_rs_core::providers::TypeHierarchyProvider::default() -> Self
 pub struct perl_lsp_rs_core::providers::navigation::WorkspaceSymbol
 pub perl_lsp_rs_core::providers::navigation::WorkspaceSymbol::container_name: core::option::Option<alloc::string::String>
@@ -7089,9 +7138,9 @@ pub perl_lsp_rs_core::providers::sse::SseEvent::data: alloc::string::String
 pub perl_lsp_rs_core::providers::sse::SseEvent::event: alloc::string::String
 pub fn perl_lsp_rs_core::providers::sse::SseEvent::clone(&self) -> perl_lsp_rs_core::providers::sse::SseEvent
 pub fn perl_lsp_rs_core::providers::sse::SseEvent::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub struct perl_lsp_rs_core::providers::sse::SseParser<R: alloc::io::buf_read::BufRead>
+pub struct perl_lsp_rs_core::providers::sse::SseParser<R: std::io::BufRead>
 pub fn perl_lsp_rs_core::providers::sse::SseParser<R>::new(reader: R) -> Self
-pub fn perl_lsp_rs_core::providers::sse::SseParser<R>::next_event(&mut self) -> core::result::Result<core::option::Option<perl_lsp_rs_core::providers::sse::SseEvent>, core::io::error::Error>
+pub fn perl_lsp_rs_core::providers::sse::SseParser<R>::next_event(&mut self) -> core::result::Result<core::option::Option<perl_lsp_rs_core::providers::sse::SseEvent>, std::io::Error>
 pub mod perl_lsp_rs_core::providers::strict_warnings
 pub fn perl_lsp_rs_core::providers::strict_warnings::check_strict_warnings(node: &perl_ast::ast::Node, diagnostics: &mut alloc::vec::Vec<perl_lsp_rs_core::providers::Diagnostic>)
 pub mod perl_lsp_rs_core::providers::symbol_query
@@ -7229,6 +7278,10 @@ pub fn perl_lsp_rs_core::providers::TypeHierarchySymbolKind::clone(&self) -> per
 pub fn perl_lsp_rs_core::providers::TypeHierarchySymbolKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_lsp_rs_core::providers::TypeHierarchySymbolKind::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 pub fn perl_lsp_rs_core::providers::TypeHierarchySymbolKind::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_lsp_rs_core::providers::type_hierarchy::TypeHierarchyCancelled
+pub fn perl_lsp_rs_core::providers::TypeHierarchyCancelled::clone(&self) -> perl_lsp_rs_core::providers::TypeHierarchyCancelled
+pub fn perl_lsp_rs_core::providers::TypeHierarchyCancelled::eq(&self, other: &perl_lsp_rs_core::providers::TypeHierarchyCancelled) -> bool
+pub fn perl_lsp_rs_core::providers::TypeHierarchyCancelled::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_lsp_rs_core::providers::type_hierarchy::TypeHierarchyItem
 pub perl_lsp_rs_core::providers::type_hierarchy::TypeHierarchyItem::data: core::option::Option<serde_json::value::Value>
 pub perl_lsp_rs_core::providers::type_hierarchy::TypeHierarchyItem::detail: core::option::Option<alloc::string::String>
@@ -7244,9 +7297,12 @@ pub fn perl_lsp_rs_core::providers::TypeHierarchyItem::deserialize<__D>(__deseri
 pub struct perl_lsp_rs_core::providers::type_hierarchy::TypeHierarchyProvider
 pub fn perl_lsp_rs_core::providers::TypeHierarchyProvider::c3_mro(&self, ast: &perl_ast::ast::Node, package: &str) -> alloc::vec::Vec<alloc::string::String>
 pub fn perl_lsp_rs_core::providers::TypeHierarchyProvider::find_subtypes(&self, ast: &perl_ast::ast::Node, item: &perl_lsp_rs_core::providers::TypeHierarchyItem) -> alloc::vec::Vec<perl_lsp_rs_core::providers::TypeHierarchyItem>
+pub fn perl_lsp_rs_core::providers::TypeHierarchyProvider::find_subtypes_with_cancellation(&self, ast: &perl_ast::ast::Node, item: &perl_lsp_rs_core::providers::TypeHierarchyItem, is_cancelled: &dyn core::ops::function::Fn() -> bool) -> core::result::Result<alloc::vec::Vec<perl_lsp_rs_core::providers::TypeHierarchyItem>, perl_lsp_rs_core::providers::TypeHierarchyCancelled>
 pub fn perl_lsp_rs_core::providers::TypeHierarchyProvider::find_supertypes(&self, ast: &perl_ast::ast::Node, item: &perl_lsp_rs_core::providers::TypeHierarchyItem) -> alloc::vec::Vec<perl_lsp_rs_core::providers::TypeHierarchyItem>
+pub fn perl_lsp_rs_core::providers::TypeHierarchyProvider::find_supertypes_with_cancellation(&self, ast: &perl_ast::ast::Node, item: &perl_lsp_rs_core::providers::TypeHierarchyItem, is_cancelled: &dyn core::ops::function::Fn() -> bool) -> core::result::Result<alloc::vec::Vec<perl_lsp_rs_core::providers::TypeHierarchyItem>, perl_lsp_rs_core::providers::TypeHierarchyCancelled>
 pub fn perl_lsp_rs_core::providers::TypeHierarchyProvider::new() -> Self
 pub fn perl_lsp_rs_core::providers::TypeHierarchyProvider::prepare(&self, ast: &perl_ast::ast::Node, code: &str, offset: usize) -> core::option::Option<alloc::vec::Vec<perl_lsp_rs_core::providers::TypeHierarchyItem>>
+pub fn perl_lsp_rs_core::providers::TypeHierarchyProvider::prepare_with_cancellation(&self, ast: &perl_ast::ast::Node, code: &str, offset: usize, is_cancelled: &dyn core::ops::function::Fn() -> bool) -> core::result::Result<core::option::Option<alloc::vec::Vec<perl_lsp_rs_core::providers::TypeHierarchyItem>>, perl_lsp_rs_core::providers::TypeHierarchyCancelled>
 pub fn perl_lsp_rs_core::providers::TypeHierarchyProvider::default() -> Self
 pub mod perl_lsp_rs_core::providers::unreachable_code
 pub fn perl_lsp_rs_core::providers::unreachable_code::check_unreachable_code(root: &perl_ast::ast::Node, diagnostics: &mut alloc::vec::Vec<perl_lsp_rs_core::providers::Diagnostic>)
@@ -8503,13 +8559,26 @@ pub fn perl_lsp_rs_core::providers::DiagnosticsProvider::get_diagnostics_with_pa
 pub fn perl_lsp_rs_core::providers::DiagnosticsProvider::get_diagnostics_with_path_and_project_version(&self, ast: &alloc::sync::Arc<perl_ast::ast::Node>, parse_errors: &[perl_parser_core::syntax::error::ParseError], source: &str, module_resolver: core::option::Option<&dyn core::ops::function::Fn(&str, usize) -> bool>, module_search_paths: &[alloc::string::String], source_path: core::option::Option<&std::path::Path>, project_version: core::option::Option<&str>) -> alloc::vec::Vec<perl_lsp_rs_core::providers::Diagnostic>
 pub fn perl_lsp_rs_core::providers::DiagnosticsProvider::get_diagnostics_with_path_and_semantics<Q: perl_workspace::semantic::queries::SemanticQueries>(&self, ast: &alloc::sync::Arc<perl_ast::ast::Node>, parse_errors: &[perl_parser_core::syntax::error::ParseError], source: &str, module_resolver: core::option::Option<&dyn core::ops::function::Fn(&str, usize) -> bool>, module_search_paths: &[alloc::string::String], source_path: core::option::Option<&std::path::Path>, file_id: perl_semantic_facts::FileId, semantic_queries: &Q) -> alloc::vec::Vec<perl_lsp_rs_core::providers::Diagnostic>
 pub fn perl_lsp_rs_core::providers::DiagnosticsProvider::get_diagnostics_with_path_and_semantics_and_project_version<Q: perl_workspace::semantic::queries::SemanticQueries>(&self, ast: &alloc::sync::Arc<perl_ast::ast::Node>, parse_errors: &[perl_parser_core::syntax::error::ParseError], source: &str, module_resolver: core::option::Option<&dyn core::ops::function::Fn(&str, usize) -> bool>, module_search_paths: &[alloc::string::String], source_path: core::option::Option<&std::path::Path>, project_version: core::option::Option<&str>, file_id: perl_semantic_facts::FileId, semantic_queries: &Q) -> alloc::vec::Vec<perl_lsp_rs_core::providers::Diagnostic>
+pub fn perl_lsp_rs_core::providers::DiagnosticsProvider::get_diagnostics_with_path_and_semantics_with_analysis<Q: perl_workspace::semantic::queries::SemanticQueries>(&self, ast: &alloc::sync::Arc<perl_ast::ast::Node>, parse_errors: &[perl_parser_core::syntax::error::ParseError], source: &str, module_resolver: core::option::Option<&dyn core::ops::function::Fn(&str, usize) -> bool>, module_search_paths: &[alloc::string::String], source_path: core::option::Option<&std::path::Path>, file_id: perl_semantic_facts::FileId, semantic_queries: &Q, project_version: core::option::Option<&str>, analysis: core::option::Option<&perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysis>) -> alloc::vec::Vec<perl_lsp_rs_core::providers::Diagnostic>
+pub fn perl_lsp_rs_core::providers::DiagnosticsProvider::get_diagnostics_with_path_with_analysis(&self, ast: &alloc::sync::Arc<perl_ast::ast::Node>, parse_errors: &[perl_parser_core::syntax::error::ParseError], source: &str, module_resolver: core::option::Option<&dyn core::ops::function::Fn(&str, usize) -> bool>, module_search_paths: &[alloc::string::String], source_path: core::option::Option<&std::path::Path>, project_version: core::option::Option<&str>, analysis: core::option::Option<&perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysis>) -> alloc::vec::Vec<perl_lsp_rs_core::providers::Diagnostic>
 pub fn perl_lsp_rs_core::providers::DiagnosticsProvider::get_diagnostics_with_search_context(&self, ast: &alloc::sync::Arc<perl_ast::ast::Node>, parse_errors: &[perl_parser_core::syntax::error::ParseError], source: &str, module_resolver: core::option::Option<&dyn core::ops::function::Fn(&str, usize) -> bool>, module_search_context: &[perl_lsp_rs_core::providers::missing_module::ModuleSearchPathDisplay], source_path: core::option::Option<&std::path::Path>) -> alloc::vec::Vec<perl_lsp_rs_core::providers::Diagnostic>
 pub fn perl_lsp_rs_core::providers::DiagnosticsProvider::get_diagnostics_with_search_context_and_project_version(&self, ast: &alloc::sync::Arc<perl_ast::ast::Node>, parse_errors: &[perl_parser_core::syntax::error::ParseError], source: &str, module_resolver: core::option::Option<&dyn core::ops::function::Fn(&str, usize) -> bool>, module_search_context: &[perl_lsp_rs_core::providers::missing_module::ModuleSearchPathDisplay], source_path: core::option::Option<&std::path::Path>, project_version: core::option::Option<&str>) -> alloc::vec::Vec<perl_lsp_rs_core::providers::Diagnostic>
 pub fn perl_lsp_rs_core::providers::DiagnosticsProvider::get_diagnostics_with_search_context_and_semantics<Q: perl_workspace::semantic::queries::SemanticQueries>(&self, ast: &alloc::sync::Arc<perl_ast::ast::Node>, parse_errors: &[perl_parser_core::syntax::error::ParseError], source: &str, module_resolver: core::option::Option<&dyn core::ops::function::Fn(&str, usize) -> bool>, module_search_context: &[perl_lsp_rs_core::providers::missing_module::ModuleSearchPathDisplay], source_path: core::option::Option<&std::path::Path>, file_id: perl_semantic_facts::FileId, semantic_queries: &Q) -> alloc::vec::Vec<perl_lsp_rs_core::providers::Diagnostic>
 pub fn perl_lsp_rs_core::providers::DiagnosticsProvider::get_diagnostics_with_search_context_and_semantics_and_project_version<Q: perl_workspace::semantic::queries::SemanticQueries>(&self, ast: &alloc::sync::Arc<perl_ast::ast::Node>, parse_errors: &[perl_parser_core::syntax::error::ParseError], source: &str, module_resolver: core::option::Option<&dyn core::ops::function::Fn(&str, usize) -> bool>, module_search_context: &[perl_lsp_rs_core::providers::missing_module::ModuleSearchPathDisplay], source_path: core::option::Option<&std::path::Path>, project_version: core::option::Option<&str>, file_id: perl_semantic_facts::FileId, semantic_queries: &Q) -> alloc::vec::Vec<perl_lsp_rs_core::providers::Diagnostic>
+pub fn perl_lsp_rs_core::providers::DiagnosticsProvider::get_diagnostics_with_search_context_and_semantics_with_analysis<Q: perl_workspace::semantic::queries::SemanticQueries>(&self, ast: &alloc::sync::Arc<perl_ast::ast::Node>, parse_errors: &[perl_parser_core::syntax::error::ParseError], source: &str, module_resolver: core::option::Option<&dyn core::ops::function::Fn(&str, usize) -> bool>, module_search_context: &[perl_lsp_rs_core::providers::missing_module::ModuleSearchPathDisplay], source_path: core::option::Option<&std::path::Path>, file_id: perl_semantic_facts::FileId, semantic_queries: &Q, project_version: core::option::Option<&str>, analysis: core::option::Option<&perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysis>) -> alloc::vec::Vec<perl_lsp_rs_core::providers::Diagnostic>
+pub fn perl_lsp_rs_core::providers::DiagnosticsProvider::get_diagnostics_with_search_context_with_analysis(&self, ast: &alloc::sync::Arc<perl_ast::ast::Node>, parse_errors: &[perl_parser_core::syntax::error::ParseError], source: &str, module_resolver: core::option::Option<&dyn core::ops::function::Fn(&str, usize) -> bool>, module_search_context: &[perl_lsp_rs_core::providers::missing_module::ModuleSearchPathDisplay], source_path: core::option::Option<&std::path::Path>, project_version: core::option::Option<&str>, analysis: core::option::Option<&perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysis>) -> alloc::vec::Vec<perl_lsp_rs_core::providers::Diagnostic>
 pub fn perl_lsp_rs_core::providers::DiagnosticsProvider::new() -> Self
 pub fn perl_lsp_rs_core::providers::DiagnosticsProvider::with_regex_analysis(self, table: alloc::sync::Arc<perl_parser_core::syntax::regex_analysis::RegexAnalysisTable>) -> Self
 pub fn perl_lsp_rs_core::providers::DiagnosticsProvider::default() -> Self
+pub struct perl_lsp_rs_core::providers::DocumentDiagnosticAnalysis
+pub fn perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysis::build(ast: &alloc::sync::Arc<perl_ast::ast::Node>, source: impl core::convert::Into<alloc::sync::Arc<str>>) -> Self
+pub fn perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysis::matches(&self, ast: &alloc::sync::Arc<perl_ast::ast::Node>, source: &str) -> bool
+pub fn perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysis::matches_node(&self, ast: &perl_ast::ast::Node, source: &str) -> bool
+pub fn perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysis::matches_source(&self, source: &str) -> bool
+pub fn perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysis::pragma_map(&self) -> &[(core::ops::range::Range<usize>, perl_pragma::PragmaState)]
+pub fn perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysis::scope_issues(&self) -> &[perl_semantic_analyzer::analysis::scope_analyzer::ScopeIssue]
+pub fn perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysis::symbol_table(&self) -> &perl_semantic_analyzer::analysis::symbol::SymbolTable
+pub fn perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysis::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_lsp_rs_core::providers::DocumentHighlight
 pub perl_lsp_rs_core::providers::DocumentHighlight::kind: perl_lsp_rs_core::providers::DocumentHighlightKind
 pub perl_lsp_rs_core::providers::DocumentHighlight::location: perl_position_tracking::span::SourceLocation
@@ -8714,6 +8783,18 @@ pub perl_lsp_rs_core::providers::HtmxAttributeSpec::name: &'static str
 pub fn perl_lsp_rs_core::providers::HtmxAttributeSpec::clone(&self) -> perl_lsp_rs_core::providers::HtmxAttributeSpec
 pub fn perl_lsp_rs_core::providers::HtmxAttributeSpec::eq(&self, other: &perl_lsp_rs_core::providers::HtmxAttributeSpec) -> bool
 pub fn perl_lsp_rs_core::providers::HtmxAttributeSpec::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_lsp_rs_core::providers::HtmxCatalogProvenance
+pub perl_lsp_rs_core::providers::HtmxCatalogProvenance::catalog_event_handler_name: &'static str
+pub perl_lsp_rs_core::providers::HtmxCatalogProvenance::contract_major: u32
+pub perl_lsp_rs_core::providers::HtmxCatalogProvenance::contract_minor: u32
+pub perl_lsp_rs_core::providers::HtmxCatalogProvenance::htmx_version: &'static str
+pub perl_lsp_rs_core::providers::HtmxCatalogProvenance::reference_commit: &'static str
+pub perl_lsp_rs_core::providers::HtmxCatalogProvenance::reference_url: &'static str
+pub perl_lsp_rs_core::providers::HtmxCatalogProvenance::reviewed_on: &'static str
+pub perl_lsp_rs_core::providers::HtmxCatalogProvenance::upstream_event_handler_name: &'static str
+pub fn perl_lsp_rs_core::providers::HtmxCatalogProvenance::clone(&self) -> perl_lsp_rs_core::providers::HtmxCatalogProvenance
+pub fn perl_lsp_rs_core::providers::HtmxCatalogProvenance::eq(&self, other: &perl_lsp_rs_core::providers::HtmxCatalogProvenance) -> bool
+pub fn perl_lsp_rs_core::providers::HtmxCatalogProvenance::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_lsp_rs_core::providers::HtmxHeaderSpec
 pub perl_lsp_rs_core::providers::HtmxHeaderSpec::direction: perl_lsp_rs_core::providers::HtmxHeaderDirection
 pub perl_lsp_rs_core::providers::HtmxHeaderSpec::documentation: &'static str
@@ -9463,6 +9544,10 @@ pub perl_lsp_rs_core::providers::TokensLegend::token_types: alloc::vec::Vec<allo
 pub struct perl_lsp_rs_core::providers::TypeDefinitionProvider
 pub fn perl_lsp_rs_core::providers::TypeDefinitionProvider::new() -> Self
 pub fn perl_lsp_rs_core::providers::TypeDefinitionProvider::default() -> Self
+pub struct perl_lsp_rs_core::providers::TypeHierarchyCancelled
+pub fn perl_lsp_rs_core::providers::TypeHierarchyCancelled::clone(&self) -> perl_lsp_rs_core::providers::TypeHierarchyCancelled
+pub fn perl_lsp_rs_core::providers::TypeHierarchyCancelled::eq(&self, other: &perl_lsp_rs_core::providers::TypeHierarchyCancelled) -> bool
+pub fn perl_lsp_rs_core::providers::TypeHierarchyCancelled::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_lsp_rs_core::providers::TypeHierarchyItem
 pub struct perl_lsp_rs_core::providers::TypeHierarchyItem
 pub perl_lsp_rs_core::providers::TypeHierarchyItem::data: core::option::Option<serde_json::value::Value>
@@ -9493,12 +9578,18 @@ pub fn perl_lsp_rs_core::providers::TypeHierarchyProvider::c3_mro(&self, ast: &p
 pub fn perl_lsp_rs_core::providers::TypeHierarchyProvider::c3_mro(&self, ast: &perl_ast::ast::Node, package: &str) -> alloc::vec::Vec<alloc::string::String>
 pub fn perl_lsp_rs_core::providers::TypeHierarchyProvider::find_subtypes(&self, ast: &perl_ast::ast::Node, item: &perl_lsp_rs_core::providers::TypeHierarchyItem) -> alloc::vec::Vec<perl_lsp_rs_core::providers::TypeHierarchyItem>
 pub fn perl_lsp_rs_core::providers::TypeHierarchyProvider::find_subtypes(&self, ast: &perl_ast::ast::Node, item: &perl_lsp_rs_core::providers::TypeHierarchyItem) -> alloc::vec::Vec<perl_lsp_rs_core::providers::TypeHierarchyItem>
+pub fn perl_lsp_rs_core::providers::TypeHierarchyProvider::find_subtypes_with_cancellation(&self, ast: &perl_ast::ast::Node, item: &perl_lsp_rs_core::providers::TypeHierarchyItem, is_cancelled: &dyn core::ops::function::Fn() -> bool) -> core::result::Result<alloc::vec::Vec<perl_lsp_rs_core::providers::TypeHierarchyItem>, perl_lsp_rs_core::providers::TypeHierarchyCancelled>
+pub fn perl_lsp_rs_core::providers::TypeHierarchyProvider::find_subtypes_with_cancellation(&self, ast: &perl_ast::ast::Node, item: &perl_lsp_rs_core::providers::TypeHierarchyItem, is_cancelled: &dyn core::ops::function::Fn() -> bool) -> core::result::Result<alloc::vec::Vec<perl_lsp_rs_core::providers::TypeHierarchyItem>, perl_lsp_rs_core::providers::TypeHierarchyCancelled>
 pub fn perl_lsp_rs_core::providers::TypeHierarchyProvider::find_supertypes(&self, ast: &perl_ast::ast::Node, item: &perl_lsp_rs_core::providers::TypeHierarchyItem) -> alloc::vec::Vec<perl_lsp_rs_core::providers::TypeHierarchyItem>
 pub fn perl_lsp_rs_core::providers::TypeHierarchyProvider::find_supertypes(&self, ast: &perl_ast::ast::Node, item: &perl_lsp_rs_core::providers::TypeHierarchyItem) -> alloc::vec::Vec<perl_lsp_rs_core::providers::TypeHierarchyItem>
+pub fn perl_lsp_rs_core::providers::TypeHierarchyProvider::find_supertypes_with_cancellation(&self, ast: &perl_ast::ast::Node, item: &perl_lsp_rs_core::providers::TypeHierarchyItem, is_cancelled: &dyn core::ops::function::Fn() -> bool) -> core::result::Result<alloc::vec::Vec<perl_lsp_rs_core::providers::TypeHierarchyItem>, perl_lsp_rs_core::providers::TypeHierarchyCancelled>
+pub fn perl_lsp_rs_core::providers::TypeHierarchyProvider::find_supertypes_with_cancellation(&self, ast: &perl_ast::ast::Node, item: &perl_lsp_rs_core::providers::TypeHierarchyItem, is_cancelled: &dyn core::ops::function::Fn() -> bool) -> core::result::Result<alloc::vec::Vec<perl_lsp_rs_core::providers::TypeHierarchyItem>, perl_lsp_rs_core::providers::TypeHierarchyCancelled>
 pub fn perl_lsp_rs_core::providers::TypeHierarchyProvider::new() -> Self
 pub fn perl_lsp_rs_core::providers::TypeHierarchyProvider::new() -> Self
 pub fn perl_lsp_rs_core::providers::TypeHierarchyProvider::prepare(&self, ast: &perl_ast::ast::Node, code: &str, offset: usize) -> core::option::Option<alloc::vec::Vec<perl_lsp_rs_core::providers::TypeHierarchyItem>>
 pub fn perl_lsp_rs_core::providers::TypeHierarchyProvider::prepare(&self, ast: &perl_ast::ast::Node, code: &str, offset: usize) -> core::option::Option<alloc::vec::Vec<perl_lsp_rs_core::providers::TypeHierarchyItem>>
+pub fn perl_lsp_rs_core::providers::TypeHierarchyProvider::prepare_with_cancellation(&self, ast: &perl_ast::ast::Node, code: &str, offset: usize, is_cancelled: &dyn core::ops::function::Fn() -> bool) -> core::result::Result<core::option::Option<alloc::vec::Vec<perl_lsp_rs_core::providers::TypeHierarchyItem>>, perl_lsp_rs_core::providers::TypeHierarchyCancelled>
+pub fn perl_lsp_rs_core::providers::TypeHierarchyProvider::prepare_with_cancellation(&self, ast: &perl_ast::ast::Node, code: &str, offset: usize, is_cancelled: &dyn core::ops::function::Fn() -> bool) -> core::result::Result<core::option::Option<alloc::vec::Vec<perl_lsp_rs_core::providers::TypeHierarchyItem>>, perl_lsp_rs_core::providers::TypeHierarchyCancelled>
 pub fn perl_lsp_rs_core::providers::TypeHierarchyProvider::default() -> Self
 pub fn perl_lsp_rs_core::providers::TypeHierarchyProvider::default() -> Self
 pub struct perl_lsp_rs_core::providers::WorkspaceSymbol
@@ -9558,6 +9649,7 @@ pub fn perl_lsp_rs_core::providers::WorkspaceSymbolsProvider::default() -> Self
 pub const perl_lsp_rs_core::providers::DEFAULT_PROMOTION_MODE: perl_lsp_rs_core::providers::references_pir_shadow::PromotionMode
 pub const perl_lsp_rs_core::providers::FUNDAMENTAL_CONSTRUCT_LABELS: &[&str]
 pub const perl_lsp_rs_core::providers::HTMX_ATTRIBUTES: &[perl_lsp_rs_core::providers::HtmxAttributeSpec]
+pub const perl_lsp_rs_core::providers::HTMX_CATALOG_PROVENANCE: perl_lsp_rs_core::providers::HtmxCatalogProvenance
 pub const perl_lsp_rs_core::providers::HTMX_HEADERS: &[perl_lsp_rs_core::providers::HtmxHeaderSpec]
 pub const perl_lsp_rs_core::providers::MAX_MARKUP_SCAN_BYTES: usize
 pub const perl_lsp_rs_core::providers::PROVIDER_DECISION_COPYABLE_PAYLOAD_VERSION: &str
@@ -11827,6 +11919,7 @@ pub struct perl_lsp_rs_core::tooling::perl_critic::NativeCriticService
 pub fn perl_lsp_rs_core::tooling::perl_critic::NativeCriticService::analyze(subject: perl_lsp_rs_core::tooling::perl_critic::NativeCriticSubject<'_>) -> perl_lsp_rs_core::tooling::perl_critic::NativeCriticRun
 pub struct perl_lsp_rs_core::tooling::perl_critic::NativeCriticSubject<'a>
 pub fn perl_lsp_rs_core::tooling::perl_critic::NativeCriticSubject<'a>::accepted(label: &'a str, source_identity: perl_lsp_rs_core::tooling::perl_critic::CriticSourceIdentity, ast: &'a perl_ast::ast::Node, source: &'a str, accepted_state: perl_lsp_rs_core::config::EffectiveCriticState, overlap_observations: alloc::vec::Vec<perl_lsp_rs_core::tooling::perl_critic::BuiltInCriticObservation>, cancellation: perl_lsp_rs_core::tooling::perl_critic::RunGate<'a>, currentness: perl_lsp_rs_core::tooling::perl_critic::RunGate<'a>) -> Self
+pub fn perl_lsp_rs_core::tooling::perl_critic::NativeCriticSubject<'a>::with_analysis(self, analysis: &'a perl_lsp_rs_core::providers::document_analysis::DocumentDiagnosticAnalysis) -> Self
 pub fn perl_lsp_rs_core::tooling::perl_critic::NativeCriticSubject<'_>::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_lsp_rs_core::tooling::perl_critic::NativeCriticWorkReceipt
 pub perl_lsp_rs_core::tooling::perl_critic::NativeCriticWorkReceipt::findings_after_policy: usize
@@ -12079,8 +12172,8 @@ pub fn perl_lsp_rs_core::transport::framing::ContentLengthFramer::fmt(&self, f: 
 pub const perl_lsp_rs_core::transport::framing::MAX_FRAME_SIZE: usize
 pub fn perl_lsp_rs_core::transport::framing::frame(body: &[u8]) -> alloc::vec::Vec<u8>
 pub fn perl_lsp_rs_core::transport::framing::log_response(response: &perl_lsp_rs_core::protocol::JsonRpcResponse)
-pub fn perl_lsp_rs_core::transport::framing::write_message(writer: &mut dyn core::io::write::Write, response: &perl_lsp_rs_core::protocol::JsonRpcResponse) -> core::io::error::Result<()>
-pub fn perl_lsp_rs_core::transport::framing::write_notification(writer: &mut dyn core::io::write::Write, method: &str, params: serde_json::value::Value) -> core::io::error::Result<()>
+pub fn perl_lsp_rs_core::transport::framing::write_message(writer: &mut dyn std::io::Write, response: &perl_lsp_rs_core::protocol::JsonRpcResponse) -> std::io::Result<()>
+pub fn perl_lsp_rs_core::transport::framing::write_notification(writer: &mut dyn std::io::Write, method: &str, params: serde_json::value::Value) -> std::io::Result<()>
 pub mod perl_lsp_rs_core::transport::incoming
 #[non_exhaustive] pub enum perl_lsp_rs_core::transport::incoming::IncomingMessageError
 pub perl_lsp_rs_core::transport::incoming::IncomingMessageError::Framing(perl_lsp_rs_core::transport::framing::FramingError)
@@ -12120,12 +12213,12 @@ pub fn perl_lsp_rs_core::transport::incoming::IncomingMessageStage::fmt(&self, f
 pub fn perl_lsp_rs_core::transport::incoming::IncomingMessageStage::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_lsp_rs_core::transport::incoming::ContentLengthMessageReader
 pub fn perl_lsp_rs_core::transport::incoming::ContentLengthMessageReader::new() -> Self
-pub fn perl_lsp_rs_core::transport::incoming::ContentLengthMessageReader::read_next(&mut self, reader: &mut dyn alloc::io::read::Read) -> core::io::error::Result<core::option::Option<perl_lsp_rs_core::protocol::JsonRpcRequest>>
-pub fn perl_lsp_rs_core::transport::incoming::ContentLengthMessageReader::read_next_outcome(&mut self, reader: &mut dyn alloc::io::read::Read) -> core::io::error::Result<core::option::Option<core::result::Result<perl_lsp_rs_core::protocol::JsonRpcRequest, perl_lsp_rs_core::transport::incoming::IncomingMessageError>>>
+pub fn perl_lsp_rs_core::transport::incoming::ContentLengthMessageReader::read_next(&mut self, reader: &mut dyn alloc::io::read::Read) -> std::io::Result<core::option::Option<perl_lsp_rs_core::protocol::JsonRpcRequest>>
+pub fn perl_lsp_rs_core::transport::incoming::ContentLengthMessageReader::read_next_outcome(&mut self, reader: &mut dyn alloc::io::read::Read) -> std::io::Result<core::option::Option<core::result::Result<perl_lsp_rs_core::protocol::JsonRpcRequest, perl_lsp_rs_core::transport::incoming::IncomingMessageError>>>
 pub fn perl_lsp_rs_core::transport::incoming::ContentLengthMessageReader::default() -> perl_lsp_rs_core::transport::incoming::ContentLengthMessageReader
 pub fn perl_lsp_rs_core::transport::incoming::decode_incoming_body(body: &[u8]) -> core::result::Result<perl_lsp_rs_core::protocol::JsonRpcRequest, perl_lsp_rs_core::transport::incoming::IncomingMessageError>
-pub fn perl_lsp_rs_core::transport::incoming::read_message(reader: &mut dyn alloc::io::buf_read::BufRead) -> core::io::error::Result<core::option::Option<perl_lsp_rs_core::protocol::JsonRpcRequest>>
-pub fn perl_lsp_rs_core::transport::incoming::read_message_outcome(reader: &mut dyn alloc::io::buf_read::BufRead) -> core::io::error::Result<core::option::Option<core::result::Result<perl_lsp_rs_core::protocol::JsonRpcRequest, perl_lsp_rs_core::transport::incoming::IncomingMessageError>>>
+pub fn perl_lsp_rs_core::transport::incoming::read_message(reader: &mut dyn std::io::BufRead) -> std::io::Result<core::option::Option<perl_lsp_rs_core::protocol::JsonRpcRequest>>
+pub fn perl_lsp_rs_core::transport::incoming::read_message_outcome(reader: &mut dyn std::io::BufRead) -> std::io::Result<core::option::Option<core::result::Result<perl_lsp_rs_core::protocol::JsonRpcRequest, perl_lsp_rs_core::transport::incoming::IncomingMessageError>>>
 pub enum perl_lsp_rs_core::transport::FramingError
 pub perl_lsp_rs_core::transport::FramingError::FrameTooLarge
 pub perl_lsp_rs_core::transport::FramingError::FrameTooLarge::len: usize
@@ -12184,17 +12277,17 @@ pub fn perl_lsp_rs_core::transport::framing::ContentLengthFramer::default() -> p
 pub fn perl_lsp_rs_core::transport::framing::ContentLengthFramer::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_lsp_rs_core::transport::ContentLengthMessageReader
 pub fn perl_lsp_rs_core::transport::incoming::ContentLengthMessageReader::new() -> Self
-pub fn perl_lsp_rs_core::transport::incoming::ContentLengthMessageReader::read_next(&mut self, reader: &mut dyn alloc::io::read::Read) -> core::io::error::Result<core::option::Option<perl_lsp_rs_core::protocol::JsonRpcRequest>>
-pub fn perl_lsp_rs_core::transport::incoming::ContentLengthMessageReader::read_next_outcome(&mut self, reader: &mut dyn alloc::io::read::Read) -> core::io::error::Result<core::option::Option<core::result::Result<perl_lsp_rs_core::protocol::JsonRpcRequest, perl_lsp_rs_core::transport::incoming::IncomingMessageError>>>
+pub fn perl_lsp_rs_core::transport::incoming::ContentLengthMessageReader::read_next(&mut self, reader: &mut dyn alloc::io::read::Read) -> std::io::Result<core::option::Option<perl_lsp_rs_core::protocol::JsonRpcRequest>>
+pub fn perl_lsp_rs_core::transport::incoming::ContentLengthMessageReader::read_next_outcome(&mut self, reader: &mut dyn alloc::io::read::Read) -> std::io::Result<core::option::Option<core::result::Result<perl_lsp_rs_core::protocol::JsonRpcRequest, perl_lsp_rs_core::transport::incoming::IncomingMessageError>>>
 pub fn perl_lsp_rs_core::transport::incoming::ContentLengthMessageReader::default() -> perl_lsp_rs_core::transport::incoming::ContentLengthMessageReader
 pub const perl_lsp_rs_core::transport::MAX_FRAME_SIZE: usize
 pub fn perl_lsp_rs_core::transport::decode_incoming_body(body: &[u8]) -> core::result::Result<perl_lsp_rs_core::protocol::JsonRpcRequest, perl_lsp_rs_core::transport::incoming::IncomingMessageError>
 pub fn perl_lsp_rs_core::transport::frame(body: &[u8]) -> alloc::vec::Vec<u8>
 pub fn perl_lsp_rs_core::transport::log_response(response: &perl_lsp_rs_core::protocol::JsonRpcResponse)
-pub fn perl_lsp_rs_core::transport::read_message(reader: &mut dyn alloc::io::buf_read::BufRead) -> core::io::error::Result<core::option::Option<perl_lsp_rs_core::protocol::JsonRpcRequest>>
-pub fn perl_lsp_rs_core::transport::read_message_outcome(reader: &mut dyn alloc::io::buf_read::BufRead) -> core::io::error::Result<core::option::Option<core::result::Result<perl_lsp_rs_core::protocol::JsonRpcRequest, perl_lsp_rs_core::transport::incoming::IncomingMessageError>>>
-pub fn perl_lsp_rs_core::transport::write_message(writer: &mut dyn core::io::write::Write, response: &perl_lsp_rs_core::protocol::JsonRpcResponse) -> core::io::error::Result<()>
-pub fn perl_lsp_rs_core::transport::write_notification(writer: &mut dyn core::io::write::Write, method: &str, params: serde_json::value::Value) -> core::io::error::Result<()>
+pub fn perl_lsp_rs_core::transport::read_message(reader: &mut dyn std::io::BufRead) -> std::io::Result<core::option::Option<perl_lsp_rs_core::protocol::JsonRpcRequest>>
+pub fn perl_lsp_rs_core::transport::read_message_outcome(reader: &mut dyn std::io::BufRead) -> std::io::Result<core::option::Option<core::result::Result<perl_lsp_rs_core::protocol::JsonRpcRequest, perl_lsp_rs_core::transport::incoming::IncomingMessageError>>>
+pub fn perl_lsp_rs_core::transport::write_message(writer: &mut dyn std::io::Write, response: &perl_lsp_rs_core::protocol::JsonRpcResponse) -> std::io::Result<()>
+pub fn perl_lsp_rs_core::transport::write_notification(writer: &mut dyn std::io::Write, method: &str, params: serde_json::value::Value) -> std::io::Result<()>
 pub mod perl_lsp_rs_core::uri
 pub fn perl_lsp_rs_core::uri::parse_uri(s: &str) -> lsp_types::uri::Uri
 pub macro perl_lsp_rs_core::check_cancellation!

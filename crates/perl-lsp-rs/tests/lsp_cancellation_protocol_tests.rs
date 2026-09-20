@@ -140,74 +140,103 @@ fn setup_test_file(server: &LspServer, uri: &str, content: &str) {
 #[test]
 fn test_enhanced_cancel_request_with_provider_context_ac1() -> Result<(), Box<dyn std::error::Error>>
 {
-    let fixture = CancellationTestFixture::new();
+    let mut fixture = CancellationTestFixture::new();
 
-    // Test completion provider cancellation with enhanced context
-    let completion_id = 1001;
-    send_request_no_wait(
-        &fixture.server,
-        json!({
-            "jsonrpc": "2.0",
-            "id": completion_id,
-            "method": "textDocument/completion",
-            "params": {
-                "textDocument": { "uri": "file:///main.pl" },
-                "position": { "line": 5, "character": 10 }
-            }
-        }),
-    );
-
-    // Send enhanced cancellation with provider context
-    // This should fail initially as enhanced cancellation infrastructure doesn't exist
-    send_notification(
-        &fixture.server,
-        json!({
-            "jsonrpc": "2.0",
-            "method": "$/cancelRequest",
-            "params": {
-                "id": completion_id,
-                "context": {
-                    "provider": "textDocument/completion",
-                    "workspace_symbols": true,
-                    "cross_file": true,
-                    "cleanup_context": "completion_provider"
-                }
-            }
-        }),
-    );
-
-    // Validate enhanced cancellation response
-    let response =
-        read_response_matching_i64(&fixture.server, completion_id, Duration::from_millis(500));
-
-    if let Some(resp) = response
-        && let Some(error) = resp.get("error")
-    {
-        assert_eq!(
-            error["code"].as_i64(),
-            Some(-32800),
-            "Should return RequestCancelled error code"
-        );
-        let message = error["message"].as_str().ok_or("Error message should be a string")?;
-        assert!(
-            message.contains("completion"),
-            "Error message should reference completion provider"
-        );
-
-        // Validate enhanced error data
-        if let Some(data) = error.get("data") {
-            assert!(
-                data.get("provider").is_some(),
-                "Enhanced error should include provider context"
+    // Registration order between the completion request and its cancellation is
+    // scheduling-dependent (#15913): a cancel handled while the request is
+    // registered-but-incomplete yields a cancel error (enhanced when the
+    // registry path wins, generic when the server-flag short-circuit wins),
+    // while a request that completes first answers with a result and no error
+    // ever follows for that id. Asserting on whichever same-id response
+    // arrives first is timing-dependent, so retry the back-to-back
+    // request-then-cancel stimulus with a fresh id until the enhanced shape
+    // is observed.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut attempt: i64 = 0;
+    let mut seen_results = 0;
+    let mut seen_timeouts = 0;
+    let response = loop {
+        if Instant::now() >= deadline {
+            eprintln!(
+                "AC1 attempts exhausted: {attempt} attempts, {seen_results} settled non-error, {seen_timeouts} timed out"
             );
-            // latency_ms is an optional enhanced field — presence is a bonus
-            let _ = data.get("latency_ms");
+            break None;
         }
-    }
+        let completion_id = fixture.track_request_id(1001 + attempt * 100);
+        attempt += 1;
+        // Request-first: only a cancel handled while the request is
+        // registered-but-incomplete can produce a cancel error (a pre-cancel
+        // for an unknown id is a no-op and the request then completes
+        // normally). Send back-to-back so the cancel usually lands in the
+        // in-flight window; a lost race settles this id and the next attempt
+        // uses a fresh one.
+        send_request_no_wait(
+            &fixture.server,
+            json!({
+                "jsonrpc": "2.0",
+                "id": completion_id,
+                "method": "textDocument/completion",
+                "params": {
+                    "textDocument": { "uri": "file:///main.pl" },
+                    "position": { "line": 5, "character": 10 }
+                }
+            }),
+        );
+        send_notification(
+            &fixture.server,
+            json!({
+                "jsonrpc": "2.0",
+                "method": "$/cancelRequest",
+                "params": {
+                    "id": completion_id,
+                    "context": {
+                        "provider": "textDocument/completion",
+                        "workspace_symbols": true,
+                        "cross_file": true,
+                        "cleanup_context": "completion_provider"
+                    }
+                }
+            }),
+        );
+        match read_response_matching_outcome(
+            &fixture.server,
+            &json!(completion_id),
+            Duration::from_secs(1),
+        ) {
+            ReadResponseOutcome::Response(resp) if is_enhanced_cancel_error(&resp) => {
+                break Some(resp);
+            }
+            ReadResponseOutcome::Response(_) => seen_results += 1,
+            _ => seen_timeouts += 1,
+        }
+    };
 
-    // Test will initially fail due to basic cancellation implementation
-    // Enhanced provider context processing will be implemented in feature development
+    // Validate enhanced cancellation response; a missing match is an explicit
+    // failure, never a vacuous pass.
+    let resp = response.ok_or("no enhanced cancel error observed within budget")?;
+    let error = resp.get("error").ok_or("enhanced cancel response must carry an error")?;
+    assert_eq!(error["code"].as_i64(), Some(-32800), "Should return RequestCancelled error code");
+    let message = error["message"].as_str().ok_or("Error message should be a string")?;
+    assert!(message.contains("completion"), "Error message should reference completion provider");
+
+    // Validate enhanced error data
+    let data = error.get("data").ok_or("Enhanced error should carry a data object")?;
+    assert!(data.get("provider").is_some(), "Enhanced error should include provider context");
+    // latency_ms is an optional enhanced field — presence is a bonus
+    let _ = data.get("latency_ms");
+
     Ok(())
+}
+
+/// A RequestCancelled error carrying the enhanced provider-context payload.
+fn is_enhanced_cancel_error(response: &Value) -> bool {
+    let Some(error) = response.get("error") else {
+        return false;
+    };
+    if error.get("code").and_then(Value::as_i64) != Some(-32800) {
+        return false;
+    }
+    error.get("data").and_then(|data| data.get("provider")).is_some()
 }
 
 /// Tests feature spec: LSP_CANCELLATION_PROTOCOL.md#provider-integration-schema
@@ -1634,27 +1663,50 @@ fn run_type_hierarchy_pre_cancel_test(
     method: &str,
     params: Value,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let request_id = fixture.track_request_id(request_id);
-    send_notification(
-        &fixture.server,
-        json!({
-            "jsonrpc": "2.0",
-            "method": "$/cancelRequest",
-            "params": { "id": request_id }
-        }),
-    );
+    // The request and its cancellation race through handler scheduling
+    // (#15913): a cancel for an unknown id is a no-op, so the cancel must be
+    // handled while the request is registered-but-incomplete to observe a
+    // cancel error; when the request completes first, no error ever follows
+    // for that id. Retry the back-to-back request-then-cancel stimulus with a
+    // fresh id until a RequestCancelled error is observed instead of asserting
+    // on whichever same-id response wins the first race.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut attempt: i64 = 0;
+    let response = loop {
+        if Instant::now() >= deadline {
+            break None;
+        }
+        let attempt_id = fixture.track_request_id(request_id + attempt * 100);
+        attempt += 1;
+        send_request_no_wait(
+            &fixture.server,
+            json!({
+                "jsonrpc": "2.0",
+                "id": attempt_id,
+                "method": method,
+                "params": params
+            }),
+        );
+        send_notification(
+            &fixture.server,
+            json!({
+                "jsonrpc": "2.0",
+                "method": "$/cancelRequest",
+                "params": { "id": attempt_id }
+            }),
+        );
 
-    send_request_no_wait(
-        &fixture.server,
-        json!({
-            "jsonrpc": "2.0",
-            "id": request_id,
-            "method": method,
-            "params": params
-        }),
-    );
+        if let Some(resp) = read_response_where(
+            &fixture.server,
+            &json!(attempt_id),
+            Duration::from_secs(1),
+            is_cancel_error,
+        ) {
+            break Some(resp);
+        }
+    };
 
-    let response = read_response_matching_i64(&fixture.server, request_id, Duration::from_secs(1))
+    let response = response
         .ok_or_else(|| std::io::Error::other(format!("{method} must respond to a cancelled id")))?;
     validate_request_cancelled(&response, method)?;
     if !fixture.server.is_alive() {
@@ -1664,6 +1716,12 @@ fn run_type_hierarchy_pre_cancel_test(
         .into());
     }
     Ok(())
+}
+
+/// Any RequestCancelled error, with or without the enhanced payload.
+fn is_cancel_error(response: &Value) -> bool {
+    response.get("error").and_then(|error| error.get("code")).and_then(Value::as_i64)
+        == Some(-32800)
 }
 
 fn validate_request_cancelled(
