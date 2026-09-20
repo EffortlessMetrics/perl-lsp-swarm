@@ -297,7 +297,7 @@ mod tests {
 
     /// Race falsifier (#9521 review): a state event blocked on a FULL outbound
     /// queue must not commit into a replacement session's stream. The old
-    /// Block until the forwarder has provably parked inside the generation-
+    /// block until the forwarder has provably parked inside the generation-
     /// guarded dispatch on a full outbound queue (#15749).
     ///
     /// The guarded dispatch holds the seq lock across its bounded commit
