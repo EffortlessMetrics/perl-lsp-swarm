@@ -1900,9 +1900,17 @@ mod tests {
         server.config.lock().ai_completion.streaming.update_debounce_ms = 0;
         let uri = "file:///scheduler-reverse-stream-admission.pl";
         let other_uri = "file:///scheduler-other-stream-admission.pl";
-        server.test_apply_did_open(uri, "my $obj = Package->", 1)?;
+        // The trailing space gives A (19) and B (20) two distinct cursors whose
+        // streamed final still composes valid Perl:
+        // `my $obj = Package->find_user($id) ` and `my $obj = Package-> find_user($id)`.
+        // This witness is about admission ordering, so neither cursor may sit
+        // where the shared parse-safety filter would reject the final chunk --
+        // B used to sit mid-identifier at 11, composing
+        // `my $obj = Pfind_user($id)ackage->`, and the nonempty-final assertion
+        // then measured the parser rather than admission.
+        server.test_apply_did_open(uri, "my $obj = Package-> ", 1)?;
         if mode == OtherUri {
-            server.test_apply_did_open(other_uri, "my $obj = Package->", 1)?;
+            server.test_apply_did_open(other_uri, "my $obj = Package-> ", 1)?;
         }
         let deferred = matches!(mode, Reverse | CompletedNewer | FailedNewer | OtherUri);
         let (snapshot_tx, snapshot_rx) = std::sync::mpsc::channel();
@@ -1978,7 +1986,7 @@ mod tests {
                 }
             }
             let mut newer =
-                request(802, 11, "reverse-B", if mode == OtherUri { other_uri } else { uri });
+                request(802, 20, "reverse-B", if mode == OtherUri { other_uri } else { uri });
             let params = newer.params.as_mut().ok_or("fixture B must have params")?;
             if mode == InvalidNewer {
                 params
