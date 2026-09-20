@@ -227,12 +227,17 @@ class AggregateWiringTests(unittest.TestCase):
         verdict = gate.evaluate(
             needs, run_cancelled=True, run_head=TESTED_HEAD, latest_head=TESTED_HEAD
         )
-        self.assertEqual("failure", verdict.status)
+        # Named rather than folded into `failure`: no dependency failed, and a
+        # reader told one would go looking for something that is not there.
+        self.assertEqual("cancelled_no_verdict", verdict.status)
 
-        status, _ = self._exit_status(
+        # The exit code is the assertion that matters. Naming the state must
+        # not make it a pass, which is #16107's rule and #5460's before it.
+        status, summary = self._exit_status(
             needs, RUN_CANCELLED="true", LATEST_HEAD_SHA=TESTED_HEAD
         )
         self.assertEqual(1, status)
+        self.assertIn("cancelled_no_verdict", summary)
 
     def test_an_unresolved_live_head_stays_red(self) -> None:
         """No answer from the API is not evidence of a replacement."""
@@ -274,6 +279,25 @@ class AggregateWiringTests(unittest.TestCase):
             needs, RUN_CANCELLED="true", LATEST_HEAD_SHA=NEWER_HEAD
         )
         self.assertEqual(1, status)
+
+    def test_an_unrecognised_status_is_red(self) -> None:
+        """A classification added later must not reach exit 0 by existing.
+
+        The exit mapping is an allowlist of three statuses, not a denylist of
+        failures, so a verdict nobody taught it about is red. That is the
+        property that lets `cancelled_no_verdict` be introduced at all.
+        """
+        output = io.StringIO()
+        with mock.patch.object(
+            gate, "evaluate", return_value=gate.Verdict("a_new_idea", "whatever")
+        ):
+            with mock.patch.dict(
+                os.environ,
+                {"NEEDS_JSON": json.dumps(applicable_needs()), "EVENT_NAME": "pull_request"},
+                clear=True,
+            ):
+                with redirect_stdout(output):
+                    self.assertEqual(1, gate.main())
 
     def test_only_the_exact_cancellation_marker_is_believed(self) -> None:
         """An unset or unexpected value must fail closed, not forgive."""

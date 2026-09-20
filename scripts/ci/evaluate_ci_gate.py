@@ -176,14 +176,21 @@ def evaluate(
         if _result(needs, name) != "success"
     )
     if blockers:
-        if (
-            run_cancelled
-            and _all_cancelled(blockers)
-            and _superseded(run_head, latest_head)
-        ):
+        if run_cancelled and _all_cancelled(blockers):
+            if _superseded(run_head, latest_head):
+                return Verdict(
+                    "superseded",
+                    f"cancelled run for {run_head[:8]} superseded by {latest_head[:8]}",
+                    blockers,
+                )
+            # Same inputs as the branch above, minus the one fact that makes
+            # them safe. #16107 named this state and kept it red: NOT_PROVEN
+            # for a SHA nothing proved. Saying so is worth a status of its
+            # own, because "applicable dependency did not succeed" sends the
+            # reader looking for a dependency that failed, and none did.
             return Verdict(
-                "superseded",
-                f"cancelled run for {run_head[:8]} superseded by {latest_head[:8]}",
+                "cancelled_no_verdict",
+                "run cancelled with no newer head; nothing proved this candidate",
                 blockers,
             )
         return Verdict("failure", "applicable dependency did not succeed", blockers)
@@ -249,7 +256,10 @@ def main() -> int:
     # `superseded` exits 0 because a cancelled run proved nothing about the
     # candidate and a newer run is already proving it. `scoped_noop` is the
     # same argument for a route that was never meant to run. Every other
-    # status, including a verdict this function does not recognise, is red.
+    # status is red, `cancelled_no_verdict` included: it is the superseded
+    # shape with the replacement missing, which is absent proof and not a
+    # pass. A status this function does not recognise is red as well, so a
+    # new classification cannot turn the gate green by being added.
     return 0 if verdict.status in {"success", "scoped_noop", "superseded"} else 1
 
 
