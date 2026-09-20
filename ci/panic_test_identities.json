@@ -5076,6 +5076,195 @@
       "selector_identity": "invocation:b9a46c54aa6b64e7:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
       "state": "active"
+    },
+    {
+      "path": "crates/perl-corpus/src/gold/hover_observation.rs",
+      "enclosing_test_or_function": "substring_assertions_use_full_text_past_the_render_bound",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"expected content, got {other:?}\"),",
+      "selector_identity": "invocation:37271a5b3a2faf23:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-dap/tests/dap_server_and_adapter_tests.rs",
+      "enclosing_test_or_function": "dap_server_trusted_root_that_does_not_exist_is_rejected",
+      "macro_family": "panic!",
+      "normalized_snippet": "Ok(_) => panic!(\"a missing trusted root must be rejected\"),",
+      "selector_identity": "invocation:dad0c265ed4e9b67:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-dap/tests/security_evaluate_tests.rs",
+      "enclosing_test_or_function": "refusal_message",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"expected Response, got {other:?}\"),",
+      "selector_identity": "invocation:5a3ab277da9e9c15:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-dap/tests/security_evaluate_tests.rs",
+      "enclosing_test_or_function": "read_oriented_contexts_still_evaluate_safe_expressions",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"expected Response for context {context:?}, got {other:?}\"),",
+      "selector_identity": "invocation:7f505450c248742b:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-evidence-envelope/tests/dependency_contract.rs",
+      "enclosing_test_or_function": "dependency_tree",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!( \"dependency contract is unproven: could not run `cargo tree` ({error}). \\ The contract fails closed rather than skipping.\" )",
+      "selector_identity": "invocation:81474b1573ef7b56:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-lsp-perltidy/tests/support/formatter_property_harness/mod.rs",
+      "enclosing_test_or_function": "name",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"Family::ALL order drifted from the exhaustive pinned_index enumeration\");",
+      "selector_identity": "invocation:542c36c7da88b013:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-lsp-perltidy/tests/support/formatter_property_harness/mod.rs",
+      "enclosing_test_or_function": "name",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"FAMILY_TABLE order drifted from the exhaustive pinned_index enumeration\");",
+      "selector_identity": "invocation:e7dc4023b2f63259:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-lsp-perltidy/tests/support/formatter_property_harness/mod.rs",
+      "enclosing_test_or_function": "name",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"FAMILY_TABLE row count drifted from the exhaustive pinned_index enumeration\");",
+      "selector_identity": "invocation:d8043b2cd497eec6:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-lsp-rs-core/src/providers/ai/inflight.rs",
+      "enclosing_test_or_function": "permit_is_released_when_the_holder_panics",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"simulated panic while holding a permit\");",
+      "selector_identity": "invocation:9ed4b2689ec154b0:occurrence:1",
+      "accepted_reason": "Intentional panic injection used to exercise scheduler or worker recovery, poisoning, or panic-payload handling.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-lsp-rs/src/runtime/lifecycle/capabilities.rs",
+      "enclosing_test_or_function": "concurrent_initialize_attempts_have_exactly_one_owner",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"unexpected concurrent initialize outcomes: {other:?}\"),",
+      "selector_identity": "invocation:0ec4a736e06a2ad5:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-lsp-rs/src/runtime/v0_18_text_sync_envelope.rs",
+      "enclosing_test_or_function": "full_replacement_array_is_admitted_and_last_text_wins",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"expected admission, got {reason}\")",
+      "selector_identity": "invocation:163e1e1d6021849b:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-operation-trace/tests/dependency_contract.rs",
+      "enclosing_test_or_function": "dependency_tree",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!( \"dependency contract is unproven: could not run `cargo tree` ({error}). \\ The contract fails closed rather than skipping.\" )",
+      "selector_identity": "invocation:81474b1573ef7b56:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser/src/heredoc_anti_patterns/detectors/tests.rs",
+      "enclosing_test_or_function": "test_detector_state_helpers_call_observation",
+      "macro_family": "panic!",
+      "normalized_snippet": "_ => panic!(\"required_state must report Unavailable for missing patterns\"),",
+      "selector_identity": "invocation:e9a674d1b22edaca:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-regex/tests/conformance_matrix_tests.rs",
+      "enclosing_test_or_function": "parse_fixture",
+      "macro_family": "panic!",
+      "normalized_snippet": ".unwrap_or_else(|err| panic!(\"fixture {label} failed to parse: {err}\"))",
+      "selector_identity": "invocation:077536ce77a7116c:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-regex/tests/conformance_matrix_tests.rs",
+      "enclosing_test_or_function": "resolve_operator",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"unknown operator in fixture: {other:?}\"),",
+      "selector_identity": "invocation:4c0c59bbaa7b30fa:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-regex/tests/conformance_matrix_tests.rs",
+      "enclosing_test_or_function": "resolve_feature_state",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"unknown enhanced_xx value in fixture: {other:?}\"),",
+      "selector_identity": "invocation:09dbfabe815b9788:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-regex/tests/conformance_matrix_tests.rs",
+      "enclosing_test_or_function": "all_fixture_ids_are_globally_unique",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!( \"duplicate conformance id {:?} in {file} (first seen in {prior_file})\", row.id );",
+      "selector_identity": "invocation:211f34fddba301bf:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-regex/tests/conformance_matrix_tests.rs",
+      "enclosing_test_or_function": "all_fixture_files_on_disk_are_loaded",
+      "macro_family": "panic!",
+      "normalized_snippet": ".unwrap_or_else(|err| panic!(\"failed to read fixture dir {}: {err}\", dir.display()))",
+      "selector_identity": "invocation:70f893bcb86d6150:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-regex/tests/conformance_matrix_tests.rs",
+      "enclosing_test_or_function": "assert_row_facts",
+      "macro_family": "panic!",
+      "normalized_snippet": ".unwrap_or_else(|| panic!(\"fixture {file}/{}: modifier_sequence offset overflow\", row.id));",
+      "selector_identity": "invocation:fdc9e975493782da:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-regex/tests/conformance_matrix_tests.rs",
+      "enclosing_test_or_function": "assert_row_facts",
+      "macro_family": "panic!",
+      "normalized_snippet": ".unwrap_or_else(|| panic!(\"{ctx}: diagnostic_codes field is required\"))",
+      "selector_identity": "invocation:73a64acab9439c02:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-regex/tests/conformance_matrix_tests.rs",
+      "enclosing_test_or_function": "run_modifier_analysis",
+      "macro_family": "panic!",
+      "normalized_snippet": ".unwrap_or_else(|| panic!(\"modifier sequence overflow for {raw:?}\"));",
+      "selector_identity": "invocation:a52b97bd0d311a5d:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
     }
   ]
 }
