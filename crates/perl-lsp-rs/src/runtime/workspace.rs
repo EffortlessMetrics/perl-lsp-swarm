@@ -304,10 +304,19 @@ impl OpenDocumentsHandle {
 
 #[cfg(feature = "workspace")]
 #[allow(unsafe_code)]
+// SAFETY: restates the type's `# SAFETY` section for this impl. Moving a clone
+// to the indexing thread is sound because the only consumer there,
+// `LspServer::documents_open_in`, reads key membership and never dereferences
+// the `*const Node` pointers inside `DocumentState`, so no pointer crosses the
+// thread boundary in a dereferenceable state.
 unsafe impl Send for OpenDocumentsHandle {}
 
 #[cfg(feature = "workspace")]
 #[allow(unsafe_code)]
+// SAFETY: as for `Send`, plus the sharing obligation: every read reaches
+// `DocumentState` through the wrapping `Mutex`, so concurrent
+// `&OpenDocumentsHandle` access is serialised and the raw pointers are never
+// aliased across threads.
 unsafe impl Sync for OpenDocumentsHandle {}
 
 #[cfg(feature = "workspace")]

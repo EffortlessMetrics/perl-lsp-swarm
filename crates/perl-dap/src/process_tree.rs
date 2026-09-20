@@ -119,6 +119,10 @@ fn descendant_pids(root: u32) -> Vec<u32> {
         TH32CS_SNAPPROCESS,
     };
 
+    // SAFETY: CreateToolhelp32Snapshot takes two scalars and dereferences
+    // nothing. It reports failure in band as INVALID_HANDLE_VALUE, which the
+    // next line checks before the handle is used, and every path that reaches
+    // past that check closes the handle exactly once.
     let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
     if snapshot == INVALID_HANDLE_VALUE {
         tracing::warn!(
@@ -129,6 +133,15 @@ fn descendant_pids(root: u32) -> Vec<u32> {
         return Vec::new();
     }
     let mut parent_to_children: HashMap<u32, Vec<u32>> = HashMap::new();
+    // SAFETY: PROCESSENTRY32W is a C struct of integers and a fixed-size
+    // WCHAR array, so the all-zero bit pattern is a valid value for it and
+    // `zeroed` is sound here. dwSize is set to the struct's own size on the
+    // next line, which is the contract Process32FirstW documents and the only
+    // way it knows how much of the buffer it may write. `snapshot` is a live
+    // handle: INVALID_HANDLE_VALUE returned above. `&mut entry` is a valid,
+    // aligned, exclusive borrow that outlives both calls, and the loop stops
+    // on the documented zero return rather than reading past the table.
+    // CloseHandle runs once, on the single exit from this block.
     unsafe {
         let mut entry: PROCESSENTRY32W = std::mem::zeroed();
         entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
@@ -170,6 +183,11 @@ fn terminate_pid(pid: u32) -> std::io::Result<()> {
     use winapi::um::handleapi::CloseHandle;
     use winapi::um::processthreadsapi::{OpenProcess, TerminateProcess};
     use winapi::um::winnt::PROCESS_TERMINATE;
+    // SAFETY: OpenProcess takes scalars only and reports failure as a null
+    // handle, which is checked before TerminateProcess ever sees it. The
+    // handle is closed exactly once on both the success and failure paths,
+    // and last_os_error is read before CloseHandle so the close cannot
+    // overwrite the error being reported.
     unsafe {
         let handle = OpenProcess(PROCESS_TERMINATE, 0, pid);
         if handle.is_null() {
