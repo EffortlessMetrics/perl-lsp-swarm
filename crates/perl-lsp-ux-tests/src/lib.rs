@@ -604,6 +604,7 @@ impl UxHarness {
             if Instant::now() >= deadline {
                 return Ok((last_inserts, QualityPollOutcome::Deadline { timeout }));
             }
+            // ux-timing: product-retry
             std::thread::sleep(Duration::from_millis(100));
         }
     }
