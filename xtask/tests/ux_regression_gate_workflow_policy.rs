@@ -380,14 +380,20 @@ fn both_ux_summaries_print_the_receipts_human_summary() -> Result<()> {
         let source = heredoc_python(run, file, step)?;
         let code = executable_python(source);
 
+        // Two independent substrings would also be satisfied by a decorative
+        // `- Summary: unavailable` sitting beside an unrelated `human_summary`
+        // mention. Requiring the Summary line to *be* the one that reads the field
+        // is what makes this a contract on the behaviour rather than on vocabulary.
+        // Raised in review as FC-CONTRACT-UNCOUPLED-NEEDLES.
+        let summary_line = code
+            .lines()
+            .find(|line| line.contains("- Summary:"))
+            .ok_or_else(|| anyhow!("{file}: step `{step}` must append a `- Summary:` line"))?;
         assert!(
-            code.contains("human_summary"),
-            "{file}: step `{step}` must read the receipt's human_summary in code, \
-             not merely name it in a comment"
-        );
-        assert!(
-            code.contains("- Summary:"),
-            "{file}: step `{step}` must append the Summary line that carries it"
+            summary_line.contains("human_summary"),
+            "{file}: step `{step}` appends `- Summary:` without reading human_summary: \
+             `{}`",
+            summary_line.trim()
         );
 
         // YAML-valid is not runtime-valid: a heredoc step can parse as a string
