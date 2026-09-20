@@ -1778,9 +1778,12 @@ expires = "2026-09-30"
 id = "ripr-suppress-line-index-utf16-column-overflow-guard"
 # classification key removed (#15519): the previous values are receipt/gap
 # kind words no finding classification or grip_class can carry, so the entry
-# silently never fired against the new-gap gate; it stays path-scoped.
+# silently never fired against the new-gap gate. The selector is the seam id
+# from that receipt, not the whole file — a future unrelated finding in
+# line_index.rs with a different probe identity stays visible.
 kind = "predicate_infection_untraceable"
 paths = ["crates/perl-position-tracking/src/line_index.rs"]
+gap_ids = ["f197bc96baa7df76"]
 
 owner = "proof-lane"
 issue = "EffortlessMetrics/ripr#1428"
