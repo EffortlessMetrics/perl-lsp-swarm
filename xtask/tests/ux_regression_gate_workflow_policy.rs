@@ -369,6 +369,7 @@ fn unavailable_harness_has_no_executed_test_receipt() -> Result<()> {
 /// to agree by habit.
 #[test]
 fn both_ux_summaries_print_the_receipts_human_summary() -> Result<()> {
+    let python = if cfg!(windows) { "python" } else { "python3" };
     for (file, job, step) in [
         ("ux-regression-gate.yml", "ux-regression-gate", "Summarize UX evidence"),
         ("ci.yml", "ux-tests", "UX regression summary"),
@@ -376,12 +377,63 @@ fn both_ux_summaries_print_the_receipts_human_summary() -> Result<()> {
         let wf = workflow(file)?;
         let job_steps = steps(&wf, job)?;
         let run = run_step(job_steps, step)?;
+        let source = heredoc_python(run, file, step)?;
+        let code = executable_python(source);
+
         assert!(
-            run.contains("human_summary"),
-            "{file}: step `{step}` must print the receipt's human_summary"
+            code.contains("human_summary"),
+            "{file}: step `{step}` must read the receipt's human_summary in code, \
+             not merely name it in a comment"
+        );
+        assert!(
+            code.contains("- Summary:"),
+            "{file}: step `{step}` must append the Summary line that carries it"
+        );
+
+        // YAML-valid is not runtime-valid: a heredoc step can parse as a string
+        // and still raise on the runner. Parsing it here is what makes the edit
+        // proven live rather than merely present.
+        let temp = tempfile::tempdir()?;
+        let script = temp.path().join("step.py");
+        fs::write(&script, source)?;
+        let parsed = Command::new(python)
+            .arg("-c")
+            .arg("import ast,sys; ast.parse(open(sys.argv[1], encoding='utf-8').read())")
+            .arg(&script)
+            .output()
+            .with_context(|| format!("{file}: could not run {python} to parse step `{step}`"))?;
+        assert!(
+            parsed.status.success(),
+            "{file}: step `{step}` is not valid python: {}",
+            String::from_utf8_lossy(&parsed.stderr)
         );
     }
     Ok(())
+}
+
+/// The python source of a step whose `run:` is a single `python3 - <<'PY'` heredoc.
+fn heredoc_python<'a>(run: &'a str, file: &str, step: &str) -> Result<&'a str> {
+    const OPEN: &str = "python3 - <<'PY'\n";
+    let start = run
+        .find(OPEN)
+        .ok_or_else(|| anyhow!("{file}: step `{step}` must be a single python3 heredoc"))?
+        + OPEN.len();
+    let body = &run[start..];
+    let end = body
+        .find("\nPY")
+        .ok_or_else(|| anyhow!("{file}: step `{step}` heredoc is not terminated by PY"))?;
+    Ok(&body[..end])
+}
+
+/// The lines of a python source the runner actually executes.
+///
+/// A whole-line comment is prose, and prose can satisfy a substring search. The
+/// gate step carries a comment block naming `human_summary` several times, so a
+/// search over the raw source stayed green when only the print was deleted —
+/// review caught exactly that on `7bc961452`. Stripping comments first is what
+/// makes the falsification real.
+fn executable_python(source: &str) -> String {
+    source.lines().filter(|line| !line.trim_start().starts_with('#')).collect::<Vec<_>>().join("\n")
 }
 
 #[test]

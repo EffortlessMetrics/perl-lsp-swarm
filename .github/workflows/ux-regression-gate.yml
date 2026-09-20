@@ -327,7 +327,7 @@ jobs:
                       # showed the guess without the reading beside it, while the
                       # same receipt read correctly in ci.yml. Two printers of one
                       # field is exactly how that divergence happens, which is why
-                      # `both_ux_summaries_print_the_receipt_s_human_summary` now
+                      # `both_ux_summaries_print_the_receipts_human_summary` now
                       # pins both.
                       if receipt.get("human_summary"):
                           lines.append(f"- Summary: {receipt.get('human_summary')}")
