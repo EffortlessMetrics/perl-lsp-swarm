@@ -1561,6 +1561,22 @@ created = "2026-08-30"
 review_after = "2026-11-30"
 
 [[allow]]
+id = "non-rust-release-live-controls-schema"
+path = "schemas/release_live_controls.v1.schema.json"
+kind = "release_contract"
+language = "json"
+surface = "release"
+classification = "config"
+owner = "release/ci"
+reason = "Versioned read-only receipt schema for the release_live_controls.v1 observer, distinguishing source policy from LIVE GitHub branch-protection, ruleset, environment, and release-posture enforcement (#9403)."
+covered_by = [
+  "cargo test -p xtask --test release_live_controls",
+  "cargo xtask check-file-policy",
+]
+created = "2026-09-03"
+review_after = "2026-12-03"
+
+[[allow]]
 id = "non-rust-v0-18-text-sync-envelope-schema"
 path = "schemas/v0_18_text_sync_envelope.v1.schema.json"
 kind = "release_contract"
@@ -5221,6 +5237,21 @@ covered_by = ["cargo test -p xtask --test standalone_source_build_contract --loc
 broad_glob_reason = "One positive packet and single-field mutation vectors are materialized by the focused contract test, then checked against the plan/evidence schema and semantic bindings; per-vector rows would not add policy precision."
 created = "2026-08-29"
 review_after = "2027-02-28"
+
+[[allow]]
+id = "non-rust-core-harness-result-axes-v2-schema"
+path = "schemas/perl_core_harness.result_axes.v2.schema.json"
+kind = "compiler_contract"
+language = "json"
+surface = "compiler"
+classification = "config"
+owner = "compiler"
+reason = "Published JSON Schema for the perl_core_harness.result_axes.v2 receipt; the cross-axis rules are held to the Rust constructor case-for-case by the schema-parity tests in perl-core-harness-types, so the schema cannot drift from the invariants it publishes (#8607)."
+covered_by = [
+  "cargo test -p perl-core-harness-types --locked",
+]
+created = "2026-08-29"
+review_after = "2026-11-29"
 
 [[allow]]
 id = "non-rust-standalone-owned-state-schema"
