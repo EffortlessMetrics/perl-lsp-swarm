@@ -29,6 +29,9 @@ ROOT = Path(__file__).resolve().parents[2]
 # to its own `.upper()`, which silently makes a case assertion vacuous.
 TESTED_HEAD = "2a4f5bcf1d0e7c9b8a6f5e4d3c2b1a0918273645"
 NEWER_HEAD = "cc291563b7a0e5d4f3c2b1a09182736455647382"
+# The replacement run's id. A moved head says the candidate changed; this
+# says something exists to prove the new one, which is what #16087 asks for.
+REPLACEMENT_RUN = "35508361576"
 
 
 def applicable_needs(*, shard_result: str = "success") -> dict[str, dict]:
@@ -46,6 +49,20 @@ def applicable_needs(*, shard_result: str = "success") -> dict[str, dict]:
         "ux-tests": {"result": "success", "outputs": {}},
         "merge-gate-shards": {"result": shard_result, "outputs": {}},
     }
+
+
+def _merge_gate_block() -> str:
+    """The `merge-gate` job's text from the real workflow file.
+
+    Same slice the workflow-hardening tests below take. Extracting it by the
+    job's own boundaries rather than by searching for a step name is what
+    keeps an edit to a *different* job from silently satisfying these
+    assertions.
+    """
+    workflow = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+    start = workflow.index("  merge-gate:\n")
+    end = workflow.index("\n  # \u2500\u2500 UX Tests", start)
+    return workflow[start:end]
 
 
 def _measured_cancelled_run() -> dict[str, dict]:
@@ -203,6 +220,7 @@ class AggregateWiringTests(unittest.TestCase):
             "NEEDS_JSON": json.dumps(needs),
             "EVENT_NAME": "pull_request",
             "RUN_HEAD_SHA": TESTED_HEAD,
+            "REPLACEMENT_RUN_ID": REPLACEMENT_RUN,
         }
         environ.update(env)
         with mock.patch.dict(os.environ, environ, clear=True):
@@ -217,7 +235,10 @@ class AggregateWiringTests(unittest.TestCase):
         needs["ux-tests"]["result"] = "cancelled"
 
         verdict = gate.evaluate(
-            needs, run_head=TESTED_HEAD, latest_head=NEWER_HEAD
+            needs,
+            run_head=TESTED_HEAD,
+            latest_head=NEWER_HEAD,
+            replacement_run=REPLACEMENT_RUN,
         )
         self.assertEqual("superseded", verdict.status)
 
@@ -295,9 +316,94 @@ class AggregateWiringTests(unittest.TestCase):
                 # And the same two inputs are both forgiven once a newer head
                 # is positively established. The head is doing all the work.
                 superseded = gate.evaluate(
-                    needs, run_head=TESTED_HEAD, latest_head=NEWER_HEAD
+                    needs,
+                    run_head=TESTED_HEAD,
+                    latest_head=NEWER_HEAD,
+                    replacement_run=REPLACEMENT_RUN,
                 )
                 self.assertEqual("superseded", superseded.status)
+
+    def test_a_moved_head_with_no_replacement_run_stays_red(self) -> None:
+        """Head movement is not replacement evidence. The review's finding.
+
+        A push moves the pull request's head, but nothing guarantees a run
+        started for it: the workflow may be filtered out on the new head,
+        Actions may be degraded, the lookup may fail, or the push may simply
+        be newer than any scheduling. In all of those the candidate changed
+        and *nothing* is proving the new one, so "superseded" would claim a
+        replacement that does not exist. #16087 asks for a demonstrable newer
+        run; without one this is absent proof and stays red.
+        """
+        needs = _measured_cancelled_run()
+
+        verdict = gate.evaluate(
+            needs,
+            run_head=TESTED_HEAD,
+            latest_head=NEWER_HEAD,
+            replacement_run="",
+        )
+        self.assertEqual("failure", verdict.status)
+
+        status, _ = self._exit_status(
+            needs, LATEST_HEAD_SHA=NEWER_HEAD, REPLACEMENT_RUN_ID=""
+        )
+        self.assertEqual(1, status)
+
+    def test_only_a_well_formed_replacement_run_id_is_believed(self) -> None:
+        """A garbled replacement id is unknown, never a replacement.
+
+        The workflow step exports the id only when it matches `^[0-9]+$`, but
+        that shell condition is one layer, and this is the input that turns
+        the gate green. Anything that is not plainly a run id must read as
+        "no replacement found".
+        """
+        needs = _measured_cancelled_run()
+        malformed = (
+            "",
+            "   ",
+            "null",  # jq's output when the field is absent and `// empty` is lost
+            "empty",
+            "0x1234",
+            "35508361576abc",
+            "-35508361576",
+            "35508361576 35508361577",
+        )
+        for value in malformed:
+            with self.subTest(replacement_run=value):
+                self.assertFalse(
+                    gate._superseded(TESTED_HEAD, NEWER_HEAD, value)
+                )
+                status, _ = self._exit_status(
+                    needs,
+                    LATEST_HEAD_SHA=NEWER_HEAD,
+                    REPLACEMENT_RUN_ID=value,
+                )
+                self.assertEqual(1, status)
+
+    def test_the_workflow_binds_the_replacement_run_within_this_workflow(
+        self,
+    ) -> None:
+        """The lookup must be scoped, and must not find this run itself.
+
+        Two properties of the resolution step that no unit test of the
+        classifier can reach, because they live in the shell. The lookup is
+        keyed on the run's own `workflow_id`, so a run of some *other*
+        workflow on the newer head cannot be mistaken for the replacement;
+        and it is guarded on the heads already differing, so a run can never
+        return itself as its own replacement.
+        """
+        block = _merge_gate_block()
+        self.assertIn("workflow_id", block)
+        self.assertIn("actions/workflows/${workflow_id}/runs?head_sha=", block)
+        self.assertIn('"${latest}" != "${tested}"', block)
+        self.assertIn('"${replacement}" =~ ^[0-9]+$', block)
+        # Exported exactly once, and only after the shape check. A second
+        # unguarded export anywhere in the job would defeat the check.
+        self.assertEqual(1, block.count("REPLACEMENT_RUN_ID="))
+        self.assertLess(
+            block.index('"${replacement}" =~ ^[0-9]+$'),
+            block.index("REPLACEMENT_RUN_ID="),
+        )
 
     def test_a_real_failure_is_never_forgiven_however_far_the_head_moved(
         self,
@@ -368,14 +474,16 @@ class AggregateWiringTests(unittest.TestCase):
                 # Asserted at the classifier too: the workflow's own
                 # `^[0-9a-f]{40}$` guard must not be the only thing standing
                 # between a garbled value and a green gate.
-                self.assertFalse(gate._superseded(TESTED_HEAD, value))
+                self.assertFalse(
+                    gate._superseded(TESTED_HEAD, value, REPLACEMENT_RUN)
+                )
 
         # The layer boundary, stated rather than assumed: `main` normalises
         # surrounding whitespace and `_superseded` judges the shape. A padded
         # object name is the same object name, so it is believed — the check
         # is for garbled values, not for tidy ones.
         padded = f"  {NEWER_HEAD}\n"
-        self.assertFalse(gate._superseded(TESTED_HEAD, padded))
+        self.assertFalse(gate._superseded(TESTED_HEAD, padded, REPLACEMENT_RUN))
         status, _ = self._exit_status(needs, LATEST_HEAD_SHA=padded)
         self.assertEqual(0, status)
 

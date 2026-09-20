@@ -77,6 +77,7 @@ def evaluate(
     pull_request_draft: str = "false",
     run_head: str = "",
     latest_head: str = "",
+    replacement_run: str = "",
 ) -> Verdict:
     """Classify the aggregate without inferring success from absent evidence.
 
@@ -178,10 +179,11 @@ def evaluate(
     )
     if blockers:
         if _all_cancelled(blockers):
-            if _superseded(run_head, latest_head):
+            if _superseded(run_head, latest_head, replacement_run):
                 return Verdict(
                     "superseded",
-                    f"cancelled run for {run_head[:8]} superseded by {latest_head[:8]}",
+                    f"cancelled run for {run_head[:8]} superseded by "
+                    f"{latest_head[:8]}, proved by run {replacement_run}",
                     blockers,
                 )
             # Cancelled lanes with no newer head. #16107 named this state and
@@ -209,28 +211,42 @@ def _all_cancelled(blockers: tuple[str, ...]) -> bool:
 
 
 _OBJECT_NAME = re.compile(r"[0-9a-f]{40}")
+_RUN_ID = re.compile(r"[0-9]+")
 
 
-def _superseded(run_head: str, latest_head: str) -> bool:
-    """Whether a newer candidate has replaced the one this run tested.
+def _superseded(run_head: str, latest_head: str, replacement_run: str) -> bool:
+    """Whether a newer run has demonstrably replaced the one this tested.
 
-    Both heads must be a well-formed object name. An unresolved `latest_head`
-    — no token, an API error, an event with no pull request — is not evidence
-    of a replacement, so it reads as "not superseded" and the gate stays red.
-    That is the direction to fail in: a missed supersession costs one
-    avoidable red, while a wrongly claimed one reports green over a candidate
-    nothing proved.
+    Three facts, and the third is the one that took two attempts to get
+    right. Both heads must be well-formed object names, they must differ,
+    **and** the replacement run must be identified.
 
-    The workflow step already refuses to export anything but 40 hex
-    characters. This repeats that check because it is the one input that can
-    turn the gate green, and a shell condition in a YAML file is a thin
-    single layer to rest that on. A truncated or garbled value must read as
-    "unknown", never as "different, therefore newer".
+    Differing heads alone were the earlier design, and the review that
+    rejected it was correct: a moved head establishes that the candidate
+    changed, not that anything exists to prove the new one. #16087's accepted
+    design asks for a demonstrable newer run, so the workflow step looks one
+    up by the live head, within this same workflow, and binds its id here.
+    Without that id there is no replacement to point at, and "nothing proved
+    this candidate, but something else will" is not a claim the inputs
+    support.
+
+    Everything unresolved reads as "not superseded" and the gate stays red —
+    no token, an API error, an event with no pull request, a head that moved
+    before any run started. That is the direction to fail in: a missed
+    supersession costs one avoidable red, while a wrongly claimed one reports
+    green over a candidate nothing proved.
+
+    The workflow step already refuses to export a malformed value. These
+    checks repeat it because this is the one path that can turn the gate
+    green, and a shell condition in a YAML file is a thin single layer to
+    rest that on. A truncated or garbled value must read as "unknown", never
+    as "different, therefore newer".
     """
     return (
         _OBJECT_NAME.fullmatch(run_head) is not None
         and _OBJECT_NAME.fullmatch(latest_head) is not None
         and run_head != latest_head
+        and _RUN_ID.fullmatch(replacement_run) is not None
     )
 
 
@@ -258,6 +274,7 @@ def main() -> int:
             # step exports neither unless it is already 40 hex characters.
             run_head=os.environ.get("RUN_HEAD_SHA", "").strip(),
             latest_head=os.environ.get("LATEST_HEAD_SHA", "").strip(),
+            replacement_run=os.environ.get("REPLACEMENT_RUN_ID", "").strip(),
         )
         summary = render_summary(raw_needs, verdict)
     except (json.JSONDecodeError, ValueError) as error:
