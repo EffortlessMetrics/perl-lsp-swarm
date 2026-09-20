@@ -118,17 +118,17 @@ fn resolve(source: &StubSource, offset: u32) -> ResolveAtOutcome {
     resolve_at_position(source, FILE, offset, &generation(), false)
 }
 
-fn expect_exact(outcome: &ResolveAtOutcome) -> &ResolvedOccurrence {
+fn expect_exact(outcome: &ResolveAtOutcome) -> Result<&ResolvedOccurrence, String> {
     match outcome {
-        ResolveAtOutcome::Exact(resolved) => resolved,
-        other => panic!("expected an exact identity, got {other:?}"),
+        ResolveAtOutcome::Exact(resolved) => Ok(resolved),
+        other => Err(format!("expected an exact identity, got {other:?}")),
     }
 }
 
 // ── Exact identity ──
 
 #[test]
-fn exact_occurrence_carries_occurrence_entity_and_generation() {
+fn exact_occurrence_carries_occurrence_entity_and_generation() -> Result<(), String> {
     let source = StubSource::default().with_symbol(
         10,
         entity(1, EntityKind::Variable, "$value", Some(100)),
@@ -136,7 +136,7 @@ fn exact_occurrence_carries_occurrence_entity_and_generation() {
     );
 
     let outcome = resolve(&source, 10);
-    let resolved = expect_exact(&outcome);
+    let resolved = expect_exact(&outcome)?;
 
     assert_eq!(resolved.occurrence_id, OccurrenceId(50));
     assert_eq!(resolved.entity_id, EntityId(1));
@@ -146,13 +146,14 @@ fn exact_occurrence_carries_occurrence_entity_and_generation() {
     assert_eq!(resolved.generation, generation());
     assert!(resolved.limitations.is_empty());
     assert_eq!(outcome.stage(), "exact");
+    Ok(())
 }
 
 /// Negative control for the whole layer: nested same-name lexicals are two
 /// bindings, so the same spelling at two offsets must not collapse to one
 /// identity. A spelling-based implementation fails here.
 #[test]
-fn nested_same_name_lexicals_resolve_to_distinct_bindings() {
+fn nested_same_name_lexicals_resolve_to_distinct_bindings() -> Result<(), String> {
     let source = StubSource::default()
         .with_symbol(
             10,
@@ -168,19 +169,20 @@ fn nested_same_name_lexicals_resolve_to_distinct_bindings() {
     let outer = resolve(&source, 10);
     let inner = resolve(&source, 40);
 
-    assert_eq!(expect_exact(&outer).canonical_name, expect_exact(&inner).canonical_name);
-    assert_ne!(expect_exact(&outer).entity_id, expect_exact(&inner).entity_id);
-    assert_ne!(expect_exact(&outer).occurrence_id, expect_exact(&inner).occurrence_id);
+    assert_eq!(expect_exact(&outer)?.canonical_name, expect_exact(&inner)?.canonical_name);
+    assert_ne!(expect_exact(&outer)?.entity_id, expect_exact(&inner)?.entity_id);
+    assert_ne!(expect_exact(&outer)?.occurrence_id, expect_exact(&inner)?.occurrence_id);
     assert!(
         !outer.shares_subject_with(&inner),
         "shadowed lexicals must not be reported as one shared subject"
     );
+    Ok(())
 }
 
 /// Same spelling in two packages, and the same spelling in two roots, are
 /// distinct entities. Only the offset may decide which one the cursor selected.
 #[test]
-fn same_spelling_in_two_packages_resolves_by_position_not_name() {
+fn same_spelling_in_two_packages_resolves_by_position_not_name() -> Result<(), String> {
     let source = StubSource::default()
         .with_symbol(
             10,
@@ -193,14 +195,15 @@ fn same_spelling_in_two_packages_resolves_by_position_not_name() {
             occurrence(51, OccurrenceKind::Call, Some(2), 201),
         );
 
-    assert_eq!(expect_exact(&resolve(&source, 10)).entity_id, EntityId(1));
-    assert_eq!(expect_exact(&resolve(&source, 40)).entity_id, EntityId(2));
+    assert_eq!(expect_exact(&resolve(&source, 10))?.entity_id, EntityId(1));
+    assert_eq!(expect_exact(&resolve(&source, 40))?.entity_id, EntityId(2));
+    Ok(())
 }
 
 /// Qualified and unqualified occurrences of one entity share the entity but
 /// remain separate occurrences.
 #[test]
-fn qualified_and_unqualified_occurrences_share_one_entity() {
+fn qualified_and_unqualified_occurrences_share_one_entity() -> Result<(), String> {
     let shared = entity(1, EntityKind::Subroutine, "Alpha::run", Some(100));
     let source = StubSource::default()
         .with_symbol(10, shared.clone(), occurrence(50, OccurrenceKind::Call, Some(1), 101))
@@ -209,14 +212,15 @@ fn qualified_and_unqualified_occurrences_share_one_entity() {
     let qualified = resolve(&source, 10);
     let unqualified = resolve(&source, 40);
 
-    assert_eq!(expect_exact(&qualified).entity_id, expect_exact(&unqualified).entity_id);
-    assert_ne!(expect_exact(&qualified).occurrence_id, expect_exact(&unqualified).occurrence_id);
+    assert_eq!(expect_exact(&qualified)?.entity_id, expect_exact(&unqualified)?.entity_id);
+    assert_ne!(expect_exact(&qualified)?.occurrence_id, expect_exact(&unqualified)?.occurrence_id);
+    Ok(())
 }
 
 /// Declaration and write roles are preserved; role is part of the resolved
 /// subject, not something each provider re-derives.
 #[test]
-fn occurrence_roles_are_preserved() {
+fn occurrence_roles_are_preserved() -> Result<(), String> {
     let source = StubSource::default()
         .with_symbol(
             10,
@@ -229,8 +233,9 @@ fn occurrence_roles_are_preserved() {
             occurrence(51, OccurrenceKind::Write, Some(1), 201),
         );
 
-    assert_eq!(expect_exact(&resolve(&source, 10)).role, OccurrenceKind::Definition);
-    assert_eq!(expect_exact(&resolve(&source, 40)).role, OccurrenceKind::Write);
+    assert_eq!(expect_exact(&resolve(&source, 10))?.role, OccurrenceKind::Definition);
+    assert_eq!(expect_exact(&resolve(&source, 40))?.role, OccurrenceKind::Write);
+    Ok(())
 }
 
 // ── Non-exact states stay mechanically distinct ──
@@ -239,7 +244,7 @@ fn occurrence_roles_are_preserved() {
 /// exact identity by finding a same-name definition. This is the precise error
 /// the layer exists to prevent.
 #[test]
-fn occurrence_without_entity_is_partial_not_exact() {
+fn occurrence_without_entity_is_partial_not_exact() -> Result<(), String> {
     let source = StubSource::default().with_symbol(
         10,
         entity(1, EntityKind::Variable, "$value", Some(100)),
@@ -254,8 +259,9 @@ fn occurrence_without_entity_is_partial_not_exact() {
         ResolveAtOutcome::Partial { limitations, .. } => {
             assert!(limitations.contains(&ResolveLimitation::OccurrenceWithoutEntity));
         }
-        other => panic!("expected Partial, got {other:?}"),
+        other => return Err(format!("expected Partial, got {other:?}")),
     }
+    Ok(())
 }
 
 /// The production shape of the same state: the entity–occurrence pair lookup
@@ -263,7 +269,7 @@ fn occurrence_without_entity_is_partial_not_exact() {
 /// lookup still reports the published fact. The outcome must be the
 /// entity-less limitation, never "no occurrence at this position".
 #[test]
-fn occurrence_without_entity_stays_visible_when_the_pair_lookup_collapses() {
+fn occurrence_without_entity_stays_visible_when_the_pair_lookup_collapses() -> Result<(), String> {
     let source = StubSource::default()
         .with_occurrence_only(10, occurrence(50, OccurrenceKind::Read, None, 101));
 
@@ -273,8 +279,9 @@ fn occurrence_without_entity_stays_visible_when_the_pair_lookup_collapses() {
         ResolveAtOutcome::Partial { limitations, .. } => {
             assert!(limitations.contains(&ResolveLimitation::OccurrenceWithoutEntity));
         }
-        other => panic!("expected Partial(OccurrenceWithoutEntity), got {other:?}"),
+        other => return Err(format!("expected Partial(OccurrenceWithoutEntity), got {other:?}")),
     }
+    Ok(())
 }
 
 /// A position with truly nothing published stays unavailable — the
@@ -313,7 +320,7 @@ fn dynamic_boundary_occurrence_is_dynamic_not_exact() {
 /// different fact from "nothing is here" — but only for a caller that opted in
 /// to the second query.
 #[test]
-fn dynamic_boundary_without_occurrence_is_not_unavailable_when_consulted() {
+fn dynamic_boundary_without_occurrence_is_not_unavailable_when_consulted() -> Result<(), String> {
     let source = StubSource::default()
         .with_dynamic(10, occurrence(90, OccurrenceKind::DynamicBoundary, None, 900));
 
@@ -325,8 +332,9 @@ fn dynamic_boundary_without_occurrence_is_not_unavailable_when_consulted() {
         ResolveAtOutcome::Dynamic { occurrence_id, .. } => {
             assert_eq!(occurrence_id, OccurrenceId(90));
         }
-        other => panic!("expected Dynamic, got {other:?}"),
+        other => return Err(format!("expected Dynamic, got {other:?}")),
     }
+    Ok(())
 }
 
 /// The base rule asks the semantic layer exactly one question. A caller whose
@@ -360,7 +368,7 @@ fn dynamic_consultation_does_not_override_a_published_occurrence() {
 /// A generated member with no source body keeps its generated identity and is
 /// never given a fabricated body range.
 #[test]
-fn generated_member_without_source_body_records_its_limitation() {
+fn generated_member_without_source_body_records_its_limitation() -> Result<(), String> {
     let source = StubSource::default().with_symbol(
         10,
         entity(1, EntityKind::GeneratedMember, "name", None),
@@ -368,16 +376,17 @@ fn generated_member_without_source_body_records_its_limitation() {
     );
 
     let outcome = resolve(&source, 10);
-    let resolved = expect_exact(&outcome);
+    let resolved = expect_exact(&outcome)?;
 
     assert_eq!(resolved.entity_anchor_id, None, "no fabricated body range");
     assert!(resolved.limitations.contains(&ResolveLimitation::GeneratedWithoutSourceBody));
+    Ok(())
 }
 
 /// Heuristic or search-fallback provenance is not exact evidence. A name-scan
 /// producer cannot launder a spelling match into an exact identity.
 #[test]
-fn non_exact_provenance_is_partial_not_exact() {
+fn non_exact_provenance_is_partial_not_exact() -> Result<(), String> {
     for provenance in [Provenance::NameHeuristic, Provenance::SearchFallback] {
         let mut fact = occurrence(50, OccurrenceKind::Read, Some(1), 101);
         fact.provenance = provenance;
@@ -394,9 +403,10 @@ fn non_exact_provenance_is_partial_not_exact() {
             ResolveAtOutcome::Partial { limitations, .. } => {
                 assert!(limitations.contains(&ResolveLimitation::NonExactProvenance));
             }
-            other => panic!("expected Partial for {provenance:?}, got {other:?}"),
+            other => return Err(format!("expected Partial for {provenance:?}, got {other:?}")),
         }
     }
+    Ok(())
 }
 
 /// Low confidence is not exact evidence either.
@@ -479,7 +489,7 @@ fn ambiguous_outcome_yields_no_bound_entity() {
 /// `published_occurrence` exposes the occurrence's role and anchor so a caller
 /// need not re-query the semantic layer for facts this resolution already read.
 #[test]
-fn published_occurrence_exposes_role_and_anchor_without_a_second_query() {
+fn published_occurrence_exposes_role_and_anchor_without_a_second_query() -> Result<(), String> {
     let mut heuristic = occurrence(51, OccurrenceKind::Definition, Some(2), 201);
     heuristic.provenance = Provenance::NameHeuristic;
 
@@ -495,20 +505,25 @@ fn published_occurrence_exposes_role_and_anchor_without_a_second_query() {
     );
 
     let from_exact = resolve(&exact, 10);
-    let published = from_exact.published_occurrence().expect("exact publishes an occurrence");
+    let published = from_exact
+        .published_occurrence()
+        .ok_or_else(|| "exact publishes an occurrence".to_owned())?;
     assert_eq!(published.role, OccurrenceKind::Definition);
     assert_eq!(published.occurrence_anchor_id, AnchorId(101));
 
     // A sub-exact occurrence is still a published occurrence: the caller that
     // reads the declaration anchor must see it exactly as it did before.
     let from_partial = resolve(&sub_exact, 10);
-    let published = from_partial.published_occurrence().expect("partial publishes an occurrence");
+    let published = from_partial
+        .published_occurrence()
+        .ok_or_else(|| "partial publishes an occurrence".to_owned())?;
     assert_eq!(published.role, OccurrenceKind::Definition);
     assert_eq!(published.occurrence_anchor_id, AnchorId(201));
 
     // Nothing published means nothing to read.
     assert!(resolve(&StubSource::default(), 10).published_occurrence().is_none());
     assert!(ResolveAtOutcome::Stale.published_occurrence().is_none());
+    Ok(())
 }
 
 /// `occurrence_was_published` separates "a producer published an occurrence but
@@ -536,7 +551,7 @@ fn occurrence_was_published_tracks_producer_output_not_exactness() {
 /// Every state has a distinct stage identifier, so a receipt can never conflate
 /// two of them.
 #[test]
-fn every_outcome_stage_is_distinct() {
+fn every_outcome_stage_is_distinct() -> Result<(), String> {
     let stages = [
         ResolveAtOutcome::Exact(
             expect_exact(&resolve(
@@ -546,7 +561,7 @@ fn every_outcome_stage_is_distinct() {
                     occurrence(50, OccurrenceKind::Read, Some(1), 2),
                 ),
                 10,
-            ))
+            ))?
             .clone(),
         )
         .stage(),
@@ -574,6 +589,7 @@ fn every_outcome_stage_is_distinct() {
     unique.sort_unstable();
     unique.dedup();
     assert_eq!(unique.len(), stages.len(), "outcome stages must be mechanically distinct");
+    Ok(())
 }
 
 /// Not-ready reasons stay separated from "no occurrence here": the first may
@@ -859,7 +875,7 @@ fn the_torn_read_protocol_is_bounded() {
 /// two snapshots. This is the deterministic version of the race the bracket
 /// exists for — the write fires while the first view is open.
 #[test]
-fn a_commit_between_basis_and_view_is_retried_with_a_fresh_basis() {
+fn a_commit_between_basis_and_view_is_retried_with_a_fresh_basis() -> Result<(), String> {
     use std::cell::Cell;
 
     let version = Cell::new(10u64);
@@ -879,12 +895,14 @@ fn a_commit_between_basis_and_view_is_retried_with_a_fresh_basis() {
     );
 
     assert_eq!(view_calls.get(), 2, "the torn attempt must be retried");
-    let (basis, view_basis) = result.expect("a settled index must still yield a view");
+    let (basis, view_basis) =
+        result.ok_or_else(|| "a settled index must still yield a view".to_owned())?;
     assert_eq!(basis, "basis@11", "the surviving basis must name the post-commit version");
     assert_eq!(
         view_basis, "basis@11",
         "the surviving view must have resolved against that same basis"
     );
+    Ok(())
 }
 
 /// A view whose version never settles yields `None` — the caller's named
@@ -924,6 +942,53 @@ fn the_basis_view_bracket_is_bounded() {
 
     assert!(result.is_none());
     assert_eq!(attempts.get(), 3, "the bracket must stop after its attempt bound");
+}
+
+/// The definition receipt captures its basis, then performs the legacy lookup,
+/// then opens the semantic view — three steps the one basis is meant to
+/// describe. An unrelated workspace update completing anywhere in that window
+/// would otherwise leave the newer view's facts labelled with the settled older
+/// basis, and the provider's own document-generation checks would not catch it:
+/// they compare document generations, never the workspace half.
+///
+/// The update here is *scheduled* rather than raced — it lands exactly once,
+/// inside the first attempt's window — so the control is deterministic. It
+/// fails against the pre-repair ordering, which captured the basis once and
+/// returned it without ever re-observing the version: that shape yields the
+/// stale `7` after a single pass instead of the settled `8` after two.
+#[test]
+fn a_workspace_update_scheduled_between_basis_and_view_is_not_returned() {
+    use std::cell::Cell;
+
+    let version = Cell::new(7u64);
+    let view_passes = Cell::new(0u32);
+    let update_pending = Cell::new(true);
+
+    let observed: Option<(u64, &'static str)> = stable_basis_view(
+        || version.get(),
+        || version.get(),
+        |_basis| {
+            view_passes.set(view_passes.get() + 1);
+            if update_pending.replace(false) {
+                // The unrelated workspace update completes here: after the
+                // basis was captured, before this view finishes.
+                version.set(version.get() + 1);
+            }
+            "view"
+        },
+        3,
+    );
+
+    assert_eq!(
+        observed,
+        Some((8, "view")),
+        "the returned basis must describe the view it labels, not the one that was displaced"
+    );
+    assert_eq!(
+        view_passes.get(),
+        2,
+        "the attempt the update landed in must be discarded rather than returned"
+    );
 }
 
 /// A uri the index has never seen still yields an explicit unknown document
@@ -978,7 +1043,7 @@ fn a_source_pairing_matched_facts_still_resolves() {
 /// The identity is occurrence *and* entity, so a weak entity cannot be laundered
 /// into an exact identity by a strong occurrence.
 #[test]
-fn a_weak_entity_is_not_an_exact_identity() {
+fn a_weak_entity_is_not_an_exact_identity() -> Result<(), String> {
     for (provenance, confidence) in [
         (Provenance::NameHeuristic, Confidence::High),
         (Provenance::SearchFallback, Confidence::High),
@@ -1006,15 +1071,16 @@ fn a_weak_entity_is_not_an_exact_identity() {
                 limitations.contains(&ResolveLimitation::NonExactEntityProvenance),
                 "the weak half must be named"
             ),
-            other => panic!("expected Partial, got {other:?}"),
+            other => return Err(format!("expected Partial, got {other:?}")),
         }
     }
+    Ok(())
 }
 
 /// The two halves are reported separately, so a caller can tell which one is
 /// approximate rather than being told only that something is.
 #[test]
-fn weak_occurrence_and_weak_entity_are_named_separately() {
+fn weak_occurrence_and_weak_entity_are_named_separately() -> Result<(), String> {
     let mut weak_entity_fact = entity(1, EntityKind::Variable, "$value", Some(100));
     weak_entity_fact.provenance = Provenance::NameHeuristic;
     let mut weak_occurrence = occurrence(50, OccurrenceKind::Read, Some(1), 101);
@@ -1036,22 +1102,23 @@ fn weak_occurrence_and_weak_entity_are_named_separately() {
             assert!(limitations.contains(&ResolveLimitation::NonExactEntityProvenance));
             assert!(!limitations.contains(&ResolveLimitation::NonExactProvenance));
         }
-        other => panic!("expected Partial, got {other:?}"),
+        other => return Err(format!("expected Partial, got {other:?}")),
     }
     match resolve(&occurrence_only, 10) {
         ResolveAtOutcome::Partial { limitations, .. } => {
             assert!(limitations.contains(&ResolveLimitation::NonExactProvenance));
             assert!(!limitations.contains(&ResolveLimitation::NonExactEntityProvenance));
         }
-        other => panic!("expected Partial, got {other:?}"),
+        other => return Err(format!("expected Partial, got {other:?}")),
     }
+    Ok(())
 }
 
 /// An identity whose snapshot is unidentified is not exact, however strong the
 /// producer evidence. Without a known basis a caller cannot say which source the
 /// identity came from, nor detect drift by comparing bases.
 #[test]
-fn an_unknown_basis_cannot_produce_an_exact_identity() {
+fn an_unknown_basis_cannot_produce_an_exact_identity() -> Result<(), String> {
     let source = StubSource::default().with_symbol(
         10,
         entity(1, EntityKind::Variable, "$value", Some(100)),
@@ -1074,9 +1141,10 @@ fn an_unknown_basis_cannot_produce_an_exact_identity() {
                 // accepted sub-exact evidence keeps the same answer.
                 assert_eq!(candidates.first().map(|first| first.entity_id), Some(EntityId(1)));
             }
-            other => panic!("expected Partial, got {other:?}"),
+            other => return Err(format!("expected Partial, got {other:?}")),
         }
     }
+    Ok(())
 }
 
 /// The degraded state stays usable: `bound_entity_id` still reports the entity,
@@ -1133,7 +1201,7 @@ fn another_file_at_the_same_offset_does_not_satisfy_the_request() {
 /// that published no scope must stay absent rather than borrow the entity's,
 /// or an exact identity would carry a use site the cursor never had.
 #[test]
-fn a_missing_occurrence_scope_is_not_filled_from_the_entity() {
+fn a_missing_occurrence_scope_is_not_filled_from_the_entity() -> Result<(), String> {
     let mut declared_elsewhere = entity(1, EntityKind::Variable, "$value", Some(100));
     declared_elsewhere.scope_id = Some(ScopeId(77));
     let mut used_here = occurrence(50, OccurrenceKind::Read, Some(1), 101);
@@ -1144,17 +1212,18 @@ fn a_missing_occurrence_scope_is_not_filled_from_the_entity() {
     let outcome = resolve(&source, 10);
 
     assert_eq!(
-        expect_exact(&outcome).scope_id,
+        expect_exact(&outcome)?.scope_id,
         None,
         "an unpublished occurrence scope must stay absent, not borrow ScopeId(77) from the entity"
     );
+    Ok(())
 }
 
 /// Positive control on the same shape: when the occurrence does publish a
 /// scope, that scope is reported even though the entity names a different one.
 /// Pins the rule as "the occurrence's scope" rather than "whichever is Some".
 #[test]
-fn a_published_occurrence_scope_wins_over_a_different_entity_scope() {
+fn a_published_occurrence_scope_wins_over_a_different_entity_scope() -> Result<(), String> {
     let mut declared_elsewhere = entity(1, EntityKind::Variable, "$value", Some(100));
     declared_elsewhere.scope_id = Some(ScopeId(77));
     let mut used_here = occurrence(50, OccurrenceKind::Read, Some(1), 101);
@@ -1164,5 +1233,6 @@ fn a_published_occurrence_scope_wins_over_a_different_entity_scope() {
 
     let outcome = resolve(&source, 10);
 
-    assert_eq!(expect_exact(&outcome).scope_id, Some(ScopeId(88)));
+    assert_eq!(expect_exact(&outcome)?.scope_id, Some(ScopeId(88)));
+    Ok(())
 }

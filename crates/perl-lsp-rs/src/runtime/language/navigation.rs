@@ -33,6 +33,7 @@ use perl_lsp_rs_core::providers::navigation::definition_shadow::{
 #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
 use perl_lsp_rs_core::providers::semantic_port::{
     ResolveAtOutcome, SemanticQueriesResolveSource, accepted_generation_basis, resolve_at_position,
+    stable_basis_view,
 };
 
 /// How the shared cursor identity (#8977) compares with the live name-keyed
@@ -2264,39 +2265,70 @@ impl LspServer {
         if !snapshot_is_current() {
             return None;
         }
-        // One shared basis for this request (#8977). Built from the accepted
-        // view before the semantic view is opened — `accepted_generation_basis`
-        // reads the index's document map, and taking that lock while holding the
-        // semantic read guards would invert this crate's lock order. References
-        // builds it from the same constructor, so the two providers cannot drift
-        // onto different generations.
-        let resolve_generation = accepted_generation_basis(index.as_ref(), uri);
-        // Resolve the legacy location BEFORE entering the callback: the cutover
-        // path must not re-enter `WorkspaceIndex` while
-        // `with_semantic_queries_for_uri` holds its read guards (#15644).
-        let legacy_location = index.find_definition(&symbol);
-        let (receipt, resolved_at_cursor) =
-            index.with_semantic_queries_for_uri(uri, |file_id, queries| {
-                // The shared cursor identity and the live name-keyed lookup are
-                // captured under ONE view open; two opens would be a second
-                // snapshot of the same request.
-                let resolve_source = SemanticQueriesResolveSource::new(&queries);
-                let resolved_at_cursor = resolve_at_position(
-                    &resolve_source,
-                    file_id,
-                    byte_offset,
-                    &resolve_generation,
-                    false,
-                );
-                let context = QueryContext::new(file_id, None, Some(byte_offset));
-                let outcome = goto_definition_live_exact_or_imported(
-                    legacy_location,
-                    &queries,
-                    &symbol,
-                    &context,
-                );
-                (outcome, resolved_at_cursor)
-            })?;
+        // One shared basis for this request (#8977), bracketed against the
+        // index's write version across everything the basis is meant to
+        // describe. References builds its basis from the same constructor, so
+        // the two providers cannot drift onto different generations.
+        //
+        // The basis cannot be re-read inside the callback:
+        // `accepted_generation_basis` takes the index's document-map lock, and
+        // taking it while `with_semantic_queries_for_uri` holds the semantic
+        // read guards would invert this crate's lock order. So the bracket is
+        // closed the other way — `stable_basis_view` observes `write_version`
+        // before the basis is captured and again after the view has completed
+        // and released its guards.
+        //
+        // Both the legacy lookup and the view open sit inside that bracket, and
+        // both must. The legacy lookup has to happen before the callback (it
+        // must not re-enter `WorkspaceIndex` while the read guards are held,
+        // #15644), which leaves two operations between the basis capture and the
+        // view. `snapshot_is_current` below compares only *document*
+        // generations, so without this bracket an unrelated workspace update
+        // completing in that window would label the newer view's facts with the
+        // settled older workspace basis and nothing would notice.
+        //
+        // Exhaustion declines the receipt rather than emitting a basis that does
+        // not describe its own view. This is the receipt path, so declining
+        // costs a trace entry and never changes the definition response. The
+        // underlying writer protocol — overlapping `WriteVersionGuard` windows
+        // and the unversioned incremental shard replace — stays with
+        // #8038/#8642; this bracket does not claim to repair it.
+        //
+        // Same bound as the references seam, which brackets this same class
+        // with this same helper: contention here is a brief index write, not a
+        // queue. Each attempt only re-reads, so a retry is observationally
+        // identical to the first pass.
+        const VIEW_BASIS_ATTEMPTS: u8 = 3;
+        let (_resolve_generation, view) = stable_basis_view(
+            || accepted_generation_basis(index.as_ref(), uri),
+            || index.write_version(),
+            |resolve_generation| {
+                let legacy_location = index.find_definition(&symbol);
+                index.with_semantic_queries_for_uri(uri, |file_id, queries| {
+                    // The shared cursor identity and the live name-keyed lookup
+                    // are captured under ONE view open; two opens would be a
+                    // second snapshot of the same request.
+                    let resolve_source = SemanticQueriesResolveSource::new(&queries);
+                    let resolved_at_cursor = resolve_at_position(
+                        &resolve_source,
+                        file_id,
+                        byte_offset,
+                        resolve_generation,
+                        false,
+                    );
+                    let context = QueryContext::new(file_id, None, Some(byte_offset));
+                    let outcome = goto_definition_live_exact_or_imported(
+                        legacy_location,
+                        &queries,
+                        &symbol,
+                        &context,
+                    );
+                    (outcome, resolved_at_cursor)
+                })
+            },
+            VIEW_BASIS_ATTEMPTS,
+        )?;
+        let (receipt, resolved_at_cursor) = view?;
         if !snapshot_is_current() || self.workspace_index_stale_for_any_open_document() {
             return None;
         }
