@@ -771,6 +771,10 @@ impl<'a> Parser<'a> {
 
                             let token = self.tokens.next()?;
                             let start = token.start();
+                            let has_parens = self.peek_kind() == Some(TokenKind::LeftParen);
+                            if has_parens {
+                                self.consume_token()?;
+                            }
                             let variable = if matches!(
                                 self.peek_kind(),
                                 Some(
@@ -807,9 +811,17 @@ impl<'a> Parser<'a> {
                                 Some(TokenKind::Comma | TokenKind::FatArrow)
                             ) {
                                 self.consume_token()?;
+                                if has_parens && self.peek_kind() == Some(TokenKind::RightParen) {
+                                    break;
+                                }
                                 args.push(self.parse_assignment()?);
                             }
-                            let end = self.previous_position();
+                            // Some operands consume tokens directly, so their AST end is authoritative.
+                            let mut end = args.last().map_or(package.location.end, |arg| arg.location.end);
+                            if has_parens {
+                                self.expect_closing_delimiter(TokenKind::RightParen)?;
+                                end = end.max(self.previous_position());
+                            }
                             Ok(Node::new(
                                 NodeKind::Tie { variable, package, args },
                                 SourceLocation { start, end },
