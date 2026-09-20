@@ -5,6 +5,7 @@
 
 use crate::tasks::change_set::{self, ArtifactIdentity};
 use crate::tasks::git_context::{default_windows_drive_mount_root, git_output_with_mount_root};
+use chrono::{NaiveDate, Utc};
 use color_eyre::eyre::{Context, Result, bail, eyre};
 use glob::Pattern;
 use serde::de::{self, DeserializeSeed, IgnoredAny, MapAccess, SeqAccess, Visitor};
@@ -203,6 +204,233 @@ pub fn ripr_pr_summary(check: bool) -> Result<()> {
     Ok(())
 }
 
+// -----------------------------------------------------------------------------
+// Suppression lifecycle audit (advisory)
+// -----------------------------------------------------------------------------
+
+/// Days before `expires` at which an entry is called out as due to lapse.
+const SUPPRESSION_EXPIRY_HORIZON_DAYS: i64 = 14;
+
+/// Report the ledger's own lifecycle dates against today, advisory only.
+///
+/// This command exists because the dates were unreadable in practice: the
+/// ledger header demands `owner`, `reason`, `created`, `review_after` and
+/// `expires` on every entry, yet nothing in the toolchain deserialized the last
+/// four, so an entry went on suppressing findings indefinitely past its own
+/// stated end date and no surface said so.
+///
+/// It deliberately does not enforce. Retiring a lapsed suppression is a
+/// judgement about whether the underlying finding is now real, which belongs to
+/// the entry's owner; failing the gate on a date would red PRs that have
+/// nothing to do with the suppression, which is the defect class this work is
+/// meant to reduce rather than add to. The command exits 0 on any readable
+/// ledger.
+pub fn ripr_suppression_audit(
+    suppressions: &Path,
+    out: &Path,
+    json_out: &Path,
+    print_summary: bool,
+) -> Result<()> {
+    let repo = repo_root()?;
+    let rules = read_ripr_suppression_rules(&repo, suppressions)?;
+    let packet = suppression_lifecycle_audit(
+        &rules.lifecycle,
+        Utc::now().date_naive(),
+        &display_path(suppressions),
+    );
+    let markdown = render_suppression_lifecycle_markdown(&packet);
+
+    write_text(&repo.join(json_out), &format_json(&packet)?)?;
+    write_text(&repo.join(out), &markdown)?;
+    if print_summary {
+        print!("{markdown}");
+    }
+    println!("Wrote {}", display_path(json_out));
+    println!("Wrote {}", display_path(out));
+    Ok(())
+}
+
+/// Classify every committed lifecycle row against one explicit date.
+///
+/// Pure in both arguments: the caller supplies `today`, so the whole judgement
+/// is reproducible from the ledger bytes plus a date, and the tests pin real
+/// calendar arithmetic rather than whatever day they happen to run on.
+fn suppression_lifecycle_audit(
+    lifecycle: &[RiprSuppressionLifecycle],
+    today: NaiveDate,
+    ledger_path: &str,
+) -> Value {
+    let mut expired = Vec::new();
+    let mut expiring_soon = Vec::new();
+    let mut review_due = Vec::new();
+    let mut unenforceable = Vec::new();
+    let mut no_expiry = Vec::new();
+    let mut current = 0usize;
+
+    for row in lifecycle {
+        // Completeness and expiry are reported independently. An entry missing
+        // only `owner` still has a readable end date, and folding it into a
+        // single "unenforceable" bucket would hide that date — the exact
+        // silence this audit exists to break.
+        if !row.missing.is_empty() || !row.malformed.is_empty() {
+            unenforceable.push(json!({
+                "id": row.id,
+                "owner": row.owner,
+                "missing": row.missing,
+                "malformed": row.malformed,
+            }));
+        }
+
+        let Some(expires) = parse_ledger_date(&row.expires) else {
+            // No readable end date at all: a permanent exception living in a
+            // ledger whose header says every entry carries one.
+            no_expiry.push(json!({
+                "id": row.id,
+                "kind": row.kind,
+                "owner": row.owner,
+                "expires": row.expires,
+            }));
+            continue;
+        };
+
+        let days_past = (today - expires).num_days();
+        if days_past > 0 {
+            expired.push(json!({
+                "id": row.id,
+                "kind": row.kind,
+                "owner": row.owner,
+                "created": row.created,
+                "expires": row.expires,
+                "days_past_expiry": days_past,
+            }));
+        } else if -days_past <= SUPPRESSION_EXPIRY_HORIZON_DAYS {
+            expiring_soon.push(json!({
+                "id": row.id,
+                "owner": row.owner,
+                "expires": row.expires,
+                "days_until_expiry": -days_past,
+            }));
+        } else {
+            current += 1;
+        }
+
+        if let Some(review_after) = parse_ledger_date(&row.review_after)
+            && review_after <= today
+        {
+            review_due.push(json!({
+                "id": row.id,
+                "owner": row.owner,
+                "review_after": row.review_after,
+                "days_past_review": (today - review_after).num_days(),
+            }));
+        }
+    }
+
+    let oldest_overrun = expired
+        .iter()
+        .filter_map(|entry| entry.get("days_past_expiry").and_then(Value::as_i64))
+        .max()
+        .unwrap_or(0);
+
+    json!({
+        "schema_version": 1,
+        "kind": "ripr_suppression_lifecycle_audit",
+        "mode": "advisory",
+        "decision": "advisory",
+        "as_of": today.to_string(),
+        "ledger": ledger_path,
+        "total_entries": lifecycle.len(),
+        "expired_count": expired.len(),
+        "expiring_within_days": SUPPRESSION_EXPIRY_HORIZON_DAYS,
+        "expiring_soon_count": expiring_soon.len(),
+        "review_due_count": review_due.len(),
+        "unenforceable_count": unenforceable.len(),
+        "no_expiry_count": no_expiry.len(),
+        "current_count": current,
+        "oldest_overrun_days": oldest_overrun,
+        "expired": expired,
+        "expiring_soon": expiring_soon,
+        "review_due": review_due,
+        "unenforceable": unenforceable,
+        "no_expiry": no_expiry,
+        "claim_boundary": [
+            "Advisory report only; no gate verdict reads this artifact and no suppression stops applying on its expires date.",
+            "Dates are the ledger's own committed values, compared against as_of.",
+            "expired, expiring_soon, current and no_expiry partition the ledger by end date; unenforceable overlaps all of them and counts entries missing or malforming a field the ledger header demands.",
+            "review_due is reported only for entries with a readable expires date."
+        ]
+    })
+}
+
+fn render_suppression_lifecycle_markdown(packet: &Value) -> String {
+    let num = |key: &str| packet.get(key).and_then(Value::as_i64).unwrap_or(0);
+    let rows = |key: &str| packet.get(key).and_then(Value::as_array).cloned().unwrap_or_default();
+    let text = |value: &Value, key: &str| {
+        value.get(key).and_then(Value::as_str).filter(|v| !v.is_empty()).unwrap_or("—").to_string()
+    };
+
+    let mut out = String::new();
+    out.push_str("### RIPR suppression lifecycle (advisory)\n\n");
+    out.push_str(&format!(
+        "`{}` — {} entries, as of {}.\n\n",
+        packet.get("ledger").and_then(Value::as_str).unwrap_or("policy/ripr-suppressions.toml"),
+        num("total_entries"),
+        packet.get("as_of").and_then(Value::as_str).unwrap_or("unknown"),
+    ));
+
+    let expired = num("expired_count");
+    if expired == 0 {
+        out.push_str("No suppression is past its own `expires` date.\n\n");
+    } else {
+        out.push_str(&format!(
+            "**{expired} suppression(s) are past their own `expires` date**, the oldest by {} days.\n\n",
+            num("oldest_overrun_days"),
+        ));
+        out.push_str("| id | owner | expires | days past |\n|---|---|---|---|\n");
+        for row in rows("expired") {
+            out.push_str(&format!(
+                "| `{}` | {} | {} | {} |\n",
+                text(&row, "id"),
+                text(&row, "owner"),
+                text(&row, "expires"),
+                row.get("days_past_expiry").and_then(Value::as_i64).unwrap_or(0),
+            ));
+        }
+        out.push('\n');
+    }
+
+    out.push_str(&format!(
+        "Expiring within {} days: {}. Past `review_after`: {}. Current: {}.\n\n",
+        num("expiring_within_days"),
+        num("expiring_soon_count"),
+        num("review_due_count"),
+        num("current_count"),
+    ));
+
+    let no_expiry = num("no_expiry_count");
+    if no_expiry > 0 {
+        out.push_str(&format!(
+            "**{no_expiry} suppression(s) carry no readable `expires` date at all** and are therefore permanent:\n\n",
+        ));
+        for row in rows("no_expiry") {
+            out.push_str(&format!("- `{}` (owner {})\n", text(&row, "id"), text(&row, "owner")));
+        }
+        out.push('\n');
+    }
+
+    let unenforceable = num("unenforceable_count");
+    if unenforceable > 0 {
+        out.push_str(&format!(
+            "{unenforceable} entr(y/ies) are missing or malforming a field the ledger header demands; see `lifecycle-audit.json`.\n\n",
+        ));
+    }
+
+    out.push_str(
+        "These dates are advisory. No gate reads them, and a suppression does not stop applying on its `expires` date; retiring one is the owner's call.\n",
+    );
+    out
+}
+
 pub fn ripr_annotations(comments: &str, out: &str, check: bool) -> Result<()> {
     let repo = repo_root()?;
     let comments = normalized_option(comments, REVIEW_COMMENTS_JSON);
@@ -399,6 +627,10 @@ fn ripr_plus_receipt_packet(
             "path_patterns": suppressions.display_patterns.clone(),
             "invalid_patterns": suppressions.invalid_patterns.clone(),
             "reasons": suppressions.suppression_reasons.clone(),
+            // Committed lifecycle rows, verbatim and clock-free. The expiry
+            // judgement lives in `cargo xtask ripr-suppression-audit`, which is
+            // advisory; nothing here changes a gate verdict.
+            "lifecycle": suppressions.lifecycle.iter().map(RiprSuppressionLifecycle::to_value).collect::<Vec<_>>(),
         },
         "decision": "advisory",
         "claim_boundary": [
@@ -709,6 +941,101 @@ struct RiprSuppression {
     gap_ids: Vec<String>,
     #[serde(default)]
     reason: String,
+    /// Accountable owner. Demanded by the ledger header; see [`RiprSuppressionLifecycle`]
+    /// for why it was previously discarded.
+    #[serde(default)]
+    owner: String,
+    /// Date the suppression was admitted, `YYYY-MM-DD`.
+    #[serde(default)]
+    created: String,
+    /// Date the owner undertook to revisit the suppression, `YYYY-MM-DD`.
+    #[serde(default)]
+    review_after: String,
+    /// Date the suppression was to stop applying, `YYYY-MM-DD`.
+    #[serde(default)]
+    expires: String,
+}
+
+/// One suppression's committed lifecycle row, exactly as the ledger spells it.
+///
+/// The ledger header states that every entry "requires owner, reason, created,
+/// review_after, and expires", but [`RiprSuppression`] deserialized only `id`,
+/// `kind`, `paths`, `classification`, `gap_ids` and `reason`. Serde's default
+/// behaviour is to ignore unknown keys, so the four lifecycle fields parsed
+/// cleanly and were then dropped on the floor: nothing in the toolchain ever
+/// read a `review_after` or an `expires`, and no entry has ever stopped
+/// applying on its own date.
+///
+/// These rows carry the committed dates verbatim and hold no clock reading, so
+/// they are a pure function of the ledger bytes. Every comparison against
+/// "today" happens in [`suppression_lifecycle_audit`], which writes an advisory
+/// artifact and is not an input to any gate verdict.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct RiprSuppressionLifecycle {
+    id: String,
+    kind: String,
+    owner: String,
+    created: String,
+    review_after: String,
+    expires: String,
+    /// Fields the ledger header demands that this entry leaves empty.
+    missing: Vec<String>,
+    /// Date fields present but not parseable as `YYYY-MM-DD`.
+    malformed: Vec<String>,
+}
+
+impl RiprSuppressionLifecycle {
+    fn from_entry(suppression: &RiprSuppression) -> Self {
+        let mut missing = Vec::new();
+        let mut malformed = Vec::new();
+        for (field, value) in [
+            ("owner", suppression.owner.as_str()),
+            ("reason", suppression.reason.as_str()),
+            ("created", suppression.created.as_str()),
+            ("review_after", suppression.review_after.as_str()),
+            ("expires", suppression.expires.as_str()),
+        ] {
+            if value.trim().is_empty() {
+                missing.push(field.to_string());
+            }
+        }
+        for (field, value) in [
+            ("created", suppression.created.as_str()),
+            ("review_after", suppression.review_after.as_str()),
+            ("expires", suppression.expires.as_str()),
+        ] {
+            if !value.trim().is_empty() && parse_ledger_date(value).is_none() {
+                malformed.push(field.to_string());
+            }
+        }
+        Self {
+            id: suppression.id.clone(),
+            kind: suppression.kind.clone(),
+            owner: suppression.owner.clone(),
+            created: suppression.created.clone(),
+            review_after: suppression.review_after.clone(),
+            expires: suppression.expires.clone(),
+            missing,
+            malformed,
+        }
+    }
+
+    fn to_value(&self) -> Value {
+        json!({
+            "id": self.id,
+            "kind": self.kind,
+            "owner": self.owner,
+            "created": self.created,
+            "review_after": self.review_after,
+            "expires": self.expires,
+            "missing": self.missing,
+            "malformed": self.malformed,
+        })
+    }
+}
+
+fn parse_ledger_date(value: &str) -> Option<NaiveDate> {
+    NaiveDate::parse_from_str(value.trim(), "%Y-%m-%d").ok()
 }
 
 #[derive(Debug, Default)]
@@ -720,6 +1047,10 @@ struct RiprSuppressionRules {
     gap_id_sets: Vec<Vec<String>>,
     invalid_patterns: Vec<String>,
     suppression_reasons: Vec<Value>,
+    /// One row per `[[suppress]]` entry in ledger order, carrying the committed
+    /// lifecycle fields. Deliberately kept out of `suppression_reasons` so the
+    /// existing receipt shape is unchanged. Holds no clock reading.
+    lifecycle: Vec<RiprSuppressionLifecycle>,
 }
 
 fn read_ripr_suppression_rules(repo: &Path, path: &Path) -> Result<RiprSuppressionRules> {
@@ -731,6 +1062,7 @@ fn read_ripr_suppression_rules(repo: &Path, path: &Path) -> Result<RiprSuppressi
 
     let mut rules = RiprSuppressionRules::default();
     for suppression in policy.suppressions {
+        rules.lifecycle.push(RiprSuppressionLifecycle::from_entry(&suppression));
         let paths =
             suppression.paths.iter().map(|path| normalize_path_text(path)).collect::<Vec<_>>();
         if !suppression.id.trim().is_empty()
@@ -7027,6 +7359,7 @@ mod maybe_tests {
             invalid_patterns: Vec::new(),
             gap_id_sets: Vec::new(),
             suppression_reasons: Vec::new(),
+            lifecycle: Vec::new(),
         };
 
         let summary = ripr_plus_seam_summary(&seams, &suppressions, 10);
@@ -7070,6 +7403,7 @@ mod maybe_tests {
                 "reason": "Archived source is not active behavior.",
                 "paths": ["archive/**"],
             })],
+            lifecycle: Vec::new(),
         };
         // Badge supplies the canonical counts; seam summary supplies the triage inventory.
         let badge = json!({
@@ -7384,6 +7718,258 @@ reason = "UX receipt tests are proof inputs."
                 "reason": "Archived source is not active workspace behavior.",
                 "paths": ["archive/**"],
             })
+        );
+        Ok(())
+    }
+
+    fn lifecycle_row(
+        id: &str,
+        owner: &str,
+        created: &str,
+        review_after: &str,
+        expires: &str,
+    ) -> RiprSuppressionLifecycle {
+        RiprSuppressionLifecycle::from_entry(&RiprSuppression {
+            id: id.to_string(),
+            kind: "generated_or_non_production_surface".to_string(),
+            paths: vec!["archive/**".to_string()],
+            classification: Vec::new(),
+            gap_ids: Vec::new(),
+            reason: "documented exception".to_string(),
+            owner: owner.to_string(),
+            created: created.to_string(),
+            review_after: review_after.to_string(),
+            expires: expires.to_string(),
+        })
+    }
+
+    fn audit_on(rows: &[RiprSuppressionLifecycle], today: &str) -> Value {
+        suppression_lifecycle_audit(
+            rows,
+            parse_ledger_date(today).expect("test date"),
+            "policy/ripr-suppressions.toml",
+        )
+    }
+
+    /// The defect this work exists to fix: the four lifecycle fields the ledger
+    /// header demands parsed cleanly and were then discarded, so nothing could
+    /// ever observe an overrun.
+    #[test]
+    fn suppression_lifecycle_fields_survive_deserialization() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let repo = temp.path();
+        fs::create_dir_all(repo.join("policy"))?;
+        fs::write(
+            repo.join("policy/ripr-suppressions.toml"),
+            r#"
+schema_version = 1
+policy = "ripr-suppressions"
+
+[[suppress]]
+id = "ripr-suppress-archive"
+kind = "generated_or_non_production_surface"
+paths = ["archive/**"]
+owner = "proof-lane"
+reason = "Archived source is not active workspace behavior."
+created = "2026-05-28"
+review_after = "2026-06-28"
+expires = "2026-09-30"
+"#,
+        )?;
+
+        let rules = read_ripr_suppression_rules(repo, Path::new("policy/ripr-suppressions.toml"))?;
+
+        assert_eq!(rules.lifecycle.len(), 1);
+        let row = &rules.lifecycle[0];
+        assert_eq!(row.owner, "proof-lane");
+        assert_eq!(row.created, "2026-05-28");
+        assert_eq!(row.review_after, "2026-06-28");
+        assert_eq!(row.expires, "2026-09-30");
+        assert!(row.missing.is_empty(), "complete row reported missing {:?}", row.missing);
+        assert!(row.malformed.is_empty());
+        Ok(())
+    }
+
+    /// The receipt carries the committed dates verbatim and reads no clock, so
+    /// `ripr-plus --check` stays byte-stable across a midnight boundary.
+    #[test]
+    fn ripr_plus_lifecycle_rows_hold_no_clock_reading() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let repo = temp.path();
+        fs::create_dir_all(repo.join("policy"))?;
+        fs::write(
+            repo.join("policy/ripr-suppressions.toml"),
+            r#"
+schema_version = 1
+policy = "ripr-suppressions"
+
+[[suppress]]
+id = "ripr-suppress-archive"
+kind = "generated_or_non_production_surface"
+paths = ["archive/**"]
+owner = "proof-lane"
+reason = "Archived source is not active workspace behavior."
+created = "2026-05-28"
+review_after = "2026-06-28"
+expires = "2026-09-30"
+"#,
+        )?;
+        let rules = read_ripr_suppression_rules(repo, Path::new("policy/ripr-suppressions.toml"))?;
+        let packet = ripr_plus_receipt_packet(
+            &RiprPlusOptions {
+                root: ".".to_string(),
+                suppressions: PathBuf::from("policy/ripr-suppressions.toml"),
+            },
+            "deadbeef",
+            &rules,
+            &json!({}),
+            ripr_plus_seam_summary(&[], &rules, 10),
+        );
+
+        assert_eq!(
+            packet["suppressions"]["lifecycle"],
+            json!([{
+                "id": "ripr-suppress-archive",
+                "kind": "generated_or_non_production_surface",
+                "owner": "proof-lane",
+                "created": "2026-05-28",
+                "review_after": "2026-06-28",
+                "expires": "2026-09-30",
+                "missing": [],
+                "malformed": [],
+            }])
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn suppression_audit_reports_overrun_in_days_against_the_supplied_date() {
+        let rows = vec![
+            lifecycle_row("expired-long", "repo-owner", "2026-05-07", "2026-06-07", "2026-08-07"),
+            lifecycle_row("expired-today", "proof-lane", "2026-05-07", "2026-06-07", "2026-09-19"),
+            lifecycle_row("current", "proof-lane", "2026-05-07", "2026-06-07", "2026-12-31"),
+        ];
+
+        let audit = audit_on(&rows, "2026-09-20");
+
+        assert_eq!(audit["expired_count"], json!(2));
+        assert_eq!(audit["oldest_overrun_days"], json!(44));
+        assert_eq!(audit["current_count"], json!(1));
+        assert_eq!(audit["expired"][0]["id"], json!("expired-long"));
+        assert_eq!(audit["expired"][0]["days_past_expiry"], json!(44));
+        assert_eq!(audit["expired"][1]["days_past_expiry"], json!(1));
+    }
+
+    /// An entry expiring exactly today has not yet lapsed; one that expired
+    /// yesterday has. Pins the boundary so the report cannot drift by a day.
+    #[test]
+    fn suppression_audit_treats_the_expiry_date_itself_as_still_current() {
+        let rows =
+            vec![lifecycle_row("edge", "proof-lane", "2026-01-01", "2026-06-01", "2026-09-20")];
+
+        let on_the_day = audit_on(&rows, "2026-09-20");
+        assert_eq!(on_the_day["expired_count"], json!(0));
+        assert_eq!(on_the_day["expiring_soon_count"], json!(1));
+        assert_eq!(on_the_day["expiring_soon"][0]["days_until_expiry"], json!(0));
+
+        let day_after = audit_on(&rows, "2026-09-21");
+        assert_eq!(day_after["expired_count"], json!(1));
+        assert_eq!(day_after["expired"][0]["days_past_expiry"], json!(1));
+    }
+
+    /// A missing `owner` must not swallow a readable end date. Folding
+    /// completeness and expiry into one bucket would hide exactly the overrun
+    /// this audit exists to surface.
+    #[test]
+    fn suppression_audit_reports_an_incomplete_entry_that_is_also_expired() {
+        let rows = vec![lifecycle_row("no-owner", "", "2026-05-07", "2026-06-07", "2026-08-07")];
+
+        let audit = audit_on(&rows, "2026-09-20");
+
+        assert_eq!(audit["unenforceable_count"], json!(1));
+        assert_eq!(audit["unenforceable"][0]["missing"], json!(["owner"]));
+        assert_eq!(audit["expired_count"], json!(1), "an incomplete entry still has an end date");
+        assert_eq!(audit["expired"][0]["days_past_expiry"], json!(44));
+    }
+
+    /// An entry with no `expires` at all is permanent. It is neither expired
+    /// nor current, and reporting it as current would be the ledger's original
+    /// lie restated.
+    #[test]
+    fn suppression_audit_separates_entries_with_no_expiry_from_current_ones() {
+        let rows = vec![
+            lifecycle_row("permanent", "proof-lane", "", "", ""),
+            lifecycle_row("malformed", "proof-lane", "2026-05-07", "2026-06-07", "not-a-date"),
+            lifecycle_row("current", "proof-lane", "2026-05-07", "2026-06-07", "2026-12-31"),
+        ];
+
+        let audit = audit_on(&rows, "2026-09-20");
+
+        assert_eq!(audit["no_expiry_count"], json!(2));
+        assert_eq!(audit["current_count"], json!(1));
+        assert_eq!(audit["expired_count"], json!(0));
+        assert_eq!(audit["unenforceable"][1]["malformed"], json!(["expires"]));
+    }
+
+    #[test]
+    fn suppression_audit_reports_review_due_separately_from_expiry() {
+        let rows =
+            vec![lifecycle_row("due", "proof-lane", "2026-05-07", "2026-09-13", "2026-12-31")];
+
+        let audit = audit_on(&rows, "2026-09-20");
+
+        assert_eq!(audit["expired_count"], json!(0));
+        assert_eq!(audit["review_due_count"], json!(1));
+        assert_eq!(audit["review_due"][0]["days_past_review"], json!(7));
+    }
+
+    #[test]
+    fn suppression_audit_markdown_names_the_expired_entry_and_its_age() {
+        let rows = vec![lifecycle_row(
+            "ripr-suppress-generated-status-docs",
+            "repo-owner",
+            "2026-05-07",
+            "2026-06-07",
+            "2026-08-07",
+        )];
+
+        let markdown = render_suppression_lifecycle_markdown(&audit_on(&rows, "2026-09-20"));
+
+        assert!(markdown.contains("1 suppression(s) are past their own `expires` date"));
+        assert!(markdown.contains("the oldest by 44 days"));
+        assert!(markdown.contains("ripr-suppress-generated-status-docs"));
+        assert!(markdown.contains("repo-owner"));
+        assert!(
+            markdown.contains("advisory"),
+            "the report must say plainly that it changes no gate verdict"
+        );
+    }
+
+    #[test]
+    fn suppression_audit_markdown_says_so_when_nothing_has_lapsed() {
+        let rows =
+            vec![lifecycle_row("current", "proof-lane", "2026-05-07", "2026-12-01", "2026-12-31")];
+
+        let markdown = render_suppression_lifecycle_markdown(&audit_on(&rows, "2026-09-20"));
+
+        assert!(markdown.contains("No suppression is past its own `expires` date."));
+        assert!(!markdown.contains("| days past |"));
+    }
+
+    /// The live ledger is the subject of the change. This pins that the real
+    /// file parses under the widened schema and that every entry now yields a
+    /// lifecycle row, without pinning today's overrun count.
+    #[test]
+    fn committed_ledger_yields_one_lifecycle_row_per_entry() -> Result<()> {
+        let repo = repo_root()?;
+        let raw = fs::read_to_string(repo.join("policy/ripr-suppressions.toml"))?;
+        let declared = raw.matches("[[suppress]]").count();
+        let rules = read_ripr_suppression_rules(&repo, Path::new("policy/ripr-suppressions.toml"))?;
+
+        assert_eq!(rules.lifecycle.len(), declared);
+        assert!(
+            rules.lifecycle.iter().any(|row| !row.expires.is_empty()),
+            "the ledger must carry at least one readable expires date"
         );
         Ok(())
     }
@@ -7704,6 +8290,7 @@ paths = ["archive/["]
             invalid_patterns: Vec::new(),
             gap_id_sets: Vec::new(),
             suppression_reasons: Vec::new(),
+            lifecycle: Vec::new(),
         };
 
         let packet = pr_evidence_packet(
@@ -7744,6 +8331,7 @@ paths = ["archive/["]
             invalid_patterns: Vec::new(),
             gap_id_sets: Vec::new(),
             suppression_reasons: Vec::new(),
+            lifecycle: Vec::new(),
         };
         let finding = json!({
             "classification": "reachable_unrevealed",
@@ -7765,6 +8353,7 @@ paths = ["archive/["]
             invalid_patterns: Vec::new(),
             gap_id_sets: Vec::new(),
             suppression_reasons: Vec::new(),
+            lifecycle: Vec::new(),
         };
         let finding = json!({
             "classification": "weakly_exposed",
@@ -7789,6 +8378,7 @@ paths = ["archive/["]
             invalid_patterns: Vec::new(),
             gap_id_sets: vec![vec![listed.to_string()]],
             suppression_reasons: Vec::new(),
+            lifecycle: Vec::new(),
         };
         let listed_finding = json!({
             "id": listed,
@@ -7830,6 +8420,7 @@ paths = ["archive/["]
             invalid_patterns: Vec::new(),
             gap_id_sets: vec![vec![listed.to_string()]],
             suppression_reasons: Vec::new(),
+            lifecycle: Vec::new(),
         };
         let listed_seam = json!({
             "id": listed,
@@ -7973,6 +8564,7 @@ paths = ["archive/["]
             invalid_patterns: Vec::new(),
             gap_id_sets: Vec::new(),
             suppression_reasons: Vec::new(),
+            lifecycle: Vec::new(),
         };
 
         let packet = pr_evidence_packet(
@@ -8039,6 +8631,7 @@ paths = ["archive/["]
             invalid_patterns: Vec::new(),
             gap_id_sets: Vec::new(),
             suppression_reasons: Vec::new(),
+            lifecycle: Vec::new(),
         };
 
         let packet = pr_evidence_packet(
@@ -8067,6 +8660,7 @@ paths = ["archive/["]
             invalid_patterns: Vec::new(),
             gap_id_sets: Vec::new(),
             suppression_reasons: Vec::new(),
+            lifecycle: Vec::new(),
         }
     }
 
@@ -8250,6 +8844,7 @@ paths = ["archive/["]
             invalid_patterns: Vec::new(),
             gap_id_sets: Vec::new(),
             suppression_reasons: Vec::new(),
+            lifecycle: Vec::new(),
         };
         let extents = HeadLineExtents {
             present: BTreeMap::from([("archive/old.rs".to_string(), 4usize)]),
@@ -8411,6 +9006,7 @@ paths = ["archive/["]
             invalid_patterns: Vec::new(),
             gap_id_sets: Vec::new(),
             suppression_reasons: Vec::new(),
+            lifecycle: Vec::new(),
         };
 
         let packet = pr_evidence_packet_on_surface(
@@ -8821,6 +9417,7 @@ paths = ["archive/["]
             invalid_patterns: Vec::new(),
             gap_id_sets: Vec::new(),
             suppression_reasons: Vec::new(),
+            lifecycle: Vec::new(),
         };
         let production_surface = ProductionSurface::from_parts("/ws", &[]);
         let payload = json!({
@@ -8900,6 +9497,7 @@ paths = ["archive/["]
             invalid_patterns: Vec::new(),
             gap_id_sets: Vec::new(),
             suppression_reasons: Vec::new(),
+            lifecycle: Vec::new(),
         };
         let first_findings = vec![raw_check_finding(
             "probe:first",
@@ -11665,6 +12263,7 @@ esac
             invalid_patterns: Vec::new(),
             gap_id_sets: Vec::new(),
             suppression_reasons: Vec::new(),
+            lifecycle: Vec::new(),
         };
 
         let packet = pr_evidence_packet(
@@ -11735,6 +12334,7 @@ esac
             invalid_patterns: Vec::new(),
             gap_id_sets: Vec::new(),
             suppression_reasons: Vec::new(),
+            lifecycle: Vec::new(),
         };
 
         let packet = pr_evidence_packet(
@@ -11811,6 +12411,7 @@ esac
             invalid_patterns: Vec::new(),
             gap_id_sets: Vec::new(),
             suppression_reasons: Vec::new(),
+            lifecycle: Vec::new(),
         };
 
         let packet = pr_evidence_packet(

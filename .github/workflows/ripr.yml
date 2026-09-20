@@ -383,6 +383,9 @@ jobs:
               cargo xtask impacted-evidence --labels-csv "$PR_LABELS" || RIPR_FAILED=1
               cargo xtask ripr-pr-summary || RIPR_FAILED=1
               cargo xtask ripr-annotations || RIPR_FAILED=1
+              # Advisory: reports the suppression ledger's own expires/review_after
+              # dates, which nothing else in the toolchain reads. Never gates.
+              cargo xtask ripr-suppression-audit || true
 
               # Validation phase.
               cargo xtask ripr-pr --base "origin/$BASE_REF" --head HEAD --pr-head "$PR_HEAD_SHA" --check
@@ -438,6 +441,10 @@ jobs:
             cat target/receipts/quality/quality-gate-ripr.md >> "$GITHUB_STEP_SUMMARY"
           else
             echo "No RIPR quality-gate summary was produced." >> "$GITHUB_STEP_SUMMARY"
+          fi
+          if [ -f target/ripr/suppressions/lifecycle-audit.md ]; then
+            printf '\n' >> "$GITHUB_STEP_SUMMARY"
+            cat target/ripr/suppressions/lifecycle-audit.md >> "$GITHUB_STEP_SUMMARY"
           fi
           if [ -f target/ripr/review/annotations.txt ]; then
             cat target/ripr/review/annotations.txt
@@ -697,6 +704,13 @@ jobs:
         if: always()
         run: cargo xtask ripr-annotations
 
+      # Advisory: reports the suppression ledger's own expires/review_after
+      # dates, which nothing else in the toolchain reads. Never gates.
+      - name: Audit suppression lifecycle
+        if: always()
+        continue-on-error: true
+        run: cargo xtask ripr-suppression-audit
+
       - name: Validate PR evidence contracts
         if: always()
         run: |
@@ -759,6 +773,10 @@ jobs:
             cat target/receipts/quality/quality-gate-ripr.md >> "$GITHUB_STEP_SUMMARY"
           else
             echo "No RIPR quality-gate summary was produced." >> "$GITHUB_STEP_SUMMARY"
+          fi
+          if [ -f target/ripr/suppressions/lifecycle-audit.md ]; then
+            printf '\n' >> "$GITHUB_STEP_SUMMARY"
+            cat target/ripr/suppressions/lifecycle-audit.md >> "$GITHUB_STEP_SUMMARY"
           fi
           if [ -f target/ripr/review/annotations.txt ]; then
             cat target/ripr/review/annotations.txt
@@ -923,6 +941,13 @@ jobs:
         if: always()
         run: cargo xtask ripr-annotations
 
+      # Advisory: reports the suppression ledger's own expires/review_after
+      # dates, which nothing else in the toolchain reads. Never gates.
+      - name: Audit suppression lifecycle
+        if: always()
+        continue-on-error: true
+        run: cargo xtask ripr-suppression-audit
+
       - name: Validate PR evidence contracts
         if: always()
         run: |
@@ -985,6 +1010,10 @@ jobs:
             cat target/receipts/quality/quality-gate-ripr.md >> "$GITHUB_STEP_SUMMARY"
           else
             echo "No RIPR quality-gate summary was produced." >> "$GITHUB_STEP_SUMMARY"
+          fi
+          if [ -f target/ripr/suppressions/lifecycle-audit.md ]; then
+            printf '\n' >> "$GITHUB_STEP_SUMMARY"
+            cat target/ripr/suppressions/lifecycle-audit.md >> "$GITHUB_STEP_SUMMARY"
           fi
           if [ -f target/ripr/review/annotations.txt ]; then
             cat target/ripr/review/annotations.txt

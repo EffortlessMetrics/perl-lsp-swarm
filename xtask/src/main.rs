@@ -891,6 +891,24 @@ enum Commands {
         check: bool,
     },
 
+    /// Report the RIPR suppression ledger's own lifecycle dates against today.
+    ///
+    /// Advisory: writes an artifact and always exits 0 on a readable ledger.
+    RiprSuppressionAudit {
+        /// RIPR suppression policy path.
+        #[arg(long, default_value = "policy/ripr-suppressions.toml")]
+        suppressions: PathBuf,
+        /// Markdown report path, suitable for $GITHUB_STEP_SUMMARY.
+        #[arg(long, default_value = "target/ripr/suppressions/lifecycle-audit.md")]
+        out: PathBuf,
+        /// Machine-readable report path.
+        #[arg(long, default_value = "target/ripr/suppressions/lifecycle-audit.json")]
+        json: PathBuf,
+        /// Also print the report to stdout.
+        #[arg(long)]
+        print: bool,
+    },
+
     /// Render non-blocking GitHub warning annotations from comments[] guidance only.
     RiprAnnotations {
         /// Review guidance JSON path.
@@ -6081,6 +6099,9 @@ fn run_cli(cli: Cli) -> Result<()> {
             )
         }
         Commands::RiprPrSummary { check } => ripr_evidence::ripr_pr_summary(check),
+        Commands::RiprSuppressionAudit { suppressions, out, json, print } => {
+            ripr_evidence::ripr_suppression_audit(&suppressions, &out, &json, print)
+        }
         Commands::RiprAnnotations { comments, out, check } => {
             ripr_evidence::ripr_annotations(&comments, &out, check)
         }
