@@ -86,6 +86,10 @@ rendered as success.
   change the instrument mid-run and mask unavailability. Install tools
   explicitly (`cargo install cargo-audit --locked`,
   `cargo install cargo-deny --locked`, Trivy's installer).
+- Scanner runs are preceded by the repo cargo toolchain guard
+  (`scripts/lib/cargo-toolchain-guard.sh`, issue #12593); a refusal exits 78
+  with remediation guidance and is fail-closed. `verify` does not require a
+  toolchain.
 - Artifact schema validation uses `python3`/`python` when available; if no
   JSON validator exists the artifact is not schema-verified and the scanner is
   recorded `instrument_failed` (fail-closed).

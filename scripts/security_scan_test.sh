@@ -7,6 +7,10 @@
 # real toolchains.
 #
 # Run: bash scripts/security_scan_test.sh   (from anywhere; repo root derived)
+#
+# cargo-toolchain-guard: exempt — hermetic proof harness: every cargo
+# invocation resolves to in-test stub binaries under an isolated PATH, never
+# to the host toolchain, so there is no real cargo to guard.
 set -u
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -70,6 +74,7 @@ EOF
     # cargo binary itself, bypassing extensionless shims. Shim `cargo` too.
     cat >"$FAKEBIN/cargo" <<EOF
 #!/usr/bin/env bash
+if [ "\${1:-}" = "--version" ]; then echo "cargo 99.0.0 (fake)"; exit 0; fi
 case "\${1:-}" in
   audit) shift; exec "$FAKEBIN/cargo-audit" "\$@" ;;
   deny)  shift; exec "$FAKEBIN/cargo-deny" "\$@" ;;

@@ -86,6 +86,11 @@ RUN_ID="run-${STAMP}-$$"
 RUN_DIR="$RUNS_ROOT/$RUN_ID"
 mkdir -p "$RUN_DIR" || die "cannot create run directory $RUN_DIR"
 
+# Toolchain guard (issue #12593): scanners invoke cargo as a command, so a
+# stale or missing cargo is refused before any scanner runs (exit 78).
+. "$(dirname -- "${BASH_SOURCE[0]}")/lib/cargo-toolchain-guard.sh"
+cargo_toolchain_guard || exit $?
+
 # ---------------------------------------------------------------- helpers ---
 
 # schema_ok <file> <json|jsonl>  -> 0 valid, 1 invalid, 2 no validator available
