@@ -5578,3 +5578,29 @@ reason = "Opt-in offline RC/numeric-VSIX binding for #14923; no live version all
 covered_by = ["python -m unittest discover -s scripts -p test_generate_release_topology.py", "node --test vscode-extension/scripts/check-vsix-prebuilt-payload.test.js"]
 created = "2026-09-20"
 review_after = "2026-12-20"
+
+[[allow]]
+id = "non-rust-release-scope-v2-schema"
+path = "schemas/release_scope.v2.schema.json"
+kind = "release_contract"
+language = "json"
+surface = "release"
+classification = "config"
+owner = "release/ci"
+reason = "FF01 #13855 structural final-freeze contract; does not establish live freeze or publication authority."
+covered_by = ["cargo test -p xtask --locked --bin xtask release_scope_v2", "cargo xtask check-file-policy"]
+created = "2026-09-20"
+review_after = "2026-12-20"
+
+[[allow]]
+id = "non-rust-release-scope-v2-fixture"
+path = "fixtures/release_scope_v2/valid.preparation-pending.json"
+kind = "test_fixture"
+language = "json"
+surface = "fixtures"
+classification = "test"
+owner = "release/ci"
+reason = "Synthetic FF01 #13855 round-trip and shape fixture with placeholder identities; not a live freeze receipt."
+covered_by = ["cargo test -p xtask --locked --bin xtask release_scope_v2", "cargo xtask check-file-policy"]
+created = "2026-09-20"
+review_after = "2026-12-20"
