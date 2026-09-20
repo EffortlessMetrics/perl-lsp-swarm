@@ -104,35 +104,132 @@ fn require_real_jq() -> Result<()> {
     Ok(())
 }
 
-/// What the shimmed `gh` answers for each of the two reads the decision makes.
-#[derive(Clone, Copy)]
-struct GhShim<'a> {
-    /// `.draft` for the pull request, or `None` to make the read fail.
-    live_draft: Option<&'a str>,
-    /// The conclusion another run has already published, `Some("")` for none,
-    /// or `None` to make the read fail.
-    published: Option<&'a str>,
+/// The GitHub Actions integration id `.ci/policies/required-checks.toml` binds
+/// both required contexts to.
+const GH_ACTIONS_APP_ID: i64 = 15368;
+/// The stale draft run executing the block under test.
+const OWN_RUN_ID: &str = "35489448110";
+/// The run that actually analysed the head, measured on #16094.
+const READY_RUN_ID: &str = "35489457115";
+
+/// One check run in the fake `/check-runs` payload. The shim serves these to
+/// the block's real `--jq` program, so selection is exercised rather than
+/// assumed.
+#[derive(Clone)]
+struct CheckRunFixture {
+    app_id: i64,
+    id: i64,
+    started_at: &'static str,
+    status: &'static str,
+    conclusion: &'static str,
+    run_id: &'static str,
 }
 
-fn write_gh_shim(dir: &Path, shim: GhShim<'_>) -> Result<()> {
+impl CheckRunFixture {
+    /// A completed run published by GitHub Actions for the run that analysed
+    /// the head — the shape the mirror is meant to accept.
+    fn published(conclusion: &'static str) -> Self {
+        Self {
+            app_id: GH_ACTIONS_APP_ID,
+            id: 106_028_633_059,
+            started_at: "2026-09-20T05:30:00Z",
+            status: "completed",
+            conclusion,
+            run_id: READY_RUN_ID,
+        }
+    }
+
+    fn with(mut self, f: impl FnOnce(&mut Self)) -> Self {
+        f(&mut self);
+        self
+    }
+
+    fn to_json(&self) -> String {
+        format!(
+            r#"{{"id":{id},"app":{{"id":{app}}},"started_at":"{started}","status":"{status}","conclusion":{conclusion},"details_url":"https://github.com/EffortlessMetrics/perl-lsp-swarm/actions/runs/{run}/job/{id}"}}"#,
+            id = self.id,
+            app = self.app_id,
+            started = self.started_at,
+            status = self.status,
+            conclusion = if self.conclusion.is_empty() {
+                "null".to_string()
+            } else {
+                format!("\"{}\"", self.conclusion)
+            },
+            run = self.run_id,
+        )
+    }
+}
+
+/// What the shimmed `gh` answers for each of the two reads the decision makes.
+#[derive(Clone)]
+struct GhShim {
+    /// `.draft` for the pull request, or `None` to make the read fail.
+    live_draft: Option<&'static str>,
+    /// The conclusion another run has already published, `Some("")` for none,
+    /// or `None` to make the read fail. Sugar for a single well-formed
+    /// GitHub Actions run; use `runs` to control the population directly.
+    published: Option<&'static str>,
+    /// Overrides `published` when set: the exact check-run population the API
+    /// reports for this head.
+    runs: Option<Vec<CheckRunFixture>>,
+}
+
+impl GhShim {
+    fn new(live_draft: Option<&'static str>, published: Option<&'static str>) -> Self {
+        Self { live_draft, published, runs: None }
+    }
+
+    fn with_runs(live_draft: Option<&'static str>, runs: Vec<CheckRunFixture>) -> Self {
+        Self { live_draft, published: Some("unused"), runs: Some(runs) }
+    }
+
+    /// The payload the `/check-runs` read serves, or `None` to fail the read.
+    fn payload(&self) -> Option<String> {
+        let runs = match (&self.runs, self.published) {
+            (Some(runs), _) => runs.clone(),
+            (None, None) => return None,
+            (None, Some("")) => Vec::new(),
+            (None, Some(conclusion)) => vec![CheckRunFixture::published(conclusion)],
+        };
+        let body = runs.iter().map(CheckRunFixture::to_json).collect::<Vec<_>>().join(",");
+        Some(format!("{{\"check_runs\":[{body}]}}"))
+    }
+}
+
+/// Serve both reads as real JSON and apply the block's own `--jq` program with
+/// real `jq`. Answering with a bare conclusion string instead would leave the
+/// selection — app binding, attempt ordering, self-exclusion — untested, which
+/// is exactly how two defects reached review in #16105.
+fn write_gh_shim(dir: &Path, shim: &GhShim) -> Result<()> {
     let draft = match shim.live_draft {
-        Some(value) => format!("printf '%s\\n' '{value}'"),
+        Some(value) => format!("printf '%s' '{{\"draft\":{value}}}' | jq -r \"$jqprog\""),
         None => "exit 1".to_string(),
     };
-    let published = match shim.published {
-        Some("") => "exit 0".to_string(),
-        Some(value) => format!("printf '%s\\n' '{value}'"),
+    let checks = match shim.payload() {
+        Some(payload) => {
+            format!("printf '%s' '{payload}' | jq -r \"$jqprog\"")
+        }
         None => "exit 1".to_string(),
     };
     let script = format!(
         "#!/usr/bin/env bash\n\
          set -u\n\
+         jqprog=\"\"\n\
+         want=\"\"\n\
+         prev=\"\"\n\
          for arg in \"$@\"; do\n\
+         \x20 if [ \"$prev\" = \"--jq\" ]; then jqprog=\"$arg\"; fi\n\
          \x20 case \"$arg\" in\n\
-         \x20   */pulls/*) {draft}; exit 0 ;;\n\
-         \x20   */check-runs*) {published}; exit 0 ;;\n\
+         \x20   */pulls/*) want=pull ;;\n\
+         \x20   */check-runs*) want=checks ;;\n\
          \x20 esac\n\
+         \x20 prev=\"$arg\"\n\
          done\n\
+         case \"$want\" in\n\
+         \x20 pull) {draft}; exit 0 ;;\n\
+         \x20 checks) {checks}; exit 0 ;;\n\
+         esac\n\
          echo \"unexpected gh invocation: $*\" >&2\n\
          exit 64\n"
     );
@@ -154,12 +251,7 @@ impl Evaluation {
     }
 }
 
-fn evaluate(
-    gate: Gate,
-    route_result: &str,
-    is_draft: &str,
-    shim: GhShim<'_>,
-) -> Result<Evaluation> {
+fn evaluate(gate: Gate, route_result: &str, is_draft: &str, shim: GhShim) -> Result<Evaluation> {
     // The env bindings are asserted separately, on purpose: bailing here would
     // make every behavioral case fail for that one reason, and the suite could
     // no longer tell a reverted decision from a dropped env key.
@@ -168,7 +260,7 @@ fn evaluate(
     let sandbox = tempfile::tempdir().context("creating the aggregator sandbox")?;
     let bin = sandbox.path().join("bin");
     fs::create_dir_all(&bin)?;
-    write_gh_shim(&bin, shim)?;
+    write_gh_shim(&bin, &shim)?;
     let summary = sandbox.path().join("summary.md");
     fs::write(&summary, "")?;
 
@@ -186,6 +278,8 @@ fn evaluate(
         .env("GITHUB_REPOSITORY", "EffortlessMetrics/perl-lsp-swarm")
         .env("GH_TOKEN", "shim")
         .env("CHECK_NAME", gate.check_name)
+        .env("REQUIRED_CHECK_APP_ID", GH_ACTIONS_APP_ID.to_string())
+        .env("GITHUB_RUN_ID", OWN_RUN_ID)
         .env("PR_NUMBER", "16094")
         .env("HEAD_SHA", "c9bf380f4")
         .env("IS_DRAFT_PR", is_draft)
@@ -218,12 +312,7 @@ fn assert_draft_snapshot_contract(gate: Gate) -> Result<()> {
     // Measured on #16094: the run that executed the lane published a success,
     // and a run created while the pull request was still a draft then finished
     // and replaced it. The stale run mirrors that success instead.
-    let run = evaluate(
-        gate,
-        "skipped",
-        "true",
-        GhShim { live_draft: Some("false"), published: Some("success") },
-    )?;
+    let run = evaluate(gate, "skipped", "true", GhShim::new(Some("false"), Some("success")))?;
     if run.code != 0 || !run.verdict_is(gate, "superseded-draft-snapshot") {
         bail!(
             "{}: a stale snapshot must mirror a published success: {}",
@@ -244,8 +333,7 @@ fn assert_draft_snapshot_contract(gate: Gate) -> Result<()> {
     // reached no verdict, an unreadable read and an empty read must all stay
     // non-successful — AGENTS.md makes missing evidence NOT_PROVEN.
     for published in [Some("failure"), Some("cancelled"), Some(""), None] {
-        let run =
-            evaluate(gate, "skipped", "true", GhShim { live_draft: Some("false"), published })?;
+        let run = evaluate(gate, "skipped", "true", GhShim::new(Some("false"), published))?;
         if run.code == 0 || !run.verdict_is(gate, "superseded-no-proof") {
             bail!(
                 "{}: published={published:?} must stay NOT_PROVEN: {}",
@@ -254,12 +342,7 @@ fn assert_draft_snapshot_contract(gate: Gate) -> Result<()> {
             );
         }
     }
-    let run = evaluate(
-        gate,
-        "skipped",
-        "true",
-        GhShim { live_draft: Some("false"), published: Some("") },
-    )?;
+    let run = evaluate(gate, "skipped", "true", GhShim::new(Some("false"), Some("")))?;
     if !run.summary.contains("superseded-no-proof (NOT_PROVEN; published: `none`)") {
         bail!("{}: the summary must record why it is not proven: {}", gate.workflow, run.summary);
     }
@@ -267,8 +350,7 @@ fn assert_draft_snapshot_contract(gate: Gate) -> Result<()> {
     // A pull request that is still a draft is unchanged, and a draft state that
     // cannot be read is not evidence that the snapshot is stale.
     for live_draft in [Some("true"), None] {
-        let run =
-            evaluate(gate, "skipped", "true", GhShim { live_draft, published: Some("success") })?;
+        let run = evaluate(gate, "skipped", "true", GhShim::new(live_draft, Some("success")))?;
         if run.code == 0 || !run.verdict_is(gate, "draft-no-proof") {
             bail!(
                 "{}: live_draft={live_draft:?} must keep the draft verdict: {}",
@@ -279,12 +361,7 @@ fn assert_draft_snapshot_contract(gate: Gate) -> Result<()> {
     }
 
     // The pre-existing non-draft skipped route is untouched.
-    let run = evaluate(
-        gate,
-        "skipped",
-        "false",
-        GhShim { live_draft: Some("false"), published: Some("failure") },
-    )?;
+    let run = evaluate(gate, "skipped", "false", GhShim::new(Some("false"), Some("failure")))?;
     if run.code != 0 || !run.stdout.contains("neutral") {
         bail!("{}: the non-draft skipped route changed: {}", gate.workflow, run.stdout);
     }
@@ -304,6 +381,17 @@ fn assert_live_read_bindings(gate: Gate) -> Result<()> {
     }
     for key in ["PR_NUMBER", "HEAD_SHA"] {
         evaluate_env(gate, key)?;
+    }
+    // The mirror is only allowed to trust this context's bound integration, so
+    // the id has to reach the block. Without the binding the jq comparison is
+    // against an empty string and every candidate is rejected, which fails
+    // closed but silently disables the mirror.
+    if evaluate_env(gate, "REQUIRED_CHECK_APP_ID")? != "15368" {
+        bail!(
+            "{}: REQUIRED_CHECK_APP_ID must bind the GitHub Actions integration \
+             recorded in .ci/policies/required-checks.toml",
+            gate.workflow
+        );
     }
     // A job-level `permissions:` block replaces the workflow-level one outright
     // rather than adding to it, so the effective scopes are the job's when it
@@ -329,6 +417,95 @@ fn assert_live_read_bindings(gate: Gate) -> Result<()> {
     Ok(())
 }
 
+/// The mirror publishes a *required* check from evidence it did not produce,
+/// so which check run it believes is the whole of its safety. Each case here
+/// is a way a same-name success exists on the head without being proof for
+/// this context.
+fn assert_mirror_selection(gate: Gate) -> Result<()> {
+    // Any installed app may publish a check run of any name. Only the
+    // integration this context is bound to is proof for it.
+    let foreign = CheckRunFixture::published("success").with(|run| {
+        run.app_id = 99_999;
+        run.id = 106_028_999_999;
+    });
+    let run = evaluate(gate, "skipped", "true", GhShim::with_runs(Some("false"), vec![foreign]))?;
+    if run.code == 0 || !run.verdict_is(gate, "superseded-no-proof") {
+        bail!(
+            "{}: a same-name success from another app must not be mirrored: {}",
+            gate.workflow,
+            run.stdout
+        );
+    }
+
+    // A newer attempt that has not reported yet outranks an older success:
+    // mirroring the old one would publish green over evidence still in flight.
+    let older_success = CheckRunFixture::published("success");
+    let newer_pending = CheckRunFixture::published("").with(|run| {
+        run.id = 106_028_700_000;
+        run.started_at = "2026-09-20T05:40:00Z";
+        run.status = "in_progress";
+    });
+    let run = evaluate(
+        gate,
+        "skipped",
+        "true",
+        GhShim::with_runs(Some("false"), vec![older_success.clone(), newer_pending]),
+    )?;
+    if run.code == 0 || !run.verdict_is(gate, "superseded-no-proof") {
+        bail!(
+            "{}: a pending newer attempt must outrank an older success: {}",
+            gate.workflow,
+            run.stdout
+        );
+    }
+
+    // Ordering by completion time rather than start time lets a slow older
+    // attempt outrank a faster newer one. Here the newer attempt started later
+    // and failed fast; the older one succeeded but finished after it.
+    let newer_failure = CheckRunFixture::published("failure").with(|run| {
+        run.id = 106_028_700_001;
+        run.started_at = "2026-09-20T05:40:00Z";
+    });
+    let run = evaluate(
+        gate,
+        "skipped",
+        "true",
+        GhShim::with_runs(Some("false"), vec![older_success.clone(), newer_failure]),
+    )?;
+    if run.code == 0 || !run.verdict_is(gate, "superseded-no-proof") {
+        bail!(
+            "{}: the latest attempt by start time owns the verdict: {}",
+            gate.workflow,
+            run.stdout
+        );
+    }
+
+    // This run's own check run is in progress by construction — it is the
+    // block asking the question. Counting it would always select it and the
+    // mirror could never fire, so the fix would be inert rather than safe.
+    let own = CheckRunFixture::published("").with(|run| {
+        run.id = 106_028_654_805;
+        run.started_at = "2026-09-20T05:41:00Z";
+        run.status = "in_progress";
+        run.run_id = OWN_RUN_ID;
+    });
+    let run = evaluate(
+        gate,
+        "skipped",
+        "true",
+        GhShim::with_runs(Some("false"), vec![older_success, own]),
+    )?;
+    if run.code != 0 || !run.verdict_is(gate, "superseded-draft-snapshot") {
+        bail!(
+            "{}: this run's own in-progress check must not block the mirror: {}",
+            gate.workflow,
+            run.stdout
+        );
+    }
+
+    Ok(())
+}
+
 #[test]
 fn rust_small_result_honours_the_draft_snapshot_contract() -> Result<()> {
     assert_draft_snapshot_contract(RUST_SMALL)
@@ -347,4 +524,14 @@ fn ripr_new_gap_gate_honours_the_draft_snapshot_contract() -> Result<()> {
 #[test]
 fn ripr_new_gap_gate_declares_what_the_live_reads_need() -> Result<()> {
     assert_live_read_bindings(RIPR)
+}
+
+#[test]
+fn rust_small_result_mirrors_only_its_own_bound_authority() -> Result<()> {
+    assert_mirror_selection(RUST_SMALL)
+}
+
+#[test]
+fn ripr_new_gap_gate_mirrors_only_its_own_bound_authority() -> Result<()> {
+    assert_mirror_selection(RIPR)
 }

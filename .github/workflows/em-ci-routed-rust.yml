@@ -846,6 +846,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           CHECK_NAME: Perl LSP Rust Small Result
+          # .ci/policies/required-checks.toml binds this required context to the
+          # GitHub Actions integration; only its check runs are proof for it.
+          REQUIRED_CHECK_APP_ID: "15368"
           PR_NUMBER: ${{ github.event.pull_request.number }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           IS_DRAFT_PR: ${{ github.event_name == 'pull_request' && github.event.pull_request.draft == true }}
@@ -917,6 +920,27 @@ jobs:
           # check on this head. This job's own check run is still in progress,
           # so the completed filter cannot match it. The check name carries
           # spaces, so it goes through `-f` rather than into the path.
+          # Mirror only this required context's own authority. Two things the
+          # check name alone does not establish (#16105 review):
+          #
+          #   1. Any installed GitHub App may publish a check run of any name.
+          #      `.ci/policies/required-checks.toml` binds both required
+          #      contexts to GitHub Actions integration 15368, so a same-name
+          #      success from another app is not proof for this context.
+          #   2. Which attempt speaks for the head. Ordering by completion time
+          #      lets a slow older attempt outrank a faster newer one, and
+          #      pre-filtering to completed runs hides a newer attempt that is
+          #      still pending. Either mirrors green over newer contradictory
+          #      evidence. Select the way the repository's own resolver does,
+          #      max by (started_at, id) across every attempt — see
+          #      `latest_check_run` in xtask/src/tasks/github_preflight.rs.
+          #
+          # This run is excluded from its own denominator: it is the stale
+          # snapshot asking whether it was superseded, and its own check run is
+          # in progress, so leaving it in would always select it and the answer
+          # would always be "no proof". Everything else fails closed — a
+          # selection that is absent, pending or non-success prints nothing and
+          # the caller treats that as NOT_PROVEN.
           published_conclusion() {
             gh api -X GET \
               -H "Accept: application/vnd.github+json" \
@@ -924,8 +948,14 @@ jobs:
               "repos/${GITHUB_REPOSITORY:-}/commits/${HEAD_SHA:-}/check-runs" \
               -f "check_name=${CHECK_NAME:-}" \
               -F per_page=100 \
-              --jq '[.check_runs[] | select(.status == "completed")]
-                    | sort_by(.completed_at) | last | .conclusion // empty'
+              --jq '[.check_runs[]
+                     | select((.app.id // -1) == (env.REQUIRED_CHECK_APP_ID | tonumber))
+                     | select(((.details_url // "")
+                               | contains("/actions/runs/" + env.GITHUB_RUN_ID + "/")) | not)]
+                    | max_by([(.started_at // ""), .id])
+                    | if . == null then empty
+                      elif .status != "completed" then empty
+                      else (.conclusion // empty) end'
           }
 
           # Draft routing saves work but produces no required-check proof.
