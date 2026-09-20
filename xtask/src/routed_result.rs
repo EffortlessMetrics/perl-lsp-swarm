@@ -50,6 +50,14 @@ pub const ROUTED_GATE_RESULT_PRODUCER: &str = "xtask::routed_result";
 /// `SHA-256("routed_gate_result.v1\0" || canonical_semantic_bytes)`.
 pub const FINGERPRINT_DOMAIN: &[u8] = b"routed_gate_result.v1\0";
 
+/// Domain separation prefix for the per-row identity digest preimage
+/// (#15814):
+/// `SHA-256("routed_gate_result.row_identity.v1\0" || semantic_fingerprint ||
+/// 0x00 || canonical_row_identity_bytes)`. The plan fingerprint inside the
+/// preimage binds the row to exactly one plan, so the same row content under
+/// another plan — or another run — seals a different digest.
+pub const ROW_IDENTITY_DIGEST_DOMAIN: &[u8] = b"routed_gate_result.row_identity.v1\0";
+
 // ---------------------------------------------------------------------------
 // Closed outcome vocabulary
 // ---------------------------------------------------------------------------
@@ -307,6 +315,12 @@ pub struct PlanAuthorityIdentity {
     pub workflow_digest: String,
     pub selector_digest: String,
     pub denominator: Vec<String>,
+    /// Per-row identity digest (#15814): domain-separated digest binding the
+    /// exact planned row this result was built from to this plan's
+    /// fingerprint. Recomputed from the record's own row projection at
+    /// plan-less validation, and from the referenced plan's row in
+    /// [`RoutedGateResultV1::validate_against_plan`].
+    pub row_identity_digest: String,
 }
 
 /// The planned `run` row identity expected by the plan, bound to this result.
@@ -431,6 +445,36 @@ impl RoutedGateResultV1 {
     pub fn validate(&self) -> Result<(), String> {
         validate_result(self)
     }
+
+    /// Bind this record to the exact planned row of the referenced plan
+    /// (#15814). Plan-less [`Self::validate`] re-derives the carried row
+    /// identity digest from the record's own row projection, so a wholly
+    /// re-sealed substitution that also recomputes that digest stays
+    /// internally consistent — the validator cannot know the substituted
+    /// projection names no governed row. Against the plan bytes the
+    /// fingerprint names, it does: the digest is recomputed from the plan's
+    /// own row and any substituted or fabricated row refuses. Consumers
+    /// holding the referenced plan (by fingerprint) run this on read-back
+    /// receipts.
+    pub fn validate_against_plan(&self, plan: &CiRoutePlanV1) -> Result<(), String> {
+        plan.validate().map_err(|error| format!("referenced route plan rejected: {error}"))?;
+        if plan.semantic_fingerprint != self.route_plan_fingerprint {
+            return Err(format!(
+                "record names plan fingerprint {:?}, the referenced plan carries {:?}",
+                self.route_plan_fingerprint, plan.semantic_fingerprint
+            ));
+        }
+        let planned = planned_row_identity_of(plan, &self.row.gate_id)?;
+        let expected = row_identity_digest(&plan.semantic_fingerprint, &planned)?;
+        if expected != self.plan_authority.row_identity_digest {
+            return Err(format!(
+                "row identity digest {} does not match the exact planned row of gate {:?} \
+                 under the referenced plan; the record's row was substituted or fabricated",
+                self.plan_authority.row_identity_digest, self.row.gate_id
+            ));
+        }
+        Ok(())
+    }
 }
 
 /// Fingerprint-bearing semantic fields (artifact order normalized).
@@ -484,25 +528,8 @@ pub fn build_routed_result(
     observation: RunObservation,
 ) -> Result<RoutedGateResultV1, String> {
     plan.validate().map_err(|error| format!("route plan rejected before execution: {error}"))?;
-    let row = plan
-        .rows
-        .iter()
-        .find(|row| row.gate_id == gate_id)
-        .ok_or_else(|| format!("gate {gate_id:?} is not part of the governed denominator"))?;
-    let PlannedOutcomeRunSnapshot { command, timeout_seconds } = match &row.outcome {
-        crate::ci_route_plan::PlannedOutcome::Run { command, timeout_seconds, .. } => {
-            PlannedOutcomeRunSnapshot {
-                command: command.clone(),
-                timeout_seconds: *timeout_seconds,
-            }
-        }
-        _ => {
-            return Err(format!(
-                "gate {gate_id:?} has no planned run row (scoped-noop/quarantined/error rows do not execute)"
-            ));
-        }
-    };
-    if row.applicability != Applicability::Applicable {
+    let row = planned_row_identity_of(plan, gate_id)?;
+    if row.applicability_expected != Applicability::Applicable {
         return Err(format!(
             "gate {gate_id:?} is not positively applicable on this subject; execution results require applicable planned rows"
         ));
@@ -577,6 +604,8 @@ pub fn build_routed_result(
     }
 
     check_timing(&observation.timing).map_err(|error| format!("timing: {error}"))?;
+    check_timing_against_start(&observation.timing, observation.command_started)
+        .map_err(|error| format!("timing: {error}"))?;
 
     // --- instrument plane -------------------------------------------------
     let (instrument_outcome, instrument_detail) = match prerequisites.state {
@@ -673,8 +702,8 @@ pub fn build_routed_result(
         }
     };
 
-    // Capture before `command` moves into the row identity below.
-    let focused_reproduce_command = build_reproduce_command(&command)?;
+    // Capture before `row` moves into the record below.
+    let focused_reproduce_command = build_reproduce_command(&row.command)?;
     let mut result = RoutedGateResultV1 {
         schema: ROUTED_GATE_RESULT_SCHEMA.to_string(),
         producer: ROUTED_GATE_RESULT_PRODUCER.to_string(),
@@ -696,17 +725,9 @@ pub fn build_routed_result(
             workflow_digest: plan.workflow_digest.clone(),
             selector_digest: plan.selection.selector_digest.clone(),
             denominator: plan.denominator.clone(),
+            row_identity_digest: row_identity_digest(&plan.semantic_fingerprint, &row)?,
         },
-        row: PlannedRowIdentity {
-            gate_id: row.gate_id.clone(),
-            native_tier: row.native_tier.clone(),
-            policy_role: row.policy_role,
-            lifecycle: row.lifecycle,
-            requested_profile: plan.requested_profile.clone(),
-            command,
-            timeout_seconds,
-            applicability_expected: row.applicability,
-        },
+        row,
         prerequisites,
         command_started: observation.command_started,
         child: observation.child.clone(),
@@ -724,9 +745,54 @@ pub fn build_routed_result(
     Ok(result)
 }
 
-struct PlannedOutcomeRunSnapshot {
-    command: String,
-    timeout_seconds: u64,
+/// Project the exact planned `run` row of `gate_id` out of a validated plan.
+/// Shared by the builder and by [`RoutedGateResultV1::validate_against_plan`]
+/// so the record's row identity and the digest validation expects are derived
+/// from the same authoritative projection.
+fn planned_row_identity_of(
+    plan: &CiRoutePlanV1,
+    gate_id: &str,
+) -> Result<PlannedRowIdentity, String> {
+    let row = plan
+        .rows
+        .iter()
+        .find(|row| row.gate_id == gate_id)
+        .ok_or_else(|| format!("gate {gate_id:?} is not part of the governed denominator"))?;
+    let crate::ci_route_plan::PlannedOutcome::Run { command, timeout_seconds, .. } = &row.outcome
+    else {
+        return Err(format!(
+            "gate {gate_id:?} has no planned run row (scoped-noop/quarantined/error rows do not execute)"
+        ));
+    };
+    Ok(PlannedRowIdentity {
+        gate_id: row.gate_id.clone(),
+        native_tier: row.native_tier.clone(),
+        policy_role: row.policy_role,
+        lifecycle: row.lifecycle,
+        requested_profile: plan.requested_profile.clone(),
+        command: command.clone(),
+        timeout_seconds: *timeout_seconds,
+        applicability_expected: row.applicability,
+    })
+}
+
+/// Domain-separated identity digest of one planned row under one plan
+/// fingerprint (#15814). `plan_fingerprint` is a validated 64-hex digest and
+/// the `0x00` separator keeps the preimage unambiguous, mirroring the
+/// [`FINGERPRINT_DOMAIN`] construction.
+pub fn row_identity_digest(
+    plan_fingerprint: &str,
+    row: &PlannedRowIdentity,
+) -> Result<String, String> {
+    let value = serde_json::to_value(row)
+        .map_err(|error| format!("row identity projection failed: {error}"))?;
+    let bytes = canonical_json(&value)?;
+    let mut hasher = Sha256::new();
+    hasher.update(ROW_IDENTITY_DIGEST_DOMAIN);
+    hasher.update(plan_fingerprint.as_bytes());
+    hasher.update([0u8]);
+    hasher.update(&bytes);
+    Ok(hex(&hasher.finalize()))
 }
 
 fn product_detail(outcome: TerminalOutcome) -> String {
@@ -761,6 +827,31 @@ fn format_dependency_failures(prerequisites: &PrerequisiteEvidence) -> String {
             .map(|(gate, reason)| format!("{gate}: {reason}"))
             .collect();
         format!("failed dependencies: {}", joined.join("; "))
+    }
+}
+
+/// Reconcile the observation window with whether the command actually ran.
+/// `check_timing` alone only proves the window is internally coherent: an
+/// empty window on a started command, or a full window on one that never
+/// started, is coherent in isolation and contradictory in fact. Both shapes
+/// would otherwise re-seal and validate.
+fn check_timing_against_start(
+    timing: &ObservationTiming,
+    command_started: bool,
+) -> Result<(), String> {
+    let observed = timing.started_at_unix_ms.is_some() || timing.ended_at_unix_ms.is_some();
+    match (command_started, observed) {
+        (true, false) => {
+            Err("a started command carries no observation window; a command that ran has a \
+             start and an end"
+                .to_string())
+        }
+        (false, true) => {
+            Err("a never-started command carries an observation window; nothing ran to be \
+             observed"
+                .to_string())
+        }
+        _ => Ok(()),
     }
 }
 
@@ -852,6 +943,7 @@ fn validate_plan_authority(authority: &PlanAuthorityIdentity) -> Result<(), Stri
         ("disposition_digest", &authority.disposition_digest),
         ("workflow_digest", &authority.workflow_digest),
         ("selector_digest", &authority.selector_digest),
+        ("row_identity_digest", &authority.row_identity_digest),
     ] {
         if !is_hex_sha256(digest) {
             return Err(format!(
@@ -913,6 +1005,21 @@ fn validate_result(result: &RoutedGateResultV1) -> Result<(), String> {
             result.row.native_tier
         ));
     }
+    // The carried row identity digest binds the row to the exact planned row
+    // of the fingerprinted plan (#15814). Recomputed from the record's own
+    // projection: any post-sealing mutation of the row — a substituted
+    // command/tier/role/lifecycle, or a row mixed in from another run —
+    // recomputes to a digest other than the one carried, and the record
+    // refuses even after a fresh result_fingerprint reseal.
+    let expected_row_digest =
+        row_identity_digest(&result.plan_authority.semantic_fingerprint, &result.row)?;
+    if expected_row_digest != result.plan_authority.row_identity_digest {
+        return Err(format!(
+            "row identity digest {} does not match the record's planned row under plan \
+             fingerprint {}; the row was substituted after sealing or mixed across runs",
+            result.plan_authority.row_identity_digest, result.plan_authority.semantic_fingerprint
+        ));
+    }
     for sha in [&result.subject.head_sha, &result.subject.subject_digest] {
         if sha.is_empty() {
             return Err("empty subject identity".to_string());
@@ -944,6 +1051,7 @@ fn validate_result(result: &RoutedGateResultV1) -> Result<(), String> {
     }
     validate_hosted_identity(result.hosted.as_ref())?;
     check_timing(&result.timing)?;
+    check_timing_against_start(&result.timing, result.command_started)?;
     validate_plane_honesty(result)?;
     let recomputed = result.semantic_fingerprint_of()?;
     if recomputed != result.result_fingerprint {

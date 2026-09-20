@@ -3,8 +3,8 @@
 //! Manages document content with Rope-based storage for efficient
 //! incremental updates and UTF-16 position mapping.
 
-use perl_parser::declaration::ParentMap;
 use perl_parser::position::LineStartsCache;
+use perl_semantic_analyzer::analysis::declaration::ParentMap;
 use std::borrow::Cow;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, OnceLock};
@@ -190,6 +190,13 @@ pub struct ParsedSnapshot {
     parent_map: Arc<ParentMap>,
     /// Degradation tier computed from `ast` and `parse_errors`.
     degradation_tier: DegradationTier,
+    /// Canonical regex analysis retained during this exact parse (#7018/#7024).
+    ///
+    /// `None` when the parse ran outside a retention session (compatibility
+    /// callers and tests). It is retained rather than derived on demand because
+    /// deriving it later would mean a second parse, and a second parse is a
+    /// second regex authority.
+    regex_analysis: Option<Arc<perl_parser_core::RegexAnalysisTable>>,
     /// Lazily-built, generation-owned single-file semantic analyzer. Empty
     /// until first requested via [`Self::semantic_analyzer`]; never populated
     /// for a `Minimal` (AST-less) snapshot.
@@ -201,6 +208,18 @@ pub struct ParsedSnapshot {
     /// Lazily-built, generation-owned source region index for non-code
     /// classification evidence (comments, literals, POD, data sections).
     source_region_index: OnceLock<Arc<perl_parser_core::SourceRegionIndex>>,
+    /// Lazily-bound, generation-owned document diagnostic analysis (pragma
+    /// map, scope issues, symbol table) shared by production push and pull
+    /// diagnostics for this snapshot's generation (#7286). Empty until first
+    /// requested via [`Self::diagnostic_analysis`]; never populated for a
+    /// `Minimal` (AST-less) snapshot, which has nothing to analyze.
+    ///
+    /// Populating this cell runs no analysis pass:
+    /// `DocumentDiagnosticAnalysis` defers each of its three facts to its
+    /// first reader, so a generation only pays for the passes its consumers
+    /// actually read.
+    diagnostic_analysis:
+        OnceLock<Arc<perl_lsp_rs_core::providers::diagnostics::DocumentDiagnosticAnalysis>>,
     /// Test-only: counts how many times the [`Self::semantic_analyzer`]
     /// construction closure has actually executed. Proves construction
     /// happens at most once per snapshot -- an `Arc::ptr_eq` identity check
@@ -220,6 +239,10 @@ pub struct ParsedSnapshot {
     /// [`Self::source_region_index`].
     #[cfg(test)]
     source_region_index_build_count: std::cell::Cell<usize>,
+    /// Test-only counterpart to `semantic_analyzer_build_count` for
+    /// [`Self::diagnostic_analysis`].
+    #[cfg(test)]
+    diagnostic_analysis_build_count: std::cell::Cell<usize>,
 }
 
 impl std::fmt::Debug for ParsedSnapshot {
@@ -236,6 +259,7 @@ impl std::fmt::Debug for ParsedSnapshot {
             .field("semantic_analyzer", &cell_state(self.semantic_analyzer.get().is_some()))
             .field("type_environment", &cell_state(self.type_environment.get().is_some()))
             .field("source_region_index", &cell_state(self.source_region_index.get().is_some()))
+            .field("diagnostic_analysis", &cell_state(self.diagnostic_analysis.get().is_some()))
             .finish()
     }
 }
@@ -283,16 +307,38 @@ impl ParsedSnapshot {
             parse_errors: Arc::from(parse_errors),
             parent_map: Arc::new(parent_map),
             degradation_tier,
+            regex_analysis: None,
             semantic_analyzer: OnceLock::new(),
             type_environment: OnceLock::new(),
             source_region_index: OnceLock::new(),
+            diagnostic_analysis: OnceLock::new(),
             #[cfg(test)]
             semantic_analyzer_build_count: std::cell::Cell::new(0),
             #[cfg(test)]
             type_environment_build_count: std::cell::Cell::new(0),
             #[cfg(test)]
             source_region_index_build_count: std::cell::Cell::new(0),
+            #[cfg(test)]
+            diagnostic_analysis_build_count: std::cell::Cell::new(0),
         }
+    }
+
+    /// Attach the canonical regex analysis retained during this snapshot's parse.
+    ///
+    /// The table must come from the [`perl_parser_core::RetainedRegexSession`] that
+    /// wrapped the parse this snapshot was built from, so it is bound to the same
+    /// source. Consumers re-check that binding before trusting it.
+    pub(crate) fn with_regex_analysis(
+        mut self,
+        regex_analysis: Arc<perl_parser_core::RegexAnalysisTable>,
+    ) -> Self {
+        self.regex_analysis = Some(regex_analysis);
+        self
+    }
+
+    /// Canonical regex analysis retained for this snapshot's source, if any.
+    pub fn regex_analysis(&self) -> Option<&Arc<perl_parser_core::RegexAnalysisTable>> {
+        self.regex_analysis.as_ref()
     }
 
     /// The document generation this snapshot was parsed from.
@@ -407,6 +453,77 @@ impl ParsedSnapshot {
         }))
     }
 
+    /// The generation-owned [`perl_lsp_rs_core::providers::diagnostics::DocumentDiagnosticAnalysis`]
+    /// for this snapshot, built lazily and exactly once on first request and
+    /// shared (by `Arc`) thereafter (#7286).
+    ///
+    /// Same generation-ownership, laziness, and exactly-once concurrency
+    /// contract as [`Self::semantic_analyzer`]: the analysis is derived from
+    /// this snapshot's own [`Self::ast`] and [`Self::source`], never a later
+    /// generation's, and construction happens at most once whether zero, one,
+    /// or many diagnostic evaluations of this generation request it.
+    ///
+    /// Returns `None` only for a [`DegradationTier::Minimal`] snapshot, which
+    /// has no AST to derive anything from.
+    ///
+    /// An earlier revision also returned `None` when the snapshot's parse
+    /// errors suppress the lint stack, on the reasoning that production would
+    /// discard the analysis unused. That reasoning held while
+    /// `DiagnosticsProvider` was the only consumer -- it skips the whole
+    /// pragma/scope/symbol block for a blocking parse error -- but it stopped
+    /// being true once native critic composition became a second consumer.
+    /// `NativeCriticRegistry::check_unfiltered` runs under no parse-error
+    /// guard, so on a malformed-but-recoverable document (the ordinary
+    /// mid-edit state) withholding the analysis made the critic rebuild the
+    /// pragma map and scope analysis on *every* evaluation -- precisely the
+    /// cost this cell exists to remove, in the most latency-sensitive case
+    /// there is.
+    ///
+    /// So the analysis is available whenever there is an AST. The provider
+    /// still skips its block for a blocking parse error, unchanged; the critic
+    /// reuses instead of rebuilding.
+    ///
+    /// Making it available costs nothing a consumer does not ask for.
+    /// `DocumentDiagnosticAnalysis` defers each of its three facts to its
+    /// first reader, so a blocking-parse-error generation runs the pragma and
+    /// scope passes the critic reads and does *not* run the symbol extraction
+    /// nobody reads -- and under the legacy critic engine, which reads none of
+    /// the three, it runs no pass at all. Returning the analysis is therefore
+    /// never worse than withholding it, which is what makes the unconditional
+    /// rule safe rather than merely simpler.
+    ///
+    /// The source is handed over as a shared `Arc<str>`, not copied: the
+    /// analysis retains it for its deferred passes, and a per-generation copy
+    /// of every open document's text would be a real cost.
+    pub fn diagnostic_analysis(
+        &self,
+    ) -> Option<Arc<perl_lsp_rs_core::providers::diagnostics::DocumentDiagnosticAnalysis>> {
+        let ast = self.ast.as_ref()?;
+        Some(Arc::clone(self.diagnostic_analysis.get_or_init(|| {
+            #[cfg(test)]
+            self.diagnostic_analysis_build_count
+                .set(self.diagnostic_analysis_build_count.get() + 1);
+            Arc::new(perl_lsp_rs_core::providers::diagnostics::DocumentDiagnosticAnalysis::build(
+                ast,
+                Arc::clone(&self.source),
+            ))
+        })))
+    }
+
+    /// Whether the [`Self::diagnostic_analysis`] cell has been materialized.
+    /// Test-only counterpart to [`Self::semantic_analyzer_initialized`].
+    #[cfg(test)]
+    pub(crate) fn diagnostic_analysis_initialized(&self) -> bool {
+        self.diagnostic_analysis.get().is_some()
+    }
+
+    /// Test-only counterpart to [`Self::semantic_analyzer_build_count`] for
+    /// [`Self::diagnostic_analysis`].
+    #[cfg(test)]
+    pub(crate) fn diagnostic_analysis_build_count(&self) -> usize {
+        self.diagnostic_analysis_build_count.get()
+    }
+
     /// Whether the [`Self::semantic_analyzer`] cell has been materialized.
     ///
     /// Test-only observability for the "a superseded snapshot with no semantic
@@ -504,7 +621,12 @@ pub struct DocumentState {
     /// (#5053).
     pub text_arc: std::sync::Arc<str>,
 
-    /// LSP document version number for synchronization
+    /// Newest observed client document version.
+    ///
+    /// After an accepted full replacement this matches the committed buffer.
+    /// After a Full-sync violation it is raised to the rejected notification's
+    /// version without mutating last-good text, so a delayed older replacement
+    /// cannot recover.
     pub version: i32,
 
     /// Latest published parse result, if any.
@@ -573,6 +695,16 @@ pub struct DocumentState {
     /// Only compiled when the `incremental` feature is enabled.
     #[cfg(feature = "incremental")]
     pub incremental_state: Option<perl_parser::incremental::IncrementalState>,
+
+    /// Set when a `didChange` array violated the advertised Full/UTF-16 envelope.
+    ///
+    /// Last-good text remains retained as predecessor evidence. It is not current
+    /// client state: [`Self::current_parsed`] and [`Self::parsed_for_user_answers`]
+    /// return `None` until an accepted full-document replacement, close/reopen, or
+    /// restart clears the flag. [`Self::latest_parsed`] still exposes the
+    /// predecessor snapshot so workspace-index eligibility can tell “was indexed”
+    /// from “never parsed.”
+    full_sync_required: bool,
 }
 
 impl DocumentState {
@@ -595,6 +727,7 @@ impl DocumentState {
             incremental_doc: None,
             #[cfg(feature = "incremental")]
             incremental_state: None,
+            full_sync_required: false,
         }
     }
 
@@ -611,6 +744,16 @@ impl DocumentState {
     /// removed once all callers migrate.
     pub fn text_str(&self) -> &str {
         &self.text_arc
+    }
+
+    /// Source text usable for user-facing answers.
+    ///
+    /// Predecessor text remains in [`Self::text_str`] as last-good evidence.
+    /// Edit-producing providers must not format or rewrite from that buffer
+    /// while a Full-sync violation is outstanding.
+    #[must_use]
+    pub(crate) fn text_for_user_answers(&self) -> Option<&str> {
+        if self.full_sync_required { None } else { Some(self.text_str()) }
     }
 
     /// Construct a document state from raw rope/text/version parts while
@@ -642,7 +785,43 @@ impl DocumentState {
             incremental_doc: None,
             #[cfg(feature = "incremental")]
             incremental_state: None,
+            full_sync_required: false,
         }
+    }
+
+    /// Mark the open document as requiring an explicit full-document resync.
+    ///
+    /// Bumps [`Self::generation`] on the false→true transition so workspace-index
+    /// freshness treats last-good facts as predecessor, matching ordinary edits.
+    /// Repeated violations while already desynchronized do not bump again.
+    pub(crate) fn mark_full_sync_required(&mut self) {
+        if self.full_sync_required {
+            return;
+        }
+        self.full_sync_required = true;
+        self.generation.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// Raise the client-version watermark without accepting the notification text.
+    ///
+    /// The existing out-of-order `didChange` gate compares against [`Self::version`].
+    /// Recording the rejected notification here keeps last-good text untouched while
+    /// still refusing delayed older full replacements.
+    pub(crate) fn observe_change_version(&mut self, incoming: i32) {
+        if incoming > self.version {
+            self.version = incoming;
+        }
+    }
+
+    /// Whether later ranged changes and current-answer facts are unavailable.
+    #[must_use]
+    pub(crate) fn full_sync_required(&self) -> bool {
+        self.full_sync_required
+    }
+
+    /// Clear the Full-sync violation after an accepted complete replacement.
+    pub(crate) fn clear_full_sync_required(&mut self) {
+        self.full_sync_required = false;
     }
 
     /// Update document content and invalidate caches
@@ -732,13 +911,29 @@ impl DocumentState {
         self.parsed.clone()
     }
 
+    /// Snapshot usable for user-facing answers.
+    ///
+    /// Ordinary pending parse may fall back to [`Self::latest_parsed`] when the
+    /// current generation has no snapshot yet. Full-sync desynchronization is
+    /// not pending parse: predecessor AST must not answer the user until an
+    /// accepted full replacement recovers.
+    #[must_use]
+    pub(crate) fn parsed_for_user_answers(&self) -> Option<Arc<ParsedSnapshot>> {
+        if self.full_sync_required {
+            None
+        } else {
+            self.current_parsed().or_else(|| self.latest_parsed())
+        }
+    }
+
     /// The published parse result, but only if it was parsed from the
     /// document's *current* generation.
     ///
     /// Returns an **owned** `Arc<ParsedSnapshot>` for the same reason as
     /// [`Self::latest_parsed`] -- see that method's doc comment.
     ///
-    /// Returns `None` when no snapshot has ever been published, or when the
+    /// Returns `None` when no snapshot has ever been published, when a
+    /// Full-sync violation left [`Self::full_sync_required`] set, or when the
     /// last published snapshot is stale (parsed from an older generation
     /// than the document is now at). This is the freshness-correct default:
     /// once an async parse worker can publish out of order, a stale
@@ -750,6 +945,9 @@ impl DocumentState {
     /// old `ast`/`parse_errors`/`parent_map`/`degradation_tier` fields
     /// directly.
     pub fn current_parsed(&self) -> Option<Arc<ParsedSnapshot>> {
+        if self.full_sync_required {
+            return None;
+        }
         let snapshot = self.parsed.clone()?;
         (snapshot.generation == self.current_generation()).then_some(snapshot)
     }
@@ -773,7 +971,8 @@ impl DocumentState {
         expected_generation: u32,
         snapshot: Arc<ParsedSnapshot>,
     ) -> bool {
-        if self.current_generation() != expected_generation
+        if self.full_sync_required
+            || self.current_generation() != expected_generation
             || snapshot.generation != expected_generation
         {
             return false;
@@ -883,6 +1082,34 @@ mod tests {
         )
     }
 
+    /// Directly construct a `Partial`-tier snapshot (AST present, but a
+    /// blocking parse error) at `generation`, bypassing the real parser.
+    ///
+    /// Used to exercise the blocking-parse-error case of
+    /// [`ParsedSnapshot::diagnostic_analysis`] without depending on the v3
+    /// parser's error-recovery behavior to reliably pair a blocking error
+    /// with a real AST -- same rationale as `minimal_snapshot_for`.
+    fn blocking_error_snapshot_for(source: &str, generation: u32) -> ParsedSnapshot {
+        let mut parser = perl_parser::Parser::new(source);
+        let ast = match parser.parse() {
+            Ok(ast) => Arc::new(ast),
+            Err(_) => {
+                // Fall back to parsing an empty, always-clean source so the
+                // AST is present regardless of `source`'s own parseability --
+                // this helper's contract is about the (ast: Some, blocking
+                // error) pairing, not about `source`'s real parse errors.
+                let mut clean = perl_parser::Parser::new("");
+                Arc::new(must(clean.parse()))
+            }
+        };
+        ParsedSnapshot::from_parse_result(
+            generation,
+            source,
+            Some(ast),
+            vec![perl_parser::error::ParseError::UnexpectedEof],
+        )
+    }
+
     #[test]
     fn current_parsed_matches_generation() {
         let mut doc = DocumentState::new("my $x = 1;", 1);
@@ -891,6 +1118,67 @@ mod tests {
         assert!(doc.publish_parsed_if_current(doc_gen, snapshot));
         let current = must_some(doc.current_parsed());
         assert_eq!(current.generation(), doc_gen);
+    }
+
+    #[test]
+    fn current_parsed_none_when_full_sync_is_required() {
+        let mut doc = DocumentState::new("my $x = 1;", 1);
+        let doc_gen = doc.current_generation();
+        let snapshot = Arc::new(snapshot_for("my $x = 1;", doc_gen));
+        assert!(doc.publish_parsed_if_current(doc_gen, snapshot));
+        doc.mark_full_sync_required();
+        let desync_gen = doc.current_generation();
+        assert!(
+            desync_gen > doc_gen,
+            "desync must bump generation so workspace-index freshness rejects predecessor facts"
+        );
+        assert!(
+            doc.current_parsed().is_none(),
+            "last-good parse cannot masquerade as current after a Full-sync violation"
+        );
+        assert!(
+            doc.parsed_for_user_answers().is_none(),
+            "stale-tolerant user answers must not use predecessor AST while desynchronized"
+        );
+        assert!(
+            doc.latest_parsed().is_some(),
+            "predecessor snapshot stays retained as last-good evidence"
+        );
+        assert_eq!(doc.text_str(), "my $x = 1;");
+        assert!(
+            doc.text_for_user_answers().is_none(),
+            "predecessor text must not answer user-facing edit providers while desynchronized"
+        );
+        assert!(doc.full_sync_required());
+        doc.observe_change_version(3);
+        assert_eq!(
+            doc.version, 3,
+            "observed client version must rise without treating rejected text as accepted"
+        );
+        assert_eq!(doc.text_str(), "my $x = 1;");
+        doc.observe_change_version(2);
+        assert_eq!(doc.version, 3, "older observed versions must not lower the watermark");
+        assert!(
+            !doc.publish_parsed_if_current(doc_gen, Arc::new(snapshot_for("my $x = 1;", doc_gen))),
+            "a parse of the pre-desync generation must not republish"
+        );
+        assert!(
+            !doc.publish_parsed_if_current(
+                desync_gen,
+                Arc::new(snapshot_for("my $x = 1;", desync_gen))
+            ),
+            "a later parse of last-good text must not republish as current while unavailable"
+        );
+        doc.clear_full_sync_required();
+        assert!(
+            doc.publish_parsed_if_current(
+                desync_gen,
+                Arc::new(snapshot_for("my $x = 1;", desync_gen))
+            ),
+            "an accepted full replacement must allow current publication again"
+        );
+        assert!(doc.current_parsed().is_some());
+        assert!(doc.parsed_for_user_answers().is_some());
     }
 
     #[test]
@@ -1102,6 +1390,7 @@ mod tests {
                 let mentions_parsed = line.contains(".parsed") && !line.contains(".parsed_range");
                 let via_accessor = line.contains("current_parsed")
                     || line.contains("latest_parsed")
+                    || line.contains("parsed_for_user_answers")
                     || line.contains("publish_parsed_if_current");
                 if mentions_parsed && !via_accessor {
                     offenders.push(format!("{}:{}: {}", path.display(), idx + 1, line.trim()));
@@ -1445,6 +1734,155 @@ mod tests {
             results.iter().all(|r| Arc::ptr_eq(r, &first)),
             "all racing readers must observe the same initialized value"
         );
+    }
+
+    // ── diagnostic_analysis (#7286) ──
+
+    /// Repeated requests against a single snapshot reuse ONE
+    /// `DocumentDiagnosticAnalysis` instance -- the `OnceLock` materializes
+    /// exactly once, and the construction closure itself runs exactly once
+    /// (not merely "returns an `Arc::ptr_eq`-identical result" -- see
+    /// `analyzer_and_type_env_construction_happens_exactly_once` for why the
+    /// build-count counter is the load-bearing assertion here).
+    #[test]
+    fn diagnostic_analysis_construction_happens_exactly_once() {
+        let snapshot = snapshot_for("sub foo { my $x = 1; print $undeclared; }", 0);
+
+        let mut instances = Vec::new();
+        for _ in 0..5 {
+            instances.push(must_some(snapshot.diagnostic_analysis()));
+        }
+
+        let first = must_some(instances.first().cloned());
+        assert!(
+            instances.iter().all(|a| Arc::ptr_eq(a, &first)),
+            "repeated diagnostic_analysis requests must reuse one instance"
+        );
+        assert_eq!(
+            snapshot.diagnostic_analysis_build_count(),
+            1,
+            "diagnostic_analysis's construction closure must run exactly once across repeated calls"
+        );
+    }
+
+    /// A new generation gets a fresh `diagnostic_analysis` cell: distinct
+    /// `Arc` allocation, its own independent build count, and facts rebuilt
+    /// from the new generation's own source -- no cross-generation bleed.
+    #[test]
+    fn diagnostic_analysis_is_generation_bound() {
+        let snap0 = snapshot_for("my $x = 1;", 0);
+        let snap1 = snapshot_for("my $y = 2; print $undeclared;", 1);
+
+        let a0 = must_some(snap0.diagnostic_analysis());
+        let a1 = must_some(snap1.diagnostic_analysis());
+
+        assert!(
+            !Arc::ptr_eq(&a0, &a1),
+            "distinct generations must not share one diagnostic-analysis allocation"
+        );
+        assert_eq!(snap0.diagnostic_analysis_build_count(), 1);
+        assert_eq!(
+            snap1.diagnostic_analysis_build_count(),
+            1,
+            "the new generation's build count starts fresh, independent of an earlier generation's"
+        );
+        assert!(
+            a1.matches_source("my $y = 2; print $undeclared;"),
+            "the new generation's analysis must describe its own source"
+        );
+        assert!(
+            !a1.matches_source("my $x = 1;"),
+            "the new generation's analysis must not describe the prior generation's source"
+        );
+    }
+
+    /// A superseded snapshot on which `diagnostic_analysis` was never
+    /// requested performs zero construction: laziness holds even across a
+    /// generation boundary.
+    #[test]
+    fn superseded_snapshot_without_diagnostic_analysis_request_stays_lazy() {
+        let mut doc = DocumentState::new("my $x = 1;", 1);
+        let gen0 = doc.current_generation();
+        let snapshot0 = Arc::new(snapshot_for("my $x = 1;", gen0));
+        assert!(doc.publish_parsed_if_current(gen0, Arc::clone(&snapshot0)));
+
+        doc.apply_change(0, 8, 0, 9, "2", 2);
+        let gen1 = doc.current_generation();
+        let snapshot1 = Arc::new(snapshot_for("my $x = 2;", gen1));
+        assert!(doc.publish_parsed_if_current(gen1, snapshot1));
+
+        assert!(
+            !snapshot0.diagnostic_analysis_initialized(),
+            "a superseded, never-requested snapshot must not build a diagnostic analysis"
+        );
+        assert_eq!(
+            snapshot0.diagnostic_analysis_build_count(),
+            0,
+            "a superseded, never-requested snapshot's build count must stay at zero"
+        );
+    }
+
+    /// A `Minimal` (AST-less) snapshot exposes no diagnostic analysis and
+    /// never materializes the cell -- there is nothing to analyze.
+    #[test]
+    fn minimal_snapshot_has_no_diagnostic_analysis() {
+        let snapshot = minimal_snapshot_for(0);
+        assert_eq!(snapshot.degradation_tier(), DegradationTier::Minimal);
+        assert!(snapshot.ast().is_none(), "a Minimal snapshot must have no AST");
+        assert!(
+            snapshot.diagnostic_analysis().is_none(),
+            "a Minimal (AST-less) snapshot must expose no diagnostic analysis"
+        );
+        assert!(
+            !snapshot.diagnostic_analysis_initialized(),
+            "a Minimal snapshot must not materialize the diagnostic-analysis cell"
+        );
+    }
+
+    /// A snapshot whose parse errors suppress the document-analysis / lint
+    /// stack (the `has_blocking_parse_error` rule) exposes no diagnostic
+    /// analysis and never materializes the cell, even though it has a real
+    /// AST -- building it would be wasted work that production diagnostics
+    /// never uses, since they skip the entire pragma/scope/symbol block
+    /// under this exact condition today.
+    #[test]
+    fn blocking_parse_error_snapshot_still_offers_its_analysis() {
+        // Deliberate reversal of an earlier contract. This previously asserted
+        // `None`, on the reasoning that `DiagnosticsProvider` skips the
+        // pragma/scope/symbol block for a blocking parse error and would
+        // discard the analysis unused. That stopped being true once native
+        // critic composition became a second consumer: it runs under no
+        // parse-error guard, so withholding the analysis made it rebuild the
+        // pragma map and scope analysis on every evaluation of a
+        // malformed-but-recoverable document.
+        let snapshot = blocking_error_snapshot_for("my $x = 1;", 0);
+        assert!(
+            snapshot.ast().is_some(),
+            "the fixture snapshot must have a real AST despite the blocking error"
+        );
+        assert!(
+            !snapshot.diagnostic_analysis_initialized(),
+            "the cell must still be lazy: nothing is built until someone asks"
+        );
+
+        let analysis = snapshot.diagnostic_analysis();
+        assert!(
+            analysis.is_some(),
+            "an AST-bearing snapshot must offer its analysis even with a blocking parse error, \
+             so the critic stage reuses instead of rebuilding per evaluation"
+        );
+        assert_eq!(
+            snapshot.diagnostic_analysis_build_count(),
+            1,
+            "exactly one construction, as for any other AST-bearing generation"
+        );
+
+        // Still exactly-once, not once-per-request.
+        let again = snapshot.diagnostic_analysis();
+        assert_eq!(snapshot.diagnostic_analysis_build_count(), 1);
+        let first = must_some(analysis);
+        let second = must_some(again);
+        assert!(Arc::ptr_eq(&first, &second), "repeat requests must share one analysis");
     }
 }
 

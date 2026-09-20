@@ -147,8 +147,7 @@ fn container_installer_contract_rejects_extra_or_mismatched_installers()
 #[derive(Clone, Copy)]
 struct GateRoute<'a> {
     router_target: &'a str,
-    cx53_result: &'a str,
-    cx43_result: &'a str,
+    selfhosted_result: &'a str,
     github_result: &'a str,
     fallback_result: &'a str,
 }
@@ -224,8 +223,7 @@ impl<'a> GateRoute<'a> {
     fn github_failure() -> Self {
         Self {
             router_target: "github",
-            cx53_result: "skipped",
-            cx43_result: "skipped",
+            selfhosted_result: "skipped",
             github_result: "failure",
             fallback_result: "skipped",
         }
@@ -237,8 +235,7 @@ fn gate_lane_identity(route: GateRoute<'_>) -> (&'static str, &'static str) {
         return ("ripr+ (Disk-Full Fallback)", "88001");
     }
     match route.router_target {
-        "cx53" => ("ripr+ on CX53", "53001"),
-        "cx43" => ("ripr+ on CX43", "43001"),
+        "selfhosted" => ("ripr+ on Self-Hosted (rust-standard)", "53001"),
         "github" => ("ripr+ on GitHub Hosted", "97001"),
         _ => ("unknown", "0"),
     }
@@ -447,8 +444,7 @@ gh() {
         .env("ROUTE_RESULT", "success")
         .env("ROUTER_TARGET", route.router_target)
         .env("ROUTER_REASON", "test")
-        .env("CX53_RESULT", route.cx53_result)
-        .env("CX43_RESULT", route.cx43_result)
+        .env("SELFHOSTED_RESULT", route.selfhosted_result)
         .env("GITHUB_RESULT", route.github_result)
         .env("FALLBACK_RESULT", route.fallback_result)
         .env("GITHUB_REPOSITORY", "EffortlessMetrics/perl-lsp-swarm")
@@ -532,15 +528,19 @@ gh() {
 
 fn runner_response(fixture: &str) -> Result<&'static str> {
     match fixture {
+        // A live rust-standard pool: one busy member and one idle member.
+        // Busy state is irrelevant to routing -- GitHub queues within the
+        // capability pool -- so both count as capacity.
         "ready" => Ok(
-            r#"{"runners":[{"id":53001,"name":"cx53-ready","status":"online","busy":false,"labels":[{"name":"EM-CI"},{"name":"CX53"},{"name":"rust-small"},{"name":"trusted-pr"}]},{"id":43001,"name":"cx43-ready","status":"online","busy":false,"labels":[{"name":"em-ci"},{"name":"cx43"},{"name":"rust-small"},{"name":"trusted-pr"}]},{"id":53002,"name":"cx53-busy","status":"online","busy":true,"labels":[{"name":"em-ci"},{"name":"cx53"},{"name":"rust-small"},{"name":"trusted-pr"}]},{"id":53003,"name":"cx53-missing-label","status":"online","busy":false,"labels":[{"name":"em-ci"},{"name":"cx53"},{"name":"rust-small"}]},{"id":53004,"name":"cx53-offline","status":"offline","busy":false,"labels":[{"name":"em-ci"},{"name":"cx53"},{"name":"rust-small"},{"name":"trusted-pr"}]}]}"#,
+            r#"{"runners":[{"id":53001,"name":"rust-standard-busy","status":"online","busy":true,"labels":[{"name":"EM-CI"},{"name":"Rust-Standard"},{"name":"trusted-pr"}]},{"id":43001,"name":"rust-standard-idle","status":"online","busy":false,"labels":[{"name":"em-ci"},{"name":"rust-standard"},{"name":"trusted-pr"}]},{"id":53003,"name":"wrong-capability","status":"online","busy":false,"labels":[{"name":"em-ci"},{"name":"rust-light"},{"name":"trusted-pr"}]},{"id":53004,"name":"rust-standard-offline","status":"offline","busy":false,"labels":[{"name":"em-ci"},{"name":"rust-standard"},{"name":"trusted-pr"}]}]}"#,
         ),
         "busy-only" => Ok(
-            r#"{"runners":[{"id":53002,"name":"cx53-busy","status":"online","busy":true,"labels":[{"name":"em-ci"},{"name":"cx53"},{"name":"rust-small"},{"name":"trusted-pr"}]}]}"#,
+            r#"{"runners":[{"id":53001,"name":"rust-standard-busy","status":"online","busy":true,"labels":[{"name":"em-ci"},{"name":"rust-standard"},{"name":"trusted-pr"}]}]}"#,
         ),
         "missing-label-only" => Ok(
-            r#"{"runners":[{"id":53003,"name":"cx53-missing-label","status":"online","busy":false,"labels":[{"name":"em-ci"},{"name":"cx53"},{"name":"rust-small"}]}]}"#,
+            r#"{"runners":[{"id":53003,"name":"wrong-capability","status":"online","busy":false,"labels":[{"name":"em-ci"},{"name":"rust-light"}]}]}"#,
         ),
+        "empty" => Ok(r#"{"runners":[]}"#),
         _ => bail!("unknown runner fixture: {fixture}"),
     }
 }
@@ -624,6 +624,7 @@ curl() {
         .env("FAKE_RUNNERS_JSON", runner_json)
         .env("FAKE_CURL_STATUS", curl_status)
         .env("FAKE_CURL_REQUEST", &curl_request)
+        .env("RIPR_ROUTER_PROBE_SECONDS", "0")
         .env("GITHUB_OUTPUT", &output_file)
         .env("GITHUB_STEP_SUMMARY", &summary)
         .stdin(Stdio::piped())
@@ -660,7 +661,7 @@ fn run_preflight_case(
     let cache = sandbox.path().join("cache");
     fs::create_dir_all(&scratch)?;
     fs::create_dir_all(&cache)?;
-    let run = workflow_run_block("ripr-cx53", "Preflight disk")?;
+    let run = workflow_run_block("ripr-selfhosted", "Preflight disk")?;
     let fake = r#"
 docker() {
   if [ "$1" = "image" ] && [ "$2" = "inspect" ]; then
@@ -709,9 +710,8 @@ ci-disk-guard() {
 
 fn run_fallback_condition(
     router_target: &str,
-    cx53_result: &str,
-    cx43_result: &str,
-    cx53_preflight_ok: &str,
+    selfhosted_result: &str,
+    selfhosted_preflight_ok: &str,
 ) -> Result<(std::process::Output, String)> {
     let sandbox = tempfile::tempdir().context("creating fallback-condition sandbox")?;
     let summary = sandbox.path().join("summary.md");
@@ -719,10 +719,8 @@ fn run_fallback_condition(
         .replace("always()", "true")
         .replace("needs.route-ripr.result", "\"$ROUTE_RESULT\"")
         .replace("needs.route-ripr.outputs.target", "\"$ROUTER_TARGET\"")
-        .replace("needs.ripr-cx53.result", "\"$CX53_RESULT\"")
-        .replace("needs.ripr-cx53.outputs.preflight_ok", "\"$CX53_PREFLIGHT_OK\"")
-        .replace("needs.ripr-cx43.result", "\"$CX43_RESULT\"")
-        .replace("needs.ripr-cx43.outputs.preflight_ok", "\"$CX43_PREFLIGHT_OK\"");
+        .replace("needs.ripr-selfhosted.result", "\"$SELFHOSTED_RESULT\"")
+        .replace("needs.ripr-selfhosted.outputs.preflight_ok", "\"$SELFHOSTED_PREFLIGHT_OK\"");
     let run = workflow_run_block("ripr-fallback", "Annotate failover reason")?
         .replace("${{ needs.route-ripr.outputs.target }}", router_target);
     let script = format!(
@@ -733,10 +731,8 @@ fn run_fallback_condition(
         .current_dir(sandbox.path())
         .env("ROUTE_RESULT", "success")
         .env("ROUTER_TARGET", router_target)
-        .env("CX53_RESULT", cx53_result)
-        .env("CX43_RESULT", cx43_result)
-        .env("CX53_PREFLIGHT_OK", cx53_preflight_ok)
-        .env("CX43_PREFLIGHT_OK", "")
+        .env("SELFHOSTED_RESULT", selfhosted_result)
+        .env("SELFHOSTED_PREFLIGHT_OK", selfhosted_preflight_ok)
         .env("GITHUB_STEP_SUMMARY", &summary)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -833,7 +829,7 @@ fn run_fallback_path(quality_gate_fails: bool) -> Result<FallbackPathEvidence> {
     fs::create_dir_all(&freshness_handoff)?;
     fs::write(freshness_handoff.join("clear-succeeded"), format!("{freshness_token}\n"))?;
     let annotation = workflow_run_block("ripr-fallback", "Annotate failover reason")?
-        .replace("${{ needs.route-ripr.outputs.target }}", "cx53");
+        .replace("${{ needs.route-ripr.outputs.target }}", "selfhosted");
     let normalize = workflow_run_block("ripr-fallback", "Normalize base ref")?;
     let executable_steps = [
         "Toolchain (rust-toolchain.toml pins 1.95.0)",
@@ -886,7 +882,7 @@ git() {
           [ "$5" = "--head" ] && [ "$6" = "HEAD" ] || return 1
           [ "$7" = "--pr-head" ] && [ "$8" = "$FAKE_PR_HEAD_SHA" ] || return 1
           if [ "$#" -eq 10 ]; then
-            [ "$9" = "--timeout-seconds" ] && [ "${10}" = "600" ] || return 1
+            [ "$9" = "--timeout-seconds" ] && [ "${10}" = "3600" ] || return 1
           elif [ "$#" -eq 9 ]; then
             [ "$9" = "--check" ] || return 1
           else
@@ -1283,11 +1279,11 @@ fn ripr_workflow_runs_on_ready_for_review_without_path_filter()
     require_single_canonical_container_installer(&hosted_producer)?;
     assert!(
         hosted_producer.contains("docker run --rm")
-            && hosted_producer.contains("--memory=6g")
-            && hosted_producer.contains("--memory-swap=6g")
+            && hosted_producer.contains("--memory=14g")
+            && hosted_producer.contains("--memory-swap=14g")
             && hosted_producer.contains("timeout --signal=TERM --kill-after=30s 40m")
             && hosted_producer.contains("timeout --signal=TERM --kill-after=30s 25m")
-            && hosted_producer.contains("-e RIPR_MAX_DIFF_INDEX_FILES=1600")
+            && hosted_producer.contains("-e RIPR_MAX_DIFF_INDEX_FILES=2560")
             && hosted_producer.contains("-e RIPR_FRESHNESS_HANDOFF=/freshness")
             && hosted_producer.contains("-v \"$RIPR_FRESHNESS_HANDOFF:/freshness\"")
             && hosted_producer.contains("--name \"$container_name\"")
@@ -1367,17 +1363,17 @@ fn ripr_workflow_runs_on_ready_for_review_without_path_filter()
     );
     assert_eq!(
         workflow.matches("Prepare RIPR freshness handoff").count(),
-        4,
+        3,
         "every producer job must create a distinct freshness handoff"
     );
     assert_eq!(
         workflow.matches("steps.ripr-freshness-result.outputs.ready == 'true'").count(),
-        4,
+        3,
         "every producer upload must require its producer freshness handoff"
     );
     assert_eq!(
         workflow.matches("RIPR freshness handoff unavailable; suppressing stale summary").count(),
-        4,
+        3,
         "every producer summary step must suppress stale output without its handoff"
     );
     for job in ["ripr-github", "ripr-fallback"] {
@@ -1629,31 +1625,29 @@ fn ripr_self_hosted_preflight_falls_back_when_required_image_is_missing() -> Res
                 line.trim_start().starts_with("if ! docker image inspect em-ci-rust:1.95")
             })
             .count(),
-        2,
-        "CX53 and CX43 preflight must both check the required Docker image before running ripr"
+        1,
+        "the self-hosted rust-standard lane must check the required Docker image before running ripr"
     );
     assert!(
-        workflow.contains("Required Docker image em-ci-rust:1.95 is missing on CX53")
-            && workflow.contains("Required Docker image em-ci-rust:1.95 is missing on CX43"),
+        workflow
+            .contains("Required Docker image em-ci-rust:1.95 is missing on the self-hosted runner"),
         "missing self-hosted Rust image must be reported as preflight failure"
     );
     assert!(
         workflow.contains(
-            "needs.route-ripr.outputs.target == 'cx53' && needs.ripr-cx53.result == 'failure' && needs.ripr-cx53.outputs.preflight_ok == 'false'",
-        )
-            && workflow.contains(
-                "needs.route-ripr.outputs.target == 'cx43' && needs.ripr-cx43.result == 'failure' && needs.ripr-cx43.outputs.preflight_ok == 'false'",
-            ),
+            "needs.route-ripr.outputs.target == 'selfhosted' &&
+      needs.ripr-selfhosted.result == 'failure' &&
+      needs.ripr-selfhosted.outputs.preflight_ok == 'false'",
+        ),
         "only a failed self-hosted preflight with preflight_ok=false must route the run to the GitHub-hosted fallback"
     );
 
     let (self_hosted_route, self_hosted_output) =
         run_router_case("false", "runner-token", "ready", "200")?;
     if !self_hosted_route.status.success()
-        || !self_hosted_output.contains("target=cx53")
-        || !self_hosted_output.contains("reason=cx53_idle")
-        || !self_hosted_output.contains("idle_cx53=1")
-        || !self_hosted_output.contains("idle_cx43=1")
+        || !self_hosted_output.contains("target=selfhosted")
+        || !self_hosted_output.contains("reason=rust_standard_capacity_online")
+        || !self_hosted_output.contains("online_rust_standard=2")
         || !self_hosted_output.contains(
             "endpoint=https://api.github.com/orgs/EffortlessMetrics/actions/runners?per_page=100",
         )
@@ -1667,18 +1661,20 @@ fn ripr_self_hosted_preflight_falls_back_when_required_image_is_missing() -> Res
     }
     let (busy_route, busy_output) = run_router_case("false", "runner-token", "busy-only", "200")?;
     if !busy_route.status.success()
-        || !busy_output.contains("target=github")
-        || !busy_output.contains("reason=no_idle_runner")
-        || !busy_output.contains("idle_cx53=0")
+        || !busy_output.contains("target=selfhosted")
+        || !busy_output.contains("reason=rust_standard_capacity_online")
+        || !busy_output.contains("online_rust_standard=1")
     {
-        bail!("a busy runner must not be routed to self-hosted:\n{busy_output}");
+        bail!(
+            "a busy rust-standard runner is still capacity and must route self-hosted:\n{busy_output}"
+        );
     }
     let (missing_label_route, missing_label_output) =
         run_router_case("false", "runner-token", "missing-label-only", "200")?;
     if !missing_label_route.status.success()
         || !missing_label_output.contains("target=github")
-        || !missing_label_output.contains("reason=no_idle_runner")
-        || !missing_label_output.contains("idle_cx53=0")
+        || !missing_label_output.contains("reason=no_rust_standard_capacity_online")
+        || !missing_label_output.contains("online_rust_standard=0")
     {
         bail!(
             "a runner missing a required label must not be routed to self-hosted:\n{missing_label_output}"
@@ -1696,7 +1692,7 @@ fn ripr_self_hosted_preflight_falls_back_when_required_image_is_missing() -> Res
     let (missing_image, missing_image_output) = run_preflight_case(false, false)?;
     if missing_image.status.success()
         || !missing_image_output
-            .contains("Required Docker image em-ci-rust:1.95 is missing on CX53")
+            .contains("Required Docker image em-ci-rust:1.95 is missing on the self-hosted runner")
         || !missing_image_output.contains("preflight_ok=false")
     {
         bail!(
@@ -1709,7 +1705,7 @@ fn ripr_self_hosted_preflight_falls_back_when_required_image_is_missing() -> Res
         bail!("missing-image preflight did not produce the expected false output")
     };
     let (fallback_started, fallback_output) =
-        run_fallback_condition("cx53", "failure", "skipped", missing_image_preflight)?;
+        run_fallback_condition("selfhosted", "failure", missing_image_preflight)?;
     if !fallback_started.status.success()
         || !fallback_output.contains("fallback_started=true")
         || !fallback_output.contains("### ripr Disk-Full Failover")
@@ -1746,7 +1742,7 @@ fn ripr_self_hosted_preflight_falls_back_when_required_image_is_missing() -> Res
     for expected_command in [
         "cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json",
         "cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json --check",
-        "cargo xtask ripr-review-comments --base origin/main --head HEAD --pr-head 0123456789abcdef0123456789abcdef01234567 --timeout-seconds 600",
+        "cargo xtask ripr-review-comments --base origin/main --head HEAD --pr-head 0123456789abcdef0123456789abcdef01234567 --timeout-seconds 3600",
         "cargo xtask ripr-review-comments --base origin/main --head HEAD --pr-head 0123456789abcdef0123456789abcdef01234567 --check",
         "cargo xtask impacted-evidence --labels-csv ci",
         "cargo xtask impacted-evidence --labels-csv ci --check",
@@ -1758,7 +1754,7 @@ fn ripr_self_hosted_preflight_falls_back_when_required_image_is_missing() -> Res
         }
     }
     let (preflight_passed, preflight_passed_output) =
-        run_fallback_condition("cx53", "failure", "skipped", "true")?;
+        run_fallback_condition("selfhosted", "failure", "true")?;
     if !preflight_passed.status.success()
         || !preflight_passed_output.contains("fallback_started=false")
         || preflight_passed_output.contains("### ripr Disk-Full Failover")
@@ -1766,7 +1762,7 @@ fn ripr_self_hosted_preflight_falls_back_when_required_image_is_missing() -> Res
         bail!("a successful preflight must not start ripr-fallback:\n{preflight_passed_output}");
     }
     let (primary_succeeded, primary_succeeded_output) =
-        run_fallback_condition("cx53", "success", "skipped", "false")?;
+        run_fallback_condition("selfhosted", "success", "false")?;
     if !primary_succeeded.status.success()
         || !primary_succeeded_output.contains("fallback_started=false")
         || primary_succeeded_output.contains("### ripr Disk-Full Failover")
@@ -1784,7 +1780,7 @@ fn ripr_self_hosted_preflight_falls_back_when_required_image_is_missing() -> Res
     let (disk_guard_failure, disk_guard_output) = run_preflight_case(true, true)?;
     if disk_guard_failure.status.success()
         || !disk_guard_output.contains("preflight_ok=false")
-        || !disk_guard_output.contains("Self-hosted preflight failed on CX53")
+        || !disk_guard_output.contains("Self-hosted preflight failed after cleanup")
     {
         bail!(
             "a failing disk guard must fail preflight and record false for fallback routing:\n{disk_guard_output}"
@@ -2404,41 +2400,27 @@ fn ripr_gate_retrieval_reaches_classifier_and_failed_fetch_fails_closed() -> Res
         );
     }
 
-    for (route_name, route) in [
-        (
-            "cx53",
-            GateRoute {
-                router_target: "cx53",
-                cx53_result: "failure",
-                cx43_result: "skipped",
-                github_result: "skipped",
-                fallback_result: "skipped",
-            },
-        ),
-        (
-            "cx43",
-            GateRoute {
-                router_target: "cx43",
-                cx53_result: "skipped",
-                cx43_result: "failure",
-                github_result: "skipped",
-                fallback_result: "skipped",
-            },
-        ),
-    ] {
-        let expected_job_id = if route_name == "cx53" { "53001" } else { "43001" };
+    {
+        let route = GateRoute {
+            router_target: "selfhosted",
+            selfhosted_result: "failure",
+            github_result: "skipped",
+            fallback_result: "skipped",
+        };
+        let expected_job_id = "53001";
+        let expected_lane_name = "ripr+ on Self-Hosted (rust-standard)";
         let (self_hosted, output, artifact) =
             run_gate_with_fake_gh(Some(evicted_log), 0, 0, route)?;
-        let artifact = artifact.ok_or_else(|| anyhow!("{route_name} classification is missing"))?;
+        let artifact = artifact.ok_or_else(|| anyhow!("selfhosted classification is missing"))?;
         if self_hosted.status.success()
             || !output.contains("classification=infra-no-proof")
             || !output.contains("RIPR_GATE_VERDICT=infra-no-proof")
             || !output.contains("lookup=Some(\"1\")\nfetch=Some(\"1\")")
-            || !artifact.contains(&format!("lane_name=ripr+ on {}", route_name.to_uppercase()))
+            || !artifact.contains(&format!("lane_name={expected_lane_name}"))
             || !artifact.contains(&format!("lane_job_id={expected_job_id}"))
         {
             bail!(
-                "{route_name} runner failure must select its job, classify its downloaded log, and publish the retry artifact:\n{output}\n{artifact}"
+                "selfhosted runner failure must select its job, classify its downloaded log, and publish the retry artifact:\n{output}\n{artifact}"
             );
         }
     }
@@ -2457,16 +2439,15 @@ fn ripr_gate_retrieval_reaches_classifier_and_failed_fetch_fails_closed() -> Res
         );
     }
     let fallback_route = GateRoute {
-        router_target: "cx53",
-        cx53_result: "failure",
-        cx43_result: "skipped",
+        router_target: "selfhosted",
+        selfhosted_result: "failure",
         github_result: "skipped",
         fallback_result,
     };
     let (fallback, fallback_output, fallback_artifact) =
         run_gate_with_fake_gh(None, 0, 0, fallback_route)?;
     if !fallback.status.success()
-        || !fallback_output.contains("CX53 disk preflight failed")
+        || !fallback_output.contains("Self-hosted disk preflight failed")
         || !fallback_output.contains("lookup=None\nfetch=None")
         || fallback_artifact.is_some()
     {
@@ -2474,7 +2455,6 @@ fn ripr_gate_retrieval_reaches_classifier_and_failed_fetch_fails_closed() -> Res
             "successful disk-full fallback must skip primary-log retrieval that nothing would read (the verdict path only warns), emit the fallback warning, and take the fallback route without a retry artifact:\n{fallback_output}"
         );
     }
-
     let fallback_failure_execution = run_fallback_path(true)?;
     let fallback_failure_execution_output = &fallback_failure_execution.transcript;
     let fallback_failure_result = fallback_failure_execution.decision()?;
@@ -2488,9 +2468,8 @@ fn ripr_gate_retrieval_reaches_classifier_and_failed_fetch_fails_closed() -> Res
         );
     }
     let fallback_failure_route = GateRoute {
-        router_target: "cx53",
-        cx53_result: "failure",
-        cx43_result: "skipped",
+        router_target: "selfhosted",
+        selfhosted_result: "failure",
         github_result: "skipped",
         fallback_result: fallback_failure_result,
     };
@@ -2548,4 +2527,105 @@ fn ripr_draft_result_is_not_proof() -> Result<(), Box<dyn std::error::Error>> {
         "ripr",
         "RIPR_GATE_VERDICT=draft-no-proof",
     )
+}
+
+fn workflow_job_env_value(job_name: &str, env_key: &str) -> Result<String> {
+    let root = project_root()?;
+    let workflow = fs::read_to_string(root.join(".github/workflows/ripr.yml"))?;
+    let yaml: Value = serde_yaml_ng::from_str(&workflow)?;
+    let jobs = yaml
+        .get("jobs")
+        .and_then(Value::as_mapping)
+        .ok_or_else(|| anyhow!("ripr.yml has no jobs mapping"))?;
+    let job = jobs
+        .get(Value::String(job_name.into()))
+        .ok_or_else(|| anyhow!("ripr.yml has no {job_name} job"))?;
+    job.get("env")
+        .and_then(Value::as_mapping)
+        .and_then(|env| env.get(Value::String(env_key.into())))
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .ok_or_else(|| anyhow!("{job_name} env has no {env_key}"))
+}
+
+// #15498: ripr 0.10.0 tightened the built-in diff-index refusal from 1600
+// files (0.9.0) to 800. Every producer lane must therefore pin the
+// admission boundary explicitly and pair it with a container budget measured
+// to hold it (1600-file closures indexed inside 6g => <=3.75 MB/file, so
+// 2560 files needs ~9.6 GB inside a 14g container; the self-hosted lane's
+// larger envelope holds the 2560 pair with headroom).
+#[test]
+fn hosted_ripr_lanes_pin_the_diff_index_boundary_with_a_measured_budget() -> Result<()> {
+    let root = project_root()?;
+    let workflow = fs::read_to_string(root.join(".github/workflows/ripr.yml"))?;
+
+    let hosted_cap = workflow_job_env_value("ripr-fallback", "RIPR_MAX_DIFF_INDEX_FILES")?;
+    ensure!(
+        hosted_cap == "2560",
+        "ripr-fallback must pin RIPR_MAX_DIFF_INDEX_FILES=2560 explicitly; found {hosted_cap:?}.          Without the pin the lane inherits the CLI's built-in default, which ripr 0.10.0          silently tightened from 1600 to 800 (#15498)"
+    );
+    for lane in ["ripr-selfhosted"] {
+        let cap = workflow_job_env_value(lane, "RIPR_MAX_DIFF_INDEX_FILES")?;
+        ensure!(
+            cap == "2560",
+            "{lane} must pin RIPR_MAX_DIFF_INDEX_FILES=2560 explicitly; found {cap:?}.              Without the pin the capable lane inherits the CLI default (800), moving the              fail-closed boundary onto self-hosted as soon as a large closure routes there (#15498)"
+        );
+    }
+
+    let script = workflow_step(&workflow, "Generate PR evidence")
+        .ok_or_else(|| anyhow!("missing Generate PR evidence step"))?;
+    for expected in [
+        "-e RIPR_MAX_DIFF_INDEX_FILES=2560",
+        "--memory=14g",
+        "--memory-swap=14g",
+        "docker_memory=14g",
+    ] {
+        ensure!(
+            script.contains(expected),
+            "ripr-github's hosted producer must carry {expected:?}; the admission boundary and              the container budget are one measured pair (#15498)"
+        );
+    }
+    ensure!(
+        !script.contains("--memory=6g") && !script.contains("RIPR_MAX_DIFF_INDEX_FILES=1600"),
+        "stale 6g/1600 hosted budgets must not survive beside the measured 14g/2560 pair"
+    );
+
+    // #15082/#15028: the review-guidance pass on a new-crate diff no longer
+    // completes in 600s on the hosted lane, so the gate failed closed on an
+    // incomplete receipt while 64-67 mechanical seams went unadjudicated.
+    // Both hosted lanes must carry the raised bound; the self-hosted 210s
+    // lanes are intentionally untouched.
+    for lane in ["ripr-github", "ripr-fallback"] {
+        // Job-scoped on purpose: workflow_step would return the first
+        // matching step in the file, so both iterations would inspect
+        // ripr-github and ripr-fallback could silently miss the bound.
+        let guidance = workflow_run_block(lane, "Generate review guidance")?;
+        // Token-aware on purpose: a substring match would also accept a
+        // longer value, silently unenforcing the bound.
+        let bound = guidance
+            .split_whitespace()
+            .skip_while(|token| *token != "--timeout-seconds")
+            .nth(1)
+            .ok_or_else(|| {
+                anyhow!("{lane}'s review-guidance pass carries no --timeout-seconds value")
+            })?;
+        ensure!(
+            bound == "3600",
+            "{lane}'s review-guidance pass must carry --timeout-seconds 3600; found {bound:?}.              The 600s and 1800s bounds each failed closed on large-closure diffs (#15082, #15028, #14897)"
+        );
+    }
+    let count = workflow
+        .lines()
+        .filter(|line| {
+            line.split_whitespace()
+                .skip_while(|token| *token != "--timeout-seconds")
+                .nth(1)
+                .is_some_and(|value| value == "3600")
+        })
+        .count();
+    ensure!(
+        count == 2,
+        "exactly the two hosted lanes must carry the 3600s guidance bound; found {count}"
+    );
+    Ok(())
 }

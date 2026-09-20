@@ -231,7 +231,7 @@ proptest! {
             .map(|(i, r)| (r.qualified_name.clone(), EntityId(i as u64 + 100)))
             .collect();
 
-        let facts = symbol_refs_to_semantic_facts(&refs, file_id, &entity_map);
+        let facts = symbol_refs_to_semantic_facts(&refs, file_id, &entity_map, &BTreeMap::new());
         let known_anchors = anchor_id_set(&facts.anchors);
 
         for occurrence in &facts.occurrences {

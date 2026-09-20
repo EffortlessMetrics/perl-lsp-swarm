@@ -85,7 +85,7 @@ impl LspServer {
             // Compatibility: some lightweight clients send `initialize` and then
             // immediately issue requests without an explicit `initialized` notification.
             // Accept those requests once `initialize` has completed successfully.
-            _ if !self.initialize_requested.load(Ordering::Acquire)
+            _ if !self.initialization_accepted.load(Ordering::Acquire)
                 && method != "shutdown"
                 && method != "exit" =>
             {
@@ -496,7 +496,7 @@ mod tests {
         .enumerate()
         {
             let server = LspServer::new();
-            server.initialize_requested.store(true, Ordering::Release);
+            server.test_mark_initialize_session_accepted();
             let request_id = JsonRpcId::Integer(4100 + offset as i64);
             server.cancel_mark(&request_id);
 
@@ -540,7 +540,7 @@ mod tests {
     #[test]
     fn route_request_call_presence_observer() -> Result<(), Box<dyn std::error::Error>> {
         let server = LspServer::new();
-        server.initialize_requested.store(true, Ordering::Release);
+        server.test_mark_initialize_session_accepted();
         let uri = "file:///routing-type-hierarchy.pl";
         server
             .test_apply_did_open(
@@ -704,7 +704,7 @@ mod tests {
         Ok(())
     }
 
-    /// ripr seam `fe813eac7a1c99cf`: `!initialize_requested && method != "shutdown"`.
+    /// ripr seam `fe813eac7a1c99cf`: `!initialization_accepted && method != "shutdown"`.
     #[test]
     fn ripr_seam_proof_route_request_before_initialize_rejects_non_shutdown()
     -> Result<(), Box<dyn std::error::Error>> {
@@ -840,7 +840,7 @@ mod tests {
 
         for (offset, method) in methods.iter().enumerate() {
             let server = LspServer::new();
-            server.initialize_requested.store(true, Ordering::Release);
+            server.test_mark_initialize_session_accepted();
             let request_id = JsonRpcId::Integer(4600 + offset as i64);
             server.cancel_mark(&request_id);
 
@@ -899,7 +899,7 @@ mod tests {
             "client/unregisterCapability",
         ] {
             let server = LspServer::new();
-            server.initialize_requested.store(true, Ordering::Release);
+            server.test_mark_initialize_session_accepted();
 
             let routed = server.route_request(
                 JsonRpcRequest {
@@ -936,7 +936,7 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         for method in ["workspace/applyEdit", "$/progress", "window/showMessage"] {
             let server = LspServer::new();
-            server.initialize_requested.store(true, Ordering::Release);
+            server.test_mark_initialize_session_accepted();
             server
                 .test_apply_did_open("file:///direction-drop.pl", "my $kept = 1;\n", 1)
                 .map_err(|error| std::io::Error::other(format!("didOpen failed: {error:?}")))?;

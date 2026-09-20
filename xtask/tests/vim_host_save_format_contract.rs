@@ -1045,9 +1045,15 @@ fn hermetic_host_ci_triggers_on_the_production_formatter_crate() -> Result<()> {
     // end-to-end save proof (#12763 thread 3864145182).
     let workflow = fs::read_to_string(repo_root().join(".github/workflows/vim-hermetic-host.yml"))
         .context("reading .github/workflows/vim-hermetic-host.yml")?;
+    // The ratchet is coverage of the formatter crate, not one spelling of it.
+    // A blanket `crates/**` covers it strictly more broadly than the named
+    // entry; narrowing to any filter that reaches neither still fails here.
+    let covered =
+        workflow.contains("\"crates/perl-lsp-perltidy/**\"") || workflow.contains("\"crates/**\"");
     ensure!(
-        workflow.contains("\"crates/perl-lsp-perltidy/**\""),
-        "the hermetic host workflow path filter must include crates/perl-lsp-perltidy/**"
+        covered,
+        "the hermetic host workflow path filter must reach crates/perl-lsp-perltidy \
+         (via \"crates/perl-lsp-perltidy/**\" or a covering \"crates/**\")"
     );
     Ok(())
 }

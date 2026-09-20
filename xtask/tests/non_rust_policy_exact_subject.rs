@@ -386,9 +386,22 @@ fn pull_request_target_constructs_a_subject_from_exact_base_and_head() -> Result
         .output()
         .context("executing stale-head subject-binding block")?;
     ensure!(!stale.status.success(), "stale PR head must fail closed");
+    let stale_output = fs::read_to_string(&output_path)?;
+    let stale_subject =
+        stale_output.lines().find_map(|line| line.strip_prefix("subject_sha=")).unwrap_or("");
     ensure!(
-        fs::read_to_string(&output_path)?.is_empty(),
-        "stale PR head must not export a synthetic subject"
+        stale_subject.is_empty(),
+        "stale PR head must not export a synthetic subject; subject_sha was '{stale_subject}'"
+    );
+    ensure!(
+        stale_output.lines().any(|line| line.starts_with("bind_failure_stage=event-head-mismatch")),
+        "stale PR head must emit bind_failure_stage=event-head-mismatch; got: {stale_output}"
+    );
+    ensure!(
+        stale_output.lines().any(
+            |line| line.starts_with("artifact_id=bind-failure-event-head-mismatch-pr-42-head-")
+        ),
+        "stale PR head must emit a stable artifact_id; got: {stale_output}"
     );
 
     // The synthetic subject is reproducible across reruns, independent of
@@ -447,16 +460,18 @@ fn pull_request_target_constructs_a_subject_from_exact_base_and_head() -> Result
 #[test]
 fn pre_evaluation_receipts_preserve_stage_and_never_claim_inventory() -> Result<()> {
     let receipt_run = named_run_block("Write pre-evaluation failure receipt")?;
-    for (bind, guard_stage, expected) in [
-        ("failure", "evaluator-availability", "identity-binding"),
-        ("success", "evaluator-availability", "evaluator-availability"),
-        ("success", "trusted-workflow-contract", "trusted-workflow-contract"),
+    for (bind, bind_failure_stage, guard_stage, expected) in [
+        ("failure", "", "evaluator-availability", "identity-binding"),
+        ("success", "", "evaluator-availability", "evaluator-availability"),
+        ("success", "", "trusted-workflow-contract", "trusted-workflow-contract"),
+        ("failure", "subject-merge-conflict", "", "identity-binding-subject-merge-conflict"),
     ] {
         let fixture = tempfile::tempdir()?;
         let output = Command::new(bash_executable())
             .args(["--noprofile", "--norc", "-e", "-o", "pipefail", "-c", &receipt_run])
             .current_dir(fixture.path())
             .env("BIND_ERROR", bind)
+            .env("BIND_FAILURE_STAGE", bind_failure_stage)
             .env("GUARD_FAILURE_STAGE", guard_stage)
             .env("BASE_SHA", "base-fixture")
             .env("EVALUATOR_SHA", "evaluator-fixture")
@@ -487,6 +502,11 @@ fn pre_evaluation_receipts_preserve_stage_and_never_claim_inventory() -> Result<
                 field("error")?
                     .as_str()
                     .is_some_and(|error| error.contains("inventory was not evaluated"))
+            );
+        } else if !bind_failure_stage.is_empty() {
+            ensure!(
+                field("error")?.as_str().is_some_and(|error| error.contains(bind_failure_stage)),
+                "named bind failure must mention {bind_failure_stage} in error"
             );
         }
     }
@@ -527,6 +547,143 @@ fn pre_evaluation_receipts_preserve_stage_and_never_claim_inventory() -> Result<
         receipt_condition
             == "always() && (steps.bind.outcome == 'failure' || steps.verify-trusted-workflow-contract.outcome == 'failure')",
         "receipt must run for either pre-evaluation failure even after a failed step"
+    );
+    Ok(())
+}
+
+struct ConflictPrFixture {
+    _temp: TempDir,
+    trusted: PathBuf,
+    base_sha: String,
+    head_sha: String,
+}
+
+fn conflict_pr_fixture() -> Result<ConflictPrFixture> {
+    // Build a remote/PR-head pair whose exact merge of advanced base and PR
+    // head conflicts on the same line of the same file. The fixture must
+    // produce a real conflict in git merge-tree --write-tree (not just a
+    // textually-different file), so both sides modify the same line.
+    let temp = tempfile::tempdir()?;
+    let remote = temp.path().join("remote.git");
+    let seed = temp.path().join("seed");
+    let trusted = temp.path().join("trusted");
+    fs::create_dir_all(&seed)?;
+
+    run_ok(
+        "git",
+        &["init", "--bare", remote.to_str().ok_or_else(|| anyhow!("remote path"))?],
+        temp.path(),
+    )?;
+    run_ok("git", &["init"], &seed)?;
+    run_ok("git", &["config", "user.name", "test"], &seed)?;
+    run_ok("git", &["config", "user.email", "test@example.invalid"], &seed)?;
+    write(&seed.join("conflict.txt"), "line 1 base\nline 2 shared\n")?;
+    run_ok("git", &["add", "conflict.txt"], &seed)?;
+    run_ok("git", &["commit", "-m", "base"], &seed)?;
+    run_ok("git", &["branch", "-M", "main"], &seed)?;
+    run_ok(
+        "git",
+        &["remote", "add", "origin", remote.to_str().ok_or_else(|| anyhow!("remote path"))?],
+        &seed,
+    )?;
+    run_ok("git", &["push", "origin", "main"], &seed)?;
+
+    run_ok("git", &["switch", "-c", "candidate"], &seed)?;
+    write(&seed.join("conflict.txt"), "line 1 candidate\nline 2 shared\n")?;
+    run_ok("git", &["add", "conflict.txt"], &seed)?;
+    run_ok("git", &["commit", "-m", "candidate"], &seed)?;
+    let head_sha = git_output(&["rev-parse", "HEAD"], &seed)?;
+    run_ok("git", &["push", "origin", "candidate"], &seed)?;
+
+    // Advance the target branch so the PR's base is no longer the same as the
+    // candidate's fork point. Both sides now modify line 1 of conflict.txt
+    // differently, which forces git merge-tree --write-tree to leave unmerged
+    // entries in the index.
+    run_ok("git", &["switch", "main"], &seed)?;
+    write(&seed.join("conflict.txt"), "line 1 advanced base\nline 2 shared\n")?;
+    run_ok("git", &["add", "conflict.txt"], &seed)?;
+    run_ok("git", &["commit", "-m", "advance base"], &seed)?;
+    let base_sha = git_output(&["rev-parse", "HEAD"], &seed)?;
+    run_ok("git", &["push", "origin", "main"], &seed)?;
+
+    run_ok(
+        "git",
+        &[
+            "--git-dir",
+            remote.to_str().ok_or_else(|| anyhow!("remote path"))?,
+            "update-ref",
+            "refs/pull/77/head",
+            &head_sha,
+        ],
+        temp.path(),
+    )?;
+
+    run_ok(
+        "git",
+        &[
+            "clone",
+            remote.to_str().ok_or_else(|| anyhow!("remote path"))?,
+            trusted.to_str().ok_or_else(|| anyhow!("trusted path"))?,
+        ],
+        temp.path(),
+    )?;
+    run_ok("git", &["switch", "main"], &trusted)?;
+
+    Ok(ConflictPrFixture { _temp: temp, trusted, base_sha, head_sha })
+}
+
+#[test]
+fn pull_request_target_merging_with_real_conflict_emits_named_failure_stage() -> Result<()> {
+    // Regression for #15636: an exact-subject merge that git merge-tree
+    // --write-tree cannot resolve must fail closed with the named
+    // bind_failure_stage=subject-merge-conflict, must not export a synthetic
+    // subject, and must emit a stable artifact_id so the failed step's
+    // artifact keeps a non-empty identity.
+    let fixture = conflict_pr_fixture()?;
+    let output_path = fixture.trusted.join("github-output");
+    let env_path = fixture.trusted.join("github-env");
+    write(&output_path, "")?;
+    write(&env_path, "")?;
+    let run = bind_run_block()?;
+    let output = Command::new(bash_executable())
+        .args(["--noprofile", "--norc", "-e", "-o", "pipefail", "-c", &run])
+        .current_dir(&fixture.trusted)
+        .env("BASE_SHA", &fixture.base_sha)
+        .env("PR_HEAD_SHA", &fixture.head_sha)
+        .env("PR_NUMBER", "77")
+        .env("SUBJECT_SHA", "0000000000000000000000000000000000000000")
+        .env("GITHUB_OUTPUT", &output_path)
+        .env("GITHUB_ENV", &env_path)
+        .output()
+        .context("executing conflict subject-binding block")?;
+    ensure!(
+        !output.status.success(),
+        "real conflict must fail closed; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    ensure!(
+        stderr.contains("bind-subject-merge-conflict"),
+        "conflict must surface bind-subject-merge-conflict stage; stderr: {stderr}"
+    );
+    let output_value = fs::read_to_string(&output_path)?;
+    ensure!(
+        output_value.lines().any(|line| line == "bind_failure_stage=subject-merge-conflict"),
+        "conflict must emit bind_failure_stage=subject-merge-conflict; got: {output_value}"
+    );
+    let subject_value =
+        output_value.lines().find_map(|line| line.strip_prefix("subject_sha=")).unwrap_or("");
+    ensure!(
+        subject_value.is_empty(),
+        "conflict must not export a synthetic subject; subject_sha was '{subject_value}'"
+    );
+    ensure!(
+        output_value.lines().any(|line| {
+            line.starts_with("artifact_id=bind-failure-subject-merge-conflict-pr-77-head-")
+                && line.len() > "artifact_id=bind-failure-subject-merge-conflict-pr-77-head-".len()
+        }),
+        "conflict must emit a stable, non-empty artifact_id; got: {output_value}"
     );
     Ok(())
 }
