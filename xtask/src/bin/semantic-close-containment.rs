@@ -885,10 +885,9 @@ fn evaluate_relation(
         );
     }
 
-    let remaining = section_text(sections, &[SectionKind::RemainingWork]);
     if rules.enabled(RuleId::RemainingSameIssue)
-        && remaining_work_assigns_issue(
-            &remaining,
+        && remaining_work_assigns_section(
+            sections.get(&SectionKind::RemainingWork),
             &relation.key,
             &pull.repository,
             &relation.source_line,
@@ -1975,18 +1974,30 @@ const REMAINING_WORK_SCOPE_EXCLUSION_MARKERS: &[&str] =
 /// attribution unit references the closing issue, is not an explicit scope
 /// exclusion (see `unit_is_explicit_scope_exclusion`), and is not the closing
 /// relation's own declaration line (see `is_closing_relation_source_line`).
-/// Per-unit evaluation keeps every unmarked mention failing (fail-closed).
-fn remaining_work_assigns_issue(
-    text: &str,
+/// Heading and body units are evaluated separately: the heading is not
+/// remaining-work prose, and the section parser drops the leading blank line
+/// after the heading, so a fused heading+first-paragraph unit would break the
+/// marker's start-of-unit rule for unbulleted first entries. Per-unit
+/// evaluation keeps every unmarked mention failing (fail-closed).
+fn remaining_work_assigns_section(
+    section: Option<&Section>,
     key: &IssueKey,
     current_repository: &str,
     source_line: &str,
 ) -> bool {
-    attribution_units(text).into_iter().any(|unit| {
-        !unit_is_explicit_scope_exclusion(&unit)
-            && !is_closing_relation_source_line(&unit, source_line)
-            && references_issue(&unit, key, current_repository)
-    })
+    let Some(section) = section else {
+        return false;
+    };
+    section
+        .headings
+        .iter()
+        .map(String::as_str)
+        .chain(attribution_units(&section.body).iter().map(String::as_str))
+        .any(|unit| {
+            !unit_is_explicit_scope_exclusion(unit)
+                && !is_closing_relation_source_line(unit, source_line)
+                && references_issue(unit, key, current_repository)
+        })
 }
 
 /// True when a Remaining-work unit is the closing relation's own PURE
@@ -2045,8 +2056,10 @@ fn is_issue_reference_token(token: &str) -> bool {
     if let Some(number) = token.strip_prefix('#') {
         return !number.is_empty() && number.bytes().all(|byte| byte.is_ascii_digit());
     }
-    if let Some(rest) = token.strip_prefix(URL_PREFIX) {
-        let Some((_, number)) = rest.split_once("/issues/") else {
+    if token.len() >= URL_PREFIX.len() && token[..URL_PREFIX.len()].eq_ignore_ascii_case(URL_PREFIX)
+    {
+        let rest = &token[URL_PREFIX.len()..];
+        let Some((_, number)) = split_once_ignore_ascii_case(rest, "/issues/") else {
             return false;
         };
         return !number.is_empty() && number.bytes().all(|byte| byte.is_ascii_digit());
@@ -2060,6 +2073,22 @@ fn is_issue_reference_token(token: &str) -> bool {
         }
         None => false,
     }
+}
+
+/// Case-insensitive ASCII `split_once`, aligned with the closing-relation
+/// regex's `(?i)` matching. A slice index is only used on char boundaries, so
+/// non-ASCII input simply never matches the ASCII separator.
+fn split_once_ignore_ascii_case<'a>(value: &'a str, separator: &str) -> Option<(&'a str, &'a str)> {
+    for (index, _) in value.char_indices() {
+        let tail = &value[index..];
+        if tail.len() >= separator.len()
+            && tail.is_char_boundary(separator.len())
+            && tail[..separator.len()].eq_ignore_ascii_case(separator)
+        {
+            return Some((&value[..index], &tail[separator.len()..]));
+        }
+    }
+    None
 }
 
 /// True when a Remaining-work attribution unit is an explicit scope
@@ -2436,7 +2465,7 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
-    const FIXTURES: [(&str, &str); 27] = [
+    const FIXTURES: [(&str, &str); 28] = [
         (
             "valid-explicit-subject-inventory-14633",
             include_str!(concat!(
@@ -2571,6 +2600,13 @@ mod tests {
             )),
         ),
         (
+            "valid-remaining-work-scope-exclusion-unbulleted",
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../.ci/semantic-close-containment/fixtures/valid-remaining-work-scope-exclusion-unbulleted.json"
+            )),
+        ),
+        (
             "valid-controller-packet",
             include_str!(concat!(
                 env!("CARGO_MANIFEST_DIR"),
@@ -2658,9 +2694,20 @@ mod tests {
             "* **Out of scope:** inherited ledger debt keeps its current owner (#9000103).",
             "Explicitly out of scope: unchanged ledger lifecycle debt remains with existing owners; no widening of #9000103.",
         ];
+        let assigns = |body: &str| {
+            let sections =
+                parse_sections(body, MAX_PR_BODY_BYTES).expect("bounded test body parses");
+            remaining_work_assigns_section(
+                sections.get(&SectionKind::RemainingWork),
+                &key,
+                repository,
+                "",
+            )
+        };
         for marked in marked_units {
+            let body = format!("## Remaining work\n\n{marked}");
             assert!(
-                !remaining_work_assigns_issue(marked, &key, repository, ""),
+                !assigns(&body),
                 "an explicitly marked exclusion unit must not fail the Remaining-work rule: {marked}"
             );
         }
@@ -2683,9 +2730,20 @@ mod tests {
             "Debt is not in scope for this closure (#9000103).",
             "Out of scope: debt moves to #9000104.\n\nThe rest of #9000103 remains required.",
         ];
+        let assigns = |body: &str| {
+            let sections =
+                parse_sections(body, MAX_PR_BODY_BYTES).expect("bounded test body parses");
+            remaining_work_assigns_section(
+                sections.get(&SectionKind::RemainingWork),
+                &key,
+                repository,
+                "",
+            )
+        };
         for unmarked in unmarked_units {
+            let body = format!("## Remaining work\n\n{unmarked}");
             assert!(
-                remaining_work_assigns_issue(unmarked, &key, repository, ""),
+                assigns(&body),
                 "an unmarked or ambiguous mention must keep failing: {unmarked}"
             );
         }
@@ -2696,38 +2754,59 @@ mod tests {
         // The section parser attributes a trailing `Closes #N` paragraph to
         // the last recognized section, so the declaration can sit inside the
         // Remaining-work section. The declaration itself assigns no remaining
-        // work; the skip is exact (normalized source-line match), and any
-        // other unit that mentions the closing issue still fails.
+        // work; the skip is exact (normalized source-line match, pure
+        // keyword+reference shape), and any other unit that mentions the
+        // closing issue still fails.
         let key = IssueKey {
             repository: "effortlessmetrics/perl-lsp-swarm".to_string(),
             number: 9000103,
         };
         let repository = "effortlessmetrics/perl-lsp-swarm";
-        let section = "Remaining work\n\nCloses #9000103.";
-        assert!(
-            !remaining_work_assigns_issue(section, &key, repository, "Closes #9000103."),
-            "the closing declaration line alone must not fail the Remaining-work rule"
-        );
-        let keyword_variant = "Remaining work\n\nfixes #9000103.";
-        assert!(
-            remaining_work_assigns_issue(keyword_variant, &key, repository, "Closes #9000103."),
-            "only the parsed relation's own source line is skipped: any other line mentioning the issue still fails"
-        );
-        let extra_mention =
-            "Remaining work\nThe follow-up cohort reuses #9000103.\n\nCloses #9000103.";
-        assert!(
-            remaining_work_assigns_issue(extra_mention, &key, repository, "Closes #9000103."),
-            "a declaration line does not mask additional unmarked mentions"
-        );
-        let qualified = "Remaining work\n\nCloses #9000103 (partial - item 2 slice only).";
-        assert!(
-            remaining_work_assigns_issue(
-                qualified,
+        let assigns = |body: &str, source_line: &str| {
+            let sections =
+                parse_sections(body, MAX_PR_BODY_BYTES).expect("bounded test body parses");
+            remaining_work_assigns_section(
+                sections.get(&SectionKind::RemainingWork),
                 &key,
                 repository,
+                source_line,
+            )
+        };
+        assert!(
+            !assigns("## Remaining work\n\nCloses #9000103.", "Closes #9000103."),
+            "the closing declaration line alone must not fail the Remaining-work rule"
+        );
+        assert!(
+            !assigns(
+                "## Remaining work\n\nCloses HTTPS://GITHUB.COM/org/repo/issues/9000103.",
+                "Closes HTTPS://GITHUB.COM/org/repo/issues/9000103."
+            ),
+            "the pure-declaration shape matches the relation regex case-insensitively"
+        );
+        assert!(
+            assigns("## Remaining work\n\nfixes #9000103.", "Closes #9000103."),
+            "only the parsed relation's own source line is skipped: any other line mentioning the issue still fails"
+        );
+        assert!(
+            assigns(
+                "## Remaining work\n\nThe follow-up cohort reuses #9000103.\n\nCloses #9000103.",
+                "Closes #9000103."
+            ),
+            "a declaration line does not mask additional unmarked mentions"
+        );
+        assert!(
+            assigns(
+                "## Remaining work\n\nCloses #9000103 (partial - item 2 slice only).",
                 "Closes #9000103 (partial - item 2 slice only)."
             ),
             "a declaration qualified with additional prose stays subject to the rule"
+        );
+        assert!(
+            assigns(
+                "## Remaining work\n\nCloses #9000103 https://github.com/org/repo/pulls/9000103.",
+                "Closes #9000103 https://github.com/org/repo/pulls/9000103."
+            ),
+            "a non-issue GitHub URL is not a reference token: the line stays subject to the rule"
         );
     }
 
@@ -2759,6 +2838,62 @@ mod tests {
         let unmarked_report =
             evaluate_with_rules(&unmarked, |_| evidence.clone(), RuleGate::all_rules())?;
         assert_eq!(unmarked_report.aggregate_code, ResultCode::FailRemainingWorkSameIssue);
+        Ok(())
+    }
+
+    #[test]
+    fn remaining_work_unbulleted_first_entry_exclusion_passes_real_section_path() -> Result<()> {
+        // #16288 review round: parse_sections drops the leading blank line
+        // after the heading, so section_text fuses the heading with the first
+        // body paragraph. A documented UNBULLETED first-entry exclusion must
+        // still pass end-to-end; the same shape without the marker keeps
+        // failing.
+        let repository = "effortlessmetrics/perl-lsp-swarm";
+        let issue = IssueSubject {
+            number: 9000105,
+            title: "fix(runtime): complete the five-row mutation cohort".to_string(),
+            body: "## Acceptance\n\nAll five current mutation rows are proved.".to_string(),
+        };
+        let evidence = IssueEvidence::Available(issue);
+        let marked = PullRequestSubject {
+            repository: repository.to_string(),
+            number: 990010,
+            title: "fix(runtime): land one row while ledger debt keeps its owner".to_string(),
+            body: "## Claim Boundary\n\nOne bounded row is complete.\n\n## Remaining work\n\nOut of scope: unchanged ledger lifecycle debt remains with existing owners; no widening of #9000105.\n\nCloses #9000105.".to_string(),
+        };
+        let marked_report =
+            evaluate_with_rules(&marked, |_| evidence.clone(), RuleGate::all_rules())?;
+        assert_eq!(marked_report.aggregate_code, ResultCode::PassNoHighConfidenceContradiction);
+        let unmarked = PullRequestSubject {
+            body: "## Claim Boundary\n\nOne bounded row is complete.\n\n## Remaining work\n\nUnchanged ledger lifecycle debt remains with existing owners; no widening of #9000105.\n\nCloses #9000105.".to_string(),
+            ..marked
+        };
+        let unmarked_report =
+            evaluate_with_rules(&unmarked, |_| evidence.clone(), RuleGate::all_rules())?;
+        assert_eq!(unmarked_report.aggregate_code, ResultCode::FailRemainingWorkSameIssue);
+        Ok(())
+    }
+
+    #[test]
+    fn remaining_work_pure_declaration_accepts_uppercase_issue_url() -> Result<()> {
+        // #16288 review round: the closing-relation regex is (?i), so an
+        // uppercase GitHub issue URL parses as a pure declaration line; the
+        // declaration skip must recognize it too.
+        let repository = "effortlessmetrics/perl-lsp-swarm";
+        let issue = IssueSubject {
+            number: 9000106,
+            title: "fix(runtime): complete the five-row mutation cohort".to_string(),
+            body: "## Acceptance\n\nAll five current mutation rows are proved.".to_string(),
+        };
+        let evidence = IssueEvidence::Available(issue);
+        let pull = PullRequestSubject {
+            repository: repository.to_string(),
+            number: 990011,
+            title: "fix(runtime): land one row while ledger debt keeps its owner".to_string(),
+            body: "## Claim Boundary\n\nOne bounded row is complete.\n\n## Remaining work\n\nCloses HTTPS://GITHUB.COM/org/repo/issues/9000106".to_string(),
+        };
+        let report = evaluate_with_rules(&pull, |_| evidence.clone(), RuleGate::all_rules())?;
+        assert_eq!(report.aggregate_code, ResultCode::PassNoHighConfidenceContradiction);
         Ok(())
     }
 
