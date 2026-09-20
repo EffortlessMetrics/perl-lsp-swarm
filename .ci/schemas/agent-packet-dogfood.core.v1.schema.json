@@ -53,7 +53,7 @@
     "sha256_hex": {
       "type": "string",
       "pattern": "^[0-9a-f]{64}$",
-      "description": "Lowercase SHA-256 hex digest recomputed by the validator from canonical bytes; self-reported values are never trusted."
+      "description": "Lowercase SHA-256 hex representation. Record and packet digests are recomputed; tree and spec digests are caller-declared identities bound into the packet envelope, not independently authenticated."
     },
     "identity": {
       "type": "object",
@@ -67,7 +67,7 @@
         },
         "tree_sha": {
           "$ref": "#/$defs/sha256_hex",
-          "description": "Exact source tree the run was executed against."
+          "description": "Caller-declared source tree identity, bound into the packet envelope but not verified against a checkout."
         },
         "spec_ref": {
           "type": "string",
@@ -76,7 +76,7 @@
         },
         "spec_digest": {
           "$ref": "#/$defs/sha256_hex",
-          "description": "SHA-256 binding the packet to the governing spec revision."
+          "description": "Caller-declared governing spec digest, bound into the packet envelope but not recomputed from external spec content."
         }
       }
     },

@@ -6,7 +6,8 @@
 //! analysis-train, #11654 clippy packets, #11704 authority-transfer). This
 //! module owns only:
 //!
-//! - packet/tree/spec identity digests (always recomputed, never trusted);
+//! - recomputed packet/record integrity digests that bind caller-declared
+//!   tree/spec identities without authenticating external source content;
 //! - agent/model/tool/permission subject metadata with a mandatory
 //!   permission scope ceiling;
 //! - bounded observable event/result records with contiguous sequences;
@@ -1263,7 +1264,6 @@ pub(crate) fn validate_manifest(doc: &Value) -> Vec<Violation> {
 
 #[derive(Default)]
 struct RawManifestScan {
-    duplicate_credential_key: bool,
     credential_hygiene: bool,
     local_path_hygiene: bool,
 }
@@ -1347,15 +1347,14 @@ impl<'de, 'a> Visitor<'de> for ScanVisitor<'a> {
     where
         A: MapAccess<'de>,
     {
-        let mut keys = Vec::<String>::new();
+        let mut keys = std::collections::BTreeSet::<String>::new();
         while let Some(key) = map.next_key::<String>()? {
+            if !keys.insert(key.clone()) {
+                return Err(serde::de::Error::custom("duplicate JSON member name"));
+            }
             if is_credential_key(&key) {
                 self.0.credential_hygiene = true;
             }
-            if keys.iter().any(|seen| seen == &key) && is_credential_key(&key) {
-                self.0.duplicate_credential_key = true;
-            }
-            keys.push(key);
             map.next_value_seed(ScanSeed(self.0))?;
         }
         Ok(())
@@ -1368,10 +1367,6 @@ fn scan_raw_manifest(text: &str) -> serde_json::Result<RawManifestScan> {
     ScanSeed(&mut scan).deserialize(&mut deserializer)?;
     deserializer.end()?;
     Ok(scan)
-}
-
-fn has_duplicate_credential_key(text: &str) -> serde_json::Result<bool> {
-    Ok(scan_raw_manifest(text)?.duplicate_credential_key)
 }
 
 fn string_of(root: &Map<String, Value>, key: &str) -> String {
@@ -1761,9 +1756,9 @@ fn load_entries(manifests: &[PathBuf]) -> Result<Vec<LoadedManifest>> {
 
 fn run_stamp(path: &Path) -> Result<()> {
     let text = fs::read_to_string(path).context("failed to read caller-supplied manifest")?;
+    let raw_scan = scan_raw_manifest(&text).context("failed to parse caller-supplied manifest")?;
     let mut doc: Value =
         serde_json::from_str(&text).context("failed to parse caller-supplied manifest")?;
-    let raw_scan = scan_raw_manifest(&text).context("failed to parse caller-supplied manifest")?;
     if raw_scan.credential_hygiene || raw_scan.local_path_hygiene {
         let mut codes = Vec::new();
         if raw_scan.credential_hygiene {

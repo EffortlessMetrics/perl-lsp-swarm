@@ -412,3 +412,30 @@ fn stamp_cli_does_not_echo_caller_controlled_manifest_paths() -> Result<()> {
     assert!(!stderr.contains(&readonly_text), "stamp write error echoed manifest path: {stderr}");
     Ok(())
 }
+
+#[test]
+fn cli_rejects_duplicate_member_names_before_decoding() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let mut document = fixture_document()?;
+    document.as_object_mut().ok_or_else(|| eyre!("fixture must be an object"))?.remove("metadata");
+    let encoded = serde_json::to_string(&document)?;
+    let prefix = encoded.strip_suffix('}').ok_or_else(|| eyre!("fixture object must close"))?;
+    let text = format!(r#"{prefix},"metadata":{{"label":1,"label":2}}}}"#);
+    let path = temp.path().join("duplicate-members.json");
+    fs::write(&path, &text)?;
+
+    for command in ["validate", "report", "stamp"] {
+        let output = Command::cargo_bin("xtask")?
+            .args(["agent-dogfood", command, "--manifest"])
+            .arg(&path)
+            .output()?;
+        let stderr = String::from_utf8(output.stderr)?;
+        if output.status.success() || !stderr.contains("duplicate JSON member name") {
+            return Err(eyre!("{command} must reject duplicate member names before decoding"));
+        }
+        if fs::read_to_string(&path)? != text {
+            return Err(eyre!("{command} must preserve a rejected manifest"));
+        }
+    }
+    Ok(())
+}

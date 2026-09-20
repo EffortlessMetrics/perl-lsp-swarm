@@ -482,22 +482,29 @@ fn negative_posix_detector_rejects_labeled_absolute_paths() {
 }
 
 #[test]
-fn duplicate_credential_keys_are_checked_before_json_object_collapse() {
-    let text = r#"{"metadata":{"api\u005fkey":"hunter2","api_key":"redacted"}}"#;
-    assert!(has_duplicate_credential_key(text).expect("duplicate-key scan succeeds"));
+fn duplicate_member_names_are_rejected_before_json_object_collapse() -> Result<()> {
+    for text in [
+        r#"{"label":1,"label":2}"#,
+        r#"{"outer":{"label":1,"label":2}}"#,
+        r#"[{"label":1,"label":2}]"#,
+        r#"{"la\u0062el":1,"label":2}"#,
+    ] {
+        let error = scan_raw_manifest(text)
+            .err()
+            .ok_or_else(|| color_eyre::eyre::eyre!("duplicate member names must be rejected"))?;
+        let detail = error.to_string();
+        if !detail.contains("duplicate JSON member name") || detail.contains("label") {
+            bail!("duplicate-member diagnostic must be generic");
+        }
+    }
+    Ok(())
+}
 
-    let doc: Value = serde_json::from_str(text).expect("duplicate-key JSON parses");
-    assert_eq!(doc["metadata"]["api_key"], json!("redacted"));
-    let raw_scan = scan_raw_manifest(text).expect("raw manifest scan succeeds");
-    let manifest = LoadedManifest { source: "duplicate.json".to_string(), doc, raw_scan };
-    assert_contains(&validate_loaded_manifest(&manifest), "credential_in_payload");
-
-    let text = r#"{"metadata":{"note":"api_key=hunter2","note":"safe"}}"#;
-    let raw_scan = scan_raw_manifest(text).expect("raw manifest scan succeeds");
-    assert!(raw_scan.credential_hygiene);
-    let doc: Value = serde_json::from_str(text).expect("duplicate-key JSON parses");
-    let manifest = LoadedManifest { source: "duplicate-value.json".to_string(), doc, raw_scan };
-    assert_contains(&validate_loaded_manifest(&manifest), "credential_in_payload");
+#[test]
+fn repeated_member_names_in_distinct_objects_remain_valid() -> Result<()> {
+    scan_raw_manifest(r#"{"left":{"label":1},"right":{"label":2}}"#)?;
+    scan_raw_manifest(r#"[{"label":1},{"label":2}]"#)?;
+    Ok(())
 }
 
 #[test]
