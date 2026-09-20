@@ -561,7 +561,7 @@ impl LspServer {
                     params.push(format!(":{}", name));
                 }
             }
-            NodeKind::OptionalParameter { variable, default_value } => {
+            NodeKind::OptionalParameter { variable, default_value, .. } => {
                 if let Some(name) = Self::format_param_variable(variable) {
                     params.push(format!(
                         "{} = {}",
