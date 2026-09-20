@@ -281,6 +281,21 @@ fn suppression_lifecycle_audit(
             }));
         }
 
+        // Read before the `expires` branch below, whose `continue` would
+        // otherwise skip it: an entry with no readable end date can still be
+        // long past its own review date, and dropping that date here is the
+        // same silence the block above refuses.
+        if let Some(review_after) = parse_ledger_date(&row.review_after)
+            && review_after <= today
+        {
+            review_due.push(json!({
+                "id": row.id,
+                "owner": row.owner,
+                "review_after": row.review_after,
+                "days_past_review": (today - review_after).num_days(),
+            }));
+        }
+
         let Some(expires) = parse_ledger_date(&row.expires) else {
             // No readable end date at all: a permanent exception living in a
             // ledger whose header says every entry carries one.
@@ -312,17 +327,6 @@ fn suppression_lifecycle_audit(
             }));
         } else {
             current += 1;
-        }
-
-        if let Some(review_after) = parse_ledger_date(&row.review_after)
-            && review_after <= today
-        {
-            review_due.push(json!({
-                "id": row.id,
-                "owner": row.owner,
-                "review_after": row.review_after,
-                "days_past_review": (today - review_after).num_days(),
-            }));
         }
     }
 
@@ -7743,12 +7747,10 @@ reason = "UX receipt tests are proof inputs."
         })
     }
 
-    fn audit_on(rows: &[RiprSuppressionLifecycle], today: &str) -> Value {
-        suppression_lifecycle_audit(
-            rows,
-            parse_ledger_date(today).expect("test date"),
-            "policy/ripr-suppressions.toml",
-        )
+    fn audit_on(rows: &[RiprSuppressionLifecycle], today: &str) -> Result<Value> {
+        let today = parse_ledger_date(today)
+            .ok_or_else(|| eyre!("test fixture date `{today}` is not `%Y-%m-%d`"))?;
+        Ok(suppression_lifecycle_audit(rows, today, "policy/ripr-suppressions.toml"))
     }
 
     /// The defect this work exists to fix: the four lifecycle fields the ledger
@@ -7843,14 +7845,14 @@ expires = "2026-09-30"
     }
 
     #[test]
-    fn suppression_audit_reports_overrun_in_days_against_the_supplied_date() {
+    fn suppression_audit_reports_overrun_in_days_against_the_supplied_date() -> Result<()> {
         let rows = vec![
             lifecycle_row("expired-long", "repo-owner", "2026-05-07", "2026-06-07", "2026-08-07"),
             lifecycle_row("expired-today", "proof-lane", "2026-05-07", "2026-06-07", "2026-09-19"),
             lifecycle_row("current", "proof-lane", "2026-05-07", "2026-06-07", "2026-12-31"),
         ];
 
-        let audit = audit_on(&rows, "2026-09-20");
+        let audit = audit_on(&rows, "2026-09-20")?;
 
         assert_eq!(audit["expired_count"], json!(2));
         assert_eq!(audit["oldest_overrun_days"], json!(44));
@@ -7858,73 +7860,103 @@ expires = "2026-09-30"
         assert_eq!(audit["expired"][0]["id"], json!("expired-long"));
         assert_eq!(audit["expired"][0]["days_past_expiry"], json!(44));
         assert_eq!(audit["expired"][1]["days_past_expiry"], json!(1));
+        Ok(())
     }
 
     /// An entry expiring exactly today has not yet lapsed; one that expired
     /// yesterday has. Pins the boundary so the report cannot drift by a day.
     #[test]
-    fn suppression_audit_treats_the_expiry_date_itself_as_still_current() {
+    fn suppression_audit_treats_the_expiry_date_itself_as_still_current() -> Result<()> {
         let rows =
             vec![lifecycle_row("edge", "proof-lane", "2026-01-01", "2026-06-01", "2026-09-20")];
 
-        let on_the_day = audit_on(&rows, "2026-09-20");
+        let on_the_day = audit_on(&rows, "2026-09-20")?;
         assert_eq!(on_the_day["expired_count"], json!(0));
         assert_eq!(on_the_day["expiring_soon_count"], json!(1));
         assert_eq!(on_the_day["expiring_soon"][0]["days_until_expiry"], json!(0));
 
-        let day_after = audit_on(&rows, "2026-09-21");
+        let day_after = audit_on(&rows, "2026-09-21")?;
         assert_eq!(day_after["expired_count"], json!(1));
         assert_eq!(day_after["expired"][0]["days_past_expiry"], json!(1));
+        Ok(())
     }
 
     /// A missing `owner` must not swallow a readable end date. Folding
     /// completeness and expiry into one bucket would hide exactly the overrun
     /// this audit exists to surface.
     #[test]
-    fn suppression_audit_reports_an_incomplete_entry_that_is_also_expired() {
+    fn suppression_audit_reports_an_incomplete_entry_that_is_also_expired() -> Result<()> {
         let rows = vec![lifecycle_row("no-owner", "", "2026-05-07", "2026-06-07", "2026-08-07")];
 
-        let audit = audit_on(&rows, "2026-09-20");
+        let audit = audit_on(&rows, "2026-09-20")?;
 
         assert_eq!(audit["unenforceable_count"], json!(1));
         assert_eq!(audit["unenforceable"][0]["missing"], json!(["owner"]));
         assert_eq!(audit["expired_count"], json!(1), "an incomplete entry still has an end date");
         assert_eq!(audit["expired"][0]["days_past_expiry"], json!(44));
+        Ok(())
     }
 
     /// An entry with no `expires` at all is permanent. It is neither expired
     /// nor current, and reporting it as current would be the ledger's original
     /// lie restated.
     #[test]
-    fn suppression_audit_separates_entries_with_no_expiry_from_current_ones() {
+    fn suppression_audit_separates_entries_with_no_expiry_from_current_ones() -> Result<()> {
         let rows = vec![
             lifecycle_row("permanent", "proof-lane", "", "", ""),
             lifecycle_row("malformed", "proof-lane", "2026-05-07", "2026-06-07", "not-a-date"),
             lifecycle_row("current", "proof-lane", "2026-05-07", "2026-06-07", "2026-12-31"),
         ];
 
-        let audit = audit_on(&rows, "2026-09-20");
+        let audit = audit_on(&rows, "2026-09-20")?;
 
         assert_eq!(audit["no_expiry_count"], json!(2));
         assert_eq!(audit["current_count"], json!(1));
         assert_eq!(audit["expired_count"], json!(0));
         assert_eq!(audit["unenforceable"][1]["malformed"], json!(["expires"]));
+        assert_eq!(
+            audit["review_due_count"],
+            json!(2),
+            "an unreadable `expires` must not also swallow the entry's review date"
+        );
+        Ok(())
+    }
+
+    /// The two dates are independent facts. An entry with no readable `expires`
+    /// can still be long past its own `review_after`, and reporting only the
+    /// missing end date would hide that — the defect a `continue` in the
+    /// expiry branch introduced once already.
+    #[test]
+    fn an_entry_with_no_expiry_still_reports_its_overdue_review_date() -> Result<()> {
+        let rows = vec![
+            lifecycle_row("no-end-date", "proof-lane", "2020-01-01", "2020-01-01", ""),
+            lifecycle_row("unparseable", "proof-lane", "2020-01-01", "2020-01-01", "someday"),
+        ];
+
+        let audit = audit_on(&rows, "2026-09-20")?;
+
+        assert_eq!(audit["no_expiry_count"], json!(2));
+        assert_eq!(audit["review_due_count"], json!(2));
+        assert_eq!(audit["review_due"][0]["id"], json!("no-end-date"));
+        assert_eq!(audit["review_due"][0]["days_past_review"], json!(2454));
+        Ok(())
     }
 
     #[test]
-    fn suppression_audit_reports_review_due_separately_from_expiry() {
+    fn suppression_audit_reports_review_due_separately_from_expiry() -> Result<()> {
         let rows =
             vec![lifecycle_row("due", "proof-lane", "2026-05-07", "2026-09-13", "2026-12-31")];
 
-        let audit = audit_on(&rows, "2026-09-20");
+        let audit = audit_on(&rows, "2026-09-20")?;
 
         assert_eq!(audit["expired_count"], json!(0));
         assert_eq!(audit["review_due_count"], json!(1));
         assert_eq!(audit["review_due"][0]["days_past_review"], json!(7));
+        Ok(())
     }
 
     #[test]
-    fn suppression_audit_markdown_names_the_expired_entry_and_its_age() {
+    fn suppression_audit_markdown_names_the_expired_entry_and_its_age() -> Result<()> {
         let rows = vec![lifecycle_row(
             "ripr-suppress-generated-status-docs",
             "repo-owner",
@@ -7933,7 +7965,7 @@ expires = "2026-09-30"
             "2026-08-07",
         )];
 
-        let markdown = render_suppression_lifecycle_markdown(&audit_on(&rows, "2026-09-20"));
+        let markdown = render_suppression_lifecycle_markdown(&audit_on(&rows, "2026-09-20")?);
 
         assert!(markdown.contains("1 suppression(s) are past their own `expires` date"));
         assert!(markdown.contains("the oldest by 44 days"));
@@ -7943,17 +7975,19 @@ expires = "2026-09-30"
             markdown.contains("advisory"),
             "the report must say plainly that it changes no gate verdict"
         );
+        Ok(())
     }
 
     #[test]
-    fn suppression_audit_markdown_says_so_when_nothing_has_lapsed() {
+    fn suppression_audit_markdown_says_so_when_nothing_has_lapsed() -> Result<()> {
         let rows =
             vec![lifecycle_row("current", "proof-lane", "2026-05-07", "2026-12-01", "2026-12-31")];
 
-        let markdown = render_suppression_lifecycle_markdown(&audit_on(&rows, "2026-09-20"));
+        let markdown = render_suppression_lifecycle_markdown(&audit_on(&rows, "2026-09-20")?);
 
         assert!(markdown.contains("No suppression is past its own `expires` date."));
         assert!(!markdown.contains("| days past |"));
+        Ok(())
     }
 
     /// The live ledger is the subject of the change. This pins that the real
