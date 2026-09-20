@@ -110,6 +110,81 @@ class ClassificationTests(unittest.TestCase):
         self.assertEqual(classifications[200], liveness.INFRA_NO_PROOF)
         self.assertEqual(classifications[100], liveness.INFRA_NO_PROOF)
 
+    def test_a_predecessor_past_the_one_page_boundary_is_still_found(self) -> None:
+        """Per #16153: a predecessor that fell off page one before #16153
+        landed would be invisible to the classifier; with the multi-page
+        snapshot, ``predecessor_for`` must still scan past the historical
+        100-run boundary and report ``serialised_behind_predecessor``.
+
+        The fixture places a same-group in-progress predecessor after 149
+        unrelated completed runs on other pull requests. Without
+        pagination the predecessor would not appear in this snapshot at
+        all, so this test discriminates the fix from a no-op.
+        """
+        filler = [
+            run(
+                run_id=300 + idx,
+                status="completed",
+                created_at="2026-09-20T03:30:00Z",
+                job_count=4,
+                pulls=[16100 + (idx % 25)],
+            )
+            for idx in range(149)
+        ]
+        report = liveness.classify_snapshot(
+            snapshot(
+                run(200, created_at="2026-09-20T04:00:00Z", pulls=[16083]),
+                *filler,
+                run(
+                    100,
+                    status="in_progress",
+                    created_at="2026-09-20T03:30:00Z",
+                    job_count=4,
+                    pulls=[16083],
+                ),
+            )
+        )
+        findings = report["findings"]
+        self.assertEqual(len(findings), 1)
+        finding = findings[0]
+        self.assertEqual(finding["run_id"], 200)
+        self.assertEqual(finding["classification"], liveness.SERIALISED,
+                         "predecessor at position 150+ in the snapshot must "
+                         "still serialise the queued candidate")
+        self.assertEqual(finding["conclusion"], "neutral")
+        self.assertEqual(finding["predecessor_run_id"], 100)
+
+    def test_no_predecessor_anywhere_remains_infra_no_proof(self) -> None:
+        """Control for #16153: a candidate with no predecessor in the
+        multi-page snapshot must still classify ``infra-no-proof``. The fix
+        cannot simply suppress the alarm.
+        """
+        filler = [
+            run(
+                run_id=400 + idx,
+                status="completed",
+                created_at="2026-09-20T03:30:00Z",
+                job_count=4,
+                pulls=[16100 + (idx % 25)],
+            )
+            for idx in range(149)
+        ]
+        report = liveness.classify_snapshot(
+            snapshot(
+                run(200, created_at="2026-09-20T04:00:00Z", pulls=[16083]),
+                *filler,
+            )
+        )
+        findings = report["findings"]
+        self.assertEqual(len(findings), 1)
+        finding = findings[0]
+        self.assertEqual(finding["classification"], liveness.INFRA_NO_PROOF,
+                         "without a same-group predecessor the candidate "
+                         "must still alarm, otherwise the fix is just "
+                         "suppressing the warning")
+        self.assertEqual(finding["conclusion"], "failure")
+        self.assertIsNone(finding["predecessor_run_id"])
+
     def test_an_in_progress_run_on_another_pull_request_explains_nothing(self) -> None:
         """`concurrency: ripr-<pr>` scopes the group; another PR does not contend."""
         report = liveness.classify_snapshot(
