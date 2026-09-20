@@ -1716,8 +1716,12 @@ jobs:
     # cancelled inside the emacs docs contract step at the 15m ceiling with
     # the compile step itself green (jobs 98281594104, 98291003739,
     # 98300685210); 25m restores measured headroom for the contracts.
+    # 2026-09-19: job 105961871648 (#15953 head 474b2b5d4d) cancelled inside
+    # the Dead-code API ledger contract step at the 25m ceiling with the
+    # compile step itself green in 13m15s; 35m restores measured headroom
+    # for the grown contract tail.
     # Same shape as #5425: raise the knob when runners/base outgrow it.
-    timeout-minutes: 25
+    timeout-minutes: 35
     needs: [draft-pr-check, preflight-latest-check]
     if: needs.draft-pr-check.outputs.run_ci == 'true' && needs.preflight-latest-check.outputs.is_latest == 'true'
     steps:
