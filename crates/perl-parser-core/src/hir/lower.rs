@@ -167,7 +167,7 @@ impl Lowerer {
                 // `Class` arm registered its span so this frame can be the
                 // class frame that owns field visibility (#13817).
                 let scope_kind =
-                    if self.class_body_spans.contains(&(node.location.start, node.location.end)) {
+                    if self.class_body_spans.contains(&(node.location.start(), node.location.end())) {
                         ScopeKind::Class
                     } else {
                         ScopeKind::Block
@@ -1072,14 +1072,14 @@ impl Lowerer {
                         _ => None,
                     };
                     if declarator == Some("field") {
-                        direct_field_decls.push((statement.location.start, statement.location.end));
+                        direct_field_decls.push((statement.location.start(), statement.location.end()));
                     }
                 });
                 self.class_field_decls.extend(direct_field_decls);
                 // The block arm turns this span into a `ScopeKind::Class`
                 // frame, which is where the field bindings above will land and
                 // what decides who can see them.
-                self.class_body_spans.insert((body.location.start, body.location.end));
+                self.class_body_spans.insert((body.location.start(), body.location.end()));
                 self.visit_children(node, confidence);
             }
             NodeKind::Defer { .. } => {
@@ -1115,7 +1115,7 @@ impl Lowerer {
                     Some(self.current_scope()),
                 );
                 let is_class_field_decl =
-                    self.class_field_decls.contains(&(node.location.start, node.location.end));
+                    self.class_field_decls.contains(&(node.location.start(), node.location.end()));
                 // A legacy `field` call declares nothing and records no stash
                 // effects — body lowering owns the argument's resolved
                 // read/write effects instead. A *class-body* `field`
@@ -1169,7 +1169,7 @@ impl Lowerer {
                     declarator,
                     &bindings,
                     item_id,
-                    self.class_field_decls.contains(&(node.location.start, node.location.end)),
+                    self.class_field_decls.contains(&(node.location.start(), node.location.end())),
                 );
                 self.visit_declaration_list_entries(variables, confidence);
                 if let Some(initializer) = initializer {
@@ -1642,7 +1642,7 @@ impl Lowerer {
         scope_id: HirScopeId,
         declaration_item: Option<HirId>,
     ) -> HirBindingId {
-        let shadows = self.resolve_visible_binding(scope_id, &sigil, &name, Some(range.start));
+        let shadows = self.resolve_visible_binding(scope_id, &sigil, &name, Some(range.start()));
         let id = HirBindingId::from_index(to_u32_saturating(self.scope_graph.bindings.len()));
         self.scope_graph.bindings.push(Binding {
             id,
@@ -1661,7 +1661,7 @@ impl Lowerer {
     fn record_reference(&mut self, sigil: &str, name: &str, range: SourceLocation) {
         let scope_id = self.current_scope();
         let resolved_binding =
-            self.resolve_visible_binding(scope_id, sigil, name, Some(range.start));
+            self.resolve_visible_binding(scope_id, sigil, name, Some(range.start()));
         self.scope_graph.references.push(BindingReference {
             scope_id,
             sigil: sigil.to_string(),
@@ -2976,7 +2976,7 @@ fn class_field_is_visible(
         return false;
     }
     match reference_start {
-        Some(start) => start >= binding.range.start,
+        Some(start) => start >= binding.range.start(),
         None => true,
     }
 }
@@ -4970,7 +4970,7 @@ impl<'a> BodyBuilder2<'a> {
                     "our" => VariableKind::Package,
                     "field" => Self::kind_for(
                         &var_name,
-                        self.resolve_visible_binding(sigil_str, &var_name, variable.location.start),
+                        self.resolve_visible_binding(sigil_str, &var_name, variable.location.start()),
                     ),
                     _ => VariableKind::Lexical,
                 };
@@ -5009,7 +5009,7 @@ impl<'a> BodyBuilder2<'a> {
             // A legacy call's argument reads the *visible* binding rather than
             // declaring one, so it resolves by visibility (#14166).
             let resolved =
-                self.resolve_visible_binding(sigil_str, &var_name, binding_node.location.start);
+                self.resolve_visible_binding(sigil_str, &var_name, binding_node.location.start());
             let argument = HirExpr::Variable(HirVariable {
                 sigil: sigil_from_str(sigil_str),
                 name: var_name.clone(),
@@ -5105,7 +5105,7 @@ impl<'a> BodyBuilder2<'a> {
             NodeKind::ExpressionStatement { expression } => self.lower_expr(expression),
 
             NodeKind::Variable { sigil, name } => {
-                let resolved = self.resolve_visible_binding(sigil, name, range.start);
+                let resolved = self.resolve_visible_binding(sigil, name, range.start());
                 let var = HirVariable {
                     sigil: sigil_from_str(sigil),
                     name: name.clone(),
@@ -5823,7 +5823,7 @@ impl<'a> BodyBuilder2<'a> {
         let range = node.location;
         match &node.kind {
             NodeKind::Variable { sigil, name } => {
-                let resolved = self.resolve_visible_binding(sigil, name, range.start);
+                let resolved = self.resolve_visible_binding(sigil, name, range.start());
                 let var = HirVariable {
                     sigil: sigil_from_str(sigil),
                     name: name.clone(),
@@ -5942,7 +5942,7 @@ impl<'a> BodyBuilder2<'a> {
 
         let previous_scope = self.start_scope;
         self.start_scope = find_body_scope(self.scope_graph, handler.location);
-        let resolved = self.resolve_visible_binding(sigil, name, range.start);
+        let resolved = self.resolve_visible_binding(sigil, name, range.start());
         let kind = Self::kind_for(name, resolved);
         let binding = resolved.map(|found| found.id);
         self.start_scope = previous_scope;
