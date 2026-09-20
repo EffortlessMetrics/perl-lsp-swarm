@@ -620,12 +620,27 @@ mod tests {
 
         server.handle_did_change(Some(ranged_violation(uri, 2)))?;
 
-        let result = server.handle_streaming_inline_completion(Some(json!({
-            "textDocument": { "uri": uri, "version": 2 },
-            "position": { "line": 0, "character": 12 },
-            "partialResultToken": "stream-desync",
-            "context": { "triggerKind": 1 }
-        })))?;
+        // Mint a real ingress ticket rather than passing `None`. Without one the
+        // handler returns null at its admission guard, which is *after* the
+        // desync gate under test -- the backend would stay uncalled even if that
+        // gate regressed, and every assertion below would pass vacuously.
+        let counter = std::sync::atomic::AtomicU64::new(0);
+        let admission = server
+            .stream_sessions()
+            .reserve_read(&counter, Some(uri))
+            .map_err(|error| format!("stream admission reservation failed: {error:?}"))?
+            .1;
+        assert!(admission.is_some(), "a URI-scoped reservation must yield an admission ticket");
+
+        let result = server.handle_streaming_inline_completion(
+            Some(json!({
+                "textDocument": { "uri": uri, "version": 2 },
+                "position": { "line": 0, "character": 12 },
+                "partialResultToken": "stream-desync",
+                "context": { "triggerKind": 1 }
+            })),
+            admission,
+        )?;
         assert_eq!(
             result,
             Some(json!(null)),

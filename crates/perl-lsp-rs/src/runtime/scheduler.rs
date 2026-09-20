@@ -2203,8 +2203,6 @@ mod tests {
             read_tx,
             workers: Vec::new(),
             mutation_seq_next: Arc::new(AtomicU64::new(0)),
-            mutation_seq_done: Arc::new(AtomicU64::new(0)),
-            mutation_notify: Arc::new(Notify::new()),
             server: Arc::clone(&server),
         };
         let id = JsonRpcId::Integer(891);
