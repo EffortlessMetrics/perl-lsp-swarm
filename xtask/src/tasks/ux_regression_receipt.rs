@@ -258,6 +258,28 @@ fn classify_with_exit_status(
     }
 }
 
+/// One failing test's cargo stdout block, with its `---- <name> stdout ----`
+/// header: the only text in the log that describes *why* that test failed.
+fn failure_block_spans(raw: &str) -> Vec<(String, &str)> {
+    // (test name, where its body starts, where the header starts)
+    let mut headers: Vec<(String, usize, usize)> = Vec::new();
+    for capture in FAILURE_BLOCK_RE.captures_iter(raw) {
+        let (Some(header), Some(name)) = (capture.get(0), capture.get(1)) else {
+            continue;
+        };
+        headers.push((name.as_str().to_string(), header.end(), header.start()));
+    }
+    let mut spans: Vec<(String, &str)> = Vec::new();
+    for (index, (name, _, header_start)) in headers.iter().enumerate() {
+        let body_end = headers
+            .get(index + 1)
+            .map_or(raw.len(), |(_, _, next_header_start)| *next_header_start);
+        let block = raw.get(*header_start..body_end).unwrap_or_default();
+        spans.push((name.clone(), block));
+    }
+    spans
+}
+
 /// Split cargo's trailing failure report into one block per failing test and
 /// classify each from its own evidence.
 ///
@@ -274,20 +296,11 @@ fn discriminate_failing_tests(raw: &str) -> Vec<UxFailingTest> {
         };
         headers.push((name.as_str().to_string(), header.end(), header.start()));
     }
-    let mut spans: Vec<(String, usize, usize)> = Vec::new();
-    for (index, (name, body_start, _)) in headers.iter().enumerate() {
-        let body_end = headers
-            .get(index + 1)
-            .map_or(raw.len(), |(_, _, next_header_start)| *next_header_start);
-        spans.push((name.clone(), *body_start, body_end));
-    }
-
     let mut discriminated: Vec<UxFailingTest> = Vec::new();
-    for (name, start, end) in spans {
+    for (name, block) in failure_block_spans(raw) {
         if discriminated.iter().any(|existing| existing.name == name) {
             continue;
         }
-        let block = raw.get(start..end).unwrap_or_default();
         let (mode, evidence) = classify_failure_mode(block_body(block));
         discriminated.push(UxFailingTest {
             name,
@@ -404,11 +417,24 @@ const fn mode_is_evidence_backed(mode: UxFailureMode) -> bool {
 
 /// The text `infer_failure_class` is allowed to read.
 ///
-/// Two kinds of line are removed because they describe something other than the
-/// failure: a scenario's own diagnostic detail block, and the result line of a test
-/// that passed or was skipped. Both are present on every run and neither says
-/// anything about why this run failed.
+/// When cargo printed its trailing failure report, that report's per-test stdout
+/// blocks are the whole input. Everything else in the log describes some other
+/// test's evidence — or cargo's own bookkeeping — and a common word out there
+/// (`baseline`, `snapshot`) reclassified unrelated failures as baseline drift,
+/// prescribing the one remedy the contract forbids for them (#16205). The
+/// failing tests' own blocks carry the names, panics, and assertions the class
+/// arms actually key on.
+///
+/// When no block was printed, the failing test's own result line is the only
+/// per-test evidence there is, so the whole log survives with two kinds of
+/// known noise removed: scenario diagnostic detail blocks, and the result lines
+/// of tests that passed or were skipped. Neither says anything about why this
+/// run failed.
 fn classification_input(raw: &str) -> String {
+    let blocks: Vec<&str> = failure_block_spans(raw).into_iter().map(|(_, block)| block).collect();
+    if !blocks.is_empty() {
+        return blocks.join("\n");
+    }
     let mut in_detail = false;
     let mut retained = Vec::new();
     for line in raw.lines() {
@@ -437,10 +463,18 @@ fn infer_failure_class(raw: &str) -> UxFailureClass {
         UxFailureClass::ProviderRegression
     } else if lower.contains("fixture matrix") || lower.contains("matrix drift") {
         UxFailureClass::MatrixDrift
-    } else if lower.contains("baseline") || lower.contains("snapshot") {
-        UxFailureClass::BaselineDrift
     } else if lower.contains("timed out") || lower.contains("timeout") {
+        // A mode-specific marker outranks mode-generic vocabulary: `baseline` and
+        // `snapshot` name data a test might merely mention, while `timed out` says
+        // what went wrong. Under the old order a genuine timeout was classified
+        // BaselineDrift — the route that widens a baseline until a live defect fits
+        // through the gate (#16205).
         UxFailureClass::Timeout
+    } else if lower.contains("baseline") || lower.contains("snapshot") {
+        // `raw` here is the failing tests' own stdout blocks (see
+        // `classification_input`), so this word is the failing test speaking, not
+        // a passing test's name or another scenario's output.
+        UxFailureClass::BaselineDrift
     } else if lower.contains("race") || lower.contains("flaky") {
         UxFailureClass::TestRace
     } else if lower.contains("panicked") && lower.contains("tests/ux_scenario_") {
@@ -1149,5 +1183,90 @@ test result: FAILED. 0 passed; 1 failed; timed out after 60s";
             receipt.schema_version, 2,
             "consumers pinned to version 1 keep every field they already read"
         );
+    }
+
+    // ── #16205: the class is read from the failing test's own block ─────────
+    //
+    // A word anywhere else in the log — a passing test's name, cargo lines, a
+    // harness preamble — is not this failure's evidence, but it used to decide
+    // the class and route unrelated failures to `update_baseline`, the one
+    // remedy the repository contract forbids for them.
+
+    /// The issue's starvation case: a completion-quality receipt fails with no
+    /// candidates while the surrounding log mentions baselines. The block says
+    /// nothing about a baseline, so the receipt must not prescribe widening one.
+    #[test]
+    fn a_baseline_mention_outside_the_failing_block_cannot_route_to_update_baseline() {
+        let log = "running 95 tests\n\
+test scenario_20_completion_module_prefix_surfaces_real_baseline_app_hard_assert ... ok\n\
+ux-gate: baseline snapshot refresh is a manual remedy; see docs/baselines.md\n\
+test ux_scenario_52_inline_completion_quality::scenario_52_test_inline_completion_quality_receipt ... FAILED\n\
+\n\
+failures:\n\
+\n\
+---- ux_scenario_52_inline_completion_quality::scenario_52_test_inline_completion_quality_receipt stdout ----\n\
+assertion failed: completion returned at least one candidate; got []\n\
+\n\
+test result: FAILED. 0 passed; 1 failed";
+        let receipt = classify(log, Some("sha-16205".to_string()));
+        assert!(
+            !matches!(receipt.failure_class, UxFailureClass::BaselineDrift),
+            "a token outside the failing test's block must not decide the class, got {:?}",
+            receipt.failure_class
+        );
+        assert_ne!(
+            receipt.merge_action, "update_baseline",
+            "a completion starvation must never be prescribed a baseline widening"
+        );
+        assert!(
+            matches!(receipt.failure_class, UxFailureClass::ProviderRegression),
+            "the block's own assertion failure is the evidence, got {:?}",
+            receipt.failure_class
+        );
+    }
+
+    /// A genuine latency timeout wins over a baseline mention in the same
+    /// failure: mode-specific evidence outranks mode-generic vocabulary.
+    #[test]
+    fn a_timeout_outranks_a_baseline_mention_in_its_own_block() {
+        let log = "failures:\n\
+\n\
+---- ux_latency_workspace_symbols_sees_open_document_symbols stdout ----\n\
+comparing against baseline snapshot set v3 before judging latency\n\
+workspace/symbol wait ended: test timed out after 30s\n\
+\n\
+test result: FAILED. 0 passed; 1 failed";
+        let receipt = classify(log, Some("sha-timeout".to_string()));
+        assert!(
+            matches!(receipt.failure_class, UxFailureClass::Timeout),
+            "timed-out evidence must not be reclassified by a vocabulary word, got {:?}",
+            receipt.failure_class
+        );
+        assert_eq!(
+            receipt.merge_action, "triage_timeout",
+            "an expired budget is triaged, never widened into a baseline"
+        );
+    }
+
+    /// Negative control: a real baseline-drift block still routes to
+    /// `update_baseline`. Scoping must not break the honest route.
+    #[test]
+    fn a_genuine_baseline_drift_block_still_routes_to_baseline_update() {
+        let log = "failures:\n\
+\n\
+---- ux_scenario_10_hover_baseline_snapshot::hover_type stdout ----\n\
+baseline snapshot mismatch for hover_type\n\
+  expected: \"package Foo;\"\n\
+   actual: \"package Foo // drifted\";\n\
+\n\
+test result: FAILED. 0 passed; 1 failed";
+        let receipt = classify(log, Some("sha-drift".to_string()));
+        assert!(
+            matches!(receipt.failure_class, UxFailureClass::BaselineDrift),
+            "the failing test's own baseline mismatch is genuine drift, got {:?}",
+            receipt.failure_class
+        );
+        assert_eq!(receipt.route, UxRoute::BaselineUpdate);
+        assert_eq!(receipt.merge_action, "update_baseline");
     }
 }
