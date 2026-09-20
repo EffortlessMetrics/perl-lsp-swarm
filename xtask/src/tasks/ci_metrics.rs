@@ -108,8 +108,21 @@ struct BaselineSummary {
     overall_signal_per_dollar: f64,
 }
 
+/// Envelope version stamped on every `ci_baseline.json` this module writes.
+///
+/// Umbrella #15990 Lane 0 ruling: `schema_version` is a `u32` integer and
+/// consumers assert it fail-closed. The release-health consumer refuses any
+/// other value (#15367), so bumping this constant requires updating every
+/// consumer in the same change.
+pub(crate) const SCHEMA_VERSION: u32 = 1;
+
+/// `pub(crate)` so the release-health consumer's producer-conformance test
+/// can serialize the producer's real type (#15369). Field privacy is
+/// unchanged; consumers only ever see the serialized artifact.
 #[derive(Serialize)]
-struct BaselineReport {
+pub(crate) struct BaselineReport {
+    /// Envelope contract for on-disk consumers (#15367).
+    schema_version: u32,
     generated_at: String,
     branch: String,
     days_analyzed: u64,
@@ -130,6 +143,54 @@ struct BaselineReport {
     newest_fetched_at: Option<String>,
     workflows: BTreeMap<String, BaselineWorkflow>,
     summary: BaselineSummary,
+}
+
+/// Producer-conformance fixture (#15369): a fully populated
+/// [`BaselineReport`] carrying every field of the on-disk `ci_baseline.json`
+/// envelope, built from the producer's real types. The release-health
+/// consumer serializes this and proves it still accepts the producer's whole
+/// envelope, so a producer field rename or removal is caught by that test
+/// instead of drifting away undetected.
+#[cfg(test)]
+pub(crate) fn baseline_report_fixture() -> BaselineReport {
+    let mut workflows = BTreeMap::new();
+    workflows.insert(
+        "ci".to_string(),
+        BaselineWorkflow {
+            name: "ci".to_string(),
+            total_runs: 42,
+            completed_runs: 42,
+            success_count: 40,
+            failure_count: 2,
+            skipped_count: 0,
+            success_rate_percent: 95.2,
+            median_duration_seconds: 310,
+            p95_duration_seconds: 900,
+            avg_duration_seconds: 420,
+            billable_minutes: 137,
+            unique_failures: 2,
+            unique_catch_rate_percent: 100.0,
+            signal_per_dollar: 1.5,
+        },
+    );
+    BaselineReport {
+        schema_version: SCHEMA_VERSION,
+        generated_at: "2026-09-18T00:00:00+00:00".to_string(),
+        branch: "main".to_string(),
+        days_analyzed: 30,
+        sample_completeness: SampleCompleteness::Complete,
+        fetched_runs: 42,
+        oldest_fetched_at: Some("2026-08-19T00:00:00+00:00".to_string()),
+        newest_fetched_at: Some("2026-09-18T00:00:00+00:00".to_string()),
+        workflows,
+        summary: BaselineSummary {
+            total_runs: 42,
+            total_billable_minutes: 137,
+            overall_success_rate_percent: 95.5,
+            total_unique_failures: 2,
+            overall_signal_per_dollar: 1.5,
+        },
+    }
 }
 
 /// Completeness of a baseline sample relative to its requested window.
@@ -751,6 +812,7 @@ fn build_baseline_report(
         if total_cost > 0.0 { total_unique_failures as f64 / total_cost } else { 0.0 };
 
     Some(BaselineReport {
+        schema_version: SCHEMA_VERSION,
         generated_at: generated_at.to_rfc3339(),
         branch: branch.to_string(),
         days_analyzed: days,
@@ -1271,6 +1333,27 @@ mod tests {
                 .ok_or_else(|| eyre!("expected baseline report"))?;
         assert_eq!(report.sample_completeness, SampleCompleteness::Complete);
 
+        Ok(())
+    }
+
+    /// The producer stamps the envelope (#15367): serialized
+    /// `ci_baseline.json` carries `schema_version: 1`, which release-health
+    /// asserts fail-closed. Keep the stamp, the constant, and the consumer
+    /// assert in lockstep.
+    #[test]
+    fn baseline_report_stamps_schema_version_for_consumers() -> Result<()> {
+        let generated_at =
+            DateTime::parse_from_rfc3339("2026-03-25T12:00:00Z")?.with_timezone(&Utc);
+        let cutoff = DateTime::parse_from_rfc3339("2026-03-25T10:30:00Z")?.with_timezone(&Utc);
+
+        let report =
+            build_baseline_report("main", 1, generated_at, cutoff, 2, &truncated_window_runs())
+                .ok_or_else(|| eyre!("expected baseline report"))?;
+        assert_eq!(report.schema_version, SCHEMA_VERSION);
+
+        let json = serde_json::to_string(&report)?;
+        let parsed: serde_json::Value = serde_json::from_str(&json)?;
+        assert_eq!(parsed["schema_version"], 1);
         Ok(())
     }
 
