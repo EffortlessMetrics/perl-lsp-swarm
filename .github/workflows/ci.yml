@@ -1585,7 +1585,12 @@ jobs:
         if: cancelled() && github.event_name == 'pull_request'
         shell: bash
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # `github.token` rather than `secrets.GITHUB_TOKEN`: the same
+          # installation token, reached without a secret reference in a
+          # PR-triggered workflow, which `workflow_security_ratchet.py` flags
+          # as `pr_secret_reference`. The job's own `permissions:` block is
+          # what bounds the authority, and it is read-only.
+          GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           REPOSITORY: ${{ github.repository }}
           RUN_ID: ${{ github.run_id }}
