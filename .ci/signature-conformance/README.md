@@ -42,8 +42,9 @@ python scripts/ci/signature_conformance.py --check-native-report $env:SIGNATURE_
 
 Exit 1 from the Python native validator means a complete report records real
 `CONFORMANCE_MISMATCH`. Exit 2 means missing/stale evidence or an instrument/process
-failure. A missing AST operator span is reported as missing geometry; the reporter
-does not manufacture a span by examining the source gap. Tree-sitter and Pest are
+failure. The reporter reads default operator text and spans from the AST; it compares
+missing or inconsistent operator metadata as a mismatch and never manufactures
+a span by examining the source gap. Tree-sitter and Pest are
 not observed by this native reporter and are not claimed to conform.
 
 The existing **Perl Version Matrix** workflow has a `signatures_only` dispatch
@@ -86,3 +87,19 @@ This makes Git line-ending conversion portable without ignoring content changes.
 Executable SHA-256 remains byte-exact; fixture source hashes also remain exact.
 Version-1 receipts are not silently reinterpreted: retain their original evidence,
 then rerun the bounded oracle to produce current version-2 receipts.
+
+The #8915 native parameter-form repair adds required `default_operator` and
+`default_operator_span` fields to public `NodeKind::OptionalParameter`, plus
+`default_operator_span` to `NamedParameter`. Explicit Rust constructors and
+exhaustive field patterns must migrate. Named operator/span/default presence
+remains paired; mandatory named parameters carry none. Parser-produced spans are
+inside the parameter and come from the consumed operator token.
+
+Invalid aggregate forms and immediately missing defaults are blocking native
+`InvalidSignatureParameter` diagnostics with a typed kind and half-open range.
+Their Error nodes retain available variable/default evidence. Complete forbidden
+defaults and immediately missing expressions preserve signature separators and
+suffixes; arbitrary malformed expressions retain existing bounded recovery.
+Native range preservation includes clone and inline-reparse offsets. This does
+not promote LSP highlighting or semantic/provider behavior. Ordering, effective feature admission, and separator/dialect admission remain
+#8917, #8922, and #8925 respectively.
