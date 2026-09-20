@@ -116,8 +116,11 @@ struct BaselineSummary {
 /// consumer in the same change.
 pub(crate) const SCHEMA_VERSION: u32 = 1;
 
+/// `pub(crate)` so the release-health consumer's producer-conformance test
+/// can serialize the producer's real type (#15369). Field privacy is
+/// unchanged; consumers only ever see the serialized artifact.
 #[derive(Serialize)]
-struct BaselineReport {
+pub(crate) struct BaselineReport {
     /// Envelope contract for on-disk consumers (#15367).
     schema_version: u32,
     generated_at: String,
@@ -140,6 +143,54 @@ struct BaselineReport {
     newest_fetched_at: Option<String>,
     workflows: BTreeMap<String, BaselineWorkflow>,
     summary: BaselineSummary,
+}
+
+/// Producer-conformance fixture (#15369): a fully populated
+/// [`BaselineReport`] carrying every field of the on-disk `ci_baseline.json`
+/// envelope, built from the producer's real types. The release-health
+/// consumer serializes this and proves it still accepts the producer's whole
+/// envelope, so a producer field rename or removal is caught by that test
+/// instead of drifting away undetected.
+#[cfg(test)]
+pub(crate) fn baseline_report_fixture() -> BaselineReport {
+    let mut workflows = BTreeMap::new();
+    workflows.insert(
+        "ci".to_string(),
+        BaselineWorkflow {
+            name: "ci".to_string(),
+            total_runs: 42,
+            completed_runs: 42,
+            success_count: 40,
+            failure_count: 2,
+            skipped_count: 0,
+            success_rate_percent: 95.2,
+            median_duration_seconds: 310,
+            p95_duration_seconds: 900,
+            avg_duration_seconds: 420,
+            billable_minutes: 137,
+            unique_failures: 2,
+            unique_catch_rate_percent: 100.0,
+            signal_per_dollar: 1.5,
+        },
+    );
+    BaselineReport {
+        schema_version: SCHEMA_VERSION,
+        generated_at: "2026-09-18T00:00:00+00:00".to_string(),
+        branch: "main".to_string(),
+        days_analyzed: 30,
+        sample_completeness: SampleCompleteness::Complete,
+        fetched_runs: 42,
+        oldest_fetched_at: Some("2026-08-19T00:00:00+00:00".to_string()),
+        newest_fetched_at: Some("2026-09-18T00:00:00+00:00".to_string()),
+        workflows,
+        summary: BaselineSummary {
+            total_runs: 42,
+            total_billable_minutes: 137,
+            overall_success_rate_percent: 95.5,
+            total_unique_failures: 2,
+            overall_signal_per_dollar: 1.5,
+        },
+    }
 }
 
 /// Completeness of a baseline sample relative to its requested window.

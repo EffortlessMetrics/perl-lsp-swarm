@@ -684,6 +684,55 @@ technical_debt:
         Ok(())
     }
 
+    /// #15370: a wholly absent `ci_baseline.json` is the one condition that
+    /// still degrades to "no baseline" — a fresh clone, not schema drift.
+    /// Pinning it alongside the fail-closed rejection tests keeps the repair
+    /// from over-tightening: `Ok(None)` here is the contract, and every
+    /// present-but-broken shape must stay an error.
+    #[test]
+    fn read_ci_baseline_absent_file_is_none() -> Result<()> {
+        let tmp = TempDir::new()?;
+        let baseline = read_ci_baseline(tmp.path())?;
+        assert!(baseline.is_none(), "absent baseline file must degrade to None, got {baseline:?}");
+        Ok(())
+    }
+
+    /// #15369: producer-conformance. The artifact this consumer reads is
+    /// written by `ci_metrics::run_ci_baseline`; serialize the producer's
+    /// real `BaselineReport` — every envelope field populated — and prove
+    /// this consumer accepts it. A producer field rename or removal fails
+    /// here (the fixture builder stops matching the envelope) instead of
+    /// drifting away from the consumer undetected.
+    #[test]
+    fn ci_baseline_consumer_accepts_full_producer_envelope() -> Result<()> {
+        let report = crate::tasks::ci_metrics::baseline_report_fixture();
+        let json = serde_json::to_string(&report).context("serialize producer baseline")?;
+        let parsed: serde_json::Value = serde_json::from_str(&json)?;
+        for key in
+            ["schema_version", "generated_at", "branch", "days_analyzed", "workflows", "summary"]
+        {
+            assert!(
+                parsed.get(key).is_some(),
+                "producer envelope lost `{key}` — envelope fields move in lockstep with consumers (#15369)"
+            );
+        }
+
+        let tmp = TempDir::new()?;
+        write_raw_ci_baseline(tmp.path(), &json)?;
+        let file = read_ci_baseline(tmp.path())?
+            .ok_or_else(|| eyre!("producer report must be accepted, not treated as absent"))?;
+        let summary =
+            file.summary.ok_or_else(|| eyre!("producer summary must survive the round-trip"))?;
+        assert_eq!(summary.total_runs, 42);
+        assert_eq!(summary.total_billable_minutes, 137);
+        assert_eq!(
+            file.sample_completeness.as_deref(),
+            Some("complete"),
+            "completeness flag must round-trip through the consumer's envelope"
+        );
+        Ok(())
+    }
+
     /// A `partial_sample` baseline must not populate release health as a
     /// full period (#15377): the merge-gate metrics degrade to null exactly
     /// like an absent file, so the scorecard shows unknown instead of a
