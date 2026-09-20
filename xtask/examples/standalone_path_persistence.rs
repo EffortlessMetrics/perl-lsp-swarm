@@ -2617,37 +2617,60 @@ mod tests {
         )
     }
 
+    /// The Windows plan is the one fixture whose `new_session_requirement` is
+    /// `logout_login`. Both boundary tests drive the same observation and differ
+    /// only in `session.origin`, so the pair isolates that single field.
+    fn windows_observation_from(origin: &str) -> ContractResult<FreshProcessObservation> {
+        let owned = origin.to_string();
+        mutated("fresh_visible_after_documented_new_session.json", move |value| {
+            value["bound_plan_id"] = json!("path-plan-windows-registry-user");
+            value["bound_plan_sha256"] = json!(digest_of_windows_plan());
+            value["observed_environment"] = json!({
+                "platform": "windows_native",
+                "shell_family": "powershell"
+            });
+            value["session"]["origin"] = json!(owned);
+            value["lookup"]["resolved"] = json!({
+                "path": "C:\\Users\\operator\\AppData\\Local\\perl-lsp\\versions\\0.18.0\\bin\\perllsp.exe",
+                "sha256": "e4".to_string() + &"0".repeat(62),
+                "matches_candidate": true
+            });
+            value["lookup"]["competing_candidates"] = json!([{
+                "path": "C:\\Users\\operator\\AppData\\Local\\perl-lsp\\versions\\0.18.0\\bin\\perllsp.exe",
+                "sha256": "e4".to_string() + &"0".repeat(62)
+            }]);
+        })
+    }
+
     /// A logout/login boundary is strictly stronger than a new shell, and only a
     /// new login session exercises it.
     #[test]
     fn a_logout_login_boundary_is_not_proven_by_a_new_shell() -> Result<()> {
         let plan: PathPlan = parse("plan_windows_registry_user_path.json")?;
         let digest = digest_of("plan_windows_registry_user_path.json")?;
-        let observation: FreshProcessObservation = mutated(
-            "fresh_visible_after_documented_new_session.json",
-            |value| {
-                value["bound_plan_id"] = json!("path-plan-windows-registry-user");
-                value["bound_plan_sha256"] = json!(digest_of_windows_plan());
-                value["observed_environment"] = json!({
-                    "platform": "windows_native",
-                    "shell_family": "powershell"
-                });
-                value["session"]["origin"] = json!("new_shell_process");
-                value["lookup"]["resolved"] = json!({
-                    "path": "C:\\Users\\operator\\AppData\\Local\\perl-lsp\\versions\\0.18.0\\bin\\perllsp.exe",
-                    "sha256": "e4".to_string() + &"0".repeat(62),
-                    "matches_candidate": true
-                });
-                value["lookup"]["competing_candidates"] = json!([{
-                    "path": "C:\\Users\\operator\\AppData\\Local\\perl-lsp\\versions\\0.18.0\\bin\\perllsp.exe",
-                    "sha256": "e4".to_string() + &"0".repeat(62)
-                }]);
-            },
-        )?;
+        let observation = windows_observation_from("new_shell_process")?;
         expect_rejected(
             validate_fresh_process_against_plan(&observation, &plan, &digest),
             "only `new_login_session` exercises",
         )
+    }
+
+    /// The paired positive direction. Without it the guard above could be
+    /// satisfied by refusing *every* observation against a `logout_login` plan,
+    /// which would pass the rejection test while proving nothing: a contract
+    /// that accepts no evidence is not a stricter contract, it is a broken one.
+    /// Same observation, same plan, one field changed.
+    #[test]
+    fn a_logout_login_boundary_is_proven_by_a_new_login_session() -> Result<()> {
+        let plan: PathPlan = parse("plan_windows_registry_user_path.json")?;
+        let digest = digest_of("plan_windows_registry_user_path.json")?;
+        let observation = windows_observation_from("new_login_session")?;
+        validate_fresh_process_against_plan(&observation, &plan, &digest).map_err(|error| {
+            color_eyre::eyre::eyre!(
+                "a new login session is exactly what a `logout_login` boundary asks for: {error}"
+            )
+        })?;
+        Ok(())
     }
 
     fn digest_of_windows_plan() -> String {
