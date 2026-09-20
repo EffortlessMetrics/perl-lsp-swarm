@@ -226,7 +226,14 @@ fn classify_with_exit_status(
     } else {
         let test = first_failing_test.as_deref().unwrap_or("unknown_test");
         let repro = canonical_repro.as_deref().unwrap_or("see ux-regression.log");
-        format!("UX regression failed in {test}; classified as {failure_class:?}; repro: {repro}")
+        let discrimination = first_failing_test
+            .as_deref()
+            .and_then(|name| failing_tests.iter().find(|failing| failing.name == name))
+            .map(describe_discrimination)
+            .unwrap_or_default();
+        format!(
+            "UX regression failed in {test}; classified as {failure_class:?}{discrimination}; repro: {repro}"
+        )
     };
 
     UxRegressionReceipt {
@@ -322,6 +329,40 @@ fn discriminate_failing_tests(raw: &str) -> Vec<UxFailingTest> {
         });
     }
     discriminated
+}
+
+/// Say, in the one sentence a reader actually sees, what the first failing test's
+/// own block proved.
+///
+/// `failure_class` is read from the whole log, so it answers a question nobody asked:
+/// #16103 records a run where an unrelated one-file diff was published as
+/// `provider_regression` / `fix_provider`, and a later one where the same shape came
+/// back as `timeout` — the arm taken depends on which words happen to appear
+/// elsewhere in the log. `failing_tests` already carries the per-block reading that
+/// can tell a spent budget from a rejected observation, and it reaches the receipt
+/// file only. The check surface prints `human_summary`, so the discrimination has to
+/// travel in there to be read at all.
+///
+/// An undiscriminated mode is reported as such rather than dropped. "This log did not
+/// say" is the honest answer, and it is the one that tells a triager to open the log
+/// instead of trusting the class beside it.
+fn describe_discrimination(failing: &UxFailingTest) -> String {
+    let mode = match failing.mode {
+        UxFailureMode::BudgetExceeded => {
+            "a bounded wait expired, so nothing about the change was decided"
+        }
+        UxFailureMode::AssertionFailed => "an assertion rejected an observed value",
+        UxFailureMode::AssertionOnAbsentObservation => {
+            "an assertion failed on an absent observation, which a regression and a spent budget both produce"
+        }
+        UxFailureMode::Panic => "the test panicked without an assertion",
+        UxFailureMode::Unknown => "its block carried no evidence this classifier reads",
+    };
+    match (failing.discriminated, failing.evidence.as_deref()) {
+        (true, Some(evidence)) => format!("; per-test evidence: {mode} ({})", evidence.trim()),
+        (true, None) => format!("; per-test evidence: {mode}"),
+        (false, _) => format!("; per-test evidence: not discriminated — {mode}"),
+    }
 }
 
 /// Trim cargo's run-level trailer off the end of a block so the last failing test
@@ -1089,6 +1130,66 @@ test result: FAILED. 0 passed; 2 failed; 0 ignored";
             UxFailureMode::BudgetExceeded,
             "per-test discrimination must survive the whole-run class"
         );
+    }
+
+    #[test]
+    fn the_human_summary_carries_the_first_failing_tests_own_evidence() {
+        // #16103: `failure_class` is read from the whole log, and here it reads the
+        // scenario-14 provider vocabulary and calls the run a provider regression —
+        // while the test that actually failed first ran out of budget. The check
+        // surface prints `human_summary` and nothing else, so unless the per-test
+        // reading travels in there, the only sentence a triager sees is the wrong one.
+        let receipt = classify(TWO_FAILURES_LOG, Some("sha".to_string()));
+        assert!(
+            receipt.human_summary.contains("classified as ProviderRegression"),
+            "the whole-run class stays, so existing readers see what they saw: {}",
+            receipt.human_summary
+        );
+        assert!(
+            receipt.human_summary.contains("a bounded wait expired"),
+            "the first failing test's own mode must reach the printed sentence: {}",
+            receipt.human_summary
+        );
+        assert!(
+            receipt.human_summary.contains("deadline expired after 5000ms"),
+            "and the line it was read from, so the receipt shows its work: {}",
+            receipt.human_summary
+        );
+    }
+
+    #[test]
+    fn an_undiscriminated_failure_says_so_rather_than_borrowing_a_class() {
+        // The counterpart control. A block with nothing this classifier reads must
+        // not silently inherit the whole-run class's confidence: "not discriminated"
+        // is what sends a triager to the log instead of to the wrong file.
+        let log = "running 1 test\n\
+test ux_scenario_61_package_boundary_receiver_inline_completion_quality::scenario_61_receipt ... FAILED\n\
+\n\
+failures:\n\
+\n\
+---- ux_scenario_61_package_boundary_receiver_inline_completion_quality::scenario_61_receipt stdout ----\n\
+Error: the run ended without a verdict\n\
+\n\
+failures:\n\
+    ux_scenario_61_package_boundary_receiver_inline_completion_quality::scenario_61_receipt\n\
+\n\
+test result: FAILED. 0 passed; 1 failed; 0 ignored";
+        let receipt = classify(log, None);
+        assert!(!receipt.failing_tests[0].discriminated, "the block carries no marker");
+        assert!(
+            receipt.human_summary.contains("not discriminated"),
+            "an unread block must be reported as unread: {}",
+            receipt.human_summary
+        );
+    }
+
+    #[test]
+    fn a_passing_run_keeps_its_summary_unchanged() {
+        // The addition is for failures only; a green run's sentence is a contract
+        // other readers already parse.
+        let receipt =
+            classify("running 1 test\ntest ok_test ... ok\ntest result: ok. 1 passed", None);
+        assert_eq!(receipt.human_summary, "UX regression passed; merge_allowed.");
     }
 
     #[test]
