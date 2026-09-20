@@ -826,6 +826,59 @@ fn host_work_status_f14_subject_mismatch_unrepresentable() {
 // ---- F15: aggregate HEALTHY can never hide required uncertainty ------------
 
 #[test]
+fn host_work_status_missing_provider_blocks_complete_cleanup_observation()
+-> Result<(), Box<dyn std::error::Error>> {
+    let subject = repository_subject(Some("wt"));
+    let key = subject.subject_key();
+    let mut set = HostWorkObservationSet::new(key.clone());
+    set.push_logical(logical(&key, DurableState::NoLocalResidue))?;
+    set.push_mutation(mutation(&key, MutationOwnership::Unowned))?;
+    set.push_compute(compute(
+        &key,
+        ProcessTreeFact::ExitedConfirmed { process_group_id: String::from("pg") },
+        ReservationFact::Absent,
+        Settlement::Settled,
+        Settlement::Settled,
+        InitiatorReturn::Returned,
+    ))?;
+    set.push_storage(storage(
+        &key,
+        RootClass::CandidatePrivate,
+        StorageDisposition::CacheOnly,
+        CapacityFact::Measured { free_bytes: 900 },
+        None,
+        false,
+        ReclaimClass::NoneApproved,
+    ))?;
+
+    let complete = HostWorkStatus::build(&subject, &set, &[])?;
+    if complete.classifications.len() != 4
+        || complete.classifications.iter().any(|row| row.evidence != DimensionEvidence::Complete)
+    {
+        return Err("control requires all four dimensions to have complete evidence".into());
+    }
+    if complete.cleanup_readiness != [CleanupReadiness::ReadOnlyObservationComplete]
+        || complete.aggregate != [HostWorkObservationToken::Healthy]
+    {
+        return Err("complete observations without a missing provider must remain complete".into());
+    }
+
+    set.declare_missing_provider(ProviderFamily::CapacityReservation);
+    let missing = HostWorkStatus::build(&subject, &set, &[])?;
+    if missing.classifications != complete.classifications {
+        return Err("provider uncertainty must not change the four observed dimensions".into());
+    }
+    if missing.cleanup_readiness != [CleanupReadiness::NotProven]
+        || !missing.aggregate.contains(&HostWorkObservationToken::NotProven)
+        || !missing.aggregate.contains(&HostWorkObservationToken::Ambiguous)
+        || missing.aggregate.contains(&HostWorkObservationToken::Healthy)
+    {
+        return Err("missing provider must prevent a complete cleanup observation".into());
+    }
+    Ok(())
+}
+
+#[test]
 fn host_work_status_f15_healthy_never_hides_uncertainty() {
     let subject = repository_subject(Some("wt"));
     let key = subject.subject_key();
@@ -1463,4 +1516,98 @@ fn host_work_status_f3b_unobserved_remote_branch_is_not_no_residue() {
         matches!(logical_row.durable_state, DurableState::NotProven),
         "an absent observation can never read as confirmed remote absence"
     );
+}
+
+#[test]
+fn host_work_status_subject_key_preserves_optional_presence()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut absent = repository_subject(None);
+    absent.canonical_remote = None;
+    absent.worktree = None;
+    absent.candidate_id = None;
+    absent.executor_operation_id = None;
+    absent.allocation_id = None;
+    absent.reservation_id = None;
+    absent.process_group_id = None;
+    absent.storage_root = None;
+    let absent_key = absent.subject_key();
+    let mut alternatives = Vec::new();
+    for position in 0..6 {
+        let mut present = absent.clone();
+        let field = match position {
+            0 => &mut present.canonical_remote,
+            1 => &mut present.candidate_id,
+            2 => &mut present.executor_operation_id,
+            3 => &mut present.allocation_id,
+            4 => &mut present.reservation_id,
+            _ => &mut present.process_group_id,
+        };
+        *field = Some(String::new());
+        alternatives.push(present);
+    }
+    let mut storage = absent.clone();
+    storage.storage_root = Some(std::path::PathBuf::new());
+    alternatives.push(storage);
+    let mut worktree = absent.clone();
+    worktree.worktree = Some(WorktreeIdentity { path: std::path::PathBuf::new(), branch: None });
+    alternatives.push(worktree.clone());
+    let branch_absent_key = worktree.subject_key();
+    worktree.worktree.as_mut().ok_or("worktree fixture missing")?.branch = Some(String::new());
+    if branch_absent_key == worktree.subject_key() {
+        return Err("absent and present-empty worktree branch must differ".into());
+    }
+    alternatives.push(worktree);
+    let mut keys = std::collections::BTreeSet::new();
+    keys.insert(absent_key);
+    for alternative in alternatives {
+        let key = alternative.subject_key();
+        if key != alternative.clone().subject_key() || !keys.insert(key) {
+            return Err("optional presence must be distinct and deterministic".into());
+        }
+    }
+    Ok(())
+}
+
+#[cfg(any(unix, windows))]
+#[test]
+fn host_work_status_subject_key_preserves_native_non_unicode_paths()
+-> Result<(), Box<dyn std::error::Error>> {
+    #[cfg(unix)]
+    let paths = {
+        use std::os::unix::ffi::OsStringExt;
+        [std::ffi::OsString::from_vec(vec![0x80]), std::ffi::OsString::from_vec(vec![0x81])]
+    };
+    #[cfg(windows)]
+    let paths = {
+        use std::os::windows::ffi::OsStringExt;
+        [std::ffi::OsString::from_wide(&[0xd800]), std::ffi::OsString::from_wide(&[0xd801])]
+    };
+    let [first, second] = paths.map(std::path::PathBuf::from);
+    if first.to_string_lossy() != second.to_string_lossy() {
+        return Err("control must distinguish paths the old display encoding collapsed".into());
+    }
+    for position in 0..4 {
+        let mut left = repository_subject(None);
+        let mut right = left.clone();
+        for (subject, path) in [(&mut left, first.clone()), (&mut right, second.clone())] {
+            match position {
+                0 => subject.repository_root = path,
+                1 => subject.common_dir = path,
+                2 => subject.worktree = Some(WorktreeIdentity { path, branch: None }),
+                _ => subject.storage_root = Some(path),
+            }
+        }
+        if left.subject_key() == right.subject_key()
+            || left.subject_key() != left.clone().subject_key()
+        {
+            return Err(
+                "native path identity must be lossless and deterministic in every field".into()
+            );
+        }
+        let mut set = HostWorkObservationSet::new(left.subject_key());
+        if set.push_logical(logical(&right.subject_key(), DurableState::NoLocalResidue)).is_ok() {
+            return Err("distinct native paths must not satisfy another subject".into());
+        }
+    }
+    Ok(())
 }

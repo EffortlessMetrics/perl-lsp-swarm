@@ -208,7 +208,10 @@ impl HostWorkStatus {
 
         let evidence_incomplete =
             classifications.iter().any(|c| c.evidence == DimensionEvidence::Incomplete);
-        if evidence_incomplete || !set.unknown_variants().is_empty() {
+        if evidence_incomplete
+            || !set.unknown_variants().is_empty()
+            || !set.missing_providers().is_empty()
+        {
             readiness.push(CleanupReadiness::NotProven);
         }
 

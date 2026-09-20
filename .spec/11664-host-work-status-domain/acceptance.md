@@ -39,7 +39,13 @@ Negative laws (each has a falsifier test):
 13. Unknown provider variants surface as visible rows (`UNKNOWN_PROVIDER_VARIANT`,
     lifecycle `AMBIGUOUS`), never dropped. (F13)
 14. Subject identity is exact: `subject_key()` encodes every identity field
-    including `host_profile`, length-delimited (F14, F14b); a snapshot bound to a
+    including `host_profile`, length-delimited (F14, F14b). Optional values and
+    worktree identity retain explicit presence, so absent and present-empty values
+    differ. Paths preserve native units (Unix bytes / Windows UTF-16 units) with
+    an encoding discriminator; other targets use OS-tagged encoded bytes. This is
+    supplied-value identity, not filesystem canonicalization, live host verification,
+    or a portable persistent format. Benign native-path and optional-presence
+    controls accompany the separator controls. A snapshot bound to a
     different target is rejected, never merged (F14d); a detached target never
     shares a key with a named branch (F14e); incomplete PR-ownership evidence stays
     `Unknown` and never fabricates a PR identity (F14c).

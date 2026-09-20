@@ -48,36 +48,33 @@ pub struct HostWorkSubject {
 }
 
 impl HostWorkSubject {
-    /// Canonical, deterministic identity string for this subject. Two
-    /// subjects with equal keys are the same resource; different keys are
+    /// Deterministic native-value identity string for this subject. Equal
+    /// keys identify equal supplied field values, not verified resources. Keys are
     /// never substituted for one another regardless of path or name
     /// resemblance.
     ///
     /// Each field is encoded length-delimited, so the encoding is injective:
     /// field values containing the separator (or digit/colon sequences)
     /// cannot shift field boundaries between adjacent positions to make two
-    /// distinct subjects collide on one key.
+    /// distinct subjects collide on one key. Options retain presence, and paths
+    /// retain native units with an encoding discriminator. This is not filesystem
+    /// canonicalization, host verification, or a portable persistent identity.
     pub fn subject_key(&self) -> String {
-        let worktree_path =
-            self.worktree.as_ref().map(|w| w.path.display().to_string()).unwrap_or_default();
-        let worktree_branch =
-            self.worktree.as_ref().and_then(|w| w.branch.clone()).unwrap_or_default();
-        let storage_root =
-            self.storage_root.as_ref().map(|p| p.display().to_string()).unwrap_or_default();
         let fields = [
             self.scope_as_key_token(),
-            self.repository_root.display().to_string(),
-            self.common_dir.display().to_string(),
-            self.canonical_remote.clone().unwrap_or_default(),
+            native_path_key(&self.repository_root),
+            native_path_key(&self.common_dir),
+            optional_string_key(self.canonical_remote.as_deref()),
             self.host_profile.clone(),
-            worktree_path,
-            worktree_branch,
-            self.candidate_id.clone().unwrap_or_default(),
-            self.executor_operation_id.clone().unwrap_or_default(),
-            self.allocation_id.clone().unwrap_or_default(),
-            self.reservation_id.clone().unwrap_or_default(),
-            self.process_group_id.clone().unwrap_or_default(),
-            storage_root,
+            if self.worktree.is_some() { "some" } else { "none" }.to_string(),
+            optional_path_key(self.worktree.as_ref().map(|w| w.path.as_path())),
+            optional_string_key(self.worktree.as_ref().and_then(|w| w.branch.as_deref())),
+            optional_string_key(self.candidate_id.as_deref()),
+            optional_string_key(self.executor_operation_id.as_deref()),
+            optional_string_key(self.allocation_id.as_deref()),
+            optional_string_key(self.reservation_id.as_deref()),
+            optional_string_key(self.process_group_id.as_deref()),
+            optional_path_key(self.storage_root.as_deref()),
         ];
         let mut key = String::new();
         for field in &fields {
@@ -98,6 +95,51 @@ impl HostWorkSubject {
             ObservationScope::ProcessTree => "PROCESS_TREE".to_string(),
             ObservationScope::StorageRoot => "STORAGE_ROOT".to_string(),
         }
+    }
+}
+
+fn optional_string_key(value: Option<&str>) -> String {
+    match value {
+        None => "none".to_string(),
+        Some(value) => format!("some:{value}"),
+    }
+}
+
+fn optional_path_key(value: Option<&std::path::Path>) -> String {
+    match value {
+        None => "none".to_string(),
+        Some(value) => format!("some:{}", native_path_key(value)),
+    }
+}
+
+// Native path values, not filesystem equivalence or a portable persistence format.
+// Fixed-width hex preserves every native unit without lossy Unicode conversion.
+fn native_path_key(path: &std::path::Path) -> String {
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        let mut encoded = String::from("windows-u16:");
+        for unit in path.as_os_str().encode_wide() {
+            encoded.push_str(&format!("{unit:04x}"));
+        }
+        encoded
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        let mut encoded = String::from("unix-u8:");
+        for unit in path.as_os_str().as_bytes() {
+            encoded.push_str(&format!("{unit:02x}"));
+        }
+        encoded
+    }
+    #[cfg(not(any(windows, unix)))]
+    {
+        let mut encoded = format!("{}-os-encoded:", std::env::consts::OS);
+        for unit in path.as_os_str().as_encoded_bytes() {
+            encoded.push_str(&format!("{unit:02x}"));
+        }
+        encoded
     }
 }
 
