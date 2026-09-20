@@ -2173,6 +2173,31 @@ jobs:
       - name: Required-context mirror contract (required merge surface)
         run: cargo test -p xtask --test workflow_draft_snapshot_supersession --locked -- --nocapture
 
+      # #16219: identical reasoning to the contracts above, in its most complete
+      # form -- the activation inventory suite is reachable from no CI lane at
+      # all. `xtask/tests/activation.rs` is a `tests/` target, so the merge
+      # gate's `cargo test --workspace --lib` never builds it, and no workflow
+      # named it. The only lane that executes xtask's `tests/` is
+      # unit_routed_full, which is advisory and scope-aware, so it is silent
+      # unless a diff happens to select xtask. The suite sat 21 passed / 42
+      # failed on main while every required check stayed green (#16159).
+      - name: Activation inventory suite (required merge surface)
+        run: cargo test -p xtask --test activation --locked -- --nocapture
+
+      # The suite proves the deriver agrees with itself; this proves the
+      # committed artifact still agrees with the authorities it projects. The
+      # two fail for different reasons, so neither substitutes for the other: a
+      # deriver regression reds the suite, while a gate added to
+      # `.ci/gate-policy.yaml` or a cargo feature added to a manifest without
+      # `cargo xtask activation generate --write` reds only this. That second
+      # case is why it belongs here rather than on a Rust-scoped lane --
+      # compile-all-targets is the required merge surface that still runs when
+      # only `.ci/` changes. The drift is not hypothetical: the committed
+      # artifact reached 170 rows against a live derivation of 177 while the
+      # deriver panicked before emitting anything, so the suite could not see it.
+      - name: Activation inventory drift gate (required merge surface)
+        run: cargo run --locked -p xtask -- activation generate
+
   lsp-memory-smoke:
     name: LSP Memory Smoke
     runs-on: ubuntu-24.04
