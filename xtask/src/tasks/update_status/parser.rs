@@ -124,11 +124,19 @@ pub(super) fn count_common_corpus_pinned(root: &Path) -> usize {
 pub(super) fn read_sweep_report(path: &Path) -> Option<ParserSweepReceipt> {
     let raw = fs::read_to_string(path).ok()?;
     let value = serde_json::from_str::<serde_json::Value>(&raw).ok()?;
-    let has_recovery_shape = value.get("files_with_structured_recovery_only").is_some()
+    let report =
+        serde_json::from_value::<super::super::parser_corpus_sweep::SweepReport>(value.clone())
+            .ok()?;
+    // Envelope discipline (#15362): negotiate `schema_version` before trusting
+    // field shape. A receipt at an unknown version parses but must not render
+    // recovery claims (#15361, fail-closed); a legacy string version is
+    // refused outright by the typed integer deserialization.
+    let has_recovery_shape = report.schema_version
+        == super::super::parser_corpus_sweep::SCHEMA_VERSION
+        && value.get("files_with_structured_recovery_only").is_some()
         && value.get("files_with_error_nodes").is_some()
         && value.get("files_with_catastrophic_parse_failure").is_some()
         && value.get("total_dirty_files").is_some();
-    let report = serde_json::from_value(value).ok()?;
     Some(ParserSweepReceipt { report, has_recovery_shape })
 }
 

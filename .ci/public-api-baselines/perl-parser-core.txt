@@ -1881,7 +1881,9 @@ pub fn perl_parser_core::hir::ReplacementEvaluation::eq(&self, other: &perl_pars
 pub fn perl_parser_core::hir::ReplacementEvaluation::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_parser_core::hir::ReplacementEvaluation::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
 #[non_exhaustive] pub enum perl_parser_core::hir::ScopeKind
+pub perl_parser_core::hir::ScopeKind::AnonymousSubroutine
 pub perl_parser_core::hir::ScopeKind::Block
+pub perl_parser_core::hir::ScopeKind::Class
 pub perl_parser_core::hir::ScopeKind::EvalString
 pub perl_parser_core::hir::ScopeKind::File
 pub perl_parser_core::hir::ScopeKind::Format
@@ -1890,6 +1892,7 @@ pub perl_parser_core::hir::ScopeKind::Package
 pub perl_parser_core::hir::ScopeKind::PhaseBlock
 pub perl_parser_core::hir::ScopeKind::Signature
 pub perl_parser_core::hir::ScopeKind::Subroutine
+pub const fn perl_parser_core::hir::ScopeKind::is_callable(self) -> bool
 pub fn perl_parser_core::hir::ScopeKind::clone(&self) -> perl_parser_core::hir::ScopeKind
 pub fn perl_parser_core::hir::ScopeKind::eq(&self, other: &perl_parser_core::hir::ScopeKind) -> bool
 pub fn perl_parser_core::hir::ScopeKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
@@ -1940,6 +1943,7 @@ pub fn perl_parser_core::hir::StatementModifierKind::eq(&self, other: &perl_pars
 pub fn perl_parser_core::hir::StatementModifierKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_parser_core::hir::StatementModifierKind::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
 #[non_exhaustive] pub enum perl_parser_core::hir::StorageClass
+pub perl_parser_core::hir::StorageClass::ClassField
 pub perl_parser_core::hir::StorageClass::Implicit
 pub perl_parser_core::hir::StorageClass::LexicalMy
 pub perl_parser_core::hir::StorageClass::LexicalState
@@ -1966,6 +1970,7 @@ pub fn perl_parser_core::hir::UnaryMode::clone(&self) -> perl_parser_core::hir::
 pub fn perl_parser_core::hir::UnaryMode::eq(&self, other: &perl_parser_core::hir::UnaryMode) -> bool
 pub fn perl_parser_core::hir::UnaryMode::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub enum perl_parser_core::hir::VariableKind
+pub perl_parser_core::hir::VariableKind::Field
 pub perl_parser_core::hir::VariableKind::Lexical
 pub perl_parser_core::hir::VariableKind::Package
 pub fn perl_parser_core::hir::VariableKind::clone(&self) -> perl_parser_core::hir::VariableKind
@@ -3172,6 +3177,13 @@ pub perl_parser_core::pir::PirOperation::Deref::operand_kind: perl_parser_core::
 pub perl_parser_core::pir::PirOperation::DynamicBoundary
 pub perl_parser_core::pir::PirOperation::DynamicBoundary::kind: perl_parser_core::pir::PirDynamicBoundaryKind
 pub perl_parser_core::pir::PirOperation::DynamicBoundary::reason: alloc::string::String
+pub perl_parser_core::pir::PirOperation::FieldModify
+pub perl_parser_core::pir::PirOperation::FieldModify::name: perl_parser_core::pir::LexicalName
+pub perl_parser_core::pir::PirOperation::FieldModify::op: alloc::string::String
+pub perl_parser_core::pir::PirOperation::FieldRead
+pub perl_parser_core::pir::PirOperation::FieldRead::name: perl_parser_core::pir::LexicalName
+pub perl_parser_core::pir::PirOperation::FieldWrite
+pub perl_parser_core::pir::PirOperation::FieldWrite::name: perl_parser_core::pir::LexicalName
 pub perl_parser_core::pir::PirOperation::LexicalRead
 pub perl_parser_core::pir::PirOperation::LexicalRead::name: perl_parser_core::pir::LexicalName
 pub perl_parser_core::pir::PirOperation::LexicalWrite
