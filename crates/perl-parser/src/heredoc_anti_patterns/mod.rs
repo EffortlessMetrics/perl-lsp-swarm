@@ -99,26 +99,26 @@
 //! while `$y << FOO`, `$h{k} << FOO` and `CORE::time << FOO` remain shifts.
 //! Every row there is a `perl -c` result, not a reading of the grammar.
 //!
-//! Two residuals are accepted there. Neither blanks live code, but they do not
-//! share a failure direction, and only the second is confined to lost coverage.
+//! One residual is accepted there, and it is confined to lost coverage.
 //!
-//! A filehandle block longer than `FILEHANDLE_BLOCK_BUDGET` is not matched back
-//! to its opening brace, so its heredoc is not admitted: the backward scan runs
-//! at every `<<` preceded by `}` and is quadratic without a bound, and
-//! precomputing whole-file brace matches would add an `O(n)` pass and `O(n)`
-//! memory to every call to serve a construct an order of magnitude larger than
-//! any observed filehandle expression. That precomputation is the fix if a real
-//! case appears.
+//! A filehandle block of any length is matched back to its opening brace. An
+//! earlier revision capped that search at a fixed byte budget, which bounded the
+//! cost but conflated *no matching brace exists* with *the search gave up*: past
+//! the budget the declaration was not admitted, its body stayed visible, and
+//! body text was scanned as code — *fabricating* a diagnostic on valid Perl
+//! rather than merely missing one, the direction #14352 exists to close. The
+//! asymmetry that makes declining-to-admit safe elsewhere does not cover that
+//! case, so the budget was not a residual this module could accept.
 //!
-//! Declining to admit is not free here, and the asymmetry above does not cover
-//! it. An unadmitted declaration leaves its body visible, and body text is
-//! scanned as code, so an over-budget block can *fabricate* a diagnostic on
-//! valid Perl rather than merely miss one — the direction #14352 closed for the
-//! in-budget case. The status quo it restores is the pre-mask behavior, which
-//! for this construct was already wrong in that direction.
-//! `antip_over_budget_filehandle_block_fabricates_from_body_text` pins the
-//! behavior and its in-budget control, so a fix has to retire the residual
-//! deliberately instead of drifting past it.
+//! The bound is preserved by reversing the direction of the search instead of
+//! truncating it. Scanning backwards from every `<<` preceded by `}` is
+//! quadratic; one forward pass with a brace stack is `O(n)`, and resolving only
+//! the offsets that actually end a candidate's prefix keeps the table
+//! proportional to the candidates rather than to the file.
+//! `antip_long_filehandle_block_does_not_fabricate_from_body_text` sweeps the
+//! former budget with a positive control, and
+//! `antip_unmatched_closing_brace_is_not_a_filehandle_block` holds the other
+//! side: a `}` with no matching `{` is still not a block.
 //!
 //! The unqualified bareword stays irreducible: Perl consults the symbol table,
 //! reading `somefunc<<FOO` as a shift when no such sub is declared and

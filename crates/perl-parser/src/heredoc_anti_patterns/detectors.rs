@@ -530,7 +530,7 @@ static HEREDOC_DECL_PATTERN: LazyLock<Result<Regex, regex::Error>> = LazyLock::n
 /// that, so barewords stay term position — matching `print`, `say`, `return`
 /// and `warn`, which are what actually precede a heredoc — and the fail-safe
 /// backstops the rest, since an unmatched operand masks nothing.
-fn heredoc_is_in_term_position(code: &str, start: usize) -> bool {
+fn heredoc_is_in_term_position(code: &str, start: usize, braces: &HashMap<usize, usize>) -> bool {
     let prefix = code[..start].trim_end();
     let Some(previous) = prefix.chars().next_back() else {
         return true; // start of file: nothing to shift
@@ -545,7 +545,10 @@ fn heredoc_is_in_term_position(code: &str, start: usize) -> bool {
     // operator introduces it — directly for the block form, or through the
     // sigil for the braced-scalar form.
     if previous == '}' {
-        let Some(open) = matching_open_brace(prefix) else {
+        // `braces` holds the match for every `}` that precedes a candidate, so a
+        // miss here means no matching `{` exists in the file rather than that a
+        // search gave up. Declining on a genuinely unmatched brace is correct.
+        let Some(&open) = braces.get(&(prefix.len() - 1)) else {
             return false;
         };
         let before_brace = &prefix[..open];
@@ -617,21 +620,6 @@ const TERM_TAKING_OPERATORS: [&str; 9] =
 /// arguments, as `print $fh <<EOF` and `print {$fh} <<EOF`.
 const FILEHANDLE_OPERATORS: [&str; 3] = ["print", "printf", "say"];
 
-/// How far back a filehandle block may be matched from its closing brace.
-///
-/// A block used as a filehandle holds an expression yielding a handle, so it is
-/// short even when written across lines; 256 bytes covers `{$fh}` through
-/// `{ $self->{handles}{err} }` with room to spare.
-///
-/// Declining to mask past the budget does **not** cost only coverage. An
-/// unadmitted declaration leaves its heredoc body visible, and body text is
-/// then scanned as code, so an over-budget block can fabricate a diagnostic on
-/// valid Perl — the same direction #14352 closed for the in-budget case.
-/// `antip_over_budget_filehandle_block_fabricates_from_body_text` pins that.
-/// The fix is a precomputed whole-file brace match, which is linear but adds a
-/// pass and a table to every call; it is not attempted here.
-const FILEHANDLE_BLOCK_BUDGET: usize = 256;
-
 /// The identifier ending `prefix`, ignoring trailing whitespace.
 fn trailing_bareword(prefix: &str) -> Option<&str> {
     let prefix = prefix.trim_end();
@@ -643,31 +631,47 @@ fn trailing_bareword(prefix: &str) -> Option<&str> {
     (start < prefix.len()).then(|| &prefix[start..])
 }
 
-/// Offset of the `{` matching the `}` that ends `prefix`.
+/// Matching `{` offset for each `}` offset named in `wanted`.
 ///
-/// The search is capped at [`FILEHANDLE_BLOCK_BUDGET`] bytes rather than at the
-/// start of the line: a filehandle block may be written across lines, but it is
-/// always short. A fixed budget keeps the cost `O(1)` per candidate, which the
-/// bound exists for — an unbounded backwards scan from every `}` that precedes a
-/// `<<` is quadratic on adversarial input.
-fn matching_open_brace(prefix: &str) -> Option<usize> {
-    let floor = prefix.len().saturating_sub(FILEHANDLE_BLOCK_BUDGET);
-    let bytes = prefix.as_bytes();
-    let mut depth = 0usize;
+/// One forward pass with a brace stack, rather than a backward scan from every
+/// candidate. The direction is what makes the bound hold: scanning backwards
+/// from each `}` that precedes a `<<` is quadratic on adversarial input, which
+/// an earlier revision capped with a fixed byte budget. That budget made the
+/// cost `O(1)` per candidate but conflated *no matching brace exists* with
+/// *the search gave up*, and the second case left a real heredoc body unmasked
+/// so its text was scanned as code — fabricating a diagnostic on valid Perl,
+/// the direction #14352 exists to close. A single pass removes the budget
+/// without reintroducing the quadratic shape: `O(n)` in the source, with the
+/// table holding only the candidates' own braces rather than every brace in
+/// the file.
+///
+/// Braces inside strings, comments and heredoc bodies are counted, as they were
+/// by the backward scan this replaces. The nesting is LIFO either way, so a
+/// locally balanced construct still matches correctly; only a literal
+/// *unbalanced* brace in quoted text can skew it, which is pre-existing
+/// imprecision shared with the previous implementation and is bounded by the
+/// fail-safe — an unmatched operand is not admitted and masks nothing.
+fn matching_open_braces(code: &str, wanted: &HashSet<usize>) -> HashMap<usize, usize> {
+    let mut matches = HashMap::new();
+    if wanted.is_empty() {
+        return matches;
+    }
 
-    for idx in (floor..bytes.len()).rev() {
-        match bytes[idx] {
-            b'}' => depth += 1,
-            b'{' => {
-                depth = depth.checked_sub(1)?;
-                if depth == 0 {
-                    return Some(idx);
+    let mut open = Vec::new();
+    for (idx, byte) in code.bytes().enumerate() {
+        match byte {
+            b'{' => open.push(idx),
+            b'}' => {
+                if let Some(start) = open.pop()
+                    && wanted.contains(&idx)
+                {
+                    matches.insert(idx, start);
                 }
             }
             _ => {}
         }
     }
-    None
+    matches
 }
 
 /// Byte ranges of heredoc *bodies* in `code`, terminator line included and the
@@ -689,20 +693,36 @@ fn heredoc_body_ranges(code: &str, scan_code: &str) -> Vec<(usize, usize)> {
         return Vec::new();
     };
 
-    let declarations: Vec<(usize, bool, &str)> = decl_pattern
+    // Candidates first, then the term-position filter. The brace match a `}`
+    // candidate needs is resolved in one forward pass over the source, so the
+    // offsets it must cover have to be known before the filter runs.
+    let candidates: Vec<(usize, bool, &str)> = decl_pattern
         .captures_iter(code)
         .filter_map(|capture| {
             let whole = capture.get(0)?;
             if scan_code.get(whole.start()..whole.start() + 2) != Some("<<") {
                 return None;
             }
-            if !heredoc_is_in_term_position(code, whole.start()) {
-                return None;
-            }
             let indented = capture.get(1).is_some_and(|tilde| !tilde.as_str().is_empty());
             let delimiter = (2..=6).find_map(|group| capture.get(group))?.as_str();
             (!delimiter.is_empty()).then_some((whole.start(), indented, delimiter))
         })
+        .collect();
+
+    // Only the braces that actually end a candidate's prefix are resolved, so
+    // the table stays proportional to the candidates rather than to the file.
+    let wanted: HashSet<usize> = candidates
+        .iter()
+        .filter_map(|&(at, _, _)| {
+            let prefix = code[..at].trim_end();
+            prefix.as_bytes().last().filter(|&&byte| byte == b'}').map(|_| prefix.len() - 1)
+        })
+        .collect();
+    let braces = matching_open_braces(code, &wanted);
+
+    let declarations: Vec<(usize, bool, &str)> = candidates
+        .into_iter()
+        .filter(|&(at, _, _)| heredoc_is_in_term_position(code, at, &braces))
         .collect();
 
     if declarations.is_empty() {
