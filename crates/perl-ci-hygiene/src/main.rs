@@ -218,14 +218,25 @@ const MAX_MODULE_DEPTH: usize = 64;
 /// redirects into `bin/`, into a `tests/` directory, or to a `_tests.rs` name,
 /// all of which `is_excluded_test_path` already drops, so following the
 /// attribute would change no verdict today.
+///
+/// This reads text rather than an AST, so it exempts a file only on a shape it
+/// can establish: an exact `mod <stem>;` whose own attribute list carries the
+/// guard. Anything it cannot establish stays in the production scans, which is
+/// the safe direction — a missed exemption is a false positive a human reads,
+/// while a wrong exemption silently stops measuring real code.
 fn is_cfg_test_module_file(path: &Path) -> bool {
     let mut current = path.to_path_buf();
 
     for _ in 0..MAX_MODULE_DEPTH {
         let Some((parent_dir, stem)) = declaring_scope(&current) else { return false };
 
-        // Check every candidate before moving: a crate root can hold both
-        // `lib.rs` and `main.rs`, and only one of them may declare this module.
+        // Every candidate is read before anything is decided. A crate root can
+        // hold both `lib.rs` and `main.rs`, and the same file can be owned by
+        // both, so one root's test-only declaration does not remove the other
+        // root's production declaration. Exempting on "some root guards it" is
+        // the same quantifier error as "some evidence for, none against" — the
+        // question is whether every owner agrees.
+        let mut guarded = false;
         let mut declared_unguarded = None;
         for candidate in [
             parent_dir.join("mod.rs"),
@@ -237,13 +248,20 @@ fn is_cfg_test_module_file(path: &Path) -> bool {
                 continue;
             }
             match module_declaration_is_test_only(&candidate, &stem) {
-                Some(true) => return true,
+                Some(true) => guarded = true,
                 Some(false) => declared_unguarded = Some(candidate),
                 None => {}
             }
         }
 
-        // Nothing declares this file, so there is no chain to follow.
+        if guarded && declared_unguarded.is_none() {
+            return true;
+        }
+
+        // Either nothing declares this file, or the declarations disagree. A
+        // mixed ownership keeps walking the production owner's chain rather
+        // than exempting here: only if that chain is itself test-only is the
+        // file test-only under every root that loads it.
         let Some(next) = declared_unguarded else { return false };
         current = next;
     }
@@ -4272,6 +4290,57 @@ mod tests {
         std::fs::write(&child, "fn f() {}\n")?;
 
         assert!(!is_cfg_test_module_file(&child), "a prefix match is not a declaration");
+
+        let _ = std::fs::remove_dir_all(&root);
+        Ok(())
+    }
+
+    #[test]
+    fn a_module_two_roots_disagree_about_stays_production() -> Result<()> {
+        // EffortlessSteven's P2 on #16251. A crate can hold both `lib.rs` and
+        // `main.rs`, and the same file can be owned by both. A test-only
+        // declaration in one root does not remove a production declaration in
+        // the other, so "some root guards it" is the wrong quantifier — the
+        // file is only test-only when every owner agrees.
+        let root = cfg_test_fixture("mixed_roots")?;
+        let src = root.join("src");
+        std::fs::create_dir_all(&src)?;
+        std::fs::write(src.join("lib.rs"), "#[cfg(test)]\nmod census;\n")?;
+        std::fs::write(src.join("main.rs"), "mod census;\n")?;
+        let child = src.join("census.rs");
+        std::fs::write(&child, "fn f() { let _ = x.expect(\"boom\"); }\n")?;
+
+        assert!(
+            !is_cfg_test_module_file(&child),
+            "the binary root still loads this as production code"
+        );
+
+        // The control: with the disagreement removed, the exemption returns.
+        std::fs::write(src.join("main.rs"), "#[cfg(test)]\nmod census;\n")?;
+        assert!(is_cfg_test_module_file(&child), "both roots guard it");
+
+        let _ = std::fs::remove_dir_all(&root);
+        Ok(())
+    }
+
+    #[test]
+    fn a_guard_on_the_preceding_item_is_not_this_declarations() -> Result<()> {
+        // Item-boundary control. `#[cfg(test)]` attaches forward to the next
+        // item, so on this shape it belongs to the `use`, not to `mod census;`
+        // two lines below. The walk back has to stop at the `use`. This is the
+        // parent-file mirror of first_cfg_test_line_number's own
+        // cfg_test_line_number_cfg_all_test_on_use_is_not_boundary.
+        let root = cfg_test_fixture("use_boundary")?;
+        let module_dir = root.join("lifecycle");
+        std::fs::create_dir_all(&module_dir)?;
+        std::fs::write(module_dir.join("mod.rs"), "#[cfg(test)]\nuse std::env;\n\nmod census;\n")?;
+        let child = module_dir.join("census.rs");
+        std::fs::write(&child, "fn f() {}\n")?;
+
+        assert!(
+            !is_cfg_test_module_file(&child),
+            "the guard belongs to the use statement, not to this declaration"
+        );
 
         let _ = std::fs::remove_dir_all(&root);
         Ok(())
