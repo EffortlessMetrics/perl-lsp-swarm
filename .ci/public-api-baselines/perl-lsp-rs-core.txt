@@ -6685,6 +6685,71 @@ pub fn perl_lsp_rs_core::providers::ProviderResultPath::partial_cmp(&self, other
 pub fn perl_lsp_rs_core::providers::ProviderResultPath::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_lsp_rs_core::providers::ProviderResultPath::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
 pub fn perl_lsp_rs_core::providers::ProviderResultPath::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+#[non_exhaustive] pub enum perl_lsp_rs_core::providers::semantic_port::ResolveAtOutcome
+pub perl_lsp_rs_core::providers::semantic_port::ResolveAtOutcome::Ambiguous(alloc::vec::Vec<perl_lsp_rs_core::providers::ResolvedOccurrence>)
+pub perl_lsp_rs_core::providers::semantic_port::ResolveAtOutcome::Dynamic
+pub perl_lsp_rs_core::providers::semantic_port::ResolveAtOutcome::Dynamic::boundary: perl_lsp_rs_core::providers::ResolveLimitation
+pub perl_lsp_rs_core::providers::semantic_port::ResolveAtOutcome::Dynamic::entity_id: core::option::Option<perl_semantic_facts::EntityId>
+pub perl_lsp_rs_core::providers::semantic_port::ResolveAtOutcome::Dynamic::generation: perl_lsp_rs_core::providers::ResolveGenerationBasis
+pub perl_lsp_rs_core::providers::semantic_port::ResolveAtOutcome::Dynamic::occurrence_id: perl_semantic_facts::OccurrenceId
+pub perl_lsp_rs_core::providers::semantic_port::ResolveAtOutcome::Exact(perl_lsp_rs_core::providers::ResolvedOccurrence)
+pub perl_lsp_rs_core::providers::semantic_port::ResolveAtOutcome::InstrumentFailure(&'static str)
+pub perl_lsp_rs_core::providers::semantic_port::ResolveAtOutcome::NotReady(perl_lsp_rs_core::providers::ResolveNotReady)
+pub perl_lsp_rs_core::providers::semantic_port::ResolveAtOutcome::Partial
+pub perl_lsp_rs_core::providers::semantic_port::ResolveAtOutcome::Partial::candidates: alloc::vec::Vec<perl_lsp_rs_core::providers::ResolvedOccurrence>
+pub perl_lsp_rs_core::providers::semantic_port::ResolveAtOutcome::Partial::generation: perl_lsp_rs_core::providers::ResolveGenerationBasis
+pub perl_lsp_rs_core::providers::semantic_port::ResolveAtOutcome::Partial::limitations: alloc::vec::Vec<perl_lsp_rs_core::providers::ResolveLimitation>
+pub perl_lsp_rs_core::providers::semantic_port::ResolveAtOutcome::Stale
+pub perl_lsp_rs_core::providers::semantic_port::ResolveAtOutcome::Unavailable(perl_lsp_rs_core::providers::ResolveUnavailable)
+pub fn perl_lsp_rs_core::providers::ResolveAtOutcome::bound_entity_id(&self) -> core::option::Option<perl_semantic_facts::EntityId>
+pub fn perl_lsp_rs_core::providers::ResolveAtOutcome::exact(&self) -> core::option::Option<&perl_lsp_rs_core::providers::ResolvedOccurrence>
+pub fn perl_lsp_rs_core::providers::ResolveAtOutcome::generation(&self) -> core::option::Option<&perl_lsp_rs_core::providers::ResolveGenerationBasis>
+pub fn perl_lsp_rs_core::providers::ResolveAtOutcome::occurrence_was_published(&self) -> bool
+pub fn perl_lsp_rs_core::providers::ResolveAtOutcome::published_occurrence(&self) -> core::option::Option<&perl_lsp_rs_core::providers::ResolvedOccurrence>
+pub fn perl_lsp_rs_core::providers::ResolveAtOutcome::reason(&self) -> core::option::Option<&'static str>
+pub fn perl_lsp_rs_core::providers::ResolveAtOutcome::shares_generation_with(&self, other: &Self) -> bool
+pub fn perl_lsp_rs_core::providers::ResolveAtOutcome::shares_subject_with(&self, other: &Self) -> bool
+pub fn perl_lsp_rs_core::providers::ResolveAtOutcome::stage(&self) -> &'static str
+pub fn perl_lsp_rs_core::providers::ResolveAtOutcome::clone(&self) -> perl_lsp_rs_core::providers::ResolveAtOutcome
+pub fn perl_lsp_rs_core::providers::ResolveAtOutcome::eq(&self, other: &perl_lsp_rs_core::providers::ResolveAtOutcome) -> bool
+pub fn perl_lsp_rs_core::providers::ResolveAtOutcome::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+#[non_exhaustive] pub enum perl_lsp_rs_core::providers::semantic_port::ResolveLimitation
+pub perl_lsp_rs_core::providers::semantic_port::ResolveLimitation::DynamicSelector
+pub perl_lsp_rs_core::providers::semantic_port::ResolveLimitation::GeneratedWithoutSourceBody
+pub perl_lsp_rs_core::providers::semantic_port::ResolveLimitation::NonExactEntityProvenance
+pub perl_lsp_rs_core::providers::semantic_port::ResolveLimitation::NonExactProvenance
+pub perl_lsp_rs_core::providers::semantic_port::ResolveLimitation::OccurrenceWithoutEntity
+pub perl_lsp_rs_core::providers::semantic_port::ResolveLimitation::SymbolicReference
+pub perl_lsp_rs_core::providers::semantic_port::ResolveLimitation::TypeglobMutation
+pub perl_lsp_rs_core::providers::semantic_port::ResolveLimitation::UnknownGeneration
+pub perl_lsp_rs_core::providers::semantic_port::ResolveLimitation::UnresolvedAlias
+pub fn perl_lsp_rs_core::providers::ResolveLimitation::as_str(self) -> &'static str
+pub fn perl_lsp_rs_core::providers::ResolveLimitation::clone(&self) -> perl_lsp_rs_core::providers::ResolveLimitation
+pub fn perl_lsp_rs_core::providers::ResolveLimitation::cmp(&self, other: &perl_lsp_rs_core::providers::ResolveLimitation) -> core::cmp::Ordering
+pub fn perl_lsp_rs_core::providers::ResolveLimitation::eq(&self, other: &perl_lsp_rs_core::providers::ResolveLimitation) -> bool
+pub fn perl_lsp_rs_core::providers::ResolveLimitation::partial_cmp(&self, other: &perl_lsp_rs_core::providers::ResolveLimitation) -> core::option::Option<core::cmp::Ordering>
+pub fn perl_lsp_rs_core::providers::ResolveLimitation::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_lsp_rs_core::providers::ResolveLimitation::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+#[non_exhaustive] pub enum perl_lsp_rs_core::providers::semantic_port::ResolveNotReady
+pub perl_lsp_rs_core::providers::semantic_port::ResolveNotReady::SemanticQueriesUnavailable
+pub perl_lsp_rs_core::providers::semantic_port::ResolveNotReady::WorkspaceIndexUnavailable
+pub fn perl_lsp_rs_core::providers::ResolveNotReady::as_str(self) -> &'static str
+pub fn perl_lsp_rs_core::providers::ResolveNotReady::clone(&self) -> perl_lsp_rs_core::providers::ResolveNotReady
+pub fn perl_lsp_rs_core::providers::ResolveNotReady::cmp(&self, other: &perl_lsp_rs_core::providers::ResolveNotReady) -> core::cmp::Ordering
+pub fn perl_lsp_rs_core::providers::ResolveNotReady::eq(&self, other: &perl_lsp_rs_core::providers::ResolveNotReady) -> bool
+pub fn perl_lsp_rs_core::providers::ResolveNotReady::partial_cmp(&self, other: &perl_lsp_rs_core::providers::ResolveNotReady) -> core::option::Option<core::cmp::Ordering>
+pub fn perl_lsp_rs_core::providers::ResolveNotReady::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_lsp_rs_core::providers::ResolveNotReady::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+#[non_exhaustive] pub enum perl_lsp_rs_core::providers::semantic_port::ResolveUnavailable
+pub perl_lsp_rs_core::providers::semantic_port::ResolveUnavailable::ByteOffsetOutOfRange
+pub perl_lsp_rs_core::providers::semantic_port::ResolveUnavailable::NoOccurrenceAtPosition
+pub fn perl_lsp_rs_core::providers::ResolveUnavailable::as_str(self) -> &'static str
+pub fn perl_lsp_rs_core::providers::ResolveUnavailable::clone(&self) -> perl_lsp_rs_core::providers::ResolveUnavailable
+pub fn perl_lsp_rs_core::providers::ResolveUnavailable::cmp(&self, other: &perl_lsp_rs_core::providers::ResolveUnavailable) -> core::cmp::Ordering
+pub fn perl_lsp_rs_core::providers::ResolveUnavailable::eq(&self, other: &perl_lsp_rs_core::providers::ResolveUnavailable) -> bool
+pub fn perl_lsp_rs_core::providers::ResolveUnavailable::partial_cmp(&self, other: &perl_lsp_rs_core::providers::ResolveUnavailable) -> core::option::Option<core::cmp::Ordering>
+pub fn perl_lsp_rs_core::providers::ResolveUnavailable::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_lsp_rs_core::providers::ResolveUnavailable::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
 pub struct perl_lsp_rs_core::providers::semantic_port::NoopProviderQueryControl
 pub fn perl_lsp_rs_core::providers::NoopProviderQueryControl::clone(&self) -> perl_lsp_rs_core::providers::NoopProviderQueryControl
 pub fn perl_lsp_rs_core::providers::NoopProviderQueryControl::default() -> perl_lsp_rs_core::providers::NoopProviderQueryControl
@@ -6808,6 +6873,41 @@ pub fn perl_lsp_rs_core::providers::ProviderQueryResultDraft::clone(&self) -> pe
 pub fn perl_lsp_rs_core::providers::ProviderQueryResultDraft::eq(&self, other: &perl_lsp_rs_core::providers::ProviderQueryResultDraft) -> bool
 pub fn perl_lsp_rs_core::providers::ProviderQueryResultDraft::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_lsp_rs_core::providers::ProviderQueryResultDraft::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+#[non_exhaustive] pub struct perl_lsp_rs_core::providers::semantic_port::ResolveGenerationBasis
+pub perl_lsp_rs_core::providers::semantic_port::ResolveGenerationBasis::document_generation: perl_semantic_facts::envelope::SourceGeneration
+pub perl_lsp_rs_core::providers::semantic_port::ResolveGenerationBasis::workspace_generation: perl_semantic_facts::envelope::SourceGeneration
+pub fn perl_lsp_rs_core::providers::ResolveGenerationBasis::is_known(&self) -> bool
+pub fn perl_lsp_rs_core::providers::ResolveGenerationBasis::new(document_generation: perl_semantic_facts::envelope::SourceGeneration, workspace_generation: perl_semantic_facts::envelope::SourceGeneration) -> Self
+pub fn perl_lsp_rs_core::providers::ResolveGenerationBasis::clone(&self) -> perl_lsp_rs_core::providers::ResolveGenerationBasis
+pub fn perl_lsp_rs_core::providers::ResolveGenerationBasis::eq(&self, other: &perl_lsp_rs_core::providers::ResolveGenerationBasis) -> bool
+pub fn perl_lsp_rs_core::providers::ResolveGenerationBasis::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_lsp_rs_core::providers::ResolveGenerationBasis::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+#[non_exhaustive] pub struct perl_lsp_rs_core::providers::semantic_port::ResolvedOccurrence
+pub perl_lsp_rs_core::providers::semantic_port::ResolvedOccurrence::canonical_name: alloc::string::String
+pub perl_lsp_rs_core::providers::semantic_port::ResolvedOccurrence::confidence: perl_semantic_facts::Confidence
+pub perl_lsp_rs_core::providers::semantic_port::ResolvedOccurrence::entity_anchor_id: core::option::Option<perl_semantic_facts::AnchorId>
+pub perl_lsp_rs_core::providers::semantic_port::ResolvedOccurrence::entity_confidence: perl_semantic_facts::Confidence
+pub perl_lsp_rs_core::providers::semantic_port::ResolvedOccurrence::entity_id: perl_semantic_facts::EntityId
+pub perl_lsp_rs_core::providers::semantic_port::ResolvedOccurrence::entity_kind: perl_semantic_facts::EntityKind
+pub perl_lsp_rs_core::providers::semantic_port::ResolvedOccurrence::entity_provenance: perl_semantic_facts::Provenance
+pub perl_lsp_rs_core::providers::semantic_port::ResolvedOccurrence::generation: perl_lsp_rs_core::providers::ResolveGenerationBasis
+pub perl_lsp_rs_core::providers::semantic_port::ResolvedOccurrence::limitations: alloc::vec::Vec<perl_lsp_rs_core::providers::ResolveLimitation>
+pub perl_lsp_rs_core::providers::semantic_port::ResolvedOccurrence::occurrence_anchor_id: perl_semantic_facts::AnchorId
+pub perl_lsp_rs_core::providers::semantic_port::ResolvedOccurrence::occurrence_id: perl_semantic_facts::OccurrenceId
+pub perl_lsp_rs_core::providers::semantic_port::ResolvedOccurrence::provenance: perl_semantic_facts::Provenance
+pub perl_lsp_rs_core::providers::semantic_port::ResolvedOccurrence::role: perl_semantic_facts::OccurrenceKind
+pub perl_lsp_rs_core::providers::semantic_port::ResolvedOccurrence::scope_id: core::option::Option<perl_semantic_facts::ScopeId>
+pub fn perl_lsp_rs_core::providers::ResolvedOccurrence::is_exact_evidence(&self) -> bool
+pub fn perl_lsp_rs_core::providers::ResolvedOccurrence::clone(&self) -> perl_lsp_rs_core::providers::ResolvedOccurrence
+pub fn perl_lsp_rs_core::providers::ResolvedOccurrence::eq(&self, other: &perl_lsp_rs_core::providers::ResolvedOccurrence) -> bool
+pub fn perl_lsp_rs_core::providers::ResolvedOccurrence::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_lsp_rs_core::providers::semantic_port::SemanticQueriesResolveSource<'queries, Q: ?core::marker::Sized>(_)
+pub fn perl_lsp_rs_core::providers::SemanticQueriesResolveSource<'queries, Q>::new(queries: &'queries Q) -> Self
+pub fn perl_lsp_rs_core::providers::SemanticQueriesResolveSource<'queries, Q>::clone(&self) -> perl_lsp_rs_core::providers::SemanticQueriesResolveSource<'queries, Q>
+pub fn perl_lsp_rs_core::providers::SemanticQueriesResolveSource<'queries, Q>::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_lsp_rs_core::providers::SemanticQueriesResolveSource<'_, Q>::resolve_dynamic_boundary_at(&self, file_id: perl_semantic_facts::FileId, byte_offset: u32) -> core::option::Option<perl_semantic_facts::OccurrenceFact>
+pub fn perl_lsp_rs_core::providers::SemanticQueriesResolveSource<'_, Q>::resolve_occurrence_at(&self, file_id: perl_semantic_facts::FileId, byte_offset: u32) -> core::option::Option<perl_semantic_facts::OccurrenceFact>
+pub fn perl_lsp_rs_core::providers::SemanticQueriesResolveSource<'_, Q>::resolve_symbol_at(&self, file_id: perl_semantic_facts::FileId, byte_offset: u32) -> core::option::Option<(perl_semantic_facts::EntityFact, perl_semantic_facts::OccurrenceFact)>
 pub trait perl_lsp_rs_core::providers::semantic_port::ProviderQueryControl: core::marker::Send + core::marker::Sync
 pub fn perl_lsp_rs_core::providers::semantic_port::ProviderQueryControl::deadline_expired(&self) -> bool
 pub fn perl_lsp_rs_core::providers::semantic_port::ProviderQueryControl::is_cancelled(&self) -> bool
@@ -6817,8 +6917,19 @@ pub trait perl_lsp_rs_core::providers::semantic_port::ProviderSemanticPort
 pub fn perl_lsp_rs_core::providers::semantic_port::ProviderSemanticPort::query(&self, request: &perl_lsp_rs_core::providers::ProviderQueryRequest, control: &dyn perl_lsp_rs_core::providers::ProviderQueryControl) -> core::result::Result<perl_lsp_rs_core::providers::ProviderQueryResultDraft, perl_lsp_rs_core::providers::ProviderQueryContractError>
 pub fn perl_lsp_rs_core::providers::CanonicalEnvelopePort::query(&self, request: &perl_lsp_rs_core::providers::ProviderQueryRequest, control: &dyn perl_lsp_rs_core::providers::ProviderQueryControl) -> core::result::Result<perl_lsp_rs_core::providers::ProviderQueryResultDraft, perl_lsp_rs_core::providers::ProviderQueryContractError>
 pub fn perl_lsp_rs_core::providers::FileFactShardPort::query(&self, request: &perl_lsp_rs_core::providers::ProviderQueryRequest, control: &dyn perl_lsp_rs_core::providers::ProviderQueryControl) -> core::result::Result<perl_lsp_rs_core::providers::ProviderQueryResultDraft, perl_lsp_rs_core::providers::ProviderQueryContractError>
+pub trait perl_lsp_rs_core::providers::semantic_port::ResolveAtSource
+pub fn perl_lsp_rs_core::providers::semantic_port::ResolveAtSource::resolve_dynamic_boundary_at(&self, file_id: perl_semantic_facts::FileId, byte_offset: u32) -> core::option::Option<perl_semantic_facts::OccurrenceFact>
+pub fn perl_lsp_rs_core::providers::semantic_port::ResolveAtSource::resolve_occurrence_at(&self, file_id: perl_semantic_facts::FileId, byte_offset: u32) -> core::option::Option<perl_semantic_facts::OccurrenceFact>
+pub fn perl_lsp_rs_core::providers::semantic_port::ResolveAtSource::resolve_symbol_at(&self, file_id: perl_semantic_facts::FileId, byte_offset: u32) -> core::option::Option<(perl_semantic_facts::EntityFact, perl_semantic_facts::OccurrenceFact)>
+pub fn perl_lsp_rs_core::providers::SemanticQueriesResolveSource<'_, Q>::resolve_dynamic_boundary_at(&self, file_id: perl_semantic_facts::FileId, byte_offset: u32) -> core::option::Option<perl_semantic_facts::OccurrenceFact>
+pub fn perl_lsp_rs_core::providers::SemanticQueriesResolveSource<'_, Q>::resolve_occurrence_at(&self, file_id: perl_semantic_facts::FileId, byte_offset: u32) -> core::option::Option<perl_semantic_facts::OccurrenceFact>
+pub fn perl_lsp_rs_core::providers::SemanticQueriesResolveSource<'_, Q>::resolve_symbol_at(&self, file_id: perl_semantic_facts::FileId, byte_offset: u32) -> core::option::Option<(perl_semantic_facts::EntityFact, perl_semantic_facts::OccurrenceFact)>
+pub fn perl_lsp_rs_core::providers::semantic_port::accepted_generation_basis(index: &perl_workspace::workspace::workspace_index::WorkspaceIndex, uri: &str) -> perl_lsp_rs_core::providers::ResolveGenerationBasis
 pub fn perl_lsp_rs_core::providers::semantic_port::execute_provider_query(port: &dyn perl_lsp_rs_core::providers::ProviderSemanticPort, request: &perl_lsp_rs_core::providers::ProviderQueryRequest, control: &dyn perl_lsp_rs_core::providers::ProviderQueryControl) -> core::result::Result<perl_lsp_rs_core::providers::ProviderQueryResult, perl_lsp_rs_core::providers::ProviderQueryContractError>
 pub fn perl_lsp_rs_core::providers::semantic_port::query_fact_from_envelope(role: perl_lsp_rs_core::providers::ProviderQueryFactRole, generation_scope: perl_lsp_rs_core::providers::ProviderFactGenerationScope, envelope: perl_semantic_facts::envelope::SemanticFactEnvelope) -> core::result::Result<perl_lsp_rs_core::providers::ProviderQueryFact, perl_lsp_rs_core::providers::ProviderQueryContractError>
+pub fn perl_lsp_rs_core::providers::semantic_port::resolve_at_position<S>(source: &S, file_id: perl_semantic_facts::FileId, byte_offset: u32, generation: &perl_lsp_rs_core::providers::ResolveGenerationBasis, stale: bool) -> perl_lsp_rs_core::providers::ResolveAtOutcome where S: perl_lsp_rs_core::providers::ResolveAtSource + ?core::marker::Sized
+pub fn perl_lsp_rs_core::providers::semantic_port::resolve_at_position_with_dynamic_boundary<S>(source: &S, file_id: perl_semantic_facts::FileId, byte_offset: u32, generation: &perl_lsp_rs_core::providers::ResolveGenerationBasis, stale: bool) -> perl_lsp_rs_core::providers::ResolveAtOutcome where S: perl_lsp_rs_core::providers::ResolveAtSource + ?core::marker::Sized
+pub fn perl_lsp_rs_core::providers::semantic_port::stable_basis_view<Basis, Outcome>(basis: impl core::ops::function::Fn() -> Basis, write_version: impl core::ops::function::Fn() -> u64, view: impl core::ops::function::FnMut(&Basis) -> Outcome, attempts: u8) -> core::option::Option<(Basis, Outcome)>
 pub mod perl_lsp_rs_core::providers::semantic_port_adapters
 #[non_exhaustive] pub enum perl_lsp_rs_core::providers::semantic_port_adapters::ProviderAdapterError
 pub perl_lsp_rs_core::providers::semantic_port_adapters::ProviderAdapterError::ConflictingFactId(perl_semantic_facts::envelope::FactId)
@@ -8064,6 +8175,71 @@ pub perl_lsp_rs_core::providers::ReferencesPirPromoteOutcome::LegacyFallback::re
 pub fn perl_lsp_rs_core::providers::references_pir_shadow::ReferencesPirPromoteOutcome::clone(&self) -> perl_lsp_rs_core::providers::references_pir_shadow::ReferencesPirPromoteOutcome
 pub fn perl_lsp_rs_core::providers::references_pir_shadow::ReferencesPirPromoteOutcome::eq(&self, other: &perl_lsp_rs_core::providers::references_pir_shadow::ReferencesPirPromoteOutcome) -> bool
 pub fn perl_lsp_rs_core::providers::references_pir_shadow::ReferencesPirPromoteOutcome::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+#[non_exhaustive] pub enum perl_lsp_rs_core::providers::ResolveAtOutcome
+pub perl_lsp_rs_core::providers::ResolveAtOutcome::Ambiguous(alloc::vec::Vec<perl_lsp_rs_core::providers::ResolvedOccurrence>)
+pub perl_lsp_rs_core::providers::ResolveAtOutcome::Dynamic
+pub perl_lsp_rs_core::providers::ResolveAtOutcome::Dynamic::boundary: perl_lsp_rs_core::providers::ResolveLimitation
+pub perl_lsp_rs_core::providers::ResolveAtOutcome::Dynamic::entity_id: core::option::Option<perl_semantic_facts::EntityId>
+pub perl_lsp_rs_core::providers::ResolveAtOutcome::Dynamic::generation: perl_lsp_rs_core::providers::ResolveGenerationBasis
+pub perl_lsp_rs_core::providers::ResolveAtOutcome::Dynamic::occurrence_id: perl_semantic_facts::OccurrenceId
+pub perl_lsp_rs_core::providers::ResolveAtOutcome::Exact(perl_lsp_rs_core::providers::ResolvedOccurrence)
+pub perl_lsp_rs_core::providers::ResolveAtOutcome::InstrumentFailure(&'static str)
+pub perl_lsp_rs_core::providers::ResolveAtOutcome::NotReady(perl_lsp_rs_core::providers::ResolveNotReady)
+pub perl_lsp_rs_core::providers::ResolveAtOutcome::Partial
+pub perl_lsp_rs_core::providers::ResolveAtOutcome::Partial::candidates: alloc::vec::Vec<perl_lsp_rs_core::providers::ResolvedOccurrence>
+pub perl_lsp_rs_core::providers::ResolveAtOutcome::Partial::generation: perl_lsp_rs_core::providers::ResolveGenerationBasis
+pub perl_lsp_rs_core::providers::ResolveAtOutcome::Partial::limitations: alloc::vec::Vec<perl_lsp_rs_core::providers::ResolveLimitation>
+pub perl_lsp_rs_core::providers::ResolveAtOutcome::Stale
+pub perl_lsp_rs_core::providers::ResolveAtOutcome::Unavailable(perl_lsp_rs_core::providers::ResolveUnavailable)
+pub fn perl_lsp_rs_core::providers::ResolveAtOutcome::bound_entity_id(&self) -> core::option::Option<perl_semantic_facts::EntityId>
+pub fn perl_lsp_rs_core::providers::ResolveAtOutcome::exact(&self) -> core::option::Option<&perl_lsp_rs_core::providers::ResolvedOccurrence>
+pub fn perl_lsp_rs_core::providers::ResolveAtOutcome::generation(&self) -> core::option::Option<&perl_lsp_rs_core::providers::ResolveGenerationBasis>
+pub fn perl_lsp_rs_core::providers::ResolveAtOutcome::occurrence_was_published(&self) -> bool
+pub fn perl_lsp_rs_core::providers::ResolveAtOutcome::published_occurrence(&self) -> core::option::Option<&perl_lsp_rs_core::providers::ResolvedOccurrence>
+pub fn perl_lsp_rs_core::providers::ResolveAtOutcome::reason(&self) -> core::option::Option<&'static str>
+pub fn perl_lsp_rs_core::providers::ResolveAtOutcome::shares_generation_with(&self, other: &Self) -> bool
+pub fn perl_lsp_rs_core::providers::ResolveAtOutcome::shares_subject_with(&self, other: &Self) -> bool
+pub fn perl_lsp_rs_core::providers::ResolveAtOutcome::stage(&self) -> &'static str
+pub fn perl_lsp_rs_core::providers::ResolveAtOutcome::clone(&self) -> perl_lsp_rs_core::providers::ResolveAtOutcome
+pub fn perl_lsp_rs_core::providers::ResolveAtOutcome::eq(&self, other: &perl_lsp_rs_core::providers::ResolveAtOutcome) -> bool
+pub fn perl_lsp_rs_core::providers::ResolveAtOutcome::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+#[non_exhaustive] pub enum perl_lsp_rs_core::providers::ResolveLimitation
+pub perl_lsp_rs_core::providers::ResolveLimitation::DynamicSelector
+pub perl_lsp_rs_core::providers::ResolveLimitation::GeneratedWithoutSourceBody
+pub perl_lsp_rs_core::providers::ResolveLimitation::NonExactEntityProvenance
+pub perl_lsp_rs_core::providers::ResolveLimitation::NonExactProvenance
+pub perl_lsp_rs_core::providers::ResolveLimitation::OccurrenceWithoutEntity
+pub perl_lsp_rs_core::providers::ResolveLimitation::SymbolicReference
+pub perl_lsp_rs_core::providers::ResolveLimitation::TypeglobMutation
+pub perl_lsp_rs_core::providers::ResolveLimitation::UnknownGeneration
+pub perl_lsp_rs_core::providers::ResolveLimitation::UnresolvedAlias
+pub fn perl_lsp_rs_core::providers::ResolveLimitation::as_str(self) -> &'static str
+pub fn perl_lsp_rs_core::providers::ResolveLimitation::clone(&self) -> perl_lsp_rs_core::providers::ResolveLimitation
+pub fn perl_lsp_rs_core::providers::ResolveLimitation::cmp(&self, other: &perl_lsp_rs_core::providers::ResolveLimitation) -> core::cmp::Ordering
+pub fn perl_lsp_rs_core::providers::ResolveLimitation::eq(&self, other: &perl_lsp_rs_core::providers::ResolveLimitation) -> bool
+pub fn perl_lsp_rs_core::providers::ResolveLimitation::partial_cmp(&self, other: &perl_lsp_rs_core::providers::ResolveLimitation) -> core::option::Option<core::cmp::Ordering>
+pub fn perl_lsp_rs_core::providers::ResolveLimitation::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_lsp_rs_core::providers::ResolveLimitation::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+#[non_exhaustive] pub enum perl_lsp_rs_core::providers::ResolveNotReady
+pub perl_lsp_rs_core::providers::ResolveNotReady::SemanticQueriesUnavailable
+pub perl_lsp_rs_core::providers::ResolveNotReady::WorkspaceIndexUnavailable
+pub fn perl_lsp_rs_core::providers::ResolveNotReady::as_str(self) -> &'static str
+pub fn perl_lsp_rs_core::providers::ResolveNotReady::clone(&self) -> perl_lsp_rs_core::providers::ResolveNotReady
+pub fn perl_lsp_rs_core::providers::ResolveNotReady::cmp(&self, other: &perl_lsp_rs_core::providers::ResolveNotReady) -> core::cmp::Ordering
+pub fn perl_lsp_rs_core::providers::ResolveNotReady::eq(&self, other: &perl_lsp_rs_core::providers::ResolveNotReady) -> bool
+pub fn perl_lsp_rs_core::providers::ResolveNotReady::partial_cmp(&self, other: &perl_lsp_rs_core::providers::ResolveNotReady) -> core::option::Option<core::cmp::Ordering>
+pub fn perl_lsp_rs_core::providers::ResolveNotReady::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_lsp_rs_core::providers::ResolveNotReady::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+#[non_exhaustive] pub enum perl_lsp_rs_core::providers::ResolveUnavailable
+pub perl_lsp_rs_core::providers::ResolveUnavailable::ByteOffsetOutOfRange
+pub perl_lsp_rs_core::providers::ResolveUnavailable::NoOccurrenceAtPosition
+pub fn perl_lsp_rs_core::providers::ResolveUnavailable::as_str(self) -> &'static str
+pub fn perl_lsp_rs_core::providers::ResolveUnavailable::clone(&self) -> perl_lsp_rs_core::providers::ResolveUnavailable
+pub fn perl_lsp_rs_core::providers::ResolveUnavailable::cmp(&self, other: &perl_lsp_rs_core::providers::ResolveUnavailable) -> core::cmp::Ordering
+pub fn perl_lsp_rs_core::providers::ResolveUnavailable::eq(&self, other: &perl_lsp_rs_core::providers::ResolveUnavailable) -> bool
+pub fn perl_lsp_rs_core::providers::ResolveUnavailable::partial_cmp(&self, other: &perl_lsp_rs_core::providers::ResolveUnavailable) -> core::option::Option<core::cmp::Ordering>
+pub fn perl_lsp_rs_core::providers::ResolveUnavailable::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_lsp_rs_core::providers::ResolveUnavailable::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
 #[non_exhaustive] pub enum perl_lsp_rs_core::providers::SemanticTokensCollectionInput<'a>
 pub perl_lsp_rs_core::providers::SemanticTokensCollectionInput::Ast(&'a perl_ast::ast::Node)
 pub perl_lsp_rs_core::providers::SemanticTokensCollectionInput::CollectionFailure(perl_lsp_rs_core::providers::SemanticTokensCollectionError)
@@ -9219,11 +9395,46 @@ pub perl_lsp_rs_core::providers::RenameResult::edits: alloc::vec::Vec<perl_lsp_r
 pub perl_lsp_rs_core::providers::RenameResult::error: core::option::Option<alloc::string::String>
 pub perl_lsp_rs_core::providers::RenameResult::is_valid: bool
 pub fn perl_lsp_rs_core::providers::RenameResult::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+#[non_exhaustive] pub struct perl_lsp_rs_core::providers::ResolveGenerationBasis
+pub perl_lsp_rs_core::providers::ResolveGenerationBasis::document_generation: perl_semantic_facts::envelope::SourceGeneration
+pub perl_lsp_rs_core::providers::ResolveGenerationBasis::workspace_generation: perl_semantic_facts::envelope::SourceGeneration
+pub fn perl_lsp_rs_core::providers::ResolveGenerationBasis::is_known(&self) -> bool
+pub fn perl_lsp_rs_core::providers::ResolveGenerationBasis::new(document_generation: perl_semantic_facts::envelope::SourceGeneration, workspace_generation: perl_semantic_facts::envelope::SourceGeneration) -> Self
+pub fn perl_lsp_rs_core::providers::ResolveGenerationBasis::clone(&self) -> perl_lsp_rs_core::providers::ResolveGenerationBasis
+pub fn perl_lsp_rs_core::providers::ResolveGenerationBasis::eq(&self, other: &perl_lsp_rs_core::providers::ResolveGenerationBasis) -> bool
+pub fn perl_lsp_rs_core::providers::ResolveGenerationBasis::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_lsp_rs_core::providers::ResolveGenerationBasis::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+#[non_exhaustive] pub struct perl_lsp_rs_core::providers::ResolvedOccurrence
+pub perl_lsp_rs_core::providers::ResolvedOccurrence::canonical_name: alloc::string::String
+pub perl_lsp_rs_core::providers::ResolvedOccurrence::confidence: perl_semantic_facts::Confidence
+pub perl_lsp_rs_core::providers::ResolvedOccurrence::entity_anchor_id: core::option::Option<perl_semantic_facts::AnchorId>
+pub perl_lsp_rs_core::providers::ResolvedOccurrence::entity_confidence: perl_semantic_facts::Confidence
+pub perl_lsp_rs_core::providers::ResolvedOccurrence::entity_id: perl_semantic_facts::EntityId
+pub perl_lsp_rs_core::providers::ResolvedOccurrence::entity_kind: perl_semantic_facts::EntityKind
+pub perl_lsp_rs_core::providers::ResolvedOccurrence::entity_provenance: perl_semantic_facts::Provenance
+pub perl_lsp_rs_core::providers::ResolvedOccurrence::generation: perl_lsp_rs_core::providers::ResolveGenerationBasis
+pub perl_lsp_rs_core::providers::ResolvedOccurrence::limitations: alloc::vec::Vec<perl_lsp_rs_core::providers::ResolveLimitation>
+pub perl_lsp_rs_core::providers::ResolvedOccurrence::occurrence_anchor_id: perl_semantic_facts::AnchorId
+pub perl_lsp_rs_core::providers::ResolvedOccurrence::occurrence_id: perl_semantic_facts::OccurrenceId
+pub perl_lsp_rs_core::providers::ResolvedOccurrence::provenance: perl_semantic_facts::Provenance
+pub perl_lsp_rs_core::providers::ResolvedOccurrence::role: perl_semantic_facts::OccurrenceKind
+pub perl_lsp_rs_core::providers::ResolvedOccurrence::scope_id: core::option::Option<perl_semantic_facts::ScopeId>
+pub fn perl_lsp_rs_core::providers::ResolvedOccurrence::is_exact_evidence(&self) -> bool
+pub fn perl_lsp_rs_core::providers::ResolvedOccurrence::clone(&self) -> perl_lsp_rs_core::providers::ResolvedOccurrence
+pub fn perl_lsp_rs_core::providers::ResolvedOccurrence::eq(&self, other: &perl_lsp_rs_core::providers::ResolvedOccurrence) -> bool
+pub fn perl_lsp_rs_core::providers::ResolvedOccurrence::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_lsp_rs_core::providers::SelectionRangeProvider
 pub fn perl_lsp_rs_core::providers::SelectionRangeProvider::get_selection_ranges(&self, text: &str, positions: &[lsp_types::Position]) -> alloc::vec::Vec<lsp_types::selection_range::SelectionRange>
 pub fn perl_lsp_rs_core::providers::SelectionRangeProvider::new() -> Self
 pub fn perl_lsp_rs_core::providers::SelectionRangeProvider::default() -> perl_lsp_rs_core::providers::SelectionRangeProvider
 pub fn perl_lsp_rs_core::providers::SelectionRangeProvider::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_lsp_rs_core::providers::SemanticQueriesResolveSource<'queries, Q: ?core::marker::Sized>(_)
+pub fn perl_lsp_rs_core::providers::SemanticQueriesResolveSource<'queries, Q>::new(queries: &'queries Q) -> Self
+pub fn perl_lsp_rs_core::providers::SemanticQueriesResolveSource<'queries, Q>::clone(&self) -> perl_lsp_rs_core::providers::SemanticQueriesResolveSource<'queries, Q>
+pub fn perl_lsp_rs_core::providers::SemanticQueriesResolveSource<'queries, Q>::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_lsp_rs_core::providers::SemanticQueriesResolveSource<'_, Q>::resolve_dynamic_boundary_at(&self, file_id: perl_semantic_facts::FileId, byte_offset: u32) -> core::option::Option<perl_semantic_facts::OccurrenceFact>
+pub fn perl_lsp_rs_core::providers::SemanticQueriesResolveSource<'_, Q>::resolve_occurrence_at(&self, file_id: perl_semantic_facts::FileId, byte_offset: u32) -> core::option::Option<perl_semantic_facts::OccurrenceFact>
+pub fn perl_lsp_rs_core::providers::SemanticQueriesResolveSource<'_, Q>::resolve_symbol_at(&self, file_id: perl_semantic_facts::FileId, byte_offset: u32) -> core::option::Option<(perl_semantic_facts::EntityFact, perl_semantic_facts::OccurrenceFact)>
 #[non_exhaustive] pub struct perl_lsp_rs_core::providers::SemanticTokenShadowCandidate
 pub perl_lsp_rs_core::providers::SemanticTokenShadowCandidate::anchor_id: core::option::Option<perl_semantic_facts::AnchorId>
 pub perl_lsp_rs_core::providers::SemanticTokenShadowCandidate::confidence: perl_semantic_facts::Confidence
@@ -9461,6 +9672,14 @@ pub trait perl_lsp_rs_core::providers::ProviderSemanticPort
 pub fn perl_lsp_rs_core::providers::ProviderSemanticPort::query(&self, request: &perl_lsp_rs_core::providers::ProviderQueryRequest, control: &dyn perl_lsp_rs_core::providers::ProviderQueryControl) -> core::result::Result<perl_lsp_rs_core::providers::ProviderQueryResultDraft, perl_lsp_rs_core::providers::ProviderQueryContractError>
 pub fn perl_lsp_rs_core::providers::CanonicalEnvelopePort::query(&self, request: &perl_lsp_rs_core::providers::ProviderQueryRequest, control: &dyn perl_lsp_rs_core::providers::ProviderQueryControl) -> core::result::Result<perl_lsp_rs_core::providers::ProviderQueryResultDraft, perl_lsp_rs_core::providers::ProviderQueryContractError>
 pub fn perl_lsp_rs_core::providers::FileFactShardPort::query(&self, request: &perl_lsp_rs_core::providers::ProviderQueryRequest, control: &dyn perl_lsp_rs_core::providers::ProviderQueryControl) -> core::result::Result<perl_lsp_rs_core::providers::ProviderQueryResultDraft, perl_lsp_rs_core::providers::ProviderQueryContractError>
+pub trait perl_lsp_rs_core::providers::ResolveAtSource
+pub fn perl_lsp_rs_core::providers::ResolveAtSource::resolve_dynamic_boundary_at(&self, file_id: perl_semantic_facts::FileId, byte_offset: u32) -> core::option::Option<perl_semantic_facts::OccurrenceFact>
+pub fn perl_lsp_rs_core::providers::ResolveAtSource::resolve_occurrence_at(&self, file_id: perl_semantic_facts::FileId, byte_offset: u32) -> core::option::Option<perl_semantic_facts::OccurrenceFact>
+pub fn perl_lsp_rs_core::providers::ResolveAtSource::resolve_symbol_at(&self, file_id: perl_semantic_facts::FileId, byte_offset: u32) -> core::option::Option<(perl_semantic_facts::EntityFact, perl_semantic_facts::OccurrenceFact)>
+pub fn perl_lsp_rs_core::providers::SemanticQueriesResolveSource<'_, Q>::resolve_dynamic_boundary_at(&self, file_id: perl_semantic_facts::FileId, byte_offset: u32) -> core::option::Option<perl_semantic_facts::OccurrenceFact>
+pub fn perl_lsp_rs_core::providers::SemanticQueriesResolveSource<'_, Q>::resolve_occurrence_at(&self, file_id: perl_semantic_facts::FileId, byte_offset: u32) -> core::option::Option<perl_semantic_facts::OccurrenceFact>
+pub fn perl_lsp_rs_core::providers::SemanticQueriesResolveSource<'_, Q>::resolve_symbol_at(&self, file_id: perl_semantic_facts::FileId, byte_offset: u32) -> core::option::Option<(perl_semantic_facts::EntityFact, perl_semantic_facts::OccurrenceFact)>
+pub fn perl_lsp_rs_core::providers::accepted_generation_basis(index: &perl_workspace::workspace::workspace_index::WorkspaceIndex, uri: &str) -> perl_lsp_rs_core::providers::ResolveGenerationBasis
 pub fn perl_lsp_rs_core::providers::add_xs_api_completions_for_prefix(completions: &mut alloc::vec::Vec<perl_lsp_rs_core::providers::CompletionItem>, prefix: &str, prefix_start: usize, position: usize, source: &str, filepath: core::option::Option<&str>)
 pub fn perl_lsp_rs_core::providers::adjust_location_for_sigil(location: perl_position_tracking::span::SourceLocation, kind: perl_symbol::types::SymbolKind) -> perl_position_tracking::span::SourceLocation
 pub fn perl_lsp_rs_core::providers::apply_rename_edits(source: &str, edits: &[perl_lsp_rs_core::providers::TextEdit]) -> alloc::string::String
@@ -9515,6 +9734,8 @@ pub fn perl_lsp_rs_core::providers::query_fact_from_envelope(role: perl_lsp_rs_c
 pub fn perl_lsp_rs_core::providers::references_pir_promote(mode: perl_lsp_rs_core::providers::references_pir_shadow::PromotionMode, target_sigil: &str, target_name: &str, pir_receipt: &perl_parser_core::pir::extractor::LexicalExtractorReceipt, legacy_result: &[(usize, usize)], target_body_idx: usize, uri_mapper: &dyn core::ops::function::Fn(usize, usize) -> lsp_types::Range, opts: perl_lsp_rs_core::providers::references_pir_shadow::ReferenceOptions) -> perl_lsp_rs_core::providers::references_pir_shadow::ReferencesPirPromoteOutcome
 pub fn perl_lsp_rs_core::providers::render_snippet_plaintext(body: &str) -> alloc::string::String
 pub fn perl_lsp_rs_core::providers::render_snippet_plaintext(body: &str) -> alloc::string::String
+pub fn perl_lsp_rs_core::providers::resolve_at_position<S>(source: &S, file_id: perl_semantic_facts::FileId, byte_offset: u32, generation: &perl_lsp_rs_core::providers::ResolveGenerationBasis, stale: bool) -> perl_lsp_rs_core::providers::ResolveAtOutcome where S: perl_lsp_rs_core::providers::ResolveAtSource + ?core::marker::Sized
+pub fn perl_lsp_rs_core::providers::resolve_at_position_with_dynamic_boundary<S>(source: &S, file_id: perl_semantic_facts::FileId, byte_offset: u32, generation: &perl_lsp_rs_core::providers::ResolveGenerationBasis, stale: bool) -> perl_lsp_rs_core::providers::ResolveAtOutcome where S: perl_lsp_rs_core::providers::ResolveAtSource + ?core::marker::Sized
 pub fn perl_lsp_rs_core::providers::resolve_code_lens(lens: perl_lsp_rs_core::providers::CodeLens, reference_count: usize) -> perl_lsp_rs_core::providers::CodeLens
 pub fn perl_lsp_rs_core::providers::selection_ranges(text: &str, positions: &[lsp_types::Position]) -> alloc::vec::Vec<lsp_types::selection_range::SelectionRange>
 pub fn perl_lsp_rs_core::providers::semantic_token_source_shadow(legacy_tokens: alloc::vec::Vec<perl_lsp_rs_core::providers::SemanticTokenShadowLegacy>, compiler_candidates: alloc::vec::Vec<perl_lsp_rs_core::providers::SemanticTokenShadowCandidate>, symbol: &str) -> perl_lsp_rs_core::providers::SemanticTokenShadowResult
@@ -9523,6 +9744,7 @@ pub fn perl_lsp_rs_core::providers::snippet_body_defects(body: &str) -> alloc::v
 pub fn perl_lsp_rs_core::providers::snippet_body_defects(body: &str) -> alloc::vec::Vec<alloc::string::String>
 pub fn perl_lsp_rs_core::providers::sort_imports(imports: alloc::vec::Vec<alloc::string::String>) -> alloc::vec::Vec<alloc::string::String>
 pub fn perl_lsp_rs_core::providers::source_backed_document_symbols_from_ast(ast: &perl_ast::ast::Node, source: &str) -> perl_lsp_rs_core::providers::DocumentSymbolLiveResult
+pub fn perl_lsp_rs_core::providers::stable_basis_view<Basis, Outcome>(basis: impl core::ops::function::Fn() -> Basis, write_version: impl core::ops::function::Fn() -> u64, view: impl core::ops::function::FnMut(&Basis) -> Outcome, attempts: u8) -> core::option::Option<(Basis, Outcome)>
 pub fn perl_lsp_rs_core::providers::take_critic_overlap_observations(diagnostics: &mut alloc::vec::Vec<perl_lsp_rs_core::providers::Diagnostic>) -> alloc::vec::Vec<perl_lsp_rs_core::tooling::perl_critic::BuiltInCriticObservation>
 pub fn perl_lsp_rs_core::providers::trivial_type_hints(ast: &perl_ast::ast::Node, to_pos16: &impl core::ops::function::Fn(usize) -> (u32, u32), range: core::option::Option<perl_position_tracking::wire::WireRange>) -> alloc::vec::Vec<serde_json::value::Value>
 pub fn perl_lsp_rs_core::providers::validate_endpoint(url: &str, allow_local_http: bool) -> core::result::Result<perl_lsp_rs_core::providers::destination::ApprovedDestination, perl_lsp_rs_core::providers::destination::DestinationError>
@@ -11999,8 +12221,8 @@ pub fn perl_lsp_rs_core::transport::incoming::IncomingMessageStage::fmt(&self, f
 pub fn perl_lsp_rs_core::transport::incoming::IncomingMessageStage::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_lsp_rs_core::transport::incoming::ContentLengthMessageReader
 pub fn perl_lsp_rs_core::transport::incoming::ContentLengthMessageReader::new() -> Self
-pub fn perl_lsp_rs_core::transport::incoming::ContentLengthMessageReader::read_next(&mut self, reader: &mut dyn alloc::io::read::Read) -> std::io::Result<core::option::Option<perl_lsp_rs_core::protocol::JsonRpcRequest>>
-pub fn perl_lsp_rs_core::transport::incoming::ContentLengthMessageReader::read_next_outcome(&mut self, reader: &mut dyn alloc::io::read::Read) -> std::io::Result<core::option::Option<core::result::Result<perl_lsp_rs_core::protocol::JsonRpcRequest, perl_lsp_rs_core::transport::incoming::IncomingMessageError>>>
+pub fn perl_lsp_rs_core::transport::incoming::ContentLengthMessageReader::read_next(&mut self, reader: &mut dyn std::io::Read) -> std::io::Result<core::option::Option<perl_lsp_rs_core::protocol::JsonRpcRequest>>
+pub fn perl_lsp_rs_core::transport::incoming::ContentLengthMessageReader::read_next_outcome(&mut self, reader: &mut dyn std::io::Read) -> std::io::Result<core::option::Option<core::result::Result<perl_lsp_rs_core::protocol::JsonRpcRequest, perl_lsp_rs_core::transport::incoming::IncomingMessageError>>>
 pub fn perl_lsp_rs_core::transport::incoming::ContentLengthMessageReader::default() -> perl_lsp_rs_core::transport::incoming::ContentLengthMessageReader
 pub fn perl_lsp_rs_core::transport::incoming::decode_incoming_body(body: &[u8]) -> core::result::Result<perl_lsp_rs_core::protocol::JsonRpcRequest, perl_lsp_rs_core::transport::incoming::IncomingMessageError>
 pub fn perl_lsp_rs_core::transport::incoming::read_message(reader: &mut dyn std::io::BufRead) -> std::io::Result<core::option::Option<perl_lsp_rs_core::protocol::JsonRpcRequest>>
@@ -12063,8 +12285,8 @@ pub fn perl_lsp_rs_core::transport::framing::ContentLengthFramer::default() -> p
 pub fn perl_lsp_rs_core::transport::framing::ContentLengthFramer::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_lsp_rs_core::transport::ContentLengthMessageReader
 pub fn perl_lsp_rs_core::transport::incoming::ContentLengthMessageReader::new() -> Self
-pub fn perl_lsp_rs_core::transport::incoming::ContentLengthMessageReader::read_next(&mut self, reader: &mut dyn alloc::io::read::Read) -> std::io::Result<core::option::Option<perl_lsp_rs_core::protocol::JsonRpcRequest>>
-pub fn perl_lsp_rs_core::transport::incoming::ContentLengthMessageReader::read_next_outcome(&mut self, reader: &mut dyn alloc::io::read::Read) -> std::io::Result<core::option::Option<core::result::Result<perl_lsp_rs_core::protocol::JsonRpcRequest, perl_lsp_rs_core::transport::incoming::IncomingMessageError>>>
+pub fn perl_lsp_rs_core::transport::incoming::ContentLengthMessageReader::read_next(&mut self, reader: &mut dyn std::io::Read) -> std::io::Result<core::option::Option<perl_lsp_rs_core::protocol::JsonRpcRequest>>
+pub fn perl_lsp_rs_core::transport::incoming::ContentLengthMessageReader::read_next_outcome(&mut self, reader: &mut dyn std::io::Read) -> std::io::Result<core::option::Option<core::result::Result<perl_lsp_rs_core::protocol::JsonRpcRequest, perl_lsp_rs_core::transport::incoming::IncomingMessageError>>>
 pub fn perl_lsp_rs_core::transport::incoming::ContentLengthMessageReader::default() -> perl_lsp_rs_core::transport::incoming::ContentLengthMessageReader
 pub const perl_lsp_rs_core::transport::MAX_FRAME_SIZE: usize
 pub fn perl_lsp_rs_core::transport::decode_incoming_body(body: &[u8]) -> core::result::Result<perl_lsp_rs_core::protocol::JsonRpcRequest, perl_lsp_rs_core::transport::incoming::IncomingMessageError>

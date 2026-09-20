@@ -4284,7 +4284,6 @@ created = "2026-09-15"
 review_after = "2026-10-15"
 expires = "2026-12-31"
 removal_criteria = "Remove when ripr#1429-class tracing covers fn-pointer call sites on the deletion side of a diff, or when this PR's deletion probes age out of the diff scope. Narrow immediately if any seam unrelated to ParseFailure classification lands in this file."
-
 # -----------------------------------------------------------------------------
 # issue_controllers train validator (PR #15416, T02 of #11765): new-module
 # declarations with no static test path (ripr#1429 class).
