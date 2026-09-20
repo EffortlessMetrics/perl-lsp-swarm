@@ -191,7 +191,15 @@ fn module_edges(path: &Path, lines: &[String]) -> Vec<ModuleEdge> {
             if let Ok(included) = file_dir.join(target).canonicalize()
                 && included.is_file()
             {
-                edges.push(ModuleEdge { files: vec![included], gated: false });
+                // A splice is gated exactly as a declaration is: by the
+                // attribute on its own line, and by any enclosing inline
+                // module that was itself gated. `#[cfg(test)] include!(…)`
+                // names source the compiler builds only under `cfg(test)`,
+                // so reading it as a production edge holds every panic site
+                // in the spliced file inside the production closure and
+                // makes rule (3) hand it back at the end.
+                let gated = gated || inline.iter().any(|(_, _, open_gated)| *open_gated);
+                edges.push(ModuleEdge { files: vec![included], gated });
             }
             gated = false;
             redirect = None;
@@ -1020,6 +1028,44 @@ mod tests {
         ensure!(
             !found.contains(&shared),
             "`live/../shared.rs` and `shared.rs` are one file; the production include must override the gated alias"
+        );
+        Ok(())
+    }
+
+    /// The other direction of the `include!` rule, and the one the production
+    /// edge above would otherwise swallow: a splice is *gated* exactly as a
+    /// declaration is. Reading `#[cfg(test)] include!("cases.rs")` as
+    /// production seeds the production closure with test-only source, and
+    /// rule (3) then hands the whole spliced file back as in-scope forever.
+    #[test]
+    fn a_gated_include_splices_test_only_source() -> Result<()> {
+        let tree = Tree::new("include-gated")?;
+        let root = tree.write("lib.rs", "#[cfg(test)]\ninclude!(\"cases.rs\");\n")?;
+        let cases = tree.write("cases.rs", "fn f() { x.unwrap(); }\n")?;
+
+        let found = test_only_source_files(&[root, cases.clone()])?;
+        ensure!(
+            found.contains(&cases),
+            "a `#[cfg(test)]` include! reaches test source only; found {found:?}"
+        );
+        Ok(())
+    }
+
+    /// The same rule one level up. Here the splice's own line carries no
+    /// attribute at all -- the gate belongs to the inline module holding it --
+    /// so only the enclosing-block check can see it, which is the half a
+    /// same-line test would miss.
+    #[test]
+    fn an_include_inside_a_gated_inline_module_is_gated_too() -> Result<()> {
+        let tree = Tree::new("include-inline-gated")?;
+        let root =
+            tree.write("lib.rs", "#[cfg(test)]\nmod harness {\n    include!(\"cases.rs\");\n}\n")?;
+        let cases = tree.write("cases.rs", "fn f() { x.unwrap(); }\n")?;
+
+        let found = test_only_source_files(&[root, cases.clone()])?;
+        ensure!(
+            found.contains(&cases),
+            "the enclosing `#[cfg(test)] mod` gates everything it splices; found {found:?}"
         );
         Ok(())
     }
