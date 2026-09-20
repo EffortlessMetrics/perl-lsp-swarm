@@ -2130,7 +2130,11 @@ dependencies = [
  "criterion",
  "perl-ast",
  "perl-parser-core",
+ "perl-semantic-facts",
+ "perl-source-identity",
  "proptest",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
