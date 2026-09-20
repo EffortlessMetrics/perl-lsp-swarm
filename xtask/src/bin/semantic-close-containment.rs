@@ -208,7 +208,14 @@ struct IssueSubject {
 #[derive(Clone, Debug)]
 enum IssueEvidence {
     Available(IssueSubject),
+    /// The relation itself does not hold: the pull request names an issue that
+    /// is absent, foreign, or not an issue at all. A verdict about the pull
+    /// request, so it maps to `NOT_PROVEN_GITHUB` and exit 3.
     Unavailable(String),
+    /// The lookup could not be performed: `gh` would not start, the transport
+    /// failed, or the response was unusable. #16214 — this says nothing about
+    /// the pull request, so it maps to `INSTRUMENT_FAILURE` and exit 4.
+    LookupFailed(String),
 }
 
 #[derive(Clone, Debug)]
@@ -686,7 +693,7 @@ fn evaluate_fixture_with_rules(fixture: &Fixture, rules: RuleGate) -> Result<Rep
         &pull,
         |key| {
             issues.get(key).cloned().unwrap_or_else(|| {
-                IssueEvidence::Unavailable("fixture omitted the referenced issue".to_string())
+                IssueEvidence::LookupFailed("fixture omitted the referenced issue".to_string())
             })
         },
         rules,
@@ -765,13 +772,7 @@ where
         rows.push(evaluate_relation(pull, &sections, relation_count, relation, evidence, rules));
     }
 
-    let aggregate_code = rows
-        .iter()
-        .find(|row| row.code.is_failure())
-        .map(|row| row.code)
-        .or_else(|| rows.iter().find(|row| row.code.is_instrument_failure()).map(|row| row.code))
-        .or_else(|| rows.iter().find(|row| row.code.is_not_proven()).map(|row| row.code))
-        .unwrap_or(ResultCode::PassNoHighConfidenceContradiction);
+    let aggregate_code = aggregate_code(&rows);
 
     Ok(Report {
         schema_version: REPORT_SCHEMA,
@@ -783,6 +784,19 @@ where
         rows,
         subject_snapshot: None,
     })
+}
+
+/// The headline row a reader sees. It shares its precedence with
+/// [`Report::exit_code`] deliberately: #16214 exists because the two
+/// disagreed, so they are defined once and tested together rather than
+/// recomputed at each call site.
+fn aggregate_code(rows: &[RelationResult]) -> ResultCode {
+    rows.iter()
+        .find(|row| row.code.is_failure())
+        .map(|row| row.code)
+        .or_else(|| rows.iter().find(|row| row.code.is_instrument_failure()).map(|row| row.code))
+        .or_else(|| rows.iter().find(|row| row.code.is_not_proven()).map(|row| row.code))
+        .unwrap_or(ResultCode::PassNoHighConfidenceContradiction)
 }
 
 fn evaluate_relation(
@@ -813,6 +827,15 @@ fn evaluate_relation(
                 ResultCode::NotProvenGithub,
                 format!(
                     "terminal relation could not be checked against its issue subject: {}",
+                    sanitize_for_output(&reason, 512)
+                ),
+            );
+        }
+        IssueEvidence::LookupFailed(reason) => {
+            return unavailable(
+                ResultCode::InstrumentFailure,
+                format!(
+                    "the issue lookup could not be performed, so this relation was not evaluated: {}",
                     sanitize_for_output(&reason, 512)
                 ),
             );
@@ -991,6 +1014,19 @@ fn failed_row(
     }
 }
 
+/// `gh api` reports every HTTP error through the same exit status, so the two
+/// outcomes are told apart on stderr. A 404 is the pull request's problem — it
+/// names an issue that does not exist — while a 401, a 403, a rate limit or a
+/// network error is the validator's (#16214). Split out from the caller so the
+/// classification has a control; the caller itself shells out to `gh`.
+fn classify_gh_failure(stderr: &str, detail: String) -> IssueEvidence {
+    if stderr.contains("(HTTP 404)") || stderr.contains("HTTP 404:") {
+        IssueEvidence::Unavailable(detail)
+    } else {
+        IssueEvidence::LookupFailed(detail)
+    }
+}
+
 fn fetch_issue_live(key: &IssueKey) -> IssueEvidence {
     if let Err(error) = canonical_repository(&key.repository) {
         return IssueEvidence::Unavailable(error.to_string());
@@ -999,23 +1035,31 @@ fn fetch_issue_live(key: &IssueKey) -> IssueEvidence {
     let output = match Command::new("gh").args(["api", "--method", "GET", &endpoint]).output() {
         Ok(output) => output,
         Err(error) => {
-            return IssueEvidence::Unavailable(format!("failed to start gh api: {error}"));
+            return IssueEvidence::LookupFailed(format!("failed to start gh api: {error}"));
         }
     };
     if !output.status.success() {
-        return IssueEvidence::Unavailable(format!("gh api exited with status {}", output.status));
+        // `gh api` reports every HTTP error the same way in its exit status, so
+        // the two outcomes are told apart on stderr. A 404 is the pull request's
+        // problem — it names an issue that does not exist — while a 401, a 403,
+        // a rate limit or a network error is the validator's (#16214).
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let detail = format!("gh api exited with status {}: {}", output.status, stderr.trim());
+        return classify_gh_failure(&stderr, detail);
     }
     if output.stdout.len() > MAX_GITHUB_OUTPUT_BYTES {
-        return IssueEvidence::Unavailable("GitHub issue response exceeded the input bound".into());
+        return IssueEvidence::LookupFailed(
+            "GitHub issue response exceeded the input bound".into(),
+        );
     }
     let payload: GithubIssuePayload = match serde_json::from_slice(&output.stdout) {
         Ok(payload) => payload,
         Err(error) => {
-            return IssueEvidence::Unavailable(format!("invalid GitHub issue response: {error}"));
+            return IssueEvidence::LookupFailed(format!("invalid GitHub issue response: {error}"));
         }
     };
     if payload.number != key.number {
-        return IssueEvidence::Unavailable("GitHub returned a different issue number".into());
+        return IssueEvidence::LookupFailed("GitHub returned a different issue number".into());
     }
     if payload.pull_request.is_some() {
         return IssueEvidence::Unavailable(
@@ -2522,13 +2566,15 @@ mod tests {
                 suggested_relation: None,
                 retirement_mapping: None,
             })
-            .collect();
+            .collect::<Vec<_>>();
         Report {
             schema_version: REPORT_SCHEMA,
             repository: "effortlessmetrics/perl-lsp-swarm".to_string(),
             pull_request_number: 16214,
             pull_request_title: "synthetic".to_string(),
-            aggregate_code: ResultCode::PassNoHighConfidenceContradiction,
+            // Through the production helper, not a literal: a report whose
+            // headline is hardcoded cannot falsify the headline.
+            aggregate_code: aggregate_code(&rows),
             semantic_completion_proven: false,
             rows,
             subject_snapshot: None,
@@ -2600,6 +2646,84 @@ mod tests {
         Ok(())
     }
 
+    /// The 404 seam, pinned directly: without this, deleting the 404 branch
+    /// left every other control green, because nothing drives `gh`.
+    #[test]
+    fn only_a_404_from_gh_is_a_verdict_about_the_pull_request() -> Result<()> {
+        for stderr in [
+            "gh: Not Found (HTTP 404)",
+            "HTTP 404: Not Found (https://api.github.com/repos/o/r/issues/1)",
+        ] {
+            if !matches!(
+                classify_gh_failure(stderr, stderr.to_string()),
+                IssueEvidence::Unavailable(_)
+            ) {
+                bail!("a 404 must read as an absent issue, not a broken validator: {stderr:?}");
+            }
+        }
+        for stderr in [
+            "gh: Bad credentials (HTTP 401)",
+            "gh: API rate limit exceeded (HTTP 403)",
+            "error connecting to api.github.com",
+            "gh: Internal Server Error (HTTP 500)",
+            "",
+        ] {
+            if !matches!(
+                classify_gh_failure(stderr, stderr.to_string()),
+                IssueEvidence::LookupFailed(_)
+            ) {
+                bail!("a transport failure must not be reported as a verdict: {stderr:?}");
+            }
+        }
+        Ok(())
+    }
+
+    /// The split has to survive the live lookup, not just the exit table.
+    /// `fetch_issue_live` used to funnel a dead transport and an absent issue
+    /// into one `Unavailable`, so a `gh` that would not start was reported as a
+    /// verdict about the pull request. These drive the production evaluator
+    /// with each evidence kind and read the exit code it actually produces.
+    #[test]
+    fn a_failed_lookup_and_an_absent_issue_reach_different_exit_codes() -> Result<()> {
+        let pull = PullRequestSubject {
+            repository: "effortlessmetrics/perl-lsp-swarm".to_string(),
+            number: 16233,
+            title: "synthetic".to_string(),
+            body: "Closes #1234\n".to_string(),
+        };
+
+        let lookup_failed = evaluate_with_rules(
+            &pull,
+            |_| IssueEvidence::LookupFailed("failed to start gh api: No such file".to_string()),
+            RuleGate::all_rules(),
+        )?;
+        if lookup_failed.exit_code() != EXIT_INSTRUMENT_FAILURE {
+            bail!(
+                "a lookup that could not run exited {}, expected {EXIT_INSTRUMENT_FAILURE}",
+                lookup_failed.exit_code()
+            );
+        }
+        if lookup_failed.aggregate_code != ResultCode::InstrumentFailure {
+            bail!("a lookup that could not run reported {:?}", lookup_failed.aggregate_code);
+        }
+
+        let absent_issue = evaluate_with_rules(
+            &pull,
+            |_| IssueEvidence::Unavailable("gh api exited with status 1: (HTTP 404)".to_string()),
+            RuleGate::all_rules(),
+        )?;
+        if absent_issue.exit_code() != EXIT_NOT_PROVEN {
+            bail!(
+                "an absent issue exited {}, expected {EXIT_NOT_PROVEN}",
+                absent_issue.exit_code()
+            );
+        }
+        if absent_issue.aggregate_code != ResultCode::NotProvenGithub {
+            bail!("an absent issue reported {:?}", absent_issue.aggregate_code);
+        }
+        Ok(())
+    }
+
     /// Precedence, asserted rather than left to row order: a mixed report must
     /// not report a verdict it did not reach.
     #[test]
@@ -2630,26 +2754,42 @@ mod tests {
     }
 
     /// The headline row a reader sees must not contradict the exit code the
-    /// workflow classifies.
+    /// workflow classifies. Both are read off the production report rather
+    /// than recomputed here, so reordering or dropping an arm in either one
+    /// fails this test.
     #[test]
     fn the_aggregate_row_agrees_with_the_exit_code() -> Result<()> {
-        for (codes, expected_aggregate) in [
-            (vec![ResultCode::InstrumentFailure], ResultCode::InstrumentFailure),
+        for (codes, expected_aggregate, expected_exit) in [
+            (
+                vec![ResultCode::InstrumentFailure],
+                ResultCode::InstrumentFailure,
+                EXIT_INSTRUMENT_FAILURE,
+            ),
             (
                 vec![ResultCode::NotProvenGithub, ResultCode::InstrumentFailure],
                 ResultCode::InstrumentFailure,
+                EXIT_INSTRUMENT_FAILURE,
             ),
-            (vec![ResultCode::NotProvenGithub], ResultCode::NotProvenGithub),
+            (vec![ResultCode::NotProvenGithub], ResultCode::NotProvenGithub, EXIT_NOT_PROVEN),
+            (
+                vec![ResultCode::InstrumentFailure, ResultCode::FailPhaseTerminalRelation],
+                ResultCode::FailPhaseTerminalRelation,
+                EXIT_CONTRADICTION,
+            ),
+            (vec![ResultCode::PassNotApplicable], ResultCode::PassNoHighConfidenceContradiction, 0),
         ] {
-            let aggregate = codes
-                .iter()
-                .find(|code| code.is_failure())
-                .or_else(|| codes.iter().find(|code| code.is_instrument_failure()))
-                .or_else(|| codes.iter().find(|code| code.is_not_proven()))
-                .copied()
-                .unwrap_or(ResultCode::PassNoHighConfidenceContradiction);
-            if aggregate != expected_aggregate {
-                bail!("aggregate for {codes:?} was {aggregate:?}, expected {expected_aggregate:?}");
+            let report = report_with(&codes);
+            if report.aggregate_code != expected_aggregate {
+                bail!(
+                    "aggregate for {codes:?} was {:?}, expected {expected_aggregate:?}",
+                    report.aggregate_code
+                );
+            }
+            if report.exit_code() != expected_exit {
+                bail!(
+                    "exit code for {codes:?} was {}, expected {expected_exit}",
+                    report.exit_code()
+                );
             }
         }
         Ok(())
