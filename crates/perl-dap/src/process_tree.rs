@@ -121,8 +121,11 @@ fn descendant_pids(root: u32) -> Vec<u32> {
 
     // SAFETY: CreateToolhelp32Snapshot takes two scalars and dereferences
     // nothing. It reports failure in band as INVALID_HANDLE_VALUE, which the
-    // next line checks before the handle is used, and every path that reaches
-    // past that check closes the handle exactly once.
+    // next line checks before the handle is used, and every normal return
+    // path that reaches past that check closes the handle exactly once. The
+    // handle is a raw HANDLE, not RAII-owned, so that guarantee covers this
+    // function's normal control flow, not an unwind from a panic between
+    // acquisition and `CloseHandle`.
     let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
     if snapshot == INVALID_HANDLE_VALUE {
         tracing::warn!(
