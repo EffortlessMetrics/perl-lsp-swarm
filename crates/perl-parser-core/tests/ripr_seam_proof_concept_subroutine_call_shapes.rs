@@ -119,6 +119,19 @@ fn sequential_forward_declarations_keep_ordered_spans() -> Result<(), String> {
         foo[0].location,
         bar[0].location
     );
+    // The outer declaration span is the repaired surface (#8740): pin its
+    // exact source slice so a reverted last_end_position fails, not merely
+    // reorders. The semicolon terminator is not part of the declaration node.
+    assert_eq!(
+        source_text(source, &foo[0]).as_deref(),
+        Some("sub foo"),
+        "foo declaration must end at its own name, not a stale end position"
+    );
+    assert_eq!(
+        source_text(source, &bar[0]).as_deref(),
+        Some("sub bar"),
+        "bar declaration must end at its own name, not a stale end position"
+    );
     let NodeKind::Subroutine { name_span, .. } = &bar[0].kind else {
         return Err("bar declaration changed NodeKind".to_string());
     };
@@ -127,6 +140,11 @@ fn sequential_forward_declarations_keep_ordered_spans() -> Result<(), String> {
     let qualified = parse_clean("sub ::QFoo;")?;
     let decls = collect_named_subroutines(&qualified, "::QFoo");
     assert_eq!(decls.len(), 1, "expected one qualified declaration");
+    assert_eq!(
+        source_text("sub ::QFoo;", &decls[0]).as_deref(),
+        Some("sub ::QFoo"),
+        "leading-qualified declaration must end at its own name, not a stale end"
+    );
     let NodeKind::Subroutine { name_span, .. } = &decls[0].kind else {
         return Err("qualified declaration changed NodeKind".to_string());
     };
