@@ -1080,6 +1080,11 @@ jobs:
       contents: read
       # #6807: read the failed lane's job log to classify runner evictions.
       actions: read
+      # #16101: read this pull request's live draft state and the conclusions
+      # already published for this head, so a stale draft snapshot cannot
+      # overwrite the verdict of the run that analyzed it.
+      checks: read
+      pull-requests: read
     steps:
       - name: Establish gate deadline
         if: always()
@@ -1123,6 +1128,9 @@ jobs:
       - name: Evaluate routed result
         shell: bash
         env:
+          CHECK_NAME: ripr+ New Gap Gate
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           IS_DRAFT_PR: ${{ github.event_name == 'pull_request' && github.event.pull_request.draft == true }}
           ROUTE_RESULT: ${{ needs.route-ripr.result }}
           ROUTER_TARGET: ${{ needs.route-ripr.outputs.target }}
@@ -1183,10 +1191,63 @@ jobs:
             echo "- fallback_result: \`${FALLBACK_RESULT:-}\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
+          # IS_DRAFT_PR is the webhook's snapshot of the pull request, taken
+          # when this run was created. `cancel-in-progress` is false here by
+          # design, so a run created while the pull request was a draft always
+          # finishes, and its gate can land after the gate of the run that
+          # actually analyzed the head.
+          #
+          # Measured on #16094, head c9bf380f4: the run that executed the lane
+          # posted `ripr+ New Gap Gate` success at 05:35:59 with
+          # RIPR_GATE_VERDICT=success, and the superseded draft run posted
+          # draft-no-proof at 05:36:10, eleven seconds later, on a head whose
+          # analysis had completed and passed (#16101).
+          #
+          # Only an authoritative success is mirrored. A failure, a
+          # cancellation, or nothing published yet is missing or contradictory
+          # evidence, which AGENTS.md makes NOT_PROVEN, so the run stays
+          # non-successful and the run that analyzes the head overwrites it.
+          live_draft_state() {
+            gh api \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "repos/${GITHUB_REPOSITORY:-}/pulls/${PR_NUMBER:-}" \
+              --jq '.draft'
+          }
+
+          # The newest conclusion another run has already published for this
+          # check on this head. This job's own check run is still in progress,
+          # so the completed filter cannot match it. The check name carries
+          # spaces, so it goes through `-f` rather than into the path.
+          published_conclusion() {
+            gh api -X GET \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "repos/${GITHUB_REPOSITORY:-}/commits/${HEAD_SHA:-}/check-runs" \
+              -f "check_name=${CHECK_NAME:-}" \
+              -F per_page=100 \
+              --jq '[.check_runs[] | select(.status == "completed")]
+                    | sort_by(.completed_at) | last | .conclusion // empty'
+          }
+
           # Draft routing saves work but produces no required-check proof.
           # Preserve non-draft skipped routing (including RIPR cache seeding).
           if [ "$ROUTE_RESULT" = "skipped" ]; then
             if [ "${IS_DRAFT_PR:-false}" = "true" ]; then
+              draft_now="$(live_draft_state || true)"
+              if [ "$draft_now" = "false" ]; then
+                published="$(published_conclusion || true)"
+                if [ "$published" = "success" ]; then
+                  echo "RIPR_GATE_VERDICT=superseded-draft-snapshot"
+                  echo "- verdict: superseded-draft-snapshot (mirroring published success)" >> "$GITHUB_STEP_SUMMARY"
+                  echo "::notice::This run carries a stale draft snapshot for a pull request that is no longer a draft; mirroring the success already published for ${HEAD_SHA:-}."
+                  exit 0
+                fi
+                echo "RIPR_GATE_VERDICT=superseded-no-proof"
+                echo "- verdict: superseded-no-proof (NOT_PROVEN; published: \`${published:-none}\`)" >> "$GITHUB_STEP_SUMMARY"
+                echo "::error::This run carries a stale draft snapshot and no passing proof has been published for ${HEAD_SHA:-} (published: ${published:-none}); the run that analyzes this head owns the verdict."
+                exit 1
+              fi
               echo "RIPR_GATE_VERDICT=draft-no-proof"
               echo "::error::ripr draft route skipped: NOT_PROVEN; no analysis was executed."
               echo "- verdict: draft-no-proof (NOT_PROVEN)" >> "$GITHUB_STEP_SUMMARY"
