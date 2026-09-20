@@ -773,12 +773,12 @@ pub fn perl_lsp_rs_core::external_tools::external_tool_registry_json() -> core::
 pub fn perl_lsp_rs_core::external_tools::validate_external_tool_registry(registry: &[perl_lsp_rs_core::external_tools::ExternalToolPolicy]) -> core::result::Result<(), perl_lsp_rs_core::external_tools::ExternalToolRegistryError>
 pub mod perl_lsp_rs_core::feature_catalog
 pub enum perl_lsp_rs_core::feature_catalog::CatalogError
-pub perl_lsp_rs_core::feature_catalog::CatalogError::Io(std::io::error::Error)
+pub perl_lsp_rs_core::feature_catalog::CatalogError::Io(core::io::error::Error)
 pub perl_lsp_rs_core::feature_catalog::CatalogError::MissingOverride(std::path::PathBuf)
 pub perl_lsp_rs_core::feature_catalog::CatalogError::MissingSource(std::path::PathBuf)
 pub perl_lsp_rs_core::feature_catalog::CatalogError::Parse(toml::de::error::Error)
 pub perl_lsp_rs_core::feature_catalog::CatalogError::Validation(alloc::string::String)
-pub fn perl_lsp_rs_core::feature_catalog::CatalogError::from(source: std::io::error::Error) -> Self
+pub fn perl_lsp_rs_core::feature_catalog::CatalogError::from(source: core::io::error::Error) -> Self
 pub fn perl_lsp_rs_core::feature_catalog::CatalogError::from(source: toml::de::error::Error) -> Self
 pub fn perl_lsp_rs_core::feature_catalog::CatalogError::source(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>
 pub fn perl_lsp_rs_core::feature_catalog::CatalogError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
@@ -2806,9 +2806,9 @@ pub perl_lsp_rs_core::providers::ai::sse::SseEvent::data: alloc::string::String
 pub perl_lsp_rs_core::providers::ai::sse::SseEvent::event: alloc::string::String
 pub fn perl_lsp_rs_core::providers::sse::SseEvent::clone(&self) -> perl_lsp_rs_core::providers::sse::SseEvent
 pub fn perl_lsp_rs_core::providers::sse::SseEvent::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub struct perl_lsp_rs_core::providers::ai::sse::SseParser<R: std::io::BufRead>
+pub struct perl_lsp_rs_core::providers::ai::sse::SseParser<R: alloc::io::buf_read::BufRead>
 pub fn perl_lsp_rs_core::providers::sse::SseParser<R>::new(reader: R) -> Self
-pub fn perl_lsp_rs_core::providers::sse::SseParser<R>::next_event(&mut self) -> core::result::Result<core::option::Option<perl_lsp_rs_core::providers::sse::SseEvent>, std::io::error::Error>
+pub fn perl_lsp_rs_core::providers::sse::SseParser<R>::next_event(&mut self) -> core::result::Result<core::option::Option<perl_lsp_rs_core::providers::sse::SseEvent>, core::io::error::Error>
 pub enum perl_lsp_rs_core::providers::ai::DestinationError
 pub perl_lsp_rs_core::providers::ai::DestinationError::DisallowedAddress
 pub perl_lsp_rs_core::providers::ai::DestinationError::HttpsRequired
@@ -5533,9 +5533,12 @@ pub fn perl_lsp_rs_core::providers::TypeHierarchyItem::deserialize<__D>(__deseri
 pub struct perl_lsp_rs_core::providers::navigation::TypeHierarchyProvider
 pub fn perl_lsp_rs_core::providers::TypeHierarchyProvider::c3_mro(&self, ast: &perl_ast::ast::Node, package: &str) -> alloc::vec::Vec<alloc::string::String>
 pub fn perl_lsp_rs_core::providers::TypeHierarchyProvider::find_subtypes(&self, ast: &perl_ast::ast::Node, item: &perl_lsp_rs_core::providers::TypeHierarchyItem) -> alloc::vec::Vec<perl_lsp_rs_core::providers::TypeHierarchyItem>
+pub fn perl_lsp_rs_core::providers::TypeHierarchyProvider::find_subtypes_with_cancellation(&self, ast: &perl_ast::ast::Node, item: &perl_lsp_rs_core::providers::TypeHierarchyItem, is_cancelled: &dyn core::ops::function::Fn() -> bool) -> core::result::Result<alloc::vec::Vec<perl_lsp_rs_core::providers::TypeHierarchyItem>, perl_lsp_rs_core::providers::TypeHierarchyCancelled>
 pub fn perl_lsp_rs_core::providers::TypeHierarchyProvider::find_supertypes(&self, ast: &perl_ast::ast::Node, item: &perl_lsp_rs_core::providers::TypeHierarchyItem) -> alloc::vec::Vec<perl_lsp_rs_core::providers::TypeHierarchyItem>
+pub fn perl_lsp_rs_core::providers::TypeHierarchyProvider::find_supertypes_with_cancellation(&self, ast: &perl_ast::ast::Node, item: &perl_lsp_rs_core::providers::TypeHierarchyItem, is_cancelled: &dyn core::ops::function::Fn() -> bool) -> core::result::Result<alloc::vec::Vec<perl_lsp_rs_core::providers::TypeHierarchyItem>, perl_lsp_rs_core::providers::TypeHierarchyCancelled>
 pub fn perl_lsp_rs_core::providers::TypeHierarchyProvider::new() -> Self
 pub fn perl_lsp_rs_core::providers::TypeHierarchyProvider::prepare(&self, ast: &perl_ast::ast::Node, code: &str, offset: usize) -> core::option::Option<alloc::vec::Vec<perl_lsp_rs_core::providers::TypeHierarchyItem>>
+pub fn perl_lsp_rs_core::providers::TypeHierarchyProvider::prepare_with_cancellation(&self, ast: &perl_ast::ast::Node, code: &str, offset: usize, is_cancelled: &dyn core::ops::function::Fn() -> bool) -> core::result::Result<core::option::Option<alloc::vec::Vec<perl_lsp_rs_core::providers::TypeHierarchyItem>>, perl_lsp_rs_core::providers::TypeHierarchyCancelled>
 pub fn perl_lsp_rs_core::providers::TypeHierarchyProvider::default() -> Self
 pub struct perl_lsp_rs_core::providers::navigation::WorkspaceSymbol
 pub perl_lsp_rs_core::providers::navigation::WorkspaceSymbol::container_name: core::option::Option<alloc::string::String>
@@ -7028,9 +7031,9 @@ pub perl_lsp_rs_core::providers::sse::SseEvent::data: alloc::string::String
 pub perl_lsp_rs_core::providers::sse::SseEvent::event: alloc::string::String
 pub fn perl_lsp_rs_core::providers::sse::SseEvent::clone(&self) -> perl_lsp_rs_core::providers::sse::SseEvent
 pub fn perl_lsp_rs_core::providers::sse::SseEvent::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub struct perl_lsp_rs_core::providers::sse::SseParser<R: std::io::BufRead>
+pub struct perl_lsp_rs_core::providers::sse::SseParser<R: alloc::io::buf_read::BufRead>
 pub fn perl_lsp_rs_core::providers::sse::SseParser<R>::new(reader: R) -> Self
-pub fn perl_lsp_rs_core::providers::sse::SseParser<R>::next_event(&mut self) -> core::result::Result<core::option::Option<perl_lsp_rs_core::providers::sse::SseEvent>, std::io::error::Error>
+pub fn perl_lsp_rs_core::providers::sse::SseParser<R>::next_event(&mut self) -> core::result::Result<core::option::Option<perl_lsp_rs_core::providers::sse::SseEvent>, core::io::error::Error>
 pub mod perl_lsp_rs_core::providers::strict_warnings
 pub fn perl_lsp_rs_core::providers::strict_warnings::check_strict_warnings(node: &perl_ast::ast::Node, diagnostics: &mut alloc::vec::Vec<perl_lsp_rs_core::providers::Diagnostic>)
 pub mod perl_lsp_rs_core::providers::symbol_query
@@ -7168,6 +7171,10 @@ pub fn perl_lsp_rs_core::providers::TypeHierarchySymbolKind::clone(&self) -> per
 pub fn perl_lsp_rs_core::providers::TypeHierarchySymbolKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_lsp_rs_core::providers::TypeHierarchySymbolKind::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 pub fn perl_lsp_rs_core::providers::TypeHierarchySymbolKind::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_lsp_rs_core::providers::type_hierarchy::TypeHierarchyCancelled
+pub fn perl_lsp_rs_core::providers::TypeHierarchyCancelled::clone(&self) -> perl_lsp_rs_core::providers::TypeHierarchyCancelled
+pub fn perl_lsp_rs_core::providers::TypeHierarchyCancelled::eq(&self, other: &perl_lsp_rs_core::providers::TypeHierarchyCancelled) -> bool
+pub fn perl_lsp_rs_core::providers::TypeHierarchyCancelled::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_lsp_rs_core::providers::type_hierarchy::TypeHierarchyItem
 pub perl_lsp_rs_core::providers::type_hierarchy::TypeHierarchyItem::data: core::option::Option<serde_json::value::Value>
 pub perl_lsp_rs_core::providers::type_hierarchy::TypeHierarchyItem::detail: core::option::Option<alloc::string::String>
@@ -7183,9 +7190,12 @@ pub fn perl_lsp_rs_core::providers::TypeHierarchyItem::deserialize<__D>(__deseri
 pub struct perl_lsp_rs_core::providers::type_hierarchy::TypeHierarchyProvider
 pub fn perl_lsp_rs_core::providers::TypeHierarchyProvider::c3_mro(&self, ast: &perl_ast::ast::Node, package: &str) -> alloc::vec::Vec<alloc::string::String>
 pub fn perl_lsp_rs_core::providers::TypeHierarchyProvider::find_subtypes(&self, ast: &perl_ast::ast::Node, item: &perl_lsp_rs_core::providers::TypeHierarchyItem) -> alloc::vec::Vec<perl_lsp_rs_core::providers::TypeHierarchyItem>
+pub fn perl_lsp_rs_core::providers::TypeHierarchyProvider::find_subtypes_with_cancellation(&self, ast: &perl_ast::ast::Node, item: &perl_lsp_rs_core::providers::TypeHierarchyItem, is_cancelled: &dyn core::ops::function::Fn() -> bool) -> core::result::Result<alloc::vec::Vec<perl_lsp_rs_core::providers::TypeHierarchyItem>, perl_lsp_rs_core::providers::TypeHierarchyCancelled>
 pub fn perl_lsp_rs_core::providers::TypeHierarchyProvider::find_supertypes(&self, ast: &perl_ast::ast::Node, item: &perl_lsp_rs_core::providers::TypeHierarchyItem) -> alloc::vec::Vec<perl_lsp_rs_core::providers::TypeHierarchyItem>
+pub fn perl_lsp_rs_core::providers::TypeHierarchyProvider::find_supertypes_with_cancellation(&self, ast: &perl_ast::ast::Node, item: &perl_lsp_rs_core::providers::TypeHierarchyItem, is_cancelled: &dyn core::ops::function::Fn() -> bool) -> core::result::Result<alloc::vec::Vec<perl_lsp_rs_core::providers::TypeHierarchyItem>, perl_lsp_rs_core::providers::TypeHierarchyCancelled>
 pub fn perl_lsp_rs_core::providers::TypeHierarchyProvider::new() -> Self
 pub fn perl_lsp_rs_core::providers::TypeHierarchyProvider::prepare(&self, ast: &perl_ast::ast::Node, code: &str, offset: usize) -> core::option::Option<alloc::vec::Vec<perl_lsp_rs_core::providers::TypeHierarchyItem>>
+pub fn perl_lsp_rs_core::providers::TypeHierarchyProvider::prepare_with_cancellation(&self, ast: &perl_ast::ast::Node, code: &str, offset: usize, is_cancelled: &dyn core::ops::function::Fn() -> bool) -> core::result::Result<core::option::Option<alloc::vec::Vec<perl_lsp_rs_core::providers::TypeHierarchyItem>>, perl_lsp_rs_core::providers::TypeHierarchyCancelled>
 pub fn perl_lsp_rs_core::providers::TypeHierarchyProvider::default() -> Self
 pub mod perl_lsp_rs_core::providers::unreachable_code
 pub fn perl_lsp_rs_core::providers::unreachable_code::check_unreachable_code(root: &perl_ast::ast::Node, diagnostics: &mut alloc::vec::Vec<perl_lsp_rs_core::providers::Diagnostic>)
@@ -9328,6 +9338,10 @@ pub perl_lsp_rs_core::providers::TokensLegend::token_types: alloc::vec::Vec<allo
 pub struct perl_lsp_rs_core::providers::TypeDefinitionProvider
 pub fn perl_lsp_rs_core::providers::TypeDefinitionProvider::new() -> Self
 pub fn perl_lsp_rs_core::providers::TypeDefinitionProvider::default() -> Self
+pub struct perl_lsp_rs_core::providers::TypeHierarchyCancelled
+pub fn perl_lsp_rs_core::providers::TypeHierarchyCancelled::clone(&self) -> perl_lsp_rs_core::providers::TypeHierarchyCancelled
+pub fn perl_lsp_rs_core::providers::TypeHierarchyCancelled::eq(&self, other: &perl_lsp_rs_core::providers::TypeHierarchyCancelled) -> bool
+pub fn perl_lsp_rs_core::providers::TypeHierarchyCancelled::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_lsp_rs_core::providers::TypeHierarchyItem
 pub struct perl_lsp_rs_core::providers::TypeHierarchyItem
 pub perl_lsp_rs_core::providers::TypeHierarchyItem::data: core::option::Option<serde_json::value::Value>
@@ -9358,12 +9372,18 @@ pub fn perl_lsp_rs_core::providers::TypeHierarchyProvider::c3_mro(&self, ast: &p
 pub fn perl_lsp_rs_core::providers::TypeHierarchyProvider::c3_mro(&self, ast: &perl_ast::ast::Node, package: &str) -> alloc::vec::Vec<alloc::string::String>
 pub fn perl_lsp_rs_core::providers::TypeHierarchyProvider::find_subtypes(&self, ast: &perl_ast::ast::Node, item: &perl_lsp_rs_core::providers::TypeHierarchyItem) -> alloc::vec::Vec<perl_lsp_rs_core::providers::TypeHierarchyItem>
 pub fn perl_lsp_rs_core::providers::TypeHierarchyProvider::find_subtypes(&self, ast: &perl_ast::ast::Node, item: &perl_lsp_rs_core::providers::TypeHierarchyItem) -> alloc::vec::Vec<perl_lsp_rs_core::providers::TypeHierarchyItem>
+pub fn perl_lsp_rs_core::providers::TypeHierarchyProvider::find_subtypes_with_cancellation(&self, ast: &perl_ast::ast::Node, item: &perl_lsp_rs_core::providers::TypeHierarchyItem, is_cancelled: &dyn core::ops::function::Fn() -> bool) -> core::result::Result<alloc::vec::Vec<perl_lsp_rs_core::providers::TypeHierarchyItem>, perl_lsp_rs_core::providers::TypeHierarchyCancelled>
+pub fn perl_lsp_rs_core::providers::TypeHierarchyProvider::find_subtypes_with_cancellation(&self, ast: &perl_ast::ast::Node, item: &perl_lsp_rs_core::providers::TypeHierarchyItem, is_cancelled: &dyn core::ops::function::Fn() -> bool) -> core::result::Result<alloc::vec::Vec<perl_lsp_rs_core::providers::TypeHierarchyItem>, perl_lsp_rs_core::providers::TypeHierarchyCancelled>
 pub fn perl_lsp_rs_core::providers::TypeHierarchyProvider::find_supertypes(&self, ast: &perl_ast::ast::Node, item: &perl_lsp_rs_core::providers::TypeHierarchyItem) -> alloc::vec::Vec<perl_lsp_rs_core::providers::TypeHierarchyItem>
 pub fn perl_lsp_rs_core::providers::TypeHierarchyProvider::find_supertypes(&self, ast: &perl_ast::ast::Node, item: &perl_lsp_rs_core::providers::TypeHierarchyItem) -> alloc::vec::Vec<perl_lsp_rs_core::providers::TypeHierarchyItem>
+pub fn perl_lsp_rs_core::providers::TypeHierarchyProvider::find_supertypes_with_cancellation(&self, ast: &perl_ast::ast::Node, item: &perl_lsp_rs_core::providers::TypeHierarchyItem, is_cancelled: &dyn core::ops::function::Fn() -> bool) -> core::result::Result<alloc::vec::Vec<perl_lsp_rs_core::providers::TypeHierarchyItem>, perl_lsp_rs_core::providers::TypeHierarchyCancelled>
+pub fn perl_lsp_rs_core::providers::TypeHierarchyProvider::find_supertypes_with_cancellation(&self, ast: &perl_ast::ast::Node, item: &perl_lsp_rs_core::providers::TypeHierarchyItem, is_cancelled: &dyn core::ops::function::Fn() -> bool) -> core::result::Result<alloc::vec::Vec<perl_lsp_rs_core::providers::TypeHierarchyItem>, perl_lsp_rs_core::providers::TypeHierarchyCancelled>
 pub fn perl_lsp_rs_core::providers::TypeHierarchyProvider::new() -> Self
 pub fn perl_lsp_rs_core::providers::TypeHierarchyProvider::new() -> Self
 pub fn perl_lsp_rs_core::providers::TypeHierarchyProvider::prepare(&self, ast: &perl_ast::ast::Node, code: &str, offset: usize) -> core::option::Option<alloc::vec::Vec<perl_lsp_rs_core::providers::TypeHierarchyItem>>
 pub fn perl_lsp_rs_core::providers::TypeHierarchyProvider::prepare(&self, ast: &perl_ast::ast::Node, code: &str, offset: usize) -> core::option::Option<alloc::vec::Vec<perl_lsp_rs_core::providers::TypeHierarchyItem>>
+pub fn perl_lsp_rs_core::providers::TypeHierarchyProvider::prepare_with_cancellation(&self, ast: &perl_ast::ast::Node, code: &str, offset: usize, is_cancelled: &dyn core::ops::function::Fn() -> bool) -> core::result::Result<core::option::Option<alloc::vec::Vec<perl_lsp_rs_core::providers::TypeHierarchyItem>>, perl_lsp_rs_core::providers::TypeHierarchyCancelled>
+pub fn perl_lsp_rs_core::providers::TypeHierarchyProvider::prepare_with_cancellation(&self, ast: &perl_ast::ast::Node, code: &str, offset: usize, is_cancelled: &dyn core::ops::function::Fn() -> bool) -> core::result::Result<core::option::Option<alloc::vec::Vec<perl_lsp_rs_core::providers::TypeHierarchyItem>>, perl_lsp_rs_core::providers::TypeHierarchyCancelled>
 pub fn perl_lsp_rs_core::providers::TypeHierarchyProvider::default() -> Self
 pub fn perl_lsp_rs_core::providers::TypeHierarchyProvider::default() -> Self
 pub struct perl_lsp_rs_core::providers::WorkspaceSymbol
@@ -11938,8 +11958,8 @@ pub fn perl_lsp_rs_core::transport::framing::ContentLengthFramer::fmt(&self, f: 
 pub const perl_lsp_rs_core::transport::framing::MAX_FRAME_SIZE: usize
 pub fn perl_lsp_rs_core::transport::framing::frame(body: &[u8]) -> alloc::vec::Vec<u8>
 pub fn perl_lsp_rs_core::transport::framing::log_response(response: &perl_lsp_rs_core::protocol::JsonRpcResponse)
-pub fn perl_lsp_rs_core::transport::framing::write_message(writer: &mut dyn std::io::Write, response: &perl_lsp_rs_core::protocol::JsonRpcResponse) -> std::io::error::Result<()>
-pub fn perl_lsp_rs_core::transport::framing::write_notification(writer: &mut dyn std::io::Write, method: &str, params: serde_json::value::Value) -> std::io::error::Result<()>
+pub fn perl_lsp_rs_core::transport::framing::write_message(writer: &mut dyn core::io::write::Write, response: &perl_lsp_rs_core::protocol::JsonRpcResponse) -> core::io::error::Result<()>
+pub fn perl_lsp_rs_core::transport::framing::write_notification(writer: &mut dyn core::io::write::Write, method: &str, params: serde_json::value::Value) -> core::io::error::Result<()>
 pub mod perl_lsp_rs_core::transport::incoming
 #[non_exhaustive] pub enum perl_lsp_rs_core::transport::incoming::IncomingMessageError
 pub perl_lsp_rs_core::transport::incoming::IncomingMessageError::Framing(perl_lsp_rs_core::transport::framing::FramingError)
@@ -11979,12 +11999,12 @@ pub fn perl_lsp_rs_core::transport::incoming::IncomingMessageStage::fmt(&self, f
 pub fn perl_lsp_rs_core::transport::incoming::IncomingMessageStage::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_lsp_rs_core::transport::incoming::ContentLengthMessageReader
 pub fn perl_lsp_rs_core::transport::incoming::ContentLengthMessageReader::new() -> Self
-pub fn perl_lsp_rs_core::transport::incoming::ContentLengthMessageReader::read_next(&mut self, reader: &mut dyn std::io::Read) -> std::io::error::Result<core::option::Option<perl_lsp_rs_core::protocol::JsonRpcRequest>>
-pub fn perl_lsp_rs_core::transport::incoming::ContentLengthMessageReader::read_next_outcome(&mut self, reader: &mut dyn std::io::Read) -> std::io::error::Result<core::option::Option<core::result::Result<perl_lsp_rs_core::protocol::JsonRpcRequest, perl_lsp_rs_core::transport::incoming::IncomingMessageError>>>
+pub fn perl_lsp_rs_core::transport::incoming::ContentLengthMessageReader::read_next(&mut self, reader: &mut dyn alloc::io::read::Read) -> core::io::error::Result<core::option::Option<perl_lsp_rs_core::protocol::JsonRpcRequest>>
+pub fn perl_lsp_rs_core::transport::incoming::ContentLengthMessageReader::read_next_outcome(&mut self, reader: &mut dyn alloc::io::read::Read) -> core::io::error::Result<core::option::Option<core::result::Result<perl_lsp_rs_core::protocol::JsonRpcRequest, perl_lsp_rs_core::transport::incoming::IncomingMessageError>>>
 pub fn perl_lsp_rs_core::transport::incoming::ContentLengthMessageReader::default() -> perl_lsp_rs_core::transport::incoming::ContentLengthMessageReader
 pub fn perl_lsp_rs_core::transport::incoming::decode_incoming_body(body: &[u8]) -> core::result::Result<perl_lsp_rs_core::protocol::JsonRpcRequest, perl_lsp_rs_core::transport::incoming::IncomingMessageError>
-pub fn perl_lsp_rs_core::transport::incoming::read_message(reader: &mut dyn std::io::BufRead) -> std::io::error::Result<core::option::Option<perl_lsp_rs_core::protocol::JsonRpcRequest>>
-pub fn perl_lsp_rs_core::transport::incoming::read_message_outcome(reader: &mut dyn std::io::BufRead) -> std::io::error::Result<core::option::Option<core::result::Result<perl_lsp_rs_core::protocol::JsonRpcRequest, perl_lsp_rs_core::transport::incoming::IncomingMessageError>>>
+pub fn perl_lsp_rs_core::transport::incoming::read_message(reader: &mut dyn alloc::io::buf_read::BufRead) -> core::io::error::Result<core::option::Option<perl_lsp_rs_core::protocol::JsonRpcRequest>>
+pub fn perl_lsp_rs_core::transport::incoming::read_message_outcome(reader: &mut dyn alloc::io::buf_read::BufRead) -> core::io::error::Result<core::option::Option<core::result::Result<perl_lsp_rs_core::protocol::JsonRpcRequest, perl_lsp_rs_core::transport::incoming::IncomingMessageError>>>
 pub enum perl_lsp_rs_core::transport::FramingError
 pub perl_lsp_rs_core::transport::FramingError::FrameTooLarge
 pub perl_lsp_rs_core::transport::FramingError::FrameTooLarge::len: usize
@@ -12043,17 +12063,17 @@ pub fn perl_lsp_rs_core::transport::framing::ContentLengthFramer::default() -> p
 pub fn perl_lsp_rs_core::transport::framing::ContentLengthFramer::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_lsp_rs_core::transport::ContentLengthMessageReader
 pub fn perl_lsp_rs_core::transport::incoming::ContentLengthMessageReader::new() -> Self
-pub fn perl_lsp_rs_core::transport::incoming::ContentLengthMessageReader::read_next(&mut self, reader: &mut dyn std::io::Read) -> std::io::error::Result<core::option::Option<perl_lsp_rs_core::protocol::JsonRpcRequest>>
-pub fn perl_lsp_rs_core::transport::incoming::ContentLengthMessageReader::read_next_outcome(&mut self, reader: &mut dyn std::io::Read) -> std::io::error::Result<core::option::Option<core::result::Result<perl_lsp_rs_core::protocol::JsonRpcRequest, perl_lsp_rs_core::transport::incoming::IncomingMessageError>>>
+pub fn perl_lsp_rs_core::transport::incoming::ContentLengthMessageReader::read_next(&mut self, reader: &mut dyn alloc::io::read::Read) -> core::io::error::Result<core::option::Option<perl_lsp_rs_core::protocol::JsonRpcRequest>>
+pub fn perl_lsp_rs_core::transport::incoming::ContentLengthMessageReader::read_next_outcome(&mut self, reader: &mut dyn alloc::io::read::Read) -> core::io::error::Result<core::option::Option<core::result::Result<perl_lsp_rs_core::protocol::JsonRpcRequest, perl_lsp_rs_core::transport::incoming::IncomingMessageError>>>
 pub fn perl_lsp_rs_core::transport::incoming::ContentLengthMessageReader::default() -> perl_lsp_rs_core::transport::incoming::ContentLengthMessageReader
 pub const perl_lsp_rs_core::transport::MAX_FRAME_SIZE: usize
 pub fn perl_lsp_rs_core::transport::decode_incoming_body(body: &[u8]) -> core::result::Result<perl_lsp_rs_core::protocol::JsonRpcRequest, perl_lsp_rs_core::transport::incoming::IncomingMessageError>
 pub fn perl_lsp_rs_core::transport::frame(body: &[u8]) -> alloc::vec::Vec<u8>
 pub fn perl_lsp_rs_core::transport::log_response(response: &perl_lsp_rs_core::protocol::JsonRpcResponse)
-pub fn perl_lsp_rs_core::transport::read_message(reader: &mut dyn std::io::BufRead) -> std::io::error::Result<core::option::Option<perl_lsp_rs_core::protocol::JsonRpcRequest>>
-pub fn perl_lsp_rs_core::transport::read_message_outcome(reader: &mut dyn std::io::BufRead) -> std::io::error::Result<core::option::Option<core::result::Result<perl_lsp_rs_core::protocol::JsonRpcRequest, perl_lsp_rs_core::transport::incoming::IncomingMessageError>>>
-pub fn perl_lsp_rs_core::transport::write_message(writer: &mut dyn std::io::Write, response: &perl_lsp_rs_core::protocol::JsonRpcResponse) -> std::io::error::Result<()>
-pub fn perl_lsp_rs_core::transport::write_notification(writer: &mut dyn std::io::Write, method: &str, params: serde_json::value::Value) -> std::io::error::Result<()>
+pub fn perl_lsp_rs_core::transport::read_message(reader: &mut dyn alloc::io::buf_read::BufRead) -> core::io::error::Result<core::option::Option<perl_lsp_rs_core::protocol::JsonRpcRequest>>
+pub fn perl_lsp_rs_core::transport::read_message_outcome(reader: &mut dyn alloc::io::buf_read::BufRead) -> core::io::error::Result<core::option::Option<core::result::Result<perl_lsp_rs_core::protocol::JsonRpcRequest, perl_lsp_rs_core::transport::incoming::IncomingMessageError>>>
+pub fn perl_lsp_rs_core::transport::write_message(writer: &mut dyn core::io::write::Write, response: &perl_lsp_rs_core::protocol::JsonRpcResponse) -> core::io::error::Result<()>
+pub fn perl_lsp_rs_core::transport::write_notification(writer: &mut dyn core::io::write::Write, method: &str, params: serde_json::value::Value) -> core::io::error::Result<()>
 pub mod perl_lsp_rs_core::uri
 pub fn perl_lsp_rs_core::uri::parse_uri(s: &str) -> lsp_types::uri::Uri
 pub macro perl_lsp_rs_core::check_cancellation!
