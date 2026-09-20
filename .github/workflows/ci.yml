@@ -983,6 +983,47 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
 
+      - name: Summarize PR-fast gate failures
+        if: always()
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          receipt = Path("target/receipts/receipt.json")
+          summary = Path(os.environ["GITHUB_STEP_SUMMARY"])
+          lines = ["### PR Smoke gate summary", ""]
+          if not receipt.is_file():
+              lines.append("- Receipt: unavailable (the PR-fast runner did not produce a final receipt.)")
+          else:
+              try:
+                  data = json.loads(receipt.read_text(encoding="utf-8"))
+              except (OSError, json.JSONDecodeError) as error:
+                  lines.append(f"- Receipt: unreadable ({error})")
+              else:
+                  gates = data.get("gates", [])
+                  failures = [
+                      gate for gate in gates
+                      if gate.get("status") not in ("pass", "passed", "success")
+                  ]
+                  lines.append(f"- Receipt: `{receipt}`")
+                  if failures:
+                      lines.append("")
+                      lines.append("| Gate | Status | Exit |")
+                      lines.append("| --- | --- | ---: |")
+                      for gate in failures:
+                          lines.append(
+                              f"| `{gate.get('gate_name', 'unknown')}` | "
+                              f"`{gate.get('status', 'unknown')}` | "
+                              f"`{gate.get('exit_code', 'unknown')}` |"
+                          )
+                  else:
+                      lines.append("- Non-success gates: none recorded.")
+          summary.write_text("\n".join(lines) + "\n", encoding="utf-8")
+          PY
+
       - name: Convert PR-fast receipt to JUnit
         if: always()
         run: |

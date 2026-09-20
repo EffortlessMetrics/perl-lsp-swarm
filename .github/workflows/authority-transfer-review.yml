@@ -25,7 +25,9 @@
 # merge readiness and live policy remain separate. Advisory / non-required:
 # intentionally absent from required enforcement; promotion belongs to #11796.
 # Reviewer packets are supplied by the #11701/#11703 machinery as they land;
-# until then governed rows report FAIL_REVIEW_MISSING rather than passing.
+# until then governed rows whose required_evidence is current_head_reviewer_packet
+# report NOT_PROVEN_GITHUB (no packet source configured at this run), not a
+# typed FAIL_REVIEW_MISSING — see issue #16100.
 #
 # The dogfood receipt uploaded here carries one bounded advisory packet (verdict
 # counts, bounded-input state, denominator digests) for the #11796 promotion
