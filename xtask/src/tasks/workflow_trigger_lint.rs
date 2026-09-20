@@ -166,6 +166,30 @@ struct GovernanceSummary {
     remainders: usize,
 }
 
+impl GovernanceSummary {
+    /// The one-line human summary, split out of `println!` so the counts it
+    /// states can be asserted.
+    ///
+    /// The JSON receipt carries `external` as its own field; the text line did
+    /// not print it, so `1/5` read as four gaps when some of those four are out
+    /// of this contract's reach by declaration rather than by omission (#16172
+    /// review). Every required context now appears in exactly one of the three
+    /// counts, and `governance_line_accounts_for_every_required_context` holds
+    /// that.
+    fn summary_line(&self) -> String {
+        format!(
+            "{}/{} ruleset-required contexts governed, {} produced outside this \
+             repository, {} ungoverned, {} accepted exemptions, {} remainders",
+            self.governed,
+            self.required_contexts,
+            self.external,
+            self.ungoverned.len(),
+            self.accepted_exemptions,
+            self.remainders
+        )
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 struct WorkflowTriggerLintReceipt {
     schema_version: String,
@@ -671,14 +695,7 @@ fn output(receipt: &WorkflowTriggerLintReceipt, format: WorkflowTriggerLintForma
             }
 
             if let Some(governance) = &receipt.governance {
-                println!(
-                    "  governance: {}/{} ruleset-required contexts governed, {} accepted \
-                     exemptions, {} remainders",
-                    governance.governed,
-                    governance.required_contexts,
-                    governance.accepted_exemptions,
-                    governance.remainders
-                );
+                println!("  governance: {}", governance.summary_line());
                 for entry in &governance.ungoverned {
                     println!("      * {}", entry);
                 }
@@ -958,6 +975,34 @@ mod tests {
     /// second entry for the same clause is decided by list order: an `accepted`
     /// above a `remainder` swallows the remainder, which then appears in no
     /// count and no receipt (#16164 review).
+    #[test]
+    fn governance_line_accounts_for_every_required_context() {
+        // The JSON receipt has always carried `external`; the text line did not,
+        // so a reader saw `governed/required` and read the difference as gaps
+        // (#16172 review). The three counts must partition the required set, or
+        // the line is arithmetic that does not add up.
+        let summary = GovernanceSummary {
+            required_contexts: 5,
+            governed: 3,
+            external: 1,
+            ungoverned: vec!["some-context: names no workflow".to_string()],
+            accepted_exemptions: 2,
+            remainders: 1,
+        };
+        assert_eq!(
+            summary.governed + summary.external + summary.ungoverned.len(),
+            summary.required_contexts,
+            "the fixture itself must partition the required set"
+        );
+        let line = summary.summary_line();
+        assert!(line.contains("3/5 ruleset-required contexts governed"), "{line}");
+        assert!(
+            line.contains("1 produced outside this repository"),
+            "the out-of-scope count is the one the text used to drop: {line}"
+        );
+        assert!(line.contains("1 ungoverned"), "{line}");
+    }
+
     #[test]
     fn a_clause_carrying_two_exemptions_is_a_violation() -> Result<()> {
         let fixture = load_fixture("missing-merge-group.yml")?;

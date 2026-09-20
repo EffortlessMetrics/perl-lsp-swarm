@@ -29,15 +29,45 @@ row, and nothing said so: the lint deserialized `[[check]]` alone, and
 contexts were in that state (#16164).
 
 The lint now reads both and refuses the mismatch. Every `[[checks]]` row with
-`required = true` must name a workflow that some `[[check]]` row governs, and
-the receipt carries the counts:
+`required = true` **that this repository produces** must name a workflow that
+some `[[check]]` row governs, and the receipt carries the counts:
 
 ```
-governance: 5/5 ruleset-required contexts governed, 5 accepted exemptions, 1 remainder
+governance: 5/5 ruleset-required contexts governed, 0 produced outside this repository, 0 ungoverned, 5 accepted exemptions, 1 remainders
 ```
+
+That is the line this policy file produces today, copied from the run rather
+than composed: all five required contexts are produced by jobs in this
+repository, so the out-of-scope count is zero. It is printed anyway, because the
+three counts partition the required set — every required context is governed,
+out of scope, or reported — and a number that only appears once it is non-zero
+is a number a reader cannot check.
 
 A row with `required = false` governs nothing — `evaluate_required_entry`
 returns no violations for one — so it does not satisfy the requirement.
+
+### The external-producer exclusion
+
+Not every required context is produced by a workflow in this repository.
+`codecov/patch`, for instance, is published by an installed integration and
+names no workflow here. It is advisory today and so not in the required set the
+counts above cover, but the classification has to exist before such a context
+becomes required: demanding a governance row for it would be a rule nobody could
+satisfy, and a lint with an unsatisfiable rule gets suppressed rather than fixed.
+The inventory says which is which, and the lint reads that field rather than
+inferring it:
+
+| `producer` | Meaning | Effect on the count |
+| --- | --- | --- |
+| `repository-job` | A job in this repository publishes it | Must name a workflow a `[[check]]` row governs, or it is **reported** |
+| `external` | An installed integration publishes it | Counted **out of scope**, not governed |
+| absent | The row does not say | **Reported** — the lint does not guess |
+
+The middle column is the whole point of the field: a missing `workflow` key is
+legitimate only for an external producer. Reading *any* missing workflow as
+external is what let a `repository-job` row that lost its `workflow` key during
+an edit pass silently (#16172 review), so a stated `repository-job` must name
+one and an unstated producer fails closed.
 
 ## Required-workflow lint rules
 
