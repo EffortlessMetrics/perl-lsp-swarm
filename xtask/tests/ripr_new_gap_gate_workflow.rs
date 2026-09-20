@@ -2395,6 +2395,39 @@ fn ripr_gate_retrieval_reaches_classifier_and_failed_fetch_fails_closed() -> Res
         );
     }
 
+    // The job-id lookup has its own loop and its own pair of warning branches,
+    // and nothing above can reach either: every case that drives lookup to give
+    // up uses the slow 30s-request model and asserts only the terminal verdict,
+    // and every fast-failing case resolves the job id on its first attempt. A
+    // change that fixed only the fetch loop would still pass all of them. So
+    // pin the lookup phase directly (#14774): fast failures that never resolve
+    // a job id must spend the same reserved budget the fetch phase does —
+    // fifteen attempts reaching the full 240s, where the old five-attempt
+    // schedule stopped with most of the reserve unspent — and must report the
+    // deadline branch rather than the attempt-count branch.
+    let (lookup_never, lookup_never_output, lookup_never_classification) =
+        run_gate_with_fast_failing_requests(None, 99, 0, GateRoute::github_failure())?;
+    if lookup_never.status.success()
+        || lookup_never_classification.is_some()
+        || !lookup_never_output.contains("classification=ripr-failure")
+        || !lookup_never_output.contains("RIPR_GATE_VERDICT=ripr-failure")
+        || lookup_never_output.contains("verdict=infra-no-proof")
+    {
+        bail!(
+            "an unresolvable job id must fail closed without arming the retry:\n{lookup_never_output}"
+        );
+    }
+    if !lookup_never_output.contains("lookup=Some(\"15\")")
+        || !lookup_never_output.contains("fetch=None")
+        || !lookup_never_output.contains("elapsed=Some(\"240\\n\")")
+        || !lookup_never_output
+            .contains("job id for ripr+ on GitHub Hosted reached the job-level retrieval deadline")
+    {
+        bail!(
+            "fast-failing job-id lookup must spend the reserve and report the deadline branch, not a fixed attempt count:\n{lookup_never_output}"
+        );
+    }
+
     // Exercise the maximum-duration path with a deterministic virtual clock:
     // lookup succeeds only on its fifth attempt, then the fetch phase reaches
     // the shared deadline before a second slow request can complete. This is
