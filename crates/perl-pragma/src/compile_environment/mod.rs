@@ -199,14 +199,52 @@ pub enum FactClass {
     Locale,
     /// Language profile.
     Profile,
+    /// Lexical binding identities.
+    LexicalBindings,
+    /// Package binding identities.
+    PackageBindings,
+    /// Imported visibility.
+    ImportVisibility,
+    /// Exported visibility.
+    ExportVisibility,
+    /// Constant values.
+    Constants,
+    /// Subroutine prototypes.
+    Prototypes,
+    /// Inheritance relationships.
+    Inheritance,
+    /// Method availability.
+    Methods,
+    /// Module dependency graph.
+    ModuleGraph,
+    /// Include-root configuration.
+    IncludeRoots,
+    /// Generated members or symbols.
+    GeneratedMembers,
+    /// Type facts.
+    Types,
+    /// Call resolution.
+    CallResolution,
+    /// Provider exactness.
+    ProviderExactness,
+    /// Edit authorization.
+    EditAuthorization,
+    /// Unknown unbounded impact, never a default.
+    AllFacts,
 }
 
-/// Boundary reference qualified independently from unrelated fact classes.
+/// Reference to a boundary semantic ID, retaining its complete accepted subject.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct Boundary {
-    /// Stable boundary identifier.
-    pub id: String,
+pub struct BoundaryReference {
+    /// Canonical semantic identity of the full record.
+    pub id: ContentDigest,
+    /// Complete accepted source/parser/profile/compiler subject.
+    pub binding: Binding,
+    /// Qualification cannot be upgraded through a reference.
+    pub disposition: BoundaryDisposition,
+    /// Referenced record declares missing catalog/graph authority.
+    pub pending_authority: bool,
     /// Affected fact classes; nonempty set.
     pub affects: Vec<FactClass>,
     /// Qualified boundary authority port.
@@ -294,7 +332,7 @@ pub struct StateDraft {
     /// Locale state.
     pub locale: Facet<LocaleState>,
     /// Fact-local boundaries.
-    pub boundaries: Vec<Boundary>,
+    pub boundaries: Vec<BoundaryReference>,
 }
 
 /// Admitted canonical state. There is deliberately no Deserialize implementation.
@@ -425,7 +463,7 @@ pub struct TransitionDraft {
     /// Provenance references.
     pub origins: Vec<Origin>,
     /// Fact-local boundaries.
-    pub boundaries: Vec<Boundary>,
+    pub boundaries: Vec<BoundaryReference>,
 }
 /// Admitted transition with stable semantic digest.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -498,3 +536,8 @@ impl TransitionBundle {
         wire::encode(&self.0.iter().map(|item| &item.0).collect::<Vec<_>>(), MAX_BUNDLE_BYTES)
     }
 }
+
+mod boundary;
+pub use boundary::*;
+
+mod boundary_validation;

@@ -3594,6 +3594,27 @@ pub fn perl_semantic_facts::CallableResultRelation::eq(&self, other: &perl_seman
 pub fn perl_semantic_facts::CallableResultRelation::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_semantic_facts::CallableResultRelation::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 pub fn perl_semantic_facts::CallableResultRelation::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+#[non_exhaustive] pub enum perl_semantic_facts::CompileEffectSourceKind
+pub perl_semantic_facts::CompileEffectSourceKind::Assignment
+pub perl_semantic_facts::CompileEffectSourceKind::CompileEnvironment
+pub perl_semantic_facts::CompileEffectSourceKind::MethodDecl
+pub perl_semantic_facts::CompileEffectSourceKind::NoDirective
+pub perl_semantic_facts::CompileEffectSourceKind::PackageDecl
+pub perl_semantic_facts::CompileEffectSourceKind::PhaseBlock
+pub perl_semantic_facts::CompileEffectSourceKind::RequireDirective
+pub perl_semantic_facts::CompileEffectSourceKind::ScopeGraph
+pub perl_semantic_facts::CompileEffectSourceKind::StashGraph
+pub perl_semantic_facts::CompileEffectSourceKind::SubDecl
+pub perl_semantic_facts::CompileEffectSourceKind::SymbolicReferenceDeref
+pub perl_semantic_facts::CompileEffectSourceKind::TypeglobAssignment
+pub perl_semantic_facts::CompileEffectSourceKind::UseDirective
+pub perl_semantic_facts::CompileEffectSourceKind::VariableDecl
+pub fn perl_semantic_facts::CompileEffectSourceKind::clone(&self) -> perl_semantic_facts::CompileEffectSourceKind
+pub fn perl_semantic_facts::CompileEffectSourceKind::eq(&self, other: &perl_semantic_facts::CompileEffectSourceKind) -> bool
+pub fn perl_semantic_facts::CompileEffectSourceKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_semantic_facts::CompileEffectSourceKind::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub fn perl_semantic_facts::CompileEffectSourceKind::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_semantic_facts::CompileEffectSourceKind::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
 pub enum perl_semantic_facts::Confidence
 pub perl_semantic_facts::Confidence::High
 pub perl_semantic_facts::Confidence::Low

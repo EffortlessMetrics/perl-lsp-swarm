@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Added
+body: Add bounded compile-effect boundary records with explicit dispositions, precise impact selectors, and deterministic semantic identities; execution and propagation remain outside this schema.
+time: 2026-09-20T16:35:00Z
+custom:
+  PR: "16246"
+  Slug: compile-effect-boundaries
+  Breaking: "no"
