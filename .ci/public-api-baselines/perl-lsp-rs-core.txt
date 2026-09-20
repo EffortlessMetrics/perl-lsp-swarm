@@ -10580,6 +10580,8 @@ pub perl_lsp_rs_core::semantic_construction::SemanticConstructionCallError::Fore
 pub perl_lsp_rs_core::semantic_construction::SemanticConstructionCallError::IncoherentProfileTriple
 pub perl_lsp_rs_core::semantic_construction::SemanticConstructionCallError::IncoherentProfileTriple::expected: perl_source_identity::digest::ContentDigest
 pub perl_lsp_rs_core::semantic_construction::SemanticConstructionCallError::IncoherentProfileTriple::found: perl_source_identity::digest::ContentDigest
+pub perl_lsp_rs_core::semantic_construction::SemanticConstructionCallError::IncoherentSubjectParseBinding
+pub perl_lsp_rs_core::semantic_construction::SemanticConstructionCallError::IncoherentSubjectParseBinding::ticket_id: perl_lsp_rs_core::semantic_snapshot::AcceptedParserTicketId
 pub perl_lsp_rs_core::semantic_construction::SemanticConstructionCallError::InputMismatch
 pub perl_lsp_rs_core::semantic_construction::SemanticConstructionCallError::InputsTicketMismatch
 pub perl_lsp_rs_core::semantic_construction::SemanticConstructionCallError::InputsTicketMismatch::cell_ticket: perl_lsp_rs_core::semantic_snapshot::AcceptedParserTicketId
