@@ -140,6 +140,13 @@ class ReleaseBuildIdentityTests(unittest.TestCase):
         with self.assertRaisesRegex(subject.BuildIdentityError, "schema"):
             subject.validate_topology(topology, **args)
         subject.validate_topology(topology, **args, allow_mapped_rc=True)
+        schema_path = "schemas/release_topology.v4.schema.json"
+        digest = topology["sources"][schema_path]["sha256"]
+        topology["sources"][schema_path]["sha256"] = "c" * 64
+        with self.assertRaisesRegex(subject.BuildIdentityError, "schema source hash is stale"):
+            subject.validate_topology(topology, **args, allow_mapped_rc=True)
+        topology["sources"][schema_path]["sha256"] = digest
+
         topology["vsix"]["pre_release"] = False
         with self.assertRaises(subject.BuildIdentityError):
             subject.validate_topology(topology, **args, allow_mapped_rc=True)

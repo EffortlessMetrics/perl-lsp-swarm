@@ -5,10 +5,32 @@ const fs = require('node:fs');
 const path = require('node:path');
 const yauzl = require('yauzl');
 
+// Reuse the JSON visitor pinned by the existing VSIX packager, as for XML below.
+// JSON.parse enforces strict JSON syntax; the visitor retains every property.
+function parseUniqueJson(raw) {
+  const text = typeof raw === 'string' ? raw : new TextDecoder('utf-8', { fatal: true }).decode(raw);
+  const value = JSON.parse(text);
+  const { createRequire } = require('node:module');
+  const packagerRequire = createRequire(require.resolve('@vscode/vsce/package.json'));
+  const { visit } = packagerRequire('jsonc-parser');
+  const objects = [];
+  visit(text, {
+    onObjectBegin() { objects.push(new Set()); },
+    onObjectProperty(key) {
+      const seen = objects.at(-1);
+      if (!seen || seen.has(key)) throw new Error(`Duplicate or invalid JSON key: ${key}`);
+      seen.add(key);
+    },
+    onObjectEnd() { objects.pop(); },
+    onError() { throw new Error('Invalid identity JSON'); },
+  });
+  return value;
+}
+
 async function mappedMetadata(vsix) {
   const wanted = new Set(['extension/package.json', 'extension/vsix-candidate-payload.json', 'extension.vsixmanifest']);
   const values = new Map();
-  const archive = await yauzl.openPromise(vsix, { lazyEntries: true, decodeStrings: false, validateEntrySizes: true });
+  const archive = await yauzl.fromBufferPromise(vsix, { lazyEntries: true, decodeStrings: false, validateEntrySizes: true });
   try {
     for await (const entry of archive.eachEntry()) {
       const name = Buffer.from(entry.fileName).toString('utf8');
@@ -31,21 +53,22 @@ async function mappedMetadata(vsix) {
   return values;
 }
 
-async function fileDigest(file) {
-  const hash = crypto.createHash('sha256');
-  for await (const chunk of fs.createReadStream(file)) hash.update(chunk);
-  return hash.digest('hex');
-}
-
+/** @param {string} vsix @param {Buffer|string} topologyBytes @param {string} expectedDigest */
 async function verifyMappedRc(vsix, topologyBytes, expectedDigest) {
-  if (!/^[0-9a-f]{64}$/.test(expectedDigest) || await fileDigest(vsix) !== expectedDigest) {
+  const archiveBytes = fs.readFileSync(vsix);
+  topologyBytes = Buffer.from(topologyBytes);
+  if (!/^[0-9a-f]{64}$/.test(expectedDigest) || crypto.createHash('sha256').update(archiveBytes).digest('hex') !== expectedDigest) {
     throw new Error('Mapped VSIX bytes differ from expected digest');
   }
-  const topology = JSON.parse(topologyBytes);
-  const Ajv2020 = require('ajv/dist/2020');
-  const validator = new Ajv2020({ strict: true }).compile(
-    JSON.parse(fs.readFileSync(path.join(__dirname, '../../schemas/release_topology.v4.schema.json'), 'utf8')),
-  );
+  const topology = parseUniqueJson(topologyBytes);
+  const Ajv2020 = require('ajv/dist/2020').default;
+  const schemaPath = 'schemas/release_topology.v4.schema.json';
+  const schemaBytes = fs.readFileSync(path.join(__dirname, '../..', schemaPath));
+  if (topology.sources?.[schemaPath]?.path !== schemaPath || topology.sources?.[schemaPath]?.sha256 !== crypto.createHash('sha256').update(schemaBytes).digest('hex')) {
+    throw new Error('Mapped topology schema source hash is stale');
+  }
+  /** @type {import('ajv').ValidateFunction<any>} */
+  const validator = new Ajv2020({ strict: true }).compile(parseUniqueJson(schemaBytes));
   if (!validator(topology)) throw new Error(`Invalid mapped topology: ${JSON.stringify(validator.errors)}`);
   if (topology.schema !== 4 || !/^[0-9a-f]{40}$/.test(topology.prepared_swarm_sha ?? '') ||
       topology.prepared_swarm_sha === topology.frozen_product_sha) {
@@ -59,9 +82,9 @@ async function verifyMappedRc(vsix, topologyBytes, expectedDigest) {
       path.basename(vsix) !== selected.asset_name) {
     throw new Error('VSIX asset does not match selected RC identity');
   }
-  const values = await mappedMetadata(vsix);
-  const pkg = JSON.parse(values.get('extension/package.json'));
-  const payload = JSON.parse(values.get('extension/vsix-candidate-payload.json'));
+  const values = await mappedMetadata(archiveBytes);
+  const pkg = parseUniqueJson(values.get('extension/package.json'));
+  const payload = parseUniqueJson(values.get('extension/vsix-candidate-payload.json'));
   if (pkg.publisher !== selected.publisher || pkg.name !== selected.name || pkg.version !== selected.version) {
     throw new Error('Packaged extension identity differs from topology');
   }
@@ -105,21 +128,24 @@ async function verifyMappedRc(vsix, topologyBytes, expectedDigest) {
     throw new Error('Packaged payload differs from selected RC/topology/source identity');
   }
   for (const native of [payload.server, payload.dap.payload]) {
-    if (native) await verifyPayloadMember(vsix, `bin/${projection.vscodeTargetId}/${native.member}`, native.sha256);
+    if (native) await verifyPayloadMember(archiveBytes, `bin/${projection.vscodeTargetId}/${native.member}`, native.sha256);
   }
   const { collectArchiveInventory, semanticInventorySha256 } = require('./check-vsix-inventory-transition');
-  if (semanticInventorySha256((await collectArchiveInventory(vsix)).inventory) !== payload.package.inventorySha256) {
+  if (semanticInventorySha256((await collectArchiveInventory(archiveBytes)).inventory) !== payload.package.inventorySha256) {
     throw new Error('Mapped VSIX package inventory differs from payload');
   }
-  if (await fileDigest(vsix) !== expectedDigest) throw new Error('Mapped VSIX bytes changed during verification');
+  // All checks above consume the same private buffer hashed at entry. Path replacement
+  // cannot change the subject, and no later path read can mix artifact snapshots.
 }
 
 async function verifyPayloadMember(vsix, member, expected) {
-  const archive = await yauzl.openPromise(vsix, {
+  const archive = await (Buffer.isBuffer(vsix) ? yauzl.fromBufferPromise(vsix, {
+    lazyEntries: true, decodeStrings: false, validateEntrySizes: true,
+  }) : yauzl.openPromise(vsix, {
     lazyEntries: true,
     decodeStrings: false,
     validateEntrySizes: true,
-  });
+  }));
   let matches = 0;
   try {
     for await (const entry of archive.eachEntry()) {
@@ -149,7 +175,7 @@ async function verifyPayloadMember(vsix, member, expected) {
 
 function argument(name) {
   const index = process.argv.indexOf(name);
-  return index >= 0 ? process.argv[index + 1] : '';
+  return index >= 0 ? (process.argv[index + 1] ?? '') : '';
 }
 
 async function main() {
@@ -193,4 +219,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { main, verifyPayloadMember, verifyMappedRc };
+module.exports = { main, verifyPayloadMember, verifyMappedRc, parseUniqueJson };

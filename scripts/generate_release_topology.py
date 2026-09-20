@@ -113,11 +113,12 @@ def schema_validate(manifest: dict[str, Any], root: Path | None = None) -> None:
         ) from error
     try:
         schema_path = (root or SCHEMA_PATH.parents[1]) / relative
-        schema = json.loads(schema_path.read_text(encoding="utf-8"))
+        schema_bytes = schema_path.read_bytes()
+        schema = json.loads(schema_bytes.decode("utf-8"))
         validator_type = jsonschema.validators.validator_for(schema)
         validator_type.check_schema(schema)
         validator = validator_type(schema)
-    except (OSError, json.JSONDecodeError, jsonschema.SchemaError) as error:
+    except (OSError, UnicodeError, json.JSONDecodeError, jsonschema.SchemaError) as error:
         raise TopologyError(f"release topology schema is invalid: {error}") from error
     errors = sorted(
         validator.iter_errors(manifest),
@@ -136,9 +137,7 @@ def schema_validate(manifest: dict[str, Any], root: Path | None = None) -> None:
             if isinstance(sources, dict)
             else {}
         )
-        if not isinstance(source, dict) or source.get("sha256") != sha256(
-            root / relative
-        ):
+        if not isinstance(source, dict) or source.get("path") != relative or source.get("sha256") != hashlib.sha256(schema_bytes).hexdigest():
             raise TopologyError("schema source hash is stale")
 
 
@@ -679,6 +678,8 @@ def source_paths(
     ]
     if schema_version in (3, 4):
         paths.extend(["scripts/release_subject_projection.py", "scripts/release_terminal_manifest.py"])
+    if schema_version == 4:
+        paths.append("scripts/release_vsix_mapping.py")
     manifests = workspace_manifests
     if manifests is None:
         manifests = []
@@ -946,6 +947,14 @@ def validate_source_transition(
             relative = schema_relative_path(version)
             if inventory.get(relative) != {"path": relative, "sha256": sha256(root / relative)}:
                 raise TopologyError("mapped transition has stale selected schema identity")
+        helper = "scripts/release_vsix_mapping.py"
+        for root in (frozen_root, prepared_root):
+            ensure_committed_topology_inputs(root, [helper])
+        if (frozen_root / helper).read_bytes() != (prepared_root / helper).read_bytes():
+            raise TopologyError("mapped preparation changed the mapping helper")
+        if prepared_sources.get(helper) != {"path": helper, "sha256": sha256(prepared_root / helper)}:
+            raise TopologyError("mapped transition has stale mapping helper identity")
+        prepared_sources = {key: value for key, value in prepared_sources.items() if key != helper}
         frozen_sources = {key: value for key, value in frozen_sources.items() if key != schema_relative_path(3)}
         prepared_sources = {key: value for key, value in prepared_sources.items() if key != schema_relative_path(4)}
     if set(frozen_sources) != set(prepared_sources):
@@ -1807,7 +1816,16 @@ def main() -> int:
     args = parser.parse_args()
     root = (args.root or Path(__file__).resolve().parents[1]).resolve()
     try:
-        vsix_mapping = json.loads(args.vsix_mapping.read_text(encoding="utf-8")) if args.vsix_mapping else None
+        vsix_mapping = None
+        if args.vsix_mapping:
+            try:
+                if __package__:
+                    from .release_topology_json import load_unique_json
+                else:
+                    from release_topology_json import load_unique_json
+                vsix_mapping = load_unique_json(args.vsix_mapping.read_bytes().decode("utf-8"))
+            except (UnicodeError, ValueError) as error:
+                raise TopologyError(f"invalid VSIX mapping: {error}") from error
         if (args.schema_version == 4) != (vsix_mapping is not None):
             raise TopologyError("topology v4 requires --vsix-mapping; legacy schemas forbid it")
         if args.frozen_topology is None and (

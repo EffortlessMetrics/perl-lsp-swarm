@@ -61,6 +61,10 @@
     "synthetic-fixture": {
       "path": "synthetic-fixture",
       "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "schemas/release_topology.v4.schema.json": {
+      "path": "schemas/release_topology.v4.schema.json",
+      "sha256": "9b5c1cd646371485f42af872274da6d89dcdc3b09e4b6a9af43e228c8a93727f"
     }
   },
   "checksum_assets": [

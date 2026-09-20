@@ -84,7 +84,7 @@ class PrebuiltPayloadAdapterTests(unittest.TestCase):
             "extension_id": "EffortlessMetrics.perl-lsp-rs",
         }
         values.update(overrides)
-        return ["python", "scripts/prepare_vsix_prebuilt_payload.py", "--receipt", str(paths["receipt"]), "--package-evidence", str(paths["evidence"]), "--archive", str(paths["archive"]), "--topology", str(paths["topology"]), "--projection", str(paths["projection"]), "--output", str(paths["output"]), "--source-sha", values["source_sha"], "--target", values["target"], "--candidate-id", values["candidate_id"], "--release-version", values["release_version"], "--inventory-sha256", values["inventory_sha256"], "--extension-id", values["extension_id"]]
+        return [sys.executable, "scripts/prepare_vsix_prebuilt_payload.py", "--receipt", str(paths["receipt"]), "--package-evidence", str(paths["evidence"]), "--archive", str(paths["archive"]), "--topology", str(paths["topology"]), "--projection", str(paths["projection"]), "--output", str(paths["output"]), "--source-sha", values["source_sha"], "--target", values["target"], "--candidate-id", values["candidate_id"], "--release-version", values["release_version"], "--inventory-sha256", values["inventory_sha256"], "--extension-id", values["extension_id"]]
 
     def namespace(self, paths: dict[str, Path | str]) -> object:
         spec = importlib.util.spec_from_file_location("prepare_payload", Path(__file__).with_name("prepare_vsix_prebuilt_payload.py"))
@@ -127,6 +127,21 @@ class PrebuiltPayloadAdapterTests(unittest.TestCase):
                 str(paths["output"] / "bin" / vscode_target / f"perl-dap{suffix}"), target, vscode_target, suffix,
             ], cwd=Path(__file__).parents[1], capture_output=True, text=True, check=False,
         )
+
+    def test_mapped_raw_topology_rejects_duplicate_schema_and_nested_identity(self) -> None:
+        for nested in (False, True):
+            with tempfile.TemporaryDirectory() as directory:
+                paths = self.fixture(Path(directory), version="0.18.0-rc.7", mapped=True)
+                raw = paths["topology"].read_text()
+                if nested:
+                    raw = raw.replace('"candidate_id": "candidate-1"', '"candidate_id": "candidate-1", "candidate_id": "candidate-1"')
+                else:
+                    raw = raw.replace('"schema": 4', '"schema": 3, "schema": 4')
+                paths["topology"].write_text(raw)
+                result = subprocess.run(self.command(paths, release_version="0.18.0-rc.7"), cwd=Path(__file__).parents[1], capture_output=True, text=True, check=False)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertRegex(result.stderr, "duplicate JSON key|schema must appear once")
+                self.assertNotIn("digest differs", result.stderr)
 
     def test_mapped_rc_adapter_preserves_numeric_extension_and_native_identity(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

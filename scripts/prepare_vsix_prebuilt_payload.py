@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import hashlib
 import os
 import subprocess
 import sys
@@ -14,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from release_archive_members import copy_selected_member, selected_member_digest
+from release_topology_json import load_topology_json
 from release_vsix_mapping import mapping_from_topology
 from release_build_identity import ReleaseBuildIdentity, load_json_object, validate_topology
 from release_terminal_manifest import (
@@ -60,8 +62,9 @@ def build(args: argparse.Namespace) -> None:
         binaries,
         evidence["archive"]["sha256"],
     )
-    topology = load_json_object(args.topology, "release topology")
-    if digest(args.topology) != identity.get("release_topology_digest"):
+    topology_bytes = args.topology.read_bytes()
+    topology = load_topology_json(topology_bytes, supported_versions=(1, 2, 4))
+    if hashlib.sha256(topology_bytes).hexdigest() != identity.get("release_topology_digest"):
         raise ValueError("release topology digest differs from build receipt")
     validate_topology(
         topology,

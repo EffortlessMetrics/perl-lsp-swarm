@@ -16,8 +16,9 @@ No suffix stripping, shared-prefix inference, version allocation or occupancy de
 is performed. Inputs are synthetic fixtures or values already admitted by the existing
 preparation owner. Structural validity is not permission to use an occupied version.
 
-This is a partial implementation of #14923. It does not produce a release, alter any
-workflow, admit a terminal candidate, or prove installed server/DAP selection.
+This is a partial implementation of #14923. It does not produce a release, alter any publication workflow, admit a terminal
+candidate, or prove installed server/DAP selection. Existing proof workflows install
+the pinned release-schema requirements used by the opted-in v4 checks.
 
 The authorized cross-version transition is frozen v3 -> prepared v4. Existing
 same-schema v1/2/3 routes remain valid; v1/v2 are not implicitly upgraded because
@@ -148,3 +149,29 @@ are private contract machinery, not a second preparation or release authority.
 Rollback removes the opt-in contracts and callers together before any live consumer
 adopts them. Preserve all legacy schemas/defaults and do not mutate previously admitted
 or invalidated release transactions. No actual version/tag/channel is allocated here.
+
+
+## Review repair: raw identity and verifier snapshot
+
+Mapped v4 topology admission rejects duplicate JSON properties at every depth;
+legacy loader defaults remain 1/2 and keep their previous admission semantics.
+The Python adapter parses and hashes the same captured raw topology bytes.
+Mapping-file malformed UTF-8 and duplicate keys produce structured NOT_PROVEN.
+The VSIX verifier uses the packager's existing pinned jsonc-parser visitor after
+strict JSON syntax validation to reject duplicate topology/package/payload fields.
+No new dependency is introduced.
+
+A mapped VSIX is captured once into a private buffer. Its expected SHA256,
+metadata, native members and semantic inventory all use that buffer, with no
+path reopening between checks. This establishes one checked byte identity; it
+does not promise that the source path remains unchanged afterward. Both Python
+and Node offline schema checks bind the actual schema bytes to the topology's
+recorded schema path/digest. This remains structural offline binding, not full
+canonical topology generation or installed qualification.
+
+V4 inventories include scripts/release_vsix_mapping.py. The v3-to-v4 transition
+requires that helper to be committed and byte-identical in both checkouts, checks
+the prepared inventory hash, then permits only that explicit inventory addition.
+V1/v2/v3 inventories and default selection are unchanged. The existing two CI
+jobs install scripts/requirements-release.txt before their newly affected proof;
+Python subprocess tests use the current interpreter rather than ambient python.

@@ -190,6 +190,8 @@ class ReleaseTopologyTests(unittest.TestCase):
             package["publisher"] = "fixture-publisher"
             package_path.write_text(json.dumps(package), encoding="utf-8")
             frozen["sources"]["vscode-extension/package.json"]["sha256"] = MODULE.sha256(package_path)
+            helper = "scripts/release_vsix_mapping.py"
+            (root / helper).write_bytes((MODULE_PATH.parents[1] / helper).read_bytes())
             frozen_root = root.parent / "mapped-frozen"
             copytree(root, frozen_root)
             authority = root.parent / "mapped-authority.json"
@@ -238,10 +240,34 @@ class ReleaseTopologyTests(unittest.TestCase):
                     wrong = deepcopy(result); mutate(wrong)
                     with self.assertRaises(MODULE.TopologyError):
                         MODULE.validate_prepared_projection(frozen, wrong, frozen_digest, authority, frozen_root, root)
+                helper_bytes = (root / helper).read_bytes()
+                (root / helper).write_bytes(helper_bytes + b"\n")
+                changed = deepcopy(result)
+                changed["sources"][helper]["sha256"] = MODULE.sha256(root / helper)
+                with self.assertRaisesRegex(MODULE.TopologyError, "changed the mapping helper"):
+                    MODULE.validate_prepared_projection(frozen, changed, frozen_digest, authority, frozen_root, root)
+                (root / helper).write_bytes(helper_bytes)
+                MODULE.validate_prepared_projection(frozen, result, frozen_digest, authority, frozen_root, root)
                 (root / schema4).write_text((root / schema4).read_text() + "\n", encoding="utf-8")
                 result["sources"][schema4]["sha256"] = MODULE.sha256(root / schema4)
                 with self.assertRaisesRegex(MODULE.TopologyError, "changed a topology schema"):
                     MODULE.validate_prepared_projection(frozen, result, frozen_digest, authority, frozen_root, root)
+
+    def test_mapping_utf8_and_duplicate_fields_fail_structurally(self):
+        import subprocess
+        import sys
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            mapping = root / "mapping.json"
+            for raw in (b"\xff", b'{"preRelease":true,"preRelease":true}'):
+                mapping.write_bytes(raw)
+                run = subprocess.run([sys.executable, str(MODULE_PATH), "--schema-version", "4",
+                    "--release", "0.18.0-rc.7", "--frozen-product-sha", "a" * 40,
+                    "--vsix-mapping", str(mapping), "--output", str(root / "out.json")],
+                    capture_output=True, text=True, check=False)
+                self.assertEqual(run.returncode, 2)
+                self.assertIn("NOT_PROVEN", run.stderr)
+                self.assertNotIn("Traceback", run.stderr)
 
     def test_legacy_v1_v2_are_not_implicitly_upgraded_to_mapped_v4(self):
         for version in (1, 2):

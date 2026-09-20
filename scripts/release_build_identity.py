@@ -552,7 +552,7 @@ def validate_topology(
             from release_vsix_mapping import mapped_vsix_identity, mapping_from_topology
             from generate_release_topology import schema_validate, TopologyError
         try:
-            schema_validate(dict(topology))
+            schema_validate(dict(topology), Path(__file__).resolve().parents[1])
             if topology.get("prepared_swarm_sha") == topology.get("frozen_product_sha"):
                 raise ValueError("mapped topology requires a distinct prepared source")
             expected = mapped_vsix_identity(mapping_from_topology(dict(topology)), topology.get("vsix", {}), release_version, source_revision)
