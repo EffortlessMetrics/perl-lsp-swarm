@@ -1,9 +1,11 @@
 use std::fs;
 use std::path::PathBuf;
+use std::sync::LazyLock;
 
 use chrono::Utc;
 use color_eyre::eyre::{Context, Result, eyre};
 use perl_lsp_ux_tests::taxonomy::{UxComponent, UxFailureClass, UxRoute, route_for_failure_class};
+use regex::Regex;
 use serde::Serialize;
 
 use crate::tasks::cargo_failure_blocks::{failing_test_names, failure_blocks, panic_location};
