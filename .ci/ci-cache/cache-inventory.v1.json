@@ -1214,6 +1214,39 @@
       "notes": null
     },
     {
+      "id": "perl-version-matrix/signature-native/0",
+      "workflow": "perl-version-matrix.yml",
+      "job": "signature-native",
+      "step_name": "#0",
+      "action": "Swatinem/rust-cache",
+      "action_ref": "6323deb102c322ba6fcbdcafc7e3dddab59af2b6",
+      "capability": "restore_and_save",
+      "trigger_event_set": [
+        "pull_request",
+        "schedule",
+        "workflow_dispatch"
+      ],
+      "candidate_event_reachability": "reachable",
+      "executed_subject": "candidate",
+      "job_condition": "${{ inputs.signatures_only }}",
+      "step_condition": null,
+      "save_condition": "${{ (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main') }}",
+      "save_authority_source": "event_and_ref_guard",
+      "payload_class": "cargo_target",
+      "cached_paths": [],
+      "key_dimensions": {
+        "key": null,
+        "shared_key": "signature-conformance",
+        "restore_keys": null
+      },
+      "key_authority": "trusted",
+      "cached_byte_provenance": "trusted_tree",
+      "artifact_provenance": null,
+      "writer_disposition": "trusted_guarded",
+      "repair_owner": null,
+      "notes": null
+    },
+    {
       "id": "post-merge-corpus-ratchet/corpus-ratchet-bounded/0",
       "workflow": "post-merge-corpus-ratchet.yml",
       "job": "corpus-ratchet-bounded",
