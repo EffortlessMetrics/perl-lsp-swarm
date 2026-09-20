@@ -21,6 +21,13 @@ const REPORT_SCHEMA: &str = "semantic_close_containment_report.v1";
 const FIXTURE_SCHEMA: &str = "semantic_close_containment_fixture.v1";
 const EXIT_CONTRADICTION: i32 = 2;
 const EXIT_NOT_PROVEN: i32 = 3;
+/// #16214: exit 3 used to mean both "a relation could not be proven" — a
+/// verdict about the pull request — and "this validator failed" — a statement
+/// about the instrument, carrying no verdict at all. A consumer reading only
+/// the exit code or the check-run annotation could not tell which, so every
+/// instrument failure was indistinguishable from a finding against the PR.
+/// They now exit differently.
+const EXIT_INSTRUMENT_FAILURE: i32 = 4;
 const MAX_EVENT_BYTES: usize = 2 * 1024 * 1024;
 const MAX_FIXTURE_BYTES: usize = 512 * 1024;
 const MAX_PR_BODY_BYTES: usize = 128 * 1024;
@@ -81,8 +88,17 @@ impl ResultCode {
         )
     }
 
+    /// A verdict about the subject: the relation was checked and could not be
+    /// proven. Deliberately excludes `InstrumentFailure`, which says nothing
+    /// about the subject (#16214).
     fn is_not_proven(self) -> bool {
-        matches!(self, Self::NotProvenGithub | Self::InstrumentFailure)
+        matches!(self, Self::NotProvenGithub)
+    }
+
+    /// The validator could not do its job for this relation. Not a finding
+    /// against the pull request.
+    fn is_instrument_failure(self) -> bool {
+        matches!(self, Self::InstrumentFailure)
     }
 
     fn as_str(self) -> &'static str {
@@ -257,8 +273,15 @@ struct Report {
 
 impl Report {
     fn exit_code(&self) -> i32 {
+        // A contradiction outranks an instrument failure: it is a proven
+        // statement about the subject, and it stays true whether or not some
+        // other relation could be checked. Below it, an instrument failure
+        // outranks a not-proven verdict, because a run that could not do its
+        // job should not be reported as having reached a verdict.
         if self.rows.iter().any(|row| row.code.is_failure()) {
             EXIT_CONTRADICTION
+        } else if self.rows.iter().any(|row| row.code.is_instrument_failure()) {
+            EXIT_INSTRUMENT_FAILURE
         } else if self.rows.iter().any(|row| row.code.is_not_proven()) {
             EXIT_NOT_PROVEN
         } else {
@@ -405,7 +428,7 @@ fn main() {
             "INSTRUMENT_FAILURE semantic-close-containment: {}",
             sanitize_for_output(&error.to_string(), 1_024)
         );
-        exit(EXIT_NOT_PROVEN);
+        exit(EXIT_INSTRUMENT_FAILURE);
     }
 }
 
@@ -746,6 +769,7 @@ where
         .iter()
         .find(|row| row.code.is_failure())
         .map(|row| row.code)
+        .or_else(|| rows.iter().find(|row| row.code.is_instrument_failure()).map(|row| row.code))
         .or_else(|| rows.iter().find(|row| row.code.is_not_proven()).map(|row| row.code))
         .unwrap_or(ResultCode::PassNoHighConfidenceContradiction);
 
@@ -2478,6 +2502,158 @@ mod tests {
             )),
         ),
     ];
+
+    /// #16214: the exit code is the only part of this verdict a REST consumer
+    /// can read — the job summary carrying the report is not served by the
+    /// API. These pin the four outcomes apart from each other.
+    fn report_with(codes: &[ResultCode]) -> Report {
+        let rows = codes
+            .iter()
+            .enumerate()
+            .map(|(index, code)| RelationResult {
+                repository: "effortlessmetrics/perl-lsp-swarm".to_string(),
+                issue_number: 1000 + index as u64,
+                keyword: "Closes".to_string(),
+                source_line: format!("Closes #{}", 1000 + index),
+                line_number: index + 1,
+                code: *code,
+                rule_id: None,
+                reason: "synthetic row".to_string(),
+                suggested_relation: None,
+                retirement_mapping: None,
+            })
+            .collect();
+        Report {
+            schema_version: REPORT_SCHEMA,
+            repository: "effortlessmetrics/perl-lsp-swarm".to_string(),
+            pull_request_number: 16214,
+            pull_request_title: "synthetic".to_string(),
+            aggregate_code: ResultCode::PassNoHighConfidenceContradiction,
+            semantic_completion_proven: false,
+            rows,
+            subject_snapshot: None,
+        }
+    }
+
+    fn expect_exit(codes: &[ResultCode], expected: i32, why: &str) -> Result<()> {
+        let actual = report_with(codes).exit_code();
+        if actual != expected {
+            bail!("{why}: expected exit {expected}, got {actual}");
+        }
+        Ok(())
+    }
+
+    /// The defect this separates: a run that could not do its job used to exit
+    /// the same code as a run that reached a verdict, so no consumer could
+    /// tell a finding against the pull request from a broken instrument.
+    #[test]
+    fn instrument_failure_and_not_proven_no_longer_share_an_exit_code() -> Result<()> {
+        expect_exit(
+            &[ResultCode::NotProvenGithub],
+            EXIT_NOT_PROVEN,
+            "a relation that was checked and could not be proven is a verdict",
+        )?;
+        expect_exit(
+            &[ResultCode::InstrumentFailure],
+            EXIT_INSTRUMENT_FAILURE,
+            "a relation the validator could not check is not a verdict",
+        )?;
+        if EXIT_NOT_PROVEN == EXIT_INSTRUMENT_FAILURE {
+            bail!("the two outcomes must not share an exit code");
+        }
+        Ok(())
+    }
+
+    /// Pinned separately from `exit_code`, because `exit_code` checks the two
+    /// predicates in an order that hides a regression in either: widening
+    /// `is_not_proven` back over `InstrumentFailure` leaves every exit code
+    /// unchanged while the two concepts are silently one again. Asserting the
+    /// predicates are disjoint is what actually holds them apart.
+    #[test]
+    fn the_two_predicates_classify_disjoint_sets() -> Result<()> {
+        for code in [
+            ResultCode::PassNotApplicable,
+            ResultCode::PassNoHighConfidenceContradiction,
+            ResultCode::FailPhaseTerminalRelation,
+            ResultCode::FailExplicitUnprovenRequiredWork,
+            ResultCode::FailRemainingWorkSameIssue,
+            ResultCode::FailControllerPacketMissing,
+            ResultCode::FailPredecessorSuccessorCollapse,
+            ResultCode::FailProofLevelContradiction,
+            ResultCode::NotProvenGithub,
+            ResultCode::InstrumentFailure,
+        ] {
+            let claims = [code.is_failure(), code.is_not_proven(), code.is_instrument_failure()]
+                .into_iter()
+                .filter(|held| *held)
+                .count();
+            if claims > 1 {
+                bail!("{code:?} is claimed by more than one classifier");
+            }
+        }
+        if ResultCode::InstrumentFailure.is_not_proven() {
+            bail!("an instrument failure must not be classified as a not-proven verdict");
+        }
+        if ResultCode::NotProvenGithub.is_instrument_failure() {
+            bail!("a not-proven verdict must not be classified as an instrument failure");
+        }
+        Ok(())
+    }
+
+    /// Precedence, asserted rather than left to row order: a mixed report must
+    /// not report a verdict it did not reach.
+    #[test]
+    fn a_broken_relation_outranks_an_unproven_one_but_not_a_contradiction() -> Result<()> {
+        expect_exit(
+            &[ResultCode::NotProvenGithub, ResultCode::InstrumentFailure],
+            EXIT_INSTRUMENT_FAILURE,
+            "one unchecked relation means this run did not reach a clean verdict",
+        )?;
+        expect_exit(
+            &[ResultCode::InstrumentFailure, ResultCode::NotProvenGithub],
+            EXIT_INSTRUMENT_FAILURE,
+            "precedence must not depend on which row came first",
+        )?;
+        // A contradiction is proven about the subject and stays true whether or
+        // not a different relation could be checked.
+        expect_exit(
+            &[ResultCode::InstrumentFailure, ResultCode::FailPhaseTerminalRelation],
+            EXIT_CONTRADICTION,
+            "a proven contradiction outranks an instrument failure",
+        )?;
+        expect_exit(
+            &[ResultCode::PassNotApplicable, ResultCode::PassNoHighConfidenceContradiction],
+            0,
+            "an all-pass report exits clean",
+        )?;
+        Ok(())
+    }
+
+    /// The headline row a reader sees must not contradict the exit code the
+    /// workflow classifies.
+    #[test]
+    fn the_aggregate_row_agrees_with_the_exit_code() -> Result<()> {
+        for (codes, expected_aggregate) in [
+            (vec![ResultCode::InstrumentFailure], ResultCode::InstrumentFailure),
+            (
+                vec![ResultCode::NotProvenGithub, ResultCode::InstrumentFailure],
+                ResultCode::InstrumentFailure,
+            ),
+            (vec![ResultCode::NotProvenGithub], ResultCode::NotProvenGithub),
+        ] {
+            let aggregate = codes
+                .iter()
+                .find(|code| code.is_failure())
+                .or_else(|| codes.iter().find(|code| code.is_instrument_failure()))
+                .or_else(|| codes.iter().find(|code| code.is_not_proven()))
+                .copied()
+                .unwrap_or(ResultCode::PassNoHighConfidenceContradiction);
+            if aggregate != expected_aggregate {
+                bail!("aggregate for {codes:?} was {aggregate:?}, expected {expected_aggregate:?}");
+            }
+        }
+        Ok(())
+    }
 
     #[test]
     fn immutable_fixture_matrix_matches_expected_dispositions() -> Result<()> {
