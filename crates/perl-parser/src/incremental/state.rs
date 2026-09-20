@@ -49,32 +49,16 @@ pub struct IncrementalStateReadView {
 /// `LexCheckpoint` vector remains a compact compatibility summary; it is not
 /// the restart authority.
 ///
-/// Legacy field-style reads remain available:
+/// Legacy field-style reads remain available, and the view grants no mutation
+/// authority: there is no `DerefMut`, so `state.source.push_str(..)` and
+/// `state.tokens.clear()` are type errors.
 ///
-/// ```
-/// use perl_parser::incremental::IncrementalState;
-///
-/// let state = IncrementalState::new("my $x = 1;".to_string());
-/// assert_eq!(state.source.len(), state.source().len());
-/// assert_eq!(state.tokens.len(), state.tokens().len());
-/// assert_eq!(state.lex_checkpoints.len(), state.lex_checkpoints().len());
-/// ```
-///
-/// The view does not grant mutation authority:
-///
-/// ```compile_fail
-/// use perl_parser::incremental::IncrementalState;
-///
-/// let mut state = IncrementalState::new("my $x = 1;".to_string());
-/// state.source.push_str("\n");
-/// ```
-///
-/// ```compile_fail
-/// use perl_parser::incremental::IncrementalState;
-///
-/// let mut state = IncrementalState::new("my $x = 1;".to_string());
-/// state.tokens.clear();
-/// ```
+/// Both halves of that claim are held by
+/// `tests/incremental_state_read_only_authority.rs`, which
+/// `unit_parser_stack_full` runs. They were previously written here as one
+/// passing doctest and two `compile_fail` doctests; that proved nothing,
+/// because no gate ran `cargo test --doc` and this module is behind a
+/// non-default feature a doctest run would have to name (#13774).
 #[derive(Clone)]
 #[non_exhaustive]
 pub struct IncrementalState {
