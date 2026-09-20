@@ -13,29 +13,34 @@
 //! "the observer was never invoked".
 
 use assert_cmd::Command;
-use color_eyre::eyre::Result;
+use color_eyre::eyre::{Result, eyre};
 
 const NOT_PROVEN_EXIT_CODE: i32 = 3;
 
 #[test]
 fn top_level_help_lists_release_live_controls() -> Result<()> {
     let output = Command::cargo_bin("xtask")?.arg("--help").output()?;
-    assert!(output.status.success(), "xtask --help should exit 0");
+    if !output.status.success() {
+        return Err(eyre!("xtask --help should exit 0"));
+    }
     let stdout = String::from_utf8(output.stdout)?;
-    assert!(
-        stdout.contains("release-live-controls"),
-        "top-level help should mention release-live-controls; got: {stdout}"
-    );
+    if !stdout.contains("release-live-controls") {
+        return Err(eyre!("top-level help should mention release-live-controls; got: {stdout}"));
+    }
     Ok(())
 }
 
 #[test]
 fn subcommand_help_describes_required_flags() -> Result<()> {
     let output = Command::cargo_bin("xtask")?.args(["release-live-controls", "--help"]).output()?;
-    assert!(output.status.success(), "subcommand --help should exit 0");
+    if !output.status.success() {
+        return Err(eyre!("subcommand --help should exit 0"));
+    }
     let stdout = String::from_utf8(output.stdout)?;
     for flag in ["--repo-root", "--repository", "--branch", "--out", "--json"] {
-        assert!(stdout.contains(flag), "subcommand --help should mention {flag}; got: {stdout}");
+        if !stdout.contains(flag) {
+            return Err(eyre!("subcommand --help should mention {flag}; got: {stdout}"));
+        }
     }
     Ok(())
 }
@@ -48,15 +53,14 @@ fn subcommand_resolves_and_exits_not_proven_without_credentials() -> Result<()> 
     let output = Command::cargo_bin("xtask")?
         .args(["release-live-controls", "--repository", "octocat/Hello-World"])
         .output()?;
-    assert_eq!(
-        output.status.code(),
-        Some(NOT_PROVEN_EXIT_CODE),
-        "release-live-controls without credentials must exit {NOT_PROVEN_EXIT_CODE}; \
-         got {:?}\nstdout: {}\nstderr: {}",
-        output.status.code(),
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
+    if output.status.code() != Some(NOT_PROVEN_EXIT_CODE) {
+        return Err(eyre!(
+            "release-live-controls without credentials must exit {NOT_PROVEN_EXIT_CODE}; got {:?}\nstdout: {}\nstderr: {}",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        ));
+    }
     Ok(())
 }
 
@@ -76,14 +80,12 @@ fn subcommand_json_output_names_configured_repository() -> Result<()> {
         ])
         .output()?;
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        stdout.contains("octocat/Hello-World"),
-        "--repository override must reach the receipt; got: {stdout}"
-    );
-    assert!(
-        stdout.contains("\"verdict\""),
-        "--json output must include the verdict field; got: {stdout}"
-    );
+    if !stdout.contains("octocat/Hello-World") {
+        return Err(eyre!("--repository override must reach the receipt; got: {stdout}"));
+    }
+    if !stdout.contains("\"verdict\"") {
+        return Err(eyre!("--json output must include the verdict field; got: {stdout}"));
+    }
     Ok(())
 }
 
@@ -97,10 +99,10 @@ fn subcommand_repo_root_dot_resolves_workspace_identity() -> Result<()> {
     // receipt.
     let output = Command::cargo_bin("xtask")?.args(["release-live-controls", "--json"]).output()?;
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        stdout.contains("EffortlessMetrics/perl-lsp"),
-        "default --repo-root . must surface the committed product-identity repository; \
-         got: {stdout}"
-    );
+    if !stdout.contains("EffortlessMetrics/perl-lsp") {
+        return Err(eyre!(
+            "default --repo-root . must surface the committed product-identity repository; got: {stdout}"
+        ));
+    }
     Ok(())
 }
