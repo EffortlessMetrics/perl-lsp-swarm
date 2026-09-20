@@ -241,6 +241,59 @@ fn pr_smoke_publishes_failing_gate_names_through_the_reporter() -> Result<()> {
     Ok(())
 }
 
+/// #16214: the exit codes the validator can return, and the workflow's own
+/// header documenting them, drifted apart — the header still said `3 =
+/// NOT_PROVEN/instrument failure` after the two were split. That drift is
+/// silent for anyone reading the YAML as authority, and it re-teaches exactly
+/// the conflation the split removed. Bind the two.
+#[test]
+fn semantic_close_containment_header_documents_every_exit_the_binary_can_return() -> Result<()> {
+    let root = repo_root_checked()?;
+    let binary = fs::read_to_string(root.join("xtask/src/bin/semantic-close-containment.rs"))?;
+    let workflow =
+        fs::read_to_string(root.join(".github/workflows/semantic-close-containment.yml"))?;
+
+    let header_end = workflow.find("\nname:").ok_or_else(|| {
+        anyhow!("semantic-close-containment.yml has no `name:` key, so it has no header to check")
+    })?;
+    let header = workflow.get(..header_end).ok_or_else(|| {
+        anyhow!(
+            "the semantic-close-containment.yml header offset {header_end} is not a char boundary"
+        )
+    })?;
+
+    // Every documented exit constant, read off the binary rather than listed
+    // here, so adding a fifth code fails this test instead of passing it.
+    let mut codes = vec![0];
+    for line in binary.lines() {
+        let Some(rest) = line.strip_prefix("const EXIT_") else { continue };
+        let Some((_, value)) = rest.split_once(": i32 = ") else { continue };
+        let value = value.trim_end_matches(';').trim();
+        codes.push(value.parse::<i32>().map_err(|error| {
+            anyhow!("semantic-close-containment.rs declares a non-numeric exit constant {value:?}: {error}")
+        })?);
+    }
+    ensure!(
+        codes.len() >= 4,
+        "expected the binary to declare at least three EXIT_ constants beside 0, found {codes:?}; \
+         the header contract test is not reading the constants it thinks it is"
+    );
+
+    for code in &codes {
+        ensure!(
+            header.contains(&format!("{code} = ")),
+            "the semantic-close-containment.yml header does not document exit {code}, which the \
+             validator can return; a reader outside the web UI sees only the number"
+        );
+    }
+    ensure!(
+        !header.contains("NOT_PROVEN/instrument failure"),
+        "the semantic-close-containment.yml header still documents NOT_PROVEN and instrument \
+         failure as one exit code; #16214 split them"
+    );
+    Ok(())
+}
+
 #[test]
 fn ripr_workflow_blocks_new_gaps_and_requires_receipts() {
     let root = repo_root();

@@ -18,8 +18,14 @@
 #
 # Exit contract: 0 = pass (containment level only), 2 = high-confidence
 # contradiction (the check fails with the suggested non-terminal relation),
-# 3 = NOT_PROVEN/instrument failure (the check fails; it never passes on
-# missing or broken evidence).
+# 3 = NOT_PROVEN (a terminal relation was checked against its issue subject
+# and could not be proven — a verdict about the pull request), 4 = instrument
+# failure (the validator could not evaluate the pull request at all, or could
+# not publish what it evaluated — NOT a finding against the pull request).
+# The check fails on 2, 3 and 4 alike; it never passes on missing or broken
+# evidence. 3 and 4 were one code until #16214, which is why they are spelled
+# out here: a reader outside the web UI sees only the number, and the job
+# summary carrying the detail is not served by the REST API.
 #
 # Trigger note: `pull_request_target` lets the base-owned workflow execute the
 # validator after the workflow is present on the base.
