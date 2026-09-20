@@ -96,7 +96,16 @@ compatibility_apis = ["index_file", "index_file_str", "index_file_with_generatio
 # post-merge main over this baseline; #11916) recurs here: #15575 landed green
 # and the drift surfaced on #15937. Filing #15937 also asks maintainers to own
 # a companion check that catches drift at the introducing PR.
-compatibility_baseline = 710
+#
+# Reconciled 710 -> 715 for #16011 (d7d4c5143): added five `.index_file(`
+# calls inside the `#[cfg(test)]` module of
+# `crates/perl-workspace/src/workspace/workspace_index.rs`, seeding on-disk
+# fixtures for the synthetic-main library-file tests. Fixture-only:
+# `index_file` is the documented thin alias of `index_initial_file`, the file
+# is an already-ledgered caller identity under the `crates/perl-workspace/src`
+# owner row, and the path is outside the #11305 banned prefix. No production
+# caller was added. By API: index_file +5. Same recurrence class as above.
+compatibility_baseline = 715
 
 # Structural recurrence control (#11305): files under these prefixes must
 # never call compatibility source APIs at all -- live commits go through
