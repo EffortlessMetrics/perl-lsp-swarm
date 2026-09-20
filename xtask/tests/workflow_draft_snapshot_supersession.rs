@@ -123,7 +123,14 @@ struct CheckRunFixture {
     status: &'static str,
     conclusion: &'static str,
     run_id: &'static str,
+    /// The check-run name the API would report. `GATE_NAME` stands for "this
+    /// gate's own required context", resolved when the payload is rendered,
+    /// so a fixture does not have to know which of the two gates it is for.
+    name: &'static str,
 }
+
+/// Placeholder resolved to the gate's own `CHECK_NAME` at render time.
+const GATE_NAME: &str = "@gate";
 
 impl CheckRunFixture {
     /// A completed run published by GitHub Actions for the run that analysed
@@ -136,6 +143,7 @@ impl CheckRunFixture {
             status: "completed",
             conclusion,
             run_id: READY_RUN_ID,
+            name: GATE_NAME,
         }
     }
 
@@ -144,10 +152,11 @@ impl CheckRunFixture {
         self
     }
 
-    fn to_json(&self) -> String {
+    fn to_json(&self, gate_name: &str) -> String {
         format!(
-            r#"{{"id":{id},"app":{{"id":{app}}},"started_at":{started},"status":"{status}","conclusion":{conclusion},"details_url":"https://github.com/EffortlessMetrics/perl-lsp-swarm/actions/runs/{run}/job/{id}"}}"#,
+            r#"{{"id":{id},"name":"{name}","app":{{"id":{app}}},"started_at":{started},"status":"{status}","conclusion":{conclusion},"details_url":"https://github.com/EffortlessMetrics/perl-lsp-swarm/actions/runs/{run}/job/{id}"}}"#,
             id = self.id,
+            name = if self.name == GATE_NAME { gate_name } else { self.name },
             app = self.app_id,
             // An empty `started_at` serialises as JSON `null`, which is what
             // the API reports for a queued attempt that has not started. The
@@ -193,31 +202,44 @@ impl GhShim {
     }
 
     /// The payload the `/check-runs` read serves, or `None` to fail the read.
-    fn payload(&self) -> Option<String> {
+    fn payload(&self, gate_name: &str) -> Option<String> {
         let runs = match (&self.runs, self.published) {
             (Some(runs), _) => runs.clone(),
             (None, None) => return None,
             (None, Some("")) => Vec::new(),
             (None, Some(conclusion)) => vec![CheckRunFixture::published(conclusion)],
         };
-        let body = runs.iter().map(CheckRunFixture::to_json).collect::<Vec<_>>().join(",");
+        let body = runs.iter().map(|run| run.to_json(gate_name)).collect::<Vec<_>>().join(",");
         Some(format!("{{\"check_runs\":[{body}]}}"))
     }
 }
 
 /// Serve both reads as real JSON and apply the block's own `--jq` program with
 /// real `jq`. Answering with a bare conclusion string instead would leave the
-/// selection — app binding, attempt ordering, self-exclusion — untested, which
-/// is exactly how two defects reached review in #16105.
-fn write_gh_shim(dir: &Path, shim: &GhShim) -> Result<()> {
+/// selection — app binding, agreement, self-exclusion — untested, which is
+/// exactly how two defects reached review in #16105.
+///
+/// The shim also enforces the `check_name` query. Recognising the request by
+/// path alone would serve this gate's curated payload however the read was
+/// spelled, so dropping or misspelling `-f check_name=...` in the workflow
+/// would leave all six contract tests green while the live endpoint returned
+/// every other check on the head (#16105 review). Here an absent `check_name`
+/// is an error, and the payload is filtered by the one that was sent.
+fn write_gh_shim(dir: &Path, shim: &GhShim, gate_name: &str) -> Result<()> {
     let draft = match shim.live_draft {
         Some(value) => format!("printf '%s' '{{\"draft\":{value}}}' | jq -r \"$jqprog\""),
         None => "exit 1".to_string(),
     };
-    let checks = match shim.payload() {
-        Some(payload) => {
-            format!("printf '%s' '{payload}' | jq -r \"$jqprog\"")
-        }
+    let checks = match shim.payload(gate_name) {
+        Some(payload) => format!(
+            "if [ -z \"$cname\" ]; then\n\
+             \x20 echo \"gh shim: /check-runs read carried no check_name=\" >&2\n\
+             \x20 exit 65\n\
+             fi\n\
+             printf '%s' '{payload}' \\\n\
+             \x20 | jq -c --arg n \"$cname\" '{{check_runs: [.check_runs[] | select(.name == $n)]}}' \\\n\
+             \x20 | jq -r \"$jqprog\""
+        ),
         None => "exit 1".to_string(),
     };
     let script = format!(
@@ -226,9 +248,11 @@ fn write_gh_shim(dir: &Path, shim: &GhShim) -> Result<()> {
          jqprog=\"\"\n\
          want=\"\"\n\
          prev=\"\"\n\
+         cname=\"\"\n\
          for arg in \"$@\"; do\n\
          \x20 if [ \"$prev\" = \"--jq\" ]; then jqprog=\"$arg\"; fi\n\
          \x20 case \"$arg\" in\n\
+         \x20   check_name=*) cname=\"${{arg#check_name=}}\" ;;\n\
          \x20   */pulls/*) want=pull ;;\n\
          \x20   */check-runs*) want=checks ;;\n\
          \x20 esac\n\
@@ -236,7 +260,7 @@ fn write_gh_shim(dir: &Path, shim: &GhShim) -> Result<()> {
          done\n\
          case \"$want\" in\n\
          \x20 pull) {draft}; exit 0 ;;\n\
-         \x20 checks) {checks}; exit 0 ;;\n\
+         \x20 checks) {checks}; exit $? ;;\n\
          esac\n\
          echo \"unexpected gh invocation: $*\" >&2\n\
          exit 64\n"
@@ -268,7 +292,7 @@ fn evaluate(gate: Gate, route_result: &str, is_draft: &str, shim: GhShim) -> Res
     let sandbox = tempfile::tempdir().context("creating the aggregator sandbox")?;
     let bin = sandbox.path().join("bin");
     fs::create_dir_all(&bin)?;
-    write_gh_shim(&bin, &shim)?;
+    write_gh_shim(&bin, &shim, gate.check_name)?;
     let summary = sandbox.path().join("summary.md");
     fs::write(&summary, "")?;
 
@@ -467,9 +491,9 @@ fn assert_mirror_selection(gate: Gate) -> Result<()> {
         );
     }
 
-    // Ordering by completion time rather than start time lets a slow older
-    // attempt outrank a faster newer one. Here the newer attempt started later
-    // and failed fast; the older one succeeded but finished after it.
+    // Two completed attempts that disagree. Any ordering rule would have to
+    // pick one, and picking the success is a green published over a failure on
+    // the same head. Agreement refuses instead.
     let newer_failure = CheckRunFixture::published("failure").with(|run| {
         run.id = 106_028_700_001;
         run.started_at = "2026-09-20T05:40:00Z";
@@ -482,18 +506,20 @@ fn assert_mirror_selection(gate: Gate) -> Result<()> {
     )?;
     if run.code == 0 || !run.verdict_is(gate, "superseded-no-proof") {
         bail!(
-            "{}: the latest attempt by start time owns the verdict: {}",
+            "{}: two completed attempts that disagree must not be mirrored: {}",
             gate.workflow,
             run.stdout
         );
     }
 
-    // A queued attempt reports `started_at: null`, so ordering has to come from
-    // somewhere else. Both directions of coercing that absent value are wrong,
-    // and the two cases below pin one direction each.
+    // A queued attempt reports `started_at: null` and has no conclusion. An
+    // ordering rule has to decide where that sorts, and both directions are
+    // wrong: nulls first lets an older success outrank proof that has not
+    // started, nulls last lets a stale attempt red a passing head. The two
+    // cases below are the same shape from either side, and agreement answers
+    // both the same way — an attempt that has not finished is not evidence
+    // either for or against, so there is no proof yet (#16105 review).
 
-    // Newer and queued: sorting nulls first would let the older success win and
-    // the stale draft run would exit green over proof that has not started.
     let newer_queued = CheckRunFixture::published("").with(|run| {
         run.id = 106_028_700_002;
         run.started_at = "";
@@ -507,17 +533,18 @@ fn assert_mirror_selection(gate: Gate) -> Result<()> {
     )?;
     if run.code == 0 || !run.verdict_is(gate, "superseded-no-proof") {
         bail!(
-            "{}: a queued newer attempt with no start time must outrank an older success: {}",
+            "{}: a queued attempt beside an older success must not be mirrored: {}",
             gate.workflow,
             run.stdout
         );
     }
 
-    // Older and still queued: a dispatch attempt created before the successful
-    // pull_request attempt and never started. The two use different concurrency
-    // keys, so they coexist on one SHA. Sorting nulls last would let this stale
-    // attempt outrank real proof and red a passing head — the defect this whole
-    // candidate exists to remove, one ordering down (#16101 review).
+    // A dispatch attempt created before the successful pull_request attempt
+    // and never started. The two use different concurrency keys, so they
+    // coexist on one SHA. This is the case the candidate pays for: the head is
+    // genuinely proved, and the mirror still refuses because one attempt never
+    // reported. Red here is the fail-closed direction, and it is chosen over
+    // resting the gate on an ordering the Checks API does not promise.
     let stale_queued = CheckRunFixture::published("").with(|run| {
         run.id = 106_028_600_000;
         run.started_at = "";
@@ -533,9 +560,43 @@ fn assert_mirror_selection(gate: Gate) -> Result<()> {
         "true",
         GhShim::with_runs(Some("false"), vec![stale_queued, later_success]),
     )?;
+    if run.code == 0 || !run.verdict_is(gate, "superseded-no-proof") {
+        bail!(
+            "{}: an attempt that never completed must withhold proof, whatever its id: {}",
+            gate.workflow,
+            run.stdout
+        );
+    }
+
+    // The read has to be scoped to this context, and the fixture has to make
+    // an unscoped read visible. Under agreement an unrelated *success* changes
+    // nothing — it agrees — so it cannot discriminate. An unrelated *failure*
+    // can: scoped, this head is proved and the mirror fires; unscoped, the
+    // other context's failure poisons the agreement and a green head reds.
+    //
+    // That is also what makes the shim's `check_name` enforcement load-bearing
+    // rather than decorative. It recognised a `/check-runs` request by path
+    // alone and served this gate's curated payload however the read was
+    // spelled, so dropping `-f check_name=...` from either workflow left all
+    // six tests green while production read every check on the head (#16105
+    // review). The shim now errors on an absent `check_name` and filters by
+    // the one that was sent, and this case fails if the scope is lost.
+    let other_context_failed = CheckRunFixture::published("failure").with(|run| {
+        run.id = 106_029_999_999;
+        run.name = "Some Other Required Context";
+    });
+    let own_success = CheckRunFixture::published("success").with(|run| {
+        run.id = 106_028_700_004;
+    });
+    let run = evaluate(
+        gate,
+        "skipped",
+        "true",
+        GhShim::with_runs(Some("false"), vec![own_success, other_context_failed]),
+    )?;
     if run.code != 0 || !run.verdict_is(gate, "superseded-draft-snapshot") {
         bail!(
-            "{}: an older queued attempt must not outrank a later success: {}",
+            "{}: another context's failure must not reach this context's agreement: {}",
             gate.workflow,
             run.stdout
         );
