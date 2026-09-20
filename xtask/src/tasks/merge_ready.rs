@@ -403,7 +403,13 @@ fn check_subject_finding(
             ))
         }),
         CheckSubject::PullRequestIntegration { base_sha } => {
-            if base_sha != &snapshot.base_sha {
+            if let Some(merge_group_sha) = snapshot.merge_group_sha.as_deref() {
+                Some(stale(format!(
+                    "snapshot declares merge group {merge_group_sha} but the check is ordinary \
+                     pull-request integration evidence; a B+H result cannot satisfy the \
+                     queue-generated merge-group subject, require a merge-group row instead"
+                )))
+            } else if base_sha != &snapshot.base_sha {
                 Some(stale(format!(
                     "check was integrated against base {base_sha} but the current base is {}",
                     snapshot.base_sha
@@ -1528,6 +1534,27 @@ mod tests {
             finding.source == "required_check:rust"
                 && finding.class == EvidenceClass::Stale
                 && finding.detail.contains("candidate-head")
+        }));
+        Ok(())
+    }
+
+    #[test]
+    fn fan_in_integration_row_cannot_satisfy_declared_merge_group() -> color_eyre::eyre::Result<()>
+    {
+        // #15343 follow-up: once the snapshot declares a merge-group
+        // integration subject, an ordinary B+H integration row cannot
+        // satisfy the required row even though its base matches — the
+        // required checks ran on the B+H tree, not the queue-generated
+        // merge-group subject. Require a merge-group row instead.
+        let mut snapshot = fan_in_snapshot();
+        snapshot.merge_group_sha = Some(SHA_C.to_string());
+        snapshot.protection.evaluated_merge_group_sha = Some(SHA_C.to_string());
+        let evaluation = evaluate_snapshot(&snapshot)?;
+        color_eyre::eyre::ensure!(evaluation.status == MergeReadinessStatus::Stale);
+        color_eyre::eyre::ensure!(evaluation.findings.iter().any(|finding| {
+            finding.source == "required_check:rust"
+                && finding.class == EvidenceClass::Stale
+                && finding.detail.contains("merge-group row instead")
         }));
         Ok(())
     }
