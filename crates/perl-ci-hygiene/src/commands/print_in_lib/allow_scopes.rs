@@ -1,25 +1,81 @@
+/// A print-lint opt-out attribute, once its whole span has been read.
+pub(super) struct PrintAllowAttr {
+    /// `true` for the inner form (`#![expect(…)]`), which applies to the file.
+    pub(super) inner: bool,
+}
+
+/// Reads attributes a line at a time, joining the ones rustfmt has wrapped.
+///
+/// Two spellings defeated the single-line matcher this replaces. `#[expect(…)]`
+/// is the form this repository actually uses -- it is the stricter one, because
+/// rustc warns when the lint it names never fires, so an expectation cannot rot
+/// the way an `allow` can -- and the matcher only knew `#[allow(`. And rustfmt
+/// wraps either spelling as soon as a `reason = "…"` clause makes the line long,
+/// putting the opener and the lint name on different lines, so a matcher needing
+/// both together saw neither half.
+///
+/// An attribute is open from the line that starts it until a line ending in
+/// `)]` or `]`. An attribute that never closes stays open, so nothing after it
+/// is reported as opted out -- the conservative direction for a gate: a print
+/// the scanner cannot prove is intentional is one it still reports.
+#[derive(Default)]
+pub(super) struct AttrJoiner {
+    open: Option<OpenAttr>,
+}
+
+struct OpenAttr {
+    inner: bool,
+    names_print_lint: bool,
+}
+
+impl AttrJoiner {
+    /// `true` while an attribute is still being read across lines. The caller
+    /// skips those lines: a wrapped attribute's middle (`clippy::print_stderr,`,
+    /// `reason = "…"`, `)]`) is not source, and counting its braces would close
+    /// a scope the attribute is still opening.
+    pub(super) fn in_attribute(&self) -> bool {
+        self.open.is_some()
+    }
+
+    /// Feeds one line. Returns the attribute that ends on it, when that
+    /// attribute names a print lint.
+    pub(super) fn feed(&mut self, line: &str) -> Option<PrintAllowAttr> {
+        let trimmed = line.trim();
+        let mut attr = match self.open.take() {
+            Some(open) => open,
+            None => {
+                let inner = trimmed.starts_with("#![");
+                let outer = trimmed.starts_with("#[");
+                if !(inner || outer) {
+                    return None;
+                }
+                if !(trimmed.contains("allow(") || trimmed.contains("expect(")) {
+                    return None;
+                }
+                OpenAttr { inner, names_print_lint: false }
+            }
+        };
+
+        attr.names_print_lint |= trimmed.contains("clippy::print_");
+
+        if trimmed.ends_with(")]") || trimmed.ends_with(']') {
+            return attr.names_print_lint.then_some(PrintAllowAttr { inner: attr.inner });
+        }
+
+        self.open = Some(attr);
+        None
+    }
+}
+
 /// Returns `true` when a source file should be skipped wholesale by the print-macro check.
 ///
-/// Files with a file-level `#![allow(clippy::print_stderr)]` or
+/// Files with a file-level `#![expect(clippy::print_stderr)]` or
 /// `#![allow(clippy::print_stdout)]` attribute have been explicitly opted out of the
 /// rule (e.g. `cli.rs` in the LSP binary crate). The attribute must appear in the
 /// first 30 lines of the file (the module-doc / crate-doc block).
 pub(super) fn file_has_print_allow(lines: &[String]) -> bool {
-    lines.iter().take(30).any(|line| line_has_inner_print_allow_attr(line))
-}
-
-fn line_has_inner_print_allow_attr(line: &str) -> bool {
-    line.contains("#![allow(")
-        && (line.contains("clippy::print_stderr")
-            || line.contains("clippy::print_stdout")
-            || line.contains("clippy::print_"))
-}
-
-pub(super) fn line_has_outer_print_allow_attr(line: &str) -> bool {
-    line.contains("#[allow(")
-        && (line.contains("clippy::print_stderr")
-            || line.contains("clippy::print_stdout")
-            || line.contains("clippy::print_"))
+    let mut joiner = AttrJoiner::default();
+    lines.iter().take(30).filter_map(|line| joiner.feed(line)).any(|attr| attr.inner)
 }
 
 pub(super) fn line_is_whole_line_comment(line: &str) -> bool {
@@ -53,11 +109,19 @@ impl PrintAllowScope {
         }
 
         if self.pending_attr {
-            self.pending_attr = false;
             let delta = brace_delta(line);
             if delta > 0 {
+                self.pending_attr = false;
                 self.active_brace_depth = delta as usize;
+            } else if line.trim_end().ends_with(';') {
+                // An item with no block of its own -- `use`, a `const`, a bare
+                // `fn` declaration. The attribute covered that item and is spent.
+                self.pending_attr = false;
             }
+            // Otherwise the item's signature is still being read. A function whose
+            // parameters or `where` clause wrap opens its brace several lines below
+            // the attribute, and dropping the attribute on the first of those lines
+            // lost the scope before the body it was written for ever started.
         }
     }
 
@@ -213,16 +277,100 @@ mod tests {
         assert!(!file_has_print_allow(&lines));
     }
 
-    #[test]
-    fn line_has_outer_print_allow_attr_detects_outer_bracket() {
-        assert!(line_has_outer_print_allow_attr(
-            "#[allow(clippy::print_stderr, clippy::print_stdout)]"
-        ));
+    /// Feeds each line and returns the attributes that completed, in order.
+    fn joined(lines: &[&str]) -> Vec<bool> {
+        let mut joiner = AttrJoiner::default();
+        lines.iter().filter_map(|line| joiner.feed(line)).map(|attr| attr.inner).collect()
     }
 
     #[test]
-    fn line_has_outer_print_allow_attr_rejects_inner_bracket() {
-        assert!(!line_has_outer_print_allow_attr("#![allow(clippy::print_stderr)]"));
+    fn a_single_line_outer_allow_completes_as_outer() {
+        assert_eq!(joined(&["#[allow(clippy::print_stderr, clippy::print_stdout)]"]), vec![false]);
+    }
+
+    #[test]
+    fn a_single_line_inner_allow_completes_as_inner() {
+        assert_eq!(joined(&["#![allow(clippy::print_stderr)]"]), vec![true]);
+    }
+
+    #[test]
+    fn an_expect_attribute_counts_the_same_as_an_allow() {
+        // `#[expect]` is what this repository actually writes, and it is the
+        // stricter spelling: rustc warns when the lint never fires. A matcher
+        // that knew only `#[allow(` reported every one of them as an offender.
+        assert_eq!(
+            joined(&[r#"#[expect(clippy::print_stdout, reason = "CLI report")]"#]),
+            vec![false]
+        );
+    }
+
+    #[test]
+    fn an_attribute_wrapped_by_rustfmt_is_read_as_one() {
+        // rustfmt splits this as soon as the reason clause makes the line long,
+        // so the opener and the lint name never share a line.
+        assert_eq!(
+            joined(&[
+                "#[expect(",
+                "    clippy::print_stderr,",
+                r#"    reason = "batch CLI unit — diagnostics intentionally use stderr""#,
+                ")]",
+            ]),
+            vec![false]
+        );
+    }
+
+    #[test]
+    fn a_wrapped_inner_attribute_keeps_its_inner_form() {
+        assert_eq!(
+            joined(&[
+                "#![expect(",
+                "    clippy::print_stdout,",
+                r#"    reason = "CLI output module""#,
+                ")]",
+            ]),
+            vec![true]
+        );
+    }
+
+    #[test]
+    fn an_attribute_that_names_no_print_lint_completes_as_nothing() {
+        assert!(joined(&["#[expect(clippy::too_many_lines)]"]).is_empty());
+    }
+
+    #[test]
+    fn an_attribute_that_never_closes_opts_nothing_out() {
+        // The conservative direction for a gate: a print the scanner cannot
+        // prove is intentional is one it still reports.
+        let mut joiner = AttrJoiner::default();
+        assert!(joiner.feed("#[expect(").is_none());
+        assert!(joiner.feed("    clippy::print_stderr,").is_none());
+        assert!(joiner.in_attribute());
+    }
+
+    #[test]
+    fn an_attribute_scope_survives_a_wrapped_signature() {
+        // `#[expect(…)] fn run_cli<I, S>(args: I) -> i32 where …` opens its brace
+        // several lines below the attribute. Spending the attribute on the first
+        // of those lines lost the scope before the body it was written for began.
+        let mut scope = PrintAllowScope::default();
+        scope.note_attribute();
+        for line in
+            ["pub fn run_cli<I, S>(args: I) -> i32", "where", "    I: IntoIterator<Item = S>,"]
+        {
+            scope.observe_line(line);
+            assert!(scope.allows_current_line(), "scope lost at `{line}`");
+        }
+        scope.observe_line("    S: Into<String>, {");
+        assert!(scope.allows_current_line());
+    }
+
+    #[test]
+    fn an_attribute_on_a_statement_item_is_spent_at_its_semicolon() {
+        // Without this the pending attribute would leak down the rest of the file.
+        let mut scope = PrintAllowScope::default();
+        scope.note_attribute();
+        scope.observe_line("use std::io::Write;");
+        assert!(!scope.allows_current_line());
     }
 
     #[test]

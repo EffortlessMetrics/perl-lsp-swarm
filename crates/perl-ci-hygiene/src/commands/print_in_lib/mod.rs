@@ -9,8 +9,7 @@ use crate::{
 };
 
 use self::allow_scopes::{
-    PrintAllowScope, file_has_print_allow, line_has_outer_print_allow_attr,
-    line_is_whole_line_comment,
+    AttrJoiner, PrintAllowScope, file_has_print_allow, line_is_whole_line_comment,
 };
 use self::exclusions::is_excluded_for_print_check;
 
@@ -69,6 +68,7 @@ pub(crate) fn check_print_in_lib(repo_root: &Path) -> Result<i32> {
 
         let mut debug_assertions_scope = PrintAllowScope::default();
         let mut print_allow_scope = PrintAllowScope::default();
+        let mut attrs = AttrJoiner::default();
 
         for (index, line) in lines.iter().enumerate() {
             let line_no = index + 1;
@@ -79,8 +79,20 @@ pub(crate) fn check_print_in_lib(repo_root: &Path) -> Result<i32> {
             if debug_attr_re.is_match(line) {
                 debug_assertions_scope.note_attribute();
             }
-            if line_has_outer_print_allow_attr(line) {
+
+            // The joiner has to see every line, because an attribute rustfmt
+            // wrapped is only recognisable once its last line arrives.
+            let completed = attrs.feed(line);
+            if let Some(attr) = &completed
+                && !attr.inner
+            {
                 print_allow_scope.note_attribute();
+            }
+            // A wrapped attribute's own lines are not source: they hold no print
+            // macro, and letting `observe_line` count their braces would close the
+            // scope the attribute is still opening.
+            if attrs.in_attribute() || completed.is_some() {
+                continue;
             }
 
             if line_is_whole_line_comment(line) {
@@ -107,6 +119,9 @@ pub(crate) fn check_print_in_lib(repo_root: &Path) -> Result<i32> {
         println!("Offenders (use tracing::{{debug,info,warn,error}} instead):");
         for line in offenders.iter().take(20) {
             println!("  {line}");
+        }
+        if let Some(withheld) = offenders.len().checked_sub(20).filter(|count| *count > 0) {
+            println!("  ... and {withheld} more");
         }
         println!();
         println!("If the print macro is intentional, add #[allow(clippy::print_stderr)] or");
