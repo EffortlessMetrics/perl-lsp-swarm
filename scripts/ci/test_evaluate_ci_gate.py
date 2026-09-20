@@ -25,8 +25,10 @@ SPEC.loader.exec_module(gate)
 ROOT = Path(__file__).resolve().parents[2]
 
 
-TESTED_HEAD = "1111111111111111111111111111111111111111"
-NEWER_HEAD = "2222222222222222222222222222222222222222"
+# Real object names, not repeated digits: a fixture of "1" * 40 is equal
+# to its own `.upper()`, which silently makes a case assertion vacuous.
+TESTED_HEAD = "2a4f5bcf1d0e7c9b8a6f5e4d3c2b1a0918273645"
+NEWER_HEAD = "cc291563b7a0e5d4f3c2b1a09182736455647382"
 
 
 def applicable_needs(*, shard_result: str = "success") -> dict[str, dict]:
@@ -44,6 +46,20 @@ def applicable_needs(*, shard_result: str = "success") -> dict[str, dict]:
         "ux-tests": {"result": "success", "outputs": {}},
         "merge-gate-shards": {"result": shard_result, "outputs": {}},
     }
+
+
+def _measured_cancelled_run() -> dict[str, dict]:
+    """The needs map of run 35507473500, a real concurrency cancellation.
+
+    Fifteen lanes cancelled; `Draft PR guard`, `Preflight` and `Conflict
+    marker check` green, having finished before the cancel landed. That
+    survivor set is why "every lane cancelled" is not the shape of a
+    cancelled run, and why the early guards do not trip on one.
+    """
+    needs = applicable_needs(shard_result="cancelled")
+    needs["check-all-targets"]["result"] = "cancelled"
+    needs["ux-tests"]["result"] = "cancelled"
+    return needs
 
 
 class AggregateClassifierTests(unittest.TestCase):
@@ -201,12 +217,12 @@ class AggregateWiringTests(unittest.TestCase):
         needs["ux-tests"]["result"] = "cancelled"
 
         verdict = gate.evaluate(
-            needs, run_cancelled=True, run_head=TESTED_HEAD, latest_head=NEWER_HEAD
+            needs, run_head=TESTED_HEAD, latest_head=NEWER_HEAD
         )
         self.assertEqual("superseded", verdict.status)
 
         status, summary = self._exit_status(
-            needs, RUN_CANCELLED="true", LATEST_HEAD_SHA=NEWER_HEAD
+            needs, LATEST_HEAD_SHA=NEWER_HEAD
         )
         self.assertEqual(0, status)
         self.assertIn("superseded", summary)
@@ -220,24 +236,17 @@ class AggregateWiringTests(unittest.TestCase):
         candidate, so nothing is proving it and the gate must stay red. This is
         the case #5460 refused a pass verdict for, and it still refuses.
         """
-        needs = applicable_needs(shard_result="cancelled")
-        needs["check-all-targets"]["result"] = "cancelled"
-        needs["ux-tests"]["result"] = "cancelled"
+        needs = _measured_cancelled_run()
 
         verdict = gate.evaluate(
-            needs, run_cancelled=True, run_head=TESTED_HEAD, latest_head=TESTED_HEAD
+            needs, run_head=TESTED_HEAD, latest_head=TESTED_HEAD
         )
-        # Named rather than folded into `failure`: no dependency failed, and a
-        # reader told one would go looking for something that is not there.
-        self.assertEqual("cancelled_no_verdict", verdict.status)
+        self.assertEqual("failure", verdict.status)
 
-        # The exit code is the assertion that matters. Naming the state must
-        # not make it a pass, which is #16107's rule and #5460's before it.
-        status, summary = self._exit_status(
-            needs, RUN_CANCELLED="true", LATEST_HEAD_SHA=TESTED_HEAD
-        )
+        # The exit code is the assertion that matters. #16107's rule and
+        # #5460's before it: absent proof does not pass.
+        status, _ = self._exit_status(needs, LATEST_HEAD_SHA=TESTED_HEAD)
         self.assertEqual(1, status)
-        self.assertIn("cancelled_no_verdict", summary)
 
     def test_an_unresolved_live_head_stays_red(self) -> None:
         """No answer from the API is not evidence of a replacement."""
@@ -248,44 +257,74 @@ class AggregateWiringTests(unittest.TestCase):
         for latest in ("", "   "):
             with self.subTest(latest_head=latest):
                 status, _ = self._exit_status(
-                    needs, RUN_CANCELLED="true", LATEST_HEAD_SHA=latest
+                    needs, LATEST_HEAD_SHA=latest
                 )
                 self.assertEqual(1, status)
 
-    def test_a_cancelled_lane_in_a_live_run_stays_red(self) -> None:
-        """A lane lost on its own produced no proof, and nothing superseded it.
+    def test_a_cancelled_run_and_a_cancelled_lane_are_indistinguishable(
+        self,
+    ) -> None:
+        """Why no verdict names cancellation as a cause.
 
-        This is the case that must not be forgiven. A manual cancel, an API
-        cancel or a runner dying leaves the blockers looking exactly like
-        supersession, so only the run-level fact separates them. `ripr.yml`
-        blocks the same shape as `cancelled-no-verdict` (#5460).
+        Run 35507473500 was concurrency-cancelled and still reported three
+        green lanes, because the fast guards had already finished when the
+        cancel landed. So a cancelled *run* and a single cancelled *job* reach
+        this function as the same shape: some lanes cancelled, some green,
+        none failed. Nothing in the needs map separates them, and the job's own
+        `cancelled()` is false for both.
+
+        Both are therefore `failure` — provable, and red either way. Only the
+        head comparison distinguishes a state worth forgiving, which is the
+        whole of the evidence model #16186's first attempt lacked.
         """
-        needs = applicable_needs(shard_result="cancelled")
+        lone_lane = applicable_needs(shard_result="cancelled")
+        whole_run = _measured_cancelled_run()
 
-        verdict = gate.evaluate(needs, run_cancelled=False)
-        self.assertEqual("failure", verdict.status)
+        for label, needs in (("one job", lone_lane), ("whole run", whole_run)):
+            with self.subTest(cancelled=label):
+                verdict = gate.evaluate(
+                    needs, run_head=TESTED_HEAD, latest_head=TESTED_HEAD
+                )
+                self.assertEqual("failure", verdict.status)
 
-        status, _ = self._exit_status(needs)
-        self.assertEqual(1, status)
+                status, _ = self._exit_status(
+                    needs, LATEST_HEAD_SHA=TESTED_HEAD
+                )
+                self.assertEqual(1, status)
 
-    def test_a_real_failure_beside_a_cancellation_stays_red(self) -> None:
+                # And the same two inputs are both forgiven once a newer head
+                # is positively established. The head is doing all the work.
+                superseded = gate.evaluate(
+                    needs, run_head=TESTED_HEAD, latest_head=NEWER_HEAD
+                )
+                self.assertEqual("superseded", superseded.status)
+
+    def test_a_real_failure_is_never_forgiven_however_far_the_head_moved(
+        self,
+    ) -> None:
+        """Supersession forgives absent proof, never contrary proof.
+
+        This is the assertion that keeps the head comparison from becoming a
+        blanket amnesty: a dependency that genuinely failed is a failure even
+        when the candidate it tested has been replaced.
+        """
         needs = applicable_needs(shard_result="cancelled")
         needs["check-all-targets"]["result"] = "failure"
 
-        verdict = gate.evaluate(needs, run_cancelled=True)
+        verdict = gate.evaluate(
+            needs, run_head=TESTED_HEAD, latest_head=NEWER_HEAD
+        )
         self.assertEqual("failure", verdict.status)
 
-        status, _ = self._exit_status(
-            needs, RUN_CANCELLED="true", LATEST_HEAD_SHA=NEWER_HEAD
-        )
+        status, _ = self._exit_status(needs, LATEST_HEAD_SHA=NEWER_HEAD)
         self.assertEqual(1, status)
 
     def test_an_unrecognised_status_is_red(self) -> None:
         """A classification added later must not reach exit 0 by existing.
 
         The exit mapping is an allowlist of three statuses, not a denylist of
-        failures, so a verdict nobody taught it about is red. That is the
-        property that lets `cancelled_no_verdict` be introduced at all.
+        failures, so a verdict nobody taught it about is red. A status
+        added later cannot turn the gate green merely by existing.
         """
         output = io.StringIO()
         with mock.patch.object(
@@ -299,36 +338,79 @@ class AggregateWiringTests(unittest.TestCase):
                 with redirect_stdout(output):
                     self.assertEqual(1, gate.main())
 
-    def test_only_the_exact_cancellation_marker_is_believed(self) -> None:
-        """An unset or unexpected value must fail closed, not forgive."""
+    def test_only_a_well_formed_differing_head_is_believed(self) -> None:
+        """Fail closed on anything that is not plainly a newer object name.
+
+        This replaces a test of the `RUN_CANCELLED` marker's exact spelling.
+        That marker is gone, so the input that can now be malformed is the
+        live head, and the same discipline applies to it: a value the
+        workflow would not have exported, or one equal to the tested head,
+        must not read as a replacement.
+        """
         needs = applicable_needs(shard_result="cancelled")
         needs["check-all-targets"]["result"] = "cancelled"
         needs["ux-tests"]["result"] = "cancelled"
 
-        for value in ("", "false", "True", "TRUE", "1", "cancelled"):
-            with self.subTest(run_cancelled=value):
-                status, _ = self._exit_status(
-                    needs, RUN_CANCELLED=value, LATEST_HEAD_SHA=NEWER_HEAD
-                )
+        malformed = (
+            "",
+            "   ",
+            TESTED_HEAD,  # not a replacement at all
+            TESTED_HEAD.upper(),  # the same object, differently spelled
+            NEWER_HEAD[:39],  # truncated: unknown, not newer
+            NEWER_HEAD + "0",  # over-long
+            NEWER_HEAD[:-1] + "g",  # not hexadecimal
+        )
+        for value in malformed:
+            with self.subTest(latest_head=value):
+                status, _ = self._exit_status(needs, LATEST_HEAD_SHA=value)
                 self.assertEqual(1, status)
 
-    def test_workflow_records_cancellation_before_the_classifier_reads_it(self) -> None:
+                # Asserted at the classifier too: the workflow's own
+                # `^[0-9a-f]{40}$` guard must not be the only thing standing
+                # between a garbled value and a green gate.
+                self.assertFalse(gate._superseded(TESTED_HEAD, value))
+
+        # The layer boundary, stated rather than assumed: `main` normalises
+        # surrounding whitespace and `_superseded` judges the shape. A padded
+        # object name is the same object name, so it is believed — the check
+        # is for garbled values, not for tidy ones.
+        padded = f"  {NEWER_HEAD}\n"
+        self.assertFalse(gate._superseded(TESTED_HEAD, padded))
+        status, _ = self._exit_status(needs, LATEST_HEAD_SHA=padded)
+        self.assertEqual(0, status)
+
+    def test_the_head_resolution_is_not_gated_on_cancelled(self) -> None:
+        """The signal must reach the classifier in a cancelled run.
+
+        This replaces a test that pinned the ordering of an `if: cancelled()`
+        marker step. Run 35507473500 falsified that design: the run was
+        concurrency-cancelled, every dependency came back `cancelled`, and
+        this job's `if: cancelled()` steps were skipped. `cancelled()` is
+        false here, so anything behind it could never fire in the one case
+        #16087 is about.
+
+        The heads are therefore resolved under `always()`, and no step in
+        this job may reintroduce a `cancelled()` guard on the path that
+        feeds the classifier.
+        """
         workflow = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
         start = workflow.index("  merge-gate:\n")
         end = workflow.index("\n  # \u2500\u2500 UX Tests", start)
         block = workflow[start:end]
 
-        self.assertIn("name: Record run cancellation", block)
-        self.assertIn("python3 scripts/ci/evaluate_ci_gate.py", block)
-        record = block.index("name: Record run cancellation")
-        classifier = block.index("python3 scripts/ci/evaluate_ci_gate.py")
-        self.assertLess(
-            record,
-            classifier,
-            "the cancellation marker must be exported before the step that reads it",
+        resolve = block.index("name: Resolve the tested head")
+        guard = block.index("if:", resolve)
+        self.assertIn("always()", block[guard : guard + 60])
+
+        # Comments are stripped: this job's own comment explains the
+        # `cancelled()` finding and quotes the directive it removed, and an
+        # assertion that tripped over that prose would be checking the wrong
+        # thing. What must not come back is a live guard.
+        directives = "\n".join(
+            line for line in block.splitlines() if not line.lstrip().startswith("#")
         )
-        self.assertIn("if: cancelled()", block)
-        self.assertIn('RUN_CANCELLED=true" >> "$GITHUB_ENV"', block)
+        self.assertNotIn("cancelled()", directives)
+        self.assertNotIn("RUN_CANCELLED", directives)
 
     def test_workflow_resolves_both_heads_from_the_api(self) -> None:
         """The comparison is only as trustworthy as where the two heads come from.

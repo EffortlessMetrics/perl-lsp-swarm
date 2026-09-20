@@ -1557,13 +1557,22 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       # Evidence that a newer candidate replaced the one this run tested, which
-      # is the only thing that makes forgiving a cancelled run safe. GitHub's
-      # `cancelled()` says the run was cancelled but not why: a maintainer
-      # cancelling by hand or through the API sets it exactly as
-      # `cancel-in-progress` does, and no replacement run exists in that case.
-      # #5460 refused a pass verdict here for precisely that reason. So the
-      # classifier is given the pull request's live head as well, and forgives
-      # only when it has moved off the head this run tested (#16087).
+      # is the only thing that makes forgiving a cancelled aggregate safe.
+      #
+      # This job used to gate that on `cancelled()`, and a live run falsified
+      # it. Run 35507473500 was concurrency-cancelled by a push, every
+      # dependency came back `cancelled`, this job still ran under
+      # `if: always()` — and its `if: cancelled()` steps were *skipped*.
+      # `cancelled()` is false here: the run was cancelled, this job was not.
+      # The marker those steps exported could therefore never be set in the one
+      # case #16087 is about, so anything resting on it was inert.
+      #
+      # The head comparison is the whole signal now, and it needs no
+      # cancellation fact at all: if the pull request's live head is no longer
+      # the head this run tested, a replacement run is already proving the
+      # candidate, whatever cancelled this one. The classifier still requires
+      # every blocker to be a cancelled lane, so a genuine failure alongside a
+      # cancellation is still a failure.
       #
       # The pull request is resolved by its number, not by branch name:
       # `github.head_ref` is fork-controlled, which is how a branch called
@@ -1572,17 +1581,10 @@ jobs:
       # read candidate-controlled pull-request head data (#12911) — the run
       # object's `head_sha` is the head this run actually tested.
       #
-      # Both variables are best effort and fail closed. The marker is exported
-      # only on the cancelled path, and an unresolved head stays empty; either
-      # one missing leaves the gate red, which is the behaviour before this
-      # step existed.
-      - name: Record run cancellation
-        if: cancelled()
-        shell: bash
-        run: echo "RUN_CANCELLED=true" >> "$GITHUB_ENV"
-
+      # Fail closed: an unresolved head stays empty and leaves the gate red,
+      # which is the behaviour before this step existed.
       - name: Resolve the tested head and the pull request's live head
-        if: cancelled() && github.event_name == 'pull_request'
+        if: always() && github.event_name == 'pull_request'
         shell: bash
         env:
           # `github.token` rather than `secrets.GITHUB_TOKEN`: the same

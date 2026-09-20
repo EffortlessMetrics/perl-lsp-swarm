@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
@@ -74,7 +75,6 @@ def evaluate(
     *,
     event_name: str = "pull_request",
     pull_request_draft: str = "false",
-    run_cancelled: bool = False,
     run_head: str = "",
     latest_head: str = "",
 ) -> Verdict:
@@ -88,23 +88,24 @@ def evaluate(
     Forgiving that needs **positive evidence that a newer candidate exists**,
     which is `latest_head != run_head`: the pull request's live head is no
     longer the head this run tested, so a replacement run is already proving
-    the thing this one stopped proving. Nothing weaker will do.
-    `cancelled()` alone will not, because it reports *that* the run was
-    cancelled and not *why* — a maintainer cancelling a run by hand or through
-    the API sets it exactly as concurrency does, and there is no replacement
-    run in that case. #5460 said as much when it refused a pass verdict here,
-    and it was right: the run-level fact separates a cancelled run from one
-    lost lane, but not a cancelled-by-supersession run from a
-    cancelled-by-hand one.
+    the thing this one stopped proving. Nothing weaker will do, and in
+    particular `cancelled()` will not.
 
-    `run_cancelled` and all-cancelled blockers are kept as necessary
-    conditions, not sufficient ones. Together they confine the forgiving branch
-    to runs that were cancelled and produced no contrary evidence, and the head
-    comparison is what establishes that something superseded them.
+    It will not for two reasons, and the second was measured rather than
+    reasoned. It reports *that* a run was cancelled and not *why*, so a
+    maintainer cancelling by hand is indistinguishable from concurrency —
+    which is what #5460 refused a pass verdict over, and it was right. And in
+    this job it is simply false: run 35507473500 was concurrency-cancelled
+    with every dependency `cancelled`, and the `if: cancelled()` steps in this
+    very job were skipped. The run was cancelled; the job was not. So no
+    cancellation fact reaches this function at all, and none is needed.
 
-    Everything short of all three stays red, which is where `ripr.yml` also
-    lands from the other side — it sets `cancel-in-progress: false`, so a
-    cancelled ripr lane never means supersession at all and its
+    What remains necessary is `_all_cancelled(blockers)`: a genuine failure
+    alongside a cancellation is still a failure, whatever the heads say. The
+    head comparison supplies the rest.
+
+    `ripr.yml` is unaffected either way. It sets `cancel-in-progress: false`,
+    so a cancelled ripr lane never means supersession and its
     `cancelled-no-verdict` block stays correct unchanged.
     """
     draft_result = _result(needs, "draft-pr-check")
@@ -176,23 +177,23 @@ def evaluate(
         if _result(needs, name) != "success"
     )
     if blockers:
-        if run_cancelled and _all_cancelled(blockers):
+        if _all_cancelled(blockers):
             if _superseded(run_head, latest_head):
                 return Verdict(
                     "superseded",
                     f"cancelled run for {run_head[:8]} superseded by {latest_head[:8]}",
                     blockers,
                 )
-            # Same inputs as the branch above, minus the one fact that makes
-            # them safe. #16107 named this state and kept it red: NOT_PROVEN
-            # for a SHA nothing proved. Saying so is worth a status of its
-            # own, because "applicable dependency did not succeed" sends the
-            # reader looking for a dependency that failed, and none did.
-            return Verdict(
-                "cancelled_no_verdict",
-                "run cancelled with no newer head; nothing proved this candidate",
-                blockers,
-            )
+            # Cancelled lanes with no newer head. #16107 named this state and
+            # kept it red — NOT_PROVEN for a SHA nothing proved — and that
+            # rule is carried here unchanged. It gets no status of its own:
+            # the needs map cannot tell a cancelled run from a cancelled job.
+            # Run 35507473500 was concurrency-cancelled and still reported
+            # three green lanes, so "every lane cancelled" is not the shape of
+            # a cancelled run, and no other cancellation evidence reaches this
+            # function. A verdict naming a cause it cannot establish is the
+            # error #16186's first attempt made; `failure` is what is provable
+            # and it blocks identically.
         return Verdict("failure", "applicable dependency did not succeed", blockers)
     return Verdict("success", "all applicable dependencies succeeded")
 
@@ -201,21 +202,36 @@ def _all_cancelled(blockers: tuple[str, ...]) -> bool:
     """Whether every blocker is a cancelled lane rather than a real outcome.
 
     Necessary but not sufficient for `superseded`: one genuine failure
-    alongside a cancellation is still a failure.
+    alongside a cancellation is still a failure, however far the head has
+    moved. The head comparison supplies the sufficient half.
     """
     return all(blocker.rsplit("=", 1)[-1] == "cancelled" for blocker in blockers)
+
+
+_OBJECT_NAME = re.compile(r"[0-9a-f]{40}")
 
 
 def _superseded(run_head: str, latest_head: str) -> bool:
     """Whether a newer candidate has replaced the one this run tested.
 
-    Both heads must be known. An unresolved `latest_head` — no token, an API
-    error, an event with no pull request — is not evidence of a replacement,
-    so it reads as "not superseded" and the gate stays red. That is the
-    direction to fail in: a missed supersession costs one avoidable red, while
-    a wrongly claimed one reports green over a candidate nothing proved.
+    Both heads must be a well-formed object name. An unresolved `latest_head`
+    — no token, an API error, an event with no pull request — is not evidence
+    of a replacement, so it reads as "not superseded" and the gate stays red.
+    That is the direction to fail in: a missed supersession costs one
+    avoidable red, while a wrongly claimed one reports green over a candidate
+    nothing proved.
+
+    The workflow step already refuses to export anything but 40 hex
+    characters. This repeats that check because it is the one input that can
+    turn the gate green, and a shell condition in a YAML file is a thin
+    single layer to rest that on. A truncated or garbled value must read as
+    "unknown", never as "different, therefore newer".
     """
-    return bool(run_head) and bool(latest_head) and run_head != latest_head
+    return (
+        _OBJECT_NAME.fullmatch(run_head) is not None
+        and _OBJECT_NAME.fullmatch(latest_head) is not None
+        and run_head != latest_head
+    )
 
 
 def render_summary(needs: Mapping[str, Any], verdict: Verdict) -> str:
@@ -238,10 +254,8 @@ def main() -> int:
             raw_needs,
             event_name=os.environ.get("EVENT_NAME", ""),
             pull_request_draft=os.environ.get("PULL_REQUEST_DRAFT", ""),
-            # Anything but the exact string is not a cancelled run. The step
-            # that exports this is itself `if: cancelled()`, so an uncancelled
-            # run leaves the variable unset and the default keeps the gate red.
-            run_cancelled=os.environ.get("RUN_CANCELLED", "") == "true",
+            # Normalised here, shape-checked in `_superseded`. The workflow
+            # step exports neither unless it is already 40 hex characters.
             run_head=os.environ.get("RUN_HEAD_SHA", "").strip(),
             latest_head=os.environ.get("LATEST_HEAD_SHA", "").strip(),
         )
@@ -256,10 +270,10 @@ def main() -> int:
     # `superseded` exits 0 because a cancelled run proved nothing about the
     # candidate and a newer run is already proving it. `scoped_noop` is the
     # same argument for a route that was never meant to run. Every other
-    # status is red, `cancelled_no_verdict` included: it is the superseded
-    # shape with the replacement missing, which is absent proof and not a
-    # pass. A status this function does not recognise is red as well, so a
-    # new classification cannot turn the gate green by being added.
+    # status is red, `failure` over cancelled lanes included: that is the
+    # superseded shape with the replacement missing, which is absent proof
+    # and not a pass. This is an allowlist rather than a denylist, so a
+    # status added later cannot reach exit 0 merely by existing.
     return 0 if verdict.status in {"success", "scoped_noop", "superseded"} else 1
 
 
