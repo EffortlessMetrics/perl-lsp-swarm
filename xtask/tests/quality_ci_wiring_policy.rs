@@ -39,22 +39,10 @@ fn ignored_test_issue_reference_gate_is_required_on_prs() {
     let smoke_start = must_some(workflow.find("  pr-smoke:"));
     let smoke = &workflow[smoke_start..];
     let warm_start = must_some(smoke.find("- name: Warm xtask"));
-    // #15528 replaced the per-run `Select PR Smoke Cargo target` step with a
-    // job-level env: a run-id-and-attempt path was unique per run, so the lane
-    // cold-built every time and the watchdog killed it mid-compile. The
-    // invariant that survives is cache alignment -- the lane must build into
-    // the one tree Swatinem/rust-cache restores and saves -- and it must hold
-    // for every step, the xtask warm-up included, which a job-level env gives
-    // and a step-level export could not.
-    let target_env = must_some(smoke.find("CARGO_TARGET_DIR: target"));
-    assert!(
-        target_env < warm_start,
-        "PR Smoke must fix its cache-aligned CARGO_TARGET_DIR before warming xtask"
-    );
-    assert!(
-        !smoke.contains("pr-smoke-${PR_SMOKE_RUN_ID}-${PR_SMOKE_RUN_ATTEMPT}"),
-        "PR Smoke must not reintroduce a per-run cargo target: it defeats the cache"
-    );
+    // The cargo-target invariant this test used to assert here now lives in
+    // `pr_smoke_builds_into_the_cache_aligned_cargo_target`, because #15528
+    // deleted the step it named and the stale locator took every assertion
+    // below it out of service.
     assert!(
         smoke.contains("\"$CARGO_TARGET_DIR/debug/xtask\" gates --tier pr-fast"),
         "PR Smoke must invoke the warmed xtask from its selected cargo target"
@@ -127,49 +115,113 @@ fn ignored_test_issue_reference_gate_is_required_on_prs() {
             "PR Smoke must prebuild `{command}` before running independent gates"
         );
     }
-    let summary_step = must_some(workflow_step(smoke, "Summarize PR-fast gate failures"));
+}
+
+/// #15528 replaced the per-run `Select PR Smoke Cargo target` step with a
+/// job-level env: a run-id-and-attempt path was unique per run, so the lane
+/// cold-built every time and the watchdog killed it mid-compile. The invariant
+/// that survives the step is cache alignment -- the lane must build into the
+/// one tree Swatinem/rust-cache restores and saves -- and it must hold for
+/// every step, the xtask warm-up included, which a job-level env gives and a
+/// step-level export could not.
+#[test]
+fn pr_smoke_builds_into_the_cache_aligned_cargo_target() -> Result<()> {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .ok_or_else(|| anyhow!("the xtask manifest directory has no parent"))?
+        .to_path_buf();
+    let workflow = fs::read_to_string(root.join(".github/workflows/ci.yml"))?;
+    let smoke_start = workflow
+        .find("  pr-smoke:")
+        .ok_or_else(|| anyhow!("ci.yml no longer declares a `pr-smoke` job"))?;
+    let smoke = &workflow[smoke_start..];
+
+    let warm_start = smoke
+        .find("- name: Warm xtask")
+        .ok_or_else(|| anyhow!("PR Smoke no longer declares a `Warm xtask` step"))?;
+    let target_env = smoke.find("CARGO_TARGET_DIR: target").ok_or_else(|| {
+        anyhow!("PR Smoke no longer pins the cache-aligned `CARGO_TARGET_DIR: target`")
+    })?;
+    ensure!(
+        target_env < warm_start,
+        "PR Smoke must fix its cache-aligned CARGO_TARGET_DIR before warming xtask"
+    );
+    ensure!(
+        !smoke.contains("pr-smoke-${PR_SMOKE_RUN_ID}-${PR_SMOKE_RUN_ATTEMPT}"),
+        "PR Smoke must not reintroduce a per-run cargo target: it defeats the cache"
+    );
+    Ok(())
+}
+
+/// The #15492 reporter contract, deliberately outside the long wiring test
+/// above rather than appended to it. That test locates steps by literal name
+/// and aborts at the first stale locator, which is how its own #15492
+/// assertions went unrun for a day after #15935 renamed a step out from under
+/// it. These controls are fallible end to end, so a drifted locator reports
+/// what drifted instead of taking the rest of the contract down with it.
+#[test]
+fn pr_smoke_publishes_failing_gate_names_through_the_reporter() -> Result<()> {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .ok_or_else(|| anyhow!("the xtask manifest directory has no parent"))?
+        .to_path_buf();
+
+    let workflow = fs::read_to_string(root.join(".github/workflows/ci.yml"))?;
+    let smoke_start = workflow
+        .find("  pr-smoke:")
+        .ok_or_else(|| anyhow!("ci.yml no longer declares a `pr-smoke` job"))?;
+    let smoke = &workflow[smoke_start..];
+    let summary_step =
+        workflow_step(smoke, "Summarize PR-fast gate failures").ok_or_else(|| {
+            anyhow!("PR Smoke no longer declares a `Summarize PR-fast gate failures` step")
+        })?;
+
     // The reporter moved out of the workflow body (#15492) so that its
     // annotation branches could be falsified by a test harness. The wiring
     // assertion is therefore split: the step must still invoke it, and the
     // script it invokes must still carry the publication invariants.
-    assert!(
+    ensure!(
         summary_step.contains("python3 scripts/ci/summarize_pr_fast_gates.py"),
         "PR Smoke must invoke the failing-gate reporter"
     );
-    let reporter = must(fs::read_to_string(root.join("scripts/ci/summarize_pr_fast_gates.py")));
-    assert!(
-        reporter.contains("GITHUB_STEP_SUMMARY")
-            && reporter.contains("Non-success gates")
-            && reporter.contains("exit_code"),
-        "PR Smoke must publish failing gate names and exit codes in the job summary"
+
+    let reporter = fs::read_to_string(root.join("scripts/ci/summarize_pr_fast_gates.py"))?;
+    for required in ["GITHUB_STEP_SUMMARY", "Non-success gates", "exit_code"] {
+        ensure!(
+            reporter.contains(required),
+            "the reporter must publish failing gate names and exit codes in the job summary \
+             (missing `{required}`)"
+        );
+    }
+
+    // The pr-fast receipt producer (GateResult in xtask/src/tasks/gates.rs)
+    // serializes its identifier as `gate_name`, not `name`: reading `name`
+    // renders every failing gate as `unknown` and defeats the summary's
+    // diagnostic purpose (#15492 review thread).
+    let producer = fs::read_to_string(root.join("xtask/src/tasks/gates.rs"))?;
+    ensure!(
+        producer.contains("pub gate_name: String"),
+        "GateResult must keep serializing its identifier as `gate_name`"
     );
+    ensure!(
+        reporter.contains("gate.get(\"gate_name\""),
+        "the reporter must read the producer's `gate_name` field, not `name`"
+    );
+
     // Extraction only buys proof while the self-tests actually run, and they
     // run on a path filter naming both halves.
-    let self_tests =
-        must(fs::read_to_string(root.join(".github/workflows/ci-gate-self-tests.yml")));
+    let self_tests = fs::read_to_string(root.join(".github/workflows/ci-gate-self-tests.yml"))?;
     for required in [
         "scripts/ci/summarize_pr_fast_gates.py",
         "scripts/ci/test_summarize_pr_fast_gates.py",
         "python3 -m unittest scripts.ci.test_summarize_pr_fast_gates",
     ] {
-        assert!(
+        ensure!(
             self_tests.contains(required),
             "the gate self-test workflow must carry `{required}`"
         );
     }
-    // The pr-fast receipt producer (GateResult in xtask/src/tasks/gates.rs)
-    // serializes its identifier as `gate_name`, not `name`: reading `name`
-    // renders every failing gate as `unknown` and defeats the summary's
-    // diagnostic purpose (#15492 review thread).
-    let producer = must(fs::read_to_string(root.join("xtask/src/tasks/gates.rs")));
-    assert!(
-        producer.contains("pub gate_name: String"),
-        "GateResult must keep serializing its identifier as `gate_name`"
-    );
-    assert!(
-        reporter.contains("gate.get(\"gate_name\""),
-        "PR Smoke summary must read the producer's `gate_name` field, not `name`"
-    );
+    Ok(())
 }
 
 #[test]
