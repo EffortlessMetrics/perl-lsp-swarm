@@ -65,11 +65,11 @@ const EXPECTED_CLASS_COUNTS: &[(&str, usize)] = &[
     ("product", 16),
     ("preview", 2),
     ("compatibility_shim", 1),
-    ("test_api", 26),
+    ("test_api", 27),
     ("lab", 21),
     ("oracle", 1),
     ("benchmark", 15),
-    ("gate", 87),
+    ("gate", 94),
 ];
 
 /// Pin derivation receipts independently of class counts so a rule that
@@ -77,9 +77,9 @@ const EXPECTED_CLASS_COUNTS: &[(&str, usize)] = &[
 const EXPECTED_DERIVATION: &[(&str, usize, usize)] = &[
     ("features-product", 129, 16),
     ("features-preview", 129, 2),
-    ("gate-policy-gates", 87, 87),
+    ("gate-policy-gates", 94, 94),
     ("cargo-bench-targets", 15, 15),
-    ("cargo-test-features", 79, 26),
+    ("cargo-test-features", 80, 27),
     ("fuzz-targets", 21, 21),
     ("override", 2, 2),
 ];
@@ -740,7 +740,7 @@ fn every_test_api_row_records_which_signal_classified_it() -> TestResult {
             }
         }
     }
-    assert_eq!((by_name, by_usage), (13, 13), "test_api signal split drifted");
+    assert_eq!((by_name, by_usage), (14, 13), "test_api signal split drifted");
     Ok(())
 }
 

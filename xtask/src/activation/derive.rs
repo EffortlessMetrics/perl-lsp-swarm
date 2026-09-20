@@ -898,7 +898,20 @@ fn raw_string_open(bytes: &[u8], i: usize) -> Option<(usize, usize)> {
 /// positions this copy proves are code rather than scanning this copy.
 fn code_only(text: &str) -> String {
     let mask = code_mask(text);
-    text.char_indices().map(|(i, c)| if mask[i] || c == '\n' { c } else { ' ' }).collect()
+    let mut code = String::with_capacity(text.len());
+    for (i, c) in text.char_indices() {
+        if mask[i] || c == '\n' {
+            code.push(c);
+        } else {
+            // One space per BYTE, not per char: callers read the original
+            // text at offsets found in this copy, so byte lengths must
+            // match. Blank a multi-byte char whole, never slice it.
+            for _ in 0..c.len_utf8() {
+                code.push(' ');
+            }
+        }
+    }
+    code
 }
 
 /// Every feature name this file gates on.
@@ -1498,6 +1511,31 @@ mod tests {
             return false;
         };
         fs::create_dir_all(parent).is_ok() && fs::write(&path, contents).is_ok()
+    }
+
+    #[test]
+    fn non_ascii_comment_preserves_byte_offsets() {
+        // `code_only` blanks one space per BYTE, not per char: callers read
+        // the original text at offsets found in this copy, so byte lengths
+        // must match. Collapsing a multi-byte char to one space shifted every
+        // later offset and made `gated_features` slice the original text
+        // mid-character (#16195).
+        let text = "// ── decorated comment ──\nlet _ = cfg!(feature = \"probe_feature\");\n";
+        let code = code_only(text);
+        assert_eq!(code.len(), text.len(), "byte length must match the original");
+        let Some(decorated) = text.find('─') else {
+            assert!(text.contains('─'), "fixture must contain the multi-byte char");
+            return;
+        };
+        assert!(
+            code.as_bytes()[decorated..decorated + '─'.len_utf8()].iter().all(|byte| *byte == b' '),
+            "a blanked multi-byte char must become one space per byte"
+        );
+        assert_eq!(
+            gated_features(text),
+            BTreeSet::from(["probe_feature".to_string()]),
+            "a gate after a non-ASCII comment must still be found at the right offset"
+        );
     }
 
     #[test]
