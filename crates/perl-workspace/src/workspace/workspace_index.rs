@@ -7590,7 +7590,10 @@ mod tests {
         for uri in ["file:///bin/tool", "file:///release.v1/bin/tool", "untitled:tool"] {
             let index = WorkspaceIndex::new();
             index
-                .index_file(Url::parse(uri)?, "#!/usr/bin/env perl\nsub helper { 1 }".to_string())
+                .index_initial_file(
+                    Url::parse(uri)?,
+                    "#!/usr/bin/env perl\nsub helper { 1 }".to_string(),
+                )
                 .map_err(anyhow::Error::msg)?;
             let symbols = index.file_symbols(uri);
             anyhow::ensure!(
@@ -7617,7 +7620,7 @@ mod tests {
         ] {
             let index = WorkspaceIndex::new();
             index
-                .index_file(Url::parse(uri)?, "sub helper { 1 }".to_string())
+                .index_initial_file(Url::parse(uri)?, "sub helper { 1 }".to_string())
                 .map_err(anyhow::Error::msg)?;
             let symbols = index.file_symbols(uri);
             let helper = symbols
@@ -7637,7 +7640,7 @@ mod tests {
         for uri in ["file:///bin/tool", "file:///lib/Tool.pm"] {
             let index = WorkspaceIndex::new();
             index
-                .index_file(Url::parse(uri)?, "package Tool; sub helper { 1 }".to_string())
+                .index_initial_file(Url::parse(uri)?, "package Tool; sub helper { 1 }".to_string())
                 .map_err(anyhow::Error::msg)?;
             let symbols = index.file_symbols(uri);
             anyhow::ensure!(
@@ -7655,7 +7658,7 @@ mod tests {
         let index = WorkspaceIndex::new();
         let uri = "file:///lib/Utility.pm";
         index
-            .index_file(Url::parse(uri)?, "sub helper { 1 }".to_string())
+            .index_initial_file(Url::parse(uri)?, "sub helper { 1 }".to_string())
             .map_err(anyhow::Error::msg)?;
 
         let symbols = index.file_symbols(uri);
@@ -7671,7 +7674,7 @@ mod tests {
         let index = WorkspaceIndex::new();
         let uri = "file:///bin/utility.pl";
         index
-            .index_file(Url::parse(uri)?, "sub helper { 1 }".to_string())
+            .index_initial_file(Url::parse(uri)?, "sub helper { 1 }".to_string())
             .map_err(anyhow::Error::msg)?;
 
         let symbols = index.file_symbols(uri);
