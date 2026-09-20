@@ -155,6 +155,40 @@ fn antip_heredoc_body_does_not_fabricate_a_regex_code_block() {
 }
 
 #[test]
+fn antip_over_budget_filehandle_block_fabricates_from_body_text() {
+    // KNOWN RESIDUAL, pinned deliberately: `FILEHANDLE_BLOCK_BUDGET` caps the
+    // backward brace match at 256 bytes to keep it `O(1)` per candidate. A
+    // longer braced filehandle is therefore not admitted as a term position,
+    // its heredoc body is never masked, and the body is scanned as code.
+    //
+    // The cost is *not* limited to lost coverage. Body text can fabricate a
+    // diagnostic on valid Perl — the same direction #14352 closed for the
+    // in-budget case. This test asserts the wrong-but-accepted behavior so
+    // that fixing it fails here and forces an explicit decision rather than
+    // silently changing a documented boundary.
+    let long_handle = "a".repeat(300);
+    let over_budget = format!("print {{ $fh_{long_handle} }} <<'M';\n}} (?{{ a << b }}\nM\n");
+
+    assert_eq!(
+        regex_code_block_count(&over_budget),
+        1,
+        "residual: over-budget filehandle block leaves body text visible and fabricates PL804. \
+         If this now reports 0 the residual is fixed — update this test, \
+         `FILEHANDLE_BLOCK_BUDGET`'s doc comment, and the module-docs residual together"
+    );
+
+    // Discriminating control: the identical body under an *in-budget* block is
+    // masked and reports nothing. The budget is the cause, not the body shape.
+    let in_budget = "print { $fh } <<'M';\n} (?{ a << b }\nM\n";
+    assert_eq!(
+        regex_code_block_count(in_budget),
+        0,
+        "in-budget filehandle block must mask the same body; got {:?}",
+        detect(in_budget).iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
+#[test]
 fn antip_body_mask_never_outruns_a_proven_terminator() {
     // The mask blanks bodies, and blanking is what hides constructs from the
     // detector, so a `<<WORD` that is not really a heredoc must cost nothing.

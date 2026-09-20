@@ -621,8 +621,15 @@ const FILEHANDLE_OPERATORS: [&str; 3] = ["print", "printf", "say"];
 ///
 /// A block used as a filehandle holds an expression yielding a handle, so it is
 /// short even when written across lines; 256 bytes covers `{$fh}` through
-/// `{ $self->{handles}{err} }` with room to spare. Anything longer is not a
-/// filehandle block, and declining to mask costs only coverage.
+/// `{ $self->{handles}{err} }` with room to spare.
+///
+/// Declining to mask past the budget does **not** cost only coverage. An
+/// unadmitted declaration leaves its heredoc body visible, and body text is
+/// then scanned as code, so an over-budget block can fabricate a diagnostic on
+/// valid Perl — the same direction #14352 closed for the in-budget case.
+/// `antip_over_budget_filehandle_block_fabricates_from_body_text` pins that.
+/// The fix is a precomputed whole-file brace match, which is linear but adds a
+/// pass and a table to every call; it is not attempted here.
 const FILEHANDLE_BLOCK_BUDGET: usize = 256;
 
 /// The identifier ending `prefix`, ignoring trailing whitespace.
