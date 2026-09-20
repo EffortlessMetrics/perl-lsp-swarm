@@ -201,7 +201,10 @@ fn trivia_separated_declaration_x_equals_is_never_normalized() -> Result<(), Str
     let source = "my ($x, $y) x = 3;";
     let output = Parser::new(source).parse_with_recovery();
     if find_assignment(&output.ast, "x=").is_some() {
-        return Err(format!("trivia-separated declaration x = became x=:\n{}", output.ast.to_sexp()));
+        return Err(format!(
+            "trivia-separated declaration x = became x=:\n{}",
+            output.ast.to_sexp()
+        ));
     }
     let NodeKind::Program { statements, .. } = &output.ast.kind else {
         return Err(format!("expected program root, got {:?}", output.ast.kind));
@@ -213,7 +216,10 @@ fn trivia_separated_declaration_x_equals_is_never_normalized() -> Result<(), Str
         ));
     }
     if find_assignment(&output.ast, "=").is_none() {
-        return Err(format!("expected the leftover to stay an ordinary assignment:\n{}", output.ast.to_sexp()));
+        return Err(format!(
+            "expected the leftover to stay an ordinary assignment:\n{}",
+            output.ast.to_sexp()
+        ));
     }
     if !output.diagnostics.is_empty() {
         return Err(format!(
