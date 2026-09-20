@@ -182,8 +182,8 @@ fn classify_with_exit_status(
     let scenario = first_failing_test.as_ref().and_then(|name| scenario_from_test_name(name));
     let workflow = first_failing_test.as_ref().and_then(|name| workflow_from_test_name(name));
 
-    let failure_class = infer_failure_class(&classification_input(raw));
     let failing_tests = discriminate_failing_tests(raw);
+    let failure_class = run_failure_class(&failing_tests, raw);
 
     let canonical_repro = first_failing_test.as_ref().map(|name| {
         format!("cargo test -p perl-lsp-ux-tests {name} -- --test-threads=1 --nocapture")
@@ -427,6 +427,39 @@ fn classification_input(raw: &str) -> String {
 fn scenario_from_test_name(test: &str) -> Option<String> {
     let scenario = test.split("::").next()?;
     if scenario.starts_with("ux_scenario_") { Some(format!("{scenario}.rs")) } else { None }
+}
+
+/// The run's class, preferring per-test evidence over the whole-log word scan.
+///
+/// `infer_failure_class` matches substrings across the entire log, so one
+/// incidental "baseline" — a cache step, a path, an unrelated line — classifies
+/// the whole run as `BaselineDrift` and routes it to `update_baseline`. On a
+/// latency probe that is the one remedy the repository forbids: widening a budget
+/// until the noise fits buries the non-determinism instead of reporting it
+/// (#16205, measured on job 106081131409).
+///
+/// `discriminate_failing_tests` has already read each block and said, with the
+/// line it read, which failures were expired waits. This applies the same
+/// precedence `classify_failure_mode` documents inside a block — a budget marker
+/// wins outright, because a wait that expired decided nothing — one level up.
+///
+/// That precedence does not transfer between tests, though: one test's expired
+/// wait says nothing about another test's assertion over two real values. So a
+/// proven budget decides the run only when no failing test carries positive
+/// evidence that the change itself is the subject, which is exactly the other
+/// two evidence-backed modes.
+fn run_failure_class(failing_tests: &[UxFailingTest], raw: &str) -> UxFailureClass {
+    let change_is_the_subject = failing_tests
+        .iter()
+        .any(|test| matches!(test.mode, UxFailureMode::AssertionFailed | UxFailureMode::Panic));
+    let expired_budget =
+        failing_tests.iter().any(|test| test.mode == UxFailureMode::BudgetExceeded);
+
+    if expired_budget && !change_is_the_subject {
+        UxFailureClass::Timeout
+    } else {
+        infer_failure_class(&classification_input(raw))
+    }
 }
 
 fn infer_failure_class(raw: &str) -> UxFailureClass {
@@ -1045,6 +1078,62 @@ test result: FAILED. 0 passed; 2 failed; 0 ignored";
             receipt.failing_tests[0].mode,
             UxFailureMode::BudgetExceeded,
             "per-test discrimination must survive the whole-run class"
+        );
+    }
+
+    #[test]
+    fn an_expired_budget_is_not_routed_to_update_the_baseline() {
+        // #16205, measured on job 106081131409. `infer_failure_class` scans the whole
+        // log for substrings, so the word "baseline" anywhere in it — here a cache
+        // step that has nothing to do with the failure — classified the run as
+        // BaselineDrift and routed it to BaselineUpdate. On a latency probe that is
+        // the one remedy the repository forbids: widening the budget until the noise
+        // fits buries the non-determinism instead of reporting it.
+        let log = "Restored baseline snapshot cache in 0.4s\n\
+failures:\n\n\
+---- ux_latency_raw_rpc::ux_latency_workspace_symbols_sees_open_document_symbols stdout ----\n\
+wait ended: deadline expired after 5000ms with the stream still live\n\
+assertion failed: !symbols.is_empty()\n\
+\n\
+failures:\n\
+    ux_latency_raw_rpc::ux_latency_workspace_symbols_sees_open_document_symbols\n\
+\n\
+test result: FAILED. 0 passed; 1 failed";
+
+        let receipt = classify(log, None);
+        assert_eq!(
+            receipt.failing_tests[0].mode,
+            UxFailureMode::BudgetExceeded,
+            "the deadline marker is the evidence this rests on"
+        );
+        assert_eq!(
+            receipt.failure_class,
+            UxFailureClass::Timeout,
+            "a proven expired wait outranks an incidental `baseline` elsewhere in the log"
+        );
+        assert_eq!(
+            receipt.route,
+            UxRoute::TimeoutTriage,
+            "the route must send triage at the flake, never at the baseline"
+        );
+        assert_eq!(
+            receipt.merge_action, "triage_timeout",
+            "update_baseline is the forbidden remedy this test exists to prevent"
+        );
+    }
+
+    #[test]
+    fn a_real_assertion_keeps_its_class_even_beside_an_expired_budget() {
+        // The converse guard. One test's expired wait says nothing about another
+        // test's assertion over two real values, so a budget must not launder a
+        // genuine regression into a timeout. TWO_FAILURES_LOG carries both.
+        let receipt = classify(TWO_FAILURES_LOG, None);
+        assert_eq!(receipt.failing_tests[0].mode, UxFailureMode::BudgetExceeded);
+        assert_eq!(receipt.failing_tests[1].mode, UxFailureMode::AssertionFailed);
+        assert_eq!(
+            receipt.failure_class,
+            UxFailureClass::ProviderRegression,
+            "positive evidence that the change is the subject outranks the budget"
         );
     }
 
