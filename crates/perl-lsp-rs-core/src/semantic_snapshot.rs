@@ -2774,7 +2774,7 @@ mod tests {
     }
 
     #[test]
-    fn absent_agrees_with_from_parts_for_every_absent_state() {
+    fn absent_agrees_with_from_parts_for_every_absent_state() -> anyhow::Result<()> {
         // The total constructor skips `validate_shape`; this proves it loses
         // nothing. For every absent-family state, both constructors must
         // produce the identical snapshot -- same derived ticket, same
@@ -2784,7 +2784,7 @@ mod tests {
         // absent family is proved here without this test being edited.
         for state in AbsentTerminalState::iter() {
             let terminal = state.as_terminal_state();
-            assert!(terminal.is_absent_family(), "{terminal} is not absent-family");
+            anyhow::ensure!(terminal.is_absent_family(), "{terminal} is not absent-family");
             let parts = parts_for_terminal(terminal);
             let checked = must_with(
                 FileSemanticSnapshotV1::from_parts(parts.clone()),
@@ -2797,12 +2797,13 @@ mod tests {
                 parts.work_receipt,
                 state,
             );
-            assert_eq!(total, checked, "constructors disagree for {terminal}");
+            anyhow::ensure!(total == checked, "constructors disagree for {terminal}");
         }
+        Ok(())
     }
 
     #[test]
-    fn absent_terminal_state_covers_exactly_the_absent_family() {
+    fn absent_terminal_state_covers_exactly_the_absent_family() -> anyhow::Result<()> {
         // A state that joins the absent family without joining
         // `AbsentTerminalState` would leave a construction path that can only
         // be expressed through the fallible constructor again.
@@ -2817,20 +2818,20 @@ mod tests {
         let mut seen = 0usize;
         for terminal in SemanticSnapshotTerminalState::iter() {
             seen += 1;
-            assert_eq!(
-                terminal.is_absent_family(),
-                named.contains(&terminal),
+            anyhow::ensure!(
+                terminal.is_absent_family() == named.contains(&terminal),
                 "{terminal} disagrees between `is_absent_family` and `AbsentTerminalState`"
             );
         }
         // Guards the iteration itself: a derive silently dropped or replaced by
-        // a stub would make every assertion above vacuous.
-        assert!(seen > named.len(), "the complete family must not be empty");
-        assert_eq!(
-            named.len(),
-            named.iter().collect::<std::collections::HashSet<_>>().len(),
+        // a stub would make every check above vacuous.
+        anyhow::ensure!(seen > named.len(), "the complete family must not be empty");
+        let distinct = named.iter().collect::<std::collections::HashSet<_>>().len();
+        anyhow::ensure!(
+            named.len() == distinct,
             "`AbsentTerminalState` maps two variants onto one terminal state"
         );
+        Ok(())
     }
 
     #[test]

@@ -2015,51 +2015,58 @@ mod tests {
     }
 
     #[test]
-    fn a_presented_subject_naming_the_parse_snapshots_own_input_passes_the_entry_guard() {
+    fn a_presented_subject_naming_the_parse_snapshots_own_input_passes_the_entry_guard()
+    -> anyhow::Result<()> {
         // The valid input the three clause cases are measured against. Same
         // seam, same retired lease, nothing perturbed: the call must get past
         // the entry guard and reach the honest not-live refusal. Without this
         // pairing the cases below would also pass if the guard refused
         // everything that reached it.
         let terminal = must(construct_with_presented_subject(subject("open-1", "7")));
-        assert_eq!(terminal.terminal_state(), SemanticSnapshotTerminalState::NotProven);
-        assert!(
+        anyhow::ensure!(
+            terminal.terminal_state() == SemanticSnapshotTerminalState::NotProven,
+            "unexpected terminal state: {:?}",
+            terminal.terminal_state()
+        );
+        anyhow::ensure!(
             matches!(terminal.refusal(), Some(SemanticConstructionRefusal::TicketNotLive { .. })),
             "unexpected refusal: {:?}",
             terminal.refusal()
         );
+        Ok(())
     }
 
     #[test]
-    fn a_presented_subject_whose_parser_input_digest_differs_is_refused() {
+    fn a_presented_subject_whose_parser_input_digest_differs_is_refused() -> anyhow::Result<()> {
         // Digest clause only. `OTHER_SOURCE` is the same byte length as
         // `SOURCE`, so the length clause agrees and cannot be what refuses.
         let parse = parse_snapshot(7);
         let presented = subject_for_source("open-1", "7", OTHER_SOURCE);
-        assert_ne!(
-            presented.parser_input_revision.digest, parse.source_digest,
+        anyhow::ensure!(
+            presented.parser_input_revision.digest != parse.source_digest,
             "this case requires a differing parser-input digest"
         );
-        assert_eq!(
-            presented.parser_input_revision.byte_len, parse.source_len,
+        anyhow::ensure!(
+            presented.parser_input_revision.byte_len == parse.source_len,
             "the length clause must agree, or this is not a digest-only case"
         );
-        assert_eq!(
-            presented.full_source_revision.logical_source_id, presented.logical_source_id,
+        anyhow::ensure!(
+            presented.full_source_revision.logical_source_id == presented.logical_source_id,
             "the full-source clause must agree, or this is not a digest-only case"
         );
         let err = must_err_with(
             construct_with_presented_subject(presented),
             "a subject naming other parser-input bytes is a typed call error",
         );
-        assert!(
+        anyhow::ensure!(
             matches!(err, SemanticConstructionCallError::IncoherentSubjectParseBinding { .. }),
             "unexpected error: {err:?}"
         );
+        Ok(())
     }
 
     #[test]
-    fn a_presented_subject_whose_parser_input_length_differs_is_refused() {
+    fn a_presented_subject_whose_parser_input_length_differs_is_refused() -> anyhow::Result<()> {
         // Length clause only. The digest is `SOURCE`'s own, so the digest
         // clause agrees: a truncated-projection claim over identical bytes is
         // exactly the pair a digest-only check would wave through.
@@ -2067,30 +2074,32 @@ mod tests {
         let mut presented = subject("open-1", "7");
         presented.parser_input_revision =
             ParserInputRevision::new(ContentDigest::of_bytes(SOURCE), SOURCE.len() as u64 - 1);
-        assert_eq!(
-            presented.parser_input_revision.digest, parse.source_digest,
+        anyhow::ensure!(
+            presented.parser_input_revision.digest == parse.source_digest,
             "the digest clause must agree, or this is not a length-only case"
         );
-        assert_ne!(
-            presented.parser_input_revision.byte_len, parse.source_len,
+        anyhow::ensure!(
+            presented.parser_input_revision.byte_len != parse.source_len,
             "this case requires a differing parser-input length"
         );
-        assert_eq!(
-            presented.full_source_revision.logical_source_id, presented.logical_source_id,
+        anyhow::ensure!(
+            presented.full_source_revision.logical_source_id == presented.logical_source_id,
             "the full-source clause must agree, or this is not a length-only case"
         );
         let err = must_err_with(
             construct_with_presented_subject(presented),
             "a subject naming another parser-input length is a typed call error",
         );
-        assert!(
+        anyhow::ensure!(
             matches!(err, SemanticConstructionCallError::IncoherentSubjectParseBinding { .. }),
             "unexpected error: {err:?}"
         );
+        Ok(())
     }
 
     #[test]
-    fn a_presented_subject_whose_full_source_names_another_logical_source_is_refused() {
+    fn a_presented_subject_whose_full_source_names_another_logical_source_is_refused()
+    -> anyhow::Result<()> {
         // Full-source clause only. Both parser-input fields are `SOURCE`'s
         // own, so neither parser clause can be what refuses; only the
         // subject's internal full-source binding is broken.
@@ -2103,16 +2112,16 @@ mod tests {
         };
         presented.full_source_revision =
             ContentRevision::new(other_source, ContentDigest::of_bytes(SOURCE));
-        assert_eq!(
-            presented.parser_input_revision.digest, parse.source_digest,
+        anyhow::ensure!(
+            presented.parser_input_revision.digest == parse.source_digest,
             "the digest clause must agree, or this is not a full-source-only case"
         );
-        assert_eq!(
-            presented.parser_input_revision.byte_len, parse.source_len,
+        anyhow::ensure!(
+            presented.parser_input_revision.byte_len == parse.source_len,
             "the length clause must agree, or this is not a full-source-only case"
         );
-        assert_ne!(
-            presented.full_source_revision.logical_source_id, presented.logical_source_id,
+        anyhow::ensure!(
+            presented.full_source_revision.logical_source_id != presented.logical_source_id,
             "this case requires a differing full-source logical source"
         );
         let err = must_err_with(
@@ -2120,10 +2129,11 @@ mod tests {
             "a subject whose full-source revision names another logical source \
              is a typed call error",
         );
-        assert!(
+        anyhow::ensure!(
             matches!(err, SemanticConstructionCallError::IncoherentSubjectParseBinding { .. }),
             "unexpected error: {err:?}"
         );
+        Ok(())
     }
 
     #[test]
