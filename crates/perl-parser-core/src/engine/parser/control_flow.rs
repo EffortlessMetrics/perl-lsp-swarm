@@ -432,6 +432,9 @@ impl<'a> Parser<'a> {
 
         // Set flag to prevent semicolon consumption in variable declaration
         self.in_for_loop_init = true;
+        // Iterator targets are not assignment expressions: mark them so
+        // declaration tails that form assignments stay disabled (#13486).
+        self.in_foreach_iterator = true;
         let variable = if matches!(
             self.peek_kind(),
             Some(TokenKind::My)
@@ -444,6 +447,7 @@ impl<'a> Parser<'a> {
             // foreach $var (LIST) — bare scalar without my
             self.parse_variable()?
         };
+        self.in_foreach_iterator = false;
         self.in_for_loop_init = false;
 
         self.expect(TokenKind::LeftParen)?;
@@ -477,6 +481,8 @@ impl<'a> Parser<'a> {
     fn parse_foreach_style_for(&mut self) -> ParseResult<Node> {
         // Set flag to prevent semicolon consumption in variable declaration
         self.in_for_loop_init = true;
+        // Iterator targets are not assignment expressions (#13486).
+        self.in_foreach_iterator = true;
         let variable = if matches!(
             self.peek_kind(),
             Some(TokenKind::My)
@@ -489,6 +495,7 @@ impl<'a> Parser<'a> {
             // for $var (LIST) — bare scalar without my
             self.parse_variable()?
         };
+        self.in_foreach_iterator = false;
         self.in_for_loop_init = false;
 
         self.expect(TokenKind::LeftParen)?;

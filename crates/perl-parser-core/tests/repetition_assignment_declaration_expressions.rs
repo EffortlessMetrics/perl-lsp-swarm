@@ -52,6 +52,25 @@ fn find_missing_expression(node: &Node) -> Option<&Node> {
     node.children().into_iter().find_map(find_missing_expression)
 }
 
+fn find_variable<'a>(node: &'a Node, expected_name: &str) -> Option<&'a Node> {
+    if matches!(&node.kind, NodeKind::Variable { name, .. } if name == expected_name) {
+        return Some(node);
+    }
+
+    node.children().into_iter().find_map(|child| find_variable(child, expected_name))
+}
+
+fn find_comma_array<'a>(node: &'a Node, first: &Node) -> Option<&'a Node> {
+    if let NodeKind::ArrayLiteral { elements } = &node.kind
+        && elements.len() == 2
+        && elements[0].location == first.location
+    {
+        return Some(node);
+    }
+
+    node.children().into_iter().find_map(|child| find_comma_array(child, first))
+}
+
 fn source_slice<'a>(source: &'a str, node: &Node) -> Result<&'a str, String> {
     source
         .get(node.location.start..node.location.end)
@@ -82,12 +101,40 @@ fn list_declaration_accepts_repetition_assignment() -> Result<(), String> {
         return Err(format!("unexpected full assignment span: {:?}", assignment.location));
     }
     // A trailing comma still belongs to the surrounding comma expression,
-    // not to the repetition RHS.
+    // not to the repetition RHS: the assignment spans exactly
+    // `my ($x, $y) x= 3` with a numeric RHS, sits first in the two-element
+    // comma array, and `$z` survives after it. A finisher that parsed the
+    // RHS at comma precedence would swallow `, $z` and fail the span pin.
     let trailing = "my ($x, $y) x= 3, $z;";
     assert_clean_parse(trailing);
     let trailing_ast = parse(trailing);
-    if find_assignment(&trailing_ast, "x=").is_none() {
-        return Err(format!("trailing comma lost declaration x=:\n{}", trailing_ast.to_sexp()));
+    let trailing_assignment = find_assignment(&trailing_ast, "x=")
+        .ok_or_else(|| format!("trailing comma lost declaration x=:\n{}", trailing_ast.to_sexp()))?;
+    if source_slice(trailing, trailing_assignment)? != "my ($x, $y) x= 3" {
+        return Err(format!(
+            "comma leaked into the repetition RHS:\n{}",
+            trailing_ast.to_sexp()
+        ));
+    }
+    let NodeKind::Assignment { rhs, .. } = &trailing_assignment.kind else {
+        return Err(format!("expected Assignment, got {:?}", trailing_assignment.kind));
+    };
+    if !matches!(&rhs.kind, NodeKind::Number { value } if value == "3") {
+        return Err(format!("expected numeric repetition rhs, got {:?}", rhs.kind));
+    }
+    let comma = find_comma_array(&trailing_ast, trailing_assignment).ok_or_else(|| {
+        format!("expected the two-element comma array:\n{}", trailing_ast.to_sexp())
+    })?;
+    let NodeKind::ArrayLiteral { elements } = &comma.kind else {
+        return Err(format!("expected ArrayLiteral, got {:?}", comma.kind));
+    };
+    let z = find_variable(&trailing_ast, "z")
+        .ok_or_else(|| format!("trailing comma lost $z:\n{}", trailing_ast.to_sexp()))?;
+    if !matches!(&elements[1].kind, NodeKind::Variable { name, .. } if name == "z") {
+        return Err(format!("expected $z second in the comma array:\n{}", trailing_ast.to_sexp()));
+    }
+    if z.location.start < trailing_assignment.location.end {
+        return Err(format!("$z overlaps the repetition assignment:\n{}", trailing_ast.to_sexp()));
     }
     Ok(())
 }
@@ -134,6 +181,45 @@ fn declaration_repetition_assignment_keeps_rhs_right_associative() -> Result<(),
     };
     if !matches!(&rhs.kind, NodeKind::Assignment { op, .. } if op == "=") {
         return Err(format!("expected ordinary assignment on x= rhs, got {:?}", rhs.kind));
+    }
+    Ok(())
+}
+
+#[test]
+fn call_argument_list_preserves_surrounding_arguments() -> Result<(), String> {
+    // Neighboring arguments survive around the declaration assignment: three
+    // args in order, the middle one the exact `my $v x= 3` assignment.
+    let source = "f($a, my $v x= 3, $b);";
+    assert_clean_parse(source);
+    let ast = parse(source);
+    let call =
+        find_named_call(&ast, "f").ok_or_else(|| format!("expected f call:\n{}", ast.to_sexp()))?;
+    let NodeKind::FunctionCall { args, .. } = &call.kind else {
+        return Err(format!("expected FunctionCall, got {:?}", call.kind));
+    };
+    if args.len() != 3 {
+        return Err(format!("expected three call arguments:\n{}", ast.to_sexp()));
+    }
+    if !matches!(&args[0].kind, NodeKind::Variable { name, .. } if name == "a") {
+        return Err(format!("expected $a first:\n{}", ast.to_sexp()));
+    }
+    if !matches!(&args[2].kind, NodeKind::Variable { name, .. } if name == "b") {
+        return Err(format!("expected $b last:\n{}", ast.to_sexp()));
+    }
+    let NodeKind::Assignment { lhs, rhs, op } = &args[1].kind else {
+        return Err(format!("expected middle x= assignment, got {:?}", args[1].kind));
+    };
+    if op != "x=" {
+        return Err(format!("expected x= operator, got {op}"));
+    }
+    if find_variable_declaration(lhs).is_none() {
+        return Err(format!("middle argument x= lhs lost declaration: {:?}", lhs.kind));
+    }
+    if source_slice(source, &args[1])? != "my $v x= 3" {
+        return Err(format!("unexpected middle argument span: {:?}", args[1].location));
+    }
+    if !matches!(&rhs.kind, NodeKind::Number { value } if value == "3") {
+        return Err(format!("expected numeric middle rhs, got {:?}", rhs.kind));
     }
     Ok(())
 }
@@ -257,13 +343,46 @@ fn trivia_separated_declaration_x_equals_is_never_normalized() -> Result<(), Str
 
 #[test]
 fn loop_headers_reject_declaration_repetition_tail() -> Result<(), String> {
-    // Loop headers are not assignment expressions: a `foreach` iterator
-    // target must never grow an `x=` tail even though it parses through the
-    // same list-declaration branch.
+    // `foreach` iterator targets are not assignment expressions: they must
+    // never grow an `x=` tail even though they parse through the same
+    // list-declaration branch. Pin the exact recovery diagnostics so the
+    // rejection cannot pass silently.
     let source = "foreach my ($x, $y) x= 3 (@items) {}";
     let output = Parser::new(source).parse_with_recovery();
     if find_assignment(&output.ast, "x=").is_some() {
         return Err(format!("foreach iterator target grew an x= tail:\n{}", output.ast.to_sexp()));
+    }
+    if !matches!(
+        output.diagnostics.as_slice(),
+        [
+            ParseError::UnexpectedToken { expected, found, location: 20 },
+            ParseError::UnexpectedToken { expected: expected2, found: found2, location: 21 },
+        ] if expected == "'('" && found == "identifier"
+            && expected2 == "statement" && found2 == "'='"
+    ) {
+        return Err(format!(
+            "expected exactly the two iterator-boundary diagnostics, got {:?}",
+            output.diagnostics
+        ));
+    }
+    // C-style `for` initializers are assignment-capable, so the tail fires
+    // there with the same declaration-over-assignment shape as statements.
+    let source = "for (my ($x, $y) x= 3; $c; $d) {}";
+    assert_clean_parse(source);
+    let ast = parse(source);
+    let assignment = find_assignment(&ast, "x=")
+        .ok_or_else(|| format!("expected C-style init x= assignment:\n{}", ast.to_sexp()))?;
+    let NodeKind::Assignment { lhs, rhs, .. } = &assignment.kind else {
+        return Err(format!("expected Assignment, got {:?}", assignment.kind));
+    };
+    if find_variable_declaration(lhs).is_none() {
+        return Err(format!("C-style x= lhs lost declaration topology: {:?}", lhs.kind));
+    }
+    if source_slice(source, lhs)? != "my ($x, $y)" {
+        return Err(format!("unexpected C-style declaration lhs span: {:?}", lhs.location));
+    }
+    if !matches!(&rhs.kind, NodeKind::Number { value } if value == "3") {
+        return Err(format!("expected numeric C-style x= rhs, got {:?}", rhs.kind));
     }
     Ok(())
 }

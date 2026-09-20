@@ -80,11 +80,11 @@ impl<'a> Parser<'a> {
             // shared assignment seam so it becomes the LHS of one `x=`
             // assignment (#13486). The `Identifier` gate keeps symbolic
             // operators on their existing path: the seam consumes nothing
-            // unless it recognizes an adjacent `x=`. Loop headers set
-            // `in_for_loop_init` and are not assignment expressions, so a
-            // `foreach` iterator target never grows an `x=` tail here.
+            // unless it recognizes an adjacent `x=`. `foreach` iterator
+            // targets are not assignment expressions, so they never grow an
+            // `x=` tail here; C-style `for` initializers stay eligible.
             if initializer.is_none()
-                && !self.in_for_loop_init
+                && !self.in_foreach_iterator
                 && self.peek_kind() == Some(TokenKind::Identifier)
                 && let Some((op, op_start)) = self.consume_assignment_operator()?
             {
