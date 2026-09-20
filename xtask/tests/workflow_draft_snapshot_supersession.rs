@@ -488,8 +488,11 @@ fn assert_mirror_selection(gate: Gate) -> Result<()> {
         );
     }
 
-    // A queued newer attempt reports `started_at: null`. Ordering that as ""
-    // would sort it behind every timestamp and let the older success win, so
+    // A queued attempt reports `started_at: null`, so ordering has to come from
+    // somewhere else. Both directions of coercing that absent value are wrong,
+    // and the two cases below pin one direction each.
+
+    // Newer and queued: sorting nulls first would let the older success win and
     // the stale draft run would exit green over proof that has not started.
     let newer_queued = CheckRunFixture::published("").with(|run| {
         run.id = 106_028_700_002;
@@ -505,6 +508,34 @@ fn assert_mirror_selection(gate: Gate) -> Result<()> {
     if run.code == 0 || !run.verdict_is(gate, "superseded-no-proof") {
         bail!(
             "{}: a queued newer attempt with no start time must outrank an older success: {}",
+            gate.workflow,
+            run.stdout
+        );
+    }
+
+    // Older and still queued: a dispatch attempt created before the successful
+    // pull_request attempt and never started. The two use different concurrency
+    // keys, so they coexist on one SHA. Sorting nulls last would let this stale
+    // attempt outrank real proof and red a passing head — the defect this whole
+    // candidate exists to remove, one ordering down (#16101 review).
+    let stale_queued = CheckRunFixture::published("").with(|run| {
+        run.id = 106_028_600_000;
+        run.started_at = "";
+        run.status = "queued";
+    });
+    let later_success = CheckRunFixture::published("success").with(|run| {
+        run.id = 106_028_700_003;
+        run.started_at = "2026-09-20T05:45:00Z";
+    });
+    let run = evaluate(
+        gate,
+        "skipped",
+        "true",
+        GhShim::with_runs(Some("false"), vec![stale_queued, later_success]),
+    )?;
+    if run.code != 0 || !run.verdict_is(gate, "superseded-draft-snapshot") {
+        bail!(
+            "{}: an older queued attempt must not outrank a later success: {}",
             gate.workflow,
             run.stdout
         );
