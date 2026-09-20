@@ -30,6 +30,7 @@ use super::{
     native_finding_candidates, normalize_with_native_policy,
 };
 use crate::config::EffectiveCriticState;
+use crate::providers::diagnostics::DocumentDiagnosticAnalysis;
 use perl_source_identity::ContentDigest;
 
 /// Gate consulted at deterministic barrier points of one run.
@@ -102,6 +103,14 @@ pub struct NativeCriticSubject<'a> {
     /// Gate consulted after evaluation and before the run may publish; a
     /// closed gate yields a stale run no consumer may treat as current.
     currentness: RunGate<'a>,
+    /// Caller-owned generation analysis (#7286). When the caller already
+    /// holds a [`DocumentDiagnosticAnalysis`] for this exact parse, the
+    /// service reuses its pragma/scope facts instead of re-deriving them
+    /// inside `check_unfiltered`; the share is accepted only behind the
+    /// analysis's own `matches(ast, source)` gate, so a stale or mismatched
+    /// handle degrades to the self-computed context rather than changing any
+    /// finding. `None` leaves the #9062 behavior unchanged.
+    analysis: Option<&'a DocumentDiagnosticAnalysis>,
 }
 
 impl<'a> NativeCriticSubject<'a> {
@@ -132,7 +141,20 @@ impl<'a> NativeCriticSubject<'a> {
             overlap_observations,
             cancellation,
             currentness,
+            analysis: None,
         }
+    }
+
+    /// Offer the caller's generation-owned analysis to this run (#7286).
+    ///
+    /// This is the only way shared facts enter a subject: the service still
+    /// owns acceptance, and the analysis is consulted only after its own
+    /// freshness gate binds it to the exact `ast`/`source` pair being
+    /// evaluated, so a caller cannot hand the run another tree's facts.
+    #[must_use]
+    pub fn with_analysis(mut self, analysis: &'a DocumentDiagnosticAnalysis) -> Self {
+        self.analysis = Some(analysis);
+        self
     }
 }
 
@@ -390,7 +412,25 @@ impl NativeCriticService {
             exclude: accepted.exclude.clone(),
             ..CriticConfig::default()
         };
-        let context = CriticContext::new(subject.source, subject.ast, &critic_config);
+        // #7286: when the caller offered a generation-owned analysis, share
+        // its pragma/scope facts into the rule context — but only after the
+        // analysis's own gate proves it describes this exact tree and source.
+        // Either branch yields the same facts the registry would compute, so
+        // which branch runs never changes a finding; it only decides whether
+        // the pragma/scope passes run once per document generation or once
+        // per critic evaluation.
+        let context = match subject.analysis {
+            Some(analysis) if analysis.matches_node(subject.ast, subject.source) => {
+                CriticContext::with_scope(
+                    subject.source,
+                    subject.ast,
+                    &critic_config,
+                    analysis.scope_issues(),
+                    analysis.pragma_map(),
+                )
+            }
+            _ => CriticContext::new(subject.source, subject.ast, &critic_config),
+        };
         let registry =
             NativeCriticRegistry::for_profile_with_config(accepted.profile, &critic_config);
         let mut work =
