@@ -80,6 +80,9 @@ GATE_TO_LANE_MAP: dict[str, dict[str, Any]] = {
     "lsp_capability_snapshots": {"lanes": ["pr_smoke"]},
     "inline_completion_core": {"lanes": ["pr_smoke"]},
     "inline_completion_quality_receipt": {"lanes": ["pr_smoke"]},
+    # pr_fast install-transaction contract gate (#11099); runs inside the
+    # existing pr-fast invocation, so it rolls up under pr_smoke.
+    "standalone_transaction_check": {"lanes": ["pr_smoke"]},
 
     # core / foundation gates roll up under merge_gate_shards
     "clippy_core": {"lanes": ["merge_gate_shards"]},
