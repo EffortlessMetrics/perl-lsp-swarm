@@ -131,4 +131,89 @@ mod tests {
         assert!(sexp.contains("redo"), "Expected redo in continue block, got: {sexp}");
         assert!(!sexp.contains("ERROR"), "Parse should not emit ERROR nodes: {sexp}");
     }
+
+    #[test]
+    fn test_bare_continue_simple() {
+        // AC: bare `continue;` at statement level parses as a LoopControl node
+        // (the when-block fall-through op), not as a bareword Identifier.
+        let source = "continue;";
+        let ast = must_some(parse_code(source));
+        assert!(
+            matches!(ast.kind, NodeKind::Program { .. }),
+            "expected Program, got {:?}",
+            ast.kind
+        );
+        let NodeKind::Program { statements } = &ast.kind else {
+            return;
+        };
+        let stmt = must_some(statements.first());
+        assert!(
+            matches!(stmt.kind, NodeKind::LoopControl { .. }),
+            "expected LoopControl, got {:?}",
+            stmt.kind
+        );
+        let NodeKind::LoopControl { op, label } = &stmt.kind else {
+            return;
+        };
+        assert_eq!(op, "continue");
+        assert!(label.is_none());
+    }
+
+    #[test]
+    fn test_continue_with_label() {
+        // Labels must be accepted on `continue` for symmetry with next/last/redo.
+        let source = "continue OUTER;";
+        let ast = must_some(parse_code(source));
+        let NodeKind::Program { statements } = &ast.kind else {
+            panic!("expected Program, got {:?}", ast.kind);
+        };
+        let stmt = must_some(statements.first());
+        let NodeKind::LoopControl { op, label } = &stmt.kind else {
+            panic!("expected LoopControl, got {:?}", stmt.kind);
+        };
+        assert_eq!(op, "continue");
+        assert_eq!(label.as_deref(), Some("OUTER"));
+    }
+
+    #[test]
+    fn test_continue_in_when_block() {
+        // Inside a `when` block, `continue` falls through to the next case.
+        let source = "given ($x) { when (1) { do_thing(); continue } when (2) { do_other(); } }";
+        let ast = must_some(parse_code(source));
+
+        let sexp = ast.to_sexp();
+        assert!(
+            sexp.contains("continue"),
+            "Expected `continue` to appear as a loop-control op, got: {sexp}"
+        );
+        assert!(
+            !sexp.contains("Identifier(\"continue\")"),
+            "`continue` should not be parsed as an Identifier, got: {sexp}"
+        );
+    }
+
+    #[test]
+    fn test_post_loop_continue_block_unaffected() {
+        // The post-loop `continue { BLOCK }` form must still parse as the
+        // While/For/Foreach `continue_block`, not as a labeled LoopControl.
+        let source = "while (1) { last; } continue { $x++; }";
+        let ast = must_some(parse_code(source));
+
+        assert!(
+            matches!(ast.kind, NodeKind::Program { .. }),
+            "expected Program, got {:?}",
+            ast.kind
+        );
+        let NodeKind::Program { statements } = &ast.kind else {
+            return;
+        };
+        let while_stmt = must_some(statements.first());
+        let NodeKind::While { continue_block, .. } = &while_stmt.kind else {
+            panic!("expected While, got {:?}", while_stmt.kind);
+        };
+        assert!(
+            continue_block.is_some(),
+            "post-loop `continue {{ BLOCK }}` must attach as While.continue_block"
+        );
+    }
 }

@@ -353,6 +353,20 @@ impl<'a> Parser<'a> {
                     Ok(self.parse_word_or_expr(ctrl)?)
                 }
 
+                // `continue` at statement level is the when-block fall-through op
+                // (e.g. `given ($x) { when (1) { ...; continue } }`). It belongs
+                // with the loop-control siblings, but the LeftBrace guard keeps
+                // the post-loop `continue { BLOCK }` form (consumed by the
+                // surrounding while/until/for/foreach parser) from being
+                // misrouted into a labeled loop-control node.
+                TokenKind::Continue
+                    if self.tokens.peek_second().ok().map(|t| t.kind())
+                        != Some(TokenKind::LeftBrace) =>
+                {
+                    let ctrl = self.parse_loop_control()?;
+                    Ok(self.parse_word_or_expr(ctrl)?)
+                }
+
                 // Subroutines and modern OOP
                 TokenKind::Sub => {
                     let sub_node = self.parse_subroutine()?;
