@@ -19,7 +19,10 @@ and test modules. It also joins each active row's canonical storage member to an
 actual writer and, where supported, consumer expression. Serde field witnesses
 bind the derived project field to its generated parser/storage declaration.
 Removed-runner evidence includes schema absence and the production parser's
-absence of the removed key.
+absence of removed-key string literals (including JSON-pointer segments) in its
+AST, nested declarations and macro token trees. This conservative check can reject
+a non-access literal in that parser; it does not infer key aliases, dynamically
+constructed strings or deserialization through types declared elsewhere.
 
 The TypeScript witnesses compare complete function bodies and key-to-property
 tables using the existing
@@ -33,7 +36,10 @@ server's separately stored `format_on_save` field drives an automatic trigger.
 AST snapshots deliberately make changes to the selected expression reviewable.
 They are source identity checks, not a Rust/TypeScript type checker, whole-program
 dataflow proof, runtime containment test, or proof that a referenced issue landed.
-Compiler/parser failure is missing evidence and fails the command.
+Compiler/parser failure is missing evidence and fails the command. Plain assignment
+places establish writes, not consumer reads; evaluated receivers, indices and
+right-hand expressions retain their read evidence. Compound assignments read
+and write their destination.
 Test-dependent attributes conservatively exclude expressions, local initializers
 and let-else branches, match arms, and struct field values from production
 witness traversal; this is not compiler-resolved conditional compilation.
@@ -80,6 +86,16 @@ cargo test -p perl-lsp-rs-core --lib configuration_observation --profile agent -
 cargo test -p perl-lsp-rs-core --test perllsp_settings_schema_tests --profile agent --locked
 node scripts/ci/check_high_risk_client_bindings.cjs <repo-root> <typescript-package-root>
 ```
+
+The existing required `check-all-targets` merge-surface job runs both the checker
+binary tests and the actual repository binding command, with explicit repository
+and `vscode-extension/node_modules/typescript` paths. The existing
+`setup-vscode-toolchain` action supplies pinned Node/npm and lockfile-resolved
+TypeScript via `npm ci`; its publisher verification remains disabled. This adds
+one cached dependency installation and scoped checker execution to that job,
+not a new lane. Hosted timing is not yet measured. The existing job-level
+applicability applies; no additional path filter excludes docs/schema/fixture or
+production-source changes from this proof.
 
 The explicit TypeScript package path selects an existing TypeScript 7 install;
 the checker does not install dependencies or silently substitute text matching.

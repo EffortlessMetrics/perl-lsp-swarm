@@ -289,13 +289,66 @@ impl syn::parse::Parse for MatchesInput {
         Ok(Self { expression, guard })
     }
 }
+impl StorageUse<'_> {
+    // A place is written, not read. Its evaluated receiver/index expressions
+    // can still read configuration, so do not discard the entire left operand.
+    fn visit_assignment_place(&mut self, place: &syn::Expr) {
+        match place {
+            syn::Expr::Field(field) => {
+                if matches!(&field.member, syn::Member::Named(name) if name == self.member) {
+                    self.writes = true;
+                }
+                self.visit_assignment_place(&field.base);
+            }
+            syn::Expr::Index(index) => {
+                self.visit_assignment_place(&index.expr);
+                self.visit_expr(&index.index);
+            }
+            syn::Expr::Paren(paren) => self.visit_assignment_place(&paren.expr),
+            syn::Expr::Group(group) => self.visit_assignment_place(&group.expr),
+            syn::Expr::Tuple(tuple) => {
+                for element in &tuple.elems {
+                    self.visit_assignment_place(element);
+                }
+            }
+            syn::Expr::Array(array) => {
+                for element in &array.elems {
+                    self.visit_assignment_place(element);
+                }
+            }
+            syn::Expr::Struct(record) => {
+                for field in &record.fields {
+                    self.visit_assignment_place(&field.expr);
+                }
+            }
+            syn::Expr::Unary(unary) => self.visit_expr(&unary.expr),
+            syn::Expr::Call(_) | syn::Expr::MethodCall(_) => self.visit_expr(place),
+            _ => {}
+        }
+    }
+}
 impl<'ast> Visit<'ast> for StorageUse<'_> {
     fn visit_expr_assign(&mut self, node: &'ast syn::ExprAssign) {
-        if matches!(node.left.as_ref(), syn::Expr::Field(field) if matches!(&field.member, syn::Member::Named(name) if name == self.member))
-        {
-            self.writes = true;
+        self.visit_assignment_place(&node.left);
+        self.visit_expr(&node.right);
+    }
+    fn visit_expr_binary(&mut self, node: &'ast syn::ExprBinary) {
+        if matches!(
+            node.op,
+            syn::BinOp::AddAssign(_)
+                | syn::BinOp::SubAssign(_)
+                | syn::BinOp::MulAssign(_)
+                | syn::BinOp::DivAssign(_)
+                | syn::BinOp::RemAssign(_)
+                | syn::BinOp::BitXorAssign(_)
+                | syn::BinOp::BitAndAssign(_)
+                | syn::BinOp::BitOrAssign(_)
+                | syn::BinOp::ShlAssign(_)
+                | syn::BinOp::ShrAssign(_)
+        ) {
+            self.visit_assignment_place(&node.left);
         }
-        visit::visit_expr_assign(self, node);
+        visit::visit_expr_binary(self, node);
     }
     fn visit_field_value(&mut self, node: &'ast syn::FieldValue) {
         if matches!(&node.member, syn::Member::Named(name) if name == self.member) {
@@ -353,12 +406,47 @@ fn check_storage_join(row: &model::Row, projection: &Projection) -> CheckResult 
     }
     Ok(())
 }
-impl<'ast> Visit<'ast> for RemovedKey<'_> {
-    fn visit_expr_method_call(&mut self, node: &'ast syn::ExprMethodCall) {
-        if node.method == "get" && node.args.first().is_some_and(|arg| matches!(arg, syn::Expr::Lit(literal) if matches!(&literal.lit, syn::Lit::Str(value) if value.value() == self.key))) { self.found = true; }
-        visit::visit_expr_method_call(self, node);
+impl RemovedKey<'_> {
+    fn inspect_string(&mut self, value: &str) {
+        // Conservative syntax evidence, including JSON-pointer path segments.
+        // This does not resolve aliases or infer separately declared serde types.
+        self.found |= value == self.key
+            || (value.starts_with('/')
+                && value
+                    .split('/')
+                    .skip(1)
+                    .any(|segment| segment.replace("~1", "/").replace("~0", "~") == self.key));
     }
-    fn visit_item(&mut self, _: &'ast syn::Item) {}
+    fn inspect_tokens(&mut self, tokens: proc_macro2::TokenStream) {
+        for token in tokens {
+            match token {
+                proc_macro2::TokenTree::Group(group) => self.inspect_tokens(group.stream()),
+                proc_macro2::TokenTree::Literal(literal) => {
+                    if let Ok(syn::Lit::Str(value)) =
+                        syn::parse_str::<syn::Lit>(&literal.to_string())
+                    {
+                        self.inspect_string(&value.value());
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+}
+impl<'ast> Visit<'ast> for RemovedKey<'_> {
+    fn visit_attribute(&mut self, node: &'ast syn::Attribute) {
+        if let syn::Meta::List(list) = &node.meta {
+            self.inspect_tokens(list.tokens.clone());
+        }
+        visit::visit_attribute(self, node);
+    }
+
+    fn visit_lit_str(&mut self, literal: &'ast syn::LitStr) {
+        self.inspect_string(&literal.value());
+    }
+    fn visit_macro(&mut self, node: &'ast syn::Macro) {
+        self.inspect_tokens(node.tokens.clone());
+    }
 }
 
 fn low_risk_schema_id(family: &str, key: &str) -> Option<&'static str> {
@@ -737,6 +825,166 @@ mod tests {
                     "pattern binding or malformed macro supplied storage read: {source}"
                 )
                 .into());
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn assignment_places_do_not_supply_consumer_reads() -> CheckResult {
+        for (source, writes, reads) in [
+            ("config.engine = default_engine", true, false),
+            ("(config.engine) = default_engine", true, false),
+            ("(config.engine, other) = values", true, false),
+            ("[config.engine, other] = values", true, false),
+            ("Record { field: config.engine } = value", true, false),
+            ("config.engine.option = value", true, false),
+            ("config.engine[0] = value", true, false),
+            ("config.engine[0].option = value", true, false),
+            ("config.engine.options[0] = value", true, false),
+            ("config.engine[config.engine.index] = value", true, true),
+            ("config.engine.receiver().option = value", false, true),
+            ("receiver(config.engine)[0] = value", false, true),
+            ("config.engine.option += value", true, true),
+            ("config.engine[0] += value", true, true),
+            ("config.engine = previous.engine", true, true),
+            ("config.other = config.engine", false, true),
+            ("receiver(config.engine).other = value", false, true),
+            ("values[config.engine] = value", false, true),
+            ("*config.engine = value", false, true),
+            ("config.engine += value", true, true),
+            ("run(config.engine)", false, true),
+        ] {
+            let expression = syn::parse_str::<syn::Expr>(source)?;
+            let mut usage = StorageUse { member: "engine", writes: false, reads: false };
+            usage.visit_expr(&expression);
+            if (usage.writes, usage.reads) != (writes, reads) {
+                return Err(
+                    format!("incorrect assignment read/write classification: {source}").into()
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn removed_key_literals_are_rejected_across_parser_syntax() -> CheckResult {
+        let witness = Witness {
+            path: "fixture.rs".into(),
+            function: "@no-key:parse".into(),
+            expression: "testRunner".into(),
+        };
+        for body in [
+            "let value = input.get(\"testRunner\");",
+            "let value = input[\"testRunner\"] ;",
+            "let value = input.get_mut(\"testRunner\");",
+            "let value = input.remove(\"testRunner\");",
+            "let value = input.pointer(\"/testRunner/enabled\");",
+            "let value = json!({\"testRunner\": false});",
+            "let value = input.get(r#\"testRunner\"#);",
+            "#[derive(Deserialize)] struct Payload { #[serde(rename = \"testRunner\")] runner: bool }",
+        ] {
+            let source = format!("fn parse() {{ {body} }}");
+            if check_witness(&source, &witness).is_ok() {
+                return Err(format!("removed key literal accepted: {body}").into());
+            }
+            check_witness(&source.replace("testRunner", "otherSetting"), &witness)?;
+        }
+        check_witness(
+            "fn parse() { /* input.get(\"testRunner\") */ } fn elsewhere() { input.get(\"testRunner\"); }",
+            &witness,
+        )?;
+        Ok(())
+    }
+
+    #[test]
+    fn required_merge_surface_executes_tests_and_actual_bindings() -> CheckResult {
+        let root =
+            Path::new(env!("CARGO_MANIFEST_DIR")).parent().ok_or("missing repository root")?;
+        let workflow: serde_yaml_ng::Value = serde_yaml_ng::from_str(&fs::read_to_string(
+            root.join(".github").join("workflows").join("ci.yml"),
+        )?)?;
+        let job = workflow
+            .get("jobs")
+            .and_then(|jobs| jobs.get("check-all-targets"))
+            .ok_or("missing required merge surface")?;
+        if job.get("continue-on-error").is_some() {
+            return Err("binding job cannot be advisory".into());
+        }
+        let steps = job
+            .get("steps")
+            .and_then(serde_yaml_ng::Value::as_sequence)
+            .ok_or("missing gate steps")?;
+        fn validate_steps(steps: &[serde_yaml_ng::Value]) -> CheckResult {
+            let expected = [
+                ("uses", "./.github/actions/setup-vscode-toolchain"),
+                ("run", "cargo test -p xtask --bin high-risk-configuration-bindings --locked"),
+                (
+                    "run",
+                    "cargo run -p xtask --bin high-risk-configuration-bindings --locked -- . vscode-extension/node_modules/typescript",
+                ),
+            ];
+            let mut previous = None;
+            for (key, value) in expected {
+                let matches: Vec<_> = steps
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, step)| {
+                        step.get(key).and_then(serde_yaml_ng::Value::as_str) == Some(value)
+                    })
+                    .collect();
+                let (index, step) =
+                    matches.first().copied().ok_or("missing binding execution step")?;
+                if matches.len() != 1
+                    || previous.is_some_and(|earlier| earlier >= index)
+                    || step.get("if").is_some()
+                    || step.get("continue-on-error").is_some()
+                {
+                    return Err(
+                        "binding setup/execution is optional, duplicated or out of order".into()
+                    );
+                }
+                if key == "uses" && step.get("with").is_some() {
+                    return Err("binding setup must retain locked install defaults".into());
+                }
+                previous = Some(index);
+            }
+            Ok(())
+        }
+        validate_steps(steps)?;
+        let mut without_execution = steps.clone();
+        without_execution.retain(|step| {
+            !step.get("run").and_then(serde_yaml_ng::Value::as_str).is_some_and(|command| {
+                command.starts_with("cargo run -p xtask --bin high-risk-configuration-bindings")
+            })
+        });
+        if validate_steps(&without_execution).is_ok() {
+            return Err("missing actual execution accepted".into());
+        }
+        let mut reordered = steps.clone();
+        reordered.reverse();
+        if validate_steps(&reordered).is_ok() {
+            return Err("execution before setup accepted".into());
+        }
+        for guard in ["if", "continue-on-error"] {
+            let mut optional = steps.clone();
+            let step = optional
+                .iter_mut()
+                .find(|step| {
+                    step.get("run").and_then(serde_yaml_ng::Value::as_str).is_some_and(|command| {
+                        command.starts_with(
+                            "cargo run -p xtask --bin high-risk-configuration-bindings",
+                        )
+                    })
+                })
+                .and_then(serde_yaml_ng::Value::as_mapping_mut)
+                .ok_or("missing actual execution mapping")?;
+            step.insert(
+                serde_yaml_ng::Value::String(guard.into()),
+                serde_yaml_ng::Value::Bool(true),
+            );
+            if validate_steps(&optional).is_ok() {
+                return Err(format!("optional execution accepted: {guard}").into());
             }
         }
         Ok(())

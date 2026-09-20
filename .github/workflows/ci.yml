@@ -1847,6 +1847,17 @@ jobs:
       - name: Compile all targets (catches integration-test + bench bit-rot)
         run: just check-all-targets
 
+      # CA02B needs execution, not merely compilation. Reuse the locked Node/npm
+      # setup and npm cache; no new lane or publisher-tool verification is added.
+      - name: Setup configuration binding TypeScript authority
+        uses: ./.github/actions/setup-vscode-toolchain
+
+      - name: High-risk configuration checker controls (required merge surface)
+        run: cargo test -p xtask --bin high-risk-configuration-bindings --locked
+
+      - name: High-risk production Rust and TypeScript bindings (required merge surface)
+        run: cargo run -p xtask --bin high-risk-configuration-bindings --locked -- . vscode-extension/node_modules/typescript
+
       # The frozen legacy parity authority is a required merge surface. Keep
       # both integration targets here because compile-all-targets alone cannot
       # execute their assertions, and the routed pr-fast lane is advisory.
