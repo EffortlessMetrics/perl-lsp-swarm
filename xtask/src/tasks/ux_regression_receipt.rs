@@ -531,6 +531,8 @@ fn workflow_from_test_name(test: &str) -> Option<String> {
 mod tests {
     use super::*;
 
+    use color_eyre::eyre::{bail, ensure};
+
     #[test]
     fn classify_extracts_structured_fields() {
         // Uses the Rust 1.73+ panic format: "panicked at path:row:col:" (no quoted message).
@@ -1090,7 +1092,7 @@ test result: FAILED. 0 passed; 2 failed; 0 ignored";
     }
 
     #[test]
-    fn an_expired_budget_is_not_routed_to_update_the_baseline() {
+    fn an_expired_budget_is_not_routed_to_update_the_baseline() -> Result<()> {
         // #16205, measured on job 106081131409. `infer_failure_class` scans the whole
         // log for substrings, so the word "baseline" anywhere in it — here a cache
         // step that has nothing to do with the failure — classified the run as
@@ -1109,29 +1111,34 @@ failures:\n\
 test result: FAILED. 0 passed; 1 failed";
 
         let receipt = classify(log, None);
-        assert_eq!(
-            receipt.failing_tests[0].mode,
-            UxFailureMode::BudgetExceeded,
-            "the deadline marker is the evidence this rests on"
+        let Some(probe) = receipt.failing_tests.first() else {
+            bail!("the log carries one failing test block; none was discriminated");
+        };
+        ensure!(
+            probe.mode == UxFailureMode::BudgetExceeded,
+            "the deadline marker is the evidence this rests on, got {:?}",
+            probe.mode
         );
-        assert_eq!(
-            receipt.failure_class,
-            UxFailureClass::Timeout,
-            "a proven expired wait outranks an incidental `baseline` elsewhere in the log"
+        ensure!(
+            receipt.failure_class == UxFailureClass::Timeout,
+            "a proven expired wait outranks an incidental `baseline` elsewhere in the log, got {:?}",
+            receipt.failure_class
         );
-        assert_eq!(
-            receipt.route,
-            UxRoute::TimeoutTriage,
-            "the route must send triage at the flake, never at the baseline"
+        ensure!(
+            receipt.route == UxRoute::TimeoutTriage,
+            "the route must send triage at the flake, never at the baseline, got {:?}",
+            receipt.route
         );
-        assert_eq!(
-            receipt.merge_action, "triage_timeout",
-            "update_baseline is the forbidden remedy this test exists to prevent"
+        ensure!(
+            receipt.merge_action == "triage_timeout",
+            "update_baseline is the forbidden remedy this test exists to prevent, got {}",
+            receipt.merge_action
         );
+        Ok(())
     }
 
     #[test]
-    fn an_unresolved_co_failure_keeps_the_budget_from_deciding_the_run() {
+    fn an_unresolved_co_failure_keeps_the_budget_from_deciding_the_run() -> Result<()> {
         // Devin Review on #16244. An unresolved failure is the ABSENCE of
         // evidence, not evidence of a flake, so one test's deadline marker must
         // not speak for it. Here test B is a real baseline failure whose block
@@ -1152,35 +1159,61 @@ failures:\n\
 test result: FAILED. 0 passed; 2 failed";
 
         let receipt = classify(log, None);
-        assert_eq!(receipt.failing_tests[0].mode, UxFailureMode::BudgetExceeded);
-        assert!(
-            !receipt.failing_tests[1].discriminated,
-            "the second block carries no evidence this classifier backs"
+        let [probe, snapshot] = receipt.failing_tests.as_slice() else {
+            bail!(
+                "the log carries exactly two failing test blocks, got {}",
+                receipt.failing_tests.len()
+            );
+        };
+        ensure!(
+            probe.mode == UxFailureMode::BudgetExceeded,
+            "the first block's deadline marker is what the run would wrongly follow, got {:?}",
+            probe.mode
         );
-        assert_ne!(
-            receipt.failure_class,
-            UxFailureClass::Timeout,
+        ensure!(
+            !snapshot.discriminated,
+            "the second block carries no evidence this classifier backs, got {:?}",
+            snapshot.mode
+        );
+        ensure!(
+            receipt.failure_class != UxFailureClass::Timeout,
             "an unresolved co-failure must stop the budget deciding the whole run"
         );
-        assert_ne!(
-            receipt.merge_action, "triage_timeout",
+        ensure!(
+            receipt.merge_action != "triage_timeout",
             "and must not take update_baseline away from a real baseline failure"
         );
+        Ok(())
     }
 
     #[test]
-    fn a_real_assertion_keeps_its_class_even_beside_an_expired_budget() {
+    fn a_real_assertion_keeps_its_class_even_beside_an_expired_budget() -> Result<()> {
         // The converse guard. One test's expired wait says nothing about another
         // test's assertion over two real values, so a budget must not launder a
         // genuine regression into a timeout. TWO_FAILURES_LOG carries both.
         let receipt = classify(TWO_FAILURES_LOG, None);
-        assert_eq!(receipt.failing_tests[0].mode, UxFailureMode::BudgetExceeded);
-        assert_eq!(receipt.failing_tests[1].mode, UxFailureMode::AssertionFailed);
-        assert_eq!(
-            receipt.failure_class,
-            UxFailureClass::ProviderRegression,
-            "positive evidence that the change is the subject outranks the budget"
+        let [budget, assertion] = receipt.failing_tests.as_slice() else {
+            bail!(
+                "TWO_FAILURES_LOG carries a budget and an assertion, got {}",
+                receipt.failing_tests.len()
+            );
+        };
+        ensure!(
+            budget.mode == UxFailureMode::BudgetExceeded,
+            "the first block is the expired wait, got {:?}",
+            budget.mode
         );
+        ensure!(
+            assertion.mode == UxFailureMode::AssertionFailed,
+            "the second block is a real assertion over two values, got {:?}",
+            assertion.mode
+        );
+        ensure!(
+            receipt.failure_class == UxFailureClass::ProviderRegression,
+            "positive evidence that the change is the subject outranks the budget, got {:?}",
+            receipt.failure_class
+        );
+        Ok(())
     }
 
     #[test]
