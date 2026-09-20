@@ -224,15 +224,11 @@ fn write_packet(out: &str, packet: &serde_json::Value) -> std::io::Result<()> {
     // must leave the destination untouched, not partially rewritten.
     let json = serde_json::to_string_pretty(packet)?;
 
-    let temp = temp_sibling_path(path);
-    if let Err(error) = stage_temp_sibling(&temp, json.as_bytes()) {
-        // Best-effort cleanup: the staged sibling is scratch, and the failure we
-        // report is the staging error, not whatever removing the scratch hit.
-        let _ = std::fs::remove_file(&temp);
-        return Err(error);
-    }
+    let temp = stage_temp_sibling(path, json.as_bytes())?;
     carry_destination_permissions(path, &temp);
     if let Err(error) = std::fs::rename(&temp, path) {
+        // Best-effort cleanup: only the sibling we actually created is ours, and
+        // it is scratch. A rename failure is reported as such.
         let _ = std::fs::remove_file(&temp);
         return Err(error);
     }
@@ -317,16 +313,59 @@ fn temp_sibling_path(path: &std::path::Path) -> std::path::PathBuf {
     }
 }
 
-/// Write `bytes` to the staged sibling and make them durable, so the rename
-/// that follows publishes a complete file rather than one whose contents are
-/// still only in the page cache.
-fn stage_temp_sibling(temp: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+/// Maximum number of attempts to claim an exclusive staging sibling before
+/// reporting the collision as exhaustion. Each attempt computes a fresh path
+/// via [`temp_sibling_path`], so the bound is on attempts per destination
+/// call, not on the sequence counter itself.
+const MAX_TEMP_SIBLING_ATTEMPTS: usize = 16;
+
+/// Write `bytes` to an exclusively-created staged sibling and make them
+/// durable, so the rename that follows publishes a complete file rather than
+/// one whose contents are still only in the page cache. Returns the path of
+/// the scratch file actually created, so the caller can clean it up on
+/// rename failure and never touches a sibling this invocation did not write.
+///
+/// Staging uses `O_CREAT | O_EXCL` semantics (`OpenOptions::create_new`) so a
+/// stale sibling left over from a previous interrupted run is preserved
+/// rather than truncated. `AlreadyExists` is recovered by trying the next
+/// sequence number up to [`MAX_TEMP_SIBLING_ATTEMPTS`] — the destination
+/// itself is never touched, and a pre-existing scratch file that this
+/// invocation did not create is never removed.
+fn stage_temp_sibling(dest: &std::path::Path, bytes: &[u8]) -> std::io::Result<std::path::PathBuf> {
     use std::io::Write as _;
 
-    let mut file = std::fs::File::create(temp)?;
-    file.write_all(bytes)?;
-    file.flush()?;
-    file.sync_all()
+    let mut last_collision: Option<std::io::Error> = None;
+    for _ in 0..MAX_TEMP_SIBLING_ATTEMPTS {
+        let temp = temp_sibling_path(dest);
+        let mut file = match std::fs::OpenOptions::new().write(true).create_new(true).open(&temp) {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                // The computed path already names a real file. This is the
+                // stale-sibling case the issue describes: another run (or
+                // another part of this process) created a scratch path with
+                // a sequence number we would otherwise have used. We must
+                // not truncate it, and we must not delete it: it might not
+                // be ours. Try the next sequence number.
+                last_collision = Some(error);
+                continue;
+            }
+            Err(error) => return Err(error),
+        };
+        file.write_all(bytes)?;
+        file.flush()?;
+        file.sync_all()?;
+        return Ok(temp);
+    }
+    Err(last_collision.unwrap_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            format!(
+                "exhausted {MAX_TEMP_SIBLING_ATTEMPTS} attempts to allocate an exclusive \
+                 staging sibling for `{}`",
+                dest.display()
+            ),
+        )
+    }))
 }
 
 #[cfg(test)]
@@ -1118,6 +1157,106 @@ mod tests {
 
         let resolved = resolve_destination(std::path::Path::new(&a));
         assert!(resolved.ends_with("a") || resolved.ends_with("b"), "cycle must terminate");
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    // #16162 — exclusive allocation of the staged sibling. A stale scratch file
+    // left behind by a previous interrupted run must NOT be truncated by
+    // `File::create`; staging must claim a fresh sibling via O_EXCL semantics
+    // and retry until either a fresh slot is found or the bounded attempts
+    // are exhausted.
+
+    #[test]
+    fn stage_temp_sibling_preserves_an_existing_scratch_file() -> std::io::Result<()> {
+        // A pre-existing scratch file with the next sequence number's name must
+        // remain byte-identical: `stage_temp_sibling` allocates a fresh sibling
+        // rather than truncating the one it found.
+        let dir = "target/ripr-exclusive-claim";
+        let _ = std::fs::remove_dir_all(dir);
+        std::fs::create_dir_all(dir)?;
+        let dest_string = format!("{dir}/packet.json");
+        let dest = std::path::Path::new(&dest_string);
+
+        // Predict the sibling name the implementation will compute first, plant
+        // a sentinel at exactly that path, and verify the sentinel survives.
+        let claimed_first = temp_sibling_path(dest);
+        let sentinel = b"PRE-EXISTING-SIBLING-DO-NOT-TRUNCATE";
+        std::fs::write(&claimed_first, sentinel)?;
+
+        let written = stage_temp_sibling(dest, b"new packet bytes")?;
+        assert_ne!(
+            written, claimed_first,
+            "staging must allocate a sibling distinct from the pre-existing scratch",
+        );
+
+        let preserved = std::fs::read(&claimed_first)?;
+        assert_eq!(
+            preserved, sentinel,
+            "the pre-existing sibling must be preserved byte-for-byte, not truncated",
+        );
+
+        let new_bytes = std::fs::read(&written)?;
+        assert_eq!(new_bytes, b"new packet bytes");
+
+        let _ = std::fs::remove_dir_all(dir);
+        Ok(())
+    }
+
+    #[test]
+    fn stage_temp_sibling_returns_a_path_we_own() {
+        // The returned path is the one the implementation actually created;
+        // the caller uses it to clean up only its own scratch on rename
+        // failure. A test that fails on a wrong return value would silently
+        // widen cleanup to a file we did not create.
+        let dir = "target/ripr-owned-return";
+        let _ = std::fs::remove_dir_all(dir);
+        std::fs::create_dir_all(dir).unwrap();
+        let dest_string = format!("{dir}/packet.json");
+        let dest = std::path::Path::new(&dest_string);
+
+        let returned = stage_temp_sibling(dest, b"payload").unwrap();
+        assert!(
+            returned.starts_with(dir),
+            "returned sibling must live in the destination's directory: got {}",
+            returned.display(),
+        );
+        assert!(returned.exists(), "the returned sibling must exist on disk");
+        assert!(
+            returned
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with('.') && name.contains(".tmp-")),
+            "the returned sibling must match the dot-prefixed `.tmp-{{pid}}-{{seq}}` scheme",
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn stage_temp_sibling_propagates_unrelated_io_errors() {
+        // When the bounded retry loop hits a non-collision error, that error
+        // is surfaced verbatim. The destination is not created, and no
+        // scratch is left behind.
+        //
+        // We trigger `NotADirectory` by passing a destination whose parent
+        // is a regular file: `OpenOptions::create_new` cannot create a
+        // sibling next to a regular file when the parent component is
+        // expected to be a directory.
+        let dir = "target/ripr-non-collision";
+        let _ = std::fs::remove_dir_all(dir);
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(format!("{dir}/regular-file"), b"not a directory").unwrap();
+
+        let blocker = format!("{dir}/regular-file/packet.json");
+        let dest = std::path::Path::new(&blocker);
+        let result = stage_temp_sibling(dest, b"payload");
+        let err = result.expect_err("a non-directory parent must surface an error");
+        assert_ne!(
+            err.kind(),
+            std::io::ErrorKind::AlreadyExists,
+            "a non-collision error must not be misclassified as `AlreadyExists`",
+        );
 
         let _ = std::fs::remove_dir_all(dir);
     }
