@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from release_archive_members import copy_selected_member, selected_member_digest
+from release_vsix_mapping import mapping_from_topology
 from release_build_identity import ReleaseBuildIdentity, load_json_object, validate_topology
 from release_terminal_manifest import (
     digest,
@@ -67,6 +68,7 @@ def build(args: argparse.Namespace) -> None:
         release_version=identity["release_version"],
         source_revision=args.source_sha,
         target=args.target,
+        allow_mapped_rc=True,
     )
     projection = load_json_object(args.projection, "VSIX projection input")
     if projection.get("releaseTopologySha256") != identity.get("release_topology_digest"):
@@ -105,6 +107,12 @@ def build(args: argparse.Namespace) -> None:
         "server": {"candidateId": args.candidate_id, "target": args.target, "member": "", "sha256": payloads[0]["sha256"], "identityRef": f"{args.receipt}:binaries/perllsp"},
         "dap": {"candidateId": args.candidate_id, "target": args.target, "member": "", "sha256": payloads[1]["sha256"], "identityRef": f"{args.receipt}:binaries/perl-dap"},
     }
+    if topology.get("schema") == 4:
+        mapping = mapping_from_topology(topology)
+        if mapping["extension"]["id"] != args.extension_id or mapping["candidate"]["id"] != args.candidate_id:
+            raise ValueError("requested VSIX identity differs from selected mapping")
+        node_input.update(mapping)
+        node_input["schema"] = "vsix_candidate_payload.v2"
     builder = Path(__file__).parents[1] / "vscode-extension" / "scripts" / "build_vsix_candidate_manifest.js"
     result = subprocess.run(["node", str(builder)], input=json.dumps(node_input), text=True, capture_output=True, check=False)
     if result.returncode != 0:

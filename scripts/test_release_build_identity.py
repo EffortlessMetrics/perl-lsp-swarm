@@ -134,6 +134,16 @@ def valid_packet(
 
 
 class ReleaseBuildIdentityTests(unittest.TestCase):
+    def test_mapped_topology_requires_explicit_offline_opt_in(self) -> None:
+        topology = json.loads((REPO_ROOT / "fixtures/rc_vsix_binding/valid.topology.v4.json").read_text())
+        args = dict(release_version=topology["release"], source_revision=topology["prepared_swarm_sha"], target=topology["binary_targets"][0]["target"])
+        with self.assertRaisesRegex(subject.BuildIdentityError, "schema"):
+            subject.validate_topology(topology, **args)
+        subject.validate_topology(topology, **args, allow_mapped_rc=True)
+        topology["vsix"]["pre_release"] = False
+        with self.assertRaises(subject.BuildIdentityError):
+            subject.validate_topology(topology, **args, allow_mapped_rc=True)
+
     def test_closed_input_rejects_unknown_fields(self) -> None:
         value = valid_mapping()
         value["forged"] = "accepted"

@@ -7,6 +7,106 @@ const { spawnSync } = require('node:child_process');
 const JSZip = require('jszip');
 const { test } = require('node:test');
 const { verifyPayloadMember } = require('./check-vsix-prebuilt-payload');
+const { verifyMappedRc } = require('./check-vsix-prebuilt-payload');
+
+async function mappedFixture(change = () => {}, native = false) {
+  const { buildVsixCandidatePayloadManifest, deriveVsixTargetProjection } = require('../src/vsixPackageProjection.ts');
+  const { collectArchiveInventory, semanticInventorySha256 } = require('./check-vsix-inventory-transition');
+  const source = 'b'.repeat(40);
+  const topology = JSON.parse(fs.readFileSync(path.join(__dirname, '../../fixtures/rc_vsix_binding/valid.topology.v4.json'), 'utf8'));
+  const bytes = Buffer.from(JSON.stringify(topology));
+  const projections = deriveVsixTargetProjection({ releaseTopologySha256: sha256(bytes), includeUniversalManaged: true,
+    targets: topology.binary_targets.map((row) => ({ target: row.target, os: row.os, architecture: row.architecture, libc: row.libc, archiveName: row.archive_name, requiredMembers: row.required_members })) });
+  const projection = projections.find((row) => row.vscodeTargetId === (native ? 'linux-x64' : 'universal'));
+  const payload = buildVsixCandidatePayloadManifest({ schema: 'vsix_candidate_payload.v2', preRelease: true,
+    extension: { id: 'fixture-publisher.fixture-extension', version: '0.19.7', sourceSha: source },
+    candidate: { id: 'synthetic-rc-seven', release: topology.release, sourceSha: source },
+    releaseTopologySha256: sha256(bytes), projection, packageInventorySha256: 'a'.repeat(64),
+    ...(native ? {
+      server: { candidateId: 'synthetic-rc-seven', target: projection.rustTarget, member: 'perllsp', sha256: sha256('server'), identityRef: 'synthetic:server' },
+      dap: { candidateId: 'synthetic-rc-seven', target: projection.rustTarget, member: 'perl-dap', sha256: sha256('dap'), identityRef: 'synthetic:dap' },
+    } : {}),
+  });
+  const data = { payload, package: { publisher: 'fixture-publisher', name: 'fixture-extension', version: '0.19.7' },
+    serverBytes: 'server', dapBytes: 'dap',
+    xml: '<PackageManifest><Metadata><Identity Id="fixture-extension" Publisher="fixture-publisher" Version="0.19.7"/><Properties><Property Id="Microsoft.VisualStudio.Code.PreRelease" Value="true"/></Properties></Metadata></PackageManifest>' };
+  if (native) data.xml = data.xml.replace('<Identity ', '<Identity TargetPlatform="linux-x64" ');
+  change(data);
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-mapped-rc-'));
+  const archive = path.join(root, topology.vsix.asset_name);
+  async function write() {
+    const zip = new JSZip();
+    zip.file('extension/package.json', JSON.stringify(data.package));
+    zip.file('extension/vsix-candidate-payload.json', JSON.stringify(data.payload));
+    zip.file('extension.vsixmanifest', data.xml);
+    if (native) {
+      zip.file('extension/bin/linux-x64/perllsp', data.serverBytes);
+      zip.file('extension/bin/linux-x64/perl-dap', data.dapBytes);
+    }
+    fs.writeFileSync(archive, await zip.generateAsync({ type: 'nodebuffer' }));
+  }
+  await write();
+  data.payload.package.inventorySha256 = semanticInventorySha256((await collectArchiveInventory(archive)).inventory);
+  await write();
+  return { root, archive, topologyBytes: bytes, digest: sha256(fs.readFileSync(archive)) };
+}
+
+test('mapped RC validates actual metadata and preserves every exact subject', async () => {
+  const bundled = await mappedFixture(() => {}, true);
+  try { await verifyMappedRc(bundled.archive, bundled.topologyBytes, bundled.digest); }
+  finally { fs.rmSync(bundled.root, { recursive: true, force: true }); }
+  const substituted = await mappedFixture((data) => { data.dapBytes = 'another dap'; }, true);
+  try { await assert.rejects(verifyMappedRc(substituted.archive, substituted.topologyBytes, substituted.digest), /payload SHA mismatch/); }
+  finally { fs.rmSync(substituted.root, { recursive: true, force: true }); }
+  const valid = await mappedFixture();
+  try {
+    await verifyMappedRc(valid.archive, valid.topologyBytes, valid.digest);
+    await assert.rejects(verifyMappedRc(valid.archive, valid.topologyBytes, 'c'.repeat(64)), /bytes differ/);
+    const wrongSource = JSON.parse(valid.topologyBytes);
+    wrongSource.prepared_swarm_sha = 'c'.repeat(40);
+    await assert.rejects(verifyMappedRc(valid.archive, Buffer.from(JSON.stringify(wrongSource)), valid.digest), /payload differs/);
+    const wrongRc = JSON.parse(valid.topologyBytes);
+    wrongRc.release = '0.18.0-rc.8';
+    await assert.rejects(verifyMappedRc(valid.archive, Buffer.from(JSON.stringify(wrongRc)), valid.digest), /asset/);
+    fs.appendFileSync(valid.archive, 'changed');
+    await assert.rejects(verifyMappedRc(valid.archive, valid.topologyBytes, valid.digest), /bytes differ/);
+  } finally { fs.rmSync(valid.root, { recursive: true, force: true }); }
+  for (const [label, mutate] of [
+    ['package version', (x) => { x.package.version = '0.19.8'; }],
+    ['VSIX identity version', (x) => { x.xml = x.xml.replace('Version="0.19.7"', 'Version="0.19.8"'); }],
+    ['different RC iteration', (x) => { x.payload.candidate.release = '0.18.0-rc.8'; }],
+    ['payload source', (x) => { x.payload.extension.sourceSha = 'c'.repeat(40); }],
+    ['payload topology digest', (x) => { x.payload.releaseTopologySha256 = 'c'.repeat(64); }],
+    ['legacy payload', (x) => { x.payload.schema = 'vsix_candidate_payload.v1'; delete x.payload.preRelease; }],
+    ['absent marker', (x) => { x.xml = x.xml.replace('<Property Id="Microsoft.VisualStudio.Code.PreRelease" Value="true"/>', ''); }],
+    ['false marker', (x) => { x.xml = x.xml.replace('Value="true"', 'Value="false"'); }],
+    ['duplicate marker', (x) => { x.xml = x.xml.replace('</Properties>', '<Property Id="Microsoft.VisualStudio.Code.PreRelease" Value="true"/></Properties>'); }],
+  ]) {
+    const wrong = await mappedFixture(mutate);
+    try { await assert.rejects(verifyMappedRc(wrong.archive, wrong.topologyBytes, wrong.digest), undefined, label); }
+    finally { fs.rmSync(wrong.root, { recursive: true, force: true }); }
+  }
+});
+
+test('mapped RC binds manifest platform to native or universal projection', async () => {
+  for (const native of [true, false]) {
+    const valid = await mappedFixture(() => {}, native);
+    try { await verifyMappedRc(valid.archive, valid.topologyBytes, valid.digest); }
+    finally { fs.rmSync(valid.root, { recursive: true, force: true }); }
+    const mutations = native ? [
+      (xml) => xml.replace('TargetPlatform="linux-x64"', 'TargetPlatform="win32-x64"'),
+      (xml) => xml.replace('TargetPlatform="linux-x64"', ''),
+    ] : [
+      (xml) => xml.replace('<Identity ', '<Identity TargetPlatform="linux-x64" '),
+      (xml) => xml.replace('<Identity ', '<Identity TargetPlatform="" '),
+    ];
+    for (const mutate of mutations) {
+      const wrong = await mappedFixture((data) => { data.xml = mutate(data.xml); }, native);
+      try { await assert.rejects(verifyMappedRc(wrong.archive, wrong.topologyBytes, wrong.digest), /target platform differs/); }
+      finally { fs.rmSync(wrong.root, { recursive: true, force: true }); }
+    }
+  }
+});
 
 function sha256(value) {
   return crypto.createHash('sha256').update(value).digest('hex');

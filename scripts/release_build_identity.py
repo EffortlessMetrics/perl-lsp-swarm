@@ -539,10 +539,27 @@ def validate_topology(
     release_version: str,
     source_revision: str,
     target: str,
+    allow_mapped_rc: bool = False,
 ) -> None:
     version = topology.get("schema")
-    if type(version) not in (int, float) or version not in (1, 2):
+    if type(version) not in (int, float) or version not in ((1, 2, 4) if allow_mapped_rc else (1, 2)):
         raise BuildIdentityError("release topology schema must be 1 or 2")
+    if version == 4:
+        if __package__:
+            from .release_vsix_mapping import mapped_vsix_identity, mapping_from_topology
+            from .generate_release_topology import schema_validate, TopologyError
+        else:
+            from release_vsix_mapping import mapped_vsix_identity, mapping_from_topology
+            from generate_release_topology import schema_validate, TopologyError
+        try:
+            schema_validate(dict(topology))
+            if topology.get("prepared_swarm_sha") == topology.get("frozen_product_sha"):
+                raise ValueError("mapped topology requires a distinct prepared source")
+            expected = mapped_vsix_identity(mapping_from_topology(dict(topology)), topology.get("vsix", {}), release_version, source_revision)
+        except (ValueError, TopologyError) as error:
+            raise BuildIdentityError(str(error)) from error
+        if any(topology["vsix"].get(key) != value for key, value in expected.items()):
+            raise BuildIdentityError("mapped topology VSIX identity is inconsistent")
     if topology.get("release") != release_version:
         raise BuildIdentityError(
             "release topology version differs from build identity"

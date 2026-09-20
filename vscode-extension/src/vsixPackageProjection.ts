@@ -51,6 +51,8 @@ export interface VsixNativePayloadIdentity {
 }
 
 export interface VsixCandidatePayloadManifestInput {
+  readonly schema?: 'vsix_candidate_payload.v1' | 'vsix_candidate_payload.v2';
+  readonly preRelease?: boolean;
   readonly extension: VsixExtensionIdentity;
   readonly candidate: VsixCandidateIdentity;
   readonly releaseTopologySha256: string;
@@ -61,7 +63,8 @@ export interface VsixCandidatePayloadManifestInput {
 }
 
 export interface VsixCandidatePayloadManifest {
-  readonly schema: 'vsix_candidate_payload.v1';
+  readonly schema: 'vsix_candidate_payload.v1' | 'vsix_candidate_payload.v2';
+  readonly preRelease?: true;
   readonly extension: VsixExtensionIdentity;
   readonly candidate: VsixCandidateIdentity;
   readonly releaseTopologySha256: string;
@@ -299,6 +302,22 @@ export function buildVsixCandidatePayloadManifest(
   requireSourceSha(input.candidate.sourceSha, 'candidate.sourceSha');
   requireSha256(input.releaseTopologySha256, 'releaseTopologySha256');
   requireSha256(input.packageInventorySha256, 'packageInventorySha256');
+  const schema = input.schema ?? 'vsix_candidate_payload.v1';
+  if (schema !== 'vsix_candidate_payload.v1' && schema !== 'vsix_candidate_payload.v2') {
+    throw new Error('Unsupported VSIX payload schema.');
+  }
+  if (schema === 'vsix_candidate_payload.v2') {
+    const numeric = '(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)';
+    if (!new RegExp(`^${numeric}$`).test(input.extension.version) ||
+        !new RegExp(`^${numeric}-rc\\.[1-9][0-9]*$`).test(input.candidate.release) ||
+        input.extension.version.trim() !== input.extension.version ||
+        input.candidate.release.trim() !== input.candidate.release ||
+        input.preRelease !== true || input.extension.sourceSha !== input.candidate.sourceSha) {
+      throw new Error('Mapped RC payload requires numeric extension version, full RC, prerelease and one prepared source.');
+    }
+  } else if (input.preRelease !== undefined) {
+    throw new Error('Explicit prerelease mapping requires VSIX payload v2.');
+  }
 
   if (input.projection.packageMode === 'unsupported') {
     throw new Error(
@@ -333,7 +352,8 @@ export function buildVsixCandidatePayloadManifest(
   }
 
   return {
-    schema: 'vsix_candidate_payload.v1',
+    schema,
+    ...(schema === 'vsix_candidate_payload.v2' ? { preRelease: true as const } : {}),
     extension: {
       id: input.extension.id,
       version: input.extension.version,

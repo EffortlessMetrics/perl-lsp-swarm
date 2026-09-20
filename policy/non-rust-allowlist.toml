@@ -5526,3 +5526,55 @@ reason = "deterministic scenario (already absent complete evidence) for the #114
 covered_by = ["cargo test -p xtask --example standalone_owned_state --locked"]
 created = "2026-08-24"
 review_after = "2026-09-23"
+
+[[allow]]
+id = "non-rust-14923-rc-vsix-mapping"
+path = "scripts/release_vsix_mapping.py"
+kind = "release_contract"
+language = "python"
+surface = "release"
+classification = "production"
+owner = "release/ci"
+reason = "Opt-in offline RC/numeric-VSIX binding for #14923; no live version allocation, terminal admission or publication."
+covered_by = ["python -m unittest discover -s scripts -p test_generate_release_topology.py", "node --test vscode-extension/scripts/check-vsix-prebuilt-payload.test.js"]
+created = "2026-09-20"
+review_after = "2026-12-20"
+
+[[allow]]
+id = "non-rust-14923-release-topology-v4"
+path = "schemas/release_topology.v4.schema.json"
+kind = "release_contract"
+language = "json"
+surface = "release"
+classification = "config"
+owner = "release/ci"
+reason = "Opt-in offline RC/numeric-VSIX binding for #14923; no live version allocation, terminal admission or publication."
+covered_by = ["python -m unittest discover -s scripts -p test_generate_release_topology.py", "node --test vscode-extension/scripts/check-vsix-prebuilt-payload.test.js"]
+created = "2026-09-20"
+review_after = "2026-12-20"
+
+[[allow]]
+id = "non-rust-14923-vsix-candidate-payload-v2"
+path = "schemas/vsix_candidate_payload.v2.schema.json"
+kind = "release_contract"
+language = "json"
+surface = "release"
+classification = "config"
+owner = "release/ci"
+reason = "Opt-in offline RC/numeric-VSIX binding for #14923; no live version allocation, terminal admission or publication."
+covered_by = ["python -m unittest discover -s scripts -p test_generate_release_topology.py", "node --test vscode-extension/scripts/check-vsix-prebuilt-payload.test.js"]
+created = "2026-09-20"
+review_after = "2026-12-20"
+
+[[allow]]
+id = "non-rust-14923-rc-vsix-binding-fixture"
+path = "fixtures/rc_vsix_binding/valid.topology.v4.json"
+kind = "release_contract"
+language = "json"
+surface = "release"
+classification = "test"
+owner = "release/ci"
+reason = "Opt-in offline RC/numeric-VSIX binding for #14923; no live version allocation, terminal admission or publication."
+covered_by = ["python -m unittest discover -s scripts -p test_generate_release_topology.py", "node --test vscode-extension/scripts/check-vsix-prebuilt-payload.test.js"]
+created = "2026-09-20"
+review_after = "2026-12-20"
