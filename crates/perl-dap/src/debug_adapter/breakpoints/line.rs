@@ -762,19 +762,25 @@ mod source_boundary_tests {
     -> Result<(), Box<dyn Error>> {
         let root = tempfile::tempdir()?;
         let outside = tempfile::tempdir()?;
-        let cwd = root.path().join("subdir");
+        // Canonicalize the tempdir roots before deriving fixture paths: on
+        // Windows runners %TEMP% resolves through an 8.3 short-name spelling
+        // while `validate_source_path_at` canonicalizes lookups to the long
+        // form, so mixed spellings would leave seeded store keys unreachable.
+        let root_path = root.path().canonicalize()?;
+        let outside_path = outside.path().canonicalize()?;
+        let cwd = root_path.join("subdir");
         fs::create_dir_all(cwd.join("lib"))?;
-        fs::create_dir(root.path().join("lib"))?;
-        fs::create_dir(outside.path().join("lib"))?;
+        fs::create_dir(root_path.join("lib"))?;
+        fs::create_dir(outside_path.join("lib"))?;
         // Seed native filesystem spellings, matching admitted store keys even
         // when the debugger uses forward slashes on Windows.
         let source = cwd.join("lib").join("module.pl");
-        let decoy = root.path().join("lib").join("module.pl");
-        let outside_source = outside.path().join("lib").join("module.pl");
+        let decoy = root_path.join("lib").join("module.pl");
+        let outside_source = outside_path.join("lib").join("module.pl");
         for path in [&source, &decoy, &outside_source] {
             fs::write(path, "print 'fixture';\n")?;
         }
-        let adapter = bounded_adapter(root.path())?;
+        let adapter = bounded_adapter(&root_path)?;
         // Trusted store fixtures exercise retained hit/logpoint semantics without
         // promoting the handler's currently floored optional capabilities.
         let logpoint = serde_json::from_value(json!({
@@ -792,12 +798,11 @@ mod source_boundary_tests {
                 "wrong-directory controls must contain verified stopping breakpoints",
             )?;
         }
-        let authority = root.path().canonicalize()?;
         let first = DebugAdapter::register_observed_breakpoint_hit(
             &adapter.breakpoints,
             "lib/module.pl",
             1,
-            Some(&authority),
+            Some(&root_path),
             &cwd,
         );
         require(
@@ -808,7 +813,7 @@ mod source_boundary_tests {
             &adapter.breakpoints,
             "lib/module.pl",
             1,
-            Some(&authority),
+            Some(&root_path),
             &cwd,
         );
         require(
@@ -824,8 +829,8 @@ mod source_boundary_tests {
             &adapter.breakpoints,
             "lib/module.pl",
             1,
-            Some(&authority),
-            outside.path(),
+            Some(&root_path),
+            &outside_path,
         );
         require(
             !refused.matched && !refused.should_stop && refused.log_messages.is_empty(),
