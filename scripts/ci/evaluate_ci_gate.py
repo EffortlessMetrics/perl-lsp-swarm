@@ -75,26 +75,37 @@ def evaluate(
     event_name: str = "pull_request",
     pull_request_draft: str = "false",
     run_cancelled: bool = False,
+    run_head: str = "",
+    latest_head: str = "",
 ) -> Verdict:
     """Classify the aggregate without inferring success from absent evidence.
 
-    `run_cancelled` is GitHub's own `cancelled()` for *this run*, and it is the
-    only thing that lets a cancelled lane read as supersession rather than as
-    absent proof. `ci.yml` sets `cancel-in-progress` on pull-request
-    synchronize, so a second push cancels the run in flight, its lanes with it,
-    and this job still starts under `if: always()` — which is how a routine
-    push reddened the aggregate with "applicable dependency did not succeed"
-    (#16087).
+    `ci.yml` sets `cancel-in-progress` on pull-request synchronize, so a second
+    push cancels the run in flight, its lanes with it, and this job still
+    starts under `if: always()` — which is how a routine push reddened the
+    aggregate with "applicable dependency did not succeed" (#16087).
 
-    The run-level fact is what makes that safe to forgive, and the blockers
-    cannot supply it. A single lane lost to a manual cancel, an API cancel or a
-    runner dying leaves every blocker `cancelled` too, and calling that
-    supersession would report green over a lane that produced no evidence. So
-    the run must itself be cancelled, and anything short of that stays red:
-    `ripr.yml` holds the same line from the other side, blocking a cancelled
-    lane as `cancelled-no-verdict` (#5460). The two rules differ because the
-    workflows do — ripr sets `cancel-in-progress: false`, so a cancelled ripr
-    lane never means head supersession, while here it usually does.
+    Forgiving that needs **positive evidence that a newer candidate exists**,
+    which is `latest_head != run_head`: the pull request's live head is no
+    longer the head this run tested, so a replacement run is already proving
+    the thing this one stopped proving. Nothing weaker will do.
+    `cancelled()` alone will not, because it reports *that* the run was
+    cancelled and not *why* — a maintainer cancelling a run by hand or through
+    the API sets it exactly as concurrency does, and there is no replacement
+    run in that case. #5460 said as much when it refused a pass verdict here,
+    and it was right: the run-level fact separates a cancelled run from one
+    lost lane, but not a cancelled-by-supersession run from a
+    cancelled-by-hand one.
+
+    `run_cancelled` and all-cancelled blockers are kept as necessary
+    conditions, not sufficient ones. Together they confine the forgiving branch
+    to runs that were cancelled and produced no contrary evidence, and the head
+    comparison is what establishes that something superseded them.
+
+    Everything short of all three stays red, which is where `ripr.yml` also
+    lands from the other side — it sets `cancel-in-progress: false`, so a
+    cancelled ripr lane never means supersession at all and its
+    `cancelled-no-verdict` block stays correct unchanged.
     """
     draft_result = _result(needs, "draft-pr-check")
     if draft_result != "success":
@@ -165,10 +176,14 @@ def evaluate(
         if _result(needs, name) != "success"
     )
     if blockers:
-        if run_cancelled and _all_cancelled(blockers):
+        if (
+            run_cancelled
+            and _all_cancelled(blockers)
+            and _superseded(run_head, latest_head)
+        ):
             return Verdict(
                 "superseded",
-                "this run was cancelled and every blocker is a lane it cancelled",
+                f"cancelled run for {run_head[:8]} superseded by {latest_head[:8]}",
                 blockers,
             )
         return Verdict("failure", "applicable dependency did not succeed", blockers)
@@ -179,10 +194,21 @@ def _all_cancelled(blockers: tuple[str, ...]) -> bool:
     """Whether every blocker is a cancelled lane rather than a real outcome.
 
     Necessary but not sufficient for `superseded`: one genuine failure
-    alongside a cancellation is still a failure, and the caller checks that
-    the run itself was cancelled before reading these as supersession.
+    alongside a cancellation is still a failure.
     """
     return all(blocker.rsplit("=", 1)[-1] == "cancelled" for blocker in blockers)
+
+
+def _superseded(run_head: str, latest_head: str) -> bool:
+    """Whether a newer candidate has replaced the one this run tested.
+
+    Both heads must be known. An unresolved `latest_head` — no token, an API
+    error, an event with no pull request — is not evidence of a replacement,
+    so it reads as "not superseded" and the gate stays red. That is the
+    direction to fail in: a missed supersession costs one avoidable red, while
+    a wrongly claimed one reports green over a candidate nothing proved.
+    """
+    return bool(run_head) and bool(latest_head) and run_head != latest_head
 
 
 def render_summary(needs: Mapping[str, Any], verdict: Verdict) -> str:
@@ -209,6 +235,8 @@ def main() -> int:
             # that exports this is itself `if: cancelled()`, so an uncancelled
             # run leaves the variable unset and the default keeps the gate red.
             run_cancelled=os.environ.get("RUN_CANCELLED", "") == "true",
+            run_head=os.environ.get("RUN_HEAD_SHA", "").strip(),
+            latest_head=os.environ.get("LATEST_HEAD_SHA", "").strip(),
         )
         summary = render_summary(raw_needs, verdict)
     except (json.JSONDecodeError, ValueError) as error:

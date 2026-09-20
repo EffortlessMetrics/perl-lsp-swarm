@@ -25,6 +25,10 @@ SPEC.loader.exec_module(gate)
 ROOT = Path(__file__).resolve().parents[2]
 
 
+TESTED_HEAD = "1111111111111111111111111111111111111111"
+NEWER_HEAD = "2222222222222222222222222222222222222222"
+
+
 def applicable_needs(*, shard_result: str = "success") -> dict[str, dict]:
     return {
         "draft-pr-check": {
@@ -179,25 +183,69 @@ class AggregateWiringTests(unittest.TestCase):
         ever reaches GitHub, so every claim about red or green is made here.
         """
         output = io.StringIO()
-        environ = {"NEEDS_JSON": json.dumps(needs), "EVENT_NAME": "pull_request"}
+        environ = {
+            "NEEDS_JSON": json.dumps(needs),
+            "EVENT_NAME": "pull_request",
+            "RUN_HEAD_SHA": TESTED_HEAD,
+        }
         environ.update(env)
         with mock.patch.dict(os.environ, environ, clear=True):
             with redirect_stdout(output):
                 status = gate.main()
         return status, output.getvalue()
 
-    def test_a_cancelled_run_whose_lanes_it_cancelled_reports_green(self) -> None:
+    def test_a_cancelled_run_that_a_newer_head_replaced_reports_green(self) -> None:
         """The #16087 case: a routine second push must not red the aggregate."""
         needs = applicable_needs(shard_result="cancelled")
         needs["check-all-targets"]["result"] = "cancelled"
         needs["ux-tests"]["result"] = "cancelled"
 
-        verdict = gate.evaluate(needs, run_cancelled=True)
+        verdict = gate.evaluate(
+            needs, run_cancelled=True, run_head=TESTED_HEAD, latest_head=NEWER_HEAD
+        )
         self.assertEqual("superseded", verdict.status)
 
-        status, summary = self._exit_status(needs, RUN_CANCELLED="true")
+        status, summary = self._exit_status(
+            needs, RUN_CANCELLED="true", LATEST_HEAD_SHA=NEWER_HEAD
+        )
         self.assertEqual(0, status)
         self.assertIn("superseded", summary)
+
+    def test_a_hand_cancelled_run_with_no_newer_head_stays_red(self) -> None:
+        """A maintainer cancelling a run is not supersession.
+
+        `cancelled()` reports that a run was cancelled, not why, so this input
+        is indistinguishable from #16087's at the run level. Only the live head
+        separates them, and here it has not moved: nothing replaced this
+        candidate, so nothing is proving it and the gate must stay red. This is
+        the case #5460 refused a pass verdict for, and it still refuses.
+        """
+        needs = applicable_needs(shard_result="cancelled")
+        needs["check-all-targets"]["result"] = "cancelled"
+        needs["ux-tests"]["result"] = "cancelled"
+
+        verdict = gate.evaluate(
+            needs, run_cancelled=True, run_head=TESTED_HEAD, latest_head=TESTED_HEAD
+        )
+        self.assertEqual("failure", verdict.status)
+
+        status, _ = self._exit_status(
+            needs, RUN_CANCELLED="true", LATEST_HEAD_SHA=TESTED_HEAD
+        )
+        self.assertEqual(1, status)
+
+    def test_an_unresolved_live_head_stays_red(self) -> None:
+        """No answer from the API is not evidence of a replacement."""
+        needs = applicable_needs(shard_result="cancelled")
+        needs["check-all-targets"]["result"] = "cancelled"
+        needs["ux-tests"]["result"] = "cancelled"
+
+        for latest in ("", "   "):
+            with self.subTest(latest_head=latest):
+                status, _ = self._exit_status(
+                    needs, RUN_CANCELLED="true", LATEST_HEAD_SHA=latest
+                )
+                self.assertEqual(1, status)
 
     def test_a_cancelled_lane_in_a_live_run_stays_red(self) -> None:
         """A lane lost on its own produced no proof, and nothing superseded it.
@@ -222,7 +270,9 @@ class AggregateWiringTests(unittest.TestCase):
         verdict = gate.evaluate(needs, run_cancelled=True)
         self.assertEqual("failure", verdict.status)
 
-        status, _ = self._exit_status(needs, RUN_CANCELLED="true")
+        status, _ = self._exit_status(
+            needs, RUN_CANCELLED="true", LATEST_HEAD_SHA=NEWER_HEAD
+        )
         self.assertEqual(1, status)
 
     def test_only_the_exact_cancellation_marker_is_believed(self) -> None:
@@ -233,7 +283,9 @@ class AggregateWiringTests(unittest.TestCase):
 
         for value in ("", "false", "True", "TRUE", "1", "cancelled"):
             with self.subTest(run_cancelled=value):
-                status, _ = self._exit_status(needs, RUN_CANCELLED=value)
+                status, _ = self._exit_status(
+                    needs, RUN_CANCELLED=value, LATEST_HEAD_SHA=NEWER_HEAD
+                )
                 self.assertEqual(1, status)
 
     def test_workflow_records_cancellation_before_the_classifier_reads_it(self) -> None:
@@ -253,6 +305,32 @@ class AggregateWiringTests(unittest.TestCase):
         )
         self.assertIn("if: cancelled()", block)
         self.assertIn('RUN_CANCELLED=true" >> "$GITHUB_ENV"', block)
+
+    def test_workflow_resolves_both_heads_from_the_api(self) -> None:
+        """The comparison is only as trustworthy as where the two heads come from.
+
+        The classifier cannot tell a real supersession from a fabricated one,
+        so the job must read both sides from the API keyed on `github.run_id`,
+        which the candidate cannot set. Taking either head from the event
+        payload would let the compared values travel with the branch.
+        """
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        start = workflow.index("  merge-gate:\n")
+        end = workflow.index("\n  # \u2500\u2500 UX Tests", start)
+        block = workflow[start:end]
+
+        self.assertIn("RUN_HEAD_SHA=", block)
+        self.assertIn("LATEST_HEAD_SHA=", block)
+        self.assertIn("actions/runs/${RUN_ID}", block)
+        self.assertIn("RUN_ID: ${{ github.run_id }}", block)
+
+        resolve = block.index("RUN_HEAD_SHA=")
+        classifier = block.index("python3 scripts/ci/evaluate_ci_gate.py")
+        self.assertLess(
+            resolve,
+            classifier,
+            "both heads must be exported before the step that compares them",
+        )
 
     def test_workflow_uses_one_unconditional_job_check(self) -> None:
         workflow = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")

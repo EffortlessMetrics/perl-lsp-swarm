@@ -1537,6 +1537,11 @@ jobs:
     name: CI Gate (Advisory Aggregate)
     runs-on: ubuntu-24.04
     timeout-minutes: 2
+    # Read-only, and narrower than it looks: the job needs `pull-requests` only
+    # to read the live head of the pull request it is already running for.
+    permissions:
+      contents: read
+      pull-requests: read
     needs:
       - draft-pr-check
       - preflight-latest-check
@@ -1551,20 +1556,54 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
-      # GitHub's own answer to "was this run cancelled", recorded before the
-      # classifier reads it. `cancel-in-progress` is set for pull-request
-      # synchronize, so a second push cancels this run and its in-flight lanes
-      # while this job still starts under `if: always()`. Without this the
-      # classifier cannot tell that from one lane lost to a manual or API
-      # cancel, and forgiving both would report green over absent proof
-      # (#16087).
+      # Evidence that a newer candidate replaced the one this run tested, which
+      # is the only thing that makes forgiving a cancelled run safe. GitHub's
+      # `cancelled()` says the run was cancelled but not why: a maintainer
+      # cancelling by hand or through the API sets it exactly as
+      # `cancel-in-progress` does, and no replacement run exists in that case.
+      # #5460 refused a pass verdict here for precisely that reason. So the
+      # classifier is given the pull request's live head as well, and forgives
+      # only when it has moved off the head this run tested (#16087).
       #
-      # The variable is exported only on the cancelled path: an uncancelled run
-      # skips this step, leaves it unset, and the classifier stays red.
+      # The pull request is resolved by its number, not by branch name:
+      # `github.head_ref` is fork-controlled, which is how a branch called
+      # "main" once made every fork PR look superseded (#5981). Both SHAs come
+      # from the API rather than the event payload, because this job must not
+      # read candidate-controlled pull-request head data (#12911) — the run
+      # object's `head_sha` is the head this run actually tested.
+      #
+      # Both variables are best effort and fail closed. The marker is exported
+      # only on the cancelled path, and an unresolved head stays empty; either
+      # one missing leaves the gate red, which is the behaviour before this
+      # step existed.
       - name: Record run cancellation
         if: cancelled()
         shell: bash
         run: echo "RUN_CANCELLED=true" >> "$GITHUB_ENV"
+
+      - name: Resolve the tested head and the pull request's live head
+        if: cancelled() && github.event_name == 'pull_request'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPOSITORY: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -uo pipefail
+          tested="$(gh api "repos/${REPOSITORY}/actions/runs/${RUN_ID}" --jq '.head_sha' 2>/dev/null || true)"
+          latest="$(gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}" --jq '.head.sha' 2>/dev/null || true)"
+          # Only a full object name is exported. `gh` writes nothing to stdout
+          # on failure, but a partial or unexpected value would still compare
+          # unequal to the other side and read as a supersession that did not
+          # happen, so the shape is checked rather than assumed.
+          for pair in "RUN_HEAD_SHA=${tested}" "LATEST_HEAD_SHA=${latest}"; do
+            if [[ "${pair#*=}" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "$pair" >> "$GITHUB_ENV"
+            else
+              echo "::notice::Unresolved ${pair%%=*}; the gate stays red."
+            fi
+          done
 
       - name: Gate summary
         if: always()
