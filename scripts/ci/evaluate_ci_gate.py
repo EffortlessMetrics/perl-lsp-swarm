@@ -201,12 +201,21 @@ def evaluate(
         # the same words for a broken test and for a routine second push.
         if _all_cancelled(blockers):
             if _superseded(run_head, latest_head, replacement_run):
+                # "is this workflow's run for that head" and not "is
+                # authoritative for it". Review objected to the stronger word
+                # twice, and on the second reading it is right: the lookup
+                # establishes that the run exists, belongs to this pull
+                # request, and came after this one. It establishes nothing
+                # about that run's outcome — it may itself be cancelled. The
+                # sentence is this change's entire deliverable, so it says
+                # what was read and stops.
                 return Verdict(
                     "superseded",
                     f"no proof for {run_head[:8]}: every blocking lane was "
                     f"cancelled. The pull request has moved to "
-                    f"{latest_head[:8]} and run {replacement_run} is "
-                    f"authoritative for it. This is NOT a test failure",
+                    f"{latest_head[:8]}, and run {replacement_run} is this "
+                    f"workflow's run for that head. This is NOT a test "
+                    f"failure",
                     blockers,
                 )
             return Verdict(

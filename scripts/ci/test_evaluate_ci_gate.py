@@ -397,7 +397,16 @@ class AggregateWiringTests(unittest.TestCase):
                 # cancellation was caused by the push, which no input shows.
                 self.assertIn(NEWER_HEAD[:8], superseded.reason)
                 self.assertIn(REPLACEMENT_RUN, superseded.reason)
-                for unprovable in ("because", "superseded by", "second push"):
+                # Words the inputs do not support. "authoritative" is on the
+                # list because review objected to it twice: the lookup shows
+                # the run exists and is this pull request's successor, never
+                # that it will produce a verdict — it may be cancelled too.
+                for unprovable in (
+                    "because",
+                    "superseded by",
+                    "second push",
+                    "authoritative",
+                ):
                     self.assertNotIn(unprovable, superseded.reason)
 
     def test_a_moved_head_with_no_replacement_run_stays_red(self) -> None:
