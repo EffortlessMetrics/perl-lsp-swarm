@@ -1993,6 +1993,9 @@ function createLanguageClientLifecycle(
       await finalizeStartedLanguageClient(context, startedClient, generation);
     },
     onFailed: (snapshot) => {
+      // Carry the settling error on the metrics surface so a terminal failed
+      // state is diagnosable from the snapshot alone (#15592).
+      languageClientStartupMetrics.recordStartupError(snapshot.error);
       languageClientStartupMetrics.finishServerStart('error');
       languageClientStartupMetrics.finishInitialize('error');
       const message =
