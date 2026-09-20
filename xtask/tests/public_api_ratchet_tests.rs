@@ -454,7 +454,15 @@ fn public_api_filter_normalizes_only_io_reexport_paths() -> Result<(), Box<dyn s
         .ok_or("Could not delimit _public-api-filter recipe")?;
 
     assert!(filter.contains("core::io::(write::|error::)?"));
-    assert!(filter.contains("alloc::io::buf_read::"));
+    // Both `alloc::io` submodules, not just `buf_read` (#16117). `Read` lands in
+    // `alloc::io::read::`, and folding only its sibling left `&mut dyn
+    // alloc::io::read::Read` unnormalized. That survived on both sides of the
+    // diff and so caused no failure -- but the symmetry was luck, and it breaks
+    // the moment one side is regenerated and the other is not.
+    assert!(
+        filter.contains("alloc::io::(buf_read::|read::)?"),
+        "_public-api-filter must fold both `alloc::io` submodules to `std::io::` (#16117)"
+    );
     assert!(filter.contains("std::io::"));
     assert!(filter.contains("grep -E"));
     Ok(())
@@ -689,6 +697,79 @@ fn tool_version_pinned_consistently() -> Result<(), Box<dyn std::error::Error>> 
         justfile_version_num, ci_version_num,
         "cargo-public-api version mismatch: justfile={}, CI={}. Both must be identical.",
         justfile_version_num, ci_version_num
+    );
+
+    Ok(())
+}
+
+/// #16117: the io-path normalization (#16043/#16058) must run on BOTH sides of
+/// the comparison.
+///
+/// The filter was applied to the freshly generated surface only, while the
+/// committed baseline was diffed raw. A baseline captured under a nightly that
+/// rendered `core::io::*` / `alloc::io::*` therefore disagreed with every
+/// folded line -- 102 of them across three baselines -- on pull requests that
+/// changed no Rust at all. Asserting the recipe diffs a normalized baseline is
+/// what stops that from silently coming back: a one-sided filter still passes
+/// every other test here, because both recipes and both file sets look fine in
+/// isolation.
+#[test]
+fn public_api_check_normalizes_both_sides_of_the_diff() -> Result<(), Box<dyn std::error::Error>> {
+    let justfile = fs::read_to_string(project_root().join("justfile"))?.replace("\r\n", "\n");
+    let recipe = justfile
+        .split("\npublic-api-check:")
+        .nth(1)
+        .and_then(|rest| rest.split("\npublic-api-update:").next())
+        .ok_or("Could not find the public-api-check recipe body")?;
+
+    assert!(
+        recipe.contains(r#"just _public-api-filter "$BASELINE""#),
+        "public-api-check must pass the committed baseline through _public-api-filter; \
+         diffing a raw baseline against a normalized surface reports a toolchain \
+         rendering change as an API change (#16117)"
+    );
+
+    let diffs_normalized_baseline =
+        recipe.lines().any(|line| line.contains("diff -u") && line.contains("-baseline.txt"));
+    assert!(
+        diffs_normalized_baseline,
+        "public-api-check must diff the normalized baseline, not $BASELINE directly (#16117)"
+    );
+
+    Ok(())
+}
+
+/// #16117: the committed baselines must already be in the canonical form the
+/// filter produces.
+///
+/// This is the state assertion behind the recipe assertion above. It holds
+/// whether the baselines were regenerated or the stored side is normalized on
+/// read, and it fails if a future regeneration on a drifted nightly writes
+/// `core::io::*` / `alloc::io::*` back into the stored surface.
+#[test]
+fn committed_baselines_carry_no_unfolded_io_paths() -> Result<(), Box<dyn std::error::Error>> {
+    let root = project_root();
+    let mut offenders = Vec::new();
+    for crate_name in ratchet_crates()? {
+        let path = root.join(".ci/public-api-baselines").join(format!("{crate_name}.txt"));
+        let Ok(content) = fs::read_to_string(&path) else {
+            // baselines_exist_for_every_listed_crate owns that failure.
+            continue;
+        };
+        for (index, line) in content.lines().enumerate() {
+            if line.contains("core::io::") || line.contains("alloc::io::") {
+                offenders.push(format!("{crate_name}.txt:{}: {line}", index + 1));
+            }
+        }
+    }
+
+    assert!(
+        offenders.is_empty(),
+        "committed baselines carry {} unfolded io path(s); the ratchet folds them to \
+         `std::io::*` on the generated side, so a stored `core::io::*` / `alloc::io::*` \
+         reds every api_scope pull request on a diff nobody wrote (#16117). First few:\n{}",
+        offenders.len(),
+        offenders.iter().take(5).cloned().collect::<Vec<_>>().join("\n")
     );
 
     Ok(())

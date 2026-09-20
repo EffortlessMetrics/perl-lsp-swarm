@@ -2384,7 +2384,7 @@ _public-api-filter raw out:
     grep -E '^(pub |(#\[[^]]*\][[:space:]]*)+pub )' "{{raw}}" \
         | sed -E \
             -e 's#core::io::(write::|error::)?#std::io::#g' \
-            -e 's#alloc::io::buf_read::#std::io::#g' \
+            -e 's#alloc::io::(buf_read::|read::)?#std::io::#g' \
         > "{{out}}" || true
 
 # Check public API surface of the ratcheted crates against committed baselines
@@ -2423,7 +2423,22 @@ public-api-check:
             FAILED=1
             continue
         fi
-        if ! diff -u "$BASELINE" "/tmp/${crate}-current.txt" > "/tmp/${crate}-diff.txt" 2>&1; then
+        # Both sides go through the identical transformation (#16117). The
+        # filter's io-path rewrite (#16043/#16058) previously ran on the
+        # generated surface only, so a baseline captured under a nightly that
+        # rendered `core::io::*`/`alloc::io::*` disagreed with every folded
+        # line -- 102 of them across three baselines -- on pull requests that
+        # changed no Rust at all. Normalizing the stored side too makes the
+        # comparison invariant to which toolchain captured it, which is the
+        # class #16043 set out to absorb. It is a no-op on a baseline already
+        # written by `public-api-update`, which shares this filter.
+        just _public-api-filter "$BASELINE" "/tmp/${crate}-baseline.txt"
+        if [ ! -s "/tmp/${crate}-baseline.txt" ]; then
+            echo "INSTRUMENT-FAIL ${crate}: committed baseline $BASELINE normalized to nothing -- a filter that empties a non-empty baseline is never a diff"
+            FAILED=1
+            continue
+        fi
+        if ! diff -u "/tmp/${crate}-baseline.txt" "/tmp/${crate}-current.txt" > "/tmp/${crate}-diff.txt" 2>&1; then
             echo "FAIL Public API changed in ${crate}:"
             cat "/tmp/${crate}-diff.txt"
             FAILED=1
