@@ -85,8 +85,10 @@
       "stage_id": "executable_observation",
       "result": "succeeded",
       "reason_family": "none",
-      "receipt_digest": "sha256:967cd41d203837f9b8c50c5af666cd1ef35e59796fddd84135cfcfbdcff7b3a5",
-      "predecessor_digests": []
+      "receipt_digest": "sha256:d1dc9e19a1f209f72c0865f38e0eb0b64819c9b9fe25b52b6ad7b85527cc7949",
+      "predecessor_digests": [
+        "sha256:54fd09325475c1d36862ff0b170040d4a0b63140121d712a5527393444c57642"
+      ]
     },
     {
       "attempt_id": "attempt-a1-fb",
@@ -94,9 +96,9 @@
       "stage_id": "promotion",
       "result": "succeeded",
       "reason_family": "none",
-      "receipt_digest": "sha256:af3cfddc51a051ce029abc937a17ead2f940d03915d08b9838cea2d5650396b8",
+      "receipt_digest": "sha256:8611837acb77fe5d156a5f5c733455ced450c24baf05369412c1edbdb2ee0af9",
       "predecessor_digests": [
-        "sha256:967cd41d203837f9b8c50c5af666cd1ef35e59796fddd84135cfcfbdcff7b3a5"
+        "sha256:d1dc9e19a1f209f72c0865f38e0eb0b64819c9b9fe25b52b6ad7b85527cc7949"
       ]
     },
     {
@@ -105,9 +107,9 @@
       "stage_id": "path_persistence",
       "result": "succeeded",
       "reason_family": "none",
-      "receipt_digest": "sha256:2d013b7d7be3b8f9e4930ccb5a9fcf3a2052e4d1298dd6e8aae4e7c12db28109",
+      "receipt_digest": "sha256:cc69925234f723ba5e76e50869c606f604804bc6166f82dd659d46a32bd98519",
       "predecessor_digests": [
-        "sha256:af3cfddc51a051ce029abc937a17ead2f940d03915d08b9838cea2d5650396b8"
+        "sha256:8611837acb77fe5d156a5f5c733455ced450c24baf05369412c1edbdb2ee0af9"
       ]
     },
     {
@@ -116,9 +118,9 @@
       "stage_id": "fresh_process_observation",
       "result": "succeeded",
       "reason_family": "none",
-      "receipt_digest": "sha256:e03c2fe32a5789174d047b2558008870492e73827ae9918e393b4f3f2a97e940",
+      "receipt_digest": "sha256:ae9c4530054be093e9a55c7d6496c9468cc59db883c40a2cb518d0d39a0a6602",
       "predecessor_digests": [
-        "sha256:2d013b7d7be3b8f9e4930ccb5a9fcf3a2052e4d1298dd6e8aae4e7c12db28109"
+        "sha256:cc69925234f723ba5e76e50869c606f604804bc6166f82dd659d46a32bd98519"
       ]
     },
     {
@@ -127,9 +129,9 @@
       "stage_id": "installed_transition",
       "result": "succeeded",
       "reason_family": "none",
-      "receipt_digest": "sha256:04d6ed273240331fdb625456d96f520873382f6bdb58fe1752877a710e171e33",
+      "receipt_digest": "sha256:bdb41122a06ca77af600a01e1553c654fc37fb614c99c0c097017fa368b9d99c",
       "predecessor_digests": [
-        "sha256:e03c2fe32a5789174d047b2558008870492e73827ae9918e393b4f3f2a97e940"
+        "sha256:ae9c4530054be093e9a55c7d6496c9468cc59db883c40a2cb518d0d39a0a6602"
       ]
     }
   ],
