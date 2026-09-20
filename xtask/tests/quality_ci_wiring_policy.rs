@@ -1,6 +1,9 @@
 //! Contract tests for first blocking proof-lane CI wiring.
 
-use std::{fs, path::PathBuf};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 
 use anyhow::{Result, anyhow, ensure};
 use assert_cmd::Command;
@@ -117,6 +120,33 @@ fn ignored_test_issue_reference_gate_is_required_on_prs() {
     }
 }
 
+/// `repo_root` panics on a missing parent; these controls report instead.
+fn repo_root_checked() -> Result<PathBuf> {
+    Ok(PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .ok_or_else(|| anyhow!("the xtask manifest directory has no parent"))?
+        .to_path_buf())
+}
+
+/// The `pr-smoke:` job body, read through checked access end to end.
+///
+/// `find` does return a valid boundary, so `&workflow[start..]` would not
+/// panic here. It is still unchecked slicing, which repository policy bans
+/// outright rather than case by case -- and this very PR exists because
+/// unchecked slicing in `xtask` panicked on a char boundary once `find`'s
+/// offset was computed against a different string. The policy is the cheaper
+/// rule to follow than the analysis is to repeat.
+fn pr_smoke_job(root: &Path) -> Result<String> {
+    let workflow = fs::read_to_string(root.join(".github/workflows/ci.yml"))?;
+    let start = workflow
+        .find("  pr-smoke:")
+        .ok_or_else(|| anyhow!("ci.yml no longer declares a `pr-smoke` job"))?;
+    let job = workflow
+        .get(start..)
+        .ok_or_else(|| anyhow!("the `pr-smoke:` job offset {start} is not a char boundary"))?;
+    Ok(job.to_string())
+}
+
 /// #15528 replaced the per-run `Select PR Smoke Cargo target` step with a
 /// job-level env: a run-id-and-attempt path was unique per run, so the lane
 /// cold-built every time and the watchdog killed it mid-compile. The invariant
@@ -126,15 +156,9 @@ fn ignored_test_issue_reference_gate_is_required_on_prs() {
 /// step-level export could not.
 #[test]
 fn pr_smoke_builds_into_the_cache_aligned_cargo_target() -> Result<()> {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .ok_or_else(|| anyhow!("the xtask manifest directory has no parent"))?
-        .to_path_buf();
-    let workflow = fs::read_to_string(root.join(".github/workflows/ci.yml"))?;
-    let smoke_start = workflow
-        .find("  pr-smoke:")
-        .ok_or_else(|| anyhow!("ci.yml no longer declares a `pr-smoke` job"))?;
-    let smoke = &workflow[smoke_start..];
+    let root = repo_root_checked()?;
+    let smoke = pr_smoke_job(&root)?;
+    let smoke = smoke.as_str();
 
     let warm_start = smoke
         .find("- name: Warm xtask")
@@ -161,16 +185,9 @@ fn pr_smoke_builds_into_the_cache_aligned_cargo_target() -> Result<()> {
 /// what drifted instead of taking the rest of the contract down with it.
 #[test]
 fn pr_smoke_publishes_failing_gate_names_through_the_reporter() -> Result<()> {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .ok_or_else(|| anyhow!("the xtask manifest directory has no parent"))?
-        .to_path_buf();
-
-    let workflow = fs::read_to_string(root.join(".github/workflows/ci.yml"))?;
-    let smoke_start = workflow
-        .find("  pr-smoke:")
-        .ok_or_else(|| anyhow!("ci.yml no longer declares a `pr-smoke` job"))?;
-    let smoke = &workflow[smoke_start..];
+    let root = repo_root_checked()?;
+    let smoke = pr_smoke_job(&root)?;
+    let smoke = smoke.as_str();
     let summary_step =
         workflow_step(smoke, "Summarize PR-fast gate failures").ok_or_else(|| {
             anyhow!("PR Smoke no longer declares a `Summarize PR-fast gate failures` step")
