@@ -4,6 +4,6 @@ kind: Fixed
 body: "Bare quote-word arguments now remain inside no directives instead of becoming a separate expression, preserving the following statement."
 time: 2026-09-20T14:00:00Z
 custom:
-  PR: "16143"
+  PR: "16146"
   Slug: no-directive-quote-word-ownership
   Breaking: "no"
