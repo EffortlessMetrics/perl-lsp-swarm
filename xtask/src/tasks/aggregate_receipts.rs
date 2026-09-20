@@ -404,7 +404,7 @@ mod tests {
         let receipt = build_aggregator_receipt(&config)?;
 
         assert_eq!(receipt.check, "quality-gate", "receipt should preserve check name");
-        assert_eq!(receipt.schema_version, SCHEMA_VERSION, "receipt schema version drifted");
+        assert_eq!(receipt.schema_version, 1u32, "receipt schema version drifted");
         assert_eq!(receipt.event, EVENT_PULL_REQUEST, "receipt event drifted");
         assert_eq!(receipt.verdict, Verdict::Fail, "missing required receipt should fail");
         assert_eq!(
@@ -466,6 +466,48 @@ mod tests {
             Classification::Unknown,
             "written receipt classification should be unknown"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn aggregator_receipt_schema_version_is_numeric_on_wire() -> Result<()> {
+        let dir = tempdir().context("create aggregate receipt fixture dir")?;
+        let inputs = dir.path().join("inputs");
+        fs::create_dir(&inputs).context("create aggregate receipt input dir")?;
+        fs::write(
+            inputs.join("rust.json"),
+            serde_json::to_vec_pretty(&json!({
+                "name": "rust",
+                "required": true,
+                "verdict": "pass"
+            }))?,
+        )
+        .context("write rust subreceipt")?;
+        let output = dir.path().join("receipt.json");
+        let config = AggregateReceiptsConfig {
+            check: "quality-gate".to_string(),
+            inputs,
+            output: output.clone(),
+            allow_noop: true,
+        };
+
+        run(config)?;
+
+        let body =
+            fs::read_to_string(&output).with_context(|| format!("read {}", output.display()))?;
+        let raw: serde_json::Value = serde_json::from_str(&body)
+            .context("parse written aggregate receipt as generic json")?;
+        let version =
+            raw.get("schema_version").context("schema_version missing from written receipt")?;
+        // as_u64 subsumes any is_u64/is_i64 pre-check: only the literal 1 passes.
+        assert_eq!(
+            version.as_u64(),
+            Some(1),
+            "schema_version must serialize as the numeric literal 1 to match peer receipts (got {version})"
+        );
+        let receipt: AggregatorReceipt = serde_json::from_str(&body)
+            .context("parse aggregate receipt as typed struct after numeric wire check")?;
+        assert_eq!(receipt.schema_version, 1u32, "round-tripped schema_version drifted");
         Ok(())
     }
 }

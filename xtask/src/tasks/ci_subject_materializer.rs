@@ -877,9 +877,12 @@ mod tests {
     #[test]
     fn bounded_git_runner_drains_and_caps_large_output() -> Result<()> {
         let temp = tempfile::tempdir()?;
-        let mut command = Command::new(if cfg!(windows) { "cmd" } else { "sh" });
+        let mut command = Command::new(if cfg!(windows) { "perl" } else { "sh" });
         if cfg!(windows) {
-            command.args(["/C", "for /L %i in (1,1,100000) do @echo x"]);
+            command.args(["-e", "print 'x' x 200000"]);
+            command.env("LC_ALL", "C");
+            command.env("LC_CTYPE", "C");
+            command.env("LANG", "C");
         } else {
             command.args(["-c", "yes x | head -c 200000"]);
         }
