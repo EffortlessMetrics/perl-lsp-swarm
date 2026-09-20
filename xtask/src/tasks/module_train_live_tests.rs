@@ -1939,7 +1939,12 @@ fn a_real_merged_pr_payload_parses_into_review_facts() -> Result<()> {
         bail!("unexpected thread counts: {:?}", facts.threads);
     }
     if facts.threads.truncated || !facts.reviews.is_empty() || facts.reviews_truncated {
-        bail!("payload reported unexpected truncation or reviews: {:?}", facts);
+        bail!(
+            "payload reported unexpected truncation or reviews: threads_truncated={}, reviews={}, reviews_truncated={}",
+            facts.threads.truncated,
+            facts.reviews.len(),
+            facts.reviews_truncated
+        );
     }
     Ok(())
 }
