@@ -1,0 +1,81 @@
+# Signature conformance evidence (#8912)
+
+`cases.json` is the independently authored denominator. It records exact source,
+version-conditioned compile acceptance, warning categories, selected runtime output,
+and expected native header/parameter/variable/default/operator byte geometry. It is
+not generated from parser output. The authority links are pinned to Perl 5.44.
+
+Run the instrument tests:
+
+```text
+python scripts/ci/test_signature_conformance.py
+cargo test --locked -p perl-parser-core --test signature_conformance
+```
+
+A green ordinary Rust test means the matrix/comparator instrument works. It does
+**not** mean native signature conformance passes: the conformance test is explicitly
+opt-in because this evidence-only change exposes unfixed production defects.
+
+Run and retain actual interpreter evidence, once per required version:
+
+```text
+python scripts/ci/signature_conformance.py --perl /path/to/perl --expected-version 5.44 --output /path/to/perl-5.44.json
+python scripts/ci/signature_conformance.py --validate-receipts /path/to/perl-5.36.json /path/to/perl-5.38.json /path/to/perl-5.42.json /path/to/perl-5.44.json
+```
+
+The runner records the actual executable digest/version, source and matrix digests,
+exit/stdout/stderr, timeout/instrument status, compile disposition, warnings, and
+runtime observations separately. Receipt validation rechecks observations against
+current expectations; stored `failures: []` is never authority. Historical 5.32/5.34
+runs do not replace any required version. Missing, stale, or wrong-version evidence
+is `NOT_PROVEN`. Receipts must come from trusted CI execution or an inspected local
+run; hashes bind subject content but do not authenticate arbitrary JSON. Warning identities are matched from pinned diagnostic patterns,
+not inferred merely from nonempty stderr.
+
+Run native proof with a retained report (PowerShell):
+
+```powershell
+$env:SIGNATURE_NATIVE_REPORT = 'target/signature-conformance/native.json'
+cargo test --locked -p perl-parser-core --test signature_conformance native_signature_conformance_report -- --ignored --exact --nocapture
+python scripts/ci/signature_conformance.py --check-native-report $env:SIGNATURE_NATIVE_REPORT --native-exit-code $LASTEXITCODE
+```
+
+Exit 1 from the Python native validator means a complete report records real
+`CONFORMANCE_MISMATCH`. Exit 2 means missing/stale evidence or an instrument/process
+failure. A missing AST operator span is reported as missing geometry; the reporter
+does not manufacture a span by examining the source gap. Tree-sitter and Pest are
+not observed by this native reporter and are not claimed to conform.
+
+The existing **Perl Version Matrix** workflow has a `signatures_only` dispatch
+input. It provisions only 5.36, 5.38, 5.42, and 5.44 and runs one native Rust job;
+it skips unrelated postfix and LSP smoke work in that mode. Default runs retain
+existing behavior and add the 5.44 interpreter plus signature probes on the four
+required versions. Oracle and native artifacts are uploaded even on failure.
+Native mismatches deliberately fail their dedicated job, rather than being hidden
+by `continue-on-error`. These new jobs are advisory under current main protection,
+not new required merge gates. A green required gate does not establish signature
+conformance; promotion requires the four-version receipts and subsequent production
+repairs to satisfy the native contract.
+
+Known contrary tests include:
+
+- `fix_signature_param_validation_3359::test_sub_signature_invocant_separator_is_accepted`
+  accepts `$self: $x`, which is not Perl subroutine-signature syntax.
+- `fix_signature_param_validation_3359::test_empty_signature_no_diagnostics`
+  checks diagnostics without distinguishing an exact-zero-arity signature from a
+  prototype under effective feature context.
+- `fix_mixed_positional_named_signature_3944::mixed_positional_and_named_signature_parses_with_expected_shape`
+  and `fix_mixed_positional_named_signature_3944::bare_named_parameter_without_default_is_required`
+  lack interpreter-version and warning observations; these are not external conformance proof.
+
+The generated native report identifies current mismatches by case and field.
+Production repair remains #8915 (parameter forms/defaults), #8917 (ordering), and
+#8922 (effective feature admission). No parser, semantic, provider, or editor support
+claim is changed by this evidence surface. Revert its fixtures, runner, tests, and
+workflow wiring together to roll back the surface; no production state is migrated.
+
+Native dispositions use the canonical recovery salvage classification: advisory
+diagnostics do not reject clean syntax, while error nodes do. Any typed terminal
+stop is retained as `NOT_PROVEN`, never evidence that a negative fixture was
+correctly rejected. Named binding/requiredness and absent defaults are compared
+explicitly. Ordinary controls mutate actual parse outputs and named AST fields.
