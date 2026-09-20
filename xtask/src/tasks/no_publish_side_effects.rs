@@ -21,7 +21,7 @@
 //! real generator) belongs to the sequenced follow-up.
 
 use clap::Parser;
-use color_eyre::eyre::{bail, Context, Result};
+use color_eyre::eyre::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
@@ -807,7 +807,7 @@ pub fn run_cli() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use color_eyre::eyre::{eyre, WrapErr};
+    use color_eyre::eyre::{WrapErr, eyre};
 
     /// A minimal but structurally faithful release-topology artifact: the
     /// manifest fields the closed authority derives from, matching
