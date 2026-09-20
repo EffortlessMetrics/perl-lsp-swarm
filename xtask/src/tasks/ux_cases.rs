@@ -129,9 +129,9 @@ enum RunRefused {
     /// invocation failure, preserving the pre-bound behaviour exactly.
     Spawn(std::io::Error),
     /// The wall-clock ceiling elapsed with the child still running.
-    TimedOut { wall: Duration, reaped: bool },
+    TimedOut { wall: Duration, termination: Termination },
     /// A stream exceeded its retention ceiling.
-    Overflowed { stream: &'static str, limit: usize, reaped: bool },
+    Overflowed { stream: &'static str, limit: usize, termination: Termination },
     /// A stream did not reach EOF within the collection ceiling, which a
     /// descendant holding the pipe can cause even after the child has exited.
     CollectionTimedOut { stream: &'static str, collect: Duration },
@@ -139,6 +139,74 @@ enum RunRefused {
     ReaderFailed { stream: &'static str, detail: String },
     /// The child could not be waited on.
     Wait(std::io::Error),
+}
+
+/// Ceiling on confirming that a signalled child has been reaped.
+///
+/// Reaping a killed child is an OS operation measured in microseconds, so this
+/// is not tuned to the child's work. It exists because `Child::wait` blocks with
+/// no deadline: a process wedged in uninterruptible sleep would otherwise sit
+/// inside the very ceiling this module documents.
+const REAP_CEILING: Duration = Duration::from_secs(5);
+
+/// What the refusal path could actually establish about the child's fate.
+///
+/// Three outcomes, not a boolean: a failed kill, a confirmed reap, and a kill
+/// whose reap could not be confirmed are different facts, and a failure message
+/// that calls all of them "terminated" is wrong about two of them.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Termination {
+    /// The child exited on its own; there was nothing to terminate.
+    ExitedOnItsOwn,
+    /// Signalled and reaped inside [`REAP_CEILING`].
+    Reaped,
+    /// Signalled, but not confirmed reaped before the ceiling expired.
+    ReapUnconfirmed,
+    /// The kill itself failed and the child was not already gone, so it may
+    /// still be running.
+    NotSignalled,
+}
+
+impl Termination {
+    /// How to describe this outcome in a failure reason, without overclaiming.
+    fn describe(self) -> &'static str {
+        match self {
+            Self::ExitedOnItsOwn => "the command had already exited",
+            Self::Reaped => "the command was terminated and reaped",
+            Self::ReapUnconfirmed => {
+                "the command was signalled but its exit could not be confirmed \
+                 within the reap ceiling"
+            }
+            Self::NotSignalled => "the command could not be signalled and may still be running",
+        }
+    }
+}
+
+/// Kill a child and confirm the reap within [`REAP_CEILING`].
+///
+/// `Child::wait` is deliberately not used: it blocks without a deadline, which
+/// would put an unbounded wait inside the operation ceiling.
+fn reap_bounded(child: &mut std::process::Child) -> Termination {
+    if child.kill().is_err() {
+        // A kill fails when the child has already exited, which is not a
+        // surviving process — check before reporting one.
+        return match child.try_wait() {
+            Ok(Some(_)) => Termination::Reaped,
+            _ => Termination::NotSignalled,
+        };
+    }
+    let deadline = Instant::now() + REAP_CEILING;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => return Termination::Reaped,
+            Ok(None) => {}
+            Err(_) => return Termination::ReapUnconfirmed,
+        }
+        if Instant::now() >= deadline {
+            return Termination::ReapUnconfirmed;
+        }
+        thread::sleep(POLL_INTERVAL);
+    }
 }
 
 /// What one drain thread concluded about its stream.
@@ -154,22 +222,22 @@ enum StreamOutcome {
 impl RunRefused {
     /// Render the reason carried by [`UxDiscoveryFailure::InstrumentFailure`].
     ///
-    /// Whether the child was reaped is reported rather than assumed: a kill that
-    /// itself fails leaves a process behind, and triage needs to know which
-    /// happened.
+    /// The child's fate is described from what was actually established, never
+    /// asserted: a kill can fail outright, and a successful kill can go
+    /// unconfirmed, so neither may be reported as "terminated".
     fn reason(&self, source: &str) -> String {
         match self {
             Self::Spawn(error) => format!("`{source}` could not be started: {error}"),
-            Self::TimedOut { wall, reaped } => format!(
-                "`{source}` exceeded its {}s ceiling and was terminated ({}); \
-                 discovery cannot derive a result from an unfinished command",
+            Self::TimedOut { wall, termination } => format!(
+                "`{source}` exceeded its {}s ceiling; {}. \
+                 Discovery cannot derive a result from an unfinished command",
                 wall.as_secs(),
-                if *reaped { "child reaped" } else { "child could not be reaped" }
+                termination.describe()
             ),
-            Self::Overflowed { stream, limit, reaped } => format!(
-                "`{source}` wrote more than {limit} bytes to {stream} and was terminated ({}); \
-                 a truncated stream cannot be trusted to list every case",
-                if *reaped { "child reaped" } else { "child could not be reaped" }
+            Self::Overflowed { stream, limit, termination } => format!(
+                "`{source}` wrote more than {limit} bytes to {stream}; {}. \
+                 A truncated stream cannot be trusted to list every case",
+                termination.describe()
             ),
             Self::CollectionTimedOut { stream, collect } => format!(
                 "`{source}` left {stream} open past its {}s collection ceiling, which a surviving \
@@ -247,12 +315,12 @@ fn collect_stream(
     limit: usize,
     deadline: Instant,
     collect: Duration,
-    reaped: bool,
+    termination: Termination,
 ) -> Result<Vec<u8>, RunRefused> {
     let remaining = deadline.saturating_duration_since(Instant::now());
     match outcome.recv_timeout(remaining) {
         Ok(StreamOutcome::Complete(bytes)) => Ok(bytes),
-        Ok(StreamOutcome::Overflowed) => Err(RunRefused::Overflowed { stream, limit, reaped }),
+        Ok(StreamOutcome::Overflowed) => Err(RunRefused::Overflowed { stream, limit, termination }),
         Ok(StreamOutcome::Failed(detail)) => Err(RunRefused::ReaderFailed { stream, detail }),
         Err(_) => Err(RunRefused::CollectionTimedOut { stream, collect }),
     }
@@ -318,7 +386,7 @@ fn run_bounded(command: &mut Command, bound: RunBound) -> Result<BoundedOutput, 
             refusal = Some(RunRefused::Overflowed {
                 stream: "stdout",
                 limit: bound.stdout_limit,
-                reaped: false,
+                termination: Termination::ExitedOnItsOwn,
             });
             break;
         }
@@ -326,22 +394,28 @@ fn run_bounded(command: &mut Command, bound: RunBound) -> Result<BoundedOutput, 
             refusal = Some(RunRefused::Overflowed {
                 stream: "stderr",
                 limit: bound.stderr_limit,
-                reaped: false,
+                termination: Termination::ExitedOnItsOwn,
             });
             break;
         }
         if started.elapsed() >= bound.wall {
-            refusal = Some(RunRefused::TimedOut { wall: bound.wall, reaped: false });
+            refusal = Some(RunRefused::TimedOut {
+                wall: bound.wall,
+                termination: Termination::ExitedOnItsOwn,
+            });
             break;
         }
         thread::sleep(POLL_INTERVAL);
     }
 
     // Kill before collecting: a child still running will not close its pipes, so
-    // the readers cannot reach EOF while it lives.
-    let reaped = match refusal {
-        Some(_) => child.kill().is_ok() && child.wait().is_ok(),
-        None => true,
+    // the readers cannot reach EOF while it lives. The reap is bounded for the
+    // same reason collection is — `Child::wait` blocks with no deadline, and a
+    // child wedged in uninterruptible sleep would sit inside the ceiling this
+    // function documents.
+    let termination = match refusal {
+        Some(_) => reap_bounded(&mut child),
+        None => Termination::ExitedOnItsOwn,
     };
 
     // Collection is its own bounded phase. Stream problems are evaluated before
@@ -356,7 +430,7 @@ fn run_bounded(command: &mut Command, bound: RunBound) -> Result<BoundedOutput, 
         bound.stdout_limit,
         collect_deadline,
         bound.collect,
-        reaped,
+        termination,
     )?;
     let stderr = collect_stream(
         &stderr_rx,
@@ -364,16 +438,16 @@ fn run_bounded(command: &mut Command, bound: RunBound) -> Result<BoundedOutput, 
         bound.stderr_limit,
         collect_deadline,
         bound.collect,
-        reaped,
+        termination,
     )?;
 
     match (exited, refusal) {
         (Some(status), _) => Ok(BoundedOutput { status, stdout, stderr }),
         (None, Some(RunRefused::TimedOut { wall, .. })) => {
-            Err(RunRefused::TimedOut { wall, reaped })
+            Err(RunRefused::TimedOut { wall, termination })
         }
         (None, Some(RunRefused::Overflowed { stream, limit, .. })) => {
-            Err(RunRefused::Overflowed { stream, limit, reaped })
+            Err(RunRefused::Overflowed { stream, limit, termination })
         }
         (None, Some(other)) => Err(other),
         // `exited` and `refusal` are set on every loop exit, so this is
@@ -981,9 +1055,13 @@ mod tests {
         let elapsed = started.elapsed();
 
         match outcome {
-            Err(RunRefused::TimedOut { wall, reaped }) => {
+            Err(RunRefused::TimedOut { wall, termination }) => {
                 assert_eq!(wall, Duration::from_millis(300));
-                assert!(reaped, "a child terminated at its ceiling must also be reaped");
+                assert_eq!(
+                    termination,
+                    Termination::Reaped,
+                    "a child killed at its ceiling must be confirmed reaped"
+                );
             }
             Err(other) => {
                 panic!("expected a timeout, got: {}", other.reason("sleep 30"))
@@ -1006,10 +1084,14 @@ mod tests {
             run_bounded(Command::new("sh").arg("-c").arg("while :; do echo runaway; done"), bound);
 
         match outcome {
-            Err(RunRefused::Overflowed { stream, limit, reaped }) => {
+            Err(RunRefused::Overflowed { stream, limit, termination }) => {
                 assert_eq!(stream, "stdout");
                 assert_eq!(limit, 4096);
-                assert!(reaped, "a child terminated at its ceiling must also be reaped");
+                assert_eq!(
+                    termination,
+                    Termination::Reaped,
+                    "a child killed at its ceiling must be confirmed reaped"
+                );
             }
             Err(other) => {
                 panic!("expected an overflow, got: {}", other.reason("runaway"))
@@ -1172,18 +1254,47 @@ mod tests {
 
     #[test]
     fn a_ceiling_failure_names_the_command_and_the_limit_it_exceeded() {
-        let timed_out =
-            RunRefused::TimedOut { wall: Duration::from_secs(42), reaped: true }.reason("cargo x");
+        let timed_out = RunRefused::TimedOut {
+            wall: Duration::from_secs(42),
+            termination: Termination::Reaped,
+        }
+        .reason("cargo x");
         assert!(timed_out.contains("cargo x"), "{timed_out}");
         assert!(timed_out.contains("42s"), "{timed_out}");
-        assert!(timed_out.contains("child reaped"), "{timed_out}");
+        assert!(timed_out.contains("terminated and reaped"), "{timed_out}");
 
-        let leaked =
-            RunRefused::TimedOut { wall: Duration::from_secs(1), reaped: false }.reason("cargo x");
-        assert!(leaked.contains("could not be reaped"), "{leaked}");
+        // A kill that failed must not be reported as a termination. The previous
+        // wording said "was terminated (child could not be reaped)", which
+        // asserted the one thing that had not been established.
+        let unsignalled = RunRefused::TimedOut {
+            wall: Duration::from_secs(1),
+            termination: Termination::NotSignalled,
+        }
+        .reason("cargo x");
+        assert!(unsignalled.contains("could not be signalled"), "{unsignalled}");
+        assert!(unsignalled.contains("may still be running"), "{unsignalled}");
+        assert!(
+            !unsignalled.contains("was terminated"),
+            "an unsignalled child must not be described as terminated: {unsignalled}"
+        );
+
+        // Signalled but unconfirmed is its own fact, not a reap and not a failure
+        // to signal.
+        let unconfirmed = RunRefused::TimedOut {
+            wall: Duration::from_secs(1),
+            termination: Termination::ReapUnconfirmed,
+        }
+        .reason("cargo x");
+        assert!(unconfirmed.contains("signalled"), "{unconfirmed}");
+        assert!(unconfirmed.contains("could not be confirmed"), "{unconfirmed}");
+        assert!(
+            !unconfirmed.contains("and reaped"),
+            "an unconfirmed reap must not claim a reap: {unconfirmed}"
+        );
 
         let overflowed =
-            RunRefused::Overflowed { stream: "stdout", limit: 7, reaped: true }.reason("t --list");
+            RunRefused::Overflowed { stream: "stdout", limit: 7, termination: Termination::Reaped }
+                .reason("t --list");
         assert!(overflowed.contains("t --list"), "{overflowed}");
         assert!(overflowed.contains('7'), "{overflowed}");
         assert!(overflowed.contains("stdout"), "{overflowed}");
