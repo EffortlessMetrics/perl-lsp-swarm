@@ -4,7 +4,8 @@ use super::logpoint::{DrainStep, LogpointDrain, LogpointStep, PendingLogpoint};
 use super::{
     Arc, BufRead, BufReader, Child, DEBUG_SESSION_TERMINATE_WAIT_MS, DapEvent, DapMessage,
     DebugAdapter, DebugSession, DebugState, DisconnectArguments, Duration,
-    EngineBreakpointHitOutcome, Instant, Mutex, Read, RestartArguments, ResumeMode, Source,
+    EngineBreakpointHitOutcome, Instant, LAUNCH_REFUSED_NO_AUTHORITY_MESSAGE,
+    LAUNCH_REFUSED_NO_BOUNDARY_MESSAGE, Mutex, Read, RestartArguments, ResumeMode, Source,
     StackFrame, Stdio, TcpAttachConfig, TcpAttachSession, TerminateArguments, TerminationState,
     Value, Write, ansi_escape_re, catalog_has_feature, context_re, die_suffix_re, error_re,
     exception_re, json, lock_or_recover, module_path_to_name, prompt_re, security, stack_frame_re,
@@ -43,6 +44,13 @@ fn emit_event_safe(
 }
 
 const SCOPE_FRAME_ID_MAX: u64 = 99_999;
+
+enum AttachSubject {
+    Tcp,
+    ProcessId,
+    Invalid(String),
+    Ambiguous(String),
+}
 
 /// Read one debugger record, accepting either a newline or a prompt-only
 /// record. perl5db may leave `DB<N>` unterminated while it waits for the next
@@ -567,54 +575,138 @@ impl DebugAdapter {
             // self-validating and defeats the workspace check entirely.
             let user_cwd = args.get("cwd").and_then(|c| c.as_str()).map(PathBuf::from);
 
-            // Determine the workspace boundary for this launch.
+            // Launch-authority admission (#8656).
             //
-            // The server-configured root (set once via `set_workspace_root`,
-            // typically from `DapConfig.workspace_root` at server construction)
-            // is the source of truth. A launch-args `workspaceRoot` may NARROW
-            // that boundary but must never WIDEN it — otherwise a malicious or
-            // misconfigured client could hand itself a broader root than the
-            // server allows. If no server root is configured, a launch-args
-            // `workspaceRoot` is accepted as the boundary for this launch (there
-            // is nothing to widen relative to).
+            // Tier 1 — explicit authority: when the startup configuration
+            // resolved a launch authority, it is the only source of
+            // launch-path authority. Workspace-bound authority admits the
+            // `program` only inside a trusted root and lets a launch-args
+            // `workspaceRoot` only NARROW one; an explicitly unbounded
+            // authority admits any program and never synthesizes a boundary
+            // from launch arguments.
             //
-            // If neither is present, validation is skipped entirely (see the
-            // `None` handling in `launch_debugger`) — this preserves current
-            // behavior for existing users, since `DapConfig.workspace_root` is
-            // not yet populated from any CLI/editor-supplied source (tracked
-            // separately in #5345; that fail-open gap is intentionally out of
-            // scope for this fix).
-            let server_root =
-                lock_or_recover(&self.workspace_root, "debug_adapter.workspace_root").clone();
+            // Tier 2 — legacy single-root contract: an adapter (or server)
+            // started without authority inputs keeps the historical
+            // narrowing-only `workspace_root` boundary. Its two historical
+            // fail-open paths are retired here: launch arguments can no
+            // longer CREATE the boundary, and a launch with neither
+            // authority nor a configured boundary is refused instead of
+            // running unvalidated.
             let launch_root_arg =
                 args.get("workspaceRoot").and_then(|w| w.as_str()).map(PathBuf::from);
-
-            let effective_root = match (server_root, launch_root_arg) {
-                (Some(server), Some(launch)) => match security::validate_path(&launch, &server) {
-                    Ok(narrowed) => Some(narrowed),
-                    Err(e) => {
+            let authority_installed = self.has_launch_authority();
+            // Authority admission and process spawning must validate the same
+            // path. A relative program would otherwise be resolved against
+            // one directory for admission and a potentially different cwd
+            // when Perl is spawned. Require callers to provide an absolute
+            // path for authority-backed launches until a single launch-local
+            // path resolver is threaded through the entire transaction.
+            if authority_installed && !program.trim().is_empty() && Path::new(program).is_relative()
+            {
+                return DapMessage::Response {
+                    seq,
+                    request_seq,
+                    success: false,
+                    command: "launch".to_string(),
+                    body: None,
+                    message: Some(
+                        "authority-backed launches require an absolute `program` path so the admitted path and executed path cannot diverge"
+                            .to_string(),
+                    ),
+                };
+            }
+            let narrowed_root = if authority_installed {
+                let admission = self.admit_launch_against_authority(
+                    if program.trim().is_empty() { None } else { Some(Path::new(program)) },
+                    launch_root_arg.as_deref(),
+                );
+                match admission {
+                    Ok(narrowed) => narrowed,
+                    Err(message) => {
                         return DapMessage::Response {
                             seq,
                             request_seq,
                             success: false,
                             command: "launch".to_string(),
                             body: None,
-                            message: Some(format!(
-                                "The launch 'workspaceRoot' ('{}') is outside your workspace \
-                                     folder and cannot widen the server-configured boundary. \
-                                     Details: {}",
-                                launch.display(),
-                                e
-                            )),
+                            message: Some(message),
                         };
                     }
-                },
-                (Some(server), None) => Some(server),
-                (None, Some(launch)) => Some(launch),
-                (None, None) => None,
+                }
+            } else {
+                let server_root =
+                    lock_or_recover(&self.workspace_root, "debug_adapter.workspace_root").clone();
+                match (server_root, launch_root_arg.clone()) {
+                    (Some(server), Some(launch)) => {
+                        match security::validate_path(&launch, &server) {
+                            Ok(narrowed) => Some(narrowed),
+                            Err(e) => {
+                                return DapMessage::Response {
+                                    seq,
+                                    request_seq,
+                                    success: false,
+                                    command: "launch".to_string(),
+                                    body: None,
+                                    message: Some(format!(
+                                        "The launch 'workspaceRoot' ('{}') is outside your \
+                                             workspace folder and cannot widen the \
+                                             server-configured boundary. Details: {}",
+                                        launch.display(),
+                                        e
+                                    )),
+                                };
+                            }
+                        }
+                    }
+                    (Some(server), None) => Some(server),
+                    (None, Some(_)) => {
+                        return DapMessage::Response {
+                            seq,
+                            request_seq,
+                            success: false,
+                            command: "launch".to_string(),
+                            body: None,
+                            message: Some(LAUNCH_REFUSED_NO_AUTHORITY_MESSAGE.to_string()),
+                        };
+                    }
+                    (None, None) => {
+                        return DapMessage::Response {
+                            seq,
+                            request_seq,
+                            success: false,
+                            command: "launch".to_string(),
+                            body: None,
+                            message: Some(LAUNCH_REFUSED_NO_BOUNDARY_MESSAGE.to_string()),
+                        };
+                    }
+                }
             };
 
-            if let Some(root) = effective_root {
+            // Keep the defense-in-depth workspace boundary aligned with the
+            // authority decision for the spawn window (restored below, so a
+            // request's narrowing never constrains a later launch):
+            // the narrowed root when launch args narrow one, else the
+            // trusted root that admitted the program. A preset legacy root
+            // must not second-guess an admission it did not make, and an
+            // explicitly unbounded authority sets no boundary at all, so a
+            // stale or preset legacy root is cleared for the window instead
+            // of refusing an admitted program in the spawner below.
+            let previous_workspace_root =
+                lock_or_recover(&self.workspace_root, "debug_adapter.workspace_root").clone();
+            if authority_installed {
+                if self.launch_authority_is_unbounded() {
+                    *lock_or_recover(&self.workspace_root, "debug_adapter.workspace_root") = None;
+                } else if let Some(root) = narrowed_root.or_else(|| {
+                    if program.trim().is_empty() {
+                        None
+                    } else {
+                        self.authority_root_for_program(Path::new(program))
+                    }
+                }) {
+                    *lock_or_recover(&self.workspace_root, "debug_adapter.workspace_root") =
+                        Some(root);
+                }
+            } else if let Some(root) = narrowed_root {
                 *lock_or_recover(&self.workspace_root, "debug_adapter.workspace_root") = Some(root);
             }
 
@@ -650,7 +742,7 @@ impl DebugAdapter {
                 .unwrap_or_default();
 
             // Launch Perl debugger
-            match self.launch_debugger(
+            let launch_result = self.launch_debugger(
                 program,
                 &perl_interpreter,
                 perl_args,
@@ -658,7 +750,13 @@ impl DebugAdapter {
                 env_overrides,
                 user_cwd,
                 debuggee_timeout_secs,
-            ) {
+            );
+            // A request's narrowing is a launch-local effective boundary;
+            // never let it constrain a later launch on the same adapter.
+            *lock_or_recover(&self.workspace_root, "debug_adapter.workspace_root") =
+                previous_workspace_root;
+
+            match launch_result {
                 // The output reader owns the first debugger context and frame snapshot.
                 // It publishes the entry stop after that snapshot is installed; emitting
                 // here races a client's immediate stackTrace request with the reader.
@@ -668,14 +766,21 @@ impl DebugAdapter {
                 // created with `entry_stop_pending` set and the output reader emits
                 // exactly one `stopped(reason=entry)` from the authoritative
                 // suspension instead.
-                Ok(_thread_id) => DapMessage::Response {
-                    seq,
-                    request_seq,
-                    success: true,
-                    command: "launch".to_string(),
-                    body: None,
-                    message: None,
-                },
+                Ok(_thread_id) => {
+                    // Failed attempts must not consume an authority session
+                    // generation. Begin it only after validation and spawn
+                    // have succeeded.
+                    let _ = self.begin_authority_session();
+
+                    DapMessage::Response {
+                        seq,
+                        request_seq,
+                        success: true,
+                        command: "launch".to_string(),
+                        body: None,
+                        message: None,
+                    }
+                }
                 Err(e) => {
                     let perl_info = detect_perl_info();
                     DapMessage::Response {
@@ -964,6 +1069,10 @@ impl DebugAdapter {
             );
         }
 
+        // #15538: make the session child a process-group leader on Unix so
+        // every terminate path can reach its descendants.
+        crate::process_tree::prepare_owned_command(&mut cmd);
+
         match cmd.spawn() {
             Ok(mut child) => {
                 // Only advance the session generation once spawning has succeeded. A rejected
@@ -1188,6 +1297,10 @@ impl DebugAdapter {
         // resolves and compiles perl5db.pl, so this cannot flip the verdict —
         // and if that ever stopped being true, the probe would now observe it.
         apply_windows_debugger_transport_env(&mut cmd);
+        // #15538: the bounded probe paths below must reach descendants, not
+        // only the direct child. On Unix this makes the probe a
+        // process-group leader.
+        crate::process_tree::prepare_owned_command(&mut cmd);
 
         let mut child = match cmd.spawn() {
             Ok(child) => child,
@@ -1219,9 +1332,8 @@ impl DebugAdapter {
                     thread::sleep(DEBUGGER_PROBE_POLL_INTERVAL);
                 }
                 Err(e) => {
-                    // Instrument failure: kill what we spawned and skip.
-                    let _ = child.kill();
-                    let _ = child.wait();
+                    // Instrument failure: kill the whole owned tree and skip.
+                    let _ = crate::process_tree::terminate_tree_and_reap(&mut child);
                     tracing::warn!(
                         "perl5db capability probe of '{perl_interpreter}' could not be \
                          observed (will attempt the launch anyway): {e}"
@@ -1233,10 +1345,10 @@ impl DebugAdapter {
 
         let Some(status) = status else {
             // Deadline reached with no exit: the probe is inconclusive, not a
-            // capability verdict. Kill the child so nothing outlives the
-            // probe, then keep the launch-continue disposition.
-            let _ = child.kill();
-            let _ = child.wait();
+            // capability verdict. Kill the whole owned tree (#15538) so
+            // nothing outlives the probe, then keep the launch-continue
+            // disposition.
+            let _ = crate::process_tree::terminate_tree_and_reap(&mut child);
             tracing::warn!(
                 "perl5db capability probe of '{perl_interpreter}' exceeded its \
                  {} budget (will attempt the launch anyway)",
@@ -2583,63 +2695,10 @@ impl DebugAdapter {
         });
     }
 
-    /// Verify that a target process exists and is accessible before attaching.
-    ///
-    /// Returns `Ok(true)` if the process is verified to exist and is signalable,
-    /// `Ok(false)` if the process exists but is owned by a different user (warned
-    /// but allowed to proceed), or `Err(msg)` if the process does not exist or
-    /// cannot be queried.
-    fn verify_attach_target(pid: u32) -> Result<bool, String> {
-        #[cfg(unix)]
-        {
-            use nix::errno::Errno;
-            let nix_pid = Pid::from_raw(pid as i32);
-            // Signal 0 (None) checks process existence without actually sending a signal.
-            match signal::kill(nix_pid, None) {
-                Ok(()) => Ok(true),
-                Err(Errno::EPERM) => {
-                    tracing::warn!(
-                        pid,
-                        "Attach target exists but is owned by a different user (EPERM); \
-                         proceeding with limited capabilities"
-                    );
-                    Ok(false)
-                }
-                Err(Errno::ESRCH) => Err(format!("Process {pid} does not exist (no such process)")),
-                Err(e) => Err(format!("Cannot verify process {pid}: {e}")),
-            }
-        }
-        #[cfg(windows)]
-        {
-            use winapi::um::handleapi::CloseHandle;
-            use winapi::um::processthreadsapi::OpenProcess;
-            use winapi::um::winnt::PROCESS_QUERY_LIMITED_INFORMATION;
-
-            // SAFETY: OpenProcess is a standard Win32 API.  We request only
-            // query-limited information, which is a read-only access right.
-            // The handle is closed immediately after the existence check.
-            let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
-            if handle.is_null() {
-                return Err(format!(
-                    "Process {pid} does not exist or is not accessible (OpenProcess failed)"
-                ));
-            }
-            // SAFETY: CloseHandle on a valid process handle is always safe.
-            unsafe { CloseHandle(handle) };
-            Ok(true)
-        }
-        #[cfg(not(any(unix, windows)))]
-        {
-            let _ = pid;
-            Err("Process verification not supported on this platform".to_string())
-        }
-    }
-
     /// Handle attach request
     ///
-    /// Attaches to a running Perl process. Supports two modes:
-    /// 1. TCP attachment - Connect to Perl::LanguageServer DAP via host:port
-    /// 2. Process ID attachment - Signal-control mode for local Perl process
+    /// Attaches to a running Perl debugger transport. Supports one mode:
+    /// TCP attachment - connect to the debugger's DAP listener via `host:port`.
     ///
     /// For TCP attachment, the arguments should contain:
     /// - `host`: Hostname or IP address (default: "localhost")
@@ -2648,10 +2707,12 @@ impl DebugAdapter {
     ///
     /// # Current Implementation
     ///
-    /// TCP attachment is implemented with socket support.
-    /// Process ID attachment is implemented in signal-control mode (pause/continue
-    /// signaling and thread identity), with limited stack/evaluate capabilities
-    /// unless a debugger transport is active.
+    /// TCP attachment is implemented with socket support. Process ID
+    /// (signal-control) attachment is refused fail-closed (#8109): verifying
+    /// that a process exists and holding signal control never established a
+    /// debugger transport or observed a stop transition, so the previous
+    /// successful attach response with synthetic `stopped(attach)`/`entry`
+    /// events represented a session the adapter did not own.
     pub(super) fn handle_attach(
         &self,
         seq: i64,
@@ -2660,43 +2721,14 @@ impl DebugAdapter {
     ) -> DapMessage {
         // Parse attach arguments
         if let Some(args) = arguments {
-            let process_id =
-                args.get("processId").and_then(|p| p.as_u64()).map(Self::u64_to_u32_saturating);
-
-            // PID attachment mode: best-effort process control without requiring TCP shim transport.
-            if let Some(pid) = process_id {
-                if pid == 0 {
-                    return DapMessage::Response {
-                        seq,
-                        request_seq,
-                        success: false,
-                        command: "attach".to_string(),
-                        body: None,
-                        message: Some("processId must be greater than zero".to_string()),
-                    };
-                }
-
-                // Verify the target process exists before attaching (#4638).
-                if let Err(msg) = Self::verify_attach_target(pid) {
-                    return DapMessage::Response {
-                        seq,
-                        request_seq,
-                        success: false,
-                        command: "attach".to_string(),
-                        body: None,
-                        message: Some(msg),
-                    };
-                }
-
-                // Reset existing process/tcp attachment state before switching to PID mode.
-                self.begin_session_generation();
-                // Debuggee replacement invalidates the reload family's
-                // session identities (#10102, R03): a PID attach is a
-                // replacement session like launch/TCP attach, so the prior
-                // reload epoch, negotiation, subjects, and operation
-                // identities must not survive it.
-                self.reset_reload_route_for_replacement_session();
-                if !self.clear_active_session_state() {
+            match Self::classify_attach_subject(&args) {
+                AttachSubject::ProcessId => {
+                    // #8109: a syntactically valid processId is refused before
+                    // any target inspection, session mutation, signal, or event
+                    // emission. Process existence plus signal control is not a
+                    // stopped debugger session. Re-enable requires a real
+                    // debugger transport with a behavior-backed attach journey
+                    // (#6684 real-session matrix owns that proof).
                     return DapMessage::Response {
                         seq,
                         request_seq,
@@ -2704,155 +2736,109 @@ impl DebugAdapter {
                         command: "attach".to_string(),
                         body: None,
                         message: Some(
-                            "Cannot attach while an earlier debugger process cleanup remains unconfirmed"
+                            "Attaching by processId is not supported. Use TCP attach with host \
+                             and port instead."
                                 .to_string(),
                         ),
                     };
                 }
-
-                if let Ok(mut guard) = self.attached_pid.lock() {
-                    *guard = Some(pid);
-                    drop(guard);
-                    self.admit_terminal_lifecycle();
+                AttachSubject::Tcp => {}
+                AttachSubject::Invalid(message) | AttachSubject::Ambiguous(message) => {
+                    return DapMessage::Response {
+                        seq,
+                        request_seq,
+                        success: false,
+                        command: "attach".to_string(),
+                        body: None,
+                        message: Some(message),
+                    };
                 }
+            }
 
-                let stop_on_entry =
-                    args.get("stopOnEntry").and_then(|s| s.as_bool()).unwrap_or(false);
-                let thread_id = Self::i64_to_i32_saturating(i64::from(pid));
-
-                // Always emit the "attach" stopped event to signal the client that the
-                // debugger is connected and paused.
-                self.send_event(
-                    "stopped",
-                    Some(json!({
-                        "reason": "attach",
-                        "threadId": thread_id,
-                        "allThreadsStopped": true
-                    })),
-                );
-
-                // When stopOnEntry is requested, emit an additional "entry" stopped event
-                // so the IDE pauses at the first available program location.
-                if stop_on_entry {
-                    self.send_event(
-                        "stopped",
-                        Some(json!({
-                            "reason": "entry",
-                            "threadId": thread_id,
-                            "allThreadsStopped": true,
-                            "description": "Paused on entry"
-                        })),
-                    );
-                }
-
-                tracing::info!(
-                    pid,
-                    stop_on_entry,
-                    "Attach request: Process ID attachment (signal-control mode)"
-                );
-
-                DapMessage::Response {
+            // Extract host and port for TCP attachment.
+            let host = args.get("host").and_then(|h| h.as_str()).unwrap_or("localhost");
+            let normalized_host = host.trim();
+            let raw_port = args.get("port").and_then(|p| p.as_u64()).unwrap_or(13603);
+            if raw_port > 65535 {
+                return DapMessage::Response {
                     seq,
                     request_seq,
-                    success: true,
+                    success: false,
                     command: "attach".to_string(),
-                    body: Some(json!({
-                        "threadId": thread_id,
-                        "processId": pid,
-                        "mode": "processId"
-                    })),
+                    body: None,
+                    message: Some(format!("Port {raw_port} out of range (must be 1-65535)")),
+                };
+            }
+            let port = raw_port as u16;
+            let timeout = args
+                .get("timeout")
+                .or_else(|| args.get("timeoutMs"))
+                .and_then(|t| t.as_u64())
+                .map(Self::u64_to_u32_saturating);
+            let stop_on_entry = args.get("stopOnEntry").and_then(|s| s.as_bool()).unwrap_or(false);
+
+            // TCP attachment mode (IMPLEMENTED)
+            let mut config = TcpAttachConfig::new(normalized_host.to_string(), port);
+            if let Some(t) = timeout {
+                config = config.with_timeout(t);
+            }
+
+            if let Err(error) = config.validate_timeout_bounds() {
+                return DapMessage::Response {
+                    seq,
+                    request_seq,
+                    success: false,
+                    command: "attach".to_string(),
+                    body: None,
+                    message: Some(error.to_string()),
+                };
+            }
+
+            if stop_on_entry {
+                return DapMessage::Response {
+                    seq,
+                    request_seq,
+                    success: false,
+                    command: "attach".to_string(),
+                    body: None,
                     message: Some(
-                        "Attached in signal-control mode. Stack/evaluate are limited without a \
-                         debugger transport."
+                        "TCP attach does not support stopOnEntry=true. Set stopOnEntry=false and \
+                             configure the debugger peer to pause if needed"
                             .to_string(),
                     ),
-                }
-            } else {
-                // Extract host and port for TCP attachment.
-                let host = args.get("host").and_then(|h| h.as_str()).unwrap_or("localhost");
-                let normalized_host = host.trim();
-                let raw_port = args.get("port").and_then(|p| p.as_u64()).unwrap_or(13603);
-                if raw_port > 65535 {
-                    return DapMessage::Response {
-                        seq,
-                        request_seq,
-                        success: false,
-                        command: "attach".to_string(),
-                        body: None,
-                        message: Some(format!("Port {raw_port} out of range (must be 1-65535)")),
-                    };
-                }
-                let port = raw_port as u16;
-                let timeout = args
-                    .get("timeout")
-                    .or_else(|| args.get("timeoutMs"))
-                    .and_then(|t| t.as_u64())
-                    .map(Self::u64_to_u32_saturating);
-                let stop_on_entry =
-                    args.get("stopOnEntry").and_then(|s| s.as_bool()).unwrap_or(false);
+                };
+            }
 
-                // TCP attachment mode (IMPLEMENTED)
-                let mut config = TcpAttachConfig::new(normalized_host.to_string(), port);
-                if let Some(t) = timeout {
-                    config = config.with_timeout(t);
-                }
+            // Create TCP attach session
+            let mut session = TcpAttachSession::new();
 
-                if let Err(error) = config.validate_timeout_bounds() {
-                    return DapMessage::Response {
-                        seq,
-                        request_seq,
-                        success: false,
-                        command: "attach".to_string(),
-                        body: None,
-                        message: Some(error.to_string()),
-                    };
-                }
+            // Set up the bounded event channel for TCP events (#9521)
+            let (tx, rx) = sync_channel::<DapEvent>(TCP_ATTACH_EVENT_CAPACITY);
+            session.set_event_sender(tx);
 
-                if stop_on_entry {
-                    return DapMessage::Response {
-                        seq,
-                        request_seq,
-                        success: false,
-                        command: "attach".to_string(),
-                        body: None,
-                        message: Some(
-                            "TCP attach does not support stopOnEntry=true. Set stopOnEntry=false and \
-                             configure the debugger peer to pause if needed"
-                                .to_string(),
-                        ),
-                    };
-                }
+            // Attempt to connect (validate is called inside connect,
+            // which also pins the resolved addresses for DNS-rebinding
+            // defense #5257)
+            match session.connect(&mut config) {
+                Ok(()) => {
+                    if let Err(e) = session.start_reader() {
+                        tracing::error!(error = %e, "Failed to start TCP reader");
+                        return DapMessage::Response {
+                            seq,
+                            request_seq,
+                            success: false,
+                            command: "attach".to_string(),
+                            body: None,
+                            message: Some(format!("Failed to start TCP reader: {}", e)),
+                        };
+                    }
 
-                // Create TCP attach session
-                let mut session = TcpAttachSession::new();
-
-                // Set up the bounded event channel for TCP events (#9521)
-                let (tx, rx) = sync_channel::<DapEvent>(TCP_ATTACH_EVENT_CAPACITY);
-                session.set_event_sender(tx);
-
-                // Attempt to connect (validate is called inside connect,
-                // which also pins the resolved addresses for DNS-rebinding
-                // defense #5257)
-                match session.connect(&mut config) {
-                    Ok(()) => {
-                        if let Err(e) = session.start_reader() {
-                            tracing::error!(error = %e, "Failed to start TCP reader");
-                            return DapMessage::Response {
-                                seq,
-                                request_seq,
-                                success: false,
-                                command: "attach".to_string(),
-                                body: None,
-                                message: Some(format!("Failed to start TCP reader: {}", e)),
-                            };
-                        }
-
-                        // The TCP session is fully connected and has a reader before it becomes
-                        // the active session, so a failed attach does not invalidate an existing
-                        // session's generation.
-                        if !self.prepare_replacement_session() {
-                            let _ = session.disconnect();
-                            return DapMessage::Response {
+                    // The TCP session is fully connected and has a reader before it becomes
+                    // the active session, so a failed attach does not invalidate an existing
+                    // session's generation.
+                    if !self.prepare_replacement_session() {
+                        let _ = session.disconnect();
+                        return DapMessage::Response {
                                 seq,
                                 request_seq,
                                 success: false,
@@ -2863,66 +2849,65 @@ impl DebugAdapter {
                                         .to_string(),
                                 ),
                             };
-                        }
-                        // Store session
-                        if let Ok(mut guard) = self.tcp_session.lock() {
-                            *guard = Some(session);
-                            drop(guard);
-                            self.admit_terminal_lifecycle();
-                        }
-                        self.operation_broker.open_session();
-
-                        // Start the generation-aware forwarder for TCP events.
-                        // Events are published only while the attach's session
-                        // generation is current; a replacement attach,
-                        // termination, or disconnect discards the dead
-                        // generation's queued events before DAP publication
-                        // (#9521).
-                        let seq_counter = self.seq.clone();
-                        let event_sender = self.event_sender.clone();
-                        let termination_state = self.termination_state.clone();
-                        let event_drain = self.event_drain.clone();
-                        let session_generation = self.current_session_generation();
-                        spawn_tcp_attach_event_forwarder(
-                            rx,
-                            event_sender,
-                            seq_counter,
-                            termination_state,
-                            session_generation,
-                            event_drain,
-                        );
-
-                        tracing::info!(host, port, stop_on_entry, "TCP attach successful");
-
-                        DapMessage::Response {
-                            seq,
-                            request_seq,
-                            success: true,
-                            command: "attach".to_string(),
-                            body: None,
-                            message: None,
-                        }
                     }
-                    Err(e) => DapMessage::Response {
+                    // Store session
+                    if let Ok(mut guard) = self.tcp_session.lock() {
+                        *guard = Some(session);
+                        drop(guard);
+                        self.admit_terminal_lifecycle();
+                    }
+                    self.operation_broker.open_session();
+
+                    // Start the generation-aware forwarder for TCP events.
+                    // Events are published only while the attach's session
+                    // generation is current; a replacement attach,
+                    // termination, or disconnect discards the dead
+                    // generation's queued events before DAP publication
+                    // (#9521).
+                    let seq_counter = self.seq.clone();
+                    let event_sender = self.event_sender.clone();
+                    let termination_state = self.termination_state.clone();
+                    let event_drain = self.event_drain.clone();
+                    let session_generation = self.current_session_generation();
+                    spawn_tcp_attach_event_forwarder(
+                        rx,
+                        event_sender,
+                        seq_counter,
+                        termination_state,
+                        session_generation,
+                        event_drain,
+                    );
+
+                    tracing::info!(host, port, stop_on_entry, "TCP attach successful");
+
+                    DapMessage::Response {
                         seq,
                         request_seq,
-                        success: false,
+                        success: true,
                         command: "attach".to_string(),
                         body: None,
-                        message: Some(format!(
-                            "Cannot attach to Perl debugger at {}:{} ({}ms timeout): {}. \
+                        message: None,
+                    }
+                }
+                Err(e) => DapMessage::Response {
+                    seq,
+                    request_seq,
+                    success: false,
+                    command: "attach".to_string(),
+                    body: None,
+                    message: Some(format!(
+                        "Cannot attach to Perl debugger at {}:{} ({}ms timeout): {}. \
                              Make sure the Perl process was started with \
                              'PERLDB_OPTS=\"RemotePort={}:{}\"' \
                              and is still running before attaching.",
-                            config.host,
-                            config.port,
-                            config.timeout_ms.unwrap_or(30000),
-                            e,
-                            config.host,
-                            config.port,
-                        )),
-                    },
-                }
+                        config.host,
+                        config.port,
+                        config.timeout_ms.unwrap_or(30000),
+                        e,
+                        config.host,
+                        config.port,
+                    )),
+                },
             }
         } else {
             // No arguments provided
@@ -2933,12 +2918,58 @@ impl DebugAdapter {
                 command: "attach".to_string(),
                 body: None,
                 message: Some(
-                    "Missing attach arguments. Provide either 'processId' for process attachment \
-                     or 'host' and 'port' for TCP attachment."
+                    "Missing attach arguments. Provide 'host' and 'port' for TCP attachment; \
+                     attaching by processId is not supported."
                         .to_string(),
                 ),
             }
         }
+    }
+
+    /// Classify the attach subject without inspecting the target.
+    ///
+    /// A missing or explicit `null` value leaves the request on the TCP path.
+    /// Malformed, zero, and out-of-range values are invalid input; only a
+    /// positive in-range integer reaches the capability-first unsupported
+    /// response for native PID attach (#8109).
+    fn classify_attach_subject(args: &Value) -> AttachSubject {
+        let process_id = match Self::parse_process_id(args) {
+            Ok(process_id) => process_id,
+            Err(message) => return AttachSubject::Invalid(message),
+        };
+        if process_id.is_some() {
+            let has_tcp_subject = ["host", "port"]
+                .iter()
+                .any(|key| args.get(*key).is_some_and(|value| !value.is_null()));
+            if has_tcp_subject {
+                return AttachSubject::Ambiguous(
+                    "Ambiguous attach: processId cannot be combined with explicit host or port"
+                        .to_string(),
+                );
+            }
+            return AttachSubject::ProcessId;
+        }
+        AttachSubject::Tcp
+    }
+
+    fn parse_process_id(args: &Value) -> Result<Option<u32>, String> {
+        let Some(value) = args.get("processId") else {
+            return Ok(None);
+        };
+        if value.is_null() {
+            return Ok(None);
+        }
+
+        let raw = value.as_u64().ok_or_else(|| {
+            "Invalid processId: expected a positive integer in the range 1-4294967295".to_string()
+        })?;
+        let pid = u32::try_from(raw).map_err(|_| {
+            "Invalid processId: expected a positive integer in the range 1-4294967295".to_string()
+        })?;
+        if pid == 0 {
+            return Err("Invalid processId: value must be greater than zero".to_string());
+        }
+        Ok(Some(pid))
     }
 
     /// Clear active process session, TCP session, and PID-attach mode state.
@@ -3175,6 +3206,10 @@ impl DebugAdapter {
                             Duration::from_millis(DEBUG_SESSION_TERMINATE_WAIT_MS),
                         )
                     {
+                        // #15538: the direct child exited gracefully, but the
+                        // group it led can still hold descendants (a pager or
+                        // readline helper under `perl -d`).
+                        crate::process_tree::terminate_descendants(process);
                         return outcome;
                     }
                 }
@@ -3184,6 +3219,10 @@ impl DebugAdapter {
             }
         }
 
+        // #15538: reach descendants before the direct child dies — on
+        // Windows by walking the live parent→child tree from this child, on
+        // Unix by killing the process group it leads.
+        crate::process_tree::terminate_descendants(process);
         if let Err(e) = process.kill() {
             tracing::warn!(pid = process.id(), error = %e, "Failed to terminate process");
         }
@@ -3793,11 +3832,140 @@ mod tests {
     };
     use super::{DapMessage, Duration, Instant, PathBuf, Stdio, Value, json, thread};
     use crate::reload::RuntimeModuleGenerationClock;
+    use crate::security::launch_authority::{
+        LaunchAuthority, LaunchAuthoritySource, LaunchAuthorityStartup, UnboundedAcknowledgement,
+    };
     use crate::tcp_attach::DapEvent;
     use perl_test_must::must_some_with;
     use std::collections::HashMap;
     use std::sync::mpsc::{TryRecvError, sync_channel};
     use std::sync::{Arc, Mutex};
+
+    fn workspace_bound_authority(root: &std::path::Path) -> LaunchAuthority {
+        LaunchAuthority::resolve(&LaunchAuthorityStartup {
+            trusted_roots: vec![root.to_path_buf()],
+            allow_unbounded: None,
+        })
+        .expect("test authority resolution")
+    }
+
+    fn unbounded_test_authority() -> LaunchAuthority {
+        LaunchAuthority::resolve(&LaunchAuthorityStartup {
+            trusted_roots: Vec::new(),
+            allow_unbounded: Some(UnboundedAcknowledgement::new(
+                LaunchAuthoritySource::CommandLine,
+                "test session",
+            )),
+        })
+        .expect("test authority resolution")
+    }
+
+    fn launch_failure_message(response: super::DapMessage) -> Option<String> {
+        match response {
+            super::DapMessage::Response { success, message, .. } if !success => message,
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn launch_without_startup_authority_fails_closed() {
+        let mut adapter = DebugAdapter::new();
+        let _ = adapter.handle_initialize(1, 1, None);
+        let response =
+            adapter.handle_launch(2, 2, Some(serde_json::json!({ "program": "script.pl" })));
+        let message = launch_failure_message(response)
+            .expect("a launch without startup authority must be refused");
+        assert!(
+            message.contains("no startup launch authority"),
+            "refusal should explain the missing authority; got: {message:?}"
+        );
+    }
+
+    #[test]
+    fn workspace_bound_authority_refuses_program_outside_trusted_roots() {
+        let root = tempfile::tempdir().expect("temp root");
+        let mut adapter = DebugAdapter::new();
+        adapter.set_launch_authority(workspace_bound_authority(root.path()));
+        let _ = adapter.handle_initialize(1, 1, None);
+
+        let outside = tempfile::tempdir().expect("outside temp root");
+        let outside_script = outside.path().join("outside.pl");
+        std::fs::write(&outside_script, b"print 1;").expect("script");
+
+        let response = adapter.handle_launch(
+            2,
+            2,
+            Some(serde_json::json!({ "program": outside_script.display().to_string() })),
+        );
+        let message = launch_failure_message(response)
+            .expect("a program outside every trusted root must be refused");
+        assert!(
+            message.contains("trusted root"),
+            "refusal should mention the trusted-root boundary; got: {message:?}"
+        );
+    }
+
+    #[test]
+    fn launch_args_workspace_root_cannot_create_authority() {
+        let root = tempfile::tempdir().expect("temp root");
+        let mut adapter = DebugAdapter::new();
+        adapter.set_launch_authority(workspace_bound_authority(root.path()));
+        let _ = adapter.handle_initialize(1, 1, None);
+
+        let outside = tempfile::tempdir().expect("outside temp root");
+        let script = outside.path().join("script.pl");
+        std::fs::write(&script, b"print 1;").expect("script");
+
+        // A launch-args workspaceRoot outside the trusted roots must be
+        // refused instead of becoming the launch boundary.
+        let response = adapter.handle_launch(
+            2,
+            2,
+            Some(serde_json::json!({
+                "program": script.display().to_string(),
+                "workspaceRoot": outside.path().display().to_string(),
+            })),
+        );
+        let message = launch_failure_message(response)
+            .expect("a launch-args workspaceRoot cannot create authority");
+        assert!(
+            message.contains("trusted root"),
+            "refusal should mention the trusted-root boundary; got: {message:?}"
+        );
+    }
+
+    #[test]
+    fn explicitly_unbounded_authority_is_recorded_and_admits_paths() {
+        let adapter = DebugAdapter::new();
+        let authority = unbounded_test_authority();
+        let receipt = authority.receipt();
+        assert_eq!(receipt.mode, "explicit_unbounded");
+        assert!(receipt.acknowledgement_identity.is_some());
+        adapter.set_launch_authority(authority);
+        let _ = adapter.handle_initialize(1, 1, None);
+
+        // Admission succeeds and a session generation begins.
+        assert!(adapter.begin_authority_session().is_some());
+    }
+
+    #[test]
+    fn launch_authority_can_only_be_installed_once() {
+        let first_root = tempfile::tempdir().expect("first temp root");
+        let second_root = tempfile::tempdir().expect("second temp root");
+        let adapter = DebugAdapter::new();
+
+        adapter.set_launch_authority(workspace_bound_authority(first_root.path()));
+        adapter.set_launch_authority(workspace_bound_authority(second_root.path()));
+
+        let (_, receipt) =
+            adapter.begin_authority_session().expect("first authority must remain installed");
+        let first = LaunchAuthority::resolve(&LaunchAuthorityStartup {
+            trusted_roots: vec![first_root.path().to_path_buf()],
+            allow_unbounded: None,
+        })
+        .expect("first authority resolution");
+        assert_eq!(receipt.authority_identity, first.receipt().authority_identity);
+    }
 
     #[test]
     fn failed_child_cleanup_retains_owner_until_retry() -> Result<(), String> {
@@ -4190,11 +4358,32 @@ mod tests {
                     if reason != Some("breakpoint") {
                         return Err(format!("expected breakpoint stop, got {reason:?}"));
                     }
-                    let guard = lock_or_recover(&adapter.session, "test.session");
-                    let frame = guard
-                        .as_ref()
-                        .and_then(|session| session.stack_frames.first())
-                        .ok_or("breakpoint frame missing")?;
+                    // The fixture exits after ACTUAL_DONE. Under shard load the
+                    // reader may reap it between the stopped event and this read;
+                    // distinguish that from a session whose frames were never
+                    // published instead of collapsing both into one diagnosis.
+                    let deadline = Instant::now() + Duration::from_secs(5);
+                    let frame =
+                        loop {
+                            {
+                                let guard = lock_or_recover(&adapter.session, "test.session");
+                                match guard.as_ref() {
+                                    None => return Err(
+                                        "session was reaped before the breakpoint frame was read"
+                                            .into(),
+                                    ),
+                                    Some(session) => {
+                                        if let Some(frame) = session.stack_frames.first() {
+                                            break frame.clone();
+                                        }
+                                    }
+                                }
+                            }
+                            if Instant::now() >= deadline {
+                                return Err("breakpoint frame never published".into());
+                            }
+                            thread::sleep(Duration::from_millis(2));
+                        };
                     if frame.source.path != source_path || frame.line != 5 {
                         return Err(format!(
                             "breakpoint frame mismatch: path={}, line={}",
@@ -6257,6 +6446,23 @@ mod tests {
 
         let mut adapter = DebugAdapter::new();
 
+        // Install an explicitly unbounded startup authority (#8656): this
+        // test targets the Perl-spawn error path, not boundary validation.
+        // Without an authority the launch is refused before any Perl check.
+        let authority = crate::security::launch_authority::LaunchAuthority::resolve(
+            &crate::security::launch_authority::LaunchAuthorityStartup {
+                trusted_roots: Vec::new(),
+                allow_unbounded: Some(
+                    crate::security::launch_authority::UnboundedAcknowledgement::new(
+                        crate::security::launch_authority::LaunchAuthoritySource::CommandLine,
+                        "test: reach the Perl spawn error path",
+                    ),
+                ),
+            },
+        )
+        .map_err(|e| format!("authority resolution failed: {e}"))?;
+        adapter.set_launch_authority(authority);
+
         // Initialize first (required by state machine validation)
         let _ = adapter.handle_initialize(1, 1, None);
 
@@ -7722,5 +7928,92 @@ mod tests {
             }
             other => Err(format!("expected Response from handle_launch; got {other:?}")),
         }
+    }
+
+    #[test]
+    fn parse_process_id_refuses_zero_with_exact_error_variant() -> Result<(), String> {
+        let error = DebugAdapter::parse_process_id(&json!({ "processId": 0 }))
+            .err()
+            .ok_or("pid zero was accepted by the attach subject classifier")?;
+        let expected = "Invalid processId: value must be greater than zero";
+        if error != expected {
+            return Err(format!("pid zero refusal was {error:?}, expected {expected:?}"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn parse_process_id_refuses_malformed_and_oversized_with_exact_variants() -> Result<(), String>
+    {
+        let expected = "Invalid processId: expected a positive integer in the range 1-4294967295";
+        for subject in [json!({ "processId": "4242" }), json!({ "processId": 4_294_967_296_u64 })] {
+            let error = DebugAdapter::parse_process_id(&subject)
+                .err()
+                .ok_or("invalid processId was accepted by the attach subject classifier")?;
+            if error != expected {
+                return Err(format!(
+                    "invalid processId refusal was {error:?}, expected {expected:?}"
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn handle_attach_pid_only_call_observes_unsupported_refusal_without_session_mutation()
+    -> Result<(), String> {
+        let adapter = DebugAdapter::new();
+        let response = adapter.handle_attach(7, 9, Some(json!({ "processId": 4242 })));
+        let (success, command, message) = match &response {
+            super::DapMessage::Response { success, command, message, .. } => {
+                (*success, command.clone(), message.clone())
+            }
+            other => return Err(format!("expected Response from handle_attach; got {other:?}")),
+        };
+        if success || command != "attach" {
+            return Err("pid-only attach response was not an attach refusal".to_string());
+        }
+        let expected = "Attaching by processId is not supported. Use TCP attach with host \
+                        and port instead.";
+        if message.as_deref() != Some(expected) {
+            return Err(format!("pid-only refusal message was {message:?}, expected {expected:?}"));
+        }
+        let seeded = adapter.session.lock().map_err(|_| "session lock poisoned")?.is_some();
+        if seeded {
+            return Err("pid-only refusal mutated modeled session state".to_string());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn handle_attach_ambiguous_call_observes_typed_ambiguity_before_tcp_connection()
+    -> Result<(), String> {
+        let adapter = DebugAdapter::new();
+        let response = adapter.handle_attach(
+            8,
+            10,
+            Some(json!({ "processId": 4242, "host": "127.0.0.1", "port": 13603 })),
+        );
+        let (success, command, message) = match &response {
+            super::DapMessage::Response { success, command, message, .. } => {
+                (*success, command.clone(), message.clone())
+            }
+            other => return Err(format!("expected Response from handle_attach; got {other:?}")),
+        };
+        if success || command != "attach" {
+            return Err("ambiguous attach response was not an attach refusal".to_string());
+        }
+        let expected = "Ambiguous attach: processId cannot be combined with explicit host or port";
+        if message.as_deref() != Some(expected) {
+            return Err(format!(
+                "ambiguous refusal message was {message:?}, expected {expected:?}"
+            ));
+        }
+        let tcp_seeded =
+            adapter.tcp_session.lock().map_err(|_| "tcp session lock poisoned")?.is_some();
+        if tcp_seeded {
+            return Err("ambiguous refusal created a TCP session".to_string());
+        }
+        Ok(())
     }
 }

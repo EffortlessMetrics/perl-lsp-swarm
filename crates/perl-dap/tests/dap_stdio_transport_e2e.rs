@@ -136,6 +136,12 @@ impl DapProcess {
             .arg("--stdio")
             .arg("--log-level")
             .arg("error")
+            // Transport e2e exercises framing/session behavior, not the
+            // launch-authority contract (#8656): without an explicit
+            // acknowledgement every `launch` is refused.
+            .arg("--allow-unbounded")
+            .arg("--unbounded-note")
+            .arg("test: stdio transport e2e")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -750,6 +756,104 @@ fn native_stdio_cancel_reaches_blocked_evaluate_and_recovers() -> Result<()> {
     dap.finish_cleanly()?;
     assert_debuggee_absent(&replacement_pid.to_string())?;
     release_guard.pid = None;
+    Ok(())
+}
+
+#[test]
+fn stdio_transport_pid_attach_refuses_without_session_events() -> Result<()> {
+    let binary = OsString::from(env!("CARGO_BIN_EXE_perl-dap"));
+    let mut dap = DapProcess::spawn_binary(&binary)?;
+    dap.send_request(
+        1,
+        "initialize",
+        Some(json!({
+            "clientID": "perl-dap-stdio-pid-refusal",
+            "adapterID": "perl-dap",
+            "pathFormat": "path",
+        })),
+    )?;
+    dap.wait_for_response(1, "initialize")?;
+    dap.wait_for_event("initialized")?;
+
+    dap.send_request(
+        2,
+        "attach",
+        Some(json!({
+            "processId": std::process::id(),
+            "stopOnEntry": true,
+        })),
+    )?;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let (success, body, message) = match dap
+        .rx
+        .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+    {
+        Ok(Ok(DapMessage::Response {
+            request_seq: 2, command, success, body, message, ..
+        })) if command == "attach" => (success, body, message),
+        Ok(Ok(message)) => {
+            return Err(anyhow!("unexpected message before PID refusal response: {message:?}"));
+        }
+        Ok(Err(error)) => return Err(anyhow!("stdio reader failed: {error}")),
+        Err(error) => return Err(anyhow!("timed out waiting for PID refusal: {error}")),
+    };
+    if success || body.is_some() {
+        return Err(anyhow!("PID attach was not refused without a response body"));
+    }
+    let message = message.ok_or_else(|| anyhow!("PID refusal omitted its diagnostic"))?;
+    if !message.contains("not supported") || !message.contains("host") || !message.contains("port")
+    {
+        return Err(anyhow!("PID refusal omitted TCP remediation guidance: {message}"));
+    }
+
+    dap.send_request(3, "threads", None)?;
+    let threads =
+        match dap.rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+            Ok(Ok(DapMessage::Response {
+                request_seq: 3, command, success: true, body, ..
+            })) if command == "threads" => body,
+            Ok(Ok(message)) => return Err(anyhow!("unexpected threads response: {message:?}")),
+            Ok(Err(error)) => return Err(anyhow!("stdio reader failed for threads: {error}")),
+            Err(error) => return Err(anyhow!("timed out waiting for threads response: {error}")),
+        }
+        .ok_or_else(|| anyhow!("threads response omitted its body"))?;
+    let threads = threads
+        .get("threads")
+        .and_then(Value::as_array)
+        .ok_or_else(|| anyhow!("threads response omitted its threads array"))?;
+    if !threads.is_empty() {
+        return Err(anyhow!("refused PID attach fabricated threads: {threads:?}"));
+    }
+
+    dap.send_request(4, "disconnect", Some(json!({})))?;
+    let mut disconnect_response = false;
+    loop {
+        match dap.rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+            Ok(Ok(DapMessage::Response { request_seq: 4, command, success: true, .. }))
+                if command == "disconnect" && !disconnect_response =>
+            {
+                disconnect_response = true
+            }
+            Ok(Ok(message)) => {
+                return Err(anyhow!("unexpected post-refusal message: {message:?}"));
+            }
+            Ok(Err(error)) => return Err(anyhow!("stdio reader failed after refusal: {error}")),
+            Err(RecvTimeoutError::Disconnected) if disconnect_response => break,
+            Err(error) => return Err(anyhow!("stdio stream did not reach EOF: {error}")),
+        }
+    }
+    loop {
+        if let Some(status) = dap.child.try_wait()? {
+            if !status.success() {
+                return Err(anyhow!("adapter exited unsuccessfully after PID refusal: {status}"));
+            }
+            break;
+        }
+        if Instant::now() >= deadline {
+            return Err(anyhow!("adapter did not exit after PID refusal"));
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
     Ok(())
 }
 

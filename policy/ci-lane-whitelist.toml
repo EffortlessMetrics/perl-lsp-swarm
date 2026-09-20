@@ -714,7 +714,7 @@ tier = "on-demand"
 kind = "automation"
 blocking = false
 default_pr = false
-runner = "self_hosted_droid_review"
+runner = "ubuntu_24_04"
 base_lem = 2
 owner = "ci"
 intent = "Manual @droid review triggered by trusted contributors."
@@ -865,7 +865,7 @@ tier = "frontdoor"
 kind = "automation"
 blocking = false
 default_pr = false
-runner = "self_hosted_droid_review"
+runner = "ubuntu_24_04"
 base_lem = 4
 owner = "ci"
 intent = "Manual / dispatch Droid command (separate from droid_auto_review)."
@@ -1028,6 +1028,27 @@ expensive = false
 duplicate_of = []
 review_after = "2027-01-22"
 expires = "2027-08-22"
+
+[[lane]]
+id = "authority_transfer_review"
+workflow = ".github/workflows/authority-transfer-review.yml"
+job = "authority-transfer-review"
+tier = "frontdoor"
+kind = "hygiene"
+blocking = false
+default_pr = true
+runner = "ubuntu_24_04"
+base_lem = 3
+owner = "ci"
+intent = "Publish one advisory exact-head Authority Transfer Review context per PR over the #11793 review-surface denominator, executing only trusted base-branch validator code (#11795 AR02)."
+failure_mode = "A governed-surface change merges with stale, missing, or denominator-invalidated review evidence while an advisory context looked valid."
+proof_obligation = "Replay the evaluator self-test as an instrument self-test, prove exact base and inert head identity, then evaluate bounded changed paths against the checked #11793 manifest and projection; typed FAIL/NOT_PROVEN exits fail the advisory check."
+evidence = ["job output", "target/receipts/authority-transfer-review.json"]
+allowed_triggers = ["pull_request_target", "workflow_dispatch"]
+expensive = false
+duplicate_of = []
+review_after = "2027-02-25"
+expires = "2027-09-25"
 
 [[lane]]
 id = "policy_validators"

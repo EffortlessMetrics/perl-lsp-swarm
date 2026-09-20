@@ -7,12 +7,17 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 
-use color_eyre::eyre::{Context, Result};
+use color_eyre::eyre::{Context, Result, bail};
 use serde::Deserialize;
 
 use crate::tasks::metrics::lsp_stats::{
     LatencyMetric, MeasuredEditorUxScorecard, RateMetric, WorkflowResult,
 };
+
+/// Highest `MeasuredEditorUxScorecard.schema_version` this consumer accepts.
+/// Fail closed on any other value (issue #15341): a future producer version
+/// must never silently drive the quality.md surface with stale assumptions.
+const SUPPORTED_EDITOR_UX_SCHEMA_VERSION: u32 = 1;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -166,6 +171,15 @@ fn load_measured_scorecard(root: &Path) -> Result<Option<MeasuredEditorUxScoreca
     let raw = fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
     let scorecard: MeasuredEditorUxScorecard =
         serde_json::from_str(&raw).with_context(|| format!("parsing {}", path.display()))?;
+    if scorecard.schema_version != SUPPORTED_EDITOR_UX_SCHEMA_VERSION {
+        bail!(
+            "{}: unsupported MeasuredEditorUxScorecard schema_version \
+             (expected {}, found {})",
+            path.display(),
+            SUPPORTED_EDITOR_UX_SCHEMA_VERSION,
+            scorecard.schema_version
+        );
+    }
     Ok(Some(scorecard))
 }
 

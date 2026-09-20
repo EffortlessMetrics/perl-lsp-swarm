@@ -489,7 +489,32 @@ fn is_xtask_policy_guarded_input(file: &str) -> bool {
             | ".github/workflows/post-merge-status.yml"
             | ".github/workflows/badge-endpoints.yml"
             | ".github/workflows/ripr.yml"
+            // Four xtask integration suites (vim_host_runner_contract,
+            // vim_host_diagnostics_contract, vim_host_freshness_contract,
+            // vim_host_save_format_contract) read this workflow and assert its
+            // trigger surface and step contract. Without this route a PR
+            // editing only the lane skipped every guard written to catch it —
+            // observed on this branch: a trigger change silently broke
+            // `hermetic_host_ci_triggers_on_the_production_formatter_crate`
+            // and CI stayed green because xtask was never in scope.
+            | ".github/workflows/vim-hermetic-host.yml"
     )
+        // The gate policy is the gate owner's source: its declaration order is
+        // execution order (short-circuit focused gates, #13698/#14409), and the
+        // pinning proof `focused_control_plane_gates_precede_unit_routed_full_
+        // and_pin_the_backstop` lives in xtask's bin target. Without this
+        // routing, a gate-policy-only PR would skip both focused owner gates
+        // and the very proof that pins the policy's shape (#14409 review).
+        || file == ".ci/gate-policy.yaml"
+        // The required-context ledger is asserted by
+        // `xtask/tests/required_context_binding_contract.rs` (#15348): a
+        // required row's producer binding (`ruleset_integration_id`,
+        // workflow + job identity) is only meaningful against the ledger
+        // file. Without this routing, a ledger-only PR would skip xtask's
+        // `tests/` suite under scope-aware `unit_routed_full` and a deleted
+        // binding would sail through every required check green (#15995
+        // review).
+        || file == ".ci/policies/required-checks.toml"
         // Publishable-crate manifests: binstall metadata, publish metadata, and
         // version-sync are all xtask-owned assertions over these files.
         || (file.starts_with("crates/") && file.ends_with("/Cargo.toml"))
@@ -781,7 +806,19 @@ pub fn classify_files(
     let windows_test_crates = if windows_runner {
         let mut crates: Vec<String> = direct_crates.iter().map(|c| c.name.clone()).collect();
         if crates.is_empty() {
-            crates.extend(["perl-uri".to_string(), "perl-workspace".to_string()]);
+            // #15405: add `perl-dap` to the default Windows smoke set so
+            // every Windows-bound PR surfaces the deterministic Windows-
+            // local failures (admitted_debugger_alias symlink privilege,
+            // live_perl_debuggee_reload perl5db stall — #15395 slices B1
+            // and B2 own the fixes) as visible check runs rather than
+            // letting them silently bit-rot on the floor. The set is
+            // advisory: promotion to required belongs to the owner once
+            // B1/B2 land.
+            crates.extend([
+                "perl-uri".to_string(),
+                "perl-workspace".to_string(),
+                "perl-dap".to_string(),
+            ]);
         }
         crates.sort();
         crates.dedup();
@@ -1263,6 +1300,34 @@ mod tests {
     // skips the guard that exists to catch it.
 
     #[test]
+    fn hermetic_vim_workflow_change_selects_xtask() -> Result<()> {
+        let files = vec![".github/workflows/vim-hermetic-host.yml".to_string()];
+        let metadata = fake_metadata(&[("xtask", "xtask")]);
+        let crates = crates_from_files(&files, &metadata, "/workspace")?;
+        assert!(
+            crates.contains("xtask"),
+            "changing the hermetic Vim lane must route to the contract tests that assert on it"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn required_checks_ledger_change_selects_xtask() -> Result<()> {
+        // #15348 / #15995 review: the required-context binding contract test
+        // reads `.ci/policies/required-checks.toml`. A ledger-only PR must
+        // route xtask into scope or a deleted producer binding sails through
+        // every required check green.
+        let files = vec![".ci/policies/required-checks.toml".to_string()];
+        let metadata = fake_metadata(&[("xtask", "xtask")]);
+        let crates = crates_from_files(&files, &metadata, "/workspace")?;
+        assert!(
+            crates.contains("xtask"),
+            "changing the required-checks ledger must route to the contract test that asserts on it"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn release_workflow_change_selects_xtask() -> Result<()> {
         let files = vec![".github/workflows/release.yml".to_string()];
         let metadata = fake_metadata(&[("xtask", "xtask")]);
@@ -1288,6 +1353,24 @@ mod tests {
                 "changing {workflow} must route to the xtask contract that reads it"
             );
         }
+        Ok(())
+    }
+
+    /// A gate-policy-only diff must select xtask (#14409 review of #13698):
+    /// the focused owner gates are `rust_package_scoped` on xtask, and the
+    /// pinning proof for the policy's declaration order/commands lives in the
+    /// xtask bin target. Without this routing, gate-policy drift would bypass
+    /// both on exactly the PRs that move the policy.
+    #[test]
+    fn gate_policy_change_selects_xtask() -> Result<()> {
+        let files = vec![".ci/gate-policy.yaml".to_string()];
+        let metadata = fake_metadata(&[("xtask", "xtask")]);
+        let crates = crates_from_files(&files, &metadata, "/workspace")?;
+        assert!(
+            crates.contains("xtask"),
+            "changing .ci/gate-policy.yaml must route to the gate owner whose \
+             pinning proof asserts on it"
+        );
         Ok(())
     }
 
@@ -1548,6 +1631,44 @@ mod tests {
 
         assert!(!output.platform_overrides.windows_runner);
         assert!(output.platform_overrides.windows_test_crates.is_empty());
+        Ok(())
+    }
+
+    /// #15405: when the Windows runner is triggered by a path outside any
+    /// crate (e.g. a shell hook change) the default fallback `windows_test_
+    /// crates` set must include `perl-dap` so the deterministic Windows-local
+    /// failures observed by #15395 (admitted_debugger_alias symlink privilege,
+    /// live_perl_debuggee_reload perl5db stall) reach the advisory Windows
+    /// smoke on every Windows-bound PR rather than only when the change
+    /// happens to touch `crates/perl-dap/**` directly. Slices B1 and B2 own
+    /// the fixes; this lane owns the observation. Promotion to required is
+    /// the owner's call once those slices land.
+    #[test]
+    fn classify_files_fallback_includes_perl_dap_when_windows_runner_triggers_without_direct_crates()
+    -> Result<()> {
+        // `hooks/pre-push` selects the Windows runner but is not under
+        // `crates/`, so `direct_crates` will be empty and the fallback list
+        // is what `windows_test_crates` reads from.
+        let metadata = fake_metadata(&[("perl-dap", "crates/perl-dap")]);
+        let files = vec!["hooks/pre-push".to_string()];
+        let output = classify_files(&files, &metadata, "/workspace")?;
+
+        assert!(
+            output.platform_overrides.windows_runner,
+            "hooks/pre-push should trigger the Windows runner"
+        );
+        assert!(
+            output.direct_crates.is_empty(),
+            "no crate is touched, so direct_crates must be empty for the fallback path"
+        );
+        let crates = &output.platform_overrides.windows_test_crates;
+        // Exact set (the fallback list is sorted and deduped at construction):
+        // perl-dap must be present, and nothing may silently join or leave.
+        assert_eq!(
+            crates,
+            &vec!["perl-dap".to_string(), "perl-uri".to_string(), "perl-workspace".to_string(),],
+            "fallback windows_test_crates drifted, got {crates:?}"
+        );
         Ok(())
     }
 

@@ -1040,18 +1040,259 @@ def validate_prepared_projection(
         )
 
 
-_TYPESCRIPT_NON_CODE = re.compile(
-    r"//[^\r\n]*|/\*.*?\*/|'(?:\\.|[^'\\])*'|\"(?:\\.|[^\"\\])*\"|`(?:\\.|[^`\\])*`",
-    re.DOTALL,
-)
+# Characters whose preceding token leaves the parser in a position where the
+# next `/` must be a regex literal rather than division: assignment,
+# open/close delimiters, statement separators, type annotations, the `=>`
+# arrow, the unary/binary operators that do not permit division, and the
+# power/bitwise operators.  The closing delimiters `)]}` ALSO permit a regex
+# (the postfix-`/` shorthand is not used by the managed downloader, but we
+# keep the conservative rule for symmetry with TypeScript's own lexer).
+_REGEX_STARTER_CHARS = frozenset("=([,;{}?:!&|~+-*/%<>^")
 
 
-def _mask_typescript_non_code(source: str) -> str:
-    """Blank TypeScript comments and literals while preserving line positions."""
-    return _TYPESCRIPT_NON_CODE.sub(
-        lambda match: "".join("\n" if char == "\n" else " " for char in match.group()),
-        source,
-    )
+def _first_identifier(needle: str) -> str | None:
+    """Return the first TypeScript identifier in ``needle``, or ``None``.
+
+    Used by ``_has_executable_substring`` to anchor the position check at a
+    chunk of the needle that is not part of a string literal.  String
+    literals are masked by ``_mask_typescript_non_code`` (positions of the
+    quote characters and the literal body are blanked to spaces), so a
+    full-string equality check would reject matches whose string literal
+    appears in real code.  Verifying that the leading identifier sits in
+    executable source is enough to confirm the rest of the needle lives in
+    code.
+    """
+    i = 0
+    while i < len(needle):
+        ch = needle[i]
+        if ch.isalpha() or ch == "_" or ch == "$":
+            j = i
+            while j < len(needle) and (needle[j].isalnum() or needle[j] in "_$"):
+                j += 1
+            return needle[i:j]
+        i += 1
+    return None
+
+
+def _has_executable_substring(source: str, executable_source: str, needle: str) -> bool:
+    """True when ``needle`` appears in ``source`` AND the leading identifier
+    of the match sits in executable code (a comment or regex literal does
+    not count).
+
+    Position-aware counterpart to ``needle in source``.  The raw source is
+    searched for ``needle``; for each match the leading identifier's
+    position in the masked source is verified.  String literals are masked
+    by ``_mask_typescript_non_code`` so the substring may not be
+    byte-identical at that position; checking the leading identifier is
+    sufficient because identifiers cannot appear inside comments, regex
+    literals, or string literals.
+    """
+    if not needle:
+        return False
+    anchor = _first_identifier(needle)
+    if not anchor:
+        # Fall back to a literal check if the needle has no identifier.
+        for match in re.finditer(re.escape(needle), source):
+            if (
+                executable_source[match.start() : match.start() + len(needle)]
+                == needle
+            ):
+                return True
+        return False
+    for match in re.finditer(re.escape(needle), source):
+        anchor_pos = match.start() + needle.index(anchor)
+        if executable_source[anchor_pos : anchor_pos + len(anchor)] == anchor:
+            return True
+    return False
+
+
+def _mask_typescript_non_code(
+    source: str, mask_template_literal_bodies: bool = False
+) -> str:
+    """Blank TypeScript non-code positions while preserving line numbers.
+
+    TypeScript has four non-code lexical forms that, if left intact, would
+    let a comment or non-code string satisfy a target-derivation scan:
+
+      1. line comments    ``// ...``
+      2. block comments   ``/* ... */``
+      3. string literals  ``'...'`` and ``"..."``
+      4. regex literals   ``/.../[flags]``
+
+    Template literals (``\\`...\\```) are masked only when
+    ``mask_template_literal_bodies`` is True.  The default pass keeps the
+    template literal body verbatim because the Linux check uses the
+    production substring ``${archPrefix}-unknown-linux-${libc}`` inside the
+    template literal as its authority.  When the identifier-side check
+    needs to be strict (e.g. ``return WINDOWS_X64_TARGET`` must not be
+    satisfied by ``\\`return WINDOWS_X64_TARGET\\```) the caller asks for a
+    second pass that blanks template literal bodies too.
+
+    Regex literals are lexically ambiguous with division (``/``), so they
+    need a small character-based lexer.  ``/`` opens a regex literal only
+    when the lexer is in a term position: start of input, after an operator
+    or punctuation that disallows division, or after a newline.  After an
+    identifier, number, string, template, or closing bracket the ``/`` is
+    division and is left intact.  Unterminated literals fail closed by
+    treating the rest of the line as code rather than silently admitting a
+    partial match.
+    """
+    out: list[str] = []
+    i = 0
+    n = len(source)
+    # True at start-of-input and after newline/operator/punctuation that
+    # cannot terminate a value-producing expression.  An identifier, number,
+    # closing bracket, string, or template resets it to False.
+    expect_term = True
+
+    while i < n:
+        c = source[i]
+        # Whitespace: pass through, newline resets expect_term so the next
+        # token starts an expression position.
+        if c.isspace():
+            if c == "\n":
+                expect_term = True
+            out.append(c)
+            i += 1
+            continue
+        # Line comment: // ... \n
+        if c == "/" and i + 1 < n and source[i + 1] == "/":
+            j = i
+            while j < n and source[j] != "\n":
+                j += 1
+            out.append(" " * (j - i))
+            i = j
+            continue
+        # Block comment: /* ... */  (preserve newlines so line numbers match)
+        if c == "/" and i + 1 < n and source[i + 1] == "*":
+            end = source.find("*/", i + 2)
+            j = n if end == -1 else end + 2
+            chunk = source[i:j]
+            out.append("".join("\n" if ch == "\n" else " " for ch in chunk))
+            i = j
+            continue
+        # String literal: '...' or "..."  MASKED so that pseudo-returns of the
+        # form ``'return WINDOWS_X64_TARGET'`` or ``"return 'x86_64-pc-
+        # windows-msvc'"`` cannot satisfy the Windows check below.  Windows
+        # does its own ``re.finditer`` over the raw source and then re-checks
+        # each match against this masked source to confirm it lives in
+        # executable code; a string-literal pseudo-return is masked, so the
+        # position check fails and the target is not admitted.
+        if c in ("'", '"'):
+            quote = c
+            j = i + 1
+            while j < n:
+                if source[j] == "\\" and j + 1 < n:
+                    j += 2
+                    continue
+                if source[j] == quote:
+                    j += 1
+                    break
+                if source[j] == "\n":
+                    # Unterminated string: stop at the newline (fail closed).
+                    break
+                j += 1
+            chunk = source[i:j]
+            out.append("".join("\n" if ch == "\n" else " " for ch in chunk))
+            expect_term = False  # a string is a complete expression term
+            i = j
+            continue
+        # Template literal: `...`  Two masks exist:
+        #
+        # * The Linux-construction substring (``${archPrefix}-unknown-linux-
+        #   ${libc}``) is the production authority, so the template literal
+        #   body MUST be visible in the mask returned to
+        #   ``derive_downloader_targets``.  ``_has_executable_substring`` is
+        #   called with this mask to confirm the template literal sits in
+        #   executable code.
+        # * The Windows-construction identifier check (``return
+        #   WINDOWS_X64_TARGET``) must not admit a template-literal pseudo-
+        #   return like `` `return WINDOWS_X64_TARGET` ``.  The mask used by
+        #   that check (built by ``_mask_typescript_identifier_unsafe``)
+        #   blanks template literal bodies as well.
+        #
+        # The default branch here is the "linux-visible" pass: append the
+        # template literal verbatim.  ``_mask_typescript_identifier_unsafe``
+        # replaces this branch with a blanked-body pass for callers that
+        # need to verify identifiers.
+        if c == "`":
+            j = i + 1
+            while j < n:
+                if source[j] == "\\" and j + 1 < n:
+                    j += 2
+                    continue
+                if source[j] == "`":
+                    j += 1
+                    break
+                j += 1
+            chunk = source[i:j]
+            if mask_template_literal_bodies:
+                out.append(
+                    "".join("\n" if ch == "\n" else " " for ch in chunk)
+                )
+            else:
+                out.append(chunk)
+            expect_term = False
+            i = j
+            continue
+        # Regex literal: /.../[flags]  (only in term position)
+        if c == "/" and expect_term:
+            j = i + 1
+            in_class = False
+            consumed_any = False
+            while j < n:
+                ch = source[j]
+                if ch == "\\" and j + 1 < n:
+                    j += 2
+                    consumed_any = True
+                    continue
+                if ch == "[":
+                    in_class = True
+                elif ch == "]" and in_class:
+                    in_class = False
+                elif ch == "/" and not in_class:
+                    j += 1
+                    break
+                if ch == "\n":
+                    # Unterminated regex on this line; treat as a stray
+                    # division operator and stop consuming.
+                    j = i + 1
+                    break
+                consumed_any = True
+                j += 1
+            # Consume valid regex flags: g, i, m, s, u, y, d.
+            while j < n and source[j] in "gimsuy":
+                j += 1
+            if consumed_any and j > i + 1:
+                chunk = source[i:j]
+                out.append("".join("\n" if ch == "\n" else " " for ch in chunk))
+                expect_term = False
+                i = j
+                continue
+            # Otherwise fall through: this was a stray `/` (division or junk)
+        # Identifier or keyword: pass through, then no term expected next.
+        if c.isalpha() or c == "_" or c == "$":
+            j = i
+            while j < n and (source[j].isalnum() or source[j] in "_$"):
+                j += 1
+            out.append(source[i:j])
+            expect_term = False
+            i = j
+            continue
+        # Number: pass through
+        if c.isdigit():
+            j = i
+            while j < n and (source[j].isalnum() or source[j] in "._"):
+                j += 1
+            out.append(source[i:j])
+            expect_term = False
+            i = j
+            continue
+        # Operators / punctuation
+        out.append(c)
+        expect_term = c in _REGEX_STARTER_CHARS
+        i += 1
+    return "".join(out)
 
 
 def derive_downloader_targets(source: str, workflow_targets: set[str]) -> set[str]:
@@ -1065,10 +1306,29 @@ def derive_downloader_targets(source: str, workflow_targets: set[str]) -> set[st
     """
     managed: set[str] = set()
     executable_source = _mask_typescript_non_code(source)
+    # ``identifier_unsafe_source`` blanks template literal bodies in
+    # addition to comments / string literals / regex literals.  The Windows
+    # ``constant_return`` check matches ``return WINDOWS_X64_TARGET``; a
+    # template literal like `` `return WINDOWS_X64_TARGET` `` must not
+    # satisfy that check, so the search runs against the stricter mask.
+    identifier_unsafe_source = _mask_typescript_non_code(
+        source, mask_template_literal_bodies=True
+    )
 
-    if "aarch64-apple-darwin" in source:
+    # Darwin targets must be admitted from a position-aware check that anchors on
+    # a token outside the string literal.  The downloader constructs both
+    # darwin targets in a single ternary, ``return arch === 'arm64' ?
+    # 'aarch64-apple-darwin' : 'x86_64-apple-darwin';``.  The first identifier
+    # in that needle is ``arch`` — an unquoted identifier — so the
+    # position-of-identifier check passes when the ternary is in real code
+    # and fails when the ternary is in a comment or regex literal.  Commented
+    # macOS target branches are therefore rejected while real darwin code is
+    # accepted.
+    darwin_ternary = (
+        "return arch === 'arm64' ? 'aarch64-apple-darwin' : 'x86_64-apple-darwin'"
+    )
+    if _has_executable_substring(source, executable_source, darwin_ternary):
         managed.add("aarch64-apple-darwin")
-    if "x86_64-apple-darwin" in source:
         managed.add("x86_64-apple-darwin")
     for constant, target in (
         ("WINDOWS_X64_TARGET", "x86_64-pc-windows-msvc"),
@@ -1079,7 +1339,9 @@ def derive_downloader_targets(source: str, workflow_targets: set[str]) -> set[st
             if executable_source[match.start() : match.start() + len("return")] == "return":
                 literal_return = True
                 break
-        constant_return = re.search(rf"return\s+{constant}\b", executable_source) is not None
+        constant_return = (
+            re.search(rf"return\s+{constant}\b", identifier_unsafe_source) is not None
+        )
         declared_target = False
         for match in re.finditer(
             rf"\b{constant}\s*=\s*(['\"]){re.escape(target)}\1", source
@@ -1090,11 +1352,14 @@ def derive_downloader_targets(source: str, workflow_targets: set[str]) -> set[st
         if literal_return or (declared_target and constant_return):
             managed.add(target)
 
-    constructs_linux_targets = (
-        "return `${archPrefix}-unknown-linux-${libc}`" in source
-        and "archPrefix = arch === 'arm64' ? 'aarch64' : 'x86_64'" in source
-        and "value === 'gnu'" in source
-        and "value === 'musl'" in source
+    constructs_linux_targets = all(
+        _has_executable_substring(source, executable_source, needle)
+        for needle in (
+            "return `${archPrefix}-unknown-linux-${libc}`",
+            "archPrefix = arch === 'arm64' ? 'aarch64' : 'x86_64'",
+            "value === 'gnu'",
+            "value === 'musl'",
+        )
     )
     if constructs_linux_targets:
         managed.update(
