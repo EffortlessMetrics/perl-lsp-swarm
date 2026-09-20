@@ -1476,7 +1476,7 @@ mod tests {
     }
 
     #[test]
-    fn root_checkout_on_real_master_branch_blocks_by_default() {
+    fn root_checkout_on_real_master_branch_blocks_by_default() -> Result<()> {
         // #15083: a real branch named `master` (distinct from the canonical
         // `main`) must not be silently accepted as canonical. The previous
         // hardcoded comparison against the literal `"master"` made a
@@ -1487,20 +1487,22 @@ mod tests {
         snapshot.is_root_checkout = true;
         snapshot.head.symbolic_ref = Some("refs/heads/master".to_string());
         let checks = run_checks(&snapshot, &default_config());
-        assert_eq!(
-            aggregate_verdict(&checks),
-            AdmissionVerdict::Block,
-            "{checks:?}"
-        );
-        assert!(
-            checks.iter().any(|c| c.name == "branch-worktree-mapping"
-                && c.status == CheckStatus::Block),
-            "expected branch-worktree-mapping check present and blocking: {checks:?}"
-        );
+        if aggregate_verdict(&checks) != AdmissionVerdict::Block {
+            color_eyre::eyre::bail!("expected aggregate Block, got {checks:?}");
+        }
+        if !checks
+            .iter()
+            .any(|c| c.name == "branch-worktree-mapping" && c.status == CheckStatus::Block)
+        {
+            color_eyre::eyre::bail!(
+                "expected branch-worktree-mapping check present and blocking: {checks:?}"
+            );
+        }
+        Ok(())
     }
 
     #[test]
-    fn root_checkout_on_master_passes_when_explicitly_listed_as_alternative() {
+    fn root_checkout_on_master_passes_when_explicitly_listed_as_alternative() -> Result<()> {
         // #15083: operators who genuinely run on a non-`main` canonical
         // branch (e.g., a `master` upstream) enumerate those names
         // explicitly via `canonical_base_alternatives`. The branch must
@@ -1511,15 +1513,14 @@ mod tests {
         let mut config = default_config();
         config.canonical_base_alternatives = vec!["master".to_string()];
         let checks = run_checks(&snapshot, &config);
-        let branch_check = checks
-            .iter()
-            .find(|c| c.name == "branch-worktree-mapping")
-            .expect("branch-worktree-mapping check present");
-        assert_eq!(
-            branch_check.status,
-            CheckStatus::Pass,
-            "{checks:?}"
-        );
+        let branch_check =
+            checks.iter().find(|c| c.name == "branch-worktree-mapping").ok_or_else(|| {
+                color_eyre::eyre::eyre!("branch-worktree-mapping check missing from {checks:?}")
+            })?;
+        if branch_check.status != CheckStatus::Pass {
+            color_eyre::eyre::bail!("expected branch check Pass, got {checks:?}");
+        }
+        Ok(())
     }
 
     #[test]
