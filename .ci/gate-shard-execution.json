@@ -40,6 +40,7 @@
     "docs_build": {"requires": [], "on_dependency_failure": "blocked_not_proven"},
     "adr_link_check": {"requires": [], "on_dependency_failure": "blocked_not_proven"},
     "non_rust_inventory_check": {"requires": [], "on_dependency_failure": "blocked_not_proven"},
+    "completion_candidate_ledger": {"requires": [], "on_dependency_failure": "blocked_not_proven"},
     "docs_agents_contract_workflows": {"requires": [], "on_dependency_failure": "blocked_not_proven"},
     "must_context_check": {"requires": [], "on_dependency_failure": "blocked_not_proven"},
     "lint_policy": {"requires": [], "on_dependency_failure": "blocked_not_proven"},

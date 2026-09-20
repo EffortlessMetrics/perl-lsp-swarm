@@ -1771,6 +1771,26 @@ gates:
       - docs
       - build
 
+  - name: completion_candidate_ledger
+    tier: merge_gate
+    # Wired here by #10949. Before that this check reached CI only as a side
+    # effect of one test inside `cargo test -p xtask`, so a drift presented as
+    # an xtask unit-test failure rather than as a named policy lane — which is
+    # how it survived two merges (#14573, #14897) unnoticed on `main`.
+    description: "Reconcile policy/completion-candidate-producers.toml against the live completion surface: every producer rowed, no forbidden disposition, no post-finalizer append, and the audit digest plus generated projection still bound to current source"
+    required: true
+    command: cargo xtask completion-candidates check
+    timeout_seconds: 120
+    retry_count: 0
+    budgets:
+      max_duration_ms: 90000
+    quarantine: false
+    tags:
+      - policy
+      - generated
+      - ledger
+      - completion
+
   - name: non_rust_inventory_check
     tier: merge_gate
     description: "Classify the current tracked tree, emit retained inventory evidence, and reject newly added unclassified paths"
@@ -2673,6 +2693,7 @@ workflow_integration:
         - pull_diagnostics_freshness
         - docs_build
         - non_rust_inventory_check
+        - completion_candidate_ledger
         - v2_bundle_sync
         - nested_lock_check
         - doctest_contract_proof
