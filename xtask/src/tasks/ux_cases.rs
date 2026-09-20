@@ -24,6 +24,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -71,6 +72,11 @@ const POLL_INTERVAL: Duration = Duration::from_millis(50);
 #[derive(Clone, Copy)]
 struct RunBound {
     wall: Duration,
+    /// Ceiling on *collecting* the pipes once the child has exited or been
+    /// killed. Separate from `wall` because a child's exit does not close a pipe
+    /// a descendant still holds — `cargo` exiting does not close the handle its
+    /// `rustc` inherited — so waiting for EOF is its own unbounded operation.
+    collect: Duration,
     stdout_limit: usize,
     stderr_limit: usize,
 }
@@ -80,6 +86,7 @@ impl RunBound {
     /// considerably longer cold — and emits a JSON message per unit.
     const COMPILE: Self = Self {
         wall: Duration::from_hours(1),
+        collect: Duration::from_mins(5),
         stdout_limit: 256 * 1024 * 1024,
         stderr_limit: 64 * 1024 * 1024,
     };
@@ -87,12 +94,14 @@ impl RunBound {
     /// listing still running after minutes is not listing.
     const LIST: Self = Self {
         wall: Duration::from_mins(5),
+        collect: Duration::from_mins(1),
         stdout_limit: 64 * 1024 * 1024,
         stderr_limit: 8 * 1024 * 1024,
     };
     /// `git` and `rustc` subject probes answer immediately or not at all.
     const PROBE: Self = Self {
         wall: Duration::from_mins(1),
+        collect: Duration::from_secs(15),
         stdout_limit: 8 * 1024 * 1024,
         stderr_limit: 1024 * 1024,
     };
@@ -114,8 +123,23 @@ enum RunRefused {
     TimedOut { wall: Duration, reaped: bool },
     /// A stream exceeded its retention ceiling.
     Overflowed { stream: &'static str, limit: usize, reaped: bool },
+    /// A stream did not reach EOF within the collection ceiling, which a
+    /// descendant holding the pipe can cause even after the child has exited.
+    CollectionTimedOut { stream: &'static str, collect: Duration },
+    /// A stream could not be read to completion.
+    ReaderFailed { stream: &'static str, detail: String },
     /// The child could not be waited on.
     Wait(std::io::Error),
+}
+
+/// What one drain thread concluded about its stream.
+enum StreamOutcome {
+    /// Reached EOF inside its ceiling; every byte written is retained.
+    Complete(Vec<u8>),
+    /// Exceeded the retention ceiling, so no prefix is trustworthy.
+    Overflowed,
+    /// Could not be read to completion.
+    Failed(String),
 }
 
 impl RunRefused {
@@ -138,6 +162,16 @@ impl RunRefused {
                  a truncated stream cannot be trusted to list every case",
                 if *reaped { "child reaped" } else { "child could not be reaped" }
             ),
+            Self::CollectionTimedOut { stream, collect } => format!(
+                "`{source}` left {stream} open past its {}s collection ceiling, which a surviving \
+                 descendant holding the pipe can cause even after the command itself exited; \
+                 the stream is incomplete and cannot be trusted to list every case",
+                collect.as_secs()
+            ),
+            Self::ReaderFailed { stream, detail } => format!(
+                "`{source}` could not be read to completion on {stream} ({detail}); \
+                 a partial stream cannot be trusted to list every case"
+            ),
             Self::Wait(error) => format!("`{source}` could not be waited on: {error}"),
         }
     }
@@ -150,17 +184,29 @@ impl RunRefused {
 /// it. The retained prefix is *discarded* on overflow rather than truncated,
 /// because a short identity-bearing stream would yield a short case list — the
 /// silent-shrinkage outcome this module exists to make impossible.
+/// The flag is set the moment the ceiling trips, so the polling parent can kill
+/// a runaway child without waiting for EOF; the outcome is *also* sent at EOF,
+/// so a finite over-limit writer that exits before the next poll is still
+/// refused. A read error is reported rather than swallowed, because a partial
+/// stream and a complete one are indistinguishable once the error is dropped.
 fn drain_bounded<R: std::io::Read + Send + 'static>(
     mut stream: R,
     limit: usize,
     overflowed: Arc<AtomicBool>,
-) -> thread::JoinHandle<Vec<u8>> {
+    outcome: mpsc::Sender<StreamOutcome>,
+) {
     thread::spawn(move || {
         let mut retained: Vec<u8> = Vec::new();
         let mut buf = [0_u8; 8192];
-        loop {
+        let concluded = loop {
             match stream.read(&mut buf) {
-                Ok(0) | Err(_) => break,
+                Ok(0) => {
+                    break if overflowed.load(Ordering::Relaxed) {
+                        StreamOutcome::Overflowed
+                    } else {
+                        StreamOutcome::Complete(retained)
+                    };
+                }
                 Ok(read) => {
                     if overflowed.load(Ordering::Relaxed) {
                         continue;
@@ -172,16 +218,59 @@ fn drain_bounded<R: std::io::Read + Send + 'static>(
                         retained.extend_from_slice(&buf[..read]);
                     }
                 }
+                Err(error) => break StreamOutcome::Failed(error.to_string()),
             }
-        }
-        retained
-    })
+        };
+        // The receiver is gone when collection already timed out; the send
+        // failing is that case and carries no further information.
+        let _ = outcome.send(concluded);
+    });
 }
 
-/// Run one child under a wall-clock and per-stream output ceiling.
+/// Collect one stream's outcome within the remaining collection budget.
+///
+/// Bounded rather than joined: a `JoinHandle` has no timed wait, and the thread
+/// cannot reach EOF while any process still holds the write end. On timeout the
+/// reader is abandoned — see the note on [`run_bounded`].
+fn collect_stream(
+    outcome: &mpsc::Receiver<StreamOutcome>,
+    stream: &'static str,
+    limit: usize,
+    deadline: Instant,
+    collect: Duration,
+    reaped: bool,
+) -> Result<Vec<u8>, RunRefused> {
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    match outcome.recv_timeout(remaining) {
+        Ok(StreamOutcome::Complete(bytes)) => Ok(bytes),
+        Ok(StreamOutcome::Overflowed) => Err(RunRefused::Overflowed { stream, limit, reaped }),
+        Ok(StreamOutcome::Failed(detail)) => Err(RunRefused::ReaderFailed { stream, detail }),
+        Err(_) => Err(RunRefused::CollectionTimedOut { stream, collect }),
+    }
+}
+
+/// Run one child under a wall-clock ceiling, a per-stream output ceiling, and a
+/// separate ceiling on collecting the pipes afterwards.
 ///
 /// Both pipes are drained concurrently, so neither can deadlock the other, and
 /// the child is killed and reaped when either ceiling trips.
+///
+/// **The whole operation is bounded, not just the child wait.** A child's exit
+/// does not close a pipe a descendant inherited, so EOF is not guaranteed by
+/// killing or reaping the child — `cargo` exiting leaves its `rustc` holding the
+/// handle. Collection is therefore bounded by `RunBound::collect` and the reader
+/// is abandoned on timeout rather than joined.
+///
+/// **Declared residue:** an abandoned reader is a detached thread holding a pipe
+/// until the surviving descendant closes it, and that descendant is not reaped
+/// here. Discovery runs as a short-lived command and reports the condition as a
+/// typed failure, so the residue is bounded by the process lifetime; killing a
+/// descendant process group portably is deliberately not attempted.
+///
+/// **A stream problem outranks the child's exit status.** An overflowed,
+/// unreadable, or uncollectable stream is refused even when the child exited
+/// zero: the alternative is handing the caller a short listing that parses as a
+/// smaller case population.
 fn run_bounded(command: &mut Command, bound: RunBound) -> Result<BoundedOutput, RunRefused> {
     let mut child = command
         .stdin(Stdio::null())
@@ -192,14 +281,14 @@ fn run_bounded(command: &mut Command, bound: RunBound) -> Result<BoundedOutput, 
 
     let stdout_over = Arc::new(AtomicBool::new(false));
     let stderr_over = Arc::new(AtomicBool::new(false));
-    let stdout_reader = child
-        .stdout
-        .take()
-        .map(|stream| drain_bounded(stream, bound.stdout_limit, Arc::clone(&stdout_over)));
-    let stderr_reader = child
-        .stderr
-        .take()
-        .map(|stream| drain_bounded(stream, bound.stderr_limit, Arc::clone(&stderr_over)));
+    let (stdout_tx, stdout_rx) = mpsc::channel();
+    let (stderr_tx, stderr_rx) = mpsc::channel();
+    if let Some(stream) = child.stdout.take() {
+        drain_bounded(stream, bound.stdout_limit, Arc::clone(&stdout_over), stdout_tx);
+    }
+    if let Some(stream) = child.stderr.take() {
+        drain_bounded(stream, bound.stderr_limit, Arc::clone(&stderr_over), stderr_tx);
+    }
 
     let started = Instant::now();
     let mut exited: Option<std::process::ExitStatus> = None;
@@ -239,14 +328,35 @@ fn run_bounded(command: &mut Command, bound: RunBound) -> Result<BoundedOutput, 
         thread::sleep(POLL_INTERVAL);
     }
 
-    // Kill before joining: the readers only reach EOF once the child's pipes
-    // close, which a hung child will never do on its own.
+    // Kill before collecting: a child still running will not close its pipes, so
+    // the readers cannot reach EOF while it lives.
     let reaped = match refusal {
         Some(_) => child.kill().is_ok() && child.wait().is_ok(),
         None => true,
     };
-    let stdout = stdout_reader.and_then(|handle| handle.join().ok()).unwrap_or_default();
-    let stderr = stderr_reader.and_then(|handle| handle.join().ok()).unwrap_or_default();
+
+    // Collection is its own bounded phase. Stream problems are evaluated before
+    // the exit status precisely because `try_wait` can observe a clean exit while
+    // a stream was already ruined — a finite writer that crosses its ceiling and
+    // exits before the next poll is the case that reaches here with
+    // `exited == Some(0)` and an empty buffer.
+    let collect_deadline = Instant::now() + bound.collect;
+    let stdout = collect_stream(
+        &stdout_rx,
+        "stdout",
+        bound.stdout_limit,
+        collect_deadline,
+        bound.collect,
+        reaped,
+    )?;
+    let stderr = collect_stream(
+        &stderr_rx,
+        "stderr",
+        bound.stderr_limit,
+        collect_deadline,
+        bound.collect,
+        reaped,
+    )?;
 
     match (exited, refusal) {
         (Some(status), _) => Ok(BoundedOutput { status, stdout, stderr }),
@@ -833,6 +943,7 @@ mod tests {
     fn generous_bound() -> RunBound {
         RunBound {
             wall: Duration::from_secs(30),
+            collect: Duration::from_secs(5),
             stdout_limit: 8 * 1024 * 1024,
             stderr_limit: 8 * 1024 * 1024,
         }
@@ -935,6 +1046,74 @@ mod tests {
             output.stderr.len()
         );
         Ok(())
+    }
+
+    #[test]
+    fn a_finite_overflowing_child_is_refused_even_though_it_exits_cleanly() {
+        // The infinite-writer control never lets the child exit, so it only ever
+        // reaches the overflow branch through the polling loop. A *finite* writer
+        // that crosses the ceiling and then exits promptly takes the other path:
+        // `try_wait` observes the exit first. The retained buffer was cleared on
+        // overflow, so reporting success here hands the caller an empty listing —
+        // a silently smaller denominator, which is the outcome this module exists
+        // to make impossible.
+        let bound = RunBound { stdout_limit: 64, ..generous_bound() };
+        let outcome = run_bounded(
+            Command::new("sh")
+                .arg("-c")
+                .arg("i=0; while [ $i -lt 400 ]; do echo overflowing; i=$((i+1)); done"),
+            bound,
+        );
+
+        match outcome {
+            Err(RunRefused::Overflowed { stream, limit, .. }) => {
+                assert_eq!(stream, "stdout");
+                assert_eq!(limit, 64);
+            }
+            Err(other) => panic!("expected an overflow, got: {}", other.reason("finite writer")),
+            Ok(output) => panic!(
+                "a child that crossed its output ceiling must not report success; \
+                 status {:?}, retained {} bytes",
+                output.status.code(),
+                output.stdout.len()
+            ),
+        }
+    }
+
+    #[test]
+    fn a_descendant_holding_a_pipe_cannot_outlast_the_ceiling() {
+        // The direct child exits immediately but leaves a grandchild holding the
+        // write end of stdout, so the pipe never reaches EOF on the child's exit.
+        // This is the real shape of `cargo` spawning `rustc`, not a contrivance:
+        // waiting on the reader is therefore unbounded even though waiting on the
+        // child is bounded.
+        let bound = RunBound {
+            wall: Duration::from_millis(300),
+            collect: Duration::from_millis(400),
+            ..generous_bound()
+        };
+        let started = Instant::now();
+        let outcome = run_bounded(Command::new("sh").arg("-c").arg("sleep 30 & exit 0"), bound);
+        let elapsed = started.elapsed();
+
+        match outcome {
+            Err(RunRefused::CollectionTimedOut { stream, collect }) => {
+                assert_eq!(stream, "stdout");
+                assert_eq!(collect, Duration::from_millis(400));
+            }
+            Err(other) => {
+                panic!("expected a collection timeout, got: {}", other.reason("descendant"))
+            }
+            Ok(output) => panic!(
+                "an incomplete stream must not report success; status {:?}, {} bytes",
+                output.status.code(),
+                output.stdout.len()
+            ),
+        }
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "collection must be bounded by the ceiling, not by the descendant; took {elapsed:?}"
+        );
     }
 
     #[test]
