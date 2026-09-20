@@ -1753,6 +1753,45 @@
       "notes": null
     },
     {
+      "id": "ripr/ripr-fallback/1",
+      "workflow": "ripr.yml",
+      "job": "ripr-fallback",
+      "step_name": "Restore ripr fact cache",
+      "action": "actions/cache/restore",
+      "action_ref": "55cc8345863c7cc4c66a329aec7e433d2d1c52a9",
+      "capability": "restore_only",
+      "trigger_event_set": [
+        "merge_group",
+        "pull_request",
+        "push",
+        "schedule",
+        "workflow_dispatch"
+      ],
+      "candidate_event_reachability": "reachable",
+      "executed_subject": "candidate",
+      "job_condition": "always() && needs.route-ripr.result == 'success' && needs.route-ripr.outputs.target == 'selfhosted' && needs.ripr-selfhosted.result == 'failure' && needs.ripr-selfhosted.outputs.preflight_ok == 'false'",
+      "step_condition": null,
+      "save_condition": null,
+      "save_authority_source": "absent",
+      "payload_class": "other",
+      "cached_paths": [
+        "${{ runner.temp }}/ripr-facts"
+      ],
+      "key_dimensions": {
+        "key": "ripr-facts-${{ env.RIPR_VERSION }}-${{ github.sha }}",
+        "shared_key": null,
+        "restore_keys": [
+          "ripr-facts-${{ env.RIPR_VERSION }}-"
+        ]
+      },
+      "key_authority": "mixed",
+      "cached_byte_provenance": "not_proven",
+      "artifact_provenance": null,
+      "writer_disposition": "restore_only",
+      "repair_owner": null,
+      "notes": null
+    },
+    {
       "id": "ripr/ripr-github/0",
       "workflow": "ripr.yml",
       "job": "ripr-github",
@@ -1788,6 +1827,45 @@
       "notes": null
     },
     {
+      "id": "ripr/ripr-github/1",
+      "workflow": "ripr.yml",
+      "job": "ripr-github",
+      "step_name": "Restore ripr fact cache",
+      "action": "actions/cache/restore",
+      "action_ref": "55cc8345863c7cc4c66a329aec7e433d2d1c52a9",
+      "capability": "restore_only",
+      "trigger_event_set": [
+        "merge_group",
+        "pull_request",
+        "push",
+        "schedule",
+        "workflow_dispatch"
+      ],
+      "candidate_event_reachability": "reachable",
+      "executed_subject": "candidate",
+      "job_condition": "needs.route-ripr.result == 'success' && needs.route-ripr.outputs.target == 'github' && needs.route-ripr.outputs.fallback_allowed == 'true'",
+      "step_condition": null,
+      "save_condition": null,
+      "save_authority_source": "absent",
+      "payload_class": "other",
+      "cached_paths": [
+        "${{ runner.temp }}/ripr-facts"
+      ],
+      "key_dimensions": {
+        "key": "ripr-facts-${{ env.RIPR_VERSION }}-${{ github.sha }}",
+        "shared_key": null,
+        "restore_keys": [
+          "ripr-facts-${{ env.RIPR_VERSION }}-"
+        ]
+      },
+      "key_authority": "mixed",
+      "cached_byte_provenance": "not_proven",
+      "artifact_provenance": null,
+      "writer_disposition": "restore_only",
+      "repair_owner": null,
+      "notes": null
+    },
+    {
       "id": "ripr/seed-cache/0",
       "workflow": "ripr.yml",
       "job": "seed-cache",
@@ -1813,6 +1891,43 @@
       "key_dimensions": {
         "key": null,
         "shared_key": "ripr-${{ env.RIPR_VERSION }}",
+        "restore_keys": null
+      },
+      "key_authority": "trusted",
+      "cached_byte_provenance": "trusted_tree",
+      "artifact_provenance": null,
+      "writer_disposition": "statically_excluded",
+      "repair_owner": null,
+      "notes": null
+    },
+    {
+      "id": "ripr/seed-cache/1",
+      "workflow": "ripr.yml",
+      "job": "seed-cache",
+      "step_name": "Save ripr fact cache",
+      "action": "actions/cache/save",
+      "action_ref": "55cc8345863c7cc4c66a329aec7e433d2d1c52a9",
+      "capability": "save_only",
+      "trigger_event_set": [
+        "merge_group",
+        "pull_request",
+        "push",
+        "schedule",
+        "workflow_dispatch"
+      ],
+      "candidate_event_reachability": "statically_excluded",
+      "executed_subject": "candidate",
+      "job_condition": "(github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.seed_cache == true)) && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main')",
+      "step_condition": "(github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.seed_cache == true)) && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main')",
+      "save_condition": "(github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.seed_cache == true)) && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main')",
+      "save_authority_source": "job_static_exclusion",
+      "payload_class": "other",
+      "cached_paths": [
+        "${{ runner.temp }}/ripr-facts"
+      ],
+      "key_dimensions": {
+        "key": "ripr-facts-${{ env.RIPR_VERSION }}-${{ github.sha }}",
+        "shared_key": null,
         "restore_keys": null
       },
       "key_authority": "trusted",
