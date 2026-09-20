@@ -25,9 +25,15 @@ on:
 permissions:
   contents: read
 
+# Serialized per ref, but never cancelled. A push-to-main lane that cancels
+# its predecessor produces no measurement for the superseded commit, which
+# is the gap this lane exists to close: drift would then be dated to whichever
+# commit happened to be last in a burst rather than to the one that introduced
+# it. `workflow-policy-lint` enforces this for truth runs
+# (`BLANKET_CANCEL_IN_PROGRESS`).
 concurrency:
   group: content-anchored-baselines-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   measure:
