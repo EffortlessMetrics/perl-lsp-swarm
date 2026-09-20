@@ -692,15 +692,13 @@ impl<'a> Parser<'a> {
             }
         }
 
-        // A contextual repetition `x` after an expression is a potential infix
-        // continuation, not unexpected residue: `$value x` may still form
-        // repetition, and the repetition tests pin the split-statement
-        // silence for trivia-separated `x =` (`whitespace_does_not_form_`
-        // `repetition_assignment`, #13179). The statement loop resolves the
-        // leftover exactly as before. (The lexer keeps `x` contextual, so it
-        // arrives here as `Identifier("x")`; see `consume_assignment_operator`.)
+        // The contextual infix owner distinguishes an invalid operand from a
+        // continuation it cannot parse. Do not turn its unsupported operand
+        // forms into fabricated syntax errors, or let an invalid operand
+        // masquerade as a second clean statement.
         if self.peek_kind() == Some(TokenKind::Identifier)
             && self.tokens.peek().is_ok_and(|token| token.text.as_ref() == "x")
+            && self.repetition_rhs_disposition()? != RepetitionRhsDisposition::InvalidOperand
         {
             return Ok(());
         }

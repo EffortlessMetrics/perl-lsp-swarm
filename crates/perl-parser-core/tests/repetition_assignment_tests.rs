@@ -141,12 +141,8 @@ fn whitespace_does_not_form_repetition_assignment() -> Result<(), String> {
     if find_assignment(&output.ast, "x=").is_some() {
         return Err(format!("spaced x = must not be normalized to x=:\n{}", output.ast.to_sexp()));
     }
-    // The claim is only that spaced `x =` stays outside the operator, not
-    // that the parser diagnoses the same-line leftover: statement-terminator
-    // enforcement deliberately ignores same-line trailing tokens, so the
-    // source parses as the variable expression followed by an ordinary `x =
-    // 3` assignment with no repetition diagnostic. Pin that exact shape so
-    // the test cannot pass vacuously on some future unrelated acceptance.
+    // The operator contract rejects normalization, while statement recovery
+    // exposes the invalid leftover. Preserve the useful partial statements.
     let NodeKind::Program { statements, .. } = &output.ast.kind else {
         return Err(format!("expected program root, got {:?}", output.ast.kind));
     };
@@ -156,10 +152,16 @@ fn whitespace_does_not_form_repetition_assignment() -> Result<(), String> {
             output.ast.to_sexp()
         ));
     }
-    if !output.diagnostics.is_empty() {
+    if !matches!(
+        output.diagnostics.as_slice(),
+        [ParseError::Recovered {
+            site: RecoverySite::Statement,
+            kind: RecoveryKind::UnexpectedSameLineResidue,
+            location: 7,
+        }]
+    ) {
         return Err(format!(
-            "same-line leftover enforcement is owned by statement termination, not the \
-             repetition operator; expected no repetition diagnostic, got {:?}",
+            "expected one residual recovery at contextual x, got {:?}",
             output.diagnostics
         ));
     }
@@ -410,10 +412,8 @@ fn repetition_assignment_rejects_trivia_between_x_and_equals() -> Result<(), Str
     // Real Perl trivia between `x` and `=` is whitespace or a `#` line
     // comment. Perl 5.38.2 syntax-errors these sources (`near "x ="`,
     // `near "x\n="`, `near "x # separated\n="`) and never forms `x=`.
-    // The native parser currently splits them into two statements with no
-    // diagnostics: statement termination owns the leftover `= 3`. Pin that
-    // exact shape so the test cannot pass vacuously on a future hard parse
-    // error or by normalizing trivia into `x=`.
+    // Statement termination diagnoses the invalid continuation while keeping
+    // the useful partial statements and never normalizing trivia into `x=`.
     //
     // `/* ... */` is not trivia. Perl has no C comments; after infix `x` a
     // `/` opens a bare regex. That boundary is
@@ -436,9 +436,16 @@ fn repetition_assignment_rejects_trivia_between_x_and_equals() -> Result<(), Str
                 ast.to_sexp()
             ));
         }
-        if !parser.get_errors().is_empty() {
+        if !matches!(
+            parser.get_errors(),
+            [ParseError::Recovered {
+                site: RecoverySite::Statement,
+                kind: RecoveryKind::UnexpectedSameLineResidue,
+                location: 7,
+            }]
+        ) {
             return Err(format!(
-                "expected no diagnostics for real Perl trivia {source:?}, got {:?}",
+                "expected residual diagnostic for invalid trivia-separated operator {source:?}, got {:?}",
                 parser.get_errors()
             ));
         }

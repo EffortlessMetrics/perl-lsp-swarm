@@ -214,16 +214,160 @@ fn perl_compile_accepts(source: &str) -> Result<Option<bool>, String> {
 
 #[test]
 fn invalid_same_line_residue_is_not_clean() -> Result<(), String> {
-    // NOTE: `$value x = 3;` is NOT in this list even though real Perl
-    // rejects it: a contextual `x` is a potential repetition continuation,
-    // and `whitespace_does_not_form_repetition_assignment` (#13179) pins
-    // the split-statement silence. Flagging it here would override that
-    // deliberate pin; that contract change belongs to its own claim.
-    for (source, token) in
-        [("use strict; my $x = 1 print \"hi\";", "print"), ("use strict; my $x = 1; 1 2;", "2")]
-    {
+    for (source, token) in [
+        ("use strict; my $x = 1 print \"hi\";", "print"),
+        ("use strict; my $x = 1; 1 2;", "2"),
+        ("$value x = 3;", "x"),
+    ] {
         assert_non_clean(source)?;
         assert_same_line_residual_at(source, token)?;
+    }
+    Ok(())
+}
+
+/// The issue's language contract includes all three rejected oracle rows.
+/// A historical two-statement AST pin must not make invalid Perl clean.
+#[test]
+fn required_invalid_oracle_rows_cannot_parse_clean() -> Result<(), String> {
+    for source in
+        ["use strict; my $x = 1 print \"hi\";", "use strict; my $x = 1; 1 2;", "$value x = 3;"]
+    {
+        let output = Parser::new(source).parse_with_recovery();
+        if !output.diagnostics.iter().any(ParseError::blocks_clean_parse) {
+            return Err(format!(
+                "required invalid oracle row must produce a blocking diagnostic:\nsource={source:?}\nast={}\ndiagnostics={:?}",
+                output.ast.to_sexp(),
+                output.diagnostics,
+            ));
+        }
+        if find_assignment(&output.ast, "x=").is_some() {
+            return Err(format!(
+                "residue recovery must not invent contiguous x= from spaced tokens:\n{}",
+                output.ast.to_sexp(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn missing_repetition_operand_is_non_clean_and_preserves_later_statement() -> Result<(), String> {
+    let source = "my $value = \"x\" x ; print \"after\";";
+    let output = Parser::new(source).parse_with_recovery();
+    if !output.diagnostics.iter().any(ParseError::blocks_clean_parse) {
+        return Err(format!("missing repetition operand returned clean: {}", output.ast.to_sexp()));
+    }
+    let NodeKind::Program { statements } = &output.ast.kind else {
+        return Err("expected a partial program".to_string());
+    };
+    if !matches!(statements.last().map(|node| &node.kind), Some(NodeKind::ExpressionStatement { expression })
+        if matches!(&expression.kind, NodeKind::FunctionCall { name, .. } if name == "print"))
+    {
+        return Err(format!("lost later print statement: {}", output.ast.to_sexp()));
+    }
+    Ok(())
+}
+
+#[test]
+fn missing_repetition_operands_keep_typed_recovery_at_each_boundary() -> Result<(), String> {
+    for (source, owner, expected_statements) in [
+        ("\"x\" x", "direct", 1),
+        ("\"x\" x;", "direct", 1),
+        ("foo(\"x\" x); print \"after\";", "call", 2),
+        ("[\"x\" x]; print \"after\";", "array", 2),
+        ("do { \"x\" x }; print \"after\";", "do", 2),
+    ] {
+        let expected = source.find(" x").ok_or("missing fixture operator")? + 1;
+        let output = Parser::new(source).parse_with_recovery();
+        if !matches!(output.diagnostics.as_slice(), [ParseError::Recovered {
+            site: RecoverySite::InfixRhs,
+            kind: RecoveryKind::MissingOperand,
+            location,
+        }] if *location == expected)
+            || !has_recovery_node(&output.ast)
+        {
+            return Err(format!(
+                "expected only missing-operand recovery at {expected} for {source:?}: {} {:?}",
+                output.ast.to_sexp(),
+                output.diagnostics,
+            ));
+        }
+        let NodeKind::Program { statements } = &output.ast.kind else {
+            return Err("expected recovered program".to_string());
+        };
+        let expression = first_expression(&output.ast).ok_or("lost first expression")?;
+        let operand = match (owner, &expression.kind) {
+            ("call", NodeKind::FunctionCall { name, args }) if name == "foo" && args.len() == 1 => {
+                args.first()
+            }
+            ("array", NodeKind::ArrayLiteral { elements }) if elements.len() == 1 => {
+                elements.first()
+            }
+            ("do", NodeKind::Do { block }) => {
+                let NodeKind::Block { statements: body } = &block.kind else {
+                    return Err("lost do block".to_string());
+                };
+                let Some(Node { kind: NodeKind::ExpressionStatement { expression }, .. }) =
+                    body.first()
+                else {
+                    return Err("lost do block expression".to_string());
+                };
+                if body.len() != 1 {
+                    return Err("split repetition inside do block".to_string());
+                }
+                Some(expression.as_ref())
+            }
+            ("direct", _) => Some(expression),
+            _ => return Err(format!("lost required {owner} owner: {}", output.ast.to_sexp())),
+        };
+        if statements.len() != expected_statements
+            || !matches!(operand.map(|node| &node.kind), Some(NodeKind::Binary { op, right, .. })
+                if op == "x" && matches!(right.kind, NodeKind::MissingExpression))
+            || (expected_statements == 2
+                && !matches!(statements.last().map(|node| &node.kind), Some(NodeKind::ExpressionStatement { expression })
+                    if matches!(&expression.kind, NodeKind::FunctionCall { name, args }
+                        if name == "print" && args.len() == 1
+                            && expression.location.start == source.find("print").unwrap_or(usize::MAX)
+                            && args.first().is_some_and(|arg| source.get(arg.location.start..arg.location.end) == Some("\"after\"")))))
+        {
+            return Err(format!(
+                "lost repetition owner or suffix for {source:?}: {}",
+                output.ast.to_sexp()
+            ));
+        }
+        let repeated = Parser::new(source).parse_with_recovery();
+        if output.ast.to_sexp() != repeated.ast.to_sexp()
+            || format!("{:?}", output.diagnostics) != format!("{:?}", repeated.diagnostics)
+        {
+            return Err(format!("non-deterministic operand recovery for {source:?}"));
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn contextual_repetition_stops_preserve_valid_and_unsupported_boundaries() -> Result<(), String> {
+    for source in [
+        "x;",
+        "x",
+        "x();",
+        "Pkg::x();",
+        "$obj->x();",
+        "$h{x};",
+        "my $value = 'a' x 3;",
+        "my $value = 'a' x __PACKAGE__;",
+        "my $value = 'a' x count();",
+        "print $fh \"message\" or die $!;",
+        "open my $fh, '<', $path or die $!;",
+        "$value = 'a' x 3 if $enabled;",
+    ] {
+        assert_valid_case(source);
+    }
+    // These operand forms remain parser limitations, not a reason to
+    // fabricate a same-line user syntax error. Full limitation reporting
+    // remains part of #13489 rather than this bounded repetition repair.
+    for source in ["my $value = 'a' x <>;", "my $value = 'a' x <STDIN>;"] {
+        assert_no_same_line_residual(source)?;
     }
     Ok(())
 }
@@ -250,12 +394,8 @@ fn spaced_repetition_tokens_are_not_rewritten_to_x_assign() -> Result<(), String
     if find_assignment(&output.ast, "x=").is_some() {
         return Err(format!("spaced x = must not be normalized to x=:\n{}", output.ast.to_sexp()));
     }
-    // The "must expose its invalid residual token" half of this test cannot
-    // hold: a contextual `x` is a potential repetition continuation, and
-    // `whitespace_does_not_form_repetition_assignment` (#13179) pins the
-    // silent split-statement shape. The guard that remains is the operator
-    // contract (no `x=` normalization) plus the exact pinned shape, so the
-    // test still fails on a future hard error or a vacuous acceptance.
+    // Recovery preserves the partial statements but cannot report clean
+    // support for spaced tokens that do not form the assignment operator.
     let NodeKind::Program { statements, .. } = &output.ast.kind else {
         return Err(format!("expected program root, got {:?}", output.ast.kind));
     };
@@ -265,14 +405,7 @@ fn spaced_repetition_tokens_are_not_rewritten_to_x_assign() -> Result<(), String
             output.ast.to_sexp()
         ));
     }
-    if !output.diagnostics.is_empty() {
-        return Err(format!(
-            "same-line residue enforcement leaves contextual `x` alone per #13179; \
-             expected no diagnostics, got {:?}",
-            output.diagnostics
-        ));
-    }
-    Ok(())
+    assert_same_line_residual_at(source, "x")
 }
 
 #[test]
@@ -609,9 +742,7 @@ fn real_perl_oracle_agrees_on_supported_continuations_and_residue() -> Result<()
         }
     }
 
-    // NOTE: `$value x = 3;` is not in this list (same #13179 rationale as
-    // above): the contextual `x` keeps the parse clean by deliberate pin.
-    for source in ["my $x = 1 print \"hi\";", "my $x = 1 2;"] {
+    for source in ["my $x = 1 print \"hi\";", "my $x = 1 2;", "$value x = 3;"] {
         if perl_compile_accepts(source)? == Some(true) {
             return Err(format!("real Perl unexpectedly accepted invalid residue: {source:?}"));
         }
@@ -657,6 +788,22 @@ fn valid_class_method_source_does_not_gain_a_false_semicolon_error() -> Result<(
         "class C { method m { 1 } }\n",
     );
     assert_valid_case(source);
+    let output = Parser::new(source).parse_with_recovery();
+    let NodeKind::Program { statements } = &output.ast.kind else {
+        return Err("expected program containing class".to_string());
+    };
+    let Some(Node { kind: NodeKind::Class { name, body, .. }, .. }) = statements.last() else {
+        return Err(format!("expected final class declaration: {}", output.ast.to_sexp()));
+    };
+    let NodeKind::Block { statements: members } = &body.kind else {
+        return Err(format!("expected class block: {}", body.to_sexp()));
+    };
+    if name != "C"
+        || members.len() != 1
+        || !matches!(members.first().map(|node| &node.kind), Some(NodeKind::Method { name, .. }) if name == "m")
+    {
+        return Err(format!("method must remain a direct class member: {}", output.ast.to_sexp()));
+    }
     Ok(())
 }
 
