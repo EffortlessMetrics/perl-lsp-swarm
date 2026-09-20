@@ -134,6 +134,19 @@ fn ignored_test_issue_reference_gate_is_required_on_prs() {
             && summary_step.contains("exit_code"),
         "PR Smoke must publish failing gate names and exit codes in the job summary"
     );
+    // The pr-fast receipt producer (GateResult in xtask/src/tasks/gates.rs)
+    // serializes its identifier as `gate_name`, not `name`: reading `name`
+    // renders every failing gate as `unknown` and defeats the summary's
+    // diagnostic purpose (#15492 review thread).
+    let producer = must(fs::read_to_string(root.join("xtask/src/tasks/gates.rs")));
+    assert!(
+        producer.contains("pub gate_name: String"),
+        "GateResult must keep serializing its identifier as `gate_name`"
+    );
+    assert!(
+        summary_step.contains("gate.get('gate_name'"),
+        "PR Smoke summary must read the producer's `gate_name` field, not `name`"
+    );
 }
 
 #[test]

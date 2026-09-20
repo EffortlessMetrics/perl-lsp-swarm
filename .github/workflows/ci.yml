@@ -998,7 +998,7 @@ jobs:
                       lines.append("| --- | --- | ---: |")
                       for gate in failures:
                           lines.append(
-                              f"| `{gate.get('name', 'unknown')}` | "
+                              f"| `{gate.get('gate_name', 'unknown')}` | "
                               f"`{gate.get('status', 'unknown')}` | "
                               f"`{gate.get('exit_code', 'unknown')}` |"
                           )
