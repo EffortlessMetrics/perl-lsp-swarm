@@ -316,7 +316,7 @@ mod tests {
     }
 
     #[test]
-    fn classify_deadline_expiry_before_provider_assertion_as_timeout() {
+    fn classify_deadline_expiry_before_provider_assertion_as_timeout() -> Result<()> {
         let log = "running 1 test\n\
 test scenario_52_test_inline_completion_quality_receipt ... FAILED\n\
 wait_for_diagnostics ended without a match: deadline expired after 30000ms with the stream still live\n\
@@ -324,14 +324,22 @@ assertion failed: expected inline completion\n\
 test result: FAILED. 0 passed; 1 failed";
         let receipt = classify(log, Some("sha-deadline".to_string()));
 
-        assert!(
-            matches!(receipt.failure_class, UxFailureClass::Timeout),
-            "explicit deadline expiry must not be misclassified as provider regression: {:?}",
-            receipt.failure_class
-        );
-        assert_eq!(receipt.route, UxRoute::TimeoutTriage);
-        assert_eq!(receipt.merge_action, "triage_timeout");
-        assert!(receipt.blocking);
+        if !matches!(receipt.failure_class, UxFailureClass::Timeout) {
+            color_eyre::eyre::bail!(
+                "explicit deadline expiry must not be misclassified as provider regression: {:?}",
+                receipt.failure_class
+            );
+        }
+        if receipt.route != UxRoute::TimeoutTriage {
+            color_eyre::eyre::bail!("deadline expiry routed to {:?}", receipt.route);
+        }
+        if receipt.merge_action != "triage_timeout" {
+            color_eyre::eyre::bail!("deadline expiry merge action was {:?}", receipt.merge_action);
+        }
+        if !receipt.blocking {
+            color_eyre::eyre::bail!("deadline expiry receipt must be blocking");
+        }
+        Ok(())
     }
 
     #[test]
