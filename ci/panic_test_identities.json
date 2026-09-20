@@ -5265,6 +5265,24 @@
       "selector_identity": "invocation:a52b97bd0d311a5d:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
       "state": "active"
+    },
+    {
+      "path": "crates/perl-core-harness/src/invocation_trace/test_support.rs",
+      "enclosing_test_or_function": "emit",
+      "macro_family": "panic!",
+      "normalized_snippet": ".unwrap_or_else(|error| panic!(\"fixture header must serialize: {error}\"));",
+      "selector_identity": "invocation:d4b61bccaf4a7720:occurrence:1",
+      "accepted_reason": "Intentional test-fixture emission diagnostic; the helper's own contract is to fail loudly when a frame does not serialize, because a silently dropped frame would let a dependent test pass for the wrong reason. Test-only: the module is declared `#[cfg(test)]` in crates/perl-core-harness/src/lib.rs.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-core-harness/src/invocation_trace/test_support.rs",
+      "enclosing_test_or_function": "emit",
+      "macro_family": "panic!",
+      "normalized_snippet": ".unwrap_or_else(|error| panic!(\"fixture terminal must serialize: {error}\"));",
+      "selector_identity": "invocation:81148b34d40f7225:occurrence:1",
+      "accepted_reason": "Intentional test-fixture emission diagnostic; the helper's own contract is to fail loudly when a frame does not serialize, because a silently dropped frame would let a dependent test pass for the wrong reason. Test-only: the module is declared `#[cfg(test)]` in crates/perl-core-harness/src/lib.rs.",
+      "state": "active"
     }
   ]
 }

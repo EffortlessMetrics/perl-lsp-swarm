@@ -54,18 +54,69 @@ pub(crate) fn external_test_module_files(path: &Path, lines: &[String]) -> Vec<P
     else {
         return Vec::new();
     };
+    let Some(base) = module_directory(path) else {
+        return Vec::new();
+    };
     let mut files = Vec::new();
-    for line in lines.iter().skip(start_line.saturating_sub(1)) {
-        push_declared_module_files(path, line, &mut files);
+    // `mod helper;` inside `mod tests { … }` names `tests/helper.rs`, not
+    // `helper.rs`. Resolving it beside the module directory finds nothing, and
+    // a child whose whole file is test-only carries no `#[cfg(test)]` of its
+    // own, so `complete_panic_site_inventory` never reaches it by any other
+    // route: its panic sites are simply absent from the inventory. Measured on
+    // this tree, that is two sites in
+    // `crates/perl-core-harness/src/invocation_trace/test_support.rs`, whose
+    // parent declares it from inside `pub mod invocation_trace { … }`.
+    //
+    // Only the resolution is corrected. Which declarations get swept stays
+    // deliberately over-inclusive, for the reason the doc comment gives.
+    let mut inline: Vec<(usize, String)> = Vec::new();
+    for (index, line) in lines.iter().enumerate() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with("//") {
+            continue;
+        }
+        let indent = line.len() - line.trim_start().len();
+        if trimmed.starts_with('}') {
+            while inline.last().is_some_and(|(open, _)| *open >= indent) {
+                inline.pop();
+            }
+            continue;
+        }
+
+        // Strip the attributes so `#[cfg(test)] mod tests {` is read as the
+        // block opener it is, exactly as `module_edges` reads it.
+        let mut rest = trimmed;
+        while let Some(end) = attribute_end(rest) {
+            let Some(tail) = rest.get(end + 1..) else {
+                break;
+            };
+            rest = tail.trim_start();
+        }
+        if rest.is_empty() {
+            continue;
+        }
+
+        if let Some(name) = inline_module_name(rest) {
+            inline.push((indent, name));
+            continue;
+        }
+
+        // The nesting is tracked over the whole file so a block that opened
+        // above the boundary is still known below it; only declarations at or
+        // after the boundary are swept.
+        if index + 1 >= start_line {
+            let mut dir = base.clone();
+            for (_, segment) in &inline {
+                dir = dir.join(segment);
+            }
+            push_declared_module_files(&dir, rest, &mut files);
+        }
     }
     files
 }
 
-fn push_declared_module_files(path: &Path, line: &str, files: &mut Vec<PathBuf>) {
+fn push_declared_module_files(base: &Path, line: &str, files: &mut Vec<PathBuf>) {
     let Some(name) = declared_module_name(line.trim()) else {
-        return;
-    };
-    let Some(base) = module_directory(path) else {
         return;
     };
     // Both spellings of a child module. Rust allows only one to exist, so
@@ -614,6 +665,55 @@ mod tests {
         ensure!(
             !found.contains(&unrelated_sibling),
             "the sibling rows.rs belongs to the crate root, not to census"
+        );
+        Ok(())
+    }
+
+    /// The hop the sweep used to lose: a declaration *inside* an inline module
+    /// resolves under that module's directory, not beside the declaring file.
+    ///
+    /// This is the panic inventory's one blind spot rather than a cosmetic
+    /// miss. A wholly test-only child carries no `#[cfg(test)]` of its own, so
+    /// `complete_panic_site_inventory`'s other route — walking every workspace
+    /// file and reading from its own boundary — never reaches it either. On
+    /// this tree it hid two live sites in
+    /// `crates/perl-core-harness/src/invocation_trace/test_support.rs`, both
+    /// now registered.
+    #[test]
+    fn the_panic_sweep_resolves_a_child_under_its_inline_module() -> Result<()> {
+        let tree = Tree::new("sweep-inline")?;
+        let root = tree.write("lib.rs", "#[cfg(test)]\nmod tests {\n    mod helper;\n}\n")?;
+        let nested = tree.write("tests/helper.rs", "fn f() { panic!(\"boom\"); }\n")?;
+        let unrelated_sibling = tree.write("helper.rs", "fn g() {}\n")?;
+
+        let found = external_test_module_files(&root, &read_lines(&root)?);
+        ensure!(
+            found.contains(&nested),
+            "`mod helper;` inside `mod tests` names tests/helper.rs; found {found:?}"
+        );
+        ensure!(
+            !found.contains(&unrelated_sibling),
+            "the helper.rs beside lib.rs is a different module nothing here declares"
+        );
+        Ok(())
+    }
+
+    /// A block that closed before the boundary must not keep gating what
+    /// follows it. Without popping the nesting, `mod census;` at the crate
+    /// root would resolve under `tests/`, which is the same defect pointed the
+    /// other way.
+    #[test]
+    fn the_panic_sweep_leaves_a_closed_inline_module_behind() -> Result<()> {
+        let tree = Tree::new("sweep-inline-closed")?;
+        let root =
+            tree.write("lib.rs", "mod tests {\n    mod helper;\n}\n#[cfg(test)]\nmod census;\n")?;
+        tree.write("tests/helper.rs", "fn f() {}\n")?;
+        let census = tree.write("census.rs", "fn f() { panic!(\"boom\"); }\n")?;
+
+        let found = external_test_module_files(&root, &read_lines(&root)?);
+        ensure!(
+            found.contains(&census),
+            "census.rs sits at the crate root, outside the closed block; found {found:?}"
         );
         Ok(())
     }
