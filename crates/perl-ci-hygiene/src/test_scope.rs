@@ -38,7 +38,7 @@ use crate::{first_cfg_test_line_number, read_lines};
 /// direction — the worst case is scanning a file that holds no test panics.
 ///
 /// **Do not use it to exclude a file from a production check.** There the same
-/// over-inclusion is a false negative. Use [`cfg_test_declared_module_files`].
+/// over-inclusion is a false negative. Use [`test_only_source_files`].
 pub(crate) fn external_test_module_files(path: &Path, lines: &[String]) -> Vec<PathBuf> {
     let Some(start_line) = first_cfg_test_line_number(path).ok().filter(|line| *line != usize::MAX)
     else {
@@ -110,7 +110,12 @@ fn module_edges(path: &Path, lines: &[String]) -> Vec<ModuleEdge> {
     let mut edges = Vec::new();
     let mut gated = false;
     let mut redirect: Option<String> = None;
-    let mut inline: Vec<(usize, String)> = Vec::new();
+    // Each entry is the indent that opened the block, its module name, and
+    // whether the declaration that opened it was gated. A `mod` inside a
+    // `#[cfg(test)] mod tests { … }` is compiled only under `cfg(test)` just
+    // as surely as one whose own declaration carries the attribute, so the
+    // gate has to survive entering the block rather than being reset by it.
+    let mut inline: Vec<(usize, String, bool)> = Vec::new();
 
     for line in lines {
         let trimmed = line.trim();
@@ -120,7 +125,7 @@ fn module_edges(path: &Path, lines: &[String]) -> Vec<ModuleEdge> {
         let indent = line.len() - line.trim_start().len();
 
         if trimmed.starts_with('}') {
-            while inline.last().is_some_and(|(open, _)| *open >= indent) {
+            while inline.last().is_some_and(|(open, _, _)| *open >= indent) {
                 inline.pop();
             }
             gated = false;
@@ -151,7 +156,29 @@ fn module_edges(path: &Path, lines: &[String]) -> Vec<ModuleEdge> {
         }
 
         if let Some(name) = inline_module_name(rest) {
-            inline.push((indent, name));
+            inline.push((indent, name, gated));
+            gated = false;
+            redirect = None;
+            continue;
+        }
+
+        // `include!("literal.rs")` splices a file in at this point. It is not
+        // a module declaration, so nothing above reads it -- and a production
+        // file reachable only that way would be absent from the production
+        // closure, which is the one direction phase 3 cannot recover from.
+        // `perl-parser-core`'s parser is built this way. The path is relative
+        // to the directory holding *this* file, and a computed path
+        // (`concat!(env!("OUT_DIR"), ...)`) is skipped: it names generated
+        // source outside the scanned tree, so it cannot be excluded anyway.
+        if let Some(target) = rest
+            .strip_prefix("include!(\"")
+            .and_then(|rest| rest.split_once("\")"))
+            .map(|(path, _)| path)
+        {
+            let included = file_dir.join(target);
+            if included.is_file() {
+                edges.push(ModuleEdge { files: vec![included], gated: false });
+            }
             gated = false;
             redirect = None;
             continue;
@@ -167,13 +194,16 @@ fn module_edges(path: &Path, lines: &[String]) -> Vec<ModuleEdge> {
                 file_dir.clone()
             } else {
                 let mut dir = module_dir.clone();
-                for (_, segment) in &inline {
+                for (_, segment, _) in &inline {
                     dir = dir.join(segment);
                 }
                 dir
             };
             let files = module_files(&base, &name, redirect.as_deref());
             if !files.is_empty() {
+                // An enclosing gated inline module gates everything it
+                // declares, however the declaration itself is spelled.
+                let gated = gated || inline.iter().any(|(_, _, open_gated)| *open_gated);
                 edges.push(ModuleEdge { files, gated });
             }
         }
@@ -613,6 +643,79 @@ mod tests {
         let redirected = tree.write("outer/redirected.rs", "fn f() { x.unwrap(); }\n")?;
 
         assert!(test_only_source_files(&[root, redirected.clone()])?.contains(&redirected));
+        Ok(())
+    }
+
+    /// A `#[cfg(test)]` on an inline module block gates every file that block
+    /// declares. The first version pushed the block onto the inline stack and
+    /// reset `gated` in the same step, so `helper` below came out as an ungated
+    /// edge and the production closure reached a file the compiler builds only
+    /// under `cfg(test)`.
+    #[test]
+    fn a_gated_inline_module_gates_the_files_it_declares() -> Result<()> {
+        let tree = Tree::new("gated-inline")?;
+        let root = tree.write("lib.rs", "#[cfg(test)]\nmod tests {\n    mod helper;\n}\n")?;
+        let helper = tree.write("tests/helper.rs", "fn f() { x.expect(\"boom\"); }\n")?;
+
+        assert!(
+            test_only_source_files(&[root, helper.clone()])?.contains(&helper),
+            "a file declared inside a gated inline module is test-only"
+        );
+        Ok(())
+    }
+
+    /// The companion: the gate must not leak back out of the block it opened.
+    #[test]
+    fn a_declaration_after_a_gated_inline_block_closes_is_not_gated() -> Result<()> {
+        let tree = Tree::new("gate-scope")?;
+        let root =
+            tree.write("lib.rs", "#[cfg(test)]\nmod tests {\n    mod helper;\n}\n\nmod live;\n")?;
+        let helper = tree.write("tests/helper.rs", "fn f() {}\n")?;
+        let live = tree.write("live.rs", "fn g() { y.unwrap(); }\n")?;
+
+        let found = test_only_source_files(&[root, helper.clone(), live.clone()])?;
+        assert!(found.contains(&helper));
+        assert!(!found.contains(&live), "the gate ended with the block that opened it");
+        Ok(())
+    }
+
+    /// The exclusion path's one genuinely dangerous asymmetry: an *unread*
+    /// production edge paired with a *read* gated one. `include!` is the form
+    /// that actually occurs here -- `perl-parser-core`'s parser is assembled
+    /// from thirteen of them -- so a literal `include!` is read as a production
+    /// edge. Without that, `shared.rs` below is absent from the production
+    /// closure and the gated alias takes a file the compiler builds into
+    /// production straight out of scope.
+    #[test]
+    fn a_file_reached_only_through_an_include_stays_in_production_scope() -> Result<()> {
+        let tree = Tree::new("include-prod")?;
+        let root = tree.write(
+            "lib.rs",
+            "mod engine;\n#[cfg(test)]\n#[path = \"engine/shared.rs\"]\nmod under_test;\n",
+        )?;
+        let engine = tree.write("engine/mod.rs", "include!(\"shared.rs\");\n")?;
+        let shared = tree.write("engine/shared.rs", "fn f() { x.expect(\"boom\"); }\n")?;
+
+        let found = test_only_source_files(&[root, engine, shared.clone()])?;
+        assert!(
+            !found.contains(&shared),
+            "an include! reaches it in production, so a gated alias cannot exclude it"
+        );
+        Ok(())
+    }
+
+    /// A computed `include!` names generated source outside the scanned tree,
+    /// so it resolves to nothing rather than to a wrong path.
+    #[test]
+    fn a_computed_include_path_is_not_invented() -> Result<()> {
+        let tree = Tree::new("include-computed")?;
+        let root = tree.write(
+            "lib.rs",
+            "include!(concat!(env!(\"OUT_DIR\"), \"/gen.rs\"));\n#[cfg(test)]\nmod census;\n",
+        )?;
+        let census = tree.write("census.rs", "fn f() { x.unwrap(); }\n")?;
+
+        assert!(test_only_source_files(&[root, census.clone()])?.contains(&census));
         Ok(())
     }
 
