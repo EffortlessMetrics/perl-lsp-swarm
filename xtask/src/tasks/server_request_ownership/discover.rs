@@ -537,56 +537,71 @@ pub(super) fn scan_emission(
     }
     paths.sort();
 
-    // ── Test-gated external modules ──────────────────────────────────────
+    // ── Production reachability ──────────────────────────────────────────
     // `#[cfg(test)] mod tests;` leaves the test code in its own file, and a
     // file parsed on its own carries no trace of the attribute that gated it.
     // A filename cannot recover that -- `tests.rs` and `helpers.rs` look
-    // alike -- so the declarations are resolved to the paths they name. What a
-    // gated file itself declares is gated too, hence the fixpoint.
-    let mut test_gated: BTreeSet<PathBuf> = BTreeSet::new();
-    // A file one module gates is not thereby test-only: another, ordinary
-    // module can include the same file, and then its sends are production
-    // sends. Gating alone would drop it from the scan and hide them, so the
-    // production declarations are collected too and ownership must be
-    // *exclusively* test-gated before a file leaves the denominator.
-    let mut production_declared: BTreeSet<PathBuf> = BTreeSet::new();
-    let mut unresolvable: BTreeSet<PathBuf> = BTreeSet::new();
+    // alike -- so the declarations are resolved to the paths they name.
+    //
+    // The question is not "is this file gated somewhere" but "does production
+    // reach it": one `#[cfg(test)] mod shared;` must not drop a file an
+    // ordinary `mod shared;` also includes, nor -- transitively -- that file's
+    // own ordinary children. Reachability is therefore computed forwards from
+    // the roots rather than backwards from the gating.
+    //
+    // Seeding from a fixed set and growing monotonically is what makes the
+    // result independent of the order files are visited. Deriving each file's
+    // status from sets that are themselves still growing does not: a child
+    // reached before its parent's gating is known would be admitted and, since
+    // nothing is ever withdrawn, never taken back out.
+    let mut declared_anywhere: BTreeSet<PathBuf> = BTreeSet::new();
+    for path in &paths {
+        let Ok(source) = std::fs::read_to_string(path) else { continue };
+        let Ok(parsed) = syn::parse_file(&source) else { continue };
+        for item in &parsed.items {
+            let syn::Item::Mod(item) = item else { continue };
+            // An inline module's body is already skipped by the visitor.
+            if item.content.is_some() {
+                continue;
+            }
+            let candidates = match declared_path(path, &item.attrs) {
+                Some(Ok(declared)) => vec![declared],
+                Some(Err(())) => continue,
+                None => module_paths(path, &item.ident.to_string()),
+            };
+            for candidate in candidates {
+                if candidate.is_file() {
+                    declared_anywhere.insert(candidate);
+                }
+            }
+        }
+    }
+
+    // A file no external module names is a root -- a crate entry point, or an
+    // orphan the walker still reads -- and roots are production by default,
+    // which is what "silence never reads as absence" requires of them.
+    let mut production: BTreeSet<PathBuf> =
+        paths.iter().filter(|path| !declared_anywhere.contains(*path)).cloned().collect();
     loop {
         let mut grew = false;
         for path in &paths {
+            if !production.contains(path) {
+                continue;
+            }
             let Ok(source) = std::fs::read_to_string(path) else { continue };
             let Ok(parsed) = syn::parse_file(&source) else { continue };
-            let inherited = test_gated.contains(path);
             for item in &parsed.items {
                 let syn::Item::Mod(item) = item else { continue };
-                // An inline module's body is already skipped by the visitor.
-                if item.content.is_some() {
+                if item.content.is_some() || is_test_gated(&item.attrs) {
                     continue;
                 }
-                let gated = inherited || is_test_gated(&item.attrs);
                 let candidates = match declared_path(path, &item.attrs) {
                     Some(Ok(declared)) => vec![declared],
-                    Some(Err(())) => {
-                        // Only a gated declaration hides test code behind an
-                        // unresolvable `#[path]`; a production one names a file
-                        // the scan already reads on its own.
-                        if gated {
-                            unresolvable.insert(path.clone());
-                        }
-                        continue;
-                    }
+                    Some(Err(())) => continue,
                     None => module_paths(path, &item.ident.to_string()),
                 };
                 for candidate in candidates {
-                    if !candidate.is_file() {
-                        continue;
-                    }
-                    let inserted = if gated {
-                        test_gated.insert(candidate)
-                    } else {
-                        production_declared.insert(candidate)
-                    };
-                    if inserted {
+                    if candidate.is_file() && production.insert(candidate) {
                         grew = true;
                     }
                 }
@@ -596,6 +611,26 @@ pub(super) fn scan_emission(
             break;
         }
     }
+
+    // A declaration is gated either explicitly or by sitting in a file
+    // production never reaches.
+    let mut unresolvable: BTreeSet<PathBuf> = BTreeSet::new();
+    for path in &paths {
+        let Ok(source) = std::fs::read_to_string(path) else { continue };
+        let Ok(parsed) = syn::parse_file(&source) else { continue };
+        let file_is_production = production.contains(path);
+        for item in &parsed.items {
+            let syn::Item::Mod(item) = item else { continue };
+            if item.content.is_some() {
+                continue;
+            }
+            let gated = !file_is_production || is_test_gated(&item.attrs);
+            if gated && matches!(declared_path(path, &item.attrs), Some(Err(()))) {
+                unresolvable.insert(path.clone());
+            }
+        }
+    }
+
     // A `#[path]` the reader cannot evaluate hides which file a test module
     // occupies, so any send in it would read as production. Report it instead.
     for path in &unresolvable {
@@ -616,13 +651,12 @@ pub(super) fn scan_emission(
     let mut files: Vec<(String, Vec<FnFacts>)> = Vec::new();
     for path in paths {
         // Whole-file test modules carry no production emission. Membership is
-        // resolved from the `#[cfg(test)] mod name;` that declares the file,
-        // not guessed from the filename: a `_tests.rs` suffix skipped files
-        // nothing had gated, and missed gated ones spelled any other way.
-        // Exclusive ownership is required: a file an ordinary module also
-        // includes stays in the scan, because its sends compile into
-        // production however some other module gates it.
-        if test_gated.contains(&path) && !production_declared.contains(&path) {
+        // resolved from the declarations that reach the file, not guessed from
+        // the filename: a `_tests.rs` suffix skipped files nothing had gated,
+        // and missed gated ones spelled any other way. A file production
+        // reaches stays in the scan however some other module gates it,
+        // including one reached only through a shared parent.
+        if !production.contains(&path) {
             continue;
         }
         let relative = slash_relative(repo_root, &path);

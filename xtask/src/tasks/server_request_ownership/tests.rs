@@ -1155,6 +1155,125 @@ impl Second {
     Ok(())
 }
 
+/// Production reachability must propagate *through* a shared parent. Retaining
+/// the directly shared file is not enough: a fixpoint that derives gating from
+/// a still-growing set marks the parent's ordinary `mod child;` test-only and
+/// drops it at the final filter -- the same fail-open, one level down.
+///
+/// The layout is deliberate. `paths` is sorted, and `PathBuf` orders by
+/// component, so `owner/parent.rs` sorts *before* `owner.rs`: the parent would
+/// be visited while its gating is still unknown, its child would be recorded as
+/// production, and the bug would be masked. `#[path]` puts the parent after its
+/// declarer instead, so the only pass that sees `mod child;` is one that
+/// already believes the parent is gated. Without that, this control passes
+/// against the broken code and proves nothing.
+#[test]
+fn an_ordinary_child_of_a_shared_parent_is_production() -> Result<(), Box<dyn std::error::Error>> {
+    let dir = tempfile::tempdir()?;
+    let runtime = dir.path().join("src").join("runtime");
+    std::fs::create_dir_all(runtime.join("z_parent"))?;
+    // One gated and one ordinary declaration of the same parent file.
+    std::fs::write(
+        runtime.join("a_owner.rs"),
+        r#"
+#[cfg(test)]
+#[path = "z_parent.rs"]
+mod gated_view;
+#[path = "z_parent.rs"]
+mod prod_view;
+"#,
+    )?;
+    std::fs::write(
+        runtime.join("z_parent.rs"),
+        r"
+mod z_child;
+#[cfg(test)]
+mod z_gated_child;
+",
+    )?;
+    std::fs::write(
+        runtime.join("z_parent").join("z_child.rs"),
+        r#"
+impl Server {
+    fn emit(&self) -> io::Result<()> {
+        self.send_request(id, "window/showDocument", params)
+    }
+}
+"#,
+    )?;
+    // The explicitly gated sibling must stay excluded even through a mixed
+    // parent, or "propagate production" would degrade into "never exclude".
+    std::fs::write(
+        runtime.join("z_parent").join("z_gated_child.rs"),
+        r#"
+impl Server {
+    fn exercise(&self) -> io::Result<()> {
+        self.send_request(id, "test-only/never-sent", params)
+    }
+}
+"#,
+    )?;
+
+    let constants = BTreeMap::new();
+    let (emitted, _ambiguous, findings) = scan_emission(dir.path(), "src", &constants)?;
+
+    assert!(
+        emitted.contains_key("window/showDocument"),
+        "an ordinary child of a shared parent is production: {emitted:?}"
+    );
+    assert!(
+        !emitted.contains_key("test-only/never-sent"),
+        "an explicitly gated child stays excluded through a mixed parent: {emitted:?}"
+    );
+    assert!(findings.is_empty(), "no finding is expected here: {findings:?}");
+    Ok(())
+}
+
+/// The all-test-only nested negative. With no production route to the parent,
+/// neither it nor its ordinary child is production, so the child's send must
+/// stay out. Without this, propagating production reachability could be
+/// satisfied by propagating it unconditionally.
+#[test]
+fn an_ordinary_child_of_a_gated_only_parent_is_not_production()
+-> Result<(), Box<dyn std::error::Error>> {
+    let dir = tempfile::tempdir()?;
+    let runtime = dir.path().join("src").join("runtime");
+    std::fs::create_dir_all(runtime.join("owner").join("parent"))?;
+    std::fs::write(
+        runtime.join("owner.rs"),
+        r"
+#[cfg(test)]
+mod parent;
+",
+    )?;
+    std::fs::write(
+        runtime.join("owner").join("parent.rs"),
+        r"
+mod child;
+",
+    )?;
+    std::fs::write(
+        runtime.join("owner").join("parent").join("child.rs"),
+        r#"
+impl Server {
+    fn exercise(&self) -> io::Result<()> {
+        self.send_request(id, "test-only/nested", params)
+    }
+}
+"#,
+    )?;
+
+    let constants = BTreeMap::new();
+    let (emitted, _ambiguous, findings) = scan_emission(dir.path(), "src", &constants)?;
+
+    assert!(
+        !emitted.contains_key("test-only/nested"),
+        "an ordinary child of a gated-only parent is still not production: {emitted:?}"
+    );
+    assert!(findings.is_empty(), "no finding is expected here: {findings:?}");
+    Ok(())
+}
+
 /// A file is dropped from the scan only when its module ownership is
 /// *exclusively* test-gated. One `#[cfg(test)] mod shared;` used to be enough
 /// to drop it outright, so a file an ordinary `mod shared;` also includes lost
