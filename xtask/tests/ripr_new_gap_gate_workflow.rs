@@ -261,6 +261,29 @@ fn run_gate_with_fake_gh(
         GhApiControl::Valid,
         Some("gate-token"),
         0,
+        30,
+    )
+}
+
+/// Model the production failure shape: a request that fails fast, so the
+/// attempt schedule rather than the deadline decides how long the gate waits
+/// for a freshly evicted lane's log (#14774).
+fn run_gate_with_fast_failing_requests(
+    log: Option<&str>,
+    lookup_failures: u32,
+    fetch_failures: u32,
+    route: GateRoute<'_>,
+) -> Result<(std::process::Output, String, Option<String>)> {
+    run_gate_with_fake_gh_logs(
+        log,
+        "##[error]The runner has received a shutdown signal.\n",
+        lookup_failures,
+        fetch_failures,
+        route,
+        GhApiControl::Valid,
+        Some("gate-token"),
+        0,
+        2,
     )
 }
 
@@ -278,6 +301,7 @@ fn run_gate_after_delayed_setup(
         GhApiControl::Valid,
         Some("gate-token"),
         initial_now,
+        30,
     )
 }
 
@@ -299,6 +323,7 @@ fn run_gate_with_fake_gh_logs(
     api_control: GhApiControl,
     token: Option<&str>,
     initial_now: u64,
+    request_seconds: u64,
 ) -> Result<(std::process::Output, String, Option<String>)> {
     let root = project_root()?;
     let sandbox = tempfile::tempdir().context("creating gate workflow sandbox")?;
@@ -463,7 +488,7 @@ gh() {
         .env("FAKE_FETCH_URLS", &fetch_urls)
         .env("FAKE_TIMEOUT_CALLS", &timeout_calls)
         .env("FAKE_ELAPSED_SECONDS", &elapsed_seconds)
-        .env("FAKE_REQUEST_SECONDS", "30")
+        .env("FAKE_REQUEST_SECONDS", request_seconds.to_string())
         .env("RIPR_GATE_DEADLINE_EPOCH", "240")
         .env("RIPR_GATE_FINALIZATION_RESERVE_SECONDS", "60")
         .env("FAKE_JOBS_RESPONSE", &jobs_response)
@@ -2298,7 +2323,7 @@ fn ripr_gate_retrieval_reaches_classifier_and_failed_fetch_fails_closed() -> Res
         bail!("an unretrievable lane log must keep the gate red");
     }
     if !failed_output.contains("classification=ripr-failure")
-        || !failed_output.contains("was not retrievable after 5 attempts")
+        || !failed_output.contains("eviction classification skipped and the gate will fail closed")
         || !failed_output.contains("RIPR_GATE_VERDICT=ripr-failure")
         || failed_output.contains("verdict=infra-no-proof")
     {
@@ -2309,12 +2334,64 @@ fn ripr_gate_retrieval_reaches_classifier_and_failed_fetch_fails_closed() -> Res
     if no_classification.is_some() {
         bail!("failed retrieval must not create an infra retry artifact:\n{no_classification:?}");
     }
-    if !failed_output.contains("lookup=Some(\"1\")\nfetch=Some(\"5\")") {
-        bail!("log retrieval retry must be bounded at five attempts:\n{failed_output}");
-    }
-    if failed_output.matches(timeout_prefix).count() != 6 {
+    // #14774: the bound is the shared deadline, not an attempt count. With the
+    // 30s request model the budget is what stops the loop, so the warning must
+    // be the deadline branch and the elapsed clock must read the full reserve.
+    if !failed_output.contains("reached the job-level retrieval deadline")
+        || !failed_output.contains("elapsed=Some(\"240\\n\")")
+    {
         bail!(
-            "failed retrieval must execute the bounded lookup once and bounded log fetch five times:\n{failed_output}"
+            "retrieval must spend the gate's reserved budget before failing closed:\n{failed_output}"
+        );
+    }
+
+    // The production shape the old five-attempt schedule could not reach
+    // (#14774): a freshly evicted lane's log is not served for the first
+    // minute-plus, and each failing request returns fast, so an attempt-count
+    // bound gave up with most of the budget unspent. Seven fast failures then a
+    // success must now classify, and must still write the retry artifact.
+    let (late_log, late_output, late_classification) =
+        run_gate_with_fast_failing_requests(Some(evicted_log), 0, 7, GateRoute::github_failure())?;
+    if late_log.status.success() {
+        bail!("an evicted lane must keep the gate red even once it is classified:\n{late_output}");
+    }
+    if !late_output.contains("classification=infra-no-proof")
+        || !late_output.contains("RIPR_GATE_VERDICT=infra-no-proof")
+        || !late_output.contains("fetch=Some(\"8\")")
+    {
+        bail!(
+            "a log that only becomes retrievable after the old five-attempt bound must still be classified:\n{late_output}"
+        );
+    }
+    if !late_classification
+        .ok_or_else(|| anyhow!("late-retrieved classification artifact is missing"))?
+        .contains("classification=infra-no-proof")
+    {
+        bail!("a late-retrieved eviction must still arm the bounded retry:\n{late_output}");
+    }
+
+    // The same fast-request model with a log that never arrives must still fail
+    // closed and must not arm the retry — but it must exhaust the budget first.
+    // Fifteen attempts reaching 227s of a 240s reserve is the deterministic
+    // outcome under the virtual clock; the loop stops only once the next
+    // backoff would overrun the deadline. The old five-attempt bound stopped
+    // here at 5 attempts with most of the reserve unspent, which is the defect.
+    let (never, never_output, never_classification) =
+        run_gate_with_fast_failing_requests(None, 0, 0, GateRoute::github_failure())?;
+    if never.status.success()
+        || never_classification.is_some()
+        || !never_output.contains("classification=ripr-failure")
+        || !never_output.contains("RIPR_GATE_VERDICT=ripr-failure")
+        || never_output.contains("verdict=infra-no-proof")
+    {
+        bail!("an unretrievable log must fail closed without arming the retry:\n{never_output}");
+    }
+    if !never_output.contains("lookup=Some(\"1\")\nfetch=Some(\"15\")")
+        || !never_output.contains("elapsed=Some(\"227\\n\")")
+        || !never_output.contains("was not retrievable after 15 attempts")
+    {
+        bail!(
+            "fast-failing retrieval must spend the reserve rather than stop at a fixed attempt count:\n{never_output}"
         );
     }
 
@@ -2385,6 +2462,7 @@ fn ripr_gate_retrieval_reaches_classifier_and_failed_fetch_fails_closed() -> Res
         GhApiControl::Valid,
         Some("gate-token"),
         0,
+        30,
     )?;
     if reused.status.success()
         || !reused_output.contains("classification=ripr-failure")
@@ -2503,6 +2581,7 @@ fn ripr_gate_retrieval_reaches_classifier_and_failed_fetch_fails_closed() -> Res
             control,
             token,
             0,
+            30,
         )?;
         if negative.status.success() || artifact.is_some() {
             bail!(
