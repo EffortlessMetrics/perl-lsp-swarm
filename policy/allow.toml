@@ -4489,3 +4489,21 @@ normalized_snippet_hash = "fnv1a64:dcfd9e6d8162989e"
 [allow.last_seen]
 line = 59
 column = 5
+
+[[allow]]
+id = "allow-10247-staged-document-revision"
+kind = "lint_exception"
+family = "expect_attribute"
+path = "crates/perl-lsp-rs/src/state/mod.rs"
+owner = "core/maintainers"
+classification = "reviewed_exception"
+reason = "Private document revision primitives await production cutover in #8286; non-test dead code only. Remove with that consumer; tests retain normal diagnostics."
+evidence = ["issue:10247", "issue:8286", "test:crates/perl-lsp-rs/src/state/document_revision.rs"]
+created = "2026-09-20"
+review_after = "2026-10-20"
+expires = "2026-12-20"
+
+[allow.selector]
+ast_kind = "attribute"
+lint = "dead_code"
+target_fingerprint = "policy:allow-10247-staged-document-revision"
