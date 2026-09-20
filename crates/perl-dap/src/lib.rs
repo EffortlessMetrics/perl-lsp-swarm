@@ -43,6 +43,10 @@
 //!     log_level: "info".to_string(),
 //!     mode: DapMode::Native,
 //!     workspace_root: None,
+//!     launch_authority: perl_dap::LaunchAuthorityStartup {
+//!         trusted_roots: vec![std::path::PathBuf::from("/workspace")],
+//!         allow_unbounded: None,
+//!     },
 //! };
 //! let mut server = DapServer::new(config)?;
 //! server.run()?;
@@ -129,6 +133,9 @@ pub mod eval;
 pub mod parse_origin;
 /// Cross-platform utilities for Perl path resolution and environment setup (from perl-dap-platform).
 pub mod platform;
+/// Owned-subprocess-tree termination convention shared by every bounded
+/// owned-subprocess site (#15538).
+mod process_tree;
 /// Security validation and hardening (from perl-dap-security).
 pub mod security;
 /// Shell-specific helpers for Perl DAP process launch (from perl-dap-shell).
@@ -190,6 +197,10 @@ pub use configuration::{
     create_launch_json_snippet,
 };
 pub use debug_adapter::{DapMessage, DebugAdapter};
+pub use security::{
+    LaunchAuthority, LaunchAuthorityError, LaunchAuthorityMode, LaunchAuthorityReceipt,
+    LaunchAuthoritySource, LaunchAuthorityStartup, TrustedRoot, UnboundedAcknowledgement,
+};
 pub use server::{DapConfig, DapMode, DapServer};
 
 pub use breakpoints::{BreakpointRecord, BreakpointStore, interpolate_logpoint_message};

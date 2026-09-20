@@ -841,7 +841,7 @@ gates:
 
   - name: clippy_tests_kernel
     tier: pr_fast
-    description: "Clippy --all-targets on the known-clean staged cohort (37/47 crates): required within the pr_fast runner for test/bench/example code in these crates (#11736)"
+    description: "Clippy --all-targets on the known-clean staged cohort (37/48 crates): required within the pr_fast runner for test/bench/example code in these crates (#11736)"
     required: true
     # (#11736): The workspace lints in Cargo.toml deny `unwrap_used`, `expect_used`,
     # and `panic` but the existing clippy gates use `--lib` only, so these denials
@@ -1305,6 +1305,7 @@ gates:
       --test incremental_edit_set_normalization
       --test incremental_parsing_tests
       --test incremental_regression_slices
+      --test incremental_state_read_only_authority
       --test mutation_hardening_tests
       --test ripr_seam_proof_concept_ast_invariant_contract
       --test vstring_incremental_tests
@@ -1843,6 +1844,67 @@ gates:
     tags:
       - policy
       - tests
+
+  # #13774: before this route existed, nothing in the repository ever ran
+  # `cargo test --doc` — not a gate, not a workflow, not a `justfile` recipe.
+  # Every `compile_fail` doctest was therefore documentation that looked like
+  # proof: reintroducing the construct one forbids left CI fully green.
+  #
+  # The package list is bounded on purpose rather than `--workspace`. Measured
+  # on 1da8ec61, a workspace-wide `--doc` run is 162 passed / 15 failed / 169
+  # ignored across 33 packages carrying doctests; the 15 failures are ordinary
+  # examples in perl-dap (11), perl-parser-core (3), and perl-lsp-rs-core (1),
+  # none of which carry a `compile_fail` contract. Those are tracked
+  # separately and are not this route's claim.
+  #
+  # The list is a floor, not a snapshot: `doctest_enforcement` fails the
+  # policy shard if any package grows a `compile_fail` fence without being
+  # added here, so the gap cannot silently reopen.
+  #
+  # Note: `[lib] doctest = false` does NOT exclude a package from this route.
+  # Measured on the pinned toolchain, that field only removes doctests from
+  # the default `cargo test` target selection; an explicit `--doc` collects
+  # them regardless. The real exclusion is a non-default feature, which is why
+  # perl-parser's `incremental` contracts were migrated to a gate-run target
+  # instead of being selected here.
+  - name: doctest_contract_proof
+    tier: merge_gate
+    description: "Execute doctests for the packages carrying compile_fail contracts, so negative type-level invariants are enforced rather than merely documented"
+    required: true
+    command: >-
+      cargo test --locked --doc
+      -p perl-token
+      -p perl-module
+      -p perl-corpus
+      -p perl-evidence-envelope
+      -p xtask
+    timeout_seconds: 300
+    retry_count: 0
+    budgets:
+      max_duration_ms: 240000
+    quarantine: false
+    tags:
+      - test
+      - doctest
+      - contract
+      - ratchet
+
+  - name: doctest_enforcement
+    tier: merge_gate
+    description: "Ratchet: every compile_fail doctest contract must sit inside the doctest_contract_proof route (#13774)"
+    required: true
+    command: cargo xtask ci-hygiene check-doctest-enforcement
+    # Matches must_context_check, the sibling `cargo xtask ci-hygiene ...`
+    # gate in this shard: the cost is the cargo invocation, not the scan.
+    timeout_seconds: 300
+    retry_count: 0
+    budgets:
+      max_duration_ms: 240000
+    quarantine: false
+    tags:
+      - policy
+      - doctest
+      - ratchet
 
   - name: lint_policy
     tier: merge_gate
@@ -2630,6 +2692,8 @@ workflow_integration:
         - non_rust_inventory_check
         - v2_bundle_sync
         - nested_lock_check
+        - doctest_contract_proof
+        - doctest_enforcement
         - published_crate_count_pr_fast
         - agent_ledgers_validate
       # `compile_all_targets` is not listed here since #15638: the meta shard
@@ -2659,6 +2723,14 @@ workflow_integration:
 # Track significant changes to this policy.
 
 version_history:
+  - version: "1.3.0"
+    date: "2026-09-14"
+    changes:
+      - "Add doctest_contract_proof and doctest_enforcement merge_gate entries (#13774). Before them nothing in the repository ever ran `cargo test --doc`, so every `compile_fail` doctest — the only idiom here for a negative type-level contract — was documentation that looked like proof. Measured on 1da8ec61: `cargo test --workspace --doc` is 162 passed / 15 failed / 169 ignored across the 33 packages that carry doctests."
+      - "doctest_contract_proof runs a bounded package list rather than --workspace. The 15 failures are ordinary examples in perl-dap (11), perl-parser-core (3), and perl-lsp-rs-core (1); none of those packages carries a `compile_fail` contract, so they are separate residual work rather than this route's claim."
+      - "doctest_enforcement is the ratchet that keeps the bounded list a floor: it fails when a package grows a `compile_fail` fence without being added to the route, when the route stops passing --doc, when the route selects no package, when the route is demoted, quarantined, or unrequired, when the inventory cannot read a member manifest or source file (fail closed), and when the route is deleted. All are proven by mutation or unit falsifier, not assertion."
+      - "`[lib] doctest = false` is deliberately NOT treated as an exclusion. Measured on the pinned 1.95.0 toolchain, that field only removes doctests from the default `cargo test` target selection; an explicit --doc collects them regardless (perl-parser-core declares it and still reports 18 passed / 3 failed). The real exclusion is a non-default feature, which is why perl-parser's `incremental` compile_fail contracts were migrated to a gate-run target instead of being selected here."
+      - "unit_parser_stack_full gains --test incremental_state_read_only_authority, the migrated home of those contracts."
   - version: "1.2.0"
     date: "2026-08-24"
     changes:
