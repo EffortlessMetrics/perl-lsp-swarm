@@ -90,7 +90,8 @@
               "producer": "xtask-pr-close-proof",
               "subject": "000000000000000000000000000000000000e921",
               "content_digest": "0000000000000000000000000000000000000000000000000000000000091b51",
-              "reference": "git ancestry receipt for the predecessor deletion"
+              "reference": "git ancestry receipt for the predecessor deletion",
+              "schema_version": "landing_proof.v1"
             }
           }
         },

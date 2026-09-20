@@ -92,7 +92,8 @@
               "producer": "xtask-pr-close-proof",
               "subject": "0000000000000000000000000000000000005b24",
               "content_digest": "0000000000000000000000000000000000000000000000000000000000038f6f",
-              "reference": "cargo xtask pr-close-proof --pr 2600"
+              "reference": "cargo xtask pr-close-proof --pr 2600",
+              "schema_version": "landing_proof.v1"
             }
           },
           "lib-code.deny.enforced": {
@@ -105,7 +106,8 @@
               "producer": "xtask-pr-close-proof",
               "subject": "0000000000000000000000000000000000005b23",
               "content_digest": "0000000000000000000000000000000000000000000000000000000000038f65",
-              "reference": "cargo xtask pr-close-proof --pr 2600"
+              "reference": "cargo xtask pr-close-proof --pr 2600",
+              "schema_version": "landing_proof.v1"
             }
           }
         },
@@ -161,7 +163,8 @@
               "producer": "xtask-pr-close-proof",
               "subject": "0000000000000000000000000000000000005b24",
               "content_digest": "0000000000000000000000000000000000000000000000000000000000038f6f",
-              "reference": "cargo xtask pr-close-proof --pr 2600"
+              "reference": "cargo xtask pr-close-proof --pr 2600",
+              "schema_version": "landing_proof.v1"
             }
           },
           "lib-code.deny.enforced": {
@@ -174,7 +177,8 @@
               "producer": "xtask-pr-close-proof",
               "subject": "0000000000000000000000000000000000005b23",
               "content_digest": "0000000000000000000000000000000000000000000000000000000000038f65",
-              "reference": "cargo xtask pr-close-proof --pr 2600"
+              "reference": "cargo xtask pr-close-proof --pr 2600",
+              "schema_version": "landing_proof.v1"
             }
           }
         },
