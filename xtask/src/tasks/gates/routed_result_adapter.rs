@@ -747,7 +747,10 @@ mod fixtures {
         RouteExecutionIdentity, RouteProfileExpansionInput, RouteSelectionEvidence,
         RouteSubjectRef, SelectorPlacement, SelectorProof, SelectorRole,
     };
-    use xtask::routed_result::TerminalOutcome;
+    use xtask::routed_result::{
+        ChildObservation, ObservationTiming, PrerequisiteEvidence, TerminalOutcome,
+        row_identity_digest,
+    };
 
     const SHA_A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     const SHA_B: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
@@ -817,6 +820,135 @@ mod fixtures {
         let plan = CiRoutePlanV1::compile(input).expect("fixture plan compiles");
         plan.validate().expect("fixture plan validates");
         plan
+    }
+
+    /// A plan governing two applicable run rows, so a record can be
+    /// substituted with another *governed* row's exact identity (#15814).
+    fn two_row_plan() -> CiRoutePlanV1 {
+        let mut input = fixture_input();
+        input.expansion.denominator = vec!["clippy_gate".to_string(), "fmt_gate".to_string()];
+        input.dispositions.push(RouteDispositionInput {
+            gate_id: "clippy_gate".to_string(),
+            policy_role: PolicyRole::Required,
+            lifecycle: LifecycleDisposition {
+                state: LifecycleState::Active,
+                resolution: Resolution::Current,
+            },
+            native_tier: "merge_gate".to_string(),
+            quarantine: None,
+            detail: None,
+        });
+        input.selectors.push(GateSelectorInput {
+            gate_id: "clippy_gate".to_string(),
+            placement: SelectorPlacement::Selected,
+            role: Some(SelectorRole::AlwaysOn),
+            reason: "always on".to_string(),
+            proof: Some(SelectorProof::Applicable),
+        });
+        input.execution.push(RouteExecutionIdentity {
+            gate_id: "clippy_gate".to_string(),
+            command: "cargo clippy -p perl-lsp --all-targets".to_string(),
+            timeout_seconds: 300,
+        });
+        let plan = CiRoutePlanV1::compile(input).expect("two-row plan compiles");
+        plan.validate().expect("two-row plan validates");
+        plan
+    }
+
+    /// Minimal honest passing-process observation for `build_routed_result`.
+    fn passing_observation() -> RunObservation {
+        RunObservation {
+            runner_status: RoutedReaderGateStatus::Pass,
+            hosted: None,
+            prerequisites: Some(PrerequisiteEvidence {
+                state: PrerequisiteState::Ready,
+                missing_artifacts: Vec::new(),
+                dependency_gates: std::collections::BTreeMap::new(),
+            }),
+            command_started: true,
+            child: ChildObservation {
+                exit_code: Some(0),
+                signal: None,
+                timed_out: false,
+                cancelled: false,
+                in_process: false,
+            },
+            timing: ObservationTiming {
+                started_at_unix_ms: Some(1_000),
+                ended_at_unix_ms: Some(4_500),
+                duration_ms: 3_500,
+            },
+            artifacts: Vec::new(),
+            receipt_shortfall: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn built_result_carries_the_plan_bound_row_identity_digest() {
+        // The builder seals the exact planned row under the plan fingerprint
+        // (#15814); the honest record passes both plan-less and plan-bound
+        // validation.
+        let plan = compiled_fixture();
+        let built = build_routed_result(&plan, "fmt_gate", passing_observation())
+            .expect("honest observation builds");
+        built.validate().expect("plan-less validation accepts");
+        let expected = row_identity_digest(&plan.semantic_fingerprint, &built.row)
+            .expect("row identity digest recomputes");
+        assert_eq!(built.plan_authority.row_identity_digest, expected);
+        built
+            .validate_against_plan(&plan)
+            .expect("plan-bound validation accepts the honest record");
+    }
+
+    #[test]
+    fn cross_row_substitution_reseal_refuses_validation() {
+        // The #15814 falsifier: substitute another governed row's exact
+        // identity and re-seal. Every pre-existing check still passes — the
+        // gate id is in the denominator, the tier is included, the
+        // projection is consistent — so only the row identity binding
+        // refuses the mixed record.
+        let plan = two_row_plan();
+        let built = build_routed_result(&plan, "fmt_gate", passing_observation())
+            .expect("fmt observation builds");
+        let other = build_routed_result(&plan, "clippy_gate", passing_observation())
+            .expect("clippy observation builds");
+
+        let mut substituted = built.clone();
+        substituted.row = other.row;
+        substituted.result_fingerprint = substituted.semantic_fingerprint_of().expect("reseals");
+        let error = substituted.validate().expect_err("cross-row substitution must refuse");
+        assert!(
+            error.contains("substituted after sealing or mixed across runs"),
+            "unexpected refusal: {error}"
+        );
+    }
+
+    #[test]
+    fn wholly_resealed_fabrication_refuses_plan_bound_validation() {
+        // A substitution that also recomputes the row identity digest and
+        // re-seals is internally consistent, so plan-less validation accepts
+        // it (the documented #15814 boundary: without plan bytes the
+        // validator cannot know the projection names no governed row). A row
+        // whose substituted command matches no governed plan row is still
+        // refused by the plan the fingerprint names. (Substituting another
+        // row's exact true projection plus a recomputed digest is a valid
+        // binding for that row — the row digest binds rows to the plan, it
+        // cannot re-attribute execution facts.)
+        let plan = two_row_plan();
+        let built = build_routed_result(&plan, "fmt_gate", passing_observation())
+            .expect("fmt observation builds");
+
+        let mut fabricated = built.clone();
+        fabricated.row.command = "cargo clippy -p perl-lsp --all-targets".to_string();
+        fabricated.plan_authority.row_identity_digest =
+            row_identity_digest(&fabricated.plan_authority.semantic_fingerprint, &fabricated.row)
+                .expect("digest recomputes");
+        fabricated.result_fingerprint = fabricated.semantic_fingerprint_of().expect("reseals");
+        fabricated.validate().expect("a wholly re-sealed record is plan-less consistent");
+        let error = fabricated
+            .validate_against_plan(&plan)
+            .expect_err("plan-bound validation must refuse the fabricated row");
+        assert!(error.contains("exact planned row"), "unexpected refusal: {error}");
     }
 
     #[test]

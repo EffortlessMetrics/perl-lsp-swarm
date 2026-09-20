@@ -1717,6 +1717,7 @@ name = "perl-core-harness-types"
 version = "0.17.0"
 dependencies = [
  "clap",
+ "jsonschema",
  "serde",
  "serde_json",
 ]
@@ -1994,6 +1995,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "perl-operation-trace"
+version = "0.17.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "perl-parser"
 version = "0.17.0"
 dependencies = [
@@ -2022,6 +2031,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serial_test",
+ "static_assertions",
  "tempfile",
  "thiserror",
  "tracing",
