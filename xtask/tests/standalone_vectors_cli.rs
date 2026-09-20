@@ -3,7 +3,7 @@
 //! control 16 — the oracle must never be generated from, or execute,
 //! production code).
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use assert_cmd::cargo::cargo_bin_cmd;
 use std::fs;
 use std::path::PathBuf;
@@ -63,12 +63,10 @@ fn explain_renders_a_known_vector_and_rejects_unknown_ids() -> Result<()> {
 /// proof dependencies and never spawns processes (so it cannot execute the
 /// production POSIX/PowerShell adapters either).
 #[test]
-fn oracle_subtree_has_no_production_imports_or_subprocesses() {
+fn oracle_subtree_has_no_production_imports_or_subprocesses() -> Result<()> {
     let module_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/tasks/standalone_vectors");
-    let entries = match fs::read_dir(&module_dir) {
-        Ok(entries) => entries,
-        Err(error) => panic_free(&format!("read_dir failed: {error}")),
-    };
+    let entries = fs::read_dir(&module_dir)
+        .with_context(|| format!("read_dir failed for {}", module_dir.display()))?;
 
     let forbidden: &[&str] = &[
         "use perl_",
@@ -84,15 +82,12 @@ fn oracle_subtree_has_no_production_imports_or_subprocesses() {
         "tokio::process",
     ];
 
-    for entry in entries.flatten() {
-        let path = entry.path();
+    for entry in entries {
+        let path = entry.with_context(|| "unreadable directory entry")?.path();
         if path.extension().and_then(|extension| extension.to_str()) != Some("rs") {
             continue;
         }
-        let text = match fs::read_to_string(&path) {
-            Ok(text) => text,
-            Err(error) => panic_free(&format!("read {path:?} failed: {error}")),
-        };
+        let text = fs::read_to_string(&path).with_context(|| format!("read {path:?} failed"))?;
         for pattern in forbidden {
             assert!(
                 !text.contains(pattern),
@@ -101,11 +96,5 @@ fn oracle_subtree_has_no_production_imports_or_subprocesses() {
             );
         }
     }
-}
-
-/// Panic/unwrap are denied workspace-wide; tests fail through a distinct
-/// nonzero exit instead.
-fn panic_free(message: &str) -> ! {
-    eprintln!("test failure: {message}");
-    std::process::exit(101)
+    Ok(())
 }

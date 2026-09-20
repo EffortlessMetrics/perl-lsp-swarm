@@ -1518,91 +1518,110 @@ mod tests {
     use super::*;
     use crate::tasks::standalone_vectors::load_corpus;
 
-    /// Panic/unwrap are denied workspace-wide; tests fail through a distinct
-    /// nonzero exit instead.
-    fn fail(message: &str) -> ! {
-        eprintln!("test failure: {message}");
-        std::process::exit(101)
+    /// Fallible test propagation (`docs/NO_PANIC_POLICY.md`, "Test guidance"):
+    /// setup and helper failures return an error and propagate with `?`, so the
+    /// harness reports each test individually and keeps its diagnostics. An
+    /// earlier revision of these tests exited the process with code 101, which
+    /// terminated the whole executable and suppressed every sibling result.
+    type TestResult<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
+
+    fn corpus() -> TestResult<Vec<Vector>> {
+        Ok(load_corpus().map_err(|error| format!("corpus must load: {error}"))?)
     }
 
-    fn corpus() -> Vec<Vector> {
-        match load_corpus() {
-            Ok(vectors) => vectors,
-            Err(error) => fail(&format!("corpus must load: {error}")),
-        }
+    fn vector_by_id<'a>(vectors: &'a [Vector], id: &str) -> TestResult<&'a Vector> {
+        vectors
+            .iter()
+            .find(|vector| vector.vector_id == id)
+            .ok_or_else(|| format!("{id} missing from corpus").into())
     }
 
-    fn vector_by_id<'a>(vectors: &'a [Vector], id: &str) -> &'a Vector {
-        match vectors.iter().find(|vector| vector.vector_id == id) {
-            Some(vector) => vector,
-            None => fail(&format!("{id} missing from corpus")),
-        }
+    fn derive(vector: &Vector, deviation: Deviation) -> TestResult<SemanticPacket> {
+        derive_packet(vector, deviation)
+            .map_err(|error| format!("{}: derive failed: {error}", vector.vector_id).into())
     }
 
-    fn derive(vector: &Vector, deviation: Deviation) -> SemanticPacket {
-        match derive_packet(vector, deviation) {
-            Ok(packet) => packet,
-            Err(error) => fail(&format!("{}: derive failed: {error}", vector.vector_id)),
-        }
+    /// Serialization failure would silently weaken the determinism comparison
+    /// if it defaulted to an empty string, so it propagates too.
+    fn serialized(packet: &SemanticPacket) -> TestResult<String> {
+        Ok(serde_json::to_string_pretty(packet)?)
     }
 
-    fn serialized(packet: &SemanticPacket) -> String {
-        serde_json::to_string_pretty(packet).unwrap_or_default()
+    /// Reads a corpus fixture as normalized text for the fixture-edit controls.
+    fn fixture_text(name: &str) -> TestResult<String> {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../fixtures/standalone_install_vectors/vectors")
+            .join(name);
+        Ok(std::fs::read_to_string(&path)
+            .map_err(|error| format!("fixture read failed for {}: {error}", path.display()))?
+            .replace("\r\n", "\n"))
     }
 
     #[test]
-    fn derivation_is_byte_deterministic_for_every_vector() {
-        for vector in corpus() {
-            let first = serialized(&derive(&vector, Deviation::None));
-            let second = serialized(&derive(&vector, Deviation::None));
+    fn derivation_is_byte_deterministic_for_every_vector() -> TestResult {
+        for vector in corpus()? {
+            let first = serialized(&derive(&vector, Deviation::None)?)?;
+            let second = serialized(&derive(&vector, Deviation::None)?)?;
             assert_eq!(first, second, "{}: second generation drifted", vector.vector_id);
         }
+
+        Ok(())
     }
 
     #[test]
-    fn corpus_covers_the_full_platform_neutral_denominator() {
-        let vectors = corpus();
+    fn corpus_covers_the_full_platform_neutral_denominator() -> TestResult {
+        let vectors = corpus()?;
         assert_eq!(vectors.len(), 22, "corpus denominator");
         for vector in &vectors {
             assert_eq!(vector.contract_generation, 1, "{}", vector.vector_id);
         }
+
+        Ok(())
     }
 
     #[test]
-    fn healthy_pair_reaches_installed_claim_with_pair_satisfied() {
-        let vectors = corpus();
-        let packet = derive(vector_by_id(&vectors, "v001-archive-pair-success"), Deviation::None);
+    fn healthy_pair_reaches_installed_claim_with_pair_satisfied() -> TestResult {
+        let vectors = corpus()?;
+        let packet = derive(vector_by_id(&vectors, "v001-archive-pair-success")?, Deviation::None)?;
         assert_eq!(packet.terminal.result, TerminalResult::Succeeded);
         assert_eq!(packet.claim_ceiling, ClaimCeiling::InstalledReleaseClaim);
         assert!(packet.pair_claims_satisfied);
         assert_eq!(packet.side_effect_ceiling, CeilingLevel::InstalledClaim);
+
+        Ok(())
     }
 
     #[test]
-    fn historical_topology_stays_a_bounded_historical_unit() {
-        let vectors = corpus();
-        let packet =
-            derive(vector_by_id(&vectors, "v002-archive-historical-server-only"), Deviation::None);
+    fn historical_topology_stays_a_bounded_historical_unit() -> TestResult {
+        let vectors = corpus()?;
+        let packet = derive(
+            vector_by_id(&vectors, "v002-archive-historical-server-only")?,
+            Deviation::None,
+        )?;
         assert_eq!(packet.claim_ceiling, ClaimCeiling::HistoricalEvidenceOnly);
         assert!(!packet.pair_claims_satisfied);
+
+        Ok(())
     }
 
     #[test]
-    fn local_development_never_authorizes_install_claims() {
-        let vectors = corpus();
+    fn local_development_never_authorizes_install_claims() -> TestResult {
+        let vectors = corpus()?;
         let packet = derive(
-            vector_by_id(&vectors, "v004-local-development-non-authoritative"),
+            vector_by_id(&vectors, "v004-local-development-non-authoritative")?,
             Deviation::None,
-        );
+        )?;
         assert_eq!(packet.claim_ceiling, ClaimCeiling::LocalDevelopmentOnly);
         assert!(!packet.pair_claims_satisfied);
+
+        Ok(())
     }
 
     #[test]
-    fn fallback_branch_binds_a_new_subject_and_isolates_receipts() {
-        let vectors = corpus();
+    fn fallback_branch_binds_a_new_subject_and_isolates_receipts() -> TestResult {
+        let vectors = corpus()?;
         let packet =
-            derive(vector_by_id(&vectors, "v007-fallback-allowed-new-branch"), Deviation::None);
+            derive(vector_by_id(&vectors, "v007-fallback-allowed-new-branch")?, Deviation::None)?;
         assert_eq!(packet.branches.len(), 2);
         assert_eq!(packet.attempts.len(), 2);
         assert_ne!(
@@ -1628,43 +1647,51 @@ mod tests {
                 }
             }
         }
+
+        Ok(())
     }
 
     #[test]
-    fn implicit_fallback_is_rejected_when_policy_forbids() {
-        let vectors = corpus();
+    fn implicit_fallback_is_rejected_when_policy_forbids() -> TestResult {
+        let vectors = corpus()?;
         let packet = derive(
-            vector_by_id(&vectors, "v008-fallback-forbidden-no-registry-action"),
+            vector_by_id(&vectors, "v008-fallback-forbidden-no-registry-action")?,
             Deviation::None,
-        );
+        )?;
         assert_eq!(packet.branches.len(), 1, "no registry action may appear");
         assert_eq!(packet.attempts.len(), 1);
         assert_eq!(packet.terminal.reason_family, ReasonFamily::IntegrityFailed);
+
+        Ok(())
     }
 
     #[test]
-    fn wrong_subject_receipt_fails_closed_even_with_valid_bytes() {
-        let vectors = corpus();
-        let vector = vector_by_id(&vectors, "v009-transport-checksum-subject-mix");
-        let packet = derive(vector, Deviation::None);
+    fn wrong_subject_receipt_fails_closed_even_with_valid_bytes() -> TestResult {
+        let vectors = corpus()?;
+        let vector = vector_by_id(&vectors, "v009-transport-checksum-subject-mix")?;
+        let packet = derive(vector, Deviation::None)?;
         assert_eq!(packet.terminal.reason_family, ReasonFamily::SubjectMismatch);
-        let trusted = derive(vector, Deviation::TrustWrongIdentity);
-        assert_ne!(serialized(&packet), serialized(&trusted));
+        let trusted = derive(vector, Deviation::TrustWrongIdentity)?;
+        assert_ne!(serialized(&packet)?, serialized(&trusted)?);
+
+        Ok(())
     }
 
     #[test]
-    fn stale_completion_never_advances_the_newer_attempt() {
-        let vectors = corpus();
-        let vector = vector_by_id(&vectors, "v016-retry-stale-completion");
-        let packet = derive(vector, Deviation::None);
+    fn stale_completion_never_advances_the_newer_attempt() -> TestResult {
+        let vectors = corpus()?;
+        let vector = vector_by_id(&vectors, "v016-retry-stale-completion")?;
+        let packet = derive(vector, Deviation::None)?;
         assert!(packet.observations.iter().any(|o| o.kind == "stale_completion_ignored"));
         assert_eq!(packet.attempts.len(), 2, "retry history retained");
         assert_eq!(packet.terminal.result, TerminalResult::Failed);
 
-        let stale_applied = derive(vector, Deviation::StaleAdvancesNewer);
-        assert_ne!(serialized(&packet), serialized(&stale_applied));
-        let erased = derive(vector, Deviation::ErasePriorAttempt);
+        let stale_applied = derive(vector, Deviation::StaleAdvancesNewer)?;
+        assert_ne!(serialized(&packet)?, serialized(&stale_applied)?);
+        let erased = derive(vector, Deviation::ErasePriorAttempt)?;
         assert_eq!(erased.attempts.len(), 1, "mutation 13 drops history");
+
+        Ok(())
     }
 
     /// v022 is the success-path twin of v016: attempt a1 integrity-fails,
@@ -1673,10 +1700,10 @@ mod tests {
     /// asserted here independently of the mutation bank and the
     /// golden-comparison path.
     #[test]
-    fn retry_success_keeps_the_prior_failed_attempt_in_history() {
-        let vectors = corpus();
-        let vector = vector_by_id(&vectors, "v022-retry-succeeds-erase-prior-attempt");
-        let packet = derive(vector, Deviation::None);
+    fn retry_success_keeps_the_prior_failed_attempt_in_history() -> TestResult {
+        let vectors = corpus()?;
+        let vector = vector_by_id(&vectors, "v022-retry-succeeds-erase-prior-attempt")?;
+        let packet = derive(vector, Deviation::None)?;
         assert_eq!(packet.terminal.result, TerminalResult::Succeeded);
         assert_eq!(packet.terminal.stage_id, StageId::InstalledTransition);
         assert_eq!(packet.attempts.len(), 2, "retry history retained on success");
@@ -1685,50 +1712,58 @@ mod tests {
         assert_eq!(packet.attempts[1].outcome, TerminalResult::Succeeded);
         assert_eq!(packet.claim_ceiling, ClaimCeiling::InstalledReleaseClaim);
 
-        let erased = derive(vector, Deviation::ErasePriorAttempt);
+        let erased = derive(vector, Deviation::ErasePriorAttempt)?;
         assert_eq!(erased.attempts.len(), 1, "mutation 13 drops history on success too");
+
+        Ok(())
     }
 
     #[test]
-    fn pair_gate_blocks_promotion_without_dap() {
-        let vectors = corpus();
-        let packet = derive(vector_by_id(&vectors, "v013-pair-missing-dap"), Deviation::None);
+    fn pair_gate_blocks_promotion_without_dap() -> TestResult {
+        let vectors = corpus()?;
+        let packet = derive(vector_by_id(&vectors, "v013-pair-missing-dap")?, Deviation::None)?;
         assert_eq!(packet.terminal.reason_family, ReasonFamily::PairIncomplete);
         assert_eq!(packet.side_effect_ceiling, CeilingLevel::Staged);
         assert!(!packet.effects.iter().any(|effect| effect.kind == "promoted"));
+
+        Ok(())
     }
 
     #[test]
-    fn health_failure_rolls_back_and_caps_the_claim_below_installed() {
-        let vectors = corpus();
+    fn health_failure_rolls_back_and_caps_the_claim_below_installed() -> TestResult {
+        let vectors = corpus()?;
         let packet =
-            derive(vector_by_id(&vectors, "v014-health-failure-rollback"), Deviation::None);
+            derive(vector_by_id(&vectors, "v014-health-failure-rollback")?, Deviation::None)?;
         assert!(packet.effects.iter().any(|effect| effect.kind == "rollback"));
         assert_eq!(packet.claim_ceiling, ClaimCeiling::CurrentStatePromotion);
         assert_eq!(packet.terminal.reason_family, ReasonFamily::HealthCheckFailed);
+
+        Ok(())
     }
 
     #[test]
-    fn redaction_scanner_catches_the_leak_mutation_only() {
-        let vectors = corpus();
-        let vector = vector_by_id(&vectors, "v019-instrument-failure-redaction");
-        let rendered = serialized(&derive(vector, Deviation::None));
+    fn redaction_scanner_catches_the_leak_mutation_only() -> TestResult {
+        let vectors = corpus()?;
+        let vector = vector_by_id(&vectors, "v019-instrument-failure-redaction")?;
+        let rendered = serialized(&derive(vector, Deviation::None)?)?;
         for token in &vector.redaction.forbidden_tokens {
             assert!(!rendered.contains(token), "conformant packet leaked {token:?}");
         }
         match derive_packet(vector, Deviation::LeakPrivatePath) {
             Err(OracleError::Redaction(_)) => {}
-            other => fail(&format!("leak mutation must trip redaction, got {other:?}")),
+            other => return Err(format!("leak mutation must trip redaction, got {other:?}").into()),
         }
+
+        Ok(())
     }
 
     #[test]
-    fn applicability_rows_are_two_way_validated_against_the_authorization_map() {
+    fn applicability_rows_are_two_way_validated_against_the_authorization_map() -> TestResult {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../fixtures/standalone_install_vectors/vectors/v001-archive-pair-success.json");
         let text = match std::fs::read_to_string(path) {
             Ok(text) => text.replace("\r\n", "\n"),
-            Err(error) => fail(&format!("fixture read failed: {error}")),
+            Err(error) => return Err(format!("fixture read failed: {error}").into()),
         };
 
         // Unauthorized skip: archive-mode checksum declared not_applicable.
@@ -1737,63 +1772,58 @@ mod tests {
             "\"stage_id\": \"checksum_integrity\", \"applicability\": \"not_applicable\"",
         );
         assert_ne!(text, bad_row, "fixture edit must apply");
-        let vector: Vector = match serde_json::from_str(&bad_row) {
-            Ok(vector) => vector,
-            Err(error) => fail(&format!("parse failed: {error}")),
-        };
+        let vector: Vector =
+            serde_json::from_str(&bad_row).map_err(|error| format!("parse failed: {error}"))?;
         match validate_vector(&vector) {
             Err(OracleError::CorpusRule(message)) => {
                 assert!(message.contains("not positively authorized"), "{message}");
             }
-            other => fail(&format!("unauthorized n/a must be rejected, got {other:?}")),
+            other => return Err(format!("unauthorized n/a must be rejected, got {other:?}").into()),
         }
 
         // Mandatory row where policy authorizes a skip: with provenance not
         // required, a Required provenance row is invalid authoring.
         let relaxed =
             text.replace("\"provenance_required\": true", "\"provenance_required\": false");
-        let vector: Vector = match serde_json::from_str(&relaxed) {
-            Ok(vector) => vector,
-            Err(error) => fail(&format!("parse failed: {error}")),
-        };
+        let vector: Vector =
+            serde_json::from_str(&relaxed).map_err(|error| format!("parse failed: {error}"))?;
         match validate_vector(&vector) {
             Err(OracleError::CorpusRule(message)) => {
                 assert!(message.contains("must be declared not_applicable"), "{message}");
             }
-            other => fail(&format!("undeclared skip must be rejected, got {other:?}")),
+            other => return Err(format!("undeclared skip must be rejected, got {other:?}").into()),
         }
+
+        Ok(())
     }
 
     #[test]
-    fn exact_selector_must_match_the_resolved_release_tag() {
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../fixtures/standalone_install_vectors/vectors/v001-archive-pair-success.json");
-        let text = match std::fs::read_to_string(path) {
-            Ok(text) => text,
-            Err(error) => fail(&format!("fixture read failed: {error}")),
-        };
+    fn exact_selector_must_match_the_resolved_release_tag() -> TestResult {
+        let text = fixture_text("v001-archive-pair-success.json")?;
         let drifted = text.replace(
             "{ \"exact\": { \"tag\": \"synthetic-v1.0.0\" } }",
             "{ \"exact\": { \"tag\": \"synthetic-v0.0.1\" } }",
         );
         assert_ne!(text, drifted, "fixture edit must apply");
-        let vector: Vector = match serde_json::from_str(&drifted) {
-            Ok(vector) => vector,
-            Err(error) => fail(&format!("parse failed: {error}")),
-        };
+        let vector: Vector =
+            serde_json::from_str(&drifted).map_err(|error| format!("parse failed: {error}"))?;
         match validate_vector(&vector) {
             Err(OracleError::CorpusRule(message)) => {
                 assert!(message.contains("exact selector tag"), "{message}");
             }
-            other => fail(&format!("drifted selector must be rejected, got {other:?}")),
+            other => return Err(format!("drifted selector must be rejected, got {other:?}").into()),
         }
+
+        Ok(())
     }
 
     #[test]
-    fn unknown_fields_fail_closed_at_the_schema_boundary() {
+    fn unknown_fields_fail_closed_at_the_schema_boundary() -> TestResult {
         let text = r#"{"vector_id":"x","contract_generation":1,"family":"f","platform_classification":"platform_neutral","intent":{"operation_id":"o","attempt_id":"a","route":"first_party_posix","mode":"release_archive","selector":{"latest_requested":null},"target":{"platform":"p","arch":"a","libc":"l"},"requested_product_unit":"server_only","fallback_policy":"forbidden","path_policy":"persist","config_digest":"c"},"resolved_subject":{"subject_id":"s","mode":"release_archive","product_unit":"server_only","required_executables":["perllsp"],"destination_role":"install_root","provenance_required":true},"stage_graph":[],"port_scripts":{},"expected":{"terminal_result":"succeeded","terminal_stage":"resolve_subject","reason_family":"none","action_class":"none","side_effect_ceiling":"none","claim_ceiling":"none","pair_claims_satisfied":false,"branch_count":0,"attempt_count":0},"redaction":{"forbidden_tokens":[]},"sneaky_field":1}"#;
         let parse: std::result::Result<Vector, _> = serde_json::from_str(text);
         assert!(parse.is_err(), "deny_unknown_fields must reject sneaky_field");
+
+        Ok(())
     }
 
     // Negative controls for the three #13295 fail-closed closures (#13300
@@ -1807,12 +1837,12 @@ mod tests {
     /// `validate_stage_graph` is the only surface that sees the absent
     /// stage.
     #[test]
-    fn truncated_graph_rejected_when_a_mode_required_stage_is_absent() {
+    fn truncated_graph_rejected_when_a_mode_required_stage_is_absent() -> TestResult {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../fixtures/standalone_install_vectors/vectors/v001-archive-pair-success.json");
         let text = match std::fs::read_to_string(path) {
             Ok(text) => text.replace("\r\n", "\n"),
-            Err(error) => fail(&format!("fixture read failed: {error}")),
+            Err(error) => return Err(format!("fixture read failed: {error}").into()),
         };
         let truncated = text.replace(
             ",\n    { \"stage_id\": \"installed_transition\", \"applicability\": \"required\", \
@@ -1820,10 +1850,8 @@ mod tests {
             "",
         );
         assert_ne!(text, truncated, "fixture edit must apply");
-        let vector: Vector = match serde_json::from_str(&truncated) {
-            Ok(vector) => vector,
-            Err(error) => fail(&format!("parse failed: {error}")),
-        };
+        let vector: Vector =
+            serde_json::from_str(&truncated).map_err(|error| format!("parse failed: {error}"))?;
         match validate_vector(&vector) {
             Err(OracleError::StageGraph(message)) => {
                 assert!(
@@ -1832,8 +1860,10 @@ mod tests {
                     "{message}"
                 );
             }
-            other => fail(&format!("truncated graph must be rejected, got {other:?}")),
+            other => return Err(format!("truncated graph must be rejected, got {other:?}").into()),
         }
+
+        Ok(())
     }
 
     /// Fix 2 (#13295): a successful executable observation whose call omits
@@ -1841,27 +1871,27 @@ mod tests {
     /// gate must fold the attempt to `PairIncomplete` instead of letting the
     /// success reach promotion with `pair_claims_satisfied`.
     #[test]
-    fn absent_executables_map_fails_the_pair_gate_at_observation() {
+    fn absent_executables_map_fails_the_pair_gate_at_observation() -> TestResult {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../fixtures/standalone_install_vectors/vectors/v001-archive-pair-success.json");
         let text = match std::fs::read_to_string(path) {
             Ok(text) => text.replace("\r\n", "\n"),
-            Err(error) => fail(&format!("fixture read failed: {error}")),
+            Err(error) => return Err(format!("fixture read failed: {error}").into()),
         };
         let no_map =
             text.replace(", \"executables\": { \"perllsp\": \"ok\", \"perl-dap\": \"ok\" }", "");
         assert_ne!(text, no_map, "fixture edit must apply");
-        let vector: Vector = match serde_json::from_str(&no_map) {
-            Ok(vector) => vector,
-            Err(error) => fail(&format!("parse failed: {error}")),
-        };
+        let vector: Vector =
+            serde_json::from_str(&no_map).map_err(|error| format!("parse failed: {error}"))?;
         if let Err(error) = validate_vector(&vector) {
-            fail(&format!("edited vector must stay corpus-valid: {error}"));
+            return Err(format!("edited vector must stay corpus-valid: {error}").into());
         }
         let packet = match derive_packet(&vector, Deviation::None) {
             Ok(packet) => packet,
             Err(error) => {
-                fail(&format!("absent map must fold to a typed failure, not error: {error}"))
+                return Err(
+                    format!("absent map must fold to a typed failure, not error: {error}").into()
+                );
             }
         };
         assert_eq!(packet.terminal.result, TerminalResult::Failed);
@@ -1870,6 +1900,8 @@ mod tests {
         assert_eq!(packet.side_effect_ceiling, CeilingLevel::Staged);
         assert!(!packet.pair_claims_satisfied);
         assert!(!packet.effects.iter().any(|effect| effect.kind == "promoted"));
+
+        Ok(())
     }
 
     /// Fix 1 (#13295): a declared predecessor with neither a receipt in this
@@ -1880,13 +1912,13 @@ mod tests {
     /// receipt and without mode authorization, and the declared successor's
     /// predecessor chain cannot be resolved.
     #[test]
-    fn unresolvable_declared_predecessor_fails_closed_at_composition() {
-        let vectors = corpus();
-        let vector = vector_by_id(&vectors, "v011-missing-mandatory-stage");
+    fn unresolvable_declared_predecessor_fails_closed_at_composition() -> TestResult {
+        let vectors = corpus()?;
+        let vector = vector_by_id(&vectors, "v011-missing-mandatory-stage")?;
 
         // Conformant anchor: without a deviation the missing mandatory stage
         // stops the attempt before any successor runs.
-        let packet = derive(vector, Deviation::None);
+        let packet = derive(vector, Deviation::None)?;
         assert_eq!(packet.terminal.reason_family, ReasonFamily::MissingEvidence);
 
         match derive_packet(vector, Deviation::WarnAndContinue) {
@@ -1898,9 +1930,14 @@ mod tests {
                 );
             }
             other => {
-                fail(&format!("unresolvable declared predecessor must fail closed, got {other:?}"))
+                return Err(format!(
+                    "unresolvable declared predecessor must fail closed, got {other:?}"
+                )
+                .into());
             }
         }
+
+        Ok(())
     }
 
     /// Fix 1 (#13295), second half: a mode-authorized skipped predecessor must
@@ -1916,25 +1953,28 @@ mod tests {
     /// cannot discriminate this case: there the predecessor is absent from the
     /// skipped set, here it is present in it.
     #[test]
-    fn mode_authorized_skipped_predecessor_binds_to_its_substitute_receipt() {
-        let vectors = corpus();
-        let vector = vector_by_id(&vectors, "v007-fallback-allowed-new-branch");
-        let packet = derive(vector, Deviation::None);
+    fn mode_authorized_skipped_predecessor_binds_to_its_substitute_receipt() -> TestResult {
+        let vectors = corpus()?;
+        let vector = vector_by_id(&vectors, "v007-fallback-allowed-new-branch")?;
+        let packet = derive(vector, Deviation::None)?;
 
-        let fallback_receipt = |stage: StageId| -> &StageExecution {
-            let found = packet.executed_stages.iter().find(|execution| {
-                execution.stage_id == stage
-                    && execution.branch_id != "branch-main"
-                    && execution.result == TerminalResult::Succeeded
-            });
-            match found {
-                Some(execution) => execution,
-                None => fail(&format!(
-                    "v007 fallback branch must record a successful {}",
-                    format_stage(stage)
-                )),
-            }
-        };
+        fn fallback_receipt(
+            packet: &SemanticPacket,
+            stage: StageId,
+        ) -> TestResult<&StageExecution> {
+            packet
+                .executed_stages
+                .iter()
+                .find(|execution| {
+                    execution.stage_id == stage
+                        && execution.branch_id != "branch-main"
+                        && execution.result == TerminalResult::Succeeded
+                })
+                .ok_or_else(|| {
+                    format!("v007 fallback branch must record a successful {}", format_stage(stage))
+                        .into()
+                })
+        }
 
         // Precondition: staging really is skipped on this branch, so the edge
         // under test is the authorized one and not an ordinary chain lookup.
@@ -1946,13 +1986,60 @@ mod tests {
             "v007 fallback branch must mode-authorize archive_manifest_and_staging"
         );
 
-        let source_build = fallback_receipt(StageId::SourceBuild).receipt_digest.clone();
-        let observation = fallback_receipt(StageId::ExecutableObservation);
+        let source_build = fallback_receipt(&packet, StageId::SourceBuild)?.receipt_digest.clone();
+        let observation = fallback_receipt(&packet, StageId::ExecutableObservation)?;
         assert_eq!(
             observation.predecessor_digests,
             vec![source_build],
             "executable_observation must bind to the fallback source_build receipt, \
              not mint an empty predecessor list"
         );
+
+        Ok(())
+    }
+
+    /// Fix 6 (#13295), reject arm. The positive control above proves the edge
+    /// binds when the substitute produced a receipt; this pins the other arm.
+    /// When the active mode names a substitute and that stage produced no
+    /// receipt on the branch, the dependency is real and unresolvable, so
+    /// composition must fail closed instead of silently falling back to an
+    /// empty predecessor list — which is exactly the defect Fix 6 repaired.
+    ///
+    /// Removing v007's `source_build` row leaves the vector corpus-valid: the
+    /// resolved subject is `release_archive`, which positively authorizes
+    /// skipping `source_build`, so `validate_stage_graph` has no complaint and
+    /// the edit reaches composition on the `exact_registry_source` fallback
+    /// branch.
+    #[test]
+    fn skipped_predecessor_substitute_without_a_receipt_fails_closed() -> TestResult {
+        let text = fixture_text("v007-fallback-allowed-new-branch.json")?;
+        let without_build = text.replace(
+            ",\n    { \"stage_id\": \"source_build\", \"applicability\": \"not_applicable\", \
+             \"predecessors\": [\"resolve_subject\"], \"port_script\": \"source-build\" }",
+            "",
+        );
+        assert_ne!(text, without_build, "fixture edit must apply");
+        let vector: Vector = serde_json::from_str(&without_build)
+            .map_err(|error| format!("parse failed: {error}"))?;
+        validate_vector(&vector)
+            .map_err(|error| format!("edited vector must stay corpus-valid: {error}"))?;
+
+        match derive_packet(&vector, Deviation::None) {
+            Err(OracleError::StageGraph(message)) => {
+                assert!(
+                    message.contains("source_build")
+                        && message.contains("substitute")
+                        && message.contains("no receipt in this chain"),
+                    "{message}"
+                );
+            }
+            other => {
+                return Err(format!(
+                    "a named substitute with no receipt must fail closed, got {other:?}"
+                )
+                .into());
+            }
+        }
+        Ok(())
     }
 }
