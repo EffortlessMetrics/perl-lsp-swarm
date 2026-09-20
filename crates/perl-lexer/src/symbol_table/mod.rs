@@ -68,15 +68,10 @@ impl LocalSymbolTable {
     /// an opener whose body never closes is left unarmed, so opener-shaped prose
     /// cannot hide the declarations after it.
     ///
-    /// That bounds, but does not remove, one residue. The terminator is matched
-    /// by line shape, so opener-shaped prose can bind to a lone `.` that belongs
-    /// to something else, suppressing declarations in between. It needs the
-    /// prepass to be already mis-scanning a region — the same confusion that
-    /// makes POD swallow to EOF here today — and the region bounds the damage
-    /// where POD does not. Repairing it means recognizing heredoc openers the
-    /// prepass currently misses, which requires term-versus-operator position
-    /// (`my $z = $x <<'END';` is a left shift, not a heredoc), so it belongs to
-    /// the heredoc owners rather than this region. Tracked by #14927.
+    /// Unrecognized source regions can still expose format-shaped prose to this
+    /// scan. Immediate scalar and bareword filehandles in `print FILEHANDLE LIST`
+    /// are recognized, but general indirect-method/list-slot grammar is not.
+    /// Quoted shift operands alone never authorize body skipping.
     ///
     /// Perl alternates picture lines and argument lines inside a body, and a
     /// `sub NAME {}` on an *argument* line is genuinely declared, so excluding
@@ -404,9 +399,15 @@ fn scan_code_line(
             continue;
         }
 
-        if line[offset..].starts_with("<<")
+        let heredoc_start = if line[offset..].starts_with("<<")
             && heredoc_allowed_before(line, offset, known_subs, hints)
-            && let Some((pending, end)) = parse_heredoc_opener(line, offset)
+        {
+            Some(offset)
+        } else {
+            print_filehandle_heredoc_start(line, offset, known_subs, hints)
+        };
+        if let Some(start) = heredoc_start
+            && let Some((pending, end)) = parse_heredoc_opener(line, start)
         {
             state.pending_heredocs.push_back(pending);
             offset = end;
@@ -784,6 +785,45 @@ fn heredoc_allowed_before(
     previous_word_before(line, offset).is_some_and(|word| is_callable_word(word, known_subs, hints))
 }
 
+/// Recognize the immediate `print FILEHANDLE LIST` term slot while scanning code.
+/// Start at `print`, rather than searching a raw prefix that may contain prose.
+/// Completed terms still use `heredoc_allowed_before` and cannot become heredocs
+/// merely because their shift operand is a quoted label.
+fn print_filehandle_heredoc_start(
+    line: &str,
+    start: usize,
+    known_subs: &HashSet<Box<str>>,
+    hints: &HashSet<Box<str>>,
+) -> Option<usize> {
+    let after_print = line[start..].strip_prefix("print")?;
+    if !after_print.starts_with([' ', '\t']) {
+        return None;
+    }
+    let before = &line[..start];
+    if before.trim_end_matches([' ', '\t']).ends_with("->")
+        || before.chars().next_back().is_some_and(|ch| {
+            is_perl_identifier_continue(ch)
+                || matches!(ch, '$' | '@' | '%' | '&' | '*' | ':' | '\'')
+        })
+    {
+        return None;
+    }
+
+    let mut offset = skip_horizontal_whitespace(line, start + "print".len());
+    let scalar = line[offset..].starts_with('$');
+    if scalar {
+        offset += 1;
+    }
+    let (name, end) = parse_qualified_name(line, offset)?;
+    // A callable bareword is not a filehandle. Leave existing callable handling
+    // in charge; this bounded recognizer does not infer prototype semantics.
+    if !scalar && is_callable_word(name, known_subs, hints) {
+        return None;
+    }
+    let opener = skip_horizontal_whitespace(line, end);
+    line[opener..].starts_with("<<").then_some(opener)
+}
+
 fn parse_heredoc_opener(line: &str, start: usize) -> Option<(PendingHeredoc, usize)> {
     let mut offset = start + 2;
     let allow_indent = if line[offset..].starts_with('~') {
@@ -875,7 +915,7 @@ mod tests {
             let tokens = tokens_with_table(&with_slash, LocalSymbolTable::scan_subs(&with_slash));
             assert!(
                 tokens.iter().any(|token| matches!(&token.token_type, TokenType::Division)),
-                "{name} leaked into the regex path for {source:?}"
+                "{name} leaked into the regex path for {source:?}; tokens: {tokens:?}"
             );
             assert!(
                 !tokens.iter().any(|token| matches!(&token.token_type, TokenType::RegexMatch)),
@@ -1388,10 +1428,9 @@ mod tests {
         let unterminated = "format STDOUT =\nsub fake { }\nsub real { }\n";
         assert_membership_and_slash(unterminated, &["fake", "real"], &[]);
 
-        // The motivating case, and valid Perl: this prepass does not recognize
-        // `print $fh <<'END';` as a heredoc, so the opener-shaped prose inside
-        // the body is reached as code. It must not erase the file.
-        let prose_in_unrecognized_heredoc = concat!(
+        // A recognized print-filehandle heredoc keeps its format-shaped prose
+        // opaque even when no format terminator follows.
+        let prose_in_heredoc = concat!(
             "open(my $fh, '>', '/dev/null') or die;\n",
             "print $fh <<'END';\n",
             "Usage: declare a report with a line such as\n",
@@ -1400,26 +1439,13 @@ mod tests {
             "END\n",
             "sub helper { return 2 }\n",
         );
-        assert_membership_and_slash(prose_in_unrecognized_heredoc, &["helper"], &[]);
+        assert_membership_and_slash(prose_in_heredoc, &["helper"], &[]);
     }
 
     #[test]
-    fn opener_shaped_prose_can_still_bind_to_an_unrelated_terminator() {
-        // Recorded boundary, not a desired behavior. Arming requires a
-        // terminator, which bounds the damage, but the terminator is found by
-        // line shape and can belong to something else entirely — here a lone `.`
-        // inside a second heredoc. A declaration between the two is suppressed.
-        //
-        // This is valid Perl, and the root cause is upstream of this region: the
-        // prepass does not recognize `print $fh <<'END';` as a heredoc, so prose
-        // reaches the scanner as code. The same confusion already makes POD
-        // swallow to EOF on main, so this is an instance of an accepted class
-        // rather than a new hazard, and the region bounds it where POD does not.
-        //
-        // It is deliberately not repaired here: recognizing that heredoc needs
-        // term-versus-operator position, since `my $z = $x <<'END';` is a left
-        // shift, not a heredoc (verified with perl 5.38.2). That is the heredoc
-        // owners' seam. Tracked by #14927.
+    fn print_filehandle_heredoc_prose_cannot_bind_to_an_unrelated_terminator() {
+        // A format-shaped line belongs to the first heredoc, not to the dot in
+        // the second heredoc. Both intervening and subsequent subs survive.
         let src = concat!(
             "open(my $fh, '>', '/dev/null') or die;\n",
             "print $fh <<'END';\n",
@@ -1431,7 +1457,46 @@ mod tests {
             "TWO\n",
             "sub after_all { 1 }\n",
         );
-        assert_membership_and_slash(src, &["after_all"], &["real_between"]);
+        assert_membership_and_slash(src, &["real_between", "after_all"], &[]);
+    }
+
+    #[test]
+    fn print_filehandle_heredocs_exclude_prose_and_preserve_real_subs() {
+        for call in ["print $fh", "print STDERR", "print HANDLE", "print $Pkg::fh"] {
+            for prose in ["=head1 NAME", "format STDOUT =", "ordinary text"] {
+                let source =
+                    format!("{call} <<'END';\n{prose}\nsub fake {{ }}\nEND\nsub real {{ }}\n");
+                assert_membership_and_slash(&source, &["real"], &["fake"]);
+            }
+        }
+    }
+
+    #[test]
+    fn completed_scalar_terms_keep_quoted_and_numeric_left_shifts() {
+        for term in ["$x", "print($fh)"] {
+            for operand in ["2", "'END'"] {
+                let source = format!(
+                    "my $z = {term} <<{operand};\nsub real {{ }}\nEND\n; sub after {{ }}\n"
+                );
+                assert_membership_and_slash(&source, &["real", "after"], &[]);
+            }
+        }
+    }
+
+    #[test]
+    fn print_call_prefixes_keep_left_shifts_across_trivia() {
+        for prefix in ["& ", "$obj->", "$obj->\n", "$obj-> # method\n", "& # call\n"] {
+            let source = format!(
+                "my $x = {prefix}print($fh <<'END');\nsub real {{ }}\nEND\n; sub after {{ }}\n"
+            );
+            assert_membership_and_slash(&source, &["real", "after"], &[]);
+        }
+    }
+
+    #[test]
+    fn ordinary_heredoc_pod_prose_preserves_the_public_slash_path() {
+        let source = "my $x = <<'END';\n=head1 NAME\nsub fake { }\nEND\nsub real { }\n";
+        assert_membership_and_slash(source, &["real"], &["fake"]);
     }
 
     #[test]
