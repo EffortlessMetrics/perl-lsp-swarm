@@ -4,6 +4,6 @@ kind: Fixed
 body: "Bare q and qq arguments remain inside no directives with their complete spelling, and malformed quote tokens in raw no arguments and shared import pair values retain diagnostics."
 time: 2026-09-20T10:30:00Z
 custom:
-  PR: "0000"
+  PR: "16184"
   Slug: no-directive-q-qq-ownership-16154
   Breaking: "no"
