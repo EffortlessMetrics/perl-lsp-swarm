@@ -1003,8 +1003,15 @@ note: run with `RUST_BACKTRACE=full` for a verbose backtrace
         Ok(())
     }
 
-    /// The digest appends. The existing `Gate summary` step writes the gate
-    /// table first, and overwriting it would trade one diagnostic for another.
+    /// The digest replaces its own output file. Appending to `$GITHUB_STEP_SUMMARY`
+    /// is the workflow's job — `cat target/receipts/gate-failure-digest.md >>
+    /// "$GITHUB_STEP_SUMMARY"` — so the gate table written by the earlier `Gate
+    /// summary` step survives without this writer having to preserve it.
+    ///
+    /// Replacing is what makes that safe. `target/` is restored from a shared
+    /// rust-cache (#12085), so a digest file left by an unrelated run is already
+    /// on disk; appending to it would `cat` another SHA's failures into this
+    /// run's summary as if they were this run's.
     #[test]
     fn writing_the_digest_replaces_a_file_left_by_another_run() -> Result<()> {
         let temp = tempfile::tempdir()?;
