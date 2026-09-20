@@ -108,8 +108,18 @@ struct BaselineSummary {
     overall_signal_per_dollar: f64,
 }
 
+/// Envelope version stamped on every `ci_baseline.json` this module writes.
+///
+/// Umbrella #15990 Lane 0 ruling: `schema_version` is a `u32` integer and
+/// consumers assert it fail-closed. The release-health consumer refuses any
+/// other value (#15367), so bumping this constant requires updating every
+/// consumer in the same change.
+pub(crate) const SCHEMA_VERSION: u32 = 1;
+
 #[derive(Serialize)]
 struct BaselineReport {
+    /// Envelope contract for on-disk consumers (#15367).
+    schema_version: u32,
     generated_at: String,
     branch: String,
     days_analyzed: u64,
@@ -751,6 +761,7 @@ fn build_baseline_report(
         if total_cost > 0.0 { total_unique_failures as f64 / total_cost } else { 0.0 };
 
     Some(BaselineReport {
+        schema_version: SCHEMA_VERSION,
         generated_at: generated_at.to_rfc3339(),
         branch: branch.to_string(),
         days_analyzed: days,
@@ -1271,6 +1282,27 @@ mod tests {
                 .ok_or_else(|| eyre!("expected baseline report"))?;
         assert_eq!(report.sample_completeness, SampleCompleteness::Complete);
 
+        Ok(())
+    }
+
+    /// The producer stamps the envelope (#15367): serialized
+    /// `ci_baseline.json` carries `schema_version: 1`, which release-health
+    /// asserts fail-closed. Keep the stamp, the constant, and the consumer
+    /// assert in lockstep.
+    #[test]
+    fn baseline_report_stamps_schema_version_for_consumers() -> Result<()> {
+        let generated_at =
+            DateTime::parse_from_rfc3339("2026-03-25T12:00:00Z")?.with_timezone(&Utc);
+        let cutoff = DateTime::parse_from_rfc3339("2026-03-25T10:30:00Z")?.with_timezone(&Utc);
+
+        let report =
+            build_baseline_report("main", 1, generated_at, cutoff, 2, &truncated_window_runs())
+                .ok_or_else(|| eyre!("expected baseline report"))?;
+        assert_eq!(report.schema_version, SCHEMA_VERSION);
+
+        let json = serde_json::to_string(&report)?;
+        let parsed: serde_json::Value = serde_json::from_str(&json)?;
+        assert_eq!(parsed["schema_version"], 1);
         Ok(())
     }
 
