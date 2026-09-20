@@ -21,6 +21,12 @@ const REPORT_SCHEMA: &str = "semantic_close_containment_report.v1";
 const FIXTURE_SCHEMA: &str = "semantic_close_containment_fixture.v1";
 const EXIT_CONTRADICTION: i32 = 2;
 const EXIT_NOT_PROVEN: i32 = 3;
+/// #16214: instrument failures (the tool itself crashed and could not
+/// evaluate the PR at all) exit with a distinct code from `EXIT_NOT_PROVEN`
+/// (the PR was evaluated and at least one closing relation could not be
+/// checked against its issue subject). The two are opposite claims about
+/// whether the change under test has a problem.
+const EXIT_INSTRUMENT_FAILURE: i32 = 4;
 const MAX_EVENT_BYTES: usize = 2 * 1024 * 1024;
 const MAX_FIXTURE_BYTES: usize = 512 * 1024;
 const MAX_PR_BODY_BYTES: usize = 128 * 1024;
@@ -82,7 +88,17 @@ impl ResultCode {
     }
 
     fn is_not_proven(self) -> bool {
-        matches!(self, Self::NotProvenGithub | Self::InstrumentFailure)
+        matches!(self, Self::NotProvenGithub)
+    }
+
+    /// #16214: instrument failure is its own class. The validator could not
+    /// evaluate the PR at all (a lookup returned the wrong issue, a body
+    /// overflowed the bounded input, the issue body could not be parsed within
+    /// bounds). That is distinct from "the PR was evaluated and the closing
+    /// relation could not be checked against its subject", which is
+    /// `is_not_proven`.
+    fn is_instrument_failure(self) -> bool {
+        matches!(self, Self::InstrumentFailure)
     }
 
     fn as_str(self) -> &'static str {
@@ -257,8 +273,16 @@ struct Report {
 
 impl Report {
     fn exit_code(&self) -> i32 {
+        // #16214: precedence is contradiction > instrument_failure > not_proven.
+        // A contradiction row is a real verdict about the PR. An
+        // instrument_failure row says the validator could not evaluate the
+        // PR — distinct from not_proven, which says the evaluator checked and
+        // could not confirm. Reporting one as the other misrepresents the
+        // change under test.
         if self.rows.iter().any(|row| row.code.is_failure()) {
             EXIT_CONTRADICTION
+        } else if self.rows.iter().any(|row| row.code.is_instrument_failure()) {
+            EXIT_INSTRUMENT_FAILURE
         } else if self.rows.iter().any(|row| row.code.is_not_proven()) {
             EXIT_NOT_PROVEN
         } else {
@@ -401,11 +425,15 @@ struct FixtureExpectedRow {
 
 fn main() {
     if let Err(error) = run_cli() {
+        // #16214: instrument failures exit with `EXIT_INSTRUMENT_FAILURE`,
+        // not `EXIT_NOT_PROVEN`. The two are opposite claims about whether
+        // the change under test has a problem — see `Report::exit_code` for
+        // the matching precedence rule on the report path.
         eprintln!(
             "INSTRUMENT_FAILURE semantic-close-containment: {}",
             sanitize_for_output(&error.to_string(), 1_024)
         );
-        exit(EXIT_NOT_PROVEN);
+        exit(EXIT_INSTRUMENT_FAILURE);
     }
 }
 
@@ -438,11 +466,73 @@ fn run_cli() -> Result<()> {
         OutputFormat::Json => println!("{}", serde_json::to_string_pretty(&report)?),
     }
 
+    emit_github_annotations(&report);
+
     let code = report.exit_code();
     if code != 0 {
         exit(code);
     }
     Ok(())
+}
+
+/// #16214: surface every non-pass row as a GitHub Actions workflow command so
+/// the check annotation surface tells readers which of two opposite claims the
+/// run made — "the PR was evaluated and a closing relation could not be
+/// checked" (`NOT_PROVEN`) versus "the validator could not evaluate the PR at
+/// all" (`INSTRUMENT_FAILURE`). The previous behaviour surfaced the verdict
+/// only in the step summary, which the REST API does not serve.
+///
+/// A no-op outside CI (`GITHUB_ACTIONS` is not set), so local invocations
+/// keep their existing output and tests can assert against the function
+/// without affecting the host environment.
+fn emit_github_annotations(report: &Report) {
+    if env::var_os("GITHUB_ACTIONS").is_none() {
+        return;
+    }
+    for line in annotation_lines_for_report(report) {
+        eprintln!("{line}");
+    }
+}
+
+/// Build the `::error …` annotation lines a run would emit inside
+/// `GITHUB_ACTIONS`. Factored out of `emit_github_annotations` so tests can
+/// assert on the produced text without touching the host environment.
+fn annotation_lines_for_report(report: &Report) -> Vec<String> {
+    let mut lines = Vec::with_capacity(report.rows.len() + 1);
+    for row in &report.rows {
+        if matches!(
+            row.code,
+            ResultCode::PassNotApplicable | ResultCode::PassNoHighConfidenceContradiction
+        ) {
+            continue;
+        }
+        let title = match row.code {
+            ResultCode::InstrumentFailure => "INSTRUMENT_FAILURE semantic-close-containment",
+            ResultCode::NotProvenGithub => "NOT_PROVEN terminal relation could not be checked",
+            _ => row.code.as_str(),
+        };
+        let title = sanitize_for_output(title, 256);
+        let line = row.line_number.max(1);
+        let body = sanitize_for_output(
+            &format!(
+                "{} ({}#{}): {}",
+                row.code.as_str(),
+                row.repository,
+                row.issue_number,
+                row.reason
+            ),
+            2_048,
+        );
+        lines.push(format!("::error title={title},line={line}::{body}"));
+    }
+    // Make the aggregate verdict visible as its own annotation too: a reader
+    // scanning the file only sees one annotation per line, and the report's
+    // aggregate carries information that no single row does.
+    lines.push(format!(
+        "::error title=semantic-close-containment aggregate,line=1::{}",
+        sanitize_for_output(report.aggregate_code.as_str(), 256)
+    ));
+    lines
 }
 
 /// #15640: the event payload supplies only the immutable locator; the
@@ -4229,5 +4319,194 @@ mod tests {
         );
         assert!(validate_live_snapshot(oversized_title.as_bytes(), &locator).is_err());
         Ok(())
+    }
+
+    // --- #16214: split EXIT_NOT_PROVEN (3) and EXIT_INSTRUMENT_FAILURE (4) ---
+
+    fn report_with_row(code: ResultCode) -> Report {
+        Report {
+            schema_version: REPORT_SCHEMA,
+            repository: "effortlessmetrics/perl-lsp-swarm".into(),
+            pull_request_number: 16214,
+            pull_request_title: "test: 16214".into(),
+            aggregate_code: code,
+            semantic_completion_proven: false,
+            rows: vec![RelationResult {
+                repository: "effortlessmetrics/perl-lsp-swarm".into(),
+                issue_number: 42,
+                keyword: "Closes".into(),
+                source_line: "Closes #42".into(),
+                line_number: 7,
+                code,
+                rule_id: None,
+                reason: "test reason".into(),
+                suggested_relation: None,
+                retirement_mapping: None,
+            }],
+            subject_snapshot: None,
+        }
+    }
+
+    #[test]
+    fn exit_code_splits_instrument_failure_from_not_proven() {
+        // The two failure modes were both EXIT_NOT_PROVEN (3) before #16214,
+        // making the check surface unable to tell them apart. The split is
+        // the acceptance predicate for the issue.
+        assert_eq!(report_with_row(ResultCode::NotProvenGithub).exit_code(), EXIT_NOT_PROVEN,);
+        assert_eq!(
+            report_with_row(ResultCode::InstrumentFailure).exit_code(),
+            EXIT_INSTRUMENT_FAILURE,
+        );
+        assert_ne!(EXIT_NOT_PROVEN, EXIT_INSTRUMENT_FAILURE);
+    }
+
+    #[test]
+    fn exit_code_precedence_is_contradiction_over_instrument_failure_over_not_proven() {
+        // A single contradiction row wins over both failure modes: a real
+        // verdict about the PR is more specific than a validator-class crash.
+        let codepoint_row = |number, code| RelationResult {
+            repository: "effortlessmetrics/perl-lsp-swarm".into(),
+            issue_number: number,
+            keyword: "Closes".into(),
+            source_line: format!("Closes #{number}"),
+            line_number: number as usize,
+            code,
+            rule_id: None,
+            reason: "r".into(),
+            suggested_relation: None,
+            retirement_mapping: None,
+        };
+        // Contradiction + instrument_failure + not_proven in the same report:
+        // the contradiction wins.
+        let full_report = Report {
+            schema_version: REPORT_SCHEMA,
+            repository: "effortlessmetrics/perl-lsp-swarm".into(),
+            pull_request_number: 16214,
+            pull_request_title: "test".into(),
+            aggregate_code: ResultCode::FailPhaseTerminalRelation,
+            semantic_completion_proven: false,
+            rows: vec![
+                codepoint_row(1, ResultCode::FailPhaseTerminalRelation),
+                codepoint_row(2, ResultCode::InstrumentFailure),
+                codepoint_row(3, ResultCode::NotProvenGithub),
+            ],
+            subject_snapshot: None,
+        };
+        assert_eq!(full_report.exit_code(), EXIT_CONTRADICTION);
+
+        // Without the contradiction row, instrument_failure wins over not_proven.
+        let instrument_only = Report {
+            schema_version: REPORT_SCHEMA,
+            repository: "effortlessmetrics/perl-lsp-swarm".into(),
+            pull_request_number: 16214,
+            pull_request_title: "test".into(),
+            aggregate_code: ResultCode::InstrumentFailure,
+            semantic_completion_proven: false,
+            rows: vec![
+                codepoint_row(2, ResultCode::InstrumentFailure),
+                codepoint_row(3, ResultCode::NotProvenGithub),
+            ],
+            subject_snapshot: None,
+        };
+        assert_eq!(instrument_only.exit_code(), EXIT_INSTRUMENT_FAILURE);
+
+        // With only the not_proven row, the exit code is NOT_PROVEN.
+        let not_proven_only = Report {
+            schema_version: REPORT_SCHEMA,
+            repository: "effortlessmetrics/perl-lsp-swarm".into(),
+            pull_request_number: 16214,
+            pull_request_title: "test".into(),
+            aggregate_code: ResultCode::NotProvenGithub,
+            semantic_completion_proven: false,
+            rows: vec![codepoint_row(3, ResultCode::NotProvenGithub)],
+            subject_snapshot: None,
+        };
+        assert_eq!(not_proven_only.exit_code(), EXIT_NOT_PROVEN);
+    }
+
+    #[test]
+    fn unavailable_issue_evidence_returns_exit_not_proven_through_evaluate() -> Result<()> {
+        // End-to-end through `evaluate`: an unavailable issue subject (e.g.
+        // GitHub API rate-limited) is `NotProvenGithub`, not
+        // `InstrumentFailure`. The exit code surfaces that distinction.
+        let pull = PullRequestSubject {
+            repository: "effortlessmetrics/perl-lsp-swarm".into(),
+            number: 900016214,
+            title: "test: unavailable issue evidence is not_proven not instrument_failure".into(),
+            body: "Closes #1\n".into(),
+        };
+        let report = evaluate(&pull, |_| {
+            IssueEvidence::Unavailable("simulated API rate limit".to_string())
+        })?;
+        assert_eq!(report.aggregate_code, ResultCode::NotProvenGithub);
+        assert_eq!(report.exit_code(), EXIT_NOT_PROVEN);
+        Ok(())
+    }
+
+    #[test]
+    fn annotation_lines_omit_pass_rows_and_distinguish_failure_modes() {
+        // The annotation surface must distinguish the two failure modes by
+        // title — that is the only way a reader of the GitHub REST API can
+        // tell them apart without opening the run. Pass rows are not
+        // surfaced (they would be noise).
+        let report = report_with_row(ResultCode::InstrumentFailure);
+        let lines = annotation_lines_for_report(&report);
+        assert_eq!(lines.len(), 2, "row + aggregate; pass rows must be omitted");
+        assert!(
+            lines[0].contains("INSTRUMENT_FAILURE semantic-close-containment"),
+            "first annotation must title instrument failure distinctly: {}",
+            lines[0]
+        );
+        assert!(lines[0].starts_with("::error title="));
+        assert!(
+            lines[1].contains("INSTRUMENT_FAILURE"),
+            "aggregate line must carry the verdict code: {}",
+            lines[1]
+        );
+
+        let report = report_with_row(ResultCode::NotProvenGithub);
+        let lines = annotation_lines_for_report(&report);
+        assert!(
+            lines[0].contains("NOT_PROVEN terminal relation could not be checked"),
+            "not_proven annotations must title the OPPOSITE claim: {}",
+            lines[0]
+        );
+        assert!(
+            !lines[0].contains("INSTRUMENT_FAILURE"),
+            "not_proven must never title as instrument_failure: {}",
+            lines[0]
+        );
+    }
+
+    #[test]
+    fn annotation_lines_include_contradiction_rows_alongside_aggregate() {
+        // A contradiction is also non-pass and must appear as its own row
+        // annotation, with the correct title. The aggregate line still
+        // appears last.
+        let report = report_with_row(ResultCode::FailPhaseTerminalRelation);
+        let lines = annotation_lines_for_report(&report);
+        assert_eq!(lines.len(), 2);
+        assert!(lines[0].contains("FAIL_PHASE_TERMINAL_RELATION"));
+        assert!(lines[1].contains("FAIL_PHASE_TERMINAL_RELATION"));
+    }
+
+    #[test]
+    fn annotation_lines_omit_pass_only_reports() {
+        // A no-relation PR is a pass: no annotations should be emitted
+        // (the aggregate line is still emitted as a single neutral
+        // summary so a CI log without any prior output is not blank).
+        let report = Report {
+            schema_version: REPORT_SCHEMA,
+            repository: "effortlessmetrics/perl-lsp-swarm".into(),
+            pull_request_number: 16214,
+            pull_request_title: "test".into(),
+            aggregate_code: ResultCode::PassNotApplicable,
+            semantic_completion_proven: false,
+            rows: Vec::new(),
+            subject_snapshot: None,
+        };
+        let lines = annotation_lines_for_report(&report);
+        assert_eq!(lines.len(), 1, "only the aggregate line for a no-relation pass");
+        assert!(lines[0].contains("PASS_NOT_APPLICABLE"));
     }
 }

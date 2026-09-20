@@ -18,8 +18,14 @@
 #
 # Exit contract: 0 = pass (containment level only), 2 = high-confidence
 # contradiction (the check fails with the suggested non-terminal relation),
-# 3 = NOT_PROVEN/instrument failure (the check fails; it never passes on
-# missing or broken evidence).
+# 3 = NOT_PROVEN (the validator ran and at least one terminal relation could
+# not be checked against its issue subject), 4 = INSTRUMENT_FAILURE (the
+# validator could not evaluate the PR at all; e.g. a body lookup returned
+# the wrong issue or overflowed the bounded input). The two failure modes
+# are opposite claims about whether the change under test has a problem —
+# the API surface distinguishes them, and every non-pass row is also emitted
+# as a `::error` annotation (#16214) so the GitHub REST check surface can
+# tell them apart without opening the run in a browser.
 #
 # Trigger note: `pull_request_target` lets the base-owned workflow execute the
 # validator after the workflow is present on the base.
@@ -124,9 +130,9 @@ jobs:
 
       - name: Replay immutable CP00 fixtures (instrument self-test)
         # Expected-contradiction fixtures legitimately exit 2; anything else
-        # non-zero (3 = NOT_PROVEN/instrument failure, crashes, expectation
-        # mismatches surfaced as 3) fails this step, so broken evidence can
-        # never masquerade as a pass.
+        # non-zero (3 = NOT_PROVEN, 4 = INSTRUMENT_FAILURE, crashes,
+        # expectation mismatches surfaced as either) fails this step, so
+        # broken evidence can never masquerade as a pass.
         run: |
           set -u
           bin="target/debug/semantic-close-containment"
