@@ -1010,13 +1010,17 @@ jobs:
           receipt = Path("target/receipts/receipt.json")
           summary = Path(os.environ["GITHUB_STEP_SUMMARY"])
           lines = ["### PR Smoke gate summary", ""]
+          failing = []
+          receipt_problem = None
           if not receipt.is_file():
               lines.append("- Receipt: unavailable (the PR-fast runner did not produce a final receipt.)")
+              receipt_problem = "the PR-fast runner did not produce a final receipt"
           else:
               try:
                   data = json.loads(receipt.read_text(encoding="utf-8"))
               except (OSError, json.JSONDecodeError) as error:
                   lines.append(f"- Receipt: unreadable ({error})")
+                  receipt_problem = f"receipt unreadable: {error}"
               else:
                   gates = data.get("gates", [])
                   failures = [
@@ -1029,14 +1033,40 @@ jobs:
                       lines.append("| Gate | Status | Exit |")
                       lines.append("| --- | --- | ---: |")
                       for gate in failures:
+                          name = gate.get("gate_name", "unknown")
+                          status = gate.get("status", "unknown")
+                          exit_code = gate.get("exit_code", "unknown")
                           lines.append(
-                              f"| `{gate.get('gate_name', 'unknown')}` | "
-                              f"`{gate.get('status', 'unknown')}` | "
-                              f"`{gate.get('exit_code', 'unknown')}` |"
+                              f"| `{name}` | `{status}` | `{exit_code}` |"
                           )
+                          failing.append((name, f"status {status}, exit {exit_code}"))
                   else:
                       lines.append("- Non-success gates: none recorded.")
-          summary.write_text("\n".join(lines) + "\n", encoding="utf-8")
+          rendered = "\n".join(lines) + "\n"
+          summary.write_text(rendered, encoding="utf-8")
+
+          # GITHUB_STEP_SUMMARY is not served by the REST API, so on its own this
+          # table is unreadable to anyone diagnosing the red through the API
+          # (#15492): no job-log tail can surface it either, because nothing here
+          # previously reached stdout. Mirror it to stdout -- the same remedy
+          # #16026 applied to the UX regression receipt below -- and additionally
+          # publish one annotation per failing gate, reachable via
+          # GET /repos/{owner}/{repo}/check-runs/{id}/annotations even when the
+          # job-log archive download is not.
+          print(rendered)
+
+          def _esc(text):
+              return (
+                  str(text)
+                  .replace("%", "%25")
+                  .replace("\r", "%0D")
+                  .replace("\n", "%0A")
+              )
+
+          for name, detail in failing:
+              print(f"::error title=pr-fast gate {_esc(name)}::{_esc(detail)}")
+          if receipt_problem is not None:
+              print(f"::warning title=pr-fast receipt::{_esc(receipt_problem)}")
           PY
 
       - name: Convert PR-fast receipt to JUnit
