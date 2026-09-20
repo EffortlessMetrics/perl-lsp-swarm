@@ -101,6 +101,10 @@ test-instrumentation = []
 
 [dev-dependencies]
 perl-test-must.workspace = true
+# Test-only enum iteration: `SemanticSnapshotTerminalState` and
+# `AbsentTerminalState` derive `strum::EnumIter` under `cfg(test)` so that
+# absent-family coverage proofs see a newly added variant automatically.
+strum.workspace = true
 perl-tdd-support.workspace = true
 sha2.workspace = true
 serde_json.workspace = true

@@ -1220,6 +1220,11 @@ pub struct ProjectFactProjectionRef {
 /// product-failure, budget, cancellation, instrument and not-proven states
 /// remain distinct; empty or missing facts never determine terminal state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+// Iterated under `cfg(test)` so that proofs over "every terminal state" pick
+// up a newly added variant without anyone editing a hand-written list. Same
+// reason `perl-ast` derives `strum::VariantNames` on `NodeKind`. The derive is
+// test-only, so no `IntoEnumIterator` impl reaches the published surface.
+#[cfg_attr(test, derive(strum::EnumIter))]
 #[serde(rename_all = "snake_case")]
 pub enum SemanticSnapshotTerminalState {
     /// Completed by honest fresh-full construction. Before #7308 this is
@@ -1310,12 +1315,19 @@ impl SemanticSnapshotTerminalState {
 /// by construction rather than by a checked branch it would then
 /// have to handle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[cfg_attr(test, derive(strum::EnumIter))]
 // The type's job is to *be* the absent family, so it carries every state
-// `is_absent_family` accepts -- including the two no construction path
-// produces yet. Dropping them would make the family narrower than the
-// predicate it mirrors, which is the error
+// `is_absent_family` accepts -- including `Unavailable` and `Cancelled`, which
+// no construction path produces yet. Dropping them would make the family
+// narrower than the predicate it mirrors, which is the error
 // `absent_terminal_state_covers_exactly_the_absent_family` exists to catch.
-#[allow(dead_code)]
+//
+// The allow is scoped to `not(test)` on purpose: under `cfg(test)` it is off,
+// so the two staged variants are dead code unless a proof actually constructs
+// them -- which iterating the enum makes it do. A blanket `allow(dead_code)`
+// would silence that check too. Same `cfg_attr(not(test), allow(dead_code))`
+// shape this crate already uses in `providers::navigation::type_definition`.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) enum AbsentTerminalState {
     /// No semantic result is available for this subject.
     Unavailable,
@@ -1350,18 +1362,6 @@ impl AbsentTerminalState {
             Self::NotProven => SemanticSnapshotTerminalState::NotProven,
         }
     }
-
-    /// Every absent-family state, for exhaustive proof.
-    #[cfg(test)]
-    pub(crate) const ALL: [Self; 7] = [
-        Self::Unavailable,
-        Self::Cancelled,
-        Self::BudgetExhausted,
-        Self::StaleOrSuperseded,
-        Self::ProductFailure,
-        Self::InstrumentOrSchemaFailure,
-        Self::NotProven,
-    ];
 }
 
 impl std::fmt::Display for SemanticSnapshotTerminalState {
@@ -1839,14 +1839,6 @@ impl FileSemanticSnapshotV1 {
         }
     }
 
-    /// Checked constructor: validates every identity binding and derives the
-    /// accepted-ticket reference and snapshot fingerprint.
-    ///
-    /// Refuses (typed) mixed subjects, mixed tickets, profile/set/view
-    /// ownership violations, complete-state-without-facts, absent-state
-    /// carrying facts, strategy/receipt contradictions, missing recovery or
-    /// dynamic limitations, non-canonical orderings, and unknown schema or
-    /// instrument states.
     /// Checked constructor: validates every identity binding and derives the
     /// accepted-ticket reference and snapshot fingerprint.
     ///
@@ -2570,6 +2562,7 @@ mod tests {
     };
     use perl_test_must::must_with;
     use serde_json::json;
+    use strum::IntoEnumIterator as _;
 
     const SOURCE: &[u8] = b"package Widget;\n1;\n";
 
@@ -2786,12 +2779,17 @@ mod tests {
         // nothing. For every absent-family state, both constructors must
         // produce the identical snapshot -- same derived ticket, same
         // fingerprint, same field for field.
-        for state in AbsentTerminalState::ALL {
+        //
+        // Driven by `AbsentTerminalState::iter()`, so a variant added to the
+        // absent family is proved here without this test being edited.
+        for state in AbsentTerminalState::iter() {
             let terminal = state.as_terminal_state();
             assert!(terminal.is_absent_family(), "{terminal} is not absent-family");
             let parts = parts_for_terminal(terminal);
-            let checked = FileSemanticSnapshotV1::from_parts(parts.clone())
-                .expect("absent-family parts are valid");
+            let checked = must_with(
+                FileSemanticSnapshotV1::from_parts(parts.clone()),
+                format_args!("absent-family parts for {terminal} must be valid"),
+            );
             let total = FileSemanticSnapshotV1::absent(
                 parts.profile,
                 parts.subject,
@@ -2808,30 +2806,31 @@ mod tests {
         // A state that joins the absent family without joining
         // `AbsentTerminalState` would leave a construction path that can only
         // be expressed through the fallible constructor again.
+        //
+        // Both sides are iterated rather than listed. `SemanticSnapshotTerminalState`
+        // and `AbsentTerminalState` derive `strum::EnumIter` under `cfg(test)`,
+        // so a variant added to either enum enters this proof by itself -- the
+        // gap a hand-written twelve-state array left open, since an array does
+        // not stop compiling when a thirteenth variant appears.
         let named: Vec<_> =
-            AbsentTerminalState::ALL.iter().map(|s| s.as_terminal_state()).collect();
-        let all = [
-            SemanticSnapshotTerminalState::CompleteFreshFull,
-            SemanticSnapshotTerminalState::CompleteIncremental,
-            SemanticSnapshotTerminalState::CompleteNoChangeReuse,
-            SemanticSnapshotTerminalState::CompleteFullFallback,
-            SemanticSnapshotTerminalState::PartialRecovered,
-            SemanticSnapshotTerminalState::Unavailable,
-            SemanticSnapshotTerminalState::Cancelled,
-            SemanticSnapshotTerminalState::BudgetExhausted,
-            SemanticSnapshotTerminalState::StaleOrSuperseded,
-            SemanticSnapshotTerminalState::ProductFailure,
-            SemanticSnapshotTerminalState::InstrumentOrSchemaFailure,
-            SemanticSnapshotTerminalState::NotProven,
-        ];
-        assert_eq!(all.len(), 12, "the twelve terminal states stay closed");
-        for terminal in all {
+            AbsentTerminalState::iter().map(AbsentTerminalState::as_terminal_state).collect();
+        let mut seen = 0usize;
+        for terminal in SemanticSnapshotTerminalState::iter() {
+            seen += 1;
             assert_eq!(
                 terminal.is_absent_family(),
                 named.contains(&terminal),
                 "{terminal} disagrees between `is_absent_family` and `AbsentTerminalState`"
             );
         }
+        // Guards the iteration itself: a derive silently dropped or replaced by
+        // a stub would make every assertion above vacuous.
+        assert!(seen > named.len(), "the complete family must not be empty");
+        assert_eq!(
+            named.len(),
+            named.iter().collect::<std::collections::HashSet<_>>().len(),
+            "`AbsentTerminalState` maps two variants onto one terminal state"
+        );
     }
 
     #[test]
