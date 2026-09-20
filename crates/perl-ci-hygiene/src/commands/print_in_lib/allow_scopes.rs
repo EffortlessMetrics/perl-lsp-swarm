@@ -4,62 +4,136 @@ pub(super) struct PrintAllowAttr {
     pub(super) inner: bool,
 }
 
+/// What one line contributes to an attribute being read across lines.
+struct LineScan {
+    /// Net `[` minus `]`, counting only brackets outside strings and comments.
+    depth_delta: isize,
+    /// The line's code, with a trailing `//` comment and the contents of
+    /// string literals removed.
+    code: String,
+}
+
+/// Splits a line into code and not-code.
+///
+/// Reading an attribute by where its text ends is wrong twice over: Rust
+/// allows a line comment after the closing bracket (`#[allow(…)] // why`,
+/// which this repository writes), and a `reason = "…"` string can contain a
+/// bracket. Both are settled by looking at brackets in code only.
+///
+/// A raw string (`r#"…"#`) is not modelled. If one ever appears in a reason
+/// clause the bracket count can be wrong, and the attribute then stays open
+/// and opts nothing out -- prints are still reported, which is the direction
+/// a gate should fail in.
+fn scan_line(line: &str) -> LineScan {
+    let mut depth_delta = 0isize;
+    let mut code = String::new();
+    let mut chars = line.chars().peekable();
+    let mut in_string = false;
+    let mut escaped = false;
+
+    while let Some(ch) = chars.next() {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+        match ch {
+            '"' => in_string = true,
+            '/' if chars.peek() == Some(&'/') => break,
+            '[' => {
+                depth_delta += 1;
+                code.push(ch);
+            }
+            ']' => {
+                depth_delta -= 1;
+                code.push(ch);
+            }
+            _ => code.push(ch),
+        }
+    }
+
+    LineScan { depth_delta, code }
+}
+
+/// An attribute currently being read, possibly across several lines.
+struct OpenAttr {
+    /// The inner form (`#![…]`), which applies to the whole file.
+    inner: bool,
+    /// Whether the attribute's own top-level path is `allow` or `expect`.
+    admitted: bool,
+    /// Whether a print lint has been named anywhere inside it.
+    names_print_lint: bool,
+    /// Unclosed `[` brackets.
+    depth: isize,
+}
+
 /// Reads attributes a line at a time, joining the ones rustfmt has wrapped.
 ///
-/// Two spellings defeated the single-line matcher this replaces. `#[expect(…)]`
-/// is the form this repository actually uses -- it is the stricter one, because
-/// rustc warns when the lint it names never fires, so an expectation cannot rot
-/// the way an `allow` can -- and the matcher only knew `#[allow(`. And rustfmt
-/// wraps either spelling as soon as a `reason = "…"` clause makes the line long,
-/// putting the opener and the lint name on different lines, so a matcher needing
-/// both together saw neither half.
+/// Three spellings defeated the substring matcher this replaces:
 ///
-/// An attribute is open from the line that starts it until a line ending in
-/// `)]` or `]`. An attribute that never closes stays open, so nothing after it
-/// is reported as opted out -- the conservative direction for a gate: a print
-/// the scanner cannot prove is intentional is one it still reports.
+/// - `#[expect(…)]`, the form this repository actually writes and the
+///   stricter one, since rustc warns when the lint it names never fires;
+/// - an attribute rustfmt wrapped, because a `reason = "…"` clause made the
+///   line long, so the opener and the lint name are on different lines;
+/// - `#[allow(clippy::print_stdout)] // why`, where the closing bracket is
+///   not the end of the line.
+///
+/// And one spelling it admitted that it should not have:
+/// `#![cfg_attr(test, allow(clippy::print_stdout))]` names a lint setting
+/// that applies under `cfg(test)` only. Admitting it exempted four
+/// production files, `perl-lsp-rs-core/src/lib.rs` among them, in every
+/// configuration. Only an unconditional `allow` or `expect` counts now:
+/// admission reads the attribute's own top-level path rather than searching
+/// its arguments.
 #[derive(Default)]
 pub(super) struct AttrJoiner {
     open: Option<OpenAttr>,
 }
 
-struct OpenAttr {
-    inner: bool,
-    names_print_lint: bool,
-}
-
 impl AttrJoiner {
-    /// `true` while an attribute is still being read across lines. The caller
-    /// skips those lines: a wrapped attribute's middle (`clippy::print_stderr,`,
-    /// `reason = "…"`, `)]`) is not source, and counting its braces would close
-    /// a scope the attribute is still opening.
+    /// `true` while an attribute is still being read across lines.
     pub(super) fn in_attribute(&self) -> bool {
         self.open.is_some()
     }
 
     /// Feeds one line. Returns the attribute that ends on it, when that
-    /// attribute names a print lint.
+    /// attribute is an unconditional opt-out naming a print lint.
     pub(super) fn feed(&mut self, line: &str) -> Option<PrintAllowAttr> {
-        let trimmed = line.trim();
+        let scan = scan_line(line);
+        let trimmed = scan.code.trim();
+
         let mut attr = match self.open.take() {
             Some(open) => open,
             None => {
                 let inner = trimmed.starts_with("#![");
-                let outer = trimmed.starts_with("#[");
-                if !(inner || outer) {
+                if !inner && !trimmed.starts_with("#[") {
                     return None;
                 }
-                if !(trimmed.contains("allow(") || trimmed.contains("expect(")) {
-                    return None;
+                let path: String = trimmed
+                    .trim_start_matches(['#', '!', '['])
+                    .chars()
+                    .take_while(|ch| ch.is_ascii_alphanumeric() || *ch == '_')
+                    .collect();
+                OpenAttr {
+                    inner,
+                    admitted: path == "allow" || path == "expect",
+                    names_print_lint: false,
+                    depth: 0,
                 }
-                OpenAttr { inner, names_print_lint: false }
             }
         };
 
-        attr.names_print_lint |= trimmed.contains("clippy::print_");
+        attr.names_print_lint |= scan.code.contains("clippy::print_");
+        attr.depth += scan.depth_delta;
 
-        if trimmed.ends_with(")]") || trimmed.ends_with(']') {
-            return attr.names_print_lint.then_some(PrintAllowAttr { inner: attr.inner });
+        if attr.depth <= 0 {
+            return (attr.admitted && attr.names_print_lint)
+                .then_some(PrintAllowAttr { inner: attr.inner });
         }
 
         self.open = Some(attr);
@@ -69,10 +143,11 @@ impl AttrJoiner {
 
 /// Returns `true` when a source file should be skipped wholesale by the print-macro check.
 ///
-/// Files with a file-level `#![expect(clippy::print_stderr)]` or
-/// `#![allow(clippy::print_stdout)]` attribute have been explicitly opted out of the
-/// rule (e.g. `cli.rs` in the LSP binary crate). The attribute must appear in the
-/// first 30 lines of the file (the module-doc / crate-doc block).
+/// Files with an unconditional file-level `#![expect(clippy::print_stderr)]`
+/// or `#![allow(clippy::print_stdout)]` attribute have been explicitly opted
+/// out of the rule (e.g. `cli.rs` in the LSP binary crate). The attribute
+/// must appear in the first 30 lines of the file (the module-doc / crate-doc
+/// block). A `cfg_attr`-conditioned allowance is not an opt-out.
 pub(super) fn file_has_print_allow(lines: &[String]) -> bool {
     let mut joiner = AttrJoiner::default();
     lines.iter().take(30).filter_map(|line| joiner.feed(line)).any(|attr| attr.inner)
@@ -113,9 +188,13 @@ impl PrintAllowScope {
             if delta > 0 {
                 self.pending_attr = false;
                 self.active_brace_depth = delta as usize;
-            } else if line.trim_end().ends_with(';') {
-                // An item with no block of its own -- `use`, a `const`, a bare
-                // `fn` declaration. The attribute covered that item and is spent.
+            } else if line.contains('{') || line.trim_end().ends_with(';') {
+                // The attributed item ended on this line: either it opened and
+                // closed its body here (`fn banner() { eprintln!("…"); }`, whose
+                // net brace delta is zero), or it has no body at all (`use`, a
+                // `const`). Either way the attribute is spent. Leaving it pending
+                // exempted every later item until something else happened to
+                // change the state.
                 self.pending_attr = false;
             }
             // Otherwise the item's signature is still being read. A function whose
@@ -330,6 +409,71 @@ mod tests {
             ]),
             vec![true]
         );
+    }
+
+    #[test]
+    fn a_trailing_comment_does_not_hold_the_attribute_open() {
+        // Rust allows a line comment after the closing bracket, and this
+        // repository writes them. Deciding closure from the line's last two
+        // characters left the attribute open, and everything after it was
+        // skipped -- often to end of file.
+        let mut joiner = AttrJoiner::default();
+        let done = joiner.feed("#[allow(clippy::print_stdout)] // test-only diagnostics");
+        assert!(done.is_some(), "the attribute closes at its bracket, not at the line end");
+        assert!(!joiner.in_attribute(), "nothing stays open to swallow the following lines");
+    }
+
+    #[test]
+    fn a_bracket_inside_a_reason_string_does_not_hold_it_open() {
+        let mut joiner = AttrJoiner::default();
+        let done = joiner.feed(r#"#[expect(clippy::print_stdout, reason = "renders [rows]")]"#);
+        assert!(done.is_some());
+        assert!(!joiner.in_attribute());
+    }
+
+    #[test]
+    fn a_cfg_attr_conditioned_allowance_is_not_an_opt_out() {
+        // `#![cfg_attr(test, allow(clippy::print_stdout))]` names a lint
+        // setting that applies under `cfg(test)` only. Admitting it on the
+        // strength of the substring `allow(` exempted four production files,
+        // `perl-lsp-rs-core/src/lib.rs` among them, in every configuration.
+        assert!(
+            joined(&["#![cfg_attr(test, allow(clippy::print_stderr, clippy::print_stdout))]"])
+                .is_empty()
+        );
+        let lines = vec!["#![cfg_attr(test, allow(clippy::print_stdout))]".to_owned()];
+        assert!(!file_has_print_allow(&lines), "a conditional allowance does not exempt the file");
+    }
+
+    #[test]
+    fn an_unconditional_allowance_beside_it_still_opts_out() {
+        // The paired half of the control above: tightening admission must not
+        // stop recognising the spelling that does opt out.
+        let lines = vec![
+            "#![cfg_attr(test, allow(clippy::print_stdout))]".to_owned(),
+            "#![allow(clippy::print_stdout)]".to_owned(),
+        ];
+        assert!(file_has_print_allow(&lines));
+    }
+
+    #[test]
+    fn an_attribute_on_a_balanced_one_line_item_is_spent_there() {
+        // `#[expect(…)] fn banner() { eprintln!("…"); }` has a net brace delta
+        // of zero and no trailing semicolon, so the attribute stayed pending
+        // and exempted every later item in the file.
+        let mut scope = PrintAllowScope::default();
+        scope.note_attribute();
+        scope.observe_line("fn banner() { eprintln!(\"hi\"); }");
+        assert!(!scope.allows_current_line(), "the item ended, so the attribute is spent");
+    }
+
+    #[test]
+    fn a_later_item_after_a_balanced_one_line_item_is_not_exempt() {
+        let mut scope = PrintAllowScope::default();
+        scope.note_attribute();
+        scope.observe_line("fn allowed() { eprintln!(\"ok\"); }");
+        scope.observe_line("fn offender() {");
+        assert!(!scope.allows_current_line(), "the next function carries no attribute of its own");
     }
 
     #[test]

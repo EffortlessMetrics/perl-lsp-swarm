@@ -70,6 +70,7 @@ fn included_path(line: &str) -> Option<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use color_eyre::eyre::Result;
     use std::path::PathBuf;
 
     #[test]
@@ -99,61 +100,92 @@ mod tests {
         assert!(!is_excluded_for_print_check(Path::new("crates/perl-parser/src/lib.rs")));
     }
 
-    /// Lays out a crate root with a build script and returns its directory.
-    /// The directory is unique per label, so parallel tests do not collide.
-    fn crate_with_build_script(label: &str, build_rs: &str) -> PathBuf {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|since| since.as_nanos())
-            .unwrap_or_default();
-        let root = std::env::temp_dir().join(format!("print-in-lib-{label}-{nanos}"));
-        let _ = std::fs::create_dir_all(&root);
-        let _ = std::fs::write(root.join("Cargo.toml"), "[package]\nname = \"probe\"\n");
-        let _ = std::fs::write(root.join("build.rs"), build_rs);
-        root
+    /// A crate root laid out on disk, removed when the test ends.
+    ///
+    /// Setup errors propagate rather than being discarded. A fixture whose
+    /// `write` silently failed still runs its assertion, and passes or fails
+    /// on a tree that was never built -- which is the same "the control
+    /// observed the wrong condition" defect this module exists to catch.
+    struct CrateRoot {
+        path: PathBuf,
+    }
+
+    impl CrateRoot {
+        /// The directory is unique per label, so parallel tests do not collide.
+        fn new(label: &str, build_rs: Option<&str>) -> Result<Self> {
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|since| since.as_nanos())
+                .unwrap_or_default();
+            let path = std::env::temp_dir().join(format!("print-in-lib-{label}-{nanos}"));
+            std::fs::create_dir_all(&path)?;
+            std::fs::write(path.join("Cargo.toml"), "[package]\nname = \"probe\"\n")?;
+            if let Some(source) = build_rs {
+                std::fs::write(path.join("build.rs"), source)?;
+            }
+            Ok(Self { path })
+        }
+
+        /// Writes a file under the crate root and returns its path.
+        fn write(&self, name: &str, contents: &str) -> Result<PathBuf> {
+            let file = self.path.join(name);
+            if let Some(parent) = file.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::write(&file, contents)?;
+            Ok(file)
+        }
+    }
+
+    impl Drop for CrateRoot {
+        fn drop(&mut self) {
+            // Cleanup is best-effort by necessity: a destructor has nowhere to
+            // report to. Every path is unique per run, so a leftover directory
+            // cannot make a later run observe the wrong condition.
+            let _ = std::fs::remove_dir_all(&self.path);
+        }
     }
 
     #[test]
-    fn a_file_the_build_script_includes_is_excluded() {
+    fn a_file_the_build_script_includes_is_excluded() -> Result<()> {
         // `crates/perl-dap/build.rs` is `include!("build_catalog.rs")`, which makes
         // `build_catalog.rs` build-script source under a different file name. The
         // `build.rs` name check alone scanned it as library source.
         let root =
-            crate_with_build_script("included", "fn main() {\n    include!(\"catalog.rs\");\n}\n");
-        let _ = std::fs::write(root.join("catalog.rs"), "// spliced into the build script\n");
-        assert!(is_excluded_for_print_check(&root.join("catalog.rs")));
-        let _ = std::fs::remove_dir_all(&root);
+            CrateRoot::new("included", Some("fn main() {\n    include!(\"catalog.rs\");\n}\n"))?;
+        let catalog = root.write("catalog.rs", "// spliced into the build script\n")?;
+        assert!(is_excluded_for_print_check(&catalog));
+        Ok(())
     }
 
     #[test]
-    fn a_sibling_the_build_script_does_not_include_is_not_excluded() {
+    fn a_sibling_the_build_script_does_not_include_is_not_excluded() -> Result<()> {
         let root =
-            crate_with_build_script("sibling", "fn main() {\n    include!(\"catalog.rs\");\n}\n");
-        let _ = std::fs::write(root.join("other.rs"), "// ordinary source\n");
-        assert!(!is_excluded_for_print_check(&root.join("other.rs")));
-        let _ = std::fs::remove_dir_all(&root);
+            CrateRoot::new("sibling", Some("fn main() {\n    include!(\"catalog.rs\");\n}\n"))?;
+        let other = root.write("other.rs", "// ordinary source\n")?;
+        assert!(!is_excluded_for_print_check(&other));
+        Ok(())
     }
 
     #[test]
-    fn a_crate_without_a_build_script_excludes_nothing() {
-        let root = crate_with_build_script("nobuild", "");
-        let _ = std::fs::remove_file(root.join("build.rs"));
-        let _ = std::fs::write(root.join("catalog.rs"), "// ordinary source\n");
-        assert!(!is_excluded_for_print_check(&root.join("catalog.rs")));
-        let _ = std::fs::remove_dir_all(&root);
+    fn a_crate_without_a_build_script_excludes_nothing() -> Result<()> {
+        let root = CrateRoot::new("nobuild", None)?;
+        let catalog = root.write("catalog.rs", "// ordinary source\n")?;
+        assert!(!is_excluded_for_print_check(&catalog));
+        Ok(())
     }
 
     #[test]
-    fn a_computed_include_path_is_not_invented() {
+    fn a_computed_include_path_is_not_invented() -> Result<()> {
         // `concat!(env!("OUT_DIR"), …)` names generated source outside the scanned
         // tree, so nothing would have walked to it to be excluded in the first place.
-        let root = crate_with_build_script(
+        let root = CrateRoot::new(
             "computed",
-            "fn main() {\n    include!(concat!(env!(\"OUT_DIR\"), \"/gen.rs\"));\n}\n",
-        );
-        let _ = std::fs::write(root.join("gen.rs"), "// generated\n");
-        assert!(!is_excluded_for_print_check(&root.join("gen.rs")));
-        let _ = std::fs::remove_dir_all(&root);
+            Some("fn main() {\n    include!(concat!(env!(\"OUT_DIR\"), \"/gen.rs\"));\n}\n"),
+        )?;
+        let generated = root.write("gen.rs", "// generated\n")?;
+        assert!(!is_excluded_for_print_check(&generated));
+        Ok(())
     }
 
     #[test]

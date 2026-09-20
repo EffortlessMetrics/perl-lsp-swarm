@@ -88,22 +88,30 @@ pub(crate) fn check_print_in_lib(repo_root: &Path) -> Result<i32> {
             {
                 print_allow_scope.note_attribute();
             }
-            // A wrapped attribute's own lines are not source: they hold no print
-            // macro, and letting `observe_line` count their braces would close the
-            // scope the attribute is still opening.
-            if attrs.in_attribute() || completed.is_some() {
-                continue;
-            }
+            let inside_attribute = attrs.in_attribute() || completed.is_some();
 
             if line_is_whole_line_comment(line) {
                 continue;
             }
 
+            // Every line is tested for a print macro, including one the joiner
+            // believes is inside an attribute. Skipping those was the more
+            // dangerous shape: an attribute the joiner failed to close would
+            // silently swallow the rest of the file. Nothing is lost by
+            // testing them, because an attribute's own text cannot contain a
+            // print macro call -- `clippy::print_stdout` is not `println!`.
             if print_re.is_match(line)
                 && !debug_assertions_scope.allows_current_line()
                 && !print_allow_scope.allows_current_line()
             {
                 offenders.push(format!("{rel}:{line_no}:{}", line.trim()));
+            }
+
+            // Brace counting is the part that must skip them: a wrapped
+            // attribute's braces are not an item's braces, and counting them
+            // would close a scope the attribute is still opening.
+            if inside_attribute {
+                continue;
             }
 
             debug_assertions_scope.observe_line(line);
