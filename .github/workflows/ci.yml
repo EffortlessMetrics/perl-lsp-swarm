@@ -1551,7 +1551,23 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
+      # GitHub's own answer to "was this run cancelled", recorded before the
+      # classifier reads it. `cancel-in-progress` is set for pull-request
+      # synchronize, so a second push cancels this run and its in-flight lanes
+      # while this job still starts under `if: always()`. Without this the
+      # classifier cannot tell that from one lane lost to a manual or API
+      # cancel, and forgiving both would report green over absent proof
+      # (#16087).
+      #
+      # The variable is exported only on the cancelled path: an uncancelled run
+      # skips this step, leaves it unset, and the classifier stays red.
+      - name: Record run cancellation
+        if: cancelled()
+        shell: bash
+        run: echo "RUN_CANCELLED=true" >> "$GITHUB_ENV"
+
       - name: Gate summary
+        if: always()
         shell: bash
         env:
           NEEDS_JSON: ${{ toJson(needs) }}

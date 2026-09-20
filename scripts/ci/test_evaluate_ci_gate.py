@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import importlib.util
 import io
+import json
 import os
 import re
 import sys
@@ -168,6 +169,91 @@ class AggregateClassifierTests(unittest.TestCase):
 
 
 class AggregateWiringTests(unittest.TestCase):
+    def _exit_status(self, needs: dict, **env: str) -> tuple[int, str]:
+        """Drive `main()` end to end and return its exit code and summary.
+
+        The exit code is the whole interface between this classifier and the
+        check's colour: the aggregate job's only step is
+        `python3 scripts/ci/evaluate_ci_gate.py`. A test that asserts on
+        `verdict.status` alone passes identically whether or not that status
+        ever reaches GitHub, so every claim about red or green is made here.
+        """
+        output = io.StringIO()
+        environ = {"NEEDS_JSON": json.dumps(needs), "EVENT_NAME": "pull_request"}
+        environ.update(env)
+        with mock.patch.dict(os.environ, environ, clear=True):
+            with redirect_stdout(output):
+                status = gate.main()
+        return status, output.getvalue()
+
+    def test_a_cancelled_run_whose_lanes_it_cancelled_reports_green(self) -> None:
+        """The #16087 case: a routine second push must not red the aggregate."""
+        needs = applicable_needs(shard_result="cancelled")
+        needs["check-all-targets"]["result"] = "cancelled"
+        needs["ux-tests"]["result"] = "cancelled"
+
+        verdict = gate.evaluate(needs, run_cancelled=True)
+        self.assertEqual("superseded", verdict.status)
+
+        status, summary = self._exit_status(needs, RUN_CANCELLED="true")
+        self.assertEqual(0, status)
+        self.assertIn("superseded", summary)
+
+    def test_a_cancelled_lane_in_a_live_run_stays_red(self) -> None:
+        """A lane lost on its own produced no proof, and nothing superseded it.
+
+        This is the case that must not be forgiven. A manual cancel, an API
+        cancel or a runner dying leaves the blockers looking exactly like
+        supersession, so only the run-level fact separates them. `ripr.yml`
+        blocks the same shape as `cancelled-no-verdict` (#5460).
+        """
+        needs = applicable_needs(shard_result="cancelled")
+
+        verdict = gate.evaluate(needs, run_cancelled=False)
+        self.assertEqual("failure", verdict.status)
+
+        status, _ = self._exit_status(needs)
+        self.assertEqual(1, status)
+
+    def test_a_real_failure_beside_a_cancellation_stays_red(self) -> None:
+        needs = applicable_needs(shard_result="cancelled")
+        needs["check-all-targets"]["result"] = "failure"
+
+        verdict = gate.evaluate(needs, run_cancelled=True)
+        self.assertEqual("failure", verdict.status)
+
+        status, _ = self._exit_status(needs, RUN_CANCELLED="true")
+        self.assertEqual(1, status)
+
+    def test_only_the_exact_cancellation_marker_is_believed(self) -> None:
+        """An unset or unexpected value must fail closed, not forgive."""
+        needs = applicable_needs(shard_result="cancelled")
+        needs["check-all-targets"]["result"] = "cancelled"
+        needs["ux-tests"]["result"] = "cancelled"
+
+        for value in ("", "false", "True", "TRUE", "1", "cancelled"):
+            with self.subTest(run_cancelled=value):
+                status, _ = self._exit_status(needs, RUN_CANCELLED=value)
+                self.assertEqual(1, status)
+
+    def test_workflow_records_cancellation_before_the_classifier_reads_it(self) -> None:
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        start = workflow.index("  merge-gate:\n")
+        end = workflow.index("\n  # \u2500\u2500 UX Tests", start)
+        block = workflow[start:end]
+
+        self.assertIn("name: Record run cancellation", block)
+        self.assertIn("python3 scripts/ci/evaluate_ci_gate.py", block)
+        record = block.index("name: Record run cancellation")
+        classifier = block.index("python3 scripts/ci/evaluate_ci_gate.py")
+        self.assertLess(
+            record,
+            classifier,
+            "the cancellation marker must be exported before the step that reads it",
+        )
+        self.assertIn("if: cancelled()", block)
+        self.assertIn('RUN_CANCELLED=true" >> "$GITHUB_ENV"', block)
+
     def test_workflow_uses_one_unconditional_job_check(self) -> None:
         workflow = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
         start = workflow.index("  merge-gate:\n")
