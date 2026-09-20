@@ -190,15 +190,52 @@ struct GhShim {
     /// Overrides `published` when set: the exact check-run population the API
     /// reports for this head.
     runs: Option<Vec<CheckRunFixture>>,
+    /// The population the API reports from the second read onwards. `None`
+    /// answers every read the same way.
+    settles_to: Option<Vec<CheckRunFixture>>,
+    /// Attempts the API counts but did not fit on the page. The shim reports
+    /// `total_count` as the rows it served plus this, so a partial page is
+    /// expressible; zero makes the two agree.
+    undisclosed: i64,
 }
 
 impl GhShim {
     fn new(live_draft: Option<&'static str>, published: Option<&'static str>) -> Self {
-        Self { live_draft, published, runs: None }
+        Self { live_draft, published, runs: None, settles_to: None, undisclosed: 0 }
     }
 
     fn with_runs(live_draft: Option<&'static str>, runs: Vec<CheckRunFixture>) -> Self {
-        Self { live_draft, published: Some("unused"), runs: Some(runs) }
+        Self {
+            live_draft,
+            published: Some("unused"),
+            runs: Some(runs),
+            settles_to: None,
+            undisclosed: 0,
+        }
+    }
+
+    /// A head whose population changes under the block: `first` on the first
+    /// read, `then` on every read after it. The lane the mirror waits for is
+    /// still running when the stale snapshot starts, which is the ordinary
+    /// case rather than a corner (#16105 review).
+    fn settling(
+        live_draft: Option<&'static str>,
+        first: Vec<CheckRunFixture>,
+        then: Vec<CheckRunFixture>,
+    ) -> Self {
+        Self {
+            live_draft,
+            published: Some("unused"),
+            runs: Some(first),
+            settles_to: Some(then),
+            undisclosed: 0,
+        }
+    }
+
+    /// Report `n` more attempts than the page carries.
+    fn undisclosing(mut self, n: i64) -> Self {
+        self.undisclosed = n;
+        self
     }
 
     /// The payload the `/check-runs` read serves, or `None` to fail the read.
@@ -209,8 +246,17 @@ impl GhShim {
             (None, Some("")) => Vec::new(),
             (None, Some(conclusion)) => vec![CheckRunFixture::published(conclusion)],
         };
+        Some(Self::render(&runs, gate_name))
+    }
+
+    /// The payload served from the second read onwards, when it differs.
+    fn settled_payload(&self, gate_name: &str) -> Option<String> {
+        self.settles_to.as_ref().map(|runs| Self::render(runs, gate_name))
+    }
+
+    fn render(runs: &[CheckRunFixture], gate_name: &str) -> String {
         let body = runs.iter().map(|run| run.to_json(gate_name)).collect::<Vec<_>>().join(",");
-        Some(format!("{{\"check_runs\":[{body}]}}"))
+        format!("{{\"check_runs\":[{body}]}}")
     }
 }
 
@@ -230,16 +276,47 @@ fn write_gh_shim(dir: &Path, shim: &GhShim, gate_name: &str) -> Result<()> {
         Some(value) => format!("printf '%s' '{{\"draft\":{value}}}' | jq -r \"$jqprog\""),
         None => "exit 1".to_string(),
     };
+    // The server filters by `check_name` and reports `total_count` over the
+    // filtered population, so the shim does both: the rows this gate would
+    // actually receive, and a count that can exceed them by `undisclosed` to
+    // stand for attempts that did not fit the page (#16105 review).
+    let serve = |payload: &str| {
+        format!(
+            // The jq program is single-quoted, so it carries a real newline
+            // rather than a `\\` continuation: inside single quotes a backslash
+            // is literal and jq would try to parse it.
+            "printf '%s' '{payload}' \\\n\
+             \x20 | jq -c --arg n \"$cname\" --argjson extra {extra} \\\n\
+             \x20     '{{check_runs: [.check_runs[] | select(.name == $n)]}}\n\
+             \x20      | .total_count = ((.check_runs | length) + $extra)' \\\n\
+             \x20 | jq -r \"$jqprog\"",
+            extra = shim.undisclosed,
+        )
+    };
     let checks = match shim.payload(gate_name) {
-        Some(payload) => format!(
-            "if [ -z \"$cname\" ]; then\n\
-             \x20 echo \"gh shim: /check-runs read carried no check_name=\" >&2\n\
-             \x20 exit 65\n\
-             fi\n\
-             printf '%s' '{payload}' \\\n\
-             \x20 | jq -c --arg n \"$cname\" '{{check_runs: [.check_runs[] | select(.name == $n)]}}' \\\n\
-             \x20 | jq -r \"$jqprog\""
-        ),
+        Some(payload) => {
+            let first = serve(&payload);
+            let later = match shim.settled_payload(gate_name) {
+                Some(settled) => serve(&settled),
+                None => first.clone(),
+            };
+            let calls = dir.join("check-runs.calls");
+            let calls = calls.display();
+            format!(
+                "if [ -z \"$cname\" ]; then\n\
+                 \x20 echo \"gh shim: /check-runs read carried no check_name=\" >&2\n\
+                 \x20 exit 65\n\
+                 fi\n\
+                 n=$(cat '{calls}' 2>/dev/null || echo 0)\n\
+                 n=$((n + 1))\n\
+                 printf '%s' \"$n\" > '{calls}'\n\
+                 if [ \"$n\" -ge 2 ]; then\n\
+                 {later}\n\
+                 else\n\
+                 {first}\n\
+                 fi"
+            )
+        }
         None => "exit 1".to_string(),
     };
     let script = format!(
@@ -315,6 +392,12 @@ fn evaluate(gate: Gate, route_result: &str, is_draft: &str, shim: GhShim) -> Res
         .env("PR_NUMBER", "16094")
         .env("HEAD_SHA", "c9bf380f4")
         .env("IS_DRAFT_PR", is_draft)
+        // The block polls until an attempt other than its own is terminal.
+        // Every fixture but the settling one answers terminally on its first
+        // read, so their budget is zero and the loop reads once; the settling
+        // fixture needs a second read, so it gets a budget it can spend.
+        .env("MIRROR_POLL_SECONDS", "1")
+        .env("MIRROR_WAIT_SECONDS", if shim.settles_to.is_some() { "5" } else { "0" })
         .env("ROUTE_RESULT", route_result)
         .env("ROUTER_TARGET", "")
         .env("ROUTER_REASON", "")
@@ -602,6 +685,54 @@ fn assert_mirror_selection(gate: Gate) -> Result<()> {
         );
     }
 
+    // The lane that owns this head is normally still running when the stale
+    // snapshot reads: the snapshot starts within seconds of the ready flip.
+    // Judging that snapshot publishes a failure onto a head about to pass, so
+    // the block waits for the population to settle and decides on a terminal
+    // read.
+    let still_running = CheckRunFixture::published("").with(|run| {
+        run.id = 106_028_700_005;
+        run.status = "in_progress";
+    });
+    let then_success = CheckRunFixture::published("success").with(|run| {
+        run.id = 106_028_700_005;
+    });
+    let run = evaluate(
+        gate,
+        "skipped",
+        "true",
+        GhShim::settling(Some("false"), vec![still_running], vec![then_success]),
+    )?;
+    if run.code != 0 || !run.verdict_is(gate, "superseded-draft-snapshot") {
+        bail!(
+            "{}: a lane still running at the first read must be waited for, not \
+             judged: {}",
+            gate.workflow,
+            run.stdout
+        );
+    }
+
+    // `per_page` caps at 100 and the read is not paginated. Agreement over a
+    // page that does not carry the whole population is agreement with the rows
+    // that happened to fit, so a short page withholds proof.
+    let fits_the_page = CheckRunFixture::published("success").with(|run| {
+        run.id = 106_028_700_006;
+    });
+    let run = evaluate(
+        gate,
+        "skipped",
+        "true",
+        GhShim::with_runs(Some("false"), vec![fits_the_page]).undisclosing(1),
+    )?;
+    if run.code != 1 || !run.verdict_is(gate, "superseded-no-proof") {
+        bail!(
+            "{}: agreement must not be claimed over a page the read did not \
+             carry whole: {}",
+            gate.workflow,
+            run.stdout
+        );
+    }
+
     // This run's own check run is in progress by construction — it is the
     // block asking the question. Counting it would always select it and the
     // mirror could never fire, so the fix would be inert rather than safe.
@@ -646,6 +777,76 @@ fn ripr_new_gap_gate_honours_the_draft_snapshot_contract() -> Result<()> {
 #[test]
 fn ripr_new_gap_gate_declares_what_the_live_reads_need() -> Result<()> {
     assert_live_read_bindings(RIPR)
+}
+
+/// The default the run block falls back to for `name`, as `${name:-<value>}`.
+fn shell_default(gate: Gate, name: &str) -> Result<u64> {
+    let block = evaluate_run_block(gate)?;
+    let needle = format!("${{{name}:-");
+    let start = block
+        .find(&needle)
+        .ok_or_else(|| anyhow!("{} has no default for {name}", gate.workflow))?
+        + needle.len();
+    let rest = &block[start..];
+    let end = rest
+        .find('}')
+        .ok_or_else(|| anyhow!("{} {name} default is unterminated", gate.workflow))?;
+    rest[..end]
+        .trim()
+        .parse()
+        .with_context(|| format!("{} {name} default is not a number", gate.workflow))
+}
+
+/// The aggregator job's own wall-clock budget, in seconds.
+fn job_timeout_seconds(gate: Gate) -> Result<u64> {
+    workflow_yaml(gate)?
+        .get("jobs")
+        .and_then(|jobs| jobs.get(gate.job))
+        .and_then(|job| job.get("timeout-minutes"))
+        .and_then(Value::as_u64)
+        .map(|minutes| minutes * 60)
+        .ok_or_else(|| anyhow!("{} job {} has no timeout-minutes", gate.workflow, gate.job))
+}
+
+/// The mirror poll waits inside a job that is killed when its own budget runs
+/// out, and the RIPR aggregator's is five minutes. A wait sized for the
+/// required lane rather than for the check-run creation gap would not make the
+/// gate patient; it would make the job die, which publishes the same red by a
+/// worse route. So the default budget has to stay a small fraction of the job
+/// that has to survive it, and this is where that stops being a comment.
+fn assert_mirror_wait_fits_the_job(gate: Gate) -> Result<()> {
+    let wait = shell_default(gate, "MIRROR_WAIT_SECONDS")?;
+    let poll = shell_default(gate, "MIRROR_POLL_SECONDS")?;
+    let budget = job_timeout_seconds(gate)?;
+
+    if poll == 0 {
+        bail!("{}: a zero poll interval never reaches the budget", gate.workflow);
+    }
+    if wait < poll {
+        bail!(
+            "{}: a {wait}s budget cannot spend a {poll}s interval, so the loop reads once",
+            gate.workflow
+        );
+    }
+    if wait * 4 > budget {
+        bail!(
+            "{}: a {wait}s mirror wait is not a small fraction of job {}'s {budget}s \
+             budget; the job would be killed before the wait returned",
+            gate.workflow,
+            gate.job
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn rust_small_result_keeps_its_mirror_wait_inside_the_job() -> Result<()> {
+    assert_mirror_wait_fits_the_job(RUST_SMALL)
+}
+
+#[test]
+fn ripr_new_gap_gate_keeps_its_mirror_wait_inside_the_job() -> Result<()> {
+    assert_mirror_wait_fits_the_job(RIPR)
 }
 
 #[test]

@@ -1259,6 +1259,7 @@ jobs:
           #      contexts to GitHub Actions integration 15368, so a same-name
           #      success from another app is not proof for this context.
           #   2. Which attempt speaks for the head, when there is more than one.
+          #   3. Whether the response carries every attempt there is.
           #
           # This run is excluded from its own denominator: it is the stale
           # snapshot asking whether it was superseded, and its own check run is
@@ -1275,31 +1276,94 @@ jobs:
           #
           # So this does not order the attempts. It requires them to agree:
           # every other attempt must be completed, and every one of them must
-          # be a success. Anything else — one still queued or running, one
-          # failed, one cancelled — prints nothing, and the caller treats that
-          # as NOT_PROVEN. A false green is then unreachable without a real
-          # success and no contradiction, which is the property this mirror
-          # needs; chronology was only ever a means to it.
+          # be a success. A failure or a cancellation is a contradiction and
+          # prints nothing, which the caller treats as NOT_PROVEN. A false green
+          # is then unreachable without a real success and no contradiction,
+          # which is the property this mirror needs; chronology was only ever a
+          # means to it.
           #
-          # What that costs: on a head carrying a stale attempt that never
-          # completes, this refuses to mirror a later success and the draft
-          # snapshot exits red. That is the fail-closed direction, and it is
-          # the trade this candidate chooses over an undocumented ordering.
-          published_conclusion() {
+          # Refusing to agree never invents a red this head did not already
+          # have: a contradiction means a real failed or cancelled attempt of
+          # this same required context is already published on this SHA, so the
+          # context is red with or without this run, and whatever re-run clears
+          # that attempt publishes a check newer than this one as well.
+          #
+          # The third question is answered by refusing the read. `per_page` caps
+          # at 100 and this request is not paginated, so when `total_count`
+          # exceeds what came back, agreement would be claimed over a population
+          # this job never saw. That reads as `truncated` and withholds proof
+          # rather than agreeing with a partial page (#16105 review).
+          #
+          # `filter` stays at its default of `latest`, deliberately. The REST
+          # contract defines `latest` as the most recent check runs, which drops
+          # an attempt superseded inside one check suite — what a re-run is. The
+          # attempt that was re-run does not contradict the one that replaced it,
+          # and `filter=all` would keep the old failure and hold a re-run-to-green
+          # head red for good. That much is documented rather than measured. What
+          # is measured on this repository is the other half: attempts from
+          # separate workflow runs are separate suites and appear under either
+          # value — two runs of one required context on one head, same two rows
+          # both ways.
+          mirror_read() {
             gh api -X GET \
               -H "Accept: application/vnd.github+json" \
               -H "X-GitHub-Api-Version: 2022-11-28" \
               "repos/${GITHUB_REPOSITORY:-}/commits/${HEAD_SHA:-}/check-runs" \
               -f "check_name=${CHECK_NAME:-}" \
               -F per_page=100 \
-              --jq '[.check_runs[]
-                     | select((.app.id // -1) == (env.REQUIRED_CHECK_APP_ID | tonumber))
-                     | select(((.details_url // "")
-                               | contains("/actions/runs/" + env.GITHUB_RUN_ID + "/")) | not)]
-                    | if length == 0 then empty
-                      elif any(.[]; .status != "completed") then empty
-                      elif all(.[]; .conclusion == "success") then "success"
-                      else empty end'
+              --jq 'if (.total_count // 0) > (.check_runs | length) then "truncated"
+                    else [.check_runs[]
+                          | select((.app.id // -1) == (env.REQUIRED_CHECK_APP_ID | tonumber))
+                          | select(((.details_url // "")
+                                    | contains("/actions/runs/" + env.GITHUB_RUN_ID + "/")) | not)]
+                         | if length == 0 then "pending"
+                           elif any(.[]; .status != "completed") then "pending"
+                           elif all(.[]; .conclusion == "success") then "success"
+                           else "contradicted" end
+                    end'
+          }
+
+          # The first read is usually too early to mean anything. The stale
+          # snapshot starts within seconds of the ready flip, and on #16172 its
+          # failure was published three seconds *before* the ready run's checks
+          # existed at all, so the read finds nothing and calls a head with no
+          # evidence yet "no proof" (#16105 review). Polling instead of reading
+          # once removes that window.
+          #
+          # It does not remove the long one, and this does not claim to. The
+          # required lane itself takes tens of minutes, while this aggregator
+          # job is budgeted in single-digit ones — this one allows five — so
+          # waiting for that lane is not available here at any honest budget.
+          # The stale red then stands until the real run publishes a newer
+          # check run for this name and supersedes it. That residual belongs to
+          # #16101, whose fix is for a draft-routed run to publish nothing on a
+          # required context rather than a verdict.
+          #
+          # So the budget is the creation gap, not the lane: seconds of margin
+          # over a gap measured in seconds. Its timeout is fail-closed — it
+          # prints nothing and the gate stays red, as an unanswerable read
+          # does — and it stays far inside this job's own five minutes.
+          published_conclusion() {
+            local waited=0
+            local poll="${MIRROR_POLL_SECONDS:-5}"
+            # A zero or non-numeric interval would make the loop spin without
+            # ever reaching the budget, so it falls back to the default.
+            [ "$poll" -ge 1 ] 2>/dev/null || poll=5
+            while : ; do
+              case "$(mirror_read || echo unreadable)" in
+                success)
+                  printf 'success'
+                  return 0
+                  ;;
+                pending) ;;
+                *) return 0 ;;
+              esac
+              if [ "$waited" -ge "${MIRROR_WAIT_SECONDS:-60}" ]; then
+                return 0
+              fi
+              sleep "$poll"
+              waited=$(( waited + poll ))
+            done
           }
 
           # Draft routing saves work but produces no required-check proof.
