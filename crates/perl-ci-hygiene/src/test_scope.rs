@@ -32,10 +32,20 @@ use crate::{first_cfg_test_line_number, read_lines};
 /// Files declared by `mod <name>;` anywhere at or after `path`'s first
 /// `#[cfg(test)]` boundary.
 ///
-/// Moved here from the panic-test command unchanged. It is deliberately
-/// over-inclusive: it sweeps every `mod` declaration after the boundary, not
-/// only the ones the attribute guards. For panic-test that is the safe
-/// direction — the worst case is scanning a file that holds no test panics.
+/// Moved here from the panic-test command. It is deliberately over-inclusive:
+/// it sweeps every `mod` declaration after the boundary, not only the ones the
+/// attribute guards. For panic-test that is the safe direction — the worst case
+/// is scanning a file that holds no test panics.
+///
+/// Over-inclusive is a choice about *which declarations* to follow. Where a
+/// declaration leads is not a choice, so the hop resolves through
+/// [`module_directory`] like every other hop in this module. The version that
+/// came over from the panic-test command used `with_file_name`, which reads a
+/// declaration in `foo.rs` as naming a file beside `foo.rs` instead of one
+/// inside `foo/`. Twenty-seven test-only module files across twelve crates
+/// resolve only under the 2018 rule — among them
+/// `xtask/src/tasks/emacs_train_packet/tests.rs`, whose six panic sites the
+/// inventory never saw.
 ///
 /// **Do not use it to exclude a file from a production check.** There the same
 /// over-inclusion is a false negative. Use [`test_only_source_files`].
@@ -52,26 +62,20 @@ pub(crate) fn external_test_module_files(path: &Path, lines: &[String]) -> Vec<P
 }
 
 fn push_declared_module_files(path: &Path, line: &str, files: &mut Vec<PathBuf>) {
-    let Some(name) = line
-        .trim()
-        .strip_prefix("mod ")
-        .and_then(|name| name.strip_suffix(';'))
-        .map(str::trim)
-        .filter(|name| {
-            !name.is_empty() && name.chars().all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
-        })
-    else {
+    let Some(name) = declared_module_name(line.trim()) else {
+        return;
+    };
+    let Some(base) = module_directory(path) else {
         return;
     };
     // Both spellings of a child module. Rust allows only one to exist, so
-    // probing for each is a disambiguation, not a guess.
-    let sibling = path.with_file_name(format!("{name}.rs"));
-    let nested = path.with_file_name(name).join("mod.rs");
-    if sibling.is_file() {
-        files.push(sibling);
-    }
-    if nested.is_file() {
-        files.push(nested);
+    // probing for each is a disambiguation, not a guess. Paths stay as built
+    // rather than canonicalized: the caller strips `repo_root` off them to
+    // form the identity a registry row is keyed on.
+    for candidate in [base.join(format!("{name}.rs")), base.join(&name).join("mod.rs")] {
+        if candidate.is_file() {
+            files.push(candidate);
+        }
     }
 }
 
@@ -527,6 +531,26 @@ mod tests {
     // root is what decides production scope. A fixture that handed the
     // resolver a bare `mod.rs` would be asking a question the compiler never
     // asks.
+
+    /// The panic-test sweep resolves its hop the same way every other hop in
+    /// this module does. `census.rs` owns `census/`, so `mod rows;` inside it
+    /// names `census/rows.rs` — never the `rows.rs` lying beside it, which is
+    /// a different module belonging to the crate root.
+    #[test]
+    fn the_panic_sweep_resolves_a_child_under_the_module_directory() -> Result<()> {
+        let tree = Tree::new("sweep-dir")?;
+        let census = tree.write("census.rs", "#[cfg(test)]\nmod rows;\n")?;
+        let test_child = tree.write("census/rows.rs", "fn f() { panic!(\"boom\"); }\n")?;
+        let unrelated_sibling = tree.write("rows.rs", "fn g() {}\n")?;
+
+        let found = external_test_module_files(&census, &read_lines(&census)?);
+        ensure!(found.contains(&test_child), "census/rows.rs is the module census.rs declares");
+        ensure!(
+            !found.contains(&unrelated_sibling),
+            "the sibling rows.rs belongs to the crate root, not to census"
+        );
+        Ok(())
+    }
 
     #[test]
     fn child_declared_under_cfg_test_is_test_only() -> Result<()> {
