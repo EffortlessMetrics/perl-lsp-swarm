@@ -118,6 +118,61 @@ def _git_text(root: Path, *args: str, check: bool = True) -> str:
     return _run(["git", *args], cwd=root, check=check).stdout.strip()
 
 
+# The instrument-failure diagnostic must not itself become a leak vector. Git error
+# text is not curated; on a red required check the stderr ends up in campaign logs
+# that downstream consumers may forward, so a token or control sequence pasted into
+# a branch name is reachable from the diagnostic verbatim. Bound the length, strip
+# the control range that includes ANSI escape sequences, and redact the credential-
+# shaped patterns that commonly leak from misconfigured CI. The matcher is
+# intentionally narrow so an unrelated error message keeps its content.
+_SUBPROCESS_STDERR_MAX = 512
+# CSI sequences (`ESC [` followed by numeric parameters and a final byte) carry
+# colour and cursor positioning. The C0 strip below removes the `ESC` itself, but
+# the parameter block (`[31m`, `[0m`) is plain ASCII and survives. Match the
+# whole CSI sequence so the diagnostic does not read as `fatal: [31mrepo[0m`.
+_ANSI_CSI_RE = re.compile(r"\x1b\[[\d;?]*[a-zA-Z~]")
+_ANSI_OSC_RE = re.compile(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)")
+# The C0 control range minus TAB (0x09), LF (0x0a), CR (0x0d) — those are
+# whitespace and are preserved so the diagnostic stays readable.
+_CONTROL_CHAR_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
+# `\b` does not work before `token` in `GITHUB_TOKEN` because `_` and `t` are
+# both word characters in Python regex, and a `(?<![A-Za-z0-9_])` lookbehind
+# has the same gap. The env-var shape `GITHUB_TOKEN=...` is exactly what we
+# need to redact, so the lookbehind allows `_` and `-` as boundaries and only
+# blocks real identifier-continuation characters (alnum). The resulting prefix
+# rule: start of string, whitespace, or `_`/`-`.
+_CREDENTIAL_RE = re.compile(
+    r"(?i)(?<![A-Za-z0-9])(token|password|passwd|secret|bearer|authorization|api[-_]?key)"
+    r"\s*[=:]\s*\S+"
+)
+# Value-side patterns for credentials that appear without an explicit
+# `key=value` assignment — typically URL-embedded (`https://ghp_xxx@github.com`)
+# or in a single-token stderr line. The shapes are narrow: a GitHub PAT prefix
+# followed by an alnum run, or an AWS access key ID. These are not exhaustive —
+# the goal is to catch the common CI-leak shapes, not to be a secret scanner.
+_GITHUB_PAT_RE = re.compile(r"gh[pousra]_[A-Za-z0-9]{16,}")
+_AWS_ACCESS_KEY_RE = re.compile(r"AKIA[A-Z0-9]{16}")
+
+
+def _sanitize_subprocess_stderr(stderr: str) -> str:
+    """Bound and sanitize subprocess stderr for an instrument-failure diagnostic.
+
+    Returns the input with control characters removed, credential-shaped patterns
+    redacted, and length bounded at `_SUBPROCESS_STDERR_MAX`. Empty input is
+    preserved as the empty string so callers can substitute their own placeholder.
+    """
+    if not stderr:
+        return ""
+    bounded = stderr[:_SUBPROCESS_STDERR_MAX]
+    bounded = _ANSI_OSC_RE.sub("", bounded)
+    bounded = _ANSI_CSI_RE.sub("", bounded)
+    bounded = _CONTROL_CHAR_RE.sub("", bounded)
+    bounded = _GITHUB_PAT_RE.sub("[REDACTED]", bounded)
+    bounded = _AWS_ACCESS_KEY_RE.sub("[REDACTED]", bounded)
+    bounded = _CREDENTIAL_RE.sub(r"\1=[REDACTED]", bounded)
+    return bounded
+
+
 def ensure_commit(root: Path, oid: str) -> None:
     if not OID_RE.fullmatch(oid):
         raise CurrentnessError(f"invalid commit oid: {oid!r}")
@@ -154,9 +209,25 @@ def subject_digest(root: Path, merge_base: str, head: str) -> str:
         cwd=root,
         check=False,
     )
-    if ancestry.returncode != 0:
+    # `git merge-base --is-ancestor` returns 1 when the predicate is false and that
+    # is the only legitimate nonzero exit: the marker cannot match a subject it is
+    # not an ancestor of, and the verdict stays fail-closed. Any other nonzero exit
+    # is an instrument failure distinct from a negative predicate: a missing object
+    # database (exit 128), an unreadable repository (negative on signal kill), a
+    # path resolution failure, or a corrupted stderr that the campaign context
+    # cannot parse. Map those to CurrentnessError with the actual exit code and a
+    # sanitized stderr, not to the ancestry message that is now reserved for
+    # exit 1 only. See #16175.
+    if ancestry.returncode == 1:
         raise CurrentnessError(
             f"marker merge base {merge_base} is not an ancestor of reviewed head {head}"
+        )
+    if ancestry.returncode != 0:
+        detail = _sanitize_subprocess_stderr(ancestry.stderr.strip())
+        suffix = f": {detail}" if detail else ""
+        raise CurrentnessError(
+            f"git merge-base --is-ancestor subprocess exit {ancestry.returncode}"
+            f"{suffix}"
         )
     diff = _run(
         [
@@ -363,8 +434,21 @@ def neutral_followup(root: Path, reviewed_head: str, current_head: str) -> tuple
         cwd=root,
         check=False,
     )
-    if ancestry.returncode != 0:
+    # A nonzero exit that is *not* 1 is an instrument failure, not a verdict. The
+    # carry-forward classification has to keep both kinds of failure distinguishable
+    # because the campaign context maps NOT_PROVEN / instrument_failure to one
+    # disposition and a legitimate `reviewed_head is not an ancestor of current_head`
+    # to another. Collapsing the two would let a stderr read error look like a real
+    # verdict and vice versa. See #16175.
+    if ancestry.returncode == 1:
         return False, "reviewed head is not an ancestor of current head"
+    if ancestry.returncode != 0:
+        detail = _sanitize_subprocess_stderr(ancestry.stderr.strip())
+        suffix = f": {detail}" if detail else ""
+        raise CurrentnessError(
+            f"git merge-base --is-ancestor subprocess exit {ancestry.returncode}"
+            f"{suffix}"
+        )
 
     names = _git_text(root, "diff", "--name-status", reviewed_head, current_head, "--")
     if not names:
