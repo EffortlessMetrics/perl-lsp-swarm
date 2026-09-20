@@ -184,6 +184,23 @@ class SemanticReviewCurrentnessPolicySurfaces(unittest.TestCase):
         assert "subject_sha256" in text
         assert "git" in text and "diff" in text and "--binary" in text
 
+    def test_subject_bound_checker_versions_stdout_json_payload(self) -> None:
+        """The stdout JSON payload must carry schema_version so a wire-shape
+        bump is observable at the consumer side rather than silent. See
+        #15284 — the marker envelope (`semantic-review:v1`) and the stdout
+        JSON payload are two distinct wire surfaces and must be version-skew
+        free at the producer side.
+        """
+        text = (
+            ROOT / "scripts/ci/check-pr-semantic-review-currentness.py"
+        ).read_text(encoding="utf-8")
+        assert 'SCHEMA_VERSION = "semantic_review_currentness.v1"' in text
+        # Three stdout surfaces (success path, MARKER_REFUSED, NOT_PROVEN).
+        # MARKER_REFUSED and NOT_PROVEN attach via dict literal; the success
+        # path attaches via setdefault. All three must reference SCHEMA_VERSION.
+        assert text.count('"schema_version": SCHEMA_VERSION') >= 2
+        assert 'setdefault("schema_version", SCHEMA_VERSION)' in text
+
     def test_semantic_carry_forward_is_narrow_and_not_code_whitespace(self) -> None:
         text = (
             ROOT / "scripts/ci/check-pr-semantic-review-currentness.py"

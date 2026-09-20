@@ -516,10 +516,10 @@ impl<'a> Parser<'a> {
         let start = expr.location.start;
         let end = rhs.location.end;
 
-        Ok(Node::new(
+        self.charge_node(
             NodeKind::Assignment { lhs: Box::new(expr), rhs: Box::new(rhs), op: op.to_string() },
             SourceLocation { start, end },
-        ))
+        )
     }
 
     fn is_explicit_sub_sigil_argument_start(&mut self) -> bool {
@@ -561,7 +561,7 @@ impl<'a> Parser<'a> {
 
     /// Expect a specific token kind
     fn expect(&mut self, kind: TokenKind) -> ParseResult<Token> {
-        let token = self.tokens.next()?;
+        let token = self.advance_token()?;
         if token.kind() != kind {
             return Err(ParseError::unexpected(
                 kind.display_name(),
@@ -588,7 +588,7 @@ impl<'a> Parser<'a> {
 
     /// Consume next token and track position
     fn consume_token(&mut self) -> ParseResult<Token> {
-        let token = self.tokens.next()?;
+        let token = self.advance_token()?;
         self.last_end_position = token.end();
         Ok(token)
     }
@@ -618,20 +618,21 @@ impl<'a> Parser<'a> {
     /// Utility to build either a HashLiteral or ArrayLiteral based on whether
     /// fat arrow (=>) was seen and we have an even number of elements
     fn build_list_or_hash(
+        &mut self,
         elements: Vec<Node>,
         saw_fat_arrow: bool,
         start: usize,
         end: usize,
-    ) -> Node {
+    ) -> ParseResult<Node> {
         if saw_fat_arrow && elements.len().is_multiple_of(2) {
             // Convert to HashLiteral
             let mut pairs = Vec::with_capacity(elements.len() / 2);
             for chunk in elements.chunks(2) {
                 pairs.push((chunk[0].clone(), chunk[1].clone()));
             }
-            Node::new(NodeKind::HashLiteral { pairs }, SourceLocation { start, end })
+            self.charge_node(NodeKind::HashLiteral { pairs }, SourceLocation { start, end })
         } else {
-            Node::new(NodeKind::ArrayLiteral { elements }, SourceLocation { start, end })
+            self.charge_node(NodeKind::ArrayLiteral { elements }, SourceLocation { start, end })
         }
     }
 
@@ -639,13 +640,18 @@ impl<'a> Parser<'a> {
     /// Apply Perl's implicit string conversion to a bareword immediately left
     /// of a fat comma. `=>` is a comma synonym, but unlike a plain comma it
     /// also auto-quotes an otherwise bare identifier.
-    pub(crate) fn auto_quote_bareword_before_fat_comma(node: &mut Node) {
+    pub(crate) fn auto_quote_bareword_before_fat_comma(
+        &mut self,
+        node: &mut Node,
+    ) -> ParseResult<()> {
         if let NodeKind::Identifier { ref name } = node.kind {
-            *node = Node::new(
+            let quoted = self.charge_node(
                 NodeKind::String { value: name.clone(), interpolated: false },
                 node.location,
-            );
+            )?;
+            *node = quoted;
         }
+        Ok(())
     }
 
     /// Continue parsing a comma / fat-arrow separated list when the first
@@ -669,7 +675,7 @@ impl<'a> Parser<'a> {
         if self.peek_kind() == Some(TokenKind::FatArrow) {
             saw_fat_arrow = true;
             if let Some(last) = expressions.last_mut() {
-                Self::auto_quote_bareword_before_fat_comma(last);
+                self.auto_quote_bareword_before_fat_comma(last)?;
             }
             self.consume_token()?; // consume =>
             if self.peek_kind() == Some(TokenKind::FatArrow) {
@@ -701,7 +707,7 @@ impl<'a> Parser<'a> {
                 saw_fat_arrow = true;
                 if !was_comma
                     && let Some(last) = expressions.last_mut() {
-                        Self::auto_quote_bareword_before_fat_comma(last);
+                        self.auto_quote_bareword_before_fat_comma(last)?;
                     }
                 self.consume_token()?; // consume =>
             }
@@ -723,7 +729,7 @@ impl<'a> Parser<'a> {
 
             if self.peek_kind() == Some(TokenKind::FatArrow) {
                 saw_fat_arrow = true;
-                Self::auto_quote_bareword_before_fat_comma(&mut elem);
+                self.auto_quote_bareword_before_fat_comma(&mut elem)?;
                 self.consume_token()?; // consume =>
                 expressions.push(elem);
 
@@ -741,18 +747,88 @@ impl<'a> Parser<'a> {
         }
 
         let end = expressions.last().map(|expr| expr.location.end).unwrap_or(start);
-        Ok(Self::build_list_or_hash(expressions, saw_fat_arrow, start, end))
+        self.build_list_or_hash(expressions, saw_fat_arrow, start, end)
     }
 
-    /// Record a parse error for later retrieval
+    /// Record a parse error for later retrieval.
+    ///
+    /// This is the single production diagnostic-retention seam (#8786). The
+    /// decision to retain is made by the live tracker's charge-before-work
+    /// authority against the operation's configured
+    /// [`crate::ParseBudget::max_errors`], so:
+    ///
+    /// * the limit is the one this operation was configured with, not a
+    ///   hard-coded constant that silently ignored an explicit budget; and
+    /// * the authority is *charged usage*, not `self.errors.len()`, so the
+    ///   retained vector is a consequence of charging rather than its source.
+    ///
+    /// A refusal drops the diagnostic; it is never charged and never retained.
+    /// Diagnostic exhaustion does not by itself terminate the parse — the
+    /// complete recovery terminal behavior remains #7074 — so this seam
+    /// deliberately returns `()` rather than propagating the typed refusal.
     fn record_error(&mut self, error: ParseError) {
-        // Respect max_errors to prevent diagnostic flooding on pathological input.
-        // The default limit matches ParseBudget::default().max_errors.
-        const MAX_ERRORS: usize = 100;
-        if self.errors.len() >= MAX_ERRORS {
+        // Observation is recorded before authorization and is never refused:
+        // grammar decisions that ask "did inner recovery happen?" must not
+        // change answer because the diagnostic budget is spent.
+        self.operation.note_diagnostic_observed();
+        if self.operation.authorize_diagnostic_emit().is_err() {
             return;
         }
+        // #8786: the seam itself.
         self.errors.push(error);
+    }
+
+    /// Construct one AST node: the single production node-construction seam
+    /// (#8786). Charges before construction; a refused node is never built.
+    fn charge_node(&mut self, kind: NodeKind, location: SourceLocation) -> ParseResult<Node> {
+        self.operation.authorize_node_construct()?;
+        // #8786: the seam itself. This is the one permitted routed use of the
+        // raw constructor; `node_construction_seam_is_unique` enforces that
+        // every other use in the production parser is annotated.
+        Ok(Node::new(kind, location))
+    }
+
+    /// Retain a *terminal* diagnostic regardless of the diagnostic budget.
+    ///
+    /// A terminal diagnostic is the only source-anchored record of why the
+    /// parse stopped, and its typed `ParseStopCause` carries no location — the
+    /// stop-cause contract directs consumers to the diagnostic vector for the
+    /// anchor. Dropping it because ordinary retention is spent would leave a
+    /// terminated parse with a cause nobody can locate.
+    ///
+    /// It is observed but deliberately **not** charged: charging it could
+    /// itself be refused, which is the failure being avoided. Same exemption as
+    /// the terminal error retained by [`Parser::parse_with_recovery`].
+    fn retain_terminal_diagnostic(&mut self, error: ParseError) {
+        self.operation.note_diagnostic_observed();
+        // #8786: not charged — a terminal diagnostic must outlive the budget.
+        self.errors.push(error);
+    }
+
+    /// Consume the next token: the single production token-advance seam
+    /// (#8786).
+    ///
+    /// Every parser advance reaches [`crate::TokenStream::next`] through here,
+    /// so token consumption is charged exactly once, before the token leaves
+    /// the stream. A refused advance consumes nothing and charges nothing.
+    ///
+    /// Lookahead (`peek`, `peek_second`, `peek_third`) is not consumption and
+    /// is never charged. A repeated read of the sticky `Eof` terminator takes
+    /// no input from the stream and is likewise not charged; the first, fresh
+    /// `Eof` is charged once like any other token.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ParseError::CoreBudgetExhausted`] when the configured
+    /// `max_tokens_consumed` is spent, or the stream's own error otherwise.
+    fn advance_token(&mut self) -> ParseResult<Token> {
+        if !self.tokens.peeked_is_sticky_eof() {
+            self.operation.authorize_token_consume()?;
+        }
+        // #8786: the seam itself. The one permitted direct use of the raw
+        // stream advance. The `token_advance_seam_is_unique` recurrence test
+        // fails if a second, unannotated direct use appears.
+        self.tokens.next()
     }
 
     /// Get all recorded errors
@@ -916,7 +992,7 @@ impl<'a> Parser<'a> {
     /// before calling the RHS parse function:
     ///
     /// ```ignore
-    /// let op_token = self.tokens.next()?;
+    /// let op_token = self.advance_token()?;
     /// if let Some(missing) = self.recover_missing_infix_rhs(op_token.start) {
     ///     // wrap (left_expr op missing) and continue
     /// }
@@ -926,12 +1002,14 @@ impl<'a> Parser<'a> {
         if !self.is_infix_rhs_absent() {
             return None;
         }
-        self.errors.push(ParseError::Recovered {
+        self.record_error(ParseError::Recovered {
             site: RecoverySite::InfixRhs,
             kind: RecoveryKind::MissingOperand,
             location: op_pos,
         });
         let pos = op_pos;
+        // #8786: not charged. Synthetic recovery node — recovery-node
+        // accounting is #7074's dimension, not an admitted core dimension.
         Some(Node::new(NodeKind::MissingExpression, SourceLocation { start: pos, end: pos }))
     }
 
@@ -965,7 +1043,7 @@ impl<'a> Parser<'a> {
     fn record_inserted_closer(&mut self, kind: TokenKind) {
         let pos = self.current_position();
         let site = Self::recovery_site_for_closer(kind);
-        self.errors.push(ParseError::Recovered {
+        self.record_error(ParseError::Recovered {
             site,
             kind: RecoveryKind::InsertedCloser,
             location: pos,
@@ -1109,6 +1187,8 @@ impl<'a> Parser<'a> {
         let end = self.current_position();
         let found_token = self.tokens.peek().ok().cloned();
 
+        // #8786: not charged. Synthetic recovery node — recovery-node
+        // accounting is #7074's dimension, not an admitted core dimension.
         Node::new(
             NodeKind::Error { message, expected: vec![], found: found_token, partial: None },
             SourceLocation { start: location, end },
@@ -1155,6 +1235,8 @@ impl<'a> Parser<'a> {
         let start = self.current_position();
         let found = self.tokens.peek().ok().cloned();
 
+        // #8786: not charged. Synthetic recovery node — recovery-node
+        // accounting is #7074's dimension, not an admitted core dimension.
         Node::new(
             NodeKind::Error { message, expected, found, partial: None },
             SourceLocation { start, end: start },
@@ -1247,13 +1329,16 @@ impl<'a> Parser<'a> {
     /// with `tokens.next()`, which leaves `previous_position()` stale.
     fn parse_flattened_qw_list_argument(&mut self) -> ParseResult<(Vec<Node>, SourceLocation)> {
         let node = self.parse_assignment_or_declaration()?;
-        Ok(Self::flatten_qw_list_argument(node))
+        self.flatten_qw_list_argument(node)
     }
 
-    fn flatten_qw_list_argument(node: Node) -> (Vec<Node>, SourceLocation) {
+    fn flatten_qw_list_argument(
+        &mut self,
+        node: Node,
+    ) -> ParseResult<(Vec<Node>, SourceLocation)> {
         match node.into_parts() {
-            (NodeKind::ArrayLiteral { elements }, location) => (elements, location),
-            (kind, location) => (vec![Node::new(kind, location)], location),
+            (NodeKind::ArrayLiteral { elements }, location) => Ok((elements, location)),
+            (kind, location) => Ok((vec![self.charge_node(kind, location)?], location)),
         }
     }
 
