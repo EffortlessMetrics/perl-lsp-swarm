@@ -6,7 +6,7 @@
 //! [`crate::packet::build_ripr_facts_packet`].
 
 use crate::packet::build_ripr_facts_packet;
-use crate::request::{EXPECTED_RIPR_FACTS_SCHEMA, RiprFactsRequest, validate_ripr_facts_path};
+use crate::request::{validate_ripr_facts_path, RiprFactsRequest, EXPECTED_RIPR_FACTS_SCHEMA};
 
 const DEFAULT_FACT_CLASSES: &str = "files,owners,changes,tests,oracles,relations,dynamic_boundaries,verify_commands,limitations,provenance";
 const DEFAULT_OUT: &str = "target/ripr/reports/perl-facts.json";
@@ -206,7 +206,7 @@ fn write_packet(out: &str, packet: &serde_json::Value) -> std::io::Result<()> {
 mod tests {
     use super::*;
     use crate::packet::build_unavailable_packet;
-    use perl_tdd_support::must_some;
+    use perl_tdd_support::{must_some, must_some_with, must_with};
 
     /// A valid request against the crate root (`"."`, no `t/` dir → unavailable).
     /// Local copy of `crate::packet`'s test-only helper of the same name — see
@@ -238,8 +238,10 @@ mod tests {
         );
         assert_eq!(rc, 0, "wrapper must succeed");
         let written: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(out)?)?;
-        let built = build_ripr_facts_packet(&valid_request("tests,oracles"))
-            .expect("valid request builds a packet");
+        let built = must_with(
+            build_ripr_facts_packet(&valid_request("tests,oracles")),
+            "valid request builds a packet",
+        );
         assert_eq!(built, written, "batch API packet must equal what the wrapper writes");
         let _ = std::fs::remove_file(out);
         Ok(())
@@ -259,15 +261,17 @@ mod tests {
         assert_eq!(rc, 0, "wrapper must succeed");
         let written: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&out)?)?;
 
-        let built = build_ripr_facts_packet(&RiprFactsRequest {
-            schema: "ripr-perl-facts-v1",
-            root,
-            base: None,
-            head: None,
-            fact_classes: "files,owners",
-            diff: None,
-        })
-        .expect("valid request");
+        let built = must_with(
+            build_ripr_facts_packet(&RiprFactsRequest {
+                schema: "ripr-perl-facts-v1",
+                root,
+                base: None,
+                head: None,
+                fact_classes: "files,owners",
+                diff: None,
+            }),
+            "valid request",
+        );
         // Sanity: the fixture actually yields owners, so parity covers PR-3 facts.
         assert!(!must_some(built["owners"].as_array()).is_empty(), "fixture must yield owners");
         assert_eq!(built, written, "wrapper output must equal the batch packet with parser facts");
@@ -297,17 +301,22 @@ mod tests {
         );
         assert_eq!(rc, 0, "wrapper succeeds");
         let written: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&out)?)?;
-        let built = build_ripr_facts_packet(&RiprFactsRequest {
-            schema: "ripr-perl-facts-v1",
-            root,
-            base: None,
-            head: None,
-            fact_classes: "tests,oracles,provenance,limitations",
-            diff: None,
-        })
-        .expect("valid request");
+        let built = must_with(
+            build_ripr_facts_packet(&RiprFactsRequest {
+                schema: "ripr-perl-facts-v1",
+                root,
+                base: None,
+                head: None,
+                fact_classes: "tests,oracles,provenance,limitations",
+                diff: None,
+            }),
+            "valid request",
+        );
         assert_eq!(built, written, "batch API packet == wrapper-written packet");
-        assert!(!built["oracles"].as_array().expect("oracles[]").is_empty(), "oracles present");
+        assert!(
+            !must_some_with(built["oracles"].as_array(), "oracles[]").is_empty(),
+            "oracles present"
+        );
         let _ = std::fs::remove_dir_all(root);
         Ok(())
     }
@@ -409,9 +418,9 @@ mod tests {
             out,
         );
         assert_eq!(rc, 0, "valid invocation must exit 0");
-        let written = std::fs::read_to_string(out).expect("packet must be written");
+        let written = must_with(std::fs::read_to_string(out), "packet must be written");
         let parsed: serde_json::Value =
-            serde_json::from_str(&written).expect("packet must be JSON");
+            must_with(serde_json::from_str(&written), "packet must be JSON");
         assert_eq!(parsed["packet_status"], "unavailable");
         // Clean up.
         let _ = std::fs::remove_file(out);
@@ -459,14 +468,16 @@ mod tests {
             parsed["packet_status"], "partial",
             "a discovered .t file must yield a partial packet"
         );
-        let tests = parsed["tests"].as_array().expect("tests[] is an array");
+        let tests = must_some_with(parsed["tests"].as_array(), "tests[] is an array");
         assert!(!tests.is_empty(), "the discovered .t file must produce a test fact");
         assert_eq!(
             tests[0]["framework"], "Test::More",
             "framework must be detected from `use Test::More`"
         );
-        let capabilities =
-            parsed["producer"]["capabilities"].as_array().expect("capabilities[] is an array");
+        let capabilities = must_some_with(
+            parsed["producer"]["capabilities"].as_array(),
+            "capabilities[] is an array",
+        );
         assert!(
             capabilities.iter().any(|capability| capability == "test_facts"),
             "packets carrying tests/oracles must advertise test_facts"
@@ -479,9 +490,10 @@ mod tests {
 
     #[test]
     fn ripr_facts_deduplicates_and_orders_fact_classes() {
-        let normalized =
-            crate::request::normalize_fact_classes("changes,owners,owners,changes,tests")
-                .expect("valid classes normalize");
+        let normalized = must_with(
+            crate::request::normalize_fact_classes("changes,owners,owners,changes,tests"),
+            "valid classes normalize",
+        );
         // Canonical order (VALID_FACT_CLASSES order): files, owners, changes, tests, ...
         assert_eq!(normalized, vec!["owners", "changes", "tests"]);
     }
@@ -529,12 +541,10 @@ mod tests {
     /// `crate::packet`'s test-only helpers of the same name (#9271 PR notes:
     /// duplicated rather than exposed cross-module).
     fn changes_of(p: &serde_json::Value) -> Vec<serde_json::Value> {
-        p["changes"].as_array().expect("changes[]").clone()
+        must_some_with(p["changes"].as_array(), "changes[]").clone()
     }
     fn has_limitation(p: &serde_json::Value, id_prefix: &str) -> bool {
-        p["limitations"]
-            .as_array()
-            .expect("limitations[]")
+        must_some_with(p["limitations"].as_array(), "limitations[]")
             .iter()
             .any(|l| l["limitation_id"].as_str().is_some_and(|s| s.starts_with(id_prefix)))
     }
@@ -588,8 +598,8 @@ mod tests {
     }
 
     #[test]
-    fn ripr_facts_cli_reads_diff_relative_to_process_cwd_not_root()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn ripr_facts_cli_reads_diff_relative_to_process_cwd_not_root(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let base = format!("target/ripr-facts-cli-cwd-diff-{}", std::process::id());
         let root = format!("{base}/workspace");
         let _ = std::fs::remove_dir_all(&base);
