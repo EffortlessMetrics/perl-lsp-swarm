@@ -69,7 +69,10 @@ Requires Python >= 3.11: the stdlib-only denominator reader depends on
 `tomllib` (added in 3.11); there is no fallback parser. The workflow pins
 `ubuntu-24.04`, which ships Python 3.11+, but a local or self-hosted runner
 on an older interpreter fails closed with a clear message below rather than
-an opaque `ModuleNotFoundError` on `import tomllib`.
+an opaque `ModuleNotFoundError` on `import tomllib`. Local proof route: run
+with an explicit 3.11+ interpreter, e.g.
+`python3.12 scripts/ci/authority_transfer_review.py --self-test`; a 3.10
+import failure is an environment mismatch, never a product defect.
 """
 from __future__ import annotations
 
@@ -1219,6 +1222,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-changed-files", type=int, default=DEFAULT_MAX_CHANGED_FILES)
     parser.add_argument("--receipt", type=Path, default=None)
     parser.add_argument("--summary", type=Path, default=None)
+    parser.add_argument(
+        "--surface-version",
+        default=SCHEMA,
+        help=(
+            "receipt surface version the caller is pinned to (FC-NO-CLI-VERSION-KNOB). "
+            "Only the known token is accepted; anything else fails closed so a "
+            "future v2 shape can never be silently claimed by this producer."
+        ),
+    )
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument(
         "--validate-tree-entries",
@@ -1226,10 +1238,23 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "read NUL-terminated `git ls-tree -r -z --full-tree <head>` output "
             "from stdin and fail closed (exit 3) if any entry is an unsafe "
-            "path or a symlink/submodule mode; extract nothing"
+            "path or a submodule gitlink mode; extract nothing. Symlinks are "
+            "accepted here and deleted after extraction (FC-SYMLINK-ABORT)."
         ),
     )
     return parser
+
+
+def resolve_surface_version(requested: str) -> str:
+    """Pin the receipt surface version a caller may claim (FC-NO-CLI-VERSION-KNOB).
+
+    Only the known SCHEMA token is accepted. A future v2 producer opts in by
+    adding its token here alongside its shape change; until then an unknown
+    token fails closed instead of emitting a receipt that lies about its shape.
+    """
+    if requested != SCHEMA:
+        raise ValueError(f"unknown surface version ({requested!r}); known: {SCHEMA!r}")
+    return SCHEMA
 
 
 def _fixture_manifest_text(catalog_predecessor_exit: str = "") -> str:
@@ -1884,6 +1909,115 @@ def self_test() -> int:
             FAIL_ARTIFACT_REVIEW_INCOMPLETE,
         )
 
+        # 19. FC-SYMLINK-ABORT: a tracked symlink entry must not abort
+        # tree validation. The repository tracks
+        # crates/tree-sitter-perl/test/corpus as mode 120000, so rejecting
+        # symlinks fails every run before the evaluator starts; links are
+        # neutralized by deletion after extraction instead. Submodule
+        # gitlinks stay rejected.
+        symlink_tree = parse_ls_tree_entries(
+            b"100644 blob " + b"0" * 40 + b"\tREADME.md\x00"
+            b"120000 blob " + b"1" * 40 + b"\tcrates/tree-sitter-perl/test/corpus\x00"
+            b"160000 commit " + b"2" * 40 + b"\tsubmodule/path\x00"
+        )
+        symlink_violations = validate_tree_entries(symlink_tree)
+        expect(
+            "symlink_neutralized",
+            [v for v in symlink_violations if "corpus" in v],
+            [],
+        )
+        expect(
+            "gitlink_still_rejected",
+            any("160000" in v for v in symlink_violations),
+            True,
+        )
+
+        # 20. FC-BASE-ONLY-APPLICABILITY: a candidate-added surface whose
+        # new path is changed must join applicability. Base-only matching
+        # misses the packet requirement and reports a false green, so the
+        # union (base metadata wins per surface) is pinned here.
+        base_doc = tomllib.loads(saved)
+        candidate_text = (
+            saved
+            + '\n[surface.candidate_added]\nreview_profile = "semantic_close_authority"\npaths = [\n  "new/authority.rs",\n]\n'
+        )
+        candidate_doc = tomllib.loads(candidate_text)
+        base_only_rows, _ = governed_rows(base_doc, ["new/authority.rs"])
+        expect(
+            "candidate_added_invisible_to_base",
+            [row["surface_id"] for row in base_only_rows],
+            [],
+        )
+        candidate_rows, _ = governed_rows(candidate_doc, ["new/authority.rs"])
+        expect(
+            "candidate_added_row_present",
+            [row["surface_id"] for row in candidate_rows],
+            ["candidate_added"],
+        )
+        merged = merge_governed_rows(base_only_rows, candidate_rows)
+        expect(
+            "candidate_added_union",
+            [row["surface_id"] for row in merged],
+            ["candidate_added"],
+        )
+        widened = merge_governed_rows(
+            [
+                {
+                    "surface_id": "s",
+                    "matched_paths": ["a"],
+                    "required_evidence": "packet",
+                }
+            ],
+            [
+                {
+                    "surface_id": "s",
+                    "matched_paths": ["b"],
+                    "required_evidence": "none",
+                }
+            ],
+        )
+        expect("base_metadata_wins", widened[0]["required_evidence"], "packet")
+        expect("matched_paths_widen", widened[0]["matched_paths"], ["a", "b"])
+
+        # 21. FC-RENAME-ESCAPE: a governed path renamed out of its surface
+        # must still match. The workflow emits both sides via
+        # `git diff --no-renames`; the evaluator side pins that a removed
+        # governed path string still resolves its row, and the tripwire
+        # below pins the workflow flag itself.
+        renamed_rows, _ = governed_rows(
+            base_doc, ["src/authority/catalog.rs", "new/location/catalog.rs"]
+        )
+        renamed = [row for row in renamed_rows if row["surface_id"] == "authority_catalog"]
+        expect("rename_removed_side_matches", len(renamed), 1)
+        # Only the removed governed side matches: the ungoverned
+        # destination correctly contributes no row. The escape the flag
+        # closes is the removed side vanishing from the changed list.
+        expect(
+            "rename_removed_side_matched",
+            renamed[0]["matched_paths"] if renamed else [],
+            ["src/authority/catalog.rs"],
+        )
+        workflow_path = (
+            Path(__file__).resolve().parents[2]
+            / ".github/workflows/authority-transfer-review.yml"
+        )
+        workflow_text = workflow_path.read_text(encoding="utf-8")
+        expect(
+            "rename_detection_disabled_tripwire",
+            "--no-renames" in workflow_text,
+            True,
+        )
+
+        # 22. FC-NO-CLI-VERSION-KNOB: the caller pin accepts only the known
+        # receipt surface token and fails closed on anything else.
+        expect("surface_version_known", resolve_surface_version(SCHEMA), SCHEMA)
+        try:
+            resolve_surface_version("authority-transfer-review.v2")
+            version_rejected = False
+        except ValueError:
+            version_rejected = True
+        expect("surface_version_unknown_rejected", version_rejected, True)
+
     if failures:
         print(f"Authority Transfer Review self-test FAILED ({len(failures)}):")
         for failure in failures:
@@ -1908,6 +2042,11 @@ def main(argv: list[str] | None = None) -> int:
         return EXIT_PASS
     if args.root is None:
         parser.error("--root is required unless --self-test is given")
+        return EXIT_NOT_PROVEN
+    try:
+        resolve_surface_version(args.surface_version)
+    except ValueError as error:
+        print(f"::error::{error}", file=sys.stderr)
         return EXIT_NOT_PROVEN
 
     packets = [{"label": str(path), "path": path} for path in args.packet]
