@@ -1011,7 +1011,7 @@ fn run_attempt(
                 kind: "rule_bypass".to_string(),
                 detail: format!("{attempt_id}: provenance implied by checksum success"),
             });
-            let predecessors = predecessors_of(&chain, &skipped_stage_ids, spec)?;
+            let predecessors = predecessors_of(&chain, &skipped_stage_ids, active_mode, spec)?;
             let view = ReceiptView {
                 schema: RECEIPT_SCHEMA_ID,
                 transaction_id,
@@ -1255,7 +1255,7 @@ fn run_attempt(
         let received_predecessors: Vec<String> = if call.corrupt_predecessor_digests {
             vec![fabricated_digest("corrupted-predecessor")]
         } else {
-            predecessors_of(&chain, &skipped_stage_ids, spec)?
+            predecessors_of(&chain, &skipped_stage_ids, active_mode, spec)?
         };
         let received_subject = if call.corrupt_subject_digest {
             fabricated_digest("corrupted-subject")
@@ -1367,22 +1367,54 @@ fn active_subject_profile(vector: &Vector, branch_id: &str) -> SubjectProfile {
     (active.mode, active.provenance_required, active.required_executables.clone())
 }
 
+/// Redirects an edge whose declared predecessor was mode-authorized as
+/// `not_applicable` on the active branch to the stage that carries the same
+/// evidence in that mode.
+///
+/// A skipped predecessor is authorized, so it must not fail closed — but
+/// dropping the edge outright disconnects the receipt chain whenever the
+/// active mode still reaches that evidence under a different stage.
+/// `exact_registry_source` reaches the installable artifact through
+/// `source_build` rather than `archive_manifest_and_staging`, so on a
+/// source-mode branch an edge into staging binds to the build receipt. Without
+/// this, v007's fallback branch mints `executable_observation` with an empty
+/// predecessor list while `source_build` sits in the packet as a dangling
+/// leaf: erasing or altering that build receipt changes no downstream digest.
+///
+/// `None` means the dependency is genuinely vacuous in this mode — the skipped
+/// stage produced no evidence and the mode has no substitute that does (a
+/// not-required `provenance`, for instance). Those edges stay satisfied by the
+/// authorization map and contribute no digest.
+fn substitute_skipped_predecessor(mode: Mode, skipped: StageId) -> Option<StageId> {
+    match (mode, skipped) {
+        (Mode::ExactRegistrySource, StageId::ArchiveManifestAndStaging) => {
+            Some(StageId::SourceBuild)
+        }
+        _ => None,
+    }
+}
+
 /// Resolves predecessor receipt digests for a stage, in the declaration order
 /// from the stage spec. A declared predecessor is satisfied by one of:
 ///
 /// 1. A receipt already in the attempt's chain (stage executed successfully).
 /// 2. Being in `skipped_stage_ids` (positively mode-authorized as
-///    not_applicable for the active branch subject).
+///    not_applicable for the active branch subject), in which case the edge
+///    binds to this mode's substitute stage when one exists — see
+///    [`substitute_skipped_predecessor`].
 ///
 /// Fix 1 (#13295): if a declared predecessor is absent from both the chain
 /// and the skipped set the corpus is inconsistent — the stage graph declares
 /// a dependency that can never be resolved for this branch. Return
 /// `OracleError::StageGraph` so `derive_packet` surfaces the authoring bug
 /// rather than silently producing an empty predecessor list that would pass
-/// corpus checks while certifying a broken dependency chain.
+/// corpus checks while certifying a broken dependency chain. The same applies
+/// when a substitute is named but produced no receipt on this branch: the
+/// dependency is real and unresolvable, not vacuous.
 fn predecessors_of(
     chain: &[(StageId, String)],
     skipped_stage_ids: &[StageId],
+    active_mode: Mode,
     spec: &StageSpec,
 ) -> Result<Vec<String>, OracleError> {
     let mut result = Vec::new();
@@ -1390,8 +1422,23 @@ fn predecessors_of(
         if let Some((_, digest)) = chain.iter().find(|(stage, _)| stage == predecessor) {
             result.push(digest.clone());
         } else if skipped_stage_ids.contains(predecessor) {
-            // Skipped (mode-authorized) predecessors contributed no receipt;
-            // the dependency is considered satisfied by the authorization map.
+            // Mode-authorized skip: the dependency survives if this mode
+            // reaches the same evidence through another stage, otherwise it
+            // is vacuous and contributes no digest.
+            if let Some(substitute) = substitute_skipped_predecessor(active_mode, *predecessor) {
+                let Some((_, digest)) = chain.iter().find(|(stage, _)| *stage == substitute) else {
+                    return Err(OracleError::StageGraph(format!(
+                        "stage {} depends on {}, mode-authorized as not_applicable on this \
+                         branch; its {:?} substitute {} has no receipt in this chain, so the \
+                         dependency cannot be preserved",
+                        format_stage(spec.stage_id),
+                        format_stage(*predecessor),
+                        active_mode,
+                        format_stage(substitute),
+                    )));
+                };
+                result.push(digest.clone());
+            }
         } else {
             return Err(OracleError::StageGraph(format!(
                 "stage {} has declared predecessor {} that has no receipt and was not \
@@ -1854,5 +1901,58 @@ mod tests {
                 fail(&format!("unresolvable declared predecessor must fail closed, got {other:?}"))
             }
         }
+    }
+
+    /// Fix 1 (#13295), second half: a mode-authorized skipped predecessor must
+    /// not silently drop the edge. On v007's fallback branch the subject mode
+    /// is `exact_registry_source`, so `archive_manifest_and_staging` is
+    /// authorized as not_applicable and `source_build` produces the
+    /// installable artifact instead. `executable_observation` declares staging
+    /// as its predecessor, so its receipt must bind to the `source_build`
+    /// receipt; otherwise the build sits in the packet as a dangling leaf and
+    /// erasing it changes no downstream digest.
+    ///
+    /// The v011 control above exercises the unauthorized-missing branch and
+    /// cannot discriminate this case: there the predecessor is absent from the
+    /// skipped set, here it is present in it.
+    #[test]
+    fn mode_authorized_skipped_predecessor_binds_to_its_substitute_receipt() {
+        let vectors = corpus();
+        let vector = vector_by_id(&vectors, "v007-fallback-allowed-new-branch");
+        let packet = derive(vector, Deviation::None);
+
+        let fallback_receipt = |stage: StageId| -> &StageExecution {
+            let found = packet.executed_stages.iter().find(|execution| {
+                execution.stage_id == stage
+                    && execution.branch_id != "branch-main"
+                    && execution.result == TerminalResult::Succeeded
+            });
+            match found {
+                Some(execution) => execution,
+                None => fail(&format!(
+                    "v007 fallback branch must record a successful {}",
+                    format_stage(stage)
+                )),
+            }
+        };
+
+        // Precondition: staging really is skipped on this branch, so the edge
+        // under test is the authorized one and not an ordinary chain lookup.
+        assert!(
+            packet.skipped_stages.iter().any(|skip| {
+                skip.stage_id == StageId::ArchiveManifestAndStaging
+                    && skip.branch_id != "branch-main"
+            }),
+            "v007 fallback branch must mode-authorize archive_manifest_and_staging"
+        );
+
+        let source_build = fallback_receipt(StageId::SourceBuild).receipt_digest.clone();
+        let observation = fallback_receipt(StageId::ExecutableObservation);
+        assert_eq!(
+            observation.predecessor_digests,
+            vec![source_build],
+            "executable_observation must bind to the fallback source_build receipt, \
+             not mint an empty predecessor list"
+        );
     }
 }
