@@ -3223,6 +3223,16 @@ impl<'ast> Visit<'ast> for NonLiteralExprProbe {
         }
         self.found = true;
     }
+
+    /// A macro invocation is opaque tokens, not a `syn::Expr`, so `visit_expr`
+    /// never sees what it expands to. In type position — `struct S { field:
+    /// ty!() }` where `ty!()` expands to `[u8; compute()]` — nothing else in
+    /// this probe fires either, and the item would be screened as carrying no
+    /// call while its expansion carries one (#16077 review). Treat every macro
+    /// as an expression the probe cannot read, in every position.
+    fn visit_macro(&mut self, _: &'ast syn::Macro) {
+        self.found = true;
+    }
 }
 
 impl<'ast> Visit<'ast> for DeclarationSeamCollector {
@@ -7080,6 +7090,35 @@ pub struct Pair; impl Pair { fn go(&self) -> bool { compute() } }
     /// starting with `Item::Macro` — added nothing to `executable` and let a
     /// declaration on the same physical line subtract the unscreened item's
     /// finding from a required gate.
+    /// #16077 review: a macro is opaque tokens, not a `syn::Expr`. In type,
+    /// pattern or expression position its expansion can carry a call the probe
+    /// cannot read, so a declaration containing one must not be screened as
+    /// carrying no call.
+    #[test]
+    fn declaration_seam_lines_keeps_declarations_carrying_opaque_macros() -> Result<()> {
+        let source = r##"pub struct Holder { field: ty!() }
+pub const ALONE: bool = false;
+pub const FROM_MACRO: usize = size_of_thing!();
+pub type Alias = wrapper!(u8);
+"##;
+        let marked = declaration_seam_lines(source);
+
+        // Each of these is a screened item kind whose only non-literal content
+        // is a macro. `visit_expr` alone sees nothing in the type-position and
+        // alias cases, which is the reachable half of this.
+        for line in [1, 3, 4] {
+            if marked.contains(&line) {
+                return Err(eyre!(
+                    "line {line} carries a macro the probe cannot read and must stay in the blocking basis"
+                ));
+            }
+        }
+        if !marked.contains(&2) {
+            return Err(eyre!("line 2 is a literal declaration and must still be marked"));
+        }
+        Ok(())
+    }
+
     #[test]
     fn declaration_seam_lines_keeps_lines_shared_with_unscreened_items() -> Result<()> {
         let source = r##"use std::arch::global_asm; global_asm!("nop");
