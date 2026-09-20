@@ -2448,6 +2448,27 @@ public-api-check:
             FAILED=1
             continue
         fi
+        # Emptiness is not the only way normalizing the stored side can cost
+        # detection. The filter's first stage is a `grep` for guarded public
+        # items, so any committed line that is not one -- a conflict marker a
+        # bad merge left behind, a stray comment, a body truncated by a full
+        # disk -- is now silently dropped from the comparison instead of
+        # showing up as a `-` in the diff. Before #16117 the baseline was
+        # compared raw and that corruption reddened the gate; routing it
+        # through the filter is what made it invisible, so this is the guard
+        # that keeps the change from being a weakening.
+        #
+        # The committed baselines are written by `public-api-update`, which
+        # shares this filter, so canonical form is already what is on disk:
+        # verified a no-op on all twelve, 0 differing lines. A baseline that
+        # fails this is corrupt or hand-edited, and either way the diff below
+        # would be answering the wrong question.
+        if ! cmp -s "$BASELINE" "/tmp/${crate}-baseline.txt"; then
+            echo "INSTRUMENT-FAIL ${crate}: committed baseline $BASELINE is not in canonical filtered form -- lines the filter drops would be invisible to this diff (run 'just public-api-update')"
+            diff -u "$BASELINE" "/tmp/${crate}-baseline.txt" | head -20 || true
+            FAILED=1
+            continue
+        fi
         if ! diff -u "/tmp/${crate}-baseline.txt" "/tmp/${crate}-current.txt" > "/tmp/${crate}-diff.txt" 2>&1; then
             echo "FAIL Public API changed in ${crate}:"
             cat "/tmp/${crate}-diff.txt"

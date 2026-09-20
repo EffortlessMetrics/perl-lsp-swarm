@@ -613,6 +613,30 @@ fn apply_io_fold(line: &str) -> Result<String, Box<dyn std::error::Error>> {
     Ok(String::from_utf8(output.stdout)?.trim_end().to_string())
 }
 
+/// Run the recipe's own `sed` expressions over a whole buffer in one process.
+///
+/// `apply_io_fold` spawns per line, which is fine for a handful of fixtures and
+/// is not for thirty thousand baseline lines.
+fn apply_io_fold_to_all(text: &str) -> Result<String, Box<dyn std::error::Error>> {
+    let exprs = filter_sed_expressions()?;
+    let mut command = Command::new("sed");
+    command.arg("-E");
+    for expr in &exprs {
+        command.arg("-e").arg(expr);
+    }
+    let mut child =
+        command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
+    let mut stdin = child.stdin.take().ok_or("sed stdin unavailable")?;
+    let buffer = text.to_string();
+    let writer = std::thread::spawn(move || stdin.write_all(buffer.as_bytes()));
+    let output = child.wait_with_output()?;
+    writer.join().map_err(|_| "sed writer thread panicked")??;
+    if !output.status.success() {
+        return Err(format!("sed failed: {}", String::from_utf8_lossy(&output.stderr)).into());
+    }
+    Ok(String::from_utf8(output.stdout)?)
+}
+
 /// Folding both sides must not cost the gate its ability to see a real change.
 ///
 /// The lookalike test above proves the filter leaves the wrong paths alone.
@@ -938,6 +962,60 @@ fn public_api_check_normalizes_both_sides_of_the_diff() -> Result<(), Box<dyn st
         "public-api-check must diff the normalized baseline, not $BASELINE directly (#16117)"
     );
 
+    // Normalizing the stored side routes it through the filter's `grep` stage
+    // too, so any committed line that is not a guarded public item -- a
+    // conflict marker, a stray comment, a truncated body -- is dropped from
+    // the comparison rather than showing up as a `-`. Compared raw, that
+    // corruption reddened the gate. This guard is what keeps #16117 from
+    // trading a phantom-red class for a silent blind spot (#16119).
+    let guards_canonical_form =
+        recipe.lines().any(|line| line.contains("cmp -s") && line.contains(r#""$BASELINE""#));
+    assert!(
+        guards_canonical_form,
+        "public-api-check must reject a committed baseline the filter would alter; \
+         without it a corrupted baseline is silently filtered out of the diff and the \
+         gate passes where a raw comparison would have failed (#16119)"
+    );
+
+    Ok(())
+}
+
+/// The canonical-form guard must be free on the baselines actually committed.
+///
+/// A guard that fires on the current tree would be a broken gate rather than a
+/// safeguard, so this pins the state the guard depends on: every committed
+/// baseline is already exactly what `_public-api-filter` produces from it,
+/// which is what `public-api-update` writes. It is the state assertion behind
+/// the recipe assertion above, and it fails loudly if a regeneration or a
+/// merge resolution ever writes a baseline that is not in canonical form
+/// (#16119).
+#[test]
+fn committed_baselines_are_already_in_canonical_filtered_form()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = project_root();
+
+    for crate_name in ratchet_crates()? {
+        let baseline_path = root.join(".ci/public-api-baselines").join(format!("{crate_name}.txt"));
+        let committed = fs::read_to_string(&baseline_path)?;
+
+        // The filter is `grep <guarded items> | sed <io fold>`. Apply the grep
+        // half here and hand the whole remainder to one sed, rather than one
+        // sed per line: 32k lines across twelve baselines is a minute of
+        // process spawning otherwise, and this suite runs on every shard.
+        let kept: String = committed
+            .lines()
+            .filter(|line| is_guarded_surface_line(line))
+            .map(|line| format!("{line}\n"))
+            .collect();
+        let filtered = apply_io_fold_to_all(&kept)?;
+
+        assert_eq!(
+            filtered, committed,
+            "{crate_name}: committed baseline is not in canonical filtered form, so the \
+             canonical-form guard in public-api-check would fire on a clean tree. Run \
+             'just public-api-update' (#16119)"
+        );
+    }
     Ok(())
 }
 
