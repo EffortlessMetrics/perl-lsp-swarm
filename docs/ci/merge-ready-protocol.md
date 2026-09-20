@@ -102,6 +102,28 @@ Verification statuses:
 - `not_proven` (the receipt itself records an instrument-incomplete verdict;
   this is non-ready, not an unknown success)
 
+## Fan-in subject binding (#15343)
+
+The fan-in snapshot (schema version 2) requires every `RequiredCheckEvidence`
+row to declare its subject class:
+
+- `candidate_head` — evaluated against the raw PR head only. This is
+  candidate evidence. It is acceptable only while the snapshot declares no
+  merge group; a raw-head result can never satisfy a declared
+  merge-group integration subject.
+- `pull_request_integration` — evaluated against the exact base + head
+  integration tree. The row records its `base_sha` and is stale the moment
+  the snapshot's current base differs, so advancing `main` (B → B2)
+  invalidates the old B+H proof even when the head and results are unchanged.
+- `merge_group` — evaluated against a queue-generated integration subject.
+  The row records its `merge_group_sha` and is stale unless it binds the
+  snapshot's current merge group.
+
+A row whose declared subject does not match the snapshot's current subject is
+a blocking `STALE` finding, never merge authorization. Snapshot rows without
+a subject (schema version 1) fail deserialization: old head-only snapshots
+cannot re-enter admission.
+
 ## Current operation
 
 Use `merge-ready emit`/`verify` for receipt validation and the protected
