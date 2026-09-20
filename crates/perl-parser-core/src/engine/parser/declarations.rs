@@ -1580,7 +1580,7 @@ impl<'a> Parser<'a> {
                     }
                     _ => {}
                 }
-                cond_args.push(self.consume_token()?.text.to_string());
+                cond_args.push(self.consume_import_argument_token()?.text.to_string());
             }
             let end = self.previous_position();
             let has_filter_risk = Self::is_filter_module(&module);
@@ -1601,6 +1601,8 @@ impl<'a> Parser<'a> {
                     | TokenKind::Identifier
                     | TokenKind::StringCompare
                     | TokenKind::QuoteWords
+                    | TokenKind::QuoteSingle
+                    | TokenKind::QuoteDouble
             )
         ) && !matches!(
             self.peek_kind(),
@@ -1624,13 +1626,13 @@ impl<'a> Parser<'a> {
                                 TokenKind::String | TokenKind::Number | TokenKind::Identifier,
                             ) = self.peek_kind()
                             {
-                                args.push(self.consume_token()?.text.to_string());
+                                args.push(self.consume_import_argument_token()?.text.to_string());
                             } else {
                                 // best-effort: slurp tokens until ',' or ';'
                                 while !Self::is_statement_terminator(self.peek_kind())
                                     && self.peek_kind() != Some(TokenKind::Comma)
                                 {
-                                    args.push(self.consume_token()?.text.to_string());
+                                    args.push(self.consume_import_argument_token()?.text.to_string());
                                 }
                             }
                         }
@@ -1650,8 +1652,17 @@ impl<'a> Parser<'a> {
                             self.consume_use_import_value(&mut args)?;
                         }
                     }
+                    Some(TokenKind::QuoteSingle | TokenKind::QuoteDouble) => {
+                        let token = self.consume_import_argument_token()?;
+                        // Unlike qw, q/qq retain their complete source spelling.
+                        args.push(token.text.to_string());
+                        if self.peek_kind() == Some(TokenKind::FatArrow) {
+                            self.consume_token()?;
+                            self.consume_use_import_value(&mut args)?;
+                        }
+                    }
                     Some(TokenKind::String) => {
-                        args.push(self.consume_token()?.text.to_string());
+                        args.push(self.consume_import_argument_token()?.text.to_string());
 
                         // Handle fat arrow or comma after a string key
                         // (e.g. `no overload '==' => \&func` or `no overload '+', '-'`)
@@ -1666,7 +1677,7 @@ impl<'a> Parser<'a> {
                                     && self.peek_kind() != Some(TokenKind::Comma)
                                     && !self.tokens.is_eof()
                                 {
-                                    args.push(self.consume_token()?.text.to_string());
+                                    args.push(self.consume_import_argument_token()?.text.to_string());
                                 }
                                 // Consume trailing comma if present
                                 if self.peek_kind() == Some(TokenKind::Comma) {
@@ -1679,7 +1690,7 @@ impl<'a> Parser<'a> {
                         }
                     }
                     Some(TokenKind::Identifier | TokenKind::StringCompare) => {
-                        args.push(self.consume_token()?.text.to_string());
+                        args.push(self.consume_import_argument_token()?.text.to_string());
 
                         // Handle comma or fat arrow after identifier
                         match self.peek_kind() {
@@ -1693,7 +1704,7 @@ impl<'a> Parser<'a> {
                                     && self.peek_kind() != Some(TokenKind::Comma)
                                     && !self.tokens.is_eof()
                                 {
-                                    args.push(self.consume_token()?.text.to_string());
+                                    args.push(self.consume_import_argument_token()?.text.to_string());
                                 }
                                 // Consume trailing comma if present
                                 if self.peek_kind() == Some(TokenKind::Comma) {
@@ -1729,18 +1740,18 @@ impl<'a> Parser<'a> {
                 match self.peek_kind() {
                     Some(TokenKind::LeftParen) => {
                         depth = depth.saturating_add(1);
-                        args.push(self.consume_token()?.text.to_string());
+                        args.push(self.consume_import_argument_token()?.text.to_string());
                     }
                     Some(TokenKind::RightParen) => {
                         depth = depth.saturating_sub(1);
                         if depth > 0 {
-                            args.push(self.consume_token()?.text.to_string());
+                            args.push(self.consume_import_argument_token()?.text.to_string());
                         } else {
                             self.consume_token()?; // consume final )
                         }
                     }
                     Some(_) => {
-                        args.push(self.consume_token()?.text.to_string());
+                        args.push(self.consume_import_argument_token()?.text.to_string());
                     }
                     None => break,
                 }
@@ -1752,6 +1763,24 @@ impl<'a> Parser<'a> {
         let end = self.previous_position();
         let has_filter_risk = Self::is_filter_module(&module);
         Ok(Node::new(NodeKind::No { module, args, has_filter_risk }, SourceLocation { start, end }))
+    }
+
+    /// Raw import collectors must retain quote errors that the token adapter maps
+    /// back to q/qq token kinds for parser-side recovery.
+    fn consume_import_argument_token(&mut self) -> ParseResult<Token> {
+        let token = self.consume_token()?;
+        let operator = match token.kind() {
+            TokenKind::QuoteSingle => Some("q"),
+            TokenKind::QuoteDouble => Some("qq"),
+            _ => None,
+        };
+        if let Some(operator) = operator {
+            quote_parser::parse_quote_operator_content_strict(&token.text, operator)
+                .ok_or_else(|| {
+                    ParseError::syntax("Unclosed quote delimiter in import arguments", token.start())
+                })?;
+        }
+        Ok(token)
     }
 
     /// Consume a value expression on the right-hand side of `=>` inside a `use`
@@ -1799,7 +1828,7 @@ impl<'a> Parser<'a> {
                 }
             }
 
-            let token = self.consume_token()?;
+            let token = self.consume_import_argument_token()?;
             match token.kind() {
                 TokenKind::LeftParen => paren_depth += 1,
                 TokenKind::RightParen => paren_depth = paren_depth.saturating_sub(1),

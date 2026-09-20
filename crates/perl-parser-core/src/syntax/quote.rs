@@ -1141,7 +1141,13 @@ pub fn parse_qw_words(s: &str) -> Option<Vec<String>> {
 /// Parse a complete qw token, including tokens adapted from lexer errors.
 /// Preserve the compatibility word spelling, but require an unescaped, balanced closer.
 pub(crate) fn parse_qw_words_strict(s: &str) -> Option<Vec<String>> {
-    let (open, content) = quote_operator_open_and_content(s, "qw")?;
+    let body = parse_quote_operator_content_strict(s, "qw")?;
+    Some(body.split_whitespace().map(str::to_string).collect())
+}
+
+/// Extract a complete quote token using the canonical escape and nesting scanner.
+pub(crate) fn parse_quote_operator_content_strict(s: &str, operator: &str) -> Option<String> {
+    let (open, content) = quote_operator_open_and_content(s, operator)?;
     // `content` is the original suffix after the opener; recover that opener's
     // byte offset so the shared strict scanner owns escape and nesting rules.
     let start = s.len().checked_sub(content.len())?.checked_sub(open.len_utf8())?;
@@ -1150,7 +1156,7 @@ pub(crate) fn parse_qw_words_strict(s: &str) -> Option<Vec<String>> {
     if !closed || !rest.is_empty() {
         return None;
     }
-    Some(body.split_whitespace().map(str::to_string).collect())
+    Some(body)
 }
 
 // ============================================================================
