@@ -356,6 +356,34 @@ fn unavailable_harness_has_no_executed_test_receipt() -> Result<()> {
     Ok(())
 }
 
+/// One receipt, two printers, and until now only one of them read the field
+/// that carries the per-test discrimination.
+///
+/// `failure_class` is inferred from the whole log, so it answers a question
+/// nobody asked; `human_summary` carries what the first failing test's own
+/// block proved (#16103). `ci.yml` printed that field and
+/// `ux-regression-gate.yml` did not, so the same receipt read one way in one
+/// job and another way in the other, and which job a reader happened to open
+/// decided what they were told. A field added to the producer reaches a reader
+/// only through a printer, so both printers are pinned here rather than left
+/// to agree by habit.
+#[test]
+fn both_ux_summaries_print_the_receipts_human_summary() -> Result<()> {
+    for (file, job, step) in [
+        ("ux-regression-gate.yml", "ux-regression-gate", "Summarize UX evidence"),
+        ("ci.yml", "ux-tests", "UX regression summary"),
+    ] {
+        let wf = workflow(file)?;
+        let job_steps = steps(&wf, job)?;
+        let run = run_step(job_steps, step)?;
+        assert!(
+            run.contains("human_summary"),
+            "{file}: step `{step}` must print the receipt's human_summary"
+        );
+    }
+    Ok(())
+}
+
 #[test]
 fn final_jobs_fail_after_captured_ux_failure() -> Result<()> {
     for (file, job) in WORKFLOWS {
