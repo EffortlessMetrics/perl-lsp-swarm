@@ -92,7 +92,7 @@ pr-fast: _check-tools-basic
     if [ -n "${CI_SCOPE_BASE:-}" ]; then
         args+=(--base "$CI_SCOPE_BASE")
     fi
-    cargo xtask gates "${args[@]}"
+    {{cargo_safe}} xtask gates "${args[@]}"
 
 # Compile-only gate: catches integration-test/benchmark bit-rot and also
 # validates feature-gated code paths without incurring full test runtime.
@@ -426,11 +426,11 @@ quick-ref:
 
 # Lint all crates — treated as errors, same as CI (alias for cargo clippy)
 check:
-    cargo clippy --workspace -- -D warnings
+    {{cargo_safe}} clippy --workspace -- -D warnings
 
 # Auto-fix clippy warnings where possible
 fix:
-    cargo clippy --workspace --fix --allow-dirty
+    {{cargo_safe}} clippy --workspace --fix --allow-dirty
 
 # Canonical local merge gate via Nix (use before merge, not as the push hook)
 ci-local:
@@ -1440,11 +1440,11 @@ ci-test-parser-dap-full:
 
 # Build all workspace crates
 build:
-    cargo build --workspace
+    {{cargo_safe}} build --workspace
 
 # Run all tests
 test:
-    cargo test --workspace
+    {{cargo_safe}} test --workspace
 
 # Format code
 fmt:
