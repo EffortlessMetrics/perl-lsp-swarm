@@ -1059,7 +1059,7 @@ mod api_version_pin_tests {
         .err()
         .ok_or_else(|| anyhow::anyhow!("unknown envelope version must be refused"))?;
         let message = error.to_string();
-        assert!(
+        anyhow::ensure!(
             message.contains("unsupported editor_client_compat envelope version")
                 && message.contains("editor_client_compat.v999"),
             "refusal must name the rejected version, got: {message}"
@@ -1085,7 +1085,7 @@ mod api_version_pin_tests {
         .err()
         .ok_or_else(|| anyhow::anyhow!("invalid inputs must still be refused"))?;
         let message = error.to_string();
-        assert!(
+        anyhow::ensure!(
             !message.contains("unsupported editor_client_compat envelope version"),
             "current version must pass the pin, got: {message}"
         );
