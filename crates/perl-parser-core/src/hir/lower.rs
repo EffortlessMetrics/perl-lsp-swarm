@@ -166,12 +166,14 @@ impl Lowerer {
                 // The body of a `class` is an ordinary `Block` node; the
                 // `Class` arm registered its span so this frame can be the
                 // class frame that owns field visibility (#13817).
-                let scope_kind =
-                    if self.class_body_spans.contains(&(node.location.start(), node.location.end())) {
-                        ScopeKind::Class
-                    } else {
-                        ScopeKind::Block
-                    };
+                let scope_kind = if self
+                    .class_body_spans
+                    .contains(&(node.location.start(), node.location.end()))
+                {
+                    ScopeKind::Class
+                } else {
+                    ScopeKind::Block
+                };
                 let scope_id =
                     self.enter_scope(scope_kind, node.location, self.package_context.clone());
                 self.push_item(
@@ -1072,7 +1074,8 @@ impl Lowerer {
                         _ => None,
                     };
                     if declarator == Some("field") {
-                        direct_field_decls.push((statement.location.start(), statement.location.end()));
+                        direct_field_decls
+                            .push((statement.location.start(), statement.location.end()));
                     }
                 });
                 self.class_field_decls.extend(direct_field_decls);
@@ -4970,7 +4973,11 @@ impl<'a> BodyBuilder2<'a> {
                     "our" => VariableKind::Package,
                     "field" => Self::kind_for(
                         &var_name,
-                        self.resolve_visible_binding(sigil_str, &var_name, variable.location.start()),
+                        self.resolve_visible_binding(
+                            sigil_str,
+                            &var_name,
+                            variable.location.start(),
+                        ),
                     ),
                     _ => VariableKind::Lexical,
                 };
