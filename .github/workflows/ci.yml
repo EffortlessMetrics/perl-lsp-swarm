@@ -341,7 +341,15 @@ jobs:
           cargo run -p xtask --locked -- ci-scope \
             --subject "$RUNNER_TEMP/ci-subject.json" \
             --format json > "$RUNNER_TEMP/ci-scope.json"
-          windows_runner=$(jq -r 'if .platform_overrides.windows_runner == null then true else .platform_overrides.windows_runner end' "$RUNNER_TEMP/ci-scope.json")
+          schema_version=$(jq -r '.schema_version' "$RUNNER_TEMP/ci-scope.json")
+          if [ "$schema_version" != "2" ]; then
+            echo "::error::ci-scope schema_version=$schema_version, expected 2 (producer/consumer out of sync)"
+            exit 1
+          fi
+          if ! windows_runner=$(jq -r 'if (.platform_overrides | has("windows_runner") | not) then error("missing field: .platform_overrides.windows_runner") elif .platform_overrides.windows_runner == null then error("null field: .platform_overrides.windows_runner") else .platform_overrides.windows_runner end' "$RUNNER_TEMP/ci-scope.json"); then
+            echo "::error::ci-scope is missing .platform_overrides.windows_runner (refusing null->true default)"
+            exit 1
+          fi
           windows_test_crates=$(jq -r '.platform_overrides.windows_test_crates[]? | "-p \(.)"' "$RUNNER_TEMP/ci-scope.json" | paste -sd' ' -)
           case "$windows_runner" in
             true|false) ;;
@@ -1708,7 +1716,12 @@ jobs:
           else:
               lines.append("- Receipt unavailable.")
 
-          summary.write_text("\n".join(lines) + "\n", encoding="utf-8")
+          rendered = "\n".join(lines) + "\n"
+          summary.write_text(rendered, encoding="utf-8")
+          # Mirror the receipt summary into stdout so the fields appear in the
+          # job-log tail when GITHUB_STEP_SUMMARY or artifact downloads are
+          # inaccessible (#16026).
+          print(rendered)
           PY
 
       - name: Fail UX regression gate on test failures
