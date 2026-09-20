@@ -59,7 +59,13 @@ pub struct GateFailureDigestConfig {
     pub summary: PathBuf,
     /// Directory holding `<gate>.log` for each executed gate.
     pub logs: PathBuf,
-    /// Markdown destination, appended to when it already exists.
+    /// Markdown destination. **Replaced**, never appended to: `target/` is
+    /// restored from a shared rust-cache (#12085), so a digest left there by
+    /// an unrelated run would otherwise be `cat`-ed into this run's job
+    /// summary as if it were this run's. The *workflow* appends this file to
+    /// `$GITHUB_STEP_SUMMARY`, which is what preserves the gate table above
+    /// it; this writer preserves nothing. Pinned by
+    /// `writing_the_digest_replaces_a_file_left_by_another_run`.
     pub out: PathBuf,
     /// Also print the digest to stdout.
     pub print: bool,

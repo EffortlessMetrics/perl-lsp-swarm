@@ -910,7 +910,7 @@ enum Commands {
         /// Directory holding <gate>.log for each executed gate.
         #[arg(long, default_value = "target/receipts/logs")]
         logs: PathBuf,
-        /// Markdown destination; appended to when it already exists.
+        /// Markdown destination; replaced, never appended to.
         #[arg(long, default_value = "target/receipts/gate-failure-digest.md")]
         out: PathBuf,
         /// Also print the digest to stdout.
