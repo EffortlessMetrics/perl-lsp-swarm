@@ -10,9 +10,12 @@ use std::sync::Arc;
 impl Checkpointable for PerlLexer<'_> {
     fn checkpoint(&self) -> LexerCheckpoint {
         // Exhaustive projection: adding a PerlLexer field without a disposition
-        // here fails to compile. Identity, immutable input, and operation-local
-        // work are named rather than restored as mutable replay state.
+        // here fails to compile. Angle work is captured and inherited
+        // monotonically, never refunded by restore. Identity, immutable input,
+        // and the temporary scan boundary are named separately from replay state.
         let Self {
+            angle_scan_bytes,
+            angle_scan_steps,
             input,
             input_bytes,
             position,
@@ -71,6 +74,8 @@ impl Checkpointable for PerlLexer<'_> {
             generation.clone(),
         );
         let replay = ReplayState {
+            angle_scan_bytes: *angle_scan_bytes,
+            angle_scan_steps: *angle_scan_steps,
             position: *position,
             mode: *mode,
             delimiter_stack: delimiter_stack.clone(),
@@ -131,6 +136,8 @@ impl Checkpointable for PerlLexer<'_> {
 
     fn restore(&mut self, checkpoint: &LexerCheckpoint) -> Result<(), CheckpointRestoreError> {
         self.validate_restore(checkpoint)?;
+        self.angle_scan_bytes = self.angle_scan_bytes.max(checkpoint.replay().angle_scan_bytes);
+        self.angle_scan_steps = self.angle_scan_steps.max(checkpoint.replay().angle_scan_steps);
         let replay = checkpoint.replay();
         self.position = replay.position;
         self.mode = replay.mode;

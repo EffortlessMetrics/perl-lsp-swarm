@@ -68,6 +68,8 @@ pub enum CheckpointContext {
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct ReplayState {
+    pub(crate) angle_scan_bytes: usize,
+    pub(crate) angle_scan_steps: usize,
     pub(crate) position: usize,
     pub(crate) mode: LexerMode,
     pub(crate) delimiter_stack: Vec<char>,
@@ -621,6 +623,8 @@ mod tests {
         // That is the #8090 completeness falsifier for the private replay
         // snapshot; it is not a substitute for live capture/restore tests.
         let replay = ReplayState {
+            angle_scan_bytes: 0,
+            angle_scan_steps: 0,
             position: 0,
             mode: LexerMode::ExpectTerm,
             delimiter_stack: Vec::new(),

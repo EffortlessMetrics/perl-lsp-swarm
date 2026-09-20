@@ -981,7 +981,9 @@ impl<'a> Parser<'a> {
                     // not malformed `qw` input: swallowing it here would build a
                     // partial `Use` node instead of reporting the refusal
                     // (#8786).
-                    Err(error @ ParseError::CoreBudgetExhausted { .. }) => return Err(error),
+                    Err(error @ (ParseError::CoreBudgetExhausted { .. }
+                        | ParseError::AngleContextFallback { .. }
+                        | ParseError::AngleScan { error: perl_lexer::LexerError::AngleBudgetExhausted { .. } })) => return Err(error),
                     Err(_) => {
                         // Fallback: just consume tokens until semicolon
                         let mut words = Vec::new();
