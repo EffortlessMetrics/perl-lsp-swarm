@@ -632,6 +632,135 @@ fn states_without_a_basis_do_not_report_a_shared_generation() {
     assert!(!stale.shares_generation_with(&stale));
 }
 
+/// A basis that names no snapshot is not evidence that two outcomes shared one.
+///
+/// `stable_generation_basis` returns an all-unknown basis when it cannot observe
+/// a stable pair within its attempts, so two resolves that both met a churning
+/// index carry equal bases while neither identifies a generation. Comparing the
+/// values alone reports agreement exactly when the index was least settled, so
+/// the refusal has to come from the basis being unidentified — the states here
+/// both reached the semantic view, which rules out the no-basis arm.
+#[test]
+fn fully_unknown_bases_do_not_report_a_shared_generation() {
+    let source = StubSource::default().with_symbol(
+        10,
+        entity(1, EntityKind::Variable, "$value", Some(100)),
+        occurrence(50, OccurrenceKind::Read, Some(1), 101),
+    );
+    let unknown = ResolveGenerationBasis::new(SourceGeneration::Unknown, SourceGeneration::Unknown);
+
+    let definition = resolve_at_position(&source, FILE, 10, &unknown, false);
+    let references = resolve_at_position(&source, FILE, 10, &unknown, false);
+
+    assert!(
+        definition.generation().is_some() && references.generation().is_some(),
+        "both outcomes must carry a basis, or this control proves something weaker"
+    );
+    assert_eq!(
+        definition.generation(),
+        references.generation(),
+        "the two bases are equal as values; the refusal must come from identity, not inequality"
+    );
+    assert!(
+        !definition.shares_generation_with(&references),
+        "neither basis identifies a snapshot, so agreeing on `unknown` is not a shared generation"
+    );
+}
+
+/// One unidentified half is enough to refuse, whichever half it is.
+///
+/// An unindexed document yields an unknown document generation beside a known
+/// workspace one; an unobservable index yields the mirror. Agreeing on the
+/// identified half says nothing about the unidentified one, so neither pairing
+/// may read as shared. Both directions are checked because a gate written
+/// against one half only would still pass the other.
+#[test]
+fn a_partially_unknown_basis_does_not_report_a_shared_generation() {
+    let source = StubSource::default().with_symbol(
+        10,
+        entity(1, EntityKind::Variable, "$value", Some(100)),
+        occurrence(50, OccurrenceKind::Read, Some(1), 101),
+    );
+
+    for (label, basis) in [
+        (
+            "unknown document generation",
+            ResolveGenerationBasis::new(
+                SourceGeneration::Unknown,
+                SourceGeneration::known("workspace-index@4"),
+            ),
+        ),
+        (
+            "unknown workspace generation",
+            ResolveGenerationBasis::new(
+                SourceGeneration::known("file:///a.pl@4"),
+                SourceGeneration::Unknown,
+            ),
+        ),
+    ] {
+        let definition = resolve_at_position(&source, FILE, 10, &basis, false);
+        let references = resolve_at_position(&source, FILE, 10, &basis, false);
+
+        assert_eq!(
+            definition.generation(),
+            references.generation(),
+            "{label}: the bases are equal as values, so equality alone would report them shared"
+        );
+        assert!(
+            !definition.shares_generation_with(&references),
+            "{label}: an unidentified half leaves the resolved snapshot unidentified"
+        );
+    }
+}
+
+/// An empty label is present but carries no freshness, so it is refused exactly
+/// like `Unknown`.
+///
+/// This is the control that separates asking whether a basis *identifies* a
+/// snapshot from testing for the `Unknown` variant: `Known(String::new())` is
+/// not `Unknown`, compares equal to itself, and still names nothing.
+#[test]
+fn an_empty_generation_label_does_not_report_a_shared_generation() {
+    let source = StubSource::default().with_symbol(
+        10,
+        entity(1, EntityKind::Variable, "$value", Some(100)),
+        occurrence(50, OccurrenceKind::Read, Some(1), 101),
+    );
+    let empty_labels =
+        ResolveGenerationBasis::new(SourceGeneration::known(""), SourceGeneration::known(""));
+
+    let definition = resolve_at_position(&source, FILE, 10, &empty_labels, false);
+    let references = resolve_at_position(&source, FILE, 10, &empty_labels, false);
+
+    assert_eq!(definition.generation(), references.generation());
+    assert!(
+        !definition.shares_generation_with(&references),
+        "an empty label is a present value that identifies no snapshot"
+    );
+}
+
+/// The refusal is bounded: a fully identified basis still reports sharing.
+///
+/// Without this, every test above would also pass an implementation that always
+/// returned `false`.
+#[test]
+fn known_bases_still_report_a_shared_generation() {
+    let source = StubSource::default().with_symbol(
+        10,
+        entity(1, EntityKind::Variable, "$value", Some(100)),
+        occurrence(50, OccurrenceKind::Read, Some(1), 101),
+    );
+
+    let definition = resolve(&source, 10);
+    let references = resolve(&source, 10);
+
+    assert!(
+        definition.generation().is_some_and(ResolveGenerationBasis::is_known),
+        "the shared helper basis must be fully identified for this control to bound the refusal"
+    );
+    assert!(definition.shares_generation_with(&references));
+}
+
 // ── Torn-read protocol around the generation basis ──
 
 /// A quiet index yields a known basis naming the observed write version.

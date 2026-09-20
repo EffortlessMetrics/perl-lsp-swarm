@@ -558,10 +558,17 @@ impl ResolveAtOutcome {
     ///
     /// Two outcomes that never reached the semantic view share no basis to
     /// compare, so this is false for them rather than vacuously true.
+    ///
+    /// Carrying a basis is not the same as naming a snapshot, so equality alone
+    /// is not enough. Unidentified bases compare equal to one another —
+    /// `stable_generation_basis` yields an all-unknown basis precisely when no
+    /// stable pair was observable — which would report agreement exactly when
+    /// the index was least settled. Both sides must identify their snapshot
+    /// before equality is allowed to mean anything.
     #[must_use]
     pub fn shares_generation_with(&self, other: &Self) -> bool {
         match (self.generation(), other.generation()) {
-            (Some(left), Some(right)) => left == right,
+            (Some(left), Some(right)) => left.is_known() && right.is_known() && left == right,
             _ => false,
         }
     }
