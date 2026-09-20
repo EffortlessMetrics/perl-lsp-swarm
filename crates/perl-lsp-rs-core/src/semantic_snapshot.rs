@@ -1784,6 +1784,11 @@ impl FileSemanticSnapshotV1 {
     /// an absent snapshot precisely when full assembly has already refused --
     /// needs no failure branch of its own.
     ///
+    /// The receipt id is derived here rather than taken, because it is the
+    /// only input that is itself a derived value and `SemanticWorkReceipt`'s
+    /// fields are public -- see
+    /// `absent_derives_the_receipt_id_rather_than_trusting_it`.
+    ///
     /// The wire path is unaffected: it still enters through
     /// [`Self::from_parts`] with payload-supplied ids and gets every check.
     /// `absent_agrees_with_from_parts_for_every_absent_state` proves the two
@@ -1796,6 +1801,17 @@ impl FileSemanticSnapshotV1 {
         work_receipt: SemanticWorkReceipt,
         terminal_state: AbsentTerminalState,
     ) -> Self {
+        // The receipt id is a derived value, not an independent input, and
+        // every field of `SemanticWorkReceipt` is public. Deriving it here is
+        // what `validate_shape` would have done on the checked path; taking it
+        // on trust is the one shape rule this constructor would not have
+        // fixed, and a snapshot carrying a mismatched id serializes and then
+        // fails its own checked deserialization.
+        let work_receipt = SemanticWorkReceipt::new(
+            work_receipt.work_kind,
+            work_receipt.instrument,
+            work_receipt.work_sequence,
+        );
         let terminal_state = terminal_state.as_terminal_state();
         let completeness = SemanticCompleteness::NotProven;
         let confidence = SemanticConfidence::Unprovable;
@@ -2806,6 +2822,55 @@ mod tests {
             );
             anyhow::ensure!(total == checked, "constructors disagree for {terminal}");
         }
+        Ok(())
+    }
+
+    #[test]
+    fn absent_derives_the_receipt_id_rather_than_trusting_it() -> anyhow::Result<()> {
+        // `absent` skips `validate_shape`, and the receipt id is the one input
+        // it takes that `validate_shape` would have recomputed. Every field of
+        // `SemanticWorkReceipt` is public, so a crate caller can hand it an id
+        // that does not derive from its own instrument and sequence. Stored as
+        // given, that snapshot serializes and then fails its own checked
+        // deserialization with `WorkReceiptIdentityMismatch` -- a value the
+        // fail-closed path produced and the wire path cannot read back.
+        //
+        // The totality argument in `absent`'s own docs depends on this: the
+        // constructor is infallible because every shape rule is fixed by
+        // construction, and an id taken on trust is not fixed by construction.
+        let parts = parts_for_terminal(SemanticSnapshotTerminalState::NotProven);
+        let mut corrupted = parts.work_receipt.clone();
+        corrupted.receipt_id = SemanticWorkReceiptId::from_instrument_and_sequence(
+            &corrupted.instrument,
+            corrupted.work_sequence.wrapping_add(1),
+        );
+        anyhow::ensure!(
+            corrupted.receipt_id != parts.work_receipt.receipt_id,
+            "the fixture must actually carry a mismatched id"
+        );
+
+        let snapshot = FileSemanticSnapshotV1::absent(
+            parts.profile,
+            parts.subject,
+            parts.parse_snapshot,
+            corrupted,
+            AbsentTerminalState::NotProven,
+        );
+
+        anyhow::ensure!(
+            snapshot.work_receipt().receipt_id
+                == SemanticWorkReceiptId::from_instrument_and_sequence(
+                    &snapshot.work_receipt().instrument,
+                    snapshot.work_receipt().work_sequence,
+                ),
+            "the stored receipt id must derive from the receipt's own parts"
+        );
+
+        // The consequence, end to end: what the total constructor builds has
+        // to survive the checked wire path it shares with `from_parts`.
+        let wire = serde_json::to_string(&snapshot)?;
+        let read_back: FileSemanticSnapshotV1 = serde_json::from_str(&wire)?;
+        anyhow::ensure!(read_back == snapshot, "the round trip must be lossless");
         Ok(())
     }
 
