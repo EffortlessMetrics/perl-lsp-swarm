@@ -1,35 +1,12 @@
 use std::fs;
 use std::path::PathBuf;
-use std::sync::LazyLock;
 
 use chrono::Utc;
 use color_eyre::eyre::{Context, Result};
 use perl_lsp_ux_tests::taxonomy::{UxComponent, UxFailureClass, UxRoute, route_for_failure_class};
-use regex::Regex;
 use serde::Serialize;
 
-#[allow(clippy::expect_used, reason = "static LazyLock regex with known-good pattern")]
-static FAILED_TEST_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"test\s+([^\s]+)\s+\.\.\.\s+FAILED").expect("failed test regex must compile")
-});
-// Matches both pre-1.73 format ("panicked at 'msg', path:row:col") and
-// post-1.73 format ("panicked at path:row:col:") where the location appears
-// directly after "panicked at " without a quoted message.
-#[allow(clippy::expect_used, reason = "static LazyLock regex with known-good pattern")]
-static PANIC_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"panicked at (?:'[^']*',\s*)?([a-zA-Z][^:\s][^:]*:\d+:\d+)")
-        .expect("panic regex must compile")
-});
-
-// Cargo prints one `---- <test name> stdout ----` block per failing test in its
-// trailing `failures:` report. Splitting on that header is what lets each failing
-// test be classified from its own evidence instead of from the whole log, where one
-// test's wording silently reclassifies another's (#15988).
-#[allow(clippy::expect_used, reason = "static LazyLock regex with known-good pattern")]
-static FAILURE_BLOCK_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?m)^-{4}\s+(\S+)\s+stdout\s+-{4}\s*$")
-        .expect("failure block header regex must compile")
-});
+use crate::tasks::cargo_failure_blocks::{failing_test_names, failure_blocks, panic_location};
 
 // `WaitEnd::Deadline` is the one harness outcome documented to mean "nothing
 // decided": a live stream that simply did not produce the awaited observation in
@@ -161,10 +138,8 @@ fn classify_with_exit_status(
     let lines: Vec<&str> = raw.lines().collect();
     let first_fail_line =
         lines.iter().find(|line| line.contains("FAILED")).map(|line| (*line).trim().to_string());
-    let first_failing_test =
-        lines.iter().find_map(|line| FAILED_TEST_RE.captures(line).map(|cap| cap[1].to_string()));
-    let panic_location =
-        lines.iter().find_map(|line| PANIC_RE.captures(line).map(|cap| cap[1].to_string()));
+    let first_failing_test = failing_test_names(raw).into_iter().next();
+    let panic_location = panic_location(raw);
     let scenario = first_failing_test.as_ref().and_then(|name| scenario_from_test_name(name));
     let workflow = first_failing_test.as_ref().and_then(|name| workflow_from_test_name(name));
 
@@ -252,36 +227,13 @@ fn classify_with_exit_status(
 /// mentioning a baseline reclassifies another test's expired budget. Per-block
 /// reading keeps each failure's evidence to itself.
 fn discriminate_failing_tests(raw: &str) -> Vec<UxFailingTest> {
-    // (test name, where its body starts, where the next header starts)
-    let mut headers: Vec<(String, usize, usize)> = Vec::new();
-    for capture in FAILURE_BLOCK_RE.captures_iter(raw) {
-        let (Some(header), Some(name)) = (capture.get(0), capture.get(1)) else {
-            continue;
-        };
-        headers.push((name.as_str().to_string(), header.end(), header.start()));
-    }
-    let mut spans: Vec<(String, usize, usize)> = Vec::new();
-    for (index, (name, body_start, _)) in headers.iter().enumerate() {
-        let body_end = headers
-            .get(index + 1)
-            .map_or(raw.len(), |(_, _, next_header_start)| *next_header_start);
-        spans.push((name.clone(), *body_start, body_end));
-    }
-
-    let mut discriminated: Vec<UxFailingTest> = Vec::new();
-    for (name, start, end) in spans {
-        if discriminated.iter().any(|existing| existing.name == name) {
-            continue;
-        }
-        let block = raw.get(start..end).unwrap_or_default();
-        let (mode, evidence) = classify_failure_mode(block_body(block));
-        discriminated.push(UxFailingTest {
-            name,
-            mode,
-            discriminated: mode_is_evidence_backed(mode),
-            evidence,
-        });
-    }
+    let mut discriminated: Vec<UxFailingTest> = failure_blocks(raw)
+        .into_iter()
+        .map(|(name, block)| {
+            let (mode, evidence) = classify_failure_mode(block);
+            UxFailingTest { name, mode, discriminated: mode_is_evidence_backed(mode), evidence }
+        })
+        .collect();
 
     if !discriminated.is_empty() {
         return discriminated;
@@ -289,17 +241,7 @@ fn discriminate_failing_tests(raw: &str) -> Vec<UxFailingTest> {
 
     // Cargo reported failures but printed no stdout block for them. Name the tests
     // and admit the mode is unknown rather than borrowing the whole-log class.
-    for line in raw.lines() {
-        let Some(capture) = FAILED_TEST_RE.captures(line) else {
-            continue;
-        };
-        let Some(name) = capture.get(1) else {
-            continue;
-        };
-        let name = name.as_str().to_string();
-        if discriminated.iter().any(|existing| existing.name == name) {
-            continue;
-        }
+    for name in failing_test_names(raw) {
         discriminated.push(UxFailingTest {
             name,
             mode: UxFailureMode::Unknown,
@@ -308,20 +250,6 @@ fn discriminate_failing_tests(raw: &str) -> Vec<UxFailingTest> {
         });
     }
     discriminated
-}
-
-/// Trim cargo's run-level trailer off the end of a block so the last failing test
-/// does not inherit the summary lines that follow every failure report.
-fn block_body(block: &str) -> &str {
-    let mut offset = 0usize;
-    for line in block.split_inclusive('\n') {
-        let trimmed = line.trim_start();
-        if trimmed.starts_with("failures:") || trimmed.starts_with("test result:") {
-            return block.get(..offset).unwrap_or(block);
-        }
-        offset += line.len();
-    }
-    block
 }
 
 /// Read one failing test's block and say what kind of failure it was.
@@ -752,8 +680,7 @@ test result: FAILED. 0 passed; 1 failed";
     fn panic_re_matches_modern_rust_format() {
         // Rust 1.73+ format: "panicked at path:row:col:" with no quoted message.
         let line = "thread 'test' panicked at crates/perl-lsp-rs/src/lib.rs:42:8:";
-        let cap = PANIC_RE.captures(line).expect("should match modern panic format");
-        assert_eq!(&cap[1], "crates/perl-lsp-rs/src/lib.rs:42:8");
+        assert_eq!(panic_location(line).as_deref(), Some("crates/perl-lsp-rs/src/lib.rs:42:8"));
     }
 
     // =========================================================================

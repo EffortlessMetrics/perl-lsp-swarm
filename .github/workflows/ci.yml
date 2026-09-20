@@ -963,6 +963,26 @@ jobs:
             --logs-dir target/receipts/logs \
             --target-dir "${CARGO_TARGET_DIR:-target}"
 
+      # PR Smoke is the lane a contributor reads first and it published no
+      # step summary at all: a red sent the reader straight to the job log.
+      # The receipt already carries each gate's command and first failure;
+      # this renders them. Advisory, and never changes the gate outcome.
+      - name: Explain PR-fast failures
+        if: always()
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -f target/receipts/receipt.json ]; then
+            echo "no PR-fast receipt; nothing to explain"
+            exit 0
+          fi
+          "$CARGO_TARGET_DIR/debug/xtask" gate-failure-digest \
+            --summary target/receipts/receipt.json \
+            --logs target/receipts/logs \
+            --out target/receipts/pr-fast-failure-digest.md
+          cat target/receipts/pr-fast-failure-digest.md >> "$GITHUB_STEP_SUMMARY"
+
       - name: Upload PR-fast receipt
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
@@ -1459,6 +1479,32 @@ jobs:
           PY
         env:
           SHARD_NAME: ${{ matrix.name }}
+
+      # The table above names which gate went red and nothing about why, so
+      # reading a failure costs a job-log dive — and the job log is not
+      # reliably reachable (the full-log archive redirects to blob storage,
+      # and the per-job logs API returns a bounded tail a noisy later step can
+      # exhaust). Render the failing test, its panic location and the repro
+      # command here instead, the way ux-regression-gate.yml already does.
+      # Advisory: appends to the summary and never changes a verdict.
+      - name: Explain gate failures
+        if: always()
+        continue-on-error: true
+        shell: bash
+        env:
+          SHARD_NAME: ${{ matrix.name }}
+        run: |
+          set -euo pipefail
+          summary="target/receipts/shard-summaries/${SHARD_NAME}.json"
+          if [ ! -f "$summary" ]; then
+            echo "no shard summary at $summary; nothing to explain"
+            exit 0
+          fi
+          target/debug/xtask gate-failure-digest \
+            --summary "$summary" \
+            --logs target/receipts/logs \
+            --out target/receipts/gate-failure-digest.md
+          cat target/receipts/gate-failure-digest.md >> "$GITHUB_STEP_SUMMARY"
 
   # ── CI Gate aggregate: roll up the deterministic shard + guard lanes ──
   # This established context is hardened under #12911 but remains advisory.
