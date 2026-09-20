@@ -1,3 +1,14 @@
+/// Why the contextual repetition production consumes or leaves its next token.
+/// This is local grammar knowledge, not a general expression-start predicate.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RepetitionRhsDisposition {
+    SupportedOperand,
+    AssignmentContinuation,
+    MissingOperand,
+    UnsupportedOperand,
+    InvalidOperand,
+}
+
 impl<'a> Parser<'a> {
     /// Parse comma operator (lowest precedence except for word operators)
     fn parse_comma(&mut self) -> ParseResult<Node> {
@@ -1008,14 +1019,14 @@ impl<'a> Parser<'a> {
         Ok(expr)
     }
 
-    /// Whether `kind`/`text` may start the RHS of ordinary binary string repetition.
+    /// Classify the RHS term of ordinary binary string repetition.
     ///
     /// Kept local to this seam: filehandle, block, list, and recovery contexts have
     /// different legal starts. Do not reuse this as a global expression-starter
-    /// predicate. Angle-bracket terms, word `not`, magic constants, and yada-yada
-    /// `...` are intentionally omitted.
-    fn ordinary_binary_repetition_rhs_starts(kind: TokenKind, text: &str) -> bool {
-        match kind {
+    /// predicate. Angle-bracket terms, word `not`, and yada-yada `...` remain
+    /// outside this supported operand set. Magic constants use Identifier.
+    fn ordinary_binary_repetition_rhs(kind: TokenKind, text: &str) -> RepetitionRhsDisposition {
+        let supported = match kind {
             TokenKind::Number
             | TokenKind::ScalarSigil
             | TokenKind::ArraySigil
@@ -1029,6 +1040,8 @@ impl<'a> Parser<'a> {
             | TokenKind::Undef
             | TokenKind::Do
             | TokenKind::Sub
+            // `when` is a bareword/call while this operand is still expected.
+            | TokenKind::When
             | TokenKind::Not
             | TokenKind::Minus
             | TokenKind::Plus
@@ -1074,7 +1087,45 @@ impl<'a> Parser<'a> {
                 }
             }
             _ => false,
+        };
+        if supported {
+            RepetitionRhsDisposition::SupportedOperand
+        } else {
+            // A missing implementation is not evidence of invalid Perl.
+            RepetitionRhsDisposition::UnsupportedOperand
         }
+    }
+
+    /// Classify the still-unconsumed contextual `x` and its RHS together.
+    /// Both multiplicative parsing and final statement recovery consult this
+    /// owner while the same token/lookahead is current; no nested parse can
+    /// overwrite a saved cause. Adjacency belongs to assignment recognition.
+    fn repetition_rhs_disposition(&mut self) -> ParseResult<RepetitionRhsDisposition> {
+        let operator_end = self.tokens.peek()?.end();
+        let next = self.tokens.peek_second()?;
+        let kind = next.kind();
+        let adjacent = next.start() == operator_end;
+        let ordinary = Self::ordinary_binary_repetition_rhs(kind, next.text.as_ref());
+        let word_follower = (Self::is_stmt_modifier_kind(kind) && kind != TokenKind::When)
+            || matches!(kind, TokenKind::WordAnd | TokenKind::WordOr | TokenKind::WordXor);
+        // Keywords before => are autoquoted terms, not outer continuations.
+        if word_follower && self.tokens.peek_third()?.kind() == TokenKind::FatArrow {
+            return Ok(RepetitionRhsDisposition::UnsupportedOperand);
+        }
+        Ok(match kind {
+            TokenKind::Assign if adjacent => RepetitionRhsDisposition::AssignmentContinuation,
+            TokenKind::Assign => RepetitionRhsDisposition::InvalidOperand,
+            kind if kind.is_recovery_boundary()
+                || word_follower
+                || matches!(
+                    kind,
+                    TokenKind::Comma | TokenKind::FatArrow | TokenKind::And | TokenKind::Or
+                ) =>
+            {
+                RepetitionRhsDisposition::MissingOperand
+            }
+            _ => ordinary,
+        })
     }
 
     fn parse_multiplicative_with(&mut self, mut expr: Node) -> ParseResult<Node> {
@@ -1136,16 +1187,24 @@ impl<'a> Parser<'a> {
                     if peeked_text != "x" {
                         break;
                     }
-                    let is_operand_start = self.tokens.peek_second().ok().is_some_and(|next| {
-                        Self::ordinary_binary_repetition_rhs_starts(next.kind(), next.text.as_ref())
-                    });
-                    if !is_operand_start {
+                    let disposition = self.repetition_rhs_disposition()?;
+                    if !matches!(
+                        disposition,
+                        RepetitionRhsDisposition::SupportedOperand
+                            | RepetitionRhsDisposition::MissingOperand
+                    ) {
                         break;
                     }
                     let op_token = self.advance_token()?;
                     // Use parse_power() so that `a x b**c` parses as `a x (b**c)`.
                     // Exponentiation binds more tightly than repetition in Perl.
-                    let right = self.parse_power()?;
+                    let right = if disposition == RepetitionRhsDisposition::MissingOperand {
+                        self.record_missing_infix_rhs(op_token.start())
+                    } else if let Some(missing) = self.recover_missing_infix_rhs(op_token.start()) {
+                        missing
+                    } else {
+                        self.parse_power()?
+                    };
                     let start = expr.location.start;
                     let end = right.location.end;
 
