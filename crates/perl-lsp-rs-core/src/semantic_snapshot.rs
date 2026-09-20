@@ -1302,6 +1302,68 @@ impl SemanticSnapshotTerminalState {
     }
 }
 
+/// The absent family of terminal states, as a type.
+///
+/// A value of this type cannot name a complete or partial-recovered
+/// terminal, so a caller that has one has already discharged the
+/// family precondition of [`FileSemanticSnapshotV1::absent`] --
+/// by construction rather than by a checked branch it would then
+/// have to handle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+// The type's job is to *be* the absent family, so it carries every state
+// `is_absent_family` accepts -- including the two no construction path
+// produces yet. Dropping them would make the family narrower than the
+// predicate it mirrors, which is the error
+// `absent_terminal_state_covers_exactly_the_absent_family` exists to catch.
+#[allow(dead_code)]
+pub(crate) enum AbsentTerminalState {
+    /// No semantic result is available for this subject.
+    Unavailable,
+    /// Construction was cancelled before it produced facts.
+    Cancelled,
+    /// Construction stopped against its budget.
+    BudgetExhausted,
+    /// A result existed but its ticket was retired before publication.
+    StaleOrSuperseded,
+    /// The producer failed to yield a usable product.
+    ProductFailure,
+    /// The instrument or schema itself failed.
+    InstrumentOrSchemaFailure,
+    /// Nothing is proven about this subject.
+    NotProven,
+}
+
+impl AbsentTerminalState {
+    /// The corresponding terminal state. Every arm satisfies
+    /// [`SemanticSnapshotTerminalState::is_absent_family`].
+    #[must_use]
+    pub(crate) const fn as_terminal_state(self) -> SemanticSnapshotTerminalState {
+        match self {
+            Self::Unavailable => SemanticSnapshotTerminalState::Unavailable,
+            Self::Cancelled => SemanticSnapshotTerminalState::Cancelled,
+            Self::BudgetExhausted => SemanticSnapshotTerminalState::BudgetExhausted,
+            Self::StaleOrSuperseded => SemanticSnapshotTerminalState::StaleOrSuperseded,
+            Self::ProductFailure => SemanticSnapshotTerminalState::ProductFailure,
+            Self::InstrumentOrSchemaFailure => {
+                SemanticSnapshotTerminalState::InstrumentOrSchemaFailure
+            }
+            Self::NotProven => SemanticSnapshotTerminalState::NotProven,
+        }
+    }
+
+    /// Every absent-family state, for exhaustive proof.
+    #[cfg(test)]
+    pub(crate) const ALL: [Self; 7] = [
+        Self::Unavailable,
+        Self::Cancelled,
+        Self::BudgetExhausted,
+        Self::StaleOrSuperseded,
+        Self::ProductFailure,
+        Self::InstrumentOrSchemaFailure,
+        Self::NotProven,
+    ];
+}
+
 impl std::fmt::Display for SemanticSnapshotTerminalState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.as_str())
@@ -1699,6 +1761,92 @@ pub struct FileSemanticSnapshotV1 {
 }
 
 impl FileSemanticSnapshotV1 {
+    /// Total constructor for the absent family: no contribution set, no
+    /// materialized views, no projection, no predecessor, `not_proven`
+    /// completeness and `unprovable` confidence.
+    ///
+    /// Every rule `validate_shape` applies to this family is either
+    /// fixed by this constructor -- the absent-family constants, the
+    /// canonically empty limitations, the `None` work-kind requirement every
+    /// absent state carries, the in-module receipt and ticket derivation --
+    /// or is a coherence property of the caller's own identity inputs:
+    /// subject/parse binding and the profile triple.
+    /// `SemanticConstructionCell::construct_fresh_full` refuses both of those
+    /// at its entry, before any path can reach assembly. The family is
+    /// therefore total, and the fail-closed refusal path -- which must build
+    /// an absent snapshot precisely when full assembly has already refused --
+    /// needs no failure branch of its own.
+    ///
+    /// The wire path is unaffected: it still enters through
+    /// [`Self::from_parts`] with payload-supplied ids and gets every check.
+    /// `absent_agrees_with_from_parts_for_every_absent_state` proves the two
+    /// constructors produce the identical snapshot for coherent inputs.
+    #[must_use]
+    pub(crate) fn absent(
+        profile: SemanticProfileIdentity,
+        subject: SemanticSubjectIdentity,
+        parse_snapshot: ParseSnapshotIdentity,
+        work_receipt: SemanticWorkReceipt,
+        terminal_state: AbsentTerminalState,
+    ) -> Self {
+        let terminal_state = terminal_state.as_terminal_state();
+        let completeness = SemanticCompleteness::NotProven;
+        let confidence = SemanticConfidence::Unprovable;
+        let limitations = SemanticLimitations::new(vec![]);
+        let subject_fingerprint = subject.fingerprint();
+        let accepted_ticket = AcceptedParserTicketRef {
+            ticket_id: AcceptedParserTicketId::from_bound_parts(
+                &subject.document_instance,
+                parse_snapshot.accepted_generation,
+                &parse_snapshot.source_digest,
+            ),
+            document_instance: subject.document_instance.clone(),
+            accepted_generation: parse_snapshot.accepted_generation,
+        };
+        let fingerprint = snapshot_fingerprint_over(
+            FileSemanticSnapshotSchemaVersion::V1.as_u32(),
+            &profile,
+            &subject_fingerprint,
+            &accepted_ticket,
+            &parse_snapshot,
+            None,
+            &[],
+            &work_receipt,
+            None,
+            terminal_state,
+            completeness,
+            confidence,
+            &limitations,
+            None,
+        );
+        Self {
+            schema_version: FileSemanticSnapshotSchemaVersion::V1,
+            profile,
+            subject,
+            subject_fingerprint,
+            accepted_ticket,
+            parse_snapshot,
+            contribution_set: None,
+            materialized_views: vec![],
+            work_receipt,
+            predecessor: None,
+            terminal_state,
+            completeness,
+            confidence,
+            limitations,
+            project_fact_projection: None,
+            fingerprint,
+        }
+    }
+
+    /// Checked constructor: validates every identity binding and derives the
+    /// accepted-ticket reference and snapshot fingerprint.
+    ///
+    /// Refuses (typed) mixed subjects, mixed tickets, profile/set/view
+    /// ownership violations, complete-state-without-facts, absent-state
+    /// carrying facts, strategy/receipt contradictions, missing recovery or
+    /// dynamic limitations, non-canonical orderings, and unknown schema or
+    /// instrument states.
     /// Checked constructor: validates every identity binding and derives the
     /// accepted-ticket reference and snapshot fingerprint.
     ///
@@ -2630,6 +2778,60 @@ mod tests {
         assert!(!FileSemanticSnapshotSchemaVersion(0).is_supported());
         assert!(!FileSemanticSnapshotSchemaVersion(2).is_supported());
         assert_eq!(FileSemanticSnapshotSchemaVersion::V1.to_string(), "file_semantic_snapshot.v1");
+    }
+
+    #[test]
+    fn absent_agrees_with_from_parts_for_every_absent_state() {
+        // The total constructor skips `validate_shape`; this proves it loses
+        // nothing. For every absent-family state, both constructors must
+        // produce the identical snapshot -- same derived ticket, same
+        // fingerprint, same field for field.
+        for state in AbsentTerminalState::ALL {
+            let terminal = state.as_terminal_state();
+            assert!(terminal.is_absent_family(), "{terminal} is not absent-family");
+            let parts = parts_for_terminal(terminal);
+            let checked = FileSemanticSnapshotV1::from_parts(parts.clone())
+                .expect("absent-family parts are valid");
+            let total = FileSemanticSnapshotV1::absent(
+                parts.profile,
+                parts.subject,
+                parts.parse_snapshot,
+                parts.work_receipt,
+                state,
+            );
+            assert_eq!(total, checked, "constructors disagree for {terminal}");
+        }
+    }
+
+    #[test]
+    fn absent_terminal_state_covers_exactly_the_absent_family() {
+        // A state that joins the absent family without joining
+        // `AbsentTerminalState` would leave a construction path that can only
+        // be expressed through the fallible constructor again.
+        let named: Vec<_> =
+            AbsentTerminalState::ALL.iter().map(|s| s.as_terminal_state()).collect();
+        let all = [
+            SemanticSnapshotTerminalState::CompleteFreshFull,
+            SemanticSnapshotTerminalState::CompleteIncremental,
+            SemanticSnapshotTerminalState::CompleteNoChangeReuse,
+            SemanticSnapshotTerminalState::CompleteFullFallback,
+            SemanticSnapshotTerminalState::PartialRecovered,
+            SemanticSnapshotTerminalState::Unavailable,
+            SemanticSnapshotTerminalState::Cancelled,
+            SemanticSnapshotTerminalState::BudgetExhausted,
+            SemanticSnapshotTerminalState::StaleOrSuperseded,
+            SemanticSnapshotTerminalState::ProductFailure,
+            SemanticSnapshotTerminalState::InstrumentOrSchemaFailure,
+            SemanticSnapshotTerminalState::NotProven,
+        ];
+        assert_eq!(all.len(), 12, "the twelve terminal states stay closed");
+        for terminal in all {
+            assert_eq!(
+                terminal.is_absent_family(),
+                named.contains(&terminal),
+                "{terminal} disagrees between `is_absent_family` and `AbsentTerminalState`"
+            );
+        }
     }
 
     #[test]

@@ -85,7 +85,7 @@ use perl_source_identity::ContentDigest;
 use thiserror::Error;
 
 use crate::semantic_snapshot::{
-    AcceptedParserTicketId, FileSemanticSnapshotParts, FileSemanticSnapshotV1,
+    AbsentTerminalState, AcceptedParserTicketId, FileSemanticSnapshotParts, FileSemanticSnapshotV1,
     FileSemanticSnapshotValidationError, InstrumentIdentity, MaterializedQueryViewRef,
     ParseSnapshotIdentity, SemanticCompleteness, SemanticConfidence,
     SemanticContributionSetCompleteness, SemanticContributionSetRef, SemanticInstrumentKind,
@@ -372,6 +372,19 @@ pub enum SemanticConstructionCallError {
         cell_profile: ContentDigest,
         /// Profile fingerprint carried by the presented inputs.
         inputs_profile: ContentDigest,
+    },
+    /// The presented subject does not name the parse snapshot's own input:
+    /// its parser-input revision names other bytes or another length, or its
+    /// full-source revision names another logical source.
+    ///
+    /// Envelope assembly refuses such a pair, and the fail-closed refusal it
+    /// produces must itself be assembled from these same inputs -- so the
+    /// incoherence is refused here, at the entry, where a typed error can
+    /// still be returned.
+    #[error("subject does not name the parse snapshot's own input for ticket {ticket_id}")]
+    IncoherentSubjectParseBinding {
+        /// Ticket identity of this cell's key.
+        ticket_id: AcceptedParserTicketId,
     },
     /// The presented inputs bind to a different accepted parser ticket
     /// than this cell: construction under a cell may only build the exact
@@ -805,6 +818,21 @@ impl SemanticConstructionCell {
             });
         }
 
+        // The subject must name the parse snapshot's own input. Envelope
+        // assembly checks this, but by then the only way to report a refusal
+        // is an absent snapshot built from these same inputs -- which would
+        // refuse identically, with nowhere left to report it. Checking here
+        // keeps every downstream absent-family assembly total.
+        if inputs.parse_snapshot.source_digest != inputs.subject.parser_input_revision.digest
+            || inputs.parse_snapshot.source_len != inputs.subject.parser_input_revision.byte_len
+            || inputs.subject.full_source_revision.logical_source_id
+                != inputs.subject.logical_source_id
+        {
+            return Err(SemanticConstructionCallError::IncoherentSubjectParseBinding {
+                ticket_id: self.key.ticket_id.clone(),
+            });
+        }
+
         let build_inputs = 'schedule: {
             let mut guard = lock_alive(&self.inner);
             guard.truth.requests += 1;
@@ -890,7 +918,7 @@ impl SemanticConstructionCell {
         let terminal = if resolved.is_attachable() && !lease.is_live() {
             absent_terminal(
                 &resolved.as_construction_inputs(),
-                SemanticSnapshotTerminalState::StaleOrSuperseded,
+                AbsentTerminalState::StaleOrSuperseded,
             )
         } else {
             resolved
@@ -922,16 +950,13 @@ impl SemanticConstructionCell {
         use crate::semantic_snapshot::SemanticParseDisposition;
         let contribution = match outcome {
             FreshFullProducerOutcome::ProductFailure => {
-                return absent_terminal(inputs, SemanticSnapshotTerminalState::ProductFailure);
+                return absent_terminal(inputs, AbsentTerminalState::ProductFailure);
             }
             FreshFullProducerOutcome::BudgetExhausted => {
-                return absent_terminal(inputs, SemanticSnapshotTerminalState::BudgetExhausted);
+                return absent_terminal(inputs, AbsentTerminalState::BudgetExhausted);
             }
             FreshFullProducerOutcome::InstrumentFailure => {
-                return absent_terminal(
-                    inputs,
-                    SemanticSnapshotTerminalState::InstrumentOrSchemaFailure,
-                );
+                return absent_terminal(inputs, AbsentTerminalState::InstrumentOrSchemaFailure);
             }
             FreshFullProducerOutcome::Complete(contribution) => contribution,
             FreshFullProducerOutcome::PartialRecovered(contribution) => contribution,
@@ -1070,7 +1095,7 @@ impl SemanticConstructionCell {
         // Superseded work may finish but cannot attach: a ticket retired
         // before publication discards the attachable result.
         if !lease.is_live() {
-            return absent_terminal(inputs, SemanticSnapshotTerminalState::StaleOrSuperseded);
+            return absent_terminal(inputs, AbsentTerminalState::StaleOrSuperseded);
         }
 
         SemanticConstructionTerminal { snapshot, refusal: None }
@@ -1084,7 +1109,7 @@ fn refused_terminal(
     refusal: SemanticConstructionRefusal,
 ) -> SemanticConstructionTerminal {
     SemanticConstructionTerminal {
-        snapshot: absent_snapshot(inputs, SemanticSnapshotTerminalState::NotProven),
+        snapshot: absent_snapshot(inputs, AbsentTerminalState::NotProven),
         refusal: Some(refusal),
     }
 }
@@ -1092,14 +1117,14 @@ fn refused_terminal(
 /// Assemble an honest absent-family terminal with no facts and no refusal.
 fn absent_terminal(
     inputs: &FreshFullConstructionInputs,
-    state: SemanticSnapshotTerminalState,
+    state: AbsentTerminalState,
 ) -> SemanticConstructionTerminal {
     SemanticConstructionTerminal { snapshot: absent_snapshot(inputs, state), refusal: None }
 }
 
 fn absent_snapshot(
     inputs: &FreshFullConstructionInputs,
-    state: SemanticSnapshotTerminalState,
+    state: AbsentTerminalState,
 ) -> FileSemanticSnapshotV1 {
     let ticket_id = AcceptedParserTicketId::from_bound_parts(
         &inputs.subject.document_instance,
@@ -1111,35 +1136,19 @@ fn absent_snapshot(
         InstrumentIdentity::new(SemanticInstrumentKind::ConstructionCell, ticket_id.as_wire()),
         inputs.parse_snapshot.accepted_generation,
     );
-    let parts = FileSemanticSnapshotParts {
-        profile: inputs.profile.clone(),
-        subject: inputs.subject.clone(),
-        parse_snapshot: inputs.parse_snapshot.clone(),
-        contribution_set: None,
-        materialized_views: vec![],
-        work_receipt: receipt,
-        predecessor: None,
-        terminal_state: state,
-        completeness: SemanticCompleteness::NotProven,
-        confidence: SemanticConfidence::Unprovable,
-        limitations: SemanticLimitations::new(vec![]),
-        project_fact_projection: None,
-    };
-    match FileSemanticSnapshotV1::from_parts(parts) {
-        Ok(snapshot) => snapshot,
-        // Totality: the absent-family shape is fully determined by inputs the
-        // seams already proved coherent — subject/parse binding at ticket
-        // acceptance, profile-triple coherence at cell lookup, profile-key
-        // equality at construction — and every absent-family cross-check
-        // (no facts, `not_proven` completeness, `unprovable` confidence,
-        // receipt derived in-module) holds by construction. This branch is
-        // therefore unreachable for cell-reachable inputs and is kept as the
-        // documented narrow exception used for checked-invariant
-        // reconstruction throughout this crate.
-        Err(error) => {
-            unreachable!("absent-family assembly is total for cell-reachable inputs: {error}")
-        }
-    }
+    // Total by construction: `FileSemanticSnapshotV1::absent` fixes every
+    // absent-family shape rule, and the two input-coherence properties it
+    // leaves to its caller -- subject/parse binding and profile triple -- are
+    // refused at `construct_fresh_full`'s entry, so no path reaches here with
+    // inputs that could refuse. This is the one assembly that must not be
+    // fallible: it is what the fail-closed refusal path is made of.
+    FileSemanticSnapshotV1::absent(
+        inputs.profile.clone(),
+        inputs.subject.clone(),
+        inputs.parse_snapshot.clone(),
+        receipt,
+        state,
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -1969,6 +1978,29 @@ mod tests {
         // The mismatched call consumed nothing: the cell still constructs.
         let terminal = cell.construct_fresh_full(&lease, inputs, &HonestProducer::new()).unwrap();
         assert!(terminal.is_complete_fresh_full());
+    }
+
+    #[test]
+    fn a_subject_whose_parser_input_does_not_match_the_parse_snapshot_is_refused() {
+        // Reproduces the absent-family assembly panic: the cell entry checks
+        // ticket binding and profile coherence, but never checked that the
+        // subject's parser-input revision names the same bytes as the parse
+        // snapshot. An incoherent pair reaches the fail-closed refusal path,
+        // whose absent snapshot is assembled from those same inputs.
+        let registry = SemanticConstructionCellRegistry::new();
+        let subject = subject("open-1", "7");
+        let parse = parse_snapshot(7);
+        let lease = registry.accept_ticket(subject.clone(), parse.clone()).unwrap();
+        let inputs = inputs_for(subject_for_source("open-1", "7", b"other bytes"), parse);
+        let cell = registry.cell_for(&lease, &inputs.profile).unwrap();
+        lease.retire();
+        let err = cell
+            .construct_fresh_full(&lease, inputs, &HonestProducer::new())
+            .expect_err("an incoherent subject/parse pair is a typed call error");
+        assert!(
+            matches!(err, SemanticConstructionCallError::IncoherentSubjectParseBinding { .. }),
+            "unexpected error: {err:?}"
+        );
     }
 
     #[test]
