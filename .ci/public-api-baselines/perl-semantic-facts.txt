@@ -1584,6 +1584,7 @@ pub fn perl_semantic_facts::interprocedural::CompositionPolicy::serialize<__S>(&
 pub fn perl_semantic_facts::interprocedural::CompositionPolicy::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
 #[non_exhaustive] pub enum perl_semantic_facts::interprocedural::EffectKind
 pub perl_semantic_facts::interprocedural::EffectKind::Assign
+pub perl_semantic_facts::interprocedural::EffectKind::FieldModify
 pub perl_semantic_facts::interprocedural::EffectKind::Modify
 pub perl_semantic_facts::interprocedural::EffectKind::StashModify
 pub perl_semantic_facts::interprocedural::EffectKind::StashRead

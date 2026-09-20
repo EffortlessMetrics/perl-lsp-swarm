@@ -85,6 +85,7 @@ use crate::debug_adapter::variable_cache::{VariableCacheKind, slice_variables};
 #[cfg(any(test, feature = "test-helpers"))]
 use crate::reload::RuntimeModuleGenerationClock;
 use crate::security;
+use crate::security::launch_authority::LaunchAuthority;
 use patterns::{
     DEBUG_SESSION_TERMINATE_WAIT_MS, DEBUGGER_QUERY_WAIT_MS, EVENT_QUEUE_CAPACITY,
     RECENT_OUTPUT_MAX_LINES, RecentOutputBuffer, RecentOutputLine, ansi_escape_re,
@@ -196,6 +197,16 @@ pub struct DebugAdapter {
     next_goto_target_id: Arc<Mutex<i64>>,
     /// Workspace root for path validation (set during launch)
     workspace_root: Arc<Mutex<Option<PathBuf>>>,
+    /// Resolved startup launch authority (#8656). Absent only for direct
+    /// adapter constructions that never went through `DapServer::new`; launch
+    /// requests are refused in that case rather than falling back to implicit
+    /// authority.
+    launch_authority: Arc<Mutex<Option<LaunchAuthority>>>,
+    /// Receipt of the most recently begun authority session (mode, root
+    /// count, identities, generation — no paths). Retained so successful
+    /// launches stay auditable instead of discarding the session record.
+    last_authority_receipt:
+        Arc<Mutex<Option<crate::security::launch_authority::LaunchAuthorityReceipt>>>,
     /// Transport broken flag: set by the event handler on the first write or flush failure
     transport_broken: Arc<AtomicBool>,
     /// Events enqueued but not yet written by the transport's event
@@ -269,6 +280,20 @@ impl Default for DebugAdapter {
     }
 }
 
+/// Refusal message for launch requests that arrive with no resolved startup
+/// authority installed (#8656). The native lifecycle resolves authority in
+/// `DapServer::new`; direct adapter constructions must install one explicitly
+/// or every launch fails closed.
+pub(super) const LAUNCH_AUTHORITY_MISSING_MESSAGE: &str = "launch refused: no startup launch authority is configured. Start the adapter through DapServer with trusted roots or an explicit unbounded acknowledgement before launching a session.";
+
+/// Refusal for a launch whose only boundary candidate came from launch
+/// arguments: launch arguments can never create authority (#8656).
+pub(super) const LAUNCH_REFUSED_NO_AUTHORITY_MESSAGE: &str = "launch refused: no startup launch authority is configured, and launch arguments cannot create one. Configure trusted roots (--trusted-root) or an explicit unbounded acknowledgement (--allow-unbounded) at startup.";
+
+/// Refusal for a launch with neither authority nor any configured workspace
+/// boundary (#8656). The historical boundary-free launch path is retired.
+pub(super) const LAUNCH_REFUSED_NO_BOUNDARY_MESSAGE: &str = "launch refused: no startup launch authority or workspace boundary is configured. Configure trusted roots (--trusted-root) or an explicit unbounded acknowledgement (--allow-unbounded) at startup.";
+
 impl Drop for DebugAdapter {
     fn drop(&mut self) {
         // Adapter drop settles every pending broker operation (#8564): the
@@ -306,6 +331,8 @@ impl DebugAdapter {
             goto_targets: Arc::new(Mutex::new(HashMap::new())),
             next_goto_target_id: Arc::new(Mutex::new(1)),
             workspace_root: Arc::new(Mutex::new(None)),
+            launch_authority: Arc::new(Mutex::new(None)),
+            last_authority_receipt: Arc::new(Mutex::new(None)),
             transport_broken: Arc::new(AtomicBool::new(false)),
             event_drain: sync_utils::EventDrainLatch::default(),
             #[cfg(test)]
@@ -337,6 +364,91 @@ impl DebugAdapter {
     /// without exclusive access to the adapter.
     pub fn set_workspace_root(&self, root: PathBuf) {
         *lock_or_recover(&self.workspace_root, "debug_adapter.workspace_root") = Some(root);
+    }
+
+    /// Install the resolved startup launch authority (#8656).
+    ///
+    /// Called once by `DapServer::new` after `LaunchAuthority::resolve`
+    /// succeeded. The mode and identity are immutable afterwards; each launch
+    /// begins a new session generation. Launch arguments can never replace or
+    /// widen this authority.
+    pub fn set_launch_authority(&self, authority: LaunchAuthority) {
+        let mut guard = lock_or_recover(&self.launch_authority, "debug_adapter.launch_authority");
+        if guard.is_none() {
+            *guard = Some(authority);
+        }
+    }
+
+    /// Whether a resolved startup authority is installed.
+    pub(super) fn has_launch_authority(&self) -> bool {
+        lock_or_recover(&self.launch_authority, "debug_adapter.launch_authority").is_some()
+    }
+
+    /// Begin a new authority session, returning `(generation, receipt)`.
+    ///
+    /// Returns `None` when no startup authority was installed, which refuses
+    /// the launch. The receipt is retained on the adapter so admitted
+    /// launches stay auditable.
+    pub(super) fn begin_authority_session(
+        &self,
+    ) -> Option<(u64, crate::security::launch_authority::LaunchAuthorityReceipt)> {
+        let mut guard = lock_or_recover(&self.launch_authority, "debug_adapter.launch_authority");
+        let authority = guard.as_mut()?;
+        let generation = authority.begin_session();
+        let receipt = authority.receipt();
+        *lock_or_recover(&self.last_authority_receipt, "debug_adapter.last_authority_receipt") =
+            Some(receipt.clone());
+        Some((generation, receipt))
+    }
+
+    /// Receipt of the most recently begun authority session, if any.
+    pub fn last_authority_receipt(
+        &self,
+    ) -> Option<crate::security::launch_authority::LaunchAuthorityReceipt> {
+        lock_or_recover(&self.last_authority_receipt, "debug_adapter.last_authority_receipt")
+            .clone()
+    }
+
+    /// Admit the launch program path and resolve the launch-args
+    /// `workspaceRoot` against the installed startup authority (#8656).
+    ///
+    /// Workspace-bound authority requires the program inside a trusted root
+    /// and allows a launch-args root only to narrow one. Explicitly unbounded
+    /// authority admits any program and never creates a boundary from launch
+    /// arguments. Fails closed when no authority was installed.
+    pub(super) fn admit_launch_against_authority(
+        &self,
+        program: Option<&Path>,
+        launch_root: Option<&Path>,
+    ) -> Result<Option<PathBuf>, String> {
+        let guard = lock_or_recover(&self.launch_authority, "debug_adapter.launch_authority");
+        let authority =
+            guard.as_ref().ok_or_else(|| LAUNCH_AUTHORITY_MISSING_MESSAGE.to_string())?;
+        if let Some(program) = program {
+            authority.admits_launch_path(program)?;
+        }
+        match launch_root {
+            Some(root) => authority.narrow_launch_root(root),
+            None => Ok(None),
+        }
+    }
+
+    /// Whether the installed authority is explicitly unbounded.
+    pub(super) fn launch_authority_is_unbounded(&self) -> bool {
+        lock_or_recover(&self.launch_authority, "debug_adapter.launch_authority")
+            .as_ref()
+            .is_some_and(|authority| {
+                authority.mode()
+                    == crate::security::launch_authority::LaunchAuthorityMode::ExplicitUnbounded
+            })
+    }
+
+    /// Canonical trusted root admitting `program`, if any. Used to align the
+    /// spawner's defense-in-depth boundary with the admission decision.
+    pub(super) fn authority_root_for_program(&self, program: &Path) -> Option<PathBuf> {
+        lock_or_recover(&self.launch_authority, "debug_adapter.launch_authority")
+            .as_ref()
+            .and_then(|authority| authority.root_for_program(program))
     }
 
     /// Start a new session generation and reset its terminal-event gate.
