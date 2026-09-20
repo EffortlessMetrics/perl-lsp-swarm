@@ -976,7 +976,7 @@ mod tests {
     /// above a `remainder` swallows the remainder, which then appears in no
     /// count and no receipt (#16164 review).
     #[test]
-    fn governance_line_accounts_for_every_required_context() {
+    fn governance_line_accounts_for_every_required_context() -> Result<()> {
         // The JSON receipt has always carried `external`; the text line did not,
         // so a reader saw `governed/required` and read the difference as gaps
         // (#16172 review). The three counts must partition the required set, or
@@ -1001,6 +1001,7 @@ mod tests {
             "the out-of-scope count is the one the text used to drop: {line}"
         );
         assert!(line.contains("1 ungoverned"), "{line}");
+        Ok(())
     }
 
     #[test]
