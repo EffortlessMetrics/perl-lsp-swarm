@@ -74,7 +74,8 @@ pub struct LexicalExtractorReceipt {
     pub total_read_count: usize,
     /// Total count of lexical writes across all bodies.
     pub total_write_count: usize,
-    /// Count of operations skipped (Modify, StashModify).
+    /// Count of compound read-modify-write operations skipped (`Modify`,
+    /// `StashModify`, `FieldModify`).
     pub skipped_node_count: usize,
     /// Count of dynamic boundaries observed while lowering lexical facts.
     pub dynamic_boundary_count: usize,
@@ -98,8 +99,9 @@ pub struct LexicalExtractorReceipt {
 /// # Invariants
 ///
 /// - All emitted facts have `source_anchor.is_anchored() == true`
-/// - `Modify`/`StashModify` operations are skipped (not counted as facts, but tracked in `skipped_node_count`)
-/// - `StashRead`/`StashWrite` are ignored (not extracted in PR1)
+/// - `Modify`/`StashModify`/`FieldModify` operations are skipped (not counted as facts,
+///   but tracked in `skipped_node_count`)
+/// - `StashRead`/`StashWrite` and `FieldRead`/`FieldWrite` are ignored (not extracted in PR1)
 /// - `DynamicBoundary` operations are tracked so promotion can refuse exactness honestly
 /// - `provider_behavior_changed` is always `false`
 /// - `total_read_count + total_write_count == sum(bodies[].facts.len())`
@@ -147,14 +149,23 @@ pub fn extract_lexical_facts(file: &HirFile) -> LexicalExtractorReceipt {
                     });
                     total_write_count += 1;
                 }
-                PirOperation::Modify { .. } | PirOperation::StashModify { .. } => {
-                    // Modify and StashModify are explicitly skipped: they are neither Read nor
-                    // Write in the lexical-fact model (they represent compound RMW operations).
-                    // Track them so the receipt surface is honest about what was filtered.
+                PirOperation::Modify { .. }
+                | PirOperation::StashModify { .. }
+                | PirOperation::FieldModify { .. } => {
+                    // Every compound read-modify-write is explicitly skipped: none is a Read
+                    // or a Write in the lexical-fact model. Track them so the receipt surface
+                    // is honest about what was filtered.
+                    //
+                    // `FieldModify` belongs here with the other two even though a field is not
+                    // lexical storage, because the counter records *modifications that were
+                    // filtered*, not lexical ones only. Leaving it on the wildcard arm made a
+                    // method's `$n += 2` report `skipped_node_count == 0` while the identical
+                    // lexical and stash statements each reported 1 (#13817).
                     skipped_node_count += 1;
                 }
-                // StashRead, StashWrite, Call, MethodCall, Assign, etc.
-                // are outside PR1 scope — silently ignored (not facts, not skipped).
+                // StashRead/StashWrite and FieldRead/FieldWrite are non-lexical reads and
+                // writes, outside the lexical-fact model; Call, MethodCall, Assign, etc. are
+                // outside PR1 scope. All silently ignored — not facts, not skipped.
                 _ => {}
             }
         }
