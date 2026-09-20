@@ -21,7 +21,7 @@
 //! real generator) belongs to the sequenced follow-up.
 
 use clap::Parser;
-use color_eyre::eyre::{Context, Result, bail};
+use color_eyre::eyre::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
@@ -189,16 +189,21 @@ impl TopologySurfaceSpec {
 }
 
 /// Channel-name (topology manifest vocabulary) -> inventory surface id.
+/// The closed channel set the release topology may name, mapped to its
+/// surface id. Both the primary and secondary channel lists must together
+/// cover this table exactly: a subset shrinks the closed world below the
+/// accepted generator surface.
+const CHANNEL_SURFACE_IDS: &[(&str, &str)] = &[
+    ("github_release", "github_release_publication"),
+    ("crates_io", "crates_io_crate_publication"),
+    ("vscode_marketplace", "vsix_marketplace_publication"),
+    ("open_vsx", "open_vsx_publication"),
+    ("docker", "container_registry_publication"),
+    ("homebrew", "homebrew_publication"),
+];
+
 fn channel_surface_id(channel: &str) -> Option<&'static str> {
-    match channel {
-        "github_release" => Some("github_release_publication"),
-        "crates_io" => Some("crates_io_crate_publication"),
-        "vscode_marketplace" => Some("vsix_marketplace_publication"),
-        "open_vsx" => Some("open_vsx_publication"),
-        "docker" => Some("container_registry_publication"),
-        "homebrew" => Some("homebrew_publication"),
-        _ => None,
-    }
+    CHANNEL_SURFACE_IDS.iter().find(|(name, _)| *name == channel).map(|(_, surface)| *surface)
 }
 
 /// Compute the typed digest over the release-topology artifact bytes.
@@ -226,6 +231,12 @@ pub fn load_topology_authority(path: &Path) -> Result<TopologyAuthority> {
         .with_context(|| format!("parsing release topology {}", path.display()))?;
 
     let mut surfaces = BTreeMap::new();
+    // Closed-world completeness (#14305 review): the primary and secondary
+    // channel lists must together cover every channel the surface table
+    // knows. An empty or partial list would silently shrink the closed
+    // world — the generator emits the full accepted set, so admission
+    // fails closed on any missing channel.
+    let mut seen_channels = BTreeSet::new();
     let primary_channels =
         manifest.get("primary_channels").and_then(|value| value.as_array()).ok_or_else(|| {
             color_eyre::eyre::eyre!("release topology is missing primary_channels array")
@@ -249,6 +260,7 @@ pub fn load_topology_authority(path: &Path) -> Result<TopologyAuthority> {
                 subjects: vec![channel_subject_denominator(surface_id, &manifest)?],
             },
         );
+        seen_channels.insert(channel);
     }
 
     let secondary_channels =
@@ -290,6 +302,20 @@ pub fn load_topology_authority(path: &Path) -> Result<TopologyAuthority> {
                 subjects: vec![channel_subject_denominator(surface_id, &manifest)?],
             },
         );
+        seen_channels.insert(channel.as_str());
+    }
+
+    let missing_channels: Vec<&str> = CHANNEL_SURFACE_IDS
+        .iter()
+        .map(|(name, _)| *name)
+        .filter(|name| !seen_channels.contains(name))
+        .collect();
+    if !missing_channels.is_empty() {
+        bail!(
+            "release topology channel lists omit {}; an incomplete channel set \
+             shrinks the closed surface world below the accepted generator output",
+            missing_channels.join(", ")
+        );
     }
 
     // Public subject classes the release candidate ships: one checksums
@@ -299,6 +325,12 @@ pub fn load_topology_authority(path: &Path) -> Result<TopologyAuthority> {
         manifest.get("binary_targets").and_then(|value| value.as_array()).ok_or_else(|| {
             color_eyre::eyre::eyre!("release topology is missing binary_targets array")
         })?;
+    if binary_targets.is_empty() {
+        bail!(
+            "release topology binary_targets is empty; the accepted schema requires \
+             at least one archive target"
+        );
+    }
     let mut checksum_subjects = Vec::new();
     for target in binary_targets {
         let archive =
@@ -775,7 +807,7 @@ pub fn run_cli() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use color_eyre::eyre::{WrapErr, eyre};
+    use color_eyre::eyre::{eyre, WrapErr};
 
     /// A minimal but structurally faithful release-topology artifact: the
     /// manifest fields the closed authority derives from, matching
@@ -1074,6 +1106,45 @@ mod tests {
             };
             assert!(error.to_string().contains("does not match"), "{padded:?}: {error}");
         }
+        Ok(())
+    }
+
+    fn topology_rejection_error(
+        mutate: impl FnOnce(&mut serde_json::Value),
+    ) -> color_eyre::eyre::Error {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let path = temp.path().join("release-topology.json");
+        let mut artifact = topology_artifact();
+        mutate(&mut artifact);
+        std::fs::write(&path, serde_json::to_vec_pretty(&artifact).expect("serialize topology"))
+            .expect("write topology");
+        match load_topology_authority(&path) {
+            Ok(_) => eyre!("fabricated topology unexpectedly admitted"),
+            Err(error) => error,
+        }
+    }
+
+    #[test]
+    fn rejects_empty_or_partial_channel_lists() -> Result<()> {
+        let error = topology_rejection_error(|artifact| {
+            artifact["primary_channels"] = serde_json::json!([]);
+        });
+        assert!(error.to_string().contains("omit"), "{error}");
+
+        let error = topology_rejection_error(|artifact| {
+            artifact["primary_channels"] = serde_json::json!(["github_release", "crates_io"]);
+            artifact["secondary_channels"] = serde_json::json!({"docker": "required"});
+        });
+        assert!(error.to_string().contains("homebrew"), "{error}");
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_empty_binary_targets() -> Result<()> {
+        let error = topology_rejection_error(|artifact| {
+            artifact["binary_targets"] = serde_json::json!([]);
+        });
+        assert!(error.to_string().contains("binary_targets is empty"), "{error}");
         Ok(())
     }
 
