@@ -2123,6 +2123,32 @@ gates:
       - policy
       - contract
 
+  # The code-action generation ledger (#15764) is fail-closed:
+  # `cargo xtask check-code-action-generation-ledger` rejects committed
+  # `production_anchor` rows that no longer occur inside `handle_code_action`
+  # in crates/perl-lsp-rs/src/runtime/language/code_actions.rs, plus unknown
+  # generations, drifted stage numbering, and stale parity fixtures. Only the
+  # advisory pr-smoke unit test (`tracked_ledger_is_valid`) and the demoted
+  # advisory `policy_checks` composite (no workflow route) ran the validator,
+  # so anchor drift landed red on every PR's fast-feedback lane while no
+  # required lane noticed. Runs in the `policy` shard.
+  - name: code_action_generation_ledger
+    tier: merge_gate
+    description: "Validate policy/code-action-generation-ledger.toml against current code_actions.rs production anchors, stage order, and parity fixtures"
+    required: true
+    command: cargo xtask check-code-action-generation-ledger
+    # 300s to match the sibling `cargo xtask ...` gates in this shard. The
+    # validator itself is near-instant; the cost is the cargo invocation.
+    timeout_seconds: 300
+    retry_count: 0
+    budgets:
+      max_duration_ms: 240000
+    quarantine: false
+    tags:
+      - policy
+      - ledger
+      - contract
+
   # NOTE (2026-08-10, #6261): demoted to advisory (required: false). No workflow
   # shard executes this gate; wire into parser_stack or corpus shard before
   # re-promotion.
@@ -2696,6 +2722,7 @@ workflow_integration:
         - doctest_enforcement
         - published_crate_count_pr_fast
         - agent_ledgers_validate
+        - code_action_generation_ledger
       # `compile_all_targets` is not listed here since #15638: the meta shard
       # no longer executes it (the required `Compile All Targets (bit-rot
       # guard)` job owns the property), and this mapping must not claim
