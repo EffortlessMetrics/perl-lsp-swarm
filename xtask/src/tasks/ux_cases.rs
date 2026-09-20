@@ -105,6 +105,15 @@ impl RunBound {
         stdout_limit: 8 * 1024 * 1024,
         stderr_limit: 1024 * 1024,
     };
+    /// `cargo metadata --no-deps` resolves the workspace quickly but emits one
+    /// JSON document for every member, so it gets a probe's patience and a
+    /// listing's room.
+    const METADATA: Self = Self {
+        wall: Duration::from_mins(2),
+        collect: Duration::from_secs(30),
+        stdout_limit: 64 * 1024 * 1024,
+        stderr_limit: 8 * 1024 * 1024,
+    };
 }
 
 /// A completed bounded run.
@@ -595,11 +604,22 @@ fn rustc_field(verbose: &str, key: &str) -> Option<String> {
 /// Always run in `root`, not the launch directory: resolving against another
 /// workspace would classify executables under the wrong target directory.
 fn cargo_metadata_value(root: &Path) -> Option<serde_json::Value> {
-    let output = Command::new("cargo")
-        .args(["metadata", "--format-version", "1", "--no-deps"])
-        .current_dir(root)
-        .output()
-        .ok()?;
+    // Bounded like every other child discovery spawns. Review found this one
+    // still on bare `Command::output` after the compile, listing and probe paths
+    // had moved: it is not identity-bearing, but "every spawned child is bounded"
+    // has to be true of the whole file or it is not a claim.
+    let output = match run_bounded(
+        Command::new("cargo")
+            .args(["metadata", "--format-version", "1", "--no-deps"])
+            .current_dir(root),
+        RunBound::METADATA,
+    ) {
+        Ok(output) => output,
+        Err(refused) => {
+            report_probe_failure("cargo metadata", &refused.reason("cargo metadata"));
+            return None;
+        }
+    };
     if !output.status.success() {
         report_probe_failure("cargo metadata", &String::from_utf8_lossy(&output.stderr));
         return None;
@@ -1113,6 +1133,40 @@ mod tests {
         assert!(
             elapsed < Duration::from_secs(5),
             "collection must be bounded by the ceiling, not by the descendant; took {elapsed:?}"
+        );
+    }
+
+    #[test]
+    fn every_child_this_module_spawns_goes_through_the_bounded_runner() {
+        // The `cargo metadata` spawn survived three rounds of bounding because
+        // each review looked at the path it was reading, not at the file. This
+        // reads the module's own source so a future unbounded spawn fails here
+        // rather than being found by a fourth reviewer.
+        let source = include_str!("ux_cases.rs");
+        let production = source.split("#[cfg(test)]").next().unwrap_or(source);
+
+        let unbounded: Vec<&str> = production
+            .lines()
+            .map(str::trim)
+            .filter(|line| line.starts_with(".output()") || line.ends_with(".output()"))
+            .collect();
+        assert!(
+            unbounded.is_empty(),
+            "every spawn in this module must go through `run_bounded`; found: {unbounded:?}"
+        );
+
+        // Opposite direction: the guard must be able to see a spawn at all, or it
+        // would pass vacuously once the spelling changed.
+        assert!(
+            production.contains("fn run_bounded("),
+            "the bounded runner must live in the production half of this module"
+        );
+        assert_eq!(
+            production.matches("run_bounded(").count(),
+            5,
+            "run_bounded should have its definition plus the four production call \
+             sites (compile, list, probe, metadata); a new spawn needs a bound and \
+             this count updated deliberately"
         );
     }
 
