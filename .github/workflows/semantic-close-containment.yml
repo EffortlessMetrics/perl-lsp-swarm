@@ -185,7 +185,18 @@ jobs:
           errors="${RUNNER_TEMP:-/tmp}/scc-stderr.txt"
           rc=0
           target/debug/semantic-close-containment >"${report}" 2>"${errors}" || rc=$?
-          tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}" <"${report}"
+          # The report is the evidence this step claims to publish, so a
+          # failed write is a failure of the step, not a detail. On main the
+          # validator was piped straight into `tee` under `pipefail`, which
+          # failed the step on a write error; splitting the run into
+          # capture-then-classify (#16214) put the validator's status in `rc`
+          # and left `tee` unchecked. Missing evidence is NOT_PROVEN, so guard
+          # it explicitly rather than relying on the pipeline shape.
+          if ! tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}" <"${report}"; then
+            printf '::error title=semantic close containment instrument failure::the report could not be published to the job summary -- the verdict below has no evidence behind it\n'
+            cat "${errors}" >&2
+            exit 4
+          fi
           cat "${errors}" >&2
 
           # Message data escaping per GitHub's workflow-command rules. The
