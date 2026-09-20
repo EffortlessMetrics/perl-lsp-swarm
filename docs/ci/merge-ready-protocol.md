@@ -55,6 +55,52 @@ is the external Codecov status context posted after Codecov processes an
 explicit coverage upload. Both are advisory and must not block normal PR or
 merge-queue flow.
 
+### The main-red refusal makes advisory gate shards de-facto required (#16196)
+
+`Perl LSP Rust Small Result` does more than report a candidate's own
+aggregate. The `Probe main-red refusal` step of
+`.github/workflows/em-ci-routed-rust.yml` classifies exact-SHA check runs for
+the eight `CI Gate shard (...)` contexts — `meta`, `foundation`,
+`parser_stack`, `analysis`, `lsp`, `support`, `corpus`, `policy` — on both
+`main` and the PR/merge-group subject, using
+`scripts/ci/main_red_refusal.py` (fetched from `main` itself at probe time so
+the classifier cannot be altered by the candidate):
+
+- a shard that is green, missing, or not completed on `main` never blocks
+  here;
+- while a shard is recorded red on `main` (`failure`, `timed_out`,
+  `startup_failure`, `action_required`), the required check refuses to return
+  a verdict until the candidate supplies its own completed, green exact-SHA
+  result for that shard; candidate reds block immediately, and candidate
+  evidence that stays missing or non-terminal through the bounded poll
+  (50 × 30 s) is converted to a blocking refusal by the final fail-closed
+  pass;
+- the probe degrades to a non-blocking warning when its own inputs are
+  unreliable: incomplete or failed API evidence, an unreadable canonical
+  `ci.yml` on `main`, or `main` moving between the before/after SHA reads.
+
+A candidate whose `ci.yml` differs from canonical `main`'s is treated as
+having no comparable shard evidence: it is warned, then fail-closed after the
+bounded wait. So while `main` is red, a PR that also modifies `ci.yml` cannot
+clear the refusal with its own shard result; `main` has to be repaired first.
+
+Consequence: no `CI Gate shard` context is registered as required, but a
+shard red on `main` blocks the required lane for every candidate that cannot
+present its own green exact-SHA shard result. "Advisory" means a context is
+not registered as a required check; it does not mean nothing reads its
+result. Before treating an advisory red as harmless, check whether a required
+lane probes it — this one does. Triage the failing step, not the check name:
+the required check can fail naming a workflow the diff never touched
+(observed on #16172 during the #16011 ledger incident, where a single
+un-ratcheted ledger entry took the required lane down via
+`CI Gate shard (meta)`).
+
+Operator remedy: fix `main` (or get the red shard rerun green there). The
+only candidate-side escape is a completed, green exact-SHA result for the red
+shard under a `ci.yml` identical to `main`'s. The refusal has no override
+flag; it is fail-closed by design so repairs reach `main` unimpeded while
+everything else waits.
+
 ## Draft pull requests
 
 A draft PR is work in progress, not merge-ready. Every draft push still gets

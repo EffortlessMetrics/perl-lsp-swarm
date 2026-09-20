@@ -76,6 +76,14 @@ Lanes without any gate mapping today: `pr_plan`, `draft_guard`, `preflight_lates
 These either have no `.ci/gate-policy.yaml` entry (workflow-level controls, not
 gates) or run under standalone workflows.
 
+Advisory applies to registration, not to readers. The required
+`Perl LSP Rust Small Result` context consumes `CI Gate shard` results from
+`main` through the main-red refusal (`scripts/ci/main_red_refusal.py`, probe
+step in `.github/workflows/em-ci-routed-rust.yml`), so a shard red on `main`
+blocks the required lane even though no `CI Gate shard` context is itself a
+required check. See
+[Merge-ready protocol → the main-red refusal](./merge-ready-protocol.md#the-main-red-refusal-makes-advisory-gate-shards-de-facto-required-16196).
+
 The two lists above partition the lane set: 14 mapped + 11 unmapped = 25 lanes,
 matching the count block. Both are checkable against
 `scripts/ci/validate_gate_lane_mapping.py` and `policy/ci-lanes.toml`; if the
