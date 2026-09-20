@@ -77,6 +77,8 @@ on:
       # real check run on a real head. Both halves gate each other.
       - 'scripts/ci/ripr_liveness.py'
       - 'scripts/ci/test_ripr_liveness.py'
+      - '.github/workflows/ripr-liveness.yml'
+      - 'scripts/ci/test_ripr_liveness_pagination_16153.py'
       - '.cargo/config.toml'
       - 'scripts/tests/test-target-isolation.sh'
       # ripr lane termination classification + bounded same-head retry
@@ -371,6 +373,9 @@ jobs:
 
       - name: Run ripr liveness classifier tests (#16098)
         run: python3 -m unittest scripts.ci.test_ripr_liveness
+
+      - name: Run ripr liveness pagination contract tests (#16153)
+        run: python3 -m unittest scripts.ci.test_ripr_liveness_pagination_16153
 
       - name: Summary
         if: always()
