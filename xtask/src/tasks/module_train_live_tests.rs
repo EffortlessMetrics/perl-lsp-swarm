@@ -1897,18 +1897,26 @@ fn the_review_document_selects_only_fields_the_pinned_github_schema_declares() -
 fn the_document_validator_fails_loudly_when_a_selection_drifts() -> Result<()> {
     let contract = contract_types()?;
     let renamed = GH_REVIEW_GRAPHQL.replace("headRefOid", "headShaOid");
-    assert_ne!(renamed, GH_REVIEW_GRAPHQL);
+    if renamed == GH_REVIEW_GRAPHQL {
+        bail!("the renamed-field mutation did not change the GraphQL document");
+    }
     let Err(error) = validate_review_document(&contract["types"], &renamed) else {
         bail!("a renamed selected field must fail validation");
     };
-    assert!(error.to_string().contains("PullRequest.headShaOid"), "{error}");
+    if !error.to_string().contains("PullRequest.headShaOid") {
+        bail!("renamed-field error omitted the selected field: {error}");
+    }
 
     let mistyped = GH_REVIEW_GRAPHQL.replace("$threads: Int!", "$threads: String!");
-    assert_ne!(mistyped, GH_REVIEW_GRAPHQL);
+    if mistyped == GH_REVIEW_GRAPHQL {
+        bail!("the mistyped-variable mutation did not change the GraphQL document");
+    }
     let Err(error) = validate_review_document(&contract["types"], &mistyped) else {
         bail!("a mistyped variable binding must fail validation");
     };
-    assert!(error.to_string().contains("reviewThreads(first:)"), "{error}");
+    if !error.to_string().contains("reviewThreads(first:)") {
+        bail!("mistyped-variable error omitted the argument location: {error}");
+    }
     Ok(())
 }
 
@@ -1921,13 +1929,18 @@ fn the_document_validator_fails_loudly_when_a_selection_drifts() -> Result<()> {
 fn a_real_merged_pr_payload_parses_into_review_facts() -> Result<()> {
     let facts = parse_review_facts(14242, REVIEW_FACTS_PAYLOAD)
         .map_err(|failure| eyre!("recorded payload failed to parse: {failure}"))?;
-    assert_eq!(facts.head_oid, "cfac38a7ec2d33ba3dbb2b3ba518a8baa6e75073");
-    assert_eq!(facts.review_decision, None);
-    assert_eq!(facts.threads.total, 23);
-    assert_eq!(facts.threads.unresolved, 0);
-    assert!(!facts.threads.truncated);
-    assert!(facts.reviews.is_empty());
-    assert!(!facts.reviews_truncated);
+    if facts.head_oid != "cfac38a7ec2d33ba3dbb2b3ba518a8baa6e75073" {
+        bail!("unexpected head oid: {:?}", facts.head_oid);
+    }
+    if facts.review_decision.is_some() {
+        bail!("merged payload should have no review decision: {:?}", facts.review_decision);
+    }
+    if facts.threads.total != 23 || facts.threads.unresolved != 0 {
+        bail!("unexpected thread counts: {:?}", facts.threads);
+    }
+    if facts.threads.truncated || !facts.reviews.is_empty() || facts.reviews_truncated {
+        bail!("payload reported unexpected truncation or reviews: {:?}", facts);
+    }
     Ok(())
 }
 
