@@ -270,6 +270,7 @@ fn custom_config() {
         track_positions: false,
         max_lookahead: 64,
         symbol_table: None,
+        ..LexerConfig::default()
     };
     assert!(!cfg.parse_interpolation);
     assert!(!cfg.track_positions);

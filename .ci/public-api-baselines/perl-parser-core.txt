@@ -459,6 +459,11 @@ pub fn perl_parser_core::syntax::error::ParseDiagnosticSeverity::fmt(&self, f: &
 pub perl_parser_core::engine::error::ParseError::Advisory
 pub perl_parser_core::engine::error::ParseError::Advisory::location: usize
 pub perl_parser_core::engine::error::ParseError::Advisory::message: alloc::string::String
+pub perl_parser_core::engine::error::ParseError::AngleContextFallback
+pub perl_parser_core::engine::error::ParseError::AngleContextFallback::location: usize
+pub perl_parser_core::engine::error::ParseError::AngleContextFallback::reason: perl_parser_core::tokens::token_stream::ContextualFallbackReason
+pub perl_parser_core::engine::error::ParseError::AngleScan
+pub perl_parser_core::engine::error::ParseError::AngleScan::error: perl_lexer::error::LexerError
 pub perl_parser_core::engine::error::ParseError::Cancelled
 pub perl_parser_core::engine::error::ParseError::CoreBudgetExhausted
 pub perl_parser_core::engine::error::ParseError::CoreBudgetExhausted::dimension: perl_parser_core::syntax::error::ParseCoreDimension
@@ -515,6 +520,8 @@ pub fn perl_parser_core::syntax::error::ParseError::fmt(&self, f: &mut core::fmt
 pub fn perl_parser_core::syntax::error::ParseError::fmt(&self, __formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_parser_core::syntax::error::ParseError::error_class(&self) -> perl_parser_core::syntax::error::ErrorCategory
 #[non_exhaustive] pub enum perl_parser_core::engine::error::ParseStopCause
+pub perl_parser_core::engine::error::ParseStopCause::AngleContextFallback
+pub perl_parser_core::engine::error::ParseStopCause::AngleContextFallback::reason: perl_parser_core::tokens::token_stream::ContextualFallbackReason
 pub perl_parser_core::engine::error::ParseStopCause::Cancelled
 pub perl_parser_core::engine::error::ParseStopCause::CatastrophicTermination
 pub perl_parser_core::engine::error::ParseStopCause::CoreBudgetExhausted
@@ -993,6 +1000,11 @@ pub fn perl_parser_core::syntax::error::ParseDiagnosticSeverity::fmt(&self, f: &
 pub perl_parser_core::error::ParseError::Advisory
 pub perl_parser_core::error::ParseError::Advisory::location: usize
 pub perl_parser_core::error::ParseError::Advisory::message: alloc::string::String
+pub perl_parser_core::error::ParseError::AngleContextFallback
+pub perl_parser_core::error::ParseError::AngleContextFallback::location: usize
+pub perl_parser_core::error::ParseError::AngleContextFallback::reason: perl_parser_core::tokens::token_stream::ContextualFallbackReason
+pub perl_parser_core::error::ParseError::AngleScan
+pub perl_parser_core::error::ParseError::AngleScan::error: perl_lexer::error::LexerError
 pub perl_parser_core::error::ParseError::Cancelled
 pub perl_parser_core::error::ParseError::CoreBudgetExhausted
 pub perl_parser_core::error::ParseError::CoreBudgetExhausted::dimension: perl_parser_core::syntax::error::ParseCoreDimension
@@ -1049,6 +1061,8 @@ pub fn perl_parser_core::syntax::error::ParseError::fmt(&self, f: &mut core::fmt
 pub fn perl_parser_core::syntax::error::ParseError::fmt(&self, __formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_parser_core::syntax::error::ParseError::error_class(&self) -> perl_parser_core::syntax::error::ErrorCategory
 #[non_exhaustive] pub enum perl_parser_core::error::ParseStopCause
+pub perl_parser_core::error::ParseStopCause::AngleContextFallback
+pub perl_parser_core::error::ParseStopCause::AngleContextFallback::reason: perl_parser_core::tokens::token_stream::ContextualFallbackReason
 pub perl_parser_core::error::ParseStopCause::Cancelled
 pub perl_parser_core::error::ParseStopCause::CatastrophicTermination
 pub perl_parser_core::error::ParseStopCause::CoreBudgetExhausted
@@ -3864,6 +3878,11 @@ pub fn perl_parser_core::syntax::error::ParseDiagnosticSeverity::fmt(&self, f: &
 pub perl_parser_core::syntax::error::ParseError::Advisory
 pub perl_parser_core::syntax::error::ParseError::Advisory::location: usize
 pub perl_parser_core::syntax::error::ParseError::Advisory::message: alloc::string::String
+pub perl_parser_core::syntax::error::ParseError::AngleContextFallback
+pub perl_parser_core::syntax::error::ParseError::AngleContextFallback::location: usize
+pub perl_parser_core::syntax::error::ParseError::AngleContextFallback::reason: perl_parser_core::tokens::token_stream::ContextualFallbackReason
+pub perl_parser_core::syntax::error::ParseError::AngleScan
+pub perl_parser_core::syntax::error::ParseError::AngleScan::error: perl_lexer::error::LexerError
 pub perl_parser_core::syntax::error::ParseError::Cancelled
 pub perl_parser_core::syntax::error::ParseError::CoreBudgetExhausted
 pub perl_parser_core::syntax::error::ParseError::CoreBudgetExhausted::dimension: perl_parser_core::syntax::error::ParseCoreDimension
@@ -3920,6 +3939,8 @@ pub fn perl_parser_core::syntax::error::ParseError::fmt(&self, f: &mut core::fmt
 pub fn perl_parser_core::syntax::error::ParseError::fmt(&self, __formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_parser_core::syntax::error::ParseError::error_class(&self) -> perl_parser_core::syntax::error::ErrorCategory
 #[non_exhaustive] pub enum perl_parser_core::syntax::error::ParseStopCause
+pub perl_parser_core::syntax::error::ParseStopCause::AngleContextFallback
+pub perl_parser_core::syntax::error::ParseStopCause::AngleContextFallback::reason: perl_parser_core::tokens::token_stream::ContextualFallbackReason
 pub perl_parser_core::syntax::error::ParseStopCause::Cancelled
 pub perl_parser_core::syntax::error::ParseStopCause::CatastrophicTermination
 pub perl_parser_core::syntax::error::ParseStopCause::CoreBudgetExhausted
@@ -4397,6 +4418,7 @@ pub fn perl_parser_core::tokens::token_stream::ContextualFallbackReason::clone(&
 pub fn perl_parser_core::tokens::token_stream::ContextualFallbackReason::eq(&self, other: &perl_parser_core::tokens::token_stream::ContextualFallbackReason) -> bool
 pub fn perl_parser_core::tokens::token_stream::ContextualFallbackReason::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub enum perl_parser_core::token_stream::ContextualOpResult
+pub perl_parser_core::token_stream::ContextualOpResult::AngleScanned(core::result::Result<perl_lexer::angle::AngleSpan, perl_lexer::error::LexerError>)
 pub perl_parser_core::token_stream::ContextualOpResult::AppliedLive
 pub perl_parser_core::token_stream::ContextualOpResult::AppliedReplay
 pub perl_parser_core::token_stream::ContextualOpResult::FallbackRequired
@@ -4411,6 +4433,7 @@ pub perl_parser_core::token_stream::ContextualTokenOp::EnterFormatBody
 pub perl_parser_core::token_stream::ContextualTokenOp::InvalidateLookahead
 pub perl_parser_core::token_stream::ContextualTokenOp::ReclassifyFromBoundary
 pub perl_parser_core::token_stream::ContextualTokenOp::ReclassifyFromBoundary::expected_context: perl_lexer::mode::LexerMode
+pub perl_parser_core::token_stream::ContextualTokenOp::ScanAngleBody
 pub perl_parser_core::token_stream::ContextualTokenOp::StatementBoundaryReset
 pub fn perl_parser_core::tokens::token_stream::ContextualTokenOp::label(&self) -> &'static str
 pub fn perl_parser_core::tokens::token_stream::ContextualTokenOp::clone(&self) -> perl_parser_core::tokens::token_stream::ContextualTokenOp
@@ -4440,6 +4463,7 @@ pub fn perl_parser_core::tokens::token_stream::TokenStream<'a>::peek_fresh_kind(
 pub fn perl_parser_core::tokens::token_stream::TokenStream<'a>::peek_second(&mut self) -> perl_parser_core::syntax::error::ParseResult<&perl_token::token::Token>
 pub fn perl_parser_core::tokens::token_stream::TokenStream<'a>::peek_third(&mut self) -> perl_parser_core::syntax::error::ParseResult<&perl_token::token::Token>
 pub fn perl_parser_core::tokens::token_stream::TokenStream<'a>::relex_as_term(&mut self)
+pub fn perl_parser_core::tokens::token_stream::TokenStream<'a>::with_lexer_config(input: &'a str, config: perl_lexer::config::LexerConfig) -> Self
 pub mod perl_parser_core::tokens
 pub use perl_parser_core::tokens::token_wrapper
 pub mod perl_parser_core::tokens::token_stream
@@ -4452,6 +4476,7 @@ pub fn perl_parser_core::tokens::token_stream::ContextualFallbackReason::clone(&
 pub fn perl_parser_core::tokens::token_stream::ContextualFallbackReason::eq(&self, other: &perl_parser_core::tokens::token_stream::ContextualFallbackReason) -> bool
 pub fn perl_parser_core::tokens::token_stream::ContextualFallbackReason::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub enum perl_parser_core::tokens::token_stream::ContextualOpResult
+pub perl_parser_core::tokens::token_stream::ContextualOpResult::AngleScanned(core::result::Result<perl_lexer::angle::AngleSpan, perl_lexer::error::LexerError>)
 pub perl_parser_core::tokens::token_stream::ContextualOpResult::AppliedLive
 pub perl_parser_core::tokens::token_stream::ContextualOpResult::AppliedReplay
 pub perl_parser_core::tokens::token_stream::ContextualOpResult::FallbackRequired
@@ -4466,6 +4491,7 @@ pub perl_parser_core::tokens::token_stream::ContextualTokenOp::EnterFormatBody
 pub perl_parser_core::tokens::token_stream::ContextualTokenOp::InvalidateLookahead
 pub perl_parser_core::tokens::token_stream::ContextualTokenOp::ReclassifyFromBoundary
 pub perl_parser_core::tokens::token_stream::ContextualTokenOp::ReclassifyFromBoundary::expected_context: perl_lexer::mode::LexerMode
+pub perl_parser_core::tokens::token_stream::ContextualTokenOp::ScanAngleBody
 pub perl_parser_core::tokens::token_stream::ContextualTokenOp::StatementBoundaryReset
 pub fn perl_parser_core::tokens::token_stream::ContextualTokenOp::label(&self) -> &'static str
 pub fn perl_parser_core::tokens::token_stream::ContextualTokenOp::clone(&self) -> perl_parser_core::tokens::token_stream::ContextualTokenOp
@@ -4495,6 +4521,7 @@ pub fn perl_parser_core::tokens::token_stream::TokenStream<'a>::peek_fresh_kind(
 pub fn perl_parser_core::tokens::token_stream::TokenStream<'a>::peek_second(&mut self) -> perl_parser_core::syntax::error::ParseResult<&perl_token::token::Token>
 pub fn perl_parser_core::tokens::token_stream::TokenStream<'a>::peek_third(&mut self) -> perl_parser_core::syntax::error::ParseResult<&perl_token::token::Token>
 pub fn perl_parser_core::tokens::token_stream::TokenStream<'a>::relex_as_term(&mut self)
+pub fn perl_parser_core::tokens::token_stream::TokenStream<'a>::with_lexer_config(input: &'a str, config: perl_lexer::config::LexerConfig) -> Self
 pub mod perl_parser_core::tokens::token_subject
 pub enum perl_parser_core::tokens::token_subject::ClassificationAuthority
 pub perl_parser_core::tokens::token_subject::ClassificationAuthority::CarriedFromPredecessor
@@ -4749,6 +4776,11 @@ pub fn perl_parser_core::syntax::error::ParseDiagnosticSeverity::fmt(&self, f: &
 pub perl_parser_core::ParseError::Advisory
 pub perl_parser_core::ParseError::Advisory::location: usize
 pub perl_parser_core::ParseError::Advisory::message: alloc::string::String
+pub perl_parser_core::ParseError::AngleContextFallback
+pub perl_parser_core::ParseError::AngleContextFallback::location: usize
+pub perl_parser_core::ParseError::AngleContextFallback::reason: perl_parser_core::tokens::token_stream::ContextualFallbackReason
+pub perl_parser_core::ParseError::AngleScan
+pub perl_parser_core::ParseError::AngleScan::error: perl_lexer::error::LexerError
 pub perl_parser_core::ParseError::Cancelled
 pub perl_parser_core::ParseError::CoreBudgetExhausted
 pub perl_parser_core::ParseError::CoreBudgetExhausted::dimension: perl_parser_core::syntax::error::ParseCoreDimension
@@ -4805,6 +4837,8 @@ pub fn perl_parser_core::syntax::error::ParseError::fmt(&self, f: &mut core::fmt
 pub fn perl_parser_core::syntax::error::ParseError::fmt(&self, __formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_parser_core::syntax::error::ParseError::error_class(&self) -> perl_parser_core::syntax::error::ErrorCategory
 #[non_exhaustive] pub enum perl_parser_core::ParseStopCause
+pub perl_parser_core::ParseStopCause::AngleContextFallback
+pub perl_parser_core::ParseStopCause::AngleContextFallback::reason: perl_parser_core::tokens::token_stream::ContextualFallbackReason
 pub perl_parser_core::ParseStopCause::Cancelled
 pub perl_parser_core::ParseStopCause::CatastrophicTermination
 pub perl_parser_core::ParseStopCause::CoreBudgetExhausted
@@ -5143,6 +5177,7 @@ pub fn perl_parser_core::tokens::token_stream::TokenStream<'a>::peek_fresh_kind(
 pub fn perl_parser_core::tokens::token_stream::TokenStream<'a>::peek_second(&mut self) -> perl_parser_core::syntax::error::ParseResult<&perl_token::token::Token>
 pub fn perl_parser_core::tokens::token_stream::TokenStream<'a>::peek_third(&mut self) -> perl_parser_core::syntax::error::ParseResult<&perl_token::token::Token>
 pub fn perl_parser_core::tokens::token_stream::TokenStream<'a>::relex_as_term(&mut self)
+pub fn perl_parser_core::tokens::token_stream::TokenStream<'a>::with_lexer_config(input: &'a str, config: perl_lexer::config::LexerConfig) -> Self
 pub struct perl_parser_core::TriviaParseOutput
 pub perl_parser_core::TriviaParseOutput::parse: perl_parser_core::syntax::error::ParseOutput
 pub perl_parser_core::TriviaParseOutput::trivia: alloc::vec::Vec<perl_parser_core::tokens::trivia::TriviaToken>
