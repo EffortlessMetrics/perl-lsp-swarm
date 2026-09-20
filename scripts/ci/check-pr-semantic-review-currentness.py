@@ -49,6 +49,12 @@ RESULT_SECTION_RE = re.compile(
 )
 ANY_SECTION_RE = re.compile(r"^[ \t]*##[ \t]", re.MULTILINE)
 RESULT_ITEM_RE = re.compile(r"^[ \t]*[-*][ \t]*([A-Z_]+)\b", re.MULTILINE)
+# Stdout JSON payload version. The marker envelope (`semantic-review:v1`) and the
+# stdout JSON payload are two distinct wire surfaces: the marker is parsed by the
+# campaign review pipeline, the stdout payload is parsed by upstream operators
+# and gates. Pin the payload version explicitly so a shape bump (e.g. a new
+# `finalised_at` key) is observable at the consumer side rather than silent.
+SCHEMA_VERSION = "semantic_review_currentness.v1"
 
 
 class Review(NamedTuple):
@@ -605,6 +611,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                     "detail": str(refusal),
                     "pr": args.pr,
                     "result": args.result,
+                    "schema_version": SCHEMA_VERSION,
                 },
                 sort_keys=True,
             )
@@ -624,10 +631,18 @@ def main(argv: Optional[list[str]] = None) -> int:
             "reason": "instrument_failure",
             "detail": str(error),
             "pr": args.pr,
+            "schema_version": SCHEMA_VERSION,
         }
         print(json.dumps(result, sort_keys=True))
         return 2
-    print(json.dumps(result, sort_keys=True))
+    # The success path: ensure the verdict dict carries the schema version too so
+    # the three stdout surfaces (success, MARKER_REFUSED, NOT_PROVEN) are uniformly
+    # versioned. `result` originates from `evaluate(...)` which builds the verdict
+    # dict; we attach the version field here rather than threading it through the
+    # evaluator to keep the change scoped to this script's stdout contract.
+    enriched_result = dict(result)
+    enriched_result.setdefault("schema_version", SCHEMA_VERSION)
+    print(json.dumps(enriched_result, sort_keys=True))
     return 0 if result["classification"] == "REVIEW_CURRENT" else 1
 
 

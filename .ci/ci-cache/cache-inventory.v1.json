@@ -729,10 +729,10 @@
       "cached_paths": [],
       "key_dimensions": {
         "key": null,
-        "shared_key": "ci-gate-${{ hashFiles('Cargo.lock') }}",
+        "shared_key": "pr-smoke",
         "restore_keys": null
       },
-      "key_authority": "mixed",
+      "key_authority": "trusted",
       "cached_byte_provenance": "trusted_tree",
       "artifact_provenance": null,
       "writer_disposition": "trusted_guarded",
@@ -1701,7 +1701,7 @@
       ],
       "candidate_event_reachability": "reachable",
       "executed_subject": "candidate",
-      "job_condition": "always() && needs.route-ripr.result == 'success' && (\n  (needs.route-ripr.outputs.target == 'cx53' && needs.ripr-cx53.result == 'failure' && needs.ripr-cx53.outputs.preflight_ok == 'false') ||\n  (needs.route-ripr.outputs.target == 'cx43' && needs.ripr-cx43.result == 'failure' && needs.ripr-cx43.outputs.preflight_ok == 'false')\n)",
+      "job_condition": "always() && needs.route-ripr.result == 'success' && needs.route-ripr.outputs.target == 'selfhosted' && needs.ripr-selfhosted.result == 'failure' && needs.ripr-selfhosted.outputs.preflight_ok == 'false'",
       "step_condition": null,
       "save_condition": "${{ false }}",
       "save_authority_source": "event_guard",

@@ -80,6 +80,9 @@
 
 /// Builtin function signatures and metadata.
 pub use perl_lexer::builtins;
+/// Structured decoding of a Perl interpreter invocation into source fragments
+/// and switch facts.
+pub mod command_line;
 /// Parser engine components and supporting utilities.
 pub mod engine;
 /// Normalized high-level constructs lowered from the parser AST.
@@ -174,8 +177,9 @@ pub use ast::{GotoTargetForm, Node, NodeKind, SourceLocation};
 pub use error::classifier::{RecoverySalvageMetrics, classify_recovery_salvage};
 /// Parse error, budget, and output types.
 pub use error::{
-    BudgetTracker, ErrorCategory, ErrorClass, ParseBudget, ParseDiagnosticSeverity, ParseError,
-    ParseOutput, ParseResult, ParseStopCause, RecoverySalvageClass, RecoverySalvageProfile,
+    BudgetTracker, ErrorCategory, ErrorClass, ParseBudget, ParseCoreDimension,
+    ParseDiagnosticSeverity, ParseError, ParseOutput, ParseResult, ParseStopCause,
+    RecoverySalvageClass, RecoverySalvageProfile,
 };
 
 /// Builtin function signature lookup tables.
