@@ -986,6 +986,23 @@ fn q_and_qq_table_names_are_source_backed_literals() -> Result<(), Box<dyn std::
 }
 
 #[test]
+fn escaped_quote_like_delimiters_remain_inside_static_table_names()
+-> Result<(), Box<dyn std::error::Error>> {
+    for table_name in [r#"q{users\}archive}"#, r#"q|users\|archive|"#] {
+        let source = format!(
+            "package User; use DBIx::QuickORM type => 'table'; table {table_name} => sub {{}};"
+        );
+        let facts = generated_facts_from_source(&source)?;
+        assert_eq!(
+            canonical_names(&facts),
+            vec!["User::qorm_table"],
+            "escaped quote-like delimiter must remain body text: {source}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
 fn qq_interpolated_table_names_remain_dynamic() -> Result<(), Box<dyn std::error::Error>> {
     for table_name in ["qq($name)", "qq{${prefix}_users}", "qq(@arr)", "qq($^O)", "qq($::prefix)"] {
         let source = format!(

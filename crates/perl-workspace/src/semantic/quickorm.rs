@@ -749,9 +749,20 @@ fn parse_quote_like_literal(source: &str) -> Option<(&str, QuoteLikeForm, &str)>
         // is single-byte because all four paired delimiters are ASCII; the
         // outer bytes of a non-paired form are likewise ASCII.
         let mut depth = 1usize;
+        let mut escaped = false;
         let mut index = 0usize;
         while index < after_open_bytes.len() {
             let byte = after_open_bytes[index];
+            if escaped {
+                escaped = false;
+                index += 1;
+                continue;
+            }
+            if byte == b'\\' {
+                escaped = true;
+                index += 1;
+                continue;
+            }
             if byte == opening {
                 depth += 1;
             } else if byte == closing {
@@ -766,11 +777,20 @@ fn parse_quote_like_literal(source: &str) -> Option<(&str, QuoteLikeForm, &str)>
         }
         None
     } else {
-        // Non-paired delimiter: stop at the first occurrence. Backslash
-        // escapes inside the body are not interpreted here because the
-        // bounded pilot does not require them; admitting them would only
-        // matter if the body could legitimately contain the delimiter.
-        let end = after_open_bytes.iter().position(|&b| b == closing)?;
+        // Non-paired delimiters can occur in the body when escaped. Track the
+        // escape state so a literal delimiter does not truncate the value.
+        let mut escaped = false;
+        let end = after_open_bytes.iter().position(|&byte| {
+            if escaped {
+                escaped = false;
+                return false;
+            }
+            if byte == b'\\' {
+                escaped = true;
+                return false;
+            }
+            byte == closing
+        })?;
         let body = &after_open[..end];
         let remainder = &after_open[end + 1..];
         Some((body, form, remainder))
