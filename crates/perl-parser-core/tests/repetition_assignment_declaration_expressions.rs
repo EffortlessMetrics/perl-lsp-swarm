@@ -193,12 +193,56 @@ fn ordinary_declaration_and_repetition_controls_remain_distinct() -> Result<(), 
 
 #[test]
 fn trivia_separated_declaration_x_equals_is_never_normalized() -> Result<(), String> {
-    for source in ["my ($x, $y) x = 3;", "f(my $v x\n= 3);", "f(my $v x # gap\n= 3);"] {
+    // Statement level: the leftover `x = 3` parses as an ordinary second
+    // statement assignment with no diagnostics (same-line leftover
+    // enforcement belongs to statement termination, not the operator). Pin
+    // that exact shape so the test cannot pass vacuously on some future
+    // unrelated acceptance.
+    let source = "my ($x, $y) x = 3;";
+    let output = Parser::new(source).parse_with_recovery();
+    if find_assignment(&output.ast, "x=").is_some() {
+        return Err(format!("trivia-separated declaration x = became x=:\n{}", output.ast.to_sexp()));
+    }
+    let NodeKind::Program { statements, .. } = &output.ast.kind else {
+        return Err(format!("expected program root, got {:?}", output.ast.kind));
+    };
+    if statements.len() != 2 {
+        return Err(format!(
+            "expected the leftover `x = 3` to parse as a second statement, got {}",
+            output.ast.to_sexp()
+        ));
+    }
+    if find_assignment(&output.ast, "=").is_none() {
+        return Err(format!("expected the leftover to stay an ordinary assignment:\n{}", output.ast.to_sexp()));
+    }
+    if !output.diagnostics.is_empty() {
+        return Err(format!(
+            "expected no diagnostics for the clean split, got {:?}",
+            output.diagnostics
+        ));
+    }
+    // Call arguments: a split `x` / `=` cannot form the operator, so the
+    // argument errors at the `)` boundary with exactly two boundary
+    // diagnostics. Pin both so the proof cannot pass on a silent drop.
+    for source in ["f(my $v x\n= 3);", "f(my $v x # gap\n= 3);"] {
         let output = Parser::new(source).parse_with_recovery();
         if find_assignment(&output.ast, "x=").is_some() {
             return Err(format!(
                 "trivia-separated declaration x = became x=:\n{}",
                 output.ast.to_sexp()
+            ));
+        }
+        if !matches!(
+            output.diagnostics.as_slice(),
+            [
+                ParseError::UnexpectedToken { expected, found, location: 8 },
+                ParseError::UnexpectedToken { expected: expected2, found: found2, location: 8 },
+            ] if expected == "')'" && found == "identifier"
+                && expected2 == "statement" && found2 == "identifier"
+        ) {
+            return Err(format!(
+                "expected exactly the two `)`-boundary diagnostics at 8, got {:?}",
+                output.diagnostics
             ));
         }
     }
