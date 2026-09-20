@@ -46,10 +46,44 @@ struct PolicyCheck {
 #[derive(Debug, Clone, Deserialize)]
 struct InventoryCheck {
     name: String,
+    /// `repository-job` or `external`, as the inventory row declares it.
+    ///
+    /// This is read rather than inferred. An earlier revision treated a
+    /// missing `workflow` as an external producer, which is fail-open: a
+    /// repository job whose row simply omits its workflow was then counted as
+    /// governed without anything being evaluated (#16164 review). The
+    /// inventory states the producer class explicitly on every row, and
+    /// `codecov/patch` — the one genuinely external row — even carries a
+    /// `workflow`, so absence of a workflow never established externality in
+    /// the first place.
+    #[serde(default)]
+    producer: Option<String>,
     #[serde(default)]
     workflow: Option<String>,
     #[serde(default)]
     required: bool,
+}
+
+/// What this contract can say about one required context's producer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProducerClass {
+    /// A job in a workflow of this repository: the trigger contract applies.
+    RepositoryJob,
+    /// Someone else's integration: out of this contract's reach, and counted
+    /// separately rather than folded into the governed total.
+    External,
+    /// The row does not say. Not assumed either way.
+    Unstated,
+}
+
+impl InventoryCheck {
+    fn producer_class(&self) -> ProducerClass {
+        match self.producer.as_deref() {
+            Some("repository-job") => ProducerClass::RepositoryJob,
+            Some("external") => ProducerClass::External,
+            _ => ProducerClass::Unstated,
+        }
+    }
 }
 
 /// One contract clause a governance row knowingly does not satisfy.
@@ -123,6 +157,10 @@ struct WorkflowEvaluation {
 struct GovernanceSummary {
     required_contexts: usize,
     governed: usize,
+    /// Required contexts this contract does not reach because the inventory
+    /// declares an external producer. Counted, not hidden: `governed` plus
+    /// `external` plus `ungoverned` accounts for every required context.
+    external: usize,
     ungoverned: Vec<String>,
     accepted_exemptions: usize,
     remainders: usize,
@@ -242,27 +280,44 @@ fn governance_summary(policy: &RequiredChecksPolicy) -> GovernanceSummary {
     let required_contexts: Vec<&InventoryCheck> =
         policy.checks.iter().filter(|entry| entry.required).collect();
 
-    let ungoverned = required_contexts
-        .iter()
-        .filter(|entry| match entry.workflow.as_deref() {
-            Some(workflow) => !governed_workflows.contains(&workflow),
-            // An inventory row with no workflow names an external producer,
-            // which this repository's trigger contract cannot govern. Requiring
-            // a row for it would be a demand nobody could satisfy.
-            None => false,
-        })
-        .map(|entry| {
-            format!(
-                "required context `{}` is produced by `{}`, which no `[[check]]` row governs",
-                entry.name,
-                entry.workflow.as_deref().unwrap_or("<unknown>")
-            )
-        })
-        .collect::<Vec<_>>();
+    let mut ungoverned = Vec::new();
+    let mut external = 0usize;
+
+    for entry in &required_contexts {
+        match entry.producer_class() {
+            // Someone else's integration. The trigger contract governs this
+            // repository's workflows, so there is no `[[check]]` row to demand.
+            ProducerClass::External => external += 1,
+            ProducerClass::RepositoryJob => match entry.workflow.as_deref() {
+                Some(workflow) if governed_workflows.contains(&workflow) => {}
+                Some(workflow) => ungoverned.push(format!(
+                    "required context `{}` is produced by `{workflow}`, which no \
+                     `[[check]]` row governs",
+                    entry.name
+                )),
+                // A repository job that does not name its workflow cannot be
+                // evaluated against the contract, and an unevaluated context is
+                // not a governed one.
+                None => ungoverned.push(format!(
+                    "required context `{}` declares a repository job but names no \
+                     workflow, so the trigger contract cannot be evaluated for it",
+                    entry.name
+                )),
+            },
+            // No producer class. Guessing one is how the fail-open path was
+            // built; this says what is missing instead.
+            ProducerClass::Unstated => ungoverned.push(format!(
+                "required context `{}` names no producer, so whether the trigger \
+                 contract governs it cannot be established",
+                entry.name
+            )),
+        }
+    }
 
     GovernanceSummary {
         required_contexts: required_contexts.len(),
-        governed: required_contexts.len().saturating_sub(ungoverned.len()),
+        governed: required_contexts.len().saturating_sub(ungoverned.len() + external),
+        external,
         ungoverned,
         accepted_exemptions: 0,
         remainders: 0,
@@ -401,6 +456,21 @@ fn apply_exemptions(
 /// stops meaning anything.
 fn exemption_defects(findings: &[(&str, String)], exemptions: &[PolicyExemption]) -> Vec<String> {
     let mut defects = Vec::new();
+
+    // Two exemptions for one clause let list order decide policy. `apply_exemptions`
+    // records the first match, so an `accepted` entry placed above a `remainder`
+    // silently swallows the remainder: it vanishes from the counts and from the
+    // receipt, and the divergence reads as settled (#16164 review). A clause has one
+    // disposition or the contract is not saying anything.
+    for (index, exemption) in exemptions.iter().enumerate() {
+        if exemptions[..index].iter().any(|earlier| earlier.clause == exemption.clause) {
+            defects.push(format!(
+                "clause `{}` carries more than one exemption; a clause has one \
+                 disposition, and a second entry would be decided by list order",
+                exemption.clause
+            ));
+        }
+    }
 
     for exemption in exemptions {
         if !CLAUSE_IDS.contains(&exemption.clause.as_str()) {
@@ -711,7 +781,26 @@ mod tests {
     }
 
     fn inventory_row(name: &str, workflow: Option<&str>, required: bool) -> InventoryCheck {
-        InventoryCheck { name: name.to_string(), workflow: workflow.map(str::to_string), required }
+        InventoryCheck {
+            name: name.to_string(),
+            producer: Some("repository-job".to_string()),
+            workflow: workflow.map(str::to_string),
+            required,
+        }
+    }
+
+    fn inventory_row_produced_by(
+        name: &str,
+        producer: Option<&str>,
+        workflow: Option<&str>,
+        required: bool,
+    ) -> InventoryCheck {
+        InventoryCheck {
+            name: name.to_string(),
+            producer: producer.map(str::to_string),
+            workflow: workflow.map(str::to_string),
+            required,
+        }
     }
 
     /// The defect in #16164: `[[checks]]` was never deserialized, so a
@@ -753,14 +842,67 @@ mod tests {
     /// An external producer has no workflow in this repository, so demanding a
     /// governance row for it would be a requirement nobody could satisfy.
     #[test]
-    fn an_inventory_row_with_no_workflow_is_not_reported_as_ungoverned() {
+    fn an_external_producer_is_counted_out_of_scope_rather_than_governed() {
+        // The trigger contract governs this repository's workflows. A row that
+        // declares an external producer is outside it, so demanding a
+        // `[[check]]` row for it would be a demand nobody could satisfy — but it
+        // is not governed either, and the summary has to say which.
         let summary = governance_summary(&policy(
             Vec::new(),
-            vec![inventory_row("codecov/patch", None, true)],
+            vec![inventory_row_produced_by(
+                "codecov/patch",
+                Some("external"),
+                Some("codecov"),
+                true,
+            )],
         ));
 
         assert_eq!(summary.required_contexts, 1);
+        assert_eq!(summary.external, 1);
+        assert_eq!(summary.governed, 0, "an unreachable context is not an evaluated one");
         assert!(summary.ungoverned.is_empty(), "{:?}", summary.ungoverned);
+    }
+
+    /// The fail-open path #16164's review found: an earlier revision read a
+    /// missing `workflow` as an external producer, so a repository job whose row
+    /// omitted its workflow counted as governed with nothing evaluated.
+    #[test]
+    fn a_repository_job_with_no_workflow_is_reported_rather_than_assumed_external() {
+        let summary = governance_summary(&policy(
+            Vec::new(),
+            vec![inventory_row_produced_by(
+                "Some Required Job",
+                Some("repository-job"),
+                None,
+                true,
+            )],
+        ));
+
+        assert_eq!(summary.external, 0, "a missing workflow does not make a producer external");
+        assert_eq!(summary.governed, 0);
+        assert_eq!(summary.ungoverned.len(), 1, "{:?}", summary.ungoverned);
+        assert!(
+            summary.ungoverned[0].contains("names no workflow"),
+            "the entry must say what is missing: {:?}",
+            summary.ungoverned
+        );
+    }
+
+    #[test]
+    fn a_required_context_with_no_producer_is_reported() {
+        let summary = governance_summary(&policy(
+            vec![governance_row("ci.yml", true)],
+            vec![inventory_row_produced_by("Some Required Job", None, Some("ci.yml"), true)],
+        ));
+
+        assert_eq!(summary.external, 0);
+        assert_eq!(summary.governed, 0, "an unclassified producer is not a governed one");
+        assert_eq!(summary.ungoverned.len(), 1, "{:?}", summary.ungoverned);
+        assert!(
+            summary.ungoverned[0].contains("names no producer"),
+            "the entry must say what is missing: {:?}",
+            summary.ungoverned
+        );
     }
 
     #[test]
@@ -807,6 +949,33 @@ mod tests {
         assert!(
             eval.violations.iter().any(|item| item.contains("stale exemption")),
             "{:?}",
+            eval.violations
+        );
+        Ok(())
+    }
+
+    /// `apply_exemptions` records the first entry that matches a clause, so a
+    /// second entry for the same clause is decided by list order: an `accepted`
+    /// above a `remainder` swallows the remainder, which then appears in no
+    /// count and no receipt (#16164 review).
+    #[test]
+    fn a_clause_carrying_two_exemptions_is_a_violation() -> Result<()> {
+        let fixture = load_fixture("missing-merge-group.yml")?;
+        let accepted = exemption("merge-group-trigger", ExemptionStatus::Accepted);
+        let mut shadowed = exemption("merge-group-trigger", ExemptionStatus::Remainder);
+        shadowed.tracking = Some("16164".to_string());
+        let eval = evaluate_required_entry(
+            "fixture",
+            "fixture.yml".to_string(),
+            true,
+            true,
+            Some(&fixture),
+            &[accepted, shadowed],
+        );
+
+        assert!(
+            eval.violations.iter().any(|item| item.contains("more than one exemption")),
+            "a clause with two dispositions must not be decided by list order: {:?}",
             eval.violations
         );
         Ok(())
