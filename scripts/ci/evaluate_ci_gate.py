@@ -23,6 +23,11 @@ SCOPED_NOOP_ALLOWED_SKIPS = frozenset(EXPECTED_DEPENDENCIES) - {
     "draft-pr-check",
 }
 
+# The exit contract, named so it can be asserted against rather than
+# restated. An allowlist, not a denylist: a status added later cannot reach
+# exit 0 merely by existing. `main` is the only consumer.
+GREEN_STATUSES = frozenset({"success", "scoped_noop"})
+
 
 @dataclass(frozen=True)
 class Verdict:
@@ -86,27 +91,38 @@ def evaluate(
     starts under `if: always()` — which is how a routine push reddened the
     aggregate with "applicable dependency did not succeed" (#16087).
 
-    Forgiving that needs **positive evidence that a newer candidate exists**,
-    which is `latest_head != run_head`: the pull request's live head is no
-    longer the head this run tested, so a replacement run is already proving
-    the thing this one stopped proving. Nothing weaker will do, and in
-    particular `cancelled()` will not.
+    **The fix is the sentence, not the colour.** That is the decision #16087
+    called the real one and answered: "exiting 1 keeps a superseded head
+    visibly unproven, which is honest... my recommendation is exit 1 with the
+    distinguishing message, because 'no proof for this SHA' genuinely is not
+    a pass." A cancelled lane produced no evidence, and no evidence is not
+    evidence of correctness. So every path below that is not a real success
+    exits 1, and what changes is which sentence the reader is handed.
 
-    It will not for two reasons, and the second was measured rather than
-    reasoned. It reports *that* a run was cancelled and not *why*, so a
-    maintainer cancelling by hand is indistinguishable from concurrency —
-    which is what #5460 refused a pass verdict over, and it was right. And in
+    Three of them, partitioned as the issue asks:
+
+    - a lane that reached a verdict and lost -> `failure`, wording unchanged;
+    - every blocking lane cancelled, with a newer run identified ->
+      `superseded`, naming the head that replaced this one and the run that
+      is authoritative for it;
+    - every blocking lane cancelled with no newer run found -> `no_verdict`,
+      saying only that, because that is all the inputs support.
+
+    `_all_cancelled(blockers)` is what keeps the first separate: a genuine
+    failure alongside a cancellation is still a failure, whatever the heads
+    say. A failed lane is information about the code, and code survives a
+    head move in a way a cancellation does not.
+
+    `cancelled()` appears nowhere, for two reasons, the second measured
+    rather than reasoned. It reports *that* a run was cancelled and not
+    *why*, so a maintainer cancelling by hand is indistinguishable from
+    concurrency — which is what #5460 refused a pass verdict over. And in
     this job it is simply false: run 35507473500 was concurrency-cancelled
     with every dependency `cancelled`, and the `if: cancelled()` steps in this
-    very job were skipped. The run was cancelled; the job was not. So no
-    cancellation fact reaches this function at all, and none is needed.
+    very job were skipped. The run was cancelled; the job was not.
 
-    What remains necessary is `_all_cancelled(blockers)`: a genuine failure
-    alongside a cancellation is still a failure, whatever the heads say. The
-    head comparison supplies the rest.
-
-    `ripr.yml` is unaffected either way. It sets `cancel-in-progress: false`,
-    so a cancelled ripr lane never means supersession and its
+    `ripr.yml` is unaffected. It sets `cancel-in-progress: false`, so a
+    cancelled ripr lane never means supersession and its
     `cancelled-no-verdict` block stays correct unchanged.
     """
     draft_result = _result(needs, "draft-pr-check")
@@ -178,24 +194,28 @@ def evaluate(
         if _result(needs, name) != "success"
     )
     if blockers:
+        # #16087's partition: a lane that reached a verdict and lost is a
+        # failure; a lane cancelled before it could reach one produced no
+        # verdict. Both are red. Only the sentence differs, and the sentence
+        # is the entire complaint — "applicable dependency did not succeed" is
+        # the same words for a broken test and for a routine second push.
         if _all_cancelled(blockers):
             if _superseded(run_head, latest_head, replacement_run):
                 return Verdict(
                     "superseded",
-                    f"cancelled run for {run_head[:8]} superseded by "
-                    f"{latest_head[:8]}, proved by run {replacement_run}",
+                    f"no proof for {run_head[:8]}: every blocking lane was "
+                    f"cancelled. The pull request has moved to "
+                    f"{latest_head[:8]} and run {replacement_run} is "
+                    f"authoritative for it. This is NOT a test failure",
                     blockers,
                 )
-            # Cancelled lanes with no newer head. #16107 named this state and
-            # kept it red — NOT_PROVEN for a SHA nothing proved — and that
-            # rule is carried here unchanged. It gets no status of its own:
-            # the needs map cannot tell a cancelled run from a cancelled job.
-            # Run 35507473500 was concurrency-cancelled and still reported
-            # three green lanes, so "every lane cancelled" is not the shape of
-            # a cancelled run, and no other cancellation evidence reaches this
-            # function. A verdict naming a cause it cannot establish is the
-            # error #16186's first attempt made; `failure` is what is provable
-            # and it blocks identically.
+            return Verdict(
+                "no_verdict",
+                "no proof for this SHA: every blocking lane was cancelled "
+                "before reaching a verdict, and no newer run was identified. "
+                "This is NOT a test failure",
+                blockers,
+            )
         return Verdict("failure", "applicable dependency did not succeed", blockers)
     return Verdict("success", "all applicable dependencies succeeded")
 
@@ -230,17 +250,20 @@ def _superseded(run_head: str, latest_head: str, replacement_run: str) -> bool:
     this candidate, but something else will" is not a claim the inputs
     support.
 
-    Everything unresolved reads as "not superseded" and the gate stays red —
-    no token, an API error, an event with no pull request, a head that moved
-    before any run started. That is the direction to fail in: a missed
-    supersession costs one avoidable red, while a wrongly claimed one reports
-    green over a candidate nothing proved.
+    Everything unresolved reads as "not superseded" — no token, an API error,
+    an event with no pull request, a head that moved before any run started.
 
-    The workflow step already refuses to export a malformed value. These
-    checks repeat it because this is the one path that can turn the gate
-    green, and a shell condition in a YAML file is a thin single layer to
-    rest that on. A truncated or garbled value must read as "unknown", never
-    as "different, therefore newer".
+    Nothing here turns the gate green any more: both branches exit 1, and
+    this only chooses which sentence the reader gets. That is deliberate, and
+    it is why the checks below stay strict anyway. A wrong answer here now
+    costs a misleading message rather than an unearned pass, and a misleading
+    message is the entire defect #16087 is about. Naming a run that is not
+    proving this candidate would reproduce that defect with more confidence
+    than the generic wording it replaced.
+
+    So a truncated or garbled value reads as "unknown", never as "different,
+    therefore newer", and the caller falls back to saying only what it can
+    prove: every blocking lane was cancelled, and no newer run was found.
     """
     return (
         _OBJECT_NAME.fullmatch(run_head) is not None
@@ -284,14 +307,22 @@ def main() -> int:
     if summary_path:
         Path(summary_path).write_text(summary, encoding="utf-8")
     print(summary, end="")
-    # `superseded` exits 0 because a cancelled run proved nothing about the
-    # candidate and a newer run is already proving it. `scoped_noop` is the
-    # same argument for a route that was never meant to run. Every other
-    # status is red, `failure` over cancelled lanes included: that is the
-    # superseded shape with the replacement missing, which is absent proof
-    # and not a pass. This is an allowlist rather than a denylist, so a
-    # status added later cannot reach exit 0 merely by existing.
-    return 0 if verdict.status in {"success", "scoped_noop", "superseded"} else 1
+    # Only a route that was never meant to run is green besides success.
+    #
+    # `superseded` and `no_verdict` are red, deliberately, and that is the
+    # decision #16087 said was the real one: "my recommendation is exit 1
+    # with the distinguishing message, because 'no proof for this SHA'
+    # genuinely is not a pass." A cancelled lane is absent proof, and absent
+    # proof is not evidence of correctness.
+    #
+    # The cost of exiting 0 instead is not symmetric with the cost of exiting
+    # 1. A wrongly red check costs an hour of a pull request looking broken.
+    # A wrongly green one is recorded against a SHA and outlives the reason
+    # it was granted — a forgiven head that a force-push later restores
+    # carries a success nothing ever earned, and no later failure supersedes
+    # it. Every defect found on this change was a risk of granting a pass;
+    # none of them exists when there is no pass to grant.
+    return 0 if verdict.status in GREEN_STATUSES else 1
 
 
 if __name__ == "__main__":
