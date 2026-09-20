@@ -101,16 +101,34 @@ fn observe_output(case: &Value, output: &ParseOutput) -> Result<Value, Box<dyn E
                     let (variable, default) = match &parameter.kind {
                         NodeKind::MandatoryParameter { variable }
                         | NodeKind::SlurpyParameter { variable } => (Some(variable.as_ref()), None),
-                        NodeKind::OptionalParameter { variable, default_value } => {
+                        NodeKind::OptionalParameter {
+                            variable,
+                            default_value,
+                            default_operator,
+                            default_operator_span,
+                        } => {
+                            actual["operator"] = json!({"text":default_operator,"span":[default_operator_span.start,default_operator_span.end]});
                             (Some(variable.as_ref()), Some(default_value.as_ref()))
                         }
                         NodeKind::NamedParameter {
                             variable,
                             default_value,
                             default_operator,
+                            default_operator_span,
                             external_name,
                             required,
                         } => {
+                            actual["operator"] = match (default_operator, default_operator_span) {
+                                (Some(operator), Some(range)) => {
+                                    json!({"text":operator,"span":[range.start,range.end]})
+                                }
+                                (None, None) => Value::Null,
+                                _ => {
+                                    failures
+                                        .push(format!("{label}: inconsistent operator metadata"));
+                                    Value::Null
+                                }
+                            };
                             actual["external_name"] = json!(external_name);
                             actual["required"] = json!(required);
                             compare(
@@ -165,11 +183,15 @@ fn observe_output(case: &Value, output: &ParseOutput) -> Result<Value, Box<dyn E
                             }
                         }
                     }
-                    if want.get("operator").is_some() {
-                        // No public AST field owns this range. A source-derived gap
-                        // would hide the missing production evidence.
-                        actual["operator_span"] = Value::Null;
-                        failures.push(format!("{label}: missing AST operator geometry"));
+                    if let Some(wanted_operator) = want.get("operator") {
+                        compare(
+                            &format!("{label} operator"),
+                            &actual["operator"],
+                            wanted_operator,
+                            &mut failures,
+                        );
+                    } else if !actual["operator"].is_null() {
+                        failures.push(format!("{label}: unexpected operator geometry"));
                     }
                     parameter_observations.push(actual);
                 }
@@ -322,6 +344,7 @@ fn native_observer_rejects_named_metadata_and_unexpected_defaults() -> R {
             external_name,
             default_value,
             default_operator,
+            ..
         } = &mut parameter.kind
         else {
             return Err("missing named parameter".into());
