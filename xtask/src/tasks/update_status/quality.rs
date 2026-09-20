@@ -24,7 +24,6 @@ static DIAGNOSTICS_P50_RE: LazyLock<Regex> = LazyLock::new(|| {
         .expect("diagnostics-p50 regex is valid")
 });
 
-
 // ---------------------------------------------------------------------------
 // Metric collectors
 // ---------------------------------------------------------------------------
