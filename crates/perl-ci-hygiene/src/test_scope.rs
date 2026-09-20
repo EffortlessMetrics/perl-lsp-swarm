@@ -411,6 +411,8 @@ pub(crate) fn test_only_source_files(files: &[PathBuf]) -> Result<BTreeSet<PathB
 
 #[cfg(test)]
 mod tests {
+    use color_eyre::eyre::ensure;
+
     use super::*;
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -460,8 +462,8 @@ mod tests {
         let real = tree.write("real.rs", "fn g() {}\n")?;
 
         let found = test_only_source_files(&[root, census.clone(), real.clone()])?;
-        assert!(found.contains(&census), "the cfg(test) child must be test-only");
-        assert!(!found.contains(&real), "an ungated sibling must stay in production scope");
+        ensure!(found.contains(&census), "the cfg(test) child must be test-only");
+        ensure!(!found.contains(&real), "an ungated sibling must stay in production scope");
         Ok(())
     }
 
@@ -471,7 +473,8 @@ mod tests {
         let root = tree.write("lib.rs", "#[cfg(test)]\nmod census;\n")?;
         let nested = tree.write("census/mod.rs", "fn f() {}\n")?;
 
-        assert!(test_only_source_files(&[root, nested.clone()])?.contains(&nested));
+        let found = test_only_source_files(&[root, nested.clone()])?;
+        ensure!(found.contains(&nested), "the mod.rs spelling resolves; found {found:?}");
         Ok(())
     }
 
@@ -483,8 +486,8 @@ mod tests {
         let deep = tree.write("census/deep.rs", "fn f() { y.unwrap(); }\n")?;
 
         let found = test_only_source_files(&[root, census.clone(), deep.clone()])?;
-        assert!(found.contains(&census));
-        assert!(found.contains(&deep), "a module of a test-only module is test-only");
+        ensure!(found.contains(&census));
+        ensure!(found.contains(&deep), "a module of a test-only module is test-only");
         Ok(())
     }
 
@@ -510,9 +513,9 @@ mod tests {
             test_child.clone(),
             production_sibling.clone(),
         ])?;
-        assert!(found.contains(&census));
-        assert!(found.contains(&test_child), "census/rows.rs is the module census.rs declares");
-        assert!(
+        ensure!(found.contains(&census));
+        ensure!(found.contains(&test_child), "census/rows.rs is the module census.rs declares");
+        ensure!(
             !found.contains(&production_sibling),
             "the sibling rows.rs is a different module and stays in production scope"
         );
@@ -531,11 +534,11 @@ mod tests {
         let shared = tree.write("shared.rs", "fn f() { x.expect(\"boom\"); }\n")?;
 
         let found = test_only_source_files(&[root, live.clone(), shared.clone()])?;
-        assert!(
+        ensure!(
             !found.contains(&shared),
             "a production #[path] alias also names this file, so it is production"
         );
-        assert!(!found.contains(&live));
+        ensure!(!found.contains(&live));
         Ok(())
     }
 
@@ -552,7 +555,7 @@ mod tests {
         let shared = tree.write("shared.rs", "fn f() { x.expect(\"boom\"); }\n")?;
 
         let found = test_only_source_files(&[root, live, shared.clone()])?;
-        assert!(found.contains(&shared), "nothing in production reaches it now");
+        ensure!(found.contains(&shared), "nothing in production reaches it now");
         Ok(())
     }
 
@@ -564,7 +567,8 @@ mod tests {
         let root = tree.write("lib.rs", "#[cfg(test)] mod assertions;\n")?;
         let assertions = tree.write("assertions.rs", "fn f() { x.expect(\"boom\"); }\n")?;
 
-        assert!(test_only_source_files(&[root, assertions.clone()])?.contains(&assertions));
+        let found = test_only_source_files(&[root, assertions.clone()])?;
+        ensure!(found.contains(&assertions), "the redirected file is test-only; found {found:?}");
         Ok(())
     }
 
@@ -582,8 +586,8 @@ mod tests {
 
         let found =
             test_only_source_files(&[root, dispatch, beside.clone(), under_module_dir.clone()])?;
-        assert!(found.contains(&beside), "the redirect is relative to dispatch.rs's own directory");
-        assert!(
+        ensure!(found.contains(&beside), "the redirect is relative to dispatch.rs's own directory");
+        ensure!(
             !found.contains(&under_module_dir),
             "dispatch/cases/lifecycle.rs is not what that attribute names"
         );
@@ -596,9 +600,10 @@ mod tests {
         let root = tree.write("lib.rs", "#[cfg(any(test, feature = \"extra\"))]\nmod census;\n")?;
         let census = tree.write("census.rs", "fn f() { x.expect(\"boom\"); }\n")?;
 
-        assert!(
-            !test_only_source_files(&[root, census.clone()])?.contains(&census),
-            "a feature-gated module is compiled into production when the feature is on"
+        let found = test_only_source_files(&[root, census.clone()])?;
+        ensure!(
+            !found.contains(&census),
+            "a feature-gated module is compiled into production when the feature is on; found {found:?}"
         );
         Ok(())
     }
@@ -618,7 +623,7 @@ mod tests {
         let workspace = tree.write("workspace.rs", "unsafe impl Send for X {}\n")?;
 
         let found = test_only_source_files(&[root, harness, workspace.clone()])?;
-        assert!(
+        ensure!(
             !found.contains(&workspace),
             "an ungated declaration below a gated one is still production code"
         );
@@ -633,8 +638,8 @@ mod tests {
         let ungated = tree.write("ungated.rs", "fn g() {}\n")?;
 
         let found = test_only_source_files(&[root, gated.clone(), ungated.clone()])?;
-        assert!(found.contains(&gated));
-        assert!(
+        ensure!(found.contains(&gated));
+        ensure!(
             !found.contains(&ungated),
             "an attribute guards one item, not the rest of the file"
         );
@@ -650,7 +655,8 @@ mod tests {
         )?;
         let redirected = tree.write("outer/redirected.rs", "fn f() { x.unwrap(); }\n")?;
 
-        assert!(test_only_source_files(&[root, redirected.clone()])?.contains(&redirected));
+        let found = test_only_source_files(&[root, redirected.clone()])?;
+        ensure!(found.contains(&redirected), "the nested redirect resolves; found {found:?}");
         Ok(())
     }
 
@@ -665,9 +671,10 @@ mod tests {
         let root = tree.write("lib.rs", "#[cfg(test)]\nmod tests {\n    mod helper;\n}\n")?;
         let helper = tree.write("tests/helper.rs", "fn f() { x.expect(\"boom\"); }\n")?;
 
-        assert!(
-            test_only_source_files(&[root, helper.clone()])?.contains(&helper),
-            "a file declared inside a gated inline module is test-only"
+        let found = test_only_source_files(&[root, helper.clone()])?;
+        ensure!(
+            found.contains(&helper),
+            "a file declared inside a gated inline module is test-only; found {found:?}"
         );
         Ok(())
     }
@@ -682,8 +689,8 @@ mod tests {
         let live = tree.write("live.rs", "fn g() { y.unwrap(); }\n")?;
 
         let found = test_only_source_files(&[root, helper.clone(), live.clone()])?;
-        assert!(found.contains(&helper));
-        assert!(!found.contains(&live), "the gate ended with the block that opened it");
+        ensure!(found.contains(&helper));
+        ensure!(!found.contains(&live), "the gate ended with the block that opened it");
         Ok(())
     }
 
@@ -705,7 +712,7 @@ mod tests {
         let shared = tree.write("engine/shared.rs", "fn f() { x.expect(\"boom\"); }\n")?;
 
         let found = test_only_source_files(&[root, engine, shared.clone()])?;
-        assert!(
+        ensure!(
             !found.contains(&shared),
             "an include! reaches it in production, so a gated alias cannot exclude it"
         );
@@ -728,7 +735,7 @@ mod tests {
         tree.write("engine/live/placeholder.rs", "// keeps `live/` on disk\n")?;
 
         let found = test_only_source_files(&[root, engine, shared.clone()])?;
-        assert!(
+        ensure!(
             !found.contains(&shared),
             "`live/../shared.rs` and `shared.rs` are one file; the production include must override the gated alias"
         );
@@ -746,7 +753,11 @@ mod tests {
         )?;
         let census = tree.write("census.rs", "fn f() { x.unwrap(); }\n")?;
 
-        assert!(test_only_source_files(&[root, census.clone()])?.contains(&census));
+        let found = test_only_source_files(&[root, census.clone()])?;
+        ensure!(
+            found.contains(&census),
+            "an uninvented include! leaves the gate intact; found {found:?}"
+        );
         Ok(())
     }
 
@@ -759,8 +770,8 @@ mod tests {
         let decoy = tree.write("cases.rs", "fn g() { w.unwrap(); }\n")?;
 
         let found = test_only_source_files(&[root, runtime, cases.clone(), decoy.clone()])?;
-        assert!(found.contains(&cases));
-        assert!(!found.contains(&decoy), "the sibling cases.rs is a different module");
+        ensure!(found.contains(&cases));
+        ensure!(!found.contains(&decoy), "the sibling cases.rs is a different module");
         Ok(())
     }
 
@@ -769,7 +780,8 @@ mod tests {
         let tree = Tree::new("empty")?;
         let root = tree.write("lib.rs", "fn f() {}\n")?;
 
-        assert!(test_only_source_files(&[root])?.is_empty());
+        let found = test_only_source_files(&[root])?;
+        ensure!(found.is_empty(), "a file declaring nothing excludes nothing; found {found:?}");
         Ok(())
     }
 
@@ -778,7 +790,11 @@ mod tests {
         let tree = Tree::new("absent")?;
         let root = tree.write("lib.rs", "#[cfg(test)]\nmod nothing_here;\n")?;
 
-        assert!(test_only_source_files(&[root])?.is_empty());
+        let found = test_only_source_files(&[root])?;
+        ensure!(
+            found.is_empty(),
+            "a declaration naming no file resolves to nothing; found {found:?}"
+        );
         Ok(())
     }
 
@@ -793,20 +809,22 @@ mod tests {
         let child = tree.write("orphan/child.rs", "fn g() { q.unwrap(); }\n")?;
 
         let found = test_only_source_files(&[root, orphan, child.clone()])?;
-        assert!(found.is_empty(), "unexpected exclusions: {found:?}");
+        ensure!(found.is_empty(), "unexpected exclusions: {found:?}");
         Ok(())
     }
 
     #[test]
     fn an_attribute_with_nested_brackets_is_one_attribute() -> Result<()> {
-        assert_eq!(attribute_end("#[cfg(test)]"), Some(11));
+        let end = attribute_end("#[cfg(test)]");
+        ensure!(end == Some(11), "a flat attribute ends at its own bracket, got {end:?}");
         let nested = "#[cfg(any(test, feature = \"x\"))]";
-        assert_eq!(
-            attribute_end(&format!("{nested} mod m;")).map(|end| end + 1),
-            Some(nested.len()),
-            "the whole attribute, not a prefix ending at the first closing bracket"
+        let nested_end = attribute_end(&format!("{nested} mod m;")).map(|end| end + 1);
+        ensure!(
+            nested_end == Some(nested.len()),
+            "the whole attribute, not a prefix ending at the first closing bracket; got {nested_end:?}"
         );
-        assert_eq!(attribute_end("mod m;"), None);
+        let none = attribute_end("mod m;");
+        ensure!(none.is_none(), "a line carrying no attribute ends nowhere, got {none:?}");
         Ok(())
     }
 }
