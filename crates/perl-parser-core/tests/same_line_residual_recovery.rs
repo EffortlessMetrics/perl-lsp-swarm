@@ -476,6 +476,46 @@ fn possible_repetition_terms_are_not_mislabeled_missing() -> Result<(), String> 
 }
 
 #[test]
+fn when_is_a_repetition_operand_before_it_can_be_a_modifier() -> Result<(), String> {
+    for (source, call) in
+        [("\"x\" x when; print \"after\";", false), ("\"x\" x when(); print \"after\";", true)]
+    {
+        if perl_compile_accepts(source)? == Some(false) {
+            return Err(format!("Perl rejected when operand: {source:?}"));
+        }
+        let output = Parser::new(source).parse_with_recovery();
+        let expression = first_expression(&output.ast).ok_or("lost repetition")?;
+        let NodeKind::Binary { op, right, .. } = &expression.kind else {
+            return Err(format!("lost repetition owner: {}", output.ast.to_sexp()));
+        };
+        let correct_operand = if call {
+            matches!(&right.kind, NodeKind::FunctionCall { name, args } if name == "when" && args.is_empty())
+        } else {
+            matches!(&right.kind, NodeKind::Identifier { name } if name == "when")
+        };
+        let NodeKind::Program { statements } = &output.ast.kind else {
+            return Err("lost program".to_string());
+        };
+        if op != "x"
+            || !correct_operand
+            || !output.diagnostics.is_empty()
+            || statements.len() != 2
+            || source.get(right.location.start..right.location.end)
+                != Some(if call { "when()" } else { "when" })
+            || !matches!(statements.get(1).map(|node| &node.kind), Some(NodeKind::ExpressionStatement { expression })
+                if matches!(&expression.kind, NodeKind::FunctionCall { name, args } if name == "print" && args.len() == 1))
+        {
+            return Err(format!(
+                "invalid when operand/suffix ownership: {} {:?}",
+                output.ast.to_sexp(),
+                output.diagnostics
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[test]
 fn repetition_keeps_named_sub_recovery_and_anonymous_sub_operand() -> Result<(), String> {
     for (source, named) in [
         ("\"x\" x sub named {}; print \"after\";", true),

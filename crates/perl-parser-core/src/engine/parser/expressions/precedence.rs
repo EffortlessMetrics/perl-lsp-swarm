@@ -1040,6 +1040,8 @@ impl<'a> Parser<'a> {
             | TokenKind::Undef
             | TokenKind::Do
             | TokenKind::Sub
+            // `when` is a bareword/call while this operand is still expected.
+            | TokenKind::When
             | TokenKind::Not
             | TokenKind::Minus
             | TokenKind::Plus
@@ -1104,7 +1106,7 @@ impl<'a> Parser<'a> {
         let kind = next.kind();
         let adjacent = next.start() == operator_end;
         let ordinary = Self::ordinary_binary_repetition_rhs(kind, next.text.as_ref());
-        let word_follower = Self::is_stmt_modifier_kind(kind)
+        let word_follower = (Self::is_stmt_modifier_kind(kind) && kind != TokenKind::When)
             || matches!(kind, TokenKind::WordAnd | TokenKind::WordOr | TokenKind::WordXor);
         // Keywords before => are autoquoted terms, not outer continuations.
         if word_follower && self.tokens.peek_third()?.kind() == TokenKind::FatArrow {
