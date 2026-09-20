@@ -65,12 +65,24 @@ jobs:
           set -euo pipefail
           mkdir -p target/ripr/liveness
 
-          # One page is ample: ripr runs are serialised per PR and the floor is
-          # minutes, so anything older than this page has long since resolved.
-          gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/ripr.yml/runs?per_page=100" \
-            --jq '[.workflow_runs[] | {id, status, event, created_at, head_sha, head_branch,
-                   head_repository: .head_repository.full_name,
-                   pull_requests: [.pull_requests[]?.number]}]' \
+          # Per #16153: one page caps at 100 runs, and a long-running predecessor
+          # can fall off that page while a queued candidate sits on it -- the
+          # predecessor_for classifier would then misread an explained wait as
+          # an infra alarm. Fetch two pages so a worst-case predecessor (queue
+          # + 31 min analysis) is still scanned inside this snapshot. Dedupe by
+          # run id and bound the merge so a noisy history cannot stall the cron.
+          # Residual race: offset pagination can shift a run off the tail
+          # between the two fetches; bounded follow-up in #16386.
+          {
+            gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/ripr.yml/runs?per_page=100" \
+              --jq '[.workflow_runs[] | {id, status, event, created_at, head_sha, head_branch,
+                     head_repository: .head_repository.full_name,
+                     pull_requests: [.pull_requests[]?.number]}]'
+            gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/ripr.yml/runs?per_page=100&page=2" \
+              --jq '[.workflow_runs[] | {id, status, event, created_at, head_sha, head_branch,
+                     head_repository: .head_repository.full_name,
+                     pull_requests: [.pull_requests[]?.number]}]'
+          } | jq -s 'add | unique_by(.id) | sort_by(.created_at) | reverse | .[0:300]' \
             > target/ripr/liveness/runs.json
 
           # Only a run that has scheduled nothing needs its job count read, so
