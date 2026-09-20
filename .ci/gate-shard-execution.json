@@ -156,6 +156,10 @@
       "requires": [],
       "on_dependency_failure": "blocked_not_proven"
     },
+    "completion_candidate_ledger": {
+      "requires": [],
+      "on_dependency_failure": "blocked_not_proven"
+    },
     "docs_agents_contract_workflows": {
       "requires": [],
       "on_dependency_failure": "blocked_not_proven"

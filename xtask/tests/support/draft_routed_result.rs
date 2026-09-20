@@ -15,7 +15,11 @@ fn run(script: &str, draft: bool, route: &str, producer: &str) -> TestResult<(bo
     let sandbox = tempfile::tempdir()?;
     // A failed producer remains blocking without using live GitHub services.
     // Retrieval is not under test here; existing RIPR contracts own that seam.
-    let bounded = format!("timeout() {{ return 1; }}\nsleep() {{ :; }}\n{script}");
+    // `gh` joins `timeout`/`sleep` as a stubbed-out live service: the draft
+    // decision must not depend on reaching GitHub, and a read that cannot be
+    // made is not evidence that the draft snapshot is stale (#16101).
+    let bounded =
+        format!("timeout() {{ return 1; }}\nsleep() {{ :; }}\ngh() {{ return 1; }}\n{script}");
     let deadline = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() + 300;
     let mut child = Command::new(workflow_bash::bash_executable())
         .args(["--noprofile", "--norc", "-s"])
@@ -96,10 +100,18 @@ pub fn check_contract(path: &Path, job: &str, token: &str) -> TestResult<()> {
     let suffix = script.get(start..).ok_or("invalid draft decision offset")?;
     let stop = suffix.find("\n  fi").ok_or("draft decision terminator missing")?;
     let branch = suffix.get(..stop).ok_or("invalid draft decision bounds")?;
-    if branch.matches("exit 1").count() != 1 {
+    // The refusal is the tail of the branch that begins at the verdict line.
+    // Anchoring on the branch as a whole counted every `exit 1` in it, so a
+    // branch that first has to decide something else — since #16101 the draft
+    // decision also mirrors a verdict another run already published — looked
+    // like two refusals and then mutated the wrong one. The region below is
+    // the refusal itself in both workflows.
+    let refusal_start = branch.find(token).ok_or("draft refusal verdict missing")?;
+    let refusal = branch.get(refusal_start..).ok_or("invalid draft refusal bounds")?;
+    if refusal.matches("exit 1").count() != 1 {
         return Err("draft refusal must have one nonpassing exit".into());
     }
-    let mutant = script.replacen(branch, &branch.replacen("exit 1", "exit 0", 1), 1);
+    let mutant = script.replacen(refusal, &refusal.replacen("exit 1", "exit 0", 1), 1);
     let (passed, output) = run(&mutant, true, "skipped", "skipped")?;
     if !passed || !output.contains(token) {
         return Err(format!("draft-success mutant did not expose the regression: {output}").into());

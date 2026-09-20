@@ -429,6 +429,13 @@ pub fn perl_parser_core::syntax::error::ErrorCategory::clone(&self) -> perl_pars
 pub fn perl_parser_core::syntax::error::ErrorCategory::eq(&self, other: &perl_parser_core::syntax::error::ErrorCategory) -> bool
 pub fn perl_parser_core::syntax::error::ErrorCategory::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_parser_core::syntax::error::ErrorCategory::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub enum perl_parser_core::engine::error::InvalidSignatureParameterKind
+pub perl_parser_core::engine::error::InvalidSignatureParameterKind::MissingDefaultExpression
+pub perl_parser_core::engine::error::InvalidSignatureParameterKind::NamedAggregate
+pub perl_parser_core::engine::error::InvalidSignatureParameterKind::SlurpyDefault
+pub fn perl_parser_core::syntax::error::InvalidSignatureParameterKind::clone(&self) -> perl_parser_core::syntax::error::InvalidSignatureParameterKind
+pub fn perl_parser_core::syntax::error::InvalidSignatureParameterKind::eq(&self, other: &perl_parser_core::syntax::error::InvalidSignatureParameterKind) -> bool
+pub fn perl_parser_core::syntax::error::InvalidSignatureParameterKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 #[non_exhaustive] pub enum perl_parser_core::engine::error::ParseCoreDimension
 pub perl_parser_core::engine::error::ParseCoreDimension::DiagnosticsEmitted
 pub perl_parser_core::engine::error::ParseCoreDimension::NodesConstructed
@@ -474,6 +481,9 @@ pub perl_parser_core::engine::error::ParseError::InvalidNumber
 pub perl_parser_core::engine::error::ParseError::InvalidNumber::literal: alloc::string::String
 pub perl_parser_core::engine::error::ParseError::InvalidRegex
 pub perl_parser_core::engine::error::ParseError::InvalidRegex::message: alloc::string::String
+pub perl_parser_core::engine::error::ParseError::InvalidSignatureParameter
+pub perl_parser_core::engine::error::ParseError::InvalidSignatureParameter::kind: perl_parser_core::syntax::error::InvalidSignatureParameterKind
+pub perl_parser_core::engine::error::ParseError::InvalidSignatureParameter::range: perl_position_tracking::span::SourceLocation
 pub perl_parser_core::engine::error::ParseError::InvalidString
 pub perl_parser_core::engine::error::ParseError::LexerError
 pub perl_parser_core::engine::error::ParseError::LexerError::message: alloc::string::String
@@ -963,6 +973,13 @@ pub fn perl_parser_core::syntax::error::ErrorCategory::clone(&self) -> perl_pars
 pub fn perl_parser_core::syntax::error::ErrorCategory::eq(&self, other: &perl_parser_core::syntax::error::ErrorCategory) -> bool
 pub fn perl_parser_core::syntax::error::ErrorCategory::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_parser_core::syntax::error::ErrorCategory::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub enum perl_parser_core::error::InvalidSignatureParameterKind
+pub perl_parser_core::error::InvalidSignatureParameterKind::MissingDefaultExpression
+pub perl_parser_core::error::InvalidSignatureParameterKind::NamedAggregate
+pub perl_parser_core::error::InvalidSignatureParameterKind::SlurpyDefault
+pub fn perl_parser_core::syntax::error::InvalidSignatureParameterKind::clone(&self) -> perl_parser_core::syntax::error::InvalidSignatureParameterKind
+pub fn perl_parser_core::syntax::error::InvalidSignatureParameterKind::eq(&self, other: &perl_parser_core::syntax::error::InvalidSignatureParameterKind) -> bool
+pub fn perl_parser_core::syntax::error::InvalidSignatureParameterKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 #[non_exhaustive] pub enum perl_parser_core::error::ParseCoreDimension
 pub perl_parser_core::error::ParseCoreDimension::DiagnosticsEmitted
 pub perl_parser_core::error::ParseCoreDimension::NodesConstructed
@@ -1008,6 +1025,9 @@ pub perl_parser_core::error::ParseError::InvalidNumber
 pub perl_parser_core::error::ParseError::InvalidNumber::literal: alloc::string::String
 pub perl_parser_core::error::ParseError::InvalidRegex
 pub perl_parser_core::error::ParseError::InvalidRegex::message: alloc::string::String
+pub perl_parser_core::error::ParseError::InvalidSignatureParameter
+pub perl_parser_core::error::ParseError::InvalidSignatureParameter::kind: perl_parser_core::syntax::error::InvalidSignatureParameterKind
+pub perl_parser_core::error::ParseError::InvalidSignatureParameter::range: perl_position_tracking::span::SourceLocation
 pub perl_parser_core::error::ParseError::InvalidString
 pub perl_parser_core::error::ParseError::LexerError
 pub perl_parser_core::error::ParseError::LexerError::message: alloc::string::String
@@ -3834,6 +3854,13 @@ pub fn perl_parser_core::syntax::error::ErrorCategory::clone(&self) -> perl_pars
 pub fn perl_parser_core::syntax::error::ErrorCategory::eq(&self, other: &perl_parser_core::syntax::error::ErrorCategory) -> bool
 pub fn perl_parser_core::syntax::error::ErrorCategory::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_parser_core::syntax::error::ErrorCategory::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub enum perl_parser_core::syntax::error::InvalidSignatureParameterKind
+pub perl_parser_core::syntax::error::InvalidSignatureParameterKind::MissingDefaultExpression
+pub perl_parser_core::syntax::error::InvalidSignatureParameterKind::NamedAggregate
+pub perl_parser_core::syntax::error::InvalidSignatureParameterKind::SlurpyDefault
+pub fn perl_parser_core::syntax::error::InvalidSignatureParameterKind::clone(&self) -> perl_parser_core::syntax::error::InvalidSignatureParameterKind
+pub fn perl_parser_core::syntax::error::InvalidSignatureParameterKind::eq(&self, other: &perl_parser_core::syntax::error::InvalidSignatureParameterKind) -> bool
+pub fn perl_parser_core::syntax::error::InvalidSignatureParameterKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 #[non_exhaustive] pub enum perl_parser_core::syntax::error::ParseCoreDimension
 pub perl_parser_core::syntax::error::ParseCoreDimension::DiagnosticsEmitted
 pub perl_parser_core::syntax::error::ParseCoreDimension::NodesConstructed
@@ -3879,6 +3906,9 @@ pub perl_parser_core::syntax::error::ParseError::InvalidNumber
 pub perl_parser_core::syntax::error::ParseError::InvalidNumber::literal: alloc::string::String
 pub perl_parser_core::syntax::error::ParseError::InvalidRegex
 pub perl_parser_core::syntax::error::ParseError::InvalidRegex::message: alloc::string::String
+pub perl_parser_core::syntax::error::ParseError::InvalidSignatureParameter
+pub perl_parser_core::syntax::error::ParseError::InvalidSignatureParameter::kind: perl_parser_core::syntax::error::InvalidSignatureParameterKind
+pub perl_parser_core::syntax::error::ParseError::InvalidSignatureParameter::range: perl_position_tracking::span::SourceLocation
 pub perl_parser_core::syntax::error::ParseError::InvalidString
 pub perl_parser_core::syntax::error::ParseError::LexerError
 pub perl_parser_core::syntax::error::ParseError::LexerError::message: alloc::string::String
@@ -4728,6 +4758,13 @@ pub fn perl_parser_core::syntax::error::ErrorCategory::clone(&self) -> perl_pars
 pub fn perl_parser_core::syntax::error::ErrorCategory::eq(&self, other: &perl_parser_core::syntax::error::ErrorCategory) -> bool
 pub fn perl_parser_core::syntax::error::ErrorCategory::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_parser_core::syntax::error::ErrorCategory::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub enum perl_parser_core::InvalidSignatureParameterKind
+pub perl_parser_core::InvalidSignatureParameterKind::MissingDefaultExpression
+pub perl_parser_core::InvalidSignatureParameterKind::NamedAggregate
+pub perl_parser_core::InvalidSignatureParameterKind::SlurpyDefault
+pub fn perl_parser_core::syntax::error::InvalidSignatureParameterKind::clone(&self) -> perl_parser_core::syntax::error::InvalidSignatureParameterKind
+pub fn perl_parser_core::syntax::error::InvalidSignatureParameterKind::eq(&self, other: &perl_parser_core::syntax::error::InvalidSignatureParameterKind) -> bool
+pub fn perl_parser_core::syntax::error::InvalidSignatureParameterKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 #[non_exhaustive] pub enum perl_parser_core::ParseCoreDimension
 pub perl_parser_core::ParseCoreDimension::DiagnosticsEmitted
 pub perl_parser_core::ParseCoreDimension::NodesConstructed
@@ -4764,6 +4801,9 @@ pub perl_parser_core::ParseError::InvalidNumber
 pub perl_parser_core::ParseError::InvalidNumber::literal: alloc::string::String
 pub perl_parser_core::ParseError::InvalidRegex
 pub perl_parser_core::ParseError::InvalidRegex::message: alloc::string::String
+pub perl_parser_core::ParseError::InvalidSignatureParameter
+pub perl_parser_core::ParseError::InvalidSignatureParameter::kind: perl_parser_core::syntax::error::InvalidSignatureParameterKind
+pub perl_parser_core::ParseError::InvalidSignatureParameter::range: perl_position_tracking::span::SourceLocation
 pub perl_parser_core::ParseError::InvalidString
 pub perl_parser_core::ParseError::LexerError
 pub perl_parser_core::ParseError::LexerError::message: alloc::string::String

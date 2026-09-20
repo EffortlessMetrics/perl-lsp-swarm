@@ -110,7 +110,7 @@ expression: "serde_json::to_string_pretty(&snapshot_receipt)?"
       "source_backed_decline_stage": "entity_resolution",
       "source_backed_exact_candidate_count": 13,
       "source_backed_outcome": "declined",
-      "source_backed_symbol_at_found": false,
+      "source_backed_symbol_at_found": true,
       "text_result_count": 31,
       "uri": "file:///real_projects/mojolicious_skeleton/lib/Mojolicious.pm"
     },
@@ -143,7 +143,7 @@ expression: "serde_json::to_string_pretty(&snapshot_receipt)?"
       "source_backed_decline_stage": "entity_resolution",
       "source_backed_exact_candidate_count": 13,
       "source_backed_outcome": "declined",
-      "source_backed_symbol_at_found": false,
+      "source_backed_symbol_at_found": true,
       "text_result_count": 31,
       "uri": "file:///real_projects/mojolicious_skeleton/lib/Mojolicious.pm"
     },
@@ -176,7 +176,7 @@ expression: "serde_json::to_string_pretty(&snapshot_receipt)?"
       "source_backed_decline_stage": "entity_resolution",
       "source_backed_exact_candidate_count": 3,
       "source_backed_outcome": "declined",
-      "source_backed_symbol_at_found": false,
+      "source_backed_symbol_at_found": true,
       "text_result_count": 6,
       "uri": "file:///real_projects/mojolicious_skeleton/lib/Mojolicious.pm"
     },
@@ -275,7 +275,7 @@ expression: "serde_json::to_string_pretty(&snapshot_receipt)?"
       "source_backed_decline_stage": "entity_resolution",
       "source_backed_exact_candidate_count": 7,
       "source_backed_outcome": "declined",
-      "source_backed_symbol_at_found": false,
+      "source_backed_symbol_at_found": true,
       "text_result_count": 16,
       "uri": "file:///real_projects/dancer2_skeleton/lib/Dancer2/Core/App.pm"
     },
@@ -308,7 +308,7 @@ expression: "serde_json::to_string_pretty(&snapshot_receipt)?"
       "source_backed_decline_stage": "entity_resolution",
       "source_backed_exact_candidate_count": 3,
       "source_backed_outcome": "declined",
-      "source_backed_symbol_at_found": false,
+      "source_backed_symbol_at_found": true,
       "text_result_count": 12,
       "uri": "file:///real_projects/dancer2_skeleton/lib/Dancer2/Core/App.pm"
     },
@@ -341,7 +341,7 @@ expression: "serde_json::to_string_pretty(&snapshot_receipt)?"
       "source_backed_decline_stage": "entity_resolution",
       "source_backed_exact_candidate_count": 3,
       "source_backed_outcome": "declined",
-      "source_backed_symbol_at_found": false,
+      "source_backed_symbol_at_found": true,
       "text_result_count": 12,
       "uri": "file:///real_projects/dancer2_skeleton/lib/Dancer2/Core/App.pm"
     },
@@ -407,7 +407,7 @@ expression: "serde_json::to_string_pretty(&snapshot_receipt)?"
       "source_backed_decline_stage": "entity_resolution",
       "source_backed_exact_candidate_count": 0,
       "source_backed_outcome": "declined",
-      "source_backed_symbol_at_found": false,
+      "source_backed_symbol_at_found": true,
       "text_result_count": 7,
       "uri": "file:///real_projects/dancer2_skeleton/lib/Dancer2/Core/App.pm"
     },
@@ -440,7 +440,7 @@ expression: "serde_json::to_string_pretty(&snapshot_receipt)?"
       "source_backed_decline_stage": "entity_resolution",
       "source_backed_exact_candidate_count": 2,
       "source_backed_outcome": "declined",
-      "source_backed_symbol_at_found": false,
+      "source_backed_symbol_at_found": true,
       "text_result_count": 4,
       "uri": "file:///real_projects/catalyst_skeleton/lib/Catalyst/Action.pm"
     },
@@ -473,7 +473,7 @@ expression: "serde_json::to_string_pretty(&snapshot_receipt)?"
       "source_backed_decline_stage": "entity_resolution",
       "source_backed_exact_candidate_count": 12,
       "source_backed_outcome": "declined",
-      "source_backed_symbol_at_found": false,
+      "source_backed_symbol_at_found": true,
       "text_result_count": 21,
       "uri": "file:///real_projects/catalyst_skeleton/lib/Catalyst/Action.pm"
     },
@@ -506,7 +506,7 @@ expression: "serde_json::to_string_pretty(&snapshot_receipt)?"
       "source_backed_decline_stage": "entity_resolution",
       "source_backed_exact_candidate_count": 3,
       "source_backed_outcome": "declined",
-      "source_backed_symbol_at_found": false,
+      "source_backed_symbol_at_found": true,
       "text_result_count": 7,
       "uri": "file:///real_projects/catalyst_skeleton/lib/Catalyst.pm"
     },
@@ -572,7 +572,7 @@ expression: "serde_json::to_string_pretty(&snapshot_receipt)?"
       "source_backed_decline_stage": "entity_resolution",
       "source_backed_exact_candidate_count": 0,
       "source_backed_outcome": "declined",
-      "source_backed_symbol_at_found": false,
+      "source_backed_symbol_at_found": true,
       "text_result_count": 12,
       "uri": "file:///real_projects/catalyst_skeleton/lib/Catalyst/Dispatcher.pm"
     },

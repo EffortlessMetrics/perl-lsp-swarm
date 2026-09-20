@@ -328,7 +328,7 @@ fn collect_loop_controls<'a>(node: &'a Node, controls: &mut Vec<&'a Node>) {
                 collect_loop_controls(default, controls);
             }
         }
-        NodeKind::OptionalParameter { variable, default_value } => {
+        NodeKind::OptionalParameter { variable, default_value, .. } => {
             collect_loop_controls(variable, controls);
             collect_loop_controls(default_value, controls);
         }

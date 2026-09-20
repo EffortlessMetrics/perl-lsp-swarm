@@ -131,6 +131,11 @@ pub struct Parser<'a> {
     last_end_position: usize,
     /// Context flag for disambiguating for-loop initialization syntax
     in_for_loop_init: bool,
+    /// Context flag marking a `foreach`-style iterator target. Iterator
+    /// targets are not assignment expressions, so declaration tails that
+    /// form assignments (like contextual `x=`) stay disabled here while
+    /// C-style `for` initializers remain assignment-capable (#13486).
+    in_foreach_iterator: bool,
     /// Context flag for do-while condition parsing. While set, a `{` following
     /// the parsed condition expression must not be absorbed as a hash
     /// subscript: in `do { ... } while (cond) { ... }` the trailing block is a
@@ -246,6 +251,7 @@ impl<'a> Parser<'a> {
             block_depth: 0,
             last_end_position: 0,
             in_for_loop_init: false,
+            in_foreach_iterator: false,
             in_do_while_condition: false,
             do_while_paren_reject: false,
             do_while_paren_depth: 0,

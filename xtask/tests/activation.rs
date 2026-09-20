@@ -61,15 +61,20 @@ fn expect_override_violation(
     Ok(())
 }
 
+/// Re-measured once the deriver stopped panicking (#16159). These numbers
+/// were unverifiable for as long as `derive_all` aborted on a char boundary,
+/// so the committed artifact and these constants both fell behind the
+/// authorities. Every row of the 170 -> 177 delta is accounted for below; none
+/// of it is a relaxed ratchet, and nothing was removed.
 const EXPECTED_CLASS_COUNTS: &[(&str, usize)] = &[
     ("product", 16),
     ("preview", 2),
     ("compatibility_shim", 1),
-    ("test_api", 26),
+    ("test_api", 27),
     ("lab", 21),
     ("oracle", 1),
     ("benchmark", 15),
-    ("gate", 87),
+    ("gate", 94),
 ];
 
 /// Pin derivation receipts independently of class counts so a rule that
@@ -77,9 +82,18 @@ const EXPECTED_CLASS_COUNTS: &[(&str, usize)] = &[
 const EXPECTED_DERIVATION: &[(&str, usize, usize)] = &[
     ("features-product", 129, 16),
     ("features-preview", 129, 2),
-    ("gate-policy-gates", 87, 87),
+    // 87/87 -> 94/94. The committed artifact already held 88, so one of these
+    // predates the last write; the other four entered .ci/gate-policy.yaml on
+    // 2026-09-19: doctest_contract_proof and doctest_enforcement in 405ab14ff
+    // (#15645), ci_subject_digest_oracle and unit_control_plane_bins in
+    // 406261b3e (#15895) -- the same commit that last wrote the inventory
+    // without them. Merging main forward added two more: completion_candidate_ledger
+    // in c02237eda (#16102) and code_action_generation_ledger in 3752ae836 (#15946).
+    ("gate-policy-gates", 94, 94),
     ("cargo-bench-targets", 15, 15),
-    ("cargo-test-features", 79, 26),
+    // 79/26 -> 80/27: `perl-lsp-rs-core/test-instrumentation`, declared in
+    // crates/perl-lsp-rs-core/Cargo.toml by 234574a74 (#14272).
+    ("cargo-test-features", 80, 27),
     ("fuzz-targets", 21, 21),
     ("override", 2, 2),
 ];
@@ -740,7 +754,20 @@ fn every_test_api_row_records_which_signal_classified_it() -> TestResult {
             }
         }
     }
-    assert_eq!((by_name, by_usage), (13, 13), "test_api signal split drifted");
+    // 13/13 -> 14/13: the one added row, `perl-lsp-rs-core/test-instrumentation`,
+    // is name-classified. The usage side is unchanged, so the corrected deriver
+    // reads the same cfg sites as the committed artifact records.
+    // Returned rather than asserted: the arm above already reports a missing
+    // signal note as an error, and a split that drifted is the same kind of
+    // finding about the same inventory. A panic here would report it through a
+    // different channel than the row-level failure it sits beside.
+    if (by_name, by_usage) != (14, 13) {
+        return Err(format!(
+            "test_api signal split drifted: expected 14 by name and 13 by usage, \
+             read {by_name} by name and {by_usage} by usage"
+        )
+        .into());
+    }
     Ok(())
 }
 

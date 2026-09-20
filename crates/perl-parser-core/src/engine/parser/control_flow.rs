@@ -432,6 +432,12 @@ impl<'a> Parser<'a> {
 
         // Set flag to prevent semicolon consumption in variable declaration
         self.in_for_loop_init = true;
+        // Iterator targets are not assignment expressions: mark them so
+        // declaration tails that form assignments stay disabled (#13486).
+        // Save and restore the prior value around the fallible parse so a
+        // broken header cannot poison later statements via `?` propagation.
+        let prior_foreach_iterator = self.in_foreach_iterator;
+        self.in_foreach_iterator = true;
         let variable = if matches!(
             self.peek_kind(),
             Some(TokenKind::My)
@@ -439,11 +445,13 @@ impl<'a> Parser<'a> {
                 | Some(TokenKind::Local)
                 | Some(TokenKind::State)
         ) {
-            self.parse_variable_declaration()?
+            self.parse_variable_declaration()
         } else {
             // foreach $var (LIST) — bare scalar without my
-            self.parse_variable()?
+            self.parse_variable()
         };
+        self.in_foreach_iterator = prior_foreach_iterator;
+        let variable = variable?;
         self.in_for_loop_init = false;
 
         self.expect(TokenKind::LeftParen)?;
@@ -477,6 +485,11 @@ impl<'a> Parser<'a> {
     fn parse_foreach_style_for(&mut self) -> ParseResult<Node> {
         // Set flag to prevent semicolon consumption in variable declaration
         self.in_for_loop_init = true;
+        // Iterator targets are not assignment expressions (#13486). Save and
+        // restore the prior value so a broken header cannot poison later
+        // statements via `?` propagation.
+        let prior_foreach_iterator = self.in_foreach_iterator;
+        self.in_foreach_iterator = true;
         let variable = if matches!(
             self.peek_kind(),
             Some(TokenKind::My)
@@ -484,11 +497,13 @@ impl<'a> Parser<'a> {
                 | Some(TokenKind::Local)
                 | Some(TokenKind::State)
         ) {
-            self.parse_variable_declaration()?
+            self.parse_variable_declaration()
         } else {
             // for $var (LIST) — bare scalar without my
-            self.parse_variable()?
+            self.parse_variable()
         };
+        self.in_foreach_iterator = prior_foreach_iterator;
+        let variable = variable?;
         self.in_for_loop_init = false;
 
         self.expect(TokenKind::LeftParen)?;

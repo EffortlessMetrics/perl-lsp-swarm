@@ -522,6 +522,37 @@ impl<'a> Parser<'a> {
         )
     }
 
+    /// Fold a just-parsed declaration into the repetition assignment the
+    /// shared seam has already recognized.
+    ///
+    /// Both declaration-specific exits that bypass ordinary assignment
+    /// parsing (the statement-level list branch and the call-argument
+    /// declaration expression) share this finisher so the span rule (LHS
+    /// keeps the declaration span, the assignment spans through the RHS),
+    /// missing-RHS recovery, and right-associative RHS have one authority
+    /// (#13486). Callers own the `Identifier` gate: only invoke after
+    /// `consume_assignment_operator` returns `Some`, which keeps symbolic
+    /// operators on their existing path.
+    fn finish_declaration_repetition_assignment(
+        &mut self,
+        decl: Node,
+        op: &str,
+        op_start: usize,
+    ) -> ParseResult<Node> {
+        let rhs = if let Some(missing) = self.recover_missing_infix_rhs(op_start) {
+            missing
+        } else {
+            self.parse_assignment()?
+        };
+        let start = decl.location.start;
+        let end = rhs.location.end;
+
+        self.charge_node(
+            NodeKind::Assignment { lhs: Box::new(decl), rhs: Box::new(rhs), op: op.to_string() },
+            SourceLocation { start, end },
+        )
+    }
+
     fn is_explicit_sub_sigil_argument_start(&mut self) -> bool {
         matches!(self.peek_kind(), Some(TokenKind::SubSigil | TokenKind::BitwiseAnd))
             && self.tokens.peek_second().is_ok_and(|token| {
@@ -1002,6 +1033,11 @@ impl<'a> Parser<'a> {
         if !self.is_infix_rhs_absent() {
             return None;
         }
+        Some(self.record_missing_infix_rhs(op_pos))
+    }
+
+    /// Record an absent operand after its grammar owner has identified the boundary.
+    fn record_missing_infix_rhs(&mut self, op_pos: usize) -> Node {
         self.record_error(ParseError::Recovered {
             site: RecoverySite::InfixRhs,
             kind: RecoveryKind::MissingOperand,
@@ -1010,7 +1046,7 @@ impl<'a> Parser<'a> {
         let pos = op_pos;
         // #8786: not charged. Synthetic recovery node — recovery-node
         // accounting is #7074's dimension, not an admitted core dimension.
-        Some(Node::new(NodeKind::MissingExpression, SourceLocation { start: pos, end: pos }))
+        Node::new(NodeKind::MissingExpression, SourceLocation { start: pos, end: pos })
     }
 
     /// Expect a closing delimiter, recovering gracefully if missing.

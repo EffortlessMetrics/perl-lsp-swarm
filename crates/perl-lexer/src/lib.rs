@@ -3695,7 +3695,7 @@ impl<'a> PerlLexer<'a> {
                 return (body, false);
             }
 
-            if ch == '\\' {
+            if ch == '\\' && delim != '\\' {
                 body.push(ch);
                 self.advance();
                 if let Some(next) = self.current_char() {
@@ -3767,7 +3767,7 @@ impl<'a> PerlLexer<'a> {
                 escaped = false;
                 continue;
             }
-            if ch == '\\' {
+            if ch == '\\' && delim != '\\' {
                 escaped = true;
                 continue;
             }

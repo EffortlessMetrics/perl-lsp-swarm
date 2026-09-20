@@ -47,7 +47,7 @@ impl PerlLexer<'_> {
         let terminator = close;
 
         while let Some(ch) = self.current_char() {
-            if ch == '\\' {
+            if ch == '\\' && delim != '\\' {
                 // Escape pairs stay raw in the literal run, exactly like the
                 // ordinary-string scanner (no flush: `a\$b` is one literal).
                 literal.push(ch);

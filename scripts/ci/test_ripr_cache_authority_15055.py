@@ -13,6 +13,36 @@ REPO_ROOT = Path(os.environ.get("A3_REPO_ROOT", Path(__file__).resolve().parents
 WORKFLOW = REPO_ROOT / ".github/workflows/ripr.yml"
 SELF_TEST_WORKFLOW = REPO_ROOT / ".github/workflows/ci-gate-self-tests.yml"
 ACTION = "Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6"
+# #16126: ripr's own fact cache rides actions/cache, pinned to the SHA
+# .ci/policies/action-pin-provenance.toml already approves for this family.
+FACT_CACHE_PIN = "55cc8345863c7cc4c66a329aec7e433d2d1c52a9"
+FACT_CACHE_RESTORE = f"actions/cache/restore@{FACT_CACHE_PIN}"
+FACT_CACHE_SAVE = f"actions/cache/save@{FACT_CACHE_PIN}"
+SEED_SCAN = "cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json"
+# #16126: the fact-cache path is spelled twice -- once for the shell that
+# exports it and once for the cache action's `path:` -- because `runner` is a
+# step-level context. These must name the same directory, or a lane restores
+# into somewhere ripr never reads and stays cold while every other rule here
+# still passes.
+FACT_CACHE_DIRNAME = "ripr-facts"
+FACT_CACHE_DECLARATION = (
+    'echo "RIPR_CACHE_DIR=$RUNNER_TEMP/' + FACT_CACHE_DIRNAME + '" >> "$GITHUB_ENV"'
+)
+FACT_CACHE_PATH = "path: ${{ runner.temp }}/" + FACT_CACHE_DIRNAME
+SELFHOSTED_CACHE_DIR = "RIPR_CACHE_DIR: /mnt/ci-cache/" + FACT_CACHE_DIRNAME
+# #16209: the job-level RIPR_CACHE_DIR above is a host-side declaration only.
+# docker does not inherit arbitrary host environment variables, so the
+# analysis container needs its own explicit forward plus a bind mount to the
+# same host directory -- without both, the container falls back to its
+# workspace-local default and loses the cache during per-run cleanup.
+SELFHOSTED_CONTAINER_CACHE_DIR = "/ripr-facts"
+SELFHOSTED_CACHE_FORWARD_LINE = (
+    "            -e RIPR_CACHE_DIR=" + SELFHOSTED_CONTAINER_CACHE_DIR + " \\\n"
+)
+SELFHOSTED_CACHE_MOUNT_LINE = (
+    '            -v "$RIPR_CACHE_DIR:' + SELFHOSTED_CONTAINER_CACHE_DIR + '" \\\n'
+)
+HOSTED_FACT_CACHE_JOBS = ("ripr-github", "ripr-fallback", "seed-cache")
 CANONICAL_REFS = "github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main'"
 SAVE_GUARD = (
     "(github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && "
@@ -135,6 +165,17 @@ def cache_steps(source: list[str]) -> list[list[str]]:
             if action_reference(step).lower().startswith("swatinem/rust-cache@")]
 
 
+def fact_cache_steps(source: list[str]) -> list[list[str]]:
+    """`actions/cache`-family steps, which carry ripr's own fact cache (#16126).
+
+    Kept separate from `cache_steps` because that helper is the rust-cache
+    cardinality contract; a fact-cache step must not change those counts, and
+    a rust-cache step must not satisfy the writer rules below.
+    """
+    return [step for step in workflow_steps(source)
+            if action_reference(step).lower().startswith("actions/cache")]
+
+
 def validate_static_contract(source: list[str]) -> None:
     """Fail closed on the workflow mutations this contract is meant to catch."""
     text = "\n".join(source)
@@ -161,11 +202,115 @@ def validate_static_contract(source: list[str]) -> None:
     seed_cache = cache_steps(seed)
     if len(seed_cache) != 1 or f"save-if: ${{{{ {SAVE_GUARD} }}}}" not in "\n".join(seed_cache[0]):
         raise AssertionError("seed writer guard is unsafe")
-    commands = [field(step, "run", 8) for step in workflow_steps(seed)]
+    # Substring, not equality: the scan shares a `run:` block with the status
+    # capture that keeps a gap finding from costing the whole warm cache, so
+    # its step's command text is longer than the command. `field` already
+    # drops comment lines, so a command named only in prose still fails here.
+    commands = [field(step, "run", 8) or "" for step in workflow_steps(seed)]
     for command in ('cargo install ripr --version "$RIPR_VERSION" --locked',
-                    'cargo build -p xtask --locked'):
-        if command not in commands:
+                    'cargo build -p xtask --locked',
+                    # #16126: the seed must actually produce the fact cache it
+                    # saves. Without this the save step stores an empty
+                    # directory and every analysis lane still pays the cold
+                    # repo-wide scan, silently.
+                    SEED_SCAN):
+        if not any(command in text for text in commands):
             raise AssertionError(f"seed useful work is missing: {command}")
+    validate_fact_cache_contract(source)
+
+
+def validate_fact_cache_contract(source: list[str]) -> None:
+    """#16126: the fact cache keeps the same one-writer boundary as the rust cache.
+
+    A restored fact cache cannot change a verdict — ripr keys every entry on
+    content hashes plus analyzer and schema version — but a candidate-reachable
+    *writer* would still burn the shared quota that docs/ci/cache-policy.md
+    reserves to the canonical seed. That is what these rules hold.
+    """
+    for job in ("ripr-github", "ripr-fallback"):
+        steps = fact_cache_steps(block(source, job, 2))
+        if len(steps) != 1:
+            raise AssertionError(f"{job} must carry exactly one fact-cache step")
+        reference = action_reference(steps[0])
+        if reference != FACT_CACHE_RESTORE:
+            raise AssertionError(f"{job} fact cache is not the approved restore action")
+    seed_steps = fact_cache_steps(block(source, "seed-cache", 2))
+    if len(seed_steps) != 1 or action_reference(seed_steps[0]) != FACT_CACHE_SAVE:
+        raise AssertionError("seed must be the one fact-cache writer")
+    # docs/ci/cache-policy.md § Direct cache-save actions: an explicit writer
+    # states its own event/ref authority instead of inheriting the job's.
+    if field(seed_steps[0], "if", 8) != SAVE_GUARD:
+        raise AssertionError("fact-cache writer does not carry its own save guard")
+    if len(fact_cache_steps(source)) != 3:
+        raise AssertionError("an unaccounted fact-cache step appeared")
+    for step in fact_cache_steps(source):
+        text = "\n".join(step)
+        if "key: ripr-facts-${{ env.RIPR_VERSION }}-${{ github.sha }}" not in text:
+            raise AssertionError("fact cache key is not bound to the analyzer version")
+        # Whole line, not substring: `ripr-facts-cache` contains `ripr-facts`,
+        # so a containment test accepts a path ripr never reads.
+        if not any(line.strip() == FACT_CACHE_PATH for line in step):
+            raise AssertionError("fact cache path is not the runner temp directory")
+    validate_fact_cache_path_agreement(source)
+
+
+def validate_fact_cache_path_agreement(source: list[str]) -> None:
+    """The exported path and the cached path must name the same directory.
+
+    They cannot share a spelling: `runner` is a step-level context, so the
+    shell export reads `$RUNNER_TEMP` while the cache action's `path:` reads
+    `${{ runner.temp }}`.
+    """
+    for job in HOSTED_FACT_CACHE_JOBS:
+        steps = workflow_steps(block(source, job, 2))
+        declared = [i for i, step in enumerate(steps)
+                    if FACT_CACHE_DECLARATION in "\n".join(step)]
+        if len(declared) != 1:
+            raise AssertionError(f"{job} does not declare the fact cache path exactly once")
+        consumers = [i for i, step in enumerate(steps)
+                     if action_reference(step).lower().startswith("actions/cache")
+                     or SEED_SCAN in (field(step, "run", 8) or "")]
+        if not consumers:
+            raise AssertionError(f"{job} declares a fact cache path that nothing reads")
+        if declared[0] > min(consumers):
+            raise AssertionError(f"{job} reads the fact cache path before declaring it")
+    # The self-hosted lane keeps durable state on the mount beside CARGO_HOME,
+    # so it needs no action and no export -- but it must still point ripr
+    # outside the per-run checkout.
+    if SELFHOSTED_CACHE_DIR not in "\n".join(block(source, "ripr-selfhosted", 2)):
+        raise AssertionError("the self-hosted lane lost its durable fact cache path")
+    validate_selfhosted_container_boundary(source)
+    # The mistake this rule exists to catch, made while writing this change:
+    # `runner` is a step-level context, and no other job-level `env:` in this
+    # repository reaches for it.
+    for job in ("ripr-selfhosted",) + HOSTED_FACT_CACHE_JOBS:
+        for line in block(source, job, 2):
+            stripped = line.lstrip()
+            if (line.startswith(" " * 6) and not line.startswith(" " * 7)
+                    and "runner." in line and not stripped.startswith(("#", "-"))):
+                raise AssertionError(f"{job} uses the runner context in a job-level field")
+
+
+def validate_selfhosted_container_boundary(source: list[str]) -> None:
+    """#16209: the job-level env is not a container-visible one.
+
+    `RIPR_CACHE_DIR` set in the job's `env:` block only sets a host-side shell
+    variable. `docker run` does not inherit arbitrary host environment
+    variables into the container, so the analysis container needs its own
+    explicit `-e RIPR_CACHE_DIR=...` forward *and* a `-v` bind mount to the
+    same host directory the job-level env names -- either one missing means
+    every ripr command inside the container reads/writes its workspace-local
+    default instead, which is deleted by the next run's workspace cleanup.
+    """
+    job_text = "\n".join(block(source, "ripr-selfhosted", 2))
+    if SELFHOSTED_CACHE_FORWARD_LINE not in job_text:
+        raise AssertionError(
+            "self-hosted docker run does not forward RIPR_CACHE_DIR into the container"
+        )
+    if SELFHOSTED_CACHE_MOUNT_LINE not in job_text:
+        raise AssertionError(
+            "self-hosted docker run does not mount the host fact-cache directory"
+        )
 
 
 class RiprCacheAuthorityTests(unittest.TestCase):
@@ -211,6 +356,15 @@ class RiprCacheAuthorityTests(unittest.TestCase):
         self.assertIn("save-if: ${{ false }}", "\n".join(cache_steps(block(self.source, "ripr-github", 2))[0]))
         self.assertIn("save-if: ${{ false }}", "\n".join(cache_steps(block(self.source, "ripr-fallback", 2))[0]))
         self.assertIn(f"save-if: ${{{{ {SAVE_GUARD} }}}}", "\n".join(steps[-1]))
+
+    def test_selfhosted_container_receives_forwarded_cache_and_mount(self) -> None:
+        job_text = "\n".join(block(self.source, "ripr-selfhosted", 2))
+        self.assertIn(SELFHOSTED_CACHE_FORWARD_LINE, job_text)
+        self.assertIn(SELFHOSTED_CACHE_MOUNT_LINE, job_text)
+        # forwarded env and mount must name the same container path so the
+        # process ripr runs actually reads from where the mount lands.
+        self.assertIn(SELFHOSTED_CONTAINER_CACHE_DIR, SELFHOSTED_CACHE_FORWARD_LINE)
+        self.assertIn(SELFHOSTED_CONTAINER_CACHE_DIR, SELFHOSTED_CACHE_MOUNT_LINE)
 
     def test_negative_controls_do_not_authorize_saves(self) -> None:
         seed_condition = field(block(self.source, "seed-cache", 2), "if", 4) or ""
@@ -283,10 +437,60 @@ class RiprCacheAuthorityTests(unittest.TestCase):
             ),
         }
         for command in ('cargo install ripr --version "$RIPR_VERSION" --locked',
-                        'cargo build -p xtask --locked'):
+                        'cargo build -p xtask --locked',
+                        SEED_SCAN):
             mutations[f"seed omits {command}"] = text.replace(
-                seed_text, seed_text.replace(f"run: {command}", "run: true", 1), 1
+                seed_text, seed_text.replace(command, "true", 1), 1
             )
+        # #16126 negative controls for the fact cache's one-writer boundary.
+        mutations["analysis job becomes a fact-cache writer"] = text.replace(
+            FACT_CACHE_RESTORE, FACT_CACHE_SAVE, 1
+        )
+        mutations["seed stops writing the fact cache"] = text.replace(
+            seed_text, seed_text.replace(FACT_CACHE_SAVE, FACT_CACHE_RESTORE, 1), 1
+        )
+        mutations["fact cache pin is unapproved"] = text.replace(
+            FACT_CACHE_RESTORE, "actions/cache/restore@" + "b" * 40, 1
+        )
+        mutations["fact cache key drops the analyzer version"] = text.replace(
+            "key: ripr-facts-${{ env.RIPR_VERSION }}-${{ github.sha }}",
+            "key: ripr-facts-${{ github.sha }}", 1
+        )
+        mutations["cached path drifts from the exported path"] = text.replace(
+            FACT_CACHE_PATH, "path: ${{ runner.temp }}/ripr-facts-cache", 1
+        )
+        mutations["lane reads the fact cache path before declaring it"] = text.replace(
+            "      - name: Point ripr's fact cache outside the workspace\n"
+            f"        run: {FACT_CACHE_DECLARATION}\n\n",
+            "", 1
+        )
+        mutations["fact cache path returns to a job-level env"] = text.replace(
+            "    env:\n      RIPR_VERSION: \"0.10.0\"\n",
+            "    env:\n      RIPR_VERSION: \"0.10.0\"\n"
+            "      RIPR_CACHE_DIR: ${{ runner.temp }}/ripr-facts\n", 1
+        )
+        mutations["self-hosted lane loses its durable fact cache path"] = text.replace(
+            SELFHOSTED_CACHE_DIR, "RIPR_CACHE_DIR: target/ripr/cache", 1
+        )
+        # #16209: the job-level declaration alone is not enough -- docker run
+        # must also forward the env var and mount the host directory into the
+        # container, or the container silently uses its own default cache.
+        mutations["self-hosted container never receives the forwarded cache env"] = text.replace(
+            SELFHOSTED_CACHE_FORWARD_LINE, "", 1
+        )
+        mutations["self-hosted container never receives the cache mount"] = text.replace(
+            SELFHOSTED_CACHE_MOUNT_LINE, "", 1
+        )
+        mutations["fact-cache writer inherits instead of stating its guard"] = text.replace(
+            seed_text,
+            re.sub(
+                r"(?m)^      - name: Save ripr fact cache\n        if: >-\n(?:          .*\n)+",
+                "      - name: Save ripr fact cache\n",
+                seed_text,
+                count=1,
+            ),
+            1,
+        )
         for name, mutated in mutations.items():
             with self.subTest(mutation=name):
                 self.assertNotEqual(text, mutated, "mutation must alter the real workflow")
