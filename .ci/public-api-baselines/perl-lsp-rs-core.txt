@@ -11999,8 +11999,8 @@ pub fn perl_lsp_rs_core::transport::incoming::IncomingMessageStage::fmt(&self, f
 pub fn perl_lsp_rs_core::transport::incoming::IncomingMessageStage::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_lsp_rs_core::transport::incoming::ContentLengthMessageReader
 pub fn perl_lsp_rs_core::transport::incoming::ContentLengthMessageReader::new() -> Self
-pub fn perl_lsp_rs_core::transport::incoming::ContentLengthMessageReader::read_next(&mut self, reader: &mut dyn alloc::io::read::Read) -> std::io::Result<core::option::Option<perl_lsp_rs_core::protocol::JsonRpcRequest>>
-pub fn perl_lsp_rs_core::transport::incoming::ContentLengthMessageReader::read_next_outcome(&mut self, reader: &mut dyn alloc::io::read::Read) -> std::io::Result<core::option::Option<core::result::Result<perl_lsp_rs_core::protocol::JsonRpcRequest, perl_lsp_rs_core::transport::incoming::IncomingMessageError>>>
+pub fn perl_lsp_rs_core::transport::incoming::ContentLengthMessageReader::read_next(&mut self, reader: &mut dyn std::io::Read) -> std::io::Result<core::option::Option<perl_lsp_rs_core::protocol::JsonRpcRequest>>
+pub fn perl_lsp_rs_core::transport::incoming::ContentLengthMessageReader::read_next_outcome(&mut self, reader: &mut dyn std::io::Read) -> std::io::Result<core::option::Option<core::result::Result<perl_lsp_rs_core::protocol::JsonRpcRequest, perl_lsp_rs_core::transport::incoming::IncomingMessageError>>>
 pub fn perl_lsp_rs_core::transport::incoming::ContentLengthMessageReader::default() -> perl_lsp_rs_core::transport::incoming::ContentLengthMessageReader
 pub fn perl_lsp_rs_core::transport::incoming::decode_incoming_body(body: &[u8]) -> core::result::Result<perl_lsp_rs_core::protocol::JsonRpcRequest, perl_lsp_rs_core::transport::incoming::IncomingMessageError>
 pub fn perl_lsp_rs_core::transport::incoming::read_message(reader: &mut dyn std::io::BufRead) -> std::io::Result<core::option::Option<perl_lsp_rs_core::protocol::JsonRpcRequest>>
@@ -12063,8 +12063,8 @@ pub fn perl_lsp_rs_core::transport::framing::ContentLengthFramer::default() -> p
 pub fn perl_lsp_rs_core::transport::framing::ContentLengthFramer::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_lsp_rs_core::transport::ContentLengthMessageReader
 pub fn perl_lsp_rs_core::transport::incoming::ContentLengthMessageReader::new() -> Self
-pub fn perl_lsp_rs_core::transport::incoming::ContentLengthMessageReader::read_next(&mut self, reader: &mut dyn alloc::io::read::Read) -> std::io::Result<core::option::Option<perl_lsp_rs_core::protocol::JsonRpcRequest>>
-pub fn perl_lsp_rs_core::transport::incoming::ContentLengthMessageReader::read_next_outcome(&mut self, reader: &mut dyn alloc::io::read::Read) -> std::io::Result<core::option::Option<core::result::Result<perl_lsp_rs_core::protocol::JsonRpcRequest, perl_lsp_rs_core::transport::incoming::IncomingMessageError>>>
+pub fn perl_lsp_rs_core::transport::incoming::ContentLengthMessageReader::read_next(&mut self, reader: &mut dyn std::io::Read) -> std::io::Result<core::option::Option<perl_lsp_rs_core::protocol::JsonRpcRequest>>
+pub fn perl_lsp_rs_core::transport::incoming::ContentLengthMessageReader::read_next_outcome(&mut self, reader: &mut dyn std::io::Read) -> std::io::Result<core::option::Option<core::result::Result<perl_lsp_rs_core::protocol::JsonRpcRequest, perl_lsp_rs_core::transport::incoming::IncomingMessageError>>>
 pub fn perl_lsp_rs_core::transport::incoming::ContentLengthMessageReader::default() -> perl_lsp_rs_core::transport::incoming::ContentLengthMessageReader
 pub const perl_lsp_rs_core::transport::MAX_FRAME_SIZE: usize
 pub fn perl_lsp_rs_core::transport::decode_incoming_body(body: &[u8]) -> core::result::Result<perl_lsp_rs_core::protocol::JsonRpcRequest, perl_lsp_rs_core::transport::incoming::IncomingMessageError>
