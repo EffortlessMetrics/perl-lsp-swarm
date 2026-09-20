@@ -211,7 +211,8 @@ fn observe_output(case: &Value, output: &ParseOutput) -> Result<Value, Box<dyn E
 #[test]
 fn authored_matrix_and_comparator_reject_wrong_geometry() -> R {
     let rows = cases()?;
-    if rows.len() != 27 {
+    // #8917 adds four independently authored ordering discriminators to the original 27.
+    if rows.len() != 31 {
         return Err("signature denominator changed without contract update".into());
     }
     let mut failures = Vec::new();

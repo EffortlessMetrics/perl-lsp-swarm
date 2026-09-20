@@ -101,5 +101,21 @@ Their Error nodes retain available variable/default evidence. Complete forbidden
 defaults and immediately missing expressions preserve signature separators and
 suffixes; arbitrary malformed expressions retain existing bounded recovery.
 Native range preservation includes clone and inline-reparse offsets. This does
-not promote LSP highlighting or semantic/provider behavior. Ordering, effective feature admission, and separator/dialect admission remain
-#8917, #8922, and #8925 respectively.
+not promote LSP highlighting or semantic/provider behavior. The ordering extension is described below; effective feature admission and
+separator/dialect admission remain #8922 and #8925 respectively.
+
+The #8917 ordering extension adds same-sigil duplicate slurpies, optional
+positional-after-named, and optional-named-before-required-named cases. The last
+case is accepted starting with Perl 5.44 and retains the named-parameter warning;
+older rejection of named syntax does not prove its ordering semantics. Adding
+rows changes the matrix digest, so earlier 27-row receipts cannot establish the
+31-row denominator.
+
+The native ordering owner is `validate_signature_ordering`. It emits
+`ParseError::InvalidSignatureOrdering` with `InvalidSignatureOrderingKind` and the
+complete offending parameter range, retaining the signature rather than
+reordering it. Error parameters add no inferred ordering state. The new public
+error variant is additive to the existing `#[non_exhaustive] ParseError`; it does
+not newly break external exhaustive matches. The diagnostic kind and message
+change for ordering failures. Existing location/anchor consumers receive the range
+start; this does not promote full-range LSP diagnostics or call-site binding.
