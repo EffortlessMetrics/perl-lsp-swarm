@@ -149,9 +149,7 @@ fn module_edges(path: &Path, lines: &[String]) -> Vec<ModuleEdge> {
                 break;
             };
             gated |= attribute_is_a_test_gate(attr);
-            if let Some(value) =
-                attr.strip_prefix("#[path = \"").and_then(|value| value.strip_suffix("\"]"))
-            {
+            if let Some(value) = path_attribute_target(attr) {
                 redirect = Some(value.to_string());
             }
             let Some(tail) = rest.get(end + 1..) else {
@@ -229,6 +227,26 @@ fn module_edges(path: &Path, lines: &[String]) -> Vec<ModuleEdge> {
         redirect = None;
     }
     edges
+}
+
+/// The file `#[path = "…"]` redirects a declaration to, or `None` when `attr`
+/// is some other attribute.
+///
+/// Whitespace around `=` is optional in Rust, so `#[path="cases/lifecycle.rs"]`
+/// names the same file as the spaced spelling. Reading only one of them sends
+/// the declaration back to its plain module name, which resolves to a different
+/// file or to none — and a gated declaration that lands on the wrong file
+/// classifies that file as test-only. The repository happens to write all 221 of
+/// its `#[path]` attributes with spaces today, so this is the parser agreeing
+/// with the language rather than with the current tree.
+fn path_attribute_target(attr: &str) -> Option<&str> {
+    attr.strip_prefix("#[path")?
+        .trim_start()
+        .strip_prefix('=')?
+        .trim_start()
+        .strip_prefix('"')?
+        .split_once('"')
+        .map(|(target, _)| target)
 }
 
 /// Whether `attr` is a `cfg` attribute whose predicate cannot hold outside a
@@ -667,6 +685,25 @@ mod tests {
 
         let found = test_only_source_files(&[root, assertions.clone()])?;
         ensure!(found.contains(&assertions), "the redirected file is test-only; found {found:?}");
+        Ok(())
+    }
+
+    /// Rust does not require whitespace around the `=` in an attribute, so the
+    /// parser must not either. Reading only the spaced spelling sends the
+    /// declaration back to its plain module name — here `under_test.rs`, which
+    /// does not exist — and the redirect target stays in production scope.
+    #[test]
+    fn a_path_attribute_without_spaces_names_the_same_file() -> Result<()> {
+        let tree = Tree::new("unspaced-path")?;
+        let root =
+            tree.write("lib.rs", "#[cfg(test)]\n#[path=\"shared.rs\"]\nmod under_test;\n")?;
+        let shared = tree.write("shared.rs", "fn f() { x.unwrap(); }\n")?;
+
+        let found = test_only_source_files(&[root, shared.clone()])?;
+        ensure!(
+            found.contains(&shared),
+            "#[path=\"…\"] redirects the gated declaration just as #[path = \"…\"] does"
+        );
         Ok(())
     }
 
