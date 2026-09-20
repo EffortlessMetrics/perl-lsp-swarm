@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Fixed
+body: Preserve ternary operand separators in ordinary call arguments and statement-position tie, so a ternary else tail no longer absorbs the following comma or fat-arrow sibling argument.
+time: 2026-09-20T00:00:00Z
+custom:
+  PR: "16226"
+  Slug: call-ternary-separators
+  Breaking: "no"

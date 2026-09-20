@@ -1478,13 +1478,16 @@ impl<'a> Parser<'a> {
                     }
 
                     // First argument to tie can be a variable declaration, e.g. tie my %hash, ...
+                    // Each operand's caller owns the comma / fat-arrow separator, so the
+                    // unparenthesized ternary else tail must not absorb the next
+                    // sibling argument (#16210), matching the expression-position arm.
                     let variable = if matches!(
                         self.peek_kind(),
                         Some(TokenKind::My | TokenKind::Our | TokenKind::Local | TokenKind::State)
                     ) {
                         Box::new(self.parse_variable_declaration()?)
                     } else {
-                        Box::new(self.parse_assignment()?)
+                        Box::new(self.parse_assignment_before_separator()?)
                     };
 
                     // Accept comma or fat arrow between variable and package
@@ -1501,7 +1504,7 @@ impl<'a> Parser<'a> {
                             ));
                         }
                     }
-                    let package = Box::new(self.parse_assignment()?);
+                    let package = Box::new(self.parse_assignment_before_separator()?);
 
                     let mut args = vec![];
                     while matches!(
@@ -1512,14 +1515,15 @@ impl<'a> Parser<'a> {
                         if has_parens && self.peek_kind() == Some(TokenKind::RightParen) {
                             break;
                         }
-                        args.push(self.parse_assignment()?);
+                        args.push(self.parse_assignment_before_separator()?);
                     }
 
+                    // Some operands consume tokens directly, so their AST end is authoritative.
+                    let mut end = args.last().map_or(package.location.end, |arg| arg.location.end);
                     if has_parens {
                         self.expect_closing_delimiter(TokenKind::RightParen)?;
+                        end = end.max(self.previous_position());
                     }
-
-                    let end = self.previous_position();
                     self.charge_node(
                         NodeKind::Tie { variable, package, args },
                         SourceLocation { start, end },
