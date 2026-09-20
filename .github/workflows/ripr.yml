@@ -1109,6 +1109,11 @@ jobs:
       contents: read
       # #6807: read the failed lane's job log to classify runner evictions.
       actions: read
+      # #16101: read this pull request's live draft state and the conclusions
+      # already published for this head, so a stale draft snapshot cannot
+      # overwrite the verdict of the run that analyzed it.
+      checks: read
+      pull-requests: read
     steps:
       - name: Establish gate deadline
         if: always()
@@ -1152,6 +1157,12 @@ jobs:
       - name: Evaluate routed result
         shell: bash
         env:
+          CHECK_NAME: ripr+ New Gap Gate
+          # .ci/policies/required-checks.toml binds this required context to the
+          # GitHub Actions integration; only its check runs are proof for it.
+          REQUIRED_CHECK_APP_ID: "15368"
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           IS_DRAFT_PR: ${{ github.event_name == 'pull_request' && github.event.pull_request.draft == true }}
           ROUTE_RESULT: ${{ needs.route-ripr.result }}
           ROUTER_TARGET: ${{ needs.route-ripr.outputs.target }}
@@ -1212,10 +1223,167 @@ jobs:
             echo "- fallback_result: \`${FALLBACK_RESULT:-}\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
+          # IS_DRAFT_PR is the webhook's snapshot of the pull request, taken
+          # when this run was created. `cancel-in-progress` is false here by
+          # design, so a run created while the pull request was a draft always
+          # finishes, and its gate can land after the gate of the run that
+          # actually analyzed the head.
+          #
+          # Measured on #16094, head c9bf380f4: the run that executed the lane
+          # posted `ripr+ New Gap Gate` success at 05:35:59 with
+          # RIPR_GATE_VERDICT=success, and the superseded draft run posted
+          # draft-no-proof at 05:36:10, eleven seconds later, on a head whose
+          # analysis had completed and passed (#16101).
+          #
+          # Only an authoritative success is mirrored. A failure, a
+          # cancellation, or nothing published yet is missing or contradictory
+          # evidence, which AGENTS.md makes NOT_PROVEN, so the run stays
+          # non-successful and the run that analyzes the head overwrites it.
+          live_draft_state() {
+            gh api \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "repos/${GITHUB_REPOSITORY:-}/pulls/${PR_NUMBER:-}" \
+              --jq '.draft'
+          }
+
+          # The newest conclusion another run has already published for this
+          # check on this head. This job's own check run is still in progress,
+          # so the completed filter cannot match it. The check name carries
+          # spaces, so it goes through `-f` rather than into the path.
+          # Mirror only this required context's own authority. Two things the
+          # check name alone does not establish (#16105 review):
+          #
+          #   1. Any installed GitHub App may publish a check run of any name.
+          #      `.ci/policies/required-checks.toml` binds both required
+          #      contexts to GitHub Actions integration 15368, so a same-name
+          #      success from another app is not proof for this context.
+          #   2. Which attempt speaks for the head, when there is more than one.
+          #   3. Whether the response carries every attempt there is.
+          #
+          # This run is excluded from its own denominator: it is the stale
+          # snapshot asking whether it was superseded, and its own check run is
+          # in progress, so leaving it in would always select it and the answer
+          # would always be "no proof".
+          #
+          # The second question has no answer in the Checks REST contract. `id`
+          # is defined there as unique, not as chronological; `started_at` is
+          # absent on a queued attempt, and every coercion of that absent value
+          # is wrong in one direction or the other; `completed_at` lets a slow
+          # older attempt outrank a faster newer one. Ordering on any of them
+          # would rest a required gate on an invariant the API does not promise
+          # (#16105 review).
+          #
+          # So this does not order the attempts. It requires them to agree:
+          # every other attempt must be completed, and every one of them must
+          # be a success. A failure or a cancellation is a contradiction and
+          # prints nothing, which the caller treats as NOT_PROVEN. A false green
+          # is then unreachable without a real success and no contradiction,
+          # which is the property this mirror needs; chronology was only ever a
+          # means to it.
+          #
+          # Refusing to agree never invents a red this head did not already
+          # have: a contradiction means a real failed or cancelled attempt of
+          # this same required context is already published on this SHA, so the
+          # context is red with or without this run, and whatever re-run clears
+          # that attempt publishes a check newer than this one as well.
+          #
+          # The third question is answered by refusing the read. `per_page` caps
+          # at 100 and this request is not paginated, so when `total_count`
+          # exceeds what came back, agreement would be claimed over a population
+          # this job never saw. That reads as `truncated` and withholds proof
+          # rather than agreeing with a partial page (#16105 review).
+          #
+          # `filter` stays at its default of `latest`, deliberately. The REST
+          # contract defines `latest` as the most recent check runs, which drops
+          # an attempt superseded inside one check suite — what a re-run is. The
+          # attempt that was re-run does not contradict the one that replaced it,
+          # and `filter=all` would keep the old failure and hold a re-run-to-green
+          # head red for good. That much is documented rather than measured. What
+          # is measured on this repository is the other half: attempts from
+          # separate workflow runs are separate suites and appear under either
+          # value — two runs of one required context on one head, same two rows
+          # both ways.
+          mirror_read() {
+            gh api -X GET \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "repos/${GITHUB_REPOSITORY:-}/commits/${HEAD_SHA:-}/check-runs" \
+              -f "check_name=${CHECK_NAME:-}" \
+              -F per_page=100 \
+              --jq 'if (.total_count // 0) > (.check_runs | length) then "truncated"
+                    else [.check_runs[]
+                          | select((.app.id // -1) == (env.REQUIRED_CHECK_APP_ID | tonumber))
+                          | select(((.details_url // "")
+                                    | contains("/actions/runs/" + env.GITHUB_RUN_ID + "/")) | not)]
+                         | if length == 0 then "pending"
+                           elif any(.[]; .status != "completed") then "pending"
+                           elif all(.[]; .conclusion == "success") then "success"
+                           else "contradicted" end
+                    end'
+          }
+
+          # The first read is usually too early to mean anything. The stale
+          # snapshot starts within seconds of the ready flip, and on #16172 its
+          # failure was published three seconds *before* the ready run's checks
+          # existed at all, so the read finds nothing and calls a head with no
+          # evidence yet "no proof" (#16105 review). Polling instead of reading
+          # once removes that window.
+          #
+          # It does not remove the long one, and this does not claim to. The
+          # required lane itself takes tens of minutes, while this aggregator
+          # job is budgeted in single-digit ones — this one allows five — so
+          # waiting for that lane is not available here at any honest budget.
+          # The stale red then stands until the real run publishes a newer
+          # check run for this name and supersedes it. That residual belongs to
+          # #16101, whose fix is for a draft-routed run to publish nothing on a
+          # required context rather than a verdict.
+          #
+          # So the budget is the creation gap, not the lane: seconds of margin
+          # over a gap measured in seconds. Its timeout is fail-closed — it
+          # prints nothing and the gate stays red, as an unanswerable read
+          # does — and it stays far inside this job's own five minutes.
+          published_conclusion() {
+            local waited=0
+            local poll="${MIRROR_POLL_SECONDS:-5}"
+            # A zero or non-numeric interval would make the loop spin without
+            # ever reaching the budget, so it falls back to the default.
+            [ "$poll" -ge 1 ] 2>/dev/null || poll=5
+            while : ; do
+              case "$(mirror_read || echo unreadable)" in
+                success)
+                  printf 'success'
+                  return 0
+                  ;;
+                pending) ;;
+                *) return 0 ;;
+              esac
+              if [ "$waited" -ge "${MIRROR_WAIT_SECONDS:-60}" ]; then
+                return 0
+              fi
+              sleep "$poll"
+              waited=$(( waited + poll ))
+            done
+          }
+
           # Draft routing saves work but produces no required-check proof.
           # Preserve non-draft skipped routing (including RIPR cache seeding).
           if [ "$ROUTE_RESULT" = "skipped" ]; then
             if [ "${IS_DRAFT_PR:-false}" = "true" ]; then
+              draft_now="$(live_draft_state || true)"
+              if [ "$draft_now" = "false" ]; then
+                published="$(published_conclusion || true)"
+                if [ "$published" = "success" ]; then
+                  echo "RIPR_GATE_VERDICT=superseded-draft-snapshot"
+                  echo "- verdict: superseded-draft-snapshot (mirroring published success)" >> "$GITHUB_STEP_SUMMARY"
+                  echo "::notice::This run carries a stale draft snapshot for a pull request that is no longer a draft; mirroring the success already published for ${HEAD_SHA:-}."
+                  exit 0
+                fi
+                echo "RIPR_GATE_VERDICT=superseded-no-proof"
+                echo "- verdict: superseded-no-proof (NOT_PROVEN; published: \`${published:-none}\`)" >> "$GITHUB_STEP_SUMMARY"
+                echo "::error::This run carries a stale draft snapshot and no passing proof has been published for ${HEAD_SHA:-} (published: ${published:-none}); the run that analyzes this head owns the verdict."
+                exit 1
+              fi
               echo "RIPR_GATE_VERDICT=draft-no-proof"
               echo "::error::ripr draft route skipped: NOT_PROVEN; no analysis was executed."
               echo "- verdict: draft-no-proof (NOT_PROVEN)" >> "$GITHUB_STEP_SUMMARY"

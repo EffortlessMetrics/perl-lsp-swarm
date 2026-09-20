@@ -4490,6 +4490,25 @@ normalized_snippet_hash = "fnv1a64:dcfd9e6d8162989e"
 line = 59
 column = 5
 
+# Staged structural authority; remove when the FF02 consumer lands (#13856).
+[[allow]]
+id = "allow-13855-staged-contract"
+kind = "lint_exception"
+family = "expect_attribute"
+path = "xtask/src/tasks/release_scope_v2.rs"
+owner = "release/ci"
+classification = "reviewed_exception"
+reason = "FF01 #13855 lands the private structural model before its FF02 #13856 emit/verify consumer. Only non-test dead_code is expected; tests exercise the model now. Remove this exception with the consumer."
+evidence = ["issue:13855", "issue:13856", "test:xtask/src/tasks/release_scope_v2/tests.rs"]
+created = "2026-09-20"
+review_after = "2026-10-20"
+expires = "2026-12-20"
+
+[allow.selector]
+ast_kind = "attribute"
+lint = "dead_code"
+target_fingerprint = "policy:allow-13855-staged-contract"
+
 [[allow]]
 id = "allow-11664-staged-domain-dead-code"
 kind = "lint_exception"
@@ -4507,6 +4526,7 @@ expires = "2026-12-20"
 ast_kind = "attribute"
 lint = "dead_code"
 target_fingerprint = "policy:allow-11664-staged-domain-dead-code"
+
 
 [[allow]]
 id = "allow-11664-staged-domain-exports"

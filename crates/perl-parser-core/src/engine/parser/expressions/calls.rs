@@ -656,7 +656,22 @@ impl<'a> Parser<'a> {
             _ => true, // not a declaration node; treat as already complete
         };
 
-        if has_initializer { Ok(decl) } else { self.parse_below_assignment_with(decl) }
+        if has_initializer {
+            return Ok(decl);
+        }
+        // Contextual repetition assignment on a declaration used as a call
+        // argument (`f(my $v x= 3)`): `parse_declaration_arg` only consumes
+        // plain `=`, and the binary chain below never applies assignment
+        // operators, so route the declaration through the shared assignment
+        // seam to form one `x=` assignment over it (#13486). The
+        // `Identifier` gate keeps symbolic operators on their existing path:
+        // the seam consumes nothing unless it recognizes an adjacent `x=`.
+        if self.peek_kind() == Some(TokenKind::Identifier)
+            && let Some((op, op_start)) = self.consume_assignment_operator()?
+        {
+            return self.finish_declaration_repetition_assignment(decl, op, op_start);
+        }
+        self.parse_below_assignment_with(decl)
     }
 
     /// Parse a variable declaration as a function argument.

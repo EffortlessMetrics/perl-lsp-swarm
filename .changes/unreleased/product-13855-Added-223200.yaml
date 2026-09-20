@@ -1,0 +1,9 @@
+project: product
+component: Release governance
+kind: Added
+body: "A versioned release_scope.v2 contract can represent the final v0.18 product freeze with distinct observation, frozen-product, and prepared-swarm identities, complete PR dispositions, typed evidence references, and explicit product-versus-preparation invalidation—without selecting or executing a live freeze."
+time: 2026-09-05T22:32:00Z
+custom:
+  PR: "13855"
+  Slug: release-scope-v2-contract
+  Breaking: "no"

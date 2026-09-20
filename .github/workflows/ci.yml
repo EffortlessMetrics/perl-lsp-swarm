@@ -1001,43 +1001,16 @@ jobs:
       - name: Summarize PR-fast gate failures
         if: always()
         shell: bash
-        run: |
-          python3 - <<'PY'
-          import json
-          import os
-          from pathlib import Path
-
-          receipt = Path("target/receipts/receipt.json")
-          summary = Path(os.environ["GITHUB_STEP_SUMMARY"])
-          lines = ["### PR Smoke gate summary", ""]
-          if not receipt.is_file():
-              lines.append("- Receipt: unavailable (the PR-fast runner did not produce a final receipt.)")
-          else:
-              try:
-                  data = json.loads(receipt.read_text(encoding="utf-8"))
-              except (OSError, json.JSONDecodeError) as error:
-                  lines.append(f"- Receipt: unreadable ({error})")
-              else:
-                  gates = data.get("gates", [])
-                  failures = [
-                      gate for gate in gates
-                      if gate.get("status") not in ("pass", "passed", "success")
-                  ]
-                  lines.append(f"- Receipt: `{receipt}`")
-                  if failures:
-                      lines.append("")
-                      lines.append("| Gate | Status | Exit |")
-                      lines.append("| --- | --- | ---: |")
-                      for gate in failures:
-                          lines.append(
-                              f"| `{gate.get('gate_name', 'unknown')}` | "
-                              f"`{gate.get('status', 'unknown')}` | "
-                              f"`{gate.get('exit_code', 'unknown')}` |"
-                          )
-                  else:
-                      lines.append("- Non-success gates: none recorded.")
-          summary.write_text("\n".join(lines) + "\n", encoding="utf-8")
-          PY
+        # Renders the gate table into GITHUB_STEP_SUMMARY, mirrors it to stdout
+        # for the job-log tail, and publishes one `::error` annotation per
+        # failing gate so the check-runs API can name the gate without the
+        # artifact download (#15492). The logic lives in a script rather than
+        # inline here because four of its branches -- the `skip` exclusion, the
+        # workflow-command escaping, the `::stop-commands::` fence and the
+        # ten-annotation fold -- are only falsifiable from a test harness:
+        # scripts/ci/test_summarize_pr_fast_gates.py, run by
+        # .github/workflows/ci-gate-self-tests.yml.
+        run: python3 scripts/ci/summarize_pr_fast_gates.py
 
       - name: Convert PR-fast receipt to JUnit
         if: always()
@@ -1132,7 +1105,7 @@ jobs:
             # The cheapest control remains first for fast diagnosis, but the
             # shard runner now records every independent member before it
             # returns the aggregate failure verdict.
-            gates: docs_agents_contract_workflows msrv_authority_sync compiler_concept_ledger compiler_proof_policy compiler_concept_proof compiler_performance_receipt_contract kubernetes_dap_profiles postfix_capability_closure release_trust_invariants docs_build adr_link_check non_rust_inventory_check must_context_check lint_policy v2_bundle_sync nested_lock_check doctest_contract_proof doctest_enforcement version_sync agent_ledgers_validate code_action_generation_ledger
+            gates: docs_agents_contract_workflows msrv_authority_sync compiler_concept_ledger compiler_proof_policy compiler_concept_proof compiler_performance_receipt_contract kubernetes_dap_profiles postfix_capability_closure release_trust_invariants docs_build adr_link_check non_rust_inventory_check completion_candidate_ledger must_context_check lint_policy v2_bundle_sync nested_lock_check doctest_contract_proof doctest_enforcement version_sync agent_ledgers_validate code_action_generation_ledger
     permissions:
       contents: read
     # Run on every PR push and on push to main/master
@@ -1537,6 +1510,21 @@ jobs:
     name: CI Gate (Advisory Aggregate)
     runs-on: ubuntu-24.04
     timeout-minutes: 2
+    # Read-only, and narrower than it looks: `pull-requests` only to read the
+    # live head of the pull request this job is already running for, `actions`
+    # only to look up the replacement run on that head.
+    #
+    # `actions: read` is belt and braces. Run 35508361581 resolved both heads
+    # under `contents`/`pull-requests` alone, with no `Unresolved` notice, so
+    # `GET /actions/runs/{id}` needs no explicit scope. The *listing* endpoint
+    # this now also calls was not covered by that measurement, and a silently
+    # 403'd lookup would leave the feature inert rather than wrong — which is
+    # the failure mode this pull request already shipped once. Declaring the
+    # scope costs nothing and removes the guess.
+    permissions:
+      contents: read
+      pull-requests: read
+      actions: read
     needs:
       - draft-pr-check
       - preflight-latest-check
@@ -1551,7 +1539,115 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
+      # Evidence that a newer candidate replaced the one this run tested. It
+      # no longer changes the gate's colour — every non-success path exits 1 —
+      # only which sentence the reader is handed, which is what #16087 asked
+      # for. That does not make a wrong answer cheap: a message naming a run
+      # that is not proving this candidate is the same defect with more
+      # confidence behind it.
+      #
+      # This job used to gate that on `cancelled()`, and a live run falsified
+      # it. Run 35507473500 was concurrency-cancelled by a push, every
+      # dependency came back `cancelled`, this job still ran under
+      # `if: always()` — and its `if: cancelled()` steps were *skipped*.
+      # `cancelled()` is false here: the run was cancelled, this job was not.
+      # The marker those steps exported could therefore never be set in the one
+      # case #16087 is about, so anything resting on it was inert.
+      #
+      # Positive evidence replaces it, and needs no cancellation fact at all.
+      # Two facts together: the pull request's live head is no longer the head
+      # this run tested, *and* a run of this workflow exists for that live
+      # head. The first alone was the previous attempt, and review rejected it
+      # correctly — a moved head shows the candidate changed, not that
+      # anything exists to prove the new one, which is what #16087's accepted
+      # design asks for. The classifier still requires every blocker to be a
+      # cancelled lane, so a genuine failure alongside a cancellation is still
+      # a failure.
+      #
+      # The pull request is resolved by its number, not by branch name:
+      # `github.head_ref` is fork-controlled, which is how a branch called
+      # "main" once made every fork PR look superseded (#5981). Both SHAs come
+      # from the API rather than the event payload, because this job must not
+      # read candidate-controlled pull-request head data (#12911) — the run
+      # object's `head_sha` is the head this run actually tested.
+      #
+      # Fail closed: an unresolved head stays empty and leaves the gate red,
+      # which is the behaviour before this step existed.
+      - name: Resolve the tested head, the live head, and the replacement run
+        if: always() && github.event_name == 'pull_request'
+        shell: bash
+        env:
+          # `github.token` rather than `secrets.GITHUB_TOKEN`: the same
+          # installation token, reached without a secret reference in a
+          # PR-triggered workflow, which `workflow_security_ratchet.py` flags
+          # as `pr_secret_reference`. The job's own `permissions:` block is
+          # what bounds the authority, and it is read-only.
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPOSITORY: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -uo pipefail
+          # One read supplies both this run's tested head and its workflow id.
+          # The workflow id keeps the replacement lookup below to *this*
+          # workflow, so a run of some other workflow on the newer head cannot
+          # be mistaken for the replacement.
+          run_json="$(gh api "repos/${REPOSITORY}/actions/runs/${RUN_ID}" 2>/dev/null || true)"
+          tested="$(printf '%s' "$run_json" | jq -r '.head_sha // empty' 2>/dev/null || true)"
+          workflow_id="$(printf '%s' "$run_json" | jq -r '.workflow_id // empty' 2>/dev/null || true)"
+          created="$(printf '%s' "$run_json" | jq -r '.created_at // empty' 2>/dev/null || true)"
+          latest="$(gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}" --jq '.head.sha' 2>/dev/null || true)"
+
+          # The replacement run's identity, not merely the fact that the head
+          # moved. A moved head shows the candidate changed; it does not show
+          # that anything is proving the new one. #16087 requires a
+          # demonstrable newer run, so it is looked up and its id bound.
+          # Queried only once the head has actually moved, so this run can
+          # never find itself.
+          #
+          # The endpoint constrains workflow and head SHA. Event, pull-request
+          # association and chronology it does not, and a review finding on
+          # #16186 named all three: without them "the evidence claim remains
+          # too strong". `scripts/ci/replacement_run_filter.jq` applies them,
+          # and `test_evaluate_ci_gate.py` runs that same file against
+          # response fixtures, so the two cannot drift.
+          replacement=""
+          if [[ "${latest}" =~ ^[0-9a-f]{40}$ ]] \
+            && [[ "${tested}" =~ ^[0-9a-f]{40}$ ]] \
+            && [[ "${latest}" != "${tested}" ]] \
+            && [[ "${workflow_id}" =~ ^[0-9]+$ ]] \
+            && [[ "${PR_NUMBER}" =~ ^[0-9]+$ ]] \
+            && [[ "${created}" =~ ^[0-9T:Z-]+$ ]]; then
+            # Arguments are passed as jq arguments, never interpolated into the
+            # program text, so neither value can alter what the filter does.
+            replacement="$(gh api \
+              "repos/${REPOSITORY}/actions/workflows/${workflow_id}/runs?head_sha=${latest}&event=pull_request&per_page=30" \
+              2>/dev/null \
+              | jq -r --argjson pr "${PR_NUMBER}" --arg since "${created}" \
+                  -f scripts/ci/replacement_run_filter.jq 2>/dev/null || true)"
+          fi
+
+          # Only well-formed values are exported. `gh` writes nothing to stdout
+          # on failure, but a partial or unexpected value would still compare
+          # unequal to the other side and read as a supersession that did not
+          # happen, so every shape is checked rather than assumed. An
+          # unexported variable leaves the gate red, which is the safe
+          # direction for all three.
+          for pair in "RUN_HEAD_SHA=${tested}" "LATEST_HEAD_SHA=${latest}"; do
+            if [[ "${pair#*=}" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "$pair" >> "$GITHUB_ENV"
+            else
+              echo "::notice::Unresolved ${pair%%=*}; the gate stays red."
+            fi
+          done
+          if [[ "${replacement}" =~ ^[0-9]+$ ]]; then
+            echo "REPLACEMENT_RUN_ID=${replacement}" >> "$GITHUB_ENV"
+          else
+            echo "::notice::No replacement run for the live head; the gate stays red."
+          fi
+
       - name: Gate summary
+        if: always()
         shell: bash
         env:
           NEEDS_JSON: ${{ toJson(needs) }}
@@ -2062,6 +2158,20 @@ jobs:
         run: |
           cargo test -p xtask --bin xtask --locked -- --nocapture dead_code_api_ledger
           cargo test -p perl-parser --test dead_code_api_compat --locked -- --nocapture
+
+      # #16101: identical reasoning to the contracts above. This suite is the
+      # only executable proof that the two required contexts mirror a
+      # conclusion from their own bound integration rather than from whichever
+      # aggregator posted last. It executes the real `Evaluate routed result`
+      # shell block through real `jq` with a shimmed `gh`, so it is what catches
+      # a regression in the app-id binding, in the newest-attempt ordering, or
+      # in the self-exclusion that stops the mirror reading its own in-progress
+      # check. The merge gate runs `cargo test --workspace --lib`, which builds
+      # no `tests/` target, and no workflow named this one — so as authored the
+      # contract could compile and never execute while a draft-run snapshot
+      # silently overwrote a green required check.
+      - name: Required-context mirror contract (required merge surface)
+        run: cargo test -p xtask --test workflow_draft_snapshot_supersession --locked -- --nocapture
 
   lsp-memory-smoke:
     name: LSP Memory Smoke
