@@ -1701,7 +1701,7 @@
       ],
       "candidate_event_reachability": "reachable",
       "executed_subject": "candidate",
-      "job_condition": "always() && needs.route-ripr.result == 'success' && (\n  (needs.route-ripr.outputs.target == 'cx53' && needs.ripr-cx53.result == 'failure' && needs.ripr-cx53.outputs.preflight_ok == 'false') ||\n  (needs.route-ripr.outputs.target == 'cx43' && needs.ripr-cx43.result == 'failure' && needs.ripr-cx43.outputs.preflight_ok == 'false')\n)",
+      "job_condition": "always() && needs.route-ripr.result == 'success' && needs.route-ripr.outputs.target == 'selfhosted' && needs.ripr-selfhosted.result == 'failure' && needs.ripr-selfhosted.outputs.preflight_ok == 'false'",
       "step_condition": null,
       "save_condition": "${{ false }}",
       "save_authority_source": "event_guard",

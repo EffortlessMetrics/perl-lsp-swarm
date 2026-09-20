@@ -507,8 +507,8 @@ mod tests {
         let policy = load_policy_for_inspection(&root.join(".ci/gate-policy.yaml"))?;
         let partition = validate_clippy_all_targets_partition(&root, &policy)?;
 
-        assert_eq!(partition.workspace.len(), 47);
-        assert_eq!(partition.strict.len(), 36);
+        assert_eq!(partition.workspace.len(), 48);
+        assert_eq!(partition.strict.len(), 37);
         assert_eq!(partition.residual.len(), 11);
         assert_eq!(partition.residual.get("perl-lsp-ux-tests").map(String::as_str), Some("#15613"));
         Ok(())
