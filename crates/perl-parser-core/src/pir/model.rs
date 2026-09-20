@@ -559,6 +559,36 @@ pub enum PirOperation {
         /// The lexical being written.
         name: LexicalName,
     },
+    /// Read a per-object `field` of a Perl 5.38+ `class`.
+    ///
+    /// Distinct from [`LexicalRead`](Self::LexicalRead) and
+    /// [`StashRead`](Self::StashRead) because a field is neither a pad slot nor
+    /// a stash slot. Folding it into either would publish a false fact:
+    /// `LexicalRead` is what fact extraction turns into a lexical binding, and
+    /// `StashRead` claims a package-global read. Keeping the reference in the
+    /// IR under its own name preserves it for navigation without asserting
+    /// storage it does not have (#13817).
+    FieldRead {
+        /// The field being read, as sigil plus name.
+        name: LexicalName,
+    },
+    /// Write (initialize or assign) a per-object `field`.
+    ///
+    /// Mirrors [`FieldRead`](Self::FieldRead) for the write direction.
+    FieldWrite {
+        /// The field being written.
+        name: LexicalName,
+    },
+    /// Compound read-modify-write on a per-object `field` (`+=`, `++`, etc.).
+    ///
+    /// Mirrors [`Modify`](Self::Modify) for field slots; the place is evaluated
+    /// once and the operator text is preserved in `op`.
+    FieldModify {
+        /// The field being modified.
+        name: LexicalName,
+        /// The compound operator text.
+        op: String,
+    },
     /// Read a package/stash symbol.
     StashRead {
         /// The symbol being read.
@@ -706,6 +736,9 @@ impl PirOperation {
     #[must_use]
     pub const fn name(&self) -> &'static str {
         match self {
+            Self::FieldModify { .. } => "FieldModify",
+            Self::FieldRead { .. } => "FieldRead",
+            Self::FieldWrite { .. } => "FieldWrite",
             Self::LexicalRead { .. } => "LexicalRead",
             Self::LexicalWrite { .. } => "LexicalWrite",
             Self::StashRead { .. } => "StashRead",
@@ -738,6 +771,9 @@ impl PirOperation {
         "Call",
         "Deref",
         "DynamicBoundary",
+        "FieldModify",
+        "FieldRead",
+        "FieldWrite",
         "LexicalRead",
         "LexicalWrite",
         "Literal",
@@ -1043,6 +1079,9 @@ mod tests {
             "Call",
             "Deref",
             "DynamicBoundary",
+            "FieldModify",
+            "FieldRead",
+            "FieldWrite",
             "LexicalRead",
             "LexicalWrite",
             "Literal",
