@@ -1537,8 +1537,10 @@ impl<'a> Parser<'a> {
             None
         };
         if let Some(token) = &default_token
-            && (matches!(self.peek_kind(), None | Some(TokenKind::Comma | TokenKind::RightParen))
-                || self.tokens.is_eof())
+            && (matches!(
+                self.peek_kind(),
+                None | Some(TokenKind::Comma | TokenKind::Colon | TokenKind::RightParen)
+            ) || self.tokens.is_eof())
         {
             let range = SourceLocation { start, end: token.end() };
             let error = ParseError::InvalidSignatureParameter {
