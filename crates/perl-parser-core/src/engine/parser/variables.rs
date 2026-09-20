@@ -1565,7 +1565,18 @@ impl<'a> Parser<'a> {
             None
         };
 
-        end = if let Some(ref default) = default_value { default.location.end } else { end };
+        // The default expression's reported `.location.end` is the inner
+        // expression span. When the default is grouped, the parser has
+        // already consumed the closing `)` past that span, so the parameter's
+        // stored end must be the maximum of the inner span and the parser's
+        // consumed-token endpoint. Without this fix the OptionalParameter
+        // / NamedParameter covering `$x = (1+2)` stops before the `)`
+        // (issue #16242, follow-up to merged #16204 under #8915).
+        end = if let Some(ref default) = default_value {
+            default.location.end.max(self.previous_position())
+        } else {
+            end
+        };
 
         // Check if variable is slurpy (@args or %hash)
         let is_slurpy = matches!(&variable.kind, NodeKind::Variable { sigil, .. } if sigil == "@" || sigil == "%");
