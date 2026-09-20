@@ -325,8 +325,16 @@ fn read_dev_loop_durations(root: &Path) -> Result<BTreeMap<String, Option<f64>>>
     let path = root.join("artifacts").join("build-timing-receipt.json");
     let raw = match fs::read_to_string(&path) {
         Ok(raw) => raw,
-        // Absent receipt is a fresh-clone condition, not schema drift.
-        Err(_) => return Ok(tracked.into_iter().map(|k| (k.to_string(), None)).collect()),
+        // Absent receipt is a fresh-clone condition, not schema drift. Any
+        // other read failure (permissions, is-a-directory, transient I/O)
+        // must propagate with path context: degrading it to missing
+        // measurements would fail open on a present-but-unreadable receipt.
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(tracked.into_iter().map(|k| (k.to_string(), None)).collect());
+        }
+        Err(error) => {
+            return Err(error).with_context(|| format!("reading {}", path.display()));
+        }
     };
 
     let parsed = serde_json::from_str::<BuildTimingReceiptFile>(&raw)
@@ -546,6 +554,33 @@ mod tests {
         ensure!(
             read_dev_loop_durations(tmp.path()).is_err(),
             "receipt without schema_version must fail closed"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn read_dev_loop_durations_degrades_only_absent_receipt_to_missing() -> Result<()> {
+        // Absent receipt is the fresh-clone condition: every tracked metric
+        // degrades to `None`.
+        let tmp = TempDir::new()?;
+        let durations = read_dev_loop_durations(tmp.path())?;
+        ensure!(
+            !durations.is_empty() && durations.values().all(|value| value.is_none()),
+            "absent receipt must degrade every tracked metric to None, got {durations:?}"
+        );
+
+        // A present-but-unreadable receipt (invalid UTF-8 here; permissions
+        // or is-a-directory in the field) must propagate, not degrade: only
+        // `NotFound` means fresh clone (#16024 review).
+        let dir = tmp.path().join("artifacts");
+        fs::create_dir_all(&dir)?;
+        fs::write(dir.join("build-timing-receipt.json"), [0xff, 0xfe, 0x00])?;
+        let err = read_dev_loop_durations(tmp.path())
+            .err()
+            .ok_or_else(|| eyre!("unreadable receipt must propagate, not degrade"))?;
+        ensure!(
+            err.to_string().contains("build-timing-receipt.json"),
+            "expected path context in the propagated error, got: {err}"
         );
         Ok(())
     }

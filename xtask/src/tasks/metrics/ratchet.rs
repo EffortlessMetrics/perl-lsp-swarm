@@ -729,6 +729,7 @@ mod tests {
         std::fs::write(
             receipt_dir.join("test.json"),
             r#"{
+  "schema_version": 1,
   "subsystem": "test",
   "generated_at": "2026-05-03T00:00:00Z",
   "commit": "current",
@@ -741,10 +742,19 @@ mod tests {
 
         let result = run_ratchet_check(dir.path(), "test", None, false);
 
+        // The fixture carries the current schema version so the failure must
+        // come from the floor-regression path (0.5 < 0.9 baseline), not from
+        // schema gating: without the stamp this assertion passes on a parse
+        // error and stops exercising violation handling.
+        let err = result.err().ok_or_else(|| {
+            color_eyre::eyre::eyre!(
+                "a receipt below the committed floor must fail; otherwise the bootstrap \
+                 pass above proves nothing"
+            )
+        })?;
         assert!(
-            result.is_err(),
-            "a receipt below the committed floor must fail; otherwise the bootstrap \
-             pass above proves nothing"
+            err.to_string().contains("floor metric violation"),
+            "expected a floor-regression failure, got: {err}"
         );
 
         Ok(())

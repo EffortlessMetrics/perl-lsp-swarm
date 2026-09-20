@@ -594,6 +594,103 @@ mod tests {
         assert_eq!(classify_improvement(-1e-3), ImprovementClass::Tie);
     }
 
+    /// `run_compare` enforces the schema gate on both inputs: a wrong or
+    /// missing version on either side must fail, so removing or reversing
+    /// the gate (or validating only one side) turns this test red (#16024
+    /// review).
+    #[test]
+    fn run_compare_rejects_wrong_or_missing_schema_version_on_either_side() -> Result<()> {
+        fn receipt(version: Option<serde_json::Value>) -> serde_json::Value {
+            let mut map = serde_json::Map::new();
+            if let Some(version) = version {
+                map.insert("schema_version".to_string(), version);
+            }
+            map.insert("timestamp".to_string(), serde_json::Value::from("2026-01-01T00:00:00Z"));
+            map.insert("toolchain".to_string(), serde_json::Value::from("rustc (test)"));
+            map.insert(
+                "measurements".to_string(),
+                serde_json::json!({
+                    "clean_build_workspace": {
+                        "duration_seconds": 1.0,
+                        "command": "cargo build",
+                    },
+                }),
+            );
+            serde_json::Value::Object(map)
+        }
+
+        let dir = tempfile::tempdir()?;
+        let baseline = dir.path().join("baseline.json");
+        let current = dir.path().join("current.json");
+        let write = |path: &std::path::Path, value: &serde_json::Value| -> Result<()> {
+            std::fs::write(path, serde_json::to_string(value)?)?;
+            Ok(())
+        };
+
+        // Both current: the gate passes (comparison itself may report drift;
+        // here the inputs are identical so it succeeds).
+        write(&baseline, &receipt(Some(serde_json::Value::from(SCHEMA_VERSION))))?;
+        write(&current, &receipt(Some(serde_json::Value::from(SCHEMA_VERSION))))?;
+        run_compare(baseline.clone(), current.clone())?;
+
+        // Wrong version on either side fails through the schema gate.
+        for (label, baseline_version, current_version) in [
+            ("baseline-wrong", Some(serde_json::Value::from(SCHEMA_VERSION + 1)), None),
+            ("current-wrong", None, Some(serde_json::Value::from(SCHEMA_VERSION + 1))),
+        ] {
+            // The `None` side keeps the current version; the `Some` side is
+            // the wrong one under test.
+            write(
+                &baseline,
+                &receipt(baseline_version.or(Some(serde_json::Value::from(SCHEMA_VERSION)))),
+            )?;
+            write(
+                &current,
+                &receipt(current_version.or(Some(serde_json::Value::from(SCHEMA_VERSION)))),
+            )?;
+            let err = run_compare(baseline.clone(), current.clone()).err().ok_or_else(|| {
+                color_eyre::eyre::eyre!("run_compare must reject a wrong schema version ({label})")
+            })?;
+            assert!(
+                err.to_string().contains("schema version mismatch"),
+                "expected the schema gate, got: {err}"
+            );
+        }
+
+        // Missing version on either side fails at parse (no serde default).
+        for (label, drop_baseline, drop_current) in
+            [("baseline-missing", true, false), ("current-missing", false, true)]
+        {
+            write(
+                &baseline,
+                &receipt(if drop_baseline {
+                    None
+                } else {
+                    Some(serde_json::Value::from(SCHEMA_VERSION))
+                }),
+            )?;
+            write(
+                &current,
+                &receipt(if drop_current {
+                    None
+                } else {
+                    Some(serde_json::Value::from(SCHEMA_VERSION))
+                }),
+            )?;
+            let err = run_compare(baseline.clone(), current.clone()).err().ok_or_else(|| {
+                color_eyre::eyre::eyre!(
+                    "run_compare must reject a missing schema version ({label})"
+                )
+            })?;
+            assert!(
+                err.to_string().contains("Failed to parse"),
+                "expected a parse failure, got: {err}"
+            );
+        }
+
+        Ok(())
+    }
+
     /// Producer round-trip: the receipt stamps the current schema version and
     /// the consumer-facing view parses it back (#15357).
     #[test]
