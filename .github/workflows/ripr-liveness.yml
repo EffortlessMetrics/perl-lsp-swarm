@@ -68,26 +68,32 @@ jobs:
           # One page is ample: ripr runs are serialised per PR and the floor is
           # minutes, so anything older than this page has long since resolved.
           gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/ripr.yml/runs?per_page=100" \
-            --jq '[.workflow_runs[] | {id, status, created_at, head_sha, head_branch,
+            --jq '[.workflow_runs[] | {id, status, event, created_at, head_sha, head_branch,
                    pull_requests: [.pull_requests[]?.number]}]' \
             > target/ripr/liveness/runs.json
 
           # Only a run that has scheduled nothing needs its job count read, so
           # the per-run call is bounded to the candidates.
           python3 - <<'PY'
-          import json, os, subprocess, datetime
+          import json, os, subprocess, datetime, importlib.util, pathlib
+
+          # The count coercion is the one piece of this step that decides a
+          # posted check run, so it lives in the tested module rather than here.
+          spec = importlib.util.spec_from_file_location(
+              "ripr_liveness", pathlib.Path("scripts/ci/ripr_liveness.py"))
+          liveness = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(liveness)
 
           repo = os.environ["GITHUB_REPOSITORY"]
           runs = json.load(open("target/ripr/liveness/runs.json"))
-          unstarted = {"queued", "pending", "waiting", "requested"}
           for run in runs:
-              if run.get("status") in unstarted:
+              if run.get("status") in liveness.UNSTARTED_STATUSES:
                   out = subprocess.run(
                       ["gh", "api", f"repos/{repo}/actions/runs/{run['id']}/jobs",
                        "--jq", ".total_count"],
                       capture_output=True, text=True, check=False,
                   )
-                  run["job_count"] = int(out.stdout.strip() or 0) if out.returncode == 0 else None
+                  run["job_count"] = liveness.job_count_from_api(out.returncode, out.stdout)
               else:
                   run["job_count"] = 1
 
@@ -127,15 +133,46 @@ jobs:
               print("no ripr run is waiting past the floor")
               sys.exit(0)
 
+          REQUIRED_CONTEXT = "ripr+ New Gap Gate"
+
+          def already_posted(head_sha, external_id):
+              """Whether this exact finding is already on this head.
+
+              The cron fires every 15 minutes and a stall lasts as long as it
+              lasts, so without this a two-hour stall leaves eight identical
+              check runs on one pull request.
+              """
+              out = subprocess.run(
+                  ["gh", "api", f"repos/{repo}/commits/{head_sha}/check-runs",
+                   "--jq", "[.check_runs[] | .external_id]"],
+                  capture_output=True, text=True, check=False,
+              )
+              if out.returncode != 0:
+                  return False  # unreadable: post rather than stay silent
+              try:
+                  return external_id in json.loads(out.stdout or "[]")
+              except ValueError:
+                  return False
+
           for finding in findings:
               conclusion = finding["conclusion"]
-              # The classifier can never say success; refuse anyway rather than
+              name = finding["check_name"]
+              # The classifier can never say success and never offers the
+              # required context's name; refuse both here anyway rather than
               # trust an upstream change not to.
               if conclusion == "success":
                   raise SystemExit("refusing to post a success conclusion from the liveness reporter")
+              if name == REQUIRED_CONTEXT:
+                  raise SystemExit(f"refusing to post under the required context {name!r}")
+              head_sha = finding["head_sha"]
+              external_id = f"ripr-liveness:{finding['run_id']}:{finding['classification']}"
+              if already_posted(head_sha, external_id):
+                  print(f"{head_sha} {finding['classification']}: already reported")
+                  continue
               payload = {
-                  "name": "ripr+ liveness",
-                  "head_sha": finding["head_sha"],
+                  "name": name,
+                  "head_sha": head_sha,
+                  "external_id": external_id,
                   "status": "completed",
                   "conclusion": conclusion,
                   "output": {
@@ -149,5 +186,5 @@ jobs:
                   input=json.dumps(payload), capture_output=True, text=True, check=False,
               )
               status = "posted" if result.returncode == 0 else f"failed: {result.stderr.strip()}"
-              print(f"{finding['head_sha']} {finding['classification']}: {status}")
+              print(f"{head_sha} {finding['classification']}: {status}")
           PY

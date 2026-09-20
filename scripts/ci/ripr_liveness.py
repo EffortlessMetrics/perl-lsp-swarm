@@ -92,19 +92,44 @@ def pull_numbers(run: dict[str, Any]) -> list[int]:
     return [pull for pull in pulls if isinstance(pull, int)]
 
 
+# Events for which `ripr.yml`'s group expression resolves to a pull request
+# number rather than to the ref.
+PULL_REQUEST_EVENTS = frozenset({"pull_request", "pull_request_target"})
+
+
+def groups_by_pull_request(run: dict[str, Any]) -> bool:
+    """Whether this run's concurrency group is keyed on a pull request number.
+
+    ``ripr.yml`` groups on ``github.event.pull_request.number || github.ref``,
+    so the answer follows the event, not the API's ``pull_requests`` array. The
+    distinction matters because that array comes back **empty for fork pull
+    requests** — the head repository differs from the base — even though the
+    run is tied to a real, numbered pull request.
+    """
+    return run.get("event") in PULL_REQUEST_EVENTS
+
+
 def same_concurrency_group(left: dict[str, Any], right: dict[str, Any]) -> bool:
     """Whether two runs would contend for the same ``concurrency`` group.
 
-    ``ripr.yml`` groups by pull request number, falling back to the ref, so two
-    runs share a group when they share a pull request or, for a push, a branch.
+    A pull-request run whose number the API withheld has an **unknown** group,
+    and unknown is reported as no match. That is the safe direction: a false
+    non-match costs at most an honest ``infra-no-proof`` naming no predecessor,
+    while a false match silently reclassifies a genuinely stuck run as an
+    explained wait — suppressing exactly the finding this exists to surface.
+    Two fork pull requests sharing a branch name (``patch-1``, ``fix``) would
+    otherwise have matched each other.
     """
-    left_pulls, right_pulls = pull_numbers(left), pull_numbers(right)
-    if left_pulls and right_pulls:
+    left_by_pr, right_by_pr = groups_by_pull_request(left), groups_by_pull_request(right)
+    if left_by_pr != right_by_pr:
+        return False
+    if left_by_pr:
+        left_pulls, right_pulls = pull_numbers(left), pull_numbers(right)
+        if not left_pulls or not right_pulls:
+            return False
         return bool(set(left_pulls) & set(right_pulls))
-    if not left_pulls and not right_pulls:
-        branch = left.get("head_branch")
-        return bool(branch) and branch == right.get("head_branch")
-    return False
+    branch = left.get("head_branch")
+    return bool(branch) and branch == right.get("head_branch")
 
 
 def predecessor_for(run: dict[str, Any], runs: list[dict[str, Any]]) -> int | None:
@@ -123,6 +148,24 @@ def predecessor_for(run: dict[str, Any], runs: list[dict[str, Any]]) -> int | No
         and isinstance(candidate.get("id"), int)
     ]
     return max(candidates) if candidates else None
+
+
+def job_count_from_api(returncode: int, stdout: str | None) -> int | None:
+    """The scheduled-job count a ``gh api .total_count`` read established.
+
+    ``None`` means the count could not be read, which the classifier treats as
+    scheduled. Only a body that actually parses as a number is a count, so a
+    successful call returning nothing — a blank or truncated body — is
+    unreadable rather than a confirmed zero. Reading it as zero would turn a
+    garbled response into a posted failure on a healthy run.
+    """
+    if returncode != 0 or stdout is None:
+        return None
+    try:
+        count = int(stdout.strip())
+    except (TypeError, ValueError):
+        return None
+    return count if count >= 0 else None
 
 
 def classify_run(
@@ -232,6 +275,7 @@ def classify_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
                 "head_sha": run.get("head_sha"),
                 "head_branch": run.get("head_branch"),
                 "pull_requests": pull_numbers(run),
+                "event": run.get("event"),
                 "status": run.get("status"),
                 "job_count": run.get("job_count"),
                 "waited_minutes": waited_minutes,

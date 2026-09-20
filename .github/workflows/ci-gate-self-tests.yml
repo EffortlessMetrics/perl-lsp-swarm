@@ -77,6 +77,9 @@ on:
       # real check run on a real head. Both halves gate each other.
       - 'scripts/ci/ripr_liveness.py'
       - 'scripts/ci/test_ripr_liveness.py'
+      # The reporter's own workflow calls into that module for the one decision
+      # its inline snapshot step makes, so an edit here must re-prove it.
+      - '.github/workflows/ripr-liveness.yml'
       - '.cargo/config.toml'
       - 'scripts/tests/test-target-isolation.sh'
       # ripr lane termination classification + bounded same-head retry
