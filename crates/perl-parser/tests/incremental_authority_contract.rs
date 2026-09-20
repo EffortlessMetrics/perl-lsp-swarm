@@ -433,7 +433,7 @@ fn active_lower_tier_kernel_and_consumer_are_explicitly_classified() -> TestResu
         .iter()
         .find(|consumer| consumer.symbol == "tree_sitter_perl_rs::Parser::parse_with_old_tree")
         .ok_or("the tree-sitter lower-tier consumer is missing from the authority ledger")?;
-    assert_eq!(consumer.source_path, "crates/tree-sitter-perl-rs/src/lib.rs");
+    assert_eq!(consumer.source_path, "crates/tree-sitter-perl-rs/src/parser.rs");
 
     let core_facade =
         compact_whitespace(&read(crate_root().join("../perl-parser-core/src/lib.rs"))?);
