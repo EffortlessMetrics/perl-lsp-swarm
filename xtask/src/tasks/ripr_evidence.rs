@@ -3198,6 +3198,27 @@ impl DeclarationSeamCollector {
         visit(&mut probe);
         probe.found
     }
+
+    /// Mark an item whose only possible source of code is its own attributes.
+    ///
+    /// `use`, `extern crate` and `mod name;` hold no expression, so the other
+    /// visitors mark them without probing. That skipped the attribute probe
+    /// entirely, and `#[generate_runtime_path] use std::fmt;` is a real shape:
+    /// the macro may append functions onto that line (#16077 review). Running
+    /// the probe over the attributes alone is the whole question for these
+    /// three kinds.
+    fn mark_by_attrs(&mut self, attrs: &[syn::Attribute], span: proc_macro2::Span) {
+        let readable = !Self::carries_an_expression(|probe| {
+            for attr in attrs {
+                probe.visit_attribute(attr);
+            }
+        });
+        if readable {
+            self.mark(attrs, span);
+        } else {
+            self.mark_executable(attrs, span);
+        }
+    }
 }
 
 /// Whether an item contains any expression other than a bare literal.
@@ -3268,7 +3289,6 @@ fn inert_attribute(attr: &syn::Attribute) -> bool {
         "allow",
         "automatically_derived",
         "cfg",
-        "cfg_attr",
         "cold",
         "deny",
         "deprecated",
@@ -3287,6 +3307,15 @@ fn inert_attribute(attr: &syn::Attribute) -> bool {
         "used",
         "warn",
     ];
+    // `cfg_attr` is deliberately absent. Its payload is an attribute list that
+    // `syn` keeps as opaque `Meta::List` tokens, so `#[cfg_attr(all(),
+    // generate_runtime_path)]` reaches neither `visit_attribute` nor
+    // `visit_macro` and would be read as inert on the strength of the wrapper's
+    // name alone (#16077 review). Reading that payload would mean re-parsing it;
+    // refusing it costs one line in this workspace — of 387 `cfg_attr`
+    // occurrences under `crates/` and `xtask/`, exactly one sits on a screened
+    // declaration kind, because the rest decorate functions and impls that are
+    // marked executable anyway.
     // `clippy::…` and `rustfmt::…` are tool attributes: two segments, inert by
     // definition, and never an attribute macro.
     let mut segments = attr.path().segments.iter();
@@ -3342,18 +3371,18 @@ impl<'ast> Visit<'ast> for DeclarationSeamCollector {
     }
 
     fn visit_item_use(&mut self, item: &'ast syn::ItemUse) {
-        self.mark(&item.attrs, item.span());
+        self.mark_by_attrs(&item.attrs, item.span());
     }
 
     fn visit_item_extern_crate(&mut self, item: &'ast syn::ItemExternCrate) {
-        self.mark(&item.attrs, item.span());
+        self.mark_by_attrs(&item.attrs, item.span());
     }
 
     fn visit_item_mod(&mut self, item: &'ast syn::ItemMod) {
         if item.content.is_none() {
             // `mod name;` — the declaration line only. A module with a body is
             // not marked; its items are visited individually below.
-            self.mark(&item.attrs, item.span());
+            self.mark_by_attrs(&item.attrs, item.span());
             return;
         }
         syn::visit::visit_item_mod(self, item);
@@ -7318,6 +7347,61 @@ pub type Derived = [u8; 8];
         }
         if !declaration_seam_lines("pub const BROKEN: bool = ;").is_empty() {
             return Err(eyre!("unparseable source produced declaration seams"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn declaration_seam_lines_keeps_declarations_whose_attribute_is_wrapped_in_cfg_attr()
+    -> Result<()> {
+        // `cfg_attr` keeps its payload as opaque `Meta::List` tokens, so a
+        // procedural attribute nested inside one reaches neither `visit_attribute`
+        // nor `visit_macro`. Reading the wrapper's name alone called it inert.
+        let source = concat!(
+            "pub const PLAIN: bool = true;\n",
+            "#[cfg_attr(all(), generate_runtime_path)]\n",
+            "pub struct Wrapped;\n",
+        );
+        let marked = declaration_seam_lines(source);
+        if !marked.contains(&1) {
+            bail!("line 1 carries no attribute at all and must stay marked: {marked:?}");
+        }
+        for line in [2, 3] {
+            if marked.contains(&line) {
+                bail!(
+                    "line {line} is covered by a cfg_attr payload the probe cannot read \
+                     and must stay in the blocking basis: {marked:?}"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn declaration_seam_lines_probes_attributes_on_directly_marked_items() -> Result<()> {
+        // `use`, `extern crate` and `mod name;` hold no expression, so they were
+        // marked without probing — which skipped the attribute probe entirely,
+        // although an attribute macro on any of them may append functions.
+        let source = concat!(
+            "use std::fmt;\n",
+            "#[generate_runtime_path]\n",
+            "use std::io;\n",
+            "#[generate_runtime_path]\n",
+            "extern crate alloc;\n",
+            "#[generate_runtime_path]\n",
+            "mod generated;\n",
+        );
+        let marked = declaration_seam_lines(source);
+        if !marked.contains(&1) {
+            bail!("a plain `use` carries nothing and must stay marked: {marked:?}");
+        }
+        for line in [2, 3, 4, 5, 6, 7] {
+            if marked.contains(&line) {
+                bail!(
+                    "line {line} carries a crate-defined attribute on a directly marked \
+                     item and must stay in the blocking basis: {marked:?}"
+                );
+            }
         }
         Ok(())
     }
