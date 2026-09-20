@@ -1011,6 +1011,7 @@ pub fn perl_dap::debug_adapter::DebugAdapter::handle_request(&mut self, request_
 pub fn perl_dap::debug_adapter::DebugAdapter::handle_request_mock(&mut self, request_seq: i64, command: &str, arguments: core::option::Option<serde_json::value::Value>) -> perl_dap::debug_adapter::DapMessage
 pub fn perl_dap::debug_adapter::DebugAdapter::handle_scopes(&self, seq: i64, request_seq: i64, arguments: core::option::Option<serde_json::value::Value>) -> perl_dap::debug_adapter::DapMessage
 pub fn perl_dap::debug_adapter::DebugAdapter::handle_variables(&self, seq: i64, request_seq: i64, arguments: core::option::Option<serde_json::value::Value>) -> perl_dap::debug_adapter::DapMessage
+pub fn perl_dap::debug_adapter::DebugAdapter::last_authority_receipt(&self) -> core::option::Option<perl_dap::security::launch_authority::LaunchAuthorityReceipt>
 pub fn perl_dap::debug_adapter::DebugAdapter::new() -> Self
 pub fn perl_dap::debug_adapter::DebugAdapter::set_event_sender(&mut self, sender: std::sync::mpsc::SyncSender<perl_dap::debug_adapter::DapMessageWithEpoch>)
 pub fn perl_dap::debug_adapter::DebugAdapter::set_launch_authority(&self, authority: perl_dap::security::launch_authority::LaunchAuthority)
@@ -3310,6 +3311,7 @@ pub fn perl_dap::security::launch_authority::LaunchAuthority::mode(&self) -> per
 pub fn perl_dap::security::launch_authority::LaunchAuthority::narrow_launch_root(&self, requested: &std::path::Path) -> core::result::Result<core::option::Option<std::path::PathBuf>, alloc::string::String>
 pub fn perl_dap::security::launch_authority::LaunchAuthority::receipt(&self) -> perl_dap::security::launch_authority::LaunchAuthorityReceipt
 pub fn perl_dap::security::launch_authority::LaunchAuthority::resolve(startup: &perl_dap::security::launch_authority::LaunchAuthorityStartup) -> core::result::Result<Self, perl_dap::security::launch_authority::LaunchAuthorityError>
+pub fn perl_dap::security::launch_authority::LaunchAuthority::root_for_program(&self, program: &std::path::Path) -> core::option::Option<std::path::PathBuf>
 pub fn perl_dap::security::launch_authority::LaunchAuthority::session_generation(&self) -> u64
 pub fn perl_dap::security::launch_authority::LaunchAuthority::trusted_roots(&self) -> &[perl_dap::security::launch_authority::TrustedRoot]
 pub fn perl_dap::security::launch_authority::LaunchAuthority::clone(&self) -> perl_dap::security::launch_authority::LaunchAuthority
