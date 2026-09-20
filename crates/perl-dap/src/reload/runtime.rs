@@ -2072,6 +2072,10 @@ mod tests {
         mut command: std::process::Command,
         deadline: std::time::Duration,
     ) -> DebuggerProbe {
+        // #15538: the deadline paths below must reach descendants, not only
+        // the direct child. On Unix this makes the child a process-group
+        // leader.
+        crate::process_tree::prepare_owned_command(&mut command);
         let mut child = match command.spawn() {
             Ok(child) => child,
             Err(error) => return DebuggerProbe::InstrumentFailed(format!("spawn: {error}")),
@@ -2088,15 +2092,14 @@ mod tests {
                 }
                 Ok(None) => {
                     if std::time::Instant::now() >= expiry {
-                        let _ = child.kill();
-                        let _ = child.wait();
+                        // #15538: kill the whole owned tree and reap.
+                        let _ = crate::process_tree::terminate_tree_and_reap(&mut child);
                         return DebuggerProbe::TimedOut;
                     }
                     std::thread::sleep(std::time::Duration::from_millis(25));
                 }
                 Err(error) => {
-                    let _ = child.kill();
-                    let _ = child.wait();
+                    let _ = crate::process_tree::terminate_tree_and_reap(&mut child);
                     return DebuggerProbe::InstrumentFailed(format!("try_wait: {error}"));
                 }
             }
