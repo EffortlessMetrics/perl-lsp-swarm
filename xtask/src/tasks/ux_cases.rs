@@ -21,7 +21,7 @@ use perl_lsp_ux_tests::taxonomy::UxCiTier;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Command, ExitStatus, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc;
@@ -183,28 +183,39 @@ impl Termination {
     }
 }
 
+/// Classify a child's fate after a kill that **failed**, from what `try_wait`
+/// then observed.
+///
+/// A separate seam because the branch is not portably reachable through a live
+/// process — on Unix `Child::kill` returns `Ok` when the exit status is already
+/// cached, deliberately, so that it cannot signal a recycled pid, and an
+/// already-reaped child therefore accepts a kill. Classifying from the observed
+/// wait result instead of from a real process is what makes the mapping
+/// falsifiable: `reap_bounded` cannot be driven into this branch, but this
+/// function can, in both directions.
+///
+/// An exit seen here is [`Termination::ExitedOnItsOwn`], never
+/// [`Termination::Reaped`]: the kill failed, so this operation terminated
+/// nothing, and `Reaped` would have `describe` claim "was terminated and
+/// reaped" about a child that left of its own accord.
+fn classify_failed_kill(waited: &std::io::Result<Option<ExitStatus>>) -> Termination {
+    match waited {
+        Ok(Some(_)) => Termination::ExitedOnItsOwn,
+        _ => Termination::NotSignalled,
+    }
+}
+
 /// Kill a child and confirm the reap within [`REAP_CEILING`].
 ///
 /// `Child::wait` is deliberately not used: it blocks without a deadline, which
 /// would put an unbounded wait inside the operation ceiling.
 fn reap_bounded(child: &mut std::process::Child) -> Termination {
     if child.kill().is_err() {
-        // An exit observed here is `ExitedOnItsOwn`, not `Reaped`: the kill
-        // failed, so this operation terminated nothing, and `Reaped` would have
-        // `describe` claim "was terminated and reaped" about a child that left
-        // on its own.
-        //
-        // An earlier revision of this comment said a kill fails "when the child
-        // has already exited". That is wrong on Unix: `Child::kill` returns `Ok`
-        // when the status is already cached, deliberately, so it cannot signal a
-        // recycled pid. A failed kill therefore means something else — EPERM, or
-        // a platform where the call can fail for a reaped child — and this
-        // branch is defensive rather than reachable here. See the limitation on
-        // the control.
-        return match child.try_wait() {
-            Ok(Some(_)) => Termination::ExitedOnItsOwn,
-            _ => Termination::NotSignalled,
-        };
+        // A failed kill means something other than "already exited" — EPERM, or
+        // a platform where the call can fail for a reaped child. Whatever the
+        // cause, this operation signalled nothing, so the outcome is classified
+        // from the wait result rather than assumed. See `classify_failed_kill`.
+        return classify_failed_kill(&child.try_wait());
     }
     let deadline = Instant::now() + REAP_CEILING;
     loop {
@@ -1264,39 +1275,71 @@ mod tests {
     }
 
     #[test]
-    fn reap_bounded_reports_a_reap_only_for_a_child_it_actually_signalled() {
-        // Review found the failed-kill branch returning `Reaped`, which
-        // `describe` renders as "was terminated and reaped" about a child the
-        // failed kill never touched. The mapping is fixed to `ExitedOnItsOwn`
-        // and its wording is asserted in
-        // `a_ceiling_failure_names_the_command_and_the_limit_it_exceeded`.
-        //
-        // That branch is deliberately **not** driven by a live process here, and
-        // the first attempt to do so is why this control is shaped this way: on
-        // Unix `Child::kill` returns `Ok` when the exit status is already cached,
-        // so that it cannot signal a recycled pid. An already-reaped child
-        // therefore accepts a kill, and `kill().is_err()` with an exited child
-        // cannot be produced portably — the same class of limitation already
-        // declared for `ReapUnconfirmed`. Asserting the mapping without reaching
-        // the branch would be a control that passes without discriminating.
-        let mut reaped = Command::new("true").spawn().expect("`true` must spawn");
-        reaped.wait().expect("`true` must be reapable");
-        assert!(
-            reaped.kill().is_ok(),
-            "Unix `Child::kill` is expected to succeed on a cached status; if this \
-             ever fails, the failed-kill branch has become reachable and deserves \
-             its own live control"
+    fn a_failed_kill_classifies_an_exited_child_without_claiming_a_termination() -> TestResult {
+        // Review found this branch returning `Reaped`, which `describe` renders
+        // as "was terminated and reaped" about a child the failed kill never
+        // touched. A live process cannot drive it — Unix `Child::kill` returns
+        // `Ok` on a cached exit status, so an already-reaped child accepts a
+        // kill — so the classification is its own seam and gets driven from the
+        // observed wait result instead. Both directions, so neither can pass by
+        // always answering the same variant.
+        let exited = Command::new("true").spawn()?.wait()?;
+        assert_eq!(
+            classify_failed_kill(&Ok(Some(exited))),
+            Termination::ExitedOnItsOwn,
+            "a kill that failed terminated nothing, so an exit it then observes \
+             is the child's own"
+        );
+        assert_eq!(
+            classify_failed_kill(&Ok(None)),
+            Termination::NotSignalled,
+            "a child still running after a failed kill was never signalled"
+        );
+        assert_eq!(
+            classify_failed_kill(&Err(std::io::Error::other("wait failed"))),
+            Termination::NotSignalled,
+            "an unreadable wait cannot establish an exit, so it must not claim one"
         );
 
-        // What is reachable, and the direction that matters for honesty: a live
+        // Reverting the mapping to `Reaped` fails the first assertion above,
+        // which is what this control exists to guarantee.
+        for (outcome, forbidden) in [
+            (classify_failed_kill(&Ok(Some(exited))), "was terminated"),
+            (classify_failed_kill(&Ok(None)), "was terminated"),
+        ] {
+            let rendered =
+                RunRefused::TimedOut { wall: Duration::from_secs(1), termination: outcome }
+                    .reason("cargo x");
+            assert!(
+                !rendered.contains(forbidden),
+                "a failed kill must never render {forbidden:?}: {rendered}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn reap_bounded_reports_a_reap_only_for_a_child_it_actually_signalled() -> TestResult {
+        // The reachable direction, paired with the seam control above: a live
         // child this operation really does signal and collect is the only case
         // allowed to report `Reaped`.
-        let mut live = Command::new("sleep").arg("30").spawn().expect("`sleep` must spawn");
+        let mut live = Command::new("sleep").arg("30").spawn()?;
         assert_eq!(
             reap_bounded(&mut live),
             Termination::Reaped,
             "a child this operation signalled and collected is genuinely reaped"
         );
+
+        // Pins the platform premise that makes the failed-kill branch
+        // unreachable. If this ever fails, that branch has become reachable and
+        // deserves a live control of its own rather than the seam alone.
+        let mut gone = Command::new("true").spawn()?;
+        gone.wait()?;
+        assert!(
+            gone.kill().is_ok(),
+            "Unix `Child::kill` is expected to succeed on a cached exit status"
+        );
+        Ok(())
     }
 
     #[test]
