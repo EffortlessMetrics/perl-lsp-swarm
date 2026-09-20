@@ -20,6 +20,11 @@ pub use super::lsp_stats_impl::{
 };
 
 const RECEIPT_SCHEMA_PATH: &str = ".ci/schemas/ux-scenario-run.schema.json";
+
+/// The only `UxScenarioRunReceipt` schema generation this boundary accepts.
+/// Receipt consumers fail closed on missing, non-integer, or newer versions so
+/// a newer producer cannot silently change receipt semantics under this guard.
+const RECEIPT_SCHEMA_VERSION: u32 = 1;
 const FIXTURE_MATRIX_PATH: &str = "crates/perl-lsp-ux-tests/fixtures/editor_ux_fixture_matrix.json";
 
 /// Fields that distinguish an editor-UX scenario run from companion receipts
@@ -131,6 +136,16 @@ fn validate_scorecard_inputs(
                 );
             }
             continue;
+        }
+
+        if candidate.value.get("schema_version").and_then(Value::as_u64)
+            != Some(u64::from(RECEIPT_SCHEMA_VERSION))
+        {
+            bail!(
+                "unsupported UX scenario receipt schema_version {:?} in {} (expected {RECEIPT_SCHEMA_VERSION})",
+                candidate.value.get("schema_version"),
+                candidate.path.display()
+            );
         }
 
         if let Err(error) = validator.validate(&candidate.value) {
@@ -869,6 +884,40 @@ mod tests {
             "invalid receipt unexpectedly passed schema validation",
         )?;
         assert!(format!("{error:#}").contains("invalid UX scenario receipt"));
+        Ok(())
+    }
+
+    #[test]
+    fn unsupported_receipt_schema_versions_fail_closed() -> Result<()> {
+        for (name, version) in [
+            ("wrong-version.json", Some(serde_json::json!(2))),
+            ("string-version.json", Some(serde_json::json!("1"))),
+            ("missing-version.json", None),
+        ] {
+            let temp = tempfile::tempdir()?;
+            let receipts = temp.path().join("receipts");
+            fs::create_dir_all(&receipts)?;
+            let path = write_receipt(&receipts, name, "known", "known.rs")?;
+            let mut value: Value = serde_json::from_str(&fs::read_to_string(&path)?)?;
+            match version {
+                Some(mutated) => value["schema_version"] = mutated,
+                None => {
+                    value
+                        .as_object_mut()
+                        .ok_or_else(|| color_eyre::eyre::eyre!("receipt is not a JSON object"))?
+                        .remove("schema_version");
+                }
+            }
+            fs::write(&path, serde_json::to_string_pretty(&value)?)?;
+            let matrix = write_matrix(temp.path(), &[("known", "known.rs")])?;
+
+            let error = validation_error(
+                validate_scorecard_inputs(&receipts, &matrix, &checked_in_receipt_schema()),
+                "receipt with unsupported schema_version unexpectedly passed",
+            )?;
+            let message = format!("{error:#}");
+            assert!(message.contains("unsupported UX scenario receipt schema_version"));
+        }
         Ok(())
     }
 
