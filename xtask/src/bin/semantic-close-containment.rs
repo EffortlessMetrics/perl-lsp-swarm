@@ -490,7 +490,7 @@ fn evaluate_live_event(path: &Path) -> Result<Report> {
         if let Some(cached) = cache.get(key) {
             return cached.clone();
         }
-        let evidence = fetch_issue_live(key);
+        let evidence = fetch_issue_live(key, &pull.repository);
         cache.insert(key.clone(), evidence.clone());
         evidence
     })?;
@@ -1014,20 +1014,49 @@ fn failed_row(
     }
 }
 
-/// `gh api` reports every HTTP error through the same exit status, so the two
-/// outcomes are told apart on stderr. A 404 is the pull request's problem — it
-/// names an issue that does not exist — while a 401, a 403, a rate limit or a
-/// network error is the validator's (#16214). Split out from the caller so the
-/// classification has a control; the caller itself shells out to `gh`.
-fn classify_gh_failure(stderr: &str, detail: String) -> IssueEvidence {
-    if stderr.contains("(HTTP 404)") || stderr.contains("HTTP 404:") {
+/// `gh api` reports every HTTP error through the same exit status, so the
+/// outcomes are told apart on stderr. A 401, a 403, a rate limit or a network
+/// error is plainly the validator's problem (#16214).
+///
+/// A 404 is not plainly anything. GitHub answers 404 rather than 403 for a
+/// resource the caller may not know exists, so absence and invisibility are
+/// the same response — and this evaluator accepts source-qualified references
+/// to any repository, so a relation can name one this token cannot read. An
+/// ambiguous 404 therefore belongs on the instrument's side of the split: it
+/// is exactly the case the split exists to keep off the pull request.
+///
+/// The one repository where a 404 does establish absence is the subject's own.
+/// This validator runs in that repository with its own read token, so a 404
+/// there is the repository answering that the issue is not present, not
+/// declining to say. Nothing else is probed: establishing visibility for a
+/// foreign repository would mean asking about a private resource.
+fn classify_gh_failure(
+    stderr: &str,
+    detail: String,
+    issue_repository: &str,
+    subject_repository: &str,
+) -> IssueEvidence {
+    if !(stderr.contains("(HTTP 404)") || stderr.contains("HTTP 404:")) {
+        return IssueEvidence::LookupFailed(detail);
+    }
+    let same_repository =
+        match (canonical_repository(issue_repository), canonical_repository(subject_repository)) {
+            (Ok(issue), Ok(subject)) => issue == subject,
+            // A repository identity that will not canonicalize cannot establish
+            // read access, so it cannot establish absence either.
+            _ => false,
+        };
+    if same_repository {
         IssueEvidence::Unavailable(detail)
     } else {
-        IssueEvidence::LookupFailed(detail)
+        IssueEvidence::LookupFailed(format!(
+            "{detail} -- a 404 from a repository other than the pull request's own does not \
+             distinguish an absent issue from one this token cannot see"
+        ))
     }
 }
 
-fn fetch_issue_live(key: &IssueKey) -> IssueEvidence {
+fn fetch_issue_live(key: &IssueKey, subject_repository: &str) -> IssueEvidence {
     if let Err(error) = canonical_repository(&key.repository) {
         return IssueEvidence::Unavailable(error.to_string());
     }
@@ -1039,13 +1068,9 @@ fn fetch_issue_live(key: &IssueKey) -> IssueEvidence {
         }
     };
     if !output.status.success() {
-        // `gh api` reports every HTTP error the same way in its exit status, so
-        // the two outcomes are told apart on stderr. A 404 is the pull request's
-        // problem — it names an issue that does not exist — while a 401, a 403,
-        // a rate limit or a network error is the validator's (#16214).
         let stderr = String::from_utf8_lossy(&output.stderr);
         let detail = format!("gh api exited with status {}: {}", output.status, stderr.trim());
-        return classify_gh_failure(&stderr, detail);
+        return classify_gh_failure(&stderr, detail, &key.repository, subject_repository);
     }
     if output.stdout.len() > MAX_GITHUB_OUTPUT_BYTES {
         return IssueEvidence::LookupFailed(
@@ -2646,21 +2671,85 @@ mod tests {
         Ok(())
     }
 
-    /// The 404 seam, pinned directly: without this, deleting the 404 branch
-    /// left every other control green, because nothing drives `gh`.
+    /// The 404 seam, pinned directly: without a control here, deleting the
+    /// branch left every other control green, because nothing drives `gh`.
+    ///
+    /// GitHub answers 404 rather than 403 for a resource the caller may not be
+    /// allowed to know exists, so a 404 alone proves nothing. Absence is only
+    /// established for the pull request's own repository, which this validator
+    /// demonstrably reads. Everything else is the instrument's limitation, and
+    /// reporting it as a verdict is the defect this change exists to remove.
     #[test]
-    fn only_a_404_from_gh_is_a_verdict_about_the_pull_request() -> Result<()> {
+    fn a_404_establishes_absence_only_where_the_validator_can_read() -> Result<()> {
+        const SUBJECT: &str = "effortlessmetrics/perl-lsp-swarm";
+
+        // Authenticated known absence: the repository this run owns answers
+        // 404 for an issue number, which is an answer, not a refusal.
         for stderr in [
             "gh: Not Found (HTTP 404)",
-            "HTTP 404: Not Found (https://api.github.com/repos/o/r/issues/1)",
+            "HTTP 404: Not Found (https://api.github.com/repos/effortlessmetrics/perl-lsp-swarm/issues/1)",
         ] {
             if !matches!(
-                classify_gh_failure(stderr, stderr.to_string()),
+                classify_gh_failure(stderr, stderr.to_string(), SUBJECT, SUBJECT),
                 IssueEvidence::Unavailable(_)
             ) {
-                bail!("a 404 must read as an absent issue, not a broken validator: {stderr:?}");
+                bail!("a 404 from the subject's own repository is an absent issue: {stderr:?}");
             }
         }
+
+        // Unresolved visibility: the same 404, from a repository this token may
+        // simply not be able to see. Indistinguishable from absence, so it is
+        // the instrument's, not the pull request's.
+        for repository in [
+            "effortlessmetrics/perl-lsp",
+            "someorg/private-repo",
+            "EffortlessMetrics/Perl-LSP-Swarm-Other",
+        ] {
+            if !matches!(
+                classify_gh_failure(
+                    "gh: Not Found (HTTP 404)",
+                    "404".to_string(),
+                    repository,
+                    SUBJECT
+                ),
+                IssueEvidence::LookupFailed(_)
+            ) {
+                bail!(
+                    "a 404 from {repository:?} cannot tell absence from invisibility and must not \
+                     be reported as a verdict"
+                );
+            }
+        }
+
+        // Case differs, repository does not. Canonicalization decides, not the
+        // spelling in the pull request body.
+        if !matches!(
+            classify_gh_failure(
+                "gh: Not Found (HTTP 404)",
+                "404".to_string(),
+                "EffortlessMetrics/Perl-LSP-Swarm",
+                SUBJECT,
+            ),
+            IssueEvidence::Unavailable(_)
+        ) {
+            bail!("repository identity must compare canonically, not by spelling");
+        }
+
+        // A repository identity that will not canonicalize establishes no read
+        // access, so it establishes no absence either.
+        if !matches!(
+            classify_gh_failure(
+                "gh: Not Found (HTTP 404)",
+                "404".to_string(),
+                "not-a-repo",
+                SUBJECT
+            ),
+            IssueEvidence::LookupFailed(_)
+        ) {
+            bail!("an uncanonicalizable repository must not establish absence");
+        }
+
+        // Everything that is not a 404 was never ambiguous.
         for stderr in [
             "gh: Bad credentials (HTTP 401)",
             "gh: API rate limit exceeded (HTTP 403)",
@@ -2669,7 +2758,7 @@ mod tests {
             "",
         ] {
             if !matches!(
-                classify_gh_failure(stderr, stderr.to_string()),
+                classify_gh_failure(stderr, stderr.to_string(), SUBJECT, SUBJECT),
                 IssueEvidence::LookupFailed(_)
             ) {
                 bail!("a transport failure must not be reported as a verdict: {stderr:?}");
