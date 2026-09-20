@@ -100,7 +100,7 @@ backend flag, or handler presence may widen them:
 
 | Capability                    | Authority                       | Gate |
 |---|---|---|
-| `supportsEvaluateForHovers`   | `PURE_HOVER_INSPECTION_PROVEN`  | #9573 |
+| `supportsEvaluateForHovers`   | `PURE_HOVER_INSPECTION_PROVEN`  | repository proof record |
 
 `supportsEvaluateForHovers` promises a *pure inspection of the selected frame*.
 `handle_evaluate` runs a raw perl5db command against the debugger's **current**
@@ -144,7 +144,7 @@ cargo run -p xtask -- check-native-product-surface --strict
 cargo package -p perl-dap --allow-dirty --list
 ```
 
-For PLS comparison work, use the repository-only conformance owner under #7210.
+For PLS comparison work, use the repository-only conformance owner.
 Do not add a product Cargo feature or package source module to make a comparison
 convenient.
 
