@@ -278,7 +278,10 @@ fn collections_are_bounded_unique_and_unknown_structure_is_rejected() -> TestRes
 #[test]
 fn contradictory_planner_claims_and_invalid_dispositions_are_rejected() -> TestResult {
     for effect in [ExternalEffect::None, ExternalEffect::PresentationOnly] {
-        let sample = row("ai.endpoint", CapabilityRole::Project, effect);
+        let mut sample = row("ai.endpoint", CapabilityRole::Project, effect);
+        if effect == ExternalEffect::None {
+            sample.proof = None;
+        }
         rejected(&[sample], CapabilityViolationKind::PlannerEffectMismatch)?;
     }
     for proof in [
@@ -326,11 +329,61 @@ fn canonical_legacy_critic_planners_cannot_claim_presentation_or_none() -> TestR
             "fixture no longer targets legacy planner",
         )?;
         for effect in [ExternalEffect::None, ExternalEffect::PresentationOnly] {
-            rejected(
-                &[row(id, CapabilityRole::Project, effect)],
-                CapabilityViolationKind::PlannerEffectMismatch,
-            )?;
+            let mut sample = row(id, CapabilityRole::Project, effect);
+            if effect == ExternalEffect::None {
+                sample.proof = None;
+            }
+            rejected(&[sample], CapabilityViolationKind::PlannerEffectMismatch)?;
         }
+    }
+    Ok(())
+}
+
+#[test]
+fn no_effect_rejects_first_effect_but_retains_owned_dispositions() -> TestResult {
+    let mut sample = row("inlay.enabled", CapabilityRole::Project, ExternalEffect::None);
+    rejected(&[sample.clone()], CapabilityViolationKind::InvalidProof)?;
+    for proof in [
+        None,
+        Some(ProofRequirement::Unsupported {
+            owner: "fixture-owner".into(),
+            reason: "unsupported fixture".into(),
+        }),
+        Some(ProofRequirement::Removed {
+            owner: "fixture-owner".into(),
+            reason: "removed fixture".into(),
+        }),
+    ] {
+        sample.proof = proof;
+        accepted(&[sample.clone()])?;
+    }
+    Ok(())
+}
+
+#[test]
+fn canonical_resource_controls_require_effectful_classification() -> TestResult {
+    for (id, consumer) in [
+        ("limits.file_size_bytes", ConfigConsumer::BoundedExecution),
+        ("limits.completion_cap", ConfigConsumer::ResultCaps),
+        ("ai.max_inflight", ConfigConsumer::AiScheduler),
+    ] {
+        let field = authority_by_id(id).ok_or("missing canonical resource row")?;
+        require(field.consumers.contains(&consumer), "fixture resource consumer changed")?;
+        let mut budget = row(id, CapabilityRole::Reduce, ExternalEffect::ResourceBudget);
+        budget
+            .composition
+            .push(CompositionRule::HardProductEnvelope { owner: "fixture-product-limit".into() });
+        accepted(&[budget.clone()])?;
+        for effect in [ExternalEffect::None, ExternalEffect::PresentationOnly] {
+            let mut sample = budget.clone();
+            sample.effects = vec![effect];
+            if effect == ExternalEffect::None {
+                sample.proof = None;
+            }
+            rejected(&[sample], CapabilityViolationKind::PlannerEffectMismatch)?;
+        }
+        budget.composition.clear();
+        rejected(&[budget], CapabilityViolationKind::MissingEnvelope)?;
     }
     Ok(())
 }

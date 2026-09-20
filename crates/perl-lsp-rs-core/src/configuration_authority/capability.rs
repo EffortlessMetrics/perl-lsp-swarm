@@ -136,6 +136,11 @@ fn validate_row(
     if row.effects.iter().any(|effect| *effect != ExternalEffect::None) && row.proof.is_none() {
         return Err(fail(V::MissingProof));
     }
+    if row.effects.contains(&ExternalEffect::None)
+        && matches!(row.proof, Some(ProofRequirement::FirstEffect { .. }))
+    {
+        return Err(fail(V::InvalidProof));
+    }
     if row.proof.as_ref().is_some_and(|proof| !valid_proof(proof)) {
         return Err(fail(V::InvalidProof));
     }
@@ -176,6 +181,9 @@ fn validate_row(
             matches!(
                 consumer,
                 ConfigConsumer::AiTransport
+                    | ConfigConsumer::AiScheduler
+                    | ConfigConsumer::BoundedExecution
+                    | ConfigConsumer::ResultCaps
                     | ConfigConsumer::LegacyCritic
                     | ConfigConsumer::SaveFormatting
                     | ConfigConsumer::ExternalFormatter
