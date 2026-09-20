@@ -1,5 +1,5 @@
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
-use color_eyre::eyre::{Context, Result, bail};
+use color_eyre::eyre::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
 use serde_json::{self, Value};
 use std::collections::{BTreeMap, HashMap};
@@ -1075,9 +1075,10 @@ mod tests {
     #[test]
     fn api_version_pin_rejects_unknown_versions() -> Result<()> {
         ensure_supported_api_version("v1")?;
-        let error = ensure_supported_api_version("v2").expect_err("v2 must fail loudly");
-        assert!(error.to_string().contains("unsupported --api-version `v2`"), "got error: {error}");
-        assert!(error.to_string().contains("`v1`"), "got error: {error}");
+        let error =
+            ensure_supported_api_version("v2").err().ok_or_else(|| eyre!("v2 must fail loudly"))?;
+        ensure!(error.to_string().contains("unsupported --api-version `v2`"), "got error: {error}");
+        ensure!(error.to_string().contains("`v1`"), "got error: {error}");
         Ok(())
     }
 

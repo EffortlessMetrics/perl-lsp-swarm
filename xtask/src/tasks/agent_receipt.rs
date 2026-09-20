@@ -1,6 +1,6 @@
 use crate::tasks::agent_lease::{AgentLease, read_lease};
 use chrono::{DateTime, Utc};
-use color_eyre::eyre::{Context, Result, bail};
+use color_eyre::eyre::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::fs;
@@ -334,7 +334,7 @@ mod tests {
         let err = validate(&path)
             .err()
             .ok_or_else(|| color_eyre::eyre::eyre!("v2 receipt should fail validation"))?;
-        assert!(
+        ensure!(
             err.to_string().contains("unsupported agent receipt schema_version: 2 (expected 1)"),
             "got error: {err}"
         );
@@ -350,7 +350,7 @@ mod tests {
         let err = validate(&path)
             .err()
             .ok_or_else(|| color_eyre::eyre::eyre!("receipt without schema_version should fail"))?;
-        assert!(format!("{err:?}").contains("schema_version"), "got error: {err:?}");
+        ensure!(format!("{err:?}").contains("schema_version"), "got error: {err:?}");
 
         Ok(())
     }
