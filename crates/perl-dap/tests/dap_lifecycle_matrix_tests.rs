@@ -553,6 +553,11 @@ fn make_adapter_with_rx() -> (DebugAdapter, Receiver<DapMessageWithEpoch>) {
     let (tx, rx) = sync_channel(64);
     let mut adapter = DebugAdapter::new();
     adapter.set_event_sender(tx);
+    // Lifecycle-matrix scenarios exercise termination/replacement behavior,
+    // not the launch-authority contract; without an installed authority every
+    // launch is refused before it reaches the program validation these tests
+    // assert on (#8656).
+    common::install_unbounded_test_authority(&adapter);
     (adapter, rx)
 }
 
