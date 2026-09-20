@@ -6,9 +6,28 @@
 //! diagnostic charging remain #8786 (B02). [`crate::parser_context::ParserContext`]
 //! is a parallel AST-v2 helper, not this authority (#8700 B04 / #7105).
 
-use crate::error::{BudgetTracker, ParseBudget, ParseError, ParseResult, ParseStopCause};
+use crate::error::{
+    BudgetTracker, ParseBudget, ParseCoreDimension, ParseError, ParseResult, ParseStopCause,
+};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
+/// Core work a nested sub-parse had already charged to its own tracker at the
+/// moment it failed (#8786).
+///
+/// Carried out of the nested parse so the adopting operation can charge it:
+/// the nested tracker is discarded on the failure path, and dropping its
+/// charges with it would let a failed nested parse cost the parent nothing.
+///
+/// Diagnostics are deliberately absent: they are adopted by *retention*
+/// through the parent's `record_error` seam, not as a raw usage number. A
+/// count adopted here would charge `max_errors` for diagnostics the parent
+/// never retained and never returned.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct NestedCoreUsage {
+    pub(crate) tokens: usize,
+    pub(crate) nodes: usize,
+}
 
 /// Immutable identity of the production parser configuration selected for an
 /// operation.
@@ -94,6 +113,7 @@ pub(crate) struct ParserOperationContext {
     cancellation_check_counter: usize,
     operation_id: ParserOperationId,
     terminal: Option<ParseStopCause>,
+    diagnostics_observed: usize,
 }
 
 impl ParserOperationContext {
@@ -105,6 +125,7 @@ impl ParserOperationContext {
             cancellation_check_counter: 0,
             operation_id: ParserOperationId::next(),
             terminal: None,
+            diagnostics_observed: 0,
         }
     }
 
@@ -115,6 +136,7 @@ impl ParserOperationContext {
         self.tracker = BudgetTracker::new();
         self.cancellation_check_counter = 0;
         self.terminal = None;
+        self.diagnostics_observed = 0;
     }
 
     pub(crate) fn config(&self) -> ParserConfigIdentity {
@@ -233,6 +255,178 @@ impl ParserOperationContext {
     /// Charge source bytes traversed by heredoc collection (after-work half).
     pub(crate) fn record_heredoc_scan(&mut self, bytes: usize) {
         self.tracker.record_heredoc_scan(bytes);
+    }
+
+    /// Authorize consuming one non-EOF token, charging it before the token
+    /// leaves the stream (#8786).
+    ///
+    /// The single production caller is [`super::Parser::advance_token`]; every
+    /// parser token advance reaches the stream through it.
+    pub(crate) fn authorize_token_consume(&mut self) -> ParseResult<()> {
+        self.authorize_core(ParseCoreDimension::TokensConsumed)
+    }
+
+    /// Authorize constructing one AST node, charging it before construction
+    /// (#8786).
+    ///
+    /// The single production caller is [`super::Parser::charge_node`].
+    pub(crate) fn authorize_node_construct(&mut self) -> ParseResult<()> {
+        self.authorize_core(ParseCoreDimension::NodesConstructed)
+    }
+
+    /// Authorize retaining one parser diagnostic, charging it before retention
+    /// (#8786).
+    ///
+    /// The single production caller is [`super::Parser::record_error`]. A
+    /// refusal means the configured [`crate::ParseBudget::max_errors`] is
+    /// spent: the diagnostic is dropped rather than retained, and the charged
+    /// count — not `diagnostics.len()` — is the authority for that decision.
+    pub(crate) fn authorize_diagnostic_emit(&mut self) -> ParseResult<()> {
+        self.authorize_core(ParseCoreDimension::DiagnosticsEmitted)
+    }
+
+    /// One charge-before-work entry point shared by the admitted core
+    /// dimensions, so every dimension uses the same limit comparison,
+    /// saturating arithmetic, and typed refusal.
+    fn authorize_core(&mut self, dimension: ParseCoreDimension) -> ParseResult<()> {
+        self.tracker.authorize_core(&self.config.budget(), dimension)
+    }
+
+    /// The parent's *remaining* core allowance, as a budget for a nested parse.
+    ///
+    /// Handing a nested parse the parent's full configuration bounds one level
+    /// but not recursion: each nested `*{ ... }` would get a fresh allowance and
+    /// the aggregate would be unbounded. Each admitted core dimension is
+    /// therefore reduced by what this operation has already charged, so nested
+    /// work can never spend more than the parent has left (#8786).
+    ///
+    /// Non-core dimensions keep the parent's limits unchanged: they are charged
+    /// by their own owners (#7074 / #7291) and are not adopted here.
+    pub(crate) fn remaining_core_budget(&self) -> ParseBudget {
+        let mut budget = self.config.budget();
+        budget.max_tokens_consumed = budget
+            .max_tokens_consumed
+            .saturating_sub(self.tracker.core_usage(ParseCoreDimension::TokensConsumed));
+        budget.max_nodes_constructed = budget
+            .max_nodes_constructed
+            .saturating_sub(self.tracker.core_usage(ParseCoreDimension::NodesConstructed));
+        budget.max_errors = budget
+            .max_errors
+            .saturating_sub(self.tracker.core_usage(ParseCoreDimension::DiagnosticsEmitted));
+        budget
+    }
+
+    /// Charge the outer operation for tokens an inner sub-parse consumed and
+    /// whose nodes this AST adopted (#8786).
+    pub(crate) fn authorize_adopted_tokens(&mut self, count: usize) -> ParseResult<()> {
+        self.tracker.authorize_core_batch(
+            &self.config.budget(),
+            ParseCoreDimension::TokensConsumed,
+            count,
+        )
+    }
+
+    /// Tokens charged so far in this operation, for handing a nested parse's
+    /// usage back to its adopting parent.
+    pub(crate) fn charged_tokens(&self) -> usize {
+        self.tracker.core_usage(ParseCoreDimension::TokensConsumed)
+    }
+
+    /// Charge the outer operation for nodes an inner sub-parse constructed and
+    /// handed back into this AST (#8786).
+    ///
+    /// `parse_inline_expression` runs a nested `Parser` with its own operation
+    /// and tracker, but its nodes are spliced into *this* tree. Without this
+    /// the outer `nodes_constructed` would under-report and
+    /// `max_nodes_constructed` would not govern them. The charge is necessarily
+    /// after the fact, so the overshoot is exactly the nested parse's own node
+    /// count, itself bounded by that parse's configuration.
+    pub(crate) fn authorize_adopted_nodes(&mut self, count: usize) -> ParseResult<()> {
+        self.tracker.authorize_core_batch(
+            &self.config.budget(),
+            ParseCoreDimension::NodesConstructed,
+            count,
+        )
+    }
+
+    /// Nodes charged so far in this operation, for handing a nested parse's
+    /// usage back to its adopting parent.
+    pub(crate) fn charged_nodes(&self) -> usize {
+        self.tracker.core_usage(ParseCoreDimension::NodesConstructed)
+    }
+
+    /// Everything this operation has charged across the admitted core
+    /// dimensions, for handing a *failed* nested parse's work to its adopting
+    /// parent (#8786).
+    pub(crate) fn core_usage_snapshot(&self) -> NestedCoreUsage {
+        NestedCoreUsage {
+            tokens: self.tracker.core_usage(ParseCoreDimension::TokensConsumed),
+            nodes: self.tracker.core_usage(ParseCoreDimension::NodesConstructed),
+        }
+    }
+
+    /// Adopt the work a failed nested sub-parse already performed, and restate
+    /// its refusal in this operation's budget coordinates (#8786).
+    ///
+    /// A nested parse runs under [`Self::remaining_core_budget`], so a
+    /// `CoreBudgetExhausted` it raises names the *remainder* it was handed and
+    /// its own local usage. Propagating that verbatim contradicts this
+    /// operation's receipt: the caller reads a limit that is not the configured
+    /// limit and a usage that excludes everything the parent had already
+    /// charged. Because the nested charge is bounded by the remainder, charging
+    /// it here and re-reading the configured limit reproduces exactly the
+    /// refusal the parent would have raised had it done the work itself.
+    ///
+    /// Errors other than core exhaustion carry no budget coordinates and are
+    /// returned unchanged — but the work is adopted either way, so the tracker
+    /// never understates a failed nested parse.
+    pub(crate) fn adopt_nested_failure(
+        &mut self,
+        error: ParseError,
+        nested: NestedCoreUsage,
+    ) -> ParseError {
+        self.tracker.record_core_batch(ParseCoreDimension::TokensConsumed, nested.tokens);
+        self.tracker.record_core_batch(ParseCoreDimension::NodesConstructed, nested.nodes);
+        // Diagnostics are not adopted here. The caller forwards the nested
+        // parse's retained diagnostics through `record_error` first, so by the
+        // time this runs `DiagnosticsEmitted` already counts exactly what this
+        // operation retained — no more (#8786).
+        match error {
+            ParseError::CoreBudgetExhausted { dimension, .. } => ParseError::CoreBudgetExhausted {
+                dimension,
+                limit: self.config.budget().core_limit(dimension),
+                usage: self.tracker.core_usage(dimension),
+            },
+            other => other,
+        }
+    }
+
+    /// Note that the parser detected a diagnostic-worthy condition, whether or
+    /// not the diagnostic was retained.
+    ///
+    /// This is **not** a budget authority and gates nothing: it is a detection
+    /// signal, deliberately monotonic and unbounded, so that grammar decisions
+    /// which need to know *whether inner recovery happened* cannot be changed
+    /// by how many diagnostics the configuration allows the parser to keep.
+    ///
+    /// Before #8786 the hash-versus-block disambiguation (#1352) read the
+    /// growth of the retained diagnostic vector. Once retention became bounded
+    /// by the operation's configured `max_errors`, a spent diagnostic budget
+    /// silently made that growth zero and the parser chose a different branch —
+    /// so the same source parsed to a different AST depending only on a
+    /// diagnostic limit. Observation is kept separate from retention to make
+    /// that class of coupling impossible.
+    pub(crate) fn note_diagnostic_observed(&mut self) {
+        self.diagnostics_observed = self.diagnostics_observed.saturating_add(1);
+    }
+
+    /// Diagnostic-worthy conditions detected so far in this operation.
+    ///
+    /// Monotonic within an operation and reset by
+    /// [`ParserOperationContext::begin`]. Compare two readings to learn whether
+    /// inner recovery occurred across a span of parsing.
+    pub(crate) fn diagnostics_observed(&self) -> usize {
+        self.diagnostics_observed
     }
 }
 

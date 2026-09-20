@@ -23,6 +23,12 @@ workflow = ".github/workflows/semantic-close-containment.yml"
 required = false
 contract_role = "advisory-workflow-shape"
 
+[[check]]
+name = "Authority Transfer Review"
+workflow = ".github/workflows/authority-transfer-review.yml"
+required = false
+contract_role = "advisory-workflow-shape"
+
 # `[[checks]]` is the emitted status-context inventory. The fields answer
 # different questions and must not be inferred from each other:
 #
@@ -90,7 +96,8 @@ required = true
 policy_role = "required"
 applicability = "conditional"
 enforcement = "github-ruleset"
-reason = "Live main ruleset (id 16664791) requires all targets to compile before merge; workflow prerequisites control when the job is selected."
+ruleset_integration_id = 15368
+reason = "Live main ruleset (id 16664791) requires all targets to compile before merge, bound to the GitHub Actions integration (check-run read-back on main PR heads observed app.id 15368 for this context); workflow prerequisites control when the job is selected (#15348)."
 
 [[checks]]
 name = "Conflict marker check"
@@ -103,7 +110,8 @@ required = true
 policy_role = "required"
 applicability = "conditional"
 enforcement = "github-ruleset"
-reason = "Live main ruleset (id 16664791) requires the conflict-marker scan job before merge; workflow prerequisites control when the job is selected."
+ruleset_integration_id = 15368
+reason = "Live main ruleset (id 16664791) requires the conflict-marker scan job before merge, bound to the GitHub Actions integration (check-run read-back on main PR heads observed app.id 15368 for this context); workflow prerequisites control when the job is selected (#15348)."
 
 [[checks]]
 name = "validate-title"
@@ -116,7 +124,8 @@ required = true
 policy_role = "required"
 applicability = "always-or-scoped-noop"
 enforcement = "github-ruleset"
-reason = "Live main ruleset (id 16664791) requires PR title validation before merge."
+ruleset_integration_id = 15368
+reason = "Live main ruleset (id 16664791) requires PR title validation before merge, bound to the GitHub Actions integration (check-run read-back on main PR heads observed app.id 15368 for this context) (#15348)."
 
 [[checks]]
 name = "Rust formatting"
@@ -231,6 +240,19 @@ policy_role = "advisory"
 applicability = "always-or-scoped-noop"
 enforcement = "neither"
 reason = "CP00 containment guard (#10413) fails internally contradictory terminal close relations and NOT_PROVEN evidence before semantic evaluation; required-promotion review stays under #10168."
+
+[[checks]]
+name = "Authority Transfer Review"
+producer = "repository-job"
+workflow = ".github/workflows/authority-transfer-review.yml"
+job = "authority-transfer-review"
+workflow_result = "propagate"
+events = ["pull_request_target", "workflow_dispatch"]
+required = false
+policy_role = "advisory"
+applicability = "always-or-scoped-noop"
+enforcement = "neither"
+reason = "AR02 advisory exact-head review-context check (#11795): reports PASS_NOT_APPLICABLE or typed non-green verdicts per governed #11793 surface row; required-promotion review stays under #11796."
 
 [[checks]]
 name = "Public API Surface (facade PR)"
