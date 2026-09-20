@@ -450,8 +450,8 @@ impl<'a> Parser<'a> {
             }
 
             let end =
-                args.last().map(|arg| arg.location.end).unwrap_or_else(|| s.previous_position());
-            Ok(Node::new(NodeKind::FunctionCall { name, args }, SourceLocation { start, end }))
+                args.last().map(|arg| arg.location.end()).unwrap_or_else(|| s.previous_position());
+            Ok(Node::new(NodeKind::FunctionCall { name, args }, SourceLocation::new(start, end)))
         })
     }
 
@@ -486,7 +486,7 @@ impl<'a> Parser<'a> {
                 let token = self.consume_token()?;
                 Node::new(
                     NodeKind::Identifier { name: token.text.to_string() },
-                    SourceLocation { start: token.start(), end: token.end() },
+                    SourceLocation::new(token.start(), token.end()),
                 )
             } else {
                 self.parse_primary()?
@@ -589,7 +589,7 @@ impl<'a> Parser<'a> {
         // indirect forms keep the current-main span that ends at the object;
         // extending those is a separate production follow-up.
         let end = if matches!(method.as_str(), "print" | "printf" | "say") {
-            args.last().map_or(object.location.end, |arg| arg.location.end)
+            args.last().map_or(object.location.end(), |arg| arg.location.end())
         } else {
             self.previous_position()
         };
@@ -597,7 +597,7 @@ impl<'a> Parser<'a> {
         // Return as an indirect call node (using MethodCall with a flag or separate node)
         Ok(Node::new(
             NodeKind::IndirectCall { method, object: Box::new(object), args },
-            SourceLocation { start, end },
+            SourceLocation::new(start, end),
         ))
     }
 
@@ -705,7 +705,7 @@ impl<'a> Parser<'a> {
             // nodes (see `parse_variable_declaration`).
             let end = initializer
                 .as_ref()
-                .map_or(variable.location.end, |node| node.location.end)
+                .map_or(variable.location.end(), |node| node.location.end())
                 .max(self.previous_position());
             Ok(Node::new(
                 NodeKind::VariableDeclaration {
@@ -714,7 +714,7 @@ impl<'a> Parser<'a> {
                     attributes: Vec::new(),
                     initializer,
                 },
-                SourceLocation { start, end },
+                SourceLocation::new(start, end),
             ))
         // Check if we have a list declaration like `my ($x, $y)`
         } else if self.peek_kind() == Some(TokenKind::LeftParen) {
@@ -760,7 +760,7 @@ impl<'a> Parser<'a> {
                     attributes: Vec::new(),
                     initializer,
                 },
-                SourceLocation { start, end },
+                SourceLocation::new(start, end),
             ))
         } else {
             // Single variable declaration
@@ -787,7 +787,7 @@ impl<'a> Parser<'a> {
             // anchor the end on the parsed nodes (see `parse_variable_declaration`).
             let end = initializer
                 .as_ref()
-                .map_or(variable.location.end, |node| node.location.end)
+                .map_or(variable.location.end(), |node| node.location.end())
                 .max(self.previous_position());
             Ok(Node::new(
                 NodeKind::VariableDeclaration {
@@ -796,7 +796,7 @@ impl<'a> Parser<'a> {
                     attributes: Vec::new(),
                     initializer,
                 },
-                SourceLocation { start, end },
+                SourceLocation::new(start, end),
             ))
         }
     }

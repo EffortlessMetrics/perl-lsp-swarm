@@ -130,7 +130,7 @@ pub(crate) fn admit(
     // the cursor cannot admit a binding of any kind — an `our` alias in a
     // later statement is not valid yet, and a `local` that has not run has
     // not localized anything.
-    if symbol.location.start > cursor_position {
+    if symbol.location.start() > cursor_position {
         return Admission::NotVisible(VisibilityReason::DeclaredAfterCursor);
     }
     // Extent applies to every class with the facts this module has: the
@@ -223,8 +223,9 @@ pub(super) fn select_exact_identities<'a>(
 
         match groups.get_mut(&key) {
             Some(group) => {
-                let challenger = (depth, symbol.location.start, symbol.scope_id);
-                let incumbent = (group.best_depth, group.best.location.start, group.best.scope_id);
+                let challenger = (depth, symbol.location.start(), symbol.scope_id);
+                let incumbent =
+                    (group.best_depth, group.best.location.start(), group.best.scope_id);
                 if challenger > incumbent {
                     group.best = symbol;
                     group.best_depth = depth;
@@ -274,7 +275,7 @@ mod tests {
                     id,
                     parent,
                     kind,
-                    location: SourceLocation { start, end },
+                    location: SourceLocation::new(start, end),
                     symbols: std::collections::HashSet::new(),
                 },
             );
@@ -293,7 +294,7 @@ mod tests {
             name: name.to_string(),
             qualified_name: name.to_string(),
             kind,
-            location: SourceLocation { start, end: start + 4 },
+            location: SourceLocation::new(start, start + 4),
             scope_id,
             declaration: Some(declaration.to_string()),
             documentation: None,

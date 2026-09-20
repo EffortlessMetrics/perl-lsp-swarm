@@ -318,7 +318,7 @@ impl IncrementalDocument {
     }
 
     fn cache_node(&mut self, node: &Node) {
-        let range = (node.location.start, node.location.end);
+        let range = (node.location.start(), node.location.end());
         self.subtree_cache.by_range.insert(range, Arc::new(node.clone()));
 
         let hash = self.hash_node(node);
@@ -595,6 +595,7 @@ mod tests {
         let pos = require_find(source, "1")?;
         doc.apply_edit(IncrementalEdit::new(pos, pos + 1, "10".to_string()))?;
         assert!(doc.subtree_cache.by_content.len() <= 1);
+
         Ok(())
     }
 

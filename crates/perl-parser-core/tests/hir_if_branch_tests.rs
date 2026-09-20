@@ -118,7 +118,7 @@ fn branch_shell_item_has_valid_source_range() -> TestResult {
     let file = lower_source("if ($x) { 1 }\n");
     let item = first_branch_item(&file)?;
     assert!(
-        item.range.end >= item.range.start,
+        item.range.end() >= item.range.start(),
         "HIR item range must be non-empty and ordered; got {:?}",
         item.range,
     );

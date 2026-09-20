@@ -207,10 +207,7 @@ mod tests {
     use std::sync::Arc;
 
     fn dummy_ast() -> Arc<Node> {
-        Arc::new(Node::new(
-            NodeKind::Number { value: "0".to_string() },
-            SourceLocation { start: 0, end: 1 },
-        ))
+        Arc::new(Node::new(NodeKind::Number { value: "0".to_string() }, SourceLocation::new(0, 1)))
     }
 
     #[test]

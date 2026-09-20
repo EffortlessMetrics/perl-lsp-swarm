@@ -43,7 +43,7 @@ fn assert_has_errors(source: &str) {
 
 fn walk_all_errors(node: &Node, errors: &mut Vec<(usize, String)>) {
     if let NodeKind::Error { message, .. } = &node.kind {
-        errors.push((node.location.start, message.clone()));
+        errors.push((node.location.start(), message.clone()));
     }
     node.for_each_child(|child| {
         walk_all_errors(child, errors);

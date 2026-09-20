@@ -118,7 +118,7 @@ impl ErrorClassifier {
         // multibyte character straddles the window boundary, a raw `source[s..e]`
         // would panic.  We snap both bounds using `str::is_char_boundary`.
         let error_text = {
-            let raw_start = error_node.location.start;
+            let raw_start = error_node.location.start();
             // Clamp start to [0, source.len()] and snap forward to the next
             // char boundary so we never begin inside a multibyte sequence.
             let start = {
@@ -182,7 +182,7 @@ impl ErrorClassifier {
         // '\n' (0x0A) is always a single-byte sequence and its position is
         // therefore always a valid char boundary.
         {
-            let raw_pos = error_node.location.start;
+            let raw_pos = error_node.location.start();
             // Snap pos forward to the nearest char boundary (or source.len()).
             let pos = {
                 let p = raw_pos.min(source.len());
@@ -237,7 +237,7 @@ impl ErrorClassifier {
         }
 
         // Check if we're at EOF; use saturating_sub to avoid underflow on empty source
-        if source.is_empty() || error_node.location.start >= source.len().saturating_sub(1) {
+        if source.is_empty() || error_node.location.start() >= source.len().saturating_sub(1) {
             return ParseErrorKind::UnexpectedEof;
         }
 
@@ -436,8 +436,8 @@ pub fn classify_recovery_salvage(ast: &Node, diagnostics: &[ParseError]) -> Reco
     ) {
         if let perl_ast::NodeKind::Error { message, .. } = &node.kind {
             *error_node_count = error_node_count.saturating_add(1);
-            if node.location.start < *first_start {
-                *first_start = node.location.start;
+            if node.location.start() < *first_start {
+                *first_start = node.location.start();
                 *first_unrecovered_error_node = Some(message.clone());
             }
         }
@@ -481,7 +481,7 @@ mod tests {
                 found: None,
                 partial: None,
             },
-            SourceLocation { start: 9, end: 15 }, // "hello
+            SourceLocation::new(9, 15), // "hello
         );
 
         let kind = classifier.classify(&error_node, source);
@@ -501,7 +501,7 @@ mod tests {
                 found: None,
                 partial: None,
             },
-            SourceLocation { start: 10, end: 11 }, // newline char
+            SourceLocation::new(10, 11), // newline char
         );
         let kind = classifier.classify(&error, source);
         assert_eq!(kind, ParseErrorKind::MissingSemicolon);
@@ -517,12 +517,12 @@ mod tests {
                 found: None,
                 partial: None,
             },
-            SourceLocation { start, end },
+            SourceLocation::new(start, end),
         )
     }
 
     fn make_program_node(children: Vec<Node>) -> Node {
-        Node::new(NodeKind::Program { statements: children }, SourceLocation { start: 0, end: 100 })
+        Node::new(NodeKind::Program { statements: children }, SourceLocation::new(0, 100))
     }
 
     #[test]

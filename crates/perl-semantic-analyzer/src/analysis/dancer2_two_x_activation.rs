@@ -152,11 +152,11 @@ fn collect_package_subs(
             // is a no-op against the already-installed CV, so only
             // definitions shadow position-independently. Lexical subs stay
             // excluded via the declarator gate above.
-            let body_span_width = body.location.end.saturating_sub(body.location.start);
+            let body_span_width = body.location.end().saturating_sub(body.location.start());
             let is_forward_declaration =
-                body.location.start == body.location.end || body_span_width < 2;
+                body.location.start() == body.location.end() || body_span_width < 2;
             let declaration_offset =
-                if is_forward_declaration { Some(body.location.start as u32) } else { None };
+                if is_forward_declaration { Some(body.location.start() as u32) } else { None };
             if name.contains("::") {
                 // A qualified name belongs to its declared package, however
                 // the running package scope is spelled: `sub App::get` inside
@@ -431,8 +431,8 @@ fn walk_activation_sites(
 ) {
     match &node.kind {
         NodeKind::Use { module, .. } if is_exact_dancer2_two_x_import(module) => {
-            let span_start = node.location.start.min(u32::MAX as usize) as u32;
-            let span_end = node.location.end.min(u32::MAX as usize) as u32;
+            let span_start = node.location.start().min(u32::MAX as usize) as u32;
+            let span_end = node.location.end().min(u32::MAX as usize) as u32;
             // The parser folds the version's leading components into the
             // module name; the spelled requirement's remaining components
             // arrive as separate leading tokens and are consumed here, so a
@@ -479,7 +479,7 @@ fn walk_activation_sites(
                 package: current_package.clone(),
                 source_generation: generation.clone(),
                 file_id,
-                anchor_id: AnchorId(node.location.start as u64),
+                anchor_id: AnchorId(node.location.start() as u64),
                 span_start_byte: span_start,
                 shadowed_keywords: shadowed_for_package(
                     current_package.as_deref(),

@@ -79,7 +79,7 @@ fn check_call(node: &Node, args: &[Node], diagnostics: &mut Vec<Diagnostic>) {
     for lib in libs {
         if !library_exists(&lib, &search_paths) {
             diagnostics.push(Diagnostic {
-                range: (node.location.start, node.location.end),
+                range: (node.location.start(), node.location.end()),
                 severity: DiagnosticSeverity::Warning,
                 code: None,
                 message: format!(

@@ -46,7 +46,7 @@ use perl_ast::ast::{GotoTargetForm, Node, NodeKind, SourceLocation};
 // ---------------------------------------------------------------------------
 
 fn loc() -> SourceLocation {
-    SourceLocation { start: 0, end: 1 }
+    SourceLocation::new(0, 1)
 }
 
 fn leaf(name: &str) -> Node {
@@ -236,7 +236,7 @@ mod for_each_child_mut {
                 body: Box::new(block_of(vec![])),
                 catch_blocks: vec![
                     (
-                        Some(("$e".to_string(), SourceLocation { start: 0, end: 0 })),
+                        Some(("$e".to_string(), SourceLocation::new(0, 0))),
                         Box::new(block_of(vec![])),
                     ),
                     (None, Box::new(block_of(vec![]))),

@@ -134,7 +134,7 @@ impl ReceiverFact {
             evidence: vec![TypeEvidence::Heuristic { reason: reason.into() }],
             freshness: ReceiverFactFreshness::Unknown,
             dynamic_boundary: Some(DynamicBoundary::UnknownReceiver),
-            source_range: Some((receiver.location.start, receiver.location.end)),
+            source_range: Some((receiver.location.start(), receiver.location.end())),
             fallback_state: ReceiverFallbackState::Fallback,
         }
     }
@@ -149,7 +149,7 @@ impl ReceiverFact {
             evidence: vec![evidence],
             freshness: ReceiverFactFreshness::Unknown,
             dynamic_boundary: Some(DynamicBoundary::DynamicHashKey),
-            source_range: Some((receiver.location.start, receiver.location.end)),
+            source_range: Some((receiver.location.start(), receiver.location.end())),
             fallback_state: ReceiverFallbackState::Fallback,
         }
     }
@@ -167,7 +167,7 @@ impl ReceiverFact {
             evidence: fact.evidence,
             freshness: ReceiverFactFreshness::Fresh,
             dynamic_boundary: fact.dynamic_boundary,
-            source_range: Some((receiver.location.start, receiver.location.end)),
+            source_range: Some((receiver.location.start(), receiver.location.end())),
             fallback_state,
         }
     }
@@ -282,7 +282,7 @@ fn variable_receiver_fact(
             }],
             freshness: ReceiverFactFreshness::Unknown,
             dynamic_boundary: None,
-            source_range: Some((receiver.location.start, receiver.location.end)),
+            source_range: Some((receiver.location.start(), receiver.location.end())),
             fallback_state: ReceiverFallbackState::Fallback,
         };
     }
@@ -310,7 +310,7 @@ fn static_package_receiver(
         evidence: vec![evidence],
         freshness: ReceiverFactFreshness::Fresh,
         dynamic_boundary: None,
-        source_range: Some((receiver.location.start, receiver.location.end)),
+        source_range: Some((receiver.location.start(), receiver.location.end())),
         fallback_state: ReceiverFallbackState::Exact,
     }
 }
@@ -346,7 +346,7 @@ fn hash_receiver_fact(
             evidence: vec![evidence],
             freshness: ReceiverFactFreshness::Unknown,
             dynamic_boundary: None,
-            source_range: Some((receiver.location.start, receiver.location.end)),
+            source_range: Some((receiver.location.start(), receiver.location.end())),
             fallback_state: ReceiverFallbackState::Fallback,
         };
     };
@@ -386,7 +386,7 @@ fn array_receiver_fact(
             evidence: vec![evidence],
             freshness: ReceiverFactFreshness::Unknown,
             dynamic_boundary: None,
-            source_range: Some((receiver.location.start, receiver.location.end)),
+            source_range: Some((receiver.location.start(), receiver.location.end())),
             fallback_state: ReceiverFallbackState::Fallback,
         };
     };
@@ -552,7 +552,7 @@ fn fallback_receiver_fact(
         evidence: inherited_evidence,
         freshness,
         dynamic_boundary: boundary.or(container_fact.dynamic_boundary),
-        source_range: Some((receiver.location.start, receiver.location.end)),
+        source_range: Some((receiver.location.start(), receiver.location.end())),
         fallback_state: ReceiverFallbackState::Fallback,
     }
 }

@@ -44,7 +44,7 @@ fn truncated_recovery_span_covers_the_consumed_arrow_and_sigil() -> Result<(), S
             ));
         }
         let error = first_error(&output.ast).ok_or_else(|| format!("{source}: no error node"))?;
-        if error.location.end != source.len() {
+        if error.location.end() != source.len() {
             return Err(format!(
                 "{source}: error span {:?} must include the suffix",
                 error.location
@@ -86,10 +86,10 @@ fn braced_dynamic_method_expression_stays_traversable() -> Result<(), String> {
         format!("{source}: method expression `$name` missing from {}", output.ast.to_sexp())
     })?;
     let expected_start = source.find("$name").ok_or("fixture must contain $name")?;
-    if name_node.location.start != expected_start {
+    if name_node.location.start() != expected_start {
         return Err(format!(
             "{source}: `$name` span starts at {} not {expected_start}",
-            name_node.location.start
+            name_node.location.start()
         ));
     }
     Ok(())
@@ -171,8 +171,8 @@ fn recovered_slices_contain_their_selectors_and_preserve_following_declaration()
             return Err(format!("{source}: wrong selector value: {}", selector.to_sexp()));
         }
         let selector_start = source.find(selector_text).ok_or("fixture selector missing")?;
-        if selector.location.start != selector_start
-            || selector.location.end != selector_start + selector_text.len()
+        if selector.location.start() != selector_start
+            || selector.location.end() != selector_start + selector_text.len()
         {
             return Err(format!(
                 "{source}: selector has wrong source span: {:?}",
@@ -180,8 +180,8 @@ fn recovered_slices_contain_their_selectors_and_preserve_following_declaration()
             ));
         }
         for child in [target, selector] {
-            if slice.location.start > child.location.start
-                || slice.location.end < child.location.end
+            if slice.location.start() > child.location.start()
+                || slice.location.end() < child.location.end()
             {
                 return Err(format!(
                     "{source}: slice span {:?} must contain child span {:?}",
@@ -206,10 +206,10 @@ fn recovered_slices_contain_their_selectors_and_preserve_following_declaration()
         let next_start = source.find("my $next").ok_or("fixture declaration missing")?;
         let value_start = source.find("1;").ok_or("fixture initializer missing")?;
         if statements.len() != 2
-            || next.location.start != next_start
-            || variable.location.start != next_start + "my ".len()
-            || value.location.start != value_start
-            || value.location.end != value_start + 1
+            || next.location.start() != next_start
+            || variable.location.start() != next_start + "my ".len()
+            || value.location.start() != value_start
+            || value.location.end() != value_start + 1
         {
             return Err(format!(
                 "{source}: following declaration structure or spans changed: {}",

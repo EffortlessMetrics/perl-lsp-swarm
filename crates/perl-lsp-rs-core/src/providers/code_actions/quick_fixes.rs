@@ -29,7 +29,7 @@ pub fn fix_undefined_variable(source: &str, diagnostic: &QuickFixDiagnostic) -> 
             diagnostics: vec![DiagnosticCode::UndefinedVariable.as_str().to_string()],
             edit: CodeActionEdit {
                 changes: vec![TextEdit {
-                    location: SourceLocation { start: insert_pos, end: insert_pos },
+                    location: SourceLocation::new(insert_pos, insert_pos),
                     new_text: format!("{}my {};\n", indent, var_name),
                 }],
             },
@@ -43,7 +43,7 @@ pub fn fix_undefined_variable(source: &str, diagnostic: &QuickFixDiagnostic) -> 
             diagnostics: vec![DiagnosticCode::UndefinedVariable.as_str().to_string()],
             edit: CodeActionEdit {
                 changes: vec![TextEdit {
-                    location: SourceLocation { start: insert_pos, end: insert_pos },
+                    location: SourceLocation::new(insert_pos, insert_pos),
                     new_text: format!("{}our {};\n", indent, var_name),
                 }],
             },
@@ -73,7 +73,7 @@ pub fn fix_unused_variable(source: &str, diagnostic: &QuickFixDiagnostic) -> Vec
         diagnostics: vec![DiagnosticCode::UnusedVariable.as_str().to_string()],
         edit: CodeActionEdit {
             changes: vec![TextEdit {
-                location: SourceLocation { start: line_start, end: delete_end },
+                location: SourceLocation::new(line_start, delete_end),
                 new_text: String::new(),
             }],
         },
@@ -89,7 +89,7 @@ pub fn fix_unused_variable(source: &str, diagnostic: &QuickFixDiagnostic) -> Vec
             diagnostics: vec![DiagnosticCode::UnusedVariable.as_str().to_string()],
             edit: CodeActionEdit {
                 changes: vec![TextEdit {
-                    location: SourceLocation { start: range_start, end: range_end },
+                    location: SourceLocation::new(range_start, range_end),
                     new_text: unused_name,
                 }],
             },
@@ -160,8 +160,8 @@ mod tests {
 
         let rename = must_some(actions.iter().find(|a| a.title.contains("Rename")));
         assert_eq!(rename.edit.changes[0].new_text, "foo_2");
-        assert_eq!(rename.edit.changes[0].location.start, key_start);
-        assert_eq!(rename.edit.changes[0].location.end, key_end);
+        assert_eq!(rename.edit.changes[0].location.start(), key_start);
+        assert_eq!(rename.edit.changes[0].location.end(), key_end);
     }
 
     #[test]
@@ -183,7 +183,7 @@ mod tests {
         // Applying the delete should remove only the duplicate line.
         let edit = &delete.edit.changes[0];
         let remaining =
-            format!("{}{}", &source[..edit.location.start], &source[edit.location.end..]);
+            format!("{}{}", &source[..edit.location.start()], &source[edit.location.end()..]);
         assert_eq!(remaining, "my %h = (\n    foo => 1,\n);\n");
     }
 
@@ -322,9 +322,9 @@ mod tests {
         let remove_action = &actions[0];
         let edit = &remove_action.edit.changes[0];
 
-        assert_eq!(edit.location.start, 0);
-        assert_eq!(edit.location.end, source.len());
-        assert!(edit.location.end <= source.len(), "edit end must not exceed source length");
+        assert_eq!(edit.location.start(), 0);
+        assert_eq!(edit.location.end(), source.len());
+        assert!(edit.location.end() <= source.len(), "edit end must not exceed source length");
         assert_eq!(edit.new_text, "");
     }
 
@@ -343,10 +343,10 @@ mod tests {
         let remove_action = &actions[0];
         let edit = &remove_action.edit.changes[0];
 
-        assert_eq!(edit.location.start, 0);
+        assert_eq!(edit.location.start(), 0);
         // The newline at position 15 is found; delete_end = 15 + 1 = 16 = source.len()
-        assert_eq!(edit.location.end, source.len());
-        assert!(edit.location.end <= source.len(), "edit end must not exceed source length");
+        assert_eq!(edit.location.end(), source.len());
+        assert!(edit.location.end() <= source.len(), "edit end must not exceed source length");
         assert_eq!(edit.new_text, "");
     }
 
@@ -365,10 +365,10 @@ mod tests {
         let edit = &remove_action.edit.changes[0];
 
         // Line starts after 'use strict;\n' at offset 12
-        assert_eq!(edit.location.start, 12);
+        assert_eq!(edit.location.start(), 12);
         // Line ends at the '\n' after 'my $unused = 1;' -- include it: offset 28
-        assert_eq!(edit.location.end, 28);
-        assert!(edit.location.end <= source.len(), "edit end must not exceed source length");
+        assert_eq!(edit.location.end(), 28);
+        assert!(edit.location.end() <= source.len(), "edit end must not exceed source length");
         assert_eq!(edit.new_text, "");
     }
 
@@ -379,15 +379,15 @@ mod tests {
         let strict_actions = add_use_strict_with_offset(source);
         let strict_action = must_some(strict_actions.first());
         let strict = must_some(strict_action.edit.changes.first());
-        assert_eq!(strict.location.start, source.len());
-        assert_eq!(strict.location.end, source.len());
+        assert_eq!(strict.location.start(), source.len());
+        assert_eq!(strict.location.end(), source.len());
         assert_eq!(strict.new_text, "\nuse strict;\n");
 
         let warnings_actions = add_use_warnings_with_offset(source);
         let warnings_action = must_some(warnings_actions.first());
         let warnings = must_some(warnings_action.edit.changes.first());
-        assert_eq!(warnings.location.start, source.len());
-        assert_eq!(warnings.location.end, source.len());
+        assert_eq!(warnings.location.start(), source.len());
+        assert_eq!(warnings.location.end(), source.len());
         assert_eq!(warnings.new_text, "\nuse warnings;\n");
     }
 
@@ -398,7 +398,7 @@ mod tests {
         let strict_actions = add_use_strict_with_offset(source);
         let strict_action = must_some(strict_actions.first());
         let strict = must_some(strict_action.edit.changes.first());
-        assert_eq!(strict.location.start, source.len());
+        assert_eq!(strict.location.start(), source.len());
         assert_eq!(strict.new_text, "use strict;\n");
     }
 
@@ -419,8 +419,8 @@ mod tests {
         let edit = &actions[0].edit.changes[0];
         assert_eq!(edit.new_text, ", undef");
         // Insertion is at the end of the call node (before ';')
-        assert_eq!(edit.location.start, call_end);
-        assert_eq!(edit.location.end, call_end);
+        assert_eq!(edit.location.start(), call_end);
+        assert_eq!(edit.location.end(), call_end);
     }
 
     #[test]
@@ -428,13 +428,13 @@ mod tests {
         let string_node = |value: &str, start: usize, end: usize| {
             Node::new(
                 NodeKind::String { value: value.to_string(), interpolated: false },
-                SourceLocation { start, end },
+                SourceLocation::new(start, end),
             )
         };
         let variable_node = |start: usize, end: usize| {
             Node::new(
                 NodeKind::Variable { sigil: "$".to_string(), name: "value".to_string() },
-                SourceLocation { start, end },
+                SourceLocation::new(start, end),
             )
         };
         let indirect_call = Node::new(
@@ -443,18 +443,18 @@ mod tests {
                 object: Box::new(variable_node(0, 3)),
                 args: vec![string_node("\"%s %s %s\"", 4, 15), variable_node(17, 23)],
             },
-            SourceLocation { start: 0, end: 23 },
+            SourceLocation::new(0, 23),
         );
         let function_call = Node::new(
             NodeKind::FunctionCall {
                 name: "printf".to_string(),
                 args: vec![string_node("\"%s %s\"", 24, 32), variable_node(34, 40)],
             },
-            SourceLocation { start: 24, end: 40 },
+            SourceLocation::new(24, 40),
         );
         let program = Node::new(
             NodeKind::Program { statements: vec![indirect_call, function_call] },
-            SourceLocation { start: 0, end: 40 },
+            SourceLocation::new(0, 40),
         );
 
         let metadata = printf_format_arity_metadata_by_range(&program).get(&(24, 40)).cloned();
@@ -472,15 +472,15 @@ mod tests {
     fn printf_metadata_rejects_interpolated_arrays() {
         let format = Node::new(
             NodeKind::String { value: "\"%s @items\"".to_string(), interpolated: true },
-            SourceLocation { start: 7, end: 19 },
+            SourceLocation::new(7, 19),
         );
         let argument = Node::new(
             NodeKind::Variable { sigil: "$".to_string(), name: "item".to_string() },
-            SourceLocation { start: 21, end: 26 },
+            SourceLocation::new(21, 26),
         );
         let call = Node::new(
             NodeKind::FunctionCall { name: "printf".to_string(), args: vec![format, argument] },
-            SourceLocation { start: 0, end: 26 },
+            SourceLocation::new(0, 26),
         );
 
         assert_eq!(printf_format_arity_metadata_by_range(&call).get(&(0, 26)), None);
@@ -493,15 +493,15 @@ mod tests {
                 value: "'email@example.com %s %s'".to_string(),
                 interpolated: false,
             },
-            SourceLocation { start: 7, end: 29 },
+            SourceLocation::new(7, 29),
         );
         let argument = Node::new(
             NodeKind::Variable { sigil: "$".to_string(), name: "item".to_string() },
-            SourceLocation { start: 31, end: 36 },
+            SourceLocation::new(31, 36),
         );
         let call = Node::new(
             NodeKind::FunctionCall { name: "printf".to_string(), args: vec![format, argument] },
-            SourceLocation { start: 0, end: 40 },
+            SourceLocation::new(0, 40),
         );
 
         assert!(printf_format_arity_metadata_by_range(&call).get(&(0, 40)).is_some());
@@ -516,7 +516,7 @@ mod tests {
 
         let edit = &must_some(actions.first()).edit.changes[0];
         assert_eq!(edit.new_text, ", undef");
-        assert_eq!(&source[edit.location.start..edit.location.start + 1], ";");
+        assert_eq!(&source[edit.location.start()..edit.location.start() + 1], ";");
     }
 
     #[test]
@@ -532,7 +532,7 @@ mod tests {
         let edit = &actions[0].edit.changes[0];
         assert_eq!(edit.new_text, ", undef");
         // Insertion position should be at the closing ')'
-        assert_eq!(&source[edit.location.start..edit.location.start + 1], ")");
+        assert_eq!(&source[edit.location.start()..edit.location.start() + 1], ")");
     }
 
     #[test]
@@ -600,7 +600,7 @@ mod tests {
         assert_eq!(action.kind, CodeActionKind::QuickFix);
         assert!(action.is_preferred);
         let edit = &action.edit.changes[0];
-        assert_eq!(&source[edit.location.start..edit.location.end], " MISSING");
+        assert_eq!(&source[edit.location.start()..edit.location.end()], " MISSING");
         assert_eq!(edit.new_text, "");
     }
 
@@ -619,7 +619,7 @@ mod tests {
 
             let action = must_some(actions.first());
             let edit = &action.edit.changes[0];
-            assert_eq!(&source[edit.location.start..edit.location.end], " MISSING");
+            assert_eq!(&source[edit.location.start()..edit.location.end()], " MISSING");
             assert_eq!(edit.new_text, "");
         }
     }
@@ -638,7 +638,7 @@ mod tests {
 
         let action = must_some(actions.first());
         let edit = &action.edit.changes[0];
-        assert_eq!(&source[edit.location.start..edit.location.end], " MISSING");
+        assert_eq!(&source[edit.location.start()..edit.location.end()], " MISSING");
         assert_eq!(edit.new_text, "");
     }
 
@@ -701,7 +701,7 @@ mod tests {
 
         let action = must_some(actions.first());
         let edit = &action.edit.changes[0];
-        assert_eq!(&source[edit.location.start..edit.location.end], " Some::Label ");
+        assert_eq!(&source[edit.location.start()..edit.location.end()], " Some::Label ");
         assert_eq!(edit.new_text, "");
     }
 
@@ -962,8 +962,8 @@ mod tests {
         let action = must_some(actions.first());
         let edit = &action.edit.changes[0];
         assert_eq!(edit.new_text, ";");
-        assert_eq!(edit.location.start, must_some(source.find("   ")));
-        assert_eq!(edit.location.end, edit.location.start);
+        assert_eq!(edit.location.start(), must_some(source.find("   ")));
+        assert_eq!(edit.location.end(), edit.location.start());
     }
 
     #[test]
@@ -974,8 +974,8 @@ mod tests {
         let action = must_some(actions.first());
         let edit = &action.edit.changes[0];
         assert_eq!(edit.new_text, ";");
-        assert_eq!(edit.location.start, must_some(source.find("   ")));
-        assert_eq!(edit.location.end, edit.location.start);
+        assert_eq!(edit.location.start(), must_some(source.find("   ")));
+        assert_eq!(edit.location.end(), edit.location.start());
     }
 
     #[test]
@@ -1009,7 +1009,7 @@ pub fn fix_assignment_in_condition(
             diagnostics: vec![DiagnosticCode::AssignmentInCondition.as_str().to_string()],
             edit: CodeActionEdit {
                 changes: vec![TextEdit {
-                    location: SourceLocation { start: pos, end: pos + 1 },
+                    location: SourceLocation::new(pos, pos + 1),
                     new_text: "==".to_string(),
                 }],
             },
@@ -1024,17 +1024,11 @@ pub fn fix_assignment_in_condition(
             edit: CodeActionEdit {
                 changes: vec![
                     TextEdit {
-                        location: SourceLocation {
-                            start: diagnostic.range.0,
-                            end: diagnostic.range.0,
-                        },
+                        location: SourceLocation::new(diagnostic.range.0, diagnostic.range.0),
                         new_text: "(".to_string(),
                     },
                     TextEdit {
-                        location: SourceLocation {
-                            start: diagnostic.range.1,
-                            end: diagnostic.range.1,
-                        },
+                        location: SourceLocation::new(diagnostic.range.1, diagnostic.range.1),
                         new_text: ")".to_string(),
                     },
                 ],
@@ -1055,7 +1049,7 @@ pub fn add_use_strict_with_offset(source: &str) -> Vec<CodeAction> {
         diagnostics: vec![DiagnosticCode::MissingStrict.as_str().to_string()],
         edit: CodeActionEdit {
             changes: vec![TextEdit {
-                location: SourceLocation { start: offset, end: offset },
+                location: SourceLocation::new(offset, offset),
                 new_text: file_scope_pragma_text(source, "use strict"),
             }],
         },
@@ -1072,7 +1066,7 @@ pub fn add_use_warnings_with_offset(source: &str) -> Vec<CodeAction> {
         diagnostics: vec![DiagnosticCode::MissingWarnings.as_str().to_string()],
         edit: CodeActionEdit {
             changes: vec![TextEdit {
-                location: SourceLocation { start: offset, end: offset },
+                location: SourceLocation::new(offset, offset),
                 new_text: file_scope_pragma_text(source, "use warnings"),
             }],
         },
@@ -1115,11 +1109,11 @@ pub fn move_use_strict_to_file_scope(
         edit: CodeActionEdit {
             changes: vec![
                 TextEdit {
-                    location: SourceLocation { start: diagnostic.range.0, end: delete_end },
+                    location: SourceLocation::new(diagnostic.range.0, delete_end),
                     new_text: String::new(),
                 },
                 TextEdit {
-                    location: SourceLocation { start: insert_at, end: insert_at },
+                    location: SourceLocation::new(insert_at, insert_at),
                     new_text: file_scope_pragma_text(source, "use strict"),
                 },
             ],
@@ -1147,11 +1141,11 @@ pub fn move_use_warnings_to_file_scope(
         edit: CodeActionEdit {
             changes: vec![
                 TextEdit {
-                    location: SourceLocation { start: diagnostic.range.0, end: delete_end },
+                    location: SourceLocation::new(diagnostic.range.0, delete_end),
                     new_text: String::new(),
                 },
                 TextEdit {
-                    location: SourceLocation { start: insert_at, end: insert_at },
+                    location: SourceLocation::new(insert_at, insert_at),
                     new_text: file_scope_pragma_text(source, "use warnings"),
                 },
             ],
@@ -1183,7 +1177,7 @@ pub fn fix_deprecated_defined(source: &str, diagnostic: &QuickFixDiagnostic) -> 
             diagnostics: vec![DiagnosticCode::DeprecatedDefined.as_str().to_string()],
             edit: CodeActionEdit {
                 changes: vec![TextEdit {
-                    location: SourceLocation { start: defined_start, end: range_end },
+                    location: SourceLocation::new(defined_start, range_end),
                     new_text: arg_text.to_string(),
                 }],
             },
@@ -1218,11 +1212,11 @@ pub fn fix_numeric_undef(source: &str, diagnostic: &QuickFixDiagnostic) -> Vec<C
         edit: CodeActionEdit {
             changes: vec![
                 TextEdit {
-                    location: SourceLocation { start: range_start, end: range_start },
+                    location: SourceLocation::new(range_start, range_start),
                     new_text: "defined(".to_string(),
                 },
                 TextEdit {
-                    location: SourceLocation { start: range_end, end: range_end },
+                    location: SourceLocation::new(range_end, range_end),
                     new_text: ")".to_string(),
                 },
             ],
@@ -1238,7 +1232,7 @@ pub fn fix_numeric_undef(source: &str, diagnostic: &QuickFixDiagnostic) -> Vec<C
             diagnostics: vec![DiagnosticCode::NumericComparisonWithUndef.as_str().to_string()],
             edit: CodeActionEdit {
                 changes: vec![TextEdit {
-                    location: SourceLocation { start: range_start, end: range_end },
+                    location: SourceLocation::new(range_start, range_end),
                     new_text: "// 0".to_string(), // Default to 0
                 }],
             },
@@ -1269,7 +1263,7 @@ pub fn fix_native_undef_comparison(
         diagnostics: vec!["native.common.undef_comparison".to_string()],
         edit: CodeActionEdit {
             changes: vec![TextEdit {
-                location: SourceLocation { start: range_start, end: range_end },
+                location: SourceLocation::new(range_start, range_end),
                 new_text: replacement,
             }],
         },
@@ -1333,7 +1327,7 @@ pub fn fix_bareword(source: &str, diagnostic: &QuickFixDiagnostic) -> Vec<CodeAc
         diagnostics: vec![DiagnosticCode::UnquotedBareword.as_str().to_string()],
         edit: CodeActionEdit {
             changes: vec![TextEdit {
-                location: SourceLocation { start: range_start, end: range_end },
+                location: SourceLocation::new(range_start, range_end),
                 new_text: format!("'{}'", bareword),
             }],
         },
@@ -1347,7 +1341,7 @@ pub fn fix_bareword(source: &str, diagnostic: &QuickFixDiagnostic) -> Vec<CodeAc
         diagnostics: vec![DiagnosticCode::UnquotedBareword.as_str().to_string()],
         edit: CodeActionEdit {
             changes: vec![TextEdit {
-                location: SourceLocation { start: range_start, end: range_end },
+                location: SourceLocation::new(range_start, range_end),
                 new_text: format!("\"{}\"", bareword),
             }],
         },
@@ -1366,7 +1360,7 @@ pub fn fix_bareword(source: &str, diagnostic: &QuickFixDiagnostic) -> Vec<CodeAc
             diagnostics: vec![DiagnosticCode::UnquotedBareword.as_str().to_string()],
             edit: CodeActionEdit {
                 changes: vec![TextEdit {
-                    location: SourceLocation { start: insert_pos, end: insert_pos },
+                    location: SourceLocation::new(insert_pos, insert_pos),
                     new_text: format!("{}open my ${}; \n", indent, bareword),
                 }],
             },
@@ -1411,7 +1405,7 @@ pub fn fix_parse_error(
                 diagnostics: vec![code.to_string()],
                 edit: CodeActionEdit {
                     changes: vec![TextEdit {
-                        location: SourceLocation { start: end_pos, end: end_pos },
+                        location: SourceLocation::new(end_pos, end_pos),
                         new_text: ";".to_string(),
                     }],
                 },
@@ -1460,7 +1454,7 @@ pub fn fix_parse_error(
                     diagnostics: vec![code.to_string()],
                     edit: CodeActionEdit {
                         changes: vec![TextEdit {
-                            location: SourceLocation { start: end_pos, end: end_pos },
+                            location: SourceLocation::new(end_pos, end_pos),
                             new_text: ";".to_string(),
                         }],
                     },
@@ -1482,7 +1476,7 @@ pub fn fix_parse_error(
                 diagnostics: vec![code.to_string()],
                 edit: CodeActionEdit {
                     changes: vec![TextEdit {
-                        location: SourceLocation { start: source.len(), end: source.len() },
+                        location: SourceLocation::new(source.len(), source.len()),
                         new_text: "\n}".to_string(),
                     }],
                 },
@@ -1497,10 +1491,7 @@ pub fn fix_parse_error(
                 diagnostics: vec![code.to_string()],
                 edit: CodeActionEdit {
                     changes: vec![TextEdit {
-                        location: SourceLocation {
-                            start: diagnostic.range.1,
-                            end: diagnostic.range.1,
-                        },
+                        location: SourceLocation::new(diagnostic.range.1, diagnostic.range.1),
                         new_text: "\"".to_string(),
                     }],
                 },
@@ -1514,10 +1505,7 @@ pub fn fix_parse_error(
                 diagnostics: vec![code.to_string()],
                 edit: CodeActionEdit {
                     changes: vec![TextEdit {
-                        location: SourceLocation {
-                            start: diagnostic.range.1,
-                            end: diagnostic.range.1,
-                        },
+                        location: SourceLocation::new(diagnostic.range.1, diagnostic.range.1),
                         new_text: ")".to_string(),
                     }],
                 },
@@ -1531,10 +1519,7 @@ pub fn fix_parse_error(
                 diagnostics: vec![code.to_string()],
                 edit: CodeActionEdit {
                     changes: vec![TextEdit {
-                        location: SourceLocation {
-                            start: diagnostic.range.1,
-                            end: diagnostic.range.1,
-                        },
+                        location: SourceLocation::new(diagnostic.range.1, diagnostic.range.1),
                         new_text: "]".to_string(),
                     }],
                 },
@@ -1548,10 +1533,7 @@ pub fn fix_parse_error(
                 diagnostics: vec![code.to_string()],
                 edit: CodeActionEdit {
                     changes: vec![TextEdit {
-                        location: SourceLocation {
-                            start: diagnostic.range.1,
-                            end: diagnostic.range.1,
-                        },
+                        location: SourceLocation::new(diagnostic.range.1, diagnostic.range.1),
                         new_text: "}".to_string(),
                     }],
                 },
@@ -1683,7 +1665,7 @@ pub fn fix_unused_parameter(diagnostic: &QuickFixDiagnostic) -> Vec<CodeAction> 
             diagnostics: vec![DiagnosticCode::UnusedParameter.as_str().to_string()],
             edit: CodeActionEdit {
                 changes: vec![TextEdit {
-                    location: SourceLocation { start: diagnostic.range.0, end: diagnostic.range.1 },
+                    location: SourceLocation::new(diagnostic.range.0, diagnostic.range.1),
                     new_text: format!("_{}", param_name),
                 }],
             },
@@ -1709,7 +1691,7 @@ pub fn fix_duplicate_parameter(diagnostic: &QuickFixDiagnostic) -> Vec<CodeActio
             diagnostics: vec![DiagnosticCode::DuplicateParameter.as_str().to_string()],
             edit: CodeActionEdit {
                 changes: vec![TextEdit {
-                    location: SourceLocation { start: diagnostic.range.0, end: diagnostic.range.1 },
+                    location: SourceLocation::new(diagnostic.range.0, diagnostic.range.1),
                     new_text: String::new(),
                 }],
             },
@@ -1721,7 +1703,7 @@ pub fn fix_duplicate_parameter(diagnostic: &QuickFixDiagnostic) -> Vec<CodeActio
             diagnostics: vec![DiagnosticCode::DuplicateParameter.as_str().to_string()],
             edit: CodeActionEdit {
                 changes: vec![TextEdit {
-                    location: SourceLocation { start: diagnostic.range.0, end: diagnostic.range.1 },
+                    location: SourceLocation::new(diagnostic.range.0, diagnostic.range.1),
                     new_text: new_name,
                 }],
             },
@@ -1749,7 +1731,7 @@ pub fn fix_parameter_shadowing(diagnostic: &QuickFixDiagnostic) -> Vec<CodeActio
         diagnostics: vec![DiagnosticCode::ParameterShadowsGlobal.as_str().to_string()],
         edit: CodeActionEdit {
             changes: vec![TextEdit {
-                location: SourceLocation { start: diagnostic.range.0, end: diagnostic.range.1 },
+                location: SourceLocation::new(diagnostic.range.0, diagnostic.range.1),
                 new_text: new_name,
             }],
         },
@@ -1801,7 +1783,7 @@ pub fn fix_hardcoded_shebang(source: &str) -> Vec<CodeAction> {
         diagnostics: vec!["hardcoded-shebang".to_string()],
         edit: CodeActionEdit {
             changes: vec![TextEdit {
-                location: SourceLocation { start: 0, end: first_line.len() },
+                location: SourceLocation::new(0, first_line.len()),
                 new_text: new_shebang,
             }],
         },
@@ -1854,10 +1836,7 @@ pub fn fix_variable_shadowing(diagnostic: &QuickFixDiagnostic) -> Vec<CodeAction
                 diagnostics: vec![DiagnosticCode::VariableShadowing.as_str().to_string()],
                 edit: CodeActionEdit {
                     changes: vec![TextEdit {
-                        location: SourceLocation {
-                            start: diagnostic.range.0,
-                            end: diagnostic.range.1,
-                        },
+                        location: SourceLocation::new(diagnostic.range.0, diagnostic.range.1),
                         new_text: new_name,
                     }],
                 },
@@ -1885,7 +1864,7 @@ pub fn fix_bareword_filehandle(diagnostic: &QuickFixDiagnostic) -> Vec<CodeActio
         diagnostics: vec![DiagnosticCode::BarewordFilehandle.as_str().to_string()],
         edit: CodeActionEdit {
             changes: vec![TextEdit {
-                location: SourceLocation { start: diagnostic.range.0, end: diagnostic.range.1 },
+                location: SourceLocation::new(diagnostic.range.0, diagnostic.range.1),
                 new_text: format!("my {}", lexical_name),
             }],
         },
@@ -1909,7 +1888,7 @@ pub fn fix_missing_package_declaration(source: &str) -> Vec<CodeAction> {
         diagnostics: vec![DiagnosticCode::MissingPackageDeclaration.as_str().to_string()],
         edit: CodeActionEdit {
             changes: vec![TextEdit {
-                location: SourceLocation { start: insert_pos, end: insert_pos },
+                location: SourceLocation::new(insert_pos, insert_pos),
                 new_text: "package main;\n".to_string(),
             }],
         },
@@ -1937,7 +1916,7 @@ pub fn fix_variable_redeclaration(
             diagnostics: vec![DiagnosticCode::VariableRedeclaration.as_str().to_string()],
             edit: CodeActionEdit {
                 changes: vec![TextEdit {
-                    location: SourceLocation { start: abs_my_start, end: abs_my_end },
+                    location: SourceLocation::new(abs_my_start, abs_my_end),
                     new_text: String::new(),
                 }],
             },
@@ -1985,7 +1964,7 @@ pub fn fix_misspelled_pragma(source: &str, diagnostic: &QuickFixDiagnostic) -> V
             diagnostics: vec![DiagnosticCode::MisspelledPragma.as_str().to_string()],
             edit: CodeActionEdit {
                 changes: vec![TextEdit {
-                    location: SourceLocation { start: diagnostic.range.0, end: diagnostic.range.1 },
+                    location: SourceLocation::new(diagnostic.range.0, diagnostic.range.1),
                     new_text: format!("use {};", correct_pragma),
                 }],
             },
@@ -2020,7 +1999,7 @@ pub fn fix_unreachable_code(source: &str, diagnostic: &QuickFixDiagnostic) -> Ve
         diagnostics: vec![DiagnosticCode::UnreachableCode.as_str().to_string()],
         edit: CodeActionEdit {
             changes: vec![TextEdit {
-                location: SourceLocation { start: line_start, end: line_end },
+                location: SourceLocation::new(line_start, line_end),
                 new_text: String::new(),
             }],
         },
@@ -2044,7 +2023,7 @@ pub fn fix_duplicate_subroutine(diagnostic: &QuickFixDiagnostic) -> Vec<CodeActi
         diagnostics: vec![DiagnosticCode::DuplicateSubroutine.as_str().to_string()],
         edit: CodeActionEdit {
             changes: vec![TextEdit {
-                location: SourceLocation { start: diagnostic.range.0, end: diagnostic.range.1 },
+                location: SourceLocation::new(diagnostic.range.0, diagnostic.range.1),
                 new_text: format!("{}_2", sub_name),
             }],
         },
@@ -2089,7 +2068,7 @@ pub fn fix_duplicate_hash_keys(source: &str, diagnostic: &QuickFixDiagnostic) ->
             diagnostics: vec![DiagnosticCode::DuplicateHashKey.as_str().to_string()],
             edit: CodeActionEdit {
                 changes: vec![TextEdit {
-                    location: SourceLocation { start: line_start, end: delete_end },
+                    location: SourceLocation::new(line_start, delete_end),
                     new_text: String::new(),
                 }],
             },
@@ -2104,7 +2083,7 @@ pub fn fix_duplicate_hash_keys(source: &str, diagnostic: &QuickFixDiagnostic) ->
         diagnostics: vec![DiagnosticCode::DuplicateHashKey.as_str().to_string()],
         edit: CodeActionEdit {
             changes: vec![TextEdit {
-                location: SourceLocation { start: diagnostic.range.0, end: diagnostic.range.1 },
+                location: SourceLocation::new(diagnostic.range.0, diagnostic.range.1),
                 new_text: new_key,
             }],
         },
@@ -2197,7 +2176,7 @@ pub fn fix_missing_return(source: &str, diagnostic: &QuickFixDiagnostic) -> Vec<
         diagnostics: vec![DiagnosticCode::MissingReturn.as_str().to_string()],
         edit: CodeActionEdit {
             changes: vec![TextEdit {
-                location: SourceLocation { start: insert_pos, end: insert_pos },
+                location: SourceLocation::new(insert_pos, insert_pos),
                 new_text: format!("{}return;\n", indent),
             }],
         },
@@ -2220,10 +2199,7 @@ pub fn fix_two_arg_open(source: &str, diagnostic: &QuickFixDiagnostic) -> Vec<Co
         kind: CodeActionKind::QuickFix,
         diagnostics: vec![DiagnosticCode::TwoArgOpen.as_str().to_string()],
         edit: CodeActionEdit {
-            changes: vec![TextEdit {
-                location: SourceLocation { start: range.0, end: range.1 },
-                new_text,
-            }],
+            changes: vec![TextEdit { location: SourceLocation::new(range.0, range.1), new_text }],
         },
         is_preferred: true,
     }]
@@ -2485,7 +2461,7 @@ pub fn fix_deprecated_array_base(source: &str, diagnostic: &QuickFixDiagnostic) 
         diagnostics: vec![DiagnosticCode::DeprecatedArrayBase.as_str().to_string()],
         edit: CodeActionEdit {
             changes: vec![TextEdit {
-                location: SourceLocation { start: line_start, end: line_end },
+                location: SourceLocation::new(line_start, line_end),
                 new_text: String::new(),
             }],
         },
@@ -2536,7 +2512,7 @@ pub fn fix_security_signal_handler(
         diagnostics: vec![DiagnosticCode::SecuritySignalHandler.as_str().to_string()],
         edit: CodeActionEdit {
             changes: vec![TextEdit {
-                location: SourceLocation { start: insert_pos, end: insert_pos },
+                location: SourceLocation::new(insert_pos, insert_pos),
                 new_text: "local ".to_string(),
             }],
         },
@@ -2579,7 +2555,7 @@ pub fn fix_printf_format_arity(source: &str, diagnostic: &QuickFixDiagnostic) ->
         diagnostics: vec![DiagnosticCode::PrintfFormatMismatch.as_str().to_string()],
         edit: CodeActionEdit {
             changes: vec![TextEdit {
-                location: SourceLocation { start: insert_pos, end: insert_pos },
+                location: SourceLocation::new(insert_pos, insert_pos),
                 new_text: undef_args,
             }],
         },
@@ -2659,7 +2635,7 @@ fn collect_printf_format_arity_metadata(node: &Node, metadata: &mut PrintfFormat
     if let Some((call_name, args)) = call
         && let Some(value) = printf_format_arity_metadata_for_call(call_name, args)
     {
-        let range = (node.location.start, node.location.end);
+        let range = (node.location.start(), node.location.end());
         metadata.by_range.insert(range, value);
     }
 
@@ -2765,7 +2741,7 @@ pub fn fix_loop_control_undefined_label(
         diagnostics: vec![DiagnosticCode::LoopControlUndefinedLabel.as_str().to_string()],
         edit: CodeActionEdit {
             changes: vec![TextEdit {
-                location: SourceLocation { start: delete_start, end: delete_end },
+                location: SourceLocation::new(delete_start, delete_end),
                 new_text: String::new(),
             }],
         },

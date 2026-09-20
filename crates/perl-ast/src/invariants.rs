@@ -227,7 +227,14 @@ pub fn validate_ast(source: &str, root: &Node, options: AstInvariantOptions) -> 
         report.max_depth_reached = report.max_depth_reached.max(current.depth);
 
         let range = current.node.location;
-        if range.start > range.end
+        // Safety net for the two shapes constructors cannot produce but the
+        // type system still admits: deserialized trees (validated at the
+        // serde boundary, but a tree may predate it) and struct-literal
+        // `Range { start, end }` through the still-public engine fields.
+        // Well-typed constructor-built trees never trip this; when it fires,
+        // the input bypassed construction, which is exactly what the trace
+        // must say.
+        if range.start() > range.end()
             && !push_finding(
                 &mut report,
                 options.max_findings,
@@ -242,7 +249,7 @@ pub fn validate_ast(source: &str, root: &Node, options: AstInvariantOptions) -> 
         {
             break;
         }
-        if range.start > source.len() || range.end > source.len() {
+        if range.start() > source.len() || range.end() > source.len() {
             if !push_finding(
                 &mut report,
                 options.max_findings,
@@ -256,7 +263,7 @@ pub fn validate_ast(source: &str, root: &Node, options: AstInvariantOptions) -> 
             ) {
                 break;
             }
-        } else if (!source.is_char_boundary(range.start) || !source.is_char_boundary(range.end))
+        } else if (!source.is_char_boundary(range.start()) || !source.is_char_boundary(range.end()))
             && !push_finding(
                 &mut report,
                 options.max_findings,
@@ -272,7 +279,7 @@ pub fn validate_ast(source: &str, root: &Node, options: AstInvariantOptions) -> 
             break;
         }
         if !options.allow_empty_ranges
-            && range.start == range.end
+            && range.start() == range.end()
             && !push_finding(
                 &mut report,
                 options.max_findings,
@@ -356,7 +363,7 @@ pub fn validate_ast(source: &str, root: &Node, options: AstInvariantOptions) -> 
             let child_range = child.location;
             let path = child_path(&current.path, field, index, child);
 
-            if (child_range.start < range.start || child_range.end > range.end)
+            if (child_range.start() < range.start() || child_range.end() > range.end())
                 && !push_finding(
                     &mut report,
                     options.max_findings,
@@ -373,7 +380,8 @@ pub fn validate_ast(source: &str, root: &Node, options: AstInvariantOptions) -> 
             }
 
             if options.require_child_source_order
-                && previous.is_some_and(|previous_range| child_range.start < previous_range.start)
+                && previous
+                    .is_some_and(|previous_range| child_range.start() < previous_range.start())
                 && !push_finding(
                     &mut report,
                     options.max_findings,

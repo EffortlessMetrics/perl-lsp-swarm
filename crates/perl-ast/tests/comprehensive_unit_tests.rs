@@ -10,7 +10,7 @@ use perl_ast::ast::{Node, NodeKind, SourceLocation};
 // ---------------------------------------------------------------------------
 
 fn loc(start: usize, end: usize) -> SourceLocation {
-    SourceLocation { start, end }
+    SourceLocation::new(start, end)
 }
 
 fn num_node(value: &str) -> Node {
@@ -44,8 +44,8 @@ fn program_node(statements: Vec<Node>) -> Node {
 fn node_new_preserves_kind_and_location() -> Result<(), Box<dyn std::error::Error>> {
     let l = loc(5, 10);
     let node = Node::new(NodeKind::Number { value: "42".to_string() }, l);
-    assert_eq!(node.location.start, 5);
-    assert_eq!(node.location.end, 10);
+    assert_eq!(node.location.start(), 5);
+    assert_eq!(node.location.end(), 10);
     assert_eq!(node.kind.kind_name(), "Number");
     Ok(())
 }
@@ -280,10 +280,7 @@ fn try_catch_finally() -> Result<(), Box<dyn std::error::Error>> {
         NodeKind::Try {
             body: Box::new(block_node(vec![])),
             catch_blocks: vec![
-                (
-                    Some(("$e".to_string(), SourceLocation { start: 0, end: 0 })),
-                    Box::new(block_node(vec![])),
-                ),
+                (Some(("$e".to_string(), SourceLocation::new(0, 0))), Box::new(block_node(vec![]))),
                 (None, Box::new(block_node(vec![]))),
             ],
             finally_block: Some(Box::new(block_node(vec![]))),
@@ -769,7 +766,7 @@ fn sexp_try_catch_finally() -> Result<(), Box<dyn std::error::Error>> {
         NodeKind::Try {
             body: Box::new(block_node(vec![])),
             catch_blocks: vec![(
-                Some(("$e".to_string(), SourceLocation { start: 0, end: 0 })),
+                Some(("$e".to_string(), SourceLocation::new(0, 0))),
                 Box::new(block_node(vec![])),
             )],
             finally_block: Some(Box::new(block_node(vec![]))),
@@ -1334,7 +1331,7 @@ fn for_each_child_mut_can_modify() -> Result<(), Box<dyn std::error::Error>> {
     });
     match &prog.kind {
         NodeKind::Program { statements } => {
-            assert_eq!(statements.first().map(|s| s.location.start), Some(99));
+            assert_eq!(statements.first().map(|s| s.location.start()), Some(99));
         }
         other => return Err(format!("expected Program, got {}", other.kind_name()).into()),
     }
@@ -1558,7 +1555,7 @@ fn kind_name_covers_all_variants() -> Result<(), Box<dyn std::error::Error>> {
     // contains each variant's kind_name(). The exhaustive set-equality check lives in
     // ast.rs::tests::all_kind_names_exact_match_with_variants_set (internal test module
     // has access to all_kind_names_from_variants() helper).
-    let loc = SourceLocation { start: 0, end: 0 };
+    let loc = SourceLocation::new(0, 0);
     let dummy = Node::new(NodeKind::Undef, loc);
     let spot_checks: &[(&str, NodeKind)] = &[
         ("Program", NodeKind::Program { statements: vec![] }),
@@ -1731,8 +1728,8 @@ fn different_nodes_are_not_equal() -> Result<(), Box<dyn std::error::Error>> {
 #[test]
 fn zero_length_location() -> Result<(), Box<dyn std::error::Error>> {
     let node = Node::new(NodeKind::MissingExpression, loc(5, 5));
-    assert_eq!(node.location.start, 5);
-    assert_eq!(node.location.end, 5);
+    assert_eq!(node.location.start(), 5);
+    assert_eq!(node.location.end(), 5);
     Ok(())
 }
 

@@ -664,17 +664,17 @@ mod tests {
         let ast = Node::new(
             NodeKind::Subroutine {
                 name: Some("multiply".to_string()),
-                name_span: Some(SourceLocation { start: 4, end: 12 }),
+                name_span: Some(SourceLocation::new(4, 12)),
                 declarator: None,
                 signature: None,
                 body: Box::new(Node::new(
                     NodeKind::Block { statements: vec![] },
-                    SourceLocation { start: 0, end: 0 },
+                    SourceLocation::new(0, 0),
                 )),
                 attributes: vec![],
                 prototype: None,
             },
-            SourceLocation { start: 0, end: 0 },
+            SourceLocation::new(0, 0),
         );
 
         let tests = workflow.generate_tests(&ast, "sub multiply { }");
@@ -733,10 +733,10 @@ mod tests {
                                 sigil: "$".to_string(),
                                 name: format!("param{}", i),
                             },
-                            SourceLocation { start: 0, end: 0 },
+                            SourceLocation::new(0, 0),
                         )),
                     },
-                    SourceLocation { start: 0, end: 0 },
+                    SourceLocation::new(0, 0),
                 )
             })
             .collect();
@@ -744,20 +744,20 @@ mod tests {
         let ast = Node::new(
             NodeKind::Subroutine {
                 name: Some("complex_function".to_string()),
-                name_span: Some(SourceLocation { start: 4, end: 20 }),
+                name_span: Some(SourceLocation::new(4, 20)),
                 declarator: None,
                 signature: Some(Box::new(Node::new(
                     NodeKind::Signature { parameters },
-                    SourceLocation { start: 0, end: 0 },
+                    SourceLocation::new(0, 0),
                 ))),
                 body: Box::new(Node::new(
                     NodeKind::Block { statements: vec![] },
-                    SourceLocation { start: 0, end: 0 },
+                    SourceLocation::new(0, 0),
                 )),
                 attributes: vec![],
                 prototype: None,
             },
-            SourceLocation { start: 0, end: 0 },
+            SourceLocation::new(0, 0),
         );
 
         let suggestions = workflow.get_refactoring_suggestions(&ast, "sub complex_function { }");

@@ -52,7 +52,7 @@ fn assert_variable(node: &Node, sigil: &str, name: &str) -> Result<(), String> {
 }
 
 fn assert_span_text(source: &str, span: SourceLocation, expected: &str) {
-    assert_eq!(&source[span.start..span.end], expected);
+    assert_eq!(&source[span.start()..span.end()], expected);
 }
 
 #[test]

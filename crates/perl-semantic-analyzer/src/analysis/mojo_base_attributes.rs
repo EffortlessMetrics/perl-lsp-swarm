@@ -470,7 +470,7 @@ impl WalkState<'_> {
         let declaration_index = self.next_declaration_index;
         self.next_declaration_index += 1;
         let declaration_anchor =
-            anchor(expression.location.start, expression.location.end, self.file_id);
+            anchor(expression.location.start(), expression.location.end(), self.file_id);
         for (name_index, (name, name_node)) in parsed.names.into_iter().enumerate() {
             let name_anchor = anchor(name_node.0, name_node.1, self.file_id);
             let explicit_method = match name.literal() {
@@ -570,7 +570,9 @@ fn names_from_operand(operand: &Node) -> Vec<(MojoBaseAttributeName, (usize, usi
     match &operand.kind {
         NodeKind::ArrayLiteral { elements } if !elements.is_empty() => elements
             .iter()
-            .map(|element| (classify_name(element), (element.location.start, element.location.end)))
+            .map(|element| {
+                (classify_name(element), (element.location.start(), element.location.end()))
+            })
             .collect(),
         // An empty list declares nothing; keep it an explicit malformed
         // selection rather than silently dropping the statement.
@@ -578,9 +580,9 @@ fn names_from_operand(operand: &Node) -> Vec<(MojoBaseAttributeName, (usize, usi
             MojoBaseAttributeName::Malformed {
                 reason: "empty attribute-name list declares no attribute".to_string(),
             },
-            (operand.location.start, operand.location.end),
+            (operand.location.start(), operand.location.end()),
         )],
-        _ => vec![(classify_name(operand), (operand.location.start, operand.location.end))],
+        _ => vec![(classify_name(operand), (operand.location.start(), operand.location.end()))],
     }
 }
 

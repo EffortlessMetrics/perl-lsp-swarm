@@ -22,10 +22,10 @@ impl<'a> Parser<'a> {
 
         if self.peek_kind().is_some_and(Self::can_be_sub_name) {
             let (rest, rest_span) = self.parse_qualified_name(true)?;
-            Ok((format!("::{rest}"), SourceLocation { start: lead_start, end: rest_span.end }))
+            Ok((format!("::{rest}"), SourceLocation::new(lead_start, rest_span.end())))
         } else {
             // Bare `package ::` with no following name — mirror `sub ::`.
-            Ok(("::".to_string(), SourceLocation { start: lead_start, end: lead_end }))
+            Ok(("::".to_string(), SourceLocation::new(lead_start, lead_end)))
         }
     }
 
@@ -85,7 +85,7 @@ impl<'a> Parser<'a> {
             }
         }
 
-        Ok((name, SourceLocation { start: name_start, end: name_end }))
+        Ok((name, SourceLocation::new(name_start, name_end)))
     }
 
     /// Built-in class-level attributes defined by Perl 5.38+ `use feature 'class'`.
@@ -295,29 +295,34 @@ impl<'a> Parser<'a> {
     /// Parse subroutine definition
     fn parse_subroutine(&mut self) -> ParseResult<Node> {
         let start = self.current_position();
-        self.tokens.next()?; // consume 'sub'
+        // Consume through the tracked path so `previous_position` reflects the
+        // last consumed byte; raw stream reads would leave a stale end behind
+        // and reverse the declaration span (#8740 hardening caught this).
+        let sub_token = self.consume_token()?;
+        let _ = sub_token;
 
         let (name, name_span) = if self.peek_kind() == Some(TokenKind::DoubleColon) {
             // Leading :: qualifier — subroutine in the main package (e.g., sub ::PCDATA { })
-            let dc_token = self.tokens.next()?; // consume '::'
+            // Tracked consumption, like every other name branch: raw stream
+            // reads leave `last_end_position` stale and reverse the decl span.
+            let dc_token = self.consume_token()?;
             let name_start = dc_token.start();
             if self.peek_kind().is_some_and(Self::can_be_sub_name) {
                 // sub ::PCDATA or sub ::DB_File::splice
-                let ident_token = self.tokens.next()?;
+                let ident_token = self.consume_token()?;
                 let full_name = format!("::{}", ident_token.text);
-                (Some(full_name), Some(SourceLocation { start: name_start, end: ident_token.end() }))
+                (Some(full_name), Some(SourceLocation::new(name_start, ident_token.end())))
             } else {
                 // sub :: with no following name — treat as name "::"
-                (
-                    Some("::".to_string()),
-                    Some(SourceLocation { start: name_start, end: dc_token.end() }),
-                )
+                (Some("::".to_string()), Some(SourceLocation::new(name_start, dc_token.end())))
             }
         } else if self.peek_kind().is_some_and(Self::can_be_sub_name) {
             let (name, span) = self.parse_subroutine_name()?;
+            self.last_end_position = span.end();
             (Some(name), Some(span))
         } else if self.is_legacy_tick_subroutine_name_start() {
             let (name, span) = self.parse_legacy_tick_subroutine_name()?;
+            self.last_end_position = span.end();
             (Some(name), Some(span))
         } else {
             // No name - anonymous subroutine (next token is {, (, :, or similar)
@@ -330,9 +335,10 @@ impl<'a> Parser<'a> {
         let mut attributes = self.parse_declaration_attributes()?;
 
         if let Some(handler_name) = name.as_deref()
-            && attributes.iter().any(|attr| attr.starts_with("ATTR(") || attr == "ATTR") {
-                self.register_custom_attribute_handler(handler_name);
-            }
+            && attributes.iter().any(|attr| attr.starts_with("ATTR(") || attr == "ATTR")
+        {
+            self.register_custom_attribute_handler(handler_name);
+        }
 
         // Parse optional prototype or signature after leading attributes.
         let (prototype, signature) = if self.peek_kind() == Some(TokenKind::LeftParen) {
@@ -343,7 +349,7 @@ impl<'a> Parser<'a> {
                 let proto_content = self.parse_prototype()?;
                 let proto_node = Node::new(
                     NodeKind::Prototype { content: proto_content },
-                    SourceLocation { start: proto_start, end: self.previous_position() },
+                    SourceLocation::new(proto_start, self.previous_position()),
                 );
                 (Some(Box::new(proto_node)), None)
             } else {
@@ -352,7 +358,7 @@ impl<'a> Parser<'a> {
                 let params = self.parse_signature()?;
                 let sig_node = Node::new(
                     NodeKind::Signature { parameters: params },
-                    SourceLocation { start: sig_start, end: self.previous_position() },
+                    SourceLocation::new(sig_start, self.previous_position()),
                 );
                 (None, Some(Box::new(sig_node)))
             }
@@ -370,10 +376,7 @@ impl<'a> Parser<'a> {
         let body = if self.peek_kind() == Some(TokenKind::Semicolon) {
             // Forward declaration — return an empty block as the body
             let pos = self.current_position();
-            Node::new(
-                NodeKind::Block { statements: vec![] },
-                SourceLocation { start: pos, end: pos },
-            )
+            Node::new(NodeKind::Block { statements: vec![] }, SourceLocation::new(pos, pos))
         } else {
             self.parse_block()?
         };
@@ -389,7 +392,7 @@ impl<'a> Parser<'a> {
                 attributes,
                 body: Box::new(body),
             },
-            SourceLocation { start, end },
+            SourceLocation::new(start, end),
         ))
     }
 
@@ -434,14 +437,16 @@ impl<'a> Parser<'a> {
             }
         }
 
-        Ok((name, SourceLocation { start, end }))
+        Ok((name, SourceLocation::new(start, end)))
     }
 
     fn is_legacy_tick_subroutine_name_start(&mut self) -> bool {
         self.peek_kind() == Some(TokenKind::String)
-            && self.tokens.peek().ok().is_some_and(|token| {
-                token.text.starts_with('\'') && token.text.ends_with('\'')
-            })
+            && self
+                .tokens
+                .peek()
+                .ok()
+                .is_some_and(|token| token.text.starts_with('\'') && token.text.ends_with('\''))
             && self
                 .tokens
                 .peek_second()
@@ -454,7 +459,7 @@ impl<'a> Parser<'a> {
         let package_name = package.text.trim_matches('\'');
         let sub_name = self.tokens.next()?;
         let name = format!("{package_name}::{}", sub_name.text);
-        Ok((name, SourceLocation { start: package.start(), end: sub_name.end() }))
+        Ok((name, SourceLocation::new(package.start(), sub_name.end())))
     }
 
     /// Parse class declaration (Perl 5.38+)
@@ -486,22 +491,24 @@ impl<'a> Parser<'a> {
             self.tokens.next()?; // consume and discard version token
         } else if let Some(TokenKind::Identifier) = self.peek_kind()
             && let Ok(token) = self.tokens.peek()
-                && token.text.starts_with('v') && token.text.len() > 1 {
-                    // v-string identifier like `v5` — consume it and any trailing
-                    // `.N` number tokens that the lexer emits as separate tokens.
-                    self.tokens.next()?;
-                    while let Some(TokenKind::Number) = self.peek_kind() {
-                        if let Ok(num_token) = self.tokens.peek() {
-                            if num_token.text.starts_with('.') {
-                                self.tokens.next()?;
-                            } else {
-                                break;
-                            }
-                        } else {
-                            break;
-                        }
+            && token.text.starts_with('v')
+            && token.text.len() > 1
+        {
+            // v-string identifier like `v5` — consume it and any trailing
+            // `.N` number tokens that the lexer emits as separate tokens.
+            self.tokens.next()?;
+            while let Some(TokenKind::Number) = self.peek_kind() {
+                if let Ok(num_token) = self.tokens.peek() {
+                    if num_token.text.starts_with('.') {
+                        self.tokens.next()?;
+                    } else {
+                        break;
                     }
+                } else {
+                    break;
                 }
+            }
+        }
 
         // Parse class-level attributes (e.g. `:isa(Parent)`).
         // `_extra_known` is ignored since #1361 removed the unknown-attribute
@@ -534,7 +541,7 @@ impl<'a> Parser<'a> {
         let end = self.previous_position();
         Ok(Node::new(
             NodeKind::Class { name, name_span: Some(name_span), parents, body: Box::new(body) },
-            SourceLocation { start, end },
+            SourceLocation::new(start, end),
         ))
     }
 
@@ -545,10 +552,7 @@ impl<'a> Parser<'a> {
 
         let name_token = self.expect(TokenKind::Identifier)?;
         let name = name_token.text.to_string();
-        let name_span = Some(SourceLocation {
-            start: name_token.start(),
-            end: name_token.end(),
-        });
+        let name_span = Some(SourceLocation::new(name_token.start(), name_token.end()));
 
         let mut attributes = self.parse_declaration_attributes()?;
 
@@ -558,7 +562,7 @@ impl<'a> Parser<'a> {
             let params = self.parse_signature()?;
             Some(Box::new(Node::new(
                 NodeKind::Signature { parameters: params },
-                SourceLocation { start: sig_start, end: self.previous_position() },
+                SourceLocation::new(sig_start, self.previous_position()),
             )))
         } else {
             None
@@ -576,7 +580,7 @@ impl<'a> Parser<'a> {
         let end = self.previous_position();
         Ok(Node::new(
             NodeKind::Method { name, name_span, signature, attributes, body: Box::new(body) },
-            SourceLocation { start, end },
+            SourceLocation::new(start, end),
         ))
     }
 
@@ -596,7 +600,7 @@ impl<'a> Parser<'a> {
                 attributes: Vec::new(),
                 body: Box::new(body),
             },
-            SourceLocation { start, end },
+            SourceLocation::new(start, end),
         ))
     }
 
@@ -634,20 +638,21 @@ impl<'a> Parser<'a> {
                     body.push_str(body_token.text.as_ref());
                 }
             }
-            let name_span = Some(SourceLocation {
-                start: token.start(),
-                end: token.start() + assign_index,
-            });
+            let name_span = Some(SourceLocation::new(token.start(), token.start() + assign_index));
             return Ok(Node::new(
                 NodeKind::Format { name, name_span, body },
-                SourceLocation { start, end },
+                SourceLocation::new(start, end),
             ));
         }
 
         if self.tokens.peek().ok().is_some_and(|token| {
             let text = token.text.as_ref();
             text.starts_with('\'') && text.len() > 1
-        }) && self.tokens.peek_second().ok().is_some_and(|token| token.kind() == TokenKind::Assign)
+        }) && self
+            .tokens
+            .peek_second()
+            .ok()
+            .is_some_and(|token| token.kind() == TokenKind::Assign)
         {
             let name_token = self.tokens.next()?;
             let assign = self.tokens.next()?;
@@ -661,17 +666,14 @@ impl<'a> Parser<'a> {
                 }
                 body.push_str(body_token.text.as_ref());
             }
-            let name_span = Some(SourceLocation {
-                start: name_token.start(),
-                end: name_token.end(),
-            });
+            let name_span = Some(SourceLocation::new(name_token.start(), name_token.end()));
             return Ok(Node::new(
                 NodeKind::Format {
                     name: name_token.text.trim_start_matches('\'').to_string(),
                     name_span,
                     body,
                 },
-                SourceLocation { start, end },
+                SourceLocation::new(start, end),
             ));
         }
 
@@ -682,16 +684,9 @@ impl<'a> Parser<'a> {
         } else if self.peek_kind() == Some(TokenKind::DoubleColon) {
             let double_colon = self.tokens.next()?;
             let name_token = self.expect(TokenKind::Identifier)?;
-            let span = SourceLocation {
-                start: double_colon.start(),
-                end: name_token.end(),
-            };
+            let span = SourceLocation::new(double_colon.start(), name_token.end());
             (format!("::{}", name_token.text), Some(span))
-        } else if self
-            .tokens
-            .peek()
-            .ok()
-            .is_some_and(|token| token.text.as_ref() == "'")
+        } else if self.tokens.peek().ok().is_some_and(|token| token.text.as_ref() == "'")
             && self
                 .tokens
                 .peek_second()
@@ -700,29 +695,22 @@ impl<'a> Parser<'a> {
         {
             let tick = self.tokens.next()?;
             let name_token = self.tokens.next()?;
-            let span = SourceLocation {
-                start: tick.start(),
-                end: name_token.end(),
-            };
+            let span = SourceLocation::new(tick.start(), name_token.end());
             (name_token.text.to_string(), Some(span))
         } else if self.peek_kind() == Some(TokenKind::String)
-            && self.tokens.peek().ok().is_some_and(|token| {
-                token.text.starts_with('\'') && token.text.ends_with('\'')
-            })
+            && self
+                .tokens
+                .peek()
+                .ok()
+                .is_some_and(|token| token.text.starts_with('\'') && token.text.ends_with('\''))
         {
             let name_token = self.tokens.next()?;
-            let span = SourceLocation {
-                start: name_token.start(),
-                end: name_token.end(),
-            };
+            let span = SourceLocation::new(name_token.start(), name_token.end());
             (name_token.text.trim_matches('\'').to_string(), Some(span))
         } else {
             // Named format
             let name_token = self.expect(TokenKind::Identifier)?;
-            let span = SourceLocation {
-                start: name_token.start(),
-                end: name_token.end(),
-            };
+            let span = SourceLocation::new(name_token.start(), name_token.end());
             (name_token.text.to_string(), Some(span))
         };
 
@@ -748,7 +736,7 @@ impl<'a> Parser<'a> {
         };
 
         let end = self.previous_position();
-        Ok(Node::new(NodeKind::Format { name, name_span, body }, SourceLocation { start, end }))
+        Ok(Node::new(NodeKind::Format { name, name_span, body }, SourceLocation::new(start, end)))
     }
 
     /// Parse package declaration
@@ -807,7 +795,7 @@ impl<'a> Parser<'a> {
         };
 
         let end = self.previous_position();
-        Ok(Node::new(NodeKind::Package { name, name_span, block }, SourceLocation { start, end }))
+        Ok(Node::new(NodeKind::Package { name, name_span, block }, SourceLocation::new(start, end)))
     }
 
     /// Parse use statement
@@ -816,31 +804,29 @@ impl<'a> Parser<'a> {
         self.consume_token()?; // consume 'use'
 
         // Parse module name, version, or identifier
-        let mut module = if matches!(
-            self.peek_kind(),
-            Some(TokenKind::Number) | Some(TokenKind::VString)
-        ) {
-            // Numeric version like 5.036 or v-string like v5.14, v5.12.0.
-            // For three-part dotted versions like `5.10.1`, the lexer emits
-            // `5.10` as a Number token, then `Dot` (`.`), then `Number("1")`
-            // as three separate tokens.  Stitch trailing `Dot Number` pairs
-            // so the full version is captured and no segment leaks into the
-            // import-args list.
-            let mut ver = self.consume_token()?.text.to_string();
-            // Consume `Dot Number` pairs: e.g. `.` `1` in `5.10.1`.
-            // Only stitch when the dot is immediately followed by a plain
-            // number (not whitespace-separated or part of a method chain).
-            while self.peek_kind() == Some(TokenKind::Dot)
-                && self.tokens.peek_second().map(|t| t.kind()) == Ok(TokenKind::Number)
-            {
-                self.consume_token()?; // consume Dot
-                let num = self.consume_token()?; // consume Number
-                ver.push('.');
-                ver.push_str(&num.text);
-            }
-            ver
-        } else {
-            let first_token = self.consume_token()?;
+        let mut module =
+            if matches!(self.peek_kind(), Some(TokenKind::Number) | Some(TokenKind::VString)) {
+                // Numeric version like 5.036 or v-string like v5.14, v5.12.0.
+                // For three-part dotted versions like `5.10.1`, the lexer emits
+                // `5.10` as a Number token, then `Dot` (`.`), then `Number("1")`
+                // as three separate tokens.  Stitch trailing `Dot Number` pairs
+                // so the full version is captured and no segment leaks into the
+                // import-args list.
+                let mut ver = self.consume_token()?.text.to_string();
+                // Consume `Dot Number` pairs: e.g. `.` `1` in `5.10.1`.
+                // Only stitch when the dot is immediately followed by a plain
+                // number (not whitespace-separated or part of a method chain).
+                while self.peek_kind() == Some(TokenKind::Dot)
+                    && self.tokens.peek_second().map(|t| t.kind()) == Ok(TokenKind::Number)
+                {
+                    self.consume_token()?; // consume Dot
+                    let num = self.consume_token()?; // consume Number
+                    ver.push('.');
+                    ver.push_str(&num.text);
+                }
+                ver
+            } else {
+                let first_token = self.consume_token()?;
 
                 // Check for version strings
                 if first_token.kind() == TokenKind::Identifier
@@ -853,14 +839,15 @@ impl<'a> Parser<'a> {
                     // Check if followed by dot and more numbers (e.g., v5.36)
                     if self.peek_kind() == Some(TokenKind::Unknown)
                         && let Ok(dot_token) = self.tokens.peek()
-                            && dot_token.text.as_ref() == "." {
-                                self.consume_token()?; // consume dot
-                                if self.peek_kind() == Some(TokenKind::Number) {
-                                    let num = self.consume_token()?;
-                                    version.push('.');
-                                    version.push_str(&num.text);
-                                }
-                            }
+                        && dot_token.text.as_ref() == "."
+                    {
+                        self.consume_token()?; // consume dot
+                        if self.peek_kind() == Some(TokenKind::Number) {
+                            let num = self.consume_token()?;
+                            version.push('.');
+                            version.push_str(&num.text);
+                        }
+                    }
                     version
                 } else if first_token.text.as_ref() == "v"
                     && self.peek_kind() == Some(TokenKind::Number)
@@ -954,7 +941,7 @@ impl<'a> Parser<'a> {
             let has_filter_risk = Self::is_filter_module(&module);
             return Ok(Node::new(
                 NodeKind::Use { module, args: cond_args, has_filter_risk },
-                SourceLocation { start, end },
+                SourceLocation::new(start, end),
             ));
         }
 
@@ -1135,32 +1122,32 @@ impl<'a> Parser<'a> {
             loop {
                 // Check for qw BEFORE the match to avoid it being consumed as a generic identifier
                 if let Ok(tok) = self.tokens.peek()
-                    && tok.text.as_ref() == "qw" {
-                        self.consume_token()?; // consume 'qw'
-                        let list = self.parse_qw_words()?;
-                        // Format as "qw(FOO BAR BAZ)" so DeclarationProvider can recognize it
-                        // We use parentheses regardless of original delimiter for consistency
-                        let qw_str = format!("qw({})", list.join(" "));
-                        args.push(qw_str);
-                        // optional: qw(...) => <value>
-                        if self.peek_kind() == Some(TokenKind::FatArrow) {
-                            self.consume_token()?; // =>
-                            if let Some(
-                                TokenKind::String | TokenKind::Number | TokenKind::Identifier,
-                            ) = self.peek_kind()
+                    && tok.text.as_ref() == "qw"
+                {
+                    self.consume_token()?; // consume 'qw'
+                    let list = self.parse_qw_words()?;
+                    // Format as "qw(FOO BAR BAZ)" so DeclarationProvider can recognize it
+                    // We use parentheses regardless of original delimiter for consistency
+                    let qw_str = format!("qw({})", list.join(" "));
+                    args.push(qw_str);
+                    // optional: qw(...) => <value>
+                    if self.peek_kind() == Some(TokenKind::FatArrow) {
+                        self.consume_token()?; // =>
+                        if let Some(TokenKind::String | TokenKind::Number | TokenKind::Identifier) =
+                            self.peek_kind()
+                        {
+                            args.push(self.consume_token()?.text.to_string());
+                        } else {
+                            // best-effort: slurp tokens until ',' or ';'
+                            while !Self::is_statement_terminator(self.peek_kind())
+                                && self.peek_kind() != Some(TokenKind::Comma)
                             {
                                 args.push(self.consume_token()?.text.to_string());
-                            } else {
-                                // best-effort: slurp tokens until ',' or ';'
-                                while !Self::is_statement_terminator(self.peek_kind())
-                                    && self.peek_kind() != Some(TokenKind::Comma)
-                                {
-                                    args.push(self.consume_token()?.text.to_string());
-                                }
                             }
                         }
-                        continue; // Don't fall through to the match below
                     }
+                    continue; // Don't fall through to the match below
+                }
 
                 match self.peek_kind() {
                     Some(TokenKind::String) => {
@@ -1206,13 +1193,12 @@ impl<'a> Parser<'a> {
                         // (e.g. `qw [FOO BAR]`), so trim before the delimiter check.
                         let qw_token = self.consume_token()?;
                         let text: &str = qw_token.text.as_ref();
-                        let had_space_before_delimiter = text
-                            .strip_prefix("qw")
-                            .is_some_and(|suffix| suffix.chars().next().is_some_and(char::is_whitespace));
-                        if let Some(content) = text
-                            .strip_prefix("qw")
-                            .map(str::trim_start)
-                            .and_then(|s| {
+                        let had_space_before_delimiter =
+                            text.strip_prefix("qw").is_some_and(|suffix| {
+                                suffix.chars().next().is_some_and(char::is_whitespace)
+                            });
+                        if let Some(content) =
+                            text.strip_prefix("qw").map(str::trim_start).and_then(|s| {
                                 // Extract content between delimiters
                                 if s.starts_with('(') && s.ends_with(')') {
                                     Some(&s[1..s.len() - 1])
@@ -1412,7 +1398,7 @@ impl<'a> Parser<'a> {
         let has_filter_risk = Self::is_filter_module(&module);
         Ok(Node::new(
             NodeKind::Use { module, args, has_filter_risk },
-            SourceLocation { start, end },
+            SourceLocation::new(start, end),
         ))
     }
 
@@ -1423,10 +1409,10 @@ impl<'a> Parser<'a> {
         let name = name_token.text.to_string();
 
         // Capture name_span from token for precise LSP navigation
-        let name_span = Some(SourceLocation { start: name_token.start(), end: name_token.end() });
+        let name_span = Some(SourceLocation::new(name_token.start(), name_token.end()));
 
         let block = self.parse_block()?;
-        let end = block.location.end;
+        let end = block.location.end();
 
         // Treat as a special subroutine
         Ok(Node::new(
@@ -1439,7 +1425,7 @@ impl<'a> Parser<'a> {
                 attributes: vec![],
                 body: Box::new(block),
             },
-            SourceLocation { start, end },
+            SourceLocation::new(start, end),
         ))
     }
 
@@ -1450,7 +1436,7 @@ impl<'a> Parser<'a> {
         let phase = phase_token.text.to_string();
 
         // Capture phase_span from token for precise LSP navigation
-        let phase_span = Some(SourceLocation { start: phase_token.start(), end: phase_token.end() });
+        let phase_span = Some(SourceLocation::new(phase_token.start(), phase_token.end()));
 
         // Phase blocks must be followed by a block
         if self.peek_kind() != Some(TokenKind::LeftBrace) {
@@ -1461,12 +1447,12 @@ impl<'a> Parser<'a> {
         }
 
         let block = self.parse_block()?;
-        let end = block.location.end;
+        let end = block.location.end();
 
         // Create a special node for phase blocks
         Ok(Node::new(
             NodeKind::PhaseBlock { phase, phase_span, block: Box::new(block) },
-            SourceLocation { start, end },
+            SourceLocation::new(start, end),
         ))
     }
 
@@ -1478,7 +1464,7 @@ impl<'a> Parser<'a> {
         // token positions rather than deriving it from string lengths.
         let marker_token = self.consume_token()?;
         let marker = marker_token.text.to_string();
-        let marker_span = Some(SourceLocation { start, end: self.previous_position() });
+        let marker_span = Some(SourceLocation::new(start, self.previous_position()));
 
         // Check if there's a data body token, capturing its exact span the
         // same way. No body means no span, not an empty range.
@@ -1486,7 +1472,7 @@ impl<'a> Parser<'a> {
             let body_start = self.current_position();
             let body_token = self.consume_token()?;
             let text = body_token.text.to_string();
-            let span = Some(SourceLocation { start: body_start, end: self.previous_position() });
+            let span = Some(SourceLocation::new(body_start, self.previous_position()));
             (Some(text), span)
         } else {
             (None, None)
@@ -1498,7 +1484,7 @@ impl<'a> Parser<'a> {
         // before so existing consumers of the node's own location do not shift.
         Ok(Node::new(
             NodeKind::DataSection { marker, marker_span, body, body_span },
-            SourceLocation { start, end },
+            SourceLocation::new(start, end),
         ))
     }
 
@@ -1586,7 +1572,7 @@ impl<'a> Parser<'a> {
             let has_filter_risk = Self::is_filter_module(&module);
             return Ok(Node::new(
                 NodeKind::No { module, args: cond_args, has_filter_risk },
-                SourceLocation { start, end },
+                SourceLocation::new(start, end),
             ));
         }
 
@@ -1605,32 +1591,32 @@ impl<'a> Parser<'a> {
             loop {
                 // Check for qw BEFORE the match to avoid it being consumed as a generic identifier
                 if let Ok(tok) = self.tokens.peek()
-                    && tok.text.as_ref() == "qw" {
-                        self.consume_token()?; // consume 'qw'
-                        let list = self.parse_qw_words()?;
-                        // Format as "qw(FOO BAR BAZ)" so DeclarationProvider can recognize it
-                        // We use parentheses regardless of original delimiter for consistency
-                        let qw_str = format!("qw({})", list.join(" "));
-                        args.push(qw_str);
-                        // optional: qw(...) => <value>
-                        if self.peek_kind() == Some(TokenKind::FatArrow) {
-                            self.consume_token()?; // =>
-                            if let Some(
-                                TokenKind::String | TokenKind::Number | TokenKind::Identifier,
-                            ) = self.peek_kind()
+                    && tok.text.as_ref() == "qw"
+                {
+                    self.consume_token()?; // consume 'qw'
+                    let list = self.parse_qw_words()?;
+                    // Format as "qw(FOO BAR BAZ)" so DeclarationProvider can recognize it
+                    // We use parentheses regardless of original delimiter for consistency
+                    let qw_str = format!("qw({})", list.join(" "));
+                    args.push(qw_str);
+                    // optional: qw(...) => <value>
+                    if self.peek_kind() == Some(TokenKind::FatArrow) {
+                        self.consume_token()?; // =>
+                        if let Some(TokenKind::String | TokenKind::Number | TokenKind::Identifier) =
+                            self.peek_kind()
+                        {
+                            args.push(self.consume_token()?.text.to_string());
+                        } else {
+                            // best-effort: slurp tokens until ',' or ';'
+                            while !Self::is_statement_terminator(self.peek_kind())
+                                && self.peek_kind() != Some(TokenKind::Comma)
                             {
                                 args.push(self.consume_token()?.text.to_string());
-                            } else {
-                                // best-effort: slurp tokens until ',' or ';'
-                                while !Self::is_statement_terminator(self.peek_kind())
-                                    && self.peek_kind() != Some(TokenKind::Comma)
-                                {
-                                    args.push(self.consume_token()?.text.to_string());
-                                }
                             }
                         }
-                        continue; // Don't fall through to the match below
                     }
+                    continue; // Don't fall through to the match below
+                }
 
                 match self.peek_kind() {
                     Some(TokenKind::String) => {
@@ -1734,7 +1720,10 @@ impl<'a> Parser<'a> {
 
         let end = self.previous_position();
         let has_filter_risk = Self::is_filter_module(&module);
-        Ok(Node::new(NodeKind::No { module, args, has_filter_risk }, SourceLocation { start, end }))
+        Ok(Node::new(
+            NodeKind::No { module, args, has_filter_risk },
+            SourceLocation::new(start, end),
+        ))
     }
 
     /// Consume a value expression on the right-hand side of `=>` inside a `use`

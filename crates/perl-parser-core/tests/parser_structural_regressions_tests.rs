@@ -73,8 +73,8 @@ fn phase_block_records_phase_span_and_body() -> TestResult {
             let Some(span) = phase_span else {
                 return Err("expected phase span for BEGIN block".into());
             };
-            assert_eq!(span.start, 0);
-            assert_eq!(span.end, 5);
+            assert_eq!(span.start(), 0);
+            assert_eq!(span.end(), 5);
             match &block.kind {
                 NodeKind::Block { statements } => {
                     assert_eq!(statements.len(), 1, "phase block body should contain declaration");

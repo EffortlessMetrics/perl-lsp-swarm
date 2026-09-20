@@ -158,7 +158,7 @@ fn walk_result_sites(
                     .or_insert_with(|| PartialResultSite::new(file_id, current_package.clone()));
                 partial.record_inheritance(
                     evidence,
-                    AnchorId(node.location.start as u64),
+                    AnchorId(node.location.start() as u64),
                     source_range(node),
                 );
             }
@@ -276,7 +276,7 @@ fn table_evidence(
             } else {
                 Some(DbixTableEvidence::Static {
                     name: spelling.trim().to_string(),
-                    anchor_id: AnchorId(statement.location.start as u64),
+                    anchor_id: AnchorId(statement.location.start() as u64),
                     source_range: source_range(argument),
                 })
             }
@@ -284,7 +284,7 @@ fn table_evidence(
         NodeKind::Identifier { name } if !name.trim().is_empty() => {
             Some(DbixTableEvidence::Static {
                 name: name.trim().to_string(),
-                anchor_id: AnchorId(statement.location.start as u64),
+                anchor_id: AnchorId(statement.location.start() as u64),
                 source_range: source_range(argument),
             })
         }
@@ -332,8 +332,8 @@ fn unquote(token: &str) -> String {
 
 fn source_range(node: &Node) -> (u32, u32) {
     (
-        node.location.start.min(u32::MAX as usize) as u32,
-        node.location.end.min(u32::MAX as usize) as u32,
+        node.location.start().min(u32::MAX as usize) as u32,
+        node.location.end().min(u32::MAX as usize) as u32,
     )
 }
 

@@ -20,11 +20,11 @@
 use perl_ast::{GotoTargetForm, Node, NodeKind, SourceLocation};
 
 fn loc() -> SourceLocation {
-    SourceLocation { start: 0, end: 1 }
+    SourceLocation::new(0, 1)
 }
 
 fn loc2(s: usize, e: usize) -> SourceLocation {
-    SourceLocation { start: s, end: e }
+    SourceLocation::new(s, e)
 }
 
 fn num(v: &str) -> Node {

@@ -443,7 +443,7 @@ impl<'a> DeclarationProvider<'a> {
             // Check siblings before this node in the current scope
             for child in self.get_children(parent) {
                 // Stop when we reach or pass the usage node
-                if child.location.start >= usage.location.start {
+                if child.location.start() >= usage.location.start() {
                     break;
                 }
 
@@ -453,10 +453,13 @@ impl<'a> DeclarationProvider<'a> {
                     && name == var_name
                 {
                     return Some(vec![LocationLink {
-                        origin_selection_range: (usage.location.start, usage.location.end),
+                        origin_selection_range: (usage.location.start(), usage.location.end()),
                         target_uri: self.document_uri.clone(),
-                        target_range: (child.location.start, child.location.end),
-                        target_selection_range: (variable.location.start, variable.location.end),
+                        target_range: (child.location.start(), child.location.end()),
+                        target_selection_range: (
+                            variable.location.start(),
+                            variable.location.end(),
+                        ),
                     }]);
                 }
 
@@ -467,10 +470,13 @@ impl<'a> DeclarationProvider<'a> {
                             && name == var_name
                         {
                             return Some(vec![LocationLink {
-                                origin_selection_range: (usage.location.start, usage.location.end),
+                                origin_selection_range: (
+                                    usage.location.start(),
+                                    usage.location.end(),
+                                ),
                                 target_uri: self.document_uri.clone(),
-                                target_range: (child.location.start, child.location.end),
-                                target_selection_range: (var.location.start, var.location.end),
+                                target_range: (child.location.start(), child.location.end()),
+                                target_selection_range: (var.location.start(), var.location.end()),
                             }]);
                         }
                     }
@@ -517,7 +523,7 @@ impl<'a> DeclarationProvider<'a> {
                 return Some(vec![self.create_location_link(
                     usage,
                     parameter,
-                    (variable.location.start, variable.location.end),
+                    (variable.location.start(), variable.location.end()),
                 )]);
             }
         }
@@ -698,13 +704,13 @@ impl<'a> DeclarationProvider<'a> {
 
     fn get_labeled_statement_label_range(&self, node: &Node) -> (usize, usize) {
         let NodeKind::LabeledStatement { label, .. } = &node.kind else {
-            return (node.location.start, node.location.end);
+            return (node.location.start(), node.location.end());
         };
 
-        let start = node.location.start;
-        let end = node.location.end.min(self.content.len());
+        let start = node.location.start();
+        let end = node.location.end().min(self.content.len());
         if start >= end {
-            return (node.location.start, node.location.end);
+            return (node.location.start(), node.location.end());
         }
 
         let text = &self.content[start..end];
@@ -834,7 +840,7 @@ impl<'a> DeclarationProvider<'a> {
 
             // Check siblings before this node for package declarations
             for child in self.get_children(parent) {
-                if child.location.start >= node.location.start {
+                if child.location.start() >= node.location.start() {
                     break;
                 }
 
@@ -873,9 +879,9 @@ impl<'a> DeclarationProvider<'a> {
         name_range: (usize, usize),
     ) -> LocationLink {
         LocationLink {
-            origin_selection_range: (origin.location.start, origin.location.end),
+            origin_selection_range: (origin.location.start(), origin.location.end()),
             target_uri: self.document_uri.clone(),
-            target_range: (target.location.start, target.location.end),
+            target_range: (target.location.start(), target.location.end()),
             target_selection_range: name_range,
         }
     }
@@ -883,7 +889,7 @@ impl<'a> DeclarationProvider<'a> {
     // Helper methods
 
     fn find_node_at_offset<'b>(&'b self, node: &'b Node, offset: usize) -> Option<&'b Node> {
-        if offset >= node.location.start && offset <= node.location.end {
+        if offset >= node.location.start() && offset <= node.location.end() {
             // Check children first for more specific match
             for child in self.get_children(node) {
                 if let Some(found) = self.find_node_at_offset(child, offset) {
@@ -1182,18 +1188,18 @@ impl<'a> DeclarationProvider<'a> {
 
     fn get_subroutine_name_range(&self, decl: &Node) -> (usize, usize) {
         match &decl.kind {
-            NodeKind::Subroutine { name_span: Some(loc), .. } => (loc.start, loc.end),
+            NodeKind::Subroutine { name_span: Some(loc), .. } => (loc.start(), loc.end()),
             // For `*foo = sub { ... }`, the "name" is the typeglob LHS (*foo).
-            NodeKind::Assignment { lhs, .. } => (lhs.location.start, lhs.location.end),
-            _ => (decl.location.start, decl.location.end),
+            NodeKind::Assignment { lhs, .. } => (lhs.location.start(), lhs.location.end()),
+            _ => (decl.location.start(), decl.location.end()),
         }
     }
 
     fn get_package_name_range(&self, decl: &Node) -> (usize, usize) {
         if let NodeKind::Package { name_span, .. } = &decl.kind {
-            (name_span.start, name_span.end)
+            (name_span.start(), name_span.end())
         } else {
-            (decl.location.start, decl.location.end)
+            (decl.location.start(), decl.location.end())
         }
     }
 
@@ -1204,19 +1210,19 @@ impl<'a> DeclarationProvider<'a> {
         if let NodeKind::Use { args, .. } = &decl.kind {
             let best_guess = args.first().map(|s| s.as_str()).unwrap_or("");
             if let Some((lo, hi)) = self.find_word(&text, best_guess) {
-                let abs_lo = decl.location.start + lo;
-                let abs_hi = decl.location.start + hi;
+                let abs_lo = decl.location.start() + lo;
+                let abs_hi = decl.location.start() + hi;
                 return (abs_lo, abs_hi);
             }
         }
 
         // Try any constant-looking all-caps token in the decl
         if let Some((lo, hi)) = self.first_all_caps_word(&text) {
-            return (decl.location.start + lo, decl.location.start + hi);
+            return (decl.location.start() + lo, decl.location.start() + hi);
         }
 
         // Fallback to whole range
-        (decl.location.start, decl.location.end)
+        (decl.location.start(), decl.location.end())
     }
 
     fn get_constant_name_range_for(&self, decl: &Node, name: &str) -> (usize, usize) {
@@ -1224,7 +1230,7 @@ impl<'a> DeclarationProvider<'a> {
 
         // Fast path: try to find the exact word
         if let Some((lo, hi)) = self.find_word(&text, name) {
-            return (decl.location.start + lo, decl.location.start + hi);
+            return (decl.location.start() + lo, decl.location.start() + hi);
         }
 
         // Try inside all qw(...) windows
@@ -1233,7 +1239,7 @@ impl<'a> DeclarationProvider<'a> {
             // Find the exact token position within this qw window
             if let Some((lo, hi)) = self.find_word(&text[start..end], name) {
                 found_range =
-                    Some((decl.location.start + start + lo, decl.location.start + start + hi));
+                    Some((decl.location.start() + start + lo, decl.location.start() + start + hi));
                 true // Stop searching
             } else {
                 false // Continue to next window
@@ -1247,7 +1253,7 @@ impl<'a> DeclarationProvider<'a> {
         self.for_each_brace_window(&text, |start, end| {
             if let Some((lo, hi)) = self.find_word(&text[start..end], name) {
                 found_range =
-                    Some((decl.location.start + start + lo, decl.location.start + start + hi));
+                    Some((decl.location.start() + start + lo, decl.location.start() + start + hi));
                 true // Stop searching
             } else {
                 false // Continue to next window
@@ -1400,7 +1406,7 @@ impl<'a> DeclarationProvider<'a> {
     /// // let text = provider.get_node_text(&some_node);
     /// ```
     pub fn get_node_text(&self, node: &Node) -> String {
-        self.content[node.location.start..node.location.end].to_string()
+        self.content[node.location.start()..node.location.end()].to_string()
     }
 }
 
@@ -1453,7 +1459,7 @@ fn symbol_at_cursor_internal(
         offset: usize,
         path: &mut Vec<&'a Node>,
     ) -> bool {
-        if offset < node.location.start || offset > node.location.end {
+        if offset < node.location.start() || offset > node.location.end() {
             return false;
         }
 
@@ -1893,7 +1899,7 @@ fn symbol_at_cursor_internal(
             let Some(first) = args.first() else {
                 continue;
             };
-            if offset < first.location.start || offset > first.location.end {
+            if offset < first.location.start() || offset > first.location.end() {
                 continue;
             }
 
@@ -1972,11 +1978,11 @@ fn symbol_at_cursor_internal(
         current_pkg: &str,
         receiver_packages: &mut std::collections::HashMap<String, String>,
     ) {
-        if node.location.start > offset {
+        if node.location.start() > offset {
             return;
         }
 
-        if node.location.end <= offset {
+        if node.location.end() <= offset {
             match &node.kind {
                 NodeKind::VariableDeclaration { variable, initializer, .. } => {
                     if let (Some(variable_name), Some(initializer)) =
@@ -2000,7 +2006,7 @@ fn symbol_at_cursor_internal(
         }
 
         for child in get_node_children(node) {
-            if child.location.start <= offset {
+            if child.location.start() <= offset {
                 record_receiver_assignment(child, offset, current_pkg, receiver_packages);
             }
         }
@@ -2067,11 +2073,11 @@ fn symbol_at_cursor_internal(
         NodeKind::Use { module, args, .. } => {
             if !NON_IMPORT_PRAGMAS.contains(&module.as_str())
                 && !source_text.is_empty()
-                && offset >= node.location.start
-                && offset <= node.location.end
+                && offset >= node.location.start()
+                && offset <= node.location.end()
             {
-                let rel_offset = offset.saturating_sub(node.location.start);
-                if let Some(stmt_text) = source_text.get(node.location.start..node.location.end)
+                let rel_offset = offset.saturating_sub(node.location.start());
+                if let Some(stmt_text) = source_text.get(node.location.start()..node.location.end())
                     && let Some(token) = token_at_offset_in_text(stmt_text, rel_offset)
                     && token != *module
                     && token != "use"
@@ -2161,11 +2167,11 @@ pub fn current_package_at(ast: &Node, offset: usize) -> &str {
         mut current_pkg: &'a str,
     ) -> &'a str {
         for child in statements {
-            if child.location.start > offset {
+            if child.location.start() > offset {
                 break;
             }
 
-            if child.location.start <= offset && offset <= child.location.end {
+            if child.location.start() <= offset && offset <= child.location.end() {
                 return package_in_node(child, offset, current_pkg);
             }
 
@@ -2182,11 +2188,11 @@ pub fn current_package_at(ast: &Node, offset: usize) -> &str {
             NodeKind::Program { statements } | NodeKind::Block { statements } => {
                 package_in_statement_list(statements, offset, current_pkg)
             }
-            NodeKind::Package { name, block, .. } if node.location.start <= offset => {
+            NodeKind::Package { name, block, .. } if node.location.start() <= offset => {
                 let package_name = name.as_str();
                 if let Some(block) = block
-                    && block.location.start <= offset
-                    && offset <= block.location.end
+                    && block.location.start() <= offset
+                    && offset <= block.location.end()
                 {
                     return package_in_node(block, offset, package_name);
                 }
@@ -2194,7 +2200,7 @@ pub fn current_package_at(ast: &Node, offset: usize) -> &str {
             }
             _ => {
                 for child in get_node_children(node) {
-                    if child.location.start <= offset && offset <= child.location.end {
+                    if child.location.start() <= offset && offset <= child.location.end() {
                         return package_in_node(child, offset, current_pkg);
                     }
                 }
@@ -2243,7 +2249,7 @@ pub fn current_package_at(ast: &Node, offset: usize) -> &str {
 /// }
 /// ```
 pub fn find_node_at_offset(node: &Node, offset: usize) -> Option<&Node> {
-    if offset < node.location.start || offset > node.location.end {
+    if offset < node.location.start() || offset > node.location.end() {
         return None;
     }
 

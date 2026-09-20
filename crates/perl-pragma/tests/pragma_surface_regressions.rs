@@ -4,7 +4,7 @@ use perl_ast::ast::{Node, NodeKind};
 use perl_pragma::PragmaTracker;
 
 fn loc(start: usize, end: usize) -> SourceLocation {
-    SourceLocation { start, end }
+    SourceLocation::new(start, end)
 }
 
 fn use_node(module: &str, args: &[&str], start: usize, end: usize) -> Node {
@@ -64,7 +64,7 @@ fn phase_block(phase: &str, body: Node, start: usize, end: usize) -> Node {
 }
 
 fn program(stmts: Vec<Node>) -> Node {
-    let end = stmts.last().map_or(0, |n| n.location.end);
+    let end = stmts.last().map_or(0, |n| n.location.end());
     Node::new(NodeKind::Program { statements: stmts }, loc(0, end))
 }
 

@@ -500,13 +500,13 @@ fn binding_at_position<'a>(
 ) -> Option<&'a Symbol> {
     let name = receiver.strip_prefix('$')?;
     let candidates = symbol_table.find_symbol(name, scope_id, SymbolKind::scalar());
-    let mut visible = candidates.into_iter().filter(|symbol| symbol.location.start <= position);
+    let mut visible = candidates.into_iter().filter(|symbol| symbol.location.start() <= position);
     let first = visible.next()?;
     let defining_scope = first.scope_id;
     std::iter::once(first)
         .chain(visible)
         .filter(|symbol| symbol.scope_id == defining_scope)
-        .max_by_key(|symbol| symbol.location.start)
+        .max_by_key(|symbol| symbol.location.start())
 }
 
 fn latest_assignment_for_binding<'a>(
@@ -520,11 +520,11 @@ fn latest_assignment_for_binding<'a>(
     let scope_end = symbol_table
         .scopes
         .get(&binding.scope_id)
-        .map(|scope| scope.location.end)
-        .filter(|scope_end| *scope_end > binding.location.start)
+        .map(|scope| scope.location.end())
+        .filter(|scope_end| *scope_end > binding.location.start())
         .unwrap_or(end)
         .min(end);
-    let search_start = binding.location.start.min(scope_end);
+    let search_start = binding.location.start().min(scope_end);
     let mut expression = None;
 
     for (offset, _) in source[search_start..scope_end].match_indices(receiver) {
@@ -540,7 +540,7 @@ fn latest_assignment_for_binding<'a>(
             continue;
         };
         if occurrence_binding.scope_id != binding.scope_id
-            || occurrence_binding.location.start != binding.location.start
+            || occurrence_binding.location.start() != binding.location.start()
         {
             // Redeclared `our` bindings of the same name in the SAME package
             // alias one package variable, so a write through the redeclaration

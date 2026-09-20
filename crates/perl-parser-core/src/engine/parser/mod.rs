@@ -618,10 +618,7 @@ impl<'a> Parser<'a> {
 
                 // Return a partial Program node so consumers always receive a usable AST.
                 (
-                    Node::new(
-                        NodeKind::Program { statements: vec![] },
-                        SourceLocation { start: 0, end: 0 },
-                    ),
+                    Node::new(NodeKind::Program { statements: vec![] }, SourceLocation::new(0, 0)),
                     Some(cause),
                 )
             }

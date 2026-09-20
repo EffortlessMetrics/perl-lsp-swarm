@@ -139,13 +139,13 @@ fn walk(node: &Node, ctx: &mut WalkCtx, out: &mut Vec<SymbolDecl>) {
     match &node.kind {
         // ── Package ────────────────────────────────────────────────────────
         NodeKind::Package { name, name_span, block } => {
-            let anchor = Some((name_span.start, name_span.end));
+            let anchor = Some((name_span.start(), name_span.end()));
             let container = ctx.current_package.clone();
             out.push(SymbolDecl {
                 kind: SymbolKind::Package,
                 name: name.clone(),
                 qualified_name: name.clone(),
-                full_span: (node.location.start, node.location.end),
+                full_span: (node.location.start(), node.location.end()),
                 anchor_span: anchor,
                 container,
                 declarator: None,
@@ -172,7 +172,7 @@ fn walk(node: &Node, ctx: &mut WalkCtx, out: &mut Vec<SymbolDecl>) {
                 kind: SymbolKind::Class,
                 name: name.clone(),
                 qualified_name: ctx.qualify(name),
-                full_span: (node.location.start, node.location.end),
+                full_span: (node.location.start(), node.location.end()),
                 anchor_span: None, // Class has no name_span in current AST
                 container,
                 declarator: None,
@@ -186,14 +186,14 @@ fn walk(node: &Node, ctx: &mut WalkCtx, out: &mut Vec<SymbolDecl>) {
 
         // ── Subroutine ─────────────────────────────────────────────────────
         NodeKind::Subroutine { name: Some(sub_name), name_span, body, .. } => {
-            let anchor = name_span.as_ref().map(|s| (s.start, s.end));
+            let anchor = name_span.as_ref().map(|s| (s.start(), s.end()));
             let container = ctx.current_package.clone();
             let qualified_name = ctx.qualify(sub_name);
             out.push(SymbolDecl {
                 kind: SymbolKind::Subroutine,
                 name: sub_name.clone(),
                 qualified_name,
-                full_span: (node.location.start, node.location.end),
+                full_span: (node.location.start(), node.location.end()),
                 anchor_span: anchor,
                 container,
                 declarator: None,
@@ -215,7 +215,7 @@ fn walk(node: &Node, ctx: &mut WalkCtx, out: &mut Vec<SymbolDecl>) {
                 kind: SymbolKind::Method,
                 name: method_name.clone(),
                 qualified_name,
-                full_span: (node.location.start, node.location.end),
+                full_span: (node.location.start(), node.location.end()),
                 anchor_span: None, // Method has no name_span in current AST
                 container,
                 declarator: None,
@@ -230,7 +230,7 @@ fn walk(node: &Node, ctx: &mut WalkCtx, out: &mut Vec<SymbolDecl>) {
                 kind: SymbolKind::Format,
                 name: name.clone(),
                 qualified_name: ctx.qualify(name),
-                full_span: (node.location.start, node.location.end),
+                full_span: (node.location.start(), node.location.end()),
                 anchor_span: None, // Format has no name_span in current AST
                 container,
                 declarator: None,
@@ -248,7 +248,7 @@ fn walk(node: &Node, ctx: &mut WalkCtx, out: &mut Vec<SymbolDecl>) {
                 kind: SymbolKind::Label,
                 name: label.clone(),
                 qualified_name: label.clone(), // labels are lexically scoped — never package-qualified
-                full_span: (node.location.start, node.location.end),
+                full_span: (node.location.start(), node.location.end()),
                 anchor_span: None, // LabeledStatement has no label span in current AST
                 container,
                 declarator: None,
@@ -287,7 +287,7 @@ fn walk(node: &Node, ctx: &mut WalkCtx, out: &mut Vec<SymbolDecl>) {
                     kind: SymbolKind::Constant,
                     name: const_name.clone(),
                     qualified_name: ctx.qualify(&const_name),
-                    full_span: (node.location.start, node.location.end),
+                    full_span: (node.location.start(), node.location.end()),
                     anchor_span: None, // No precise span available from Use node
                     container,
                     declarator: None,
@@ -468,13 +468,13 @@ fn constant_wrapper_decl_from_node(
 ) -> Option<SymbolDecl> {
     match &var_node.kind {
         NodeKind::Variable { name, .. } => {
-            let anchor_span = Some((var_node.location.start, var_node.location.end));
+            let anchor_span = Some((var_node.location.start(), var_node.location.end()));
             let container = ctx.current_package.clone();
             Some(SymbolDecl {
                 kind: SymbolKind::Constant,
                 name: name.clone(),
                 qualified_name: ctx.qualify(name),
-                full_span: (call_node.location.start, call_node.location.end),
+                full_span: (call_node.location.start(), call_node.location.end()),
                 anchor_span,
                 container,
                 declarator: Some(declarator.to_string()),
@@ -538,13 +538,13 @@ fn variable_decl_from_node(
     match &var_node.kind {
         NodeKind::Variable { sigil, name } => {
             let kind = sigil_to_symbol_kind(sigil);
-            let anchor_span = Some((var_node.location.start, var_node.location.end));
+            let anchor_span = Some((var_node.location.start(), var_node.location.end()));
             let container = ctx.current_package.clone();
             Some(SymbolDecl {
                 kind,
                 name: name.clone(),
                 qualified_name: ctx.qualify(name),
-                full_span: (decl_node.location.start, decl_node.location.end),
+                full_span: (decl_node.location.start(), decl_node.location.end()),
                 anchor_span,
                 container,
                 declarator: Some(declarator.to_owned()),

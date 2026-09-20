@@ -48,7 +48,7 @@ fn assert_lvalue_repetition_assignment(source: &str, expected_name: &str) -> Res
 
     let statement_end = source.find(';').ok_or("expected statement terminator")?;
     let observed = source
-        .get(assignment.location.start..assignment.location.end)
+        .get(assignment.location.start()..assignment.location.end())
         .ok_or_else(|| format!("invalid assignment span: {:?}", assignment.location))?;
     let expected = source.get(..statement_end).ok_or("expected statement source slice")?;
     if observed != expected {
@@ -145,7 +145,7 @@ fn parenthesized_lvalue_repetition_assignment_recovers_missing_rhs() -> Result<(
         .ok_or_else(|| format!("expected missing rhs:\n{}", output.ast.to_sexp()))?;
     let operator_start = source.find("x=").ok_or("expected x= operator")?;
 
-    if missing.location.start != operator_start || missing.location.end != operator_start {
+    if missing.location.start() != operator_start || missing.location.end() != operator_start {
         return Err(format!("unexpected missing-rhs span: {:?}", missing.location));
     }
     if !matches!(

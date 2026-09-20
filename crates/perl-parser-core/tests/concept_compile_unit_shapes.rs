@@ -23,7 +23,7 @@ fn walk(node: &Node, visit: &mut impl FnMut(&Node)) {
 }
 
 fn source_text(source: &str, node: &Node) -> Option<String> {
-    source.get(node.location.start..node.location.end).map(str::to_owned)
+    source.get(node.location.start()..node.location.end()).map(str::to_owned)
 }
 
 fn count_in_subtree(node: &Node, predicate: &impl Fn(&NodeKind) -> bool) -> usize {
@@ -39,9 +39,9 @@ fn package_statement_and_block_forms_keep_exact_name_and_body_geometry() -> Resu
 
     walk(&ast, &mut |node| {
         if let NodeKind::Package { name, name_span, block } = &node.kind {
-            let name_text = source.get(name_span.start..name_span.end).map(str::to_owned);
+            let name_text = source.get(name_span.start()..name_span.end()).map(str::to_owned);
             let statement_suffix = block.is_none().then(|| {
-                source.get(name_span.end..node.location.end).map(str::trim).map(str::to_owned)
+                source.get(name_span.end()..node.location.end()).map(str::trim).map(str::to_owned)
             });
             let block_text = block.as_deref().and_then(|owned| source_text(source, owned));
             let block_is_block =

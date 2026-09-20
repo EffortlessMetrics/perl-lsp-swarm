@@ -278,7 +278,7 @@ fn add_local_package_completions(
 
     let mut symbols: Vec<&LocalSymbol> =
         symbol_table.symbols.values().flat_map(|items| items.iter()).collect();
-    symbols.sort_by_key(|symbol| symbol.location.start);
+    symbols.sort_by_key(|symbol| symbol.location.start());
 
     for symbol in symbols {
         let Some(item_kind) = local_symbol_kind(symbol) else {

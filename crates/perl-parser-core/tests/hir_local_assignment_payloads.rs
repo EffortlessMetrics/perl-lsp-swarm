@@ -58,7 +58,7 @@ fn assert_local_assignment_hir(
             "unexpected local binding identity: name={name:?}, storage={storage:?}"
         ));
     }
-    if source_slice(source, binding_range.start, binding_range.end)? != "$main::z" {
+    if source_slice(source, binding_range.start(), binding_range.end())? != "$main::z" {
         return Err(format!("unexpected local binding range: {binding_range:?}"));
     }
 
@@ -86,7 +86,7 @@ fn assert_local_assignment_hir(
     }
     let rhs_range =
         body.source_map.expr_range(rhs_id).ok_or("expected local assignment rhs range")?;
-    if source_slice(source, rhs_range.start, rhs_range.end)? != expected_rhs {
+    if source_slice(source, rhs_range.start(), rhs_range.end())? != expected_rhs {
         return Err(format!("unexpected local assignment rhs range/value: {:?}", rhs_range));
     }
 
@@ -97,7 +97,9 @@ fn assert_local_assignment_hir(
         source.find('$').ok_or("expected local variable")?,
         source.find(';').ok_or("expected statement terminator")?,
     )?;
-    if source_slice(source, assignment_range.start, assignment_range.end)? != expected_assignment {
+    if source_slice(source, assignment_range.start(), assignment_range.end())?
+        != expected_assignment
+    {
         return Err(format!(
             "local assignment range must preserve the embedded AST payload: {:?} vs {:?}",
             assignment_range, ast_assignment.location
@@ -105,7 +107,7 @@ fn assert_local_assignment_hir(
     }
 
     let stmt_range = body.source_map.stmt_range(stmt_id).ok_or("expected local statement range")?;
-    if source_slice(source, stmt_range.start, stmt_range.end)? != source.trim_end_matches(';') {
+    if source_slice(source, stmt_range.start(), stmt_range.end())? != source.trim_end_matches(';') {
         return Err(format!("unexpected local statement range: {stmt_range:?}"));
     }
 

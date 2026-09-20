@@ -355,7 +355,7 @@ fn build_table(
         left.operator == right.operator && left.full_range == right.full_range
     });
     unavailable.sort_by_key(|candidate| {
-        (candidate.range.start, candidate.range.end, candidate.expected.rank())
+        (candidate.range.start(), candidate.range.end(), candidate.expected.rank())
     });
     unavailable.dedup();
     unavailable.retain(|candidate| {
@@ -377,11 +377,11 @@ fn build_table(
     for input in inputs {
         match input {
             RetentionInput::Geometry(geometry) => {
-                let profile = profile_at(&environment, geometry.pattern.range.start);
+                let profile = profile_at(&environment, geometry.pattern.range.start());
                 let _record = table.retain_geometry(*geometry, profile);
             }
             RetentionInput::Unavailable(candidate) => {
-                let profile = profile_at(&environment, candidate.range.start);
+                let profile = profile_at(&environment, candidate.range.start());
                 let _record = table.retain_unavailable(
                     candidate.range,
                     RegexAnalysisAvailability::GeometryUnavailable,
@@ -455,15 +455,15 @@ fn geometry_for_node(
                 && contains(node.location, geometry.full_range)
                 && pattern_is_compatible(&node.kind, geometry)
         })
-        .max_by_key(|geometry| geometry.full_range.start)
+        .max_by_key(|geometry| geometry.full_range.start())
     {
         return Some(contained.clone());
     }
 
-    if let Some(text) = source.get(node.location.start..)
-        && let Some(geometry) = extract_regex_family_geometry(text, node.location.start)
+    if let Some(text) = source.get(node.location.start()..)
+        && let Some(geometry) = extract_regex_family_geometry(text, node.location.start())
         && expected.accepts(geometry.operator)
-        && geometry.full_range.end <= node.location.end
+        && geometry.full_range.end() <= node.location.end()
         && pattern_is_compatible(&node.kind, &geometry)
     {
         return Some(geometry);
@@ -477,7 +477,7 @@ fn scan_recovered_geometry(
     source: &str,
     expected: ExpectedFamily,
 ) -> Option<RegexFamilyGeometry> {
-    let text = source.get(node.location.start..node.location.end)?;
+    let text = source.get(node.location.start()..node.location.end())?;
     let mut examined = 0usize;
     let mut best = None;
     for (relative, ch) in text.char_indices() {
@@ -488,21 +488,21 @@ fn scan_recovered_geometry(
         if examined > MAX_RECOVERY_GEOMETRY_STARTS {
             break;
         }
-        let start = node.location.start.checked_add(relative)?;
+        let start = node.location.start().checked_add(relative)?;
         let Some(candidate_text) = source.get(start..) else {
             continue;
         };
         let Some(geometry) = extract_regex_family_geometry(candidate_text, start) else {
             continue;
         };
-        if geometry.full_range.end > node.location.end
+        if geometry.full_range.end() > node.location.end()
             || !expected.accepts(geometry.operator)
             || !pattern_is_compatible(&node.kind, &geometry)
         {
             continue;
         }
         if best.as_ref().is_none_or(|existing: &RegexFamilyGeometry| {
-            geometry.full_range.start > existing.full_range.start
+            geometry.full_range.start() > existing.full_range.start()
         }) {
             best = Some(geometry);
         }
@@ -575,7 +575,7 @@ fn record_for_node(
             record.operator.is_some_and(|operator| expected.accepts(operator))
                 && contains(range, record.full_range)
         })
-        .max_by_key(|record| record.full_range.start)
+        .max_by_key(|record| record.full_range.start())
 }
 
 fn project_regex_diagnostics(parse_output: &mut ParseOutput, table: &RegexAnalysisTable) {
@@ -599,17 +599,17 @@ fn project_regex_diagnostics(parse_output: &mut ParseOutput, table: &RegexAnalys
             };
             if diagnostic.class == RegexDiagnosticClass::RiskAdvisory {
                 if diagnostic.code == RegexDiagnosticCode::NestedQuantifierRisk {
-                    projected.push(ParseError::nested_quantifier_advisory(source_range.start));
+                    projected.push(ParseError::nested_quantifier_advisory(source_range.start()));
                 } else {
                     projected.push(ParseError::Advisory {
                         message: diagnostic.message(),
-                        location: source_range.start,
+                        location: source_range.start(),
                     });
                 }
             } else if diagnostic.class == RegexDiagnosticClass::Syntax
                 || diagnostic.class == RegexDiagnosticClass::PolicyLimit
             {
-                projected.push(ParseError::syntax(diagnostic.message(), source_range.start));
+                projected.push(ParseError::syntax(diagnostic.message(), source_range.start()));
             }
         }
 
@@ -627,7 +627,7 @@ fn project_regex_diagnostics(parse_output: &mut ParseOutput, table: &RegexAnalys
                 }
                 _ => "Invalid regex capture declaration",
             };
-            projected.push(ParseError::syntax(message, source_range.start));
+            projected.push(ParseError::syntax(message, source_range.start()));
         }
 
         for diagnostic in &pattern.controls.diagnostics {
@@ -665,11 +665,11 @@ fn project_regex_diagnostics(parse_output: &mut ParseOutput, table: &RegexAnalys
 }
 
 fn contains(outer: SourceLocation, inner: SourceLocation) -> bool {
-    outer.start <= inner.start && inner.end <= outer.end
+    outer.start() <= inner.start() && inner.end() <= outer.end()
 }
 
 fn geometry_sort_key(geometry: &RegexFamilyGeometry) -> (usize, usize, u8) {
-    (geometry.full_range.start, geometry.full_range.end, operator_rank(geometry.operator))
+    (geometry.full_range.start(), geometry.full_range.end(), operator_rank(geometry.operator))
 }
 
 fn operator_rank(operator: RegexFamilyOperator) -> u8 {
@@ -751,8 +751,8 @@ impl RetentionInput {
         match self {
             Self::Geometry(geometry) => geometry_sort_key(geometry),
             Self::Unavailable(candidate) => (
-                candidate.range.start,
-                candidate.range.end,
+                candidate.range.start(),
+                candidate.range.end(),
                 candidate.expected.rank().saturating_add(16),
             ),
         }
@@ -894,7 +894,7 @@ mod tests {
     use super::*;
 
     fn location(start: usize, end: usize) -> SourceLocation {
-        SourceLocation { start, end }
+        SourceLocation::new(start, end)
     }
 
     #[test]

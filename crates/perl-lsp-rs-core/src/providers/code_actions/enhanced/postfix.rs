@@ -14,8 +14,8 @@ pub fn convert_to_postfix(node: &Node, source: &str) -> Option<CodeAction> {
             && statements.len() == 1
         {
             let stmt = &statements[0];
-            let stmt_text = &source[stmt.location.start..stmt.location.end];
-            let cond_text = &source[condition.location.start..condition.location.end];
+            let stmt_text = &source[stmt.location.start()..stmt.location.end()];
+            let cond_text = &source[condition.location.start()..condition.location.end()];
 
             // Check if statement is simple enough for postfix
             if !stmt_text.contains('\n') && stmt_text.len() < 80 {

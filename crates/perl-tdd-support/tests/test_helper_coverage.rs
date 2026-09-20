@@ -327,8 +327,7 @@ fn test_tdd_workflow_repeated_cycles() -> Result<(), Box<dyn std::error::Error>>
 #[test]
 fn test_refactoring_analyzer_empty_program() -> Result<(), Box<dyn std::error::Error>> {
     let analyzer = RefactoringAnalyzer::default();
-    let ast =
-        Node::new(NodeKind::Program { statements: vec![] }, SourceLocation { start: 0, end: 0 });
+    let ast = Node::new(NodeKind::Program { statements: vec![] }, SourceLocation::new(0, 0));
     let suggestions = analyzer.analyze(&ast, "");
     assert!(suggestions.is_empty());
     Ok(())
@@ -344,10 +343,10 @@ fn test_refactoring_analyzer_exactly_at_param_limit() -> Result<(), Box<dyn std:
                 NodeKind::MandatoryParameter {
                     variable: Box::new(Node::new(
                         NodeKind::Variable { sigil: "$".to_string(), name: format!("p{}", i) },
-                        SourceLocation { start: 0, end: 0 },
+                        SourceLocation::new(0, 0),
                     )),
                 },
-                SourceLocation { start: 0, end: 0 },
+                SourceLocation::new(0, 0),
             )
         })
         .collect();
@@ -360,15 +359,15 @@ fn test_refactoring_analyzer_exactly_at_param_limit() -> Result<(), Box<dyn std:
             prototype: None,
             signature: Some(Box::new(Node::new(
                 NodeKind::Signature { parameters: params },
-                SourceLocation { start: 0, end: 0 },
+                SourceLocation::new(0, 0),
             ))),
             attributes: vec![],
             body: Box::new(Node::new(
                 NodeKind::Block { statements: vec![] },
-                SourceLocation { start: 0, end: 0 },
+                SourceLocation::new(0, 0),
             )),
         },
-        SourceLocation { start: 0, end: 0 },
+        SourceLocation::new(0, 0),
     );
 
     let suggestions = analyzer.analyze(&ast, "sub exact_limit($p0, $p1, $p2, $p3, $p4) {}");
@@ -390,10 +389,10 @@ fn test_refactoring_analyzer_one_over_param_limit() -> Result<(), Box<dyn std::e
                 NodeKind::MandatoryParameter {
                     variable: Box::new(Node::new(
                         NodeKind::Variable { sigil: "$".to_string(), name: format!("p{}", i) },
-                        SourceLocation { start: 0, end: 0 },
+                        SourceLocation::new(0, 0),
                     )),
                 },
-                SourceLocation { start: 0, end: 0 },
+                SourceLocation::new(0, 0),
             )
         })
         .collect();
@@ -406,15 +405,15 @@ fn test_refactoring_analyzer_one_over_param_limit() -> Result<(), Box<dyn std::e
             prototype: None,
             signature: Some(Box::new(Node::new(
                 NodeKind::Signature { parameters: params },
-                SourceLocation { start: 0, end: 0 },
+                SourceLocation::new(0, 0),
             ))),
             attributes: vec![],
             body: Box::new(Node::new(
                 NodeKind::Block { statements: vec![] },
-                SourceLocation { start: 0, end: 0 },
+                SourceLocation::new(0, 0),
             )),
         },
-        SourceLocation { start: 0, end: 0 },
+        SourceLocation::new(0, 0),
     );
 
     let suggestions = analyzer.analyze(&ast, "sub over_limit($p0,$p1,$p2,$p3,$p4,$p5) {}");
@@ -438,10 +437,10 @@ fn test_refactoring_analyzer_anonymous_sub() -> Result<(), Box<dyn std::error::E
                 NodeKind::MandatoryParameter {
                     variable: Box::new(Node::new(
                         NodeKind::Variable { sigil: "$".to_string(), name: format!("x{}", i) },
-                        SourceLocation { start: 0, end: 0 },
+                        SourceLocation::new(0, 0),
                     )),
                 },
-                SourceLocation { start: 0, end: 0 },
+                SourceLocation::new(0, 0),
             )
         })
         .collect();
@@ -454,15 +453,15 @@ fn test_refactoring_analyzer_anonymous_sub() -> Result<(), Box<dyn std::error::E
             prototype: None,
             signature: Some(Box::new(Node::new(
                 NodeKind::Signature { parameters: params },
-                SourceLocation { start: 0, end: 0 },
+                SourceLocation::new(0, 0),
             ))),
             attributes: vec![],
             body: Box::new(Node::new(
                 NodeKind::Block { statements: vec![] },
-                SourceLocation { start: 0, end: 0 },
+                SourceLocation::new(0, 0),
             )),
         },
-        SourceLocation { start: 0, end: 0 },
+        SourceLocation::new(0, 0),
     );
 
     let suggestions = analyzer.analyze(&ast, "sub ($x0,$x1,$x2,$x3,$x4,$x5,$x6) {}");
@@ -1163,7 +1162,7 @@ fn test_find_subroutines_in_package() -> Result<(), Box<dyn std::error::Error>> 
             statements: vec![Node::new(
                 NodeKind::Package {
                     name: "MyPkg".to_string(),
-                    name_span: SourceLocation { start: 0, end: 5 },
+                    name_span: SourceLocation::new(0, 5),
                     block: Some(Box::new(Node::new(
                         NodeKind::Block {
                             statements: vec![Node::new(
@@ -1176,19 +1175,19 @@ fn test_find_subroutines_in_package() -> Result<(), Box<dyn std::error::Error>> 
                                     attributes: vec![],
                                     body: Box::new(Node::new(
                                         NodeKind::Block { statements: vec![] },
-                                        SourceLocation { start: 0, end: 0 },
+                                        SourceLocation::new(0, 0),
                                     )),
                                 },
-                                SourceLocation { start: 0, end: 0 },
+                                SourceLocation::new(0, 0),
                             )],
                         },
-                        SourceLocation { start: 0, end: 0 },
+                        SourceLocation::new(0, 0),
                     ))),
                 },
-                SourceLocation { start: 0, end: 0 },
+                SourceLocation::new(0, 0),
             )],
         },
-        SourceLocation { start: 0, end: 0 },
+        SourceLocation::new(0, 0),
     );
 
     let subs = generator.find_subroutines(&ast);
@@ -1208,7 +1207,7 @@ fn test_find_subroutines_in_if_branch() -> Result<(), Box<dyn std::error::Error>
                     keyword: None,
                     condition: Box::new(Node::new(
                         NodeKind::Number { value: "1".to_string() },
-                        SourceLocation { start: 0, end: 0 },
+                        SourceLocation::new(0, 0),
                     )),
                     then_branch: Box::new(Node::new(
                         NodeKind::Block {
@@ -1222,13 +1221,13 @@ fn test_find_subroutines_in_if_branch() -> Result<(), Box<dyn std::error::Error>
                                     attributes: vec![],
                                     body: Box::new(Node::new(
                                         NodeKind::Block { statements: vec![] },
-                                        SourceLocation { start: 0, end: 0 },
+                                        SourceLocation::new(0, 0),
                                     )),
                                 },
-                                SourceLocation { start: 0, end: 0 },
+                                SourceLocation::new(0, 0),
                             )],
                         },
-                        SourceLocation { start: 0, end: 0 },
+                        SourceLocation::new(0, 0),
                     )),
                     elsif_branches: vec![],
                     else_branch: Some(Box::new(Node::new(
@@ -1243,19 +1242,19 @@ fn test_find_subroutines_in_if_branch() -> Result<(), Box<dyn std::error::Error>
                                     attributes: vec![],
                                     body: Box::new(Node::new(
                                         NodeKind::Block { statements: vec![] },
-                                        SourceLocation { start: 0, end: 0 },
+                                        SourceLocation::new(0, 0),
                                     )),
                                 },
-                                SourceLocation { start: 0, end: 0 },
+                                SourceLocation::new(0, 0),
                             )],
                         },
-                        SourceLocation { start: 0, end: 0 },
+                        SourceLocation::new(0, 0),
                     ))),
                 },
-                SourceLocation { start: 0, end: 0 },
+                SourceLocation::new(0, 0),
             )],
         },
-        SourceLocation { start: 0, end: 0 },
+        SourceLocation::new(0, 0),
     );
 
     let subs = generator.find_subroutines(&ast);

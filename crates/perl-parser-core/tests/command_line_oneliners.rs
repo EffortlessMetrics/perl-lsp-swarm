@@ -87,7 +87,7 @@ fn assert_not_single_line_source(source: &str) {
 }
 
 fn node_text<'a>(source: &'a str, node: &Node) -> &'a str {
-    source.get(node.location.start..node.location.end).unwrap_or("<invalid-range>")
+    source.get(node.location.start()..node.location.end()).unwrap_or("<invalid-range>")
 }
 
 /// Current leaky Binary text for `+(split)[0]` and the balanced correction.
@@ -180,7 +180,7 @@ fn slice(source: &str, start: usize, end: usize) -> &str {
 fn expr_text<'a>(source: &'a str, body: &perl_parser_core::hir::HirBody, id: HirExprId) -> &'a str {
     body.source_map
         .expr_range(id)
-        .map_or("<missing-range>", |range| slice(source, range.start, range.end))
+        .map_or("<missing-range>", |range| slice(source, range.start(), range.end()))
 }
 
 fn local_hir_facts(source: &str, hir: &HirFile) -> String {
@@ -191,14 +191,14 @@ fn local_hir_facts(source: &str, hir: &HirFile) -> String {
             "  item {} anchor={} text={:?}",
             hir_item_kind_name(&item.kind),
             item.anchor.node_kind,
-            slice(source, item.range.start, item.range.end)
+            slice(source, item.range.start(), item.range.end())
         );
         if let HirKind::StatementModifierShell(shell) = &item.kind {
             let _ = writeln!(
                 out,
                 "    modifier={:?} condition={:?}",
                 shell.modifier,
-                slice(source, shell.condition_range.start, shell.condition_range.end)
+                slice(source, shell.condition_range.start(), shell.condition_range.end())
             );
         }
     }
@@ -207,7 +207,7 @@ fn local_hir_facts(source: &str, hir: &HirFile) -> String {
             out,
             "  phase {:?} text={:?}",
             phase.phase,
-            slice(source, phase.range.start, phase.range.end)
+            slice(source, phase.range.start(), phase.range.end())
         );
     }
     if let Some(body) = hir.root_body() {
@@ -246,7 +246,7 @@ fn local_hir_facts(source: &str, hir: &HirFile) -> String {
                 let text = body
                     .source_map
                     .stmt_range(id)
-                    .map_or("<missing-range>", |range| slice(source, range.start, range.end));
+                    .map_or("<missing-range>", |range| slice(source, range.start(), range.end()));
                 let _ = writeln!(out, "  postfix {verb:?} text={text:?}");
             }
         }
@@ -316,7 +316,7 @@ fn prove_hir_fact(source: &str, ast: &Node, hir: &HirFile, fact: HirFact) -> Res
         HirFact::Item { kind, anchor, exact } => hir.items.iter().any(|item| {
             hir_item_kind_name(&item.kind) == kind
                 && item.anchor.node_kind == anchor
-                && slice(source, item.range.start, item.range.end) == exact
+                && slice(source, item.range.start(), item.range.end()) == exact
         }),
         HirFact::Modifier { verb, exact, condition } => hir.items.iter().any(|item| {
             let HirKind::StatementModifierShell(shell) = &item.kind else {
@@ -324,8 +324,8 @@ fn prove_hir_fact(source: &str, ast: &Node, hir: &HirFile, fact: HirFact) -> Res
             };
             shell.modifier == verb
                 && item.anchor.node_kind == "StatementModifier"
-                && slice(source, item.range.start, item.range.end) == exact
-                && slice(source, shell.condition_range.start, shell.condition_range.end)
+                && slice(source, item.range.start(), item.range.end()) == exact
+                && slice(source, shell.condition_range.start(), shell.condition_range.end())
                     == condition
         }),
         HirFact::ArrayElement { exact, container, selector } => {
@@ -359,7 +359,7 @@ fn prove_hir_fact(source: &str, ast: &Node, hir: &HirFile, fact: HirFact) -> Res
             hir.items.iter().any(|item| {
                 matches!(item.kind, HirKind::ReadlineMigrationAdapter(_))
                     && item.anchor.node_kind == "Diamond"
-                    && slice(source, item.range.start, item.range.end) == exact
+                    && slice(source, item.range.start(), item.range.end()) == exact
             }) && hir.root_body().is_some_and(|body| {
                 (0..body.source_map.expr_ranges.len()).any(|index| {
                     let id = HirExprId(index as u32);
@@ -377,7 +377,7 @@ fn prove_hir_fact(source: &str, ast: &Node, hir: &HirFile, fact: HirFact) -> Res
                 ) && body
                     .source_map
                     .stmt_range(id)
-                    .is_some_and(|range| slice(source, range.start, range.end) == exact)
+                    .is_some_and(|range| slice(source, range.start(), range.end()) == exact)
             })
         }),
         HirFact::IndexBinary { lhs, rhs } => hir.root_body().is_some_and(|body| {
@@ -401,13 +401,13 @@ fn prove_hir_fact(source: &str, ast: &Node, hir: &HirFile, fact: HirFact) -> Res
         }),
         HirFact::Phase { phase, exact } => {
             hir.compile_environment.phase_blocks.iter().any(|fact| {
-                fact.phase == phase && slice(source, fact.range.start, fact.range.end) == exact
+                fact.phase == phase && slice(source, fact.range.start(), fact.range.end()) == exact
             })
         }
         HirFact::Loop { exact } => {
             hir.items.iter().any(|item| {
                 matches!(item.kind, HirKind::LoopShell(_))
-                    && slice(source, item.range.start, item.range.end) == exact
+                    && slice(source, item.range.start(), item.range.end()) == exact
             }) && hir.root_body().is_some_and(|body| {
                 (0..body.source_map.expr_ranges.len()).any(|index| {
                     let id = HirExprId(index as u32);
@@ -1373,7 +1373,7 @@ fn negative_controls_keep_context_errors_and_boundaries_visible() -> TestResult 
         &multiline_hir,
         AstFact { kind: "Program", exact: multiline, payload: None },
     )?;
-    assert!(multiline_hir.items.iter().all(|item| item.range.end <= multiline.len()));
+    assert!(multiline_hir.items.iter().all(|item| item.range.end() <= multiline.len()));
 
     Ok(())
 }

@@ -74,7 +74,7 @@ fn mapping(result: &ReferenceEditResult) -> Vec<(usize, usize, usize, usize, boo
         .map(|segment| {
             let old = segment.old();
             let new = segment.new_span();
-            (old.start, old.end, new.start, new.end, segment.is_replaced())
+            (old.start(), old.end(), new.start(), new.end(), segment.is_replaced())
         })
         .collect()
 }
@@ -323,17 +323,17 @@ fn mapping_tiles_both_subjects_completely() {
         let mut new_cursor = 0;
         for segment in result.mapping() {
             assert_eq!(
-                segment.old().start,
+                segment.old().start(),
                 old_cursor,
                 "gap or overlap in the predecessor tiling of {predecessor:?}",
             );
             assert_eq!(
-                segment.new_span().start,
+                segment.new_span().start(),
                 new_cursor,
                 "gap or overlap in the successor tiling of {predecessor:?}",
             );
-            old_cursor = segment.old().end;
-            new_cursor = segment.new_span().end;
+            old_cursor = segment.old().end();
+            new_cursor = segment.new_span().end();
             if let ReferenceByteMapSegment::Unchanged { old, new } = *segment {
                 assert_eq!(
                     old.len(),

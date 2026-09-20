@@ -276,8 +276,8 @@ fn assert_repeated_hash_slice(ast: &Node, source: &str) -> Result<(), String> {
     if std::ptr::eq(found[0], found[1]) {
         return Err("the repeated marker matched one node twice".to_string());
     }
-    if found[0].location.start == found[1].location.start
-        && found[0].location.end == found[1].location.end
+    if found[0].location.start() == found[1].location.start()
+        && found[0].location.end() == found[1].location.end()
     {
         return Err("the repeated marker bound one source occurrence twice".to_string());
     }
@@ -447,7 +447,7 @@ fn exact_node<'a>(ast: &'a Node, source: &str, expected: &str) -> Result<&'a Nod
 }
 
 fn node_source<'a>(node: &Node, source: &'a str) -> Option<&'a str> {
-    source.get(node.location.start..node.location.end)
+    source.get(node.location.start()..node.location.end())
 }
 
 fn workspace_root() -> PathBuf {

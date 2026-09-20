@@ -1231,8 +1231,8 @@ pub fn collect_semantic_tokens_controlled(
                 NodeKind::Package { name_span, .. } => {
                     push_line_contained_segments(
                         text,
-                        name_span.start,
-                        name_span.end,
+                        name_span.start(),
+                        name_span.end(),
                         to_pos16,
                         kind_idx(&leg, "namespace"),
                         1, /*declaration*/
@@ -1244,8 +1244,8 @@ pub fn collect_semantic_tokens_controlled(
                 NodeKind::Subroutine { name: Some(_), name_span: Some(span), .. } => {
                     push_line_contained_segments(
                         text,
-                        span.start,
-                        span.end,
+                        span.start(),
+                        span.end(),
                         to_pos16,
                         kind_idx(&leg, "function"),
                         1 | 2, /*declaration|definition*/
@@ -1257,8 +1257,8 @@ pub fn collect_semantic_tokens_controlled(
                 NodeKind::Subroutine { name: Some(_), .. } => {
                     // Whole-construct anchor: see push_single_line_anchor.
                     push_line_contained_token(
-                        node.location.start,
-                        node.location.end,
+                        node.location.start(),
+                        node.location.end(),
                         to_pos16,
                         kind_idx(&leg, "function"),
                         1, /*declaration*/
@@ -1269,11 +1269,11 @@ pub fn collect_semantic_tokens_controlled(
                 NodeKind::Method { name, .. } => {
                     let (start, end) = method_declaration_name_offsets(
                         text,
-                        node.location.start,
-                        node.location.end,
+                        node.location.start(),
+                        node.location.end(),
                         name,
                     )
-                    .unwrap_or((node.location.start, node.location.end));
+                    .unwrap_or((node.location.start(), node.location.end()));
                     // The located name is single-line; the fallback is a
                     // whole-construct anchor. See push_single_line_anchor.
                     push_line_contained_token(
@@ -1289,8 +1289,8 @@ pub fn collect_semantic_tokens_controlled(
                 NodeKind::Class { .. } => {
                     // Whole-construct anchor: see push_single_line_anchor.
                     push_line_contained_token(
-                        node.location.start,
-                        node.location.end,
+                        node.location.start(),
+                        node.location.end(),
                         to_pos16,
                         kind_idx(&leg, "class"),
                         1, /*declaration*/
@@ -1301,8 +1301,8 @@ pub fn collect_semantic_tokens_controlled(
                 NodeKind::PhaseBlock { phase_span: Some(span), .. } => {
                     push_line_contained_segments(
                         text,
-                        span.start,
-                        span.end,
+                        span.start(),
+                        span.end(),
                         to_pos16,
                         kind_idx(&leg, "macro"),
                         0,
@@ -1312,16 +1312,16 @@ pub fn collect_semantic_tokens_controlled(
                     return Ok(true);
                 }
                 NodeKind::LabeledStatement { label, .. } => {
-                    let Some(fallback_end) = node.location.start.checked_add(label.len()) else {
+                    let Some(fallback_end) = node.location.start().checked_add(label.len()) else {
                         return Ok(true);
                     };
                     let (start, end) = statement_label_offsets(
                         text,
-                        node.location.start,
-                        node.location.end,
+                        node.location.start(),
+                        node.location.end(),
                         label,
                     )
-                    .unwrap_or((node.location.start, fallback_end));
+                    .unwrap_or((node.location.start(), fallback_end));
                     push_line_contained_segments(
                         text,
                         start,
@@ -1337,8 +1337,8 @@ pub fn collect_semantic_tokens_controlled(
                 NodeKind::LoopControl { op, label: Some(label) } => {
                     if let Some((start, end)) = loop_control_label_offsets(
                         text,
-                        node.location.start,
-                        node.location.end,
+                        node.location.start(),
+                        node.location.end(),
                         op,
                         label,
                     ) {
@@ -1359,9 +1359,9 @@ pub fn collect_semantic_tokens_controlled(
                     // Emit a narrow token for just the method name, not the entire
                     // expression. Whitespace/newlines may separate the receiver from
                     // `->method` (perldoc perlop), so scan forward for the span rather
-                    // than assuming `->` abuts the receiver at object.location.end + 2.
+                    // than assuming `->` abuts the receiver at object.location.end() + 2.
                     if let Some((method_name_start, method_name_end)) =
-                        method_call_name_offsets(text, object.location.end, method)
+                        method_call_name_offsets(text, object.location.end(), method)
                     {
                         push_line_contained_segments(
                             text,
@@ -1405,8 +1405,8 @@ pub fn collect_semantic_tokens_controlled(
                             // Keep the pre-existing single-line-only reach so
                             // no continuation line loses its variable token.
                             push_line_contained_token(
-                                first_arg.location.start,
-                                first_arg.location.end,
+                                first_arg.location.start(),
+                                first_arg.location.end(),
                                 to_pos16,
                                 kind_idx(&leg, "sql_string"),
                                 0,
@@ -1415,8 +1415,8 @@ pub fn collect_semantic_tokens_controlled(
                         } else {
                             push_line_contained_segments(
                                 text,
-                                first_arg.location.start,
-                                first_arg.location.end,
+                                first_arg.location.start(),
+                                first_arg.location.end(),
                                 to_pos16,
                                 kind_idx(&leg, "sql_string"),
                                 0,
@@ -1430,7 +1430,7 @@ pub fn collect_semantic_tokens_controlled(
                 _ => {}
             }
 
-            let (s, e) = (node.location.start, node.location.end);
+            let (s, e) = (node.location.start(), node.location.end());
 
             let (kind, mods): (&str, u32) = match &node.kind {
                 NodeKind::FunctionCall { name, .. } | NodeKind::AmperCall { name, .. } => {
@@ -1442,13 +1442,13 @@ pub fn collect_semantic_tokens_controlled(
                     }
                     // Skip builtins that should remain as keywords from the lexer pass,
                     // and synthetic names produced for coderef/deref calls (these don't
-                    // start at node.location.start — painting them produces garbage).
+                    // start at node.location.start() — painting them produces garbage).
                     match name.as_str() {
                         "eval" | "do" | "use" | "no" | "return" | "my" | "our" | "local"
                         | "state" | "next" | "last" | "redo" | "goto" | "await" => return Ok(true),
                         // Synthetic FunctionCall names from postfix.rs (coderef invocation)
                         // and variables.rs (deref).  The name is not a real identifier at
-                        // node.location.start, so narrowing to name.len() bytes paints
+                        // node.location.start(), so narrowing to name.len() bytes paints
                         // garbage on the receiver.
                         "->()" | "&{}" | "$" => return Ok(true),
                         _ => {
@@ -1482,7 +1482,7 @@ pub fn collect_semantic_tokens_controlled(
                     }
                 }
                 NodeKind::Variable { sigil, name } => {
-                    let (vs, ve) = (node.location.start, node.location.end);
+                    let (vs, ve) = (node.location.start(), node.location.end());
                     let decl_info = declaration_flag(&decl_spans, (vs, ve), traversal)?;
                     let full_name = format!("{sigil}{name}");
                     let special_mod = if is_special_variable(&full_name) { 512 } else { 0 }; // defaultLibrary bit 9
@@ -1737,7 +1737,7 @@ fn mark_declaration_target_flags(
                 .with(|count| count.set(count.get().saturating_add(1)));
             traversal.admit_work()?;
             flags
-                .entry((node.location.start, node.location.end))
+                .entry((node.location.start(), node.location.end()))
                 .and_modify(|flag| *flag |= is_readonly)
                 .or_insert(is_readonly);
         }
@@ -1764,7 +1764,7 @@ fn assignment_lhs_spans(
     let mut spans = FxHashSet::default();
     walk_ast_full_controlled(ast, traversal, &mut |node| {
         if let NodeKind::Assignment { lhs, .. } = &node.kind {
-            spans.insert((lhs.location.start, lhs.location.end));
+            spans.insert((lhs.location.start(), lhs.location.end()));
         }
         true
     })?;
@@ -3133,7 +3133,7 @@ print "ok" foreach @ys;
     /// Regression: the `method` semantic token must paint exactly the method name
     /// regardless of whitespace/newlines around `->`. Perl treats such whitespace as
     /// insignificant (external oracle: perldoc perlop — "whitespace is insignificant"
-    /// around the arrow operator). Pre-fix, the hard-coded `object.location.end + 2`
+    /// around the arrow operator). Pre-fix, the hard-coded `object.location.end() + 2`
     /// mislocated the span: `$obj ->name` painted ">nam", `$obj-> name` painted " nam",
     /// and the leading-arrow chain painted the indent+arrow instead of the method name.
     #[test]

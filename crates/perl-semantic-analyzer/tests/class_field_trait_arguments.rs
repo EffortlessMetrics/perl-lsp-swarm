@@ -318,7 +318,8 @@ fn two_fields_with_the_same_explicit_name_remain_distinguishable() {
     assert_eq!(first.reader.as_deref(), Some("shared"));
     assert_eq!(second.reader.as_deref(), Some("shared"));
     assert_ne!(
-        first.location.start, second.location.start,
+        first.location.start(),
+        second.location.start(),
         "colliding readers stay distinguishable by source location for a later conflict owner"
     );
 }

@@ -18,7 +18,7 @@ use perl_ast::ast::{Node, NodeKind, SourceLocation};
 // ---------------------------------------------------------------------------
 
 fn loc(start: usize, end: usize) -> SourceLocation {
-    SourceLocation { start, end }
+    SourceLocation::new(start, end)
 }
 
 fn num_node(value: &str) -> Node {
@@ -910,7 +910,7 @@ fn sexp_catch_with_variable() {
         NodeKind::Try {
             body: Box::new(block_node(vec![])),
             catch_blocks: vec![(
-                Some(("$e".to_string(), SourceLocation { start: 0, end: 0 })),
+                Some(("$e".to_string(), SourceLocation::new(0, 0))),
                 Box::new(block_node(vec![])),
             )],
             finally_block: None,
@@ -1352,15 +1352,15 @@ fn v2_variable_declaration_sexp_fallthrough() {
 #[test]
 fn source_location_reexported() {
     use perl_ast::SourceLocation;
-    let sl = SourceLocation { start: 0, end: 10 };
-    assert_eq!(sl.start, 0);
-    assert_eq!(sl.end, 10);
+    let sl = SourceLocation::new(0, 10);
+    assert_eq!(sl.start(), 0);
+    assert_eq!(sl.end(), 10);
 }
 
 #[test]
 fn source_location_clone_and_copy() {
     use perl_ast::SourceLocation;
-    let sl = SourceLocation { start: 5, end: 15 };
+    let sl = SourceLocation::new(5, 15);
     let copied = sl;
     assert_eq!(sl, copied);
 }

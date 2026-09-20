@@ -266,7 +266,7 @@ pub(crate) fn check_version_compat_with_pragma_map(
     // Second pass: walk AST for version-gated constructs.
     let diagnostics_before_walk = diagnostics.len();
     walk_node(node, &mut |n| {
-        let pragma_state = pragma_cursor.state_for_offset(pragma_map, n.location.start);
+        let pragma_state = pragma_cursor.state_for_offset(pragma_map, n.location.start());
         let postfix_deref = postfix_deref_spelling(n, source);
 
         match &n.kind {
@@ -724,7 +724,7 @@ fn postfix_deref_spelling<'a>(node: &'a Node, source: &str) -> Option<(&'a str, 
         NodeKind::Unary { op, .. } if POSTFIX_DEREF_UNARY_OPS.contains(&op.as_str()) => op,
         NodeKind::Binary { op, .. } if op == "->@[]" || op == "->%{}" => op,
         NodeKind::HashSlice { target, keys } => {
-            let gap = source.get(target.location.end..keys.location.start)?;
+            let gap = source.get(target.location.end()..keys.location.start())?;
             if !is_postfix_hash_slice_gap(gap) {
                 return None;
             }
@@ -748,15 +748,15 @@ fn postfix_deref_expression_range(node: &Node, source: &str) -> (usize, usize) {
     if let NodeKind::Unary { op, operand } = &node.kind
         && let Some(tail) = op.strip_prefix("->")
     {
-        let arrow = skip_perl_trivia(source, operand.location.end);
+        let arrow = skip_perl_trivia(source, operand.location.end());
         if source.get(arrow..arrow + 2) == Some("->") {
             let sigil = skip_perl_trivia(source, arrow + 2);
             if source.get(sigil..sigil + tail.len()) == Some(tail) {
-                return (node.location.start, sigil + tail.len());
+                return (node.location.start(), sigil + tail.len());
             }
         }
     }
-    (node.location.start, node.location.end)
+    (node.location.start(), node.location.end())
 }
 
 /// Advance past the trivia Perl's tokenizer ignores between tokens —
@@ -900,7 +900,7 @@ fn make_diagnostic(
     };
 
     Diagnostic {
-        range: (node.location.start, node.location.end),
+        range: (node.location.start(), node.location.end()),
         severity: DiagnosticSeverity::Warning,
         code: Some(DiagnosticCode::VersionIncompatFeature.as_str().to_string()),
         message,
@@ -1007,7 +1007,7 @@ fn make_experimental_feature_diagnostic(
     };
 
     Diagnostic {
-        range: (node.location.start, node.location.end),
+        range: (node.location.start(), node.location.end()),
         severity: DiagnosticSeverity::Warning,
         code: Some(DiagnosticCode::VersionIncompatFeature.as_str().to_string()),
         message,
@@ -1030,7 +1030,7 @@ fn make_given_when_default_diagnostic(node: &Node, declared_version: PerlVersion
     );
 
     Diagnostic {
-        range: (node.location.start, node.location.end),
+        range: (node.location.start(), node.location.end()),
         severity: DiagnosticSeverity::Warning,
         code: Some(DiagnosticCode::VersionIncompatFeature.as_str().to_string()),
         message,
@@ -1060,7 +1060,7 @@ fn make_given_when_feature_diagnostic(node: &Node, declared_version: PerlVersion
     );
 
     Diagnostic {
-        range: (node.location.start, node.location.end),
+        range: (node.location.start(), node.location.end()),
         severity: DiagnosticSeverity::Warning,
         code: Some(DiagnosticCode::VersionIncompatFeature.as_str().to_string()),
         message,
@@ -1083,7 +1083,7 @@ fn make_smartmatch_diagnostic(node: &Node, declared_version: PerlVersion) -> Dia
     );
 
     Diagnostic {
-        range: (node.location.start, node.location.end),
+        range: (node.location.start(), node.location.end()),
         severity: DiagnosticSeverity::Warning,
         code: Some(DiagnosticCode::VersionIncompatFeature.as_str().to_string()),
         message,
@@ -1116,7 +1116,7 @@ fn make_smartmatch_feature_gate_diagnostic(
     );
 
     Diagnostic {
-        range: (node.location.start, node.location.end),
+        range: (node.location.start(), node.location.end()),
         severity: DiagnosticSeverity::Warning,
         code: Some(DiagnosticCode::VersionIncompatFeature.as_str().to_string()),
         message,
@@ -1151,7 +1151,7 @@ fn make_diagnostic_with_details(
     );
 
     Diagnostic {
-        range: (node.location.start, node.location.end),
+        range: (node.location.start(), node.location.end()),
         severity,
         code: Some(DiagnosticCode::VersionIncompatFeature.as_str().to_string()),
         message,

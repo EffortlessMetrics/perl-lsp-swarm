@@ -45,11 +45,11 @@ fn every_arrow_star_deref_keeps_enclosing_untie_span_covering_child() {
             case.op
         );
         assert!(
-            untie.location.end >= deref.location.end,
+            untie.location.end() >= deref.location.end(),
             "{} parent ended at {} before child ended at {}",
             case.op,
-            untie.location.end,
-            deref.location.end
+            untie.location.end(),
+            deref.location.end()
         );
     }
 }
@@ -94,10 +94,10 @@ fn last_index_star_form_does_not_swallow_following_arithmetic() {
     let plus = must_some_with(find_binary(&ast, "+"), "arithmetic parent of ->$#*");
     assert_eq!(source_text(plus, source), Some("$aref->$#* + 1"));
     assert!(
-        plus.location.end > deref.location.end,
+        plus.location.end() > deref.location.end(),
         "arithmetic parent must extend past the star, got {} vs {}",
-        plus.location.end,
-        deref.location.end
+        plus.location.end(),
+        deref.location.end()
     );
 }
 
@@ -135,7 +135,7 @@ fn crlf_geometry_keeps_full_star_spans() {
         let following =
             must_some_with(find_variable(&ast, &source, "$y"), "following $y after CRLF star-form");
         assert!(
-            following.location.start >= deref.location.end,
+            following.location.start() >= deref.location.end(),
             "{} following sibling started inside the deref span",
             case.op
         );
@@ -153,7 +153,7 @@ fn repeated_star_forms_bind_two_distinct_full_spans() {
         assert_eq!(source_text(node, source), Some("$aref->@*"));
     }
     assert!(
-        found[0].location.start != found[1].location.start,
+        found[0].location.start() != found[1].location.start(),
         "repeated ->@* bound one source occurrence twice"
     );
 }
@@ -264,5 +264,5 @@ fn find_variable<'a>(node: &'a Node, source: &str, name: &str) -> Option<&'a Nod
 }
 
 fn source_text<'a>(node: &Node, source: &'a str) -> Option<&'a str> {
-    source.get(node.location.start..node.location.end)
+    source.get(node.location.start()..node.location.end())
 }

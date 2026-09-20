@@ -191,8 +191,8 @@ fn postfix_modifiers_preserve_exact_flat_hir_condition_and_label() -> TestResult
         assert_eq!(
             source_slice(
                 case.flat_source,
-                item.range.start,
-                item.range.end,
+                item.range.start(),
+                item.range.end(),
                 "flat-HIR postfix item",
             )?,
             case.flat_span,
@@ -208,8 +208,8 @@ fn postfix_modifiers_preserve_exact_flat_hir_condition_and_label() -> TestResult
         assert_eq!(
             source_slice(
                 case.flat_source,
-                shell.condition_range.start,
-                shell.condition_range.end,
+                shell.condition_range.start(),
+                shell.condition_range.end(),
                 "flat-HIR modifier condition",
             )?,
             case.condition,
@@ -270,8 +270,8 @@ fn postfix_modifiers_preserve_exact_body_hir_topology_and_sources() -> TestResul
         assert_eq!(
             source_slice(
                 case.body_source,
-                root_stmt_range.start,
-                root_stmt_range.end,
+                root_stmt_range.start(),
+                root_stmt_range.end(),
                 "body-HIR root postfix statement",
             )?,
             case.body_postfix_span,
@@ -318,8 +318,8 @@ fn postfix_modifiers_preserve_exact_body_hir_topology_and_sources() -> TestResul
         assert_eq!(
             source_slice(
                 case.body_source,
-                nested_stmt_range.start,
-                nested_stmt_range.end,
+                nested_stmt_range.start(),
+                nested_stmt_range.end(),
                 "body-HIR wrapped statement",
             )?,
             case.body_statement_span,
@@ -366,14 +366,14 @@ fn postfix_modifiers_preserve_exact_body_hir_topology_and_sources() -> TestResul
                             "topic-variable range is missing for {:?}",
                             case.body_source
                         ))?
-                        .start,
+                        .start(),
                     body.source_map
                         .expr_range(*rhs)
                         .ok_or_else(|| format!(
                             "topic-variable range is missing for {:?}",
                             case.body_source
                         ))?
-                        .end,
+                        .end(),
                     "postfix foreach topic variable",
                 )?,
                 "$_",
@@ -402,8 +402,8 @@ fn postfix_modifiers_preserve_exact_body_hir_topology_and_sources() -> TestResul
         assert_eq!(
             source_slice(
                 case.body_source,
-                assignment_range.start,
-                assignment_range.end,
+                assignment_range.start(),
+                assignment_range.end(),
                 "body-HIR assignment",
             )?,
             case.body_statement_span,
@@ -418,8 +418,8 @@ fn postfix_modifiers_preserve_exact_body_hir_topology_and_sources() -> TestResul
         assert_eq!(
             source_slice(
                 case.body_source,
-                condition_range.start,
-                condition_range.end,
+                condition_range.start(),
+                condition_range.end(),
                 "body-HIR condition",
             )?,
             case.condition,

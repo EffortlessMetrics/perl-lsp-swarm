@@ -166,12 +166,14 @@ impl Lowerer {
                 // The body of a `class` is an ordinary `Block` node; the
                 // `Class` arm registered its span so this frame can be the
                 // class frame that owns field visibility (#13817).
-                let scope_kind =
-                    if self.class_body_spans.contains(&(node.location.start, node.location.end)) {
-                        ScopeKind::Class
-                    } else {
-                        ScopeKind::Block
-                    };
+                let scope_kind = if self
+                    .class_body_spans
+                    .contains(&(node.location.start(), node.location.end()))
+                {
+                    ScopeKind::Class
+                } else {
+                    ScopeKind::Block
+                };
                 let scope_id =
                     self.enter_scope(scope_kind, node.location, self.package_context.clone());
                 self.push_item(
@@ -259,7 +261,7 @@ impl Lowerer {
                             declaration_range: node.location,
                             declaration_item: item_id,
                             scope_id: Some(sub_scope),
-                            anchor_id: AnchorId(prototype.location.start as u64),
+                            anchor_id: AnchorId(prototype.location.start() as u64),
                             provenance: CompileProvenance::ExactAst,
                             confidence: CompileConfidence::High,
                         });
@@ -543,7 +545,7 @@ impl Lowerer {
                     range: node.location,
                     source_item: item_id,
                     scope_id: Some(self.current_scope()),
-                    anchor_id: AnchorId(node.location.start as u64),
+                    anchor_id: AnchorId(node.location.start() as u64),
                     provenance: CompileProvenance::ExactAst,
                     confidence: CompileConfidence::High,
                 });
@@ -716,7 +718,7 @@ impl Lowerer {
                         self.package_context.clone(),
                         Some(self.current_scope()),
                     );
-                    if !self.strict_refs_enabled_at(node.location.start)
+                    if !self.strict_refs_enabled_at(node.location.start())
                         && is_proven_symbolic_name(operand)
                     {
                         let reason = "symbolic reference dereference is deferred to runtime";
@@ -1007,7 +1009,7 @@ impl Lowerer {
 
                     let (sigil, name) = split_catch_variable(spelling);
                     let frame_range =
-                        SourceLocation::new(variable_range.start, handler.location.end);
+                        SourceLocation::new(variable_range.start(), handler.location.end());
                     let scope_id = self.enter_scope(
                         ScopeKind::Block,
                         frame_range,
@@ -1072,14 +1074,15 @@ impl Lowerer {
                         _ => None,
                     };
                     if declarator == Some("field") {
-                        direct_field_decls.push((statement.location.start, statement.location.end));
+                        direct_field_decls
+                            .push((statement.location.start(), statement.location.end()));
                     }
                 });
                 self.class_field_decls.extend(direct_field_decls);
                 // The block arm turns this span into a `ScopeKind::Class`
                 // frame, which is where the field bindings above will land and
                 // what decides who can see them.
-                self.class_body_spans.insert((body.location.start, body.location.end));
+                self.class_body_spans.insert((body.location.start(), body.location.end()));
                 self.visit_children(node, confidence);
             }
             NodeKind::Defer { .. } => {
@@ -1115,7 +1118,7 @@ impl Lowerer {
                     Some(self.current_scope()),
                 );
                 let is_class_field_decl =
-                    self.class_field_decls.contains(&(node.location.start, node.location.end));
+                    self.class_field_decls.contains(&(node.location.start(), node.location.end()));
                 // A legacy `field` call declares nothing and records no stash
                 // effects — body lowering owns the argument's resolved
                 // read/write effects instead. A *class-body* `field`
@@ -1169,7 +1172,7 @@ impl Lowerer {
                     declarator,
                     &bindings,
                     item_id,
-                    self.class_field_decls.contains(&(node.location.start, node.location.end)),
+                    self.class_field_decls.contains(&(node.location.start(), node.location.end())),
                 );
                 self.visit_declaration_list_entries(variables, confidence);
                 if let Some(initializer) = initializer {
@@ -1642,7 +1645,7 @@ impl Lowerer {
         scope_id: HirScopeId,
         declaration_item: Option<HirId>,
     ) -> HirBindingId {
-        let shadows = self.resolve_visible_binding(scope_id, &sigil, &name, Some(range.start));
+        let shadows = self.resolve_visible_binding(scope_id, &sigil, &name, Some(range.start()));
         let id = HirBindingId::from_index(to_u32_saturating(self.scope_graph.bindings.len()));
         self.scope_graph.bindings.push(Binding {
             id,
@@ -1661,7 +1664,7 @@ impl Lowerer {
     fn record_reference(&mut self, sigil: &str, name: &str, range: SourceLocation) {
         let scope_id = self.current_scope();
         let resolved_binding =
-            self.resolve_visible_binding(scope_id, sigil, name, Some(range.start));
+            self.resolve_visible_binding(scope_id, sigil, name, Some(range.start()));
         self.scope_graph.references.push(BindingReference {
             scope_id,
             sigil: sigil.to_string(),
@@ -1952,12 +1955,12 @@ impl Lowerer {
         let entries = self.pragma_environment.map().entries().to_vec();
         for entry in entries {
             let range = SourceLocation::new(entry.range.start, entry.range.end);
-            if self.is_dynamic_pragma_offset(range.start) {
+            if self.is_dynamic_pragma_offset(range.start()) {
                 continue;
             }
 
             let (directive_item, scope_id, package_context) =
-                self.compile_environment_metadata_at(range.start);
+                self.compile_environment_metadata_at(range.start());
             self.compile_environment.pragma_state_facts.push(pragma_state_fact(
                 range,
                 &entry.snapshot,
@@ -1975,7 +1978,7 @@ impl Lowerer {
     fn is_dynamic_pragma_offset(&self, offset: usize) -> bool {
         self.compile_environment.dynamic_boundaries.iter().any(|boundary| {
             boundary.kind == CompileEnvironmentBoundaryKind::DynamicPragmaArgs
-                && boundary.range.start == offset
+                && boundary.range.start() == offset
         })
     }
 
@@ -1987,7 +1990,7 @@ impl Lowerer {
             .compile_environment
             .pragma_effects
             .iter()
-            .find(|effect| effect.range.start == offset)
+            .find(|effect| effect.range.start() == offset)
         {
             return (effect.directive_item, effect.scope_id, effect.package_context.clone());
         }
@@ -1996,7 +1999,7 @@ impl Lowerer {
             .compile_environment
             .directives
             .iter()
-            .find(|directive| directive.range.start == offset)
+            .find(|directive| directive.range.start() == offset)
         {
             return (directive.item_id, directive.scope_id, directive.package_context.clone());
         }
@@ -2012,8 +2015,8 @@ impl Lowerer {
         self.scope_graph
             .scopes
             .iter()
-            .filter(|scope| scope.range.start <= offset && offset <= scope.range.end)
-            .max_by_key(|scope| (scope.range.start, scope.id.index()))
+            .filter(|scope| scope.range.start() <= offset && offset <= scope.range.end())
+            .max_by_key(|scope| (scope.range.start(), scope.id.index()))
     }
 
     fn record_inc_root_effects(
@@ -2976,7 +2979,7 @@ fn class_field_is_visible(
         return false;
     }
     match reference_start {
-        Some(start) => start >= binding.range.start,
+        Some(start) => start >= binding.range.start(),
         None => true,
     }
 }
@@ -3202,7 +3205,7 @@ fn is_sigil_prefixed(value: &str) -> bool {
 /// unbound `s///`, `tr///` or `y///` is the only such node the parser builds
 /// today, at three sites (`expressions/quotes.rs`, `expressions/primary.rs`).
 fn is_synthesized_operand(node: &Node, name: &str) -> bool {
-    node.location.start == node.location.end && is_sigil_prefixed(name)
+    node.location.start() == node.location.end() && is_sigil_prefixed(name)
 }
 
 fn is_bareword_like(value: &str) -> bool {
@@ -3285,7 +3288,7 @@ fn pragma_state_fact(
     let state = snapshot.state();
     PragmaStateFact {
         range,
-        anchor_id: AnchorId(range.start as u64),
+        anchor_id: AnchorId(range.start() as u64),
         directive_item,
         scope_id,
         package_context,
@@ -4139,7 +4142,8 @@ fn declared_base_variable(node: &Node) -> Option<(&str, String, &Node)> {
 fn initializer_is_target_assignment(init: &Node, target: &Node) -> bool {
     match &init.kind {
         NodeKind::Assignment { lhs, .. } => {
-            lhs.location.start == target.location.start && lhs.location.end == target.location.end
+            lhs.location.start() == target.location.start()
+                && lhs.location.end() == target.location.end()
         }
         _ => false,
     }
@@ -4271,7 +4275,7 @@ fn classify_regex_target(expr: &Node) -> (RegexTargetKind, &'static str) {
 /// synthesized rather than written.
 fn is_synthesized_default_topic(expr: &Node) -> bool {
     matches!(&expr.kind, NodeKind::Identifier { name } if name == "$_")
-        && expr.location.start == expr.location.end
+        && expr.location.start() == expr.location.end()
 }
 
 fn variable_binding(node: &Node) -> Option<VariableBinding> {
@@ -4689,8 +4693,8 @@ impl<'a> BodyBuilder2<'a> {
             .bindings
             .iter()
             .find(|binding| {
-                binding.range.start == range.start
-                    && binding.range.end == range.end
+                binding.range.start() == range.start()
+                    && binding.range.end() == range.end()
                     && binding.sigil == sigil
                     && binding.name == name
             })
@@ -4969,7 +4973,11 @@ impl<'a> BodyBuilder2<'a> {
                     "our" => VariableKind::Package,
                     "field" => Self::kind_for(
                         &var_name,
-                        self.resolve_visible_binding(sigil_str, &var_name, variable.location.start),
+                        self.resolve_visible_binding(
+                            sigil_str,
+                            &var_name,
+                            variable.location.start(),
+                        ),
                     ),
                     _ => VariableKind::Lexical,
                 };
@@ -4987,15 +4995,13 @@ impl<'a> BodyBuilder2<'a> {
                 // Nested same-target assignments start later and need both
                 // writes, so matching the variable name alone is insufficient.
                 if is_legacy_call
-                    && init_node.location.start == variable.location.start
+                    && init_node.location.start() == variable.location.start()
                     && self.assign_targets_same_variable(rhs_id, sigil_str, &var_name)
                 {
                     rhs_id
                 } else {
-                    let assign_range = crate::SourceLocation {
-                        start: variable.location.start,
-                        end: init_node.location.end,
-                    };
+                    let assign_range =
+                        SourceLocation::new(variable.location.start(), init_node.location.end());
                     let assign_expr =
                         HirExpr::Assign { lhs: place_id, rhs: rhs_id, mode: AssignMode::Simple };
                     self.alloc_expr(assign_expr, assign_range)
@@ -5010,7 +5016,7 @@ impl<'a> BodyBuilder2<'a> {
             // A legacy call's argument reads the *visible* binding rather than
             // declaring one, so it resolves by visibility (#14166).
             let resolved =
-                self.resolve_visible_binding(sigil_str, &var_name, binding_node.location.start);
+                self.resolve_visible_binding(sigil_str, &var_name, binding_node.location.start());
             let argument = HirExpr::Variable(HirVariable {
                 sigil: sigil_from_str(sigil_str),
                 name: var_name.clone(),
@@ -5056,10 +5062,8 @@ impl<'a> BodyBuilder2<'a> {
             (Some(init_node), _) => {
                 let place_id = self.lower_expr_as_place(target, AccessMode::Write);
                 let rhs_id = self.lower_expr(init_node);
-                let assign_range = crate::SourceLocation {
-                    start: target.location.start,
-                    end: init_node.location.end,
-                };
+                let assign_range =
+                    crate::SourceLocation::new(target.location.start(), init_node.location.end());
                 self.alloc_expr(
                     HirExpr::Assign { lhs: place_id, rhs: rhs_id, mode: AssignMode::Simple },
                     assign_range,
@@ -5108,7 +5112,7 @@ impl<'a> BodyBuilder2<'a> {
             NodeKind::ExpressionStatement { expression } => self.lower_expr(expression),
 
             NodeKind::Variable { sigil, name } => {
-                let resolved = self.resolve_visible_binding(sigil, name, range.start);
+                let resolved = self.resolve_visible_binding(sigil, name, range.start());
                 let var = HirVariable {
                     sigil: sigil_from_str(sigil),
                     name: name.clone(),
@@ -5826,7 +5830,7 @@ impl<'a> BodyBuilder2<'a> {
         let range = node.location;
         match &node.kind {
             NodeKind::Variable { sigil, name } => {
-                let resolved = self.resolve_visible_binding(sigil, name, range.start);
+                let resolved = self.resolve_visible_binding(sigil, name, range.start());
                 let var = HirVariable {
                     sigil: sigil_from_str(sigil),
                     name: name.clone(),
@@ -5945,7 +5949,7 @@ impl<'a> BodyBuilder2<'a> {
 
         let previous_scope = self.start_scope;
         self.start_scope = find_body_scope(self.scope_graph, handler.location);
-        let resolved = self.resolve_visible_binding(sigil, name, range.start);
+        let resolved = self.resolve_visible_binding(sigil, name, range.start());
         let kind = Self::kind_for(name, resolved);
         let binding = resolved.map(|found| found.id);
         self.start_scope = previous_scope;
@@ -6059,8 +6063,8 @@ fn find_body_scope(scope_graph: &ScopeGraph, body_loc: SourceLocation) -> HirSco
     for frame in &scope_graph.scopes {
         let range = frame.range;
         // Check that this scope frame fully contains the body location.
-        if range.start <= body_loc.start && range.end >= body_loc.end {
-            let size = range.end - range.start;
+        if range.start() <= body_loc.start() && range.end() >= body_loc.end() {
+            let size = range.end() - range.start();
             let is_better = best.is_none_or(|(prev_size, _)| size < prev_size);
             if is_better {
                 best = Some((size, frame.id));

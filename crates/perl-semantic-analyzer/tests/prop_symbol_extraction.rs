@@ -146,16 +146,16 @@ proptest! {
         for syms in table.symbols.values() {
             for sym in syms {
                 prop_assert!(
-                    sym.location.start <= sym.location.end,
+                    sym.location.start() <= sym.location.end(),
                     "inverted location for {:?}: start={} end={}",
                     sym.name,
-                    sym.location.start,
-                    sym.location.end
+                    sym.location.start(),
+                    sym.location.end()
                 );
                 prop_assert!(
-                    sym.location.end <= src_len,
+                    sym.location.end() <= src_len,
                     "location end {} out of bounds (source len {}) for {:?}",
-                    sym.location.end,
+                    sym.location.end(),
                     src_len,
                     sym.name
                 );

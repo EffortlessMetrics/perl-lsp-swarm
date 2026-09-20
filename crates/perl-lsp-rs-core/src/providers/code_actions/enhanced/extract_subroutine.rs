@@ -13,7 +13,7 @@ pub fn create_extract_subroutine_action(
     source: &str,
     helpers: &Helpers<'_>,
 ) -> CodeAction {
-    let body_text = &source[node.location.start..node.location.end];
+    let body_text = &source[node.location.start()..node.location.end()];
     // Strip surrounding block braces to avoid double-brace corruption.
     // A Block node's location spans `{ ... }` inclusive; the generated sub
     // already adds its own `sub NAME {`, so the inner braces must be removed.
@@ -30,7 +30,7 @@ pub fn create_extract_subroutine_action(
     };
 
     // Find insertion position (before current sub or at end)
-    let insert_pos = helpers.find_subroutine_insert_position(node.location.start);
+    let insert_pos = helpers.find_subroutine_insert_position(node.location.start());
 
     // Generate function call
     let call = if returns.is_empty() {
@@ -47,7 +47,7 @@ pub fn create_extract_subroutine_action(
             changes: vec![
                 // Insert function definition
                 TextEdit {
-                    location: SourceLocation { start: insert_pos, end: insert_pos },
+                    location: SourceLocation::new(insert_pos, insert_pos),
                     new_text: format!("{}{}\n}}\n\n", signature, body_text),
                 },
                 // Replace block with function call
@@ -247,7 +247,7 @@ mod tests {
     use super::*;
 
     fn loc(start: usize, end: usize) -> SourceLocation {
-        SourceLocation { start, end }
+        SourceLocation::new(start, end)
     }
 
     fn var(name: &str, start: usize) -> Node {

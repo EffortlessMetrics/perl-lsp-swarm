@@ -22,7 +22,7 @@ $left,      $center,  $right
             // Since we assert!(ast_opt.is_some()) above, this is technically unreachable
             // but we need to satisfy the compiler without an explicit unwrap call
             // which is denied by clippy policy.
-            Node::new(NodeKind::UnknownRest, SourceLocation { start: 0, end: 0 })
+            Node::new(NodeKind::UnknownRest, SourceLocation::new(0, 0))
         });
         if let NodeKind::Program { statements } = &ast.kind {
             let stmt = &statements[0];
@@ -56,7 +56,7 @@ $name, length($name)
             // Since we assert!(ast_opt.is_some()) above, this is technically unreachable
             // but we need to satisfy the compiler without an explicit unwrap call
             // which is denied by clippy policy.
-            Node::new(NodeKind::UnknownRest, SourceLocation { start: 0, end: 0 })
+            Node::new(NodeKind::UnknownRest, SourceLocation::new(0, 0))
         });
         if let NodeKind::Program { statements } = &ast.kind {
             let stmt = &statements[0];
@@ -87,7 +87,7 @@ $description
             // Since we assert!(ast_opt.is_some()) above, this is technically unreachable
             // but we need to satisfy the compiler without an explicit unwrap call
             // which is denied by clippy policy.
-            Node::new(NodeKind::UnknownRest, SourceLocation { start: 0, end: 0 })
+            Node::new(NodeKind::UnknownRest, SourceLocation::new(0, 0))
         });
         if let NodeKind::Program { statements } = &ast.kind {
             let stmt = &statements[0];
@@ -118,7 +118,7 @@ $int,            $float
             // Since we assert!(ast_opt.is_some()) above, this is technically unreachable
             // but we need to satisfy the compiler without an explicit unwrap call
             // which is denied by clippy policy.
-            Node::new(NodeKind::UnknownRest, SourceLocation { start: 0, end: 0 })
+            Node::new(NodeKind::UnknownRest, SourceLocation::new(0, 0))
         });
         if let NodeKind::Program { statements } = &ast.kind {
             let stmt = &statements[0];
@@ -150,7 +150,7 @@ $num1, $str1, $str2, $str3, $num2, $str4
             // Since we assert!(ast_opt.is_some()) above, this is technically unreachable
             // but we need to satisfy the compiler without an explicit unwrap call
             // which is denied by clippy policy.
-            Node::new(NodeKind::UnknownRest, SourceLocation { start: 0, end: 0 })
+            Node::new(NodeKind::UnknownRest, SourceLocation::new(0, 0))
         });
         if let NodeKind::Program { statements } = &ast.kind {
             let stmt = &statements[0];
@@ -182,7 +182,7 @@ $ARGV,         $.,       $%
             // Since we assert!(ast_opt.is_some()) above, this is technically unreachable
             // but we need to satisfy the compiler without an explicit unwrap call
             // which is denied by clippy policy.
-            Node::new(NodeKind::UnknownRest, SourceLocation { start: 0, end: 0 })
+            Node::new(NodeKind::UnknownRest, SourceLocation::new(0, 0))
         });
         if let NodeKind::Program { statements } = &ast.kind {
             let stmt = &statements[0];
@@ -228,7 +228,7 @@ $title
             // Since we assert!(ast_opt.is_some()) above, this is technically unreachable
             // but we need to satisfy the compiler without an explicit unwrap call
             // which is denied by clippy policy.
-            Node::new(NodeKind::UnknownRest, SourceLocation { start: 0, end: 0 })
+            Node::new(NodeKind::UnknownRest, SourceLocation::new(0, 0))
         });
         if let NodeKind::Program { statements } = &ast.kind {
             assert_eq!(statements.len(), 2, "Expected 2 format declarations");
@@ -265,7 +265,7 @@ my $y = 42;
             // Since we assert!(ast_opt.is_some()) above, this is technically unreachable
             // but we need to satisfy the compiler without an explicit unwrap call
             // which is denied by clippy policy.
-            Node::new(NodeKind::UnknownRest, SourceLocation { start: 0, end: 0 })
+            Node::new(NodeKind::UnknownRest, SourceLocation::new(0, 0))
         });
         if let NodeKind::Program { statements } = &ast.kind {
             assert_eq!(statements.len(), 2, "Expected format + variable declaration");
@@ -301,7 +301,7 @@ $left,      $center,  $right
             // Since we assert!(ast_opt.is_some()) above, this is technically unreachable
             // but we need to satisfy the compiler without an explicit unwrap call
             // which is denied by clippy policy.
-            Node::new(NodeKind::UnknownRest, SourceLocation { start: 0, end: 0 })
+            Node::new(NodeKind::UnknownRest, SourceLocation::new(0, 0))
         });
         if let NodeKind::Program { statements } = &ast.kind {
             assert_eq!(statements.len(), 2);
@@ -338,7 +338,7 @@ scalar(localtime), $^T
             // Since we assert!(ast_opt.is_some()) above, this is technically unreachable
             // but we need to satisfy the compiler without an explicit unwrap call
             // which is denied by clippy policy.
-            Node::new(NodeKind::UnknownRest, SourceLocation { start: 0, end: 0 })
+            Node::new(NodeKind::UnknownRest, SourceLocation::new(0, 0))
         });
         if let NodeKind::Program { statements } = &ast.kind {
             let stmt = &statements[0];
@@ -365,7 +365,7 @@ scalar(localtime), $^T
             // Since we assert!(ast_opt.is_some()) above, this is technically unreachable
             // but we need to satisfy the compiler without an explicit unwrap call
             // which is denied by clippy policy.
-            Node::new(NodeKind::UnknownRest, SourceLocation { start: 0, end: 0 })
+            Node::new(NodeKind::UnknownRest, SourceLocation::new(0, 0))
         });
         if let NodeKind::Program { statements } = &ast.kind {
             let stmt = &statements[0];

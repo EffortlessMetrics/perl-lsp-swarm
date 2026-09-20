@@ -11,13 +11,30 @@ use perl_semantic_analyzer::symbol::SymbolKind;
 
 use super::types::{RenameOptions, TextEdit};
 
-/// Adjust location to exclude sigil
+/// Adjust location to exclude sigil.
+///
+/// A zero-width (synthetic, e.g. implicit `$_`) location has no sigil to
+/// skip and is returned unchanged: widening it by the sigil length would
+/// fabricate an edit over source text the symbol never covered (with
+/// order-correcting construction, `[s, s]` would become `[s, s+1]` and
+/// rewrite e.g. the `f` in `for`). Callers skip empty spans outright.
 pub fn adjust_location_for_sigil(mut location: SourceLocation, kind: SymbolKind) -> SourceLocation {
+    if location.start() == location.end() {
+        return location;
+    }
     if let Some(sigil) = kind.sigil() {
         // Skip the sigil character
-        location.start += sigil.len();
+        location = SourceLocation::new(location.start() + sigil.len(), location.end());
     }
     location
+}
+
+/// Whether a symbol/reference span can carry a rename edit. Synthetic
+/// zero-width spans (e.g. implicit `$_`) cover no source text, so they are
+/// skipped at every rename collection site: adjusting them for sigils would
+/// fabricate an edit over text the symbol never covered.
+pub fn is_renamable_span(location: SourceLocation) -> bool {
+    location.start() != location.end()
 }
 
 /// Find occurrences in comments and strings, replacing `old_name` with `new_name`.
@@ -100,7 +117,7 @@ pub fn find_occurrences_in_text(
                 };
 
                 edits.push(TextEdit {
-                    location: SourceLocation { start, end: start + old_name.len() },
+                    location: SourceLocation::new(start, start + old_name.len()),
                     new_text: new_name.to_string(),
                 });
             }
@@ -119,8 +136,8 @@ pub fn apply_rename_edits(source: &str, edits: &[TextEdit]) -> String {
 
     // Apply edits in reverse order to maintain positions
     for edit in edits.iter().rev() {
-        let start = edit.location.start;
-        let end = edit.location.end;
+        let start = edit.location.start();
+        let end = edit.location.end();
 
         if start <= result.len() && end <= result.len() && start <= end {
             result.replace_range(start..end, &edit.new_text);
@@ -144,10 +161,22 @@ mod tests {
 
     #[test]
     fn adjust_location_for_sigil_skips_sigils_for_variables() -> Result<(), Box<dyn Error>> {
-        let location = SourceLocation { start: 10, end: 14 };
+        let location = SourceLocation::new(10, 14);
         let adjusted = adjust_location_for_sigil(location, SymbolKind::Variable(VarKind::Scalar));
-        assert_eq!(adjusted.start, 11);
-        assert_eq!(adjusted.end, 14);
+        assert_eq!(adjusted.start(), 11);
+        assert_eq!(adjusted.end(), 14);
+        Ok(())
+    }
+
+    #[test]
+    fn adjust_location_for_sigil_leaves_synthetic_zero_width_spans_untouched()
+    -> Result<(), Box<dyn Error>> {
+        let location = SourceLocation::new(7, 7);
+        let adjusted = adjust_location_for_sigil(location, SymbolKind::Variable(VarKind::Scalar));
+        assert_eq!(adjusted.start(), 7);
+        assert_eq!(adjusted.end(), 7);
+        assert!(!super::is_renamable_span(location));
+        assert!(super::is_renamable_span(SourceLocation::new(7, 9)));
         Ok(())
     }
 
@@ -219,14 +248,8 @@ mod tests {
     fn apply_rename_edits_applies_in_reverse_order() -> Result<(), Box<dyn Error>> {
         let source = "my $x = $x + 1;";
         let edits = vec![
-            TextEdit {
-                location: SourceLocation { start: 4, end: 5 },
-                new_text: "value".to_string(),
-            },
-            TextEdit {
-                location: SourceLocation { start: 9, end: 10 },
-                new_text: "value".to_string(),
-            },
+            TextEdit { location: SourceLocation::new(4, 5), new_text: "value".to_string() },
+            TextEdit { location: SourceLocation::new(9, 10), new_text: "value".to_string() },
         ];
 
         let renamed = apply_rename_edits(source, &edits);
@@ -239,25 +262,25 @@ mod tests {
 
     #[test]
     fn adjust_location_for_sigil_array() -> Result<(), Box<dyn Error>> {
-        let location = SourceLocation { start: 20, end: 30 };
+        let location = SourceLocation::new(20, 30);
         let adjusted = adjust_location_for_sigil(location, SymbolKind::Variable(VarKind::Array));
-        assert_eq!(adjusted.start, 21);
+        assert_eq!(adjusted.start(), 21);
         Ok(())
     }
 
     #[test]
     fn adjust_location_for_sigil_hash() -> Result<(), Box<dyn Error>> {
-        let location = SourceLocation { start: 5, end: 10 };
+        let location = SourceLocation::new(5, 10);
         let adjusted = adjust_location_for_sigil(location, SymbolKind::Variable(VarKind::Hash));
-        assert_eq!(adjusted.start, 6);
+        assert_eq!(adjusted.start(), 6);
         Ok(())
     }
 
     #[test]
     fn adjust_location_for_sigil_no_sigil() -> Result<(), Box<dyn Error>> {
-        let location = SourceLocation { start: 10, end: 20 };
+        let location = SourceLocation::new(10, 20);
         let adjusted = adjust_location_for_sigil(location, SymbolKind::Subroutine);
-        assert_eq!(adjusted.start, 10);
+        assert_eq!(adjusted.start(), 10);
         Ok(())
     }
 
@@ -322,10 +345,8 @@ mod tests {
 
     #[test]
     fn apply_rename_edits_empty_source_with_insert() -> Result<(), Box<dyn Error>> {
-        let edits = vec![TextEdit {
-            location: SourceLocation { start: 0, end: 0 },
-            new_text: "text".to_string(),
-        }];
+        let edits =
+            vec![TextEdit { location: SourceLocation::new(0, 0), new_text: "text".to_string() }];
         let result = apply_rename_edits("", &edits);
         assert_eq!(result, "text");
         Ok(())
@@ -333,10 +354,8 @@ mod tests {
 
     #[test]
     fn apply_rename_edits_entire_source_replace() -> Result<(), Box<dyn Error>> {
-        let edits = vec![TextEdit {
-            location: SourceLocation { start: 0, end: 3 },
-            new_text: "new".to_string(),
-        }];
+        let edits =
+            vec![TextEdit { location: SourceLocation::new(0, 3), new_text: "new".to_string() }];
         let result = apply_rename_edits("old", &edits);
         assert_eq!(result, "new");
         Ok(())
@@ -344,10 +363,8 @@ mod tests {
 
     #[test]
     fn apply_rename_edits_at_start_boundary() -> Result<(), Box<dyn Error>> {
-        let edits = vec![TextEdit {
-            location: SourceLocation { start: 0, end: 1 },
-            new_text: "X".to_string(),
-        }];
+        let edits =
+            vec![TextEdit { location: SourceLocation::new(0, 1), new_text: "X".to_string() }];
         let result = apply_rename_edits("abc", &edits);
         assert_eq!(result, "Xbc");
         Ok(())
@@ -355,10 +372,8 @@ mod tests {
 
     #[test]
     fn apply_rename_edits_at_end_boundary() -> Result<(), Box<dyn Error>> {
-        let edits = vec![TextEdit {
-            location: SourceLocation { start: 2, end: 3 },
-            new_text: "X".to_string(),
-        }];
+        let edits =
+            vec![TextEdit { location: SourceLocation::new(2, 3), new_text: "X".to_string() }];
         let result = apply_rename_edits("abc", &edits);
         assert_eq!(result, "abX");
         Ok(())
@@ -367,8 +382,8 @@ mod tests {
     #[test]
     fn apply_rename_edits_two_separated_edits() -> Result<(), Box<dyn Error>> {
         let edits = vec![
-            TextEdit { location: SourceLocation { start: 0, end: 1 }, new_text: "X".to_string() },
-            TextEdit { location: SourceLocation { start: 2, end: 3 }, new_text: "Y".to_string() },
+            TextEdit { location: SourceLocation::new(0, 1), new_text: "X".to_string() },
+            TextEdit { location: SourceLocation::new(2, 3), new_text: "Y".to_string() },
         ];
         let result = apply_rename_edits("abcd", &edits);
         assert_eq!(result, "XbYd");
@@ -377,10 +392,8 @@ mod tests {
 
     #[test]
     fn apply_rename_edits_expand_text() -> Result<(), Box<dyn Error>> {
-        let edits = vec![TextEdit {
-            location: SourceLocation { start: 0, end: 1 },
-            new_text: "hello".to_string(),
-        }];
+        let edits =
+            vec![TextEdit { location: SourceLocation::new(0, 1), new_text: "hello".to_string() }];
         let result = apply_rename_edits("x", &edits);
         assert_eq!(result, "hello");
         Ok(())
@@ -388,10 +401,8 @@ mod tests {
 
     #[test]
     fn apply_rename_edits_shrink_text() -> Result<(), Box<dyn Error>> {
-        let edits = vec![TextEdit {
-            location: SourceLocation { start: 0, end: 5 },
-            new_text: "hi".to_string(),
-        }];
+        let edits =
+            vec![TextEdit { location: SourceLocation::new(0, 5), new_text: "hi".to_string() }];
         let result = apply_rename_edits("hello", &edits);
         assert_eq!(result, "hi");
         Ok(())
@@ -399,10 +410,8 @@ mod tests {
 
     #[test]
     fn apply_rename_edits_middle_replacement() -> Result<(), Box<dyn Error>> {
-        let edits = vec![TextEdit {
-            location: SourceLocation { start: 2, end: 4 },
-            new_text: "XX".to_string(),
-        }];
+        let edits =
+            vec![TextEdit { location: SourceLocation::new(2, 4), new_text: "XX".to_string() }];
         let result = apply_rename_edits("abcde", &edits);
         assert_eq!(result, "abXXe");
         Ok(())

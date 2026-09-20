@@ -480,7 +480,7 @@ fn edge_case_index_duplicate_insertion_does_not_inflate_fuzzy_score() -> Result<
 // ─── surface: extract_symbol_decls edge cases ────────────────────────────────
 
 fn loc(start: usize, end: usize) -> SourceLocation {
-    SourceLocation { start, end }
+    SourceLocation::new(start, end)
 }
 
 #[test]

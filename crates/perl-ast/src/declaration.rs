@@ -228,12 +228,12 @@ impl DeclarationAttributeSyntax {
         if name.is_empty() {
             return Err(DeclarationAttributeSyntaxError::EmptyName);
         }
-        if name_range.end - name_range.start != name.len() {
+        if name_range.end() - name_range.start() != name.len() {
             return Err(DeclarationAttributeSyntaxError::InvalidAttributeGeometry);
         }
         validate_range(separator.range())?;
         if matches!(separator, DeclarationAttributeSeparator::Colon { .. })
-            && separator.range().end - separator.range().start != 1
+            && separator.range().end() - separator.range().start() != 1
         {
             return Err(DeclarationAttributeSyntaxError::InvalidAttributeGeometry);
         }
@@ -244,23 +244,24 @@ impl DeclarationAttributeSyntax {
         }
         if !contains(range, separator.range())
             || !contains(range, name_range)
-            || separator.range().end > name_range.start
+            || separator.range().end() > name_range.start()
         {
             return Err(DeclarationAttributeSyntaxError::RangeOutsideParent);
         }
 
         if let Some(argument) = &argument {
             validate_argument(argument, range, completeness)?;
-            if argument.range.start < name_range.end {
+            if argument.range.start() < name_range.end() {
                 return Err(DeclarationAttributeSyntaxError::RangeOutsideParent);
             }
             if completeness == DeclarationAttributeCompleteness::Exact
-                && (range.start != separator.range().start || range.end != argument.range.end)
+                && (range.start() != separator.range().start()
+                    || range.end() != argument.range.end())
             {
                 return Err(DeclarationAttributeSyntaxError::InvalidAttributeGeometry);
             }
         } else if completeness == DeclarationAttributeCompleteness::Exact
-            && (range.start != separator.range().start || range.end != name_range.end)
+            && (range.start() != separator.range().start() || range.end() != name_range.end())
         {
             return Err(DeclarationAttributeSyntaxError::InvalidAttributeGeometry);
         }
@@ -298,13 +299,13 @@ fn validate_argument(
         validate_range(closing)?;
         if opening.is_empty()
             || closing.is_empty()
-            || opening.end != opening.start + 1
-            || closing.end != closing.start + 1
-            || opening.end > closing.start
+            || opening.end() != opening.start() + 1
+            || closing.end() != closing.start() + 1
+            || opening.end() > closing.start()
             || !contains(argument.range, opening)
             || !contains(argument.range, closing)
-            || argument.body_range.start < opening.end
-            || argument.body_range.end > closing.start
+            || argument.body_range.start() < opening.end()
+            || argument.body_range.end() > closing.start()
         {
             return Err(DeclarationAttributeSyntaxError::InvalidDelimiters);
         }
@@ -318,10 +319,10 @@ fn validate_argument(
             };
             let opening = delimiters.opening();
             let closing = delimiters.closing();
-            if argument.range.start != opening.start
-                || argument.range.end != closing.end
-                || argument.body_range.start != opening.end
-                || argument.body_range.end != closing.start
+            if argument.range.start() != opening.start()
+                || argument.range.end() != closing.end()
+                || argument.body_range.start() != opening.end()
+                || argument.body_range.end() != closing.start()
                 || (argument.disposition == DeclarationAttributeArgumentDisposition::Empty
                     && !argument.body_range.is_empty())
                 || (argument.disposition == DeclarationAttributeArgumentDisposition::Exact
@@ -337,7 +338,7 @@ fn validate_argument(
 }
 
 fn validate_range(range: SourceLocation) -> Result<(), DeclarationAttributeSyntaxError> {
-    if range.start > range.end {
+    if range.start() > range.end() {
         Err(DeclarationAttributeSyntaxError::InvalidRange)
     } else {
         Ok(())
@@ -345,7 +346,7 @@ fn validate_range(range: SourceLocation) -> Result<(), DeclarationAttributeSynta
 }
 
 const fn contains(parent: SourceLocation, child: SourceLocation) -> bool {
-    parent.start <= child.start && child.end <= parent.end
+    parent.start() <= child.start() && child.end() <= parent.end()
 }
 
 #[cfg(test)]
@@ -353,7 +354,7 @@ mod tests {
     use super::*;
 
     fn span(start: usize, end: usize) -> SourceLocation {
-        SourceLocation { start, end }
+        SourceLocation::new(start, end)
     }
 
     fn exact_argument() -> DeclarationAttributeArgumentSyntax {
@@ -473,7 +474,7 @@ mod tests {
             } else {
                 DeclarationAttributeArgumentSyntax { disposition, ..exact_argument() }
             };
-            let attribute_range = span(0, argument.range.end);
+            let attribute_range = span(0, argument.range.end());
             assert!(
                 DeclarationAttributeSyntax::new(
                     DeclarationAttributeSeparator::Colon { range: span(0, 1) },
@@ -551,18 +552,10 @@ mod tests {
 
     #[test]
     fn rejects_invalid_range_and_delimiter_order() {
-        assert_eq!(
-            DeclarationAttributeSyntax::new(
-                DeclarationAttributeSeparator::Colon { range: span(4, 3) },
-                "a".into(),
-                span(1, 2),
-                None,
-                span(0, 2),
-                DeclarationAttributeCompleteness::Exact,
-            ),
-            Err(DeclarationAttributeSyntaxError::InvalidRange)
-        );
-
+        // A reversed span like (4, 3) is unrepresentable through public
+        // constructors since #8740: `ByteSpan` ordering is enforced at
+        // construction, so the former `InvalidRange` rejection for
+        // `range.start > range.end` is unreachable by construction.
         let argument = DeclarationAttributeArgumentSyntax {
             delimiters: Some(DeclarationAttributeDelimiter::Parentheses {
                 opening: span(10, 11),

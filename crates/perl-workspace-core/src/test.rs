@@ -70,7 +70,7 @@ pub fn extract_test_facts(
         return None;
     }
 
-    let end = u32::try_from(ast.location.end).unwrap_or(u32::MAX);
+    let end = u32::try_from(ast.location.end()).unwrap_or(u32::MAX);
     Some(TestFact {
         file_id: file_id.clone(),
         framework,

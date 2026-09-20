@@ -36,7 +36,7 @@ fn digest(seed: &[u8]) -> ContentDigest {
 }
 
 fn anchor(range: (usize, usize)) -> TestResult<OccurrenceAnchor> {
-    let span = ByteSpan { start: range.0, end: range.1 };
+    let span = ByteSpan::new(range.0, range.1);
     let location: SourceLocation = span;
     let pir_anchor = PirSourceAnchor::explicit(location, HirId::from_index(0));
     OccurrenceAnchor::from_pir_anchor(&pir_anchor)
@@ -552,8 +552,7 @@ fn occurrence_anchors_carry_exact_ranges_not_optional_presence() -> TestResult {
     // carries a concrete byte range — there is no representation for an
     // unanchored fact, so missing anchors can only be recorded as
     // ContributionLimitation::MissingAnchor, never as silent empty facts.
-    let pir_anchor =
-        PirSourceAnchor::explicit(SourceLocation { start: 12, end: 17 }, HirId::from_index(0));
+    let pir_anchor = PirSourceAnchor::explicit(SourceLocation::new(12, 17), HirId::from_index(0));
     assert_eq!(
         pir_anchor.kind,
         perl_parser_core::pir::PirAnchorKind::ExplicitSource,
@@ -874,8 +873,7 @@ fn occurrence_anchor_identity_traces_back_to_the_canonical_anchor() -> TestResul
     // The envelope anchor projection is mechanically derived from the
     // canonical #12191 PirSourceAnchor: kind, range, anchor id, and hir_item
     // provenance all travel with the fact (#12180 discussion_r3849868378).
-    let pir_anchor =
-        PirSourceAnchor::explicit(SourceLocation { start: 12, end: 17 }, HirId::from_index(3));
+    let pir_anchor = PirSourceAnchor::explicit(SourceLocation::new(12, 17), HirId::from_index(3));
     let snapshot =
         OccurrenceAnchor::from_pir_anchor(&pir_anchor).ok_or("explicit anchors must snapshot")?;
     assert_eq!(snapshot.anchor_kind, PirAnchorKind::ExplicitSource);

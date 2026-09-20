@@ -415,8 +415,8 @@ fn collect_is_args(node: &Node, content: &str, output: &mut Vec<(String, String)
         && name == "is"
         && args.len() >= 2
     {
-        let got = source_span(content, args[0].location.start, args[0].location.end);
-        let expected = source_span(content, args[1].location.start, args[1].location.end);
+        let got = source_span(content, args[0].location.start(), args[0].location.end());
+        let expected = source_span(content, args[1].location.start(), args[1].location.end());
         if let (Some(got), Some(expected)) = (got, expected) {
             output.push((got.trim().to_string(), expected.trim().to_string()));
         }

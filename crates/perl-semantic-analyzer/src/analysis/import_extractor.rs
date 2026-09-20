@@ -136,7 +136,7 @@ impl ImportExtractor {
             file_id: Some(file_id),
             anchor_id: Some(anchor_id),
             scope_id: None,
-            span_start_byte: Some(node.location.start.min(u32::MAX as usize) as u32),
+            span_start_byte: Some(node.location.start().min(u32::MAX as usize) as u32),
         })
     }
 
@@ -214,7 +214,9 @@ impl ImportExtractor {
                     file_id: Some(file_id),
                     anchor_id: Some(anchor_id),
                     scope_id: None,
-                    span_start_byte: Some(require_node.location.start.min(u32::MAX as usize) as u32),
+                    span_start_byte: Some(
+                        require_node.location.start().min(u32::MAX as usize) as u32
+                    ),
                 });
                 consumed.insert(i);
                 consumed.insert(i + 1);
@@ -233,7 +235,9 @@ impl ImportExtractor {
                     file_id: Some(file_id),
                     anchor_id: Some(anchor_id),
                     scope_id: None,
-                    span_start_byte: Some(require_node.location.start.min(u32::MAX as usize) as u32),
+                    span_start_byte: Some(
+                        require_node.location.start().min(u32::MAX as usize) as u32
+                    ),
                 });
                 consumed.insert(i);
             }
@@ -297,7 +301,7 @@ impl ImportExtractor {
             file_id: Some(file_id),
             anchor_id: Some(anchor_id),
             scope_id: None,
-            span_start_byte: Some(node.location.start.min(u32::MAX as usize) as u32),
+            span_start_byte: Some(node.location.start().min(u32::MAX as usize) as u32),
         }
     }
 
@@ -460,7 +464,7 @@ impl ImportExtractor {
             file_id: Some(file_id),
             anchor_id: Some(anchor_id),
             scope_id: None,
-            span_start_byte: Some(node.location.start.min(u32::MAX as usize) as u32),
+            span_start_byte: Some(node.location.start().min(u32::MAX as usize) as u32),
         })
     }
 
@@ -473,7 +477,7 @@ impl ImportExtractor {
             // heuristic: `use Module;` occupies `"use " + module + ";"` bytes,
             // while `use Module ()` is longer due to the parentheses.
             let bare_len = "use ".len() + module.len() + 1; // +1 for ';'
-            let span_len = node.location.end.saturating_sub(node.location.start);
+            let span_len = node.location.end().saturating_sub(node.location.start());
             if span_len > bare_len {
                 // The source text is longer than a bare `use Module;`, so there
                 // were likely empty parentheses.
@@ -661,7 +665,7 @@ impl ImportExtractor {
     fn anchor_from_node(node: &Node) -> AnchorId {
         // Use the start byte offset as a deterministic anchor ID.
         // This is unique per use-statement within a file.
-        AnchorId(node.location.start as u64)
+        AnchorId(node.location.start() as u64)
     }
 
     /// Check whether a module string is a version pragma (e.g. `5.036`, `v5.38`).

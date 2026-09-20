@@ -38,14 +38,14 @@ fn fresh_parse(source: &str) -> Result<Node, Box<dyn std::error::Error>> {
 }
 
 fn collect_ranges(node: &Node, out: &mut HashSet<(usize, usize)>) {
-    out.insert((node.location.start, node.location.end));
+    out.insert((node.location.start(), node.location.end()));
     node.for_each_child(|child| collect_ranges(child, out));
 }
 
 fn collect_error_found(node: &Node, out: &mut Vec<(usize, usize, Option<String>)>) {
     if let NodeKind::Error { found, .. } = &node.kind {
         let found_text = found.as_ref().map(|token| token.text.to_string());
-        out.push((node.location.start, node.location.end, found_text));
+        out.push((node.location.start(), node.location.end(), found_text));
     }
     node.for_each_child(|child| collect_error_found(child, out));
 }

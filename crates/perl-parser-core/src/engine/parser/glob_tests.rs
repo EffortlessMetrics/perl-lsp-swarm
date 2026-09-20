@@ -14,9 +14,8 @@ mod tests {
         let source = "<*.pl>;";
         let ast_opt = parse_code(source);
         assert!(ast_opt.is_some());
-        let ast = ast_opt.unwrap_or_else(|| {
-            Node::new(NodeKind::UnknownRest, SourceLocation { start: 0, end: 0 })
-        });
+        let ast =
+            ast_opt.unwrap_or_else(|| Node::new(NodeKind::UnknownRest, SourceLocation::new(0, 0)));
         if let NodeKind::Program { statements } = &ast.kind {
             let stmt = &statements[0];
             if let NodeKind::ExpressionStatement { expression } = &stmt.kind {
@@ -37,9 +36,8 @@ mod tests {
             let source = format!("<{}>;", p);
             let ast_opt = parse_code(&source);
             assert!(ast_opt.is_some());
-            let ast = ast_opt.unwrap_or_else(|| {
-                Node::new(NodeKind::UnknownRest, SourceLocation { start: 0, end: 0 })
-            });
+            let ast = ast_opt
+                .unwrap_or_else(|| Node::new(NodeKind::UnknownRest, SourceLocation::new(0, 0)));
             if let NodeKind::Program { statements } = &ast.kind {
                 let stmt = &statements[0];
                 if let NodeKind::ExpressionStatement { expression } = &stmt.kind
@@ -57,9 +55,8 @@ mod tests {
         let source = "glob('*.txt');";
         let ast_opt = parse_code(source);
         assert!(ast_opt.is_some());
-        let ast = ast_opt.unwrap_or_else(|| {
-            Node::new(NodeKind::UnknownRest, SourceLocation { start: 0, end: 0 })
-        });
+        let ast =
+            ast_opt.unwrap_or_else(|| Node::new(NodeKind::UnknownRest, SourceLocation::new(0, 0)));
         if let NodeKind::Program { statements } = &ast.kind {
             let stmt = &statements[0];
             if let NodeKind::ExpressionStatement { expression } = &stmt.kind
@@ -77,9 +74,8 @@ mod tests {
         let source = "<STDIN>;";
         let ast_opt = parse_code(source);
         assert!(ast_opt.is_some());
-        let ast = ast_opt.unwrap_or_else(|| {
-            Node::new(NodeKind::UnknownRest, SourceLocation { start: 0, end: 0 })
-        });
+        let ast =
+            ast_opt.unwrap_or_else(|| Node::new(NodeKind::UnknownRest, SourceLocation::new(0, 0)));
         if let NodeKind::Program { statements } = &ast.kind {
             let stmt = &statements[0];
             if let NodeKind::ExpressionStatement { expression } = &stmt.kind {

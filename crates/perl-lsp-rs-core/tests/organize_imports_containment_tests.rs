@@ -56,7 +56,7 @@ fn enhanced_provider_never_offers_organize_imports_with_executable_statement_bet
     for action in &actions {
         for edit in &action.edit.changes {
             let spans_middle =
-                edit.location.start <= middle_start && edit.location.end >= middle_end;
+                edit.location.start() <= middle_start && edit.location.end() >= middle_end;
             assert!(
                 !spans_middle,
                 "edit from {:?} spans executable statements between import-looking lines",

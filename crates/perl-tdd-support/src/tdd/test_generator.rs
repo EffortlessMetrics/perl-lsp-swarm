@@ -984,8 +984,8 @@ impl RefactoringSuggester {
     }
 
     fn count_lines(&self, node: &Node, source: &str) -> usize {
-        let start = node.location.start;
-        let end = node.location.end;
+        let start = node.location.start();
+        let end = node.location.end();
 
         let text = &source[start..end.min(source.len())];
         text.lines().count()
@@ -1146,10 +1146,10 @@ mod tests {
                                             name: "$a".to_string(),
                                             sigil: "$".to_string(),
                                         },
-                                        crate::ast::SourceLocation { start: 0, end: 0 },
+                                        crate::ast::SourceLocation::new(0, 0),
                                     )),
                                 },
-                                crate::ast::SourceLocation { start: 0, end: 0 },
+                                crate::ast::SourceLocation::new(0, 0),
                             ),
                             Node::new(
                                 NodeKind::MandatoryParameter {
@@ -1158,23 +1158,23 @@ mod tests {
                                             name: "$b".to_string(),
                                             sigil: "$".to_string(),
                                         },
-                                        crate::ast::SourceLocation { start: 0, end: 0 },
+                                        crate::ast::SourceLocation::new(0, 0),
                                     )),
                                 },
-                                crate::ast::SourceLocation { start: 0, end: 0 },
+                                crate::ast::SourceLocation::new(0, 0),
                             ),
                         ],
                     },
-                    crate::ast::SourceLocation { start: 0, end: 0 },
+                    crate::ast::SourceLocation::new(0, 0),
                 ))),
                 body: Box::new(Node::new(
                     NodeKind::Block { statements: vec![] },
-                    crate::ast::SourceLocation { start: 0, end: 0 },
+                    crate::ast::SourceLocation::new(0, 0),
                 )),
                 attributes: vec![],
                 prototype: None,
             },
-            crate::ast::SourceLocation { start: 0, end: 0 },
+            crate::ast::SourceLocation::new(0, 0),
         );
 
         let tests = generator.generate_tests(&ast, "sub add { }");
@@ -1191,7 +1191,7 @@ mod tests {
             params: Some(vec!["$left".to_string(), "$right".to_string()]),
             node: Node::new(
                 NodeKind::Block { statements: vec![] },
-                crate::ast::SourceLocation { start: 0, end: 0 },
+                crate::ast::SourceLocation::new(0, 0),
             ),
             is_private: false,
         };
@@ -1233,15 +1233,15 @@ mod tests {
                                                 name: format!("$param{}", i),
                                                 sigil: "$".to_string(),
                                             },
-                                            crate::ast::SourceLocation { start: 0, end: 0 },
+                                            crate::ast::SourceLocation::new(0, 0),
                                         )),
                                     },
-                                    crate::ast::SourceLocation { start: 0, end: 0 },
+                                    crate::ast::SourceLocation::new(0, 0),
                                 )
                             })
                             .collect(),
                     },
-                    crate::ast::SourceLocation { start: 0, end: 0 },
+                    crate::ast::SourceLocation::new(0, 0),
                 ))),
                 body: Box::new(Node::new(
                     NodeKind::Block {
@@ -1255,25 +1255,25 @@ mod tests {
                                             name: "$a".to_string(),
                                             sigil: "$".to_string(),
                                         },
-                                        crate::ast::SourceLocation { start: 0, end: 0 },
+                                        crate::ast::SourceLocation::new(0, 0),
                                     )),
                                     then_branch: Box::new(Node::new(
                                         NodeKind::Block { statements: vec![] },
-                                        crate::ast::SourceLocation { start: 0, end: 0 },
+                                        crate::ast::SourceLocation::new(0, 0),
                                     )),
                                     elsif_branches: vec![],
                                     else_branch: None,
                                 },
-                                crate::ast::SourceLocation { start: 0, end: 0 },
+                                crate::ast::SourceLocation::new(0, 0),
                             ),
                         ],
                     },
-                    crate::ast::SourceLocation { start: 0, end: 0 },
+                    crate::ast::SourceLocation::new(0, 0),
                 )),
                 attributes: vec![],
                 prototype: None,
             },
-            crate::ast::SourceLocation { start: 0, end: 0 },
+            crate::ast::SourceLocation::new(0, 0),
         );
 
         let suggestions = suggester.analyze(&ast, "sub complex_function { }");
@@ -1294,19 +1294,19 @@ mod tests {
                         keyword: None,
                         condition: Box::new(Node::new(
                             NodeKind::Variable { name: "$x".to_string(), sigil: "$".to_string() },
-                            crate::ast::SourceLocation { start: 0, end: 0 },
+                            crate::ast::SourceLocation::new(0, 0),
                         )),
                         then_branch: Box::new(Node::new(
                             NodeKind::Block { statements: vec![] },
-                            crate::ast::SourceLocation { start: 0, end: 0 },
+                            crate::ast::SourceLocation::new(0, 0),
                         )),
                         elsif_branches: vec![],
                         else_branch: None,
                     },
-                    crate::ast::SourceLocation { start: 0, end: 0 },
+                    crate::ast::SourceLocation::new(0, 0),
                 )],
             },
-            crate::ast::SourceLocation { start: 0, end: 0 },
+            crate::ast::SourceLocation::new(0, 0),
         );
 
         let complexity = suggester.calculate_cyclomatic_complexity(&node);

@@ -206,7 +206,7 @@ impl ShadowScan {
     /// empty but real definition that does shadow.
     fn installs_a_package_sub(declarator: Option<&str>, body: &Node) -> bool {
         let package_scoped = !matches!(declarator, Some("my") | Some("state"));
-        let is_forward_declaration = body.location.start == body.location.end;
+        let is_forward_declaration = body.location.start() == body.location.end();
         package_scoped && !is_forward_declaration
     }
 
@@ -448,7 +448,7 @@ impl ExtractorState {
 
     /// Derive an [`AnchorId`] from a node's byte-offset span.
     fn anchor_from_node(node: &Node) -> AnchorId {
-        AnchorId(node.location.start as u64)
+        AnchorId(node.location.start() as u64)
     }
 
     /// Check whether a node is the `@ISA` variable.

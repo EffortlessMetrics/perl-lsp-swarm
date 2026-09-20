@@ -311,7 +311,7 @@ pub fn shadow_references_with_pir(
         .iter()
         .filter(|f| f.name.name == target_name && f.source_anchor.is_anchored())
         .filter_map(|fact| {
-            lexical_fact_range(fact.source_anchor.range.as_ref().map(|r| (r.start, r.end)))
+            lexical_fact_range(fact.source_anchor.range.as_ref().map(|r| (r.start(), r.end())))
         })
         .collect();
 
@@ -516,7 +516,7 @@ fn evaluate_pir_reference_candidate(
             continue;
         }
         if let Some((start, end)) =
-            lexical_fact_range(fact.source_anchor.range.as_ref().map(|r| (r.start, r.end)))
+            lexical_fact_range(fact.source_anchor.range.as_ref().map(|r| (r.start(), r.end())))
         {
             ranges.push(uri_mapper(start, end));
         }

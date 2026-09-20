@@ -66,7 +66,7 @@ pub fn check_common_mistakes(
                 // alias and stays a distinct finding.
                 let literal_undef =
                     matches!(left.kind, NodeKind::Undef) || matches!(right.kind, NodeKind::Undef);
-                let range = (n.location.start, n.location.end);
+                let range = (n.location.start(), n.location.end());
                 let message = format!(
                     "Using '{}' with potentially undefined value -- use 'defined()' to check first",
                     op
@@ -148,12 +148,12 @@ fn check_bareword_filehandle(
     }
 
     diagnostics.push(Diagnostic {
-        range: (node.location.start, node.location.end),
+        range: (node.location.start(), node.location.end()),
         severity: DiagnosticSeverity::Warning,
         code: Some(DiagnosticCode::BarewordFilehandle.as_str().to_string()),
         message: "Use lexical filehandles instead of bareword filehandles".to_string(),
         related_information: vec![RelatedInformation {
-            location: (node.location.start, node.location.end),
+            location: (node.location.start(), node.location.end()),
             message:
                 "Bareword filehandles are global and can lead to accidental reuse across scopes"
                     .to_string(),
@@ -174,7 +174,7 @@ fn check_assignment_in_condition(condition: &Node, diagnostics: &mut Vec<Diagnos
     if !is_assignment {
         return;
     }
-    let range = (condition.location.start, condition.location.end);
+    let range = (condition.location.start(), condition.location.end());
     diagnostics.push(Diagnostic {
         range,
         severity: DiagnosticSeverity::Warning,
@@ -207,7 +207,7 @@ fn might_be_undef(node: &Node, symbol_table: &SymbolTable) -> bool {
             // sub/block is visible for the rest of that lexical scope, per
             // perlsub/perlsyn. Falling back to global scope 0 -- the prior
             // behavior -- would make any sub-local lexical look undefined.
-            let enclosing_scope = symbol_table.scope_at_offset(node.location.start);
+            let enclosing_scope = symbol_table.scope_at_offset(node.location.start());
             // If variable is not defined in scope, it might be undef
             symbol_table.find_symbol(name, enclosing_scope, SymbolKind::scalar()).is_empty()
         }

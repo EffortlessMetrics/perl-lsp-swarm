@@ -303,7 +303,7 @@ fn push_parse_checkpoint(
     node_id: usize,
 ) {
     checkpoints.push(ParseCheckpoint {
-        byte: node.location.start,
+        byte: node.location.start(),
         scope_snapshot: scope.clone(),
         node_id,
     });

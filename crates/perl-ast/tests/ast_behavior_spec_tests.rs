@@ -8,7 +8,7 @@ use perl_ast::{Node, NodeKind, SourceLocation};
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
 fn loc(start: usize, end: usize) -> SourceLocation {
-    SourceLocation { start, end }
+    SourceLocation::new(start, end)
 }
 
 fn number(value: &str) -> Node {

@@ -226,7 +226,7 @@ fn sigil_prefixed_identifiers(source: &str) -> Vec<(String, usize, usize)> {
         if let NodeKind::Identifier { name } = &node.kind
             && name.chars().next().is_some_and(|c| matches!(c, '$' | '@' | '%' | '&' | '*'))
         {
-            found.push((name.clone(), node.location.start, node.location.end));
+            found.push((name.clone(), node.location.start(), node.location.end()));
         }
         node.for_each_child(|child| walk(child, found));
     }
@@ -267,8 +267,8 @@ fn a_written_dynamic_constructor_receiver_is_preserved() -> TestResult {
         require(
             file.bareword_table.facts.iter().any(|fact| {
                 fact.name == name
-                    && fact.range.start == start
-                    && fact.range.end == end
+                    && fact.range.start() == start
+                    && fact.range.end() == end
                     && fact.role == BarewordRole::IndirectObject
             }),
             || {
@@ -325,7 +325,7 @@ fn the_sigil_condition_is_defence_in_depth_not_a_proven_discriminator() -> TestR
     fn zero_width_identifiers(source: &str) -> Vec<String> {
         fn walk(node: &Node, found: &mut Vec<String>) {
             if let NodeKind::Identifier { name } = &node.kind
-                && node.location.start == node.location.end
+                && node.location.start() == node.location.end()
             {
                 found.push(name.clone());
             }

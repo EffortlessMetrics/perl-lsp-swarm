@@ -22,7 +22,7 @@ type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 // ── helpers ────────────────────────────────────────────────────────────────────
 
 fn loc(start: usize, end: usize) -> SourceLocation {
-    SourceLocation { start, end }
+    SourceLocation::new(start, end)
 }
 
 // ══════════════════════════════════════════════════════════════════════════════

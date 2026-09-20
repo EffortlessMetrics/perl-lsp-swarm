@@ -6,7 +6,7 @@ use perl_ast::ast::{Node, NodeKind};
 use perl_pragma::{PragmaState, PragmaTracker};
 
 fn loc(start: usize, end: usize) -> SourceLocation {
-    SourceLocation { start, end }
+    SourceLocation::new(start, end)
 }
 
 fn require_node(version: &str) -> Node {

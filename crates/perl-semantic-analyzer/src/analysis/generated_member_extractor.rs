@@ -80,7 +80,7 @@ fn is_accessor_framework(framework: Framework) -> bool {
 
 fn collect_has_members(model: &ClassModel, package: &str, members: &mut Vec<GeneratedMember>) {
     for attr in &model.attributes {
-        let anchor_id = AnchorId(attr.location.start as u64);
+        let anchor_id = AnchorId(attr.location.start() as u64);
 
         // Primary accessor/getter/setter based on `is` option.
         match attr.is {
@@ -160,7 +160,7 @@ fn collect_class_accessor_members(
         members.push(make_member(
             &method.name,
             class_accessor_kind(accessor_mode),
-            AnchorId(method.location.start as u64),
+            AnchorId(method.location.start() as u64),
             package,
         ));
     }
@@ -186,7 +186,7 @@ fn collect_dbix_class_members(
         members.push(make_member(
             &method.name,
             kind,
-            AnchorId(method.location.start as u64),
+            AnchorId(method.location.start() as u64),
             package,
         ));
     }

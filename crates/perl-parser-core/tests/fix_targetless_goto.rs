@@ -77,8 +77,8 @@ fn bare_goto_targetless_node_spans_goto_keyword() {
     let ast = cpan_test_helpers::parse("goto;");
     let node = find_node(&ast, &|k| matches!(k, NodeKind::TargetlessGoto { .. }))
         .expect("`goto;` must emit a TargetlessGoto node");
-    assert_eq!(node.location.start, 0, "node must start at the `goto` keyword");
-    assert_eq!(node.location.end, 4, "node must span the four-byte `goto` keyword");
+    assert_eq!(node.location.start(), 0, "node must start at the `goto` keyword");
+    assert_eq!(node.location.end(), 4, "node must span the four-byte `goto` keyword");
 }
 
 #[test]

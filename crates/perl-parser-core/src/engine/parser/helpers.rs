@@ -72,10 +72,11 @@ impl<'a> Parser<'a> {
         // Identifier that starts with a sigil char (e.g. `$name`, `@items`)
         if next == TokenKind::Identifier
             && let Ok(t) = self.tokens.peek_second()
-                && let Some(ch) = t.text.chars().next()
-                    && matches!(ch, '$' | '@' | '%' | '*' | '&') {
-                        return true;
-                    }
+            && let Some(ch) = t.text.chars().next()
+            && matches!(ch, '$' | '@' | '%' | '*' | '&')
+        {
+            return true;
+        }
 
         false
     }
@@ -155,10 +156,7 @@ impl<'a> Parser<'a> {
     /// that aliases `&mut Parser`. Depth is unwound on success, parse error,
     /// recovery, cancellation, exhaustion (never entered), and early return.
     #[inline]
-    fn with_depth<T>(
-        &mut self,
-        f: impl FnOnce(&mut Self) -> ParseResult<T>,
-    ) -> ParseResult<T> {
+    fn with_depth<T>(&mut self, f: impl FnOnce(&mut Self) -> ParseResult<T>) -> ParseResult<T> {
         self.enter_production_depth()?;
         let result = f(self);
         self.exit_production_depth();
@@ -513,12 +511,12 @@ impl<'a> Parser<'a> {
         } else {
             self.parse_assignment()?
         };
-        let start = expr.location.start;
-        let end = rhs.location.end;
+        let start = expr.location.start();
+        let end = rhs.location.end();
 
         Ok(Node::new(
             NodeKind::Assignment { lhs: Box::new(expr), rhs: Box::new(rhs), op: op.to_string() },
-            SourceLocation { start, end },
+            SourceLocation::new(start, end),
         ))
     }
 
@@ -551,11 +549,12 @@ impl<'a> Parser<'a> {
         }
         // The lexer sometimes emits variables as Identifier("$x") tokens
         if self.peek_kind() == Some(TokenKind::Identifier)
-            && let Ok(tok) = self.peek_token() {
-                return tok.text.starts_with('$')
-                    || tok.text.starts_with('@')
-                    || tok.text.starts_with('%');
-            }
+            && let Ok(tok) = self.peek_token()
+        {
+            return tok.text.starts_with('$')
+                || tok.text.starts_with('@')
+                || tok.text.starts_with('%');
+        }
         false
     }
 
@@ -629,9 +628,9 @@ impl<'a> Parser<'a> {
             for chunk in elements.chunks(2) {
                 pairs.push((chunk[0].clone(), chunk[1].clone()));
             }
-            Node::new(NodeKind::HashLiteral { pairs }, SourceLocation { start, end })
+            Node::new(NodeKind::HashLiteral { pairs }, SourceLocation::new(start, end))
         } else {
-            Node::new(NodeKind::ArrayLiteral { elements }, SourceLocation { start, end })
+            Node::new(NodeKind::ArrayLiteral { elements }, SourceLocation::new(start, end))
         }
     }
 
@@ -662,7 +661,7 @@ impl<'a> Parser<'a> {
             return Ok(first);
         }
 
-        let start = first.location.start;
+        let start = first.location.start();
         let mut expressions = vec![first];
         let mut saw_fat_arrow = false;
 
@@ -699,10 +698,9 @@ impl<'a> Parser<'a> {
 
             if self.peek_kind() == Some(TokenKind::FatArrow) {
                 saw_fat_arrow = true;
-                if !was_comma
-                    && let Some(last) = expressions.last_mut() {
-                        Self::auto_quote_bareword_before_fat_comma(last);
-                    }
+                if !was_comma && let Some(last) = expressions.last_mut() {
+                    Self::auto_quote_bareword_before_fat_comma(last);
+                }
                 self.consume_token()?; // consume =>
             }
 
@@ -740,7 +738,7 @@ impl<'a> Parser<'a> {
             }
         }
 
-        let end = expressions.last().map(|expr| expr.location.end).unwrap_or(start);
+        let end = expressions.last().map(|expr| expr.location.end()).unwrap_or(start);
         Ok(Self::build_list_or_hash(expressions, saw_fat_arrow, start, end))
     }
 
@@ -932,7 +930,7 @@ impl<'a> Parser<'a> {
             location: op_pos,
         });
         let pos = op_pos;
-        Some(Node::new(NodeKind::MissingExpression, SourceLocation { start: pos, end: pos }))
+        Some(Node::new(NodeKind::MissingExpression, SourceLocation::new(pos, pos)))
     }
 
     /// Expect a closing delimiter, recovering gracefully if missing.
@@ -1111,7 +1109,7 @@ impl<'a> Parser<'a> {
 
         Node::new(
             NodeKind::Error { message, expected: vec![], found: found_token, partial: None },
-            SourceLocation { start: location, end },
+            SourceLocation::new(location, end),
         )
     }
 
@@ -1157,7 +1155,7 @@ impl<'a> Parser<'a> {
 
         Node::new(
             NodeKind::Error { message, expected, found, partial: None },
-            SourceLocation { start, end: start },
+            SourceLocation::new(start, start),
         )
     }
 
@@ -1346,8 +1344,7 @@ impl<'a> Parser<'a> {
                 if matches!(
                     next_text.as_ref(),
                     "__PACKAGE__" | "__FILE__" | "__LINE__" | "__SUB__" | "__CLASS__"
-                )
-                {
+                ) {
                     return true;
                 }
                 // Allow qualified names (e.g. `File::Spec`, `Scalar::Util`) as arguments.
@@ -1373,10 +1370,11 @@ impl<'a> Parser<'a> {
                 }
                 // Block-list functions (map/grep/sort/etc.) as argument: `uniq map { ... } @list`
                 if Self::is_block_list_func(&next_text)
-                    && let Ok(third) = self.tokens.peek_second() {
-                        return third.kind() == TokenKind::LeftBrace
-                            || third.kind() == TokenKind::LeftParen;
-                    }
+                    && let Ok(third) = self.tokens.peek_second()
+                {
+                    return third.kind() == TokenKind::LeftBrace
+                        || third.kind() == TokenKind::LeftParen;
+                }
                 // Builtin functions as arguments:
                 //
                 // Pattern A (sigil arg): `func values %hash`, `func keys %h`
@@ -1393,21 +1391,23 @@ impl<'a> Parser<'a> {
                 // the fallthrough to the general `(` check at the bottom of this
                 // branch, causing `croak ref($x) . "y"` to drop the argument.
                 if Self::is_builtin_function(&next_text)
-                    && let Ok(third) = self.tokens.peek_second() {
-                        let third_text: &str = &third.text;
-                        if third.kind() == TokenKind::LeftParen {
-                            // builtin(args) — the builtin is called with parens,
-                            // producing a value that is the outer function's argument.
-                            return true;
-                        }
-                        return Self::is_sigil_argument_start(third.kind(), third_text);
+                    && let Ok(third) = self.tokens.peek_second()
+                {
+                    let third_text: &str = &third.text;
+                    if third.kind() == TokenKind::LeftParen {
+                        // builtin(args) — the builtin is called with parens,
+                        // producing a value that is the outer function's argument.
+                        return true;
                     }
+                    return Self::is_sigil_argument_start(third.kind(), third_text);
+                }
                 if next_text.starts_with(|c: char| c.is_ascii_lowercase() || c == '_')
                     && self.tokens.peek_second().ok().is_some_and(|third| {
                         Self::is_sigil_argument_start(third.kind(), third.text.as_ref())
-                    }) {
-                        return true;
-                    }
+                    })
+                {
+                    return true;
+                }
                 // Check if the next-next token is `(` — that signals a function call
                 // or `=>` (fat arrow after bareword) — that signals an auto-quoted arg
                 self.tokens.peek_second().ok().is_some_and(|t| {

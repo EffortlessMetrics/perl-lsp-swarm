@@ -170,7 +170,7 @@ fn numeric_scalar_filehandle_reaches_ast_hir_and_pir_with_one_range() -> Result<
     let ast_range = first_indirect_call_range(&ast)
         .ok_or_else(|| "AST did not retain an IndirectCall node".to_string())?;
     let ast_text = source
-        .get(ast_range.start..ast_range.end)
+        .get(ast_range.start()..ast_range.end())
         .ok_or_else(|| format!("AST range is outside source: {ast_range:?}"))?;
     if !ast_text.starts_with("print $fh 0x10") {
         return Err(format!("AST range lost the numeric scalar-filehandle form: {ast_text:?}"));
@@ -251,7 +251,7 @@ fn numeric_scalar_filehandle_reaches_ast_hir_and_pir_with_one_range() -> Result<
         matches!(
             &node.operation,
             PirOperation::StashRead { symbol } if symbol.name == "fh"
-        ) && node.source_anchor.range == Some(SourceLocation { start: 6, end: 9 })
+        ) && node.source_anchor.range == Some(SourceLocation::new(6, 9))
     }) {
         return Err(format!(
             "canonical PIR did not preserve the $fh operand range: {:?}",

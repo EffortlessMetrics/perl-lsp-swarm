@@ -7,7 +7,7 @@ use perl_parser::{Node, NodeKind, SourceLocation};
 #[test]
 fn legacy_summary_uses_canonical_kind_name_for_struct_variant()
 -> Result<(), Box<dyn std::error::Error>> {
-    let location = SourceLocation { start: 0, end: 2 };
+    let location = SourceLocation::new(0, 2);
     let child = Node::new(NodeKind::Number { value: "42".to_string() }, location);
     let root = Node::new(NodeKind::Program { statements: vec![child] }, location);
 
@@ -28,7 +28,7 @@ fn legacy_summary_uses_canonical_kind_name_for_struct_variant()
 #[test]
 fn legacy_summary_uses_canonical_kind_name_for_unit_variant()
 -> Result<(), Box<dyn std::error::Error>> {
-    let root = Node::new(NodeKind::Diamond, SourceLocation { start: 4, end: 6 });
+    let root = Node::new(NodeKind::Diamond, SourceLocation::new(4, 6));
     let summary = legacy_parse_summary(&root);
 
     assert_eq!(summary.native_root_kind, "Diamond");
@@ -39,10 +39,7 @@ fn legacy_summary_uses_canonical_kind_name_for_unit_variant()
 #[test]
 fn legacy_summary_serializes_as_valid_compact_and_pretty_json()
 -> Result<(), Box<dyn std::error::Error>> {
-    let root = Node::new(
-        NodeKind::Program { statements: Vec::new() },
-        SourceLocation { start: 0, end: 0 },
-    );
+    let root = Node::new(NodeKind::Program { statements: Vec::new() }, SourceLocation::new(0, 0));
 
     let compact = render_output(&root, OutputFormat::LegacyJson, false)?;
     let pretty = render_output(&root, OutputFormat::LegacyJson, true)?;
@@ -59,7 +56,7 @@ fn legacy_summary_serializes_as_valid_compact_and_pretty_json()
 
 #[test]
 fn legacy_sexp_bytes_are_preserved() -> Result<(), Box<dyn std::error::Error>> {
-    let location = SourceLocation { start: 0, end: 1 };
+    let location = SourceLocation::new(0, 1);
     let root = Node::new(
         NodeKind::Program {
             statements: vec![Node::new(NodeKind::Number { value: "7".to_string() }, location)],

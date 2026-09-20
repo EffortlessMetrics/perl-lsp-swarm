@@ -948,8 +948,8 @@ impl RecoverySalvageProfile {
         ) {
             if let perl_ast::NodeKind::Error { message, .. } = &node.kind {
                 *error_node_count = error_node_count.saturating_add(1);
-                if node.location.start < *first_start {
-                    *first_start = node.location.start;
+                if node.location.start() < *first_start {
+                    *first_start = node.location.start();
                     *first_unrecovered_error_node = Some(message.clone());
                 }
             }
@@ -1540,10 +1540,7 @@ mod tests {
     fn test_parse_output_success() {
         use perl_ast::{Node, NodeKind, SourceLocation};
 
-        let ast = Node::new(
-            NodeKind::Program { statements: vec![] },
-            SourceLocation { start: 0, end: 0 },
-        );
+        let ast = Node::new(NodeKind::Program { statements: vec![] }, SourceLocation::new(0, 0));
         let output = ParseOutput::success(ast);
 
         assert!(output.is_ok());
@@ -1556,10 +1553,7 @@ mod tests {
     fn test_parse_output_with_errors() {
         use perl_ast::{Node, NodeKind, SourceLocation};
 
-        let ast = Node::new(
-            NodeKind::Program { statements: vec![] },
-            SourceLocation { start: 0, end: 0 },
-        );
+        let ast = Node::new(NodeKind::Program { statements: vec![] }, SourceLocation::new(0, 0));
         let errors = vec![ParseError::syntax("error 1", 0), ParseError::syntax("error 2", 5)];
         let output = ParseOutput::with_errors(ast, errors);
 
@@ -1572,10 +1566,7 @@ mod tests {
     fn test_parse_output_finish_preserves_tracker() {
         use perl_ast::{Node, NodeKind, SourceLocation};
 
-        let ast = Node::new(
-            NodeKind::Program { statements: vec![] },
-            SourceLocation { start: 0, end: 0 },
-        );
+        let ast = Node::new(NodeKind::Program { statements: vec![] }, SourceLocation::new(0, 0));
         let errors = vec![ParseError::syntax("error 1", 0)];
 
         // Create a tracker with specific values
@@ -1705,10 +1696,7 @@ mod tests {
     fn test_parse_output_recovered_count_with_errors() {
         use perl_ast::{Node, NodeKind, SourceLocation};
 
-        let ast = Node::new(
-            NodeKind::Program { statements: vec![] },
-            SourceLocation { start: 0, end: 0 },
-        );
+        let ast = Node::new(NodeKind::Program { statements: vec![] }, SourceLocation::new(0, 0));
         let errors = vec![
             ParseError::syntax("error 1", 0),
             ParseError::Recovered {
@@ -1732,10 +1720,7 @@ mod tests {
     fn test_parse_output_success_has_zero_recovered_count() {
         use perl_ast::{Node, NodeKind, SourceLocation};
 
-        let ast = Node::new(
-            NodeKind::Program { statements: vec![] },
-            SourceLocation { start: 0, end: 0 },
-        );
+        let ast = Node::new(NodeKind::Program { statements: vec![] }, SourceLocation::new(0, 0));
         let output = ParseOutput::success(ast);
         assert_eq!(output.recovered_count, 0);
     }
@@ -1744,10 +1729,7 @@ mod tests {
     fn test_parse_output_finish_recovered_count() {
         use perl_ast::{Node, NodeKind, SourceLocation};
 
-        let ast = Node::new(
-            NodeKind::Program { statements: vec![] },
-            SourceLocation { start: 0, end: 0 },
-        );
+        let ast = Node::new(NodeKind::Program { statements: vec![] }, SourceLocation::new(0, 0));
         let errors = vec![
             ParseError::syntax("error", 0),
             ParseError::Recovered {

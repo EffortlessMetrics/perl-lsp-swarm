@@ -283,7 +283,7 @@ mod tests {
         assert_eq!(action.kind, CodeActionKind::QuickFix);
         assert!(action.is_preferred);
         let edit = &action.edit.changes[0];
-        assert_eq!(&source[edit.location.start..edit.location.end], " MISSING");
+        assert_eq!(&source[edit.location.start()..edit.location.end()], " MISSING");
         assert_eq!(edit.new_text, "");
     }
 

@@ -18,20 +18,20 @@ fn shifted_identifier_reuse_is_preferred_for_small_prefix_insert() {
         NodeKind::Program {
             statements: vec![Node::new(
                 NodeKind::Identifier { name: "value".to_string() },
-                SourceLocation { start: 10, end: 15 },
+                SourceLocation::new(10, 15),
             )],
         },
-        SourceLocation { start: 0, end: 15 },
+        SourceLocation::new(0, 15),
     );
 
     let new_tree = Node::new(
         NodeKind::Program {
             statements: vec![Node::new(
                 NodeKind::Identifier { name: "value".to_string() },
-                SourceLocation { start: 14, end: 19 },
+                SourceLocation::new(14, 19),
             )],
         },
-        SourceLocation { start: 0, end: 19 },
+        SourceLocation::new(0, 19),
     );
 
     let mut edits = EditSet::new();
@@ -62,27 +62,21 @@ fn container_reuse_not_selected_for_statement_count_change() {
     let old_tree = Node::new(
         NodeKind::Program {
             statements: vec![
-                Node::new(
-                    NodeKind::Number { value: "1".to_string() },
-                    SourceLocation { start: 0, end: 1 },
-                ),
-                Node::new(
-                    NodeKind::Number { value: "2".to_string() },
-                    SourceLocation { start: 2, end: 3 },
-                ),
+                Node::new(NodeKind::Number { value: "1".to_string() }, SourceLocation::new(0, 1)),
+                Node::new(NodeKind::Number { value: "2".to_string() }, SourceLocation::new(2, 3)),
             ],
         },
-        SourceLocation { start: 0, end: 3 },
+        SourceLocation::new(0, 3),
     );
 
     let new_tree = Node::new(
         NodeKind::Program {
             statements: vec![Node::new(
                 NodeKind::Number { value: "1".to_string() },
-                SourceLocation { start: 0, end: 1 },
+                SourceLocation::new(0, 1),
             )],
         },
-        SourceLocation { start: 0, end: 1 },
+        SourceLocation::new(0, 1),
     );
 
     let mut edits = EditSet::new();
@@ -113,30 +107,30 @@ fn candidate_filtering_keeps_target_positions_unique() {
             statements: vec![
                 Node::new(
                     NodeKind::Number { value: "10".to_string() },
-                    SourceLocation { start: 10, end: 12 },
+                    SourceLocation::new(10, 12),
                 ),
                 Node::new(
                     NodeKind::Number { value: "10".to_string() },
-                    SourceLocation { start: 20, end: 22 },
+                    SourceLocation::new(20, 22),
                 ),
             ],
         },
-        SourceLocation { start: 0, end: 22 },
+        SourceLocation::new(0, 22),
     );
     let new_tree = Node::new(
         NodeKind::Program {
             statements: vec![
                 Node::new(
                     NodeKind::Number { value: "10".to_string() },
-                    SourceLocation { start: 100, end: 102 },
+                    SourceLocation::new(100, 102),
                 ),
                 Node::new(
                     NodeKind::Number { value: "10".to_string() },
-                    SourceLocation { start: 110, end: 112 },
+                    SourceLocation::new(110, 112),
                 ),
             ],
         },
-        SourceLocation { start: 0, end: 112 },
+        SourceLocation::new(0, 112),
     );
 
     let result =

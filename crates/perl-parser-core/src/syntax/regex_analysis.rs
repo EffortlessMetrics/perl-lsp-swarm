@@ -210,9 +210,9 @@ impl RegexAnalysisRecord {
     #[must_use]
     pub fn map_pattern_range(&self, range: RegexRange) -> Option<SourceLocation> {
         let pattern = self.pattern_range()?;
-        let start = pattern.start.checked_add(range.start)?;
-        let end = pattern.start.checked_add(range.end)?;
-        (start <= end && end <= pattern.end).then_some(SourceLocation { start, end })
+        let start = pattern.start().checked_add(range.start)?;
+        let end = pattern.start().checked_add(range.end)?;
+        (start <= end && end <= pattern.end()).then_some(SourceLocation::new(start, end))
     }
 
     /// Whether the operator can execute Perl or supply pattern text at runtime.
@@ -408,9 +408,9 @@ impl RegexAnalysisTable {
             .iter()
             .filter(in_family)
             .filter(|record| {
-                range.start <= record.full_range.start && record.full_range.end <= range.end
+                range.start() <= record.full_range.start() && record.full_range.end() <= range.end()
             })
-            .max_by_key(|record| record.full_range.start)
+            .max_by_key(|record| record.full_range.start())
     }
 
     /// Find the narrowest retained occurrence containing an original-source byte.
@@ -418,8 +418,10 @@ impl RegexAnalysisTable {
     pub fn find_at_offset(&self, offset: usize) -> Option<&RegexAnalysisRecord> {
         self.records
             .iter()
-            .filter(|record| record.full_range.start <= offset && offset < record.full_range.end)
-            .min_by_key(|record| record.full_range.end.saturating_sub(record.full_range.start))
+            .filter(|record| {
+                record.full_range.start() <= offset && offset < record.full_range.end()
+            })
+            .min_by_key(|record| record.full_range.end().saturating_sub(record.full_range.start()))
     }
 
     /// Number of new canonical body analyses executed while constructing this table.
@@ -453,9 +455,10 @@ impl RegexAnalysisTable {
 
         let id = RegexAnalysisId(self.records.len());
         let operator = map_operator(geometry.operator);
-        let Some(sequence) =
-            ModifierSequence::new(geometry.modifiers.text.clone(), geometry.modifiers.range.start)
-        else {
+        let Some(sequence) = ModifierSequence::new(
+            geometry.modifiers.text.clone(),
+            geometry.modifiers.range.start(),
+        ) else {
             let record = RegexAnalysisRecord {
                 id,
                 operator: Some(geometry.operator),
@@ -482,7 +485,7 @@ impl RegexAnalysisTable {
                 .analyze_with_modifiers(&geometry.pattern.text, modifier_analysis.effective);
             let controls = RegexAnalyzer::analyze_pattern_controls(
                 &geometry.pattern.text,
-                geometry.pattern.range.start,
+                geometry.pattern.range.start(),
                 modifier_analysis.effective,
                 profile,
             );
@@ -603,7 +606,7 @@ mod tests {
         let mut table = RegexAnalysisTable::for_source(source);
         let id = table
             .retain_unavailable(
-                SourceLocation { start: 8, end: 11 },
+                SourceLocation::new(8, 11),
                 RegexAnalysisAvailability::GeometryUnavailable,
                 profile(),
             )
@@ -630,13 +633,13 @@ mod tests {
     fn lookups_find_a_record_by_full_range_and_by_contained_offset() {
         let source = "my $x = /a/;";
         let mut table = RegexAnalysisTable::for_source(source);
-        let range = SourceLocation { start: 8, end: 11 };
+        let range = SourceLocation::new(8, 11);
         let id = table
             .retain_unavailable(range, RegexAnalysisAvailability::GeometryUnavailable, profile())
             .id;
 
         assert_eq!(table.find_by_full_range(range).map(|record| record.id), Some(id));
-        assert!(table.find_by_full_range(SourceLocation { start: 8, end: 12 }).is_none());
+        assert!(table.find_by_full_range(SourceLocation::new(8, 12)).is_none());
 
         // Offsets are half-open: the start byte is inside, the end byte is not.
         assert_eq!(table.find_at_offset(8).map(|record| record.id), Some(id));
@@ -664,7 +667,7 @@ mod tests {
     #[test]
     fn an_exact_anchor_resolves_a_record_retained_without_an_operator() {
         let source = "my $x = /a/;";
-        let range = SourceLocation { start: 8, end: 11 };
+        let range = SourceLocation::new(8, 11);
         let mut table = RegexAnalysisTable::for_source(source);
         let id = table
             .retain_unavailable(range, RegexAnalysisAvailability::GeometryUnavailable, profile())
@@ -695,10 +698,7 @@ mod tests {
         // limitation, not an accident.
         assert!(
             table
-                .find_enclosed_by(
-                    SourceLocation { start: 0, end: source.len() },
-                    RegexAnalysisFamily::Match
-                )
+                .find_enclosed_by(SourceLocation::new(0, source.len()), RegexAnalysisFamily::Match)
                 .is_none(),
             "an operator-less record must not be selected by containment"
         );
@@ -712,14 +712,14 @@ mod tests {
         let mut table = RegexAnalysisTable::for_source(source);
         let outer = table
             .retain_unavailable(
-                SourceLocation { start: 0, end: 10 },
+                SourceLocation::new(0, 10),
                 RegexAnalysisAvailability::GeometryUnavailable,
                 profile(),
             )
             .id;
         let inner = table
             .retain_unavailable(
-                SourceLocation { start: 3, end: 6 },
+                SourceLocation::new(3, 6),
                 RegexAnalysisAvailability::GeometryUnavailable,
                 profile(),
             )
@@ -735,14 +735,14 @@ mod tests {
         let mut table = RegexAnalysisTable::for_source(source);
         let first = table
             .retain_unavailable(
-                SourceLocation { start: 0, end: 2 },
+                SourceLocation::new(0, 2),
                 RegexAnalysisAvailability::GeometryUnavailable,
                 profile(),
             )
             .id;
         let second = table
             .retain_unavailable(
-                SourceLocation { start: 4, end: 6 },
+                SourceLocation::new(4, 6),
                 RegexAnalysisAvailability::GeometryUnavailable,
                 profile(),
             )
@@ -750,8 +750,8 @@ mod tests {
 
         assert_eq!(first.index(), 0);
         assert_eq!(second.index(), 1);
-        assert_eq!(table.record(first).map(|record| record.full_range.start), Some(0));
-        assert_eq!(table.record(second).map(|record| record.full_range.start), Some(4));
+        assert_eq!(table.record(first).map(|record| record.full_range.start()), Some(0));
+        assert_eq!(table.record(second).map(|record| record.full_range.start()), Some(4));
         // An identifier past the end resolves to nothing rather than panicking.
         assert!(table.record(RegexAnalysisId(9)).is_none());
     }

@@ -24,7 +24,7 @@ impl<'a> Parser<'a> {
             let end = s.previous_position();
 
             // Always return a block node for builtin functions
-            Ok(Node::new(NodeKind::Block { statements }, SourceLocation { start, end }))
+            Ok(Node::new(NodeKind::Block { statements }, SourceLocation::new(start, end)))
         })
     }
 
@@ -60,7 +60,7 @@ impl<'a> Parser<'a> {
             // Functions like sort/map/grep have special handling that creates blocks
             return Ok(Node::new(
                 NodeKind::HashLiteral { pairs: Vec::new() },
-                SourceLocation { start, end },
+                SourceLocation::new(start, end),
             ));
         }
 
@@ -104,11 +104,11 @@ impl<'a> Parser<'a> {
                     // that would swallow trailing `sub`/`my` declarations (#1352).
                     let marker = Node::new(
                         NodeKind::MissingExpression,
-                        SourceLocation { start, end },
+                        SourceLocation::new(start, end),
                     );
                     return Ok(Node::new(
                         NodeKind::Block { statements: vec![marker] },
-                        SourceLocation { start, end },
+                        SourceLocation::new(start, end),
                     ));
                 }
                 // If we can't parse an expression, parse as block statements
@@ -122,7 +122,7 @@ impl<'a> Parser<'a> {
 
                 return Ok(Node::new(
                     NodeKind::Block { statements },
-                    SourceLocation { start, end },
+                    SourceLocation::new(start, end),
                 ));
             }
         };
@@ -155,7 +155,7 @@ impl<'a> Parser<'a> {
 
                     return Ok(Node::new(
                         NodeKind::HashLiteral { pairs },
-                        SourceLocation { start, end },
+                        SourceLocation::new(start, end),
                     ));
                 }
 
@@ -170,7 +170,7 @@ impl<'a> Parser<'a> {
                     let expr_node = Node::new(other_kind, first_loc);
                     return Ok(Node::new(
                         NodeKind::Block { statements: vec![expr_node] },
-                        SourceLocation { start, end },
+                        SourceLocation::new(start, end),
                     ));
                 }
             }
@@ -205,10 +205,7 @@ impl<'a> Parser<'a> {
                     // Trailing comma - treat as single element hash with undef value
                     let undef = Node::new(
                         NodeKind::Identifier { name: "undef".to_string() },
-                        SourceLocation {
-                            start: self.current_position(),
-                            end: self.current_position(),
-                        },
+                        SourceLocation::new(self.current_position(), self.current_position(),),
                     );
                     pairs.push((first_expr, undef));
                 }
@@ -242,10 +239,7 @@ impl<'a> Parser<'a> {
                         // Odd number of elements - last one becomes undef value
                         let undef = Node::new(
                             NodeKind::Identifier { name: "undef".to_string() },
-                            SourceLocation {
-                                start: self.current_position(),
-                                end: self.current_position(),
-                            },
+                            SourceLocation::new(self.current_position(), self.current_position(),),
                         );
                         pairs.push((key, undef));
                         break;
@@ -257,10 +251,7 @@ impl<'a> Parser<'a> {
                     // Key without value at end - add undef
                     let undef = Node::new(
                         NodeKind::Identifier { name: "undef".to_string() },
-                        SourceLocation {
-                            start: self.current_position(),
-                            end: self.current_position(),
-                        },
+                        SourceLocation::new(self.current_position(), self.current_position(),),
                     );
                     pairs.push((key, undef));
                     break;
@@ -274,7 +265,7 @@ impl<'a> Parser<'a> {
             self.expect(TokenKind::RightBrace)?;
             let end = self.previous_position();
 
-            Ok(Node::new(NodeKind::HashLiteral { pairs }, SourceLocation { start, end }))
+            Ok(Node::new(NodeKind::HashLiteral { pairs }, SourceLocation::new(start, end)))
         } else {
             // Not a hash - parse as block
             if self.peek_kind() == Some(TokenKind::RightBrace) {
@@ -284,7 +275,7 @@ impl<'a> Parser<'a> {
 
                 return Ok(Node::new(
                     NodeKind::Block { statements: vec![first_expr] },
-                    SourceLocation { start, end },
+                    SourceLocation::new(start, end),
                 ));
             }
 
@@ -315,7 +306,7 @@ impl<'a> Parser<'a> {
                 let end = self.previous_position();
                 return Ok(Node::new(
                     NodeKind::Block { statements: vec![first_expr] },
-                    SourceLocation { start, end },
+                    SourceLocation::new(start, end),
                 ));
             }
 
@@ -334,7 +325,7 @@ impl<'a> Parser<'a> {
             self.expect(TokenKind::RightBrace)?;
             let end = self.previous_position();
 
-            Ok(Node::new(NodeKind::Block { statements }, SourceLocation { start, end }))
+            Ok(Node::new(NodeKind::Block { statements }, SourceLocation::new(start, end)))
         }
     }
 

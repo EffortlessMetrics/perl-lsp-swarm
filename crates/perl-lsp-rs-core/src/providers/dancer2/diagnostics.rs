@@ -154,8 +154,8 @@ fn collect_keyword_usages(node: &Node, names: &[&str], out: &mut Vec<(String, u3
         {
             out.push((
                 name.clone(),
-                u32::try_from(node.location.start).unwrap_or(0),
-                u32::try_from(node.location.end).unwrap_or(0),
+                u32::try_from(node.location.start()).unwrap_or(0),
+                u32::try_from(node.location.end()).unwrap_or(0),
             ));
         }
         _ => {}
@@ -178,7 +178,7 @@ fn collect_declared_sub_names(
     names: &mut std::collections::HashSet<(String, String)>,
 ) {
     if let NodeKind::Subroutine { name: Some(name), .. } = &node.kind {
-        names.insert((current_package_at(ast, node.location.start).to_string(), name.clone()));
+        names.insert((current_package_at(ast, node.location.start()).to_string(), name.clone()));
     }
     for child in node.children() {
         collect_declared_sub_names(ast, child, names);
