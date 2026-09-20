@@ -898,7 +898,15 @@ fn raw_string_open(bytes: &[u8], i: usize) -> Option<(usize, usize)> {
 /// positions this copy proves are code rather than scanning this copy.
 fn code_only(text: &str) -> String {
     let mask = code_mask(text);
-    text.char_indices().map(|(i, c)| if mask[i] || c == '\n' { c } else { ' ' }).collect()
+    text.char_indices()
+        .flat_map(|(i, c)| {
+            if mask[i] || c == '\n' {
+                std::iter::once(c).collect::<Vec<_>>()
+            } else {
+                std::iter::repeat_n(' ', c.len_utf8()).collect()
+            }
+        })
+        .collect()
 }
 
 /// Every feature name this file gates on.
@@ -2355,4 +2363,9 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
         assert_eq!(owners, Ok(vec![UNOWNED.to_string()]));
     }
+}
+#[test]
+fn gated_features_preserves_offsets_after_multibyte_comments() {
+    let text = "// é\nconst enabled: bool = cfg!(feature = \"simd\");";
+    assert_eq!(gated_features(text), BTreeSet::from(["simd".to_string()]));
 }
