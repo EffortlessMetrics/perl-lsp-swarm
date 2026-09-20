@@ -487,7 +487,7 @@ pub struct perl_dap::backend::peer_bridge::DapPeerBridge
 pub fn perl_dap::backend::peer_bridge::DapPeerBridge::dispatch(&mut self, request_seq: i64, command: &str, arguments: core::option::Option<serde_json::value::Value>) -> alloc::vec::Vec<perl_dap::debug_adapter::DapMessage>
 pub fn perl_dap::backend::peer_bridge::DapPeerBridge::new(backend: alloc::boxed::Box<dyn perl_dap::backend::DebugBackend>) -> Self
 pub fn perl_dap::backend::peer_bridge::DapPeerBridge::poll_events(&mut self) -> alloc::vec::Vec<perl_dap::debug_adapter::DapMessage>
-pub fn perl_dap::backend::peer_bridge::run_external_peer_session_stdio(bridge: perl_dap::backend::peer_bridge::DapPeerBridge, poll_interval: core::time::Duration) -> core::io::error::Result<()>
+pub fn perl_dap::backend::peer_bridge::run_external_peer_session_stdio(bridge: perl_dap::backend::peer_bridge::DapPeerBridge, poll_interval: core::time::Duration) -> std::io::Result<()>
 pub mod perl_dap::backend::peer_launch
 pub enum perl_dap::backend::peer_launch::ExternalDebuggerKind
 pub perl_dap::backend::peer_launch::ExternalDebuggerKind::Custom
@@ -528,7 +528,7 @@ pub fn perl_dap::backend::peer_launch::MirrorPeerBridge::poll_events(&mut self) 
 pub struct perl_dap::backend::peer_launch::PeerListenEndpoint
 pub perl_dap::backend::peer_launch::PeerListenEndpoint::addr: core::net::socket_addr::SocketAddr
 pub perl_dap::backend::peer_launch::PeerListenEndpoint::control: perl_dap::backend::capabilities::ControlMode
-pub fn perl_dap::backend::peer_launch::PeerListenEndpoint::bind(host: &str, port: u16, control: perl_dap::backend::capabilities::ControlMode) -> core::io::error::Result<(std::net::tcp::TcpListener, Self)>
+pub fn perl_dap::backend::peer_launch::PeerListenEndpoint::bind(host: &str, port: u16, control: perl_dap::backend::capabilities::ControlMode) -> std::io::Result<(std::net::tcp::TcpListener, Self)>
 pub fn perl_dap::backend::peer_launch::PeerListenEndpoint::env_vars(&self) -> alloc::vec::Vec<(alloc::string::String, alloc::string::String)>
 pub fn perl_dap::backend::peer_launch::PeerListenEndpoint::session_credential(&self) -> perl_dap::backend::external_peer::PeerSessionToken
 pub fn perl_dap::backend::peer_launch::PeerListenEndpoint::session_token(&self) -> alloc::string::String
@@ -540,8 +540,8 @@ pub const perl_dap::backend::peer_launch::ENV_PEER_ADDR: &str
 pub const perl_dap::backend::peer_launch::ENV_PEER_MODE: &str
 pub const perl_dap::backend::peer_launch::ENV_PEER_TOKEN: &str
 pub fn perl_dap::backend::peer_launch::control_mode_env_str(mode: perl_dap::backend::capabilities::ControlMode) -> &'static str
-pub fn perl_dap::backend::peer_launch::prepare_mirror_listen_session(config: &perl_dap::backend::peer_launch::ExternalPeerLaunchConfig) -> core::io::error::Result<(std::net::tcp::TcpListener, perl_dap::backend::peer_launch::PeerListenEndpoint, perl_dap::backend::peer_launch::MirrorPeerBridge)>
-pub fn perl_dap::backend::peer_launch::run_mirror_listen_session_stdio(peer_listener: std::net::tcp::TcpListener, bridge: perl_dap::backend::peer_launch::MirrorPeerBridge, handshake_timeout: core::time::Duration, poll_interval: core::time::Duration, expected_token: core::option::Option<perl_dap::backend::external_peer::PeerSessionToken>) -> core::io::error::Result<()>
+pub fn perl_dap::backend::peer_launch::prepare_mirror_listen_session(config: &perl_dap::backend::peer_launch::ExternalPeerLaunchConfig) -> std::io::Result<(std::net::tcp::TcpListener, perl_dap::backend::peer_launch::PeerListenEndpoint, perl_dap::backend::peer_launch::MirrorPeerBridge)>
+pub fn perl_dap::backend::peer_launch::run_mirror_listen_session_stdio(peer_listener: std::net::tcp::TcpListener, bridge: perl_dap::backend::peer_launch::MirrorPeerBridge, handshake_timeout: core::time::Duration, poll_interval: core::time::Duration, expected_token: core::option::Option<perl_dap::backend::external_peer::PeerSessionToken>) -> std::io::Result<()>
 pub fn perl_dap::backend::peer_launch::static_mirror_capabilities() -> serde_json::value::Value
 pub enum perl_dap::backend::BackendError
 pub perl_dap::backend::BackendError::Engine(alloc::string::String)
@@ -683,7 +683,7 @@ pub fn perl_dap::backend::peer_launch::MirrorPeerBridge::poll_events(&mut self) 
 pub struct perl_dap::backend::PeerListenEndpoint
 pub perl_dap::backend::PeerListenEndpoint::addr: core::net::socket_addr::SocketAddr
 pub perl_dap::backend::PeerListenEndpoint::control: perl_dap::backend::capabilities::ControlMode
-pub fn perl_dap::backend::peer_launch::PeerListenEndpoint::bind(host: &str, port: u16, control: perl_dap::backend::capabilities::ControlMode) -> core::io::error::Result<(std::net::tcp::TcpListener, Self)>
+pub fn perl_dap::backend::peer_launch::PeerListenEndpoint::bind(host: &str, port: u16, control: perl_dap::backend::capabilities::ControlMode) -> std::io::Result<(std::net::tcp::TcpListener, Self)>
 pub fn perl_dap::backend::peer_launch::PeerListenEndpoint::env_vars(&self) -> alloc::vec::Vec<(alloc::string::String, alloc::string::String)>
 pub fn perl_dap::backend::peer_launch::PeerListenEndpoint::session_credential(&self) -> perl_dap::backend::external_peer::PeerSessionToken
 pub fn perl_dap::backend::peer_launch::PeerListenEndpoint::session_token(&self) -> alloc::string::String
@@ -773,9 +773,9 @@ pub fn perl_dap::backend::native_perldb::NativePerlDbBackend::step_in(&mut self,
 pub fn perl_dap::backend::native_perldb::NativePerlDbBackend::step_out(&mut self, thread_id: perl_dap::model::ThreadId) -> perl_dap::backend::BackendResult<()>
 pub fn perl_dap::backend::native_perldb::NativePerlDbBackend::variables(&mut self, _variables_ref: perl_dap::model::VariablesRef) -> perl_dap::backend::BackendResult<alloc::vec::Vec<perl_dap::model::DebugVariable>>
 pub fn perl_dap::backend::intersect_dap_capabilities(catalog: &perl_dap::backend::capabilities::CatalogDapFlags, backend: &perl_dap::backend::capabilities::DebugBackendCapabilities) -> perl_dap::backend::capabilities::NegotiatedDapCapabilities
-pub fn perl_dap::backend::prepare_mirror_listen_session(config: &perl_dap::backend::peer_launch::ExternalPeerLaunchConfig) -> core::io::error::Result<(std::net::tcp::TcpListener, perl_dap::backend::peer_launch::PeerListenEndpoint, perl_dap::backend::peer_launch::MirrorPeerBridge)>
-pub fn perl_dap::backend::run_external_peer_session_stdio(bridge: perl_dap::backend::peer_bridge::DapPeerBridge, poll_interval: core::time::Duration) -> core::io::error::Result<()>
-pub fn perl_dap::backend::run_mirror_listen_session_stdio(peer_listener: std::net::tcp::TcpListener, bridge: perl_dap::backend::peer_launch::MirrorPeerBridge, handshake_timeout: core::time::Duration, poll_interval: core::time::Duration, expected_token: core::option::Option<perl_dap::backend::external_peer::PeerSessionToken>) -> core::io::error::Result<()>
+pub fn perl_dap::backend::prepare_mirror_listen_session(config: &perl_dap::backend::peer_launch::ExternalPeerLaunchConfig) -> std::io::Result<(std::net::tcp::TcpListener, perl_dap::backend::peer_launch::PeerListenEndpoint, perl_dap::backend::peer_launch::MirrorPeerBridge)>
+pub fn perl_dap::backend::run_external_peer_session_stdio(bridge: perl_dap::backend::peer_bridge::DapPeerBridge, poll_interval: core::time::Duration) -> std::io::Result<()>
+pub fn perl_dap::backend::run_mirror_listen_session_stdio(peer_listener: std::net::tcp::TcpListener, bridge: perl_dap::backend::peer_launch::MirrorPeerBridge, handshake_timeout: core::time::Duration, poll_interval: core::time::Duration, expected_token: core::option::Option<perl_dap::backend::external_peer::PeerSessionToken>) -> std::io::Result<()>
 pub fn perl_dap::backend::static_mirror_capabilities() -> serde_json::value::Value
 pub type perl_dap::backend::BackendResult<T> = core::result::Result<T, perl_dap::backend::BackendError>
 pub mod perl_dap::breakpoint
