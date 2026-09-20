@@ -16,7 +16,9 @@ Filtered runs (--crate) produce a partial denominator and MUST target a
 non-canonical --out-dir. The canonical docs/releases ledger is only published
 by a full ratchet-list run on a clean tracked tree, where every ratcheted
 crate reaches a terminal verdict (pass, fail/waived, or not_applicable backed
-by baseline absence). Any unresolved instrument error fails publication.
+by baseline absence). Any unresolved instrument error fails publication; the
+publication verdict is computed before any canonical write, so a run without
+a publishable verdict leaves the canonical ledger untouched.
 
 Source of truth for crate list: .ci/public-api-baselines/ratchet-crates.txt
 """
@@ -29,6 +31,7 @@ import re
 import subprocess
 import sys
 from dataclasses import dataclass, field
+from enum import Enum
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
@@ -44,15 +47,27 @@ TERMINAL_STATUSES = {"pass", "fail", "not_applicable"}
 
 
 def parse_ratchet_list(text: str) -> list[str]:
-    """Parse the ratchet crate list text into crate names."""
+    """Parse the ratchet crate list text into crate names.
+
+    The authority file promises that everything after a `#` is a comment, so
+    inline comments are stripped; duplicate crate names fail closed before any
+    instrument runs, so a mis-edited list can neither double-check nor
+    double-disposition a crate.
+    """
     crates: list[str] = []
+    seen: set[str] = set()
     for raw in text.splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#"):
+        line = raw.split("#", 1)[0].strip()
+        if not line:
             continue
+        if line in seen:
+            raise SystemExit(
+                f"duplicate crate {line!r} in ratchet list; each ratcheted "
+                "crate must be listed exactly once")
+        seen.add(line)
         crates.append(line)
     if not crates:
-        raise SystemExit(f"no crates parsed from ratchet list")
+        raise SystemExit("no crates parsed from ratchet list")
     return crates
 
 
@@ -91,12 +106,16 @@ class CrateResult:
 
     @property
     def status(self) -> str:
+        # Exit-code contract for cargo-semver-checks 0.47.0: `fail` only for
+        # exit 1 with reported breaks, `pass` only for exit 0 with none, and
+        # `error` for every other combination — including the invalid
+        # exit 0 + fail>0, which must never enter the ledger as a verdict.
         if self.not_applicable:
             return "not_applicable"
         if self.parse_error:
             return "error"
         if self.fail_count > 0:
-            return "fail"
+            return "fail" if self.exit_code == 1 else "error"
         if self.exit_code == 0:
             return "pass"
         return "error"
@@ -232,14 +251,35 @@ def crate_not_in_baseline(crate: str, rel_manifest: str, baseline_commit: str) -
     )
 
 
-def manifest_exists_at(rel_manifest: str, commit: str, runner=None) -> bool:
-    """Return True when <commit>:<rel_manifest> exists in git history."""
+class BaselineLookup(Enum):
+    """Typed outcome of a git-history existence probe.
+
+    ERROR means the git read itself failed; it must never be folded into
+    ABSENT, or a broken repository could silently waive a crate.
+    """
+
+    PRESENT = "present"
+    ABSENT = "absent"
+    ERROR = "error"
+
+
+def manifest_exists_at(rel_manifest: str, commit: str, runner=None) -> BaselineLookup:
+    """Classify whether <commit>:<rel_manifest> exists in git history.
+
+    Exit 1 from `git cat-file -e` is the tool's "object does not exist"
+    outcome (baseline absence); any other non-zero exit is a git read
+    failure, which is not a disposition.
+    """
     run = runner or subprocess.run
     proc = run(
         ["git", "cat-file", "-e", f"{commit}:{rel_manifest}"],
         cwd=REPO, capture_output=True,
     )
-    return proc.returncode == 0
+    if proc.returncode == 0:
+        return BaselineLookup.PRESENT
+    if proc.returncode == 1:
+        return BaselineLookup.ABSENT
+    return BaselineLookup.ERROR
 
 
 def workspace_manifest_map() -> dict[str, str]:
@@ -487,6 +527,34 @@ def publication_exit_code(results: list[CrateResult]) -> int:
     return 1
 
 
+def publication_gate(results: list[CrateResult], out_dir: Path) -> int:
+    """Compute the publication verdict before any canonical write.
+
+    Canonical ledger writes happen only for a publishable verdict (0): an
+    error-containing run — or a fully clean one, which regresses the
+    inventory record — must never overwrite the canonical ledger with a
+    non-publishable set. Draft --out-dir targets always proceed so failed
+    runs remain debuggable.
+    """
+    publication = publication_exit_code(results)
+    if publication != 0 and out_dir == DEFAULT_OUT.resolve():
+        raise SystemExit(
+            "refusing canonical publication: the run has no publishable verdict "
+            "(unresolved instrument error, or zero waived breaks against the "
+            "inventory record); inspect it via a non-canonical --out-dir draft")
+    return publication
+
+
+def display_path(path: Path) -> str:
+    """Render a path for diagnostics: repo-relative when inside the repo,
+    otherwise absolute — an --out-dir/--raw-dir outside the repository must
+    not crash the summary prints."""
+    try:
+        return path.resolve().relative_to(REPO).as_posix()
+    except ValueError:
+        return str(path)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out-dir", default=str(DEFAULT_OUT),
@@ -521,7 +589,12 @@ def main(argv: list[str] | None = None) -> int:
         if rel_manifest is None:
             raise SystemExit(f"crate {crate!r} is not a workspace package; "
                              "the ratchet list is stale")
-        if not manifest_exists_at(rel_manifest, baseline_commit):
+        lookup = manifest_exists_at(rel_manifest, baseline_commit)
+        if lookup is BaselineLookup.ERROR:
+            raise SystemExit(
+                f"git lookup for {rel_manifest!r} at {baseline_commit} failed; "
+                "a read failure must not be recorded as baseline absence")
+        if lookup is BaselineLookup.ABSENT:
             print(f"[{i}/{len(crates)}] {crate} ... not_applicable (baseline_absent)",
                   flush=True)
             results.append(crate_not_in_baseline(crate, rel_manifest, baseline_commit))
@@ -542,6 +615,8 @@ def main(argv: list[str] | None = None) -> int:
             "HEAD would not identify the analyzed source bytes; commit or stash-free "
             "restore first, or write a draft with --out-dir")
 
+    publication = publication_gate(results, out_dir)
+
     out_dir.mkdir(parents=True, exist_ok=True)
     head = head_sha()
     tree = head_tree()
@@ -556,16 +631,16 @@ def main(argv: list[str] | None = None) -> int:
 
     erring = [r for r in results if r.status == "error"]
     failing = sum(1 for r in results if r.status == "fail")
-    print(f"\nWrote {json_path.relative_to(REPO)} "
-          f"and {md_path.relative_to(REPO)}")
-    print(f"Per-crate raw output: {raw_dir.relative_to(REPO)}/")
+    print(f"\nWrote {display_path(json_path)} "
+          f"and {display_path(md_path)}")
+    print(f"Per-crate raw output: {display_path(raw_dir)}/")
     print(f"Head SHA at capture: {head} (tree {tree})")
     print(f"Baseline: {BASELINE_TAG} = {baseline_commit}; tool: {version}")
     print(f"{failing} crate(s) have major-level breaks against {BASELINE_TAG}.")
     if erring:
         print(f"FAIL: {len(erring)} ratcheted crate(s) lack a terminal verdict: "
               + ", ".join(r.name for r in erring))
-    return publication_exit_code(results)
+    return publication
 
 
 if __name__ == "__main__":

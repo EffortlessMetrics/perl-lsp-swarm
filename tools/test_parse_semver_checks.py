@@ -5,6 +5,12 @@ Falsifiers for the v0.18 waived-break ledger driver: unrecognized tool output
 must fail closed, filtered runs must never publish the canonical denominator,
 crates absent from the baseline must record a terminal not_applicable, and the
 publication exit code must fail on any unresolved instrument error.
+
+#15897 hardening falsifiers: the cargo-semver-checks 0.47.0 exit-code
+contract (fail only for exit 1 with breaks, pass only for exit 0 clean),
+the typed baseline lookup (a git read failure is never baseline absence),
+the pre-write canonical publication gate, inline ratchet-list comment
+grammar, and duplicate crate rejection.
 """
 
 from __future__ import annotations
@@ -109,6 +115,32 @@ class ResultFromRawTests(unittest.TestCase):
         self.assertTrue(result.raw_report_sha256)
 
 
+class StatusExitCodeContractTests(unittest.TestCase):
+    """cargo-semver-checks 0.47.0 exit-code contract (#15897)."""
+
+    def test_exit_zero_with_failures_is_error_not_fail(self):
+        result = psc.result_from_raw("perl-fake", 0, SAMPLE_OUTPUT)
+        self.assertEqual(result.status, "error")
+
+    def test_exit_one_with_failures_is_fail(self):
+        result = psc.result_from_raw("perl-fake", 1, SAMPLE_OUTPUT)
+        self.assertEqual(result.status, "fail")
+
+    def test_other_nonzero_exit_with_failures_is_error(self):
+        result = psc.result_from_raw("perl-fake", 2, SAMPLE_OUTPUT)
+        self.assertEqual(result.status, "error")
+
+    def test_exit_zero_without_failures_is_pass(self):
+        clean = "Checked [https://docs.rs/crate/x/1.0.0] 12 checks: 12 pass, 0 skip\n"
+        result = psc.result_from_raw("perl-fake", 0, clean)
+        self.assertEqual(result.status, "pass")
+
+    def test_exit_one_without_failures_is_error(self):
+        clean = "Checked [https://docs.rs/crate/x/1.0.0] 12 checks: 12 pass, 0 skip\n"
+        result = psc.result_from_raw("perl-fake", 1, clean)
+        self.assertEqual(result.status, "error")
+
+
 class RatchetListTests(unittest.TestCase):
     def test_parses_names_skipping_comments_and_blanks(self):
         text = "# header comment\n\nperl-lexer\n  perl-symbol  \n# tail\n"
@@ -117,6 +149,18 @@ class RatchetListTests(unittest.TestCase):
     def test_empty_list_fails(self):
         with self.assertRaises(SystemExit):
             psc.parse_ratchet_list("# only comments\n")
+
+    def test_inline_comment_is_stripped(self):
+        text = "perl-lexer # trailing comment\nperl-symbol\t# another\n"
+        self.assertEqual(psc.parse_ratchet_list(text), ["perl-lexer", "perl-symbol"])
+
+    def test_indented_comment_only_line_is_skipped(self):
+        text = "perl-lexer\n   # indented comment\n"
+        self.assertEqual(psc.parse_ratchet_list(text), ["perl-lexer"])
+
+    def test_duplicate_crate_fails_closed(self):
+        with self.assertRaises(SystemExit):
+            psc.parse_ratchet_list("perl-lexer\nperl-symbol\nperl-lexer\n")
 
 
 class FilteredRunGuardTests(unittest.TestCase):
@@ -139,8 +183,9 @@ class BaselineAbsenceTests(unittest.TestCase):
                 returncode = 1
             return P()
 
-        self.assertFalse(psc.manifest_exists_at("crates/perl-x/Cargo.toml",
-                                                BASELINE_COMMIT, runner=fake_runner))
+        self.assertIs(psc.manifest_exists_at("crates/perl-x/Cargo.toml",
+                                             BASELINE_COMMIT, runner=fake_runner),
+                      psc.BaselineLookup.ABSENT)
 
     def test_manifest_present_at_baseline(self):
         def fake_runner(cmd, **_kwargs):
@@ -148,8 +193,19 @@ class BaselineAbsenceTests(unittest.TestCase):
                 returncode = 0
             return P()
 
-        self.assertTrue(psc.manifest_exists_at("crates/perl-ast/Cargo.toml",
-                                               BASELINE_COMMIT, runner=fake_runner))
+        self.assertIs(psc.manifest_exists_at("crates/perl-ast/Cargo.toml",
+                                             BASELINE_COMMIT, runner=fake_runner),
+                      psc.BaselineLookup.PRESENT)
+
+    def test_git_read_failure_is_error_not_absent(self):
+        def fake_runner(cmd, **_kwargs):
+            class P:
+                returncode = 128
+            return P()
+
+        self.assertIs(psc.manifest_exists_at("crates/perl-x/Cargo.toml",
+                                             BASELINE_COMMIT, runner=fake_runner),
+                      psc.BaselineLookup.ERROR)
 
     def test_not_applicable_result_shape(self):
         result = psc.crate_not_in_baseline("perl-source-identity",
@@ -164,7 +220,7 @@ class RenderJsonTests(unittest.TestCase):
     def test_provenance_and_posix_ratchet_list(self):
         results = [
             make_result("perl-pass"),
-            make_result("perl-break", fail_count=2),
+            make_result("perl-break", fail_count=2, exit_code=1),
             make_result("perl-source-identity", not_applicable=True),
             make_result("perl-errored", parse_error="no summary", exit_code=1),
         ]
@@ -190,18 +246,55 @@ class RenderJsonTests(unittest.TestCase):
 class PublicationExitCodeTests(unittest.TestCase):
     def test_any_error_fails_even_with_waived_breaks(self):
         results = [
-            make_result("perl-break", fail_count=11),
+            make_result("perl-break", fail_count=11, exit_code=1),
             make_result("perl-lsp-rs-core", parse_error="no summary", exit_code=101),
         ]
         self.assertEqual(psc.publication_exit_code(results), 1)
 
     def test_all_terminal_with_breaks_is_zero(self):
         results = [
-            make_result("perl-break", fail_count=3),
+            make_result("perl-break", fail_count=3, exit_code=1),
             make_result("perl-pass"),
             make_result("perl-new", not_applicable=True),
         ]
         self.assertEqual(psc.publication_exit_code(results), 0)
+
+
+class PublicationGateTests(unittest.TestCase):
+    def test_canonical_write_blocked_when_run_has_errors(self):
+        results = [
+            make_result("perl-break", fail_count=3, exit_code=1),
+            make_result("perl-errored", parse_error="no summary", exit_code=1),
+        ]
+        with self.assertRaises(SystemExit):
+            psc.publication_gate(results, psc.DEFAULT_OUT.resolve())
+
+    def test_canonical_write_blocked_for_zero_break_verdict(self):
+        results = [make_result("perl-pass"),
+                   make_result("perl-new", not_applicable=True)]
+        with self.assertRaises(SystemExit):
+            psc.publication_gate(results, psc.DEFAULT_OUT.resolve())
+
+    def test_canonical_write_allowed_for_publishable_run(self):
+        results = [make_result("perl-break", fail_count=2, exit_code=1),
+                   make_result("perl-pass")]
+        self.assertEqual(psc.publication_gate(results, psc.DEFAULT_OUT.resolve()), 0)
+
+    def test_draft_out_dir_proceeds_on_failing_run(self):
+        draft = psc.REPO / "target" / "semver-ledger-draft"
+        results = [make_result("perl-errored", parse_error="no summary", exit_code=1)]
+        self.assertEqual(psc.publication_gate(results, draft), 1)
+
+
+class DisplayPathTests(unittest.TestCase):
+    def test_in_repo_path_is_repo_relative_posix(self):
+        self.assertEqual(psc.display_path(psc.DEFAULT_OUT), "docs/releases")
+
+    def test_out_of_repo_path_does_not_crash(self):
+        outside = Path(psc.REPO.anchor) / "outside-semver-ledger"
+        shown = psc.display_path(outside)
+        self.assertIn("outside-semver-ledger", shown)
+        self.assertTrue(Path(shown).is_absolute())
 
     def test_all_terminal_without_breaks_is_one(self):
         results = [make_result("perl-pass"), make_result("perl-new", not_applicable=True)]
