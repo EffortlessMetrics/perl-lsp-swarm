@@ -90,7 +90,6 @@ pub struct AdmissionConfig {
     /// base. Operators who genuinely use a non-`main` canonical branch
     /// (e.g., a `master` upstream) must add it here explicitly
     /// (#15083).
-    #[serde(default)]
     pub canonical_base_alternatives: Vec<String>,
 }
 
