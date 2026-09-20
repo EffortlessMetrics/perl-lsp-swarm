@@ -72,7 +72,15 @@ pub(super) fn read<T: DeserializeOwned>(
         bytes.extend_from_slice(part);
     }
     check_depth(&bytes)?;
-    serde_json::from_slice(&bytes).map_err(|error| SchemaError::Invalid(error.to_string()))
+    let mut deserializer = serde_json::Deserializer::from_slice(&bytes);
+    let mut ignored = false;
+    let value = serde_ignored::deserialize(&mut deserializer, |_| ignored = true)
+        .map_err(|error| SchemaError::Invalid(error.to_string()))?;
+    deserializer.end().map_err(|error| SchemaError::Invalid(error.to_string()))?;
+    if ignored {
+        return Err(SchemaError::Invalid("unknown nested wire field".into()));
+    }
+    Ok(value)
 }
 fn check_depth(bytes: &[u8]) -> Result<(), SchemaError> {
     let mut depth = 0usize;

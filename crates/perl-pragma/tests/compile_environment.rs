@@ -647,3 +647,267 @@ fn authority_roles_cannot_cross_facets_or_transition_destinations() -> TestResul
     }
     Ok(())
 }
+#[test]
+fn nested_unknown_wire_fields_rejected_across_shared_and_tagged_records() -> TestResult {
+    let mut draft = fixture()?;
+    draft.package = Some(SemanticSourceOrderIdentity::new(0, "package-context")?);
+    draft.warnings = exact(port(PortRole::WarningPolicy, &draft.binding))?;
+    let base = serde_json::to_value(&draft)?;
+    for pointer in [
+        "/binding/source",
+        "/binding/source/content_revision",
+        "/binding/semantic",
+        "/binding/semantic/profile",
+        "/scope",
+        "/scope/subject",
+        "/scope/anchor",
+        "/package",
+        "/strict_vars/origins/0/anchor",
+        "/warnings/value/subject",
+    ] {
+        let mut value = base.clone();
+        value
+            .pointer_mut(pointer)
+            .and_then(serde_json::Value::as_object_mut)
+            .ok_or("missing fixture object")?
+            .insert("future_field".into(), "unsupported".into());
+        require(
+            CompileEnvironmentState::read(serde_json::to_vec(&value)?.as_slice()).is_err(),
+            &format!("unknown nested state field accepted at {pointer}"),
+        )?;
+    }
+    for role in [PortRole::WarningPolicy, PortRole::LanguageProfile] {
+        let mut draft = transition()?;
+        let authority = exact(port(role, &draft.binding))?;
+        draft.delta = vec![if role == PortRole::WarningPolicy {
+            Delta::Warnings(authority)
+        } else {
+            Delta::Profile(authority)
+        }];
+        draft.affects = vec![FactClass::Warnings, FactClass::Profile];
+        let base = serde_json::to_value(vec![draft])?;
+        let variant = if role == PortRole::WarningPolicy { "warnings" } else { "profile" };
+        for pointer in [
+            "/0/order".to_owned(),
+            "/0/scope/anchor".to_owned(),
+            format!("/0/delta/0/{variant}/value/subject"),
+            format!("/0/delta/0/{variant}/value/subject/profile"),
+            format!("/0/delta/0/{variant}/origins/0/anchor"),
+        ] {
+            let mut value = base.clone();
+            value
+                .pointer_mut(&pointer)
+                .and_then(serde_json::Value::as_object_mut)
+                .ok_or("missing tagged fixture object")?
+                .insert("future_field".into(), true.into());
+            require(
+                TransitionBundle::read(serde_json::to_vec(&value)?.as_slice()).is_err(),
+                &format!("unknown tagged field accepted at {pointer}"),
+            )?;
+        }
+    }
+    Ok(())
+}
+fn forget<T>(facet: &mut Facet<T>) {
+    *facet = unavailable();
+}
+#[test]
+fn nonexact_facets_cannot_bypass_source_generation_correspondence() -> TestResult {
+    for generation in [
+        SourceGeneration::Unknown,
+        SourceGeneration::Known(String::new()),
+        SourceGeneration::Known(" ".into()),
+    ] {
+        let mut state = fixture()?;
+        state.binding.source.generation = generation.clone();
+        forget(&mut state.profile);
+        forget(&mut state.version);
+        forget(&mut state.requirements);
+        forget(&mut state.strict_vars);
+        forget(&mut state.strict_subs);
+        forget(&mut state.strict_refs);
+        forget(&mut state.warnings);
+        forget(&mut state.features);
+        forget(&mut state.builtins);
+        forget(&mut state.encoding);
+        forget(&mut state.locale);
+        require(
+            CompileEnvironmentState::read(serde_json::to_vec(&state)?.as_slice()).is_err(),
+            "wire nonexact state accepted unbound source generation",
+        )?;
+        require(
+            CompileEnvironmentState::admit(state).is_err(),
+            "nonexact state accepted unbound source generation",
+        )?;
+        let mut change = transition()?;
+        change.binding.source.generation = generation;
+        change.delta.clear();
+        require(
+            TransitionBundle::read(serde_json::to_vec(&vec![change.clone()])?.as_slice()).is_err(),
+            "wire nonexact transition accepted unbound source generation",
+        )?;
+        require(
+            CompileEnvironmentTransition::admit(change).is_err(),
+            "nonexact transition accepted unbound source generation",
+        )?;
+    }
+    Ok(())
+}
+#[test]
+fn boundary_impacts_must_be_in_transition_aggregate() -> TestResult {
+    let mut draft = transition()?;
+    draft.delta.clear();
+    draft.affects = vec![FactClass::Features];
+    draft.boundaries = vec![Boundary {
+        id: "warning-boundary".into(),
+        affects: vec![FactClass::Warnings],
+        authority: unavailable(),
+    }];
+    require(
+        TransitionBundle::read(serde_json::to_vec(&vec![draft.clone()])?.as_slice()).is_err(),
+        "wire boundary impact omitted from aggregate",
+    )?;
+    require(
+        CompileEnvironmentTransition::admit(draft.clone()).is_err(),
+        "boundary impact omitted from aggregate",
+    )?;
+    draft.affects.push(FactClass::Warnings);
+    CompileEnvironmentTransition::admit(draft)?;
+    Ok(())
+}
+#[test]
+fn source_order_is_numeric_tuple_not_context_digest_sorting() -> TestResult {
+    let mut first = transition()?;
+    first.order = SemanticSourceOrderIdentity::new(2, "z-context")?;
+    let mut next = first.clone();
+    next.id = "next".into();
+    next.order = SemanticSourceOrderIdentity::new(3, "a-context")?;
+    TransitionBundle::admit(vec![first.clone(), next.clone()])?;
+    next.order = SemanticSourceOrderIdentity::new(2, "other-context")?;
+    require(
+        TransitionBundle::admit(vec![first.clone(), next.clone()]).is_err(),
+        "same-offset ordinal tie admitted",
+    )?;
+    next.byte_anchor += 1;
+    next.order = SemanticSourceOrderIdentity::new(0, "later-source-context")?;
+    TransitionBundle::admit(vec![first, next])?;
+    Ok(())
+}
+#[test]
+fn wire_rejects_duplicate_fields_and_trailing_documents() -> TestResult {
+    let state = CompileEnvironmentState::admit(fixture()?)?;
+    let text = String::from_utf8(state.to_json()?)?;
+    let duplicate =
+        text.replacen("\"schema_version\":1", "\"schema_version\":1,\"schema_version\":1", 1);
+    require(
+        CompileEnvironmentState::read(duplicate.as_bytes()).is_err(),
+        "duplicate known field accepted",
+    )?;
+    require(
+        CompileEnvironmentState::read(format!("{text} {{}}").as_bytes()).is_err(),
+        "trailing document accepted",
+    )?;
+    require(
+        CompileEnvironmentState::read(format!("{text} \n\t").as_bytes())? == state,
+        "trailing whitespace rejected",
+    )
+}
+#[test]
+fn old_adjacent_delta_forms_reject_both_wire_orders() -> TestResult {
+    let mut accepted = Vec::new();
+    for role in [PortRole::WarningPolicy, PortRole::LanguageProfile] {
+        let mut draft = transition()?;
+        draft.delta.clear();
+        draft.affects = vec![FactClass::Warnings, FactClass::Profile];
+        let mut facet = serde_json::to_value(exact(port(role, &draft.binding))?)?;
+        facet
+            .pointer_mut("/value/subject")
+            .and_then(serde_json::Value::as_object_mut)
+            .ok_or("missing subject")?
+            .insert("future_field".into(), true.into());
+        let facet = serde_json::to_string(&facet)?;
+        let kind = if role == PortRole::WarningPolicy { "warnings" } else { "profile" };
+        let tag_first = format!("{{\"facet\":\"{kind}\",\"value\":{facet}}}");
+        let value_first = format!("{{\"value\":{facet},\"facet\":\"{kind}\"}}");
+        let bundle = serde_json::to_string(&vec![draft])?;
+        for (order, delta) in [("tag_first", tag_first), ("value_first", value_first)] {
+            let wire = bundle.replacen("\"delta\":[]", &format!("\"delta\":[{delta}]"), 1);
+            require(wire != bundle, "delta fixture replacement absent")?;
+            if TransitionBundle::read(wire.as_bytes()).is_ok() {
+                accepted.push(format!("{kind}:{order}"));
+            }
+        }
+    }
+    require(accepted.is_empty(), &format!("unknown tagged fields admitted: {accepted:?}"))
+}
+#[test]
+fn external_delta_rejects_nested_unknowns_without_rejecting_valid_payloads() -> TestResult {
+    for role in [PortRole::WarningPolicy, PortRole::LanguageProfile] {
+        let mut draft = transition()?;
+        let authority = exact(port(role, &draft.binding))?;
+        draft.delta = vec![if role == PortRole::WarningPolicy {
+            Delta::Warnings(authority)
+        } else {
+            Delta::Profile(authority)
+        }];
+        draft.affects = vec![FactClass::Warnings, FactClass::Profile];
+        let variant = if role == PortRole::WarningPolicy { "warnings" } else { "profile" };
+        let base = serde_json::to_value(vec![draft])?;
+        require(
+            base.pointer(&format!("/0/delta/0/{variant}")).is_some(),
+            "not external delta wire",
+        )?;
+        TransitionBundle::read(serde_json::to_vec(&base)?.as_slice())?;
+        for path in [
+            format!("/0/delta/0/{variant}/value/subject"),
+            format!("/0/delta/0/{variant}/value/subject/profile"),
+            format!("/0/delta/0/{variant}/origins/0/anchor"),
+        ] {
+            let mut value = base.clone();
+            value
+                .pointer_mut(&path)
+                .and_then(serde_json::Value::as_object_mut)
+                .ok_or("missing external payload")?
+                .insert("future_field".into(), true.into());
+            require(
+                TransitionBundle::read(serde_json::to_vec(&value)?.as_slice()).is_err(),
+                &format!("external nested unknown accepted: {path}"),
+            )?;
+        }
+    }
+    let mut draft = fixture()?;
+    draft.version = exact(VersionDeclaration::Declared("v5.44".into()))?;
+    let mut value = serde_json::to_value(draft)?;
+    value
+        .pointer_mut("/version/value")
+        .and_then(serde_json::Value::as_object_mut)
+        .ok_or("missing version")?
+        .insert("future_field".into(), true.into());
+    require(
+        CompileEnvironmentState::read(serde_json::to_vec(&value)?.as_slice()).is_err(),
+        "local version enum unknown field admitted",
+    )
+}
+#[test]
+fn clean_old_adjacent_delta_forms_are_unsupported_in_both_orders() -> TestResult {
+    for role in [PortRole::WarningPolicy, PortRole::LanguageProfile] {
+        let mut draft = transition()?;
+        draft.delta.clear();
+        draft.affects = vec![FactClass::Warnings, FactClass::Profile];
+        let facet = serde_json::to_string(&exact(port(role, &draft.binding))?)?;
+        let kind = if role == PortRole::WarningPolicy { "warnings" } else { "profile" };
+        let bundle = serde_json::to_string(&vec![draft])?;
+        for delta in [
+            format!("{{\"facet\":\"{kind}\",\"value\":{facet}}}"),
+            format!("{{\"value\":{facet},\"facet\":\"{kind}\"}}"),
+        ] {
+            let wire = bundle.replacen("\"delta\":[]", &format!("\"delta\":[{delta}]"), 1);
+            require(wire != bundle, "clean fixture replacement absent")?;
+            require(
+                TransitionBundle::read(wire.as_bytes()).is_err(),
+                "clean adjacent wire shape still supported",
+            )?;
+        }
+    }
+    Ok(())
+}

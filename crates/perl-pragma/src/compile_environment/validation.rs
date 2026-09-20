@@ -76,11 +76,14 @@ fn binding(value: &Binding) -> Result<(), SchemaError> {
     {
         return Err(invalid("revision/source identity mismatch"));
     }
-    if let Some(generation) = value.source.generation.as_label() {
-        name(generation)?;
-        if generation != value.semantic.source_generation() {
-            return Err(invalid("source generation mismatch"));
-        }
+    let generation = value
+        .source
+        .generation
+        .as_label()
+        .ok_or_else(|| invalid("source generation correspondence unavailable"))?;
+    name(generation)?;
+    if generation != value.semantic.source_generation() {
+        return Err(invalid("source generation mismatch"));
     }
     Ok(())
 }
@@ -334,6 +337,13 @@ pub(super) fn transition(value: &mut TransitionDraft) -> Result<(), SchemaError>
     context.port(&mut value.effect, PortRole::DirectiveEffect)?;
     context.origins(&mut value.origins)?;
     context.boundaries(&mut value.boundaries)?;
+    if value
+        .boundaries
+        .iter()
+        .any(|boundary| boundary.affects.iter().any(|class| !value.affects.contains(class)))
+    {
+        return Err(invalid("boundary missing affected class"));
+    }
     for delta in &mut value.delta {
         let class = match delta {
             Delta::StrictVars(facet) | Delta::StrictSubs(facet) | Delta::StrictRefs(facet) => {

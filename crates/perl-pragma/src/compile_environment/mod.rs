@@ -247,7 +247,7 @@ pub struct LocaleState {
 
 /// Explicit absence is distinct from an unavailable qualified version facet.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", content = "spelling", rename_all = "snake_case")]
+#[serde(tag = "kind", content = "spelling", rename_all = "snake_case", deny_unknown_fields)]
 pub enum VersionDeclaration {
     /// No source version declaration.
     Absent,
@@ -347,8 +347,12 @@ impl CompileEnvironmentState {
 }
 
 /// Typed delta; values remain qualified and no application semantics are implied.
+///
+/// The v1 wire uses one external variant key, e.g. `{"strict_vars": { ... }}`.
+/// This preserves ignored-field tracking through nested shared records regardless
+/// of payload key order. The unpublished adjacent `facet`/`value` draft is rejected.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "facet", content = "value", rename_all = "snake_case")]
+#[serde(rename_all = "snake_case")]
 pub enum Delta {
     /// Strict vars replacement, independently qualified.
     StrictVars(Facet<bool>),
@@ -451,6 +455,11 @@ impl CompileEnvironmentTransition {
 pub struct TransitionBundle(Vec<CompileEnvironmentTransition>);
 impl TransitionBundle {
     /// Validate source-order continuity without sorting transitions.
+    ///
+    /// The total order is `(byte_anchor, order.context_ordinal())` in the single
+    /// bound source. At one byte anchor, producers assign increasing ordinals
+    /// across contexts. Context digests identify contexts, never sort them;
+    /// different digests cannot disambiguate a tied numeric coordinate.
     pub fn admit(drafts: Vec<TransitionDraft>) -> Result<Self, SchemaError> {
         validation::count(drafts.len(), MAX_TRANSITIONS, "transitions")?;
         let mut transitions: Vec<CompileEnvironmentTransition> = Vec::new();

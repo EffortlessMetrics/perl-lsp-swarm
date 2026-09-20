@@ -45,7 +45,14 @@ Strict categories are independent; signatures cannot enable full strict.
 Source-file and semantic document-instance identities remain distinct. A binding
 explicitly declares a common accepted opaque source-generation cursor domain,
 while retaining the complete source, parser, compiler, and profile identities.
-Admission revalidates nested shared wire records through their constructors.
+Admission requires a nonempty common generation label even when every facet is
+non-exact; facet uncertainty cannot invent a binding. It revalidates nested shared
+wire records through their constructors and rejects ignored nested wire fields.
+Deltas use external variant keys (`{"strict_vars": {...}}`); the unpublished
+adjacent `facet`/`value` form is rejected because buffering could hide ignored fields.
+A transition's aggregate affected classes include every delta and boundary class.
+Bundle order is the strict numeric `(byte_anchor, context_ordinal)` tuple; context
+digests identify contexts but never break ties or impose lexicographic order.
 Canonical serialization sorts set collections, preserves transition order, and
 hashes domain-tagged bytes with the shared SHA-256 `ContentDigest` implementation.
 
