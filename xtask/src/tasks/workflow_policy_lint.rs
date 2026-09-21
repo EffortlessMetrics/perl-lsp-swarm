@@ -3,7 +3,7 @@ use color_eyre::eyre::{Context, Result, bail};
 use serde::Serialize;
 use serde_yaml_ng::{Mapping, Value};
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, HashSet};
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -193,14 +193,8 @@ fn lint_selected_subject(
             bail!("selected workflow-policy root has no .yml or .yaml workflows");
         }
         workflows.sort();
-        // Load the repository `justfile` once per scan so `just <recipe>`
-        // invocations inside workflow `run:` steps resolve to their recipes
-        // before the xtask-CLI wiring check fires. A missing `justfile` is
-        // not an error — it preserves the previous lint behavior for repos
-        // that do not use `just`.
-        let just_recipes = load_project_justfile(&root)?.unwrap_or_default();
         for path in workflows {
-            lint_workflow_file_with_just(&path, false, issues, &just_recipes)?;
+            lint_workflow_file(&path, false, issues)?;
             subject.workflow_file_count += 1;
         }
         if config.check_lane_whitelist {
@@ -301,19 +295,6 @@ fn run_with_default_root(
 }
 
 fn lint_workflow_file(path: &Path, is_fixture: bool, issues: &mut Vec<LintIssue>) -> Result<()> {
-    lint_workflow_file_with_just(path, is_fixture, issues, &NoJustRecipes)
-}
-
-/// Like [`lint_workflow_file`], but lets the caller supply a parsed `justfile`
-/// so that `just <recipe>` invocations inside `run:` steps can be expanded into
-/// the recipe body before the xtask-CLI check runs. A fixture without an
-/// associated justfile calls the simpler wrapper instead.
-fn lint_workflow_file_with_just(
-    path: &Path,
-    is_fixture: bool,
-    issues: &mut Vec<LintIssue>,
-    recipes: &dyn JustRecipeLookup,
-) -> Result<()> {
     let raw = fs::read_to_string(path)
         .with_context(|| format!("reading workflow file {}", path.display()))?;
     let workflow: Value = serde_yaml_ng::from_str(&raw)
@@ -427,6 +408,10 @@ fn lint_workflow_file_with_just(
         }
     }
 
+    for (job_name, job) in job_mappings(&workflow) {
+        lint_job_auth(&job_name, job, &workflow, &workflow_name, issues);
+    }
+
     if POLICY_WARN_UNPINNED_ACTIONS {
         for action in collect_unpinned_actions(&workflow) {
             issues.push(LintIssue {
@@ -438,48 +423,23 @@ fn lint_workflow_file_with_just(
         }
     }
 
-    match workflow_invokes_xtask_cli(&workflow, recipes) {
-        Ok(true) => {
-            for (trigger, paths) in triggers_with_paths_filters(&workflow) {
-                let missing = XTASK_CLI_WIRING_FILES
-                    .iter()
-                    .filter(|wiring| !paths_filter_covers(&paths, wiring))
-                    .copied()
-                    .collect::<Vec<_>>();
-                if missing.is_empty() {
-                    continue;
-                }
-                issues.push(LintIssue {
-                    level: "error",
-                    code: "XTASK_CLI_WIRING_PATHS",
-                    workflow: workflow_name.clone(),
-                    message: format!(
-                        "trigger '{trigger}' runs an xtask CLI subcommand but its paths filter omits {}; a change to the CLI wiring would skip this gate",
-                        missing.join(", ")
-                    ),
-                });
+    if workflow_invokes_xtask_cli(&workflow) {
+        for (trigger, paths) in triggers_with_paths_filters(&workflow) {
+            let missing = XTASK_CLI_WIRING_FILES
+                .iter()
+                .filter(|wiring| !paths_filter_covers(&paths, wiring))
+                .copied()
+                .collect::<Vec<_>>();
+            if missing.is_empty() {
+                continue;
             }
-        }
-        Ok(false) => {}
-        Err(JustResolutionError::MissingRecipe(recipe)) => {
             issues.push(LintIssue {
                 level: "error",
-                code: "JUST_RECIPE_UNRESOLVED",
+                code: "XTASK_CLI_WIRING_PATHS",
                 workflow: workflow_name.clone(),
                 message: format!(
-                    "run: invokes `just {recipe}` but no recipe of that name is defined in justfile; \
-                     a renamed or removed recipe would silently lose xtask-CLI wiring coverage"
-                ),
-            });
-        }
-        Err(JustResolutionError::RecursionDepthExceeded { recipe, depth }) => {
-            issues.push(LintIssue {
-                level: "error",
-                code: "JUST_RECIPE_CYCLIC",
-                workflow: workflow_name.clone(),
-                message: format!(
-                    "`just {recipe}` exceeds the {depth}-level recipe indirection bound; \
-                     a cyclic recipe would otherwise lock the workflow policy lint"
+                    "trigger '{trigger}' runs an xtask CLI subcommand but its paths filter omits {}; a change to the CLI wiring would skip this gate",
+                    missing.join(", ")
                 ),
             });
         }
@@ -508,306 +468,8 @@ const COMMAND_WRAPPERS: &[&str] = &["sudo", "env", "time", "exec", "nice", "comm
 ///
 /// Known limitation: an invocation reached indirectly, through a `just` recipe
 /// or another script, is not visible here. See #14293 for the residual claim.
-/// (Partially addressed for `just` recipes by [`command_invokes_xtask_cli_with_just`];
-/// scripts other than `just` remain un-tracked.)
 fn command_invokes_xtask_cli(script: &str) -> bool {
-    // Without a recipe table there is nothing to resolve through. Indirection
-    // is silently untracked for that callers — same residual as before #15509.
-    command_invokes_xtask_cli_with_just(script, &NoJustRecipes).unwrap_or(false)
-}
-
-/// Maximum `just` recipe expansion depth, including the initial recipe call.
-///
-/// `just` recipes routinely chain two or three levels (`ci-full` → `_timed`
-/// → underlying lint/test recipe). Eight is well above anything the repository
-/// actually uses, and a hard cap stops a cyclic recipe from locking the lint.
-const JUST_RESOLUTION_MAX_DEPTH: usize = 8;
-
-/// Map of `recipe name → body lines`, with each body line pre-stripped of the
-/// leading `@` echo-suppression marker and surrounding whitespace.
-type JustRecipes = BTreeMap<String, Vec<String>>;
-
-/// A parser-time marker that says "no `just` indirection can be resolved",
-/// without forcing every caller to thread an `Option` they will never use.
-struct NoJustRecipes;
-
-impl JustRecipeLookup for NoJustRecipes {
-    fn recipes(&self) -> &JustRecipes {
-        static EMPTY: JustRecipes = BTreeMap::new();
-        &EMPTY
-    }
-}
-
-/// Recipe lookup the resolver can read from.
-///
-/// `NoJustRecipes` and the real `justfile`-derived `JustRecipes` both implement
-/// this so the lint and the legacy single-argument wrapper share one path.
-trait JustRecipeLookup {
-    fn recipes(&self) -> &JustRecipes;
-}
-
-impl JustRecipeLookup for JustRecipes {
-    fn recipes(&self) -> &JustRecipes {
-        self
-    }
-}
-
-/// Outcome of failing to expand a `just <recipe>` call inside a `run:` script.
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum JustResolutionError {
-    /// The recipe is named but does not exist in the parsed `justfile`. A
-    /// silent pass here would let a typo'd recipe hide an xtask invocation;
-    /// the lint surfaces it as an unresolved-resolution finding instead.
-    MissingRecipe(String),
-    /// Recursion hit `JUST_RESOLUTION_MAX_DEPTH`. A cyclic recipe would
-    /// otherwise loop the lint; bound the depth so the lint terminates.
-    RecursionDepthExceeded { recipe: String, depth: usize },
-}
-
-impl std::fmt::Display for JustResolutionError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::MissingRecipe(recipe) => {
-                write!(formatter, "just recipe `{recipe}` is not defined in justfile")
-            }
-            Self::RecursionDepthExceeded { recipe, depth } => write!(
-                formatter,
-                "just recipe `{recipe}` exceeds the {depth}-level indirection bound"
-            ),
-        }
-    }
-}
-
-impl std::error::Error for JustResolutionError {}
-
-/// Whether a `run:` script invokes the default `xtask` binary's CLI, looking
-/// through `just <recipe>` indirection when a recipe table is supplied.
-///
-/// The recipe table is consulted for every segment whose first token is `just`
-/// (or a wrapper around `just`, after the existing assignment/wrapper skip).
-/// Resolution is bounded by [`JUST_RESOLUTION_MAX_DEPTH`] and returns a
-/// [`JustResolutionError`] when the named recipe is absent — both to keep the
-/// verdict falsifiable and so that a future recipe-table drift cannot quietly
-/// re-introduce the false-negative the gate exists to prevent.
-fn command_invokes_xtask_cli_with_just(
-    script: &str,
-    recipes: &dyn JustRecipeLookup,
-) -> Result<bool, JustResolutionError> {
-    for command in shell_commands(script) {
-        let expanded = expand_just_in_command(&command, recipes, 0)?;
-        for inner in expanded {
-            if command_tokens_invoke_xtask_cli(&inner) {
-                return Ok(true);
-            }
-        }
-    }
-    Ok(false)
-}
-
-/// Expand every `just <recipe>` invocation reachable from `command` into the
-/// recipe's body lines. Wrapper assignments (`RUST_LOG=…`) and command
-/// wrappers (`env`, `sudo`, …) are not followed: they do not change which
-/// command runs in command position. A `just` invocation that runs inside a
-/// body line is itself recursively expanded up to the depth bound.
-///
-/// The recursion is shallow on purpose — `just` recipe bodies are flat lists
-/// of shell commands. Recursion is only needed when one body line re-runs a
-/// `just` recipe, which happens for `_timed` and other dispatcher recipes.
-fn expand_just_in_command(
-    command: &[String],
-    recipes: &dyn JustRecipeLookup,
-    depth: usize,
-) -> Result<Vec<Vec<String>>, JustResolutionError> {
-    if depth > JUST_RESOLUTION_MAX_DEPTH {
-        if let Some(recipe) = just_recipe_invoked(command) {
-            return Err(JustResolutionError::RecursionDepthExceeded {
-                recipe,
-                depth: JUST_RESOLUTION_MAX_DEPTH,
-            });
-        }
-        return Ok(Vec::new());
-    }
-    let Some(recipe) = just_recipe_invoked(command) else {
-        return Ok(vec![command.to_vec()]);
-    };
-    let body = recipes
-        .recipes()
-        .get(&recipe)
-        .ok_or_else(|| JustResolutionError::MissingRecipe(recipe.clone()))?;
-    let mut expanded = Vec::new();
-    for body_line in body {
-        let tokens: Vec<String> = body_line.split_whitespace().map(str::to_string).collect();
-        if tokens.is_empty() {
-            continue;
-        }
-        if just_recipe_invoked(&tokens).is_some() {
-            for nested in expand_just_in_command(&tokens, recipes, depth + 1)? {
-                expanded.push(nested);
-            }
-        } else {
-            expanded.push(tokens);
-        }
-    }
-    Ok(expanded)
-}
-
-/// Return the recipe name invoked by a `just <recipe>` token sequence, if any.
-///
-/// Accepts a leading assignment (`RUST_LOG=debug just ci-fast`) and a single
-/// wrapper (`env`, `sudo`, `time`, `exec`, `nice`, `command`) because the
-/// existing `command_tokens_invoke_xtask_cli` recognises those as not changing
-/// what runs. The wrapper set is identical to [`COMMAND_WRAPPERS`] so the two
-/// paths agree on what counts as "the same `just"".
-fn just_recipe_invoked(tokens: &[String]) -> Option<String> {
-    let mut rest = tokens;
-    loop {
-        let Some(first) = rest.first().map(String::as_str) else {
-            return None;
-        };
-        if is_env_assignment(first) {
-            rest = &rest[1..];
-            continue;
-        }
-        if COMMAND_WRAPPERS.contains(&first) {
-            rest = &rest[1..];
-            while let Some(next) = rest.first().map(String::as_str) {
-                if next.starts_with('-') || is_env_assignment(next) {
-                    rest = &rest[1..];
-                } else {
-                    break;
-                }
-            }
-            continue;
-        }
-        break;
-    }
-    let (command, args) = rest.split_first()?;
-    if command != "just" {
-        return None;
-    }
-    // `just` always takes one of:
-    //   - a recipe name (`just ci-fast`)
-    //   - one of its flags (`just --list`, `just --evaluate`)
-    //   - `--justfile <path> <recipe>` to point at a different file
-    // A flag-only invocation has no recipe and is not an xtask claim by itself.
-    let recipe = args.first()?;
-    if recipe.starts_with('-') {
-        return None;
-    }
-    if recipe == "--justfile" {
-        // recipe sits after the path, i.e. `args[2]`
-        return args.get(2).cloned();
-    }
-    Some(recipe.clone())
-}
-
-/// Parse a `justfile` body into a recipe map.
-///
-/// Format (https://just.systems/man/en/), in summary:
-///
-/// - lines starting with `#` are comments;
-/// - top-level `name := value` / `name = value` lines are settings or
-///   exported variables, not recipes;
-/// - a recipe header is `name [params]: [deps]` — params and deps are not
-///   modeled here, only the recipe name;
-/// - the body is the run of indented lines after the header; each body line
-///   has its leading `@` echo-suppression marker removed, since `just`
-///   strips that before exec.
-///
-/// The parser is intentionally narrow: it accepts the shape the repository's
-/// own `justfile` uses, and returns an empty map for any line it cannot
-/// classify. The lint then runs `just <recipe>` against that map; a recipe
-/// the parser cannot see cannot be expanded, and the call site gets a typed
-/// `MissingRecipe` finding.
-fn parse_justfile(content: &str) -> JustRecipes {
-    let lines: Vec<&str> = content.lines().collect();
-    let mut recipes: JustRecipes = BTreeMap::new();
-    let mut index = 0;
-    while index < lines.len() {
-        let raw = lines[index];
-        let leading_ws =
-            raw.chars().take_while(|character| matches!(character, ' ' | '\t')).count();
-        let stripped = raw[leading_ws..].trim_start();
-        if leading_ws > 0 || stripped.is_empty() || stripped.starts_with('#') {
-            index += 1;
-            continue;
-        }
-        // A non-indented line is either an assignment (`cargo_safe := ...` /
-        // `name = value`) or a recipe header (`name:` / `name params:` /
-        // `name: dep1 dep2`). The discriminator is whether the next non-blank
-        // line is indented: recipes always have a body, assignments never do.
-        let Some(name) = recipe_header_name(stripped) else {
-            index += 1;
-            continue;
-        };
-        if !next_non_blank_is_indented(&lines, index) {
-            // Treat as a setting or export. Skip.
-            index += 1;
-            continue;
-        }
-        index += 1;
-        let mut body = Vec::new();
-        while index < lines.len() {
-            let inner = lines[index];
-            let inner_ws =
-                inner.chars().take_while(|character| matches!(character, ' ' | '\t')).count();
-            if inner_ws == 0 {
-                break;
-            }
-            let inner_stripped = inner[inner_ws..].trim_start();
-            if inner_stripped.is_empty() || inner_stripped.starts_with('#') {
-                index += 1;
-                continue;
-            }
-            // `just` itself strips the leading `@` (and `@-`) before exec, so
-            // removing it here keeps the existing token splitter honest.
-            let body_line = inner_stripped.strip_prefix('@').unwrap_or(inner_stripped);
-            body.push(body_line.to_string());
-            index += 1;
-        }
-        // A recipe with an empty body cannot be reached by any `run:` step,
-        // but record it so a misspelled recipe name produces a typed
-        // `MissingRecipe` rather than a silent miss.
-        recipes.insert(name.to_string(), body);
-    }
-    recipes
-}
-
-/// Extract the recipe name from a possible recipe header line.
-///
-/// `just` recipe headers are `name`, optionally followed by parameters and
-/// `:` (with optional deps). The name itself never contains whitespace or
-/// `:`. The trailing `:` is the strongest signal: assignments use `=` /
-/// `:=`, recipes use a single `:`. We accept only headers that have a `:`;
-/// assignments without `:` (e.g. `export RUST_LOG`) are not modeled.
-fn recipe_header_name(line: &str) -> Option<&str> {
-    let colon = line.find(':')?;
-    // A `:=` assignment is not a recipe header.
-    if line.as_bytes().get(colon + 1) == Some(&b'=') {
-        return None;
-    }
-    // Parameters follow the recipe name (`name param:`); only the first
-    // whitespace-separated word is the recipe identifier.
-    let name = line[..colon].trim().split_whitespace().next()?;
-    // A `[settings]` or `export` line would also contain `:`, but those
-    // names start with a non-identifier character; gate on a valid recipe
-    // identifier so we never confuse the two.
-    if !name
-        .chars()
-        .all(|character| character.is_ascii_alphanumeric() || character == '_' || character == '-')
-    {
-        return None;
-    }
-    Some(name)
-}
-
-/// Whether the next non-blank line after `lines[index]` is indented.
-fn next_non_blank_is_indented(lines: &[&str], index: usize) -> bool {
-    lines
-        .iter()
-        .skip(index + 1)
-        .find(|line| !line.trim().is_empty())
-        .is_some_and(|line| line.starts_with(' ') || line.starts_with('\t'))
+    shell_commands(script).iter().any(|command| command_tokens_invoke_xtask_cli(command))
 }
 
 /// Split a `run:` script into candidate commands.
@@ -1000,52 +662,18 @@ fn selects_another_target(args: &[String]) -> bool {
     false
 }
 
-/// Whether any step in any job of this workflow runs the `xtask` CLI, looking
-/// through `just <recipe>` indirection when a recipe table is supplied.
-///
-/// A missing `just` recipe name produces a [`JustResolutionError::MissingRecipe`]
-/// rather than a silent false-negative. The caller is expected to surface that
-/// as a lint issue, so a recipe rename in `justfile` cannot quietly make the
-/// gate lose visibility of a step.
-fn workflow_invokes_xtask_cli(
-    workflow: &Value,
-    recipes: &dyn JustRecipeLookup,
-) -> Result<bool, JustResolutionError> {
+/// Whether any step in any job of this workflow runs the `xtask` CLI.
+fn workflow_invokes_xtask_cli(workflow: &Value) -> bool {
     let Some(jobs) = workflow.get("jobs").and_then(Value::as_mapping) else {
-        return Ok(false);
+        return false;
     };
-    for job in jobs.values() {
-        let Some(steps) = job.get("steps").and_then(Value::as_sequence) else {
-            continue;
-        };
-        for step in steps {
-            if let Some(run) = step.get("run").and_then(Value::as_str)
-                && command_invokes_xtask_cli_with_just(run, recipes)?
-            {
-                return Ok(true);
-            }
-        }
-    }
-    Ok(false)
-}
-
-/// Load the `justfile` for a repository root, returning `Ok(None)` when the
-/// file is absent. The lint treats a missing `justfile` as "no `just` recipes
-/// to resolve through", which is the same verdict the gate had before #15509.
-fn load_project_justfile(root: &Path) -> Result<Option<JustRecipes>> {
-    // The `just` tool accepts both spellings; without the fallback a project
-    // using only `Justfile` would silently resolve zero recipes.
-    for name in ["justfile", "Justfile"] {
-        let path = root.join(name);
-        match fs::read_to_string(&path) {
-            Ok(content) => return Ok(Some(parse_justfile(&content))),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(error) => {
-                return Err(error).with_context(|| format!("reading {name} {}", path.display()));
-            }
-        }
-    }
-    Ok(None)
+    jobs.values().any(|job| {
+        job.get("steps").and_then(Value::as_sequence).is_some_and(|steps| {
+            steps.iter().any(|step| {
+                step.get("run").and_then(Value::as_str).is_some_and(command_invokes_xtask_cli)
+            })
+        })
+    })
 }
 
 /// Filter-pattern syntax GitHub defines differently from shell globbing.
@@ -1173,6 +801,589 @@ fn default_write_scopes(workflow: &Value) -> Vec<String> {
             .filter_map(|(scope, _)| scope.as_str().map(str::to_string))
             .collect(),
         _ => Vec::new(),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Ineffective workflow auth (#16263)
+//
+// Calibration for the UB-review miss class from PR #16243: a probe that read
+// `GH_TOKEN` no step ever exported (auth silently empty) against a job whose
+// `permissions:` lacked `pull-requests: read` (silent 403 into the fallback).
+// Both findings needed a human-driven review to catch; these rules catch the
+// class statically, per job, before the workflow ships.
+// ---------------------------------------------------------------------------
+
+/// Access level one `permissions:` entry grants for one scope. `Write`
+/// subsumes `Read`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum ScopeAccess {
+    Read,
+    Write,
+}
+
+impl ScopeAccess {
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "read" => Some(Self::Read),
+            "write" => Some(Self::Write),
+            _ => None,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Read => "read",
+            Self::Write => "write",
+        }
+    }
+}
+
+/// The authority a job effectively holds: either its own `permissions:`
+/// declaration, or the workflow-level one it falls back to.
+#[derive(Clone, Debug)]
+enum PermissionGrants {
+    /// `permissions: read-all` / `write-all`.
+    Everything(ScopeAccess),
+    /// Explicit per-scope grants; a scope absent from the map is ungranted.
+    Scoped(std::collections::BTreeMap<String, ScopeAccess>),
+}
+
+impl PermissionGrants {
+    /// Parse one `permissions:` value. Returns `None` for an absent or
+    /// unrecognizable declaration so callers skip the check instead of
+    /// guessing.
+    fn parse(value: &Value) -> Option<Self> {
+        match value {
+            Value::String(text) => match text.as_str() {
+                "read-all" => Some(Self::Everything(ScopeAccess::Read)),
+                "write-all" => Some(Self::Everything(ScopeAccess::Write)),
+                _ => None,
+            },
+            Value::Mapping(mapping) => {
+                let mut scopes = std::collections::BTreeMap::new();
+                for (key, level) in mapping {
+                    let (Some(scope), Some(level)) = (key.as_str(), level.as_str()) else {
+                        continue;
+                    };
+                    if let Some(level) = ScopeAccess::parse(level) {
+                        scopes.insert(scope.to_string(), level);
+                    }
+                }
+                Some(Self::Scoped(scopes))
+            }
+            _ => None,
+        }
+    }
+
+    /// Whether this grant satisfies a required scope access.
+    fn grants(&self, scope: &str, required: ScopeAccess) -> bool {
+        match self {
+            Self::Everything(granted) => *granted >= required,
+            Self::Scoped(scopes) => scopes.get(scope).is_some_and(|granted| *granted >= required),
+        }
+    }
+}
+
+/// Token-shaped shell variable names the auth rules reason about.
+///
+/// Restricting the shape to `TOKEN` / `*_TOKEN` keeps the rule away from
+/// ordinary shell variables while still covering `GH_TOKEN`, `GITHUB_TOKEN`,
+/// and third-party service tokens.
+fn is_token_variable(name: &str) -> bool {
+    name == "TOKEN" || name.ends_with("_TOKEN")
+}
+
+/// The leading `[A-Za-z0-9_]+` run of one string.
+fn leading_identifier(text: &str) -> &str {
+    let end = text
+        .find(|character: char| !(character.is_ascii_alphanumeric() || character == '_'))
+        .unwrap_or(text.len());
+    &text[..end]
+}
+
+/// Jobs of one workflow as `(name, mapping)` pairs, in declaration order.
+fn job_mappings(workflow: &Value) -> Vec<(String, &Mapping)> {
+    let Some(jobs) = workflow.get("jobs").and_then(Value::as_mapping) else {
+        return Vec::new();
+    };
+    jobs.iter()
+        .filter_map(|(name, job)| Some((name.as_str()?.to_string(), job.as_mapping()?)))
+        .collect()
+}
+
+/// Names defined by an `env:` mapping.
+fn env_mapping_names(value: Option<&Value>) -> HashSet<String> {
+    value
+        .and_then(Value::as_mapping)
+        .map(|mapping| {
+            mapping.iter().filter_map(|(key, _)| key.as_str().map(str::to_string)).collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Token-shaped `$NAME` / `${NAME}` references in a shell script as
+/// `(line index, name)` pairs. `${NAME:-default}` and friends are recognized by
+/// taking the leading identifier; `$(...)` command substitution holds no
+/// direct reference at its `$` and is skipped.
+fn token_references(script: &str) -> Vec<(usize, String)> {
+    let mut references = Vec::new();
+    for (line_index, line) in script.lines().enumerate() {
+        let bytes = line.as_bytes();
+        let mut index = 0;
+        while index < bytes.len() {
+            if bytes[index] != b'$' || index + 1 >= bytes.len() {
+                index += 1;
+                continue;
+            }
+            let mut cursor = index + 1;
+            match bytes[cursor] {
+                b'{' => cursor += 1,
+                b'(' => {
+                    index += 2;
+                    continue;
+                }
+                _ => {}
+            }
+            let name = leading_identifier(&line[cursor..]);
+            if is_token_variable(name) {
+                references.push((line_index, name.to_string()));
+            }
+            index = cursor + name.len().max(1);
+        }
+    }
+    references
+}
+
+/// Line-start token exports within one script — `NAME=...` and
+/// `export NAME=...` assignments — as `(line index, name)` pairs. Such an
+/// assignment supplies references on its own line and any later line.
+fn script_export_lines(script: &str) -> Vec<(usize, String)> {
+    let mut exports = Vec::new();
+    for (line_index, line) in script.lines().enumerate() {
+        let trimmed = line.trim_start();
+        let trimmed = trimmed.strip_prefix("export ").unwrap_or(trimmed).trim_start();
+        let name = leading_identifier(trimmed);
+        if is_token_variable(name) && trimmed[name.len()..].starts_with('=') {
+            exports.push((line_index, name.to_string()));
+        }
+    }
+    exports
+}
+
+/// Token names a script writes to `$GITHUB_ENV`; those exports become visible
+/// to every later step of the job. Every `NAME=` occurrence on the line
+/// counts: a single `printf "A=%s\nB=%s"` format string writes several names.
+fn github_env_exports(script: &str) -> HashSet<String> {
+    let mut names = HashSet::new();
+    for line in script.lines() {
+        if !line.contains("GITHUB_ENV") {
+            continue;
+        }
+        for (offset, _) in line.match_indices('=') {
+            let bytes = line.as_bytes();
+            let mut start = offset;
+            while start > 0
+                && (bytes[start - 1].is_ascii_alphanumeric() || bytes[start - 1] == b'_')
+            {
+                start -= 1;
+            }
+            let name = &line[start..offset];
+            // A printf format escape (`"A=%s\nB=%s"`) leaves a literal `n`
+            // glued to the second identifier; the backslash before it marks
+            // the real boundary.
+            let name = if name.starts_with('n') && start > 0 && bytes[start - 1] == b'\\' {
+                &name[1..]
+            } else {
+                name
+            };
+            if is_token_variable(name) {
+                names.insert(name.to_string());
+            }
+        }
+    }
+    names
+}
+
+/// `env.NAME` expression references in one step value string.
+fn env_expression_references(value: &str) -> Vec<String> {
+    let mut names = Vec::new();
+    let mut rest = value;
+    while let Some(position) = rest.find("${{ env.") {
+        let tail = &rest[position + "${{ env.".len()..];
+        let name = leading_identifier(tail.trim_start());
+        if !name.is_empty() {
+            names.push(name.to_string());
+        }
+        rest = tail;
+    }
+    names
+}
+
+/// String values carried by a step's `env:` and `with:` mappings.
+fn step_env_and_with_values(step: &Value) -> Vec<String> {
+    let mut values = Vec::new();
+    for section in ["env", "with"] {
+        if let Some(mapping) =
+            step.get(Value::String(section.to_string())).and_then(Value::as_mapping)
+        {
+            for (_, value) in mapping {
+                if let Some(text) = value.as_str() {
+                    values.push(text.to_string());
+                }
+            }
+        }
+    }
+    values
+}
+
+/// The permissions a job runs under: its own `permissions:` when declared,
+/// otherwise the workflow-level declaration. A workflow that declares nothing
+/// resolves to `None` — the effective authority is then the repository
+/// default, which a static lint cannot see, so scope checking stays silent
+/// rather than guessing (`INHERITED_JOB_WRITE` already covers the
+/// write-inheritance half of that case).
+fn effective_job_permissions(workflow: &Value, job: &Mapping) -> Option<PermissionGrants> {
+    if let Some(declared) = job.get(Value::String("permissions".to_string())) {
+        return PermissionGrants::parse(declared);
+    }
+    workflow.get("permissions").and_then(PermissionGrants::parse)
+}
+
+/// Per-job ineffective-auth calibration (#16263).
+///
+/// Rule A — a step that reads a token variable through shell expansion or an
+/// `env.` expression which no env mapping, same-script export, or earlier
+/// `$GITHUB_ENV` write supplies is dead auth: GitHub never exports
+/// `GH_TOKEN`/`GITHUB_TOKEN` as shell variables, so the credential is the
+/// empty string while the workflow pretends otherwise.
+///
+/// Rule B — a GitHub REST operation whose required scope is absent from the
+/// declared permissions (job-level override, else workflow-level) fails with a
+/// silent 403 and degrades into whatever fallback the script has.
+fn lint_job_auth(
+    job_name: &str,
+    job: &Mapping,
+    workflow: &Value,
+    workflow_name: &str,
+    issues: &mut Vec<LintIssue>,
+) {
+    // What `${{ env.X }}` expressions can see: workflow env, job env, and
+    // `$GITHUB_ENV` writes from earlier steps. A step's own `env:` mapping is
+    // not in its own expression context.
+    let mut expression_exports = env_mapping_names(workflow.get("env"));
+    expression_exports.extend(env_mapping_names(job.get(Value::String("env".to_string()))));
+
+    let grants = effective_job_permissions(workflow, job);
+    let Some(steps) = job.get(Value::String("steps".to_string())).and_then(Value::as_sequence)
+    else {
+        return;
+    };
+
+    for step in steps {
+        let step_name = step
+            .get(Value::String("name".to_string()))
+            .and_then(Value::as_str)
+            .unwrap_or("<unnamed>");
+
+        for value in step_env_and_with_values(step) {
+            for name in env_expression_references(&value) {
+                if is_token_variable(&name) && !expression_exports.contains(&name) {
+                    issues.push(LintIssue {
+                        level: "error",
+                        code: "INEFFECTIVE_TOKEN_REFERENCE",
+                        workflow: workflow_name.to_string(),
+                        message: format!(
+                            "job '{job_name}' step '{step_name}' references env.{name} but no \
+                             env mapping or earlier $GITHUB_ENV write defines it; the token \
+                             reference resolves to nothing"
+                        ),
+                    });
+                }
+            }
+        }
+
+        let Some(script) = step.get(Value::String("run".to_string())).and_then(Value::as_str)
+        else {
+            continue;
+        };
+
+        // Shell references additionally see the step's own `env:` mapping.
+        let mut shell_exports = expression_exports.clone();
+        shell_exports.extend(env_mapping_names(step.get(Value::String("env".to_string()))));
+        check_script_token_references(
+            script,
+            &shell_exports,
+            step_name,
+            job_name,
+            workflow_name,
+            issues,
+        );
+
+        let mut env_values = std::collections::HashMap::new();
+        collect_env_values(workflow.get("env"), &mut env_values);
+        collect_env_values(job.get(Value::String("env".to_string())), &mut env_values);
+        collect_env_values(step.get(Value::String("env".to_string())), &mut env_values);
+
+        if let Some(grants) = &grants {
+            check_rest_scopes(script, grants, &env_values, job_name, workflow_name, issues);
+        }
+
+        expression_exports.extend(github_env_exports(script));
+    }
+}
+
+/// Rule A for one run script: flag token references nothing supplies at their
+/// use point.
+fn check_script_token_references(
+    script: &str,
+    enclosing: &HashSet<String>,
+    step_name: &str,
+    job_name: &str,
+    workflow_name: &str,
+    issues: &mut Vec<LintIssue>,
+) {
+    let exports = script_export_lines(script);
+    for (line_index, name) in token_references(script) {
+        if enclosing.contains(&name) {
+            continue;
+        }
+        if exports
+            .iter()
+            .any(|(export_line, export_name)| *export_name == name && *export_line <= line_index)
+        {
+            continue;
+        }
+        issues.push(LintIssue {
+            level: "error",
+            code: "INEFFECTIVE_TOKEN_REFERENCE",
+            workflow: workflow_name.to_string(),
+            message: format!(
+                "job '{job_name}' step '{step_name}' reads ${name} but nothing exports it \
+                 (no env mapping, same-script export, or earlier $GITHUB_ENV write); the \
+                 auth is silently empty"
+            ),
+        });
+    }
+}
+
+/// The scope one GitHub REST path requires, if the calibration models it.
+///
+/// Method other than GET/HEAD upgrades the requirement to write. Paths whose
+/// segments match nothing here need only the always-present metadata grant,
+/// so they impose no requirement.
+fn required_rest_scope(path: &str, method: Option<&str>) -> Option<(&'static str, ScopeAccess)> {
+    let write = method.is_some_and(|method| {
+        !method.eq_ignore_ascii_case("GET") && !method.eq_ignore_ascii_case("HEAD")
+    });
+    let access = if write { ScopeAccess::Write } else { ScopeAccess::Read };
+    let segment = path.split(['/', '?', '#']).find(|segment| {
+        matches!(
+            *segment,
+            "pulls"
+                | "issues"
+                | "actions"
+                | "check-runs"
+                | "check-suites"
+                | "statuses"
+                | "deployments"
+                | "pages"
+                | "releases"
+                | "contents"
+        )
+    })?;
+    let scope = match segment {
+        "pulls" => "pull-requests",
+        "issues" => "issues",
+        "actions" => "actions",
+        "check-runs" | "check-suites" => "checks",
+        "statuses" => "statuses",
+        "deployments" => "deployments",
+        "pages" => "pages",
+        "releases" | "contents" => "contents",
+        _ => return None,
+    };
+    Some((scope, access))
+}
+
+/// The HTTP method one script line spells, when it does. `-X`/`--request` /
+/// `--method` name a method; curl `-d*` and `gh api` `-f`/`-F`/`--field` /
+/// `--input` imply POST. Method detection reads the same line only: a method
+/// spelled on a shell continuation line defaults to GET (documented
+/// limitation).
+fn line_method(line: &str) -> Option<String> {
+    let mut tokens = line.split_whitespace().peekable();
+    while let Some(token) = tokens.next() {
+        if token == "-X" || matches!(token, "--request" | "--method") {
+            if let Some(next) = tokens.peek().filter(|next| !next.starts_with('-')) {
+                return Some(next.trim_matches('"').to_string());
+            }
+            continue;
+        }
+        if let Some(name) = token.strip_prefix("-X").filter(|name| !name.is_empty()) {
+            return Some(name.trim_matches('"').to_string());
+        }
+        if matches!(
+            token,
+            "-d" | "--data" | "--data-raw" | "--data-binary" | "-f" | "-F" | "--field" | "--input"
+        ) {
+            return Some("POST".to_string());
+        }
+    }
+    None
+}
+
+/// GitHub REST operations visible in one script line as paths: every
+/// `https://api.github.com/<path>` URL and every `gh api <path>` target.
+fn rest_operations(line: &str) -> Vec<String> {
+    let mut operations = Vec::new();
+    let mut rest = line;
+    while let Some(position) = rest.find("api.github.com/") {
+        let tail = &rest[position + "api.github.com/".len()..];
+        let end = tail
+            .find(|character: char| {
+                character.is_whitespace() || matches!(character, '"' | '\'' | '\\')
+            })
+            .unwrap_or(tail.len());
+        if end > 0 {
+            operations.push(tail[..end].to_string());
+        }
+        rest = &tail[end..];
+    }
+    // `gh api <path>` with a relative path; absolute URLs were already taken
+    // by the branch above.
+    if let Some(position) = line.find("gh api") {
+        let tail = line[position + "gh api".len()..].trim_start();
+        for token in tail.split_whitespace() {
+            if token.starts_with('-') {
+                continue;
+            }
+            let path = token.trim_matches(|c| c == '"' || c == '\'');
+            if !path.starts_with("http") && !path.is_empty() {
+                operations.push(path.to_string());
+            }
+            break;
+        }
+    }
+    operations
+}
+
+/// How the credential a REST call authenticates with relates to the workflow
+/// token.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BearerAuth {
+    /// The credential is the workflow's `GITHUB_TOKEN`; the declared
+    /// `permissions:` governs what it can do.
+    WorkflowToken,
+    /// The credential is some other secret; its own scopes govern, which a
+    /// static lint cannot see and must not model.
+    ExternalToken,
+    /// The credential's origin is not statically visible.
+    Unknown,
+}
+
+/// The bearer credential variable one script line authenticates with:
+/// `Authorization: Bearer $NAME` and `Authorization: token $NAME` spellings.
+fn bearer_variable(line: &str) -> Option<String> {
+    let lowered = line.to_ascii_lowercase();
+    let position = lowered.find("bearer ").or_else(|| lowered.find("token "))?;
+    let tail = line[position + "bearer ".len()..].trim_start();
+    let tail = tail.strip_prefix("${").unwrap_or(tail);
+    let name = leading_identifier(tail);
+    if name.is_empty() { None } else { Some(name.to_string()) }
+}
+
+/// Classify the credential one script line authenticates with. A bearer
+/// expression naming the workflow token directly
+/// (`${{ secrets.GITHUB_TOKEN }}` / `${{ github.token }}`) counts immediately;
+/// otherwise the spelled variable is resolved through the env mappings in
+/// scope. `gh api` lines authenticate from `GH_TOKEN` / `GITHUB_TOKEN` env.
+fn line_bearer_auth(
+    line: &str,
+    env_values: &std::collections::HashMap<String, String>,
+) -> BearerAuth {
+    let lowered = line.to_ascii_lowercase();
+    let spelled = lowered.contains("bearer ") || lowered.contains("token ");
+    if !spelled && !line.contains("gh api") {
+        return BearerAuth::Unknown;
+    }
+    if line.contains("secrets.GITHUB_TOKEN") || line.contains("github.token") {
+        return BearerAuth::WorkflowToken;
+    }
+    let mut candidates: Vec<String> = Vec::new();
+    if let Some(name) = bearer_variable(line) {
+        candidates.push(name);
+    }
+    if line.contains("gh api") {
+        candidates.push("GH_TOKEN".to_string());
+        candidates.push("GITHUB_TOKEN".to_string());
+    }
+    for name in candidates {
+        let Some(value) = env_values.get(&name) else {
+            continue;
+        };
+        if value.contains("secrets.GITHUB_TOKEN") || value.contains("github.token") {
+            return BearerAuth::WorkflowToken;
+        }
+        if value.contains("secrets.") {
+            return BearerAuth::ExternalToken;
+        }
+    }
+    BearerAuth::Unknown
+}
+
+/// Collect an `env:` mapping's name-to-value pairs into one map; later
+/// mappings override earlier ones, matching GitHub's scoping order.
+fn collect_env_values(
+    value: Option<&Value>,
+    values: &mut std::collections::HashMap<String, String>,
+) {
+    if let Some(mapping) = value.and_then(Value::as_mapping) {
+        for (key, value) in mapping {
+            if let (Some(key), Some(value)) = (key.as_str(), value.as_str()) {
+                values.insert(key.to_string(), value.to_string());
+            }
+        }
+    }
+}
+
+/// Rule B for one run script: flag REST operations whose required scope the
+/// declared permissions do not grant. Only calls authenticated with the
+/// workflow token are judged: a `permissions:` block governs `GITHUB_TOKEN`
+/// alone, so a call carrying another secret is governed by scopes a static
+/// lint cannot see and is left alone.
+fn check_rest_scopes(
+    script: &str,
+    grants: &PermissionGrants,
+    env_values: &std::collections::HashMap<String, String>,
+    job_name: &str,
+    workflow_name: &str,
+    issues: &mut Vec<LintIssue>,
+) {
+    for line in script.lines() {
+        if line_bearer_auth(line, env_values) != BearerAuth::WorkflowToken {
+            continue;
+        }
+        let method = line_method(line);
+        for path in rest_operations(line) {
+            let Some((scope, access)) = required_rest_scope(&path, method.as_deref()) else {
+                continue;
+            };
+            if grants.grants(scope, access) {
+                continue;
+            }
+            issues.push(LintIssue {
+                level: "error",
+                code: "REST_SCOPE_GAP",
+                workflow: workflow_name.to_string(),
+                message: format!(
+                    "job '{job_name}' calls GitHub REST {path} requiring {scope}: {} but the \
+                     declared permissions do not grant that scope; the call fails with a \
+                     silent 403",
+                    access.label()
+                ),
+            });
+        }
     }
 }
 
@@ -1781,13 +1992,6 @@ fn normalize_self_hosted_labels(labels: &[Value]) -> Option<String> {
     }
     if label_strs.contains(&"cx43") {
         return Some("self_hosted_cx43".to_string());
-    }
-    // em-ci capability pools (#15957): the lane names a capacity class, not a
-    // physical host, so the declaration token is the pool itself. Physical
-    // labels keep matching their own tokens first, preserving legacy drift
-    // detection for workflows that still name a host.
-    if label_strs.contains(&"self-hosted") && label_strs.contains(&"rust-standard") {
-        return Some("self_hosted_rust_standard".to_string());
     }
     if label_strs.contains(&"self-hosted") && label_strs.contains(&"droid-review") {
         return Some("self_hosted_droid_review".to_string());
@@ -2477,7 +2681,7 @@ fn check_self_hosted_isolation(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use color_eyre::eyre::ensure;
+    use color_eyre::eyre::{bail, ensure};
 
     const CLEAN_SUBJECT_WORKFLOW: &str = "on: push\npermissions: read-all\njobs:\n  check:\n    runs-on: ubuntu-24.04\n    steps:\n      - run: echo checked\n";
 
@@ -3103,6 +3307,201 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn fixture_ineffective_token_reference_fails() -> Result<()> {
+        let path = fixture_path("ineffective_token_reference.yml")?;
+        let mut issues = Vec::new();
+        lint_workflow_file(&path, true, &mut issues)?;
+        let findings: Vec<_> =
+            issues.iter().filter(|issue| issue.code == "INEFFECTIVE_TOKEN_REFERENCE").collect();
+        assert_eq!(findings.len(), 1, "one dead reference in the one step: {issues:?}");
+        assert_eq!(findings[0].level, "error");
+        assert!(findings[0].message.contains("GITHUB_TOKEN"), "names the token: {issues:?}");
+        assert!(findings[0].message.contains("Probe ref"), "names the step: {issues:?}");
+        Ok(())
+    }
+
+    #[test]
+    fn fixture_exported_token_reference_passes() -> Result<()> {
+        let path = fixture_path("exported_token_reference.yml")?;
+        let mut issues = Vec::new();
+        lint_workflow_file(&path, true, &mut issues)?;
+        assert!(
+            issues.iter().all(|issue| issue.level != "error"),
+            "a step env export supplies the reference: {issues:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn fixture_rest_scope_gap_fails() -> Result<()> {
+        let path = fixture_path("rest_scope_gap.yml")?;
+        let mut issues = Vec::new();
+        lint_workflow_file(&path, true, &mut issues)?;
+        let findings: Vec<_> =
+            issues.iter().filter(|issue| issue.code == "REST_SCOPE_GAP").collect();
+        assert_eq!(findings.len(), 1, "{issues:?}");
+        assert!(findings[0].message.contains("pull-requests"), "names the scope: {issues:?}");
+        assert!(findings[0].message.contains("probe"), "names the job: {issues:?}");
+        Ok(())
+    }
+
+    #[test]
+    fn fixture_rest_scope_granted_passes() -> Result<()> {
+        let path = fixture_path("rest_scope_granted.yml")?;
+        let mut issues = Vec::new();
+        lint_workflow_file(&path, true, &mut issues)?;
+        assert!(
+            issues.iter().all(|issue| issue.level != "error"),
+            "a granted pull-requests scope accepts the call: {issues:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn fixture_rest_scope_job_override_gap_fails() -> Result<()> {
+        // Job-level `permissions:` replace the workflow-level grant, so the
+        // workflow's pull-requests read does not rescue the job.
+        let path = fixture_path("rest_scope_job_override_gap.yml")?;
+        let mut issues = Vec::new();
+        lint_workflow_file(&path, true, &mut issues)?;
+        assert!(
+            issues.iter().any(|issue| issue.code == "REST_SCOPE_GAP"),
+            "the job-scoped grant is the effective one: {issues:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn rest_scope_gap_requires_declared_permissions() -> Result<()> {
+        // Without any declared permissions the effective grant is the
+        // repository default, invisible statically; the lint stays silent
+        // instead of guessing.
+        let workflow: Value = serde_yaml_ng::from_str(
+            r#"
+name: undeclared
+on: push
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: gh api "repos/org/repo/pulls"
+"#,
+        )?;
+        let mut issues = Vec::new();
+        for (name, job) in job_mappings(&workflow) {
+            lint_job_auth(&name, job, &workflow, "inline.yml", &mut issues);
+        }
+        assert!(issues.is_empty(), "undeclared permissions impose no modeled grant: {issues:?}");
+        Ok(())
+    }
+
+    #[test]
+    fn github_env_write_supplies_token_to_later_steps() -> Result<()> {
+        let workflow: Value = serde_yaml_ng::from_str(
+            r#"
+name: github env supply
+on: push
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Mint
+        run: |
+          echo "GH_TOKEN=${{ secrets.GITHUB_TOKEN }}" >> "$GITHUB_ENV"
+      - name: Consume
+        run: |
+          curl -sS -H "Authorization: Bearer $GH_TOKEN" https://api.github.com/user
+"#,
+        )?;
+        let mut issues = Vec::new();
+        for (name, job) in job_mappings(&workflow) {
+            lint_job_auth(&name, job, &workflow, "inline.yml", &mut issues);
+        }
+        assert!(
+            issues.iter().all(|issue| issue.code != "INEFFECTIVE_TOKEN_REFERENCE"),
+            "an earlier $GITHUB_ENV write supplies later steps: {issues:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn rest_scope_model_covers_method_and_grant_levels() -> Result<()> {
+        let Some((scope, access)) = required_rest_scope("repos/org/repo/pulls?state=open", None)
+        else {
+            bail!("pulls endpoints must model a requirement");
+        };
+        assert_eq!((scope, access), ("pull-requests", ScopeAccess::Read));
+        let Some((_, access)) = required_rest_scope("repos/org/repo/issues/9", Some("POST")) else {
+            bail!("issue endpoints must model a requirement");
+        };
+        assert_eq!(access, ScopeAccess::Write);
+        ensure!(
+            required_rest_scope("orgs/org/teams", None).is_none(),
+            "metadata-only paths impose no requirement"
+        );
+
+        let mapping: Value = serde_yaml_ng::from_str("pull-requests: read")?;
+        let Some(grants) = PermissionGrants::parse(&mapping) else {
+            bail!("a scoped permissions mapping must parse");
+        };
+        ensure!(grants.grants("pull-requests", ScopeAccess::Read), "read satisfies read");
+        ensure!(!grants.grants("pull-requests", ScopeAccess::Write), "read is not write");
+        ensure!(!grants.grants("actions", ScopeAccess::Read), "unlisted scope is ungranted");
+
+        let Some(everything) = PermissionGrants::parse(&Value::String("read-all".to_string()))
+        else {
+            bail!("read-all must parse");
+        };
+        ensure!(everything.grants("actions", ScopeAccess::Read), "read-all satisfies read");
+        ensure!(!everything.grants("actions", ScopeAccess::Write), "read-all is not write");
+        Ok(())
+    }
+
+    #[test]
+    fn rest_scope_gap_skips_externally_authenticated_calls() -> Result<()> {
+        // `permissions:` governs GITHUB_TOKEN alone; a call carrying another
+        // secret is out of the block's reach and out of the rule's.
+        let workflow: Value = serde_yaml_ng::from_str(
+            r#"
+name: external token
+on: push
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    steps:
+      - env:
+          GH_TOKEN: ${{ secrets.ORG_RUNNER_TOKEN }}
+        run: |
+          curl -sS -H "Authorization: Bearer $GH_TOKEN" "https://api.github.com/orgs/org/actions/runners?per_page=100"
+"#,
+        )?;
+        let mut issues = Vec::new();
+        for (name, job) in job_mappings(&workflow) {
+            lint_job_auth(&name, job, &workflow, "inline.yml", &mut issues);
+        }
+        assert!(
+            issues.iter().all(|issue| issue.code != "REST_SCOPE_GAP"),
+            "an external-token call is not judged against permissions: {issues:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn line_method_spelled_forms_are_recognized() {
+        assert_eq!(
+            line_method(r#"curl -X POST -H "x" https://api.github.com/x"#).as_deref(),
+            Some("POST")
+        );
+        assert_eq!(line_method("gh api --method DELETE repos/o/r/x").as_deref(), Some("DELETE"));
+        assert_eq!(line_method("curl -d '{}' https://api.github.com/x").as_deref(), Some("POST"));
+        assert_eq!(line_method("curl -sS https://api.github.com/x"), None);
+    }
+
     /// The claim #5989 actually makes, asserted against the shipped workflow
     /// rather than a fixture: validation and dispatch must not be able to
     /// write repository contents, and no job may inherit write authority.
@@ -3620,20 +4019,6 @@ labels: [self-hosted, linux, x64, em-ci, cx43, rust-small]
 "#;
         let v: Value = serde_yaml_ng::from_str(yaml)?;
         assert_eq!(normalize_runs_on(&v), Some("self_hosted_cx43".to_string()));
-        Ok(())
-    }
-
-    /// #15957: an em-ci capability-pool lane names a capacity class, not a
-    /// physical host, and normalizes to its own pool token so the isolation
-    /// profile can declare it without re-introducing a physical name.
-    #[test]
-    fn normalize_rust_standard_capability_pool() -> Result<()> {
-        let yaml = r#"
-group: em-ci-small
-labels: [self-hosted, linux, x64, em-ci, rust-standard, trusted-pr]
-"#;
-        let v: Value = serde_yaml_ng::from_str(yaml)?;
-        assert_eq!(normalize_runs_on(&v), Some("self_hosted_rust_standard".to_string()));
         Ok(())
     }
 
@@ -4498,313 +4883,6 @@ review_after = "2099-01-01"
         let stale: Vec<_> =
             issues.iter().filter(|issue| issue.code == "SELF_HOSTED_ISOLATION_STALE").collect();
         assert!(stale.is_empty(), "shipped isolation profiles have lapsed: {stale:?}");
-        Ok(())
-    }
-
-    /// The minimal justfile shape the lint accepts: recipe headers at column
-    /// zero, indented bodies, `@` echo-suppression stripped, comments skipped,
-    /// settings (`name := value`) and `[private]` attributes ignored.
-    #[test]
-    fn parse_justfile_accepts_minimal_recipe_shape() {
-        let justfile = "\
-# Settings first; never treated as a recipe.
-cargo_safe := \"./scripts/cargo-safe\"
-
-[private]
-_check-tools:
-    @echo tools
-
-# A recipe that runs xtask through the lint's detection rule.
-ci-fast:
-    cargo run -p xtask -- ci-fast-check
-
-# A recipe that does not, and stays unclaimed.
-devplane-init:
-    ./scripts/devplane-init
-";
-        let recipes = parse_justfile(justfile);
-        assert_eq!(
-            recipes.get("ci-fast").map(Vec::as_slice),
-            Some(["cargo run -p xtask -- ci-fast-check".to_string()].as_slice()),
-            "recipe bodies must carry the post-strip shell line"
-        );
-        assert_eq!(
-            recipes.get("devplane-init").map(Vec::as_slice),
-            Some(["./scripts/devplane-init".to_string()].as_slice()),
-            "plain-shell recipes must round-trip"
-        );
-        assert!(
-            !recipes.contains_key("cargo_safe"),
-            "settings (`name := value`) must not register as a recipe"
-        );
-        // `[private]` attributes must not steal the recipe body of the line
-        // that follows them. `_check-tools` keeps its body.
-        assert!(
-            recipes.contains_key("_check-tools"),
-            "[private] attributes must not bind a recipe body to the [private] line"
-        );
-        assert_eq!(
-            recipes["_check-tools"],
-            vec!["echo tools".to_string()],
-            "@ echo-suppression prefix must be stripped from the body line"
-        );
-    }
-
-    /// Parameterized recipes (`name param:`) must resolve under their bare
-    /// name, and `:=` assignments must never register as recipes — the
-    /// repo's own justfile parameterizes heavily (`_timed name cmd:`).
-    #[test]
-    fn recipe_header_name_ignores_parameters_and_assignments() {
-        assert_eq!(recipe_header_name("ci-fast:"), Some("ci-fast"));
-        assert_eq!(recipe_header_name("pre-merge-check NUMBER:"), Some("pre-merge-check"));
-        assert_eq!(recipe_header_name("_timed name cmd:"), Some("_timed"));
-        assert_eq!(recipe_header_name("cargo_safe := \"./scripts/cargo-safe\""), None);
-        assert_eq!(recipe_header_name("[private]"), None);
-        assert_eq!(recipe_header_name("no colon here"), None);
-    }
-
-    /// `load_project_justfile` reads `justfile` first and falls back to
-    /// `Justfile` so a capital-J project does not silently resolve zero
-    /// recipes; absence of both still yields `None`.
-    #[test]
-    fn load_project_justfile_prefers_justfile_falls_back_to_justfile() -> Result<()> {
-        let temporary = tempfile::tempdir()?;
-        let root = temporary.path();
-
-        assert!(load_project_justfile(root)?.is_none(), "empty dir resolves no recipes");
-
-        fs::write(root.join("Justfile"), "caps-only:\n    echo caps\n")?;
-        let recipes = load_project_justfile(root)?
-            .ok_or_else(|| color_eyre::eyre::eyre!("capital-J Justfile must resolve recipes"))?;
-        assert!(recipes.contains_key("caps-only"), "Justfile recipes must load");
-
-        fs::write(root.join("justfile"), "lower-wins:\n    echo lower\n")?;
-        let recipes = load_project_justfile(root)?
-            .ok_or_else(|| color_eyre::eyre::eyre!("lowercase justfile must resolve recipes"))?;
-        assert!(recipes.contains_key("lower-wins"), "justfile takes precedence");
-        Ok(())
-    }
-
-    /// The acceptance ladder for #15509:
-    ///
-    /// 1. a `just <recipe>` whose body invokes the xtask CLI is a CLI claim;
-    /// 2. a recipe that runs `cargo test -p xtask` (a test target, not the
-    ///    dispatch) is not;
-    /// 3. a recipe that runs another binary through `--bin <other>` is not;
-    /// 4. a recipe name that does not exist in the justfile is a typed
-    ///    `MissingRecipe` finding rather than a false negative.
-    #[test]
-    fn just_recipe_invocation_classification_matches_acceptance_ladder() -> Result<()> {
-        let justfile = "\
-ci-fast:
-    cargo run -p xtask -- ci-fast-check
-
-# Compiles the test target, not the dispatch. The existing
-# `selects_another_target` rule already excludes this, so this is a regression
-# guard rather than a new exclusion.
-ci-test:
-    cargo test -p xtask --locked --test ci_test
-
-# Same exclusion path: a different `--bin` reaches a different binary.
-ci-other-bin:
-    cargo run -p xtask --bin other-bin -- check
-";
-        let recipes = parse_justfile(justfile);
-
-        // (1) positive — a recipe that reaches the CLI.
-        assert!(
-            command_invokes_xtask_cli_with_just("just ci-fast", &recipes)?,
-            "ci-fast reaches xtask/src/main.rs and must count as a CLI claim"
-        );
-
-        // (2) negative — test target, not dispatch.
-        assert!(
-            !command_invokes_xtask_cli_with_just("just ci-test", &recipes)?,
-            "ci-test compiles a test target and must not count as a CLI claim"
-        );
-
-        // (3) negative — another --bin target.
-        assert!(
-            !command_invokes_xtask_cli_with_just("just ci-other-bin", &recipes)?,
-            "ci-other-bin reaches a different --bin and must not count"
-        );
-
-        // (4) typed missing recipe.
-        let result = command_invokes_xtask_cli_with_just("just nonexistent-recipe", &recipes);
-        assert!(
-            matches!(result, Err(JustResolutionError::MissingRecipe(ref name)) if name == "nonexistent-recipe"),
-            "missing recipe must surface as typed MissingRecipe: {result:?}"
-        );
-
-        Ok(())
-    }
-
-    /// The depth bound holds. A two-recipe cycle (`a -> b -> a`) must surface
-    /// as a typed `RecursionDepthExceeded` finding rather than lock the lint
-    /// or silently miss the indirection.
-    #[test]
-    fn just_recipe_recursion_is_bounded_and_typed() {
-        let justfile = "\
-recipe-a:
-    just recipe-b
-
-recipe-b:
-    just recipe-a
-";
-        let recipes = parse_justfile(justfile);
-        let result = command_invokes_xtask_cli_with_just("just recipe-a", &recipes);
-        assert!(
-            matches!(result, Err(JustResolutionError::RecursionDepthExceeded { .. })),
-            "a cyclic recipe must surface as RecursionDepthExceeded, not silently pass: {result:?}"
-        );
-    }
-
-    /// `just` indirection survives the same wrapper-skip rules that already
-    /// apply to `cargo`. `env`, `RUST_LOG=`, and a leading wrapper option
-    /// must not make `just ci-fast` lose its xtask claim.
-    #[test]
-    fn just_invocation_survives_assignment_and_wrapper_skip() -> Result<()> {
-        let recipes = parse_justfile("ci-fast:\n    cargo run -p xtask -- ci-fast-check\n");
-        for invocation in [
-            "just ci-fast",
-            "RUST_LOG=debug just ci-fast",
-            "env RUST_LOG=debug just ci-fast",
-            "sudo -E just ci-fast",
-        ] {
-            assert!(
-                command_invokes_xtask_cli_with_just(invocation, &recipes)?,
-                "wrapping must not change the verdict: {invocation}"
-            );
-        }
-        Ok(())
-    }
-
-    /// End-to-end: a workflow whose `run:` invokes `just <recipe>`, plus a
-    /// parsed justfile, surfaces the same `XTASK_CLI_WIRING_PATHS` finding the
-    /// detector would produce for a direct `cargo xtask …` line. Without the
-    /// justfile, the same workflow would pass silently — which is exactly
-    /// the #15509 false-negative.
-    #[test]
-    fn workflow_just_invocation_is_a_cli_claim_when_justfile_resolves_it() -> Result<()> {
-        let directory = tempfile::tempdir()?;
-        let workflow_path = directory.path().join("ci-fast.yml");
-        let workflow_yaml = "\
-name: just-fixture
-on:
-  pull_request:
-    paths:
-      - 'xtask/src/tasks/example_contract.rs'
-permissions:
-  contents: read
-jobs:
-  contract:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - run: just ci-fast
-";
-        fs::write(&workflow_path, workflow_yaml)?;
-        let justfile = parse_justfile("ci-fast:\n    cargo run -p xtask -- ci-fast-check\n");
-
-        let mut issues = Vec::new();
-        lint_workflow_file_with_just(&workflow_path, true, &mut issues, &justfile)?;
-        let wiring: Vec<_> =
-            issues.iter().filter(|issue| issue.code == "XTASK_CLI_WIRING_PATHS").collect();
-        assert_eq!(
-            wiring.len(),
-            1,
-            "a just-routed CLI claim must fire the wiring finding; got: {issues:?}"
-        );
-
-        // Same workflow, but the justfile does not resolve `ci-fast`. The
-        // wiring finding must be absent — same residual the gate had before
-        // #15509 — and no typed `JUST_RECIPE_UNRESOLVED` either, because the
-        // expanded verdict was simply "no xtask here".
-        let mut issues = Vec::new();
-        lint_workflow_file_with_just(&workflow_path, true, &mut issues, &NoJustRecipes)?;
-        let wiring: Vec<_> =
-            issues.iter().filter(|issue| issue.code == "XTASK_CLI_WIRING_PATHS").collect();
-        assert!(
-            wiring.is_empty(),
-            "without a recipe resolution, the old residual behavior holds: {issues:?}"
-        );
-        Ok(())
-    }
-
-    /// A `run: just <recipe>` invocation that does not appear in the justfile
-    /// surfaces as `JUST_RECIPE_UNRESOLVED` rather than silently passing. This
-    /// is the AC-3 typed-unresolved-state requirement.
-    #[test]
-    fn workflow_with_undefined_just_recipe_reports_typed_finding() -> Result<()> {
-        let directory = tempfile::tempdir()?;
-        let workflow_path = directory.path().join("orphan.yml");
-        let workflow_yaml = "\
-name: just-orphan
-on:
-  pull_request:
-    paths:
-      - 'xtask/src/tasks/example_contract.rs'
-permissions:
-  contents: read
-jobs:
-  contract:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - run: just recipe-renamed-without-replacement
-";
-        fs::write(&workflow_path, workflow_yaml)?;
-        let justfile = parse_justfile("ci-fast:\n    cargo run -p xtask -- ci-fast-check\n");
-
-        let mut issues = Vec::new();
-        lint_workflow_file_with_just(&workflow_path, true, &mut issues, &justfile)?;
-        let unresolved: Vec<_> =
-            issues.iter().filter(|issue| issue.code == "JUST_RECIPE_UNRESOLVED").collect();
-        assert_eq!(
-            unresolved.len(),
-            1,
-            "undefined recipe must surface as JUST_RECIPE_UNRESOLVED; got: {issues:?}"
-        );
-        Ok(())
-    }
-
-    /// A cyclic just recipe (`a -> b -> a`) surfaces as `JUST_RECIPE_CYCLIC`
-    /// with a depth-bounded expansion. The lint does not lock.
-    #[test]
-    fn workflow_with_cyclic_just_recipe_reports_typed_finding() -> Result<()> {
-        let directory = tempfile::tempdir()?;
-        let workflow_path = directory.path().join("cyclic.yml");
-        let workflow_yaml = "\
-name: just-cyclic
-on:
-  pull_request:
-    paths:
-      - 'xtask/src/tasks/example_contract.rs'
-permissions:
-  contents: read
-jobs:
-  contract:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - run: just recipe-a
-";
-        fs::write(&workflow_path, workflow_yaml)?;
-        let justfile =
-            parse_justfile("recipe-a:\n    just recipe-b\n\nrecipe-b:\n    just recipe-a\n");
-
-        let mut issues = Vec::new();
-        lint_workflow_file_with_just(&workflow_path, true, &mut issues, &justfile)?;
-        let cyclic: Vec<_> =
-            issues.iter().filter(|issue| issue.code == "JUST_RECIPE_CYCLIC").collect();
-        assert_eq!(
-            cyclic.len(),
-            1,
-            "a cyclic recipe must surface as JUST_RECIPE_CYCLIC; got: {issues:?}"
-        );
         Ok(())
     }
 }

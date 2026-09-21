@@ -1,0 +1,15 @@
+name: REST scope gap behind job override
+on: pull_request
+permissions:
+  pull-requests: read
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - name: List open pulls
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh api --paginate "repos/org/repo/pulls?state=open"

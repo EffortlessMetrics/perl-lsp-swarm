@@ -326,6 +326,8 @@ jobs:
 
   validate-result:
     name: Validate CI policy ledgers
+    permissions:
+      actions: read
     # Only the always-running fallback is a hard dependency: a queued-forever
     # trusted lane (runner outage) must not block failover, and job queue
     # time does not count toward timeout-minutes. The trusted verdict is read
