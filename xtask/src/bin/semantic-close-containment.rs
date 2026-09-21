@@ -2056,8 +2056,7 @@ fn is_issue_reference_token(token: &str) -> bool {
     if let Some(number) = token.strip_prefix('#') {
         return !number.is_empty() && number.bytes().all(|byte| byte.is_ascii_digit());
     }
-    if token.len() >= URL_PREFIX.len() && token[..URL_PREFIX.len()].eq_ignore_ascii_case(URL_PREFIX)
-    {
+    if token.get(..URL_PREFIX.len()).is_some_and(|head| head.eq_ignore_ascii_case(URL_PREFIX)) {
         let rest = &token[URL_PREFIX.len()..];
         let Some((_, number)) = split_once_ignore_ascii_case(rest, "/issues/") else {
             return false;
@@ -2747,6 +2746,19 @@ mod tests {
                 "an unmarked or ambiguous mention must keep failing: {unmarked}"
             );
         }
+    }
+
+    #[test]
+    fn is_issue_reference_token_is_panic_safe_off_char_boundary() {
+        // #16288 review round 2: the URL-prefix check must not slice across a
+        // UTF-8 char boundary. The token below is 21 bytes; the CJK character
+        // starts at byte 18 and spans byte offset 19 == URL_PREFIX.len(), so
+        // RangeTo indexing would panic. The token is not an issue reference
+        // and must return false without panicking.
+        let token = "éééééé€€中";
+        assert_eq!(token.len(), 21);
+        assert!(!token.is_char_boundary(19));
+        assert!(!is_issue_reference_token(token));
     }
 
     #[test]
