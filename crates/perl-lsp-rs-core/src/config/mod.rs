@@ -1922,7 +1922,24 @@ impl WorkspaceConfig {
             // probe (issue #3729). The interpreter / args remain whatever the
             // user (not the workspace) configured globally.
             if let Some(timeout) = workspace.get("resolutionTimeout").and_then(as_config_u64) {
-                self.resolution_timeout_ms = timeout;
+                // Hard envelope (#16182): the configuration authority catalog
+                // declares this setting as `UnsignedRange { minimum: 1,
+                // maximum: 10_000 }` with `KeepLastValid`. This channel
+                // previously copied the raw value through, so a composed or
+                // misconfigured timeout could widen the product envelope past
+                // the declared maximum. Honour the declared contract here.
+                if RESOLUTION_TIMEOUT_MS_RANGE.contains(&timeout) {
+                    self.resolution_timeout_ms = timeout;
+                } else {
+                    tracing::warn!(
+                        target: "perl_lsp::config",
+                        requested = timeout,
+                        minimum = *RESOLUTION_TIMEOUT_MS_RANGE.start(),
+                        maximum = *RESOLUTION_TIMEOUT_MS_RANGE.end(),
+                        retained = self.resolution_timeout_ms,
+                        "workspace.resolutionTimeout is out of range; keeping the previous value"
+                    );
+                }
             }
             if let Some(use_p5l) = workspace.get("usePerl5lib").and_then(|v| v.as_bool()) {
                 // Invalidate the lazy startup-@INC cache when usePerl5lib toggles, because
@@ -2257,6 +2274,29 @@ const SYSTEM_INC_PROBE_MAX_ATTEMPTS: u32 = 2;
 /// for `ai.max_inflight` in `configuration_authority::catalog`, so the
 /// client-settings channel cannot admit a value the authority would reject.
 const AI_MAX_INFLIGHT_RANGE: std::ops::RangeInclusive<u32> = 1..=64;
+
+/// Product hard envelope for the workspace module-resolution deadline (#16182).
+///
+/// `workspace.resolutionTimeout` composes into per-document waits across the
+/// module-resolution consumers (module resolution, missing-module lookup,
+/// framework route resolution): a soft or inherited timeout admitted without
+/// a ceiling can stack into unbounded waits across a workspace. The default
+/// 50 ms and every supported tuning value stay under this cap; the cap is
+/// owned here and mirrored by the configuration-authority catalog
+/// (`Validation::UnsignedRange { minimum: 1, maximum: 10_000 }`) and the
+/// published schemas, so no admission channel can widen the envelope. The
+/// separately governed [`SYSTEM_INC_PROBE_TIMEOUT`] startup probe is a
+/// different operation and keeps its own bound.
+pub const RESOLUTION_TIMEOUT_HARD_CAP_MS: u64 = 10_000;
+
+/// Accepted tuning range for `workspace.resolutionTimeout` (#16182).
+///
+/// Mirrors the `Validation::UnsignedRange { minimum: 1, maximum: 10_000 }`
+/// declared for `workspace.resolution_timeout_ms` in
+/// `configuration_authority::catalog`, so this raw-settings channel cannot
+/// admit a value the authority would reject.
+const RESOLUTION_TIMEOUT_MS_RANGE: std::ops::RangeInclusive<u64> =
+    1..=RESOLUTION_TIMEOUT_HARD_CAP_MS;
 
 /// Deterministic probe replacement for the bounded-retry proof (#12945).
 ///
@@ -6592,6 +6632,36 @@ profile = "recommended"
             Some(SystemIncProbeOutcome::Paths(stable)),
             "cache must survive when usePerl5lib value does not change",
         );
+    }
+
+    /// `workspace.resolutionTimeout` is owned by one hard envelope (#16182):
+    /// over-cap and sub-minimum values are refused with the previous value
+    /// retained (the catalog's `KeepLastValid` contract), while the full
+    /// supported tuning range stays reachable. Fails on a parser that copies
+    /// the raw configured value through.
+    #[test]
+    fn update_from_value_enforces_resolution_timeout_hard_envelope() {
+        let mut config = WorkspaceConfig::default();
+        assert_eq!(config.resolution_timeout_ms, 50);
+
+        // Composed and boundary-violating values cannot widen the envelope.
+        for rejected_value in [0, 10_001, u64::MAX] {
+            config.update_from_value(&serde_json::json!({
+                "workspace": { "resolutionTimeout": rejected_value }
+            }));
+            assert_eq!(
+                config.resolution_timeout_ms, 50,
+                "out-of-envelope resolutionTimeout {rejected_value} must keep the previous value",
+            );
+        }
+
+        // Positive supported tuning, including both boundary admits, works.
+        for (accepted_value, expected) in [(1, 1), (10_000, 10_000), (8_000, 8_000)] {
+            config.update_from_value(&serde_json::json!({
+                "workspace": { "resolutionTimeout": accepted_value }
+            }));
+            assert_eq!(config.resolution_timeout_ms, expected);
+        }
     }
 
     /// An unrecognised `perl5libPrecedence` string must leave the current
