@@ -72,11 +72,19 @@ on:
       - 'scripts/ci/test_pr_smoke_disk_guard.py'
       - 'scripts/ci/verify_gate_receipt_freshness.py'
       - 'scripts/ci/test_verify_gate_receipt_freshness.py'
+      # PR-fast failing-gate reporter (#15492): it decides which gates reach the
+      # check-runs annotations API and how a receipt's own text is escaped
+      # before it becomes a workflow command. Both halves gate each other.
+      - 'scripts/ci/summarize_pr_fast_gates.py'
+      - 'scripts/ci/test_summarize_pr_fast_gates.py'
       # ripr liveness classifier (#16098): it decides whether a ripr run with no
       # scheduled job is a designed wait or an absence of proof, and posts a
       # real check run on a real head. Both halves gate each other.
       - 'scripts/ci/ripr_liveness.py'
       - 'scripts/ci/test_ripr_liveness.py'
+      # The reporter's own workflow calls into that module for the one decision
+      # its inline snapshot step makes, so an edit here must re-prove it.
+      - '.github/workflows/ripr-liveness.yml'
       - '.cargo/config.toml'
       - 'scripts/tests/test-target-isolation.sh'
       # ripr lane termination classification + bounded same-head retry
@@ -368,6 +376,9 @@ jobs:
 
       - name: Run gate receipt freshness oracle tests (#15400/A2)
         run: python3 -m unittest scripts.ci.test_verify_gate_receipt_freshness
+
+      - name: Run PR-fast gate reporter tests (#15492)
+        run: python3 -m unittest scripts.ci.test_summarize_pr_fast_gates
 
       - name: Run ripr liveness classifier tests (#16098)
         run: python3 -m unittest scripts.ci.test_ripr_liveness

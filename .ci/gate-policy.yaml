@@ -582,10 +582,11 @@ gates:
   # Replaced with four independent gates so each contract has its own receipt
   # row, timing, result class, and narrow rerun.  The gate runner continues
   # after any single failure, so all four results are always recorded.
-  # inline_completion_registration/core budgets (#11797): PR Smoke uses a
-  # per-run CARGO_TARGET_DIR (`pr-smoke-${run_id}-${run_attempt}`), while the
-  # shared Rust cache covers dependencies rather than reusing target artifacts
-  # across runs. The separate "Warm xtask" step prebuilds xtask only; it is
+  # inline_completion_registration/core budgets (#11797): PR Smoke builds into
+  # the stable shared CARGO_TARGET_DIR=target restored from its dedicated
+  # rust-cache family (#15528), so target artifacts persist across runs
+  # whenever the lane's main-ref seed is current. The separate "Warm xtask"
+  # step prebuilds xtask only; it is
   # not a cold-cache acceptance receipt for these package tests. The raised
   # 240s / 210000ms values are policy bounds informed by the reported timeout
   # family, and retry_count: 1 permits a second attempt to reuse artifacts
@@ -1771,6 +1772,26 @@ gates:
       - docs
       - build
 
+  - name: completion_candidate_ledger
+    tier: merge_gate
+    # Wired here by #10949. Before that this check reached CI only as a side
+    # effect of one test inside `cargo test -p xtask`, so a drift presented as
+    # an xtask unit-test failure rather than as a named policy lane — which is
+    # how it survived two merges (#14573, #14897) unnoticed on `main`.
+    description: "Reconcile policy/completion-candidate-producers.toml against the live completion surface: every producer rowed, no forbidden disposition, no post-finalizer append, and the audit digest plus generated projection still bound to current source"
+    required: true
+    command: cargo xtask completion-candidates check
+    timeout_seconds: 120
+    retry_count: 0
+    budgets:
+      max_duration_ms: 90000
+    quarantine: false
+    tags:
+      - policy
+      - generated
+      - ledger
+      - completion
+
   - name: non_rust_inventory_check
     tier: merge_gate
     description: "Classify the current tracked tree, emit retained inventory evidence, and reject newly added unclassified paths"
@@ -2104,6 +2125,32 @@ gates:
     quarantine: false
     tags:
       - policy
+      - contract
+
+  # The code-action generation ledger (#15764) is fail-closed:
+  # `cargo xtask check-code-action-generation-ledger` rejects committed
+  # `production_anchor` rows that no longer occur inside `handle_code_action`
+  # in crates/perl-lsp-rs/src/runtime/language/code_actions.rs, plus unknown
+  # generations, drifted stage numbering, and stale parity fixtures. Only the
+  # advisory pr-smoke unit test (`tracked_ledger_is_valid`) and the demoted
+  # advisory `policy_checks` composite (no workflow route) ran the validator,
+  # so anchor drift landed red on every PR's fast-feedback lane while no
+  # required lane noticed. Runs in the `policy` shard.
+  - name: code_action_generation_ledger
+    tier: merge_gate
+    description: "Validate policy/code-action-generation-ledger.toml against current code_actions.rs production anchors, stage order, and parity fixtures"
+    required: true
+    command: cargo xtask check-code-action-generation-ledger
+    # 300s to match the sibling `cargo xtask ...` gates in this shard. The
+    # validator itself is near-instant; the cost is the cargo invocation.
+    timeout_seconds: 300
+    retry_count: 0
+    budgets:
+      max_duration_ms: 240000
+    quarantine: false
+    tags:
+      - policy
+      - ledger
       - contract
 
   # NOTE (2026-08-10, #6261): demoted to advisory (required: false). No workflow
@@ -2673,12 +2720,14 @@ workflow_integration:
         - pull_diagnostics_freshness
         - docs_build
         - non_rust_inventory_check
+        - completion_candidate_ledger
         - v2_bundle_sync
         - nested_lock_check
         - doctest_contract_proof
         - doctest_enforcement
         - published_crate_count_pr_fast
         - agent_ledgers_validate
+        - code_action_generation_ledger
       # `compile_all_targets` is not listed here since #15638: the meta shard
       # no longer executes it (the required `Compile All Targets (bit-rot
       # guard)` job owns the property), and this mapping must not claim

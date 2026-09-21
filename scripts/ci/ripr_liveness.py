@@ -92,37 +92,240 @@ def pull_numbers(run: dict[str, Any]) -> list[int]:
     return [pull for pull in pulls if isinstance(pull, int)]
 
 
+# Events for which `ripr.yml`'s group expression resolves to a pull request
+# number rather than to the ref.
+PULL_REQUEST_EVENTS = frozenset({"pull_request", "pull_request_target"})
+
+
+def groups_by_pull_request(run: dict[str, Any]) -> bool:
+    """Whether this run's concurrency group is keyed on a pull request number.
+
+    ``ripr.yml`` groups on ``github.event.pull_request.number || github.ref``,
+    so the answer follows the event, not the API's ``pull_requests`` array. The
+    distinction matters because that array comes back **empty for fork pull
+    requests** — the head repository differs from the base — even though the
+    run is tied to a real, numbered pull request.
+    """
+    return run.get("event") in PULL_REQUEST_EVENTS
+
+
+def base_ref(run: dict[str, Any]) -> str | None:
+    """The single base branch this run's pull request targets, if known.
+
+    Filled by the snapshot from a resolution call; absent when the run offered
+    a number directly (no resolution needed) or when resolution failed. More
+    than one base means the head is shared by several pull requests, which is
+    the very ambiguity the caller must not paper over, so that reads as
+    unknown rather than as a pick.
+    """
+    refs = run.get("base_refs")
+    if isinstance(refs, list) and len(refs) == 1 and isinstance(refs[0], str) and refs[0]:
+        return refs[0]
+    return None
+
+
+def fork_identity(run: dict[str, Any]) -> tuple[str, str, str] | None:
+    """The (head repository, head branch, base ref) triple identifying a fork's
+    pull request.
+
+    Used only when neither the API nor the resolution call supplied a number.
+    Branch alone is not an identity -- two unrelated forks both push
+    ``patch-1``. Head repository plus branch is not one either, which is the
+    correction #16109 review found: GitHub allows one open pull request per
+    head **and base** pair, so a single fork branch can carry two open pull
+    requests at once, one onto ``main`` and one onto ``master``. This
+    repository's workflows support both, and those two pull requests have
+    different numbers and therefore different ``ripr-<pr>`` concurrency
+    groups. Matching them would explain one pull request's stall with the
+    other's run and suppress a real ``infra-no-proof``.
+
+    All three halves are required. ``None`` when any is missing, which keeps an
+    unidentifiable run from matching anything -- the loud failure, an explained
+    wait that should have been reported, rather than the silent one.
+    """
+    repository = run.get("head_repository")
+    branch = run.get("head_branch")
+    base = base_ref(run)
+    if (
+        isinstance(repository, str)
+        and repository
+        and isinstance(branch, str)
+        and branch
+        and base
+    ):
+        return (repository, branch, base)
+    return None
+
+
+def resolved_pulls_from_api(returncode: int, stdout: str | None) -> list[dict[str, Any]] | None:
+    """Pull requests a ``gh api /commits/<sha>/pulls`` read established.
+
+    ``None`` means the read failed or did not parse, which leaves the run
+    without a resolved identity and so matching nothing. Only a list of
+    objects is an answer; anything else is unreadable rather than an empty
+    result, because reading a garbled body as "no pull requests" would turn a
+    resolvable run into an unidentifiable one.
+    """
+    if returncode != 0 or stdout is None:
+        return None
+    try:
+        parsed = json.loads(stdout)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(parsed, list):
+        return None
+    return [entry for entry in parsed if isinstance(entry, dict)]
+
+
+def apply_resolved_identity(run: dict[str, Any], resolved: list[dict[str, Any]] | None) -> None:
+    """Record on ``run`` what a ``/commits/<sha>/pulls`` read established.
+
+    This lives here rather than in the workflow because it decides a posted
+    check run, and because the defect it exists to prevent is only visible
+    across the seam: the endpoint answers "which pull requests contain this
+    commit", and the snapshot needs "which pull request triggered this run".
+    Those differ, and writing every returned number onto the run silently
+    converts the first into the second (#16109 review).
+
+    A head reached by **several** pull requests establishes no identity at
+    all. It is not a number to match on and not a base to fall back to: the
+    head is genuinely shared, and which of those pull requests this run
+    belongs to is exactly what the read failed to settle. Recording the whole
+    set instead made two runs triggered by *different* pull requests match on
+    a non-empty intersection, and the intersection was tested before the base
+    refs were ever consulted, so the base could not rescue it.
+
+    Marked ambiguous rather than left bare, because bare means "no number
+    known" and would fall through to the ``fork_identity`` triple — which
+    would then match these two runs on head repository and branch, the very
+    collision this is closing.
+    """
+    if resolved is None:
+        return
+    numbers = sorted({
+        entry["number"] for entry in resolved if isinstance(entry.get("number"), int)
+    })
+    if len(numbers) > 1:
+        run["ambiguous_identity"] = True
+        return
+    if not numbers:
+        return
+    run["pull_requests"] = numbers
+    bases = sorted({
+        entry["base"] for entry in resolved
+        if isinstance(entry.get("base"), str) and entry.get("base")
+    })
+    if bases:
+        run["base_refs"] = bases
+
+
+def has_ambiguous_identity(run: dict[str, Any]) -> bool:
+    """Whether this run's pull request was never narrowed to one.
+
+    Either the resolution call found the head on several pull requests, or the
+    API's own array carried more than one. Both mean the triggering number is
+    unknown, and an unknown number must match nothing.
+    """
+    return run.get("ambiguous_identity") is True or len(pull_numbers(run)) > 1
+
+
 def same_concurrency_group(left: dict[str, Any], right: dict[str, Any]) -> bool:
     """Whether two runs would contend for the same ``concurrency`` group.
 
-    ``ripr.yml`` groups by pull request number, falling back to the ref, so two
-    runs share a group when they share a pull request or, for a push, a branch.
+    Grouping follows the event, because ``ripr.yml``'s group expression does:
+    ``ripr-<pr>`` for a pull-request run. The number is therefore the identity,
+    and everything below is about recovering it when the API withheld it, which
+    it does for a fork pull request.
+
+    Two pull-request runs match on a shared number whenever both have one —
+    supplied by the API, or filled in by the snapshot's resolution call. Only
+    when neither has a number does the ``fork_identity`` triple apply, and it
+    requires the base ref precisely because head repository plus branch is not
+    an identity: one fork branch can carry two open pull requests at once, one
+    onto ``main`` and one onto ``master``, with two different numbers and two
+    different concurrency groups.
+
+    A run that offers no identity matches nothing. That is the deliberate
+    direction: an unmatched run is reported ``infra-no-proof`` when it was
+    merely queued, which is a visible false red on an advisory check, whereas a
+    wrong match explains a genuinely dead gate away and nobody ever sees it.
+
+    An **ambiguous** identity is not a weak identity, it is none: a head on
+    two pull requests yields two numbers, and a set intersection would call
+    two runs from two different pull requests a match. That check is refused
+    before either the number or the fork triple is consulted, because both
+    would accept it.
     """
-    left_pulls, right_pulls = pull_numbers(left), pull_numbers(right)
-    if left_pulls and right_pulls:
-        return bool(set(left_pulls) & set(right_pulls))
-    if not left_pulls and not right_pulls:
-        branch = left.get("head_branch")
-        return bool(branch) and branch == right.get("head_branch")
-    return False
+    left_by_pr, right_by_pr = groups_by_pull_request(left), groups_by_pull_request(right)
+    if left_by_pr != right_by_pr:
+        return False
+    if left_by_pr:
+        if has_ambiguous_identity(left) or has_ambiguous_identity(right):
+            return False
+        left_pulls, right_pulls = pull_numbers(left), pull_numbers(right)
+        # One side knowing its number is enough to decide, and it decides
+        # against: a run with a number that the other does not share is a
+        # different pull request. The fallback is for when neither side has
+        # one, which is the only case its safety argument covers.
+        if left_pulls or right_pulls:
+            return bool(set(left_pulls) & set(right_pulls))
+        left_fork, right_fork = fork_identity(left), fork_identity(right)
+        return left_fork is not None and left_fork == right_fork
+    branch = left.get("head_branch")
+    return bool(branch) and branch == right.get("head_branch")
 
 
 def predecessor_for(run: dict[str, Any], runs: list[dict[str, Any]]) -> int | None:
-    """The newest started run holding this run's concurrency group.
+    """The newest earlier run holding this run's concurrency group.
 
-    Only a run that actually started can be occupying the group; a sibling that
-    is itself queued explains nothing.
+    A run claims its concurrency group on admission, not at first job start,
+    so ``in_progress`` is too narrow a test: a run whose jobs exist but are
+    all waiting on a busy runner pool reads ``queued`` and is holding the
+    group regardless. Requiring ``in_progress`` reported the newest head as
+    ``infra-no-proof`` during exactly the runner backlog that causes the wait
+    (#16109 review). What distinguishes a holder from a sibling that explains
+    nothing is whether it has any job at all, which the snapshot already
+    reads.
+
+    The candidate must also be older than this run. ``predecessor`` is the
+    word used in the posted title and summary -- "queued behind an earlier
+    run" -- and without the ordering a genuinely dead run reclassifies to an
+    explained wait the moment its *replacement* starts, naming a successor
+    that reports on a different head and will never produce proof for this
+    one.
     """
     run_id = run.get("id")
+    if not isinstance(run_id, int):
+        return None
     candidates = [
-        candidate.get("id")
+        candidate_id
         for candidate in runs
-        if candidate.get("id") != run_id
-        and candidate.get("status") == "in_progress"
+        if isinstance(candidate_id := candidate.get("id"), int)
+        and candidate_id < run_id
+        and candidate.get("status") != "completed"
+        and isinstance(candidate.get("job_count"), int)
+        and candidate.get("job_count", 0) > 0
         and same_concurrency_group(run, candidate)
-        and isinstance(candidate.get("id"), int)
     ]
     return max(candidates) if candidates else None
+
+
+def job_count_from_api(returncode: int, stdout: str | None) -> int | None:
+    """The scheduled-job count a ``gh api .total_count`` read established.
+
+    ``None`` means the count could not be read, which the classifier treats as
+    scheduled. Only a body that actually parses as a number is a count, so a
+    successful call returning nothing — a blank or truncated body — is
+    unreadable rather than a confirmed zero. Reading it as zero would turn a
+    garbled response into a posted failure on a healthy run.
+    """
+    if returncode != 0 or stdout is None:
+        return None
+    try:
+        count = int(stdout.strip())
+    except (TypeError, ValueError):
+        return None
+    return count if count >= 0 else None
 
 
 def classify_run(
@@ -232,6 +435,8 @@ def classify_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
                 "head_sha": run.get("head_sha"),
                 "head_branch": run.get("head_branch"),
                 "pull_requests": pull_numbers(run),
+                "event": run.get("event"),
+                "head_repository": run.get("head_repository"),
                 "status": run.get("status"),
                 "job_count": run.get("job_count"),
                 "waited_minutes": waited_minutes,

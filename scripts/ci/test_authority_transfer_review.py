@@ -59,6 +59,17 @@ class AuthorityTransferReviewTests(unittest.TestCase):
         target.write_text(json.dumps(body), encoding="utf-8", newline="\n")
         return target
 
+    def packet_for_other_surface(self) -> Path:
+        """Build a current packet whose authority claim targets `close.contract`
+        (a different surface than `authority_catalog`); this proves the row
+        under review has at least one packet supplied but none that actually
+        cover it, which is the FAIL_REVIEW_MISSING case after #16100."""
+        body = packet_body("semantic_close_authority", HEAD)
+        body["subject"]["changed"]["authorities"] = [
+            {"ref": "close.contract", "subject": "docs/agents/CLOSE_PROOF_POLICY.md"}
+        ]
+        return self.write_packet("off-surface.json", body)
+
     def evaluate(
         self,
         changed: list[str],
@@ -98,12 +109,27 @@ class AuthorityTransferReviewTests(unittest.TestCase):
         self.assertEqual("authority-transfer-review.v1", receipt["schema_version"])
         self.assertEqual(receipt["schema_version"], atr.SCHEMA)
 
-    def test_governed_change_without_packet_is_typed_missing_and_head_bound(self) -> None:
-        # Falsifier 1: candidate touches the configuration authority catalog with no packet.
+    def test_governed_change_without_packet_is_not_proven_and_head_bound(self) -> None:
+        # Falsifier 1: candidate touches the configuration authority catalog with no
+        # packet supplied. With zero packets the workflow has no packet source
+        # configured at this invocation, so the verdict is NOT_PROVEN_GITHUB —
+        # evidence could not be established. A red that says "review missing"
+        # would lie about the proposition it claims to have checked; see #16100.
         receipt = self.evaluate(GOVERNED_CHANGED, [])
-        self.assertEqual(atr.FAIL_REVIEW_MISSING, receipt["result"])
+        self.assertEqual(atr.NOT_PROVEN_GITHUB, receipt["result"])
         self.assertEqual(HEAD, receipt["evaluated_head_sha"])
         self.assertEqual(["authority_catalog"], [row["surface_id"] for row in receipt["governed_rows"]])
+        self.assertEqual(
+            atr.NOT_PROVEN_GITHUB, receipt["verdicts"][0]["result"]
+        )
+
+    def test_governed_change_with_off_surface_packets_is_typed_missing(self) -> None:
+        # Regression coverage for #16100: packets supplied but none cover the
+        # governed row is a real review-absence (FAIL_REVIEW_MISSING), distinct
+        # from "no packets supplied" (NOT_PROVEN_GITHUB above). The verdict
+        # distinguishes the wiring gap from genuine missing review.
+        receipt = self.evaluate(GOVERNED_CHANGED, [self.packet_for_other_surface()])
+        self.assertEqual(atr.FAIL_REVIEW_MISSING, receipt["result"])
         self.assertEqual(
             atr.FAIL_REVIEW_MISSING, receipt["verdicts"][0]["result"]
         )
@@ -508,15 +534,18 @@ class AuthorityTransferReviewTests(unittest.TestCase):
             "--summary",
             str(summary_path),
         ]
-        # Governed change without packet must exit typed-failure (1).
+        # Governed change with no packet supplied exits not-proven (3) under
+        # #16100: the workflow has no packet source configured at this run, so
+        # the verifier cannot establish that the proposition was attempted at
+        # all. A typed-failure exit would lie about what was checked.
         buffer = io.StringIO()
         with redirect_stdout(buffer):
             status = atr.main(argv)
-        self.assertEqual(atr.EXIT_TYPED_FAILURE, status)
+        self.assertEqual(atr.EXIT_NOT_PROVEN, status)
         written = json.loads(receipt_path.read_text(encoding="utf-8"))
-        self.assertEqual(atr.FAIL_REVIEW_MISSING, written["result"])
+        self.assertEqual(atr.NOT_PROVEN_GITHUB, written["result"])
         summary = summary_path.read_text(encoding="utf-8")
-        self.assertIn("FAIL_REVIEW_MISSING", summary)
+        self.assertIn("NOT_PROVEN_GITHUB", summary)
         self.assertIn(HEAD, summary)
 
     def test_cli_not_proven_exit_code_is_distinct_from_typed_failure(self) -> None:
@@ -850,9 +879,12 @@ paths = [
         # Base alone sees no governed row for this path.
         base_only = self.evaluate(changed, [])
         self.assertEqual(atr.PASS_NOT_APPLICABLE, base_only["result"])
-        # The union sees the candidate-added surface and fails typed-missing.
+        # The union sees the candidate-added surface. With no packets supplied,
+        # #16100 makes this NOT_PROVEN_GITHUB (wiring gap, not a typed
+        # missing-review), so the verdict distinguishes the candidate-extension
+        # case from a real review-absence.
         receipt = self.evaluate(changed, [], candidate_root=candidate_root)
-        self.assertEqual(atr.FAIL_REVIEW_MISSING, receipt["result"])
+        self.assertEqual(atr.NOT_PROVEN_GITHUB, receipt["result"])
         self.assertEqual(
             ["candidate_added"], [row["surface_id"] for row in receipt["governed_rows"]]
         )

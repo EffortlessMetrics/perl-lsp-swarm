@@ -4,8 +4,8 @@ use std::path::Path;
 use std::sync::LazyLock;
 
 use crate::{
-    display_path, first_cfg_test_line_number, read_lines, read_usize_file,
-    walk_rust_source_files_for_ci_checks,
+    display_path, first_cfg_test_line_number, production_source_files_for_ci_checks, read_lines,
+    read_usize_file,
 };
 
 use self::lazy_scope::{LazyStaticScope, code_only};
@@ -38,7 +38,7 @@ fn regex_from_static(
 ///
 /// Detection is line-based, mirroring the sibling ratchets (`check_print_in_lib`,
 /// `cmd_check_unsafe_prod`). Test code is excluded two ways: whole `tests/` files
-/// via [`walk_rust_source_files_for_ci_checks`], and inline `#[cfg(test)]` modules
+/// via [`production_source_files_for_ci_checks`], and inline `#[cfg(test)]` modules
 /// via [`first_cfg_test_line_number`]. Calls inside a lazy-static initializer are
 /// recognized by [`LazyStaticScope`].
 ///
@@ -49,7 +49,7 @@ pub(crate) fn check_regex_static(repo_root: &Path) -> Result<i32> {
     let ctor_re = regex_from_static(&REGEX_CTOR_RE, "regex constructor")?;
     let mut offenders = Vec::new();
 
-    for path in walk_rust_source_files_for_ci_checks(repo_root)? {
+    for path in production_source_files_for_ci_checks(repo_root)? {
         let rel = display_path(repo_root, &path);
         let lines = read_lines(&path)?;
         let test_start = first_cfg_test_line_number(&path).unwrap_or(usize::MAX);

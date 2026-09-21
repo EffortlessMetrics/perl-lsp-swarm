@@ -264,7 +264,7 @@ pub fn perl_parser_core::syntax::edit::Edit::apply_to_position(&self, pos: perl_
 pub fn perl_parser_core::syntax::edit::Edit::apply_to_range(&self, range: &perl_position_tracking::position::Range) -> core::option::Option<perl_position_tracking::position::Range>
 pub fn perl_parser_core::syntax::edit::Edit::byte_shift(&self) -> isize
 pub fn perl_parser_core::syntax::edit::Edit::line_shift(&self) -> i32
-pub fn perl_parser_core::syntax::edit::Edit::new(start_byte: usize, old_end_byte: usize, new_end_byte: usize, start_position: perl_position_tracking::position::Position, old_end_position: perl_position_tracking::position::Position, new_end_position: perl_position_tracking::position::Position) -> Self
+pub fn perl_parser_core::syntax::edit::Edit::new(start_byte: usize, old_end_byte: usize, new_end_byte: usize, start_position: perl_position_tracking::position::Position, old_end_position: perl_position_tracking::position::Position, new_end_position: perl_position_tracking::position::Position) -> perl_parser_core::syntax::edit::Edit
 pub fn perl_parser_core::syntax::edit::Edit::overlaps_range(&self, range: &perl_position_tracking::position::Range) -> bool
 pub fn perl_parser_core::syntax::edit::Edit::clone(&self) -> perl_parser_core::syntax::edit::Edit
 pub fn perl_parser_core::syntax::edit::Edit::eq(&self, other: &perl_parser_core::syntax::edit::Edit) -> bool
@@ -280,7 +280,7 @@ pub fn perl_parser_core::syntax::edit::EditSet::coalesced_affected_ranges(&self)
 pub fn perl_parser_core::syntax::edit::EditSet::edits(&self) -> &[perl_parser_core::syntax::edit::Edit]
 pub fn perl_parser_core::syntax::edit::EditSet::is_empty(&self) -> bool
 pub fn perl_parser_core::syntax::edit::EditSet::len(&self) -> usize
-pub fn perl_parser_core::syntax::edit::EditSet::new() -> Self
+pub fn perl_parser_core::syntax::edit::EditSet::new() -> perl_parser_core::syntax::edit::EditSet
 pub fn perl_parser_core::syntax::edit::EditSet::clone(&self) -> perl_parser_core::syntax::edit::EditSet
 pub fn perl_parser_core::syntax::edit::EditSet::default() -> perl_parser_core::syntax::edit::EditSet
 pub fn perl_parser_core::syntax::edit::EditSet::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
@@ -303,7 +303,7 @@ pub fn perl_parser_core::syntax::edit::Edit::apply_to_position(&self, pos: perl_
 pub fn perl_parser_core::syntax::edit::Edit::apply_to_range(&self, range: &perl_position_tracking::position::Range) -> core::option::Option<perl_position_tracking::position::Range>
 pub fn perl_parser_core::syntax::edit::Edit::byte_shift(&self) -> isize
 pub fn perl_parser_core::syntax::edit::Edit::line_shift(&self) -> i32
-pub fn perl_parser_core::syntax::edit::Edit::new(start_byte: usize, old_end_byte: usize, new_end_byte: usize, start_position: perl_position_tracking::position::Position, old_end_position: perl_position_tracking::position::Position, new_end_position: perl_position_tracking::position::Position) -> Self
+pub fn perl_parser_core::syntax::edit::Edit::new(start_byte: usize, old_end_byte: usize, new_end_byte: usize, start_position: perl_position_tracking::position::Position, old_end_position: perl_position_tracking::position::Position, new_end_position: perl_position_tracking::position::Position) -> perl_parser_core::syntax::edit::Edit
 pub fn perl_parser_core::syntax::edit::Edit::overlaps_range(&self, range: &perl_position_tracking::position::Range) -> bool
 pub fn perl_parser_core::syntax::edit::Edit::clone(&self) -> perl_parser_core::syntax::edit::Edit
 pub fn perl_parser_core::syntax::edit::Edit::eq(&self, other: &perl_parser_core::syntax::edit::Edit) -> bool
@@ -319,7 +319,7 @@ pub fn perl_parser_core::syntax::edit::EditSet::coalesced_affected_ranges(&self)
 pub fn perl_parser_core::syntax::edit::EditSet::edits(&self) -> &[perl_parser_core::syntax::edit::Edit]
 pub fn perl_parser_core::syntax::edit::EditSet::is_empty(&self) -> bool
 pub fn perl_parser_core::syntax::edit::EditSet::len(&self) -> usize
-pub fn perl_parser_core::syntax::edit::EditSet::new() -> Self
+pub fn perl_parser_core::syntax::edit::EditSet::new() -> perl_parser_core::syntax::edit::EditSet
 pub fn perl_parser_core::syntax::edit::EditSet::clone(&self) -> perl_parser_core::syntax::edit::EditSet
 pub fn perl_parser_core::syntax::edit::EditSet::default() -> perl_parser_core::syntax::edit::EditSet
 pub fn perl_parser_core::syntax::edit::EditSet::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
@@ -351,8 +351,8 @@ pub fn perl_parser_core::engine::error::classifier::ErrorClassifier::classify(&s
 pub fn perl_parser_core::engine::error::classifier::ErrorClassifier::get_diagnostic_message(&self, kind: &perl_parser_core::engine::error::classifier::ParseErrorKind) -> alloc::string::String
 pub fn perl_parser_core::engine::error::classifier::ErrorClassifier::get_explanation(&self, kind: &perl_parser_core::engine::error::classifier::ParseErrorKind) -> core::option::Option<alloc::string::String>
 pub fn perl_parser_core::engine::error::classifier::ErrorClassifier::get_suggestion(&self, kind: &perl_parser_core::engine::error::classifier::ParseErrorKind) -> core::option::Option<alloc::string::String>
-pub fn perl_parser_core::engine::error::classifier::ErrorClassifier::new() -> Self
-pub fn perl_parser_core::engine::error::classifier::ErrorClassifier::default() -> Self
+pub fn perl_parser_core::engine::error::classifier::ErrorClassifier::new() -> perl_parser_core::engine::error::classifier::ErrorClassifier
+pub fn perl_parser_core::engine::error::classifier::ErrorClassifier::default() -> perl_parser_core::engine::error::classifier::ErrorClassifier
 pub struct perl_parser_core::engine::error::classifier::RecoverySalvageMetrics
 pub perl_parser_core::engine::error::classifier::RecoverySalvageMetrics::error_node_count: usize
 pub perl_parser_core::engine::error::classifier::RecoverySalvageMetrics::first_unrecovered_error_node: core::option::Option<alloc::string::String>
@@ -389,10 +389,10 @@ pub perl_parser_core::engine::error::recovery::ParseError::found: alloc::string:
 pub perl_parser_core::engine::error::recovery::ParseError::message: alloc::string::String
 pub perl_parser_core::engine::error::recovery::ParseError::range: perl_position_tracking::position::Range
 pub perl_parser_core::engine::error::recovery::ParseError::recovery_hint: core::option::Option<alloc::string::String>
-pub fn perl_parser_core::engine::error::recovery::ParseError::new(message: alloc::string::String, range: perl_position_tracking::position::Range) -> Self
-pub fn perl_parser_core::engine::error::recovery::ParseError::with_expected(self, expected: alloc::vec::Vec<alloc::string::String>) -> Self
-pub fn perl_parser_core::engine::error::recovery::ParseError::with_found(self, found: alloc::string::String) -> Self
-pub fn perl_parser_core::engine::error::recovery::ParseError::with_hint(self, hint: alloc::string::String) -> Self
+pub fn perl_parser_core::engine::error::recovery::ParseError::new(message: alloc::string::String, range: perl_position_tracking::position::Range) -> perl_parser_core::engine::error::recovery::ParseError
+pub fn perl_parser_core::engine::error::recovery::ParseError::with_expected(self, expected: alloc::vec::Vec<alloc::string::String>) -> perl_parser_core::engine::error::recovery::ParseError
+pub fn perl_parser_core::engine::error::recovery::ParseError::with_found(self, found: alloc::string::String) -> perl_parser_core::engine::error::recovery::ParseError
+pub fn perl_parser_core::engine::error::recovery::ParseError::with_hint(self, hint: alloc::string::String) -> perl_parser_core::engine::error::recovery::ParseError
 pub fn perl_parser_core::engine::error::recovery::ParseError::clone(&self) -> perl_parser_core::engine::error::recovery::ParseError
 pub fn perl_parser_core::engine::error::recovery::ParseError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub trait perl_parser_core::engine::error::recovery::ErrorRecovery
@@ -409,9 +409,9 @@ pub fn perl_parser_core::engine::parser_context::ParserContext::skip_until(&mut 
 pub fn perl_parser_core::engine::parser_context::ParserContext::skip_until_with_budget(&mut self, sync_points: &[perl_parser_core::engine::error::recovery::SyncPoint], budget: &perl_parser_core::syntax::error::ParseBudget, tracker: &mut perl_parser_core::syntax::error::BudgetTracker) -> perl_parser_core::engine::error::recovery::RecoveryResult
 pub fn perl_parser_core::engine::parser_context::ParserContext::synchronize(&mut self, sync_points: &[perl_parser_core::engine::error::recovery::SyncPoint]) -> bool
 pub trait perl_parser_core::engine::error::recovery::ParserErrorRecovery
-pub fn perl_parser_core::engine::error::recovery::ParserErrorRecovery::parse_list_with_recovery<F>(&mut self, parse_element: F, separator: perl_lexer::token::TokenType, terminator: perl_lexer::token::TokenType) -> alloc::vec::Vec<perl_ast_v2::Node> where F: core::ops::function::Fn(&mut Self) -> perl_ast_v2::Node
+pub fn perl_parser_core::engine::error::recovery::ParserErrorRecovery::parse_list_with_recovery<F>(&mut self, parse_element: F, separator: perl_lexer::token::TokenType, terminator: perl_lexer::token::TokenType) -> alloc::vec::Vec<perl_ast_v2::Node> where F: core::ops::function::Fn(&mut perl_parser_core::engine::error::recovery::ParserErrorRecovery) -> perl_ast_v2::Node
 pub fn perl_parser_core::engine::error::recovery::ParserErrorRecovery::parse_with_recovery(&mut self) -> (perl_ast_v2::Node, alloc::vec::Vec<perl_parser_core::engine::error::recovery::ParseError>)
-pub fn perl_parser_core::engine::error::recovery::ParserErrorRecovery::try_parse<F>(&mut self, parse_fn: F) -> perl_ast_v2::Node where F: core::ops::function::FnOnce(&mut Self) -> core::option::Option<perl_ast_v2::Node>
+pub fn perl_parser_core::engine::error::recovery::ParserErrorRecovery::try_parse<F>(&mut self, parse_fn: F) -> perl_ast_v2::Node where F: core::ops::function::FnOnce(&mut perl_parser_core::engine::error::recovery::ParserErrorRecovery) -> core::option::Option<perl_ast_v2::Node>
 pub trait perl_parser_core::engine::error::recovery::StatementRecovery
 pub fn perl_parser_core::engine::error::recovery::StatementRecovery::parse_block_with_recovery(&mut self) -> perl_ast_v2::Node
 pub fn perl_parser_core::engine::error::recovery::StatementRecovery::parse_expression_with_recovery(&mut self) -> perl_ast_v2::Node
@@ -429,6 +429,31 @@ pub fn perl_parser_core::syntax::error::ErrorCategory::clone(&self) -> perl_pars
 pub fn perl_parser_core::syntax::error::ErrorCategory::eq(&self, other: &perl_parser_core::syntax::error::ErrorCategory) -> bool
 pub fn perl_parser_core::syntax::error::ErrorCategory::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_parser_core::syntax::error::ErrorCategory::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub enum perl_parser_core::engine::error::InvalidSignatureOrderingKind
+pub perl_parser_core::engine::error::InvalidSignatureOrderingKind::MandatoryAfterOptional
+pub perl_parser_core::engine::error::InvalidSignatureOrderingKind::ParameterAfterSlurpy
+pub perl_parser_core::engine::error::InvalidSignatureOrderingKind::PositionalAfterNamed
+pub perl_parser_core::engine::error::InvalidSignatureOrderingKind::RequiredNamedAfterOptional
+pub fn perl_parser_core::syntax::error::InvalidSignatureOrderingKind::clone(&self) -> perl_parser_core::syntax::error::InvalidSignatureOrderingKind
+pub fn perl_parser_core::syntax::error::InvalidSignatureOrderingKind::eq(&self, other: &perl_parser_core::syntax::error::InvalidSignatureOrderingKind) -> bool
+pub fn perl_parser_core::syntax::error::InvalidSignatureOrderingKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum perl_parser_core::engine::error::InvalidSignatureParameterKind
+pub perl_parser_core::engine::error::InvalidSignatureParameterKind::MissingDefaultExpression
+pub perl_parser_core::engine::error::InvalidSignatureParameterKind::NamedAggregate
+pub perl_parser_core::engine::error::InvalidSignatureParameterKind::SlurpyDefault
+pub fn perl_parser_core::syntax::error::InvalidSignatureParameterKind::clone(&self) -> perl_parser_core::syntax::error::InvalidSignatureParameterKind
+pub fn perl_parser_core::syntax::error::InvalidSignatureParameterKind::eq(&self, other: &perl_parser_core::syntax::error::InvalidSignatureParameterKind) -> bool
+pub fn perl_parser_core::syntax::error::InvalidSignatureParameterKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+#[non_exhaustive] pub enum perl_parser_core::engine::error::ParseCoreDimension
+pub perl_parser_core::engine::error::ParseCoreDimension::DiagnosticsEmitted
+pub perl_parser_core::engine::error::ParseCoreDimension::NodesConstructed
+pub perl_parser_core::engine::error::ParseCoreDimension::TokensConsumed
+pub fn perl_parser_core::syntax::error::ParseCoreDimension::as_str(self) -> &'static str
+pub fn perl_parser_core::syntax::error::ParseCoreDimension::clone(&self) -> perl_parser_core::syntax::error::ParseCoreDimension
+pub fn perl_parser_core::syntax::error::ParseCoreDimension::eq(&self, other: &perl_parser_core::syntax::error::ParseCoreDimension) -> bool
+pub fn perl_parser_core::syntax::error::ParseCoreDimension::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_parser_core::syntax::error::ParseCoreDimension::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_parser_core::syntax::error::ParseCoreDimension::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
 pub enum perl_parser_core::engine::error::ParseDiagnosticAnchor
 pub perl_parser_core::engine::error::ParseDiagnosticAnchor::EndOfInput
 pub perl_parser_core::engine::error::ParseDiagnosticAnchor::Exact(usize)
@@ -449,7 +474,13 @@ pub fn perl_parser_core::syntax::error::ParseDiagnosticSeverity::fmt(&self, f: &
 pub perl_parser_core::engine::error::ParseError::Advisory
 pub perl_parser_core::engine::error::ParseError::Advisory::location: usize
 pub perl_parser_core::engine::error::ParseError::Advisory::message: alloc::string::String
+pub perl_parser_core::engine::error::ParseError::CStyleForContinueBlock
+pub perl_parser_core::engine::error::ParseError::CStyleForContinueBlock::location: usize
 pub perl_parser_core::engine::error::ParseError::Cancelled
+pub perl_parser_core::engine::error::ParseError::CoreBudgetExhausted
+pub perl_parser_core::engine::error::ParseError::CoreBudgetExhausted::dimension: perl_parser_core::syntax::error::ParseCoreDimension
+pub perl_parser_core::engine::error::ParseError::CoreBudgetExhausted::limit: usize
+pub perl_parser_core::engine::error::ParseError::CoreBudgetExhausted::usage: usize
 pub perl_parser_core::engine::error::ParseError::DoWhileTrailingBlock
 pub perl_parser_core::engine::error::ParseError::DoWhileTrailingBlock::location: usize
 pub perl_parser_core::engine::error::ParseError::HeredocBudgetExhausted
@@ -460,6 +491,12 @@ pub perl_parser_core::engine::error::ParseError::InvalidNumber
 pub perl_parser_core::engine::error::ParseError::InvalidNumber::literal: alloc::string::String
 pub perl_parser_core::engine::error::ParseError::InvalidRegex
 pub perl_parser_core::engine::error::ParseError::InvalidRegex::message: alloc::string::String
+pub perl_parser_core::engine::error::ParseError::InvalidSignatureOrdering
+pub perl_parser_core::engine::error::ParseError::InvalidSignatureOrdering::kind: perl_parser_core::syntax::error::InvalidSignatureOrderingKind
+pub perl_parser_core::engine::error::ParseError::InvalidSignatureOrdering::range: perl_position_tracking::span::SourceLocation
+pub perl_parser_core::engine::error::ParseError::InvalidSignatureParameter
+pub perl_parser_core::engine::error::ParseError::InvalidSignatureParameter::kind: perl_parser_core::syntax::error::InvalidSignatureParameterKind
+pub perl_parser_core::engine::error::ParseError::InvalidSignatureParameter::range: perl_position_tracking::span::SourceLocation
 pub perl_parser_core::engine::error::ParseError::InvalidString
 pub perl_parser_core::engine::error::ParseError::LexerError
 pub perl_parser_core::engine::error::ParseError::LexerError::message: alloc::string::String
@@ -488,21 +525,25 @@ pub fn perl_parser_core::syntax::error::ParseError::blocks_clean_parse(&self) ->
 pub fn perl_parser_core::syntax::error::ParseError::diagnostic_anchor(&self) -> perl_parser_core::syntax::error::ParseDiagnosticAnchor
 pub fn perl_parser_core::syntax::error::ParseError::is_recursion_limit(&self) -> bool
 pub fn perl_parser_core::syntax::error::ParseError::location(&self) -> core::option::Option<usize>
-pub fn perl_parser_core::syntax::error::ParseError::nested_quantifier_advisory(location: usize) -> Self
+pub fn perl_parser_core::syntax::error::ParseError::nested_quantifier_advisory(location: usize) -> perl_parser_core::syntax::error::ParseError
 pub fn perl_parser_core::syntax::error::ParseError::resolved_diagnostic_anchor(&self, source: &str) -> perl_parser_core::syntax::error::ResolvedParseDiagnosticAnchor
 pub fn perl_parser_core::syntax::error::ParseError::severity(&self) -> perl_parser_core::syntax::error::ParseDiagnosticSeverity
 pub fn perl_parser_core::syntax::error::ParseError::suggestion(&self) -> core::option::Option<alloc::string::String>
-pub fn perl_parser_core::syntax::error::ParseError::syntax(message: impl core::convert::Into<alloc::string::String>, location: usize) -> Self
-pub fn perl_parser_core::syntax::error::ParseError::unexpected(expected: impl core::convert::Into<alloc::string::String>, found: impl core::convert::Into<alloc::string::String>, location: usize) -> Self
+pub fn perl_parser_core::syntax::error::ParseError::syntax(message: impl core::convert::Into<alloc::string::String>, location: usize) -> perl_parser_core::syntax::error::ParseError
+pub fn perl_parser_core::syntax::error::ParseError::unexpected(expected: impl core::convert::Into<alloc::string::String>, found: impl core::convert::Into<alloc::string::String>, location: usize) -> perl_parser_core::syntax::error::ParseError
 pub fn perl_parser_core::syntax::error::ParseError::clone(&self) -> perl_parser_core::syntax::error::ParseError
 pub fn perl_parser_core::syntax::error::ParseError::eq(&self, other: &perl_parser_core::syntax::error::ParseError) -> bool
-pub fn perl_parser_core::syntax::error::ParseError::from(err: perl_regex::error::RegexError) -> Self
+pub fn perl_parser_core::syntax::error::ParseError::from(err: perl_regex::error::RegexError) -> perl_parser_core::syntax::error::ParseError
 pub fn perl_parser_core::syntax::error::ParseError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_parser_core::syntax::error::ParseError::fmt(&self, __formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_parser_core::syntax::error::ParseError::error_class(&self) -> perl_parser_core::syntax::error::ErrorCategory
 #[non_exhaustive] pub enum perl_parser_core::engine::error::ParseStopCause
 pub perl_parser_core::engine::error::ParseStopCause::Cancelled
 pub perl_parser_core::engine::error::ParseStopCause::CatastrophicTermination
+pub perl_parser_core::engine::error::ParseStopCause::CoreBudgetExhausted
+pub perl_parser_core::engine::error::ParseStopCause::CoreBudgetExhausted::dimension: perl_parser_core::syntax::error::ParseCoreDimension
+pub perl_parser_core::engine::error::ParseStopCause::CoreBudgetExhausted::limit: usize
+pub perl_parser_core::engine::error::ParseStopCause::CoreBudgetExhausted::usage: usize
 pub perl_parser_core::engine::error::ParseStopCause::FutureTypedTerminal
 pub perl_parser_core::engine::error::ParseStopCause::HeredocBudgetExhausted
 pub perl_parser_core::engine::error::ParseStopCause::HeredocBudgetExhausted::limit: usize
@@ -515,7 +556,7 @@ pub perl_parser_core::engine::error::ParseStopCause::RecursionBudgetExhausted
 pub perl_parser_core::engine::error::ParseStopCause::RecursionBudgetExhausted::limit: core::option::Option<usize>
 pub perl_parser_core::engine::error::ParseStopCause::RecursionBudgetExhausted::usage: core::option::Option<usize>
 pub fn perl_parser_core::syntax::error::ParseStopCause::as_str(&self) -> &'static str
-pub fn perl_parser_core::syntax::error::ParseStopCause::from_parse_error(error: &perl_parser_core::syntax::error::ParseError) -> Self
+pub fn perl_parser_core::syntax::error::ParseStopCause::from_parse_error(error: &perl_parser_core::syntax::error::ParseError) -> perl_parser_core::syntax::error::ParseStopCause
 pub fn perl_parser_core::syntax::error::ParseStopCause::is_budget_exhaustion(&self) -> bool
 pub fn perl_parser_core::syntax::error::ParseStopCause::is_cancelled(&self) -> bool
 pub fn perl_parser_core::syntax::error::ParseStopCause::clone(&self) -> perl_parser_core::syntax::error::ParseStopCause
@@ -566,16 +607,21 @@ pub perl_parser_core::engine::error::BudgetTracker::current_depth: usize
 pub perl_parser_core::engine::error::BudgetTracker::errors_emitted: usize
 pub perl_parser_core::engine::error::BudgetTracker::heredoc_scan_bytes: usize
 pub perl_parser_core::engine::error::BudgetTracker::max_depth_reached: usize
+pub perl_parser_core::engine::error::BudgetTracker::nodes_constructed: usize
 pub perl_parser_core::engine::error::BudgetTracker::recoveries_attempted: usize
+pub perl_parser_core::engine::error::BudgetTracker::tokens_consumed: usize
 pub perl_parser_core::engine::error::BudgetTracker::tokens_skipped: usize
+pub fn perl_parser_core::syntax::error::BudgetTracker::authorize_core(&mut self, budget: &perl_parser_core::syntax::error::ParseBudget, dimension: perl_parser_core::syntax::error::ParseCoreDimension) -> perl_parser_core::syntax::error::ParseResult<()>
+pub fn perl_parser_core::syntax::error::BudgetTracker::authorize_core_batch(&mut self, budget: &perl_parser_core::syntax::error::ParseBudget, dimension: perl_parser_core::syntax::error::ParseCoreDimension, count: usize) -> perl_parser_core::syntax::error::ParseResult<()>
 pub fn perl_parser_core::syntax::error::BudgetTracker::begin_recovery(&mut self, budget: &perl_parser_core::syntax::error::ParseBudget) -> bool
 pub fn perl_parser_core::syntax::error::BudgetTracker::can_skip_more(&self, budget: &perl_parser_core::syntax::error::ParseBudget, additional: usize) -> bool
+pub fn perl_parser_core::syntax::error::BudgetTracker::core_usage(&self, dimension: perl_parser_core::syntax::error::ParseCoreDimension) -> usize
 pub fn perl_parser_core::syntax::error::BudgetTracker::depth_would_exceed(&self, budget: &perl_parser_core::syntax::error::ParseBudget) -> bool
 pub fn perl_parser_core::syntax::error::BudgetTracker::enter_depth(&mut self)
 pub fn perl_parser_core::syntax::error::BudgetTracker::errors_exhausted(&self, budget: &perl_parser_core::syntax::error::ParseBudget) -> bool
 pub fn perl_parser_core::syntax::error::BudgetTracker::exit_depth(&mut self)
 pub fn perl_parser_core::syntax::error::BudgetTracker::heredoc_scan_exhausted(&self, budget: &perl_parser_core::syntax::error::ParseBudget) -> bool
-pub fn perl_parser_core::syntax::error::BudgetTracker::new() -> Self
+pub fn perl_parser_core::syntax::error::BudgetTracker::new() -> perl_parser_core::syntax::error::BudgetTracker
 pub fn perl_parser_core::syntax::error::BudgetTracker::record_error(&mut self)
 pub fn perl_parser_core::syntax::error::BudgetTracker::record_heredoc_scan(&mut self, bytes: usize)
 pub fn perl_parser_core::syntax::error::BudgetTracker::record_recovery(&mut self)
@@ -597,14 +643,17 @@ pub fn perl_parser_core::syntax::error::ErrorContext::fmt(&self, f: &mut core::f
 pub perl_parser_core::engine::error::ParseBudget::max_depth: usize
 pub perl_parser_core::engine::error::ParseBudget::max_errors: usize
 pub perl_parser_core::engine::error::ParseBudget::max_heredoc_scan_bytes: usize
+pub perl_parser_core::engine::error::ParseBudget::max_nodes_constructed: usize
 pub perl_parser_core::engine::error::ParseBudget::max_recoveries: usize
+pub perl_parser_core::engine::error::ParseBudget::max_tokens_consumed: usize
 pub perl_parser_core::engine::error::ParseBudget::max_tokens_skipped: usize
-pub fn perl_parser_core::syntax::error::ParseBudget::for_ide() -> Self
-pub fn perl_parser_core::syntax::error::ParseBudget::strict() -> Self
-pub fn perl_parser_core::syntax::error::ParseBudget::unlimited() -> Self
+pub fn perl_parser_core::syntax::error::ParseBudget::core_limit(&self, dimension: perl_parser_core::syntax::error::ParseCoreDimension) -> usize
+pub fn perl_parser_core::syntax::error::ParseBudget::for_ide() -> perl_parser_core::syntax::error::ParseBudget
+pub fn perl_parser_core::syntax::error::ParseBudget::strict() -> perl_parser_core::syntax::error::ParseBudget
+pub fn perl_parser_core::syntax::error::ParseBudget::unlimited() -> perl_parser_core::syntax::error::ParseBudget
 pub fn perl_parser_core::syntax::error::ParseBudget::clone(&self) -> perl_parser_core::syntax::error::ParseBudget
 pub fn perl_parser_core::syntax::error::ParseBudget::eq(&self, other: &perl_parser_core::syntax::error::ParseBudget) -> bool
-pub fn perl_parser_core::syntax::error::ParseBudget::default() -> Self
+pub fn perl_parser_core::syntax::error::ParseBudget::default() -> perl_parser_core::syntax::error::ParseBudget
 pub fn perl_parser_core::syntax::error::ParseBudget::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 #[non_exhaustive] pub struct perl_parser_core::engine::error::ParseOutput
 pub perl_parser_core::engine::error::ParseOutput::ast: perl_ast::ast::Node
@@ -612,11 +661,11 @@ pub perl_parser_core::engine::error::ParseOutput::budget_usage: perl_parser_core
 pub perl_parser_core::engine::error::ParseOutput::diagnostics: alloc::vec::Vec<perl_parser_core::syntax::error::ParseError>
 pub perl_parser_core::engine::error::ParseOutput::recovered_count: usize
 pub fn perl_parser_core::syntax::error::ParseOutput::error_count(&self) -> usize
-pub fn perl_parser_core::syntax::error::ParseOutput::finish(ast: perl_ast::ast::Node, diagnostics: alloc::vec::Vec<perl_parser_core::syntax::error::ParseError>, budget_usage: perl_parser_core::syntax::error::BudgetTracker, stop_cause: core::option::Option<perl_parser_core::syntax::error::ParseStopCause>) -> Self
+pub fn perl_parser_core::syntax::error::ParseOutput::finish(ast: perl_ast::ast::Node, diagnostics: alloc::vec::Vec<perl_parser_core::syntax::error::ParseError>, budget_usage: perl_parser_core::syntax::error::BudgetTracker, stop_cause: core::option::Option<perl_parser_core::syntax::error::ParseStopCause>) -> perl_parser_core::syntax::error::ParseOutput
 pub fn perl_parser_core::syntax::error::ParseOutput::has_errors(&self) -> bool
 pub fn perl_parser_core::syntax::error::ParseOutput::is_ok(&self) -> bool
-pub fn perl_parser_core::syntax::error::ParseOutput::success(ast: perl_ast::ast::Node) -> Self
-pub fn perl_parser_core::syntax::error::ParseOutput::with_errors(ast: perl_ast::ast::Node, diagnostics: alloc::vec::Vec<perl_parser_core::syntax::error::ParseError>) -> Self
+pub fn perl_parser_core::syntax::error::ParseOutput::success(ast: perl_ast::ast::Node) -> perl_parser_core::syntax::error::ParseOutput
+pub fn perl_parser_core::syntax::error::ParseOutput::with_errors(ast: perl_ast::ast::Node, diagnostics: alloc::vec::Vec<perl_parser_core::syntax::error::ParseError>) -> perl_parser_core::syntax::error::ParseOutput
 pub fn perl_parser_core::syntax::error::ParseOutput::set_stop_cause(&mut self, cause: core::option::Option<perl_parser_core::syntax::error::ParseStopCause>)
 pub fn perl_parser_core::syntax::error::ParseOutput::stop_cause(&self) -> core::option::Option<perl_parser_core::syntax::error::ParseStopCause>
 pub fn perl_parser_core::syntax::error::ParseOutput::terminated_early(&self) -> bool
@@ -628,7 +677,7 @@ pub perl_parser_core::engine::error::RecoverySalvageProfile::class: perl_parser_
 pub perl_parser_core::engine::error::RecoverySalvageProfile::error_node_count: usize
 pub perl_parser_core::engine::error::RecoverySalvageProfile::first_unrecovered_error_node: core::option::Option<alloc::string::String>
 pub perl_parser_core::engine::error::RecoverySalvageProfile::recovered_count: usize
-pub fn perl_parser_core::syntax::error::RecoverySalvageProfile::from_parse(ast: &perl_ast::ast::Node, diagnostics: &[perl_parser_core::syntax::error::ParseError], catastrophic: bool) -> Self
+pub fn perl_parser_core::syntax::error::RecoverySalvageProfile::from_parse(ast: &perl_ast::ast::Node, diagnostics: &[perl_parser_core::syntax::error::ParseError], catastrophic: bool) -> perl_parser_core::syntax::error::RecoverySalvageProfile
 pub fn perl_parser_core::syntax::error::RecoverySalvageProfile::clone(&self) -> perl_parser_core::syntax::error::RecoverySalvageProfile
 pub fn perl_parser_core::syntax::error::RecoverySalvageProfile::eq(&self, other: &perl_parser_core::syntax::error::RecoverySalvageProfile) -> bool
 pub fn perl_parser_core::syntax::error::RecoverySalvageProfile::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
@@ -670,21 +719,21 @@ pub mod perl_parser_core::engine::parser
 pub struct perl_parser_core::engine::parser::Parser<'a>
 pub fn perl_parser_core::engine::parser::Parser<'a>::config_identity(&self) -> perl_parser_core::ParserConfigIdentity
 pub fn perl_parser_core::engine::parser::Parser<'a>::errors(&self) -> &[perl_parser_core::syntax::error::ParseError]
-pub fn perl_parser_core::engine::parser::Parser<'a>::from_tokens(tokens: alloc::vec::Vec<perl_token::token::Token>, source: &'a str) -> Self
-pub fn perl_parser_core::engine::parser::Parser<'a>::new(input: &'a str) -> Self
-pub fn perl_parser_core::engine::parser::Parser<'a>::new_with_cancellation(input: &'a str, cancellation_flag: alloc::sync::Arc<core::sync::atomic::AtomicBool>) -> Self
-pub fn perl_parser_core::engine::parser::Parser<'a>::new_with_recovery_config(input: &'a str, _config: ()) -> Self
+pub fn perl_parser_core::engine::parser::Parser<'a>::from_tokens(tokens: alloc::vec::Vec<perl_token::token::Token>, source: &'a str) -> perl_parser_core::engine::parser::Parser<'a>
+pub fn perl_parser_core::engine::parser::Parser<'a>::new(input: &'a str) -> perl_parser_core::engine::parser::Parser<'a>
+pub fn perl_parser_core::engine::parser::Parser<'a>::new_with_cancellation(input: &'a str, cancellation_flag: alloc::sync::Arc<core::sync::atomic::AtomicBool>) -> perl_parser_core::engine::parser::Parser<'a>
+pub fn perl_parser_core::engine::parser::Parser<'a>::new_with_recovery_config(input: &'a str, _config: ()) -> perl_parser_core::engine::parser::Parser<'a>
 pub fn perl_parser_core::engine::parser::Parser<'a>::operation_id(&self) -> perl_parser_core::ParserOperationId
 pub fn perl_parser_core::engine::parser::Parser<'a>::parse(&mut self) -> perl_parser_core::syntax::error::ParseResult<perl_ast::ast::Node>
 pub fn perl_parser_core::engine::parser::Parser<'a>::parse_with_recovery(&mut self) -> perl_parser_core::syntax::error::ParseOutput
-pub fn perl_parser_core::engine::parser::Parser<'a>::with_production_config(input: &'a str, config: perl_parser_core::ParserConfigIdentity) -> Self
+pub fn perl_parser_core::engine::parser::Parser<'a>::with_production_config(input: &'a str, config: perl_parser_core::ParserConfigIdentity) -> perl_parser_core::engine::parser::Parser<'a>
 pub fn perl_parser_core::engine::parser::Parser<'a>::get_errors(&self) -> &[perl_parser_core::syntax::error::ParseError]
 pub struct perl_parser_core::engine::parser::ParserConfigIdentity
 pub fn perl_parser_core::ParserConfigIdentity::budget(self) -> perl_parser_core::syntax::error::ParseBudget
 pub fn perl_parser_core::ParserConfigIdentity::max_block_nesting_depth(self) -> usize
 pub fn perl_parser_core::ParserConfigIdentity::max_recursion_depth(self) -> usize
-pub fn perl_parser_core::ParserConfigIdentity::production_default() -> Self
-pub fn perl_parser_core::ParserConfigIdentity::with_budget(self, budget: perl_parser_core::syntax::error::ParseBudget) -> Self
+pub fn perl_parser_core::ParserConfigIdentity::production_default() -> perl_parser_core::ParserConfigIdentity
+pub fn perl_parser_core::ParserConfigIdentity::with_budget(self, budget: perl_parser_core::syntax::error::ParseBudget) -> perl_parser_core::ParserConfigIdentity
 pub fn perl_parser_core::ParserConfigIdentity::clone(&self) -> perl_parser_core::ParserConfigIdentity
 pub fn perl_parser_core::ParserConfigIdentity::eq(&self, other: &perl_parser_core::ParserConfigIdentity) -> bool
 pub fn perl_parser_core::ParserConfigIdentity::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
@@ -715,12 +764,12 @@ pub fn perl_parser_core::engine::parser_context::ParserContext::errors_exhausted
 pub fn perl_parser_core::engine::parser_context::ParserContext::exit_depth(&mut self)
 pub fn perl_parser_core::engine::parser_context::ParserContext::expect(&mut self, expected: perl_lexer::token::TokenType) -> core::result::Result<&perl_lexer::tokenizer::token_wrapper::TokenWithPosition, perl_parser_core::engine::error::recovery::ParseError>
 pub fn perl_parser_core::engine::parser_context::ParserContext::is_eof(&self) -> bool
-pub fn perl_parser_core::engine::parser_context::ParserContext::new(source: alloc::string::String) -> Self
+pub fn perl_parser_core::engine::parser_context::ParserContext::new(source: alloc::string::String) -> perl_parser_core::engine::parser_context::ParserContext
 pub fn perl_parser_core::engine::parser_context::ParserContext::peek_token(&self, offset: usize) -> core::option::Option<&perl_lexer::tokenizer::token_wrapper::TokenWithPosition>
 pub fn perl_parser_core::engine::parser_context::ParserContext::set_index(&mut self, index: usize)
 pub fn perl_parser_core::engine::parser_context::ParserContext::source_slice(&self, range: &perl_position_tracking::position::Range) -> &str
 pub fn perl_parser_core::engine::parser_context::ParserContext::take_errors(&mut self) -> alloc::vec::Vec<perl_parser_core::engine::error::recovery::ParseError>
-pub fn perl_parser_core::engine::parser_context::ParserContext::with_budget(source: alloc::string::String, budget: perl_parser_core::syntax::error::ParseBudget) -> Self
+pub fn perl_parser_core::engine::parser_context::ParserContext::with_budget(source: alloc::string::String, budget: perl_parser_core::syntax::error::ParseBudget) -> perl_parser_core::engine::parser_context::ParserContext
 pub fn perl_parser_core::engine::parser_context::ParserContext::create_error_node(&mut self, message: alloc::string::String, expected: alloc::vec::Vec<alloc::string::String>, partial: core::option::Option<perl_ast_v2::Node>) -> perl_ast_v2::Node
 pub fn perl_parser_core::engine::parser_context::ParserContext::is_sync_point(&self, sync_point: perl_parser_core::engine::error::recovery::SyncPoint) -> bool
 pub fn perl_parser_core::engine::parser_context::ParserContext::recover_with_node(&mut self, error: perl_parser_core::engine::error::recovery::ParseError) -> perl_ast_v2::Node
@@ -747,7 +796,7 @@ pub perl_parser_core::engine::quote_parser::MatchError::InvalidModifier(char)
 pub perl_parser_core::engine::quote_parser::MatchError::MissingDelimiter
 pub fn perl_parser_core::syntax::quote::MatchError::clone(&self) -> perl_parser_core::syntax::quote::MatchError
 pub fn perl_parser_core::syntax::quote::MatchError::eq(&self, other: &perl_parser_core::syntax::quote::MatchError) -> bool
-pub fn perl_parser_core::syntax::quote::MatchError::from(c: char) -> Self
+pub fn perl_parser_core::syntax::quote::MatchError::from(c: char) -> perl_parser_core::syntax::quote::MatchError
 pub fn perl_parser_core::syntax::quote::MatchError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 #[non_exhaustive] pub enum perl_parser_core::engine::quote_parser::RegexFamilyOperator
 pub perl_parser_core::engine::quote_parser::RegexFamilyOperator::BareMatch
@@ -823,9 +872,9 @@ pub fn perl_parser_core::engine::regex_retention::RegexParseOutput::into_parts(s
 pub fn perl_parser_core::engine::regex_retention::RegexParseOutput::clone(&self) -> perl_parser_core::engine::regex_retention::RegexParseOutput
 pub fn perl_parser_core::engine::regex_retention::RegexParseOutput::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub type perl_parser_core::engine::regex_retention::RegexParseOutput::Target = perl_parser_core::syntax::error::ParseOutput
-pub fn perl_parser_core::engine::regex_retention::RegexParseOutput::deref(&self) -> &Self::Target
+pub fn perl_parser_core::engine::regex_retention::RegexParseOutput::deref(&self) -> &perl_parser_core::engine::regex_retention::RegexParseOutput::Target
 pub struct perl_parser_core::engine::regex_retention::RetainedRegexSession<'source>
-pub fn perl_parser_core::engine::regex_retention::RetainedRegexSession<'source>::begin(source: &'source str) -> Self
+pub fn perl_parser_core::engine::regex_retention::RetainedRegexSession<'source>::begin(source: &'source str) -> perl_parser_core::engine::regex_retention::RetainedRegexSession<'source>
 pub fn perl_parser_core::engine::regex_retention::RetainedRegexSession<'source>::finish(self, ast: core::option::Option<&mut perl_ast::ast::Node>) -> perl_parser_core::syntax::regex_analysis::RegexAnalysisTable
 pub fn perl_parser_core::engine::regex_retention::RetainedRegexSession<'source>::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_parser_core::engine::regex_retention::parse_source_with_cancellation_and_regex_analysis(source: &str, cancellation_flag: alloc::sync::Arc<core::sync::atomic::AtomicBool>) -> perl_parser_core::engine::regex_retention::RegexParseOutput
@@ -859,8 +908,8 @@ pub fn perl_parser_core::engine::error::classifier::ErrorClassifier::classify(&s
 pub fn perl_parser_core::engine::error::classifier::ErrorClassifier::get_diagnostic_message(&self, kind: &perl_parser_core::engine::error::classifier::ParseErrorKind) -> alloc::string::String
 pub fn perl_parser_core::engine::error::classifier::ErrorClassifier::get_explanation(&self, kind: &perl_parser_core::engine::error::classifier::ParseErrorKind) -> core::option::Option<alloc::string::String>
 pub fn perl_parser_core::engine::error::classifier::ErrorClassifier::get_suggestion(&self, kind: &perl_parser_core::engine::error::classifier::ParseErrorKind) -> core::option::Option<alloc::string::String>
-pub fn perl_parser_core::engine::error::classifier::ErrorClassifier::new() -> Self
-pub fn perl_parser_core::engine::error::classifier::ErrorClassifier::default() -> Self
+pub fn perl_parser_core::engine::error::classifier::ErrorClassifier::new() -> perl_parser_core::engine::error::classifier::ErrorClassifier
+pub fn perl_parser_core::engine::error::classifier::ErrorClassifier::default() -> perl_parser_core::engine::error::classifier::ErrorClassifier
 pub struct perl_parser_core::error::classifier::RecoverySalvageMetrics
 pub perl_parser_core::error::classifier::RecoverySalvageMetrics::error_node_count: usize
 pub perl_parser_core::error::classifier::RecoverySalvageMetrics::first_unrecovered_error_node: core::option::Option<alloc::string::String>
@@ -897,10 +946,10 @@ pub perl_parser_core::error::recovery::ParseError::found: alloc::string::String
 pub perl_parser_core::error::recovery::ParseError::message: alloc::string::String
 pub perl_parser_core::error::recovery::ParseError::range: perl_position_tracking::position::Range
 pub perl_parser_core::error::recovery::ParseError::recovery_hint: core::option::Option<alloc::string::String>
-pub fn perl_parser_core::engine::error::recovery::ParseError::new(message: alloc::string::String, range: perl_position_tracking::position::Range) -> Self
-pub fn perl_parser_core::engine::error::recovery::ParseError::with_expected(self, expected: alloc::vec::Vec<alloc::string::String>) -> Self
-pub fn perl_parser_core::engine::error::recovery::ParseError::with_found(self, found: alloc::string::String) -> Self
-pub fn perl_parser_core::engine::error::recovery::ParseError::with_hint(self, hint: alloc::string::String) -> Self
+pub fn perl_parser_core::engine::error::recovery::ParseError::new(message: alloc::string::String, range: perl_position_tracking::position::Range) -> perl_parser_core::engine::error::recovery::ParseError
+pub fn perl_parser_core::engine::error::recovery::ParseError::with_expected(self, expected: alloc::vec::Vec<alloc::string::String>) -> perl_parser_core::engine::error::recovery::ParseError
+pub fn perl_parser_core::engine::error::recovery::ParseError::with_found(self, found: alloc::string::String) -> perl_parser_core::engine::error::recovery::ParseError
+pub fn perl_parser_core::engine::error::recovery::ParseError::with_hint(self, hint: alloc::string::String) -> perl_parser_core::engine::error::recovery::ParseError
 pub fn perl_parser_core::engine::error::recovery::ParseError::clone(&self) -> perl_parser_core::engine::error::recovery::ParseError
 pub fn perl_parser_core::engine::error::recovery::ParseError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub trait perl_parser_core::error::recovery::ErrorRecovery
@@ -917,9 +966,9 @@ pub fn perl_parser_core::engine::parser_context::ParserContext::skip_until(&mut 
 pub fn perl_parser_core::engine::parser_context::ParserContext::skip_until_with_budget(&mut self, sync_points: &[perl_parser_core::engine::error::recovery::SyncPoint], budget: &perl_parser_core::syntax::error::ParseBudget, tracker: &mut perl_parser_core::syntax::error::BudgetTracker) -> perl_parser_core::engine::error::recovery::RecoveryResult
 pub fn perl_parser_core::engine::parser_context::ParserContext::synchronize(&mut self, sync_points: &[perl_parser_core::engine::error::recovery::SyncPoint]) -> bool
 pub trait perl_parser_core::error::recovery::ParserErrorRecovery
-pub fn perl_parser_core::error::recovery::ParserErrorRecovery::parse_list_with_recovery<F>(&mut self, parse_element: F, separator: perl_lexer::token::TokenType, terminator: perl_lexer::token::TokenType) -> alloc::vec::Vec<perl_ast_v2::Node> where F: core::ops::function::Fn(&mut Self) -> perl_ast_v2::Node
+pub fn perl_parser_core::error::recovery::ParserErrorRecovery::parse_list_with_recovery<F>(&mut self, parse_element: F, separator: perl_lexer::token::TokenType, terminator: perl_lexer::token::TokenType) -> alloc::vec::Vec<perl_ast_v2::Node> where F: core::ops::function::Fn(&mut perl_parser_core::error::recovery::ParserErrorRecovery) -> perl_ast_v2::Node
 pub fn perl_parser_core::error::recovery::ParserErrorRecovery::parse_with_recovery(&mut self) -> (perl_ast_v2::Node, alloc::vec::Vec<perl_parser_core::engine::error::recovery::ParseError>)
-pub fn perl_parser_core::error::recovery::ParserErrorRecovery::try_parse<F>(&mut self, parse_fn: F) -> perl_ast_v2::Node where F: core::ops::function::FnOnce(&mut Self) -> core::option::Option<perl_ast_v2::Node>
+pub fn perl_parser_core::error::recovery::ParserErrorRecovery::try_parse<F>(&mut self, parse_fn: F) -> perl_ast_v2::Node where F: core::ops::function::FnOnce(&mut perl_parser_core::error::recovery::ParserErrorRecovery) -> core::option::Option<perl_ast_v2::Node>
 pub trait perl_parser_core::error::recovery::StatementRecovery
 pub fn perl_parser_core::error::recovery::StatementRecovery::parse_block_with_recovery(&mut self) -> perl_ast_v2::Node
 pub fn perl_parser_core::error::recovery::StatementRecovery::parse_expression_with_recovery(&mut self) -> perl_ast_v2::Node
@@ -937,6 +986,31 @@ pub fn perl_parser_core::syntax::error::ErrorCategory::clone(&self) -> perl_pars
 pub fn perl_parser_core::syntax::error::ErrorCategory::eq(&self, other: &perl_parser_core::syntax::error::ErrorCategory) -> bool
 pub fn perl_parser_core::syntax::error::ErrorCategory::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_parser_core::syntax::error::ErrorCategory::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub enum perl_parser_core::error::InvalidSignatureOrderingKind
+pub perl_parser_core::error::InvalidSignatureOrderingKind::MandatoryAfterOptional
+pub perl_parser_core::error::InvalidSignatureOrderingKind::ParameterAfterSlurpy
+pub perl_parser_core::error::InvalidSignatureOrderingKind::PositionalAfterNamed
+pub perl_parser_core::error::InvalidSignatureOrderingKind::RequiredNamedAfterOptional
+pub fn perl_parser_core::syntax::error::InvalidSignatureOrderingKind::clone(&self) -> perl_parser_core::syntax::error::InvalidSignatureOrderingKind
+pub fn perl_parser_core::syntax::error::InvalidSignatureOrderingKind::eq(&self, other: &perl_parser_core::syntax::error::InvalidSignatureOrderingKind) -> bool
+pub fn perl_parser_core::syntax::error::InvalidSignatureOrderingKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum perl_parser_core::error::InvalidSignatureParameterKind
+pub perl_parser_core::error::InvalidSignatureParameterKind::MissingDefaultExpression
+pub perl_parser_core::error::InvalidSignatureParameterKind::NamedAggregate
+pub perl_parser_core::error::InvalidSignatureParameterKind::SlurpyDefault
+pub fn perl_parser_core::syntax::error::InvalidSignatureParameterKind::clone(&self) -> perl_parser_core::syntax::error::InvalidSignatureParameterKind
+pub fn perl_parser_core::syntax::error::InvalidSignatureParameterKind::eq(&self, other: &perl_parser_core::syntax::error::InvalidSignatureParameterKind) -> bool
+pub fn perl_parser_core::syntax::error::InvalidSignatureParameterKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+#[non_exhaustive] pub enum perl_parser_core::error::ParseCoreDimension
+pub perl_parser_core::error::ParseCoreDimension::DiagnosticsEmitted
+pub perl_parser_core::error::ParseCoreDimension::NodesConstructed
+pub perl_parser_core::error::ParseCoreDimension::TokensConsumed
+pub fn perl_parser_core::syntax::error::ParseCoreDimension::as_str(self) -> &'static str
+pub fn perl_parser_core::syntax::error::ParseCoreDimension::clone(&self) -> perl_parser_core::syntax::error::ParseCoreDimension
+pub fn perl_parser_core::syntax::error::ParseCoreDimension::eq(&self, other: &perl_parser_core::syntax::error::ParseCoreDimension) -> bool
+pub fn perl_parser_core::syntax::error::ParseCoreDimension::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_parser_core::syntax::error::ParseCoreDimension::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_parser_core::syntax::error::ParseCoreDimension::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
 pub enum perl_parser_core::error::ParseDiagnosticAnchor
 pub perl_parser_core::error::ParseDiagnosticAnchor::EndOfInput
 pub perl_parser_core::error::ParseDiagnosticAnchor::Exact(usize)
@@ -957,7 +1031,13 @@ pub fn perl_parser_core::syntax::error::ParseDiagnosticSeverity::fmt(&self, f: &
 pub perl_parser_core::error::ParseError::Advisory
 pub perl_parser_core::error::ParseError::Advisory::location: usize
 pub perl_parser_core::error::ParseError::Advisory::message: alloc::string::String
+pub perl_parser_core::error::ParseError::CStyleForContinueBlock
+pub perl_parser_core::error::ParseError::CStyleForContinueBlock::location: usize
 pub perl_parser_core::error::ParseError::Cancelled
+pub perl_parser_core::error::ParseError::CoreBudgetExhausted
+pub perl_parser_core::error::ParseError::CoreBudgetExhausted::dimension: perl_parser_core::syntax::error::ParseCoreDimension
+pub perl_parser_core::error::ParseError::CoreBudgetExhausted::limit: usize
+pub perl_parser_core::error::ParseError::CoreBudgetExhausted::usage: usize
 pub perl_parser_core::error::ParseError::DoWhileTrailingBlock
 pub perl_parser_core::error::ParseError::DoWhileTrailingBlock::location: usize
 pub perl_parser_core::error::ParseError::HeredocBudgetExhausted
@@ -968,6 +1048,12 @@ pub perl_parser_core::error::ParseError::InvalidNumber
 pub perl_parser_core::error::ParseError::InvalidNumber::literal: alloc::string::String
 pub perl_parser_core::error::ParseError::InvalidRegex
 pub perl_parser_core::error::ParseError::InvalidRegex::message: alloc::string::String
+pub perl_parser_core::error::ParseError::InvalidSignatureOrdering
+pub perl_parser_core::error::ParseError::InvalidSignatureOrdering::kind: perl_parser_core::syntax::error::InvalidSignatureOrderingKind
+pub perl_parser_core::error::ParseError::InvalidSignatureOrdering::range: perl_position_tracking::span::SourceLocation
+pub perl_parser_core::error::ParseError::InvalidSignatureParameter
+pub perl_parser_core::error::ParseError::InvalidSignatureParameter::kind: perl_parser_core::syntax::error::InvalidSignatureParameterKind
+pub perl_parser_core::error::ParseError::InvalidSignatureParameter::range: perl_position_tracking::span::SourceLocation
 pub perl_parser_core::error::ParseError::InvalidString
 pub perl_parser_core::error::ParseError::LexerError
 pub perl_parser_core::error::ParseError::LexerError::message: alloc::string::String
@@ -996,21 +1082,25 @@ pub fn perl_parser_core::syntax::error::ParseError::blocks_clean_parse(&self) ->
 pub fn perl_parser_core::syntax::error::ParseError::diagnostic_anchor(&self) -> perl_parser_core::syntax::error::ParseDiagnosticAnchor
 pub fn perl_parser_core::syntax::error::ParseError::is_recursion_limit(&self) -> bool
 pub fn perl_parser_core::syntax::error::ParseError::location(&self) -> core::option::Option<usize>
-pub fn perl_parser_core::syntax::error::ParseError::nested_quantifier_advisory(location: usize) -> Self
+pub fn perl_parser_core::syntax::error::ParseError::nested_quantifier_advisory(location: usize) -> perl_parser_core::syntax::error::ParseError
 pub fn perl_parser_core::syntax::error::ParseError::resolved_diagnostic_anchor(&self, source: &str) -> perl_parser_core::syntax::error::ResolvedParseDiagnosticAnchor
 pub fn perl_parser_core::syntax::error::ParseError::severity(&self) -> perl_parser_core::syntax::error::ParseDiagnosticSeverity
 pub fn perl_parser_core::syntax::error::ParseError::suggestion(&self) -> core::option::Option<alloc::string::String>
-pub fn perl_parser_core::syntax::error::ParseError::syntax(message: impl core::convert::Into<alloc::string::String>, location: usize) -> Self
-pub fn perl_parser_core::syntax::error::ParseError::unexpected(expected: impl core::convert::Into<alloc::string::String>, found: impl core::convert::Into<alloc::string::String>, location: usize) -> Self
+pub fn perl_parser_core::syntax::error::ParseError::syntax(message: impl core::convert::Into<alloc::string::String>, location: usize) -> perl_parser_core::syntax::error::ParseError
+pub fn perl_parser_core::syntax::error::ParseError::unexpected(expected: impl core::convert::Into<alloc::string::String>, found: impl core::convert::Into<alloc::string::String>, location: usize) -> perl_parser_core::syntax::error::ParseError
 pub fn perl_parser_core::syntax::error::ParseError::clone(&self) -> perl_parser_core::syntax::error::ParseError
 pub fn perl_parser_core::syntax::error::ParseError::eq(&self, other: &perl_parser_core::syntax::error::ParseError) -> bool
-pub fn perl_parser_core::syntax::error::ParseError::from(err: perl_regex::error::RegexError) -> Self
+pub fn perl_parser_core::syntax::error::ParseError::from(err: perl_regex::error::RegexError) -> perl_parser_core::syntax::error::ParseError
 pub fn perl_parser_core::syntax::error::ParseError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_parser_core::syntax::error::ParseError::fmt(&self, __formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_parser_core::syntax::error::ParseError::error_class(&self) -> perl_parser_core::syntax::error::ErrorCategory
 #[non_exhaustive] pub enum perl_parser_core::error::ParseStopCause
 pub perl_parser_core::error::ParseStopCause::Cancelled
 pub perl_parser_core::error::ParseStopCause::CatastrophicTermination
+pub perl_parser_core::error::ParseStopCause::CoreBudgetExhausted
+pub perl_parser_core::error::ParseStopCause::CoreBudgetExhausted::dimension: perl_parser_core::syntax::error::ParseCoreDimension
+pub perl_parser_core::error::ParseStopCause::CoreBudgetExhausted::limit: usize
+pub perl_parser_core::error::ParseStopCause::CoreBudgetExhausted::usage: usize
 pub perl_parser_core::error::ParseStopCause::FutureTypedTerminal
 pub perl_parser_core::error::ParseStopCause::HeredocBudgetExhausted
 pub perl_parser_core::error::ParseStopCause::HeredocBudgetExhausted::limit: usize
@@ -1023,7 +1113,7 @@ pub perl_parser_core::error::ParseStopCause::RecursionBudgetExhausted
 pub perl_parser_core::error::ParseStopCause::RecursionBudgetExhausted::limit: core::option::Option<usize>
 pub perl_parser_core::error::ParseStopCause::RecursionBudgetExhausted::usage: core::option::Option<usize>
 pub fn perl_parser_core::syntax::error::ParseStopCause::as_str(&self) -> &'static str
-pub fn perl_parser_core::syntax::error::ParseStopCause::from_parse_error(error: &perl_parser_core::syntax::error::ParseError) -> Self
+pub fn perl_parser_core::syntax::error::ParseStopCause::from_parse_error(error: &perl_parser_core::syntax::error::ParseError) -> perl_parser_core::syntax::error::ParseStopCause
 pub fn perl_parser_core::syntax::error::ParseStopCause::is_budget_exhaustion(&self) -> bool
 pub fn perl_parser_core::syntax::error::ParseStopCause::is_cancelled(&self) -> bool
 pub fn perl_parser_core::syntax::error::ParseStopCause::clone(&self) -> perl_parser_core::syntax::error::ParseStopCause
@@ -1074,16 +1164,21 @@ pub perl_parser_core::error::BudgetTracker::current_depth: usize
 pub perl_parser_core::error::BudgetTracker::errors_emitted: usize
 pub perl_parser_core::error::BudgetTracker::heredoc_scan_bytes: usize
 pub perl_parser_core::error::BudgetTracker::max_depth_reached: usize
+pub perl_parser_core::error::BudgetTracker::nodes_constructed: usize
 pub perl_parser_core::error::BudgetTracker::recoveries_attempted: usize
+pub perl_parser_core::error::BudgetTracker::tokens_consumed: usize
 pub perl_parser_core::error::BudgetTracker::tokens_skipped: usize
+pub fn perl_parser_core::syntax::error::BudgetTracker::authorize_core(&mut self, budget: &perl_parser_core::syntax::error::ParseBudget, dimension: perl_parser_core::syntax::error::ParseCoreDimension) -> perl_parser_core::syntax::error::ParseResult<()>
+pub fn perl_parser_core::syntax::error::BudgetTracker::authorize_core_batch(&mut self, budget: &perl_parser_core::syntax::error::ParseBudget, dimension: perl_parser_core::syntax::error::ParseCoreDimension, count: usize) -> perl_parser_core::syntax::error::ParseResult<()>
 pub fn perl_parser_core::syntax::error::BudgetTracker::begin_recovery(&mut self, budget: &perl_parser_core::syntax::error::ParseBudget) -> bool
 pub fn perl_parser_core::syntax::error::BudgetTracker::can_skip_more(&self, budget: &perl_parser_core::syntax::error::ParseBudget, additional: usize) -> bool
+pub fn perl_parser_core::syntax::error::BudgetTracker::core_usage(&self, dimension: perl_parser_core::syntax::error::ParseCoreDimension) -> usize
 pub fn perl_parser_core::syntax::error::BudgetTracker::depth_would_exceed(&self, budget: &perl_parser_core::syntax::error::ParseBudget) -> bool
 pub fn perl_parser_core::syntax::error::BudgetTracker::enter_depth(&mut self)
 pub fn perl_parser_core::syntax::error::BudgetTracker::errors_exhausted(&self, budget: &perl_parser_core::syntax::error::ParseBudget) -> bool
 pub fn perl_parser_core::syntax::error::BudgetTracker::exit_depth(&mut self)
 pub fn perl_parser_core::syntax::error::BudgetTracker::heredoc_scan_exhausted(&self, budget: &perl_parser_core::syntax::error::ParseBudget) -> bool
-pub fn perl_parser_core::syntax::error::BudgetTracker::new() -> Self
+pub fn perl_parser_core::syntax::error::BudgetTracker::new() -> perl_parser_core::syntax::error::BudgetTracker
 pub fn perl_parser_core::syntax::error::BudgetTracker::record_error(&mut self)
 pub fn perl_parser_core::syntax::error::BudgetTracker::record_heredoc_scan(&mut self, bytes: usize)
 pub fn perl_parser_core::syntax::error::BudgetTracker::record_recovery(&mut self)
@@ -1105,14 +1200,17 @@ pub fn perl_parser_core::syntax::error::ErrorContext::fmt(&self, f: &mut core::f
 pub perl_parser_core::error::ParseBudget::max_depth: usize
 pub perl_parser_core::error::ParseBudget::max_errors: usize
 pub perl_parser_core::error::ParseBudget::max_heredoc_scan_bytes: usize
+pub perl_parser_core::error::ParseBudget::max_nodes_constructed: usize
 pub perl_parser_core::error::ParseBudget::max_recoveries: usize
+pub perl_parser_core::error::ParseBudget::max_tokens_consumed: usize
 pub perl_parser_core::error::ParseBudget::max_tokens_skipped: usize
-pub fn perl_parser_core::syntax::error::ParseBudget::for_ide() -> Self
-pub fn perl_parser_core::syntax::error::ParseBudget::strict() -> Self
-pub fn perl_parser_core::syntax::error::ParseBudget::unlimited() -> Self
+pub fn perl_parser_core::syntax::error::ParseBudget::core_limit(&self, dimension: perl_parser_core::syntax::error::ParseCoreDimension) -> usize
+pub fn perl_parser_core::syntax::error::ParseBudget::for_ide() -> perl_parser_core::syntax::error::ParseBudget
+pub fn perl_parser_core::syntax::error::ParseBudget::strict() -> perl_parser_core::syntax::error::ParseBudget
+pub fn perl_parser_core::syntax::error::ParseBudget::unlimited() -> perl_parser_core::syntax::error::ParseBudget
 pub fn perl_parser_core::syntax::error::ParseBudget::clone(&self) -> perl_parser_core::syntax::error::ParseBudget
 pub fn perl_parser_core::syntax::error::ParseBudget::eq(&self, other: &perl_parser_core::syntax::error::ParseBudget) -> bool
-pub fn perl_parser_core::syntax::error::ParseBudget::default() -> Self
+pub fn perl_parser_core::syntax::error::ParseBudget::default() -> perl_parser_core::syntax::error::ParseBudget
 pub fn perl_parser_core::syntax::error::ParseBudget::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 #[non_exhaustive] pub struct perl_parser_core::error::ParseOutput
 pub perl_parser_core::error::ParseOutput::ast: perl_ast::ast::Node
@@ -1120,11 +1218,11 @@ pub perl_parser_core::error::ParseOutput::budget_usage: perl_parser_core::syntax
 pub perl_parser_core::error::ParseOutput::diagnostics: alloc::vec::Vec<perl_parser_core::syntax::error::ParseError>
 pub perl_parser_core::error::ParseOutput::recovered_count: usize
 pub fn perl_parser_core::syntax::error::ParseOutput::error_count(&self) -> usize
-pub fn perl_parser_core::syntax::error::ParseOutput::finish(ast: perl_ast::ast::Node, diagnostics: alloc::vec::Vec<perl_parser_core::syntax::error::ParseError>, budget_usage: perl_parser_core::syntax::error::BudgetTracker, stop_cause: core::option::Option<perl_parser_core::syntax::error::ParseStopCause>) -> Self
+pub fn perl_parser_core::syntax::error::ParseOutput::finish(ast: perl_ast::ast::Node, diagnostics: alloc::vec::Vec<perl_parser_core::syntax::error::ParseError>, budget_usage: perl_parser_core::syntax::error::BudgetTracker, stop_cause: core::option::Option<perl_parser_core::syntax::error::ParseStopCause>) -> perl_parser_core::syntax::error::ParseOutput
 pub fn perl_parser_core::syntax::error::ParseOutput::has_errors(&self) -> bool
 pub fn perl_parser_core::syntax::error::ParseOutput::is_ok(&self) -> bool
-pub fn perl_parser_core::syntax::error::ParseOutput::success(ast: perl_ast::ast::Node) -> Self
-pub fn perl_parser_core::syntax::error::ParseOutput::with_errors(ast: perl_ast::ast::Node, diagnostics: alloc::vec::Vec<perl_parser_core::syntax::error::ParseError>) -> Self
+pub fn perl_parser_core::syntax::error::ParseOutput::success(ast: perl_ast::ast::Node) -> perl_parser_core::syntax::error::ParseOutput
+pub fn perl_parser_core::syntax::error::ParseOutput::with_errors(ast: perl_ast::ast::Node, diagnostics: alloc::vec::Vec<perl_parser_core::syntax::error::ParseError>) -> perl_parser_core::syntax::error::ParseOutput
 pub fn perl_parser_core::syntax::error::ParseOutput::set_stop_cause(&mut self, cause: core::option::Option<perl_parser_core::syntax::error::ParseStopCause>)
 pub fn perl_parser_core::syntax::error::ParseOutput::stop_cause(&self) -> core::option::Option<perl_parser_core::syntax::error::ParseStopCause>
 pub fn perl_parser_core::syntax::error::ParseOutput::terminated_early(&self) -> bool
@@ -1136,7 +1234,7 @@ pub perl_parser_core::error::RecoverySalvageProfile::class: perl_parser_core::sy
 pub perl_parser_core::error::RecoverySalvageProfile::error_node_count: usize
 pub perl_parser_core::error::RecoverySalvageProfile::first_unrecovered_error_node: core::option::Option<alloc::string::String>
 pub perl_parser_core::error::RecoverySalvageProfile::recovered_count: usize
-pub fn perl_parser_core::syntax::error::RecoverySalvageProfile::from_parse(ast: &perl_ast::ast::Node, diagnostics: &[perl_parser_core::syntax::error::ParseError], catastrophic: bool) -> Self
+pub fn perl_parser_core::syntax::error::RecoverySalvageProfile::from_parse(ast: &perl_ast::ast::Node, diagnostics: &[perl_parser_core::syntax::error::ParseError], catastrophic: bool) -> perl_parser_core::syntax::error::RecoverySalvageProfile
 pub fn perl_parser_core::syntax::error::RecoverySalvageProfile::clone(&self) -> perl_parser_core::syntax::error::RecoverySalvageProfile
 pub fn perl_parser_core::syntax::error::RecoverySalvageProfile::eq(&self, other: &perl_parser_core::syntax::error::RecoverySalvageProfile) -> bool
 pub fn perl_parser_core::syntax::error::RecoverySalvageProfile::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
@@ -1172,8 +1270,8 @@ pub fn perl_parser_core::engine::error::classifier::ErrorClassifier::classify(&s
 pub fn perl_parser_core::engine::error::classifier::ErrorClassifier::get_diagnostic_message(&self, kind: &perl_parser_core::engine::error::classifier::ParseErrorKind) -> alloc::string::String
 pub fn perl_parser_core::engine::error::classifier::ErrorClassifier::get_explanation(&self, kind: &perl_parser_core::engine::error::classifier::ParseErrorKind) -> core::option::Option<alloc::string::String>
 pub fn perl_parser_core::engine::error::classifier::ErrorClassifier::get_suggestion(&self, kind: &perl_parser_core::engine::error::classifier::ParseErrorKind) -> core::option::Option<alloc::string::String>
-pub fn perl_parser_core::engine::error::classifier::ErrorClassifier::new() -> Self
-pub fn perl_parser_core::engine::error::classifier::ErrorClassifier::default() -> Self
+pub fn perl_parser_core::engine::error::classifier::ErrorClassifier::new() -> perl_parser_core::engine::error::classifier::ErrorClassifier
+pub fn perl_parser_core::engine::error::classifier::ErrorClassifier::default() -> perl_parser_core::engine::error::classifier::ErrorClassifier
 pub struct perl_parser_core::error_classifier::RecoverySalvageMetrics
 pub perl_parser_core::error_classifier::RecoverySalvageMetrics::error_node_count: usize
 pub perl_parser_core::error_classifier::RecoverySalvageMetrics::first_unrecovered_error_node: core::option::Option<alloc::string::String>
@@ -1209,10 +1307,10 @@ pub perl_parser_core::error_recovery::ParseError::found: alloc::string::String
 pub perl_parser_core::error_recovery::ParseError::message: alloc::string::String
 pub perl_parser_core::error_recovery::ParseError::range: perl_position_tracking::position::Range
 pub perl_parser_core::error_recovery::ParseError::recovery_hint: core::option::Option<alloc::string::String>
-pub fn perl_parser_core::engine::error::recovery::ParseError::new(message: alloc::string::String, range: perl_position_tracking::position::Range) -> Self
-pub fn perl_parser_core::engine::error::recovery::ParseError::with_expected(self, expected: alloc::vec::Vec<alloc::string::String>) -> Self
-pub fn perl_parser_core::engine::error::recovery::ParseError::with_found(self, found: alloc::string::String) -> Self
-pub fn perl_parser_core::engine::error::recovery::ParseError::with_hint(self, hint: alloc::string::String) -> Self
+pub fn perl_parser_core::engine::error::recovery::ParseError::new(message: alloc::string::String, range: perl_position_tracking::position::Range) -> perl_parser_core::engine::error::recovery::ParseError
+pub fn perl_parser_core::engine::error::recovery::ParseError::with_expected(self, expected: alloc::vec::Vec<alloc::string::String>) -> perl_parser_core::engine::error::recovery::ParseError
+pub fn perl_parser_core::engine::error::recovery::ParseError::with_found(self, found: alloc::string::String) -> perl_parser_core::engine::error::recovery::ParseError
+pub fn perl_parser_core::engine::error::recovery::ParseError::with_hint(self, hint: alloc::string::String) -> perl_parser_core::engine::error::recovery::ParseError
 pub fn perl_parser_core::engine::error::recovery::ParseError::clone(&self) -> perl_parser_core::engine::error::recovery::ParseError
 pub fn perl_parser_core::engine::error::recovery::ParseError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub trait perl_parser_core::error_recovery::ErrorRecovery
@@ -1229,9 +1327,9 @@ pub fn perl_parser_core::engine::parser_context::ParserContext::skip_until(&mut 
 pub fn perl_parser_core::engine::parser_context::ParserContext::skip_until_with_budget(&mut self, sync_points: &[perl_parser_core::engine::error::recovery::SyncPoint], budget: &perl_parser_core::syntax::error::ParseBudget, tracker: &mut perl_parser_core::syntax::error::BudgetTracker) -> perl_parser_core::engine::error::recovery::RecoveryResult
 pub fn perl_parser_core::engine::parser_context::ParserContext::synchronize(&mut self, sync_points: &[perl_parser_core::engine::error::recovery::SyncPoint]) -> bool
 pub trait perl_parser_core::error_recovery::ParserErrorRecovery
-pub fn perl_parser_core::error_recovery::ParserErrorRecovery::parse_list_with_recovery<F>(&mut self, parse_element: F, separator: perl_lexer::token::TokenType, terminator: perl_lexer::token::TokenType) -> alloc::vec::Vec<perl_ast_v2::Node> where F: core::ops::function::Fn(&mut Self) -> perl_ast_v2::Node
+pub fn perl_parser_core::error_recovery::ParserErrorRecovery::parse_list_with_recovery<F>(&mut self, parse_element: F, separator: perl_lexer::token::TokenType, terminator: perl_lexer::token::TokenType) -> alloc::vec::Vec<perl_ast_v2::Node> where F: core::ops::function::Fn(&mut perl_parser_core::error_recovery::ParserErrorRecovery) -> perl_ast_v2::Node
 pub fn perl_parser_core::error_recovery::ParserErrorRecovery::parse_with_recovery(&mut self) -> (perl_ast_v2::Node, alloc::vec::Vec<perl_parser_core::engine::error::recovery::ParseError>)
-pub fn perl_parser_core::error_recovery::ParserErrorRecovery::try_parse<F>(&mut self, parse_fn: F) -> perl_ast_v2::Node where F: core::ops::function::FnOnce(&mut Self) -> core::option::Option<perl_ast_v2::Node>
+pub fn perl_parser_core::error_recovery::ParserErrorRecovery::try_parse<F>(&mut self, parse_fn: F) -> perl_ast_v2::Node where F: core::ops::function::FnOnce(&mut perl_parser_core::error_recovery::ParserErrorRecovery) -> core::option::Option<perl_ast_v2::Node>
 pub trait perl_parser_core::error_recovery::StatementRecovery
 pub fn perl_parser_core::error_recovery::StatementRecovery::parse_block_with_recovery(&mut self) -> perl_ast_v2::Node
 pub fn perl_parser_core::error_recovery::StatementRecovery::parse_expression_with_recovery(&mut self) -> perl_ast_v2::Node
@@ -1797,7 +1895,7 @@ pub fn perl_parser_core::hir::PragmaArgumentKind::hash<__H: core::hash::Hasher>(
 pub perl_parser_core::hir::ReadlineSource::ArgvDiamond
 pub perl_parser_core::hir::ReadlineSource::NamedHandle
 pub perl_parser_core::hir::ReadlineSource::ScalarHandle
-pub fn perl_parser_core::hir::ReadlineSource::from_filehandle(filehandle: core::option::Option<&str>) -> Self
+pub fn perl_parser_core::hir::ReadlineSource::from_filehandle(filehandle: core::option::Option<&str>) -> perl_parser_core::hir::ReadlineSource
 pub fn perl_parser_core::hir::ReadlineSource::clone(&self) -> perl_parser_core::hir::ReadlineSource
 pub fn perl_parser_core::hir::ReadlineSource::eq(&self, other: &perl_parser_core::hir::ReadlineSource) -> bool
 pub fn perl_parser_core::hir::ReadlineSource::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
@@ -1822,7 +1920,7 @@ pub fn perl_parser_core::hir::RegexTargetKind::hash<__H: core::hash::Hasher>(&se
 pub perl_parser_core::hir::ReplacementEvaluation::DoubleEval
 pub perl_parser_core::hir::ReplacementEvaluation::Expression
 pub perl_parser_core::hir::ReplacementEvaluation::Literal
-pub fn perl_parser_core::hir::ReplacementEvaluation::from_modifiers(modifiers: &str) -> Self
+pub fn perl_parser_core::hir::ReplacementEvaluation::from_modifiers(modifiers: &str) -> perl_parser_core::hir::ReplacementEvaluation
 pub fn perl_parser_core::hir::ReplacementEvaluation::is_dynamic(self) -> bool
 pub fn perl_parser_core::hir::ReplacementEvaluation::clone(&self) -> perl_parser_core::hir::ReplacementEvaluation
 pub fn perl_parser_core::hir::ReplacementEvaluation::eq(&self, other: &perl_parser_core::hir::ReplacementEvaluation) -> bool
@@ -1934,7 +2032,7 @@ pub fn perl_parser_core::hir::Arena<T>::len(&self) -> usize
 pub fn perl_parser_core::hir::Arena<T>::clone(&self) -> perl_parser_core::hir::Arena<T>
 pub fn perl_parser_core::hir::Arena<T>::eq(&self, other: &perl_parser_core::hir::Arena<T>) -> bool
 pub fn perl_parser_core::hir::Arena<T>::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub fn perl_parser_core::hir::Arena<T>::default() -> Self
+pub fn perl_parser_core::hir::Arena<T>::default() -> perl_parser_core::hir::Arena<T>
 #[non_exhaustive] pub struct perl_parser_core::hir::AstAnchor
 pub perl_parser_core::hir::AstAnchor::name_range: core::option::Option<perl_position_tracking::span::SourceLocation>
 pub perl_parser_core::hir::AstAnchor::node_kind: &'static str
@@ -1996,7 +2094,7 @@ pub fn perl_parser_core::hir::BlockShell::fmt(&self, f: &mut core::fmt::Formatte
 pub struct perl_parser_core::hir::BodyOwner
 pub perl_parser_core::hir::BodyOwner::kind: perl_parser_core::hir::BodyOwnerKind
 pub perl_parser_core::hir::BodyOwner::ordinal: u32
-pub fn perl_parser_core::hir::BodyOwner::new(kind: perl_parser_core::hir::BodyOwnerKind, ordinal: u32) -> Self
+pub fn perl_parser_core::hir::BodyOwner::new(kind: perl_parser_core::hir::BodyOwnerKind, ordinal: u32) -> perl_parser_core::hir::BodyOwner
 pub fn perl_parser_core::hir::BodyOwner::clone(&self) -> perl_parser_core::hir::BodyOwner
 pub fn perl_parser_core::hir::BodyOwner::cmp(&self, other: &perl_parser_core::hir::BodyOwner) -> core::cmp::Ordering
 pub fn perl_parser_core::hir::BodyOwner::eq(&self, other: &perl_parser_core::hir::BodyOwner) -> bool
@@ -2152,11 +2250,11 @@ pub fn perl_parser_core::hir::ExportDeclaration::eq(&self, other: &perl_parser_c
 pub fn perl_parser_core::hir::ExportDeclaration::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 #[non_exhaustive] pub struct perl_parser_core::hir::FrameworkAdapterRegistry
 pub fn perl_parser_core::hir::FrameworkAdapterRegistry::adapters(&self) -> &[perl_parser_core::hir::FrameworkAdapterKind]
-pub fn perl_parser_core::hir::FrameworkAdapterRegistry::new(adapters: alloc::vec::Vec<perl_parser_core::hir::FrameworkAdapterKind>) -> Self
+pub fn perl_parser_core::hir::FrameworkAdapterRegistry::new(adapters: alloc::vec::Vec<perl_parser_core::hir::FrameworkAdapterKind>) -> perl_parser_core::hir::FrameworkAdapterRegistry
 pub fn perl_parser_core::hir::FrameworkAdapterRegistry::project_file(&self, file: &perl_parser_core::hir::HirFile) -> perl_parser_core::hir::FrameworkFactGraph
 pub fn perl_parser_core::hir::FrameworkAdapterRegistry::clone(&self) -> perl_parser_core::hir::FrameworkAdapterRegistry
 pub fn perl_parser_core::hir::FrameworkAdapterRegistry::eq(&self, other: &perl_parser_core::hir::FrameworkAdapterRegistry) -> bool
-pub fn perl_parser_core::hir::FrameworkAdapterRegistry::default() -> Self
+pub fn perl_parser_core::hir::FrameworkAdapterRegistry::default() -> perl_parser_core::hir::FrameworkAdapterRegistry
 pub fn perl_parser_core::hir::FrameworkAdapterRegistry::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 #[non_exhaustive] pub struct perl_parser_core::hir::FrameworkDynamicBoundaryFact
 pub perl_parser_core::hir::FrameworkDynamicBoundaryFact::adapter: perl_parser_core::hir::FrameworkAdapterKind
@@ -2542,7 +2640,7 @@ pub fn perl_parser_core::hir::ModuleResolutionCandidateRoot::fmt(&self, f: &mut 
 pub perl_parser_core::hir::ModuleResolutionRoot::kind: perl_parser_core::hir::IncRootKind
 pub perl_parser_core::hir::ModuleResolutionRoot::path: alloc::string::String
 pub perl_parser_core::hir::ModuleResolutionRoot::source: alloc::string::String
-pub fn perl_parser_core::hir::ModuleResolutionRoot::new(path: impl core::convert::Into<alloc::string::String>, kind: perl_parser_core::hir::IncRootKind, source: impl core::convert::Into<alloc::string::String>) -> Self
+pub fn perl_parser_core::hir::ModuleResolutionRoot::new(path: impl core::convert::Into<alloc::string::String>, kind: perl_parser_core::hir::IncRootKind, source: impl core::convert::Into<alloc::string::String>) -> perl_parser_core::hir::ModuleResolutionRoot
 pub fn perl_parser_core::hir::ModuleResolutionRoot::clone(&self) -> perl_parser_core::hir::ModuleResolutionRoot
 pub fn perl_parser_core::hir::ModuleResolutionRoot::eq(&self, other: &perl_parser_core::hir::ModuleResolutionRoot) -> bool
 pub fn perl_parser_core::hir::ModuleResolutionRoot::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
@@ -2785,7 +2883,7 @@ pub fn perl_parser_core::incremental::FallbackReason::fmt(&self, formatter: &mut
 pub perl_parser_core::incremental::IncrementalEdit::new_text: alloc::string::String
 pub perl_parser_core::incremental::IncrementalEdit::old_end_byte: usize
 pub perl_parser_core::incremental::IncrementalEdit::start_byte: usize
-pub fn perl_parser_core::incremental::IncrementalEdit::new(start_byte: usize, old_end_byte: usize, new_text: impl core::convert::Into<alloc::string::String>) -> Self
+pub fn perl_parser_core::incremental::IncrementalEdit::new(start_byte: usize, old_end_byte: usize, new_text: impl core::convert::Into<alloc::string::String>) -> perl_parser_core::incremental::IncrementalEdit
 pub fn perl_parser_core::incremental::IncrementalEdit::touched_bytes(&self) -> usize
 pub fn perl_parser_core::incremental::IncrementalEdit::clone(&self) -> perl_parser_core::incremental::IncrementalEdit
 pub fn perl_parser_core::incremental::IncrementalEdit::eq(&self, other: &perl_parser_core::incremental::IncrementalEdit) -> bool
@@ -2803,10 +2901,10 @@ pub fn perl_parser_core::incremental::IncrementalMetrics::fmt(&self, f: &mut cor
 pub struct perl_parser_core::incremental::IncrementalState
 pub fn perl_parser_core::incremental::IncrementalState::diagnostics(&self) -> &[perl_parser_core::syntax::error::ParseError]
 pub fn perl_parser_core::incremental::IncrementalState::metrics(&self) -> &perl_parser_core::incremental::IncrementalMetrics
-pub fn perl_parser_core::incremental::IncrementalState::new(source: &str) -> Self
+pub fn perl_parser_core::incremental::IncrementalState::new(source: &str) -> perl_parser_core::incremental::IncrementalState
 pub fn perl_parser_core::incremental::IncrementalState::reparse(&mut self, new_source: &str, edit: &perl_parser_core::incremental::IncrementalEdit) -> perl_parser_core::syntax::error::ParseResult<perl_ast::ast::Node>
 pub fn perl_parser_core::incremental::IncrementalState::source(&self) -> &str
-pub fn perl_parser_core::incremental::IncrementalState::with_diagnostics(source: &str, diagnostics: &[perl_parser_core::syntax::error::ParseError]) -> Self
+pub fn perl_parser_core::incremental::IncrementalState::with_diagnostics(source: &str, diagnostics: &[perl_parser_core::syntax::error::ParseError]) -> perl_parser_core::incremental::IncrementalState
 pub fn perl_parser_core::incremental::IncrementalState::clone(&self) -> perl_parser_core::incremental::IncrementalState
 pub fn perl_parser_core::incremental::IncrementalState::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub mod perl_parser_core::line_index
@@ -2815,21 +2913,21 @@ pub mod perl_parser_core::parser
 pub struct perl_parser_core::parser::Parser<'a>
 pub fn perl_parser_core::engine::parser::Parser<'a>::config_identity(&self) -> perl_parser_core::ParserConfigIdentity
 pub fn perl_parser_core::engine::parser::Parser<'a>::errors(&self) -> &[perl_parser_core::syntax::error::ParseError]
-pub fn perl_parser_core::engine::parser::Parser<'a>::from_tokens(tokens: alloc::vec::Vec<perl_token::token::Token>, source: &'a str) -> Self
-pub fn perl_parser_core::engine::parser::Parser<'a>::new(input: &'a str) -> Self
-pub fn perl_parser_core::engine::parser::Parser<'a>::new_with_cancellation(input: &'a str, cancellation_flag: alloc::sync::Arc<core::sync::atomic::AtomicBool>) -> Self
-pub fn perl_parser_core::engine::parser::Parser<'a>::new_with_recovery_config(input: &'a str, _config: ()) -> Self
+pub fn perl_parser_core::engine::parser::Parser<'a>::from_tokens(tokens: alloc::vec::Vec<perl_token::token::Token>, source: &'a str) -> perl_parser_core::engine::parser::Parser<'a>
+pub fn perl_parser_core::engine::parser::Parser<'a>::new(input: &'a str) -> perl_parser_core::engine::parser::Parser<'a>
+pub fn perl_parser_core::engine::parser::Parser<'a>::new_with_cancellation(input: &'a str, cancellation_flag: alloc::sync::Arc<core::sync::atomic::AtomicBool>) -> perl_parser_core::engine::parser::Parser<'a>
+pub fn perl_parser_core::engine::parser::Parser<'a>::new_with_recovery_config(input: &'a str, _config: ()) -> perl_parser_core::engine::parser::Parser<'a>
 pub fn perl_parser_core::engine::parser::Parser<'a>::operation_id(&self) -> perl_parser_core::ParserOperationId
 pub fn perl_parser_core::engine::parser::Parser<'a>::parse(&mut self) -> perl_parser_core::syntax::error::ParseResult<perl_ast::ast::Node>
 pub fn perl_parser_core::engine::parser::Parser<'a>::parse_with_recovery(&mut self) -> perl_parser_core::syntax::error::ParseOutput
-pub fn perl_parser_core::engine::parser::Parser<'a>::with_production_config(input: &'a str, config: perl_parser_core::ParserConfigIdentity) -> Self
+pub fn perl_parser_core::engine::parser::Parser<'a>::with_production_config(input: &'a str, config: perl_parser_core::ParserConfigIdentity) -> perl_parser_core::engine::parser::Parser<'a>
 pub fn perl_parser_core::engine::parser::Parser<'a>::get_errors(&self) -> &[perl_parser_core::syntax::error::ParseError]
 pub struct perl_parser_core::parser::ParserConfigIdentity
 pub fn perl_parser_core::ParserConfigIdentity::budget(self) -> perl_parser_core::syntax::error::ParseBudget
 pub fn perl_parser_core::ParserConfigIdentity::max_block_nesting_depth(self) -> usize
 pub fn perl_parser_core::ParserConfigIdentity::max_recursion_depth(self) -> usize
-pub fn perl_parser_core::ParserConfigIdentity::production_default() -> Self
-pub fn perl_parser_core::ParserConfigIdentity::with_budget(self, budget: perl_parser_core::syntax::error::ParseBudget) -> Self
+pub fn perl_parser_core::ParserConfigIdentity::production_default() -> perl_parser_core::ParserConfigIdentity
+pub fn perl_parser_core::ParserConfigIdentity::with_budget(self, budget: perl_parser_core::syntax::error::ParseBudget) -> perl_parser_core::ParserConfigIdentity
 pub fn perl_parser_core::ParserConfigIdentity::clone(&self) -> perl_parser_core::ParserConfigIdentity
 pub fn perl_parser_core::ParserConfigIdentity::eq(&self, other: &perl_parser_core::ParserConfigIdentity) -> bool
 pub fn perl_parser_core::ParserConfigIdentity::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
@@ -2860,12 +2958,12 @@ pub fn perl_parser_core::engine::parser_context::ParserContext::errors_exhausted
 pub fn perl_parser_core::engine::parser_context::ParserContext::exit_depth(&mut self)
 pub fn perl_parser_core::engine::parser_context::ParserContext::expect(&mut self, expected: perl_lexer::token::TokenType) -> core::result::Result<&perl_lexer::tokenizer::token_wrapper::TokenWithPosition, perl_parser_core::engine::error::recovery::ParseError>
 pub fn perl_parser_core::engine::parser_context::ParserContext::is_eof(&self) -> bool
-pub fn perl_parser_core::engine::parser_context::ParserContext::new(source: alloc::string::String) -> Self
+pub fn perl_parser_core::engine::parser_context::ParserContext::new(source: alloc::string::String) -> perl_parser_core::engine::parser_context::ParserContext
 pub fn perl_parser_core::engine::parser_context::ParserContext::peek_token(&self, offset: usize) -> core::option::Option<&perl_lexer::tokenizer::token_wrapper::TokenWithPosition>
 pub fn perl_parser_core::engine::parser_context::ParserContext::set_index(&mut self, index: usize)
 pub fn perl_parser_core::engine::parser_context::ParserContext::source_slice(&self, range: &perl_position_tracking::position::Range) -> &str
 pub fn perl_parser_core::engine::parser_context::ParserContext::take_errors(&mut self) -> alloc::vec::Vec<perl_parser_core::engine::error::recovery::ParseError>
-pub fn perl_parser_core::engine::parser_context::ParserContext::with_budget(source: alloc::string::String, budget: perl_parser_core::syntax::error::ParseBudget) -> Self
+pub fn perl_parser_core::engine::parser_context::ParserContext::with_budget(source: alloc::string::String, budget: perl_parser_core::syntax::error::ParseBudget) -> perl_parser_core::engine::parser_context::ParserContext
 pub fn perl_parser_core::engine::parser_context::ParserContext::create_error_node(&mut self, message: alloc::string::String, expected: alloc::vec::Vec<alloc::string::String>, partial: core::option::Option<perl_ast_v2::Node>) -> perl_ast_v2::Node
 pub fn perl_parser_core::engine::parser_context::ParserContext::is_sync_point(&self, sync_point: perl_parser_core::engine::error::recovery::SyncPoint) -> bool
 pub fn perl_parser_core::engine::parser_context::ParserContext::recover_with_node(&mut self, error: perl_parser_core::engine::error::recovery::ParseError) -> perl_ast_v2::Node
@@ -3334,7 +3432,7 @@ pub const fn perl_parser_core::pir::FilePirLexicalContributionV1::schema_version
 pub const fn perl_parser_core::pir::FilePirLexicalContributionV1::semantic_snapshot_join(&self) -> core::option::Option<&perl_parser_core::pir::SemanticSnapshotJoinMetadata>
 pub const fn perl_parser_core::pir::FilePirLexicalContributionV1::subject(&self) -> &perl_parser_core::pir::ContributionSubjectIdentity
 pub const fn perl_parser_core::pir::FilePirLexicalContributionV1::terminal_disposition(&self) -> &perl_parser_core::pir::TerminalDisposition
-pub fn perl_parser_core::pir::FilePirLexicalContributionV1::try_new(draft: perl_parser_core::pir::ContributionDraft) -> core::result::Result<Self, perl_parser_core::pir::ContributionError>
+pub fn perl_parser_core::pir::FilePirLexicalContributionV1::try_new(draft: perl_parser_core::pir::ContributionDraft) -> core::result::Result<perl_parser_core::pir::FilePirLexicalContributionV1, perl_parser_core::pir::ContributionError>
 pub fn perl_parser_core::pir::FilePirLexicalContributionV1::unsigned_canonical_json(&self) -> core::result::Result<alloc::string::String, serde_json::error::Error>
 pub const fn perl_parser_core::pir::FilePirLexicalContributionV1::work(&self) -> &perl_parser_core::pir::ContributionWorkShape
 pub fn perl_parser_core::pir::FilePirLexicalContributionV1::clone(&self) -> perl_parser_core::pir::FilePirLexicalContributionV1
@@ -3359,7 +3457,7 @@ pub perl_parser_core::pir::LexicalBindingIdentity::name: alloc::string::String
 pub perl_parser_core::pir::LexicalBindingIdentity::scope_path: alloc::vec::Vec<alloc::string::String>
 pub perl_parser_core::pir::LexicalBindingIdentity::sigil: perl_parser_core::pir::LexicalSigil
 pub fn perl_parser_core::pir::LexicalBindingIdentity::fingerprint_for(body_id: &str, scope_path: &[alloc::string::String], sigil: perl_parser_core::pir::LexicalSigil, name: &str, declaration_range: (usize, usize)) -> core::result::Result<perl_source_identity::digest::ContentDigest, perl_parser_core::pir::ContributionError>
-pub fn perl_parser_core::pir::LexicalBindingIdentity::new(binding_id: alloc::string::String, body_id: alloc::string::String, scope_path: alloc::vec::Vec<alloc::string::String>, sigil: perl_parser_core::pir::LexicalSigil, name: alloc::string::String, declaration_range: (usize, usize)) -> core::result::Result<Self, perl_parser_core::pir::ContributionError>
+pub fn perl_parser_core::pir::LexicalBindingIdentity::new(binding_id: alloc::string::String, body_id: alloc::string::String, scope_path: alloc::vec::Vec<alloc::string::String>, sigil: perl_parser_core::pir::LexicalSigil, name: alloc::string::String, declaration_range: (usize, usize)) -> core::result::Result<perl_parser_core::pir::LexicalBindingIdentity, perl_parser_core::pir::ContributionError>
 pub fn perl_parser_core::pir::LexicalBindingIdentity::clone(&self) -> perl_parser_core::pir::LexicalBindingIdentity
 pub fn perl_parser_core::pir::LexicalBindingIdentity::eq(&self, other: &perl_parser_core::pir::LexicalBindingIdentity) -> bool
 pub fn perl_parser_core::pir::LexicalBindingIdentity::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
@@ -3386,7 +3484,7 @@ pub perl_parser_core::pir::OccurrenceAnchor::anchor_id: perl_semantic_facts::Anc
 pub perl_parser_core::pir::OccurrenceAnchor::anchor_kind: perl_parser_core::pir::PirAnchorKind
 pub perl_parser_core::pir::OccurrenceAnchor::hir_item_index: core::option::Option<u32>
 pub perl_parser_core::pir::OccurrenceAnchor::range: (usize, usize)
-pub fn perl_parser_core::pir::OccurrenceAnchor::from_pir_anchor(anchor: &perl_parser_core::pir::PirSourceAnchor) -> core::option::Option<Self>
+pub fn perl_parser_core::pir::OccurrenceAnchor::from_pir_anchor(anchor: &perl_parser_core::pir::PirSourceAnchor) -> core::option::Option<perl_parser_core::pir::OccurrenceAnchor>
 pub fn perl_parser_core::pir::OccurrenceAnchor::clone(&self) -> perl_parser_core::pir::OccurrenceAnchor
 pub fn perl_parser_core::pir::OccurrenceAnchor::eq(&self, other: &perl_parser_core::pir::OccurrenceAnchor) -> bool
 pub fn perl_parser_core::pir::OccurrenceAnchor::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
@@ -3492,7 +3590,7 @@ pub perl_parser_core::pir::PirRegexModifiers::s: bool
 pub perl_parser_core::pir::PirRegexModifiers::u: bool
 pub perl_parser_core::pir::PirRegexModifiers::unknown: alloc::vec::Vec<char>
 pub perl_parser_core::pir::PirRegexModifiers::x: bool
-pub fn perl_parser_core::pir::PirRegexModifiers::parse(raw: &str) -> Self
+pub fn perl_parser_core::pir::PirRegexModifiers::parse(raw: &str) -> perl_parser_core::pir::PirRegexModifiers
 pub fn perl_parser_core::pir::PirRegexModifiers::clone(&self) -> perl_parser_core::pir::PirRegexModifiers
 pub fn perl_parser_core::pir::PirRegexModifiers::eq(&self, other: &perl_parser_core::pir::PirRegexModifiers) -> bool
 pub fn perl_parser_core::pir::PirRegexModifiers::default() -> perl_parser_core::pir::PirRegexModifiers
@@ -3502,8 +3600,8 @@ pub perl_parser_core::pir::PirSourceAnchor::anchor_id: core::option::Option<perl
 pub perl_parser_core::pir::PirSourceAnchor::hir_item: core::option::Option<perl_parser_core::hir::HirId>
 pub perl_parser_core::pir::PirSourceAnchor::kind: perl_parser_core::pir::PirAnchorKind
 pub perl_parser_core::pir::PirSourceAnchor::range: core::option::Option<perl_position_tracking::span::SourceLocation>
-pub fn perl_parser_core::pir::PirSourceAnchor::dynamic_boundary(range: perl_position_tracking::span::SourceLocation, hir_item: perl_parser_core::hir::HirId) -> Self
-pub fn perl_parser_core::pir::PirSourceAnchor::explicit(range: perl_position_tracking::span::SourceLocation, hir_item: perl_parser_core::hir::HirId) -> Self
+pub fn perl_parser_core::pir::PirSourceAnchor::dynamic_boundary(range: perl_position_tracking::span::SourceLocation, hir_item: perl_parser_core::hir::HirId) -> perl_parser_core::pir::PirSourceAnchor
+pub fn perl_parser_core::pir::PirSourceAnchor::explicit(range: perl_position_tracking::span::SourceLocation, hir_item: perl_parser_core::hir::HirId) -> perl_parser_core::pir::PirSourceAnchor
 pub fn perl_parser_core::pir::PirSourceAnchor::is_anchored(&self) -> bool
 pub fn perl_parser_core::pir::PirSourceAnchor::clone(&self) -> perl_parser_core::pir::PirSourceAnchor
 pub fn perl_parser_core::pir::PirSourceAnchor::eq(&self, other: &perl_parser_core::pir::PirSourceAnchor) -> bool
@@ -3568,7 +3666,7 @@ pub perl_parser_core::quote_parser::MatchError::InvalidModifier(char)
 pub perl_parser_core::quote_parser::MatchError::MissingDelimiter
 pub fn perl_parser_core::syntax::quote::MatchError::clone(&self) -> perl_parser_core::syntax::quote::MatchError
 pub fn perl_parser_core::syntax::quote::MatchError::eq(&self, other: &perl_parser_core::syntax::quote::MatchError) -> bool
-pub fn perl_parser_core::syntax::quote::MatchError::from(c: char) -> Self
+pub fn perl_parser_core::syntax::quote::MatchError::from(c: char) -> perl_parser_core::syntax::quote::MatchError
 pub fn perl_parser_core::syntax::quote::MatchError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 #[non_exhaustive] pub enum perl_parser_core::quote_parser::RegexFamilyOperator
 pub perl_parser_core::quote_parser::RegexFamilyOperator::BareMatch
@@ -3657,7 +3755,7 @@ pub fn perl_parser_core::syntax::edit::Edit::apply_to_position(&self, pos: perl_
 pub fn perl_parser_core::syntax::edit::Edit::apply_to_range(&self, range: &perl_position_tracking::position::Range) -> core::option::Option<perl_position_tracking::position::Range>
 pub fn perl_parser_core::syntax::edit::Edit::byte_shift(&self) -> isize
 pub fn perl_parser_core::syntax::edit::Edit::line_shift(&self) -> i32
-pub fn perl_parser_core::syntax::edit::Edit::new(start_byte: usize, old_end_byte: usize, new_end_byte: usize, start_position: perl_position_tracking::position::Position, old_end_position: perl_position_tracking::position::Position, new_end_position: perl_position_tracking::position::Position) -> Self
+pub fn perl_parser_core::syntax::edit::Edit::new(start_byte: usize, old_end_byte: usize, new_end_byte: usize, start_position: perl_position_tracking::position::Position, old_end_position: perl_position_tracking::position::Position, new_end_position: perl_position_tracking::position::Position) -> perl_parser_core::syntax::edit::Edit
 pub fn perl_parser_core::syntax::edit::Edit::overlaps_range(&self, range: &perl_position_tracking::position::Range) -> bool
 pub fn perl_parser_core::syntax::edit::Edit::clone(&self) -> perl_parser_core::syntax::edit::Edit
 pub fn perl_parser_core::syntax::edit::Edit::eq(&self, other: &perl_parser_core::syntax::edit::Edit) -> bool
@@ -3673,7 +3771,7 @@ pub fn perl_parser_core::syntax::edit::EditSet::coalesced_affected_ranges(&self)
 pub fn perl_parser_core::syntax::edit::EditSet::edits(&self) -> &[perl_parser_core::syntax::edit::Edit]
 pub fn perl_parser_core::syntax::edit::EditSet::is_empty(&self) -> bool
 pub fn perl_parser_core::syntax::edit::EditSet::len(&self) -> usize
-pub fn perl_parser_core::syntax::edit::EditSet::new() -> Self
+pub fn perl_parser_core::syntax::edit::EditSet::new() -> perl_parser_core::syntax::edit::EditSet
 pub fn perl_parser_core::syntax::edit::EditSet::clone(&self) -> perl_parser_core::syntax::edit::EditSet
 pub fn perl_parser_core::syntax::edit::EditSet::default() -> perl_parser_core::syntax::edit::EditSet
 pub fn perl_parser_core::syntax::edit::EditSet::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
@@ -3705,8 +3803,8 @@ pub fn perl_parser_core::engine::error::classifier::ErrorClassifier::classify(&s
 pub fn perl_parser_core::engine::error::classifier::ErrorClassifier::get_diagnostic_message(&self, kind: &perl_parser_core::engine::error::classifier::ParseErrorKind) -> alloc::string::String
 pub fn perl_parser_core::engine::error::classifier::ErrorClassifier::get_explanation(&self, kind: &perl_parser_core::engine::error::classifier::ParseErrorKind) -> core::option::Option<alloc::string::String>
 pub fn perl_parser_core::engine::error::classifier::ErrorClassifier::get_suggestion(&self, kind: &perl_parser_core::engine::error::classifier::ParseErrorKind) -> core::option::Option<alloc::string::String>
-pub fn perl_parser_core::engine::error::classifier::ErrorClassifier::new() -> Self
-pub fn perl_parser_core::engine::error::classifier::ErrorClassifier::default() -> Self
+pub fn perl_parser_core::engine::error::classifier::ErrorClassifier::new() -> perl_parser_core::engine::error::classifier::ErrorClassifier
+pub fn perl_parser_core::engine::error::classifier::ErrorClassifier::default() -> perl_parser_core::engine::error::classifier::ErrorClassifier
 pub struct perl_parser_core::syntax::error::classifier::RecoverySalvageMetrics
 pub perl_parser_core::syntax::error::classifier::RecoverySalvageMetrics::error_node_count: usize
 pub perl_parser_core::syntax::error::classifier::RecoverySalvageMetrics::first_unrecovered_error_node: core::option::Option<alloc::string::String>
@@ -3742,10 +3840,10 @@ pub perl_parser_core::syntax::error::recovery::ParseError::found: alloc::string:
 pub perl_parser_core::syntax::error::recovery::ParseError::message: alloc::string::String
 pub perl_parser_core::syntax::error::recovery::ParseError::range: perl_position_tracking::position::Range
 pub perl_parser_core::syntax::error::recovery::ParseError::recovery_hint: core::option::Option<alloc::string::String>
-pub fn perl_parser_core::engine::error::recovery::ParseError::new(message: alloc::string::String, range: perl_position_tracking::position::Range) -> Self
-pub fn perl_parser_core::engine::error::recovery::ParseError::with_expected(self, expected: alloc::vec::Vec<alloc::string::String>) -> Self
-pub fn perl_parser_core::engine::error::recovery::ParseError::with_found(self, found: alloc::string::String) -> Self
-pub fn perl_parser_core::engine::error::recovery::ParseError::with_hint(self, hint: alloc::string::String) -> Self
+pub fn perl_parser_core::engine::error::recovery::ParseError::new(message: alloc::string::String, range: perl_position_tracking::position::Range) -> perl_parser_core::engine::error::recovery::ParseError
+pub fn perl_parser_core::engine::error::recovery::ParseError::with_expected(self, expected: alloc::vec::Vec<alloc::string::String>) -> perl_parser_core::engine::error::recovery::ParseError
+pub fn perl_parser_core::engine::error::recovery::ParseError::with_found(self, found: alloc::string::String) -> perl_parser_core::engine::error::recovery::ParseError
+pub fn perl_parser_core::engine::error::recovery::ParseError::with_hint(self, hint: alloc::string::String) -> perl_parser_core::engine::error::recovery::ParseError
 pub fn perl_parser_core::engine::error::recovery::ParseError::clone(&self) -> perl_parser_core::engine::error::recovery::ParseError
 pub fn perl_parser_core::engine::error::recovery::ParseError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub trait perl_parser_core::syntax::error::recovery::ErrorRecovery
@@ -3762,9 +3860,9 @@ pub fn perl_parser_core::engine::parser_context::ParserContext::skip_until(&mut 
 pub fn perl_parser_core::engine::parser_context::ParserContext::skip_until_with_budget(&mut self, sync_points: &[perl_parser_core::engine::error::recovery::SyncPoint], budget: &perl_parser_core::syntax::error::ParseBudget, tracker: &mut perl_parser_core::syntax::error::BudgetTracker) -> perl_parser_core::engine::error::recovery::RecoveryResult
 pub fn perl_parser_core::engine::parser_context::ParserContext::synchronize(&mut self, sync_points: &[perl_parser_core::engine::error::recovery::SyncPoint]) -> bool
 pub trait perl_parser_core::syntax::error::recovery::ParserErrorRecovery
-pub fn perl_parser_core::syntax::error::recovery::ParserErrorRecovery::parse_list_with_recovery<F>(&mut self, parse_element: F, separator: perl_lexer::token::TokenType, terminator: perl_lexer::token::TokenType) -> alloc::vec::Vec<perl_ast_v2::Node> where F: core::ops::function::Fn(&mut Self) -> perl_ast_v2::Node
+pub fn perl_parser_core::syntax::error::recovery::ParserErrorRecovery::parse_list_with_recovery<F>(&mut self, parse_element: F, separator: perl_lexer::token::TokenType, terminator: perl_lexer::token::TokenType) -> alloc::vec::Vec<perl_ast_v2::Node> where F: core::ops::function::Fn(&mut perl_parser_core::syntax::error::recovery::ParserErrorRecovery) -> perl_ast_v2::Node
 pub fn perl_parser_core::syntax::error::recovery::ParserErrorRecovery::parse_with_recovery(&mut self) -> (perl_ast_v2::Node, alloc::vec::Vec<perl_parser_core::engine::error::recovery::ParseError>)
-pub fn perl_parser_core::syntax::error::recovery::ParserErrorRecovery::try_parse<F>(&mut self, parse_fn: F) -> perl_ast_v2::Node where F: core::ops::function::FnOnce(&mut Self) -> core::option::Option<perl_ast_v2::Node>
+pub fn perl_parser_core::syntax::error::recovery::ParserErrorRecovery::try_parse<F>(&mut self, parse_fn: F) -> perl_ast_v2::Node where F: core::ops::function::FnOnce(&mut perl_parser_core::syntax::error::recovery::ParserErrorRecovery) -> core::option::Option<perl_ast_v2::Node>
 pub trait perl_parser_core::syntax::error::recovery::StatementRecovery
 pub fn perl_parser_core::syntax::error::recovery::StatementRecovery::parse_block_with_recovery(&mut self) -> perl_ast_v2::Node
 pub fn perl_parser_core::syntax::error::recovery::StatementRecovery::parse_expression_with_recovery(&mut self) -> perl_ast_v2::Node
@@ -3782,6 +3880,31 @@ pub fn perl_parser_core::syntax::error::ErrorCategory::clone(&self) -> perl_pars
 pub fn perl_parser_core::syntax::error::ErrorCategory::eq(&self, other: &perl_parser_core::syntax::error::ErrorCategory) -> bool
 pub fn perl_parser_core::syntax::error::ErrorCategory::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_parser_core::syntax::error::ErrorCategory::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub enum perl_parser_core::syntax::error::InvalidSignatureOrderingKind
+pub perl_parser_core::syntax::error::InvalidSignatureOrderingKind::MandatoryAfterOptional
+pub perl_parser_core::syntax::error::InvalidSignatureOrderingKind::ParameterAfterSlurpy
+pub perl_parser_core::syntax::error::InvalidSignatureOrderingKind::PositionalAfterNamed
+pub perl_parser_core::syntax::error::InvalidSignatureOrderingKind::RequiredNamedAfterOptional
+pub fn perl_parser_core::syntax::error::InvalidSignatureOrderingKind::clone(&self) -> perl_parser_core::syntax::error::InvalidSignatureOrderingKind
+pub fn perl_parser_core::syntax::error::InvalidSignatureOrderingKind::eq(&self, other: &perl_parser_core::syntax::error::InvalidSignatureOrderingKind) -> bool
+pub fn perl_parser_core::syntax::error::InvalidSignatureOrderingKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum perl_parser_core::syntax::error::InvalidSignatureParameterKind
+pub perl_parser_core::syntax::error::InvalidSignatureParameterKind::MissingDefaultExpression
+pub perl_parser_core::syntax::error::InvalidSignatureParameterKind::NamedAggregate
+pub perl_parser_core::syntax::error::InvalidSignatureParameterKind::SlurpyDefault
+pub fn perl_parser_core::syntax::error::InvalidSignatureParameterKind::clone(&self) -> perl_parser_core::syntax::error::InvalidSignatureParameterKind
+pub fn perl_parser_core::syntax::error::InvalidSignatureParameterKind::eq(&self, other: &perl_parser_core::syntax::error::InvalidSignatureParameterKind) -> bool
+pub fn perl_parser_core::syntax::error::InvalidSignatureParameterKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+#[non_exhaustive] pub enum perl_parser_core::syntax::error::ParseCoreDimension
+pub perl_parser_core::syntax::error::ParseCoreDimension::DiagnosticsEmitted
+pub perl_parser_core::syntax::error::ParseCoreDimension::NodesConstructed
+pub perl_parser_core::syntax::error::ParseCoreDimension::TokensConsumed
+pub fn perl_parser_core::syntax::error::ParseCoreDimension::as_str(self) -> &'static str
+pub fn perl_parser_core::syntax::error::ParseCoreDimension::clone(&self) -> perl_parser_core::syntax::error::ParseCoreDimension
+pub fn perl_parser_core::syntax::error::ParseCoreDimension::eq(&self, other: &perl_parser_core::syntax::error::ParseCoreDimension) -> bool
+pub fn perl_parser_core::syntax::error::ParseCoreDimension::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_parser_core::syntax::error::ParseCoreDimension::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_parser_core::syntax::error::ParseCoreDimension::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
 pub enum perl_parser_core::syntax::error::ParseDiagnosticAnchor
 pub perl_parser_core::syntax::error::ParseDiagnosticAnchor::EndOfInput
 pub perl_parser_core::syntax::error::ParseDiagnosticAnchor::Exact(usize)
@@ -3802,7 +3925,13 @@ pub fn perl_parser_core::syntax::error::ParseDiagnosticSeverity::fmt(&self, f: &
 pub perl_parser_core::syntax::error::ParseError::Advisory
 pub perl_parser_core::syntax::error::ParseError::Advisory::location: usize
 pub perl_parser_core::syntax::error::ParseError::Advisory::message: alloc::string::String
+pub perl_parser_core::syntax::error::ParseError::CStyleForContinueBlock
+pub perl_parser_core::syntax::error::ParseError::CStyleForContinueBlock::location: usize
 pub perl_parser_core::syntax::error::ParseError::Cancelled
+pub perl_parser_core::syntax::error::ParseError::CoreBudgetExhausted
+pub perl_parser_core::syntax::error::ParseError::CoreBudgetExhausted::dimension: perl_parser_core::syntax::error::ParseCoreDimension
+pub perl_parser_core::syntax::error::ParseError::CoreBudgetExhausted::limit: usize
+pub perl_parser_core::syntax::error::ParseError::CoreBudgetExhausted::usage: usize
 pub perl_parser_core::syntax::error::ParseError::DoWhileTrailingBlock
 pub perl_parser_core::syntax::error::ParseError::DoWhileTrailingBlock::location: usize
 pub perl_parser_core::syntax::error::ParseError::HeredocBudgetExhausted
@@ -3813,6 +3942,12 @@ pub perl_parser_core::syntax::error::ParseError::InvalidNumber
 pub perl_parser_core::syntax::error::ParseError::InvalidNumber::literal: alloc::string::String
 pub perl_parser_core::syntax::error::ParseError::InvalidRegex
 pub perl_parser_core::syntax::error::ParseError::InvalidRegex::message: alloc::string::String
+pub perl_parser_core::syntax::error::ParseError::InvalidSignatureOrdering
+pub perl_parser_core::syntax::error::ParseError::InvalidSignatureOrdering::kind: perl_parser_core::syntax::error::InvalidSignatureOrderingKind
+pub perl_parser_core::syntax::error::ParseError::InvalidSignatureOrdering::range: perl_position_tracking::span::SourceLocation
+pub perl_parser_core::syntax::error::ParseError::InvalidSignatureParameter
+pub perl_parser_core::syntax::error::ParseError::InvalidSignatureParameter::kind: perl_parser_core::syntax::error::InvalidSignatureParameterKind
+pub perl_parser_core::syntax::error::ParseError::InvalidSignatureParameter::range: perl_position_tracking::span::SourceLocation
 pub perl_parser_core::syntax::error::ParseError::InvalidString
 pub perl_parser_core::syntax::error::ParseError::LexerError
 pub perl_parser_core::syntax::error::ParseError::LexerError::message: alloc::string::String
@@ -3841,21 +3976,25 @@ pub fn perl_parser_core::syntax::error::ParseError::blocks_clean_parse(&self) ->
 pub fn perl_parser_core::syntax::error::ParseError::diagnostic_anchor(&self) -> perl_parser_core::syntax::error::ParseDiagnosticAnchor
 pub fn perl_parser_core::syntax::error::ParseError::is_recursion_limit(&self) -> bool
 pub fn perl_parser_core::syntax::error::ParseError::location(&self) -> core::option::Option<usize>
-pub fn perl_parser_core::syntax::error::ParseError::nested_quantifier_advisory(location: usize) -> Self
+pub fn perl_parser_core::syntax::error::ParseError::nested_quantifier_advisory(location: usize) -> perl_parser_core::syntax::error::ParseError
 pub fn perl_parser_core::syntax::error::ParseError::resolved_diagnostic_anchor(&self, source: &str) -> perl_parser_core::syntax::error::ResolvedParseDiagnosticAnchor
 pub fn perl_parser_core::syntax::error::ParseError::severity(&self) -> perl_parser_core::syntax::error::ParseDiagnosticSeverity
 pub fn perl_parser_core::syntax::error::ParseError::suggestion(&self) -> core::option::Option<alloc::string::String>
-pub fn perl_parser_core::syntax::error::ParseError::syntax(message: impl core::convert::Into<alloc::string::String>, location: usize) -> Self
-pub fn perl_parser_core::syntax::error::ParseError::unexpected(expected: impl core::convert::Into<alloc::string::String>, found: impl core::convert::Into<alloc::string::String>, location: usize) -> Self
+pub fn perl_parser_core::syntax::error::ParseError::syntax(message: impl core::convert::Into<alloc::string::String>, location: usize) -> perl_parser_core::syntax::error::ParseError
+pub fn perl_parser_core::syntax::error::ParseError::unexpected(expected: impl core::convert::Into<alloc::string::String>, found: impl core::convert::Into<alloc::string::String>, location: usize) -> perl_parser_core::syntax::error::ParseError
 pub fn perl_parser_core::syntax::error::ParseError::clone(&self) -> perl_parser_core::syntax::error::ParseError
 pub fn perl_parser_core::syntax::error::ParseError::eq(&self, other: &perl_parser_core::syntax::error::ParseError) -> bool
-pub fn perl_parser_core::syntax::error::ParseError::from(err: perl_regex::error::RegexError) -> Self
+pub fn perl_parser_core::syntax::error::ParseError::from(err: perl_regex::error::RegexError) -> perl_parser_core::syntax::error::ParseError
 pub fn perl_parser_core::syntax::error::ParseError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_parser_core::syntax::error::ParseError::fmt(&self, __formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_parser_core::syntax::error::ParseError::error_class(&self) -> perl_parser_core::syntax::error::ErrorCategory
 #[non_exhaustive] pub enum perl_parser_core::syntax::error::ParseStopCause
 pub perl_parser_core::syntax::error::ParseStopCause::Cancelled
 pub perl_parser_core::syntax::error::ParseStopCause::CatastrophicTermination
+pub perl_parser_core::syntax::error::ParseStopCause::CoreBudgetExhausted
+pub perl_parser_core::syntax::error::ParseStopCause::CoreBudgetExhausted::dimension: perl_parser_core::syntax::error::ParseCoreDimension
+pub perl_parser_core::syntax::error::ParseStopCause::CoreBudgetExhausted::limit: usize
+pub perl_parser_core::syntax::error::ParseStopCause::CoreBudgetExhausted::usage: usize
 pub perl_parser_core::syntax::error::ParseStopCause::FutureTypedTerminal
 pub perl_parser_core::syntax::error::ParseStopCause::HeredocBudgetExhausted
 pub perl_parser_core::syntax::error::ParseStopCause::HeredocBudgetExhausted::limit: usize
@@ -3868,7 +4007,7 @@ pub perl_parser_core::syntax::error::ParseStopCause::RecursionBudgetExhausted
 pub perl_parser_core::syntax::error::ParseStopCause::RecursionBudgetExhausted::limit: core::option::Option<usize>
 pub perl_parser_core::syntax::error::ParseStopCause::RecursionBudgetExhausted::usage: core::option::Option<usize>
 pub fn perl_parser_core::syntax::error::ParseStopCause::as_str(&self) -> &'static str
-pub fn perl_parser_core::syntax::error::ParseStopCause::from_parse_error(error: &perl_parser_core::syntax::error::ParseError) -> Self
+pub fn perl_parser_core::syntax::error::ParseStopCause::from_parse_error(error: &perl_parser_core::syntax::error::ParseError) -> perl_parser_core::syntax::error::ParseStopCause
 pub fn perl_parser_core::syntax::error::ParseStopCause::is_budget_exhaustion(&self) -> bool
 pub fn perl_parser_core::syntax::error::ParseStopCause::is_cancelled(&self) -> bool
 pub fn perl_parser_core::syntax::error::ParseStopCause::clone(&self) -> perl_parser_core::syntax::error::ParseStopCause
@@ -3919,16 +4058,21 @@ pub perl_parser_core::syntax::error::BudgetTracker::current_depth: usize
 pub perl_parser_core::syntax::error::BudgetTracker::errors_emitted: usize
 pub perl_parser_core::syntax::error::BudgetTracker::heredoc_scan_bytes: usize
 pub perl_parser_core::syntax::error::BudgetTracker::max_depth_reached: usize
+pub perl_parser_core::syntax::error::BudgetTracker::nodes_constructed: usize
 pub perl_parser_core::syntax::error::BudgetTracker::recoveries_attempted: usize
+pub perl_parser_core::syntax::error::BudgetTracker::tokens_consumed: usize
 pub perl_parser_core::syntax::error::BudgetTracker::tokens_skipped: usize
+pub fn perl_parser_core::syntax::error::BudgetTracker::authorize_core(&mut self, budget: &perl_parser_core::syntax::error::ParseBudget, dimension: perl_parser_core::syntax::error::ParseCoreDimension) -> perl_parser_core::syntax::error::ParseResult<()>
+pub fn perl_parser_core::syntax::error::BudgetTracker::authorize_core_batch(&mut self, budget: &perl_parser_core::syntax::error::ParseBudget, dimension: perl_parser_core::syntax::error::ParseCoreDimension, count: usize) -> perl_parser_core::syntax::error::ParseResult<()>
 pub fn perl_parser_core::syntax::error::BudgetTracker::begin_recovery(&mut self, budget: &perl_parser_core::syntax::error::ParseBudget) -> bool
 pub fn perl_parser_core::syntax::error::BudgetTracker::can_skip_more(&self, budget: &perl_parser_core::syntax::error::ParseBudget, additional: usize) -> bool
+pub fn perl_parser_core::syntax::error::BudgetTracker::core_usage(&self, dimension: perl_parser_core::syntax::error::ParseCoreDimension) -> usize
 pub fn perl_parser_core::syntax::error::BudgetTracker::depth_would_exceed(&self, budget: &perl_parser_core::syntax::error::ParseBudget) -> bool
 pub fn perl_parser_core::syntax::error::BudgetTracker::enter_depth(&mut self)
 pub fn perl_parser_core::syntax::error::BudgetTracker::errors_exhausted(&self, budget: &perl_parser_core::syntax::error::ParseBudget) -> bool
 pub fn perl_parser_core::syntax::error::BudgetTracker::exit_depth(&mut self)
 pub fn perl_parser_core::syntax::error::BudgetTracker::heredoc_scan_exhausted(&self, budget: &perl_parser_core::syntax::error::ParseBudget) -> bool
-pub fn perl_parser_core::syntax::error::BudgetTracker::new() -> Self
+pub fn perl_parser_core::syntax::error::BudgetTracker::new() -> perl_parser_core::syntax::error::BudgetTracker
 pub fn perl_parser_core::syntax::error::BudgetTracker::record_error(&mut self)
 pub fn perl_parser_core::syntax::error::BudgetTracker::record_heredoc_scan(&mut self, bytes: usize)
 pub fn perl_parser_core::syntax::error::BudgetTracker::record_recovery(&mut self)
@@ -3950,14 +4094,17 @@ pub fn perl_parser_core::syntax::error::ErrorContext::fmt(&self, f: &mut core::f
 pub perl_parser_core::syntax::error::ParseBudget::max_depth: usize
 pub perl_parser_core::syntax::error::ParseBudget::max_errors: usize
 pub perl_parser_core::syntax::error::ParseBudget::max_heredoc_scan_bytes: usize
+pub perl_parser_core::syntax::error::ParseBudget::max_nodes_constructed: usize
 pub perl_parser_core::syntax::error::ParseBudget::max_recoveries: usize
+pub perl_parser_core::syntax::error::ParseBudget::max_tokens_consumed: usize
 pub perl_parser_core::syntax::error::ParseBudget::max_tokens_skipped: usize
-pub fn perl_parser_core::syntax::error::ParseBudget::for_ide() -> Self
-pub fn perl_parser_core::syntax::error::ParseBudget::strict() -> Self
-pub fn perl_parser_core::syntax::error::ParseBudget::unlimited() -> Self
+pub fn perl_parser_core::syntax::error::ParseBudget::core_limit(&self, dimension: perl_parser_core::syntax::error::ParseCoreDimension) -> usize
+pub fn perl_parser_core::syntax::error::ParseBudget::for_ide() -> perl_parser_core::syntax::error::ParseBudget
+pub fn perl_parser_core::syntax::error::ParseBudget::strict() -> perl_parser_core::syntax::error::ParseBudget
+pub fn perl_parser_core::syntax::error::ParseBudget::unlimited() -> perl_parser_core::syntax::error::ParseBudget
 pub fn perl_parser_core::syntax::error::ParseBudget::clone(&self) -> perl_parser_core::syntax::error::ParseBudget
 pub fn perl_parser_core::syntax::error::ParseBudget::eq(&self, other: &perl_parser_core::syntax::error::ParseBudget) -> bool
-pub fn perl_parser_core::syntax::error::ParseBudget::default() -> Self
+pub fn perl_parser_core::syntax::error::ParseBudget::default() -> perl_parser_core::syntax::error::ParseBudget
 pub fn perl_parser_core::syntax::error::ParseBudget::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 #[non_exhaustive] pub struct perl_parser_core::syntax::error::ParseOutput
 pub perl_parser_core::syntax::error::ParseOutput::ast: perl_ast::ast::Node
@@ -3965,11 +4112,11 @@ pub perl_parser_core::syntax::error::ParseOutput::budget_usage: perl_parser_core
 pub perl_parser_core::syntax::error::ParseOutput::diagnostics: alloc::vec::Vec<perl_parser_core::syntax::error::ParseError>
 pub perl_parser_core::syntax::error::ParseOutput::recovered_count: usize
 pub fn perl_parser_core::syntax::error::ParseOutput::error_count(&self) -> usize
-pub fn perl_parser_core::syntax::error::ParseOutput::finish(ast: perl_ast::ast::Node, diagnostics: alloc::vec::Vec<perl_parser_core::syntax::error::ParseError>, budget_usage: perl_parser_core::syntax::error::BudgetTracker, stop_cause: core::option::Option<perl_parser_core::syntax::error::ParseStopCause>) -> Self
+pub fn perl_parser_core::syntax::error::ParseOutput::finish(ast: perl_ast::ast::Node, diagnostics: alloc::vec::Vec<perl_parser_core::syntax::error::ParseError>, budget_usage: perl_parser_core::syntax::error::BudgetTracker, stop_cause: core::option::Option<perl_parser_core::syntax::error::ParseStopCause>) -> perl_parser_core::syntax::error::ParseOutput
 pub fn perl_parser_core::syntax::error::ParseOutput::has_errors(&self) -> bool
 pub fn perl_parser_core::syntax::error::ParseOutput::is_ok(&self) -> bool
-pub fn perl_parser_core::syntax::error::ParseOutput::success(ast: perl_ast::ast::Node) -> Self
-pub fn perl_parser_core::syntax::error::ParseOutput::with_errors(ast: perl_ast::ast::Node, diagnostics: alloc::vec::Vec<perl_parser_core::syntax::error::ParseError>) -> Self
+pub fn perl_parser_core::syntax::error::ParseOutput::success(ast: perl_ast::ast::Node) -> perl_parser_core::syntax::error::ParseOutput
+pub fn perl_parser_core::syntax::error::ParseOutput::with_errors(ast: perl_ast::ast::Node, diagnostics: alloc::vec::Vec<perl_parser_core::syntax::error::ParseError>) -> perl_parser_core::syntax::error::ParseOutput
 pub fn perl_parser_core::syntax::error::ParseOutput::set_stop_cause(&mut self, cause: core::option::Option<perl_parser_core::syntax::error::ParseStopCause>)
 pub fn perl_parser_core::syntax::error::ParseOutput::stop_cause(&self) -> core::option::Option<perl_parser_core::syntax::error::ParseStopCause>
 pub fn perl_parser_core::syntax::error::ParseOutput::terminated_early(&self) -> bool
@@ -3981,7 +4128,7 @@ pub perl_parser_core::syntax::error::RecoverySalvageProfile::class: perl_parser_
 pub perl_parser_core::syntax::error::RecoverySalvageProfile::error_node_count: usize
 pub perl_parser_core::syntax::error::RecoverySalvageProfile::first_unrecovered_error_node: core::option::Option<alloc::string::String>
 pub perl_parser_core::syntax::error::RecoverySalvageProfile::recovered_count: usize
-pub fn perl_parser_core::syntax::error::RecoverySalvageProfile::from_parse(ast: &perl_ast::ast::Node, diagnostics: &[perl_parser_core::syntax::error::ParseError], catastrophic: bool) -> Self
+pub fn perl_parser_core::syntax::error::RecoverySalvageProfile::from_parse(ast: &perl_ast::ast::Node, diagnostics: &[perl_parser_core::syntax::error::ParseError], catastrophic: bool) -> perl_parser_core::syntax::error::RecoverySalvageProfile
 pub fn perl_parser_core::syntax::error::RecoverySalvageProfile::clone(&self) -> perl_parser_core::syntax::error::RecoverySalvageProfile
 pub fn perl_parser_core::syntax::error::RecoverySalvageProfile::eq(&self, other: &perl_parser_core::syntax::error::RecoverySalvageProfile) -> bool
 pub fn perl_parser_core::syntax::error::RecoverySalvageProfile::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
@@ -4067,7 +4214,7 @@ pub perl_parser_core::syntax::quote::MatchError::InvalidModifier(char)
 pub perl_parser_core::syntax::quote::MatchError::MissingDelimiter
 pub fn perl_parser_core::syntax::quote::MatchError::clone(&self) -> perl_parser_core::syntax::quote::MatchError
 pub fn perl_parser_core::syntax::quote::MatchError::eq(&self, other: &perl_parser_core::syntax::quote::MatchError) -> bool
-pub fn perl_parser_core::syntax::quote::MatchError::from(c: char) -> Self
+pub fn perl_parser_core::syntax::quote::MatchError::from(c: char) -> perl_parser_core::syntax::quote::MatchError
 pub fn perl_parser_core::syntax::quote::MatchError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 #[non_exhaustive] pub enum perl_parser_core::syntax::quote::RegexFamilyOperator
 pub perl_parser_core::syntax::quote::RegexFamilyOperator::BareMatch
@@ -4193,7 +4340,7 @@ pub fn perl_parser_core::syntax::regex_analysis::RegexAnalysisTable::find_at_off
 pub fn perl_parser_core::syntax::regex_analysis::RegexAnalysisTable::find_by_full_range(&self, range: perl_position_tracking::span::SourceLocation) -> core::option::Option<&perl_parser_core::syntax::regex_analysis::RegexAnalysisRecord>
 pub fn perl_parser_core::syntax::regex_analysis::RegexAnalysisTable::find_by_pattern_range(&self, range: perl_position_tracking::span::SourceLocation) -> core::option::Option<&perl_parser_core::syntax::regex_analysis::RegexAnalysisRecord>
 pub fn perl_parser_core::syntax::regex_analysis::RegexAnalysisTable::find_enclosed_by(&self, range: perl_position_tracking::span::SourceLocation, family: perl_parser_core::syntax::regex_analysis::RegexAnalysisFamily) -> core::option::Option<&perl_parser_core::syntax::regex_analysis::RegexAnalysisRecord>
-pub fn perl_parser_core::syntax::regex_analysis::RegexAnalysisTable::for_source(source: &str) -> Self
+pub fn perl_parser_core::syntax::regex_analysis::RegexAnalysisTable::for_source(source: &str) -> perl_parser_core::syntax::regex_analysis::RegexAnalysisTable
 pub fn perl_parser_core::syntax::regex_analysis::RegexAnalysisTable::is_empty(&self) -> bool
 pub fn perl_parser_core::syntax::regex_analysis::RegexAnalysisTable::len(&self) -> usize
 pub fn perl_parser_core::syntax::regex_analysis::RegexAnalysisTable::record(&self, id: perl_parser_core::syntax::regex_analysis::RegexAnalysisId) -> core::option::Option<&perl_parser_core::syntax::regex_analysis::RegexAnalysisRecord>
@@ -4201,11 +4348,11 @@ pub fn perl_parser_core::syntax::regex_analysis::RegexAnalysisTable::source_matc
 pub const fn perl_parser_core::syntax::regex_analysis::RegexAnalysisTable::unknown() -> Self
 pub fn perl_parser_core::syntax::regex_analysis::RegexAnalysisTable::clone(&self) -> perl_parser_core::syntax::regex_analysis::RegexAnalysisTable
 pub fn perl_parser_core::syntax::regex_analysis::RegexAnalysisTable::eq(&self, other: &perl_parser_core::syntax::regex_analysis::RegexAnalysisTable) -> bool
-pub fn perl_parser_core::syntax::regex_analysis::RegexAnalysisTable::default() -> Self
+pub fn perl_parser_core::syntax::regex_analysis::RegexAnalysisTable::default() -> perl_parser_core::syntax::regex_analysis::RegexAnalysisTable
 pub fn perl_parser_core::syntax::regex_analysis::RegexAnalysisTable::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_parser_core::syntax::regex_analysis::RegexSourceDigest(_)
 pub const fn perl_parser_core::syntax::regex_analysis::RegexSourceDigest::as_bytes(self) -> [u8; 16]
-pub fn perl_parser_core::syntax::regex_analysis::RegexSourceDigest::for_source(source: &str) -> Self
+pub fn perl_parser_core::syntax::regex_analysis::RegexSourceDigest::for_source(source: &str) -> perl_parser_core::syntax::regex_analysis::RegexSourceDigest
 pub fn perl_parser_core::syntax::regex_analysis::RegexSourceDigest::to_hex(self) -> alloc::string::String
 pub fn perl_parser_core::syntax::regex_analysis::RegexSourceDigest::clone(&self) -> perl_parser_core::syntax::regex_analysis::RegexSourceDigest
 pub fn perl_parser_core::syntax::regex_analysis::RegexSourceDigest::cmp(&self, other: &perl_parser_core::syntax::regex_analysis::RegexSourceDigest) -> core::cmp::Ordering
@@ -4271,24 +4418,24 @@ pub perl_parser_core::syntax::source_context::SourceRegion::kind: perl_parser_co
 pub perl_parser_core::syntax::source_context::SourceRegion::start: usize
 pub fn perl_parser_core::SourceRegion::contains_offset(self, offset: usize) -> bool
 pub fn perl_parser_core::SourceRegion::contains_range(self, start: usize, end: usize) -> bool
-pub fn perl_parser_core::SourceRegion::new(start: usize, end: usize, kind: perl_parser_core::SourceRegionKind) -> core::option::Option<Self>
+pub fn perl_parser_core::SourceRegion::new(start: usize, end: usize, kind: perl_parser_core::SourceRegionKind) -> core::option::Option<perl_parser_core::SourceRegion>
 pub fn perl_parser_core::SourceRegion::clone(&self) -> perl_parser_core::SourceRegion
 pub fn perl_parser_core::SourceRegion::eq(&self, other: &perl_parser_core::SourceRegion) -> bool
 pub fn perl_parser_core::SourceRegion::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_parser_core::syntax::source_context::SourceRegionIndex
-pub fn perl_parser_core::SourceRegionIndex::build(source: &str) -> Self
-pub fn perl_parser_core::SourceRegionIndex::build_with_hash(source: &str, content_hash: u64) -> Self
-pub fn perl_parser_core::SourceRegionIndex::build_with_hash_from_arc(source: alloc::sync::Arc<str>, content_hash: u64) -> Self
+pub fn perl_parser_core::SourceRegionIndex::build(source: &str) -> perl_parser_core::SourceRegionIndex
+pub fn perl_parser_core::SourceRegionIndex::build_with_hash(source: &str, content_hash: u64) -> perl_parser_core::SourceRegionIndex
+pub fn perl_parser_core::SourceRegionIndex::build_with_hash_from_arc(source: alloc::sync::Arc<str>, content_hash: u64) -> perl_parser_core::SourceRegionIndex
 pub fn perl_parser_core::SourceRegionIndex::classify_offset(&self, offset: usize) -> perl_parser_core::syntax::source_context::OffsetClassification
 pub fn perl_parser_core::SourceRegionIndex::classify_range(&self, start: usize, end: usize) -> perl_parser_core::RangeClassification
 pub fn perl_parser_core::SourceRegionIndex::classify_range_checked(&self, start: usize, end: usize) -> perl_parser_core::SourceRangeClassification
 pub const fn perl_parser_core::SourceRegionIndex::content_hash(&self) -> u64
-pub fn perl_parser_core::SourceRegionIndex::from_regions(source: &str, content_hash: u64, regions: alloc::vec::Vec<perl_parser_core::SourceRegion>) -> Self
+pub fn perl_parser_core::SourceRegionIndex::from_regions(source: &str, content_hash: u64, regions: alloc::vec::Vec<perl_parser_core::SourceRegion>) -> perl_parser_core::SourceRegionIndex
 pub fn perl_parser_core::SourceRegionIndex::kind_at_offset(&self, offset: usize) -> perl_parser_core::SourceRegionKind
 pub fn perl_parser_core::SourceRegionIndex::range_fully_within(&self, start: usize, end: usize, allowed: &[perl_parser_core::SourceRegionKind]) -> bool
 pub fn perl_parser_core::SourceRegionIndex::region_count(&self) -> usize
 pub fn perl_parser_core::SourceRegionIndex::regions(&self) -> &[perl_parser_core::SourceRegion]
-pub fn perl_parser_core::SourceRegionIndex::with_overrides(&self, overrides: &[perl_parser_core::SourceRegion]) -> Self
+pub fn perl_parser_core::SourceRegionIndex::with_overrides(&self, overrides: &[perl_parser_core::SourceRegion]) -> perl_parser_core::SourceRegionIndex
 pub fn perl_parser_core::SourceRegionIndex::clone(&self) -> perl_parser_core::SourceRegionIndex
 pub fn perl_parser_core::SourceRegionIndex::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_parser_core::syntax::source_context::hash_source_content(content: &str) -> u64
@@ -4349,12 +4496,12 @@ pub struct perl_parser_core::token_stream::TokenStream<'a>
 pub fn perl_parser_core::tokens::token_stream::TokenStream<'a>::apply_contextual(&mut self, operation: perl_parser_core::tokens::token_stream::ContextualTokenOp) -> perl_parser_core::tokens::token_stream::ContextualOpResult
 pub fn perl_parser_core::tokens::token_stream::TokenStream<'a>::backing(&self) -> perl_parser_core::tokens::token_stream::TokenStreamBacking
 pub fn perl_parser_core::tokens::token_stream::TokenStream<'a>::enter_format_mode(&mut self)
-pub fn perl_parser_core::tokens::token_stream::TokenStream<'a>::from_vec(tokens: alloc::vec::Vec<perl_token::token::Token>) -> Self
-pub fn perl_parser_core::tokens::token_stream::TokenStream<'a>::from_vec_with_source(tokens: alloc::vec::Vec<perl_token::token::Token>, source: &'a str) -> Self
+pub fn perl_parser_core::tokens::token_stream::TokenStream<'a>::from_vec(tokens: alloc::vec::Vec<perl_token::token::Token>) -> perl_parser_core::tokens::token_stream::TokenStream<'a>
+pub fn perl_parser_core::tokens::token_stream::TokenStream<'a>::from_vec_with_source(tokens: alloc::vec::Vec<perl_token::token::Token>, source: &'a str) -> perl_parser_core::tokens::token_stream::TokenStream<'a>
 pub fn perl_parser_core::tokens::token_stream::TokenStream<'a>::invalidate_peek(&mut self)
 pub fn perl_parser_core::tokens::token_stream::TokenStream<'a>::is_eof(&mut self) -> bool
 pub fn perl_parser_core::tokens::token_stream::TokenStream<'a>::lexer_tokens_to_parser_tokens(tokens: alloc::vec::Vec<perl_lexer::token::Token>) -> alloc::vec::Vec<perl_token::token::Token>
-pub fn perl_parser_core::tokens::token_stream::TokenStream<'a>::new(input: &'a str) -> Self
+pub fn perl_parser_core::tokens::token_stream::TokenStream<'a>::new(input: &'a str) -> perl_parser_core::tokens::token_stream::TokenStream<'a>
 pub fn perl_parser_core::tokens::token_stream::TokenStream<'a>::next(&mut self) -> perl_parser_core::syntax::error::ParseResult<perl_token::token::Token>
 pub fn perl_parser_core::tokens::token_stream::TokenStream<'a>::on_stmt_boundary(&mut self)
 pub fn perl_parser_core::tokens::token_stream::TokenStream<'a>::peek(&mut self) -> perl_parser_core::syntax::error::ParseResult<&perl_token::token::Token>
@@ -4404,12 +4551,12 @@ pub struct perl_parser_core::tokens::token_stream::TokenStream<'a>
 pub fn perl_parser_core::tokens::token_stream::TokenStream<'a>::apply_contextual(&mut self, operation: perl_parser_core::tokens::token_stream::ContextualTokenOp) -> perl_parser_core::tokens::token_stream::ContextualOpResult
 pub fn perl_parser_core::tokens::token_stream::TokenStream<'a>::backing(&self) -> perl_parser_core::tokens::token_stream::TokenStreamBacking
 pub fn perl_parser_core::tokens::token_stream::TokenStream<'a>::enter_format_mode(&mut self)
-pub fn perl_parser_core::tokens::token_stream::TokenStream<'a>::from_vec(tokens: alloc::vec::Vec<perl_token::token::Token>) -> Self
-pub fn perl_parser_core::tokens::token_stream::TokenStream<'a>::from_vec_with_source(tokens: alloc::vec::Vec<perl_token::token::Token>, source: &'a str) -> Self
+pub fn perl_parser_core::tokens::token_stream::TokenStream<'a>::from_vec(tokens: alloc::vec::Vec<perl_token::token::Token>) -> perl_parser_core::tokens::token_stream::TokenStream<'a>
+pub fn perl_parser_core::tokens::token_stream::TokenStream<'a>::from_vec_with_source(tokens: alloc::vec::Vec<perl_token::token::Token>, source: &'a str) -> perl_parser_core::tokens::token_stream::TokenStream<'a>
 pub fn perl_parser_core::tokens::token_stream::TokenStream<'a>::invalidate_peek(&mut self)
 pub fn perl_parser_core::tokens::token_stream::TokenStream<'a>::is_eof(&mut self) -> bool
 pub fn perl_parser_core::tokens::token_stream::TokenStream<'a>::lexer_tokens_to_parser_tokens(tokens: alloc::vec::Vec<perl_lexer::token::Token>) -> alloc::vec::Vec<perl_token::token::Token>
-pub fn perl_parser_core::tokens::token_stream::TokenStream<'a>::new(input: &'a str) -> Self
+pub fn perl_parser_core::tokens::token_stream::TokenStream<'a>::new(input: &'a str) -> perl_parser_core::tokens::token_stream::TokenStream<'a>
 pub fn perl_parser_core::tokens::token_stream::TokenStream<'a>::next(&mut self) -> perl_parser_core::syntax::error::ParseResult<perl_token::token::Token>
 pub fn perl_parser_core::tokens::token_stream::TokenStream<'a>::on_stmt_boundary(&mut self)
 pub fn perl_parser_core::tokens::token_stream::TokenStream<'a>::peek(&mut self) -> perl_parser_core::syntax::error::ParseResult<&perl_token::token::Token>
@@ -4480,9 +4627,9 @@ pub fn perl_parser_core::tokens::token_subject::TokenSubjectError::fmt(&self, f:
 pub fn perl_parser_core::tokens::token_subject::TokenSubjectError::fmt(&self, __formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_parser_core::tokens::token_subject::LexerConfigIdentity
 pub fn perl_parser_core::tokens::token_subject::LexerConfigIdentity::max_lookahead(self) -> usize
-pub fn perl_parser_core::tokens::token_subject::LexerConfigIdentity::of(config: &perl_lexer::config::LexerConfig) -> Self
+pub fn perl_parser_core::tokens::token_subject::LexerConfigIdentity::of(config: &perl_lexer::config::LexerConfig) -> perl_parser_core::tokens::token_subject::LexerConfigIdentity
 pub fn perl_parser_core::tokens::token_subject::LexerConfigIdentity::parse_interpolation(self) -> bool
-pub fn perl_parser_core::tokens::token_subject::LexerConfigIdentity::production_default() -> Self
+pub fn perl_parser_core::tokens::token_subject::LexerConfigIdentity::production_default() -> perl_parser_core::tokens::token_subject::LexerConfigIdentity
 pub fn perl_parser_core::tokens::token_subject::LexerConfigIdentity::symbol_table_bound(self) -> bool
 pub fn perl_parser_core::tokens::token_subject::LexerConfigIdentity::clone(&self) -> perl_parser_core::tokens::token_subject::LexerConfigIdentity
 pub fn perl_parser_core::tokens::token_subject::LexerConfigIdentity::eq(&self, other: &perl_parser_core::tokens::token_subject::LexerConfigIdentity) -> bool
@@ -4495,20 +4642,20 @@ pub fn perl_parser_core::tokens::token_subject::TokenSubjectIdentity::fingerprin
 pub fn perl_parser_core::tokens::token_subject::TokenSubjectIdentity::generation(&self) -> &perl_source_identity::generation::SourceGeneration
 pub fn perl_parser_core::tokens::token_subject::TokenSubjectIdentity::lexer_config(&self) -> perl_parser_core::tokens::token_subject::LexerConfigIdentity
 pub fn perl_parser_core::tokens::token_subject::TokenSubjectIdentity::logical_source(&self) -> &perl_source_identity::ids::LogicalSourceId
-pub fn perl_parser_core::tokens::token_subject::TokenSubjectIdentity::new(content_revision: perl_source_identity::generation::ContentRevision, generation: perl_source_identity::generation::SourceGeneration, lexer_config: perl_parser_core::tokens::token_subject::LexerConfigIdentity, parser_config: perl_parser_core::ParserConfigIdentity) -> Self
+pub fn perl_parser_core::tokens::token_subject::TokenSubjectIdentity::new(content_revision: perl_source_identity::generation::ContentRevision, generation: perl_source_identity::generation::SourceGeneration, lexer_config: perl_parser_core::tokens::token_subject::LexerConfigIdentity, parser_config: perl_parser_core::ParserConfigIdentity) -> perl_parser_core::tokens::token_subject::TokenSubjectIdentity
 pub fn perl_parser_core::tokens::token_subject::TokenSubjectIdentity::parser_config(&self) -> perl_parser_core::ParserConfigIdentity
 pub fn perl_parser_core::tokens::token_subject::TokenSubjectIdentity::schema_version(&self) -> u32
-pub fn perl_parser_core::tokens::token_subject::TokenSubjectIdentity::with_schema_version(self, schema_version: u32) -> Self
+pub fn perl_parser_core::tokens::token_subject::TokenSubjectIdentity::with_schema_version(self, schema_version: u32) -> perl_parser_core::tokens::token_subject::TokenSubjectIdentity
 pub fn perl_parser_core::tokens::token_subject::TokenSubjectIdentity::clone(&self) -> perl_parser_core::tokens::token_subject::TokenSubjectIdentity
 pub fn perl_parser_core::tokens::token_subject::TokenSubjectIdentity::eq(&self, other: &perl_parser_core::tokens::token_subject::TokenSubjectIdentity) -> bool
 pub fn perl_parser_core::tokens::token_subject::TokenSubjectIdentity::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_parser_core::tokens::token_subject::ValidatedTokenStream<'a>
 pub fn perl_parser_core::tokens::token_subject::ValidatedTokenStream<'a>::classification_authority(&self) -> perl_parser_core::tokens::token_subject::ClassificationAuthority
-pub fn perl_parser_core::tokens::token_subject::ValidatedTokenStream<'a>::from_checkpoint_replay(identity: perl_parser_core::tokens::token_subject::TokenSubjectIdentity, source: &'a str, tokens: alloc::vec::Vec<perl_token::token::Token>, terminal: perl_parser_core::tokens::token_subject::TerminalState, predecessor_generation: perl_source_identity::generation::SourceGeneration, classification_authority: perl_parser_core::tokens::token_subject::ClassificationAuthority) -> core::result::Result<Self, perl_parser_core::tokens::token_subject::TokenSubjectError>
-pub fn perl_parser_core::tokens::token_subject::ValidatedTokenStream<'a>::from_exact_suffix_sync(identity: perl_parser_core::tokens::token_subject::TokenSubjectIdentity, source: &'a str, tokens: alloc::vec::Vec<perl_token::token::Token>, terminal: perl_parser_core::tokens::token_subject::TerminalState) -> core::result::Result<Self, perl_parser_core::tokens::token_subject::TokenSubjectError>
-pub fn perl_parser_core::tokens::token_subject::ValidatedTokenStream<'a>::from_fresh_lex(identity: perl_parser_core::tokens::token_subject::TokenSubjectIdentity, source: &'a str) -> core::result::Result<Self, perl_parser_core::tokens::token_subject::TokenSubjectError>
-pub fn perl_parser_core::tokens::token_subject::ValidatedTokenStream<'a>::from_test_fixture(identity: perl_parser_core::tokens::token_subject::TokenSubjectIdentity, source: &'a str, tokens: alloc::vec::Vec<perl_token::token::Token>, terminal: perl_parser_core::tokens::token_subject::TerminalState) -> core::result::Result<Self, perl_parser_core::tokens::token_subject::TokenSubjectError>
-pub fn perl_parser_core::tokens::token_subject::ValidatedTokenStream<'a>::from_unsupported(identity: perl_parser_core::tokens::token_subject::TokenSubjectIdentity, source: &'a str, tokens: alloc::vec::Vec<perl_token::token::Token>, terminal: perl_parser_core::tokens::token_subject::TerminalState) -> core::result::Result<Self, perl_parser_core::tokens::token_subject::TokenSubjectError>
+pub fn perl_parser_core::tokens::token_subject::ValidatedTokenStream<'a>::from_checkpoint_replay(identity: perl_parser_core::tokens::token_subject::TokenSubjectIdentity, source: &'a str, tokens: alloc::vec::Vec<perl_token::token::Token>, terminal: perl_parser_core::tokens::token_subject::TerminalState, predecessor_generation: perl_source_identity::generation::SourceGeneration, classification_authority: perl_parser_core::tokens::token_subject::ClassificationAuthority) -> core::result::Result<perl_parser_core::tokens::token_subject::ValidatedTokenStream<'a>, perl_parser_core::tokens::token_subject::TokenSubjectError>
+pub fn perl_parser_core::tokens::token_subject::ValidatedTokenStream<'a>::from_exact_suffix_sync(identity: perl_parser_core::tokens::token_subject::TokenSubjectIdentity, source: &'a str, tokens: alloc::vec::Vec<perl_token::token::Token>, terminal: perl_parser_core::tokens::token_subject::TerminalState) -> core::result::Result<perl_parser_core::tokens::token_subject::ValidatedTokenStream<'a>, perl_parser_core::tokens::token_subject::TokenSubjectError>
+pub fn perl_parser_core::tokens::token_subject::ValidatedTokenStream<'a>::from_fresh_lex(identity: perl_parser_core::tokens::token_subject::TokenSubjectIdentity, source: &'a str) -> core::result::Result<perl_parser_core::tokens::token_subject::ValidatedTokenStream<'a>, perl_parser_core::tokens::token_subject::TokenSubjectError>
+pub fn perl_parser_core::tokens::token_subject::ValidatedTokenStream<'a>::from_test_fixture(identity: perl_parser_core::tokens::token_subject::TokenSubjectIdentity, source: &'a str, tokens: alloc::vec::Vec<perl_token::token::Token>, terminal: perl_parser_core::tokens::token_subject::TerminalState) -> core::result::Result<perl_parser_core::tokens::token_subject::ValidatedTokenStream<'a>, perl_parser_core::tokens::token_subject::TokenSubjectError>
+pub fn perl_parser_core::tokens::token_subject::ValidatedTokenStream<'a>::from_unsupported(identity: perl_parser_core::tokens::token_subject::TokenSubjectIdentity, source: &'a str, tokens: alloc::vec::Vec<perl_token::token::Token>, terminal: perl_parser_core::tokens::token_subject::TerminalState) -> core::result::Result<perl_parser_core::tokens::token_subject::ValidatedTokenStream<'a>, perl_parser_core::tokens::token_subject::TokenSubjectError>
 pub fn perl_parser_core::tokens::token_subject::ValidatedTokenStream<'a>::identity(&self) -> &perl_parser_core::tokens::token_subject::TokenSubjectIdentity
 pub fn perl_parser_core::tokens::token_subject::ValidatedTokenStream<'a>::is_production_valid(&self) -> bool
 pub fn perl_parser_core::tokens::token_subject::ValidatedTokenStream<'a>::lex_for_subject(source: &str) -> core::result::Result<alloc::vec::Vec<perl_token::token::Token>, perl_parser_core::syntax::error::ParseError>
@@ -4539,12 +4686,12 @@ pub perl_parser_core::tokens::trivia::NodeWithTrivia::trailing_trivia: alloc::ve
 pub fn perl_parser_core::tokens::trivia::NodeWithTrivia::clone(&self) -> perl_parser_core::tokens::trivia::NodeWithTrivia
 pub fn perl_parser_core::tokens::trivia::NodeWithTrivia::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_parser_core::tokens::trivia::TriviaLexer<'a>
-pub fn perl_parser_core::tokens::trivia::TriviaLexer<'a>::new(source: &'a str) -> Self
+pub fn perl_parser_core::tokens::trivia::TriviaLexer<'a>::new(source: &'a str) -> perl_parser_core::tokens::trivia::TriviaLexer<'a>
 pub fn perl_parser_core::tokens::trivia::TriviaLexer<'a>::next_token_with_trivia(&mut self) -> core::option::Option<(perl_lexer::token::Token, alloc::vec::Vec<perl_parser_core::tokens::trivia::TriviaToken>)>
 pub struct perl_parser_core::tokens::trivia::TriviaToken
 pub perl_parser_core::tokens::trivia::TriviaToken::range: perl_position_tracking::position::Range
 pub perl_parser_core::tokens::trivia::TriviaToken::trivia: perl_parser_core::tokens::trivia::Trivia
-pub fn perl_parser_core::tokens::trivia::TriviaToken::new(trivia: perl_parser_core::tokens::trivia::Trivia, range: perl_position_tracking::position::Range) -> Self
+pub fn perl_parser_core::tokens::trivia::TriviaToken::new(trivia: perl_parser_core::tokens::trivia::Trivia, range: perl_position_tracking::position::Range) -> perl_parser_core::tokens::trivia::TriviaToken
 pub fn perl_parser_core::tokens::trivia::TriviaToken::clone(&self) -> perl_parser_core::tokens::trivia::TriviaToken
 pub fn perl_parser_core::tokens::trivia::TriviaToken::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub trait perl_parser_core::tokens::trivia::TriviaCollector
@@ -4559,7 +4706,7 @@ pub fn perl_parser_core::tokens::trivia_parser::TriviaParseOutput::source(&self)
 pub fn perl_parser_core::tokens::trivia_parser::TriviaParseOutput::clone(&self) -> perl_parser_core::tokens::trivia_parser::TriviaParseOutput
 pub fn perl_parser_core::tokens::trivia_parser::TriviaParseOutput::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_parser_core::tokens::trivia_parser::TriviaPreservingParser
-pub fn perl_parser_core::tokens::trivia_parser::TriviaPreservingParser::new(source: alloc::string::String) -> Self
+pub fn perl_parser_core::tokens::trivia_parser::TriviaPreservingParser::new(source: alloc::string::String) -> perl_parser_core::tokens::trivia_parser::TriviaPreservingParser
 pub fn perl_parser_core::tokens::trivia_parser::TriviaPreservingParser::parse(self) -> perl_parser_core::tokens::trivia_parser::TriviaParseOutput
 pub fn perl_parser_core::tokens::trivia_parser::format_with_trivia(output: &perl_parser_core::tokens::trivia_parser::TriviaParseOutput) -> alloc::string::String
 pub fn perl_parser_core::tokens::trivia_parser::source_with_trivia(output: &perl_parser_core::tokens::trivia_parser::TriviaParseOutput) -> &str
@@ -4581,12 +4728,12 @@ pub perl_parser_core::trivia::NodeWithTrivia::trailing_trivia: alloc::vec::Vec<p
 pub fn perl_parser_core::tokens::trivia::NodeWithTrivia::clone(&self) -> perl_parser_core::tokens::trivia::NodeWithTrivia
 pub fn perl_parser_core::tokens::trivia::NodeWithTrivia::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_parser_core::trivia::TriviaLexer<'a>
-pub fn perl_parser_core::tokens::trivia::TriviaLexer<'a>::new(source: &'a str) -> Self
+pub fn perl_parser_core::tokens::trivia::TriviaLexer<'a>::new(source: &'a str) -> perl_parser_core::tokens::trivia::TriviaLexer<'a>
 pub fn perl_parser_core::tokens::trivia::TriviaLexer<'a>::next_token_with_trivia(&mut self) -> core::option::Option<(perl_lexer::token::Token, alloc::vec::Vec<perl_parser_core::tokens::trivia::TriviaToken>)>
 pub struct perl_parser_core::trivia::TriviaToken
 pub perl_parser_core::trivia::TriviaToken::range: perl_position_tracking::position::Range
 pub perl_parser_core::trivia::TriviaToken::trivia: perl_parser_core::tokens::trivia::Trivia
-pub fn perl_parser_core::tokens::trivia::TriviaToken::new(trivia: perl_parser_core::tokens::trivia::Trivia, range: perl_position_tracking::position::Range) -> Self
+pub fn perl_parser_core::tokens::trivia::TriviaToken::new(trivia: perl_parser_core::tokens::trivia::Trivia, range: perl_position_tracking::position::Range) -> perl_parser_core::tokens::trivia::TriviaToken
 pub fn perl_parser_core::tokens::trivia::TriviaToken::clone(&self) -> perl_parser_core::tokens::trivia::TriviaToken
 pub fn perl_parser_core::tokens::trivia::TriviaToken::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub trait perl_parser_core::trivia::TriviaCollector
@@ -4601,7 +4748,7 @@ pub fn perl_parser_core::tokens::trivia_parser::TriviaParseOutput::source(&self)
 pub fn perl_parser_core::tokens::trivia_parser::TriviaParseOutput::clone(&self) -> perl_parser_core::tokens::trivia_parser::TriviaParseOutput
 pub fn perl_parser_core::tokens::trivia_parser::TriviaParseOutput::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_parser_core::trivia_parser::TriviaPreservingParser
-pub fn perl_parser_core::tokens::trivia_parser::TriviaPreservingParser::new(source: alloc::string::String) -> Self
+pub fn perl_parser_core::tokens::trivia_parser::TriviaPreservingParser::new(source: alloc::string::String) -> perl_parser_core::tokens::trivia_parser::TriviaPreservingParser
 pub fn perl_parser_core::tokens::trivia_parser::TriviaPreservingParser::parse(self) -> perl_parser_core::tokens::trivia_parser::TriviaParseOutput
 pub fn perl_parser_core::trivia_parser::format_with_trivia(output: &perl_parser_core::tokens::trivia_parser::TriviaParseOutput) -> alloc::string::String
 pub fn perl_parser_core::trivia_parser::source_with_trivia(output: &perl_parser_core::tokens::trivia_parser::TriviaParseOutput) -> &str
@@ -4630,7 +4777,7 @@ pub perl_parser_core::value_analysis::EvaluationBudget::max_depth: usize
 pub perl_parser_core::value_analysis::EvaluationBudget::max_string_length: usize
 pub fn perl_parser_core::value_analysis::EvaluationBudget::clone(&self) -> perl_parser_core::value_analysis::EvaluationBudget
 pub fn perl_parser_core::value_analysis::EvaluationBudget::eq(&self, other: &perl_parser_core::value_analysis::EvaluationBudget) -> bool
-pub fn perl_parser_core::value_analysis::EvaluationBudget::default() -> Self
+pub fn perl_parser_core::value_analysis::EvaluationBudget::default() -> perl_parser_core::value_analysis::EvaluationBudget
 pub fn perl_parser_core::value_analysis::EvaluationBudget::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub const perl_parser_core::value_analysis::DEFAULT_MAX_ALTERNATIVES: usize
 pub const perl_parser_core::value_analysis::DEFAULT_MAX_DEPTH: usize
@@ -4650,6 +4797,31 @@ pub fn perl_parser_core::syntax::error::ErrorCategory::clone(&self) -> perl_pars
 pub fn perl_parser_core::syntax::error::ErrorCategory::eq(&self, other: &perl_parser_core::syntax::error::ErrorCategory) -> bool
 pub fn perl_parser_core::syntax::error::ErrorCategory::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_parser_core::syntax::error::ErrorCategory::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub enum perl_parser_core::InvalidSignatureOrderingKind
+pub perl_parser_core::InvalidSignatureOrderingKind::MandatoryAfterOptional
+pub perl_parser_core::InvalidSignatureOrderingKind::ParameterAfterSlurpy
+pub perl_parser_core::InvalidSignatureOrderingKind::PositionalAfterNamed
+pub perl_parser_core::InvalidSignatureOrderingKind::RequiredNamedAfterOptional
+pub fn perl_parser_core::syntax::error::InvalidSignatureOrderingKind::clone(&self) -> perl_parser_core::syntax::error::InvalidSignatureOrderingKind
+pub fn perl_parser_core::syntax::error::InvalidSignatureOrderingKind::eq(&self, other: &perl_parser_core::syntax::error::InvalidSignatureOrderingKind) -> bool
+pub fn perl_parser_core::syntax::error::InvalidSignatureOrderingKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum perl_parser_core::InvalidSignatureParameterKind
+pub perl_parser_core::InvalidSignatureParameterKind::MissingDefaultExpression
+pub perl_parser_core::InvalidSignatureParameterKind::NamedAggregate
+pub perl_parser_core::InvalidSignatureParameterKind::SlurpyDefault
+pub fn perl_parser_core::syntax::error::InvalidSignatureParameterKind::clone(&self) -> perl_parser_core::syntax::error::InvalidSignatureParameterKind
+pub fn perl_parser_core::syntax::error::InvalidSignatureParameterKind::eq(&self, other: &perl_parser_core::syntax::error::InvalidSignatureParameterKind) -> bool
+pub fn perl_parser_core::syntax::error::InvalidSignatureParameterKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+#[non_exhaustive] pub enum perl_parser_core::ParseCoreDimension
+pub perl_parser_core::ParseCoreDimension::DiagnosticsEmitted
+pub perl_parser_core::ParseCoreDimension::NodesConstructed
+pub perl_parser_core::ParseCoreDimension::TokensConsumed
+pub fn perl_parser_core::syntax::error::ParseCoreDimension::as_str(self) -> &'static str
+pub fn perl_parser_core::syntax::error::ParseCoreDimension::clone(&self) -> perl_parser_core::syntax::error::ParseCoreDimension
+pub fn perl_parser_core::syntax::error::ParseCoreDimension::eq(&self, other: &perl_parser_core::syntax::error::ParseCoreDimension) -> bool
+pub fn perl_parser_core::syntax::error::ParseCoreDimension::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_parser_core::syntax::error::ParseCoreDimension::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_parser_core::syntax::error::ParseCoreDimension::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
 #[non_exhaustive] pub enum perl_parser_core::ParseDiagnosticSeverity
 pub perl_parser_core::ParseDiagnosticSeverity::Advisory
 pub perl_parser_core::ParseDiagnosticSeverity::Blocking
@@ -4661,7 +4833,13 @@ pub fn perl_parser_core::syntax::error::ParseDiagnosticSeverity::fmt(&self, f: &
 pub perl_parser_core::ParseError::Advisory
 pub perl_parser_core::ParseError::Advisory::location: usize
 pub perl_parser_core::ParseError::Advisory::message: alloc::string::String
+pub perl_parser_core::ParseError::CStyleForContinueBlock
+pub perl_parser_core::ParseError::CStyleForContinueBlock::location: usize
 pub perl_parser_core::ParseError::Cancelled
+pub perl_parser_core::ParseError::CoreBudgetExhausted
+pub perl_parser_core::ParseError::CoreBudgetExhausted::dimension: perl_parser_core::syntax::error::ParseCoreDimension
+pub perl_parser_core::ParseError::CoreBudgetExhausted::limit: usize
+pub perl_parser_core::ParseError::CoreBudgetExhausted::usage: usize
 pub perl_parser_core::ParseError::DoWhileTrailingBlock
 pub perl_parser_core::ParseError::DoWhileTrailingBlock::location: usize
 pub perl_parser_core::ParseError::HeredocBudgetExhausted
@@ -4672,6 +4850,12 @@ pub perl_parser_core::ParseError::InvalidNumber
 pub perl_parser_core::ParseError::InvalidNumber::literal: alloc::string::String
 pub perl_parser_core::ParseError::InvalidRegex
 pub perl_parser_core::ParseError::InvalidRegex::message: alloc::string::String
+pub perl_parser_core::ParseError::InvalidSignatureOrdering
+pub perl_parser_core::ParseError::InvalidSignatureOrdering::kind: perl_parser_core::syntax::error::InvalidSignatureOrderingKind
+pub perl_parser_core::ParseError::InvalidSignatureOrdering::range: perl_position_tracking::span::SourceLocation
+pub perl_parser_core::ParseError::InvalidSignatureParameter
+pub perl_parser_core::ParseError::InvalidSignatureParameter::kind: perl_parser_core::syntax::error::InvalidSignatureParameterKind
+pub perl_parser_core::ParseError::InvalidSignatureParameter::range: perl_position_tracking::span::SourceLocation
 pub perl_parser_core::ParseError::InvalidString
 pub perl_parser_core::ParseError::LexerError
 pub perl_parser_core::ParseError::LexerError::message: alloc::string::String
@@ -4700,21 +4884,25 @@ pub fn perl_parser_core::syntax::error::ParseError::blocks_clean_parse(&self) ->
 pub fn perl_parser_core::syntax::error::ParseError::diagnostic_anchor(&self) -> perl_parser_core::syntax::error::ParseDiagnosticAnchor
 pub fn perl_parser_core::syntax::error::ParseError::is_recursion_limit(&self) -> bool
 pub fn perl_parser_core::syntax::error::ParseError::location(&self) -> core::option::Option<usize>
-pub fn perl_parser_core::syntax::error::ParseError::nested_quantifier_advisory(location: usize) -> Self
+pub fn perl_parser_core::syntax::error::ParseError::nested_quantifier_advisory(location: usize) -> perl_parser_core::syntax::error::ParseError
 pub fn perl_parser_core::syntax::error::ParseError::resolved_diagnostic_anchor(&self, source: &str) -> perl_parser_core::syntax::error::ResolvedParseDiagnosticAnchor
 pub fn perl_parser_core::syntax::error::ParseError::severity(&self) -> perl_parser_core::syntax::error::ParseDiagnosticSeverity
 pub fn perl_parser_core::syntax::error::ParseError::suggestion(&self) -> core::option::Option<alloc::string::String>
-pub fn perl_parser_core::syntax::error::ParseError::syntax(message: impl core::convert::Into<alloc::string::String>, location: usize) -> Self
-pub fn perl_parser_core::syntax::error::ParseError::unexpected(expected: impl core::convert::Into<alloc::string::String>, found: impl core::convert::Into<alloc::string::String>, location: usize) -> Self
+pub fn perl_parser_core::syntax::error::ParseError::syntax(message: impl core::convert::Into<alloc::string::String>, location: usize) -> perl_parser_core::syntax::error::ParseError
+pub fn perl_parser_core::syntax::error::ParseError::unexpected(expected: impl core::convert::Into<alloc::string::String>, found: impl core::convert::Into<alloc::string::String>, location: usize) -> perl_parser_core::syntax::error::ParseError
 pub fn perl_parser_core::syntax::error::ParseError::clone(&self) -> perl_parser_core::syntax::error::ParseError
 pub fn perl_parser_core::syntax::error::ParseError::eq(&self, other: &perl_parser_core::syntax::error::ParseError) -> bool
-pub fn perl_parser_core::syntax::error::ParseError::from(err: perl_regex::error::RegexError) -> Self
+pub fn perl_parser_core::syntax::error::ParseError::from(err: perl_regex::error::RegexError) -> perl_parser_core::syntax::error::ParseError
 pub fn perl_parser_core::syntax::error::ParseError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_parser_core::syntax::error::ParseError::fmt(&self, __formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_parser_core::syntax::error::ParseError::error_class(&self) -> perl_parser_core::syntax::error::ErrorCategory
 #[non_exhaustive] pub enum perl_parser_core::ParseStopCause
 pub perl_parser_core::ParseStopCause::Cancelled
 pub perl_parser_core::ParseStopCause::CatastrophicTermination
+pub perl_parser_core::ParseStopCause::CoreBudgetExhausted
+pub perl_parser_core::ParseStopCause::CoreBudgetExhausted::dimension: perl_parser_core::syntax::error::ParseCoreDimension
+pub perl_parser_core::ParseStopCause::CoreBudgetExhausted::limit: usize
+pub perl_parser_core::ParseStopCause::CoreBudgetExhausted::usage: usize
 pub perl_parser_core::ParseStopCause::FutureTypedTerminal
 pub perl_parser_core::ParseStopCause::HeredocBudgetExhausted
 pub perl_parser_core::ParseStopCause::HeredocBudgetExhausted::limit: usize
@@ -4727,7 +4915,7 @@ pub perl_parser_core::ParseStopCause::RecursionBudgetExhausted
 pub perl_parser_core::ParseStopCause::RecursionBudgetExhausted::limit: core::option::Option<usize>
 pub perl_parser_core::ParseStopCause::RecursionBudgetExhausted::usage: core::option::Option<usize>
 pub fn perl_parser_core::syntax::error::ParseStopCause::as_str(&self) -> &'static str
-pub fn perl_parser_core::syntax::error::ParseStopCause::from_parse_error(error: &perl_parser_core::syntax::error::ParseError) -> Self
+pub fn perl_parser_core::syntax::error::ParseStopCause::from_parse_error(error: &perl_parser_core::syntax::error::ParseError) -> perl_parser_core::syntax::error::ParseStopCause
 pub fn perl_parser_core::syntax::error::ParseStopCause::is_budget_exhaustion(&self) -> bool
 pub fn perl_parser_core::syntax::error::ParseStopCause::is_cancelled(&self) -> bool
 pub fn perl_parser_core::syntax::error::ParseStopCause::clone(&self) -> perl_parser_core::syntax::error::ParseStopCause
@@ -4820,16 +5008,21 @@ pub perl_parser_core::BudgetTracker::current_depth: usize
 pub perl_parser_core::BudgetTracker::errors_emitted: usize
 pub perl_parser_core::BudgetTracker::heredoc_scan_bytes: usize
 pub perl_parser_core::BudgetTracker::max_depth_reached: usize
+pub perl_parser_core::BudgetTracker::nodes_constructed: usize
 pub perl_parser_core::BudgetTracker::recoveries_attempted: usize
+pub perl_parser_core::BudgetTracker::tokens_consumed: usize
 pub perl_parser_core::BudgetTracker::tokens_skipped: usize
+pub fn perl_parser_core::syntax::error::BudgetTracker::authorize_core(&mut self, budget: &perl_parser_core::syntax::error::ParseBudget, dimension: perl_parser_core::syntax::error::ParseCoreDimension) -> perl_parser_core::syntax::error::ParseResult<()>
+pub fn perl_parser_core::syntax::error::BudgetTracker::authorize_core_batch(&mut self, budget: &perl_parser_core::syntax::error::ParseBudget, dimension: perl_parser_core::syntax::error::ParseCoreDimension, count: usize) -> perl_parser_core::syntax::error::ParseResult<()>
 pub fn perl_parser_core::syntax::error::BudgetTracker::begin_recovery(&mut self, budget: &perl_parser_core::syntax::error::ParseBudget) -> bool
 pub fn perl_parser_core::syntax::error::BudgetTracker::can_skip_more(&self, budget: &perl_parser_core::syntax::error::ParseBudget, additional: usize) -> bool
+pub fn perl_parser_core::syntax::error::BudgetTracker::core_usage(&self, dimension: perl_parser_core::syntax::error::ParseCoreDimension) -> usize
 pub fn perl_parser_core::syntax::error::BudgetTracker::depth_would_exceed(&self, budget: &perl_parser_core::syntax::error::ParseBudget) -> bool
 pub fn perl_parser_core::syntax::error::BudgetTracker::enter_depth(&mut self)
 pub fn perl_parser_core::syntax::error::BudgetTracker::errors_exhausted(&self, budget: &perl_parser_core::syntax::error::ParseBudget) -> bool
 pub fn perl_parser_core::syntax::error::BudgetTracker::exit_depth(&mut self)
 pub fn perl_parser_core::syntax::error::BudgetTracker::heredoc_scan_exhausted(&self, budget: &perl_parser_core::syntax::error::ParseBudget) -> bool
-pub fn perl_parser_core::syntax::error::BudgetTracker::new() -> Self
+pub fn perl_parser_core::syntax::error::BudgetTracker::new() -> perl_parser_core::syntax::error::BudgetTracker
 pub fn perl_parser_core::syntax::error::BudgetTracker::record_error(&mut self)
 pub fn perl_parser_core::syntax::error::BudgetTracker::record_heredoc_scan(&mut self, bytes: usize)
 pub fn perl_parser_core::syntax::error::BudgetTracker::record_recovery(&mut self)
@@ -4849,14 +5042,17 @@ pub fn perl_parser_core::tokens::trivia::NodeWithTrivia::fmt(&self, f: &mut core
 pub perl_parser_core::ParseBudget::max_depth: usize
 pub perl_parser_core::ParseBudget::max_errors: usize
 pub perl_parser_core::ParseBudget::max_heredoc_scan_bytes: usize
+pub perl_parser_core::ParseBudget::max_nodes_constructed: usize
 pub perl_parser_core::ParseBudget::max_recoveries: usize
+pub perl_parser_core::ParseBudget::max_tokens_consumed: usize
 pub perl_parser_core::ParseBudget::max_tokens_skipped: usize
-pub fn perl_parser_core::syntax::error::ParseBudget::for_ide() -> Self
-pub fn perl_parser_core::syntax::error::ParseBudget::strict() -> Self
-pub fn perl_parser_core::syntax::error::ParseBudget::unlimited() -> Self
+pub fn perl_parser_core::syntax::error::ParseBudget::core_limit(&self, dimension: perl_parser_core::syntax::error::ParseCoreDimension) -> usize
+pub fn perl_parser_core::syntax::error::ParseBudget::for_ide() -> perl_parser_core::syntax::error::ParseBudget
+pub fn perl_parser_core::syntax::error::ParseBudget::strict() -> perl_parser_core::syntax::error::ParseBudget
+pub fn perl_parser_core::syntax::error::ParseBudget::unlimited() -> perl_parser_core::syntax::error::ParseBudget
 pub fn perl_parser_core::syntax::error::ParseBudget::clone(&self) -> perl_parser_core::syntax::error::ParseBudget
 pub fn perl_parser_core::syntax::error::ParseBudget::eq(&self, other: &perl_parser_core::syntax::error::ParseBudget) -> bool
-pub fn perl_parser_core::syntax::error::ParseBudget::default() -> Self
+pub fn perl_parser_core::syntax::error::ParseBudget::default() -> perl_parser_core::syntax::error::ParseBudget
 pub fn perl_parser_core::syntax::error::ParseBudget::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 #[non_exhaustive] pub struct perl_parser_core::ParseOutput
 pub perl_parser_core::ParseOutput::ast: perl_ast::ast::Node
@@ -4864,11 +5060,11 @@ pub perl_parser_core::ParseOutput::budget_usage: perl_parser_core::syntax::error
 pub perl_parser_core::ParseOutput::diagnostics: alloc::vec::Vec<perl_parser_core::syntax::error::ParseError>
 pub perl_parser_core::ParseOutput::recovered_count: usize
 pub fn perl_parser_core::syntax::error::ParseOutput::error_count(&self) -> usize
-pub fn perl_parser_core::syntax::error::ParseOutput::finish(ast: perl_ast::ast::Node, diagnostics: alloc::vec::Vec<perl_parser_core::syntax::error::ParseError>, budget_usage: perl_parser_core::syntax::error::BudgetTracker, stop_cause: core::option::Option<perl_parser_core::syntax::error::ParseStopCause>) -> Self
+pub fn perl_parser_core::syntax::error::ParseOutput::finish(ast: perl_ast::ast::Node, diagnostics: alloc::vec::Vec<perl_parser_core::syntax::error::ParseError>, budget_usage: perl_parser_core::syntax::error::BudgetTracker, stop_cause: core::option::Option<perl_parser_core::syntax::error::ParseStopCause>) -> perl_parser_core::syntax::error::ParseOutput
 pub fn perl_parser_core::syntax::error::ParseOutput::has_errors(&self) -> bool
 pub fn perl_parser_core::syntax::error::ParseOutput::is_ok(&self) -> bool
-pub fn perl_parser_core::syntax::error::ParseOutput::success(ast: perl_ast::ast::Node) -> Self
-pub fn perl_parser_core::syntax::error::ParseOutput::with_errors(ast: perl_ast::ast::Node, diagnostics: alloc::vec::Vec<perl_parser_core::syntax::error::ParseError>) -> Self
+pub fn perl_parser_core::syntax::error::ParseOutput::success(ast: perl_ast::ast::Node) -> perl_parser_core::syntax::error::ParseOutput
+pub fn perl_parser_core::syntax::error::ParseOutput::with_errors(ast: perl_ast::ast::Node, diagnostics: alloc::vec::Vec<perl_parser_core::syntax::error::ParseError>) -> perl_parser_core::syntax::error::ParseOutput
 pub fn perl_parser_core::syntax::error::ParseOutput::set_stop_cause(&mut self, cause: core::option::Option<perl_parser_core::syntax::error::ParseStopCause>)
 pub fn perl_parser_core::syntax::error::ParseOutput::stop_cause(&self) -> core::option::Option<perl_parser_core::syntax::error::ParseStopCause>
 pub fn perl_parser_core::syntax::error::ParseOutput::terminated_early(&self) -> bool
@@ -4877,21 +5073,21 @@ pub fn perl_parser_core::syntax::error::ParseOutput::fmt(&self, f: &mut core::fm
 pub struct perl_parser_core::Parser<'a>
 pub fn perl_parser_core::engine::parser::Parser<'a>::config_identity(&self) -> perl_parser_core::ParserConfigIdentity
 pub fn perl_parser_core::engine::parser::Parser<'a>::errors(&self) -> &[perl_parser_core::syntax::error::ParseError]
-pub fn perl_parser_core::engine::parser::Parser<'a>::from_tokens(tokens: alloc::vec::Vec<perl_token::token::Token>, source: &'a str) -> Self
-pub fn perl_parser_core::engine::parser::Parser<'a>::new(input: &'a str) -> Self
-pub fn perl_parser_core::engine::parser::Parser<'a>::new_with_cancellation(input: &'a str, cancellation_flag: alloc::sync::Arc<core::sync::atomic::AtomicBool>) -> Self
-pub fn perl_parser_core::engine::parser::Parser<'a>::new_with_recovery_config(input: &'a str, _config: ()) -> Self
+pub fn perl_parser_core::engine::parser::Parser<'a>::from_tokens(tokens: alloc::vec::Vec<perl_token::token::Token>, source: &'a str) -> perl_parser_core::engine::parser::Parser<'a>
+pub fn perl_parser_core::engine::parser::Parser<'a>::new(input: &'a str) -> perl_parser_core::engine::parser::Parser<'a>
+pub fn perl_parser_core::engine::parser::Parser<'a>::new_with_cancellation(input: &'a str, cancellation_flag: alloc::sync::Arc<core::sync::atomic::AtomicBool>) -> perl_parser_core::engine::parser::Parser<'a>
+pub fn perl_parser_core::engine::parser::Parser<'a>::new_with_recovery_config(input: &'a str, _config: ()) -> perl_parser_core::engine::parser::Parser<'a>
 pub fn perl_parser_core::engine::parser::Parser<'a>::operation_id(&self) -> perl_parser_core::ParserOperationId
 pub fn perl_parser_core::engine::parser::Parser<'a>::parse(&mut self) -> perl_parser_core::syntax::error::ParseResult<perl_ast::ast::Node>
 pub fn perl_parser_core::engine::parser::Parser<'a>::parse_with_recovery(&mut self) -> perl_parser_core::syntax::error::ParseOutput
-pub fn perl_parser_core::engine::parser::Parser<'a>::with_production_config(input: &'a str, config: perl_parser_core::ParserConfigIdentity) -> Self
+pub fn perl_parser_core::engine::parser::Parser<'a>::with_production_config(input: &'a str, config: perl_parser_core::ParserConfigIdentity) -> perl_parser_core::engine::parser::Parser<'a>
 pub fn perl_parser_core::engine::parser::Parser<'a>::get_errors(&self) -> &[perl_parser_core::syntax::error::ParseError]
 pub struct perl_parser_core::ParserConfigIdentity
 pub fn perl_parser_core::ParserConfigIdentity::budget(self) -> perl_parser_core::syntax::error::ParseBudget
 pub fn perl_parser_core::ParserConfigIdentity::max_block_nesting_depth(self) -> usize
 pub fn perl_parser_core::ParserConfigIdentity::max_recursion_depth(self) -> usize
-pub fn perl_parser_core::ParserConfigIdentity::production_default() -> Self
-pub fn perl_parser_core::ParserConfigIdentity::with_budget(self, budget: perl_parser_core::syntax::error::ParseBudget) -> Self
+pub fn perl_parser_core::ParserConfigIdentity::production_default() -> perl_parser_core::ParserConfigIdentity
+pub fn perl_parser_core::ParserConfigIdentity::with_budget(self, budget: perl_parser_core::syntax::error::ParseBudget) -> perl_parser_core::ParserConfigIdentity
 pub fn perl_parser_core::ParserConfigIdentity::clone(&self) -> perl_parser_core::ParserConfigIdentity
 pub fn perl_parser_core::ParserConfigIdentity::eq(&self, other: &perl_parser_core::ParserConfigIdentity) -> bool
 pub fn perl_parser_core::ParserConfigIdentity::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
@@ -4918,7 +5114,7 @@ pub perl_parser_core::RecoverySalvageProfile::class: perl_parser_core::syntax::e
 pub perl_parser_core::RecoverySalvageProfile::error_node_count: usize
 pub perl_parser_core::RecoverySalvageProfile::first_unrecovered_error_node: core::option::Option<alloc::string::String>
 pub perl_parser_core::RecoverySalvageProfile::recovered_count: usize
-pub fn perl_parser_core::syntax::error::RecoverySalvageProfile::from_parse(ast: &perl_ast::ast::Node, diagnostics: &[perl_parser_core::syntax::error::ParseError], catastrophic: bool) -> Self
+pub fn perl_parser_core::syntax::error::RecoverySalvageProfile::from_parse(ast: &perl_ast::ast::Node, diagnostics: &[perl_parser_core::syntax::error::ParseError], catastrophic: bool) -> perl_parser_core::syntax::error::RecoverySalvageProfile
 pub fn perl_parser_core::syntax::error::RecoverySalvageProfile::clone(&self) -> perl_parser_core::syntax::error::RecoverySalvageProfile
 pub fn perl_parser_core::syntax::error::RecoverySalvageProfile::eq(&self, other: &perl_parser_core::syntax::error::RecoverySalvageProfile) -> bool
 pub fn perl_parser_core::syntax::error::RecoverySalvageProfile::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
@@ -4958,7 +5154,7 @@ pub fn perl_parser_core::syntax::regex_analysis::RegexAnalysisTable::find_at_off
 pub fn perl_parser_core::syntax::regex_analysis::RegexAnalysisTable::find_by_full_range(&self, range: perl_position_tracking::span::SourceLocation) -> core::option::Option<&perl_parser_core::syntax::regex_analysis::RegexAnalysisRecord>
 pub fn perl_parser_core::syntax::regex_analysis::RegexAnalysisTable::find_by_pattern_range(&self, range: perl_position_tracking::span::SourceLocation) -> core::option::Option<&perl_parser_core::syntax::regex_analysis::RegexAnalysisRecord>
 pub fn perl_parser_core::syntax::regex_analysis::RegexAnalysisTable::find_enclosed_by(&self, range: perl_position_tracking::span::SourceLocation, family: perl_parser_core::syntax::regex_analysis::RegexAnalysisFamily) -> core::option::Option<&perl_parser_core::syntax::regex_analysis::RegexAnalysisRecord>
-pub fn perl_parser_core::syntax::regex_analysis::RegexAnalysisTable::for_source(source: &str) -> Self
+pub fn perl_parser_core::syntax::regex_analysis::RegexAnalysisTable::for_source(source: &str) -> perl_parser_core::syntax::regex_analysis::RegexAnalysisTable
 pub fn perl_parser_core::syntax::regex_analysis::RegexAnalysisTable::is_empty(&self) -> bool
 pub fn perl_parser_core::syntax::regex_analysis::RegexAnalysisTable::len(&self) -> usize
 pub fn perl_parser_core::syntax::regex_analysis::RegexAnalysisTable::record(&self, id: perl_parser_core::syntax::regex_analysis::RegexAnalysisId) -> core::option::Option<&perl_parser_core::syntax::regex_analysis::RegexAnalysisRecord>
@@ -4966,7 +5162,7 @@ pub fn perl_parser_core::syntax::regex_analysis::RegexAnalysisTable::source_matc
 pub const fn perl_parser_core::syntax::regex_analysis::RegexAnalysisTable::unknown() -> Self
 pub fn perl_parser_core::syntax::regex_analysis::RegexAnalysisTable::clone(&self) -> perl_parser_core::syntax::regex_analysis::RegexAnalysisTable
 pub fn perl_parser_core::syntax::regex_analysis::RegexAnalysisTable::eq(&self, other: &perl_parser_core::syntax::regex_analysis::RegexAnalysisTable) -> bool
-pub fn perl_parser_core::syntax::regex_analysis::RegexAnalysisTable::default() -> Self
+pub fn perl_parser_core::syntax::regex_analysis::RegexAnalysisTable::default() -> perl_parser_core::syntax::regex_analysis::RegexAnalysisTable
 pub fn perl_parser_core::syntax::regex_analysis::RegexAnalysisTable::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 #[non_exhaustive] pub struct perl_parser_core::RegexParseOutput
 pub perl_parser_core::RegexParseOutput::parse_output: perl_parser_core::syntax::error::ParseOutput
@@ -4975,10 +5171,10 @@ pub fn perl_parser_core::engine::regex_retention::RegexParseOutput::into_parts(s
 pub fn perl_parser_core::engine::regex_retention::RegexParseOutput::clone(&self) -> perl_parser_core::engine::regex_retention::RegexParseOutput
 pub fn perl_parser_core::engine::regex_retention::RegexParseOutput::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub type perl_parser_core::engine::regex_retention::RegexParseOutput::Target = perl_parser_core::syntax::error::ParseOutput
-pub fn perl_parser_core::engine::regex_retention::RegexParseOutput::deref(&self) -> &Self::Target
+pub fn perl_parser_core::engine::regex_retention::RegexParseOutput::deref(&self) -> &perl_parser_core::engine::regex_retention::RegexParseOutput::Target
 pub struct perl_parser_core::RegexSourceDigest(_)
 pub const fn perl_parser_core::syntax::regex_analysis::RegexSourceDigest::as_bytes(self) -> [u8; 16]
-pub fn perl_parser_core::syntax::regex_analysis::RegexSourceDigest::for_source(source: &str) -> Self
+pub fn perl_parser_core::syntax::regex_analysis::RegexSourceDigest::for_source(source: &str) -> perl_parser_core::syntax::regex_analysis::RegexSourceDigest
 pub fn perl_parser_core::syntax::regex_analysis::RegexSourceDigest::to_hex(self) -> alloc::string::String
 pub fn perl_parser_core::syntax::regex_analysis::RegexSourceDigest::clone(&self) -> perl_parser_core::syntax::regex_analysis::RegexSourceDigest
 pub fn perl_parser_core::syntax::regex_analysis::RegexSourceDigest::cmp(&self, other: &perl_parser_core::syntax::regex_analysis::RegexSourceDigest) -> core::cmp::Ordering
@@ -4993,7 +5189,7 @@ pub fn perl_parser_core::syntax::regex_analysis::RetainedRegexPatternAnalysis::c
 pub fn perl_parser_core::syntax::regex_analysis::RetainedRegexPatternAnalysis::eq(&self, other: &perl_parser_core::syntax::regex_analysis::RetainedRegexPatternAnalysis) -> bool
 pub fn perl_parser_core::syntax::regex_analysis::RetainedRegexPatternAnalysis::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_parser_core::RetainedRegexSession<'source>
-pub fn perl_parser_core::engine::regex_retention::RetainedRegexSession<'source>::begin(source: &'source str) -> Self
+pub fn perl_parser_core::engine::regex_retention::RetainedRegexSession<'source>::begin(source: &'source str) -> perl_parser_core::engine::regex_retention::RetainedRegexSession<'source>
 pub fn perl_parser_core::engine::regex_retention::RetainedRegexSession<'source>::finish(self, ast: core::option::Option<&mut perl_ast::ast::Node>) -> perl_parser_core::syntax::regex_analysis::RegexAnalysisTable
 pub fn perl_parser_core::engine::regex_retention::RetainedRegexSession<'source>::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_parser_core::SourceRegion
@@ -5002,36 +5198,36 @@ pub perl_parser_core::SourceRegion::kind: perl_parser_core::SourceRegionKind
 pub perl_parser_core::SourceRegion::start: usize
 pub fn perl_parser_core::SourceRegion::contains_offset(self, offset: usize) -> bool
 pub fn perl_parser_core::SourceRegion::contains_range(self, start: usize, end: usize) -> bool
-pub fn perl_parser_core::SourceRegion::new(start: usize, end: usize, kind: perl_parser_core::SourceRegionKind) -> core::option::Option<Self>
+pub fn perl_parser_core::SourceRegion::new(start: usize, end: usize, kind: perl_parser_core::SourceRegionKind) -> core::option::Option<perl_parser_core::SourceRegion>
 pub fn perl_parser_core::SourceRegion::clone(&self) -> perl_parser_core::SourceRegion
 pub fn perl_parser_core::SourceRegion::eq(&self, other: &perl_parser_core::SourceRegion) -> bool
 pub fn perl_parser_core::SourceRegion::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_parser_core::SourceRegionIndex
-pub fn perl_parser_core::SourceRegionIndex::build(source: &str) -> Self
-pub fn perl_parser_core::SourceRegionIndex::build_with_hash(source: &str, content_hash: u64) -> Self
-pub fn perl_parser_core::SourceRegionIndex::build_with_hash_from_arc(source: alloc::sync::Arc<str>, content_hash: u64) -> Self
+pub fn perl_parser_core::SourceRegionIndex::build(source: &str) -> perl_parser_core::SourceRegionIndex
+pub fn perl_parser_core::SourceRegionIndex::build_with_hash(source: &str, content_hash: u64) -> perl_parser_core::SourceRegionIndex
+pub fn perl_parser_core::SourceRegionIndex::build_with_hash_from_arc(source: alloc::sync::Arc<str>, content_hash: u64) -> perl_parser_core::SourceRegionIndex
 pub fn perl_parser_core::SourceRegionIndex::classify_offset(&self, offset: usize) -> perl_parser_core::syntax::source_context::OffsetClassification
 pub fn perl_parser_core::SourceRegionIndex::classify_range(&self, start: usize, end: usize) -> perl_parser_core::RangeClassification
 pub fn perl_parser_core::SourceRegionIndex::classify_range_checked(&self, start: usize, end: usize) -> perl_parser_core::SourceRangeClassification
 pub const fn perl_parser_core::SourceRegionIndex::content_hash(&self) -> u64
-pub fn perl_parser_core::SourceRegionIndex::from_regions(source: &str, content_hash: u64, regions: alloc::vec::Vec<perl_parser_core::SourceRegion>) -> Self
+pub fn perl_parser_core::SourceRegionIndex::from_regions(source: &str, content_hash: u64, regions: alloc::vec::Vec<perl_parser_core::SourceRegion>) -> perl_parser_core::SourceRegionIndex
 pub fn perl_parser_core::SourceRegionIndex::kind_at_offset(&self, offset: usize) -> perl_parser_core::SourceRegionKind
 pub fn perl_parser_core::SourceRegionIndex::range_fully_within(&self, start: usize, end: usize, allowed: &[perl_parser_core::SourceRegionKind]) -> bool
 pub fn perl_parser_core::SourceRegionIndex::region_count(&self) -> usize
 pub fn perl_parser_core::SourceRegionIndex::regions(&self) -> &[perl_parser_core::SourceRegion]
-pub fn perl_parser_core::SourceRegionIndex::with_overrides(&self, overrides: &[perl_parser_core::SourceRegion]) -> Self
+pub fn perl_parser_core::SourceRegionIndex::with_overrides(&self, overrides: &[perl_parser_core::SourceRegion]) -> perl_parser_core::SourceRegionIndex
 pub fn perl_parser_core::SourceRegionIndex::clone(&self) -> perl_parser_core::SourceRegionIndex
 pub fn perl_parser_core::SourceRegionIndex::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_parser_core::TokenStream<'a>
 pub fn perl_parser_core::tokens::token_stream::TokenStream<'a>::apply_contextual(&mut self, operation: perl_parser_core::tokens::token_stream::ContextualTokenOp) -> perl_parser_core::tokens::token_stream::ContextualOpResult
 pub fn perl_parser_core::tokens::token_stream::TokenStream<'a>::backing(&self) -> perl_parser_core::tokens::token_stream::TokenStreamBacking
 pub fn perl_parser_core::tokens::token_stream::TokenStream<'a>::enter_format_mode(&mut self)
-pub fn perl_parser_core::tokens::token_stream::TokenStream<'a>::from_vec(tokens: alloc::vec::Vec<perl_token::token::Token>) -> Self
-pub fn perl_parser_core::tokens::token_stream::TokenStream<'a>::from_vec_with_source(tokens: alloc::vec::Vec<perl_token::token::Token>, source: &'a str) -> Self
+pub fn perl_parser_core::tokens::token_stream::TokenStream<'a>::from_vec(tokens: alloc::vec::Vec<perl_token::token::Token>) -> perl_parser_core::tokens::token_stream::TokenStream<'a>
+pub fn perl_parser_core::tokens::token_stream::TokenStream<'a>::from_vec_with_source(tokens: alloc::vec::Vec<perl_token::token::Token>, source: &'a str) -> perl_parser_core::tokens::token_stream::TokenStream<'a>
 pub fn perl_parser_core::tokens::token_stream::TokenStream<'a>::invalidate_peek(&mut self)
 pub fn perl_parser_core::tokens::token_stream::TokenStream<'a>::is_eof(&mut self) -> bool
 pub fn perl_parser_core::tokens::token_stream::TokenStream<'a>::lexer_tokens_to_parser_tokens(tokens: alloc::vec::Vec<perl_lexer::token::Token>) -> alloc::vec::Vec<perl_token::token::Token>
-pub fn perl_parser_core::tokens::token_stream::TokenStream<'a>::new(input: &'a str) -> Self
+pub fn perl_parser_core::tokens::token_stream::TokenStream<'a>::new(input: &'a str) -> perl_parser_core::tokens::token_stream::TokenStream<'a>
 pub fn perl_parser_core::tokens::token_stream::TokenStream<'a>::next(&mut self) -> perl_parser_core::syntax::error::ParseResult<perl_token::token::Token>
 pub fn perl_parser_core::tokens::token_stream::TokenStream<'a>::on_stmt_boundary(&mut self)
 pub fn perl_parser_core::tokens::token_stream::TokenStream<'a>::peek(&mut self) -> perl_parser_core::syntax::error::ParseResult<&perl_token::token::Token>
@@ -5047,12 +5243,12 @@ pub fn perl_parser_core::tokens::trivia_parser::TriviaParseOutput::source(&self)
 pub fn perl_parser_core::tokens::trivia_parser::TriviaParseOutput::clone(&self) -> perl_parser_core::tokens::trivia_parser::TriviaParseOutput
 pub fn perl_parser_core::tokens::trivia_parser::TriviaParseOutput::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_parser_core::TriviaPreservingParser
-pub fn perl_parser_core::tokens::trivia_parser::TriviaPreservingParser::new(source: alloc::string::String) -> Self
+pub fn perl_parser_core::tokens::trivia_parser::TriviaPreservingParser::new(source: alloc::string::String) -> perl_parser_core::tokens::trivia_parser::TriviaPreservingParser
 pub fn perl_parser_core::tokens::trivia_parser::TriviaPreservingParser::parse(self) -> perl_parser_core::tokens::trivia_parser::TriviaParseOutput
 pub struct perl_parser_core::TriviaToken
 pub perl_parser_core::TriviaToken::range: perl_position_tracking::position::Range
 pub perl_parser_core::TriviaToken::trivia: perl_parser_core::tokens::trivia::Trivia
-pub fn perl_parser_core::tokens::trivia::TriviaToken::new(trivia: perl_parser_core::tokens::trivia::Trivia, range: perl_position_tracking::position::Range) -> Self
+pub fn perl_parser_core::tokens::trivia::TriviaToken::new(trivia: perl_parser_core::tokens::trivia::Trivia, range: perl_position_tracking::position::Range) -> perl_parser_core::tokens::trivia::TriviaToken
 pub fn perl_parser_core::tokens::trivia::TriviaToken::clone(&self) -> perl_parser_core::tokens::trivia::TriviaToken
 pub fn perl_parser_core::tokens::trivia::TriviaToken::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub const perl_parser_core::REGEX_ANALYSIS_MODEL_VERSION: u32
