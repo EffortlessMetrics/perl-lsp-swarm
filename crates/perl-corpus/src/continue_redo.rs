@@ -431,6 +431,17 @@ while ($count < 5) {
 "#,
         should_parse: true,
     },
+    ContinueRedoCase {
+        id: "last.qualified.label",
+        description: "Package-qualified name as loop-control label; real perl rejects it.",
+        tags: &["last", "label", "qualified", "invalid"],
+        source: r#"my $x = 0;
+LOOP: while ($x) {
+    last FOO::BAR;
+}
+"#,
+        should_parse: false,
+    },
 ];
 
 /// Return all continue/redo test fixtures.

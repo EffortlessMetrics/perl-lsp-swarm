@@ -30,7 +30,8 @@ impl<'a> Parser<'a> {
                     // Don't recover from these — propagate immediately.
                     // `DoWhileTrailingBlock` joins them because the trailing
                     // `{` has no recovery that stays honest about source that
-                    // real `perl` refuses to compile (#15649).
+                    // real `perl` refuses to compile (#15649), and so does a
+                    // qualified loop-control label (#16296).
                     if matches!(
                         e,
                         ParseError::RecursionLimit
@@ -39,6 +40,7 @@ impl<'a> Parser<'a> {
                             | ParseError::NestingTooDeep { .. }
                             | ParseError::Cancelled
                             | ParseError::DoWhileTrailingBlock { .. }
+                            | ParseError::QualifiedLoopControlLabel { .. }
                     ) {
                         return Err(e);
                     }
@@ -1905,7 +1907,8 @@ impl<'a> Parser<'a> {
                         // `DoWhileTrailingBlock` joins them: the trailing block
                         // after a do-while condition has no recovery that stays
                         // honest about source that real `perl` refuses to
-                        // compile (#15649).
+                        // compile (#15649), as is a qualified loop-control
+                        // label (#16296).
                         if matches!(
                             e,
                             ParseError::RecursionLimit
@@ -1913,6 +1916,7 @@ impl<'a> Parser<'a> {
                                 | ParseError::NestingTooDeep { .. }
                                 | ParseError::Cancelled
                                 | ParseError::DoWhileTrailingBlock { .. }
+                                | ParseError::QualifiedLoopControlLabel { .. }
                         ) {
                             return Err(e);
                         }
@@ -2091,8 +2095,17 @@ impl<'a> Parser<'a> {
                 | Some(TokenKind::Init)
                 | Some(TokenKind::Unitcheck)
         ) {
+            let label_start = self.current_position();
             let label_token = self.consume_token()?;
-            Some(label_token.text.to_string())
+            let label = label_token.text.to_string();
+            // A package-qualified name is never a loop-control label: real
+            // `perl` rejects `last FOO::BAR;` outright, so swallowing the
+            // qualified name here would accept source `perl -c` refuses to
+            // compile (#16296).
+            if label.contains("::") {
+                return Err(ParseError::QualifiedLoopControlLabel { location: label_start });
+            }
+            Some(label)
         } else {
             None
         };

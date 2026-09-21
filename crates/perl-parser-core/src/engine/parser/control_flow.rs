@@ -882,7 +882,8 @@ impl<'a> Parser<'a> {
                         // `DoWhileTrailingBlock` joins them: the trailing block
                         // after a do-while condition has no recovery that stays
                         // honest about source that real `perl` refuses to
-                        // compile (#15649).
+                        // compile (#15649), as is a qualified loop-control
+                        // label (#16296).
                         if matches!(
                             e,
                             ParseError::RecursionLimit
@@ -891,6 +892,7 @@ impl<'a> Parser<'a> {
                                 | ParseError::NestingTooDeep { .. }
                                 | ParseError::Cancelled
                                 | ParseError::DoWhileTrailingBlock { .. }
+                                | ParseError::QualifiedLoopControlLabel { .. }
                         ) {
                             return Err(e);
                         }

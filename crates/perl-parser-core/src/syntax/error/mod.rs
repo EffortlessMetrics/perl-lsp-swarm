@@ -733,6 +733,20 @@ pub enum ParseError {
         location: usize,
     },
 
+    /// A package-qualified name is used as a loop-control label:
+    /// `last FOO::BAR;`
+    ///
+    /// Real Perl rejects this outright ("Bareword found where operator
+    /// expected"): a `next`/`last`/`redo` label is always a plain word. The
+    /// parse fails outright rather than swallowing the qualified name as a
+    /// label, so the parser stays honest about source `perl -c` refuses to
+    /// compile (#16296).
+    #[error("Qualified name is not a valid loop-control label at position {location}")]
+    QualifiedLoopControlLabel {
+        /// Byte position of the offending label token
+        location: usize,
+    },
+
     /// A valid construct that warrants an editor warning but does not invalidate the AST.
     #[error("{message}")]
     Advisory {
@@ -900,6 +914,7 @@ impl ErrorClass for ParseError {
             | Self::InvalidSignatureParameter { .. }
             | Self::InvalidSignatureOrdering { .. }
             | Self::DoWhileTrailingBlock { .. }
+            | Self::QualifiedLoopControlLabel { .. }
             | Self::LexerError { .. }
             | Self::InvalidNumber { .. }
             | Self::InvalidString
@@ -1634,7 +1649,8 @@ impl ParseError {
             // `get_error_contexts` reports that line rather than falling back
             // to EOF. Must stay consistent with `diagnostic_anchor`.
             ParseError::HeredocBudgetExhausted { location, .. }
-            | ParseError::DoWhileTrailingBlock { location } => Some(*location),
+            | ParseError::DoWhileTrailingBlock { location }
+            | ParseError::QualifiedLoopControlLabel { location } => Some(*location),
             _ => None,
         }
     }
@@ -1721,6 +1737,7 @@ impl ParseError {
             Self::UnexpectedToken { location, .. }
             | Self::SyntaxError { location, .. }
             | Self::DoWhileTrailingBlock { location }
+            | Self::QualifiedLoopControlLabel { location }
             | Self::Advisory { location, .. }
             | Self::HeredocBudgetExhausted { location, .. }
             | Self::Recovered { location, .. } => ParseDiagnosticAnchor::Exact(*location),
