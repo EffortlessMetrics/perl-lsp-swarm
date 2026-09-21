@@ -636,6 +636,15 @@ enum Commands {
         /// additions guard).
         #[arg(long, default_value_t = 1000)]
         large_staged_threshold: u32,
+
+        /// Additional branch names that count as the canonical base for
+        /// the root-checkout health check. The default is empty: a real
+        /// branch named, say, `master` is no longer silently accepted as
+        /// the canonical base. Operators who genuinely use a non-`main`
+        /// canonical branch (e.g., a `master` upstream) must add it here
+        /// explicitly (#15083). May be repeated.
+        #[arg(long = "canonical-base-alternative", value_name = "BRANCH")]
+        canonical_base_alternatives: Vec<String>,
     },
 
     /// Build project with various configurations
@@ -889,6 +898,24 @@ enum Commands {
         /// Validate the generated summary instead of rewriting it.
         #[arg(long)]
         check: bool,
+    },
+
+    /// Report the RIPR suppression ledger's own lifecycle dates against today.
+    ///
+    /// Advisory: writes an artifact and always exits 0 on a readable ledger.
+    RiprSuppressionAudit {
+        /// RIPR suppression policy path.
+        #[arg(long, default_value = "policy/ripr-suppressions.toml")]
+        suppressions: PathBuf,
+        /// Markdown report path, suitable for $GITHUB_STEP_SUMMARY.
+        #[arg(long, default_value = "target/ripr/suppressions/lifecycle-audit.md")]
+        out: PathBuf,
+        /// Machine-readable report path.
+        #[arg(long, default_value = "target/ripr/suppressions/lifecycle-audit.json")]
+        json: PathBuf,
+        /// Also print the report to stdout.
+        #[arg(long)]
+        print: bool,
     },
 
     /// Render non-blocking GitHub warning annotations from comments[] guidance only.
@@ -1327,6 +1354,12 @@ enum Commands {
         /// Emit machine-readable output.
         #[arg(long)]
         json: bool,
+
+        /// Schema version this producer must emit and validate. Only `v1`
+        /// is supported; anything else fails loudly instead of emitting a
+        /// shape the caller does not parse (#15371).
+        #[arg(long, default_value = "v1")]
+        api_version: String,
     },
 
     /// Measure CI baseline from recent workflow runs.
@@ -1354,6 +1387,12 @@ enum Commands {
         /// historical or per-branch baselines side by side.
         #[arg(short, long, default_value = metrics::release_health::CI_BASELINE_OUTPUT_DIR)]
         output: PathBuf,
+
+        /// Schema version this producer must emit and validate. Only `v1`
+        /// is supported; anything else fails loudly instead of emitting a
+        /// shape the caller does not parse (#15371).
+        #[arg(long, default_value = "v1")]
+        api_version: String,
     },
 
     /// Compute the CI scope — changed crates, reverse-dep closure, and architectural wideners.
@@ -6081,6 +6120,9 @@ fn run_cli(cli: Cli) -> Result<()> {
             )
         }
         Commands::RiprPrSummary { check } => ripr_evidence::ripr_pr_summary(check),
+        Commands::RiprSuppressionAudit { suppressions, out, json, print } => {
+            ripr_evidence::ripr_suppression_audit(&suppressions, &out, &json, print)
+        }
         Commands::RiprAnnotations { comments, out, check } => {
             ripr_evidence::ripr_annotations(&comments, &out, check)
         }
@@ -6326,9 +6368,11 @@ fn run_cli(cli: Cli) -> Result<()> {
                 timeout_secs,
             })
         }
-        Commands::CiCostMonitor { days, json } => ci_metrics::run_cost_monitor(days, json),
-        Commands::CiBaseline { branch, days, limit, output } => {
-            ci_metrics::run_ci_baseline(branch, days, limit, output)
+        Commands::CiCostMonitor { days, json, api_version } => {
+            ci_metrics::run_cost_monitor(days, json, &api_version)
+        }
+        Commands::CiBaseline { branch, days, limit, output, api_version } => {
+            ci_metrics::run_ci_baseline(branch, days, limit, output, &api_version)
         }
         Commands::CiScope { base, subject, root, format } => {
             ci_scope::run(ci_scope::CiScopeConfig { base, subject, root, format })
@@ -7403,6 +7447,7 @@ fn run_cli(cli: Cli) -> Result<()> {
             floor_gb,
             floor_pct,
             large_staged_threshold,
+            canonical_base_alternatives,
         } => writer_admission::run(writer_admission::AdmissionConfig {
             branch,
             base,
@@ -7414,6 +7459,7 @@ fn run_cli(cli: Cli) -> Result<()> {
             floor_gb,
             floor_pct,
             large_staged_threshold,
+            canonical_base_alternatives,
         }),
         Commands::TargetedChecks { base, mode } => targeted_checks::run(base, mode),
         Commands::ResolvePackageName { crate_dir } => {

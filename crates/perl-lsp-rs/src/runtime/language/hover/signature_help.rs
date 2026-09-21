@@ -538,8 +538,8 @@ impl LspServer {
     /// flattening them all to a bare `sigil+name`:
     ///
     /// - `MandatoryParameter` → `$name`
-    /// - `OptionalParameter`  → `$name = <default>` (default rendered when it is a
-    ///   simple literal, else `$name = ...`)
+    /// - `OptionalParameter`  → `$name <operator> <default>` (preserving `=`, `//=`,
+    ///   or `||=`; default rendered when it is a simple literal, else `...`)
     /// - `SlurpyParameter`    → `@rest` / `%opts`
     /// - `NamedParameter`     → `:$name` (leading colon — named params are supplied
     ///   by name, not by position)
@@ -561,11 +561,12 @@ impl LspServer {
                     params.push(format!(":{}", name));
                 }
             }
-            NodeKind::OptionalParameter { variable, default_value } => {
+            NodeKind::OptionalParameter { variable, default_value, default_operator, .. } => {
                 if let Some(name) = Self::format_param_variable(variable) {
                     params.push(format!(
-                        "{} = {}",
+                        "{} {} {}",
                         name,
+                        default_operator,
                         Self::render_default_value(default_value)
                     ));
                 }
@@ -1053,6 +1054,33 @@ fn active_signature_from_context(params: &Value) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn positional_default_labels_preserve_operator_8915() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let server = LspServer::new();
+        for operator in ["=", "//=", "||="] {
+            for (expression, displayed) in [("42", "42"), ("1 + 2", "...")] {
+                let source = format!(
+                    "use feature 'signatures'; sub f ($value {operator} {expression}) {{ $value }}"
+                );
+                let ast = perl_parser::Parser::new(&source).parse()?;
+                let signature =
+                    server.get_user_function_signature(&ast, "f").ok_or("missing signature")?;
+                let parameter = format!("$value {operator} {displayed}");
+                let label = format!("sub f({parameter})");
+                if signature.get("label").and_then(Value::as_str) != Some(label.as_str())
+                    || signature.pointer("/parameters/0/label").and_then(Value::as_str)
+                        != Some(parameter.as_str())
+                    || signature.get("parameters").and_then(Value::as_array).map(Vec::len)
+                        != Some(1)
+                {
+                    return Err(format!("operator {operator} misrendered: {signature}").into());
+                }
+            }
+        }
+        Ok(())
+    }
 
     // ── is_method_call_context unit tests ─────────────────────────────────────
 

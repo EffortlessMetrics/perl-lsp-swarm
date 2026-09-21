@@ -290,8 +290,8 @@ do {
     },
     ContinueRedoCase {
         id: "continue.bare.block",
-        description: "Continue block after bare block (invalid).",
-        tags: &["continue", "block", "edge-case", "invalid"],
+        description: "Continue block after bare block (valid syntax; never iterates).",
+        tags: &["continue", "block", "edge-case"],
         source: r#"{
     my $x = 1;
     print "$x\n";
@@ -299,19 +299,51 @@ do {
     print "continue\n";
 }
 "#,
-        should_parse: false, // Continue only works with loops
+        should_parse: true, // perl -c accepts `continue` after a bare block
     },
     ContinueRedoCase {
         id: "redo.bare.block",
-        description: "Redo statement in bare block (invalid).",
-        tags: &["redo", "block", "edge-case", "invalid"],
+        description: "Redo statement in bare block (valid syntax; runtime error outside a loop).",
+        tags: &["redo", "block", "edge-case"],
         source: r#"{
     my $x = 1;
     redo;
     print "$x\n";
 }
 "#,
-        should_parse: false, // Redo only works in loops
+        should_parse: true, // perl -c accepts bare `redo`; the loop check is runtime
+    },
+    ContinueRedoCase {
+        id: "continue.cstyle.for",
+        description: "Continue block after C-style for loop (invalid).",
+        tags: &["continue", "for", "c-style", "edge-case", "invalid"],
+        source: r#"for (my $i = 0; $i < 3; $i++) {
+    print "$i\n";
+} continue {
+    print "continue\n";
+}
+"#,
+        should_parse: false, // perl rejects: continue never attaches to C-style for
+    },
+    ContinueRedoCase {
+        id: "continue.empty.parens",
+        description: "Empty-parenthesized continue invocation (valid).",
+        tags: &["continue", "edge-case"],
+        source: r#"while (1) {
+    continue();
+}
+"#,
+        should_parse: true, // `continue()` is one loop-control node in real Perl
+    },
+    ContinueRedoCase {
+        id: "continue.expression.position",
+        description: "Continue as a short-circuit operand (valid).",
+        tags: &["continue", "edge-case"],
+        source: r#"while (1) {
+    $ready and continue;
+}
+"#,
+        should_parse: true, // real Perl permits continue in expression position
     },
     ContinueRedoCase {
         id: "continue.lexical.scope",
@@ -548,10 +580,10 @@ mod tests {
     fn edge_cases_marked_correctly() {
         let bare_block = find_case("continue.bare.block");
         let _ = must_some(bare_block);
-        assert!(!must_some(bare_block).should_parse, "continue on bare block should be invalid");
+        assert!(must_some(bare_block).should_parse, "continue on bare block is valid syntax");
 
         let redo_bare = find_case("redo.bare.block");
         let _ = must_some(redo_bare);
-        assert!(!must_some(redo_bare).should_parse, "redo in bare block should be invalid");
+        assert!(must_some(redo_bare).should_parse, "redo in bare block is valid syntax");
     }
 }

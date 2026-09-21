@@ -6,16 +6,27 @@
 # targeting main the evaluator reports either the cheap deterministic
 # PASS_NOT_APPLICABLE route or per-row typed verdicts for governed surfaces.
 #
-# Executes ONLY trusted base-branch validator code
+# Executes ONLY trusted validator code
 # (scripts/ci/authority_transfer_review.py + scripts/ci/validate_review_surfaces.py,
-# both stdlib-only): the checkout is pinned to the pull request's exact base SHA,
-# and candidate material is consumed strictly as bounded data. The candidate head
-# is fetched solely to prove its inert identity against the event payload and to
-# extract its tree with `git archive`; no candidate code is ever executed, so the
-# candidate cannot weaken the evaluator judging it. The extracted candidate tree
-# is additionally walked by the same trusted #11793 invariant set as data, so a
-# denominator-invalidated candidate input can never publish a valid-looking
-# context.
+# both stdlib-only). The tool/source split below is explicit (#16174):
+#
+#   TOOL SOURCE — the evaluator scripts are read from a separate checkout of
+#   the default branch at its live tip, the same ref `pull_request_target`
+#   already trusts to supply this workflow file. They were previously read
+#   from the PR's recorded base SHA, which froze the tooling at PR-open time
+#   and exited 2 on every PR whose base predates decd96de6 (the commit that
+#   added workflow and script together) — the script was simply not in that
+#   tree, and `base.sha` never advances, so those PRs could not self-clear.
+#
+#   EVALUATION SUBJECT — unchanged. The judged base view is still the PR's
+#   exact recorded base SHA (proved below), the head is still the exact event
+#   head SHA, and candidate material is consumed strictly as bounded data.
+#   The candidate head is fetched solely to prove its inert identity against
+#   the event payload and to extract its tree with `git archive`; no candidate
+#   code is ever executed, so the candidate cannot weaken the evaluator
+#   judging it. The extracted candidate tree is additionally walked by the
+#   same trusted #11793 invariant set as data, so a denominator-invalidated
+#   candidate input can never publish a valid-looking context.
 #
 # Exit contract: 0 = pass (PASS_NOT_APPLICABLE / PASS_CURRENT_REVIEW),
 # 1 = typed review failure (FAIL_*), 3 = NOT_PROVEN/instrument failure. Every
@@ -25,7 +36,9 @@
 # merge readiness and live policy remain separate. Advisory / non-required:
 # intentionally absent from required enforcement; promotion belongs to #11796.
 # Reviewer packets are supplied by the #11701/#11703 machinery as they land;
-# until then governed rows report FAIL_REVIEW_MISSING rather than passing.
+# until then governed rows whose required_evidence is current_head_reviewer_packet
+# report NOT_PROVEN_GITHUB (no packet source configured at this run), not a
+# typed FAIL_REVIEW_MISSING — see issue #16100.
 #
 # The dogfood receipt uploaded here carries one bounded advisory packet (verdict
 # counts, bounded-input state, denominator digests) for the #11796 promotion
@@ -83,6 +96,45 @@ jobs:
             exit 1
           fi
 
+      - name: Checkout current tooling authority
+        # TOOL SOURCE, not evaluation subject (#16174): the evaluator must be
+        # the version that ships alongside this workflow file on the default
+        # branch. `pull_request_target` already executes THIS file from that
+        # branch, so its tip is exactly as trusted as `base.sha` — only
+        # newer — and this keeps the tooling self-consistent with the
+        # workflow invoking it. The subject stays bound below: the exact
+        # base SHA is checked out and proved, the exact head is fetched and
+        # proved, and the candidate tree is extracted as bounded data.
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.ref || github.ref_name }}
+          path: tooling
+          fetch-depth: 1
+          persist-credentials: false
+          submodules: false
+
+      - name: Prove tooling presence (neutral when absent)
+        env:
+          TOOLING_SCRIPT: tooling/scripts/ci/authority_transfer_review.py
+        run: |
+          set -euo pipefail
+          tool_sha="$(git -C tooling rev-parse HEAD)"
+          printf 'Evaluator tooling source: default-branch tip %s (subject base/head binding below is unaffected)\n' "$tool_sha"
+          if [ ! -f "$TOOLING_SCRIPT" ]; then
+            # #16174 shape 2: a workflow that cannot locate its own
+            # evaluator has established nothing about the PR. Report the
+            # neutral instrument verdict (exit 3 = NOT_PROVEN), never a
+            # pass and never a typed review finding.
+            cat > "$GITHUB_STEP_SUMMARY" <<'EOF'
+          # Authority Transfer Review (advisory)
+
+          - Result: `NOT_PROVEN_TOOLING`
+          - Reason: the evaluator script is absent from the trusted tooling ref; nothing was judged about this run's subject.
+          EOF
+            echo "::notice::Evaluator absent from tooling ref; NOT_PROVEN instrument failure, no claim about the subject."
+            exit 3
+          fi
+
       - name: Prove inert PR head identity
         if: github.event_name == 'pull_request_target'
         env:
@@ -126,7 +178,7 @@ jobs:
           # a symlink that already landed, so a crafted candidate head could
           # otherwise write outside CANDIDATE_TREE on this trusted runner.
           git ls-tree -r -z --full-tree "$HEAD_SHA" \
-            | python3 scripts/ci/authority_transfer_review.py --validate-tree-entries
+            | python3 tooling/scripts/ci/authority_transfer_review.py --validate-tree-entries
           git archive "$HEAD_SHA" | tar -x -C "$CANDIDATE_TREE"
           # `git archive | tar` preserves symlink entries, and the trusted
           # validator's read calls would follow them out of the extracted
@@ -151,7 +203,7 @@ jobs:
       - name: Instrument self-test (broken evidence never masquerades as pass)
         run: |
           set -euo pipefail
-          python3 scripts/ci/authority_transfer_review.py --self-test
+          python3 tooling/scripts/ci/authority_transfer_review.py --self-test
 
       - name: Build bounded changed-file list
         id: changed
@@ -206,7 +258,10 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$(dirname "$RECEIPT")"
-          python3 scripts/ci/authority_transfer_review.py \
+          # Tooling comes from the default-branch checkout (see TOOL SOURCE
+          # above); `--root .` keeps the judged denominator on the exact
+          # subject base view.
+          python3 tooling/scripts/ci/authority_transfer_review.py \
             --root . \
             --candidate-root "$CANDIDATE_TREE" \
             --repository "$REPOSITORY" \
@@ -237,11 +292,13 @@ jobs:
 
       - name: Upload advisory dogfood receipt
         # Only a pull-request evaluation writes a receipt; a dispatch run has
-        # nothing to upload, so the missing-file case is an error here, not
-        # a silently swallowed audit gap.
+        # nothing to upload. A PR run with no receipt has already failed
+        # closed at the evaluator step (`test -s`), so a missing file here is
+        # a warn, not a second error obscuring the first (#16174 shape 3):
+        # one instrument failure, one red.
         if: always() && github.event_name == 'pull_request_target'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: authority-transfer-review-receipt
           path: target/receipts/authority-transfer-review.json
-          if-no-files-found: error
+          if-no-files-found: warn

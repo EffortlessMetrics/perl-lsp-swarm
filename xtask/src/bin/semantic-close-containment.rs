@@ -3,6 +3,24 @@
 //! This is CP00 from issue #10413. It does not decide whether an issue is
 //! semantically complete. It rejects only a closed set of contradictions that
 //! are visible in stable PR sections and exact issue classifications.
+//!
+//! # Remaining work and explicit scope exclusions
+//!
+//! The Remaining-work rule (CP00-REMAINING-SAME-ISSUE) fails when a
+//! Remaining-work unit assigns required work to the issue that the PR closes.
+//! A Remaining-work unit that starts with the structured marker
+//! `Out of scope:` (or the equivalent explicit label
+//! `Explicitly out of scope:`), case-insensitive, after an optional Markdown
+//! `- `, `* `, or `1. ` bullet and optional balanced emphasis, is an explicit
+//! scope exclusion: issue references inside that unit record work that stays
+//! with another owner instead of work this closure leaves open. Unmarked or
+//! ambiguous mentions of the closing issue keep failing; negation wording is
+//! never inferred. The closing relation's own declaration line (for example
+//! `Closes #12`) is a declaration, not remaining-work prose: the section
+//! parser attributes a trailing declaration to the last recognized section.
+//! A pure declaration (a relation keyword and issue references only) is
+//! ignored by the rule; a declaration qualified with additional prose stays
+//! subject to it.
 #![allow(clippy::print_stderr, clippy::print_stdout)]
 
 use clap::{Parser, ValueEnum};
@@ -34,6 +52,9 @@ const MAX_SOURCE_LINE_BYTES: usize = 2 * 1024;
 #[derive(Debug, Parser)]
 #[command(name = "semantic-close-containment")]
 #[command(about = "Reject high-confidence contradictory terminal issue relations")]
+#[command(
+    long_about = "Reject high-confidence contradictory terminal issue relations.\n\nRemaining work: a unit that starts with the structured marker `Out of scope:`\n(case-insensitive, after an optional Markdown `- `, `* `, or `1. ` bullet and\noptional balanced emphasis) explicitly excludes the issues it references from\nthis closure's remaining scope. Remaining-work mentions of the closing issue\nwithout that marker still fail (fail-closed)."
+)]
 struct Args {
     /// GitHub event payload. Defaults to GITHUB_EVENT_PATH when neither input is supplied.
     #[arg(long, conflicts_with = "fixture")]
@@ -864,15 +885,19 @@ fn evaluate_relation(
         );
     }
 
-    let remaining = section_text(sections, &[SectionKind::RemainingWork]);
     if rules.enabled(RuleId::RemainingSameIssue)
-        && references_issue(&remaining, &relation.key, &pull.repository)
+        && remaining_work_assigns_section(
+            sections.get(&SectionKind::RemainingWork),
+            &relation.key,
+            &pull.repository,
+            &relation.source_line,
+        )
     {
         return failed_row(
             &relation,
             ResultCode::FailRemainingWorkSameIssue,
             RuleId::RemainingSameIssue,
-            "the structured Remaining work section assigns required work to the same issue that the PR asks GitHub to close",
+            "the structured Remaining work section assigns required work to the same issue that the PR asks GitHub to close; to record an explicit exclusion instead, start the Remaining-work unit with the structured marker `Out of scope:`",
             suggested_advances(&relation.key, &pull.repository),
         );
     }
@@ -1794,6 +1819,10 @@ fn without_supported_emphasis(text: &str) -> String {
         "not established",
         "not claimed",
         "explicitly out of scope",
+        // Remaining-work structured scope-exclusion marker (see
+        // `unit_is_explicit_scope_exclusion`): the label may carry balanced
+        // emphasis without changing its syntax.
+        "out of scope",
     ]) {
         for phrase in [phrase.to_string(), format!("{phrase}:")] {
             for (delimiter, marker) in [("**", '*'), ("*", '*'), ("__", '_'), ("_", '_')] {
@@ -1934,6 +1963,147 @@ fn references_issue(text: &str, key: &IssueKey, current_repository: &str) -> boo
     let lower = text.to_ascii_lowercase();
     lower.contains(&qualified)
         || lower.contains(&format!("https://github.com/{}/issues/{}", key.repository, key.number))
+}
+
+/// Structured Remaining-work scope-exclusion markers (see
+/// `unit_is_explicit_scope_exclusion`).
+const REMAINING_WORK_SCOPE_EXCLUSION_MARKERS: &[&str] =
+    &["out of scope:", "explicitly out of scope:"];
+
+/// True when the Remaining-work section assigns required work to `key`: some
+/// attribution unit references the closing issue, is not an explicit scope
+/// exclusion (see `unit_is_explicit_scope_exclusion`), and is not the closing
+/// relation's own declaration line (see `is_closing_relation_source_line`).
+/// Heading and body units are evaluated separately: the heading is not
+/// remaining-work prose, and the section parser drops the leading blank line
+/// after the heading, so a fused heading+first-paragraph unit would break the
+/// marker's start-of-unit rule for unbulleted first entries. Per-unit
+/// evaluation keeps every unmarked mention failing (fail-closed).
+fn remaining_work_assigns_section(
+    section: Option<&Section>,
+    key: &IssueKey,
+    current_repository: &str,
+    source_line: &str,
+) -> bool {
+    let Some(section) = section else {
+        return false;
+    };
+    section
+        .headings
+        .iter()
+        .map(String::as_str)
+        .chain(attribution_units(&section.body).iter().map(String::as_str))
+        .any(|unit| {
+            !unit_is_explicit_scope_exclusion(unit)
+                && !is_closing_relation_source_line(unit, source_line)
+                && references_issue(unit, key, current_repository)
+        })
+}
+
+/// True when a Remaining-work unit is the closing relation's own PURE
+/// declaration line: the parsed source line (normalized comparison,
+/// whitespace- and case-insensitive, trailing sentence punctuation ignored)
+/// consisting of a relation keyword and issue references only. The section
+/// parser attributes a trailing declaration to the last recognized section,
+/// so a pure declaration can sit inside the Remaining-work section without
+/// being remaining-work prose. A declaration qualified with additional prose
+/// (for example `Closes #12 (partial - slice only)`) is PR-side content in
+/// the section and stays subject to the rule; any other line that mentions
+/// the closing issue still fails.
+fn is_closing_relation_source_line(unit: &str, source_line: &str) -> bool {
+    let normalize = |value: &str| {
+        value
+            .trim()
+            .trim_end_matches(['.', '!', '?'])
+            .split_whitespace()
+            .map(str::to_ascii_lowercase)
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    let declaration = normalize(source_line);
+    if declaration.is_empty() || normalize(unit) != declaration {
+        return false;
+    }
+    let stripped = source_line.trim().trim_end_matches(['.', '!', '?']);
+    let Some((keyword, remainder)) = stripped.split_once(' ') else {
+        return false;
+    };
+    let keyword = keyword.trim_end_matches(':').to_ascii_lowercase();
+    if !matches!(
+        keyword.as_str(),
+        "close"
+            | "closes"
+            | "closed"
+            | "fix"
+            | "fixes"
+            | "fixed"
+            | "resolve"
+            | "resolves"
+            | "resolved"
+    ) {
+        return false;
+    }
+    let tokens: Vec<&str> =
+        remainder.split([',', ' ', '\t']).filter(|token| !token.is_empty()).collect();
+    !tokens.is_empty() && tokens.iter().all(|token| is_issue_reference_token(token))
+}
+
+/// True for a bare issue-reference token: `#N`, `owner/repo#N`, or a GitHub
+/// issue URL. The caller has already separated tokens on whitespace and
+/// commas.
+fn is_issue_reference_token(token: &str) -> bool {
+    const URL_PREFIX: &str = "https://github.com/";
+    if let Some(number) = token.strip_prefix('#') {
+        return !number.is_empty() && number.bytes().all(|byte| byte.is_ascii_digit());
+    }
+    if token.get(..URL_PREFIX.len()).is_some_and(|head| head.eq_ignore_ascii_case(URL_PREFIX)) {
+        let rest = &token[URL_PREFIX.len()..];
+        let Some((_, number)) = split_once_ignore_ascii_case(rest, "/issues/") else {
+            return false;
+        };
+        return !number.is_empty() && number.bytes().all(|byte| byte.is_ascii_digit());
+    }
+    match token.split_once('#') {
+        Some((repository, number)) => {
+            !repository.is_empty()
+                && !repository.chars().any(char::is_whitespace)
+                && !number.is_empty()
+                && number.bytes().all(|byte| byte.is_ascii_digit())
+        }
+        None => false,
+    }
+}
+
+/// Case-insensitive ASCII `split_once`, aligned with the closing-relation
+/// regex's `(?i)` matching. A slice index is only used on char boundaries, so
+/// non-ASCII input simply never matches the ASCII separator.
+fn split_once_ignore_ascii_case<'a>(value: &'a str, separator: &str) -> Option<(&'a str, &'a str)> {
+    for (index, _) in value.char_indices() {
+        let tail = &value[index..];
+        if tail.len() >= separator.len()
+            && tail.is_char_boundary(separator.len())
+            && tail[..separator.len()].eq_ignore_ascii_case(separator)
+        {
+            return Some((&value[..index], &tail[separator.len()..]));
+        }
+    }
+    None
+}
+
+/// True when a Remaining-work attribution unit is an explicit scope
+/// exclusion: the structured marker `Out of scope:` (or the equivalent
+/// explicit label `Explicitly out of scope:`), case-insensitive, starts the
+/// unit after an optional Markdown list bullet and optional supported
+/// emphasis. This is syntax, not negation inference: only an explicitly
+/// marked unit reclassifies its issue references, and anything ambiguous
+/// keeps failing.
+fn unit_is_explicit_scope_exclusion(unit: &str) -> bool {
+    let prose = prose_without_inline_code(unit);
+    let body = list_item_body(prose.trim()).unwrap_or(prose.trim());
+    let lowered = body.to_ascii_lowercase();
+    let normalized =
+        without_supported_emphasis(&lowered).split_whitespace().collect::<Vec<_>>().join(" ");
+    REMAINING_WORK_SCOPE_EXCLUSION_MARKERS.iter().any(|marker| normalized.starts_with(marker))
 }
 
 fn relation_scoped_section_text(
@@ -2294,7 +2464,7 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
-    const FIXTURES: [(&str, &str); 26] = [
+    const FIXTURES: [(&str, &str); 28] = [
         (
             "valid-explicit-subject-inventory-14633",
             include_str!(concat!(
@@ -2422,6 +2592,20 @@ mod tests {
             )),
         ),
         (
+            "valid-remaining-work-scope-exclusion",
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../.ci/semantic-close-containment/fixtures/valid-remaining-work-scope-exclusion.json"
+            )),
+        ),
+        (
+            "valid-remaining-work-scope-exclusion-unbulleted",
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../.ci/semantic-close-containment/fixtures/valid-remaining-work-scope-exclusion-unbulleted.json"
+            )),
+        ),
+        (
             "valid-controller-packet",
             include_str!(concat!(
                 env!("CARGO_MANIFEST_DIR"),
@@ -2491,6 +2675,237 @@ mod tests {
             verify_expected(&report, &fixture.expected)
                 .with_context(|| format!("checking embedded fixture {name}"))?;
         }
+        Ok(())
+    }
+
+    #[test]
+    fn remaining_work_scope_exclusion_marker_passes_outside_scope_reference() {
+        let key = IssueKey {
+            repository: "effortlessmetrics/perl-lsp-swarm".to_string(),
+            number: 9000103,
+        };
+        let repository = "effortlessmetrics/perl-lsp-swarm";
+        let marked_units = [
+            "- Out of scope: unchanged ledger lifecycle debt remains with existing owners; no widening of #9000103.",
+            "Out of scope: unchanged ledger lifecycle debt remains with existing owners; no widening of #9000103.",
+            "out of scope: debt stays with the existing owners (#9000103).",
+            "1. Out of scope: inherited debt remains with its owners, not this closure (#9000103).",
+            "* **Out of scope:** inherited ledger debt keeps its current owner (#9000103).",
+            "Explicitly out of scope: unchanged ledger lifecycle debt remains with existing owners; no widening of #9000103.",
+        ];
+        let assigns = |body: &str| {
+            let sections =
+                parse_sections(body, MAX_PR_BODY_BYTES).expect("bounded test body parses");
+            remaining_work_assigns_section(
+                sections.get(&SectionKind::RemainingWork),
+                &key,
+                repository,
+                "",
+            )
+        };
+        for marked in marked_units {
+            let body = format!("## Remaining work\n\n{marked}");
+            assert!(
+                !assigns(&body),
+                "an explicitly marked exclusion unit must not fail the Remaining-work rule: {marked}"
+            );
+        }
+    }
+
+    #[test]
+    fn remaining_work_unmarked_or_ambiguous_mentions_still_fail() {
+        let key = IssueKey {
+            repository: "effortlessmetrics/perl-lsp-swarm".to_string(),
+            number: 9000103,
+        };
+        let repository = "effortlessmetrics/perl-lsp-swarm";
+        // The first row is the marker test's paired sentence: without the
+        // structured marker the identical prose keeps failing (fail-closed;
+        // no natural-language negation inference).
+        let unmarked_units = [
+            "Unchanged ledger lifecycle debt remains with existing owners; no widening of #9000103.",
+            "Out of scope unchanged ledger lifecycle debt remains with existing owners; no widening of #9000103.",
+            "This unit is out of scope: #9000103 stays with its owners.",
+            "Debt is not in scope for this closure (#9000103).",
+            "Out of scope: debt moves to #9000104.\n\nThe rest of #9000103 remains required.",
+        ];
+        let assigns = |body: &str| {
+            let sections =
+                parse_sections(body, MAX_PR_BODY_BYTES).expect("bounded test body parses");
+            remaining_work_assigns_section(
+                sections.get(&SectionKind::RemainingWork),
+                &key,
+                repository,
+                "",
+            )
+        };
+        for unmarked in unmarked_units {
+            let body = format!("## Remaining work\n\n{unmarked}");
+            assert!(
+                assigns(&body),
+                "an unmarked or ambiguous mention must keep failing: {unmarked}"
+            );
+        }
+    }
+
+    #[test]
+    fn is_issue_reference_token_is_panic_safe_off_char_boundary() {
+        // #16288 review round 2: the URL-prefix check must not slice across a
+        // UTF-8 char boundary. The token below is 21 bytes; the CJK character
+        // starts at byte 18 and spans byte offset 19 == URL_PREFIX.len(), so
+        // RangeTo indexing would panic. The token is not an issue reference
+        // and must return false without panicking.
+        let token = "éééééé€€中";
+        assert_eq!(token.len(), 21);
+        assert!(!token.is_char_boundary(19));
+        assert!(!is_issue_reference_token(token));
+    }
+
+    #[test]
+    fn remaining_work_closing_declaration_line_is_not_remaining_work() {
+        // The section parser attributes a trailing `Closes #N` paragraph to
+        // the last recognized section, so the declaration can sit inside the
+        // Remaining-work section. The declaration itself assigns no remaining
+        // work; the skip is exact (normalized source-line match, pure
+        // keyword+reference shape), and any other unit that mentions the
+        // closing issue still fails.
+        let key = IssueKey {
+            repository: "effortlessmetrics/perl-lsp-swarm".to_string(),
+            number: 9000103,
+        };
+        let repository = "effortlessmetrics/perl-lsp-swarm";
+        let assigns = |body: &str, source_line: &str| {
+            let sections =
+                parse_sections(body, MAX_PR_BODY_BYTES).expect("bounded test body parses");
+            remaining_work_assigns_section(
+                sections.get(&SectionKind::RemainingWork),
+                &key,
+                repository,
+                source_line,
+            )
+        };
+        assert!(
+            !assigns("## Remaining work\n\nCloses #9000103.", "Closes #9000103."),
+            "the closing declaration line alone must not fail the Remaining-work rule"
+        );
+        assert!(
+            !assigns(
+                "## Remaining work\n\nCloses HTTPS://GITHUB.COM/org/repo/issues/9000103.",
+                "Closes HTTPS://GITHUB.COM/org/repo/issues/9000103."
+            ),
+            "the pure-declaration shape matches the relation regex case-insensitively"
+        );
+        assert!(
+            assigns("## Remaining work\n\nfixes #9000103.", "Closes #9000103."),
+            "only the parsed relation's own source line is skipped: any other line mentioning the issue still fails"
+        );
+        assert!(
+            assigns(
+                "## Remaining work\n\nThe follow-up cohort reuses #9000103.\n\nCloses #9000103.",
+                "Closes #9000103."
+            ),
+            "a declaration line does not mask additional unmarked mentions"
+        );
+        assert!(
+            assigns(
+                "## Remaining work\n\nCloses #9000103 (partial - item 2 slice only).",
+                "Closes #9000103 (partial - item 2 slice only)."
+            ),
+            "a declaration qualified with additional prose stays subject to the rule"
+        );
+        assert!(
+            assigns(
+                "## Remaining work\n\nCloses #9000103 https://github.com/org/repo/pulls/9000103.",
+                "Closes #9000103 https://github.com/org/repo/pulls/9000103."
+            ),
+            "a non-issue GitHub URL is not a reference token: the line stays subject to the rule"
+        );
+    }
+
+    #[test]
+    fn remaining_work_scope_exclusion_fixture_pair_discriminates() -> Result<()> {
+        // #16203: the marked Remaining-work unit passes; removing the marker
+        // reproduces the reported #16199-class false positive and must keep
+        // failing.
+        let repository = "effortlessmetrics/perl-lsp-swarm";
+        let issue = IssueSubject {
+            number: 9000103,
+            title: "fix(runtime): complete the five-row mutation cohort".to_string(),
+            body: "## Acceptance\n\nAll five current mutation rows are proved.".to_string(),
+        };
+        let evidence = IssueEvidence::Available(issue);
+        let marked = PullRequestSubject {
+            repository: repository.to_string(),
+            number: 990009,
+            title: "fix(runtime): land one row while ledger debt keeps its owner".to_string(),
+            body: "## Claim Boundary\n\nOne bounded row is complete.\n\n## Remaining work\n\n- Out of scope: unchanged ledger lifecycle debt remains with existing owners; no widening of #9000103.\n\nCloses #9000103.".to_string(),
+        };
+        let marked_report =
+            evaluate_with_rules(&marked, |_| evidence.clone(), RuleGate::all_rules())?;
+        assert_eq!(marked_report.aggregate_code, ResultCode::PassNoHighConfidenceContradiction);
+        let unmarked = PullRequestSubject {
+            body: "## Claim Boundary\n\nOne bounded row is complete.\n\n## Remaining work\n\nUnchanged ledger lifecycle debt remains with existing owners; no widening of #9000103.\n\nCloses #9000103.".to_string(),
+            ..marked
+        };
+        let unmarked_report =
+            evaluate_with_rules(&unmarked, |_| evidence.clone(), RuleGate::all_rules())?;
+        assert_eq!(unmarked_report.aggregate_code, ResultCode::FailRemainingWorkSameIssue);
+        Ok(())
+    }
+
+    #[test]
+    fn remaining_work_unbulleted_first_entry_exclusion_passes_real_section_path() -> Result<()> {
+        // #16288 review round: parse_sections drops the leading blank line
+        // after the heading, so section_text fuses the heading with the first
+        // body paragraph. A documented UNBULLETED first-entry exclusion must
+        // still pass end-to-end; the same shape without the marker keeps
+        // failing.
+        let repository = "effortlessmetrics/perl-lsp-swarm";
+        let issue = IssueSubject {
+            number: 9000105,
+            title: "fix(runtime): complete the five-row mutation cohort".to_string(),
+            body: "## Acceptance\n\nAll five current mutation rows are proved.".to_string(),
+        };
+        let evidence = IssueEvidence::Available(issue);
+        let marked = PullRequestSubject {
+            repository: repository.to_string(),
+            number: 990010,
+            title: "fix(runtime): land one row while ledger debt keeps its owner".to_string(),
+            body: "## Claim Boundary\n\nOne bounded row is complete.\n\n## Remaining work\n\nOut of scope: unchanged ledger lifecycle debt remains with existing owners; no widening of #9000105.\n\nCloses #9000105.".to_string(),
+        };
+        let marked_report =
+            evaluate_with_rules(&marked, |_| evidence.clone(), RuleGate::all_rules())?;
+        assert_eq!(marked_report.aggregate_code, ResultCode::PassNoHighConfidenceContradiction);
+        let unmarked = PullRequestSubject {
+            body: "## Claim Boundary\n\nOne bounded row is complete.\n\n## Remaining work\n\nUnchanged ledger lifecycle debt remains with existing owners; no widening of #9000105.\n\nCloses #9000105.".to_string(),
+            ..marked
+        };
+        let unmarked_report =
+            evaluate_with_rules(&unmarked, |_| evidence.clone(), RuleGate::all_rules())?;
+        assert_eq!(unmarked_report.aggregate_code, ResultCode::FailRemainingWorkSameIssue);
+        Ok(())
+    }
+
+    #[test]
+    fn remaining_work_pure_declaration_accepts_uppercase_issue_url() -> Result<()> {
+        // #16288 review round: the closing-relation regex is (?i), so an
+        // uppercase GitHub issue URL parses as a pure declaration line; the
+        // declaration skip must recognize it too.
+        let repository = "effortlessmetrics/perl-lsp-swarm";
+        let issue = IssueSubject {
+            number: 9000106,
+            title: "fix(runtime): complete the five-row mutation cohort".to_string(),
+            body: "## Acceptance\n\nAll five current mutation rows are proved.".to_string(),
+        };
+        let evidence = IssueEvidence::Available(issue);
+        let pull = PullRequestSubject {
+            repository: repository.to_string(),
+            number: 990011,
+            title: "fix(runtime): land one row while ledger debt keeps its owner".to_string(),
+            body: "## Claim Boundary\n\nOne bounded row is complete.\n\n## Remaining work\n\nCloses HTTPS://GITHUB.COM/org/repo/issues/9000106".to_string(),
+        };
+        let report = evaluate_with_rules(&pull, |_| evidence.clone(), RuleGate::all_rules())?;
+        assert_eq!(report.aggregate_code, ResultCode::PassNoHighConfidenceContradiction);
         Ok(())
     }
 
