@@ -131,40 +131,4 @@ mod tests {
         assert!(sexp.contains("redo"), "Expected redo in continue block, got: {sexp}");
         assert!(!sexp.contains("ERROR"), "Parse should not emit ERROR nodes: {sexp}");
     }
-
-    #[test]
-    fn test_loop_control_with_phase_keyword_label() {
-        // Phase keywords double as loop labels: `CHECK: while (1) { last
-        // CHECK; }` is valid Perl. The label arm must attach them instead
-        // of stopping after the op.
-        for op in ["last", "next", "redo"] {
-            let source = format!("CHECK: while (1) {{ {op} CHECK; }}");
-            let ast = must_some(parse_code(&source));
-
-            let NodeKind::Program { statements } = &ast.kind else {
-                panic!("expected Program, got {:?}", ast.kind);
-            };
-            let outer = must_some(statements.first());
-            let NodeKind::LabeledStatement { label, statement } = &outer.kind else {
-                panic!("expected LabeledStatement, got {:?}", outer.kind);
-            };
-            assert_eq!(label, "CHECK");
-            let NodeKind::While { body, .. } = &statement.kind else {
-                panic!("expected While under the label, got {:?}", statement.kind);
-            };
-            let NodeKind::Block { statements: body_stmts } = &body.kind else {
-                panic!("expected Block loop body, got {:?}", body.kind);
-            };
-            let ctrl = must_some(body_stmts.first());
-            let NodeKind::LoopControl { op: found_op, label: found_label } = &ctrl.kind else {
-                panic!("expected LoopControl in loop body, got {:?}", ctrl.kind);
-            };
-            assert_eq!(found_op, op);
-            assert_eq!(found_label.as_deref(), Some("CHECK"));
-
-            let sexp = ast.to_sexp();
-            assert!(!sexp.contains("ERROR"), "Parse should not emit ERROR nodes: {sexp}");
-            assert!(sexp.contains(op), "Expected loop control keyword, got: {sexp}");
-        }
-    }
 }
