@@ -43,13 +43,25 @@ The extension downloads the matching server binary for your platform.
 ### Option 2: Installer script, macOS and Linux (Recommended for other editors)
 
 Prefer a [release archive](https://github.com/EffortlessMetrics/perl-lsp/releases) until
-release closeout publishes an immutable installer ref and the reviewed SHA-256 digest
-of `scripts/install.sh`. From a clone, run `bash install.sh --help`. Once those
-values exist, the identity-bound remote bootstrap has this shape:
+release closeout publishes the reviewed SHA-256 digest of `scripts/install.sh`. From a
+clone, run `bash install.sh --help`. In the meantime, generate the bootstrap values from
+the release tag you want to install, and check the digest they print before piping
+anything to `bash`:
 
 ```bash
-INSTALLER_REF=<full-40-char-commit-sha>
-INSTALLER_SHA256=<reviewed-sha256-of-scripts-install-sh>
+RELEASE_TAG=v0.17.0  # the release you want to install
+INSTALLER_REF="$(git ls-remote https://github.com/EffortlessMetrics/perl-lsp.git "refs/tags/${RELEASE_TAG}^{}" | cut -f1)"
+INSTALLER_SHA256="$(curl -fsSL "https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/${INSTALLER_REF}/install.sh" | sha256sum | cut -d' ' -f1)"
+printf 'ref: %s\ndigest: %s\n' "$INSTALLER_REF" "$INSTALLER_SHA256"
+```
+
+`INSTALLER_REF` is the immutable publish commit of that tag, and `INSTALLER_SHA256` is
+the digest of `install.sh` at that commit. These generated values are convenience-level:
+they pin the executed installer to one exact ref and content, but they come from the
+same host the installer is fetched from, so they are not independent review. Feed them
+to the identity-bound remote bootstrap:
+
+```bash
 curl -fsSL "https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/$INSTALLER_REF/install.sh" \
   | PERL_LSP_INSTALLER_REF="$INSTALLER_REF" \
     PERL_LSP_INSTALLER_SHA256="$INSTALLER_SHA256" bash
