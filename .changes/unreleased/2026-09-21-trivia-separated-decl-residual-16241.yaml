@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Fixed
+body: "Trivial-whitespace separated `x =` after a contextual `x` on a parenthesized declaration (`my ($x, $y) x = 3;`) now keeps the typed residual diagnostic that the operator contract's `whitespace_does_not_form_repetition_assignment` already pins for the scalar-LHS form, so the declaration-side assertion and the operator-side pin agree under the same #16145 disposition filter."
+time: 2026-09-21T08:00:00Z
+custom:
+  PR: "16241"
+  Slug: trivia-separated-declaration-x-equals-residual-16241
+  Breaking: "no"

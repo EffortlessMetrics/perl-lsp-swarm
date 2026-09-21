@@ -278,10 +278,12 @@ fn ordinary_declaration_and_repetition_controls_remain_distinct() -> Result<(), 
 #[test]
 fn trivia_separated_declaration_x_equals_is_never_normalized() -> Result<(), String> {
     // Statement level: the leftover `x = 3` parses as an ordinary second
-    // statement assignment with no diagnostics (same-line leftover
-    // enforcement belongs to statement termination, not the operator). Pin
-    // that exact shape so the test cannot pass vacuously on some future
-    // unrelated acceptance.
+    // statement assignment; the operator contract rejects `x=` normalization,
+    // while statement recovery surfaces the invalid contextual-`x`
+    // leftover as one typed residual diagnostic (mirrors
+    // `whitespace_does_not_form_repetition_assignment`, #16145). Pin
+    // both signals together so the operator contract cannot be silently
+    // re-introduced by a future disposition change.
     let source = "my ($x, $y) x = 3;";
     let output = Parser::new(source).parse_with_recovery();
     if find_assignment(&output.ast, "x=").is_some() {
@@ -305,9 +307,16 @@ fn trivia_separated_declaration_x_equals_is_never_normalized() -> Result<(), Str
             output.ast.to_sexp()
         ));
     }
-    if !output.diagnostics.is_empty() {
+    if !matches!(
+        output.diagnostics.as_slice(),
+        [ParseError::Recovered {
+            site: RecoverySite::Statement,
+            kind: RecoveryKind::UnexpectedSameLineResidue,
+            location: 12,
+        }]
+    ) {
         return Err(format!(
-            "expected no diagnostics for the clean split, got {:?}",
+            "expected one residual recovery at the contextual x of `my ($x, $y) x = 3;`, got {:?}",
             output.diagnostics
         ));
     }
