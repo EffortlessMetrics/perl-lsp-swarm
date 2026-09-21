@@ -178,7 +178,7 @@ fn classify_with_exit_status(
     let first_failing_test =
         lines.iter().find_map(|line| FAILED_TEST_RE.captures(line).map(|cap| cap[1].to_string()));
     let panic_location =
-        lines.iter().find_map(|line| PANIC_RE.captures(line).map(|cap| cap[1].to_string()));
+        first_failing_test.as_ref().and_then(|name| panic_location_for_test(raw, name));
     let scenario = first_failing_test.as_ref().and_then(|name| scenario_from_test_name(name));
     let workflow = first_failing_test.as_ref().and_then(|name| workflow_from_test_name(name));
 
@@ -258,14 +258,12 @@ fn classify_with_exit_status(
     }
 }
 
-/// Split cargo's trailing failure report into one block per failing test and
-/// classify each from its own evidence.
+/// One failing test's stdout block per cargo `---- <name> stdout ----` header:
+/// (test name, where its body starts, where the next header starts).
 ///
-/// Whole-log classification is what makes a latency timeout and a real regression
-/// indistinguishable: `infer_failure_class` scans the entire log, so one test
-/// mentioning a baseline reclassifies another test's expired budget. Per-block
-/// reading keeps each failure's evidence to itself.
-fn discriminate_failing_tests(raw: &str) -> Vec<UxFailingTest> {
+/// Shared by per-block discrimination (#15988) and panic-location scoping
+/// (#16148) so there is exactly one span implementation.
+fn failure_block_spans(raw: &str) -> Vec<(String, usize, usize)> {
     // (test name, where its body starts, where the next header starts)
     let mut headers: Vec<(String, usize, usize)> = Vec::new();
     for capture in FAILURE_BLOCK_RE.captures_iter(raw) {
@@ -281,6 +279,35 @@ fn discriminate_failing_tests(raw: &str) -> Vec<UxFailingTest> {
             .map_or(raw.len(), |(_, _, next_header_start)| *next_header_start);
         spans.push((name.clone(), *body_start, body_end));
     }
+    spans
+}
+
+/// The panic site of one named failing test, read from that test's own stdout
+/// block only (#16148). The receipt is flat, so adjacent fields read as one
+/// pair: a whole-log scan reports a later test's crash site under the first
+/// test's name when the first test fails without panicking.
+fn panic_location_for_test(raw: &str, name: &str) -> Option<String> {
+    for (block_name, body_start, body_end) in failure_block_spans(raw) {
+        if block_name != name {
+            continue;
+        }
+        let block = raw.get(body_start..body_end).unwrap_or_default();
+        return block_body(block)
+            .lines()
+            .find_map(|line| PANIC_RE.captures(line).map(|cap| cap[1].to_string()));
+    }
+    None
+}
+
+/// Split cargo's trailing failure report into one block per failing test and
+/// classify each from its own evidence.
+///
+/// Whole-log classification is what makes a latency timeout and a real regression
+/// indistinguishable: `infer_failure_class` scans the entire log, so one test
+/// mentioning a baseline reclassifies another test's expired budget. Per-block
+/// reading keeps each failure's evidence to itself.
+fn discriminate_failing_tests(raw: &str) -> Vec<UxFailingTest> {
+    let spans = failure_block_spans(raw);
 
     let mut discriminated: Vec<UxFailingTest> = Vec::new();
     for (name, start, end) in spans {
@@ -537,7 +564,7 @@ mod tests {
     fn classify_extracts_structured_fields() {
         // Uses the Rust 1.73+ panic format: "panicked at path:row:col:" (no quoted message).
         // The project toolchain is 1.95, so this is the format actual test output uses.
-        let log = "running 1 test\ntest ux_scenario_19_diagnostics_lifecycle::scenario_19_diagnostics_clear_after_fix ... FAILED\nthread 'x' panicked at crates/perl-lsp-ux-tests/tests/ux_scenario_19_diagnostics_lifecycle.rs:102:5:\nboom\ntest result: FAILED. 0 passed; 1 failed";
+        let log = "running 1 test\ntest ux_scenario_19_diagnostics_lifecycle::scenario_19_diagnostics_clear_after_fix ... FAILED\n\nfailures:\n\n---- ux_scenario_19_diagnostics_lifecycle::scenario_19_diagnostics_clear_after_fix stdout ----\nthread 'x' panicked at crates/perl-lsp-ux-tests/tests/ux_scenario_19_diagnostics_lifecycle.rs:102:5:\nboom\n\nfailures:\n    ux_scenario_19_diagnostics_lifecycle::scenario_19_diagnostics_clear_after_fix\n\ntest result: FAILED. 0 passed; 1 failed";
         let receipt = classify(log, Some("abc123".to_string()));
         assert_eq!(receipt.sha, "abc123", "sha should match input");
         assert_eq!(
@@ -1316,6 +1343,73 @@ test result: FAILED. 0 passed; 1 failed; timed out after 60s";
         assert_eq!(
             receipt.schema_version, 2,
             "consumers pinned to version 1 keep every field they already read"
+        );
+    }
+
+    #[test]
+    fn panic_location_does_not_reach_past_the_first_failing_test() {
+        // #16148: the first failing test fails with a plain assertion while a
+        // later test panics. The later test's crash site must not be reported
+        // under the first test's name.
+        let log = "running 2 tests\n\
+test ux_scenario_02_open::open_file ... FAILED\n\
+test ux_scenario_03_diag::diag_test ... FAILED\n\
+\n\
+failures:\n\
+\n\
+---- ux_scenario_02_open::open_file stdout ----\n\
+assertion `left == right` failed\n\
+  left: 1\n\
+ right: 2\n\
+\n\
+---- ux_scenario_03_diag::diag_test stdout ----\n\
+thread 'main' panicked at crates/perl-lsp-ux-tests/tests/ux_scenario_03_diag.rs:77:9:\n\
+boom\n\
+\n\
+failures:\n\
+    ux_scenario_02_open::open_file\n\
+    ux_scenario_03_diag::diag_test\n\
+\n\
+test result: FAILED. 0 passed; 2 failed";
+        let receipt = classify(log, None);
+        assert_eq!(receipt.first_failing_test.as_deref(), Some("ux_scenario_02_open::open_file"));
+        assert!(
+            receipt.panic_location.is_none(),
+            "a later test's panic site must not be reported under the first test's name, got {:?}",
+            receipt.panic_location
+        );
+        assert!(
+            matches!(receipt.failure_class, UxFailureClass::NewTestBug),
+            "whole-run class is unchanged by this fix, got {:?}",
+            receipt.failure_class
+        );
+    }
+
+    #[test]
+    fn panic_location_reports_the_first_failing_tests_own_panic() {
+        let log = "running 2 tests\n\
+test ux_scenario_02_open::open_file ... FAILED\n\
+test ux_scenario_03_diag::diag_test ... FAILED\n\
+\n\
+failures:\n\
+\n\
+---- ux_scenario_02_open::open_file stdout ----\n\
+thread 'main' panicked at crates/perl-lsp-ux-tests/tests/ux_scenario_02_open.rs:41:5:\n\
+boom\n\
+\n\
+---- ux_scenario_03_diag::diag_test stdout ----\n\
+thread 'main' panicked at crates/perl-lsp-ux-tests/tests/ux_scenario_03_diag.rs:77:9:\n\
+boom\n\
+\n\
+failures:\n\
+    ux_scenario_02_open::open_file\n\
+    ux_scenario_03_diag::diag_test\n\
+\n\
+test result: FAILED. 0 passed; 2 failed";
+        let receipt = classify(log, None);
+        assert_eq!(
+            receipt.panic_location.as_deref(),
+            Some("crates/perl-lsp-ux-tests/tests/ux_scenario_02_open.rs:41:5")
         );
     }
 }
