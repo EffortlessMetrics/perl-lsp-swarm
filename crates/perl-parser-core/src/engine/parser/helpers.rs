@@ -1405,9 +1405,9 @@ impl<'a> Parser<'a> {
             // (#16373). Widen only for argument starts that admit no other
             // parse; every other following token keeps the conservative
             // constant/package-name reading.
-            if !self.tokens.peek().ok().is_some_and(|token| {
+            if !self.peek_kind().is_some_and(|kind| {
                 matches!(
-                    token.kind(),
+                    kind,
                     TokenKind::String
                         | TokenKind::QuoteSingle
                         | TokenKind::QuoteDouble
@@ -1466,13 +1466,18 @@ impl<'a> Parser<'a> {
             // multiplication.
             TokenKind::Star if has_typeglob_first_arg => true,
 
-            // `func "string"`, `func 'string'`, or `func `command`` — bare
-            // function call with a string-literal argument. Backtick bodies
-            // lex as `QuoteCommand`, so they must be admitted here too or
-            // ``t `a``` loses its argument uptake (#16373).
+            // `func "string"`, `func 'string'`, `func q()`, `func qq()`,
+            // or `func `command`` — bare function call with a string-literal
+            // argument. Backtick bodies lex as `QuoteCommand`, `q()` as
+            // `QuoteSingle` and `qq()` as `QuoteDouble`, so they must be
+            // admitted here too or the quote form loses its argument
+            // uptake (#16373, #16377 review).
             // Handles: `croak "error message"`, `_estr "fmt"`, `die "msg"`, etc.
             // Imported functions that behave like builtins often take string args without parens.
-            TokenKind::String | TokenKind::QuoteCommand => true,
+            TokenKind::String
+            | TokenKind::QuoteSingle
+            | TokenKind::QuoteDouble
+            | TokenKind::QuoteCommand => true,
 
             // `func 0` — Perl list-operator style calls may take literal numeric args.
             TokenKind::Number => true,

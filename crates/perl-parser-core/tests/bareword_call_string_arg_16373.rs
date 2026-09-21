@@ -87,3 +87,24 @@ fn declared_lowercase_bareword_call_with_backtick_argument_parses() {
     assert_valid_case(source);
     assert_parses_as_call(source, "t", 1);
 }
+
+#[test]
+fn declared_uppercase_bareword_call_with_q_operator_argument_parses() {
+    let source = "sub T { }\nT q(a);\n";
+    assert_valid_case(source);
+    assert_parses_as_call(source, "T", 1);
+}
+
+#[test]
+fn declared_uppercase_bareword_call_with_qq_operator_argument_parses() {
+    let source = "sub T { }\nT qq(a);\n";
+    assert_valid_case(source);
+    assert_parses_as_call(source, "T", 1);
+}
+
+#[test]
+fn declared_lowercase_bareword_call_with_q_operator_argument_parses() {
+    let source = "sub t { }\nt q(a);\n";
+    assert_valid_case(source);
+    assert_parses_as_call(source, "t", 1);
+}
