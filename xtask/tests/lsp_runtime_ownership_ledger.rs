@@ -370,6 +370,13 @@ const MODULES: &[ModuleRow] = &[
         "retain workspace progress semantics above runtime",
         "#8385"
     ),
+    module_row!(
+        "v0_18_text_sync_envelope",
+        PerlApplication,
+        "perl-lsp-rs DocumentStore + adapter",
+        "retain the selected v0.18 full-document UTF-16 envelope above runtime until the atomic-incremental cutover",
+        "#8129"
+    ),
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
