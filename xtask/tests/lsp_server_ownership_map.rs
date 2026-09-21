@@ -86,15 +86,6 @@ const OWNERSHIP: &[OwnershipRow] = &[
         "#8386"
     ),
     row!(
-        "initialization_accepted",
-        ClientSession,
-        "AtomicBool",
-        "connection replacement",
-        "client session",
-        false,
-        "#8386"
-    ),
-    row!(
         "initialized",
         ClientSession,
         "AtomicBool",
@@ -255,6 +246,15 @@ const OWNERSHIP: &[OwnershipRow] = &[
         "accepted text-sync session contract (#9378): immutable FULL + UTF-16 authority written once at initialize acceptance",
         false,
         "#9378"
+    ),
+    row!(
+        "position_encoding_session_context",
+        ClientSession,
+        "Mutex<Option<PositionEncodingSessionContext>>",
+        "shutdown / connection replacement",
+        "immutable active position-encoding context (#8534): published at text-sync session acceptance, cleared on shutdown",
+        false,
+        "#8534"
     ),
     row!(
         "client_supports_pull_diags",
