@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::sync::LazyLock;
 
 use chrono::Utc;
-use color_eyre::eyre::{Context, Result, eyre};
+use color_eyre::eyre::{Context, Result};
 use perl_lsp_ux_tests::taxonomy::{UxComponent, UxFailureClass, UxRoute, route_for_failure_class};
 use regex::Regex;
 use serde::Serialize;
@@ -516,7 +516,7 @@ fn shell_quote(value: &str) -> String {
 mod tests {
     use super::*;
 
-    use color_eyre::eyre::{bail, ensure};
+    use color_eyre::eyre::{bail, ensure, eyre};
 
     #[test]
     fn classify_extracts_structured_fields() {
