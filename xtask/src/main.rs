@@ -946,24 +946,6 @@ enum Commands {
         print: bool,
     },
 
-    /// Render each non-success gate's failing tests, panic location and repro
-    /// command from a merge-gate shard summary and its per-gate logs.
-    GateFailureDigest {
-        /// Shard summary written by scripts/ci/run_gate_shard.py.
-        #[arg(long)]
-        summary: PathBuf,
-        /// Directory holding <gate>.log for each executed gate.
-        #[arg(long, default_value = "target/receipts/logs")]
-        logs: PathBuf,
-        /// Markdown destination; replaced when it already exists (the workflow
-        /// appends to `$GITHUB_STEP_SUMMARY`, not this writer).
-        #[arg(long, default_value = "target/receipts/gate-failure-digest.md")]
-        out: PathBuf,
-        /// Also print the digest to stdout.
-        #[arg(long)]
-        print: bool,
-    },
-
     /// Render non-blocking GitHub warning annotations from comments[] guidance only.
     RiprAnnotations {
         /// Review guidance JSON path.
