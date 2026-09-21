@@ -474,6 +474,8 @@ pub fn perl_parser_core::syntax::error::ParseDiagnosticSeverity::fmt(&self, f: &
 pub perl_parser_core::engine::error::ParseError::Advisory
 pub perl_parser_core::engine::error::ParseError::Advisory::location: usize
 pub perl_parser_core::engine::error::ParseError::Advisory::message: alloc::string::String
+pub perl_parser_core::engine::error::ParseError::CStyleForContinueBlock
+pub perl_parser_core::engine::error::ParseError::CStyleForContinueBlock::location: usize
 pub perl_parser_core::engine::error::ParseError::Cancelled
 pub perl_parser_core::engine::error::ParseError::CoreBudgetExhausted
 pub perl_parser_core::engine::error::ParseError::CoreBudgetExhausted::dimension: perl_parser_core::syntax::error::ParseCoreDimension
@@ -1029,6 +1031,8 @@ pub fn perl_parser_core::syntax::error::ParseDiagnosticSeverity::fmt(&self, f: &
 pub perl_parser_core::error::ParseError::Advisory
 pub perl_parser_core::error::ParseError::Advisory::location: usize
 pub perl_parser_core::error::ParseError::Advisory::message: alloc::string::String
+pub perl_parser_core::error::ParseError::CStyleForContinueBlock
+pub perl_parser_core::error::ParseError::CStyleForContinueBlock::location: usize
 pub perl_parser_core::error::ParseError::Cancelled
 pub perl_parser_core::error::ParseError::CoreBudgetExhausted
 pub perl_parser_core::error::ParseError::CoreBudgetExhausted::dimension: perl_parser_core::syntax::error::ParseCoreDimension
@@ -3921,6 +3925,8 @@ pub fn perl_parser_core::syntax::error::ParseDiagnosticSeverity::fmt(&self, f: &
 pub perl_parser_core::syntax::error::ParseError::Advisory
 pub perl_parser_core::syntax::error::ParseError::Advisory::location: usize
 pub perl_parser_core::syntax::error::ParseError::Advisory::message: alloc::string::String
+pub perl_parser_core::syntax::error::ParseError::CStyleForContinueBlock
+pub perl_parser_core::syntax::error::ParseError::CStyleForContinueBlock::location: usize
 pub perl_parser_core::syntax::error::ParseError::Cancelled
 pub perl_parser_core::syntax::error::ParseError::CoreBudgetExhausted
 pub perl_parser_core::syntax::error::ParseError::CoreBudgetExhausted::dimension: perl_parser_core::syntax::error::ParseCoreDimension
@@ -4827,6 +4833,8 @@ pub fn perl_parser_core::syntax::error::ParseDiagnosticSeverity::fmt(&self, f: &
 pub perl_parser_core::ParseError::Advisory
 pub perl_parser_core::ParseError::Advisory::location: usize
 pub perl_parser_core::ParseError::Advisory::message: alloc::string::String
+pub perl_parser_core::ParseError::CStyleForContinueBlock
+pub perl_parser_core::ParseError::CStyleForContinueBlock::location: usize
 pub perl_parser_core::ParseError::Cancelled
 pub perl_parser_core::ParseError::CoreBudgetExhausted
 pub perl_parser_core::ParseError::CoreBudgetExhausted::dimension: perl_parser_core::syntax::error::ParseCoreDimension
