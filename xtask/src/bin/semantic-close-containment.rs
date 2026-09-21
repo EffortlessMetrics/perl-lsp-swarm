@@ -867,6 +867,10 @@ fn evaluate_relation(
     let remaining = section_text(sections, &[SectionKind::RemainingWork]);
     if rules.enabled(RuleId::RemainingSameIssue)
         && references_issue(&remaining, &relation.key, &pull.repository)
+        && !remaining_work_scope_excluded(
+            &remaining_without_closing_relation_lines(&remaining, &relation.key, &pull.repository),
+            &relation.key,
+        )
     {
         return failed_row(
             &relation,
@@ -1936,6 +1940,125 @@ fn references_issue(text: &str, key: &IssueKey, current_repository: &str) -> boo
         || lower.contains(&format!("https://github.com/{}/issues/{}", key.repository, key.number))
 }
 
+/// Supported explicit scope-exclusion markers that may directly precede an
+/// issue reference in a structured Remaining work section (#16203). Each
+/// marker carries its own negation, so arbitrary negation words elsewhere in
+/// the sentence are never scope evidence.
+const REMAINING_SCOPE_PREFIX_EXCLUSIONS: [&str; 6] = [
+    "no widening of",
+    "no widening beyond",
+    "outside the scope of",
+    "outside scope of",
+    "beyond the scope of",
+    "out of scope for",
+];
+
+/// Supported explicit scope-exclusion predicates that may directly follow an
+/// issue reference in a structured Remaining work section (#16203).
+const REMAINING_SCOPE_SUFFIX_EXCLUSIONS: [&str; 9] = [
+    "is explicitly out of scope",
+    "is out of scope",
+    "remains explicitly out of scope",
+    "remains out of scope",
+    "stays out of scope",
+    "is outside the scope",
+    "remains outside the scope",
+    "is excluded from scope",
+    "is scope-excluded",
+];
+
+/// Removes lines that are themselves terminal closing-relation declarations
+/// for `key` from Remaining work text before scope-exclusion evaluation
+/// (#16203). The closing line is the PR's own closure declaration — the
+/// source of the relation under evaluation — not a prose claim assigning
+/// unfinished work, so it must not defeat an explicit scope exclusion
+/// elsewhere in the section. Genuine unfinished-work prose keeps failing on
+/// its own anchors.
+fn remaining_without_closing_relation_lines(
+    text: &str,
+    key: &IssueKey,
+    current_repository: &str,
+) -> String {
+    text.lines()
+        .filter(|line| {
+            parse_closing_relations(line, current_repository)
+                .map(|relations| !relations.iter().any(|candidate| candidate.key == *key))
+                .unwrap_or(true)
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Returns true when every reference to `key` in the structured Remaining
+/// work text carries a supported explicit scope-exclusion marker directly
+/// attached to the reference (#16203). Callers pass text already free of the
+/// terminal closing-relation lines.
+///
+/// The default reading of a Remaining work mention of the closing issue is
+/// unfinished acceptance work assigned to it. The only supported exception is
+/// an explicit outside-scope marker on the reference itself, recording that
+/// the mentioned issue's inherited debt stays with its existing owner instead
+/// of being assigned to it by this closure. The documented syntax is
+/// deliberately narrow:
+///
+/// - `<marker> #N`, where `marker` is one of `REMAINING_SCOPE_PREFIX_EXCLUSIONS`
+///   ending directly before the reference; or
+/// - `#N <predicate>`, where `predicate` is one of
+///   `REMAINING_SCOPE_SUFFIX_EXCLUSIONS` starting directly after the
+///   reference.
+///
+/// Matching ignores markdown emphasis, inline code spans, and whitespace
+/// runs, and the character outside a matched marker must be a boundary.
+/// Other negations ("not blocking", "unrelated to", "does not affect") do
+/// not exclude scope, so a paired exclusion clause cannot launder a sibling
+/// reference that assigns work: every locatable anchor of the closing issue
+/// must carry its own marker or the contradiction stands. References with no
+/// locatable `#N` anchor (bare issue URLs) are never treated as excluded.
+fn remaining_work_scope_excluded(text: &str, key: &IssueKey) -> bool {
+    let flattened = prose_without_inline_code(text)
+        .to_ascii_lowercase()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let normalized = without_supported_emphasis(&flattened);
+    let needle = format!("#{}", key.number);
+    let mut anchors = 0;
+    for (index, _) in normalized.match_indices(&needle) {
+        let followed_by_digit = normalized
+            .get(index + needle.len()..)
+            .and_then(|tail| tail.chars().next())
+            .is_some_and(|character| character.is_ascii_digit());
+        if followed_by_digit {
+            continue;
+        }
+        let Some(before) = normalized.get(..index) else { continue };
+        let Some(after) = normalized.get(index + needle.len()..) else { continue };
+        anchors += 1;
+        let prefix_excluded = REMAINING_SCOPE_PREFIX_EXCLUSIONS.iter().any(|marker| {
+            before.trim_end_matches(':').trim_end().strip_suffix(marker).is_some_and(
+                |introduction| {
+                    introduction
+                        .chars()
+                        .next_back()
+                        .is_none_or(|character| !(character.is_alphanumeric() || character == '_'))
+                },
+            )
+        });
+        if prefix_excluded {
+            continue;
+        }
+        let suffix_excluded = REMAINING_SCOPE_SUFFIX_EXCLUSIONS.iter().any(|marker| {
+            after.trim_start().strip_prefix(marker).is_some_and(|rest| {
+                rest.chars().next().is_none_or(|character| !character.is_alphanumeric())
+            })
+        });
+        if !suffix_excluded {
+            return false;
+        }
+    }
+    anchors > 0
+}
+
 fn relation_scoped_section_text(
     sections: &BTreeMap<SectionKind, Section>,
     kinds: &[SectionKind],
@@ -2294,7 +2417,7 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
-    const FIXTURES: [(&str, &str); 26] = [
+    const FIXTURES: [(&str, &str); 27] = [
         (
             "valid-explicit-subject-inventory-14633",
             include_str!(concat!(
@@ -2419,6 +2542,13 @@ mod tests {
             include_str!(concat!(
                 env!("CARGO_MANIFEST_DIR"),
                 "/../.ci/semantic-close-containment/fixtures/invalid-remaining-same-issue.json"
+            )),
+        ),
+        (
+            "valid-remaining-scope-exclusion",
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../.ci/semantic-close-containment/fixtures/valid-remaining-scope-exclusion.json"
             )),
         ),
         (
@@ -3947,6 +4077,77 @@ mod tests {
         }"#;
         let parsed = serde_json::from_str::<Fixture>(raw);
         assert!(parsed.is_err());
+    }
+
+    /// #16203 paired controls: an explicit outside-scope marker directly on a
+    /// Remaining-work reference records inherited debt with its existing
+    /// owner, while any reference that assigns unfinished work to the closing
+    /// issue — including one beside a sibling exclusion clause or an
+    /// arbitrary negation — still fails.
+    #[test]
+    fn remaining_work_scope_exclusion_requires_explicit_marker_per_reference() -> Result<()> {
+        let cases = [
+            (
+                "Unchanged ledger lifecycle debt keeps its existing owner; #10 is explicitly out of scope.",
+                ResultCode::PassNoHighConfidenceContradiction,
+            ),
+            (
+                "Unchanged ledger lifecycle debt remains with existing owners; no widening of #10.",
+                ResultCode::PassNoHighConfidenceContradiction,
+            ),
+            (
+                "Inherited ledger debt is outside the scope of #10 and keeps its existing owner.",
+                ResultCode::PassNoHighConfidenceContradiction,
+            ),
+            (
+                "Debt stays with existing owners; no widening beyond #10 is planned.",
+                ResultCode::PassNoHighConfidenceContradiction,
+            ),
+            (
+                "The other required denominator rows remain tracked on #10.",
+                ResultCode::FailRemainingWorkSameIssue,
+            ),
+            (
+                "Debt keeps its existing owner; the complete remaining work for #10 is not established.",
+                ResultCode::FailRemainingWorkSameIssue,
+            ),
+            (
+                "Finish the denominator work for #10; separately, no widening of #10 is planned.",
+                ResultCode::FailRemainingWorkSameIssue,
+            ),
+            (
+                "We are not blocking #10; the work is still owed to it.",
+                ResultCode::FailRemainingWorkSameIssue,
+            ),
+        ];
+        for (remaining_line, expected) in cases {
+            let pull = PullRequestSubject {
+                repository: "effortlessmetrics/perl-lsp-swarm".into(),
+                number: 990015,
+                title: "fix: remaining scope exclusion controls".into(),
+                body: format!(
+                    "## Claim Boundary\nThe named row is complete.\n\n## Remaining work\n{remaining_line}\n\nCloses #10"
+                ),
+            };
+            let report = evaluate(&pull, |key| {
+                IssueEvidence::Available(IssueSubject {
+                    number: key.number,
+                    title: "Complete the named change".into(),
+                    body: "## Acceptance\nThe named change is established.".into(),
+                })
+            })?;
+            let row =
+                report.rows.iter().find(|row| row.issue_number == 10).with_context(|| {
+                    format!("missing relation row for control: {remaining_line}")
+                })?;
+            if row.code != expected {
+                bail!(
+                    "remaining scope control {remaining_line:?}: expected {expected:?}, observed {:?}",
+                    row.code
+                );
+            }
+        }
+        Ok(())
     }
 
     /// Mutation controls (#10413 negative controls): disabling exactly one

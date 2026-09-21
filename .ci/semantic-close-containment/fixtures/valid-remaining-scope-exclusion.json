@@ -1,0 +1,35 @@
+{
+  "schema_version": "semantic_close_containment_fixture.v1",
+  "provenance": {
+    "captured_at": "2026-09-20",
+    "sources": [
+      "https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/16203"
+    ],
+    "subject_shas": [],
+    "boundary": "Immutable bounded structured excerpt paired with invalid-remaining-same-issue.json. The fixture proves only that CP00-REMAINING-SAME-ISSUE ignores a Remaining-work issue reference carrying the supported explicit scope-exclusion marker (`#N is explicitly out of scope`), while the paired control still rejects unfinished work assigned to the closing issue."
+  },
+  "repository": "effortlessmetrics/perl-lsp-swarm",
+  "pull_request": {
+    "number": 990014,
+    "title": "fix(runtime): land one row while excluding inherited ledger debt (#9000104)",
+    "body": "## Claim Boundary\n\nOne bounded row is complete.\n\n## Remaining work\n\nUnchanged ledger lifecycle debt keeps its existing owner; #9000104 is explicitly out of scope.\n\nCloses #9000104."
+  },
+  "issues": [
+    {
+      "repository": "effortlessmetrics/perl-lsp-swarm",
+      "number": 9000104,
+      "title": "fix(runtime): complete the five-row mutation cohort",
+      "body": "## Acceptance\n\nAll five current mutation rows are proved."
+    }
+  ],
+  "expected": {
+    "aggregate_code": "PASS_NO_HIGH_CONFIDENCE_CONTRADICTION",
+    "rows": [
+      {
+        "repository": "effortlessmetrics/perl-lsp-swarm",
+        "issue_number": 9000104,
+        "code": "PASS_NO_HIGH_CONFIDENCE_CONTRADICTION"
+      }
+    ]
+  }
+}
