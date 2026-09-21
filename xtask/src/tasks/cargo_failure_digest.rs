@@ -534,7 +534,16 @@ test result: FAILED. 1 passed; 1 failed; 0 ignored
                     "gate_name": "fmt_gate",
                     "result": "success",
                     "exit_code": 0,
-                    "reproduce": "cargo fmt --all -- --check",
+                    // Deliberately package-scoped rather than the
+                    // workspace-wide form. `fmt.rs`'s
+                    // `xtask_tasks_do_not_shell_out_to_workspace_wide_cargo_fmt_all`
+                    // greps every file under `tasks/` for the raw
+                    // workspace-wide invocation and cannot tell a shell-out
+                    // from a string, so a fixture quoting it reads as an
+                    // offender. Which command this row carries is incidental
+                    // to the proposition under test — that a `success` row is
+                    // rendered as nothing, not as a failure.
+                    "reproduce": "cargo fmt -p xtask -- --check",
                 },
                 gate,
             ],
