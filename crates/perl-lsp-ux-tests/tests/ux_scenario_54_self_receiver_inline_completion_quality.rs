@@ -200,8 +200,8 @@ fn scenario_54_self_receiver_inline_completion_quality_receipt() {
             let diagnostics_received =
                 harness.wait_for_diagnostics(SELF_RECEIVER_PATH, Duration::from_secs(30));
             let self_receiver_uri = harness.workspace.uri(SELF_RECEIVER_PATH);
-            let active_document_ready = harness
-                .wait_for_active_document_ready(&self_receiver_uri, Duration::from_secs(30));
+            let active_document_ready =
+                harness.wait_for_active_document_ready(&self_receiver_uri, Duration::from_secs(30));
 
             recorder.mark_request_start("dynamic_inline_registration");
             let dynamic_registration_seen = wait_for_inline_registration(&harness);
