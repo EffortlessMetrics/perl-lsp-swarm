@@ -122,6 +122,27 @@ mod tests {
     }
 
     #[test]
+    fn test_bare_continue_parses_as_loop_control() {
+        // Bare `continue;` is the when-fallthrough control op; it must parse
+        // as LoopControl, not as a bareword expression statement.
+        let ast = must_some(parse_code("continue;"));
+        assert!(
+            matches!(ast.kind, NodeKind::Program { .. }),
+            "expected Program, got {:?}",
+            ast.kind
+        );
+        let NodeKind::Program { statements } = &ast.kind else {
+            return;
+        };
+        let stmt = must_some(statements.first());
+        let NodeKind::LoopControl { op, label } = &stmt.kind else {
+            panic!("expected LoopControl, got {:?}", stmt.kind);
+        };
+        assert_eq!(op, "continue");
+        assert!(label.is_none());
+    }
+
+    #[test]
     fn test_loop_control_in_continue_block() {
         // Continue blocks are a common place for redo/next control flow.
         let source = "while ($x) { $x--; } continue { redo; }";

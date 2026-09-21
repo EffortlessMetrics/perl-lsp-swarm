@@ -353,6 +353,22 @@ impl<'a> Parser<'a> {
                     Ok(self.parse_word_or_expr(ctrl)?)
                 }
 
+                // Bare `continue;` is the when-fallthrough control op. A
+                // trailing `continue { ... }` loop block never reaches this
+                // dispatch (loop parsers consume it), but guard the brace
+                // shape anyway so a detached block keeps today's route.
+                TokenKind::Continue
+                    if !self
+                        .tokens
+                        .peek_second()
+                        .ok()
+                        .map(|t| t.kind() == TokenKind::LeftBrace)
+                        .unwrap_or(false) =>
+                {
+                    let ctrl = self.parse_loop_control()?;
+                    Ok(self.parse_word_or_expr(ctrl)?)
+                }
+
                 // Subroutines and modern OOP
                 TokenKind::Sub => {
                     let sub_node = self.parse_subroutine()?;
