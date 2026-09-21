@@ -166,8 +166,10 @@ pub(crate) fn file_role_from_path(path: &str) -> &'static str {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
+    #[allow(unused_imports)]
     use crate::emitter::test_facts::emit_tests_and_oracles;
 
     #[cfg(unix)]
