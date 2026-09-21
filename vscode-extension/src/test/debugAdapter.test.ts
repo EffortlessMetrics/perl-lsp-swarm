@@ -11,6 +11,7 @@ import {
   PerlDebugConfigurationProvider,
   buildDapExecutableArgs as productionBuildDapExecutableArgs,
   buildLaunchJsonContent,
+  canonicalizeWorkspaceRoot,
   debugConfigTemplateChoices,
   hasLaunchJson,
   offerDebugConfigOnFirstPerlOpen,
@@ -54,9 +55,10 @@ function asDebugConfiguration(value: Record<string, unknown>): vscode.DebugConfi
   return value as unknown as vscode.DebugConfiguration;
 }
 
-function buildDapExecutableArgs(value: unknown): string[] {
+function buildDapExecutableArgs(value: unknown, hostWorkspaceRoot?: string): string[] {
   return productionBuildDapExecutableArgs(
     value as unknown as vscode.DebugConfiguration | undefined,
+    hostWorkspaceRoot,
   );
 }
 
@@ -103,6 +105,41 @@ describe('PerlDebugConfigurationProvider', () => {
       expect(config.program).toBe('${file}');
 
       vscode.window.activeTextEditor = undefined;
+    });
+
+    test('fills in the same defaults for a perl5 alias editor (#7699)', () => {
+      const vscode = require('vscode');
+      vscode.window.activeTextEditor = {
+        document: { languageId: 'perl5', uri: { fsPath: '/test.pl' } },
+      };
+
+      const config = asDebugConfiguration({});
+      provider.resolveDebugConfiguration(undefined, config);
+
+      expect(config.type).toBe('perl');
+      expect(config.name).toBe('Launch Perl');
+      expect(config.request).toBe('launch');
+      expect(config.program).toBe('${file}');
+
+      vscode.window.activeTextEditor = undefined;
+    });
+
+    test('rewrites an explicit perl5 alias type onto the contributed perl debugger (#7699)', () => {
+      // Only `perl` is a contributed debugger, and only its contributor may
+      // register its descriptor factory: a `type: perl5` configuration must
+      // resolve to `perl` here, before VS Code looks the debugger up.
+      const config = asDebugConfiguration({
+        type: 'perl5',
+        request: 'launch',
+        name: 'Alias Debug',
+        program: '/my/script.pl',
+      });
+      provider.resolveDebugConfiguration(undefined, config);
+
+      expect(config.type).toBe('perl');
+      expect(config.request).toBe('launch');
+      expect(config.name).toBe('Alias Debug');
+      expect(config.program).toBe('/my/script.pl');
     });
 
     test('does not modify config with existing type/request/name', () => {
@@ -178,7 +215,7 @@ describe('PerlDebugConfigurationProvider', () => {
       expect((configs as vscode.DebugConfiguration[]).length).toBeGreaterThanOrEqual(3);
     });
 
-    test('includes launch, attach by TCP, and attach by PID templates', () => {
+    test('includes launch and attach-by-TCP templates, and no PID template (#8109)', () => {
       const configs = provider.provideDebugConfigurations(undefined) as vscode.DebugConfiguration[];
 
       const hasLaunch = configs.some((c) => c.request === 'launch');
@@ -187,7 +224,9 @@ describe('PerlDebugConfigurationProvider', () => {
 
       expect(hasLaunch).toBe(true);
       expect(hasTCPAttach).toBe(true);
-      expect(hasPIDAttach).toBe(true);
+      // #8109: the adapter refuses processId attach fail-closed, so no
+      // template may advertise it.
+      expect(hasPIDAttach).toBe(false);
     });
 
     test('all configurations have type "perl"', () => {
@@ -710,6 +749,35 @@ describe('PerlDebugAdapterDescriptorFactory', () => {
     expect(result.args).toEqual([]);
   });
 
+  test('descriptor forwards the session workspace folder as the trusted root', () => {
+    const binDir = managedNamespaceDir(tmpDir, hostManagedCompatibilityKeys()[0]!)!;
+    fs.mkdirSync(binDir, { recursive: true });
+    const dapName = process.platform === 'win32' ? 'perl-dap.exe' : 'perl-dap';
+    const dapPath = path.join(binDir, dapName);
+    fs.writeFileSync(dapPath, '#!/bin/sh\necho ok');
+    if (process.platform !== 'win32') {
+      fs.chmodSync(dapPath, 0o755);
+    }
+
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'dap-ws-'));
+    try {
+      const ctx = makeContext(tmpDir);
+      const factory = new PerlDebugAdapterDescriptorFactory(ctx);
+      const session = {
+        configuration: { request: 'launch', program: path.join(workspace, 'x.pl') },
+        workspaceFolder: { uri: { fsPath: workspace } },
+      };
+      const result = factory.createDebugAdapterDescriptor(
+        session as unknown as vscode.DebugSession,
+        undefined,
+      ) as vscode.DebugAdapterExecutable;
+
+      expect(result.args).toEqual(['--trusted-root', fs.realpathSync(workspace)]);
+    } finally {
+      fs.rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
   // Mutation-think: if the guard at the top of createDebugAdapterDescriptor
   // were removed (or demoted to a warning that still spawns native), each case
   // below would return a DebugAdapterExecutable instead of undefined and fail
@@ -1119,6 +1187,36 @@ describe('buildDapExecutableArgs', () => {
     expect(buildDapExecutableArgs({ request: 'launch', program: '/x.pl' })).toEqual([]);
   });
 
+  test('native editor sessions receive host-owned workspace authority', () => {
+    expect(buildDapExecutableArgs({ request: 'launch', program: '/x.pl' }, '/workspace')).toEqual([
+      '--trusted-root',
+      '/workspace',
+    ]);
+  });
+
+  test('a symlinked workspace root is canonicalized before handoff', () => {
+    const real = fs.mkdtempSync(path.join(os.tmpdir(), 'dap-real-'));
+    const link = `${real}-link`;
+    try {
+      fs.symlinkSync(real, link, 'dir');
+    } catch {
+      // Windows CI without symlink privilege cannot create the link; the
+      // fallback path (unresolvable input passes through) is covered below.
+      expect(canonicalizeWorkspaceRoot(`${real}-missing`)).toBe(`${real}-missing`);
+      return;
+    }
+    try {
+      expect(canonicalizeWorkspaceRoot(link)).toBe(fs.realpathSync(real));
+      expect(buildDapExecutableArgs({ request: 'launch' }, link)).toEqual([
+        '--trusted-root',
+        fs.realpathSync(real),
+      ]);
+    } finally {
+      fs.rmSync(link, { recursive: true, force: true });
+      fs.rmSync(real, { recursive: true, force: true });
+    }
+  });
+
   test('never emits an editor --socket or --port flag', () => {
     const configs: Array<Record<string, unknown> | undefined> = [
       undefined,
@@ -1206,6 +1304,24 @@ describe('offerDebugConfigOnFirstPerlOpen', () => {
     const doc = { languageId: 'perl' };
     await offerDebugConfigOnFirstPerlOpen(doc as vscode.TextDocument);
     expect(vscode.window.showInformationMessage).not.toHaveBeenCalled();
+  });
+
+  test('shows the same onboarding prompt for a perl5 alias document (#7699)', async () => {
+    // Runs before any test that trips the once-per-session prompt flag, so the
+    // alias itself must pass the language gate for the prompt to appear.
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'onboard-perl5-'));
+    try {
+      vscode.workspace.workspaceFolders = [{ uri: { fsPath: tmpDir }, name: 'test' }];
+      const doc = { languageId: 'perl5' };
+      await offerDebugConfigOnFirstPerlOpen(doc as vscode.TextDocument);
+      expect(vscode.window.showInformationMessage).toHaveBeenCalledWith(
+        expect.stringContaining('debug configuration'),
+        expect.any(String),
+        expect.any(String),
+      );
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
   });
 
   test('shows onboarding prompt for perl document in workspace without launch.json', async () => {

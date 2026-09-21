@@ -10,10 +10,10 @@ impl<'a> Parser<'a> {
             // Check for UnknownRest token (lexer budget exceeded)
             if matches!(self.peek_kind(), Some(TokenKind::UnknownRest)) {
                 let t = self.consume_token()?;
-                statements.push(Node::new(
+                statements.push(self.charge_node(
                     NodeKind::UnknownRest,
                     SourceLocation { start: t.start(), end: t.end() },
-                ));
+                )?);
                 // The truncated program still parses "successfully": record
                 // the terminal cause at this exact branch so the Ok path of
                 // `parse_with_recovery` cannot report a clean completion for
@@ -31,19 +31,26 @@ impl<'a> Parser<'a> {
                     // `DoWhileTrailingBlock` joins them because the trailing
                     // `{` has no recovery that stays honest about source that
                     // real `perl` refuses to compile (#15649).
+                    // `CStyleForContinueBlock` joins them for the same reason
+                    // on C-style `for` (#16296).
+                    // `QualifiedLoopControlLabel` joins them for the same
+                    // reason on package-qualified loop labels (#16296).
                     if matches!(
                         e,
                         ParseError::RecursionLimit
                             | ParseError::RecursionDepthExhausted { .. }
+                            | ParseError::CoreBudgetExhausted { .. }
                             | ParseError::NestingTooDeep { .. }
                             | ParseError::Cancelled
                             | ParseError::DoWhileTrailingBlock { .. }
+                            | ParseError::CStyleForContinueBlock { .. }
+                            | ParseError::QualifiedLoopControlLabel { .. }
                     ) {
                         return Err(e);
                     }
 
                     // Record the actual error
-                    self.errors.push(e.clone());
+                    self.record_error(e.clone());
 
                     // Create error node for failed statement
                     let error_location = self.current_position();
@@ -69,7 +76,7 @@ impl<'a> Parser<'a> {
         }
 
         let end = self.previous_position();
-        Ok(Node::new(NodeKind::Program { statements }, SourceLocation { start, end }))
+        self.charge_node(NodeKind::Program { statements }, SourceLocation { start, end })
     }
 
     /// Parse a single statement
@@ -133,7 +140,10 @@ impl<'a> Parser<'a> {
                 expr = self.parse_word_or_expr(expr)?;
                 // Wrap anonymous subroutines in expression statements
                 let location = expr.location;
-                Node::new(NodeKind::ExpressionStatement { expression: Box::new(expr) }, location)
+                self.charge_node(
+                    NodeKind::ExpressionStatement { expression: Box::new(expr) },
+                    location,
+                )?
             } else {
                 // Named subroutines are statements by themselves
                 sub_node
@@ -173,10 +183,10 @@ impl<'a> Parser<'a> {
             let token = self.consume_token()?;
             self.mark_not_stmt_start();
             // Produce a String node (autoquoting) and continue as an expression statement
-            let key_node = Node::new(
+            let key_node = self.charge_node(
                 NodeKind::String { value: token.text.to_string(), interpolated: false },
                 SourceLocation { start: token.start(), end: token.end() },
-            );
+            )?;
             // Now parse the rest of the expression (=> value, more pairs, etc.)
             // Re-enter the comma parser with the key already consumed
             let mut stmt = self.finish_expression_from(key_node)?;
@@ -223,10 +233,10 @@ impl<'a> Parser<'a> {
                     let pos = self.current_position();
                     self.consume_token()?;
                     // Return an empty block as a no-op placeholder
-                    return Ok(Node::new(
+                    return self.charge_node(
                         NodeKind::Block { statements: vec![] },
                         SourceLocation { start: pos, end: pos },
-                    ));
+                    );
                 }
 
                 // Variable declarations (`my $x`, `our @y`, ...) and scoped sub declarations
@@ -240,7 +250,7 @@ impl<'a> Parser<'a> {
                         if let NodeKind::Subroutine { declarator, name, .. } = &mut sub_node.kind {
                             *declarator = Some(decl_token.text.to_string());
                             if name.is_none() {
-                                self.errors.push(ParseError::syntax(
+                                self.record_error(ParseError::syntax(
                                     "Expected subroutine name after scoped declarator",
                                     decl_token.start(),
                                 ));
@@ -278,7 +288,7 @@ impl<'a> Parser<'a> {
                     if self.peek_kind() == Some(TokenKind::FatArrow) {
                         let variable = match decl.into_parts() {
                             (NodeKind::VariableDeclaration { variable, .. }, _) => *variable,
-                            (kind, location) => Node::new(kind, location),
+                            (kind, location) => self.charge_node(kind, location)?,
                         };
                         let call_start = variable.location.start;
                         let mut args = vec![variable];
@@ -301,10 +311,10 @@ impl<'a> Parser<'a> {
                         }
 
                         let end = args.last().map(|arg| arg.location.end).unwrap_or(call_start);
-                        let call = Node::new(
+                        let call = self.charge_node(
                             NodeKind::FunctionCall { name: "field".to_string(), args },
                             SourceLocation { start: call_start, end },
-                        );
+                        )?;
                         Ok(self.parse_word_or_expr(call)?)
                     } else {
                         Ok(self.parse_word_or_expr(decl)?)
@@ -345,6 +355,20 @@ impl<'a> Parser<'a> {
                 // Loop control — next/last/redo can be followed by a word operator at statement level,
                 // e.g. `last and die` means `(last) and (die)`.
                 TokenKind::Next | TokenKind::Last | TokenKind::Redo => {
+                    let ctrl = self.parse_loop_control()?;
+                    Ok(self.parse_word_or_expr(ctrl)?)
+                }
+
+                // `continue` at statement level is the when-block fall-through op
+                // (e.g. `given ($x) { when (1) { ...; continue } }`). It belongs
+                // with the loop-control siblings, but the LeftBrace guard keeps
+                // the post-loop `continue { BLOCK }` form (consumed by the
+                // surrounding while/until/for/foreach parser) from being
+                // misrouted into a labeled loop-control node.
+                TokenKind::Continue
+                    if self.tokens.peek_second().ok().map(|t| t.kind())
+                        != Some(TokenKind::LeftBrace) =>
+                {
                     let ctrl = self.parse_loop_control()?;
                     Ok(self.parse_word_or_expr(ctrl)?)
                 }
@@ -399,7 +423,10 @@ impl<'a> Parser<'a> {
                         .map(|t| t.kind() == TokenKind::Colon)
                         .unwrap_or(false) =>
                 {
-                    self.parse_keyword_as_label()
+                    // The labeled body owns its own terminator (as in
+                    // `parse_labeled_statement`); falling through would
+                    // re-check the following statement as residue (#13489).
+                    return self.parse_keyword_as_label();
                 }
                 TokenKind::Begin
                 | TokenKind::End
@@ -434,7 +461,8 @@ impl<'a> Parser<'a> {
                         .map(|t| t.kind() == TokenKind::Colon)
                         .unwrap_or(false) =>
                 {
-                    self.parse_keyword_as_label()
+                    // Same terminator ownership as above (#13489).
+                    return self.parse_keyword_as_label();
                 }
 
                 // Data sections
@@ -459,10 +487,10 @@ impl<'a> Parser<'a> {
                         // followed by postfix arrow operators.
                         let chained = self.parse_postfix_chain(block)?;
                         let loc = chained.location;
-                        Ok(Node::new(
+                        self.charge_node(
                             NodeKind::ExpressionStatement { expression: Box::new(chained) },
                             loc,
-                        ))
+                        )
                     } else {
                         Ok(block)
                     }
@@ -592,6 +620,13 @@ impl<'a> Parser<'a> {
             return Ok(());
         }
 
+        // The command-line fixture models `perl -ne 'print;'` as `-ne print;`.
+        // Only that known wrapper/body boundary is exempt: an arbitrary unary
+        // `-ne` expression must still enter ordinary residue classification.
+        if self.is_command_line_option_wrapper(stmt) {
+            return Ok(());
+        }
+
         // `None` is end of token stream; `RightBrace` closes the enclosing
         // block; `DataMarker` is `__END__`/`__DATA__`, which ends the program
         // text exactly like EOF — `1\n__END__\n\n=head1 …` is the idiomatic
@@ -681,36 +716,52 @@ impl<'a> Parser<'a> {
             }
         }
 
-        // Only report when the leftover token begins a later line.
-        //
-        // Reaching here mid-line means the statement stopped short of its own
-        // end — the parser did not consume a construct it should have. Three
-        // such gaps exist in this repository's own corpus today (`no warnings
-        // qw(...)`, the `x=` repetition-assignment operator, and `method NAME
-        // {...}` in a class body), and reporting a missing `;` for them would
-        // reject valid Perl to describe a defect that is not the user's.
-        //
-        // A statement terminator the *user* omitted separates two statements
-        // written on different lines, which is also the only shape `perl`
-        // itself reports this way. Staying inside that shape trades some
-        // false negatives — `my $x = 1 print "hi";` on one line is missed —
-        // for no false positives, which is the correct direction for a check
-        // that gates a release.
-        if !self.line_break_precedes_current_token() {
+        // The contextual infix owner distinguishes an invalid operand from a
+        // continuation it cannot parse. Do not turn its unsupported operand
+        // forms into fabricated syntax errors, or let an invalid operand
+        // masquerade as a second clean statement.
+        if self.peek_kind() == Some(TokenKind::Identifier)
+            && self.tokens.peek().is_ok_and(|token| token.text.as_ref() == "x")
+            && self.repetition_rhs_disposition()? != RepetitionRhsDisposition::InvalidOperand
+        {
             return Ok(());
         }
 
-        let location = self.current_position();
-        self.errors.push(ParseError::Recovered {
+        // All legal-continuation and known-unsupported boundaries return
+        // above. The remaining token is therefore the production route's
+        // first unconsumed token: classify its boundary explicitly instead of
+        // allowing a clean parse to hide it. The line-break check only chooses
+        // between two already-qualified residual causes; it is not the sole
+        // evidence that a statement stopped.
+        self.record_statement_residual()
+    }
+
+    /// Record the first token left after a statement route stopped.
+    ///
+    /// The structural guards in [`Self::finish_statement_terminator`] have
+    /// already excluded EOF, legal expression continuations, known parser
+    /// boundaries, and heredoc bodies. At this point a same-line token is
+    /// unexpected residue, while a token separated by a newline preserves the
+    /// existing inferred-semicolon contract. Keeping the token start as the
+    /// diagnostic location makes the recovery deterministic and actionable.
+    fn record_statement_residual(&mut self) -> ParseResult<()> {
+        let first_unconsumed_token = self.tokens.peek()?.start();
+        let kind = if self.line_break_precedes_current_token() {
+            RecoveryKind::InferredSemicolon
+        } else {
+            RecoveryKind::UnexpectedSameLineResidue
+        };
+
+        self.record_error(ParseError::Recovered {
             site: RecoverySite::Statement,
-            kind: RecoveryKind::InferredSemicolon,
-            location,
+            kind,
+            location: first_unconsumed_token,
         });
         Ok(())
     }
 
-    /// Whether only whitespace containing at least one newline separates the
-    /// previous token from the one the parser is positioned on.
+    /// Whether a line break belongs to the continuation that reaches the
+    /// current token.
     ///
     /// Scans the raw source backwards rather than trusting
     /// `previous_position()`. `last_end_position` is only updated by
@@ -719,13 +770,57 @@ impl<'a> Parser<'a> {
     /// — on `my $x = 1` it sits at the end of `$x`, not of `1`. A window keyed
     /// on it is wider than the actual gap and can contain a newline that is not
     /// between the statement and the leftover token (found in review, #5503).
+    /// Word operators need one extra step: the expression parser may already
+    /// have consumed `or`/`and`/`xor`, leaving the right-hand token current, as
+    /// in `copy(...)\n or goto fail_inner;`.
     fn line_break_precedes_current_token(&mut self) -> bool {
         let start = self.current_position().min(self.src_bytes.len());
-        self.src_bytes[..start]
-            .iter()
-            .rev()
-            .take_while(|byte| byte.is_ascii_whitespace())
-            .any(|&byte| byte == b'\n')
+        let mut cursor = start;
+        let mut whitespace_has_line_break = false;
+        while cursor > 0 && self.src_bytes[cursor - 1].is_ascii_whitespace() {
+            whitespace_has_line_break |= self.src_bytes[cursor - 1] == b'\n';
+            cursor -= 1;
+        }
+        if whitespace_has_line_break {
+            return true;
+        }
+
+        let word_end = cursor;
+        while cursor > 0 && self.src_bytes[cursor - 1].is_ascii_alphabetic() {
+            cursor -= 1;
+        }
+        let word = &self.src_bytes[cursor..word_end];
+        if matches!(word, b"or" | b"and" | b"xor") {
+            return self.whitespace_before_has_line_break(cursor);
+        }
+
+        // A control-flow RHS such as `or goto LABEL` consumes the word
+        // operator and `goto` before this terminator seam sees the label.
+        // Inspect that one additional word, but keep the newline requirement
+        // attached to the word operator itself.
+        if word == b"goto" {
+            while cursor > 0 && self.src_bytes[cursor - 1].is_ascii_whitespace() {
+                cursor -= 1;
+            }
+            let operator_end = cursor;
+            while cursor > 0 && self.src_bytes[cursor - 1].is_ascii_alphabetic() {
+                cursor -= 1;
+            }
+            if matches!(&self.src_bytes[cursor..operator_end], b"or" | b"and" | b"xor") {
+                return self.whitespace_before_has_line_break(cursor);
+            }
+        }
+        false
+    }
+
+    fn whitespace_before_has_line_break(&self, mut cursor: usize) -> bool {
+        while cursor > 0 && self.src_bytes[cursor - 1].is_ascii_whitespace() {
+            if self.src_bytes[cursor - 1] == b'\n' {
+                return true;
+            }
+            cursor -= 1;
+        }
+        false
     }
 
     /// Whether this token can never be the first token of a Perl statement.
@@ -800,6 +895,22 @@ impl<'a> Parser<'a> {
                     | TokenKind::RightBracket
             )
         )
+    }
+
+    fn is_command_line_option_wrapper(&mut self, stmt: &Node) -> bool {
+        let NodeKind::ExpressionStatement { expression } = &stmt.kind else {
+            return false;
+        };
+        let is_wrapper = matches!(
+            &expression.kind,
+            NodeKind::Unary { op, operand }
+                if op == "-"
+                    && matches!(&operand.kind, NodeKind::Identifier { name } if name == "ne")
+        );
+        is_wrapper
+            && self.tokens.peek().ok().is_some_and(|token| {
+                token.kind() == TokenKind::Identifier && token.text.as_ref() == "print"
+            })
     }
 
     /// Whether the subtree declares a heredoc.
@@ -1186,10 +1297,10 @@ impl<'a> Parser<'a> {
         expr = self.parse_word_or_expr(expr)?;
 
         let end = self.previous_position();
-        Ok(Node::new(
+        self.charge_node(
             NodeKind::ExpressionStatement { expression: Box::new(expr) },
             SourceLocation { start, end },
-        ))
+        )
     }
 
     fn parse_expression_statement(&mut self) -> ParseResult<Node> {
@@ -1227,10 +1338,10 @@ impl<'a> Parser<'a> {
         let end = expr.location.end.max(self.previous_position());
 
         // Wrap the expression in an ExpressionStatement node
-        Ok(Node::new(
+        self.charge_node(
             NodeKind::ExpressionStatement { expression: Box::new(expr) },
             SourceLocation { start, end },
-        ))
+        )
     }
 
     /// Continue parsing operators after a no-arg named-unary/nullary call.
@@ -1305,10 +1416,10 @@ impl<'a> Parser<'a> {
         let had_args = !args.is_empty();
         let end =
             args.last().map(|arg| arg.location.end).unwrap_or_else(|| self.previous_position());
-        let mut expr = Node::new(
+        let mut expr = self.charge_node(
             NodeKind::FunctionCall { name: func_name.to_string(), args },
             SourceLocation { start, end },
-        );
+        )?;
 
         // `pos` is an lvalue-capable builtin in Perl: `pos $s = value` and
         // `pos = value` assign to the current regex-match position.  After
@@ -1320,14 +1431,14 @@ impl<'a> Parser<'a> {
         {
             let rhs = self.parse_assignment()?;
             let assign_end = rhs.location.end;
-            expr = Node::new(
+            expr = self.charge_node(
                 NodeKind::Assignment {
                     lhs: Box::new(expr),
                     rhs: Box::new(rhs),
                     op: op.to_string(),
                 },
                 SourceLocation { start, end: assign_end },
-            );
+            )?;
             return self.parse_named_unary_statement_tail(expr);
         }
 
@@ -1429,10 +1540,10 @@ impl<'a> Parser<'a> {
                     }
 
                     let end = self.previous_position();
-                    Ok(Node::new(
+                    self.charge_node(
                         NodeKind::Tie { variable, package, args },
                         SourceLocation { start, end },
-                    ))
+                    )
                 }
                 "untie" => {
                     let start = token_start;
@@ -1442,7 +1553,7 @@ impl<'a> Parser<'a> {
                     let variable = Box::new(self.parse_assignment()?);
 
                     let end = self.previous_position();
-                    Ok(Node::new(NodeKind::Untie { variable }, SourceLocation { start, end }))
+                    self.charge_node(NodeKind::Untie { variable }, SourceLocation { start, end })
                 }
                 "new" => {
                     // Check for indirect constructor syntax
@@ -1501,10 +1612,10 @@ impl<'a> Parser<'a> {
                         | None => {
                             // No arguments - return as function call with empty args
                             let end = self.previous_position();
-                            Ok(Node::new(
+                            self.charge_node(
                                 NodeKind::FunctionCall { name: func_name.to_string(), args: vec![] },
                                 SourceLocation { start, end },
-                            ))
+                            )
                         }
                         _ => {
                             // `defined` and `ref` at statement start without parens use
@@ -1609,7 +1720,7 @@ impl<'a> Parser<'a> {
                                 if self.peek_kind() == Some(TokenKind::FatArrow)
                                     && let Some(arg) = args.last_mut()
                                 {
-                                    Self::auto_quote_bareword_before_fat_comma(arg);
+                                    self.auto_quote_bareword_before_fat_comma(arg)?;
                                 }
                                 if matches!(self.peek_kind(), Some(TokenKind::Comma) | Some(TokenKind::FatArrow)) {
                                     self.consume_token()?;
@@ -1636,7 +1747,7 @@ impl<'a> Parser<'a> {
                                     if self.peek_kind() == Some(TokenKind::FatArrow)
                                         && let Some(arg) = args.last_mut()
                                     {
-                                        Self::auto_quote_bareword_before_fat_comma(arg);
+                                        self.auto_quote_bareword_before_fat_comma(arg)?;
                                     }
                                     if matches!(self.peek_kind(), Some(TokenKind::Comma) | Some(TokenKind::FatArrow)) {
                                         self.consume_token()?;
@@ -1661,7 +1772,7 @@ impl<'a> Parser<'a> {
                                     if self.peek_kind() == Some(TokenKind::FatArrow)
                                         && let Some(arg) = args.last_mut()
                                     {
-                                        Self::auto_quote_bareword_before_fat_comma(arg);
+                                        self.auto_quote_bareword_before_fat_comma(arg)?;
                                     }
                                     self.consume_token()?; // consume comma or fat arrow
 
@@ -1694,10 +1805,10 @@ impl<'a> Parser<'a> {
                                 .last()
                                 .map(|arg| arg.location.end.max(self.previous_position()))
                                 .unwrap_or_else(|| self.previous_position());
-                            let call = Node::new(
+                            let call = self.charge_node(
                                 NodeKind::FunctionCall { name: func_name.to_string(), args },
                                 SourceLocation { start, end },
-                            );
+                            )?;
                             let call = self
                                 .parse_lvalue_builtin_assignment_tail(func_name.as_ref(), call)?;
                             self.parse_named_unary_statement_tail(call)
@@ -1778,14 +1889,14 @@ impl<'a> Parser<'a> {
         let start = statement.location.start;
         let end = condition.location.end;
 
-        Ok(Node::new(
+        self.charge_node(
             NodeKind::StatementModifier {
                 statement: Box::new(statement),
                 modifier,
                 condition: Box::new(condition),
             },
             SourceLocation { start, end },
-        ))
+        )
     }
 
     /// Parse a block statement
@@ -1814,7 +1925,10 @@ impl<'a> Parser<'a> {
                         // `DoWhileTrailingBlock` joins them: the trailing block
                         // after a do-while condition has no recovery that stays
                         // honest about source that real `perl` refuses to
-                        // compile (#15649).
+                        // compile (#15649). `CStyleForContinueBlock` joins them
+                        // for the same reason on C-style `for`, and
+                        // `QualifiedLoopControlLabel` on qualified labels
+                        // (#16296).
                         if matches!(
                             e,
                             ParseError::RecursionLimit
@@ -1822,12 +1936,14 @@ impl<'a> Parser<'a> {
                                 | ParseError::NestingTooDeep { .. }
                                 | ParseError::Cancelled
                                 | ParseError::DoWhileTrailingBlock { .. }
+                                | ParseError::CStyleForContinueBlock { .. }
+                                | ParseError::QualifiedLoopControlLabel { .. }
                         ) {
                             return Err(e);
                         }
 
                         // Record the actual error
-                        s.errors.push(e.clone());
+                        s.record_error(e.clone());
 
                         // Create error node for failed statement
                         let error_location = s.current_position();
@@ -1874,14 +1990,14 @@ impl<'a> Parser<'a> {
                 // than at end-of-input, so the squiggle lands on the brace the
                 // user needs to close and nested unclosed blocks are
                 // distinguishable (#5546).
-                s.errors.push(ParseError::syntax(
+                s.record_error(ParseError::syntax(
                     "Unclosed block: expected '}' but reached end of input",
                     start,
                 ));
             }
             let end = s.previous_position();
 
-            Ok(Node::new(NodeKind::Block { statements }, SourceLocation { start, end }))
+            s.charge_node(NodeKind::Block { statements }, SourceLocation { start, end })
         })
     }
 
@@ -1974,10 +2090,10 @@ impl<'a> Parser<'a> {
         let statement = self.parse_label_statement_body()?;
 
         let end = self.previous_position();
-        Ok(Node::new(
+        self.charge_node(
             NodeKind::LabeledStatement { label, statement },
             SourceLocation { start, end },
-        ))
+        )
     }
 
     /// Parse loop control statement (next, last, redo)
@@ -1991,6 +2107,9 @@ impl<'a> Parser<'a> {
         // Check for optional label.
         // Labels may be ordinary identifiers, and phase keywords are also
         // valid labels when used in labeled-loop control (`last CHECK`).
+        // `continue` never takes a label in real Perl (`continue OUTER` is a
+        // syntax error), so an identifier after it is rejected rather than
+        // attached (#16285).
         let label = if matches!(
             self.peek_kind(),
             Some(TokenKind::Identifier)
@@ -2000,14 +2119,46 @@ impl<'a> Parser<'a> {
                 | Some(TokenKind::Init)
                 | Some(TokenKind::Unitcheck)
         ) {
+            let label_pos = self.current_position();
             let label_token = self.consume_token()?;
+            // Labels are plain identifiers: a package-qualified name is a
+            // syntax error in real Perl. Fail outright rather than
+            // attaching it — the name would otherwise re-parse as a
+            // package call and silently accept what `perl` refuses (#16296).
+            if label_token.text.contains("::") {
+                return Err(ParseError::QualifiedLoopControlLabel { location: label_pos });
+            }
+            if op == "continue" {
+                return Err(ParseError::syntax("`continue` does not take a label", label_pos));
+            }
             Some(label_token.text.to_string())
         } else {
             None
         };
 
+        // An empty parenthesized invocation (`next()`, `continue()`) is one
+        // loop-control node in real Perl; anything else in the parens
+        // (`continue(1)`) or parens after a label (`last OUTER()`) is a
+        // syntax error (#16285).
+        if label.is_none() && self.peek_kind() == Some(TokenKind::LeftParen) {
+            self.consume_token()?;
+            if self.peek_kind() == Some(TokenKind::RightParen) {
+                self.consume_token()?;
+            } else {
+                return Err(ParseError::syntax(
+                    "loop-control operators take no arguments",
+                    self.current_position(),
+                ));
+            }
+        } else if self.peek_kind() == Some(TokenKind::LeftParen) {
+            return Err(ParseError::syntax(
+                "loop-control labels take no argument list",
+                self.current_position(),
+            ));
+        }
+
         let end = self.previous_position();
-        Ok(Node::new(NodeKind::LoopControl { op, label }, SourceLocation { start, end }))
+        self.charge_node(NodeKind::LoopControl { op, label }, SourceLocation { start, end })
     }
 
     /// Parse a phase-block keyword token used as a statement label.
@@ -2031,19 +2182,22 @@ impl<'a> Parser<'a> {
         let statement = self.parse_label_statement_body()?;
 
         let end = self.previous_position();
-        Ok(Node::new(
+        self.charge_node(
             NodeKind::LabeledStatement { label, statement },
             SourceLocation { start, end },
-        ))
+        )
     }
 
     fn parse_label_statement_body(&mut self) -> ParseResult<Box<Node>> {
         if matches!(self.peek_kind(), Some(TokenKind::RightBrace) | Some(TokenKind::Eof)) {
             let pos = self.current_position();
-            return Ok(Box::new(Node::new(
+            // Charged before the enclosing node so the charge order matches
+            // the original construction order.
+            let charged_operand = self.charge_node(
                 NodeKind::Block { statements: Vec::new() },
                 SourceLocation { start: pos, end: pos },
-            )));
+            )?;
+            return Ok(Box::new(charged_operand));
         }
 
         Ok(Box::new(self.parse_statement()?))

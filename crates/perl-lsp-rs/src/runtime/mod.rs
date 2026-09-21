@@ -56,6 +56,7 @@ mod text_sync;
 /// `PERL_LSP_TIMING` phase-1 instrumentation sink (opt-in span timings).
 pub(crate) mod timing;
 mod types;
+pub(crate) mod v0_18_text_sync_envelope;
 mod window;
 mod workspace;
 mod workspace_folder;
@@ -92,8 +93,8 @@ use perl_lsp_rs_core::tooling::performance::SymbolIndex;
 use perl_parser::{
     Parser,
     ast::{Node, NodeKind},
-    declaration::ParentMap,
 };
+use perl_semantic_analyzer::analysis::declaration::ParentMap;
 
 #[cfg(any(test, feature = "expose_lsp_test_api"))]
 pub(crate) struct WorkspaceTopologyTransitionGate {
@@ -187,6 +188,9 @@ pub struct LspServer {
     initialize_requested: AtomicBool,
     /// Whether the server is initialized
     initialized: AtomicBool,
+    /// Server-owned coordinate authority, published only after initialize succeeds.
+    pub(crate) position_encoding_session_context:
+        Mutex<Option<lifecycle::position_encoding::PositionEncodingSessionContext>>,
     /// Whether shutdown was received (for LSP-compliant exit handling)
     shutdown_received: AtomicBool,
     /// Pending `window/logMessage` text to emit once the client has sent the
@@ -289,6 +293,12 @@ pub struct LspServer {
     advertised_features: Mutex<crate::protocol::capabilities::AdvertisedFeatures>,
     /// Canonical feature IDs emitted by the most recent initialize response.
     advertised_feature_ids: Mutex<Vec<&'static str>>,
+    /// Accepted text-sync session contract plus the digest of the exact
+    /// `InitializeResult` built from it (#9378). `None` until initialize is
+    /// accepted; set exactly once, and never replaced or partially altered.
+    /// The immutable contract is the single authority for the wire sync kind
+    /// and position encoding — no other field may carry a competing value.
+    text_sync_session: Mutex<Option<lifecycle::session_contract::AcceptedTextSyncSession>>,
     /// Client supports pull diagnostics
     client_supports_pull_diags: Arc<AtomicBool>,
     /// Workspace configuration for module resolution

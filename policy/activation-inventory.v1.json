@@ -17,8 +17,8 @@
       "rule": "cargo-test-features",
       "authority": "crates/*/Cargo.toml",
       "emits": "test_api",
-      "considered": 79,
-      "emitted": 26,
+      "considered": 80,
+      "emitted": 27,
       "not_seeded_reason": "a feature is seeded when its NAME declares test-only intent (test-*, expose_*, experimental-*, stress-tests, slow_tests, integration-test) or its USAGE proves it (at least one cfg(feature = \"...\") site, all under tests/ or benches/). Each row records which signal settled it. A feature with no cfg sites at all is not seeded by usage: an unused feature is neither shown to gate tests nor shown not to. A feature gating both production and test code is seeded only if its name declares the intent, since gating production code is what an exposed test API does"
     },
     {
@@ -49,8 +49,8 @@
       "rule": "gate-policy-gates",
       "authority": ".ci/gate-policy.yaml",
       "emits": "gate",
-      "considered": 87,
-      "emitted": 87,
+      "considered": 94,
+      "emitted": 94,
       "not_seeded_reason": "every entry under gates: is emitted; nothing is filtered"
     },
     {
@@ -632,6 +632,37 @@
         "authority": "crates/perl-lexer/Cargo.toml"
       },
       "owner": "perl-lexer",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "test_api by name: the feature's own spelling declares test-only intent"
+    },
+    {
+      "surface_id": "cargo-feature:perl-lsp-rs-core/test-instrumentation",
+      "class": "test_api",
+      "class_authority": {
+        "kind": "derived",
+        "authority": "crates/perl-lsp-rs-core/Cargo.toml",
+        "rule": "cargo-test-features"
+      },
+      "semantic_authority": "crates/perl-lsp-rs-core/Cargo.toml#features.test-instrumentation",
+      "consumers": [
+        "crates/perl-lsp-rs-core"
+      ],
+      "compile_profiles": [
+        "test-instrumentation"
+      ],
+      "registration": {
+        "state": "established",
+        "authority": "crates/perl-lsp-rs-core/Cargo.toml",
+        "detail": "[features] test-instrumentation = []"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": "crates/perl-lsp-rs-core/Cargo.toml"
+      },
+      "owner": "perl-lsp-rs-core",
       "promotion": {
         "state": "not_evaluated"
       },
@@ -2739,6 +2770,33 @@
       "notes": "Every workspace member has package-local context, an exemption, or tracked context debt (advisory; needs_context non-empty)"
     },
     {
+      "surface_id": "gate:agent_ledgers_validate",
+      "class": "gate",
+      "class_authority": {
+        "kind": "derived",
+        "authority": ".ci/gate-policy.yaml",
+        "rule": "gate-policy-gates"
+      },
+      "semantic_authority": ".ci/gate-policy.yaml#agent_ledgers_validate",
+      "consumers": [],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": ".ci/gate-policy.yaml",
+        "detail": "tier = \"merge_gate\"; required = true"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": ".ci/gate-policy.yaml"
+      },
+      "owner": "release/ci",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "Validate docs/agents/ledgers/*.jsonl against the agent-ledger contract"
+    },
+    {
       "surface_id": "gate:benchmarks",
       "class": "gate",
       "class_authority": {
@@ -2847,6 +2905,33 @@
       "notes": "Compile integration tests for ci-scope selected crates"
     },
     {
+      "surface_id": "gate:ci_subject_digest_oracle",
+      "class": "gate",
+      "class_authority": {
+        "kind": "derived",
+        "authority": ".ci/gate-policy.yaml",
+        "rule": "gate-policy-gates"
+      },
+      "semantic_authority": ".ci/gate-policy.yaml#ci_subject_digest_oracle",
+      "consumers": [],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": ".ci/gate-policy.yaml",
+        "detail": "tier = \"pr_fast\"; required = true"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": ".ci/gate-policy.yaml"
+      },
+      "owner": "release/ci",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "Focused immutable-subject digest-oracle proof (#13698): ci_subject owns the ci-subject.v1 receipt digest/envelope classification and its independent fixture oracle"
+    },
+    {
       "surface_id": "gate:clippy_core",
       "class": "gate",
       "class_authority": {
@@ -2952,7 +3037,34 @@
       "promotion": {
         "state": "not_evaluated"
       },
-      "notes": "Clippy --all-targets on the known-clean staged cohort (36/46 crates): required within the pr_fast runner for test/bench/example code in these crates (#11736)"
+      "notes": "Clippy --all-targets on the known-clean staged cohort (37/48 crates): required within the pr_fast runner for test/bench/example code in these crates (#11736)"
+    },
+    {
+      "surface_id": "gate:code_action_generation_ledger",
+      "class": "gate",
+      "class_authority": {
+        "kind": "derived",
+        "authority": ".ci/gate-policy.yaml",
+        "rule": "gate-policy-gates"
+      },
+      "semantic_authority": ".ci/gate-policy.yaml#code_action_generation_ledger",
+      "consumers": [],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": ".ci/gate-policy.yaml",
+        "detail": "tier = \"merge_gate\"; required = true"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": ".ci/gate-policy.yaml"
+      },
+      "owner": "release/ci",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "Validate policy/code-action-generation-ledger.toml against current code_actions.rs production anchors, stage order, and parity fixtures"
     },
     {
       "surface_id": "gate:common_corpus_clean",
@@ -3115,6 +3227,33 @@
         "state": "not_evaluated"
       },
       "notes": "Validate contracts/compiler/perl_compiler_proof_policy.v1.toml against the concept ledger and its generated status doc"
+    },
+    {
+      "surface_id": "gate:completion_candidate_ledger",
+      "class": "gate",
+      "class_authority": {
+        "kind": "derived",
+        "authority": ".ci/gate-policy.yaml",
+        "rule": "gate-policy-gates"
+      },
+      "semantic_authority": ".ci/gate-policy.yaml#completion_candidate_ledger",
+      "consumers": [],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": ".ci/gate-policy.yaml",
+        "detail": "tier = \"merge_gate\"; required = true"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": ".ci/gate-policy.yaml"
+      },
+      "owner": "release/ci",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "Reconcile policy/completion-candidate-producers.toml against the live completion surface: every producer rowed, no forbidden disposition, no post-finalizer append, and the audit digest plus generated projection still bound to current source"
     },
     {
       "surface_id": "gate:conflict_markers_staged",
@@ -3331,6 +3470,60 @@
         "state": "not_evaluated"
       },
       "notes": "Verify documentation builds without errors"
+    },
+    {
+      "surface_id": "gate:doctest_contract_proof",
+      "class": "gate",
+      "class_authority": {
+        "kind": "derived",
+        "authority": ".ci/gate-policy.yaml",
+        "rule": "gate-policy-gates"
+      },
+      "semantic_authority": ".ci/gate-policy.yaml#doctest_contract_proof",
+      "consumers": [],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": ".ci/gate-policy.yaml",
+        "detail": "tier = \"merge_gate\"; required = true"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": ".ci/gate-policy.yaml"
+      },
+      "owner": "release/ci",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "Execute doctests for the packages carrying compile_fail contracts, so negative type-level invariants are enforced rather than merely documented"
+    },
+    {
+      "surface_id": "gate:doctest_enforcement",
+      "class": "gate",
+      "class_authority": {
+        "kind": "derived",
+        "authority": ".ci/gate-policy.yaml",
+        "rule": "gate-policy-gates"
+      },
+      "semantic_authority": ".ci/gate-policy.yaml#doctest_enforcement",
+      "consumers": [],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": ".ci/gate-policy.yaml",
+        "detail": "tier = \"merge_gate\"; required = true"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": ".ci/gate-policy.yaml"
+      },
+      "owner": "release/ci",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "Ratchet: every compile_fail doctest contract must sit inside the doctest_contract_proof route (#13774)"
     },
     {
       "surface_id": "gate:fmt",
@@ -4681,6 +4874,33 @@
         "state": "not_evaluated"
       },
       "notes": "Semantic analysis, workspace, diagnostics, and refactoring library tests"
+    },
+    {
+      "surface_id": "gate:unit_control_plane_bins",
+      "class": "gate",
+      "class_authority": {
+        "kind": "derived",
+        "authority": ".ci/gate-policy.yaml",
+        "rule": "gate-policy-gates"
+      },
+      "semantic_authority": ".ci/gate-policy.yaml#unit_control_plane_bins",
+      "consumers": [],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": ".ci/gate-policy.yaml",
+        "detail": "tier = \"pr_fast\"; required = true"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": ".ci/gate-policy.yaml"
+      },
+      "owner": "release/ci",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "Focused control-plane owner proof (#13698): xtask bin unit tests for the gate runner, route plan/ci-scope, and workflow policy/trigger-lint owner modules (the generated-inventory and badge owners keep their proof in the broad tests cohort)"
     },
     {
       "surface_id": "gate:unit_core",

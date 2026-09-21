@@ -49,7 +49,20 @@ controlling_issue = "#10949"
 route_owner = "#10229"
 finalizer_owner = "#10914"
 outcome_owner = "#10230"
-source_digest = "sha256:7753fa3668a6869745bebe0b6ca807c20df5461cf1a9d9b1a856cd9773273dbb"
+# Re-audit 2026-09-17: #15803 landed a digest of its PR base, already stale at
+# its own merge tip. Zero commits touched the scan roots between that tip and
+# current main (surface digest a1182c1c... at both trees, 42 files), every
+# producer row validated unchanged against the discovered population, and
+# `graph` reproduced the projection byte-identically apart from the digest.
+# Re-anchor 2026-09-17: post-merge wave drifted the surface to 96ba9c0c...
+# (modifications only under the scan roots, no producer add/remove/re-channel,
+# scanned set unchanged at 42 files); projection diff is digest-only, `check`
+# passes.
+# Re-anchor 2026-09-17: #15808/#15812/#15790/#15818 landings drifted the
+# surface to 6307e3bd... (one non-producer helper plus tests added under the
+# scan roots, zero removals or re-channeling); projection diff is digest-only,
+# `check` passes.
+source_digest = "sha256:24f17ee6964d14bfce7a0372c738686b2697fb46972027c822bdae0419116f9c"
 
 [[delegations]]
 module = "dancer2"

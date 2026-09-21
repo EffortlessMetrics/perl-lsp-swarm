@@ -370,6 +370,8 @@ fn build_cases() -> Vec<(Node, &'static str, usize)> {
         (
             Node::new(
                 NodeKind::OptionalParameter {
+                    default_operator: "=".into(),
+                    default_operator_span: Default::default(),
                     variable: Box::new(leaf("var")),
                     default_value: Box::new(leaf("default")),
                 },
@@ -390,6 +392,7 @@ fn build_cases() -> Vec<(Node, &'static str, usize)> {
             // shape is used here to exercise default-value traversal.)
             Node::new(
                 NodeKind::NamedParameter {
+                    default_operator_span: Some(Default::default()),
                     variable: Box::new(leaf("var")),
                     external_name: "var".to_string(),
                     default_operator: Some("=".to_string()),
@@ -435,6 +438,7 @@ fn build_cases() -> Vec<(Node, &'static str, usize)> {
             "Goto",
             1,
         ),
+        (Node::new(NodeKind::TargetlessGoto {}, loc()), "TargetlessGoto", 0),
         (
             Node::new(
                 NodeKind::MethodCall {

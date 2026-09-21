@@ -44,8 +44,46 @@ use perl_diagnostics::codes::DiagnosticSeverity;
 ///   `s///ee`) and embedded immediate/deferred code blocks (`(?{ ... })`,
 ///   `(??{ ... })`) in regex patterns (`m//`, `qr//`, bare literals) (#9818)
 pub fn check_security(node: &Node, diagnostics: &mut Vec<Diagnostic>) {
-    walk_security_node(node, diagnostics, false);
-    check_sql_injection(node, diagnostics);
+    check_security_with_canonical_regex(node, diagnostics, &[]);
+}
+
+/// [`check_security`], minus the embedded-code findings already published from the
+/// parser-retained canonical regex analysis (#7024).
+///
+/// This walker reads the AST's `has_embedded_code` flag and can only report the
+/// whole regex node. The canonical projection reports the exact `(?{ ... })` block.
+/// When both run, the same execution risk would reach the client twice under one
+/// code, so the coarser row is dropped — but only where a canonical row actually
+/// covers it.
+///
+/// `canonical_embedded_code_spans` are the original-source spans the canonical
+/// projection published (see
+/// [`super::super::regex_canonical::embedded_code_spans`]). A record with
+/// unavailable geometry contributes no span, so its AST-flag finding survives: the
+/// point is to publish each finding once, never to publish it zero times.
+pub fn check_security_with_canonical_regex(
+    node: &Node,
+    diagnostics: &mut Vec<Diagnostic>,
+    canonical_embedded_code_spans: &[(usize, usize)],
+) {
+    let mut produced = Vec::new();
+    walk_security_node(node, &mut produced, false);
+    check_sql_injection(node, &mut produced);
+
+    if !canonical_embedded_code_spans.is_empty() {
+        let embedded_code = DiagnosticCode::SecurityEmbeddedRegexCode.as_str();
+        produced.retain(|diagnostic| {
+            if diagnostic.code.as_deref() != Some(embedded_code) {
+                return true;
+            }
+            let (start, end) = diagnostic.range;
+            !canonical_embedded_code_spans
+                .iter()
+                .any(|&(inner_start, inner_end)| start <= inner_start && inner_end <= end)
+        });
+    }
+
+    diagnostics.append(&mut produced);
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -227,7 +265,7 @@ fn walk_security_node(
             walk_security_node(variable, diagnostics, signal_shadowed);
             updated_shadowed
         }
-        NodeKind::OptionalParameter { variable, default_value } => {
+        NodeKind::OptionalParameter { variable, default_value, .. } => {
             walk_security_node(default_value, diagnostics, signal_shadowed);
             let updated_shadowed =
                 if shadows_signal_table(variable) { true } else { signal_shadowed };
@@ -413,6 +451,7 @@ fn walk_security_node(
         | NodeKind::Do { .. }
         | NodeKind::LoopControl { .. }
         | NodeKind::Goto { .. }
+        | NodeKind::TargetlessGoto { .. }
         | NodeKind::Prototype { .. }
         | NodeKind::MissingExpression
         | NodeKind::MissingStatement

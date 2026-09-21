@@ -206,6 +206,22 @@ pub const AST_NODE_GEOMETRY_FIELDS: &[AstGeometryField] = &[
         disposition: AstGeometryDisposition::SourceExact,
     },
     AstGeometryField {
+        kind_name: "OptionalParameter",
+        field: "default_operator_span",
+        shape: AstGeometryShape::Direct,
+        mapping: AstGeometryMapping::MapRange,
+        payload_role: Some(crate::AstPayloadPolicy::OperatorExactOrCanonical),
+        disposition: AstGeometryDisposition::SourceExact,
+    },
+    AstGeometryField {
+        kind_name: "NamedParameter",
+        field: "default_operator_span",
+        shape: AstGeometryShape::Optional,
+        mapping: AstGeometryMapping::MapRange,
+        payload_role: Some(crate::AstPayloadPolicy::OperatorExactOrCanonical),
+        disposition: AstGeometryDisposition::SourceExact,
+    },
+    AstGeometryField {
         kind_name: "Method",
         field: "name_span",
         shape: AstGeometryShape::Optional,
@@ -847,21 +863,32 @@ pub fn observe_geometry_fields(kind: &NodeKind) -> Vec<ObservedGeometryField> {
         NodeKind::Prototype { content: _ } => NONE,
         NodeKind::Signature { parameters: _ } => NONE,
         NodeKind::MandatoryParameter { variable: _ } => NONE,
-        NodeKind::OptionalParameter { variable: _, default_value: _ } => NONE,
+        NodeKind::OptionalParameter {
+            variable: _,
+            default_value: _,
+            default_operator: _,
+            default_operator_span: _,
+        } => vec![ObservedGeometryField {
+            field: "default_operator_span",
+            shape: AstGeometryShape::Direct,
+            occurrences: 1,
+        }],
         NodeKind::SlurpyParameter { variable: _ } => NONE,
         NodeKind::NamedParameter {
             variable: _,
             external_name: _,
             default_operator: _,
+            default_operator_span,
             default_value: _,
             required: _,
-        } => NONE,
+        } => optional_span("default_operator_span", default_operator_span.is_some()),
         NodeKind::Method { name: _, name_span, signature: _, attributes: _, body: _ } => {
             optional_span("name_span", name_span.is_some())
         }
         NodeKind::Return { value: _ } => NONE,
         NodeKind::LoopControl { op: _, label: _ } => NONE,
         NodeKind::Goto { target: _, form: _ } => NONE,
+        NodeKind::TargetlessGoto {} => NONE,
         NodeKind::MethodCall { object: _, method: _, args: _ } => NONE,
         NodeKind::FunctionCall { name: _, args: _ } => NONE,
         NodeKind::AmperCall { name: _, args: _ } => NONE,

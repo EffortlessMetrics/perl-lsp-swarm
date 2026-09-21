@@ -27,6 +27,7 @@ mod cli;
 mod commands;
 mod git_hooks;
 mod process;
+mod test_scope;
 
 use crate::cli::{Cli, CliCommand};
 use crate::commands::panic_test::{check_panic_test, check_panic_test_with_registry};
@@ -145,6 +146,7 @@ fn run() -> Result<i32> {
                 check_serial_test(&repo_root)?
             }
         }
+        CliCommand::CheckDoctestEnforcement => commands::doctest_enforcement::check(&repo_root)?,
         CliCommand::CheckPrintInLib => check_print_in_lib(&repo_root)?,
         CliCommand::CheckRegexStatic => check_regex_static(&repo_root)?,
         CliCommand::QuickCheck => cmd_quick_check(&repo_root)?,
@@ -2413,10 +2415,12 @@ fn cmd_check_unsafe_prod(repo_root: &Path) -> Result<i32> {
     let mut all_matches: Vec<String> = Vec::new();
     let mut bare_unsafe: Vec<String> = Vec::new();
 
-    for path in walk_rust_source_files_for_ci_checks(repo_root)? {
-        let rel = display_path(repo_root, &path);
-        let lines = read_lines(&path)?;
-        let test_start = first_cfg_test_line_number(&path).unwrap_or(usize::MAX);
+    let sources = production_source_files_for_ci_checks(repo_root)?;
+
+    for path in sources.iter() {
+        let rel = display_path(repo_root, path);
+        let lines = read_lines(path)?;
+        let test_start = first_cfg_test_line_number(path).unwrap_or(usize::MAX);
         for (idx, line) in lines.iter().enumerate() {
             let line_no = idx + 1;
             if line_no >= test_start {
@@ -2568,6 +2572,32 @@ pub(crate) fn walk_rust_source_files_for_ci_checks(repo_root: &Path) -> Result<V
     Ok(files)
 }
 
+/// Every walked file the compiler builds outside a test profile.
+///
+/// A file whose `#[cfg(test)]` sits on the parent's `mod` declaration carries no
+/// such line itself, so a per-file scan reads every line of it as production.
+/// That is where the 14 phantom `expect` sites in `final_surface_census.rs` came
+/// from, and what kept #13838 open for three weeks over a module that has never
+/// been in a non-test build.
+///
+/// Every production check goes through here, so this is the only place that
+/// answer is computed. Two of them used to compute it inline and two did not
+/// compute it at all; one seam means a new check inherits the right scope
+/// instead of choosing it.
+///
+/// The exclusion belongs here and not inside
+/// [`walk_rust_source_files_for_ci_checks`], although folding it in would be
+/// shorter. `test_only_source_files` decides a contested file by letting any
+/// production declaration reaching it win the tie, and a file dropped from the
+/// walk never reaches that rule — the walk feeds
+/// [`test_scope::test_only_source_files`] itself, so pre-filtering there would
+/// hand it a population it had already judged.
+pub(crate) fn production_source_files_for_ci_checks(repo_root: &Path) -> Result<Vec<PathBuf>> {
+    let walked = walk_rust_source_files_for_ci_checks(repo_root)?;
+    let test_only = crate::test_scope::test_only_source_files(&walked)?;
+    Ok(walked.into_iter().filter(|path| !test_only.contains(path)).collect())
+}
+
 fn cmd_check_unwraps_prod(repo_root: &Path) -> Result<i32> {
     let unwrap_re = Regex::new(r"\.unwrap\(|\.expect\(")?;
     let panic_re = Regex::new(r"(panic!\(|todo!\(|unimplemented!\(|unreachable!\()")?;
@@ -2575,10 +2605,12 @@ fn cmd_check_unwraps_prod(repo_root: &Path) -> Result<i32> {
     let mut unwrap_offenders = Vec::new();
     let mut panic_offenders = Vec::new();
 
-    for path in walk_rust_source_files_for_ci_checks(repo_root)? {
-        let rel = display_path(repo_root, &path);
-        let lines = read_lines(&path)?;
-        let test_start = first_cfg_test_line_number(&path).unwrap_or(usize::MAX);
+    let sources = production_source_files_for_ci_checks(repo_root)?;
+
+    for path in sources.iter() {
+        let rel = display_path(repo_root, path);
+        let lines = read_lines(path)?;
+        let test_start = first_cfg_test_line_number(path).unwrap_or(usize::MAX);
         for (index, line) in lines.iter().enumerate() {
             let line_no = index + 1;
             if line_no >= test_start {
@@ -3073,6 +3105,7 @@ fn collect_ignored_matches(crates_root: &Path, repo_root: &Path) -> Result<Vec<I
 #[cfg(test)]
 mod tests {
     use super::*;
+    use color_eyre::eyre::ensure;
 
     #[test]
     fn cargo_wrapper_keeps_cargo_args_before_test_harness_separator() {
@@ -3977,6 +4010,74 @@ mod tests {
              Violations found in:\n  {}",
             violations.join("\n  ")
         );
+    }
+
+    // ── the production seam, after #16251's resolver was removed (#13838) ──────
+
+    /// Builds a throwaway tree and returns its root. Named per test so parallel
+    /// runs cannot collide, and removed first so a previous run's leftovers
+    /// cannot decide the result.
+    ///
+    /// These two are #16251's walk-level controls, kept and repointed. They
+    /// asserted on `walk_rust_source_files_for_ci_checks` while that walk did
+    /// its own filtering; the filtering now lives in `test_scope`, so they
+    /// assert on the pair the scanners actually consume. The property under
+    /// test is unchanged.
+    fn cfg_test_fixture(name: &str) -> Result<PathBuf> {
+        let root = std::env::temp_dir().join(format!("pch_production_seam_{name}"));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root)?;
+        Ok(root)
+    }
+
+    /// The files the scanners treat as production: walked, then minus the
+    /// set `test_scope` resolves as test-only.
+    #[test]
+    fn the_production_seam_skips_a_nested_guarded_module() -> Result<()> {
+        let root = cfg_test_fixture("walk_nested")?;
+        let src = root.join("crates").join("demo").join("src");
+        let inventory = src.join("inventory");
+        std::fs::create_dir_all(&inventory)?;
+        std::fs::write(src.join("lib.rs"), "#[cfg(test)]\nmod inventory;\nmod real;\n")?;
+        std::fs::write(src.join("inventory.rs"), "mod rows;\n")?;
+        std::fs::write(inventory.join("rows.rs"), "fn f() {}\n")?;
+        std::fs::write(src.join("real.rs"), "fn f() {}\n")?;
+
+        let production = production_source_files_for_ci_checks(&root)?;
+        ensure!(
+            !production.iter().any(|path| path.ends_with("rows.rs")),
+            "a nested test-only module must not be scanned as production; got {production:?}"
+        );
+        ensure!(
+            production.iter().any(|path| path.ends_with("real.rs")),
+            "its unguarded sibling must still be scanned; got {production:?}"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+        Ok(())
+    }
+
+    #[test]
+    fn the_production_seam_skips_a_parent_guarded_module() -> Result<()> {
+        let root = cfg_test_fixture("walk_parent")?;
+        let src = root.join("crates").join("demo").join("src");
+        std::fs::create_dir_all(&src)?;
+        std::fs::write(src.join("lib.rs"), "#[cfg(test)]\nmod census;\nmod real;\n")?;
+        std::fs::write(src.join("census.rs"), "fn f() { let _ = x.expect(\"boom\"); }\n")?;
+        std::fs::write(src.join("real.rs"), "fn f() {}\n")?;
+
+        let production = production_source_files_for_ci_checks(&root)?;
+        ensure!(
+            !production.iter().any(|path| path.ends_with("census.rs")),
+            "a module the parent guards must not be scanned as production; got {production:?}"
+        );
+        ensure!(
+            production.iter().any(|path| path.ends_with("real.rs")),
+            "its unguarded sibling must still be scanned; got {production:?}"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+        Ok(())
     }
 
     // ── first_cfg_test_line_number tests (#2894) ───────────────────────────────

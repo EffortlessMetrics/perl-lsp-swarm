@@ -12,6 +12,78 @@ required = true
 contract_role = "required-workflow-shape"
 
 [[check]]
+name = "Perl LSP Rust Small Result"
+workflow = ".github/workflows/em-ci-routed-rust.yml"
+required = true
+contract_role = "required-workflow-shape"
+
+  # This gate has no `push` trigger, so it produces no verdict on `main`. A
+  # lane that is red at merge stays red silently, because nothing re-measures
+  # it on the branch it was merged into. Measured on #16168: this context is
+  # carried by 0 of the last 60 landed commits. That is a real gap, not a
+  # shape this workflow needs; closing it is a separate decision about CI cost
+  # on every main push, so it is recorded here as a remainder rather than
+  # fixed in passing.
+  [[check.exemption]]
+  clause = "push-targets-master"
+  status = "remainder"
+  reason = "No push trigger, so the routed Rust aggregate never runs on main and has no baseline there."
+  tracking = "16168"
+
+[[check]]
+name = "ripr+ New Gap Gate"
+workflow = ".github/workflows/ripr.yml"
+required = true
+contract_role = "required-workflow-shape"
+
+  # Deliberate and argued in the workflow itself: RIPR is evidence production,
+  # and a cancelled run becomes a false red on a required context because the
+  # aggregator has no branch for a cancelled child (#16087). The cost of the
+  # current implementation is measured in #16141 — a superseded head's run
+  # holds the concurrency slot while the current head waits — so the exemption
+  # is accepted for the property, not for the implementation.
+  [[check.exemption]]
+  clause = "event-aware-concurrency"
+  status = "accepted"
+  reason = "cancel-in-progress is false so a cancelled run cannot become a false red on a required context; the queueing cost is tracked in #16141."
+  tracking = "16141"
+
+[[check]]
+name = "validate-title"
+workflow = ".github/workflows/pr-title-check.yml"
+required = true
+contract_role = "required-workflow-shape"
+
+  # A metadata-only check. It reads the PR title through the API and never
+  # checks out or executes candidate contents, which is what lets it run on
+  # `pull_request_target` with write permission without crossing the trust
+  # boundary. The contract's remaining clauses assume a workflow that builds
+  # the candidate; they are the wrong requirements here rather than unmet ones.
+  [[check.exemption]]
+  clause = "pull-request-trigger"
+  status = "accepted"
+  reason = "pull_request_target is required to label and check fork PRs; the job never checks out candidate contents."
+  tracking = "16164"
+
+  [[check.exemption]]
+  clause = "merge-group-trigger"
+  status = "accepted"
+  reason = "A merge queue entry has no PR title to validate; the title was already validated on the PR."
+  tracking = "16164"
+
+  [[check.exemption]]
+  clause = "push-targets-master"
+  status = "accepted"
+  reason = "A push to main has no PR title; the check is meaningless outside a pull request."
+  tracking = "16164"
+
+  [[check.exemption]]
+  clause = "event-aware-concurrency"
+  status = "accepted"
+  reason = "A five-minute metadata job with no runner cost worth cancelling; the clause exists to stop long candidate builds stacking up."
+  tracking = "16164"
+
+[[check]]
 name = "Methodology Gate"
 workflow = ".github/workflows/methodology-gate.yml"
 required = false
@@ -20,6 +92,12 @@ contract_role = "advisory-workflow-shape"
 [[check]]
 name = "Semantic Close Containment"
 workflow = ".github/workflows/semantic-close-containment.yml"
+required = false
+contract_role = "advisory-workflow-shape"
+
+[[check]]
+name = "Authority Transfer Review"
+workflow = ".github/workflows/authority-transfer-review.yml"
 required = false
 contract_role = "advisory-workflow-shape"
 
@@ -90,7 +168,8 @@ required = true
 policy_role = "required"
 applicability = "conditional"
 enforcement = "github-ruleset"
-reason = "Live main ruleset (id 16664791) requires all targets to compile before merge; workflow prerequisites control when the job is selected."
+ruleset_integration_id = 15368
+reason = "Live main ruleset (id 16664791) requires all targets to compile before merge, bound to the GitHub Actions integration (check-run read-back on main PR heads observed app.id 15368 for this context); workflow prerequisites control when the job is selected (#15348)."
 
 [[checks]]
 name = "Conflict marker check"
@@ -103,7 +182,8 @@ required = true
 policy_role = "required"
 applicability = "conditional"
 enforcement = "github-ruleset"
-reason = "Live main ruleset (id 16664791) requires the conflict-marker scan job before merge; workflow prerequisites control when the job is selected."
+ruleset_integration_id = 15368
+reason = "Live main ruleset (id 16664791) requires the conflict-marker scan job before merge, bound to the GitHub Actions integration (check-run read-back on main PR heads observed app.id 15368 for this context); workflow prerequisites control when the job is selected (#15348)."
 
 [[checks]]
 name = "validate-title"
@@ -116,7 +196,8 @@ required = true
 policy_role = "required"
 applicability = "always-or-scoped-noop"
 enforcement = "github-ruleset"
-reason = "Live main ruleset (id 16664791) requires PR title validation before merge."
+ruleset_integration_id = 15368
+reason = "Live main ruleset (id 16664791) requires PR title validation before merge, bound to the GitHub Actions integration (check-run read-back on main PR heads observed app.id 15368 for this context) (#15348)."
 
 [[checks]]
 name = "Rust formatting"
@@ -231,6 +312,19 @@ policy_role = "advisory"
 applicability = "always-or-scoped-noop"
 enforcement = "neither"
 reason = "CP00 containment guard (#10413) fails internally contradictory terminal close relations and NOT_PROVEN evidence before semantic evaluation; required-promotion review stays under #10168."
+
+[[checks]]
+name = "Authority Transfer Review"
+producer = "repository-job"
+workflow = ".github/workflows/authority-transfer-review.yml"
+job = "authority-transfer-review"
+workflow_result = "propagate"
+events = ["pull_request_target", "workflow_dispatch"]
+required = false
+policy_role = "advisory"
+applicability = "always-or-scoped-noop"
+enforcement = "neither"
+reason = "AR02 advisory exact-head review-context check (#11795): reports PASS_NOT_APPLICABLE or typed non-green verdicts per governed #11793 surface row; required-promotion review stays under #11796."
 
 [[checks]]
 name = "Public API Surface (facade PR)"

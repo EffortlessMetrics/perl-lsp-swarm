@@ -521,140 +521,232 @@ impl PullDiagnosticsProvider {
         context: &PullDiagnosticsContext,
         doc_state: Option<&DocumentState>,
     ) -> PendingPullDiagnostics {
+        // Reuse `doc_state`'s already-published parse snapshot instead of
+        // re-parsing when it demonstrably describes this exact `content`
+        // (#7286): same generation's AST, parse errors, regex analysis, and
+        // (if already built) diagnostic analysis, so a diagnostic evaluation
+        // over unchanged text doesn't pay a second parse or duplicate the
+        // pragma/scope/symbol passes. The reuse gate is exact string
+        // equality on the full buffer -- deliberately not a hash, not a
+        // generation number -- so any actual divergence between `doc_state`
+        // and `content` (a stale caller, a race) falls back to the safe
+        // re-parse path below rather than risking a wrong reuse.
+        if let Some(state) = doc_state
+            && state.text.as_str() == content
+            && let Some(snapshot) = state.current_parsed()
+            && let Some(ast) = snapshot.ast()
+        {
+            let ast = std::sync::Arc::clone(ast);
+            let parse_errors: Vec<ParseError> = snapshot.parse_errors().to_vec();
+            let diagnostic_analysis = snapshot.diagnostic_analysis();
+            let regex_analysis = snapshot.regex_analysis().cloned();
+            return self.collect_diagnostics_for_parsed_with_context(
+                uri,
+                &ast,
+                &parse_errors,
+                regex_analysis,
+                content,
+                context,
+                doc_state,
+                diagnostic_analysis,
+            );
+        }
+
         let code_text = code_slice(content);
+        // Retain the canonical regex analysis for this exact parse (#7024) so the
+        // pull path publishes the same regex findings as the push path.
+        let session = perl_parser_core::RetainedRegexSession::begin(code_text);
         let mut parser = Parser::new(code_text);
 
         match parser.parse() {
-            Ok(ast) => {
+            Ok(mut ast) => {
+                let regex_analysis = std::sync::Arc::new(session.finish(Some(&mut ast)));
                 // Retrieve any collected parse errors from error recovery
                 let parse_errors: Vec<ParseError> = parser.errors().to_vec();
                 let ast = std::sync::Arc::new(ast);
-                let provider = DiagnosticsProvider::new();
-                let uri_str = uri.to_string();
-                let source_path = url::Url::parse(&uri_str)
-                    .map_err(|e| {
-                        tracing::warn!(uri = %uri_str, error = %e, "pull diagnostics: failed to parse URI");
-                    })
-                    .ok()
-                    .and_then(|value| {
-                        value.to_file_path().map_err(|()| {
-                            tracing::warn!(uri = %uri_str, "pull diagnostics: URI is not a file path");
-                        }).ok()
-                    });
-                // Build the baseline include paths (configured + PERL5LIB, without lexical
-                // `use lib`/`no lib`). The resolver re-evaluates lexical paths per use-site
-                // offset so that `no lib` cancellations that precede each `use` statement
-                // are respected.
-                let base_include_paths = context.include_paths.clone();
+                self.collect_diagnostics_for_parsed_with_context(
+                    uri,
+                    &ast,
+                    &parse_errors,
+                    Some(regex_analysis),
+                    content,
+                    context,
+                    doc_state,
+                    None,
+                )
+            }
+            Err(error) => {
+                // Finish the session even with no tree: it retains the geometry the
+                // parser recorded before failing, and dropping it here would discard
+                // findings the suppressed legacy scan is no longer producing (#7024).
+                let regex_analysis = session.finish(None);
+                let mut diagnostics = vec![
+                    self.parse_error_to_diagnostic_with_context(uri, content, &error, context),
+                ];
+                diagnostics.extend(self.canonical_regex_lsp_diagnostics(
+                    uri,
+                    content,
+                    Some(&regex_analysis),
+                    context,
+                ));
+                PendingPullDiagnostics::projected(diagnostics)
+            }
+        }
+    }
 
-                // Extract lexical `use lib` / `no lib` operations once per diagnostic
-                // cycle so each `use Module` resolver call filters the cached ops instead
-                // of re-scanning the source prefix (#1683).
-                let source_path_ref = source_path.as_deref();
-                let workspace_root = context
-                    .workspace_root
-                    .as_deref()
-                    .or_else(|| source_path_ref.and_then(std::path::Path::parent))
-                    .unwrap_or(std::path::Path::new("."));
-                let file_dir = source_path_ref.and_then(std::path::Path::parent);
-                let use_lib_ops = extract_use_lib_operations_with_offsets(content);
+    /// Shared diagnostic-computation body for
+    /// [`Self::collect_diagnostics_for_text_with_context`], parameterized
+    /// over an already-available `ast`/`parse_errors` pair and an optional
+    /// prebuilt [`perl_lsp_rs_core::providers::diagnostics::DocumentDiagnosticAnalysis`]
+    /// (#7286). The caller either just re-parsed `content` (`diagnostic_analysis: None`)
+    /// or reused a matching `ParsedSnapshot` (`diagnostic_analysis: Some(_)`
+    /// when the snapshot had already built one, or lazily built here via the
+    /// `_with_analysis` provider calls below).
+    // Ten parameters: #7286 adds the snapshot's retained regex table and the
+    // generation-owned analysis to the shared pull body. Grouping them into a
+    // struct would create a one-use parameter object for a private helper
+    // whose arguments have no other shared lifetime or meaning, so the local
+    // convention (documented on the sibling critic helpers) is preferred.
+    #[allow(clippy::too_many_arguments)]
+    fn collect_diagnostics_for_parsed_with_context(
+        &self,
+        uri: &Uri,
+        ast: &std::sync::Arc<perl_parser::ast::Node>,
+        parse_errors: &[ParseError],
+        regex_analysis: Option<std::sync::Arc<perl_parser_core::RegexAnalysisTable>>,
+        content: &str,
+        context: &PullDiagnosticsContext,
+        doc_state: Option<&DocumentState>,
+        diagnostic_analysis: Option<
+            std::sync::Arc<perl_lsp_rs_core::providers::diagnostics::DocumentDiagnosticAnalysis>,
+        >,
+    ) -> PendingPullDiagnostics {
+        // Retain the canonical regex analysis for this exact parse (#7024) so
+        // the pull path publishes the same regex findings as the push path. A
+        // reused snapshot hands over the table its own parse retained; a fresh
+        // parse hands over the table the session just finished.
+        let provider = match regex_analysis {
+            Some(table) => DiagnosticsProvider::new().with_regex_analysis(table),
+            None => DiagnosticsProvider::new(),
+        };
+        let uri_str = uri.to_string();
+        // Same URI-to-path authority the push route uses, so one document has
+        // one source path on every platform. The previous strict
+        // `Url::to_file_path` here silently produced `None` on Windows for
+        // drive-less `file:///name.pl` URIs while push resolved them, which
+        // made path-conditional lints (PL200's script-file skip) disagree
+        // between transports -- caught by the push/pull parity control.
+        let source_path = perl_uri::source_path_from_uri_or_path(&uri_str);
+        // Build the baseline include paths (configured + PERL5LIB, without lexical
+        // `use lib`/`no lib`). The resolver re-evaluates lexical paths per use-site
+        // offset so that `no lib` cancellations that precede each `use` statement
+        // are respected.
+        let base_include_paths = context.include_paths.clone();
 
-                // Position-aware resolver: for each `use Module` statement, recompute the
-                // effective include paths at that statement's byte offset so that `no lib`
-                // directives appearing before it cancel the appropriate `use lib` paths.
-                let resolver = |module: &str, use_site_offset: usize| {
-                    let paths = self.effective_include_paths_at_offset(
-                        &base_include_paths,
-                        &use_lib_ops,
-                        workspace_root,
-                        file_dir,
-                        use_site_offset,
-                    );
-                    self.resolve_module_with_paths(module, &paths, source_path_ref)
-                };
+        // Extract lexical `use lib` / `no lib` operations once per diagnostic
+        // cycle so each `use Module` resolver call filters the cached ops instead
+        // of re-scanning the source prefix (#1683).
+        let source_path_ref = source_path.as_deref();
+        let workspace_root = context
+            .workspace_root
+            .as_deref()
+            .or_else(|| source_path_ref.and_then(std::path::Path::parent))
+            .unwrap_or(std::path::Path::new("."));
+        let file_dir = source_path_ref.and_then(std::path::Path::parent);
+        let use_lib_ops = extract_use_lib_operations_with_offsets(content);
 
-                // Search context for PL701 display: compute once for the whole file (end
-                // offset) so the diagnostic message shows what paths were searched overall.
-                let search_paths: Vec<String> = self.effective_include_paths(
-                    &base_include_paths,
-                    &use_lib_ops,
-                    workspace_root,
-                    file_dir,
-                );
+        // Position-aware resolver: for each `use Module` statement, recompute the
+        // effective include paths at that statement's byte offset so that `no lib`
+        // directives appearing before it cancel the appropriate `use lib` paths.
+        let resolver = |module: &str, use_site_offset: usize| {
+            let paths = self.effective_include_paths_at_offset(
+                &base_include_paths,
+                &use_lib_ops,
+                workspace_root,
+                file_dir,
+                use_site_offset,
+            );
+            self.resolve_module_with_paths(module, &paths, source_path_ref)
+        };
 
-                // Wire workspace semantic queries when available (pull-text path).
-                #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
-                let core_diagnostics: Vec<_> = {
-                    let semantic_diags =
-                        context.workspace_index.as_ref().and_then(|workspace_index| {
-                            workspace_index.with_semantic_queries_for_uri(
-                                &uri_str,
-                                |file_id, queries| {
-                                    provider.get_diagnostics_with_path_and_semantics_and_project_version(
-                                        &ast,
-                                        &parse_errors,
-                                        content,
-                                        Some(&resolver),
-                                        &search_paths,
-                                        source_path.as_deref(),
-                                        context.project_version.as_deref(),
-                                        file_id,
-                                        &queries,
-                                    )
-                                },
-                            )
-                        });
-                    semantic_diags.unwrap_or_else(|| {
-                        provider.get_diagnostics_with_path_and_project_version(
-                            &ast,
-                            &parse_errors,
-                            content,
-                            Some(&resolver),
-                            &search_paths,
-                            source_path.as_deref(),
-                            context.project_version.as_deref(),
-                        )
-                    })
-                };
-                #[cfg(not(all(feature = "workspace", not(target_arch = "wasm32"))))]
-                let core_diagnostics: Vec<_> = provider
-                    .get_diagnostics_with_path_and_project_version(
-                        &ast,
-                        &parse_errors,
+        // Search context for PL701 display: compute once for the whole file (end
+        // offset) so the diagnostic message shows what paths were searched overall.
+        let search_paths: Vec<String> = self.effective_include_paths(
+            &base_include_paths,
+            &use_lib_ops,
+            workspace_root,
+            file_dir,
+        );
+
+        // Wire workspace semantic queries when available (pull-text path).
+        #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
+        let core_diagnostics: Vec<_> = {
+            let semantic_diags = context.workspace_index.as_ref().and_then(|workspace_index| {
+                workspace_index.with_semantic_queries_for_uri(&uri_str, |file_id, queries| {
+                    provider.get_diagnostics_with_path_and_semantics_with_analysis(
+                        ast,
+                        parse_errors,
                         content,
                         Some(&resolver),
                         &search_paths,
                         source_path.as_deref(),
+                        file_id,
+                        &queries,
                         context.project_version.as_deref(),
-                    );
-
-                // Critic composition runs over the producer-owned core rows so
-                // declared overlap observations can enter the normalized seam
-                // before LSP projection (#11918); surviving rows are mapped
-                // afterwards.
-                let critic_generation =
-                    doc_state.map(|state| state.current_generation()).unwrap_or(0);
-                let critic = self.evaluate_policy_critic(
-                    uri,
-                    &ast,
+                        diagnostic_analysis.as_deref(),
+                    )
+                })
+            });
+            semantic_diags.unwrap_or_else(|| {
+                provider.get_diagnostics_with_path_with_analysis(
+                    ast,
+                    parse_errors,
                     content,
-                    context,
-                    perl_lsp_rs_core::tooling::perl_critic::critic_source_identity_for_uri(
-                        &uri.to_string(),
-                        critic_generation,
-                    ),
-                    &core_diagnostics,
-                );
+                    Some(&resolver),
+                    &search_paths,
+                    source_path.as_deref(),
+                    context.project_version.as_deref(),
+                    diagnostic_analysis.as_deref(),
+                )
+            })
+        };
+        #[cfg(not(all(feature = "workspace", not(target_arch = "wasm32"))))]
+        let core_diagnostics: Vec<_> = provider.get_diagnostics_with_path_with_analysis(
+            ast,
+            parse_errors,
+            content,
+            Some(&resolver),
+            &search_paths,
+            source_path.as_deref(),
+            context.project_version.as_deref(),
+            diagnostic_analysis.as_deref(),
+        );
 
-                PendingPullDiagnostics {
-                    core: core_diagnostics,
-                    projected: Vec::new(),
-                    critic: Some(critic),
-                }
-            }
-            Err(error) => PendingPullDiagnostics::projected(vec![
-                self.parse_error_to_diagnostic_with_context(uri, content, &error, context),
-            ]),
+        // Critic composition runs over the producer-owned core rows so
+        // declared overlap observations can enter the normalized seam
+        // before LSP projection (#11918); surviving rows are mapped
+        // afterwards at the report boundary. The generation-owned analysis
+        // (#7286) rides along: when it provably describes this exact tree
+        // and text, the native service reuses its pragma/scope facts instead
+        // of re-deriving them per evaluation.
+        let critic_generation = doc_state.map(|state| state.current_generation()).unwrap_or(0);
+        let critic = self.evaluate_policy_critic(
+            uri,
+            ast,
+            content,
+            context,
+            perl_lsp_rs_core::tooling::perl_critic::critic_source_identity_for_uri(
+                &uri.to_string(),
+                critic_generation,
+            ),
+            &core_diagnostics,
+            diagnostic_analysis.as_deref(),
+        );
+
+        PendingPullDiagnostics {
+            core: core_diagnostics,
+            projected: Vec::new(),
+            critic: Some(critic),
         }
     }
 
@@ -780,6 +872,7 @@ impl PullDiagnosticsProvider {
         context: &PullDiagnosticsContext,
         source_identity: perl_lsp_rs_core::tooling::perl_critic::CriticSourceIdentity,
         core_diagnostics: &[InternalDiagnostic],
+        analysis: Option<&perl_lsp_rs_core::providers::diagnostics::DocumentDiagnosticAnalysis>,
     ) -> PendingPullCriticContribution {
         // #9062: routing authority is the accepted state (#8253), never the raw
         // engine setting. `EffectiveCriticState` is `Disabled | Native`, so a
@@ -787,7 +880,15 @@ impl PullDiagnosticsProvider {
         // observation that cannot construct runtime state and cannot select a
         // second evaluator here. The service owns the disabled contribution
         // too, so there is no consumer-side branch left to get wrong.
-        self.evaluate_native_critic(uri, ast, content, context, source_identity, core_diagnostics)
+        self.evaluate_native_critic(
+            uri,
+            ast,
+            content,
+            context,
+            source_identity,
+            core_diagnostics,
+            analysis,
+        )
     }
 
     /// Add native critic policy diagnostics.
@@ -797,7 +898,10 @@ impl PullDiagnosticsProvider {
     /// (#8253), so the service — not this transport — owns registry
     /// construction, candidate collection, canonical normalization, policy,
     /// and ordering. This method only extracts emitter-declared overlap
-    /// observations (#11918) and projects the resulting logical rows.
+    /// observations (#11918) and projects the resulting logical rows. The
+    /// caller's generation-owned analysis (#7286), when offered, lets the
+    /// service reuse this generation's pragma/scope facts behind its own
+    /// freshness gate instead of re-deriving them per evaluation.
     fn evaluate_native_critic(
         &self,
         uri: &Uri,
@@ -806,6 +910,7 @@ impl PullDiagnosticsProvider {
         context: &PullDiagnosticsContext,
         source_identity: perl_lsp_rs_core::tooling::perl_critic::CriticSourceIdentity,
         core_diagnostics: &[InternalDiagnostic],
+        analysis: Option<&perl_lsp_rs_core::providers::diagnostics::DocumentDiagnosticAnalysis>,
     ) -> PendingPullCriticContribution {
         use perl_lsp_rs_core::providers::diagnostics::critic_overlap_observations;
         use perl_lsp_rs_core::tooling::perl_critic::{
@@ -828,8 +933,12 @@ impl PullDiagnosticsProvider {
         let accepted_state_is_current = || context.accepted_state_currentness.holds();
 
         let snapshot = context.accepted_critic_snapshot.clone();
-        let run = NativeCriticService::analyze(NativeCriticSubject::accepted(
-            &uri.to_string(),
+        // Bound first so the label outlives the subject that borrows it:
+        // the #7286 analysis arm keeps the subject alive past the accepted()
+        // expression.
+        let uri_label = uri.to_string();
+        let subject = NativeCriticSubject::accepted(
+            &uri_label,
             source_identity,
             ast,
             content,
@@ -837,7 +946,15 @@ impl PullDiagnosticsProvider {
             overlap_observations,
             RunGate::open(),
             RunGate::new(&accepted_state_is_current),
-        ));
+        );
+        // #7286: the analysis is offered, not trusted — the service consults
+        // it only behind its own `matches(ast, source)` gate, so a stale
+        // handle degrades to the self-computed context without changing a
+        // finding.
+        let run = NativeCriticService::analyze(match analysis {
+            Some(analysis) => subject.with_analysis(analysis),
+            None => subject,
+        });
 
         PendingPullCriticContribution { snapshot, run }
     }
@@ -941,9 +1058,16 @@ impl PullDiagnosticsProvider {
         };
         if let Some(ast) = parsed.ast() {
             let parse_errors = parsed.parse_errors();
-            let provider = DiagnosticsProvider::new();
-            let source_path =
-                url::Url::parse(&uri.to_string()).ok().and_then(|value| value.to_file_path().ok());
+            let diagnostic_analysis = parsed.diagnostic_analysis();
+            let provider = match parsed.regex_analysis().cloned() {
+                Some(table) => DiagnosticsProvider::new().with_regex_analysis(table),
+                None => DiagnosticsProvider::new(),
+            };
+            // Same URI-to-path authority the push route uses (see the
+            // text-path note): `Url::to_file_path` is platform-strict and
+            // returned `None` for drive-less file URIs on Windows, so pull and
+            // push disagreed on path-conditional lints for one document.
+            let source_path = perl_uri::source_path_from_uri_or_path(&uri.to_string());
             // Build the baseline include paths (configured + PERL5LIB, without lexical
             // `use lib`/`no lib`). The resolver re-evaluates lexical paths per use-site
             // offset so that `no lib` cancellations that precede each `use` statement
@@ -991,21 +1115,22 @@ impl PullDiagnosticsProvider {
             let core_diagnostics: Vec<_> = {
                 let semantic_diags = context.workspace_index.as_ref().and_then(|workspace_index| {
                     workspace_index.with_semantic_queries_for_uri(&uri_str, |file_id, queries| {
-                        provider.get_diagnostics_with_path_and_semantics_and_project_version(
+                        provider.get_diagnostics_with_path_and_semantics_with_analysis(
                             ast,
                             parse_errors,
                             &doc_state.text,
                             Some(&resolver),
                             &search_paths,
                             source_path.as_deref(),
-                            context.project_version.as_deref(),
                             file_id,
                             &queries,
+                            context.project_version.as_deref(),
+                            diagnostic_analysis.as_deref(),
                         )
                     })
                 });
                 semantic_diags.unwrap_or_else(|| {
-                    provider.get_diagnostics_with_path_and_project_version(
+                    provider.get_diagnostics_with_path_with_analysis(
                         ast,
                         parse_errors,
                         &doc_state.text,
@@ -1013,11 +1138,12 @@ impl PullDiagnosticsProvider {
                         &search_paths,
                         source_path.as_deref(),
                         context.project_version.as_deref(),
+                        diagnostic_analysis.as_deref(),
                     )
                 })
             };
             #[cfg(not(all(feature = "workspace", not(target_arch = "wasm32"))))]
-            let core_diagnostics: Vec<_> = provider.get_diagnostics_with_path_and_project_version(
+            let core_diagnostics: Vec<_> = provider.get_diagnostics_with_path_with_analysis(
                 ast,
                 parse_errors,
                 &doc_state.text,
@@ -1025,6 +1151,7 @@ impl PullDiagnosticsProvider {
                 &search_paths,
                 source_path.as_deref(),
                 context.project_version.as_deref(),
+                diagnostic_analysis.as_deref(),
             );
 
             let mut core_diagnostics = core_diagnostics;
@@ -1040,6 +1167,7 @@ impl PullDiagnosticsProvider {
                     doc_state.current_generation(),
                 ),
                 &core_diagnostics,
+                diagnostic_analysis.as_deref(),
             );
 
             // Add dead code diagnostics from workspace-wide symbol analysis
@@ -1068,20 +1196,28 @@ impl PullDiagnosticsProvider {
         } else if parsed.parse_errors().is_empty() {
             PendingPullDiagnostics::projected(Vec::new())
         } else {
-            PendingPullDiagnostics::projected(
-                parsed
-                    .parse_errors()
-                    .iter()
-                    .map(|error| {
-                        self.parse_error_to_diagnostic_with_context(
-                            uri,
-                            &doc_state.text,
-                            error,
-                            context,
-                        )
-                    })
-                    .collect(),
-            )
+            // No AST, so the full pipeline cannot run — but the snapshot still carries
+            // the table `finish(None)` retained, and those findings are the only regex
+            // evidence left once the legacy scan is suppressed (#7024).
+            let mut diagnostics: Vec<LspDiagnostic> = parsed
+                .parse_errors()
+                .iter()
+                .map(|error| {
+                    self.parse_error_to_diagnostic_with_context(
+                        uri,
+                        &doc_state.text,
+                        error,
+                        context,
+                    )
+                })
+                .collect();
+            diagnostics.extend(self.canonical_regex_lsp_diagnostics(
+                uri,
+                &doc_state.text,
+                parsed.regex_analysis().map(std::sync::Arc::as_ref),
+                context,
+            ));
+            PendingPullDiagnostics::projected(diagnostics)
         }
     }
 
@@ -1140,6 +1276,42 @@ impl PullDiagnosticsProvider {
                 )
             }
         }
+    }
+
+    /// Canonical regex findings for a document whose parse produced no AST (#7024).
+    ///
+    /// `finish(None)` retains the geometry the parser recorded before a fatal failure,
+    /// but retention alone publishes nothing: the AST-less branches below report parse
+    /// errors and stop. Since the session has already suppressed the legacy
+    /// per-operator scan, a finding that reaches neither route is simply lost —
+    /// measured end-to-end, a document with a nested quantifier followed by a fatal
+    /// construct published only `PL001`.
+    ///
+    /// Freshness is checked exactly as the full path checks it, against the code slice
+    /// rather than whole document text.
+    fn canonical_regex_lsp_diagnostics(
+        &self,
+        uri: &Uri,
+        text: &str,
+        regex_analysis: Option<&perl_parser_core::RegexAnalysisTable>,
+        context: &PullDiagnosticsContext,
+    ) -> Vec<LspDiagnostic> {
+        let Some(table) = regex_analysis.filter(|table| table.source_matches(code_slice(text)))
+        else {
+            return Vec::new();
+        };
+        perl_lsp_rs_core::providers::diagnostics::regex_canonical::project_canonical_regex_diagnostics(
+            table,
+        )
+        .into_iter()
+        // The context-aware conversion, which is what the AST paths use. Plain
+        // `to_lsp_diagnostic` appends the catalog `context_hint` *and* the suggestion,
+        // and for these codes the projection initializes the suggestion from that same
+        // hint — so it rendered the identical remediation paragraph twice, once behind
+        // a 💡 and once behind "Suggestion:". Measured against the AST path, which
+        // renders it once.
+        .map(|diagnostic| self.to_lsp_diagnostic_with_context(uri, text, diagnostic, context))
+        .collect()
     }
 
     /// Convert internal diagnostic to LSP diagnostic with context support.
@@ -1627,6 +1799,38 @@ mod tests {
             .ok_or("codeDescription should be populated for PL100")?;
         let expected_url =
             DiagnosticCode::MissingStrict.documentation_url().ok_or("PL100 should have docs")?;
+        assert_eq!(code_description.href.to_string(), expected_url);
+        Ok(())
+    }
+
+    #[test]
+    fn diagnostic_data_for_canonical_regex_backtracking() -> Result<(), Box<dyn std::error::Error>>
+    {
+        // The pull path must publish the retained-analysis projection (#7024):
+        // a repeated group with a nested quantifier reaches the client as the
+        // canonical regex code PL1000, with the same data/codeDescription
+        // enrichment the other PL codes carry.
+        let provider = PullDiagnosticsProvider::new();
+        let uri: Uri = "file:///test.pl".parse()?;
+        let code = "my $re = qr/(a+)+b/;\n";
+        let items = get_full_items(provider.get_document_diagnostics(&uri, code, None, None));
+        let diag = items
+            .iter()
+            .find(|d| {
+                d.code.as_ref().map(|c| matches!(c, NumberOrString::String(s) if s == "PL1000"))
+                    == Some(true)
+            })
+            .ok_or("expected PL1000 (regex backtracking risk) diagnostic for repeated group")?;
+        let data = diag.data.as_ref().ok_or("data should be Some for PL1000")?;
+        assert_eq!(data["code"], "PL1000");
+        assert_eq!(data["category"], "RegexAnalysis");
+        let code_description = diag
+            .code_description
+            .as_ref()
+            .ok_or("codeDescription should be populated for PL1000")?;
+        let expected_url = DiagnosticCode::RegexBacktrackingRisk
+            .documentation_url()
+            .ok_or("PL1000 should have docs")?;
         assert_eq!(code_description.href.to_string(), expected_url);
         Ok(())
     }
@@ -3233,6 +3437,132 @@ system($path);
             workspace_full.full_document_diagnostic_report.result_id.as_deref(),
             Some(document_id.as_str()),
             "workspace partial items must reuse the document identity authority"
+        );
+
+        Ok(())
+    }
+
+    // ── pull-text snapshot reuse gate (#7286) ──
+
+    /// Build a `DocumentState` at generation 1 with a real published parse
+    /// snapshot for `text`, using the same guarded construction path
+    /// production publication uses.
+    fn doc_state_with_published_snapshot(text: &str) -> DocumentState {
+        let mut doc_state = DocumentState::new(text, 1);
+        let generation = doc_state.current_generation();
+        let mut parser = perl_parser::Parser::new(text);
+        let (ast, errors) = match parser.parse() {
+            Ok(ast) => (Some(ast), parser.errors().to_vec()),
+            Err(e) => (None, vec![e]),
+        };
+        let ast_arc = ast.map(std::sync::Arc::new);
+        let snapshot = std::sync::Arc::new(crate::state::ParsedSnapshot::from_parse_result(
+            generation, text, ast_arc, errors,
+        ));
+        assert!(doc_state.publish_parsed_if_current(generation, snapshot));
+        doc_state
+    }
+
+    /// When `content` exactly matches `doc_state`'s published text, the
+    /// pull-text path reuses that snapshot's AST/parse-errors/analysis
+    /// instead of re-parsing. Proven directly (not just by output
+    /// equivalence): reuse necessarily calls `snapshot.diagnostic_analysis()`,
+    /// which is observable as the snapshot's build count going from 0 to 1 --
+    /// a re-parse path would never touch this snapshot's cell at all, so the
+    /// count would stay 0.
+    #[test]
+    fn text_reuse_gate_reuses_matching_doc_state_snapshot() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let provider = PullDiagnosticsProvider::new();
+        let uri: Uri = "file:///reuse.pl".parse()?;
+        let context = PullDiagnosticsContext::new();
+        let content = "sub f { my $unused = 1; print $undeclared; }\n";
+
+        let doc_state = doc_state_with_published_snapshot(content);
+        let snapshot_before =
+            doc_state.current_parsed().ok_or("snapshot must be published and current")?;
+        assert_eq!(
+            snapshot_before.diagnostic_analysis_build_count(),
+            0,
+            "the snapshot's analysis cell must start unbuilt"
+        );
+
+        let _ = provider.collect_diagnostics_for_text_with_context(
+            &uri,
+            content,
+            &context,
+            Some(&doc_state),
+        );
+
+        let snapshot_after =
+            doc_state.current_parsed().ok_or("snapshot must still be published and current")?;
+        assert_eq!(
+            snapshot_after.diagnostic_analysis_build_count(),
+            1,
+            "an exact content match must reuse doc_state's snapshot, which builds its \
+             diagnostic analysis exactly once through the shared cell"
+        );
+
+        Ok(())
+    }
+
+    /// When `content` does NOT match `doc_state.text` (a stale or differing
+    /// buffer), the pull-text path must fall back to re-parsing `content`
+    /// rather than reusing the stale snapshot. Proven two ways: (1) the stale
+    /// snapshot's analysis cell is never touched (build count stays 0), and
+    /// (2) the returned diagnostics describe `content`, not the stale text --
+    /// they equal the diagnostics produced with no `doc_state` at all, and do
+    /// NOT contain a diagnostic that only the stale text would produce.
+    #[test]
+    fn text_reuse_gate_falls_back_to_reparse_when_content_differs()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let provider = PullDiagnosticsProvider::new();
+        let uri: Uri = "file:///stale.pl".parse()?;
+        let context = PullDiagnosticsContext::new();
+
+        let stale_text = "sub stale_fn { my $stale_marker_unused = 1; }\n";
+        let doc_state = doc_state_with_published_snapshot(stale_text);
+
+        let fresh_content = "print $totally_different_undeclared;\n";
+        assert_ne!(doc_state.text, fresh_content, "fixture must actually differ from doc_state");
+
+        // Both routes now stage a `PendingPullDiagnostics` (#9062); the report
+        // boundary is where critic rows are committed or withheld, so the
+        // equivalence claim is made at that same boundary.
+        let (reused_path, _) = provider.finalize_pending_diagnostics(
+            &uri,
+            fresh_content,
+            &context,
+            provider.collect_diagnostics_for_text_with_context(
+                &uri,
+                fresh_content,
+                &context,
+                Some(&doc_state),
+            ),
+        );
+        let (reparsed_directly, _) = provider.finalize_pending_diagnostics(
+            &uri,
+            fresh_content,
+            &context,
+            provider.collect_diagnostics_for_text_with_context(&uri, fresh_content, &context, None),
+        );
+
+        assert_eq!(
+            reused_path, reparsed_directly,
+            "a content mismatch must force re-parsing `content`, producing the same result as \
+             calling with no doc_state at all"
+        );
+        assert!(
+            !reused_path.iter().any(|d| d.message.contains("stale_marker_unused")),
+            "the stale snapshot's own diagnostics must never leak in on a content mismatch"
+        );
+
+        let snapshot_after =
+            doc_state.current_parsed().ok_or("snapshot must still be published and current")?;
+        assert_eq!(
+            snapshot_after.diagnostic_analysis_build_count(),
+            0,
+            "the stale snapshot's analysis cell must never be touched on a content mismatch"
         );
 
         Ok(())

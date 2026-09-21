@@ -215,13 +215,15 @@ pub(super) fn ensure_plan_subject_fields_match_receipt(
             receipt.head_sha
         );
     }
-    if let Some(base_sha) = plan_subject.base_sha.as_deref()
-        && base_sha != receipt.base_sha
-    {
+    // Every receipt carries a base SHA (all subject inputs require one), so
+    // the plan must mirror it exactly: an omitted base binds nothing, and a
+    // re-sealed plan could otherwise drop `base_sha` entirely and still pass
+    // against a receipt carrying a concrete base.
+    if plan_subject.base_sha.as_deref() != Some(receipt.base_sha.as_str()) {
         bail!(
-            "route plan subject base {} does not match immutable subject receipt base {}; \
+            "route plan subject base {:?} does not match immutable subject receipt base {}; \
              refusing to publish a result under a false subject identity",
-            base_sha,
+            plan_subject.base_sha,
             receipt.base_sha
         );
     }
@@ -252,10 +254,19 @@ pub(super) fn ensure_plan_subject_fields_match_receipt(
 /// `--base` flag is absent would let a foreign-base plan publish under
 /// selection authority that did not govern the run (review threads
 /// FC-SELECTION-BASE-OPTIONAL-SKIP / P1 timing).
+///
+/// Both sides are compared as commits. A plan may record a symbolic base
+/// (`origin/main`) while the runner holds the same base as a rev-parsed SHA;
+/// comparing the raw strings reported those as a mismatch.
+/// `resolve_commit` returns the commit a revision names, or `None` when it
+/// names nothing resolvable — two unresolvable revisions still compare by
+/// their literal text, so an offline or shallow tree degrades to the
+/// previous behavior rather than passing everything.
 pub(super) fn ensure_plan_authority_matches_invocation(
     plan: &CiRoutePlanV1,
     tier: &GateTier,
     resolved_base_sha: &str,
+    mut resolve_commit: impl FnMut(&str) -> Option<String>,
 ) -> Result<()> {
     let runner_profile = tier.to_string();
     if plan.requested_profile != runner_profile {
@@ -266,7 +277,15 @@ pub(super) fn ensure_plan_authority_matches_invocation(
             runner_profile
         );
     }
-    if plan.selection.base != resolved_base_sha {
+    let plan_commit = resolve_commit(&plan.selection.base);
+    let runner_commit = resolve_commit(resolved_base_sha);
+    let same = match (plan_commit.as_deref(), runner_commit.as_deref()) {
+        (Some(planned), Some(actual)) => planned == actual,
+        // An unresolvable revision proves nothing about the other side;
+        // fall back to the literal identity the plan recorded.
+        _ => plan.selection.base == resolved_base_sha,
+    };
+    if !same {
         bail!(
             "route plan selection base {} does not match this runner's resolved base {resolved_base_sha}; \
              refusing a plan whose selection authority did not govern this invocation",
@@ -660,10 +679,16 @@ fn project_declared_artifacts(
             };
             let mut hasher = Sha256::new();
             hasher.update(&bytes);
-            let relative = matched.strip_prefix(root).unwrap_or(&matched).to_string_lossy();
+            // `ArtifactRef::path` is fingerprinted verbatim, so spell it in
+            // the forward-slash contract form on every platform: the lossy
+            // spelling emits the platform separator, which would seal a
+            // different identity for the same artifact on Windows than the
+            // literal branch and `project_log_artifact` record.
+            let relative =
+                matched.strip_prefix(root).unwrap_or(&matched).to_string_lossy().replace('\\', "/");
             projected.push(ArtifactRef {
                 role: "artifact".to_string(),
-                path: relative.into_owned(),
+                path: relative,
                 sha256: Some(hex(&hasher.finalize())),
             });
             expanded += 1;
@@ -722,7 +747,10 @@ mod fixtures {
         RouteExecutionIdentity, RouteProfileExpansionInput, RouteSelectionEvidence,
         RouteSubjectRef, SelectorPlacement, SelectorProof, SelectorRole,
     };
-    use xtask::routed_result::TerminalOutcome;
+    use xtask::routed_result::{
+        ChildObservation, ObservationTiming, PrerequisiteEvidence, TerminalOutcome,
+        row_identity_digest,
+    };
 
     const SHA_A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     const SHA_B: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
@@ -792,6 +820,135 @@ mod fixtures {
         let plan = CiRoutePlanV1::compile(input).expect("fixture plan compiles");
         plan.validate().expect("fixture plan validates");
         plan
+    }
+
+    /// A plan governing two applicable run rows, so a record can be
+    /// substituted with another *governed* row's exact identity (#15814).
+    fn two_row_plan() -> CiRoutePlanV1 {
+        let mut input = fixture_input();
+        input.expansion.denominator = vec!["clippy_gate".to_string(), "fmt_gate".to_string()];
+        input.dispositions.push(RouteDispositionInput {
+            gate_id: "clippy_gate".to_string(),
+            policy_role: PolicyRole::Required,
+            lifecycle: LifecycleDisposition {
+                state: LifecycleState::Active,
+                resolution: Resolution::Current,
+            },
+            native_tier: "merge_gate".to_string(),
+            quarantine: None,
+            detail: None,
+        });
+        input.selectors.push(GateSelectorInput {
+            gate_id: "clippy_gate".to_string(),
+            placement: SelectorPlacement::Selected,
+            role: Some(SelectorRole::AlwaysOn),
+            reason: "always on".to_string(),
+            proof: Some(SelectorProof::Applicable),
+        });
+        input.execution.push(RouteExecutionIdentity {
+            gate_id: "clippy_gate".to_string(),
+            command: "cargo clippy -p perl-lsp --all-targets".to_string(),
+            timeout_seconds: 300,
+        });
+        let plan = CiRoutePlanV1::compile(input).expect("two-row plan compiles");
+        plan.validate().expect("two-row plan validates");
+        plan
+    }
+
+    /// Minimal honest passing-process observation for `build_routed_result`.
+    fn passing_observation() -> RunObservation {
+        RunObservation {
+            runner_status: RoutedReaderGateStatus::Pass,
+            hosted: None,
+            prerequisites: Some(PrerequisiteEvidence {
+                state: PrerequisiteState::Ready,
+                missing_artifacts: Vec::new(),
+                dependency_gates: std::collections::BTreeMap::new(),
+            }),
+            command_started: true,
+            child: ChildObservation {
+                exit_code: Some(0),
+                signal: None,
+                timed_out: false,
+                cancelled: false,
+                in_process: false,
+            },
+            timing: ObservationTiming {
+                started_at_unix_ms: Some(1_000),
+                ended_at_unix_ms: Some(4_500),
+                duration_ms: 3_500,
+            },
+            artifacts: Vec::new(),
+            receipt_shortfall: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn built_result_carries_the_plan_bound_row_identity_digest() {
+        // The builder seals the exact planned row under the plan fingerprint
+        // (#15814); the honest record passes both plan-less and plan-bound
+        // validation.
+        let plan = compiled_fixture();
+        let built = build_routed_result(&plan, "fmt_gate", passing_observation())
+            .expect("honest observation builds");
+        built.validate().expect("plan-less validation accepts");
+        let expected = row_identity_digest(&plan.semantic_fingerprint, &built.row)
+            .expect("row identity digest recomputes");
+        assert_eq!(built.plan_authority.row_identity_digest, expected);
+        built
+            .validate_against_plan(&plan)
+            .expect("plan-bound validation accepts the honest record");
+    }
+
+    #[test]
+    fn cross_row_substitution_reseal_refuses_validation() {
+        // The #15814 falsifier: substitute another governed row's exact
+        // identity and re-seal. Every pre-existing check still passes — the
+        // gate id is in the denominator, the tier is included, the
+        // projection is consistent — so only the row identity binding
+        // refuses the mixed record.
+        let plan = two_row_plan();
+        let built = build_routed_result(&plan, "fmt_gate", passing_observation())
+            .expect("fmt observation builds");
+        let other = build_routed_result(&plan, "clippy_gate", passing_observation())
+            .expect("clippy observation builds");
+
+        let mut substituted = built.clone();
+        substituted.row = other.row;
+        substituted.result_fingerprint = substituted.semantic_fingerprint_of().expect("reseals");
+        let error = substituted.validate().expect_err("cross-row substitution must refuse");
+        assert!(
+            error.contains("substituted after sealing or mixed across runs"),
+            "unexpected refusal: {error}"
+        );
+    }
+
+    #[test]
+    fn wholly_resealed_fabrication_refuses_plan_bound_validation() {
+        // A substitution that also recomputes the row identity digest and
+        // re-seals is internally consistent, so plan-less validation accepts
+        // it (the documented #15814 boundary: without plan bytes the
+        // validator cannot know the projection names no governed row). A row
+        // whose substituted command matches no governed plan row is still
+        // refused by the plan the fingerprint names. (Substituting another
+        // row's exact true projection plus a recomputed digest is a valid
+        // binding for that row — the row digest binds rows to the plan, it
+        // cannot re-attribute execution facts.)
+        let plan = two_row_plan();
+        let built = build_routed_result(&plan, "fmt_gate", passing_observation())
+            .expect("fmt observation builds");
+
+        let mut fabricated = built.clone();
+        fabricated.row.command = "cargo clippy -p perl-lsp --all-targets".to_string();
+        fabricated.plan_authority.row_identity_digest =
+            row_identity_digest(&fabricated.plan_authority.semantic_fingerprint, &fabricated.row)
+                .expect("digest recomputes");
+        fabricated.result_fingerprint = fabricated.semantic_fingerprint_of().expect("reseals");
+        fabricated.validate().expect("a wholly re-sealed record is plan-less consistent");
+        let error = fabricated
+            .validate_against_plan(&plan)
+            .expect_err("plan-bound validation must refuse the fabricated row");
+        assert!(error.contains("exact planned row"), "unexpected refusal: {error}");
     }
 
     #[test]
@@ -1016,6 +1173,7 @@ mod fixtures {
             &plan,
             &GateTier::MergeGate,
             plan.selection.base.as_str(),
+            |_| None,
         );
         assert!(accepted.is_ok(), "the plan's own identity must accept, got {accepted:?}");
 
@@ -1023,6 +1181,7 @@ mod fixtures {
             &plan,
             &GateTier::Nightly,
             plan.selection.base.as_str(),
+            |_| None,
         );
         assert!(foreign_profile.is_err(), "a plan compiled for another profile must refuse");
         assert!(foreign_profile.err().unwrap().to_string().contains("profile"));
@@ -1031,6 +1190,7 @@ mod fixtures {
             &plan,
             &GateTier::MergeGate,
             "cccccccccccccccccccccccccccccccccccccccc",
+            |_| None,
         );
         assert!(foreign_base.is_err(), "a plan compiled against another base must refuse");
         assert!(foreign_base.err().unwrap().to_string().contains("selection base"));
@@ -1296,17 +1456,21 @@ timeout_seconds: 60
         assert!(refused.is_err(), "kind mismatch must refuse, got {refused:?}");
         assert!(refused.unwrap_err().to_string().contains("subject kind"));
 
-        // A plan that carries no base binds nothing extra and stays accepted.
+        // A plan that carries no base binds nothing: the receipt always
+        // carries one, so omission must refuse rather than pass.
         let mut baseless = plan.subject.clone();
         baseless.base_sha = None;
-        assert!(ensure_plan_subject_fields_match_receipt(&baseless, &receipt).is_ok());
+        let refused = ensure_plan_subject_fields_match_receipt(&baseless, &receipt);
+        assert!(refused.is_err(), "omitted base must refuse, got {refused:?}");
+        assert!(refused.unwrap_err().to_string().contains("subject base"));
     }
 
     #[test]
     fn plan_selection_authority_binds_runner_profile_and_base() {
         let plan = compiled_fixture();
         assert!(
-            ensure_plan_authority_matches_invocation(&plan, &GateTier::MergeGate, SHA_B).is_ok()
+            ensure_plan_authority_matches_invocation(&plan, &GateTier::MergeGate, SHA_B, |_| None)
+                .is_ok()
         );
         // The base is required: a runner without a resolved base cannot bind
         // the plan's selection authority at all, so the None skip is gone
@@ -1314,14 +1478,38 @@ timeout_seconds: 60
         // takes the base by value.
 
         let foreign_profile =
-            ensure_plan_authority_matches_invocation(&plan, &GateTier::PrFast, SHA_B);
+            ensure_plan_authority_matches_invocation(&plan, &GateTier::PrFast, SHA_B, |_| None);
         assert!(foreign_profile.is_err(), "profile mismatch must refuse: {foreign_profile:?}");
         assert!(foreign_profile.unwrap_err().to_string().contains("profile"));
 
         let foreign_base =
-            ensure_plan_authority_matches_invocation(&plan, &GateTier::MergeGate, SHA_A);
+            ensure_plan_authority_matches_invocation(&plan, &GateTier::MergeGate, SHA_A, |_| None);
         assert!(foreign_base.is_err(), "base mismatch must refuse: {foreign_base:?}");
         assert!(foreign_base.unwrap_err().to_string().contains("selection base"));
+    }
+
+    #[test]
+    fn a_symbolic_plan_base_binds_through_the_commit_it_names() {
+        // The plan may record `origin/main` while the runner holds the same
+        // base as a SHA. Comparing the raw strings called that a mismatch and
+        // refused a plan that did govern the invocation.
+        let mut plan = compiled_fixture();
+        plan.selection.base = "origin/main".to_string();
+
+        let resolve = |revision: &str| match revision {
+            "origin/main" | SHA_B => Some(SHA_B.to_string()),
+            _ => None,
+        };
+
+        assert!(
+            ensure_plan_authority_matches_invocation(&plan, &GateTier::MergeGate, SHA_B, resolve)
+                .is_ok(),
+            "a symbolic plan base naming the runner's commit must bind"
+        );
+
+        let foreign =
+            ensure_plan_authority_matches_invocation(&plan, &GateTier::MergeGate, SHA_A, resolve);
+        assert!(foreign.is_err(), "a symbolic base naming another commit must refuse: {foreign:?}");
     }
 
     #[test]

@@ -84,36 +84,39 @@ impl<'a> Parser<'a> {
         }
 
         if self.is_contextual_await_start() {
-            let op_token = self.tokens.next()?;
+            let op_token = self.advance_token()?;
             let start = op_token.start();
 
             if self.tokens.is_eof() || self.is_at_statement_end() {
                 let end = op_token.end();
-                return Ok(Node::new(
+                // Charged before the enclosing node so the charge order matches
+                // the original construction order.
+                let charged_operand = self.charge_node(
+                    NodeKind::Undef,
+                    SourceLocation { start: end, end },
+                )?;
+                return self.charge_node(
                     NodeKind::Unary {
                         op: op_token.text.to_string(),
-                        operand: Box::new(Node::new(
-                            NodeKind::Undef,
-                            SourceLocation { start: end, end },
-                        )),
+                        operand: Box::new(charged_operand),
                     },
                     SourceLocation { start, end },
-                ));
+                );
             }
 
             let operand = self.parse_unary()?;
             let end = operand.location.end;
 
-            return Ok(Node::new(
+            return self.charge_node(
                 NodeKind::Unary { op: op_token.text.to_string(), operand: Box::new(operand) },
                 SourceLocation { start, end },
-            ));
+            );
         }
 
         if let Some(kind) = self.peek_kind() {
             match kind {
                 TokenKind::Minus => {
-                    let op_token = self.tokens.next()?;
+                    let op_token = self.advance_token()?;
                     let start = op_token.start();
 
                     // Check for file test operators (-e, -f, -d, etc.)
@@ -127,16 +130,18 @@ impl<'a> Parser<'a> {
                                 .peek_second()
                                 .is_ok_and(|token| token.kind() == TokenKind::FatArrow)
                             {
-                                let test_token = self.tokens.next()?;
+                                let test_token = self.advance_token()?;
                                 let end = test_token.end();
-                                return Ok(Node::new(
-                                    NodeKind::Identifier { name: format!("-{}", test_token.text) },
+                                return self.charge_node(
+                                    NodeKind::Identifier {
+                                        name: format!("-{}", test_token.text),
+                                    },
                                     SourceLocation { start, end },
-                                ));
+                                );
                             }
 
                             // It's a file test operator
-                            let test_token = self.tokens.next()?;
+                            let test_token = self.advance_token()?;
                             let file_test = format!("-{}", test_token.text);
 
                             // File test can be used without operand (tests $_).
@@ -164,25 +169,22 @@ impl<'a> Parser<'a> {
                                     )
                                 ) {
                                 // No operand, test $_
-                                Node::new(
+                                self.charge_node(
                                     NodeKind::Variable {
                                         sigil: "$".to_string(),
                                         name: "_".to_string(),
                                     },
-                                    SourceLocation {
-                                        start: test_token.end(),
-                                        end: test_token.end(),
-                                    },
-                                )
+                                    SourceLocation { start: test_token.end(), end: test_token.end() },
+                                )?
                             } else {
                                 self.parse_unary()?
                             };
 
                             let end = operand.location.end;
-                            return Ok(Node::new(
+                            return self.charge_node(
                                 NodeKind::Unary { op: file_test, operand: Box::new(operand) },
                                 SourceLocation { start, end },
-                            ));
+                            );
                         }
                     }
 
@@ -193,30 +195,32 @@ impl<'a> Parser<'a> {
                     // The fat arrow auto-quotes the combined "-keyword" string.
                     if self.tokens.peek_second().is_ok_and(|t| t.kind() == TokenKind::FatArrow)
                         && let Some(kw_kind) = self.peek_kind()
-                        && Self::is_word_op_keyword(kw_kind)
-                    {
-                        let kw_token = self.tokens.next()?;
-                        let end = kw_token.end();
-                        return Ok(Node::new(
-                            NodeKind::Identifier { name: format!("-{}", kw_token.text) },
-                            SourceLocation { start, end },
-                        ));
-                    }
+                            && Self::is_word_op_keyword(kw_kind) {
+                                let kw_token = self.advance_token()?;
+                                let end = kw_token.end();
+                                return self.charge_node(
+                                    NodeKind::Identifier {
+                                        name: format!("-{}", kw_token.text),
+                                    },
+                                    SourceLocation { start, end },
+                                );
+                            }
 
                     // Regular unary minus
-                    let operand = self.parse_power()?;
+                    let operand = if self.goto_starts_control_flow() {
+                        self.parse_goto()?
+                    } else {
+                        self.parse_power()?
+                    };
                     let end = operand.location.end;
 
-                    return Ok(Node::new(
-                        NodeKind::Unary {
-                            op: op_token.text.to_string(),
-                            operand: Box::new(operand),
-                        },
+                    return self.charge_node(
+                        NodeKind::Unary { op: op_token.text.to_string(), operand: Box::new(operand) },
                         SourceLocation { start, end },
-                    ));
+                    );
                 }
                 TokenKind::Plus => {
-                    let op_token = self.tokens.next()?;
+                    let op_token = self.advance_token()?;
                     let start = op_token.start();
 
                     // Special case: +{ ... } forces a hash constructor (not a block)
@@ -227,13 +231,10 @@ impl<'a> Parser<'a> {
                         let end = hash.location.end;
 
                         // Wrap the hash in a unary plus to preserve the explicit disambiguation
-                        let node = Node::new(
-                            NodeKind::Unary {
-                                op: op_token.text.to_string(),
-                                operand: Box::new(hash),
-                            },
+                        let node = self.charge_node(
+                            NodeKind::Unary { op: op_token.text.to_string(), operand: Box::new(hash) },
                             SourceLocation { start, end },
-                        );
+                        )?;
                         return self.parse_postfix_chain(node);
                     }
 
@@ -241,62 +242,41 @@ impl<'a> Parser<'a> {
                     if self.tokens.is_eof() || self.is_at_statement_end() {
                         // Create a placeholder for standalone operator
                         let end = op_token.end();
-                        return Ok(Node::new(
+                        // Charged before the enclosing node so the charge order matches
+                        // the original construction order.
+                        let charged_operand_2 = self.charge_node(
+                            NodeKind::Undef,
+                            SourceLocation { start: end, end },
+                        )?;
+                        return self.charge_node(
                             NodeKind::Unary {
                                 op: op_token.text.to_string(),
-                                operand: Box::new(Node::new(
-                                    NodeKind::Undef,
-                                    SourceLocation { start: end, end },
-                                )),
+                                operand: Box::new(charged_operand_2),
                             },
                             SourceLocation { start, end },
-                        ));
+                        );
                     }
 
-                    let operand = self.parse_power()?;
+                    let operand = if self.goto_starts_control_flow() {
+                        self.parse_goto()?
+                    } else {
+                        self.parse_power()?
+                    };
                     let end = operand.location.end;
 
-                    return Ok(Node::new(
-                        NodeKind::Unary {
-                            op: op_token.text.to_string(),
-                            operand: Box::new(operand),
-                        },
+                    return self.charge_node(
+                        NodeKind::Unary { op: op_token.text.to_string(), operand: Box::new(operand) },
                         SourceLocation { start, end },
-                    ));
+                    );
                 }
                 // Handle 'not' keyword as a unary prefix at expression level.
                 // This lets `$a && not $b` parse correctly.
+                // Canonical boundary lives in parse_word_not_expr (#13932).
                 TokenKind::WordNot => {
-                    let op_token = self.tokens.next()?;
-                    let start = op_token.start();
-
-                    if self.tokens.is_eof() || self.is_at_statement_end() {
-                        let end = op_token.end();
-                        return Ok(Node::new(
-                            NodeKind::Unary {
-                                op: op_token.text.to_string(),
-                                operand: Box::new(Node::new(
-                                    NodeKind::Undef,
-                                    SourceLocation { start: end, end },
-                                )),
-                            },
-                            SourceLocation { start, end },
-                        ));
-                    }
-
-                    let operand = self.parse_unary()?;
-                    let end = operand.location.end;
-
-                    return Ok(Node::new(
-                        NodeKind::Unary {
-                            op: op_token.text.to_string(),
-                            operand: Box::new(operand),
-                        },
-                        SourceLocation { start, end },
-                    ));
+                    return self.parse_word_not_expr();
                 }
                 TokenKind::Not | TokenKind::Backslash | TokenKind::BitwiseNot | TokenKind::Star => {
-                    let op_token = self.tokens.next()?;
+                    let op_token = self.advance_token()?;
                     let start = op_token.start();
 
                     // AC1: Disambiguate typeglob (*foo) from multiplication (*)
@@ -314,24 +294,24 @@ impl<'a> Parser<'a> {
                         if let Some(name) =
                             typeglob_punctuation_name(next_kind, &next_text, terminator_kind)
                         {
-                            let t = self.tokens.next()?;
-                            return Ok(Node::new(
+                            let t = self.advance_token()?;
+                            return self.charge_node(
                                 NodeKind::Typeglob { name, body: None },
                                 SourceLocation { start, end: t.end() },
-                            ));
+                            );
                         }
 
                         match next_kind {
                             kind if Self::can_be_sub_name(kind) && !next_is_sigil_identifier => {
-                                let id_token = self.tokens.next()?;
+                                let id_token = self.advance_token()?;
                                 let end = id_token.end();
-                                let node = Node::new(
+                                let node = self.charge_node(
                                     NodeKind::Typeglob {
                                         name: id_token.text.to_string(),
                                         body: None,
                                     },
                                     SourceLocation { start, end },
-                                );
+                                )?;
                                 // Allow postfix chaining: *$self->{key}
                                 return self.parse_postfix_chain(node);
                             }
@@ -359,31 +339,31 @@ impl<'a> Parser<'a> {
                                     // uses (#15731). A braced bareword strips to
                                     // its static name and carries no body.
                                     let body = name.starts_with('{').then(|| Box::new(brace_expr));
-                                    return Ok(Node::new(
+                                    return self.charge_node(
                                         NodeKind::Typeglob { name, body },
                                         SourceLocation { start, end: body_end },
-                                    ));
+                                    );
                                 }
-                                let node = Node::new(
+                                let node = self.charge_node(
                                     NodeKind::Unary {
                                         op: "*{}".to_string(),
                                         operand: Box::new(brace_expr),
                                     },
                                     SourceLocation { start, end },
-                                );
+                                )?;
                                 return self.parse_postfix_chain(node);
                             }
                             TokenKind::BitwiseXor => {
                                 // *^X typeglob for control variable $^X (e.g. *^N, *^W, *^F)
                                 self.consume_token()?; // consume ^
                                 if let Some(TokenKind::Identifier) = self.peek_kind() {
-                                    let id_token = self.tokens.next()?;
+                                    let id_token = self.advance_token()?;
                                     let name = format!("^{}", id_token.text);
                                     let end = id_token.end();
-                                    return Ok(Node::new(
+                                    return self.charge_node(
                                         NodeKind::Typeglob { name, body: None },
                                         SourceLocation { start, end },
-                                    ));
+                                    );
                                 }
                                 // Standalone *^ — fall through to parse operand
                             }
@@ -395,70 +375,70 @@ impl<'a> Parser<'a> {
                             TokenKind::Less => {
                                 let second_kind = self.tokens.peek_second().ok().map(|t| t.kind());
                                 if is_typeglob_punct_terminator(second_kind) {
-                                    let t = self.tokens.next()?;
-                                    return Ok(Node::new(
+                                    let t = self.advance_token()?;
+                                    return self.charge_node(
                                         NodeKind::Typeglob { name: "<".to_string(), body: None },
                                         SourceLocation { start, end: t.end() },
-                                    ));
+                                    );
                                 }
                             }
                             TokenKind::Greater => {
                                 let second_kind = self.tokens.peek_second().ok().map(|t| t.kind());
                                 if is_typeglob_punct_terminator(second_kind) {
-                                    let t = self.tokens.next()?;
-                                    return Ok(Node::new(
+                                    let t = self.advance_token()?;
+                                    return self.charge_node(
                                         NodeKind::Typeglob { name: ">".to_string(), body: None },
                                         SourceLocation { start, end: t.end() },
-                                    ));
+                                    );
                                 }
                             }
                             TokenKind::LeftParen => {
                                 let second_kind = self.tokens.peek_second().ok().map(|t| t.kind());
                                 if is_typeglob_punct_terminator(second_kind) {
-                                    let t = self.tokens.next()?;
-                                    return Ok(Node::new(
+                                    let t = self.advance_token()?;
+                                    return self.charge_node(
                                         NodeKind::Typeglob { name: "(".to_string(), body: None },
                                         SourceLocation { start, end: t.end() },
-                                    ));
+                                    );
                                 }
                             }
                             TokenKind::RightParen => {
                                 // *) is always a typeglob for $) (effective GID).
                                 // RightParen cannot start a valid sub-expression in this
                                 // context, so no lookahead disambiguation is needed.
-                                let t = self.tokens.next()?;
-                                return Ok(Node::new(
+                                let t = self.advance_token()?;
+                                return self.charge_node(
                                     NodeKind::Typeglob { name: ")".to_string(), body: None },
                                     SourceLocation { start, end: t.end() },
-                                ));
+                                );
                             }
                             // *? = typeglob for $? (child process status).
                             // Question cannot start an expression after *, so no lookahead.
                             TokenKind::Question => {
-                                let t = self.tokens.next()?;
-                                return Ok(Node::new(
+                                let t = self.advance_token()?;
+                                return self.charge_node(
                                     NodeKind::Typeglob { name: "?".to_string(), body: None },
                                     SourceLocation { start, end: t.end() },
-                                ));
+                                );
                             }
                             // *, = typeglob for $, (output field separator).
                             // Comma cannot start an expression after *, so no lookahead.
                             TokenKind::Comma => {
-                                let t = self.tokens.next()?;
-                                return Ok(Node::new(
+                                let t = self.advance_token()?;
+                                return self.charge_node(
                                     NodeKind::Typeglob { name: ",".to_string(), body: None },
                                     SourceLocation { start, end: t.end() },
-                                ));
+                                );
                             }
                             // *= — the lexer emits StarAssign for the compound assignment
                             // operator, so Star followed by bare Assign is always the typeglob
                             // *=  (for $= "format lines per page").  No lookahead needed.
                             TokenKind::Assign => {
-                                let t = self.tokens.next()?;
-                                return Ok(Node::new(
+                                let t = self.advance_token()?;
+                                return self.charge_node(
                                     NodeKind::Typeglob { name: "=".to_string(), body: None },
                                     SourceLocation { start, end: t.end() },
-                                ));
+                                );
                             }
                             // */ = typeglob for $/ (input record separator).
                             // Use lookahead: if followed by a statement terminator, it's a
@@ -466,11 +446,11 @@ impl<'a> Parser<'a> {
                             TokenKind::Slash => {
                                 let second_kind = self.tokens.peek_second().ok().map(|t| t.kind());
                                 if is_typeglob_punct_terminator(second_kind) {
-                                    let t = self.tokens.next()?;
-                                    return Ok(Node::new(
+                                    let t = self.advance_token()?;
+                                    return self.charge_node(
                                         NodeKind::Typeglob { name: "/".to_string(), body: None },
                                         SourceLocation { start, end: t.end() },
-                                    ));
+                                    );
                                 }
                             }
                             // *. = typeglob for $. (input line number).
@@ -479,11 +459,11 @@ impl<'a> Parser<'a> {
                             TokenKind::Dot => {
                                 let second_kind = self.tokens.peek_second().ok().map(|t| t.kind());
                                 if is_typeglob_punct_terminator(second_kind) {
-                                    let t = self.tokens.next()?;
-                                    return Ok(Node::new(
+                                    let t = self.advance_token()?;
+                                    return self.charge_node(
                                         NodeKind::Typeglob { name: ".".to_string(), body: None },
                                         SourceLocation { start, end: t.end() },
-                                    ));
+                                    );
                                 }
                             }
                             // *| = typeglob for $| (output autoflush flag).
@@ -492,11 +472,11 @@ impl<'a> Parser<'a> {
                             TokenKind::BitwiseOr => {
                                 let second_kind = self.tokens.peek_second().ok().map(|t| t.kind());
                                 if is_typeglob_punct_terminator(second_kind) {
-                                    let t = self.tokens.next()?;
-                                    return Ok(Node::new(
+                                    let t = self.advance_token()?;
+                                    return self.charge_node(
                                         NodeKind::Typeglob { name: "|".to_string(), body: None },
                                         SourceLocation { start, end: t.end() },
-                                    ));
+                                    );
                                 }
                             }
                             // *: = typeglob for $: (format line-break characters).
@@ -505,11 +485,11 @@ impl<'a> Parser<'a> {
                             TokenKind::Colon => {
                                 let second_kind = self.tokens.peek_second().ok().map(|t| t.kind());
                                 if is_typeglob_punct_terminator(second_kind) {
-                                    let t = self.tokens.next()?;
-                                    return Ok(Node::new(
+                                    let t = self.advance_token()?;
+                                    return self.charge_node(
                                         NodeKind::Typeglob { name: ":".to_string(), body: None },
                                         SourceLocation { start, end: t.end() },
-                                    ));
+                                    );
                                 }
                             }
                             TokenKind::ArraySigil
@@ -525,7 +505,7 @@ impl<'a> Parser<'a> {
                                 // diagnostic + ERROR node instead of
                                 // silently parsing the sigil as a variable
                                 // operand.
-                                let bad = self.tokens.next()?;
+                                let bad = self.advance_token()?;
                                 let bad_text = bad.text.to_string();
                                 let node = self.recover_from_error(
                                     "bare '*' sigil followed by another sigil — \
@@ -551,7 +531,7 @@ impl<'a> Parser<'a> {
                             TokenKind::Identifier
                                 if next_text.starts_with(['@', '%', '&', '*']) =>
                             {
-                                let bad = self.tokens.next()?;
+                                let bad = self.advance_token()?;
                                 let bad_text = bad.text.to_string();
                                 let node = self.recover_from_error(
                                     "bare '*' sigil followed by another sigil — \
@@ -573,19 +553,24 @@ impl<'a> Parser<'a> {
                     if self.tokens.is_eof() || self.is_at_statement_end() {
                         // Create a placeholder for standalone operator
                         let end = op_token.end();
-                        return Ok(Node::new(
+                        // Charged before the enclosing node so the charge order matches
+                        // the original construction order.
+                        let charged_operand_4 = self.charge_node(
+                            NodeKind::Undef,
+                            SourceLocation { start: end, end },
+                        )?;
+                        return self.charge_node(
                             NodeKind::Unary {
                                 op: op_token.text.to_string(),
-                                operand: Box::new(Node::new(
-                                    NodeKind::Undef,
-                                    SourceLocation { start: end, end },
-                                )),
+                                operand: Box::new(charged_operand_4),
                             },
                             SourceLocation { start, end },
-                        ));
+                        );
                     }
 
-                    let operand = if matches!(
+                    let operand = if self.goto_starts_control_flow() {
+                        self.parse_goto()?
+                    } else if matches!(
                         op_token.kind(),
                         TokenKind::Not | TokenKind::Backslash | TokenKind::BitwiseNot
                     ) {
@@ -595,13 +580,10 @@ impl<'a> Parser<'a> {
                     };
                     let end = operand.location.end;
 
-                    let node = Node::new(
-                        NodeKind::Unary {
-                            op: op_token.text.to_string(),
-                            operand: Box::new(operand),
-                        },
+                    let node = self.charge_node(
+                        NodeKind::Unary { op: op_token.text.to_string(), operand: Box::new(operand) },
                         SourceLocation { start, end },
-                    );
+                    )?;
 
                     // For typeglob (*), allow postfix chaining: *$self->{field}
                     if op_token.kind() == TokenKind::Star {
@@ -612,50 +594,47 @@ impl<'a> Parser<'a> {
                 }
                 TokenKind::Increment | TokenKind::Decrement => {
                     // Pre-increment and pre-decrement
-                    let op_token = self.tokens.next()?;
+                    let op_token = self.advance_token()?;
                     let start = op_token.start();
                     let operand = self.parse_unary()?;
                     let end = operand.location.end;
 
-                    return Ok(Node::new(
-                        NodeKind::Unary {
-                            op: op_token.text.to_string(),
-                            operand: Box::new(operand),
-                        },
+                    return self.charge_node(
+                        NodeKind::Unary { op: op_token.text.to_string(), operand: Box::new(operand) },
                         SourceLocation { start, end },
-                    ));
+                    );
                 }
                 TokenKind::SmartMatch => {
                     // Smart match can be used as a unary operator
-                    let op_token = self.tokens.next()?;
+                    let op_token = self.advance_token()?;
                     let start = op_token.start();
 
                     // Check if we're at EOF or a terminator (for standalone operators)
                     if self.tokens.is_eof() || self.is_at_statement_end() {
                         // Create a placeholder for standalone operator
                         let end = op_token.end();
-                        return Ok(Node::new(
+                        // Charged before the enclosing node so the charge order matches
+                        // the original construction order.
+                        let charged_operand_5 = self.charge_node(
+                            NodeKind::Undef,
+                            SourceLocation { start: end, end },
+                        )?;
+                        return self.charge_node(
                             NodeKind::Unary {
                                 op: op_token.text.to_string(),
-                                operand: Box::new(Node::new(
-                                    NodeKind::Undef,
-                                    SourceLocation { start: end, end },
-                                )),
+                                operand: Box::new(charged_operand_5),
                             },
                             SourceLocation { start, end },
-                        ));
+                        );
                     }
 
                     let operand = self.parse_unary()?;
                     let end = operand.location.end;
 
-                    return Ok(Node::new(
-                        NodeKind::Unary {
-                            op: op_token.text.to_string(),
-                            operand: Box::new(operand),
-                        },
+                    return self.charge_node(
+                        NodeKind::Unary { op: op_token.text.to_string(), operand: Box::new(operand) },
                         SourceLocation { start, end },
-                    ));
+                    );
                 }
                 _ => {}
             }

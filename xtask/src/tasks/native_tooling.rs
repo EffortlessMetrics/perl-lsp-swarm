@@ -772,9 +772,10 @@ fn native_tooling_default_checks(root: &Path) -> Result<Vec<DefaultCheck>> {
     let executable_diagnostics = blank_comments(&diagnostics_source);
     let production_diagnostics = production_prefix(&executable_diagnostics);
 
-    let native_service_count = production_diagnostics
-        .matches("NativeCriticService::analyze(NativeCriticSubject::accepted(")
-        .count();
+    let native_service_count =
+        production_diagnostics.matches("NativeCriticService::analyze(").count();
+    let accepted_subject_count =
+        production_diagnostics.matches("NativeCriticSubject::accepted(").count();
     let accepted_capture_count = production_diagnostics.matches("capture_accepted_critic(").count();
     let finalize_critic_count = production_diagnostics.matches("finalize_pending_critic(").count();
 
@@ -807,10 +808,10 @@ fn native_tooling_default_checks(root: &Path) -> Result<Vec<DefaultCheck>> {
         DefaultCheck {
             name: "native_formatter_branch_uses_native_provider",
             passed: formatting_provider_source
-                .contains("FormatterMode::Native | FormatterMode::Compat")
+                .contains("FormatterMode::Native =>")
                 && formatting_provider_source.contains("self.native_document_decision(")
                 && formatting_provider_source.contains("self.native_range_decision("),
-            detail: "native/compat formatter branches render through native_*_decision".to_string(),
+            detail: "the native formatter branch renders through native_*_decision".to_string(),
         },
         DefaultCheck {
             name: "external_formatter_requires_external_legacy_mode",
@@ -823,10 +824,11 @@ fn native_tooling_default_checks(root: &Path) -> Result<Vec<DefaultCheck>> {
         DefaultCheck {
             name: "native_critic_routes_through_accepted_service",
             passed: native_service_count >= 1
+                && accepted_subject_count >= 1
                 && accepted_capture_count >= 1
                 && finalize_critic_count >= 1,
             detail: format!(
-                "native critic service entry={native_service_count} accepted-capture={accepted_capture_count} finalize={finalize_critic_count} in diagnostics runtime production code"
+                "native critic service entry={native_service_count} accepted-subject={accepted_subject_count} accepted-capture={accepted_capture_count} finalize={finalize_critic_count} in diagnostics runtime production code"
             ),
         },
         DefaultCheck {
@@ -834,7 +836,7 @@ fn native_tooling_default_checks(root: &Path) -> Result<Vec<DefaultCheck>> {
             passed: configuration_docs
                 .contains("| `[formatting] engine = \"native\"` | `\"formatting\": {\"engine\": \"native\"}` |")
                 && configuration_docs
-                    .contains("Generic LSP settings accept native, compat, or off; external-perltidy is project-only"),
+                    .contains("Generic LSP settings accept native or off; external-perltidy is project-only"),
             detail:
                 "configuration docs distinguish generic client formatter modes from project-only external formatting"
                     .to_string(),
@@ -2355,8 +2357,9 @@ if !enabled || critic_engine == perl_lsp_rs_core::config::CriticEngine::Native {
             formatting_path,
             r#"
 match self.mode {
-    FormatterMode::Native | FormatterMode::Compat => {
-        self.native_document_decision(content, options, context)
+    FormatterMode::Native => {
+        self.native_document_decision(content, options, context, counters)
+    }
     }
     FormatterMode::ExternalLegacy => self.external_document_decision(
         content,
@@ -2375,8 +2378,9 @@ match self.mode {
     )),
 }
 match self.mode {
-    FormatterMode::Native | FormatterMode::Compat => {
-        self.native_range_decision(content, range, options, context)
+    FormatterMode::Native => {
+        self.native_range_decision(content, range, options, context, counters)
+    }
     }
     FormatterMode::ExternalLegacy if is_whole_document_range(content, range) => {
         self.external_document_decision(content, options, context, target)
@@ -2408,7 +2412,8 @@ match self.mode {
 fn push_diagnostics(&self, uri: &str) {
     let accepted_critic = self.capture_accepted_critic(uri);
     let pending = self.evaluate_native_critic(ast, text, uri, identity, accepted_critic.clone(), &diagnostics);
-    let run = NativeCriticService::analyze(NativeCriticSubject::accepted(subject, identity, ast, text, state, observations, gate, current));
+    let subject = NativeCriticSubject::accepted(subject, identity, ast, text, state, observations, gate, current);
+    let run = NativeCriticService::analyze(subject);
     if self.finalize_pending_critic(&mut diagnostics, pending) {
     }
 }
@@ -2418,7 +2423,7 @@ fn push_diagnostics(&self, uri: &str) {
             docs_path,
             r#"
 | `[critic] engine = "native"` | `"critic": {"engine": "native"}` | Use `"legacy"` or `"external"` for Perl::Critic shell-out compatibility |
-| `[formatting] engine = "native"` | `"formatting": {"engine": "native"}` | Generic LSP settings accept native, compat, or off; external-perltidy is project-only |
+| `[formatting] engine = "native"` | `"formatting": {"engine": "native"}` | Generic LSP settings accept native or off; external-perltidy is project-only |
 "#,
         )?;
         Ok(())

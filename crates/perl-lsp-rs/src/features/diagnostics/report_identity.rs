@@ -52,7 +52,14 @@ const PULL_IDENTITY_PROJECT: &str = "perl-lsp";
 /// prior results. Each pin is owned here until its future authority lands
 /// (#9942 evaluation/result contract, #9945 wire projector) and is bumped by
 /// the change that alters the corresponding behavior.
-const RULE_CATALOG_SCHEMA_VERSION: u32 = 1;
+// Bumped to 2 by #7024: canonical regex diagnostics changed what the built-in
+// catalog emits. `PL1000`-`PL1007` are new identities, a backtracking risk moved
+// off `PL001` onto `PL1000`, and `PL609` narrowed from the whole pattern node to
+// the `(?{ ... })` block. Result IDs are deterministic across processes for equal
+// subjects, so without this bump a client holding a pre-change ID could be told
+// `unchanged` and keep diagnostics that predate every one of those. The cost is one
+// `full` report per document after upgrade, which is what the pin is for.
+const RULE_CATALOG_SCHEMA_VERSION: u32 = 2;
 const SUPPRESSION_CONTRACT_SCHEMA_VERSION: u16 = 1;
 const PROJECTION_WIRE_SCHEMA_VERSION: u16 = 1;
 const REMEDIATION_WIRE_SCHEMA_VERSION: u16 = 1;
@@ -432,13 +439,14 @@ fn root_and_logical_path(
         return Ok((WorkspaceRootId::from_project_and_root_key(&project, root_key), logical_path));
     }
 
-    // Standalone: the document's own directory is its root, which requires an
-    // absolute path to name. A relative path reaching here would otherwise key
-    // the identity on a directory that depends on the process's working
-    // directory. `perl_uri` already rejects most such input with
-    // `SourcePathUnavailable`; this stays as the explicit invariant rather than
-    // an assumption about a lower crate's current behavior.
-    if !document_path.is_absolute() {
+    // Standalone: the document's own directory is its root, which requires a
+    // rooted path to name. On Windows, a drive-less rooted path such as
+    // `\\elsewhere\\Mod.pm` has a root component even though
+    // `Path::is_absolute()` is false; refusing it loses reusable pull IDs for
+    // valid `file:///elsewhere/Mod.pm` URIs. A genuinely relative path would
+    // otherwise key the identity on a directory that depends on the process's
+    // working directory.
+    if !document_path.has_root() {
         return Err(NotReusable::SourcePathNotPlainDescent);
     }
     let parent = document_path.parent().ok_or(NotReusable::SourcePathHasNoFileName)?;
@@ -1147,13 +1155,11 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn driveless_standalone_uri_has_no_absolute_root() -> Result<(), String> {
+    fn driveless_standalone_uri_keeps_a_reusable_identity() -> Result<(), String> {
         let context = context_with(Some(ROOT_A));
         let outcome = pull_report_subject("file:///elsewhere/Mod.pm", CONTENT, Some(1), &context);
-        if outcome != Err(NotReusable::SourcePathNotPlainDescent) {
-            return Err(format!(
-                "drive-less standalone URI must have no absolute root: {outcome:?}"
-            ));
+        if outcome.is_err() {
+            return Err(format!("drive-less standalone URI must compose: {outcome:?}"));
         }
         Ok(())
     }

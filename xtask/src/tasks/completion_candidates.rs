@@ -754,26 +754,57 @@ fn normalize_newlines(text: &str) -> String {
 // Discovery
 // ---------------------------------------------------------------------------
 
+/// Source bytes and parsed ASTs for every file under `SCAN_ROOTS`, loaded
+/// once per `discover` invocation.
+///
+/// Four sibling functions previously read and parsed each file independently,
+/// paying ~4 reads and ~3 `syn::parse_file` calls per file. With ~42 tracked
+/// `.rs` files in `SCAN_ROOTS` that amounted to ~168 disk reads and ~126 AST
+/// parses per `run()`. The shared cache collapses that to one read and one
+/// parse per file; iteration order through `files` is preserved so the digest
+/// stays stable.
+struct LoadedSources {
+    /// Path → UTF-8 source text, keyed by the same path used in `files`.
+    sources: BTreeMap<String, String>,
+    /// Path → parsed `syn::File`, keyed by the same path used in `files`.
+    asts: BTreeMap<String, syn::File>,
+}
+
+/// Read each scanned file from disk and parse it once. The result is shared
+/// across every visitor so the working tree is read and parsed once per
+/// `discover` invocation, not four times.
+fn load_sources(root: &Path, files: &[String]) -> Result<LoadedSources> {
+    let mut sources = BTreeMap::new();
+    let mut asts = BTreeMap::new();
+    for file in files {
+        let source = fs::read_to_string(root.join(file))
+            .wrap_err_with(|| format!("failed to read {file}"))?;
+        let parsed = syn::parse_file(&source)
+            .wrap_err_with(|| format!("failed to parse {file} with syn"))?;
+        sources.insert(file.clone(), source);
+        asts.insert(file.clone(), parsed);
+    }
+    Ok(LoadedSources { sources, asts })
+}
+
 /// Build the mechanical population from the working tree.
 pub fn discover(root: &Path) -> Result<Discovered> {
     let files = scanned_files(root)?;
+    let loaded = load_sources(root, &files)?;
 
     // Carriers first: the producer scan needs to know which named types hold a
     // candidate vector before it can judge a return type.
-    let carriers = discover_candidate_carriers(root, &files)?;
+    let carriers = discover_candidate_carriers(&files, &loaded.asts)?;
 
     let mut producers = Vec::new();
     let mut construction_files = BTreeSet::new();
     let mut producer_files = BTreeSet::new();
 
     for file in &files {
-        let source = fs::read_to_string(root.join(file))
-            .wrap_err_with(|| format!("failed to read {file}"))?;
-        let parsed = syn::parse_file(&source)
-            .wrap_err_with(|| format!("failed to parse {file} with syn"))?;
+        let parsed = &loaded.asts[file];
 
         let mut visitor = SeamVisitor::new(file, &carriers);
-        visitor.visit_file(&parsed);
+        visitor.visit_file(parsed);
 
         if visitor.constructions > 0 {
             construction_files.insert(file.clone());
@@ -789,8 +820,8 @@ pub fn discover(root: &Path) -> Result<Discovered> {
         producers.iter().map(|producer| producer.function.clone()).collect();
     let (entry_direct_calls, post_finalizer_appends) =
         discover_entry_routes(root, &producer_names)?;
-    let source_digest = digest_files(root, &files)?;
-    let provider_references = discover_provider_references(root, &files)?;
+    let source_digest = digest_files(&files, &loaded.sources)?;
+    let provider_references = discover_provider_references(&files, &loaded.asts)?;
 
     Ok(Discovered {
         producers,
@@ -842,17 +873,18 @@ fn merge_declarations(producers: Vec<DiscoveredProducer>) -> Result<Vec<Discover
 ///
 /// Textual rather than resolved: the question is only which sibling provider
 /// modules this surface depends on at all, and a `use` or a fully qualified
-/// call are equally good evidence of that.
+/// call are equally good evidence of that. `asts` is the cache populated by
+/// [`load_sources`] — each entry's AST is the parsed result from the same
+/// single read-and-parse step every other visitor consumes.
 fn discover_provider_references(
-    root: &Path,
     files: &[String],
+    asts: &BTreeMap<String, syn::File>,
 ) -> Result<BTreeMap<String, BTreeSet<String>>> {
     let mut references: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     for file in files {
-        let source = fs::read_to_string(root.join(file))
-            .wrap_err_with(|| format!("failed to read {file}"))?;
-        let parsed = syn::parse_file(&source)
-            .wrap_err_with(|| format!("failed to parse {file} with syn"))?;
+        let parsed = asts
+            .get(file)
+            .ok_or_else(|| color_eyre::eyre::eyre!("missing AST cache entry for {file}"))?;
         let mut modules = BTreeSet::new();
         // The file's own scope first: a `use` may sit below the code that uses
         // it, so the frame is complete before any path is read.
@@ -865,7 +897,7 @@ fn discover_provider_references(
             scopes: vec![file_scope],
             module: module_path_for(file),
         };
-        visitor.visit_file(&parsed);
+        visitor.visit_file(parsed);
         for module in modules {
             references.entry(module).or_default().insert(file.clone());
         }
@@ -1285,16 +1317,23 @@ fn module_path_for(file: &str) -> String {
 }
 
 /// SHA-256 over an ordered file list, binding each path to its bytes.
-fn digest_files(root: &Path, files: &[String]) -> Result<String> {
+///
+/// `sources` is the cache populated by [`load_sources`] — pulling bytes
+/// from the cached `String` avoids a second read per file. The bytes fed to
+/// the hasher are identical to what a fresh `fs::read` would return, so the
+/// digest remains stable across the read consolidation.
+fn digest_files(files: &[String], sources: &BTreeMap<String, String>) -> Result<String> {
     let mut hasher = Sha256::new();
     for path in files {
-        let bytes = fs::read(root.join(path)).wrap_err_with(|| format!("failed to read {path}"))?;
+        let source = sources
+            .get(path)
+            .ok_or_else(|| color_eyre::eyre::eyre!("missing source cache entry for {path}"))?;
         // Length-prefix each field so a rename cannot collide with a content
         // change that happens to shift bytes across the boundary.
         hasher.update((path.len() as u64).to_le_bytes());
         hasher.update(path.as_bytes());
-        hasher.update((bytes.len() as u64).to_le_bytes());
-        hasher.update(&bytes);
+        hasher.update((source.len() as u64).to_le_bytes());
+        hasher.update(source.as_bytes());
     }
     let hex: String = hasher.finalize().iter().map(|byte| format!("{byte:02x}")).collect();
     Ok(format!("sha256:{hex}"))
@@ -1421,16 +1460,18 @@ const CANDIDATE_TYPES: &[&str] = &["CompletionItem", "CompletionCandidate"];
 /// returns `CompletionFinalization`, whose `candidates` field is the page. A
 /// signature-only rule misses those, so carriers are discovered from the
 /// scanned source first and the producer scan then treats a return of one as a
-/// candidate return.
-fn discover_candidate_carriers(root: &Path, files: &[String]) -> Result<BTreeSet<String>> {
+/// candidate return. `asts` is the cache populated by [`load_sources`].
+fn discover_candidate_carriers(
+    files: &[String],
+    asts: &BTreeMap<String, syn::File>,
+) -> Result<BTreeSet<String>> {
     let mut containers = Vec::new();
     for file in files {
-        let source = fs::read_to_string(root.join(file))
-            .wrap_err_with(|| format!("failed to read {file}"))?;
-        let parsed = syn::parse_file(&source)
-            .wrap_err_with(|| format!("failed to parse {file} with syn"))?;
+        let parsed = asts
+            .get(file)
+            .ok_or_else(|| color_eyre::eyre::eyre!("missing AST cache entry for {file}"))?;
         let mut visitor = CarrierVisitor { containers: &mut containers };
-        visitor.visit_file(&parsed);
+        visitor.visit_file(parsed);
     }
     Ok(resolve_carriers(&containers))
 }
@@ -3117,16 +3158,60 @@ mod tests {
 
     use super::*;
 
-    /// The checked-in ledger reconciled against the real tree is the valid
-    /// fixture. Every negative test below corrupts that fixture in memory along
-    /// one intended falsifier axis and proves the validator refuses it for that
-    /// reason — so a passing `check` means the axis was actually exercised, not
-    /// that a synthetic fixture happened to be well formed.
-    fn fixture() -> (Ledger, Discovered) {
+    /// The checked-in ledger exactly as it sits on disk, reconciled against the
+    /// real tree. Only the two `checked_in_*` tests want this: they are the
+    /// controls that prove the committed digest and projection are current, so
+    /// for them the committed `source_digest` is the subject, not a
+    /// precondition.
+    fn checked_in_fixture() -> (Ledger, Discovered) {
         let root = project_root().expect("project root");
         let ledger = load(&root).expect("ledger parses");
         let discovered = discover(&root).expect("discovery runs");
         (ledger, discovered)
+    }
+
+    /// The valid fixture every other test builds on: the checked-in ledger with
+    /// `source_digest` rebound to current discovery. Each negative test below
+    /// corrupts it in memory along one intended falsifier axis and proves the
+    /// validator refuses it for that reason — so a passing `check` means the
+    /// axis was actually exercised, not that a synthetic fixture happened to be
+    /// well formed.
+    ///
+    /// The rebinding is what keeps that guarantee true. `validate` checks the
+    /// digest before any row-level rule, so a stale committed digest makes it
+    /// refuse for the digest reason first and every `refuses` assertion below
+    /// fails on the wrong error — 27 falsifiers reporting red while none of
+    /// them is exercised. That is strictly worse than a plain red, because the
+    /// suite looks like 27 defects and proves nothing. Observed on `main` at
+    /// `cc21e16` (#10949); the drift itself is still caught, once and by name,
+    /// by `checked_in_ledger_is_current`.
+    ///
+    /// This widens detection rather than narrowing it: the digest axis keeps
+    /// its own dedicated control in `refuses_a_source_change_without_a_re_audit`,
+    /// and the row axes become reachable instead of masked.
+    fn fixture() -> (Ledger, Discovered) {
+        let (mut ledger, discovered) = checked_in_fixture();
+        ledger.source_digest.clone_from(&discovered.source_digest);
+        (ledger, discovered)
+    }
+
+    /// Guards the rebinding above. If someone reverts `fixture` to hand back the
+    /// committed digest, this fails immediately and says why, instead of the
+    /// whole negative-control suite going quietly unexercised the next time the
+    /// completion surface moves.
+    #[test]
+    fn the_axis_fixture_does_not_depend_on_committed_digest_currency() -> Result<()> {
+        let (ledger, discovered) = fixture();
+        if ledger.source_digest != discovered.source_digest {
+            bail!(
+                "the shared fixture must rebind `source_digest` to current discovery; otherwise a \
+                 stale committed digest short-circuits `validate` and masks every row-level \
+                 falsifier below"
+            );
+        }
+        validate(&ledger, &discovered)
+            .context("the shared fixture is valid before any single axis is corrupted")?;
+        Ok(())
     }
 
     fn refuses(ledger: &Ledger, discovered: &Discovered, expected: &str) {
@@ -3145,7 +3230,7 @@ mod tests {
 
     #[test]
     fn checked_in_ledger_is_current() {
-        let (ledger, discovered) = fixture();
+        let (ledger, discovered) = checked_in_fixture();
         validate(&ledger, &discovered)
             .expect("checked-in ledger reconciles against current source");
     }
@@ -3153,7 +3238,7 @@ mod tests {
     #[test]
     fn checked_in_projection_is_current() {
         let root = project_root().expect("project root");
-        let (ledger, discovered) = fixture();
+        let (ledger, discovered) = checked_in_fixture();
         let generated = render_markdown(&ledger, &discovered);
         let existing = fs::read_to_string(root.join(PROJECTION_PATH)).expect("projection exists");
         assert_eq!(
@@ -3170,6 +3255,61 @@ mod tests {
         let (ledger, discovered) = fixture();
         assert_eq!(render_markdown(&ledger, &discovered), render_markdown(&ledger, &discovered));
         assert_eq!(render_list(&ledger), render_list(&ledger));
+    }
+
+    /// `load_sources` returns a cache that is the canonical view shared by every
+    /// visitor that consumed the scan list before consolidation. Before the fix
+    /// for #15266, four sibling functions each independently walked the file
+    /// list, paying ~4 reads and ~3 `syn::parse_file` calls per file. The cache
+    /// collapses that to one read and one parse per file, and every visitor
+    /// downstream receives the same `syn::File` allocation through the same
+    /// `BTreeMap` entry — so identity equality on repeated lookups is what binds
+    /// the four siblings to the single source read.
+    #[test]
+    fn load_sources_caches_every_scanned_file_once() {
+        let root = project_root().expect("project root");
+        let files = scanned_files(&root).expect("scan");
+        let expected = files.len();
+        assert!(
+            expected > 0,
+            "test fixture must contain at least one scanned file; check SCAN_ROOTS against \
+             the current tree"
+        );
+
+        let loaded = load_sources(&root, &files).expect("load sources");
+
+        assert_eq!(
+            loaded.sources.len(),
+            expected,
+            "the source cache holds one entry per scanned file"
+        );
+        assert_eq!(loaded.asts.len(), expected, "the AST cache holds one entry per scanned file");
+
+        // The cache is the same view for every visitor: `loaded.asts[file]`
+        // and `loaded.sources[file]` reference the canonical entries the
+        // four siblings walk, not duplicates produced by independent reads.
+        // Two lookups in a row must hand back the same `syn::File` allocation
+        // — that is the proof that a visitor did not re-parse from scratch.
+        for file in &files {
+            let source =
+                loaded.sources.get(file).unwrap_or_else(|| panic!("source cache misses {file}"));
+            let first = loaded.asts.get(file).unwrap_or_else(|| panic!("AST cache misses {file}"));
+            let second = loaded.asts.get(file).expect("AST cache stable across repeat lookups");
+            assert_eq!(
+                std::ptr::from_ref(first),
+                std::ptr::from_ref(second),
+                "the AST for {file} must be the same allocation on every lookup; if a visitor \
+                 began re-parsing the source, this identity check would fail"
+            );
+            // The cached source must match the bytes we just parsed into `first` —
+            // `syn::parse_file` is deterministic on identical input but a freshly
+            // re-parsed AST would live at a different address than `first`, which
+            // the previous assertion already detects.
+            assert!(
+                !source.is_empty(),
+                "the cached source for {file} is empty; the read step did not execute"
+            );
+        }
     }
 
     /// Every scan root still matches tracked source, one root at a time.
@@ -4756,7 +4896,12 @@ mod tests {
         let root = project_root().expect("project root");
         let (_, discovered) = fixture();
         for field in ["identity", "insertion_plan", "evidence", "rank"] {
+            // Reloaded per iteration for a clean row set, so it needs the same
+            // digest rebinding `fixture` does — otherwise this control refuses
+            // for the digest reason whenever the committed audit is stale and
+            // the `not_applicable` axis goes unexercised.
             let mut ledger = load(&root).expect("ledger parses");
+            ledger.source_digest.clone_from(&discovered.source_digest);
             let row = ledger
                 .producers
                 .iter_mut()

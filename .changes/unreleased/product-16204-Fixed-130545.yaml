@@ -1,0 +1,9 @@
+project: product
+component: Compatibility
+kind: Fixed
+body: "Parse scalar signature defaults with =, //=, and ||= while retaining exact operator ranges; reject named aggregate parameters and aggregate defaults with typed, ranged errors. Rust AST users must supply default_operator and default_operator_span when constructing OptionalParameter, and default_operator_span when constructing NamedParameter. ParseError gains InvalidSignatureParameter and its typed kind. This pre-1.0 source compatibility change does not promote editor support."
+time: 2026-09-20T13:05:45Z
+custom:
+  PR: "16204"
+  Slug: signature-forms-8915
+  Breaking: "yes"
