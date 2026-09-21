@@ -80,7 +80,14 @@ every linked worktree resolves the same path (deriving it from the worktree's
 own toplevel basename would recreate the per-slot split):
 
 ```bash
-main_root="$(dirname "$(git rev-parse --git-common-dir)")"
+# --git-common-dir is absolute from a worktree but relative (".git") from the
+# main checkout, so dirname alone splits the devplane ("."/basename mismatch).
+# Branch exactly like the justfile lane does:
+common_dir="$(git rev-parse --git-common-dir)"
+case "$common_dir" in
+  /*|[A-Za-z]:*) main_root="$(dirname "$common_dir")" ;;
+  *) main_root="$(git rev-parse --show-toplevel)" ;;
+esac
 export DEVPLANE="${XDG_CACHE_HOME:-$HOME/.cache}/devplane/$(basename "$main_root")"
 export CARGO_TARGET_DIR="$DEVPLANE/target"
 export CARGO_HOME="$DEVPLANE/cargo-home"
@@ -88,7 +95,7 @@ export CARGO_INCREMENTAL=0
 # with sccache installed:
 export RUSTC_WRAPPER=sccache
 export SCCACHE_DIR="$DEVPLANE/sccache"
-export SCCACHE_BASEDIRS="$(dirname "$(git rev-parse --show-toplevel)")"
+export SCCACHE_BASEDIRS="$(dirname "$main_root")"
 ```
 
 Warning: with the variables exported directly, **you lose the flock** (see
