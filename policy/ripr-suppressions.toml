@@ -3966,41 +3966,6 @@ review_after = "2026-10-13"
 expires = "2026-12-31"
 removal_criteria = "Remove when #13238 lands the exact installed-name state that replaces this containment, or when the candidate gains its first production consumer (then re-scope the suppression to that consumer's seams and require activation evidence through it), or when ripr#1429 resolves activation tracing for modules with no production entry point. Narrow immediately if any seam unrelated to the containment predicates lands in this file."
 
-# -----------------------------------------------------------------------------
-# host_work_status pure domain (WIP-01 of #11664): whole-module no_static_path.
-#
-# PR #11995 stages a pure typed domain without a production consumer until
-# #11666 wires the live read-only observation command. Its original RIPR report
-# recorded 134 no_static_path seams across the six files below. That historical
-# count is not a current-revision receipt or a claim that every seam is covered.
-# The reported tracing limitation concerns declarations and closed-vocabulary
-# domain code whose activation is not connected to its tests by the instrument
-# (ripr#1428/#1429). Focused tests exercise classifiers, adapters, aggregation,
-# identity and negative controls; test counts alone do not prove every seam.
-# Current execution and instrument results belong in the revision's proof.
-# This suppression remains limited to the six files and no_static_path class.
-# Remove at production-consumer cutover or instrument repair; narrow it if
-# unrelated behavior is introduced. No reachable_unrevealed gap is suppressed.
-# -----------------------------------------------------------------------------
-[[suppress]]
-id = "ripr-suppress-host-work-status-pure-domain"
-kind = "predicate_infection_untraceable"
-paths = [
-  "xtask/src/host_work_status/mod.rs",
-  "xtask/src/host_work_status/subject.rs",
-  "xtask/src/host_work_status/dimension.rs",
-  "xtask/src/host_work_status/lifecycle.rs",
-  "xtask/src/host_work_status/status.rs",
-  "xtask/src/host_work_status/adapter.rs",
-]
-classification = ["no_static_path"]
-owner = "proof-lane"
-issue = "#11664"
-reason = "PR #11995 stages the pure typed host-work-status domain without a production consumer until #11666. The original report identified no_static_path seams in declarations and closed-vocabulary domain code that the instrument did not connect to test activation (ripr#1428/#1429). Historical seam/test counts are not current proof or all-seam coverage. Focused classifier, adapter, aggregation, identity and negative controls provide bounded behavioral evidence; the reviewed revision must carry its execution and instrument results separately. Limit this exception to the six named files and no_static_path classification; remove with the production entry point or upstream tracing repair."
-created = "2026-09-17"
-review_after = "2026-10-17"
-expires = "2026-12-31"
-removal_criteria = "Remove when #11666 wires the live command (RIPR can then trace activation through the command surface), or when ripr#1428/#1429 fix upstream tracing for declaration-only modules. Narrow immediately if any seam unrelated to the pure domain lands in these files."
 # Activation inventory generator (#9204, PR #14633): hosted RIPR on head
 # 09cb09d623 (merge tree d5827469, run 35005794864) reported 188 new
 # actionable gaps — 106 no_static_path + 82 reachable_unrevealed — in the
@@ -4963,3 +4928,24 @@ created = "2026-09-17"
 review_after = "2026-10-17"
 expires = "2026-12-31"
 removal_criteria = "Remove when EffortlessMetrics/ripr#1429 traces declaration-line probes to the tests that construct or exercise their owners, or at expiry. Narrow immediately if a receipt reports an executable no_static_path seam in semantic/mod.rs or semantic/quickorm.rs outside the five identities listed in gap_ids. Do not keep this entry if those probe ids rotate and the receipt names a different executable owner."
+
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-host-work-status-pure-domain"
+kind = "predicate_infection_untraceable"
+paths = [
+  "xtask/src/host_work_status/mod.rs",
+  "xtask/src/host_work_status/subject.rs",
+  "xtask/src/host_work_status/dimension.rs",
+  "xtask/src/host_work_status/lifecycle.rs",
+  "xtask/src/host_work_status/status.rs",
+  "xtask/src/host_work_status/adapter.rs",
+]
+classification = ["no_static_path"]
+owner = "proof-lane"
+issue = "#11664"
+reason = "PR #11995 stages the pure typed host-work-status domain without a production consumer until #11666. The original report identified no_static_path seams in declarations and closed-vocabulary domain code that the instrument did not connect to test activation (ripr#1428/#1429). Historical seam/test counts are not current proof or all-seam coverage. Focused classifier, adapter, aggregation, identity and negative controls provide bounded behavioral evidence; the reviewed revision must carry its execution and instrument results separately. Limit this exception to the six named files and no_static_path classification; remove with the production entry point or upstream tracing repair."
+created = "2026-09-17"
+review_after = "2026-10-17"
+expires = "2026-12-31"
+removal_criteria = "Remove when #11666 wires the live command (RIPR can then trace activation through the command surface), or when ripr#1428/#1429 fix upstream tracing for declaration-only modules. Narrow immediately if any seam unrelated to the pure domain lands in these files."
