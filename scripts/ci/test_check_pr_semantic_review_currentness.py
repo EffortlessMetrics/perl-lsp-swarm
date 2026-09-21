@@ -898,7 +898,7 @@ class AncestryPredicateStateTests(unittest.TestCase):
 
         def run(args, **kwargs):
             if list(args[:2]) == ["git", "merge-base"]:
-                return subprocess.CompletedProcess(args, code, stdout=b"", stderr=b"")
+                return subprocess.CompletedProcess(args, code, stdout="", stderr="")
             return real_run(args, **kwargs)
 
         module._run = run
@@ -925,6 +925,14 @@ class SanitizeGitDiagnosticTests(unittest.TestCase):
         cleaned = module.sanitize_git_diagnostic(raw)
         self.assertNotIn("s3cret-token", cleaned)
         self.assertIn("https://***@", cleaned)
+
+    def test_token_only_url_credentials_are_redacted(self) -> None:
+        # Token-only remote URLs (`https://TOKEN@host`) carry no user:password
+        # split; the userinfo before `@` is still the secret.
+        raw = "fatal: unable to access 'https://ghp_secret-token@example.invalid/repo.git/'"
+        cleaned = module.sanitize_git_diagnostic(raw)
+        self.assertNotIn("ghp_secret-token", cleaned)
+        self.assertIn("https://***@example.invalid", cleaned)
 
     def test_empty_stderr_sanitizes_to_empty_so_detail_is_only_the_exit_code(self) -> None:
         self.assertEqual("", module.sanitize_git_diagnostic(""))

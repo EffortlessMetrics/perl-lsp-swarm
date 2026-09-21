@@ -150,8 +150,9 @@ ANCESTRY_ANCESTOR = "ancestor"
 ANCESTRY_NOT_ANCESTOR = "not-ancestor"
 ANCESTRY_INSTRUMENT_FAILURE = "instrument-failure"
 
-# `https://user:token@host/...` — git prints credential-bearing URLs on some failures.
-_EMBEDDED_CREDENTIALS_RE = re.compile(r"([a-zA-Z][a-zA-Z0-9+.-]*)://[^@/\s:]+:[^@/\s]+@")
+# `https://user:token@host/...` and token-only `https://token@host/...` — git prints
+# credential-bearing URLs on some failures; any userinfo before `@` is a secret.
+_EMBEDDED_CREDENTIALS_RE = re.compile(r"([a-zA-Z][a-zA-Z0-9+.-]*)://[^\s/@]+@")
 
 
 def sanitize_git_diagnostic(stderr: str, *, limit: int = 200) -> str:
