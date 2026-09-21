@@ -322,6 +322,8 @@ impl LexerCheckpoint {
                 || self.replay.line_start_offset != other.replay.line_start_offset
                 || self.replay.current_quote_op != other.replay.current_quote_op
                 || self.identity.policy() != other.identity.policy(),
+            angle_budget_changed: self.replay.angle_scan_bytes != other.replay.angle_scan_bytes
+                || self.replay.angle_scan_steps != other.replay.angle_scan_steps,
         }
     }
 
@@ -603,6 +605,51 @@ mod tests {
     use crate::{LexerConfig, LexerMode, Position};
     use perl_source_identity::SourceGeneration;
 
+    #[test]
+    fn angle_budget_only_delta_is_behavior_bearing_state() {
+        // FC-CHECKPOINT-DIFF-ANGLE-BUDGET: a checkpoint pair whose only delta
+        // is cumulative angle budget consumption must disagree in
+        // diff()/has_state_changes()/behavior_state_changed(); budget-only
+        // divergence may not look like position churn.
+        let replay = |bytes: usize, steps: usize| ReplayState {
+            angle_scan_bytes: bytes,
+            angle_scan_steps: steps,
+            position: 3,
+            mode: LexerMode::ExpectTerm,
+            delimiter_stack: Vec::new(),
+            in_prototype: false,
+            prototype_depth: 0,
+            after_sub: false,
+            after_arrow: false,
+            hash_brace_depth: 0,
+            after_var_subscript: false,
+            paren_depth: 0,
+            current_pos: Position::start(),
+            after_newline: false,
+            pending_heredocs: Vec::new(),
+            line_start_offset: 0,
+            current_quote_op: None,
+            eof_emitted: false,
+            context: CheckpointContext::Normal,
+        };
+        let content = perl_source_identity::ContentDigest::of_bytes(b"");
+        let identity = crate::LexerCheckpointIdentity::capture(
+            &content,
+            &LexerConfig::default(),
+            false,
+            false,
+            None,
+            SourceGeneration::Unknown,
+        );
+        let spent = LexerCheckpoint::from_live(identity.clone(), replay(16, 4));
+        let fresh = LexerCheckpoint::from_live(identity, replay(0, 0));
+        let diff = spent.diff(&fresh);
+        assert!(diff.angle_budget_changed, "angle budget delta lost in diff");
+        assert!(diff.has_state_changes(), "budget-only delta invisible");
+        assert!(spent.behavior_state_changed(&fresh), "budget-only delta not behavior-bearing");
+    }
+
+    #[test]
     #[test]
     fn transform_offset_boundaries_and_overlap() {
         assert_eq!(transform_offset(9, 10, 5, 8), Some(9));

@@ -271,6 +271,41 @@ fn buffered_parser_reports_rebuild_instead_of_malformed_perl()
 }
 
 #[test]
+fn buffered_angle_fallback_propagates_through_nested_block()
+-> Result<(), Box<dyn std::error::Error>> {
+    // FC-ANGLE-FALLBACK-ORDINARY-BLOCK: the top-level control covers
+    // parse_program; an angle inside an ordinary nested block must still
+    // surface the typed rebuild request instead of a recovered Ok(block).
+    use crate::error::{ErrorCategory, ErrorClass};
+    let source = "if (1) { my $value = <a.pm>; }";
+    let mut stream = TokenStream::new(source);
+    let mut tokens = Vec::new();
+    loop {
+        let token = stream.next()?;
+        let eof = token.kind() == TokenKind::Eof;
+        tokens.push(token);
+        if eof {
+            break;
+        }
+    }
+    let output = Parser::from_tokens(tokens, source).parse_with_recovery();
+    let reason = crate::tokens::token_stream::ContextualFallbackReason::NoCheckpointAuthority;
+    if output.stop_cause() != Some(ParseStopCause::AngleContextFallback { reason }) {
+        return Err(format!("nested block swallowed fallback: {:?}", output.stop_cause()).into());
+    }
+    if !output.diagnostics.iter().any(|error| {
+        matches!(
+            error,
+            ParseError::AngleContextFallback { reason: observed, .. } if *observed == reason
+        ) && error.error_class() == ErrorCategory::Transient
+    }) {
+        return Err("nested block lost typed transient fallback diagnostic".into());
+    }
+    Ok(())
+}
+
+#[test]
+#[test]
 fn malformed_angle_error_node_respects_node_budget() -> Result<(), Box<dyn std::error::Error>> {
     let source = "<oops;";
     let mut budget = crate::ParseBudget::unlimited();

@@ -332,6 +332,14 @@ pub struct LexerConfigIdentity {
     parse_interpolation: bool,
     max_lookahead: usize,
     symbol_table_bound: bool,
+    /// Independent angle-scan byte budget in effect (#16224). Projection is
+    /// exact, not presence-only: two configurations differing only in an
+    /// angle limit can classify the same `<...>` source differently
+    /// (recognition vs. typed exhaustion), so token-subject identity must
+    /// move with it (FC-TOKEN-SUBJECT-ANGLE-LIMITS).
+    max_angle_scan_bytes: usize,
+    /// Independent angle-scan scalar-step budget in effect (#16224).
+    max_angle_scan_steps: usize,
 }
 
 impl LexerConfigIdentity {
@@ -342,6 +350,8 @@ impl LexerConfigIdentity {
             parse_interpolation: config.parse_interpolation,
             max_lookahead: config.max_lookahead,
             symbol_table_bound: config.symbol_table.is_some(),
+            max_angle_scan_bytes: config.max_angle_scan_bytes,
+            max_angle_scan_steps: config.max_angle_scan_steps,
         }
     }
 
@@ -376,6 +386,35 @@ impl LexerConfigIdentity {
     #[must_use]
     pub fn symbol_table_bound(self) -> bool {
         self.symbol_table_bound
+    }
+}
+
+#[cfg(test)]
+mod angle_limit_identity_tests {
+    use super::LexerConfigIdentity;
+    use perl_lexer::LexerConfig;
+
+    #[test]
+    fn angle_scan_limits_participate_in_config_identity() {
+        let base = LexerConfig::default();
+        let bytes = LexerConfig { max_angle_scan_bytes: 1, ..LexerConfig::default() };
+        let steps = LexerConfig { max_angle_scan_steps: 1, ..LexerConfig::default() };
+        let base_identity = LexerConfigIdentity::of(&base);
+        assert_ne!(
+            base_identity,
+            LexerConfigIdentity::of(&bytes),
+            "angle byte limit omitted from token-subject config identity"
+        );
+        assert_ne!(
+            base_identity,
+            LexerConfigIdentity::of(&steps),
+            "angle step limit omitted from token-subject config identity"
+        );
+        assert_eq!(
+            base_identity,
+            LexerConfigIdentity::of(&LexerConfig::default()),
+            "projection unstable across equal configurations"
+        );
     }
 }
 
