@@ -2096,6 +2096,9 @@ impl<'a> Parser<'a> {
         // Check for optional label.
         // Labels may be ordinary identifiers, and phase keywords are also
         // valid labels when used in labeled-loop control (`last CHECK`).
+        // `continue` never takes a label in real Perl (`continue OUTER` is a
+        // syntax error), so an identifier after it is rejected rather than
+        // attached (#16285).
         let label = if matches!(
             self.peek_kind(),
             Some(TokenKind::Identifier)
@@ -2105,11 +2108,36 @@ impl<'a> Parser<'a> {
                 | Some(TokenKind::Init)
                 | Some(TokenKind::Unitcheck)
         ) {
+            let label_pos = self.current_position();
             let label_token = self.consume_token()?;
+            if op == "continue" {
+                return Err(ParseError::syntax("`continue` does not take a label", label_pos));
+            }
             Some(label_token.text.to_string())
         } else {
             None
         };
+
+        // An empty parenthesized invocation (`next()`, `continue()`) is one
+        // loop-control node in real Perl; anything else in the parens
+        // (`continue(1)`) or parens after a label (`last OUTER()`) is a
+        // syntax error (#16285).
+        if label.is_none() && self.peek_kind() == Some(TokenKind::LeftParen) {
+            self.consume_token()?;
+            if self.peek_kind() == Some(TokenKind::RightParen) {
+                self.consume_token()?;
+            } else {
+                return Err(ParseError::syntax(
+                    "loop-control operators take no arguments",
+                    self.current_position(),
+                ));
+            }
+        } else if self.peek_kind() == Some(TokenKind::LeftParen) {
+            return Err(ParseError::syntax(
+                "loop-control labels take no argument list",
+                self.current_position(),
+            ));
+        }
 
         let end = self.previous_position();
         self.charge_node(NodeKind::LoopControl { op, label }, SourceLocation { start, end })

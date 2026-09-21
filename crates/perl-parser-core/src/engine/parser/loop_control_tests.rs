@@ -161,18 +161,25 @@ mod tests {
 
     #[test]
     fn test_continue_with_label() {
-        // Labels must be accepted on `continue` for symmetry with next/last/redo.
+        // Real Perl rejects labels on `continue` (`continue OUTER` is a
+        // syntax error), so the label must not attach: recovery records an
+        // error and no LoopControl node carries a label (#16285).
         let source = "continue OUTER;";
-        let ast = must_some(parse_code(source));
+        let mut parser = Parser::new(source);
+        let ast = must_some(parser.parse().ok());
+        assert!(
+            !parser.errors().is_empty(),
+            "expected a recorded rejection for `continue OUTER`, got none"
+        );
         let NodeKind::Program { statements } = &ast.kind else {
             panic!("expected Program, got {:?}", ast.kind);
         };
-        let stmt = must_some(statements.first());
-        let NodeKind::LoopControl { op, label } = &stmt.kind else {
-            panic!("expected LoopControl, got {:?}", stmt.kind);
-        };
-        assert_eq!(op, "continue");
-        assert_eq!(label.as_deref(), Some("OUTER"));
+        assert!(
+            !statements
+                .iter()
+                .any(|stmt| matches!(&stmt.kind, NodeKind::LoopControl { label: Some(_), .. })),
+            "no LoopControl node may carry a label for `continue`"
+        );
     }
 
     #[test]
