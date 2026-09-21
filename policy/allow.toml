@@ -1344,23 +1344,6 @@ expires = "2026-10-20"
 ast_kind = "tracked_file"
 glob = "justfile"
 
-# schemas/ directory - configuration/yml files
-[[allow]]
-id = "allow-b0184"
-kind = "non_rust_file"
-family = "unknown_non_rust"
-glob = "test_print_indirect.pl"
-owner = "unowned"
-classification = "baseline_debt"
-reason = "Root-level Perl test script. Baseline floor."
-evidence = ["legacy-policy:no-panic-baseline"]
-created = "2026-06-22"
-expires = "2026-10-20"
-
-[allow.selector]
-ast_kind = "tracked_file"
-glob = "test_print_indirect.pl"
-
 # vscode-extension/* - unknown_non_rust (b0161 is package_metadata, b0162 is test_fixture)
 [[allow]]
 id = "allow-b0186"
@@ -4489,3 +4472,22 @@ normalized_snippet_hash = "fnv1a64:dcfd9e6d8162989e"
 [allow.last_seen]
 line = 59
 column = 5
+
+# Staged structural authority; remove when the FF02 consumer lands (#13856).
+[[allow]]
+id = "allow-13855-staged-contract"
+kind = "lint_exception"
+family = "expect_attribute"
+path = "xtask/src/tasks/release_scope_v2.rs"
+owner = "release/ci"
+classification = "reviewed_exception"
+reason = "FF01 #13855 lands the private structural model before its FF02 #13856 emit/verify consumer. Only non-test dead_code is expected; tests exercise the model now. Remove this exception with the consumer."
+evidence = ["issue:13855", "issue:13856", "test:xtask/src/tasks/release_scope_v2/tests.rs"]
+created = "2026-09-20"
+review_after = "2026-10-20"
+expires = "2026-12-20"
+
+[allow.selector]
+ast_kind = "attribute"
+lint = "dead_code"
+target_fingerprint = "policy:allow-13855-staged-contract"

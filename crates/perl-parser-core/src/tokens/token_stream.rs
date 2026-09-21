@@ -377,6 +377,22 @@ impl<'a> TokenStream<'a> {
         }
     }
 
+    /// Whether the lookahead slot already holds the sticky `Eof` token.
+    ///
+    /// Pure read of cached state: unlike [`TokenStream::is_eof`] this never
+    /// fills the lookahead, so it cannot change which `capture_boundary` mode
+    /// produced the next token. That matters because [`TokenStream::peek`]
+    /// lexes with `capture_boundary: true` while the fresh path of
+    /// [`TokenStream::next`] uses `false`.
+    ///
+    /// Used by the parser's single advance seam to tell a real advance from a
+    /// repeated read of the sticky terminator (#8786). A `false` result does
+    /// not assert that input remains — only that the terminator is not already
+    /// cached.
+    pub(crate) fn peeked_is_sticky_eof(&self) -> bool {
+        matches!(&self.peeked, Some(token) if token.kind() == TokenKind::Eof)
+    }
+
     /// Check if we're at the end of input
     pub fn is_eof(&mut self) -> bool {
         matches!(self.peek(), Ok(token) if token.kind() == TokenKind::Eof)

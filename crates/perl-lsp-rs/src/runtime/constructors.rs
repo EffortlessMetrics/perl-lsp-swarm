@@ -49,7 +49,6 @@ impl LspServer {
         Self {
             documents: Arc::new(Mutex::new(HashMap::new())),
             initialize_requested: AtomicBool::new(false),
-            initialization_accepted: AtomicBool::new(false),
             initialized: AtomicBool::new(false),
             position_encoding_session_context: Mutex::new(None),
             shutdown_received: AtomicBool::new(false),
@@ -79,6 +78,7 @@ impl LspServer {
             discovered_perltidy_profile: Arc::new(Mutex::new(None)),
             advertised_features: Mutex::new(default_features),
             advertised_feature_ids: Mutex::new(default_feature_ids),
+            text_sync_session: Mutex::new(None),
             client_supports_pull_diags: Arc::new(AtomicBool::new(false)),
             workspace_config: Arc::new(Mutex::new(WorkspaceConfig::default())),
             initialization_options_perl_settings: Arc::new(Mutex::new(None)),
@@ -247,7 +247,6 @@ impl LspServer {
         Self {
             documents: Arc::new(Mutex::new(HashMap::new())),
             initialize_requested: AtomicBool::new(false),
-            initialization_accepted: AtomicBool::new(false),
             initialized: AtomicBool::new(false),
             position_encoding_session_context: Mutex::new(None),
             shutdown_received: AtomicBool::new(false),
@@ -277,6 +276,7 @@ impl LspServer {
             discovered_perltidy_profile: Arc::new(Mutex::new(None)),
             advertised_features: Mutex::new(default_features),
             advertised_feature_ids: Mutex::new(default_feature_ids),
+            text_sync_session: Mutex::new(None),
             client_supports_pull_diags: Arc::new(AtomicBool::new(false)),
             workspace_config: Arc::new(Mutex::new(WorkspaceConfig::default())),
             initialization_options_perl_settings: Arc::new(Mutex::new(None)),
@@ -386,7 +386,6 @@ impl LspServer {
         Self {
             documents: Arc::new(Mutex::new(HashMap::new())),
             initialize_requested: AtomicBool::new(false),
-            initialization_accepted: AtomicBool::new(false),
             initialized: AtomicBool::new(false),
             position_encoding_session_context: Mutex::new(None),
             shutdown_received: AtomicBool::new(false),
@@ -416,6 +415,7 @@ impl LspServer {
             discovered_perltidy_profile: Arc::new(Mutex::new(None)),
             advertised_features: Mutex::new(default_features),
             advertised_feature_ids: Mutex::new(default_feature_ids),
+            text_sync_session: Mutex::new(None),
             client_supports_pull_diags: Arc::new(AtomicBool::new(false)),
             workspace_config: Arc::new(Mutex::new(WorkspaceConfig::default())),
             initialization_options_perl_settings: Arc::new(Mutex::new(None)),
@@ -496,13 +496,15 @@ impl Default for LspServer {
 
 #[cfg(test)]
 impl LspServer {
-    /// Test helper: mark the initialize one-shot consumed *and* accepted.
+    /// Test helper: drive a real initialize so the session is accepted.
     ///
-    /// Setting [`Self::initialize_requested`] alone must not open serving.
+    /// Setting [`Self::initialize_requested`] alone must not open serving;
+    /// tests that need a live session run the real acceptance path, which
+    /// also publishes the active position-encoding context.
     pub(crate) fn test_mark_initialize_session_accepted(&self) {
-        use std::sync::atomic::Ordering;
-        self.initialize_requested.store(true, Ordering::Release);
-        self.initialization_accepted.store(true, Ordering::Release);
+        let Ok(Some(_)) = self.handle_initialize(None) else {
+            unreachable!("default initialize must accept in tests");
+        };
     }
 }
 

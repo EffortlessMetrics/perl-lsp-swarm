@@ -321,7 +321,12 @@ jobs:
                           f"- Route: `{receipt.get('route') or 'triage'}`",
                       ]
 
-          summary.write_text("\n".join(lines) + "\n", encoding="utf-8")
+          rendered = "\n".join(lines) + "\n"
+          summary.write_text(rendered, encoding="utf-8")
+          # Mirror the receipt summary into stdout so the fields appear in the
+          # job-log tail when GITHUB_STEP_SUMMARY or artifact downloads are
+          # inaccessible (#16026).
+          print(rendered)
           PY
 
       - name: Fail UX regression gate on test failures

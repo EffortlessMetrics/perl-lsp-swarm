@@ -26,6 +26,10 @@ use perl_lsp_rs_core::providers::navigation::references_shadow::{
     ReferencesCutoverResult, find_references_live_source_backed,
 };
 #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
+use perl_lsp_rs_core::providers::semantic_port::{
+    SemanticQueriesResolveSource, accepted_generation_basis, resolve_at_position, stable_basis_view,
+};
+#[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
 use perl_semantic_facts::AnchorId;
 #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
 use perl_workspace::semantic::queries::{QueryContext, SemanticQueries};
@@ -107,6 +111,9 @@ pub(crate) enum SourceBackedReferenceDecline {
     WorkspaceIndexUnavailable,
     /// The workspace index is stale relative to the request document.
     WorkspaceIndexStale,
+    /// The accepted view moved between generation-basis capture and the guarded
+    /// semantic read, so the basis would mislabel the resolved facts.
+    WorkspaceIndexMovedDuringResolve,
     /// Semantic queries could not be opened for the request URI.
     SemanticQueriesUnavailableForUri,
     /// Entity resolution did not produce one exact entity.
@@ -163,6 +170,9 @@ impl SourceBackedReferenceAttempt {
                     }
                     SourceBackedReferenceDecline::WorkspaceIndexStale => {
                         ("workspace_index_stale", false, 0, None)
+                    }
+                    SourceBackedReferenceDecline::WorkspaceIndexMovedDuringResolve => {
+                        ("workspace_index_moved", false, 0, None)
                     }
                     SourceBackedReferenceDecline::SemanticQueriesUnavailableForUri => {
                         ("semantic_queries", false, 0, None)
@@ -1797,85 +1807,127 @@ impl LspServer {
         // cutover path must not re-enter `WorkspaceIndex` while
         // `with_semantic_queries_for_uri` holds its read guards (#15644).
         let legacy_locations = workspace_index.find_references(symbol);
-        // Resolve the semantic outcome plus the declaration anchor when either
-        // the caller wants it included or the P8 lexical slice needs to prove
-        // this entity is an initialized lexical declaration.
-        let semantic_resolution = workspace_index
-            .with_semantic_queries_for_uri(uri, |file_id, queries| {
-                let ctx = QueryContext::new(file_id, None, Some(byte_offset));
 
-                // Two-step entity resolution: prefer the typed occurrence at
-                // the cursor, fall back to a uniquely-matching definition
-                // candidate.  When resolving via definitions we keep the
-                // anchor around so we can include it as the declaration site.
-                let symbol_at = queries.symbol_at(file_id, byte_offset);
-                let symbol_at_found = symbol_at.is_some();
-                let entity_id =
-                    match symbol_at.as_ref().and_then(|(_, occurrence)| occurrence.entity_id) {
-                        Some(entity_id) => entity_id,
-                        None => {
-                            let exact_candidates: Vec<_> = queries
-                                .definitions(symbol, &ctx)
-                                .into_iter()
-                                .filter(|candidate| {
-                                    candidate.confidence == perl_semantic_facts::Confidence::High
-                                        && matches!(
+        // One shared basis for this request (#8977). The semantic view it
+        // resolves against must describe the same snapshot: a writer that
+        // commits between basis capture and the guarded view would let the
+        // outcome claim a generation it never saw. `stable_basis_view` (#5116,
+        // #8977) brackets the pair on `write_version` and retries within a
+        // bound; exhaustion is an explicit decline, not a torn result.
+        const VIEW_BASIS_ATTEMPTS: u8 = 3;
+        let Some((_resolve_generation, semantic_resolution)) = stable_basis_view(
+            || accepted_generation_basis(workspace_index.as_ref(), uri),
+            || workspace_index.write_version(),
+            |resolve_generation| {
+                // Resolve the semantic outcome plus the declaration anchor when either
+                // the caller wants it included or the P8 lexical slice needs to prove
+                // this entity is an initialized lexical declaration.
+                workspace_index
+                    .with_semantic_queries_for_uri(uri, |file_id, queries| {
+                        let ctx = QueryContext::new(file_id, None, Some(byte_offset));
+
+                        // Two-step entity resolution: prefer the typed occurrence at
+                        // the cursor, fall back to a uniquely-matching definition
+                        // candidate.  When resolving via definitions we keep the
+                        // anchor around so we can include it as the declaration site.
+                        //
+                        // The cursor stage is the shared provider-neutral rule (#8977)
+                        // rather than a references-private reading of `symbol_at`, so
+                        // definition and references start from one occurrence identity.
+                        // `bound_entity_id` reports what the producer published without
+                        // asserting exactness, which keeps this path's acceptance
+                        // identical to the previous `occurrence.entity_id` read.
+                        //
+                        // The name-keyed `definitions` fallback below stays here, in
+                        // the provider: it matches by spelling, so it is deliberately
+                        // not admitted as an exact identity by the shared layer.
+                        let resolve_source = SemanticQueriesResolveSource::new(&queries);
+                        let resolved_at_cursor = resolve_at_position(
+                            &resolve_source,
+                            file_id,
+                            byte_offset,
+                            resolve_generation,
+                            false,
+                        );
+                        let symbol_at_found = resolved_at_cursor.occurrence_was_published();
+                        let entity_id = match resolved_at_cursor.bound_entity_id() {
+                            Some(entity_id) => entity_id,
+                            None => {
+                                let exact_candidates: Vec<_> = queries
+                                    .definitions(symbol, &ctx)
+                                    .into_iter()
+                                    .filter(|candidate| {
+                                        candidate.confidence
+                                            == perl_semantic_facts::Confidence::High
+                                            && matches!(
                                         candidate.provenance,
                                         perl_semantic_facts::Provenance::ExactAst
                                             | perl_semantic_facts::Provenance::ImportExportInference
                                             | perl_semantic_facts::Provenance::LiteralRequireImport
-                                    ) && queries.anchor_source_span(candidate.anchor_id).is_some()
-                                })
-                                .collect();
-                            match exact_candidates.as_slice() {
-                                [candidate] => candidate.entity_id,
-                                _ => {
-                                    return Some(Err(
-                                        SourceBackedReferenceDecline::EntityUnresolved {
-                                            symbol_at_found,
-                                            exact_candidate_count: exact_candidates.len(),
-                                        },
-                                    ));
+                                    ) && queries
+                                            .anchor_source_span(candidate.anchor_id)
+                                            .is_some()
+                                    })
+                                    .collect();
+                                match exact_candidates.as_slice() {
+                                    [candidate] => candidate.entity_id,
+                                    _ => {
+                                        return Some(Err(
+                                            SourceBackedReferenceDecline::EntityUnresolved {
+                                                symbol_at_found,
+                                                exact_candidate_count: exact_candidates.len(),
+                                            },
+                                        ));
+                                    }
                                 }
                             }
-                        }
-                    };
+                        };
 
-                // Find the declaration anchor for this entity.  We accept the
-                // anchor from `symbol_at` if the occurrence is a definition
-                // kind, or look up a high-confidence definition candidate
-                // otherwise.
-                let decl_anchor: Option<AnchorId> = if include_declaration || sigil.is_some() {
-                    use perl_semantic_facts::OccurrenceKind;
-                    let from_symbol_at = symbol_at
-                        .as_ref()
-                        .filter(|(_, occ)| occ.kind == OccurrenceKind::Definition)
-                        .map(|(_, occ)| occ.anchor_id);
-                    from_symbol_at.or_else(|| {
-                        queries
-                            .definitions(symbol, &ctx)
-                            .into_iter()
-                            .filter(|c| {
-                                c.confidence == perl_semantic_facts::Confidence::High
-                                    && c.entity_id == entity_id
-                                    && queries.anchor_source_span(c.anchor_id).is_some()
-                            })
-                            .map(|c| c.anchor_id)
-                            .next()
+                        // Find the declaration anchor for this entity.  We accept the
+                        // anchor from the resolved cursor occurrence if it is a
+                        // definition kind, or look up a high-confidence definition
+                        // candidate otherwise.  Reading it off the shared resolution
+                        // (#8977) rather than re-querying `symbol_at` keeps this
+                        // request to one cursor-identity step.
+                        let decl_anchor: Option<AnchorId> =
+                            if include_declaration || sigil.is_some() {
+                                use perl_semantic_facts::OccurrenceKind;
+                                let from_resolved_cursor = resolved_at_cursor
+                                    .published_occurrence()
+                                    .filter(|resolved| resolved.role == OccurrenceKind::Definition)
+                                    .map(|resolved| resolved.occurrence_anchor_id);
+                                from_resolved_cursor.or_else(|| {
+                                    queries
+                                        .definitions(symbol, &ctx)
+                                        .into_iter()
+                                        .filter(|c| {
+                                            c.confidence == perl_semantic_facts::Confidence::High
+                                                && c.entity_id == entity_id
+                                                && queries.anchor_source_span(c.anchor_id).is_some()
+                                        })
+                                        .map(|c| c.anchor_id)
+                                        .next()
+                                })
+                            } else {
+                                None
+                            };
+
+                        let outcome = find_references_live_source_backed(
+                            legacy_locations.clone(),
+                            &queries,
+                            symbol,
+                            entity_id,
+                        );
+                        Some(Ok((outcome, decl_anchor)))
                     })
-                } else {
-                    None
-                };
-
-                let outcome = find_references_live_source_backed(
-                    legacy_locations,
-                    &queries,
-                    symbol,
-                    entity_id,
-                );
-                Some(Ok((outcome, decl_anchor)))
-            })
-            .flatten();
+                    .flatten()
+            },
+            VIEW_BASIS_ATTEMPTS,
+        ) else {
+            return SourceBackedReferenceAttempt::Declined(
+                SourceBackedReferenceDecline::WorkspaceIndexMovedDuringResolve,
+            );
+        };
         let Some(semantic_resolution) = semantic_resolution else {
             return SourceBackedReferenceAttempt::Declined(
                 SourceBackedReferenceDecline::SemanticQueriesUnavailableForUri,

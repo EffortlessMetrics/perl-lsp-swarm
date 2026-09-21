@@ -143,7 +143,7 @@ mod tests {
             .and_then(Value::as_str);
         assert_eq!(encoding, Some("utf-16"));
         assert!(server.initialize_requested.load(std::sync::atomic::Ordering::Acquire));
-        assert!(server.initialization_accepted.load(std::sync::atomic::Ordering::Acquire));
+        assert!(server.initialization_accepted());
 
         let after_accepted = server
             .handle_request(request(2, "custom/unknown", None))
@@ -181,7 +181,7 @@ mod tests {
             "failed initialize must consume the one-shot"
         );
         assert!(
-            !server.initialization_accepted.load(std::sync::atomic::Ordering::Acquire),
+            !server.initialization_accepted(),
             "rejected initialize must not open an accepted session"
         );
         assert!(!server.is_initialized());
@@ -221,7 +221,7 @@ mod tests {
             Some(-32600),
             "corrected initialize must not retry after a consumed first attempt: {retry_error:?}"
         );
-        assert!(!server.initialization_accepted.load(std::sync::atomic::Ordering::Acquire));
+        assert!(!server.initialization_accepted());
     }
 
     #[test]

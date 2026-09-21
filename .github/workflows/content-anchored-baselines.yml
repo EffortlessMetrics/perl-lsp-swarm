@@ -1,0 +1,72 @@
+name: Content-Anchored Baselines
+
+# Two checked-in baselines locate the thing they audit by its content: the
+# kwalitee namespace ledger (`policy/kwalitee-namespace-inventory.toml`) and the
+# ast-v2 lifecycle audit contract (`.spec/8843-ast-v2-lifecycle-audit/`). Both
+# used to locate it by absolute line number instead, and nothing re-measured
+# them, so drift surfaced on whichever pull request happened to collide with it.
+#
+# The content form removes the drift that unrelated edits caused. It does not
+# close the other half of the gap: the gates that carry these checks on a pull
+# request are scope-aware, so a change that adds a reference in a file outside
+# the selected crates — a doc, a workflow, a policy file — is never measured
+# before it lands. This lane measures them on every push to the default branch,
+# unconditionally and with no path filter, so a reference that reached main
+# unclassified is reported against main rather than against the next author.
+#
+# It is deliberately not a required check. Its job is to date the drift, not to
+# hold a merge.
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+# Serialized per ref, but never cancelled. A push-to-main lane that cancels
+# its predecessor produces no measurement for the superseded commit, which
+# is the gap this lane exists to close: drift would then be dated to whichever
+# commit happened to be last in a burst rather than to the one that introduced
+# it. `workflow-policy-lint` enforces this for truth runs
+# (`BLANKET_CANCEL_IN_PROGRESS`).
+concurrency:
+  group: content-anchored-baselines-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  measure:
+    name: Re-measure content-anchored baselines
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout exact source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The action takes its channel from `github.action_ref`, which is this
+      # SHA when the action is pinned, so the toolchain has to be named
+      # explicitly. 1.95.0 matches `rust-toolchain.toml` and every other
+      # SHA-pinned use in this repository.
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # stable (master)
+        with:
+          toolchain: 1.95.0
+
+      - name: Cache cargo dependencies
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          cache-on-failure: true
+          shared-key: content-anchored-baselines-${{ hashFiles('Cargo.lock') }}
+          save-if: ${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' }}
+
+      # Exhaustive over the tree by design, so no path filter can decide it is
+      # irrelevant. A reference added anywhere is either classified or reported.
+      - name: Kwalitee namespace ledger reconciles against main
+        run: cargo run -q -p xtask --locked -- kwalitee-inventory --check
+
+      # Resolves all thirteen audited surfaces by anchor and reconciles the
+      # public-item, consumer and re-export inventories against current source.
+      - name: ast-v2 lifecycle audit reconciles against main
+        run: cargo test -p xtask --lib --locked ast_v2_lifecycle_audit

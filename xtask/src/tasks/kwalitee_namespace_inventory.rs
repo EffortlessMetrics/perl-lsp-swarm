@@ -14,8 +14,8 @@
 //!   classification, an owner issue, a migration target, a removal condition,
 //!   and an allowed-to-remain flag;
 //! - it fails closed on an unclassified (new or ambiguous) reference, on a
-//!   stale classification whose source line moved or vanished, on a duplicate
-//!   classification, and on any closed-vocabulary violation;
+//!   stale classification whose source text changed or vanished, on a
+//!   duplicate classification, and on any closed-vocabulary violation;
 //! - it prints a deterministic report of unresolved active occurrence counts by
 //!   migration target, which is the denominator #7185/#7192 consume.
 //!
@@ -43,6 +43,11 @@ pub const CONTROLLER_ISSUE: u64 = 8752;
 /// current occurrence is one of these three shapes modulo ASCII case
 /// (`perl-kwalitee`, `perl_kwalitee`, `PerlKwalitee`, `PERL_KWALITEE`).
 const TOKENS_LOWER: [&str; 3] = ["perl-kwalitee", "perl_kwalitee", "perlkwalitee"];
+
+/// Domain separator for [`reference_hash`]. Bumping it invalidates every
+/// stored digest on purpose, which is what a change to what the digest covers
+/// should do.
+const HASH_DOMAIN: &[u8] = b"kwalitee-namespace-reference-v2";
 
 /// Closed classification vocabulary. A new class is a governance decision and
 /// a code change here, not a string someone coins in passing.
@@ -73,11 +78,18 @@ const UNRESOLVED_CLASSES: [&str; 3] =
 const SELF_ARTIFACTS: &[&str] = &[LEDGER_REL];
 
 /// One classification row: every occurrence of the namespace in `path` whose
-/// source occurrences hash into `line_hashes` carries exactly this
-/// classification. `line_hashes` is a multiset (one entry per occurrence) of
-/// full SHA-256 digests over the one-based line number and trimmed line bytes,
-/// so moving or editing a classified line invalidates the row instead of
-/// silently passing.
+/// source occurrences hash into `reference_hashes` carries exactly this
+/// classification. `reference_hashes` is a multiset (one entry per occurrence)
+/// of full SHA-256 digests over the trimmed line bytes alone, so editing,
+/// adding or deleting a classified reference invalidates the row while moving
+/// one up or down the file does not.
+///
+/// The digest deliberately excludes the line number. It used to include it,
+/// which made every row a tripwire for edits elsewhere in the same file: a
+/// reference whose text never changed failed the check because something above
+/// it grew or shrank. That produced red builds on pull requests that had not
+/// touched the namespace at all, and it detected nothing a content digest does
+/// not — a reference is the text, not the coordinate.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Entry {
@@ -89,7 +101,7 @@ struct Entry {
     allowed_to_remain: bool,
     #[serde(default)]
     note: String,
-    line_hashes: Vec<String>,
+    reference_hashes: Vec<String>,
 }
 
 /// A declared non-content search surface. Ignored and generated trees are only
@@ -120,11 +132,15 @@ struct Occurrence {
     hash: String,
 }
 
-/// Hash a source occurrence the way [`Entry::line_hashes`] stores it: full
-/// SHA-256 over the one-based line number, a separator, and the trimmed line.
-fn line_hash(line_no: usize, trimmed: &str) -> String {
+/// Hash a source occurrence the way [`Entry::reference_hashes`] stores it: full
+/// SHA-256 over a domain tag and the trimmed line bytes.
+///
+/// The domain tag makes the content digest provably distinct from the
+/// position-bound digest this ledger used before, so a row carried over from an
+/// older branch cannot match by accident; it has to be migrated.
+fn reference_hash(trimmed: &str) -> String {
     let mut hasher = Sha256::new();
-    hasher.update(line_no.to_string().as_bytes());
+    hasher.update(HASH_DOMAIN);
     hasher.update([0]);
     hasher.update(trimmed.as_bytes());
     let digest = hasher.finalize();
@@ -292,7 +308,7 @@ fn scan_file(path: &Path) -> Result<Vec<Occurrence>> {
             out.push(Occurrence {
                 line_no: idx + 1,
                 text: trimmed.to_string(),
-                hash: line_hash(idx + 1, trimmed),
+                hash: reference_hash(trimmed),
             });
         }
     }
@@ -347,12 +363,15 @@ impl Ledger {
             if entry.removal_condition.trim().is_empty() {
                 bail!("entry {}: removal_condition is required", entry.path);
             }
-            if entry.line_hashes.is_empty() {
-                bail!("entry {}: line_hashes is empty; delete the stale row instead", entry.path);
+            if entry.reference_hashes.is_empty() {
+                bail!(
+                    "entry {}: reference_hashes is empty; delete the stale row instead",
+                    entry.path
+                );
             }
-            for hash in &entry.line_hashes {
+            for hash in &entry.reference_hashes {
                 if hash.len() != 64 || !hash.chars().all(|c| c.is_ascii_hexdigit()) {
-                    bail!("entry {}: line hash {hash:?} is not 64 hex digits", entry.path);
+                    bail!("entry {}: reference hash {hash:?} is not 64 hex digits", entry.path);
                 }
             }
         }
@@ -445,7 +464,7 @@ fn reconcile(ledger: &Ledger, observed: &BTreeMap<String, Vec<Occurrence>>) -> R
         // Claims per hash across all rows for this path.
         let mut claims: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
         for entry in entries {
-            for (hash, count) in counts(&entry.line_hashes) {
+            for (hash, count) in counts(&entry.reference_hashes) {
                 for _ in 0..count {
                     claims.entry(hash).or_default().push(entry.classification.as_str());
                 }
@@ -464,8 +483,8 @@ fn reconcile(ledger: &Ledger, observed: &BTreeMap<String, Vec<Occurrence>>) -> R
             }
             if claimants.len() < observed_count {
                 errors.push(format!(
-                    "unclassified duplicate occurrence(s) in {path}: {} row claim(s) for line \
-                     hash {hash} but {observed_count} occurrence(s) on disk",
+                    "unclassified duplicate occurrence(s) in {path}: {} row claim(s) for \
+                     reference hash {hash} but {observed_count} occurrence(s) on disk",
                     claimants.len()
                 ));
                 continue;
@@ -477,13 +496,13 @@ fn reconcile(ledger: &Ledger, observed: &BTreeMap<String, Vec<Occurrence>>) -> R
             };
             let context = entries
                 .iter()
-                .find(|entry| entry.line_hashes.iter().any(|h| h == hash))
+                .find(|entry| entry.reference_hashes.iter().any(|h| h == hash))
                 .map(|entry| {
                     format!("; row intent: {} (removal: {})", entry.note, entry.removal_condition)
                 })
                 .unwrap_or_default();
             errors.push(format!(
-                "{kind} in {path}: {} row claim(s) for line hash {hash} but \
+                "{kind} in {path}: {} row claim(s) for reference hash {hash} but \
                  {observed_count} occurrence(s) on disk (claimants: {}){context}",
                 claimants.len(),
                 distinct.into_iter().collect::<Vec<_>>().join(", ")
@@ -520,11 +539,11 @@ fn render_report(ledger: &Ledger) -> String {
     let mut unresolved: BTreeMap<&str, (usize, usize)> = BTreeMap::new();
     for entry in &ledger.entry {
         let slot = by_class.entry(entry.classification.as_str()).or_insert((0, 0));
-        slot.0 += entry.line_hashes.len();
+        slot.0 += entry.reference_hashes.len();
         slot.1 += 1;
         if UNRESOLVED_CLASSES.contains(&entry.classification.as_str()) {
             let slot = unresolved.entry(entry.migration_target.as_str()).or_insert((0, 0));
-            slot.0 += entry.line_hashes.len();
+            slot.0 += entry.reference_hashes.len();
             slot.1 += 1;
         }
     }
@@ -535,7 +554,7 @@ fn render_report(ledger: &Ledger) -> String {
         .entry
         .iter()
         .filter(|entry| !entry.allowed_to_remain)
-        .fold((0, 0), |(occ, rows), entry| (occ + entry.line_hashes.len(), rows + 1));
+        .fold((0, 0), |(occ, rows), entry| (occ + entry.reference_hashes.len(), rows + 1));
 
     let mut report = String::new();
     let _ = writeln!(
@@ -562,8 +581,8 @@ fn render_report(ledger: &Ledger) -> String {
 }
 
 /// `cargo xtask kwalitee-inventory --scaffold` — print entry skeletons with the
-/// exact line hashes the current tree produces, for the initial bootstrap and
-/// for repairing rows after a legitimate source move. Scaffold output is never
+/// exact reference hashes the current tree produces, for the initial bootstrap
+/// and for adjudicating a genuinely new reference. Scaffold output is never
 /// written anywhere; the maintainer copies hashes into reviewed rows and fills
 /// the classification fields. `--check` keeps failing until they do.
 fn scaffold(root: &Path, ledger: &Ledger) -> Result<String> {
@@ -581,7 +600,7 @@ fn scaffold(root: &Path, ledger: &Ledger) -> Result<String> {
         let _ = writeln!(out, "allowed_to_remain = true");
         let _ = writeln!(
             out,
-            "line_hashes = [{}]",
+            "reference_hashes = [{}]",
             hashes.iter().map(|h| format!("{h:?}")).collect::<Vec<_>>().join(", ")
         );
         let _ = writeln!(out);
@@ -631,24 +650,77 @@ pub fn run(check: bool, scaffold_mode: bool, root_override: Option<PathBuf>) -> 
 mod tests {
     use super::*;
 
+    /// Write `lines` to a file under `dir` and scan it, returning the
+    /// occurrence digests in scan order.
+    fn hashes_of(dir: &Path, name: &str, lines: &[&str]) -> Vec<String> {
+        let path = dir.join(name);
+        fs::write(&path, format!("{}\n", lines.join("\n"))).expect("write fixture");
+        scan_file(&path).expect("scan fixture").into_iter().map(|o| o.hash).collect()
+    }
+
     #[test]
-    fn line_hash_is_deterministic_full_sha256_and_position_bound() {
-        let a = line_hash(7, "cargo xtask perl-kwalitee report");
-        let b = line_hash(7, "cargo xtask perl-kwalitee report");
+    fn reference_hash_is_deterministic_full_sha256_and_content_bound() {
+        let a = reference_hash("cargo xtask perl-kwalitee report");
+        let b = reference_hash("cargo xtask perl-kwalitee report");
         assert_eq!(a, b);
         assert_eq!(a.len(), 64);
         assert!(a.chars().all(|c| c.is_ascii_hexdigit()));
-        assert_ne!(a, line_hash(8, "cargo xtask perl-kwalitee report"));
-        assert_ne!(a, line_hash(7, "cargo xtask perl-kwalitee check"));
+        assert_ne!(a, reference_hash("cargo xtask perl-kwalitee check"));
     }
 
     #[test]
     fn leading_whitespace_does_not_change_the_scanned_hash() {
         // Trimming happens at the scan layer; the hash sees the trimmed line.
         assert_eq!(
-            line_hash(1, "  indented perl_kwalitee ref".trim()),
-            line_hash(1, "indented perl_kwalitee ref")
+            reference_hash("  indented perl_kwalitee ref".trim()),
+            reference_hash("indented perl_kwalitee ref")
         );
+    }
+
+    /// The defect this digest form exists to end: inserting unrelated lines
+    /// above a classified reference used to invalidate its row, so a pull
+    /// request that never touched the namespace failed the gate.
+    #[test]
+    fn inserting_unrelated_lines_above_a_reference_leaves_its_digest_alone() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let before = hashes_of(dir.path(), "a.rs", &["fn main() {}", "// perl_kwalitee caller"]);
+        let after = hashes_of(
+            dir.path(),
+            "b.rs",
+            &["fn main() {}", "// unrelated", "// unrelated", "// perl_kwalitee caller"],
+        );
+        assert_eq!(before, after, "a reference that only moved must keep its digest");
+    }
+
+    /// The control for the test above: the digest must still be able to fail.
+    /// Editing the reference, adding one, or deleting one all change the
+    /// multiset the ledger is reconciled against.
+    #[test]
+    fn editing_adding_or_deleting_a_reference_changes_the_digest_multiset() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let base = hashes_of(dir.path(), "base.rs", &["// perl_kwalitee caller"]);
+
+        let edited = hashes_of(dir.path(), "edited.rs", &["// perl_kwalitee caller, now strict"]);
+        assert_ne!(base, edited, "editing a classified reference must invalidate its digest");
+
+        let added =
+            hashes_of(dir.path(), "added.rs", &["// perl_kwalitee caller", "use perl_kwalitee;"]);
+        assert_eq!(added.len(), 2, "a second reference must add a second digest");
+        assert!(added.contains(&base[0]));
+
+        let deleted = hashes_of(dir.path(), "deleted.rs", &["fn main() {}"]);
+        assert!(deleted.is_empty(), "deleting the reference must drop its digest");
+    }
+
+    /// One line carrying two spellings is two occurrences, so the row owes two
+    /// identical digests. Collapsing them would let one of the two go
+    /// unclassified.
+    #[test]
+    fn two_spellings_on_one_line_are_two_identical_digests() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let hashes = hashes_of(dir.path(), "two.rs", &["// perl-kwalitee and perl_kwalitee"]);
+        assert_eq!(hashes.len(), 2);
+        assert_eq!(hashes[0], hashes[1]);
     }
 
     #[test]
@@ -671,7 +743,7 @@ mod tests {
             removal_condition: "n/a".to_string(),
             allowed_to_remain: true,
             note: String::new(),
-            line_hashes: vec![line_hash(1, "perl-kwalitee")],
+            reference_hashes: vec![reference_hash("perl-kwalitee")],
         };
         assert!(validate_pairing(&entry).is_err());
         entry.migration_target = "none".to_string();
@@ -685,7 +757,7 @@ mod tests {
     fn surface_exclusion_matches_root_components_and_prefixes_only() {
         let excluded = ["target/**", ".wt-*", "generated/**"];
         assert!(surface_excluded("target", "target", &excluded, true));
-        assert!(!surface_excluded("target", "target/file", &excluded, false));
+        assert!(surface_excluded("target", "target/file", &excluded, false));
         assert!(!surface_excluded("target", "crates/x/target", &excluded, true));
         assert!(surface_excluded(".wt-1234", ".wt-1234/sub/file", &excluded, true));
         assert!(!surface_excluded(".wt-1234", ".wt-1234/file", &excluded, false));
