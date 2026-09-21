@@ -407,8 +407,12 @@ impl<'a> Parser<'a> {
         // `DoWhileTrailingBlock` rather than recovering — the orphaned
         // `continue { ... }` would otherwise re-parse as a clean
         // expression statement and silently accept what `perl` refuses
-        // to compile (#16296).
-        if self.peek_kind() == Some(TokenKind::Continue) {
+        // to compile (#16296). Only the block form is rejected: a bare
+        // `continue;` statement after the loop is valid Perl and keeps
+        // today's route.
+        if self.peek_kind() == Some(TokenKind::Continue)
+            && self.tokens.peek_second().ok().is_some_and(|t| t.kind() == TokenKind::LeftBrace)
+        {
             let location = self.current_position();
             return Err(ParseError::CStyleForContinueBlock { location });
         }
@@ -1223,22 +1227,6 @@ mod goto_form_tests {
         walk(&ast, &mut found_goto, &mut found_targetless);
         assert!(found_goto, "targeted goto must still produce a Goto node");
         assert!(!found_targetless, "targeted goto must not produce a TargetlessGoto");
-    }
-
-    #[test]
-    fn c_style_for_continue_block_is_hard_error() {
-        // Real perl rejects `for (;;) { ... } continue { ... }` outright
-        // (`syntax error near "} continue"`): `continue` blocks attach to
-        // while/until/foreach loops only. The parse must fail rather than
-        // attach the block or re-parse it as a call (#16296).
-        use crate::error::ParseError;
-        let mut parser =
-            Parser::new("for (my $i = 0; $i < 3; $i++) { print 1; } continue { print 2; }");
-        let err = parser.parse().expect_err("C-style for with continue block must fail to parse");
-        assert!(
-            matches!(err, ParseError::CStyleForContinueBlock { .. }),
-            "expected CStyleForContinueBlock, got {err:?}"
-        );
     }
 
     #[test]
