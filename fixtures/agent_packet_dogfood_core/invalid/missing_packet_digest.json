@@ -1,0 +1,80 @@
+{
+  "schema": "agent_packet_dogfood.core.v1",
+  "schema_version": 1,
+  "run_id": "synthetic-parser-p05-run-001",
+  "identity": {
+    "packet_id": "parser-p05-synthetic-001",
+    "tree_sha": "1111111111111111111111111111111111111111111111111111111111111111",
+    "spec_ref": "https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/11024",
+    "spec_digest": "2222222222222222222222222222222222222222222222222222222222222222"
+  },
+  "subject": {
+    "agent": {
+      "name": "synthetic-agent",
+      "version": "0"
+    },
+    "model": {
+      "id": "synthetic-model-x"
+    },
+    "tool": {
+      "name": "perl-lsp-xtask",
+      "version": "0"
+    },
+    "permissions": {
+      "ceiling": [
+        "workspace:read",
+        "workspace:write"
+      ]
+    }
+  },
+  "disposition": "completed",
+  "events": [
+    {
+      "seq": 0,
+      "kind": "observation",
+      "at_ms": 0,
+      "payload": {
+        "note": "session opened"
+      },
+      "digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    {
+      "seq": 1,
+      "kind": "tool_call",
+      "at_ms": 10,
+      "payload": {
+        "tool": "perl-lsp",
+        "op": "hover"
+      },
+      "digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    },
+    {
+      "seq": 2,
+      "kind": "tool_result",
+      "at_ms": 20,
+      "payload": {
+        "ok": true
+      },
+      "digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+    }
+  ],
+  "results": [
+    {
+      "seq": 0,
+      "kind": "check_result",
+      "at_ms": 40,
+      "payload": {
+        "check": "hover-support",
+        "outcome": "pass"
+      },
+      "digest": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+    }
+  ],
+  "human_intervention": [
+    {
+      "before_seq": 2,
+      "role": "human_operator",
+      "reason": "operator approved write scope mid-run"
+    }
+  ]
+}

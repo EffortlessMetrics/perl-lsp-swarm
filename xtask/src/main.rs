@@ -36,41 +36,42 @@ use tasks::workflow_trigger_lint::WorkflowTriggerLintFormat;
 use tasks::worktree_allocator::AgentWorktreeCommand;
 use tasks::{
     activation, active_goal_manifest, agent_capability_policy, agent_flow,
-    agent_implementation_packet, agent_lease, agent_receipt, agent_review_packet,
-    aggregate_receipts, badges, bench, benchmarks, build, build_timing, bump_version, change_set,
-    check, check_agent_context, check_lint_policy, check_tautology, check_test_wiring,
-    check_toolchain, check_version_sync, ci, ci_audit_workflows, ci_cache_inventory, ci_contract,
-    ci_doctor, ci_explain, ci_hygiene, ci_measure, ci_metrics, ci_policy, ci_pr_summary, ci_route,
-    ci_scope, clean, clippy_cost_measure, code_action_generation_ledger, command_evidence, compare,
-    compat_inventory, compiler_lexical_cutline, compiler_performance_receipt,
-    compiler_upstream_status, completion_candidates, corpus_audit, count_ratchet, cpan_corpus,
-    critic_rule_proof, dead_code, dead_code_api_ledger, debt_report, dependency_hygiene, dev,
-    devex_docs, devex_doctor, devex_plan, doc, doc_claims, e2e_validate, edge_cases,
-    emacs_train_context, emacs_train_packet, emacs_train_specs, features, finalize_check,
-    fix_forward, fmt, forbid_fatal_constructs, forensics, gate_receipts, gates, generated_files,
-    github, github_preflight, github_review, goals, hardening, hook_checks, htmx_catalog_drift,
-    ignored_tests, incremental_proof, inject_sha_assets, inline_completion_quality,
-    inline_completion_smoke, install_surface_check, integration_proof, intent_diff_gate,
-    issue_controllers, issue_plan, kwalitee_namespace_inventory, layer_check, lsp_318_claims,
-    lsp_318_matrix, lsp_ux_smoke, memory_trends, merge_ready, methodology_gate, metrics,
-    module_train, module_train_live, native_critic, native_format, native_neovim_train,
-    native_product_surface, native_tooling, oneliner_capability_matrix, oracle_fixture_manifest,
-    oracle_receipt_schema, oracle_runner, parse_rust, parser_corpus_sweep, parser_matrix,
-    parser_ratchet, perl_core_harness, perl_corpus_train, perl_kwalitee, populate_book,
-    pre_push_plan, prep_crates_io_launch, product_health_rail_contract, product_health_status,
-    protocol_type_substrate_matrix, provider_confidence_matrix, provider_promotion_ledger,
-    publication_facts, publish, publish_closure, publish_manifest_check, publish_receipts,
-    quality_baseline, quality_gate, queue_health, queue_snapshot, quickorm_api_matrix, receipts,
-    release, release_artifact_check, release_candidate_artifacts, release_evidence, release_notes,
-    release_trust_invariants, release_turnkey, repo_hygiene, repository_topology, ripr_evidence,
-    rust_small_proof, seam_diff, semantic_inline_next_edit, semantic_inline_receipts,
-    semantic_scorecard, semantic_shadow_compare, semantic_token_classes, session_receipt,
-    shadow_parity, srp_microcrates, standalone_diagnostics, supported_editor_inline_smoke,
-    swarm_agent_roster, swarm_summary, sync_release_docs, targeted_checks, test, test_lsp,
-    train_edge_contract, unwired_scan, update_homebrew, update_status, ux_regression_receipt,
-    ux_scorecard, validate_workspace_exclusions, workflow_authority_inventory,
-    workflow_policy_lint, workflow_trigger_lint, workspace_symbol_classes, worktree_allocator,
-    worktrees, writer_admission,
+    agent_implementation_packet, agent_lease, agent_packet_dogfood, agent_receipt,
+    agent_review_packet, aggregate_receipts, badges, bench, benchmarks, build, build_timing,
+    bump_version, change_set, check, check_agent_context, check_lint_policy, check_tautology,
+    check_test_wiring, check_toolchain, check_version_sync, ci, ci_audit_workflows,
+    ci_cache_inventory, ci_contract, ci_doctor, ci_explain, ci_hygiene, ci_measure, ci_metrics,
+    ci_policy, ci_pr_summary, ci_route, ci_scope, clean, clippy_cost_measure,
+    code_action_generation_ledger, command_evidence, compare, compat_inventory,
+    compiler_lexical_cutline, compiler_performance_receipt, compiler_upstream_status,
+    completion_candidates, corpus_audit, count_ratchet, cpan_corpus, critic_rule_proof, dead_code,
+    dead_code_api_ledger, debt_report, dependency_hygiene, dev, devex_docs, devex_doctor,
+    devex_plan, doc, doc_claims, e2e_validate, edge_cases, emacs_train_context, emacs_train_packet,
+    emacs_train_specs, features, finalize_check, fix_forward, fmt, forbid_fatal_constructs,
+    forensics, gate_receipts, gates, generated_files, github, github_preflight, github_review,
+    goals, hardening, hook_checks, htmx_catalog_drift, ignored_tests, incremental_proof,
+    inject_sha_assets, inline_completion_quality, inline_completion_smoke, install_surface_check,
+    integration_proof, intent_diff_gate, issue_controllers, issue_plan,
+    kwalitee_namespace_inventory, layer_check, lsp_318_claims, lsp_318_matrix, lsp_ux_smoke,
+    memory_trends, merge_ready, methodology_gate, metrics, module_train, module_train_live,
+    native_critic, native_format, native_neovim_train, native_product_surface, native_tooling,
+    oneliner_capability_matrix, oracle_fixture_manifest, oracle_receipt_schema, oracle_runner,
+    parse_rust, parser_corpus_sweep, parser_matrix, parser_ratchet, perl_core_harness,
+    perl_corpus_train, perl_kwalitee, populate_book, pre_push_plan, prep_crates_io_launch,
+    product_health_rail_contract, product_health_status, protocol_type_substrate_matrix,
+    provider_confidence_matrix, provider_promotion_ledger, publication_facts, publish,
+    publish_closure, publish_manifest_check, publish_receipts, quality_baseline, quality_gate,
+    queue_health, queue_snapshot, quickorm_api_matrix, receipts, release, release_artifact_check,
+    release_candidate_artifacts, release_evidence, release_notes, release_trust_invariants,
+    release_turnkey, repo_hygiene, repository_topology, ripr_evidence, rust_small_proof, seam_diff,
+    semantic_inline_next_edit, semantic_inline_receipts, semantic_scorecard,
+    semantic_shadow_compare, semantic_token_classes, session_receipt, shadow_parity,
+    srp_microcrates, standalone_diagnostics, supported_editor_inline_smoke, swarm_agent_roster,
+    swarm_summary, sync_release_docs, targeted_checks, test, test_lsp, train_edge_contract,
+    unwired_scan, update_homebrew, update_status, ux_regression_receipt, ux_scorecard,
+    validate_workspace_exclusions, workflow_authority_inventory, workflow_policy_lint,
+    workflow_trigger_lint, workspace_symbol_classes, worktree_allocator, worktrees,
+    writer_admission,
 };
 #[cfg(feature = "parser-tasks")]
 use tasks::{bindings, compare_parsers, highlight};
@@ -188,6 +189,18 @@ enum Commands {
         /// Operation to run against the manifest.
         #[command(subcommand)]
         command: tasks::compiler_lexical_cutline::CompilerLexicalCutlineSubcommand,
+    },
+
+    /// Validate the shared domain-neutral agent packet dogfood core contract
+    /// (agent_packet_dogfood.core.v1, #11024 family): identity digests that
+    /// are always recomputed, required subject metadata, bounded observable
+    /// event/result records, closed dispositions, human-intervention ledger
+    /// fields, mutated-packet negative controls, deterministic advisory
+    /// reports, and commit-hygiene guards over retained evidence.
+    #[command(name = "agent-dogfood")]
+    AgentDogfood {
+        #[command(subcommand)]
+        command: tasks::agent_packet_dogfood::AgentDogfoodCommand,
     },
 
     /// Check, explain, and project the standalone diagnostic reason/action
@@ -5472,6 +5485,7 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::CheckOracleFixtureManifest => oracle_fixture_manifest::run(),
         Commands::Activation { command } => activation::run(command),
         Commands::CompilerLexicalCutline { command } => compiler_lexical_cutline::run(command),
+        Commands::AgentDogfood { command } => agent_packet_dogfood::run(command),
         Commands::StandaloneDiagnostics { command } => standalone_diagnostics::run(command),
         Commands::CriticRuleProof { command } => critic_rule_proof::run(command),
         Commands::ReleaseTrustInvariants { command } => release_trust_invariants::run(command),
