@@ -126,6 +126,17 @@ pub trait SemanticQueries {
     /// associated entity and occurrence facts.
     fn symbol_at(&self, file_id: FileId, byte_offset: u32) -> Option<(EntityFact, OccurrenceFact)>;
 
+    /// Return the occurrence covering `byte_offset`, whether or not the
+    /// producer bound an entity to it.
+    ///
+    /// `symbol_at` collapses "occurrence published, no entity resolved" into
+    /// `None`; this lookup keeps the published occurrence visible so callers
+    /// can distinguish it from "no occurrence at this position". Defaults to
+    /// `None` for facades that cannot make the distinction.
+    fn occurrence_at(&self, _file_id: FileId, _byte_offset: u32) -> Option<OccurrenceFact> {
+        None
+    }
+
     /// Return ranked definition candidates for a symbol.
     ///
     /// Candidates are sorted by [`DefinitionRank`] (best first), then
@@ -558,17 +569,7 @@ impl<'a> SemanticQueries for WorkspaceSemanticQueries<'a> {
     }
 
     fn symbol_at(&self, file_id: FileId, byte_offset: u32) -> Option<(EntityFact, OccurrenceFact)> {
-        let shard = self.shard_for_file(file_id)?;
-
-        // Find the anchor that encloses the byte offset.
-        let anchor = shard.anchors.iter().find(|a| {
-            a.file_id == file_id
-                && a.span_start_byte <= byte_offset
-                && byte_offset < a.span_end_byte
-        })?;
-
-        // Find an occurrence at this anchor.
-        let occurrence = shard.occurrences.iter().find(|o| o.anchor_id == anchor.id)?;
+        let occurrence = self.occurrence_at(file_id, byte_offset)?;
 
         // Resolve the entity from the occurrence's entity_id. The declaring
         // shard may differ from the referencing file: cross-file inherited
@@ -582,7 +583,21 @@ impl<'a> SemanticQueries for WorkspaceSemanticQueries<'a> {
             .flat_map(|shard| shard.entities.iter())
             .find(|e| e.id == entity_id)?;
 
-        Some((entity.clone(), occurrence.clone()))
+        Some((entity.clone(), occurrence))
+    }
+
+    fn occurrence_at(&self, file_id: FileId, byte_offset: u32) -> Option<OccurrenceFact> {
+        let shard = self.shard_for_file(file_id)?;
+
+        // Find the anchor that encloses the byte offset.
+        let anchor = shard.anchors.iter().find(|a| {
+            a.file_id == file_id
+                && a.span_start_byte <= byte_offset
+                && byte_offset < a.span_end_byte
+        })?;
+
+        // Find an occurrence at this anchor.
+        shard.occurrences.iter().find(|o| o.anchor_id == anchor.id).cloned()
     }
 
     fn definitions(&self, symbol: &str, context: &QueryContext) -> Vec<DefinitionCandidate> {
@@ -1895,6 +1910,71 @@ mod tests {
 
         let result = queries.symbol_at(FileId(999), 0);
         assert!(result.is_none(), "should return None for unknown file");
+        Ok(())
+    }
+
+    // ── occurrence_at tests ──
+
+    /// The state `occurrence_at` exists for: a producer published an occurrence
+    /// but bound no entity to it. `symbol_at` collapses that to `None`; the
+    /// occurrence-only lookup must keep the published fact visible.
+    #[test]
+    fn occurrence_at_returns_entity_less_occurrence() -> Result<(), Box<dyn std::error::Error>> {
+        let file_id = FileId(1);
+        let anchor_id = AnchorId(10);
+        let shard = make_shard(
+            "file:///lib/Foo.pm",
+            file_id,
+            vec![AnchorFact {
+                id: anchor_id,
+                file_id,
+                span_start_byte: 0,
+                span_end_byte: 15,
+                scope_id: None,
+                provenance: Provenance::ExactAst,
+                confidence: Confidence::High,
+            }],
+            vec![],
+            vec![OccurrenceFact {
+                id: OccurrenceId(200),
+                kind: OccurrenceKind::Call,
+                entity_id: None,
+                anchor_id,
+                scope_id: None,
+                provenance: Provenance::ExactAst,
+                confidence: Confidence::High,
+            }],
+            vec![],
+        );
+        let mut shards = HashMap::new();
+        shards.insert(shard.source_uri.clone(), shard);
+        let ref_index = ReferenceIndex::new();
+        let ie_index = ImportExportIndex::new();
+        let queries = build_queries(&ref_index, &ie_index, &shards);
+
+        assert!(
+            queries.symbol_at(file_id, 5).is_none(),
+            "symbol_at collapses the entity-less occurrence to None"
+        );
+        let occurrence = queries
+            .occurrence_at(file_id, 5)
+            .ok_or("occurrence_at must report the published occurrence")?;
+        assert_eq!(occurrence.id, OccurrenceId(200));
+        assert_eq!(occurrence.entity_id, None);
+        Ok(())
+    }
+
+    #[test]
+    fn occurrence_at_returns_none_for_uncovered_position() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let (file_id, shard) = simple_shard();
+        let mut shards = HashMap::new();
+        shards.insert(shard.source_uri.clone(), shard);
+        let ref_index = ReferenceIndex::new();
+        let ie_index = ImportExportIndex::new();
+        let queries = build_queries(&ref_index, &ie_index, &shards);
+
+        assert!(queries.occurrence_at(file_id, 30).is_none());
         Ok(())
     }
 
