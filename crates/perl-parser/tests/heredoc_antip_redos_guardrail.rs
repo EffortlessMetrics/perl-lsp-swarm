@@ -382,9 +382,10 @@ fn antip_left_shift_is_not_a_heredoc_declaration() {
         ("say filehandle", "qr/x(?{ say $fh <<'M';\nhas { brace\nM\n})/;\n"),
         ("bareword filehandle", "qr/x(?{ print STDERR <<'M';\nhas { brace\nM\n})/;\n"),
         ("braced scalar filehandle", "qr/x(?{ print ${fh} <<'M';\nhas { brace\nM\n})/;\n"),
-        // A filehandle block may be written across lines. The backward match is
-        // capped by a byte budget rather than by the line, so this still
-        // resolves without reintroducing an unbounded backwards scan.
+        // A filehandle block may be written across lines. Its opening `{` is
+        // resolved by one forward brace-stack pass over the source, so a block
+        // spanning newlines is admitted at any length — no byte budget, and no
+        // backwards scan to bound.
         ("block filehandle across lines", "qr/x(?{ print {\n$fh\n} <<'M';\nhas { brace\nM\n})/;\n"),
         ("CORE-qualified list op", "qr/x(?{ CORE::print <<'M';\nhas { brace\nM\n})/;\n"),
         ("CORE::say", "qr/x(?{ CORE::say <<'M';\nhas { brace\nM\n})/;\n"),
