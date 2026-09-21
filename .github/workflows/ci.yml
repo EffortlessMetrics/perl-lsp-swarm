@@ -1021,7 +1021,19 @@ jobs:
         # ten-annotation fold -- are only falsifiable from a test harness:
         # scripts/ci/test_summarize_pr_fast_gates.py, run by
         # .github/workflows/ci-gate-self-tests.yml.
-        run: python3 scripts/ci/summarize_pr_fast_gates.py
+        # Existence guard (#16375): the workflow definition is loaded from
+        # `main` even when the PR checkout predates the script, so an unguarded
+        # `python3 scripts/ci/summarize_pr_fast_gates.py` exits with
+        # `No such file or directory` and turns this advisory step red. Skip
+        # with an explicit annotation instead; the missing summary is not a
+        # gate failure, and re-basing restores the full behaviour without any
+        # other change to this step.
+        run: |
+          if [ -f scripts/ci/summarize_pr_fast_gates.py ]; then
+            python3 scripts/ci/summarize_pr_fast_gates.py
+          else
+            echo "::warning title=pr-fast summary::summarize_pr_fast_gates.py is not present on this checkout; skipping PR-fast gate summary (rebase onto current main to restore it; issue #16375)."
+          fi
 
       - name: Convert PR-fast receipt to JUnit
         if: always()
