@@ -784,6 +784,31 @@ fn path_and_credential_shaped_references_cannot_cross_the_publication_boundary()
         }
     }
 
+    // HTTPS references are otherwise publishable, but producer-controlled
+    // query and fragment tails are never durable receipt identity. Exercise the
+    // two free-text paths independently so one cannot regress behind the other.
+    let query_sentinel = "publication-query-sentinel";
+    let via_refs = receipt_with(AVAILABLE_EXACT, |document| {
+        document["expected"]["publication_refs"] =
+            json!(["https://example.invalid/run?token=publication-query-sentinel"]);
+    })?;
+    let refs_json = serde_json::to_string(&via_refs)?;
+    if refs_json.contains(query_sentinel) || !refs_json.contains("https://example.invalid/run") {
+        bail!("publication_refs retained an HTTPS query or lost the sanitized reference");
+    }
+
+    let fragment_sentinel = "instrument-fragment-sentinel";
+    let via_instrument = receipt_with(AVAILABLE_EXACT, |document| {
+        document["instrument"]["source_ref"] =
+            json!("https://example.invalid/probe#instrument-fragment-sentinel");
+    })?;
+    let instrument_json = serde_json::to_string(&via_instrument)?;
+    if instrument_json.contains(fragment_sentinel)
+        || !instrument_json.contains("https://example.invalid/probe")
+    {
+        bail!("instrument.source_ref retained an HTTPS fragment or lost the sanitized reference");
+    }
+
     // An over-long reference is refused rather than retained.
     let oversized = receipt_with(AVAILABLE_EXACT, |document| {
         document["expected"]["publication_refs"] = json!(["x".repeat(5000)]);

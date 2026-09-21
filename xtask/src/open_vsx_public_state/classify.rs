@@ -1064,21 +1064,33 @@ fn publishable_url(url: &str, planned: Option<&str>) -> String {
 /// durable, shareable artifact, so a blocker sitting beside a retained
 /// credential still publishes the credential. The finding is recorded in
 /// `blockers`; the value itself never reaches the file.
+fn publishable_reference(value: &str) -> String {
+    match unsafe_reference(value) {
+        Some(_) => REDACTED.to_owned(),
+        None if value.starts_with("https://") => value
+            .split(['?', '#'])
+            .next()
+            .filter(|reference| !reference.is_empty())
+            .unwrap_or(REDACTED)
+            .to_owned(),
+        None => value.to_owned(),
+    }
+}
+
 fn publishable_instrument(mut instrument: Instrument) -> Instrument {
-    for field in [&mut instrument.name, &mut instrument.version, &mut instrument.source_ref] {
+    for field in [&mut instrument.name, &mut instrument.version] {
         if unsafe_reference(field).is_some() {
             *field = REDACTED.to_owned();
         }
     }
+    instrument.source_ref = publishable_reference(&instrument.source_ref);
     instrument
 }
 
 /// Strip unpublishable values from the expected identity.
 fn publishable_expected(mut expected: Expected) -> Expected {
     for reference in &mut expected.publication_refs {
-        if unsafe_reference(reference).is_some() {
-            *reference = REDACTED.to_owned();
-        }
+        *reference = publishable_reference(reference);
     }
     expected
 }
