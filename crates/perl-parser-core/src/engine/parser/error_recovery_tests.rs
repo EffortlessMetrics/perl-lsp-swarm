@@ -1844,3 +1844,73 @@ fn test_15750_preserves_unbraced_scalar_deref() {
         );
     }
 }
+
+#[test]
+fn test_recovery_orphaned_else_wraps_in_if() {
+    // `else` without a preceding `if`/`unless` is a syntax error in real
+    // perl, but the parser recovers: it records the diagnostic, consumes
+    // the block, and wraps it in an `If` with a synthetic condition so the
+    // LSP still sees the block contents.
+    let code = "else { print \"hi\"; }";
+    let mut parser = Parser::new(code);
+    let result = parser.parse();
+
+    match result {
+        Ok(ast) => {
+            if let NodeKind::Program { statements } = &ast.kind {
+                assert_eq!(statements.len(), 1, "Should have 1 recovered statement");
+                assert!(
+                    matches!(statements[0].kind, NodeKind::If { .. }),
+                    "Expected recovered If node, got: {:?}",
+                    statements[0].kind
+                );
+            } else {
+                unreachable!("Expected Program node");
+            }
+
+            let errors = parser.errors();
+            assert!(
+                errors.iter().any(|e| format!("{e}").contains("without preceding")),
+                "Should record the orphaned-else diagnostic, got: {:?}",
+                errors
+            );
+        }
+        Err(e) => {
+            unreachable!("Parser failed to recover from orphaned else: {}", e);
+        }
+    }
+}
+
+#[test]
+fn test_recovery_orphaned_elsif_chain_survives() {
+    // Same recovery for a leading `elsif` chain: the whole chain lands
+    // inside the recovered `If` and the diagnostic is recorded.
+    let code = "elsif ($x) { print 1; } else { print 2; }";
+    let mut parser = Parser::new(code);
+    let result = parser.parse();
+
+    match result {
+        Ok(ast) => {
+            if let NodeKind::Program { statements } = &ast.kind {
+                assert_eq!(statements.len(), 1, "Should have 1 recovered statement");
+                assert!(
+                    matches!(statements[0].kind, NodeKind::If { .. }),
+                    "Expected recovered If node, got: {:?}",
+                    statements[0].kind
+                );
+            } else {
+                unreachable!("Expected Program node");
+            }
+
+            let errors = parser.errors();
+            assert!(
+                errors.iter().any(|e| format!("{e}").contains("without preceding")),
+                "Should record the orphaned-elsif diagnostic, got: {:?}",
+                errors
+            );
+        }
+        Err(e) => {
+            unreachable!("Parser failed to recover from orphaned elsif: {}", e);
+        }
+    }
+}
