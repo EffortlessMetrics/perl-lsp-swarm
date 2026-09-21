@@ -28,6 +28,16 @@ AGGREGATE_TEST_GATE = "aggregate_test_gate"
 DETERMINISTIC_NON_TEST_GATE = "deterministic_non_test_gate"
 ATOMIC_SCHEMA_VERSION = 1
 ATOMIC_ENVELOPE_FIELDS = frozenset({"test_results_schema", "test_results"})
+# Peer-context envelope versions emitted by the producers the converter recognises.
+# The atomic surface uses ``test_results_schema`` (int); the gate and UX envelopes
+# use ``schema_version`` (str for gate shards, int for ux regression). Validate
+# them at the read site so a v2 envelope that renames a key cannot silently
+# inherit this identity contract — the same fail-loud principle that gates the
+# atomic surface applies to gate/ux envelopes too (#15322).
+GATE_SHARD_SCHEMA_VERSION = "ci_gate_shard.v1"
+# ux_regression_receipt v2 is additive over v1 (adds ``failing_tests``); every
+# field of v1 keeps its meaning for a reader that ignores the new array.
+UX_REGRESSION_SCHEMA_VERSIONS = frozenset({1, 2})
 ATOMIC_ROW_FIELDS = frozenset(
     {
         "suite",
@@ -119,7 +129,10 @@ def parse_receipt(data: Any) -> Optional[ParsedReceipt]:
     ``test_results`` is the only accepted atomic surface and is versioned so future
     shapes cannot silently inherit this identity contract. Gate receipts and UX
     regression summaries are recognised so callers can distinguish "known aggregate,
-    intentionally omitted" from malformed or unknown input.
+    intentionally omitted" from malformed or unknown input. Both envelopes also
+    pin a ``schema_version`` token; envelopes with an unrecognised or missing
+    version are treated as ``UnrecognizedFormat`` so a v2 rename cannot silently
+    misread (#15322).
     """
     if not isinstance(data, dict):
         return None
@@ -142,6 +155,8 @@ def parse_receipt(data: Any) -> Optional[ParsedReceipt]:
         return ParsedReceipt(ATOMIC_TEST_RESULTS, entries)
 
     if "gates" in data:
+        if data.get("schema_version") != GATE_SHARD_SCHEMA_VERSION:
+            return None
         entries = _mapping_entries(data["gates"], field="gates")
         if entries is None:
             return None
@@ -153,6 +168,8 @@ def parse_receipt(data: Any) -> Optional[ParsedReceipt]:
         return ParsedReceipt(kind, entries)
 
     if "result" in data or "failure_class" in data:
+        if data.get("schema_version") not in UX_REGRESSION_SCHEMA_VERSIONS:
+            return None
         return ParsedReceipt(AGGREGATE_TEST_GATE, (data,))
 
     return None

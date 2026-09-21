@@ -42,6 +42,7 @@ class ReceiptsToJunitTests(unittest.TestCase):
             write(
                 receipt,
                 {
+                    "schema_version": receipts_to_junit.GATE_SHARD_SCHEMA_VERSION,
                     "gates": [
                         {"gate_name": "fmt", "status": "pass"},
                         {
@@ -50,7 +51,7 @@ class ReceiptsToJunitTests(unittest.TestCase):
                             "command": "cargo test -p xtask",
                         },
                         {"gate_name": "clippy_full", "status": "timeout"},
-                    ]
+                    ],
                 },
             )
             root, total, failures, errors, skipped = convert(receipt, "pr-fast")
@@ -66,18 +67,48 @@ class ReceiptsToJunitTests(unittest.TestCase):
                 write(
                     directory / f"route-{index}.json",
                     {
+                        "schema_version": receipts_to_junit.GATE_SHARD_SCHEMA_VERSION,
                         "gates": [
                             {
                                 "gate_name": "unit_routed_full",
                                 "status": "fail",
                                 "command": command,
                             }
-                        ]
+                        ],
                     },
                 )
             root, total, failures, errors, skipped = convert(directory, "pr-fast")
         self.assertEqual((0, 0, 0, 0), (total, failures, errors, skipped))
         self.assertEqual([], root.findall("./testsuite/testcase"))
+
+    def test_gate_receipt_with_unrecognised_schema_version_is_unrecognized(self) -> None:
+        """#15322 — a v2 envelope that renames a key must not silently misread.
+
+        Bare ``gates`` without a version, an unrecognised ``schema_version``,
+        and a non-string schema_version all surface as UnrecognizedFormat
+        rather than producing a plausible-but-wrong JUnit suite.
+        """
+        cases = {
+            "missing-version": {"gates": [{"gate_name": "fmt", "status": "pass"}]},
+            "wrong-version": {
+                "schema_version": "ci_gate_shard.v2",
+                "gates": [{"gate_name": "fmt", "status": "pass"}],
+            },
+            "non-string-version": {
+                "schema_version": 1,
+                "gates": [{"gate_name": "fmt", "status": "pass"}],
+            },
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            for filename, payload in cases.items():
+                write(directory / f"{filename}.json", payload)
+            root, total, failures, errors, skipped = convert(directory)
+        self.assertEqual((0, 0, 3, 0), (total, failures, errors, skipped))
+        self.assertEqual([], root.findall("./testsuite/testcase"))
+        diagnostics = root.findtext("./testsuite/system-err") or ""
+        for filename in cases:
+            self.assertIn(f"{filename}.json: UnrecognizedFormat:", diagnostics)
 
     def test_ux_aggregate_is_not_atomic(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -85,6 +116,7 @@ class ReceiptsToJunitTests(unittest.TestCase):
             write(
                 receipt,
                 {
+                    "schema_version": 2,
                     "result": "fail",
                     "failure_class": "assertion",
                     "first_failing_test": "journey",
@@ -93,6 +125,52 @@ class ReceiptsToJunitTests(unittest.TestCase):
             root, total, failures, errors, skipped = convert(receipt, "ux")
         self.assertEqual((0, 0, 0, 0), (total, failures, errors, skipped))
         self.assertEqual([], root.findall("./testsuite/testcase"))
+
+    def test_ux_aggregate_v1_still_recognised(self) -> None:
+        """#15322 — v1 is the additive base for v2; v1 fields must still flow
+        through the recognised path even though the producer now emits v2."""
+        with tempfile.TemporaryDirectory() as tmp:
+            receipt = Path(tmp) / "ux-v1.json"
+            write(
+                receipt,
+                {
+                    "schema_version": 1,
+                    "result": "fail",
+                    "failure_class": "assertion",
+                    "first_failing_test": "journey",
+                },
+            )
+            root, total, failures, errors, skipped = convert(receipt, "ux")
+        self.assertEqual((0, 0, 0, 0), (total, failures, errors, skipped))
+        self.assertEqual([], root.findall("./testsuite/testcase"))
+
+    def test_ux_aggregate_with_unrecognised_schema_version_is_unrecognized(self) -> None:
+        """#15322 — UX result/failure_class envelopes skip envelope-version
+        only when the version is recognised; missing or future versions fail
+        loud rather than silently misreading."""
+        cases = {
+            "missing-version": {"result": "fail", "failure_class": "assertion"},
+            "future-version": {
+                "schema_version": 99,
+                "result": "fail",
+                "failure_class": "assertion",
+            },
+            "non-int-version": {
+                "schema_version": "ci_gate_shard.v1",
+                "result": "fail",
+                "failure_class": "assertion",
+            },
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            for filename, payload in cases.items():
+                write(directory / f"{filename}.json", payload)
+            root, total, failures, errors, skipped = convert(directory)
+        self.assertEqual((0, 0, 3, 0), (total, failures, errors, skipped))
+        self.assertEqual([], root.findall("./testsuite/testcase"))
+        diagnostics = root.findtext("./testsuite/system-err") or ""
+        for filename in cases:
+            self.assertIn(f"{filename}.json: UnrecognizedFormat:", diagnostics)
 
     def test_lsp_smoke_child_receipt_is_gate_telemetry_not_tests(self) -> None:
         """#8063 negative control 10: the atomic lsp_smoke child receipt is an
@@ -610,7 +688,10 @@ class ReceiptsToJunitTests(unittest.TestCase):
             receipt, output = directory / "receipt.json", directory / "junit.xml"
             write(
                 receipt,
-                {"gates": [{"gate_name": "fmt", "status": "pass"}]},
+                {
+                    "schema_version": receipts_to_junit.GATE_SHARD_SCHEMA_VERSION,
+                    "gates": [{"gate_name": "fmt", "status": "pass"}],
+                },
             )
             old_argv = receipts_to_junit.sys.argv
             try:
