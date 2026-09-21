@@ -760,21 +760,30 @@ mod source_boundary_tests {
     #[test]
     fn relative_debugger_logpoint_uses_debuggee_cwd_before_containment()
     -> Result<(), Box<dyn Error>> {
+        // Canonicalize the tempdir roots once so every fixture path (source,
+        // decoy, outside, debuggee cwd, workspace authority) shares one
+        // filesystem spelling. Windows runners expose `%TEMP%` through the
+        // 8.3 short form (e.g. `C:\Users\RUNNER~1\...`) while `canonicalize`
+        // yields the long/verbatim form; mixing the two spellings between the
+        // seeded breakpoint store keys and the validated lookup keys would
+        // silently miss every relative hit (#16129).
         let root = tempfile::tempdir()?;
         let outside = tempfile::tempdir()?;
-        let cwd = root.path().join("subdir");
+        let canonical_root = root.path().canonicalize()?;
+        let canonical_outside = outside.path().canonicalize()?;
+        let cwd = canonical_root.join("subdir");
         fs::create_dir_all(cwd.join("lib"))?;
-        fs::create_dir(root.path().join("lib"))?;
-        fs::create_dir(outside.path().join("lib"))?;
+        fs::create_dir(canonical_root.join("lib"))?;
+        fs::create_dir(canonical_outside.join("lib"))?;
         // Seed native filesystem spellings, matching admitted store keys even
         // when the debugger uses forward slashes on Windows.
         let source = cwd.join("lib").join("module.pl");
-        let decoy = root.path().join("lib").join("module.pl");
-        let outside_source = outside.path().join("lib").join("module.pl");
+        let decoy = canonical_root.join("lib").join("module.pl");
+        let outside_source = canonical_outside.join("lib").join("module.pl");
         for path in [&source, &decoy, &outside_source] {
             fs::write(path, "print 'fixture';\n")?;
         }
-        let adapter = bounded_adapter(root.path())?;
+        let adapter = bounded_adapter(&canonical_root)?;
         // Trusted store fixtures exercise retained hit/logpoint semantics without
         // promoting the handler's currently floored optional capabilities.
         let logpoint = serde_json::from_value(json!({
@@ -792,12 +801,11 @@ mod source_boundary_tests {
                 "wrong-directory controls must contain verified stopping breakpoints",
             )?;
         }
-        let authority = root.path().canonicalize()?;
         let first = DebugAdapter::register_observed_breakpoint_hit(
             &adapter.breakpoints,
             "lib/module.pl",
             1,
-            Some(&authority),
+            Some(&canonical_root),
             &cwd,
         );
         require(
@@ -808,7 +816,7 @@ mod source_boundary_tests {
             &adapter.breakpoints,
             "lib/module.pl",
             1,
-            Some(&authority),
+            Some(&canonical_root),
             &cwd,
         );
         require(
@@ -824,8 +832,8 @@ mod source_boundary_tests {
             &adapter.breakpoints,
             "lib/module.pl",
             1,
-            Some(&authority),
-            outside.path(),
+            Some(&canonical_root),
+            &canonical_outside,
         );
         require(
             !refused.matched && !refused.should_stop && refused.log_messages.is_empty(),
