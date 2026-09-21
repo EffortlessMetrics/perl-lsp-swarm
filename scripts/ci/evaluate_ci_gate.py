@@ -292,6 +292,38 @@ def render_summary(needs: Mapping[str, Any], verdict: Verdict) -> str:
     return "\n".join(lines) + "\n"
 
 
+# GitHub's workflow-command escaping. Only these three characters are
+# special in a command's *message*: a literal `%` would be read as the start
+# of an escape, and a newline would end the command — which is also how a
+# message could smuggle a second command onto the next line.
+_COMMAND_ESCAPES = (("%", "%25"), ("\r", "%0D"), ("\n", "%0A"))
+
+
+def annotation(verdict: Verdict) -> str:
+    """The verdict as a workflow annotation, for readers outside the web UI.
+
+    The rendered summary goes to `$GITHUB_STEP_SUMMARY`, which the REST API
+    does not serve, and this job's check run carries no `output` body —
+    measured on check runs 106217897926 and 106217227911, both empty. So a
+    reader on the API (the checks list, tooling, an agent triaging a red)
+    sees `Process completed with exit code 1` and nothing else, and a
+    superseded head is indistinguishable from a broken test. Annotations are
+    the one failure surface REST does serve, which is the same repair #15492
+    made for `PR Smoke` (#16198, `74976a651`).
+
+    The text is the verdict already computed, not a second classification.
+    """
+    # The same two sentences `render_summary` builds, including its trailing
+    # period: a reason does not carry one, and without it the blockers clause
+    # runs straight into the last word.
+    text = f"{verdict.status}: {verdict.reason}."
+    if verdict.blockers:
+        text = f"{text} Blocking evidence: {', '.join(verdict.blockers)}"
+    for raw, escaped in _COMMAND_ESCAPES:
+        text = text.replace(raw, escaped)
+    return f"::error title=CI Gate aggregate::{text}"
+
+
 def main() -> int:
     summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
     try:
@@ -316,6 +348,14 @@ def main() -> int:
     if summary_path:
         Path(summary_path).write_text(summary, encoding="utf-8")
     print(summary, end="")
+
+    # One binding for both the colour and the annotation, so they cannot
+    # disagree. An annotation is emitted only on a red verdict: GitHub
+    # renders `::error::` as a failure annotation whatever the exit code, so
+    # an unconditional one would hang an error off a green check.
+    green = verdict.status in GREEN_STATUSES
+    if not green:
+        print(annotation(verdict))
     # Only a route that was never meant to run is green besides success.
     #
     # `superseded` and `no_verdict` are red, deliberately, and that is the
@@ -331,7 +371,7 @@ def main() -> int:
     # carries a success nothing ever earned, and no later failure supersedes
     # it. Every defect found on this change was a risk of granting a pass;
     # none of them exists when there is no pass to grant.
-    return 0 if verdict.status in GREEN_STATUSES else 1
+    return 0 if green else 1
 
 
 if __name__ == "__main__":
