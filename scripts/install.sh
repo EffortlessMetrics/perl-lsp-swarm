@@ -6,6 +6,7 @@
 #
 # Options via environment variables:
 #   VERSION=v0.12.0 INSTALL_DIR=/usr/local/bin bash scripts/install.sh
+#   bash scripts/install.sh v0.12.0 /usr/local/bin   # positional form
 #   PERL_LSP_LINUX_LIBC=gnu bash scripts/install.sh
 #   PERL_LSP_LINUX_LIBC=musl bash scripts/install.sh
 #   BUILD_FROM_SOURCE=1 bash scripts/install.sh   # force cargo build/install
@@ -19,7 +20,10 @@ set -euo pipefail
 REPO="EffortlessMetrics/perl-lsp"
 BIN_NAME="perllsp"
 DAP_BIN_NAME="perl-dap"
-VERSION="${VERSION:-latest}"
+# Whether VERSION/INSTALL_DIR arrived from the environment decides whether a
+# positional argument may still fill them (#16310).
+VERSION_FROM_ENV="${VERSION:-}"
+VERSION="${VERSION_FROM_ENV:-latest}"
 PERL_LSP_LINUX_LIBC="${PERL_LSP_LINUX_LIBC:-auto}"
 PREFER_GNU="${PREFER_GNU:-0}"
 BUILD_FROM_SOURCE="${BUILD_FROM_SOURCE:-0}"
@@ -39,6 +43,7 @@ is_termux_environment() {
     [ -n "${TERMUX_VERSION:-}" ] || [ -d "$(termux_usr_bin)" ]
 }
 
+INSTALL_DIR_FROM_ENV="${INSTALL_DIR:-}"
 # Determine install directory: user-local by default, system-wide if explicitly set
 if [ -z "${INSTALL_DIR:-}" ]; then
     if is_termux_environment; then
@@ -137,7 +142,7 @@ while [ "$#" -gt 0 ]; do
             ;;
         -h|--help)
             cat <<'USAGE'
-Usage: scripts/install.sh [--print-target] [--with-claude]
+Usage: scripts/install.sh [--print-target] [--with-claude] [VERSION] [INSTALL_DIR]
 
 Options:
   --print-target                         Print selected release target and exit.
@@ -152,6 +157,10 @@ Environment:
                                       Linux libc target. Default: auto.
   BUILD_FROM_SOURCE=1                  Build with cargo instead of downloading.
 
+Positional arguments mirror the root wrapper: the first positional is VERSION,
+the second is INSTALL_DIR. An environment variable already set wins over the
+matching positional.
+
 Most Linux distributions use gnu/glibc. Use musl mainly for Alpine Linux and
 musl-based containers. --print-target prints the selected release target and
 exits without downloading.
@@ -163,8 +172,23 @@ that remains a separate installation receipt.
 USAGE
             exit 0
             ;;
-        *)
+        -*)
             err "unknown argument: $1"
+            ;;
+        *)
+            # Positional VERSION then INSTALL_DIR, mirroring the root wrapper's
+            # compatibility surface (#16310). An environment variable already
+            # set wins over the matching positional.
+            if [ -z "$VERSION_FROM_ENV" ]; then
+                VERSION_FROM_ENV="$1"
+                VERSION="$1"
+            elif [ -z "$INSTALL_DIR_FROM_ENV" ]; then
+                INSTALL_DIR_FROM_ENV="$1"
+                INSTALL_DIR="$1"
+            else
+                err "unexpected argument: $1 (expected at most positional VERSION and INSTALL_DIR)"
+            fi
+            shift
             ;;
     esac
 done
@@ -1627,7 +1651,7 @@ verify_install() {
     if _got_version="$("$_bin" --version 2>&1)"; then
         info "verified: $_got_version"
     else
-        warn "could not run '$BIN_NAME --version'; the binary may require a restart to load shared libraries"
+        err "post-install verification failed: '$BIN_NAME --version' exited non-zero ($_got_version); refusing to report success for a binary that will not run (#16310; if this is a shared-library error, install the missing libraries and re-run this installer)"
     fi
 }
 
@@ -1723,9 +1747,13 @@ main() {
     if [ "$INSTALL_MODE" = "release" ]; then
         # Archive inspection classifies entries from the ustar headers rather
         # than from a tar listing, so the release path needs `od` as well as
-        # `tar` (#11508). A source build never inspects an archive, so the
-        # requirement stays inside this branch instead of gating both modes.
+        # `tar` (#11508). The bounded gzip decompression in the archive safety
+        # staging also needs `gzip`; without the precondition a missing gzip
+        # misreports as a corrupt archive (#16310). A source build never
+        # inspects an archive, so the requirement stays inside this branch
+        # instead of gating both modes.
         need_cmd od
+        need_cmd gzip
         download_and_verify
         extract_archive
     else

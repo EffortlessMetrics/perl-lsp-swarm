@@ -1017,6 +1017,10 @@ ci-release-history:
 ci-install-target-selection:
     bash scripts/tests/test-install-target-selection.sh
 
+# Validate installer argument-surface agreement and loud failure paths (#16310).
+ci-install-arg-surface:
+    bash scripts/tests/test-install-arg-surface.sh
+
 # Validate Termux detection, wrapper ownership, and source-mode selection.
 ci-install-termux-detection:
     bash scripts/tests/test-installer-termux-detection.sh

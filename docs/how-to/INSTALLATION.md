@@ -49,7 +49,13 @@ From a clone, the wrapper executes the sibling `scripts/install.sh` directly:
 git clone https://github.com/EffortlessMetrics/perl-lsp.git
 cd perl-lsp
 bash install.sh --help
+bash install.sh v0.18.0 "$HOME/.local/bin"   # positional VERSION and INSTALL_DIR
 ```
+
+Both the wrapper and the canonical installer accept the same positional
+`VERSION` then `INSTALL_DIR` surface; the `VERSION=` / `INSTALL_DIR=`
+environment variables remain equivalent and take precedence over the matching
+positional.
 
 A remote or piped wrapper is deliberately **non-authoritative**. It cannot
 select installer logic from mutable `master`, `main`, `HEAD`, another branch,
