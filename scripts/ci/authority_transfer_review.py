@@ -7,7 +7,9 @@ and computes one typed terminal verdict per governed surface row:
 
   candidate changes no governed surface       -> PASS_NOT_APPLICABLE
   every governed row carries current evidence -> PASS_CURRENT_REVIEW
-  any governed row lacks current evidence     -> typed FAIL_*/NOT_PROVEN_* (non-green)
+  any governed row lacks current evidence     -> typed FAIL_* (non-green) or
+                                                 NOT_PROVEN_* (advisory-neutral
+                                                 evidence boundary, #16150)
 
 This evaluator is trusted base/default-branch code. Candidate-tree material is
 consumed only as bounded data; nothing from the candidate tree is executed. A
@@ -37,9 +39,18 @@ Result vocabulary (issue #11795, closed):
   INSTRUMENT_FAILURE                 the evaluator itself is broken
 
 Exit codes mirror .github/workflows/semantic-close-containment.yml:
-  0 - pass (PASS_NOT_APPLICABLE or PASS_CURRENT_REVIEW)
-  1 - typed review failure (FAIL_*)
-  3 - not-proven/instrument failure (NOT_PROVEN_*, INSTRUMENT_FAILURE)
+  0 - pass (PASS_NOT_APPLICABLE, PASS_CURRENT_REVIEW) or advisory-neutral
+      not-proven evidence boundary (NOT_PROVEN_GITHUB, NOT_PROVEN_SUBJECT):
+      the packet channel did not bind this row, which is a wiring/evidence
+      boundary, not a review finding about the change. Exiting non-zero reds
+      every governed PR identically (#16150 Shape 3), so the red carries no
+      information and trains readers to ignore red. The typed verdict stays
+      in the receipt and step summary. Promotion to required enforcement
+      (#11796) must revisit this mapping.
+  1 - typed review failure (FAIL_*): a real review finding about the change.
+  3 - instrument failure (INSTRUMENT_FAILURE): a broken evaluator is a
+      finding about the instrument itself, not the change, and stays loud
+      even in advisory context.
 A pass means only that the review evidence required by the governed surface is
 current and internally consistent; product behavior, merge readiness, semantic
 issue closure, and live policy remain separate. No threshold here authorizes
@@ -163,6 +174,29 @@ TYPED_FAILURE_RESULTS = (
     FAIL_CONTROLLER_RELATION,
 )
 NOT_PROVEN_RESULTS = (NOT_PROVEN_GITHUB, NOT_PROVEN_SUBJECT, INSTRUMENT_FAILURE)
+
+
+def exit_code_for_result(result: str) -> int:
+    """Map one terminal verdict to the CLI exit code.
+
+    Advisory boundary (#16150 Shape 3): NOT_PROVEN_GITHUB and NOT_PROVEN_SUBJECT
+    record that the evidence channel did not bind the row — no packet source was
+    configured at this invocation, or the supplied artifact cannot name a
+    subject. Neither is a review finding about the change, and exiting non-zero
+    on them reds every governed PR identically, so the red carries no
+    information. Their exit is therefore neutral (0); the typed verdict remains
+    in the receipt and step summary. INSTRUMENT_FAILURE stays non-zero: a
+    broken evaluator is a finding about the instrument itself and must remain
+    visible even in advisory context. Unknown verdicts fail closed to the
+    non-zero not-proven class rather than masquerading as a pass.
+    """
+    if result in PASS_RESULTS:
+        return EXIT_PASS
+    if result in TYPED_FAILURE_RESULTS:
+        return EXIT_TYPED_FAILURE
+    if result in (NOT_PROVEN_GITHUB, NOT_PROVEN_SUBJECT):
+        return EXIT_PASS
+    return EXIT_NOT_PROVEN
 
 STATUS_BOUNDARY = (
     "Advisory context only: a pass means the review evidence required by the "
@@ -2049,6 +2083,19 @@ def self_test() -> int:
             version_rejected = True
         expect("surface_version_unknown_rejected", version_rejected, True)
 
+        # 23. ADVISORY-NEUTRAL-EXIT (#16150 Shape 3): NOT_PROVEN evidence
+        # boundaries exit 0 with their typed verdict intact; a broken
+        # instrument and typed review failures keep their loud exit codes;
+        # unknown verdicts fail closed.
+        expect("exit_pass_current_review", exit_code_for_result(PASS_CURRENT_REVIEW), EXIT_PASS)
+        expect("exit_pass_not_applicable", exit_code_for_result(PASS_NOT_APPLICABLE), EXIT_PASS)
+        expect("exit_neutral_not_proven_github", exit_code_for_result(NOT_PROVEN_GITHUB), EXIT_PASS)
+        expect("exit_neutral_not_proven_subject", exit_code_for_result(NOT_PROVEN_SUBJECT), EXIT_PASS)
+        expect("exit_loud_instrument_failure", exit_code_for_result(INSTRUMENT_FAILURE), EXIT_NOT_PROVEN)
+        expect("exit_typed_review_missing", exit_code_for_result(FAIL_REVIEW_MISSING), EXIT_TYPED_FAILURE)
+        expect("exit_typed_stale_head", exit_code_for_result(FAIL_REVIEW_STALE_HEAD), EXIT_TYPED_FAILURE)
+        expect("exit_unknown_fails_closed", exit_code_for_result("SOMETHING_ELSE"), EXIT_NOT_PROVEN)
+
     if failures:
         print(f"Authority Transfer Review self-test FAILED ({len(failures)}):")
         for failure in failures:
@@ -2105,12 +2152,7 @@ def main(argv: list[str] | None = None) -> int:
         args.summary.parent.mkdir(parents=True, exist_ok=True)
         args.summary.write_text(summary, encoding="utf-8", newline="\n")
     print(summary, end="")
-    result = receipt["result"]
-    if result in PASS_RESULTS:
-        return EXIT_PASS
-    if result in TYPED_FAILURE_RESULTS:
-        return EXIT_TYPED_FAILURE
-    return EXIT_NOT_PROVEN
+    return exit_code_for_result(receipt["result"])
 
 
 if __name__ == "__main__":
