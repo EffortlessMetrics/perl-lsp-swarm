@@ -44,7 +44,13 @@ and their leaves (`check-all-targets`, `clippy-full`, `test-full`, …) invoke
 plain `cargo`, so in a secondary worktree they rebuild into that worktree's
 own `target/` with no flock or disk gate. Treat them as single-worktree
 lanes; keep multi-worktree build work on `just cached`, `just build`,
-`just test`, `just check`, `just fix`, `just pr-fast`, and `agent-*`.
+`just test`, `just check`, `just fix`, and
+`agent-check`/`agent-test`/`agent-clippy`/`agent-nextest`, which all reach
+the wrapper with a heavy first word and take its lock. `just pr-fast` and
+`just agent-pr-fast` instead invoke `cargo-safe xtask gates …`: `xtask`
+takes the wrapper's unlocked branch, so they share the target dir and
+sccache but not the build flock — do not run them concurrently against
+one `DEVPLANE`.
 
 What `cargo-safe` does (see `scripts/cargo-safe`, 74 lines, worth reading):
 
