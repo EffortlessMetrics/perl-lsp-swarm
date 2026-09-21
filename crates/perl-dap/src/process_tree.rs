@@ -107,12 +107,16 @@ pub(crate) fn terminate_tree_and_reap(child: &mut Child) -> std::io::Result<Exit
     child.wait()
 }
 
-/// Live descendant PIDs of `root`, innermost-first irrelevant; empty when
-/// the snapshot cannot be taken (table-walk failure is logged, and the
-/// caller's direct-child kill remains the fallback).
+/// One live parent→children edge map read from a single toolhelp snapshot;
+/// empty when the snapshot cannot be taken (table-walk failure is logged).
+///
+/// Every snapshot entry records its own PID as a child of its recorded
+/// parent, so the map's values enumerate exactly the PIDs in the table.
+/// The single owner of this unsafe walk; also the process-liveness oracle
+/// the owned-tree tests use.
 #[cfg(windows)]
-fn descendant_pids(root: u32) -> Vec<u32> {
-    use std::collections::{HashMap, HashSet, VecDeque};
+fn windows_parent_to_children() -> std::collections::HashMap<u32, Vec<u32>> {
+    use std::collections::HashMap;
     use winapi::um::handleapi::{CloseHandle, INVALID_HANDLE_VALUE};
     use winapi::um::tlhelp32::{
         CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW,
@@ -129,11 +133,10 @@ fn descendant_pids(root: u32) -> Vec<u32> {
     let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
     if snapshot == INVALID_HANDLE_VALUE {
         tracing::warn!(
-            pid = root,
             error = %std::io::Error::last_os_error(),
             "Failed to snapshot the process table for owned-tree termination"
         );
-        return Vec::new();
+        return HashMap::new();
     }
     let mut parent_to_children: HashMap<u32, Vec<u32>> = HashMap::new();
     // SAFETY: PROCESSENTRY32W is a C struct of integers and a fixed-size
@@ -161,6 +164,17 @@ fn descendant_pids(root: u32) -> Vec<u32> {
         }
         CloseHandle(snapshot);
     }
+    parent_to_children
+}
+
+/// Live descendant PIDs of `root`, innermost-first irrelevant; empty when
+/// the snapshot cannot be taken (table-walk failure is logged, and the
+/// caller's direct-child kill remains the fallback).
+#[cfg(windows)]
+fn descendant_pids(root: u32) -> Vec<u32> {
+    use std::collections::{HashSet, VecDeque};
+
+    let parent_to_children = windows_parent_to_children();
     // Walk the parent→child edges from the direct child. A visited set
     // bounds the walk even if the table carries a parent-PID cycle.
     let mut descendants = Vec::new();
@@ -372,33 +386,9 @@ mod tests {
 
     #[cfg(windows)]
     fn pid_in_windows_snapshot(pid: u32) -> bool {
-        use winapi::um::handleapi::{CloseHandle, INVALID_HANDLE_VALUE};
-        use winapi::um::tlhelp32::{
-            CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW,
-            TH32CS_SNAPPROCESS,
-        };
-        unsafe {
-            let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-            if snapshot == INVALID_HANDLE_VALUE {
-                return false;
-            }
-            let mut found = false;
-            let mut entry: PROCESSENTRY32W = std::mem::zeroed();
-            entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
-            if Process32FirstW(snapshot, &mut entry) != 0 {
-                loop {
-                    if entry.th32ProcessID == pid {
-                        found = true;
-                        break;
-                    }
-                    if Process32NextW(snapshot, &mut entry) == 0 {
-                        break;
-                    }
-                }
-            }
-            CloseHandle(snapshot);
-            found
-        }
+        // Every table entry lists itself under its parent, so membership in
+        // the shared walk's values is exactly presence in the snapshot.
+        super::windows_parent_to_children().values().any(|children| children.contains(&pid))
     }
 
     /// The discriminating control from #15538: a bounded kill of an owned
