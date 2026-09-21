@@ -635,6 +635,12 @@ jobs:
         with:
           tool: just
 
+      - name: Prove the surface filter folds (filter unit probes)
+        if: needs.draft-pr-check.outputs.api_scope == 'true'
+        # The shared both-sides fold owns convergence; prove it before the
+        # comparison that depends on it. Needs only awk, no nightly.
+        run: python3 scripts/ci/test_public_api_filter.py
+
       - name: Check public API surface (.ci/public-api-baselines/ratchet-crates.txt)
         if: needs.draft-pr-check.outputs.api_scope == 'true'
         # Uses cargo public-api --simplified to omit blanket-impl noise; baselines in .ci/public-api-baselines/
