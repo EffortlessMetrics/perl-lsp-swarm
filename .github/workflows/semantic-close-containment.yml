@@ -124,8 +124,8 @@ jobs:
 
       - name: Replay immutable CP00 fixtures (instrument self-test)
         # Expected-contradiction fixtures legitimately exit 2; anything else
-        # non-zero (3 = NOT_PROVEN/instrument failure, crashes, expectation
-        # mismatches surfaced as 3) fails this step, so broken evidence can
+        # non-zero (3 = a real NOT_PROVEN verdict, 4 = an instrument
+        # crash, expectation mismatches surfaced as 3) fails this step, so broken evidence can
         # never masquerade as a pass.
         run: |
           set -u
@@ -155,7 +155,7 @@ jobs:
         if: github.event_name == 'pull_request_target'
         env:
           GH_TOKEN: ${{ github.token }}
-        # pipefail keeps the validator's exit contract (0/2/3) authoritative
+        # pipefail keeps the validator's typed exit contract (0 pass / 2 contradiction / 3 NOT_PROVEN verdict / 4 instrument crash) authoritative
         # while the same report — including the #15640 snapshot receipt
         # (updated_at, live head SHA, title/body digest) — lands in the job
         # summary as evidence of what this run actually evaluated.
