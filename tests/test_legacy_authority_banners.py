@@ -188,12 +188,37 @@ def trusted_historical_commit() -> str:
     return TRUSTED_HISTORICAL_COMMIT
 
 
-def current_main_contains_trusted_history(trusted_commit: str) -> bool:
+def repository_is_shallow() -> bool:
+    result = subprocess.run(
+        ["git", "rev-parse", "--is-shallow-repository"],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return result.stdout.strip() == "true"
+
+
+def main_ancestry_verdict(trusted_commit: str) -> str:
+    """Classify the pinned-commit ancestry probe into its three real outcomes.
+
+    ``git merge-base --is-ancestor`` distinguishes: exit 0 = ancestor, exit 1 =
+    genuinely not an ancestor (a real finding against main), exit 128 = the
+    commit is not in this clone's object graph (an instrument failure that says
+    nothing about main). Collapsing all three to False reported "main lost the
+    pinned commit" from evidence that could not support it (#15480).
+    """
     result = subprocess.run(
         ["git", "merge-base", "--is-ancestor", trusted_commit, "origin/main"],
         cwd=ROOT,
+        capture_output=True,
+        text=True,
     )
-    return result.returncode == 0
+    if result.returncode == 0:
+        return "ancestor"
+    if result.returncode == 1:
+        return "not-ancestor"
+    return "instrument"
 
 
 def historical_identity_findings(
@@ -452,8 +477,22 @@ class LegacyAuthorityBannerTests(unittest.TestCase):
     def test_rollout_redirects_bind_exact_historical_subject(self) -> None:
         rows = registry_rows()
         trusted_commit = trusted_historical_commit()
-        self.assertTrue(
-            current_main_contains_trusted_history(trusted_commit),
+        shallow = repository_is_shallow()
+        verdict = main_ancestry_verdict(trusted_commit)
+        if shallow or verdict == "instrument":
+            reason = (
+                "shallow clone (grafted history)"
+                if shallow
+                else "pinned commit absent from this clone"
+            )
+            self.skipTest(
+                f"{reason}: this checkout cannot evaluate whether current main "
+                f"retains {trusted_commit}; the claim is not proven here, "
+                "not failed"
+            )
+        self.assertEqual(
+            verdict,
+            "ancestor",
             "current main must retain the pinned historical authority commit",
         )
         for path, expected in ROLLOUT_REDIRECTS.items():
@@ -496,6 +535,17 @@ class LegacyAuthorityBannerTests(unittest.TestCase):
             [],
             "a moving main tip must not redefine the pinned historical authority",
         )
+
+    def test_missing_pinned_object_is_an_instrument_verdict(self) -> None:
+        """A well-formed but absent commit must classify as instrument, not a finding.
+
+        A shallow clone cannot answer the ancestry question honestly: the same
+        checkout reports exit 128 before a partial fetch and a grafted exit 1
+        after one, while both prove nothing about main (#15480). The classifier
+        must keep the missing-object case distinct from the real exit-1
+        finding, and the rollout test skips rather than passes or fails on it.
+        """
+        self.assertEqual(main_ancestry_verdict("0" * 40), "instrument")
 
     def test_rollout_redirects_do_not_retain_executable_queue_prose(self) -> None:
         forbidden = (
