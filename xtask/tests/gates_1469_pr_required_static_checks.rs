@@ -142,6 +142,47 @@ fn gate_unit_routed_full_uses_tests_flag_not_lib() -> Result<(), Box<dyn std::er
     Ok(())
 }
 
+/// TEST: unit_routed_full exports `PERL_LSP_BIN` so the gate's diff-touched
+/// `tests/` integration suites find the perllsp binary via `PERL_LSP_BIN ->
+/// CARGO_BIN_EXE -> target/debug/perllsp` instead of falling through to a
+/// compile-on-demand PATH lookup (#16194).
+///
+/// `stdio_navigation_matches_exact_request_and_current_edit` in
+/// `crates/perl-lsp-ux-tests/tests/ux_process_lifecycle_e2e.rs` hard-requires
+/// `PERL_LSP_BIN` to name the candidate binary. With this prefix set, the test
+/// stops skipping/aborting when `unit_routed_full`'s scope arm lands
+/// `perl-lsp-ux-tests` (e.g. #16194's #13878 reproducer on `crates/perl-lsp-ux-tests/src/`).
+#[test]
+fn gate_unit_routed_full_exports_perl_lsp_bin() -> Result<(), Box<dyn std::error::Error>> {
+    let root = project_root();
+    let policy_path = root.join(".ci/gate-policy.yaml");
+    let content = fs::read_to_string(policy_path)?;
+    let parsed: GatePolicyDoc = serde_yaml_ng::from_str(&content)?;
+
+    let gates: HashMap<_, _> =
+        parsed.gates.into_iter().map(|gate| (gate.name.clone(), gate)).collect();
+
+    let gate = must_some(gates.get("unit_routed_full"));
+
+    assert!(
+        gate.command.contains("PERL_LSP_BIN="),
+        "unit_routed_full must export PERL_LSP_BIN so perllsp-spawning integration \
+         tests find the binary under PERL_LSP_BIN -> CARGO_BIN_EXE -> target/debug/perllsp; \
+         without it, stdio_navigation_matches_exact_request_and_current_edit (and any \
+         future suite that hard-requires the env var) deterministically aborts in \
+         this gate (#16194). Current command: {}",
+        gate.command
+    );
+    assert!(
+        gate.command.contains("cargo test --locked --tests"),
+        "unit_routed_full must still invoke cargo test --tests after setting PERL_LSP_BIN; \
+         current command: {}",
+        gate.command
+    );
+
+    Ok(())
+}
+
 /// TEST: All five gates are in pr_fast tier (compile_all_targets, clippy_full, unit_routed_full,
 /// fmt, check_conflict_markers)
 #[test]

@@ -1,0 +1,9 @@
+project: product
+component: Continuous integration
+kind: Fixed
+body: "Export PERL_LSP_BIN in the unit_routed_full gate so perllsp-spawning integration tests resolve the binary via the existing PERL_LSP_BIN -> CARGO_BIN_EXE -> target/debug/perllsp chain instead of falling through to compile-on-demand lookup."
+time: 2026-09-20T00:00:00Z
+custom:
+  PR: "16194"
+  Slug: unit-routed-full-perl-lsp-bin-export
+  Breaking: "no"
