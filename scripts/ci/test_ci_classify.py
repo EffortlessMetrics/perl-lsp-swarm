@@ -34,6 +34,7 @@ from ci_classify import (  # noqa: E402
     CLASS_REVIEW_GATE,
     CLASS_UNKNOWN,
     ROUTING,
+    SCHEMA_VERSION,
     classify_one,
     filter_failing,
     load_check_runs,
@@ -558,6 +559,104 @@ class TestLoadCheckRuns(unittest.TestCase):
             self.assertEqual(len(result), 2)
         finally:
             os.unlink(fname)
+
+
+# ---------------------------------------------------------------------------
+# --json envelope tests (issue #15285)
+# ---------------------------------------------------------------------------
+
+
+class TestJsonEnvelope(unittest.TestCase):
+    """The ``--json`` flag must emit a versioned envelope object.
+
+    Schema: ``{"schema_version": <str>, "classifications": [<record>, ...]}``.
+
+    Without an envelope a consumer that asserts ``data[0]["routing"] in {...}``
+    cannot detect a routing-taxonomy bump; an envelope lets the consumer
+    check ``schema_version`` first and refuse unknown shapes.
+    """
+
+    @staticmethod
+    def _captured_json_for(checks: list[dict]) -> dict:
+        """Run ``run()`` with ``--json`` and parse the captured stdout."""
+        import argparse
+        import contextlib
+        import io
+
+        from ci_classify import run
+
+        args = argparse.Namespace(input=None, pr=None, json=True)
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".json", delete=False, encoding="utf-8"
+        ) as f:
+            json.dump(checks, f)
+            fname = f.name
+        try:
+            args.input = fname
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rc = run(args)
+            assert rc == 0, f"ci_classify.run returned {rc}"
+            return json.loads(buf.getvalue())
+        finally:
+            os.unlink(fname)
+
+    def test_envelope_is_object_with_schema_version(self) -> None:
+        envelope = self._captured_json_for(
+            [{"name": "fmt", "conclusion": "failure"}]
+        )
+        self.assertIsInstance(envelope, dict)
+        self.assertEqual(envelope.get("schema_version"), SCHEMA_VERSION)
+        self.assertEqual(SCHEMA_VERSION, "ci_classify.v1")
+
+    def test_envelope_records_under_classifications_key(self) -> None:
+        envelope = self._captured_json_for(
+            [
+                {"name": "fmt", "conclusion": "failure"},
+                {
+                    "name": "CI Gate shard (lsp)",
+                    "conclusion": "cancelled",
+                    "required": True,
+                },
+            ]
+        )
+        records = envelope.get("classifications")
+        self.assertIsInstance(records, list)
+        self.assertEqual(len(records), 2)
+
+    def test_record_shape_preserved(self) -> None:
+        envelope = self._captured_json_for(
+            [{"name": "fmt", "conclusion": "failure"}]
+        )
+        record = envelope["classifications"][0]
+        self.assertEqual(
+            set(record.keys()),
+            {"name", "conclusion", "class", "rationale", "routing"},
+        )
+        self.assertEqual(record["name"], "fmt")
+        self.assertEqual(record["conclusion"], "failure")
+        self.assertEqual(record["class"], CLASS_POLICY_MISMATCH)
+        self.assertEqual(record["routing"], ROUTING[CLASS_POLICY_MISMATCH])
+        self.assertIsInstance(record["rationale"], str)
+        self.assertTrue(record["rationale"])
+
+    def test_empty_classifications_when_all_passing(self) -> None:
+        envelope = self._captured_json_for(
+            [{"name": "fmt", "conclusion": "success"}]
+        )
+        self.assertEqual(envelope["schema_version"], SCHEMA_VERSION)
+        self.assertEqual(envelope["classifications"], [])
+
+    def test_top_level_is_not_a_bare_list(self) -> None:
+        """Regression guard: previous shape was a bare list at the top level.
+
+        A consumer that did ``for record in json.load(sys.stdin)`` would
+        silently miss the schema_version envelope. Assert the root is a dict.
+        """
+        envelope = self._captured_json_for(
+            [{"name": "fmt", "conclusion": "failure"}]
+        )
+        self.assertNotIsInstance(envelope, list)
 
 
 if __name__ == "__main__":

@@ -59,6 +59,14 @@ Output
 Human-readable table to stdout, one row per failing check.  Exits 0 always
 (report-only; never blocks the caller).
 
+The ``--json`` flag emits a versioned envelope instead:
+
+    {"schema_version": "ci_classify.v1", "classifications": [...]}
+
+The envelope lets consumers detect a shape bump (e.g. a new routing value
+or a per-classifier confidence field) instead of failing silently on an
+unexpected record key.
+
 Optional thin GitHub wrapper (--pr N) fetches live check-runs via the gh CLI
 but is not required — offline fixture testing is the primary path.
 """
@@ -70,6 +78,15 @@ import subprocess
 import sys
 from pathlib import Path
 from typing import Any
+
+# ---------------------------------------------------------------------------
+# Schema versioning
+# ---------------------------------------------------------------------------
+
+# Pin the JSON output contract so a future shape bump (e.g. adding a new
+# routing value or a per-classifier confidence field) is observable at the
+# consumer side rather than silent. See issue #15285.
+SCHEMA_VERSION = "ci_classify.v1"
 
 # ---------------------------------------------------------------------------
 # Class taxonomy
@@ -421,8 +438,9 @@ def run(args: argparse.Namespace) -> int:
         results.append((check, cls, rationale))
 
     if args.json:
-        output = json.dumps(
-            [
+        envelope = {
+            "schema_version": SCHEMA_VERSION,
+            "classifications": [
                 {
                     "name": c.get("name", ""),
                     "conclusion": c.get("conclusion", ""),
@@ -432,8 +450,8 @@ def run(args: argparse.Namespace) -> int:
                 }
                 for c, cls, rationale in results
             ],
-            indent=2,
-        )
+        }
+        output = json.dumps(envelope, indent=2)
         print(output)
     else:
         print(format_results(results), end="")
