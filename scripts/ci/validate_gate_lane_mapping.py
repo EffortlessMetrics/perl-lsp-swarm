@@ -55,6 +55,10 @@ GATE_TO_LANE_MAP: dict[str, dict[str, Any]] = {
     # The serialization ratchet runs in pr-fast and again in the required
     # merge-gate policy shard, so both execution lanes own its economics.
     "serial_test_ratchet": {"lanes": ["pr_smoke", "merge_gate_shards"]},
+    # The regex-static ratchet (#16260) mirrors serial_test_ratchet: pr-fast
+    # shift-left plus the required merge-gate meta shard, so both execution
+    # lanes own its economics.
+    "regex_static_ratchet": {"lanes": ["pr_smoke", "merge_gate_shards"]},
     # Arrived from the release lineage in the reconciliation merge (#4976). The
     # gate was defined in .ci/gate-policy.yaml there but never mapped here, so
     # this validator failed the moment both files met. tier: pr_fast, and it is

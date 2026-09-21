@@ -1093,7 +1093,7 @@ jobs:
           # and re-flip `ci_workflow_includes_compile_all_targets_in_matrix`
           # if the dedicated job is ever reverted.
           - name: meta
-            gates: ignored_tests_check_refs check_conflict_markers release_history readme_heading_check publish_closure publish_manifest_check layer_check published_crate_count_pr_fast serial_test_ratchet release_history_check source_commit_api_check perl_token_leaf_contract clippy_full
+            gates: ignored_tests_check_refs check_conflict_markers release_history readme_heading_check publish_closure publish_manifest_check layer_check published_crate_count_pr_fast serial_test_ratchet regex_static_ratchet release_history_check source_commit_api_check perl_token_leaf_contract clippy_full
           - name: foundation
             gates: unit_foundation_full
           - name: parser_stack

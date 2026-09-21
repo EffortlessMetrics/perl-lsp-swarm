@@ -479,6 +479,29 @@ gates:
     planning:
       role: always_on
 
+  # Issue #16260: this ratchet was the one unwired checker that was green,
+  # and the issue blocked wiring it because it decided production scope with
+  # first_cfg_test_line_number, the classifier behind #13838. #16251 moved
+  # the production/test decision to test_scope module-graph reachability at
+  # the shared walk seam, so the checker is sound to require now. Baseline is
+  # the measured current-main census (9, b4e4001fa).
+  - name: regex_static_ratchet
+    tier: pr_fast
+    description: "Ratchet regex constructors outside lazy_static in production source (#16260)"
+    required: true
+    command: just ci-regex-static-ratchet
+    timeout_seconds: 120
+    retry_count: 0
+    budgets:
+      max_duration_ms: 90000
+    quarantine: false
+    tags:
+      - policy
+      - hygiene
+      - ratchet
+    planning:
+      role: always_on
+
   - name: release_history_check
     tier: pr_fast
     description: "Check release-history drift"
