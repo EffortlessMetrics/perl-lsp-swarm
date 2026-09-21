@@ -132,3 +132,34 @@ fn heredoc_body_dispatch_precedes_pod_and_comment_skipping() -> Result<(), Strin
     }
     Ok(())
 }
+
+#[test]
+fn lexer_sigiled_print_is_a_shift_operand_not_a_heredoc_introducer() {
+    use perl_lexer::LocalSymbolTable;
+
+    // `$print` is a completed scalar term, so `<<` is a left shift and the
+    // following lines stay live code. Bare `print <<END` is the
+    // matching-marker opposite control: it stays a heredoc introducer, so
+    // its body prose must stay out of the known-sub scan.
+    let shift =
+        "my $print = shift;\nmy $width = $print <<'END';\nsub fake { }\nEND\nsub real { }\n";
+    let table = LocalSymbolTable::scan_subs(shift);
+    assert!(table.is_known_sub("fake"), "shift operand swallowed live code: {shift:?}");
+    assert!(table.is_known_sub("real"), "suffix declaration lost: {shift:?}");
+
+    let heredoc = "print <<END;\nsub fake { }\nEND\nsub real { }\n";
+    let table = LocalSymbolTable::scan_subs(heredoc);
+    assert!(!table.is_known_sub("fake"), "heredoc body leaked: {heredoc:?}");
+    assert!(table.is_known_sub("real"), "suffix declaration lost: {heredoc:?}");
+
+    // Mandatory negative control: `foo` is unprototyped, so Perl itself
+    // reads `foo <<END` as the call consuming the heredoc; that callable
+    // authority must survive this slice.
+    let unprototyped = "sub foo { 4 }\nprint foo <<END;\nsub fake { }\nEND\nsub real { }\n";
+    let table = LocalSymbolTable::scan_subs(unprototyped);
+    assert!(
+        !table.is_known_sub("fake"),
+        "unprototyped foo lost callable authority: {unprototyped:?}"
+    );
+    assert!(table.is_known_sub("real"), "suffix declaration lost: {unprototyped:?}");
+}
