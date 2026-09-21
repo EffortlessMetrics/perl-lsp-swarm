@@ -39,6 +39,13 @@ The `agent-*` recipes (`just agent-check`, `just agent-test`,
 `just agent-clippy`, `just agent-pr-fast`) route through the same wrapper and
 are equally safe for multi-worktree use.
 
+Scope note: the tier lanes (`just merge-gate`, `just ci-gate`, `just nightly`)
+and their leaves (`check-all-targets`, `clippy-full`, `test-full`, …) invoke
+plain `cargo`, so in a secondary worktree they rebuild into that worktree's
+own `target/` with no flock or disk gate. Treat them as single-worktree
+lanes; keep multi-worktree build work on `just cached`, `just build`,
+`just test`, `just check`, `just fix`, `just pr-fast`, and `agent-*`.
+
 What `cargo-safe` does (see `scripts/cargo-safe`, 74 lines, worth reading):
 
 - redirects `CARGO_TARGET_DIR`, `CARGO_HOME`, `CARGO_BUILD_BUILD_DIR`, and
