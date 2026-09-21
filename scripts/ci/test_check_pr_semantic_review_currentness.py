@@ -821,5 +821,342 @@ class SemanticReviewCurrentnessTests(unittest.TestCase):
         self.assertEqual("semantic_review_currentness.v1", payload["schema_version"])
 
 
+def _completed(
+    args: list[str], *, returncode: int, stderr: str = ""
+) -> subprocess.CompletedProcess[str]:
+    """Build a `CompletedProcess` carrying text-mode stderr for stubbing `_run`."""
+    return subprocess.CompletedProcess(
+        args=args, returncode=returncode, stdout="", stderr=stderr
+    )
+
+
+def _stub_ancestry_run(
+    ancestry_proc: subprocess.CompletedProcess[str],
+):
+    """Return a `_run` stub that passes `ensure_commit` probes but injects `ancestry_proc`
+    for the `git merge-base --is-ancestor` call. Anything else returns an empty 0
+    so the surrounding flow can reach the ancestry check it is exercising.
+    """
+
+    def stub(
+        args: list[str],
+        *,
+        cwd: Path,
+        check: bool = True,
+        text: bool = True,
+    ) -> subprocess.CompletedProcess[str]:
+        if args[:2] == ["git", "merge-base"]:
+            return ancestry_proc
+        return _completed(args, returncode=0)
+
+    return stub
+
+
+class AncestryDiagnosticTests(unittest.TestCase):
+    """Distinguish a `git merge-base --is-ancestor` exit 1 (false predicate, the
+    legitimate git semantic) from any other nonzero exit (instrument failure).
+    See #16175.
+
+    The two ancestry call sites — `subject_digest` and `neutral_followup` —
+    used to collapse every nonzero exit into the same "not an ancestor"
+    message, which made stderr read errors and signal-kill terminations
+    indistinguishable from real ancestry refusals. Both sites now route exit
+    1 to the existing false-predicate diagnostic and route every other
+    nonzero exit to a typed CurrentnessError carrying the actual return code
+    and a sanitized stderr snippet.
+    """
+
+    def setUp(self) -> None:
+        self.tmp, self.root, self.base, self.head = setup_repo()
+        self.addCleanup(self.tmp.cleanup)
+        # Snapshot the real `_run` so `tearDown` can restore it even if a
+        # test raises before it gets the chance to swap.
+        self._original_run = module._run
+
+    def tearDown(self) -> None:
+        module._run = self._original_run
+
+    # --- direct sanitizer tests ----------------------------------------------
+
+    def test_sanitize_subprocess_stderr_strips_control_characters(self) -> None:
+        """ANSI escape sequences and the rest of the C0 range are scrubbed.
+
+        A diagnostic that quotes a Git error verbatim can carry the same
+        control bytes Git emits, and those bytes are not safe to forward to
+        a campaign log. The sanitizer must strip them while keeping the
+        readable characters around them.
+        """
+        raw = "fatal: \x1b[31mrepo corrupt\x1b[0m\n\x07beep"
+        sanitized = module._sanitize_subprocess_stderr(raw)
+        self.assertNotIn("\x1b", sanitized)
+        self.assertNotIn("\x07", sanitized)
+        self.assertIn("fatal: repo corrupt", sanitized)
+        self.assertIn("beep", sanitized)
+
+    def test_sanitize_subprocess_stderr_redacts_credential_shaped_values(self) -> None:
+        """Common credential-shaped patterns are redacted, not echoed.
+
+        A misconfigured CI can paste a real token into a path or an env
+        var, and a diagnostic that forwards Git stderr verbatim exposes it
+        in campaign logs. The redactor matches token/password/secret/
+        bearer/authorization/api-key assignments and substitutes a fixed
+        placeholder, preserving the key name so the operator can still see
+        which variable leaked.
+        """
+        raw = (
+            "fatal: could not read https://x-access-token:ghp_abcdef0123456789"
+            "@github.com/repo\n"
+            "hint: GITHUB_TOKEN=ghp_secretvalue123\n"
+            "hint: api-key: AKIAEXAMPLE\n"
+        )
+        sanitized = module._sanitize_subprocess_stderr(raw)
+        self.assertNotIn("ghp_abcdef0123456789", sanitized)
+        self.assertNotIn("ghp_secretvalue123", sanitized)
+        self.assertNotIn("AKIAEXAMPLE", sanitized)
+        self.assertIn("REDACTED", sanitized)
+        self.assertIn("token=", sanitized)
+        self.assertIn("api-key=", sanitized)
+
+    def test_sanitize_subprocess_stderr_bounds_length(self) -> None:
+        """Diagnostic length is bounded so a runaway log does not flood the verdict.
+
+        The bound is the script-wide constant; if the bound changes, the
+        assertion forces a review of the trade-off instead of silently
+        letting the diagnostic grow.
+        """
+        raw = "x" * (module._SUBPROCESS_STDERR_MAX * 4)
+        sanitized = module._sanitize_subprocess_stderr(raw)
+        self.assertEqual(module._SUBPROCESS_STDERR_MAX, len(sanitized))
+
+    def test_sanitize_subprocess_stderr_preserves_empty(self) -> None:
+        """An empty stderr stays empty so callers can substitute a placeholder.
+
+        The diagnostic message formats `f": {detail}"` only when detail is
+        non-empty, so the empty case must remain the empty string and not
+        silently turn into a placeholder that confuses the regex.
+        """
+        self.assertEqual("", module._sanitize_subprocess_stderr(""))
+
+    # --- subject_digest -------------------------------------------------------
+
+    def test_subject_digest_exit_one_keeps_false_predicate_diagnostic(self) -> None:
+        """Exit 1 from `git merge-base --is-ancestor` is a false ancestry predicate.
+
+        That is the legitimate git semantic and the only nonzero exit code
+        that should still be reachable as the false-predicate message. Any
+        regression that maps exit 1 to a different diagnostic would hide
+        real ancestry refusals behind an instrument-failure label.
+        """
+        module._run = _stub_ancestry_run(  # type: ignore[assignment]
+            _completed(["git", "merge-base"], returncode=1, stderr="")
+        )
+        with self.assertRaises(module.CurrentnessError) as ctx:
+            module.subject_digest(self.root, self.base, self.head)
+        self.assertIn("is not an ancestor of reviewed head", str(ctx.exception))
+        self.assertNotIn("subprocess exit", str(ctx.exception))
+
+    def test_subject_digest_exit_one_twenty_eight_is_instrument_failure(self) -> None:
+        """Exit 128 is the standard Git "fatal error" code.
+
+        The marker script must surface that as an instrument failure with
+        the actual return code and a sanitized stderr, not as the
+        false-predicate message that is now reserved for exit 1.
+        """
+        module._run = _stub_ancestry_run(  # type: ignore[assignment]
+            _completed(
+                ["git", "merge-base"],
+                returncode=128,
+                stderr="fatal: not a git repository: '.git'\n",
+            )
+        )
+        with self.assertRaises(module.CurrentnessError) as ctx:
+            module.subject_digest(self.root, self.base, self.head)
+        message = str(ctx.exception)
+        self.assertIn("subprocess exit 128", message)
+        self.assertIn("not a git repository", message)
+        self.assertNotIn("is not an ancestor of reviewed head", message)
+
+    def test_subject_digest_signal_kill_is_instrument_failure(self) -> None:
+        """A negative return code (signal-killed on POSIX) is instrument failure.
+
+        The script runs on the same GitHub-hosted pool that produced the
+        unexplained termination referenced in #16175, so the negative
+        return code path must remain a typed CurrentnessError rather than
+        silently inheriting the false-predicate diagnostic.
+        """
+        module._run = _stub_ancestry_run(  # type: ignore[assignment]
+            _completed(["git", "merge-base"], returncode=-9, stderr="")
+        )
+        with self.assertRaises(module.CurrentnessError) as ctx:
+            module.subject_digest(self.root, self.base, self.head)
+        self.assertIn("subprocess exit -9", str(ctx.exception))
+
+    def test_subject_digest_scrubs_control_characters_in_stderr(self) -> None:
+        """A control-character-laden stderr does not survive the sanitizer.
+
+        The diagnostic must not emit raw ANSI escape sequences even if the
+        upstream Git process wrote them. The control range is the same one
+        used for terminal colouring, so an unredacted escape sequence can
+        also rewrite campaign-log viewers.
+        """
+        module._run = _stub_ancestry_run(  # type: ignore[assignment]
+            _completed(
+                ["git", "merge-base"],
+                returncode=128,
+                stderr="\x1b[31mfatal: \x1b[0mcorrupt object\n",
+            )
+        )
+        with self.assertRaises(module.CurrentnessError) as ctx:
+            module.subject_digest(self.root, self.base, self.head)
+        message = str(ctx.exception)
+        self.assertNotIn("\x1b", message)
+        self.assertIn("fatal: corrupt object", message)
+
+    def test_subject_digest_redacts_credentials_in_stderr(self) -> None:
+        """A leaked token in the subprocess stderr is not forwarded verbatim.
+
+        GitHub Actions runners occasionally echo `GITHUB_TOKEN=` into a
+        process's environment, and a misconfigured hook can paste that
+        into a path that ends up in stderr. The diagnostic must scrub the
+        value before reaching the campaign log.
+        """
+        module._run = _stub_ancestry_run(  # type: ignore[assignment]
+            _completed(
+                ["git", "merge-base"],
+                returncode=128,
+                stderr="fatal: could not push to https://ghp_abcdef0123456789@github.com/x\n",
+            )
+        )
+        with self.assertRaises(module.CurrentnessError) as ctx:
+            module.subject_digest(self.root, self.base, self.head)
+        message = str(ctx.exception)
+        self.assertNotIn("ghp_abcdef0123456789", message)
+        self.assertIn("REDACTED", message)
+
+    def test_subject_digest_empty_stderr_still_carries_exit_code(self) -> None:
+        """Empty stderr still produces a usable diagnostic.
+
+        The format must not emit a trailing colon when there is no
+        stderr to quote; that would be cosmetic noise that hides the
+        exit code at the head of the line.
+        """
+        module._run = _stub_ancestry_run(  # type: ignore[assignment]
+            _completed(["git", "merge-base"], returncode=2, stderr="")
+        )
+        with self.assertRaises(module.CurrentnessError) as ctx:
+            module.subject_digest(self.root, self.base, self.head)
+        message = str(ctx.exception)
+        self.assertIn("subprocess exit 2", message)
+        self.assertFalse(message.rstrip().endswith(":"))
+
+    # --- neutral_followup -----------------------------------------------------
+
+    def test_neutral_followup_exit_one_keeps_false_predicate_verdict(self) -> None:
+        """Exit 1 routes to the legitimate carry-forward false verdict.
+
+        A real "reviewed head is not an ancestor of current head" must
+        keep classifying as a NOT_PROVEN carry-forward failure with that
+        reason — that is the verdict downstream consumers see.
+        """
+        module._run = _stub_ancestry_run(  # type: ignore[assignment]
+            _completed(["git", "merge-base"], returncode=1, stderr="")
+        )
+        neutral, reason = module.neutral_followup(self.root, self.head, self.base)
+        self.assertFalse(neutral)
+        self.assertEqual("reviewed head is not an ancestor of current head", reason)
+
+    def test_neutral_followup_exit_one_twenty_eight_is_instrument_failure(self) -> None:
+        """Exit 128 raises CurrentnessError rather than returning a verdict.
+
+        Returning `(False, "reviewed head is not an ancestor ...")` for a
+        subprocess failure would let that failure look like a real
+        carry-forward verdict, which downstream consumers would map to a
+        different disposition than instrument failure. The carry-forward
+        classification has to keep both kinds of failure distinguishable.
+        """
+        module._run = _stub_ancestry_run(  # type: ignore[assignment]
+            _completed(
+                ["git", "merge-base"],
+                returncode=128,
+                stderr="fatal: bad object HEAD\n",
+            )
+        )
+        with self.assertRaises(module.CurrentnessError) as ctx:
+            module.neutral_followup(self.root, self.head, self.base)
+        message = str(ctx.exception)
+        self.assertIn("subprocess exit 128", message)
+        self.assertIn("bad object HEAD", message)
+
+    def test_collapsing_all_nonzero_into_ancestry_message_must_fail(self) -> None:
+        """Regression control: exit 128 must not inherit the exit-1 message.
+
+        The pre-#16175 behaviour collapsed every nonzero exit into the
+        false-predicate message. This test pins the new contract so a
+        later refactor that re-collapses the two is caught at test time
+        rather than in a campaign log.
+        """
+        module._run = _stub_ancestry_run(  # type: ignore[assignment]
+            _completed(
+                ["git", "merge-base"],
+                returncode=128,
+                stderr="fatal: corrupt\n",
+            )
+        )
+        with self.assertRaises(module.CurrentnessError) as ctx:
+            module.subject_digest(self.root, self.base, self.head)
+        message = str(ctx.exception)
+        self.assertNotIn("is not an ancestor of reviewed head", message)
+        self.assertIn("subprocess exit 128", message)
+
+    # --- CLI surface ----------------------------------------------------------
+
+    def test_cli_surfaces_instrument_failure_for_subprocess_exit_above_one(self) -> None:
+        """Through the CLI, exit > 1 lands as NOT_PROVEN / instrument_failure.
+
+        The verdict dict is what the campaign sees; the subprocess exit
+        code is not part of the wire surface. The detail string must
+        carry the actual return code and the sanitized stderr so the
+        operator can tell a real ancestry refusal from a stderr read.
+        """
+        # Build the marker body before installing the stub: `body()` calls
+        # `subject_digest`, which itself invokes `_run`, and we want a real
+        # digest computed against the live repository rather than against
+        # the stubbed failure.
+        review_body = body(42, self.root, self.base, self.head)
+        review_row = module.Review(
+            login="reviewer",
+            user_type="User",
+            state="COMMENTED",
+            body=review_body,
+            commit_oid=self.head,
+            submitted_at="2026-08-12T00:00:00Z",
+        )
+        module._run = _stub_ancestry_run(  # type: ignore[assignment]
+            _completed(
+                ["git", "merge-base"],
+                returncode=128,
+                stderr="fatal: object missing\n",
+            )
+        )
+        fixture_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(fixture_dir.cleanup)
+        fixture = Path(fixture_dir.name) / "f.json"
+        fixture.write_text(
+            json.dumps({"head": self.head, "reviews": [review_row._asdict()]}),
+            encoding="utf-8",
+        )
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            code = module.main(
+                ["42", "o/r", "--root", str(self.root), "--fixture", str(fixture)]
+            )
+        self.assertEqual(2, code)
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual("NOT_PROVEN", payload["classification"])
+        self.assertEqual("instrument_failure", payload["reason"])
+        self.assertIn("subprocess exit 128", payload["detail"])
+        self.assertIn("object missing", payload["detail"])
+
+
 if __name__ == "__main__":
     unittest.main()

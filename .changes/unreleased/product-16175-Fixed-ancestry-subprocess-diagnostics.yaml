@@ -1,0 +1,9 @@
+project: product
+component: Developer experience
+kind: Fixed
+body: "The semantic-review currentness checker no longer collapses every nonzero `git merge-base --is-ancestor` exit into the false-ancestry message. Exit 1 (the legitimate git predicate) keeps the existing false-ancestry diagnostic; exit 2+, signal-killed (negative) return codes, and any other nonzero exit now surface as `NOT_PROVEN / instrument_failure` carrying the actual return code and a sanitized stderr snippet — bounded at 512 characters, stripped of C0 control bytes and ANSI CSI / OSC sequences, with credential-shaped assignments (`token=`, `password=`, `Authorization:`, …) and URL-embedded GitHub / AWS credential values redacted. The carry-forward path keeps `reviewed head is not an ancestor of current head` reserved for exit 1 so subprocess failures cannot look like a real verdict, and exit 1 cannot look like instrument failure."
+time: 2026-09-20T08:00:00Z
+custom:
+  PR: "16175"
+  Slug: ancestry-subprocess-diagnostics
+  Breaking: "no"
