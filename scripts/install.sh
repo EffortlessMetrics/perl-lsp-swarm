@@ -1627,7 +1627,7 @@ verify_install() {
     if _got_version="$("$_bin" --version 2>&1)"; then
         info "verified: $_got_version"
     else
-        warn "could not run '$BIN_NAME --version'; the binary may require a restart to load shared libraries"
+        err "installed binary failed to run '$BIN_NAME --version': $_bin (output: $_got_version)"
     fi
 }
 
