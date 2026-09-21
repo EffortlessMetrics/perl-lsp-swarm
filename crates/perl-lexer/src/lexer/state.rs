@@ -25,6 +25,17 @@ pub struct PerlLexer<'a> {
     pub(crate) hash_brace_depth: usize,
     pub(crate) after_var_subscript: bool,
     pub(crate) paren_depth: usize,
+    /// Depth of currently-open parens that were opened by `print` invoked as a
+    /// list operator with parens (i.e., `print(...)` at term position, with no
+    /// preceding `->` or `&`). Inside those parens, in `ExpectOperator` mode,
+    /// `<<` is recognized as a heredoc opener; the same `<<` outside those
+    /// parens is the left-shift operator. Tracked for #16163.
+    pub(crate) print_list_paren_depth: u32,
+    /// Set by the identifier-or-keyword handler when a `print` keyword/identifier
+    /// at term position is immediately followed (after horizontal whitespace) by
+    /// `(`. Consumed by the `(` handler in `try_delimiter` to record that the
+    /// open paren belongs to a `print(...)` list-operator call.
+    pub(crate) pending_print_list_paren: bool,
     // Preserved for checkpoint restoration even when a tokenization path does not read it directly.
     #[allow(dead_code)]
     pub(crate) current_pos: Position,

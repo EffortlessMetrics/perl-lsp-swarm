@@ -26,6 +26,8 @@ impl Checkpointable for PerlLexer<'_> {
             hash_brace_depth,
             after_var_subscript,
             paren_depth,
+            print_list_paren_depth,
+            pending_print_list_paren,
             current_pos,
             after_newline,
             pending_heredocs,
@@ -81,6 +83,8 @@ impl Checkpointable for PerlLexer<'_> {
             hash_brace_depth: *hash_brace_depth,
             after_var_subscript: *after_var_subscript,
             paren_depth: *paren_depth,
+            print_list_paren_depth: *print_list_paren_depth,
+            pending_print_list_paren: *pending_print_list_paren,
             current_pos: *current_pos,
             after_newline: *after_newline,
             pending_heredocs: pending_heredocs
@@ -142,6 +146,8 @@ impl Checkpointable for PerlLexer<'_> {
         self.hash_brace_depth = replay.hash_brace_depth;
         self.after_var_subscript = replay.after_var_subscript;
         self.paren_depth = replay.paren_depth;
+        self.print_list_paren_depth = replay.print_list_paren_depth;
+        self.pending_print_list_paren = replay.pending_print_list_paren;
         self.current_pos = replay.current_pos;
         self.after_newline = replay.after_newline;
         self.pending_heredocs = replay

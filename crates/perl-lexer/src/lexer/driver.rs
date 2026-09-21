@@ -22,6 +22,8 @@ impl<'a> PerlLexer<'a> {
             hash_brace_depth: 0,
             after_var_subscript: false,
             paren_depth: 0,
+            print_list_paren_depth: 0,
+            pending_print_list_paren: false,
             current_pos: Position::start(),
             after_newline: true,
             pending_heredocs: Vec::new(),

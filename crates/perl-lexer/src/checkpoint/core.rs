@@ -78,6 +78,14 @@ pub(crate) struct ReplayState {
     pub(crate) hash_brace_depth: usize,
     pub(crate) after_var_subscript: bool,
     pub(crate) paren_depth: usize,
+    /// Depth of currently-open parens opened by `print` invoked as a list
+    /// operator with parens (see `PerlLexer::print_list_paren_depth`).
+    /// Tracked alongside `paren_depth` because checkpoint restore needs to
+    /// reproduce the lexer's decision boundary for `<<` (#16163).
+    pub(crate) print_list_paren_depth: u32,
+    /// `print` keyword/identifier at term position followed by `(`; consumed
+    /// by the next `(` handler. See `PerlLexer::pending_print_list_paren`.
+    pub(crate) pending_print_list_paren: bool,
     pub(crate) current_pos: Position,
     pub(crate) after_newline: bool,
     pub(crate) pending_heredocs: Vec<PendingHeredocCheckpoint>,
@@ -631,6 +639,8 @@ mod tests {
             hash_brace_depth: 0,
             after_var_subscript: false,
             paren_depth: 0,
+            print_list_paren_depth: 0,
+            pending_print_list_paren: false,
             current_pos: Position::start(),
             after_newline: false,
             pending_heredocs: Vec::new(),
