@@ -23,3 +23,17 @@ const BARE_TERM_BUILTINS: &[&str] = &[
     "read", "ref", "reverse", "rindex", "say", "scalar", "splice", "sprintf", "sqrt", "substr",
     "tie", "uc", "ucfirst", "unpack", "unshift", "untie", "values", "write",
 ];
+
+/// Builtins whose only form takes zero arguments (#16165).
+///
+/// A call to one of these completes a term, so `<<` after it is the left-shift
+/// operator, never a heredoc introducer (`print time <<END` shifts; local Perl
+/// oracle). This list is the bounded, source-independent nullary authority the
+/// heredoc path consults; it stays disjoint from [`BARE_TERM_BUILTINS`], whose
+/// members introduce a term and can therefore consume a heredoc argument.
+const NULLARY_BUILTINS: &[&str] = &["time"];
+
+#[inline]
+pub(crate) fn is_nullary_builtin(word: &str) -> bool {
+    NULLARY_BUILTINS.binary_search(&word).is_ok()
+}

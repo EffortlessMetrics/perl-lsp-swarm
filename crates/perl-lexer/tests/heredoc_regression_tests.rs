@@ -1,4 +1,4 @@
-use perl_lexer::{PerlLexer, TokenType};
+use perl_lexer::{LexerConfig, LocalSymbolTable, PerlLexer, TokenType};
 
 #[test]
 fn lexer_terminates_on_backtick_heredoc_with_cr() {
@@ -131,4 +131,81 @@ fn heredoc_body_dispatch_precedes_pod_and_comment_skipping() -> Result<(), Strin
         }
     }
     Ok(())
+}
+
+#[test]
+fn nullary_prototype_sub_completes_term_so_marker_is_left_shift() {
+    // Local Perl oracle (#16165): `sub foo () { 4 }` followed by
+    // `print foo <<'END'` completes `foo()` as a term, so `<<` is left
+    // shift and the `<<'END'` opener is NOT a heredoc. The lines after the
+    // opener therefore stay code: the would-be body declaration is visible,
+    // and so is the suffix declaration after the marker.
+    let source = "sub foo () { 4 }\nprint foo <<'END';\nsub phantom { }\nEND\nsub real { }\n";
+    let table = LocalSymbolTable::scan_subs(source);
+    assert!(table.is_known_sub("foo"), "declaration lost: {source:?}");
+    assert!(table.is_nullary_sub("foo"), "nullary prototype not captured: {source:?}");
+    assert!(table.is_known_sub("phantom"), "body scanned as heredoc: {source:?}");
+    assert!(table.is_known_sub("real"), "suffix declaration lost: {source:?}");
+
+    let config = LexerConfig { symbol_table: Some(table), ..Default::default() };
+    let tokens = PerlLexer::with_config(source, config).collect_tokens();
+    assert!(
+        !tokens.iter().any(|t| matches!(t.token_type, TokenType::HeredocStart)),
+        "nullary call must not consume <<'END' as a heredoc: {source:?}"
+    );
+}
+
+#[test]
+fn nullary_prototype_declared_after_the_call_still_blocks_heredoc() {
+    // Prototypes are file-scoped in Perl, so the two-pass hint must carry the
+    // empty prototype back to the earlier opener (#16165).
+    let source = "print foo <<'END';\nsub phantom { }\nEND\nsub foo () { 4 }\n";
+    let table = LocalSymbolTable::scan_subs(source);
+    assert!(table.is_nullary_sub("foo"), "hint pass lost the prototype: {source:?}");
+    assert!(table.is_known_sub("phantom"), "body scanned as heredoc: {source:?}");
+
+    let config = LexerConfig { symbol_table: Some(table), ..Default::default() };
+    let tokens = PerlLexer::with_config(source, config).collect_tokens();
+    assert!(
+        !tokens.iter().any(|t| matches!(t.token_type, TokenType::HeredocStart)),
+        "later nullary declaration must still block the heredoc: {source:?}"
+    );
+}
+
+#[test]
+fn unprototyped_sub_keeps_heredoc_reading_negative_control() {
+    // Mandatory negative control (local Perl oracle): an unprototyped `foo`
+    // can still take arguments, so `print foo <<'END'` IS a heredoc — the
+    // body is consumed and the suffix declaration is the only one visible.
+    let source = "sub foo { 4 }\nprint foo <<'END';\nsub phantom { }\nEND\nsub real { }\n";
+    let table = LocalSymbolTable::scan_subs(source);
+    assert!(table.is_known_sub("foo") && !table.is_nullary_sub("foo"));
+    assert!(!table.is_known_sub("phantom"), "body not consumed: {source:?}");
+    assert!(table.is_known_sub("real"), "suffix declaration lost: {source:?}");
+
+    let config = LexerConfig { symbol_table: Some(table), ..Default::default() };
+    let tokens = PerlLexer::with_config(source, config).collect_tokens();
+    assert!(
+        tokens.iter().any(|t| matches!(t.token_type, TokenType::HeredocStart)),
+        "unprototyped sub must keep the callable-heredoc reading: {source:?}"
+    );
+}
+
+#[test]
+fn nullary_builtin_time_shifts_instead_of_consuming_heredoc() {
+    // Local Perl oracle (#16165): `print time <<'END'` treats `time()` as a
+    // complete term, so `<<` is left shift. The bounded nullary-builtin list
+    // is what keeps this off the heredoc path even though `time` is a bare
+    // term builtin.
+    let source = "print time <<'END';\nsub phantom { }\nEND\nsub real { }\n";
+    let table = LocalSymbolTable::scan_subs(source);
+    assert!(table.is_known_sub("phantom"), "body scanned as heredoc: {source:?}");
+    assert!(table.is_known_sub("real"), "suffix declaration lost: {source:?}");
+
+    let config = LexerConfig { symbol_table: Some(table), ..Default::default() };
+    let tokens = PerlLexer::with_config(source, config).collect_tokens();
+    assert!(
+        !tokens.iter().any(|t| matches!(t.token_type, TokenType::HeredocStart)),
+        "nullary builtin must not consume <<'END' as a heredoc: {source:?}"
+    );
 }

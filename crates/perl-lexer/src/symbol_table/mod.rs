@@ -21,7 +21,7 @@ use std::sync::Arc;
 
 mod format;
 
-use crate::lexer::helpers::is_builtin_function;
+use crate::lexer::helpers::{is_builtin_function, is_nullary_builtin};
 use crate::unicode::{is_perl_identifier_continue, is_perl_identifier_start};
 
 use format::{is_format_terminator, opens_terminated_format_body};
@@ -45,6 +45,9 @@ use format::{is_format_terminator, opens_terminated_format_body};
 #[derive(Debug, Clone, Default)]
 pub struct LocalSymbolTable {
     known_subs: Arc<HashSet<Box<str>>>,
+    /// Names declared with an empty prototype (`sub foo ()`). Every bare call
+    /// to one completes a term, so `<<` after it is left shift (#16165).
+    nullary_subs: Arc<HashSet<Box<str>>>,
 }
 
 impl LocalSymbolTable {
@@ -105,15 +108,24 @@ impl LocalSymbolTable {
         // is declared further down the file is missed and its body is scanned
         // as code. The first pass therefore only collects candidate declaration
         // names; the second pass consults them from the first line onward.
-        let hints = scan_pass(input, &HashSet::new());
-        let known_subs = scan_pass(input, &hints);
+        let hints = scan_pass(input, &Declarations::default());
+        let scanned = scan_pass(input, &hints);
 
-        Self { known_subs: Arc::new(known_subs) }
+        Self { known_subs: Arc::new(scanned.callables), nullary_subs: Arc::new(scanned.nullaries) }
     }
 
     /// Return `true` if `name` was declared as a subroutine in this file.
     pub fn is_known_sub(&self, name: &str) -> bool {
         self.known_subs.contains(name)
+    }
+
+    /// Return `true` if `name` was declared with an empty prototype.
+    ///
+    /// A nullary declaration completes a term at every call site, so `<<`
+    /// after the bare name is the left-shift operator, never a heredoc
+    /// introducer (#16165, local Perl oracle).
+    pub fn is_nullary_sub(&self, name: &str) -> bool {
+        self.nullary_subs.contains(name)
     }
 
     /// Return the number of subroutine names recorded.
@@ -267,13 +279,25 @@ fn is_data_marker(line: &str) -> bool {
     matches!(line.trim_end_matches([' ', '\t']), "__DATA__" | "__END__")
 }
 
+/// Declarations collected by one full scan pass.
+///
+/// `callables` are the `sub NAME` names; `nullaries` is the subset declared
+/// with an empty prototype. Pass two receives pass one's result as `hints`,
+/// which covers callables — and their prototypes — declared later in the file.
+#[derive(Debug, Default)]
+struct Declarations {
+    callables: HashSet<Box<str>>,
+    nullaries: HashSet<Box<str>>,
+}
+
 /// Run one full forward scan, treating `hints` as additional callable names.
 ///
 /// `hints` is empty on the first pass and carries the first pass's declaration
 /// names on the second, which is what lets a heredoc opener recognize a
 /// callable declared later in the file.
-fn scan_pass(input: &str, hints: &HashSet<Box<str>>) -> HashSet<Box<str>> {
+fn scan_pass(input: &str, hints: &Declarations) -> Declarations {
     let mut known_subs = HashSet::new();
+    let mut nullaries = HashSet::new();
     let mut state = ScanState::default();
     let bytes = input.as_bytes();
     let mut line_start = 0usize;
@@ -316,11 +340,11 @@ fn scan_pass(input: &str, hints: &HashSet<Box<str>>) -> HashSet<Box<str>> {
             break;
         }
 
-        scan_code_line(input, line_start, line, &mut state, &mut known_subs, hints);
+        scan_code_line(input, line_start, line, &mut state, &mut known_subs, &mut nullaries, hints);
         line_start = next_line_start;
     }
 
-    known_subs
+    Declarations { callables: known_subs, nullaries }
 }
 
 /// Return `true` if `word` names something callable for prepass purposes.
@@ -331,13 +355,20 @@ fn is_callable_word(word: &str, known_subs: &HashSet<Box<str>>, hints: &HashSet<
     is_builtin_function(word) || known_subs.contains(word) || hints.contains(word)
 }
 
+/// Return `true` if `word` is declared with an empty prototype in this pass or
+/// in the hints pass.
+fn is_nullary_word(word: &str, nullaries: &HashSet<Box<str>>, hints: &Declarations) -> bool {
+    nullaries.contains(word) || hints.nullaries.contains(word)
+}
+
 fn scan_code_line(
     input: &str,
     line_start: usize,
     line: &str,
     state: &mut ScanState,
     known_subs: &mut HashSet<Box<str>>,
-    hints: &HashSet<Box<str>>,
+    nullaries: &mut HashSet<Box<str>>,
+    hints: &Declarations,
 ) {
     let mut offset = 0usize;
 
@@ -360,6 +391,9 @@ fn scan_code_line(
 
             if let Some((name, end)) = parse_qualified_name(line, offset) {
                 known_subs.insert(name.into());
+                if has_nullary_prototype(line, end) {
+                    nullaries.insert(name.into());
+                }
                 state.awaiting_sub_name = false;
                 offset = end;
                 continue;
@@ -402,7 +436,7 @@ fn scan_code_line(
         }
 
         let heredoc_start = if line[offset..].starts_with("<<")
-            && heredoc_allowed_before(line, offset, known_subs, hints)
+            && heredoc_allowed_before(line, offset, known_subs, nullaries, hints)
         {
             Some(offset)
         } else {
@@ -473,7 +507,7 @@ fn apostrophe_is_package_separator(
     line: &str,
     offset: usize,
     known_subs: &HashSet<Box<str>>,
-    hints: &HashSet<Box<str>>,
+    hints: &Declarations,
 ) -> bool {
     let before = line[..offset].chars().next_back();
     let after = line[offset + '\''.len_utf8()..].chars().next();
@@ -482,7 +516,8 @@ fn apostrophe_is_package_separator(
         return false;
     }
 
-    previous_word_before(line, offset).is_none_or(|word| !is_callable_word(word, known_subs, hints))
+    previous_word_before(line, offset)
+        .is_none_or(|word| !is_callable_word(word, known_subs, &hints.callables))
 }
 
 fn paired_delimiter(opener: char) -> Option<char> {
@@ -769,7 +804,8 @@ fn heredoc_allowed_before(
     line: &str,
     offset: usize,
     known_subs: &HashSet<Box<str>>,
-    hints: &HashSet<Box<str>>,
+    nullaries: &HashSet<Box<str>>,
+    hints: &Declarations,
 ) -> bool {
     let prefix = line[..offset].trim_end_matches([' ', '\t']);
     if prefix.is_empty() {
@@ -784,7 +820,15 @@ fn heredoc_allowed_before(
         return true;
     }
 
-    previous_word_before(line, offset).is_some_and(|word| is_callable_word(word, known_subs, hints))
+    // A callable that can still take arguments makes `<<MARKER` its heredoc
+    // argument (`print <<END`, unprototyped `foo <<END`). A nullary authority
+    // instead completes a term: `sub foo ()` and `time` leave `<<` as the
+    // left-shift operator (local Perl oracle, #16165).
+    previous_word_before(line, offset).is_some_and(|word| {
+        is_callable_word(word, known_subs, &hints.callables)
+            && !is_nullary_word(word, nullaries, hints)
+            && !is_nullary_builtin(word)
+    })
 }
 
 /// Recognize the immediate scalar-filehandle `print $handle LIST` term slot.
@@ -811,6 +855,19 @@ fn print_scalar_filehandle_heredoc_start(line: &str, start: usize) -> Option<usi
     let (_, end) = parse_qualified_name(line, offset + 1)?;
     let opener = skip_horizontal_whitespace(line, end);
     line[opener..].starts_with("<<").then_some(opener)
+}
+
+/// Return `true` when a `sub` declaration carries an empty prototype at `end`.
+///
+/// `sub foo ()` records `foo` as nullary (#16165): every bare call completes a
+/// term, so a following `<<MARKER` is a left shift, not a heredoc. The peek is
+/// single-line and skips only horizontal whitespace; a prototype continued on
+/// the next line keeps the name plain callable status.
+fn has_nullary_prototype(line: &str, end: usize) -> bool {
+    let Some(rest) = line.get(end..) else {
+        return false;
+    };
+    rest.trim_start_matches([' ', '\t']).starts_with("()")
 }
 
 fn parse_heredoc_opener(line: &str, start: usize) -> Option<(PendingHeredoc, usize)> {
