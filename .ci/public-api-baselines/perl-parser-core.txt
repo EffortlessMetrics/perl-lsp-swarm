@@ -483,8 +483,6 @@ pub perl_parser_core::engine::error::ParseError::CoreBudgetExhausted::limit: usi
 pub perl_parser_core::engine::error::ParseError::CoreBudgetExhausted::usage: usize
 pub perl_parser_core::engine::error::ParseError::DoWhileTrailingBlock
 pub perl_parser_core::engine::error::ParseError::DoWhileTrailingBlock::location: usize
-pub perl_parser_core::engine::error::ParseError::QualifiedLoopControlLabel
-pub perl_parser_core::engine::error::ParseError::QualifiedLoopControlLabel::location: usize
 pub perl_parser_core::engine::error::ParseError::HeredocBudgetExhausted
 pub perl_parser_core::engine::error::ParseError::HeredocBudgetExhausted::limit: usize
 pub perl_parser_core::engine::error::ParseError::HeredocBudgetExhausted::location: usize
@@ -505,6 +503,8 @@ pub perl_parser_core::engine::error::ParseError::LexerError::message: alloc::str
 pub perl_parser_core::engine::error::ParseError::NestingTooDeep
 pub perl_parser_core::engine::error::ParseError::NestingTooDeep::depth: usize
 pub perl_parser_core::engine::error::ParseError::NestingTooDeep::max_depth: usize
+pub perl_parser_core::engine::error::ParseError::QualifiedLoopControlLabel
+pub perl_parser_core::engine::error::ParseError::QualifiedLoopControlLabel::location: usize
 pub perl_parser_core::engine::error::ParseError::Recovered
 pub perl_parser_core::engine::error::ParseError::Recovered::kind: perl_parser_core::syntax::error::RecoveryKind
 pub perl_parser_core::engine::error::ParseError::Recovered::location: usize
@@ -1042,8 +1042,6 @@ pub perl_parser_core::error::ParseError::CoreBudgetExhausted::limit: usize
 pub perl_parser_core::error::ParseError::CoreBudgetExhausted::usage: usize
 pub perl_parser_core::error::ParseError::DoWhileTrailingBlock
 pub perl_parser_core::error::ParseError::DoWhileTrailingBlock::location: usize
-pub perl_parser_core::error::ParseError::QualifiedLoopControlLabel
-pub perl_parser_core::error::ParseError::QualifiedLoopControlLabel::location: usize
 pub perl_parser_core::error::ParseError::HeredocBudgetExhausted
 pub perl_parser_core::error::ParseError::HeredocBudgetExhausted::limit: usize
 pub perl_parser_core::error::ParseError::HeredocBudgetExhausted::location: usize
@@ -1064,6 +1062,8 @@ pub perl_parser_core::error::ParseError::LexerError::message: alloc::string::Str
 pub perl_parser_core::error::ParseError::NestingTooDeep
 pub perl_parser_core::error::ParseError::NestingTooDeep::depth: usize
 pub perl_parser_core::error::ParseError::NestingTooDeep::max_depth: usize
+pub perl_parser_core::error::ParseError::QualifiedLoopControlLabel
+pub perl_parser_core::error::ParseError::QualifiedLoopControlLabel::location: usize
 pub perl_parser_core::error::ParseError::Recovered
 pub perl_parser_core::error::ParseError::Recovered::kind: perl_parser_core::syntax::error::RecoveryKind
 pub perl_parser_core::error::ParseError::Recovered::location: usize
@@ -3938,8 +3938,6 @@ pub perl_parser_core::syntax::error::ParseError::CoreBudgetExhausted::limit: usi
 pub perl_parser_core::syntax::error::ParseError::CoreBudgetExhausted::usage: usize
 pub perl_parser_core::syntax::error::ParseError::DoWhileTrailingBlock
 pub perl_parser_core::syntax::error::ParseError::DoWhileTrailingBlock::location: usize
-pub perl_parser_core::syntax::error::ParseError::QualifiedLoopControlLabel
-pub perl_parser_core::syntax::error::ParseError::QualifiedLoopControlLabel::location: usize
 pub perl_parser_core::syntax::error::ParseError::HeredocBudgetExhausted
 pub perl_parser_core::syntax::error::ParseError::HeredocBudgetExhausted::limit: usize
 pub perl_parser_core::syntax::error::ParseError::HeredocBudgetExhausted::location: usize
@@ -3960,6 +3958,8 @@ pub perl_parser_core::syntax::error::ParseError::LexerError::message: alloc::str
 pub perl_parser_core::syntax::error::ParseError::NestingTooDeep
 pub perl_parser_core::syntax::error::ParseError::NestingTooDeep::depth: usize
 pub perl_parser_core::syntax::error::ParseError::NestingTooDeep::max_depth: usize
+pub perl_parser_core::syntax::error::ParseError::QualifiedLoopControlLabel
+pub perl_parser_core::syntax::error::ParseError::QualifiedLoopControlLabel::location: usize
 pub perl_parser_core::syntax::error::ParseError::Recovered
 pub perl_parser_core::syntax::error::ParseError::Recovered::kind: perl_parser_core::syntax::error::RecoveryKind
 pub perl_parser_core::syntax::error::ParseError::Recovered::location: usize
@@ -4848,8 +4848,6 @@ pub perl_parser_core::ParseError::CoreBudgetExhausted::limit: usize
 pub perl_parser_core::ParseError::CoreBudgetExhausted::usage: usize
 pub perl_parser_core::ParseError::DoWhileTrailingBlock
 pub perl_parser_core::ParseError::DoWhileTrailingBlock::location: usize
-pub perl_parser_core::ParseError::QualifiedLoopControlLabel
-pub perl_parser_core::ParseError::QualifiedLoopControlLabel::location: usize
 pub perl_parser_core::ParseError::HeredocBudgetExhausted
 pub perl_parser_core::ParseError::HeredocBudgetExhausted::limit: usize
 pub perl_parser_core::ParseError::HeredocBudgetExhausted::location: usize
@@ -4870,6 +4868,8 @@ pub perl_parser_core::ParseError::LexerError::message: alloc::string::String
 pub perl_parser_core::ParseError::NestingTooDeep
 pub perl_parser_core::ParseError::NestingTooDeep::depth: usize
 pub perl_parser_core::ParseError::NestingTooDeep::max_depth: usize
+pub perl_parser_core::ParseError::QualifiedLoopControlLabel
+pub perl_parser_core::ParseError::QualifiedLoopControlLabel::location: usize
 pub perl_parser_core::ParseError::Recovered
 pub perl_parser_core::ParseError::Recovered::kind: perl_parser_core::syntax::error::RecoveryKind
 pub perl_parser_core::ParseError::Recovered::location: usize
