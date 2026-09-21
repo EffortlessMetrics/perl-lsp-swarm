@@ -25,7 +25,7 @@ pub mod emacs_host_runner;
 
 use emacs_host_runner::{
     EmacsClientKind, EmacsHostPaths, EmacsHostRunPlan, HermeticLayout, ProcessObservation,
-    build_emacs_command, build_receipt, file_sha256, run_owned_process,
+    build_emacs_command, build_receipt, file_sha256, run_owned_process, validate_receipt_binding,
 };
 use xtask::editor_client_compat::{
     CANONICAL_EXPECTATION_SET_ID, CapabilityBasis, CapabilityIdentity, CleanupResult,
@@ -868,6 +868,11 @@ pub fn host_run(
     let receipt_target =
         crate::editor_host::FreshReceiptTarget::reserve(receipt_path.clone(), subject_digest)?;
     receipt_target.write(&serde_json::to_vec_pretty(&receipt)?)?;
+    // Stale-receipt law (#15338, mirroring the four vim siblings): the receipt
+    // just written is re-validated against the run plan so a v2 producer that
+    // bypasses the schema check cannot land a malformed binding.
+    validate_receipt_binding(&receipt, &plan)
+        .context("the emitted receipt failed its own freshness binding")?;
     Ok(HostRunOutcome {
         receipt_path,
         result: outcome.result,
