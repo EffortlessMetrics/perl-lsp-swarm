@@ -34,6 +34,13 @@ export interface LanguageClientStartupMetricsSnapshot {
   initialize_status: StartupPhaseStatus;
   initialize_ms: number | null;
   server_version: string | null;
+  /**
+   * Message of the error that settled the most recent failed startup, or null
+   * while no startup failure is recorded. The lifecycle owns the error; this
+   * carries its message so a terminal failed state is diagnosable from the
+   * metrics surface alone (#15592).
+   */
+  startup_error: string | null;
   milestones: Partial<Record<LanguageClientStartupMilestone, number>>;
 }
 
@@ -57,6 +64,7 @@ export class LanguageClientStartupMetrics {
   private initializeStartedAt: number | undefined;
   private initializeMs: number | null = null;
   private serverVersion: string | null = null;
+  private startupError: string | null = null;
 
   public constructor() {
     this.markMilestone('extension_load');
@@ -77,6 +85,19 @@ export class LanguageClientStartupMetrics {
     this.serverVersion = version ?? null;
   }
 
+  /**
+   * Record the error that settled a failed startup. Pass null to clear a
+   * stale failure; a fresh attempt also clears it via beginBinaryResolution.
+   */
+  public recordStartupError(error: unknown): void {
+    this.startupError =
+      error === undefined || error === null
+        ? null
+        : error instanceof Error
+          ? error.message
+          : String(error);
+  }
+
   public beginBinaryResolution(): void {
     this.markMilestone('binary_resolution_started');
     this.binaryResolutionStatus = 'running';
@@ -84,6 +105,9 @@ export class LanguageClientStartupMetrics {
     this.binaryResolutionPath = null;
     this.binaryResolutionStartedAt = performance.now();
     this.binaryResolutionMs = null;
+    // A new resolution attempt supersedes any previous startup failure; a
+    // snapshot taken during this attempt must not report the stale error.
+    this.startupError = null;
   }
 
   public finishBinaryResolution(
@@ -147,6 +171,7 @@ export class LanguageClientStartupMetrics {
       initialize_status: this.initializeStatus,
       initialize_ms: this.initializeMs,
       server_version: this.serverVersion,
+      startup_error: this.startupError,
       milestones: { ...this.milestones },
     };
   }
