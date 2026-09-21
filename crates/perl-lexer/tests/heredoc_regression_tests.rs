@@ -114,3 +114,21 @@ fn lexer_handles_data_markers_with_cr_line_endings() {
         "expected data body after __DATA__ marker"
     );
 }
+
+#[test]
+fn heredoc_body_dispatch_precedes_pod_and_comment_skipping() -> Result<(), String> {
+    for body in ["", "ordinary\n", "=head1 NAME\nsub fake {}\n", "# comment\n", "\n  \n"] {
+        let source = format!("my $x = <<'END';\n{body}END\nsub real {{}}\n");
+        let tokens = PerlLexer::with_body_tokens(&source).collect_tokens();
+        if !tokens.iter().any(|token| {
+            matches!(token.token_type, TokenType::HeredocBody(_))
+                && source.get(token.start..token.end) == Some(body)
+        }) {
+            return Err(format!("body lost or changed: {body:?}; {tokens:?}"));
+        }
+        if !tokens.iter().any(|token| token.text.as_ref() == "real") {
+            return Err(format!("post-heredoc code lost: {body:?}; {tokens:?}"));
+        }
+    }
+    Ok(())
+}

@@ -383,10 +383,8 @@ impl<'a> PerlLexer<'a> {
                             continue;
                         }
 
-                        // `skip_whitespace_and_comments` may have consumed
-                        // indentation on the first body line before the
-                        // pending-heredoc loop runs. Restore that physical
-                        // line start so `<<~` can compare the real prefixes.
+                        // Retain the physical first-line boundary so `<<~`
+                        // compares source indentation at the body start.
                         let line_start = if self.line_start_offset == body_start {
                             body_start
                         } else {
@@ -810,7 +808,10 @@ impl<'a> PerlLexer<'a> {
                         for spec in &mut self.pending_heredocs {
                             if spec.body_start == 0 {
                                 spec.body_start = self.position;
-                                break; // Only set for the first unresolved heredoc
+                                // The next physical line belongs to the heredoc,
+                                // including POD/comment-shaped text or whitespace.
+                                // Return to next_token's pending-body dispatcher.
+                                return;
                             }
                         }
                     }
@@ -3694,7 +3695,7 @@ impl<'a> PerlLexer<'a> {
                 return (body, false);
             }
 
-            if ch == '\\' {
+            if ch == '\\' && delim != '\\' {
                 body.push(ch);
                 self.advance();
                 if let Some(next) = self.current_char() {
@@ -3766,7 +3767,7 @@ impl<'a> PerlLexer<'a> {
                 escaped = false;
                 continue;
             }
-            if ch == '\\' {
+            if ch == '\\' && delim != '\\' {
                 escaped = true;
                 continue;
             }

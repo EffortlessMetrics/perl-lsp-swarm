@@ -89,6 +89,11 @@ cd perl-lsp
 cargo install --path crates/perllsp
 ```
 
+> **Note:** this installs `perllsp` only, not the `perl-dap` debug adapter.
+> For both binaries use a release archive, or build the adapter yourself with
+> `cargo build -p perl-dap --release`. See
+> [INSTALLATION.md](../how-to/INSTALLATION.md) for details.
+
 ## Verify a Manual Installation
 
 ```bash
@@ -120,6 +125,11 @@ If `--version` and `--health` work but your editor still cannot connect, jump to
 2. Open a `.pl` or `.pm` file - the server starts automatically.
 
 ### Neovim
+
+This snippet requires the third-party `nvim-lspconfig` plugin (which also
+provides the `:LspInfo` command used in the verify step below). On Neovim
+0.11+, you can skip the plugin and use the native `vim.lsp.config()` setup in
+[EDITOR_SETUP.md](../how-to/EDITOR_SETUP.md#neovim) instead.
 
 Add to your `init.lua`:
 
