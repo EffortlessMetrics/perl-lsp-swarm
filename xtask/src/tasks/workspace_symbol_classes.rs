@@ -48,6 +48,10 @@ struct WorkspaceSymbolClass {
     requires_non_empty_query: bool,
     requires_ready_index: bool,
     requires_high_confidence: bool,
+    /// Machine-readable confidence bands admitted for live answers; an empty
+    /// declaration admits nothing live (receipts only).
+    #[serde(default)]
+    admits_confidence: Vec<String>,
     requires_source_anchor: bool,
     requires_generated_label: bool,
     #[serde(default)]
@@ -265,10 +269,18 @@ fn validate_source_backed_generated_class(
     }
     // The pilot admits bounded Medium confidence; the low_confidence blocker
     // excludes Low-confidence and dynamic candidates. ExplicitSource keeps the
-    // High floor, so the generated pilot must not claim one.
+    // High floor, so the generated pilot must not claim one. The admitted band
+    // is declared machine-readably, so a second generated producer cannot
+    // inherit Medium admission from this shared class without declaring it.
     if class.requires_high_confidence {
         violations.push(format!(
             "{key} is the bounded Medium SourceBackedGenerated pilot but requires_high_confidence is true"
+        ));
+    }
+    let admitted = class.admits_confidence.iter().map(String::as_str).collect::<BTreeSet<_>>();
+    if admitted != BTreeSet::from(["Medium"]) {
+        violations.push(format!(
+            "{key} is the bounded Medium SourceBackedGenerated pilot but admits_confidence is {admitted:?}; expected exactly {{\"Medium\"}}"
         ));
     }
     if !class.requires_source_anchor {
@@ -416,6 +428,7 @@ mod tests {
             requires_non_empty_query: true,
             requires_ready_index: true,
             requires_high_confidence: false,
+            admits_confidence: vec!["Medium".to_string()],
             requires_source_anchor: true,
             requires_generated_label: true,
             label: Some(REQUIRED_GENERATED_LABEL.to_string()),
@@ -438,6 +451,7 @@ mod tests {
             requires_non_empty_query: true,
             requires_ready_index: true,
             requires_high_confidence: true,
+            admits_confidence: Vec::new(),
             requires_source_anchor: true,
             requires_generated_label: false,
             label: None,
@@ -560,6 +574,41 @@ mod tests {
     }
 
     #[test]
+    fn rejects_generated_pilot_without_declared_confidence_band() -> TestResult {
+        let policy = policy();
+        let mut class = live_generated_class();
+        class.admits_confidence = Vec::new();
+        let mut violations = Vec::new();
+
+        validate_source_backed_generated_class(&class, "test", &policy, &mut violations);
+
+        assert!(
+            violations.iter().any(|violation| violation.contains("admits_confidence")),
+            "live generated pilot without a declared confidence band must fail: {violations:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_generated_pilot_admitting_low_confidence_band() -> TestResult {
+        let policy = policy();
+        let mut class = live_generated_class();
+        class.admits_confidence = vec!["Medium".to_string(), "Low".to_string()];
+        let mut violations = Vec::new();
+
+        validate_source_backed_generated_class(&class, "test", &policy, &mut violations);
+
+        assert!(
+            violations
+                .iter()
+                .any(|violation| violation.contains("admits_confidence")
+                    && violation.contains("Low")),
+            "live generated pilot admitting the Low band must fail: {violations:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn rejects_generated_no_source_live_class() -> TestResult {
         let class = WorkspaceSymbolClass {
             name: "generated_no_source_candidate".to_string(),
@@ -570,6 +619,7 @@ mod tests {
             requires_non_empty_query: false,
             requires_ready_index: false,
             requires_high_confidence: false,
+            admits_confidence: Vec::new(),
             requires_source_anchor: false,
             requires_generated_label: true,
             label: None,
