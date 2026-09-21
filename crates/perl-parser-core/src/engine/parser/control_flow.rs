@@ -888,6 +888,10 @@ impl<'a> Parser<'a> {
                             ParseError::RecursionLimit
                                 | ParseError::RecursionDepthExhausted { .. }
                                 | ParseError::CoreBudgetExhausted { .. }
+                                | ParseError::AngleContextFallback { .. }
+                                | ParseError::AngleScan {
+                                    error: perl_lexer::LexerError::AngleBudgetExhausted { .. }
+                                }
                                 | ParseError::NestingTooDeep { .. }
                                 | ParseError::Cancelled
                                 | ParseError::DoWhileTrailingBlock { .. }

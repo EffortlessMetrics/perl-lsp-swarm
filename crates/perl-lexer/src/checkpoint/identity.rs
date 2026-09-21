@@ -18,7 +18,7 @@ use crate::config::LexerConfig;
 use crate::symbol_table::LocalSymbolTable;
 
 /// Checkpoint schema version captured with every live snapshot.
-pub const CHECKPOINT_SCHEMA_VERSION: u32 = 1;
+pub const CHECKPOINT_SCHEMA_VERSION: u32 = 2;
 
 /// How source newlines participate in checkpoint identity.
 ///
@@ -37,6 +37,8 @@ pub enum CheckpointNewlinePolicy {
 /// do not participate. Mutable lexical state is not stored here.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LexerPolicyIdentity {
+    angle_scan_bytes_limit: usize,
+    angle_scan_steps_limit: usize,
     interpolation: bool,
     lookahead_limit: usize,
     qw_recovery_enabled: bool,
@@ -51,6 +53,8 @@ impl LexerPolicyIdentity {
         emit_heredoc_body_tokens: bool,
     ) -> Self {
         Self {
+            angle_scan_bytes_limit: config.max_angle_scan_bytes,
+            angle_scan_steps_limit: config.max_angle_scan_steps,
             interpolation: config.interpolation_enabled(),
             lookahead_limit: config.lookahead_limit(),
             qw_recovery_enabled,

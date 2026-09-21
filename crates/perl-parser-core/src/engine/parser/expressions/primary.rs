@@ -658,69 +658,45 @@ impl<'a> Parser<'a> {
             }
 
             TokenKind::Less => {
-                // Could be diamond operator <> or <FILEHANDLE>
-                let start = self.consume_token()?.start(); // consume <
-
-                if self.peek_kind() == Some(TokenKind::Greater) {
-                    // Diamond operator <>
-                    self.consume_token()?; // consume >
-                    let end = self.previous_position();
-                    self.charge_node(NodeKind::Diamond, SourceLocation { start, end })
+                let start = self.consume_token()?.start();
+                let span = match self.tokens.apply_contextual(crate::tokens::token_stream::ContextualTokenOp::ScanAngleBody) {
+                    crate::tokens::token_stream::ContextualOpResult::AngleScanned(result) => match result {
+                        Ok(span) => span,
+                        Err(error @ perl_lexer::LexerError::UnterminatedAngle { recovery, .. }) => {
+                            let error = ParseError::AngleScan { error };
+                            let message = error.to_string();
+                            self.record_error(error);
+                            self.last_end_position = recovery;
+                            return self.charge_node(
+                                NodeKind::Error { message, expected: vec![TokenKind::Greater], found: None, partial: None },
+                                SourceLocation { start, end: recovery },
+                            );
+                        }
+                        Err(error) => {
+                            if matches!(error, perl_lexer::LexerError::AngleBudgetExhausted { .. }) {
+                                self.operation.record_terminal(ParseStopCause::LexerBudgetExhausted);
+                            }
+                            return Err(ParseError::AngleScan { error });
+                        }
+                    },
+                    crate::tokens::token_stream::ContextualOpResult::FallbackRequired { reason } => {
+                        return Err(ParseError::AngleContextFallback { reason, location: start });
+                    }
+                    outcome => return Err(ParseError::syntax(format!("angle scan requires live contextual authority: {outcome:?}"), start)),
+                };
+                let pattern = self.src_bytes.get(span.body_start..span.body_end)
+                    .and_then(|bytes| std::str::from_utf8(bytes).ok())
+                    .ok_or_else(|| ParseError::syntax("invalid angle source geometry", start))?
+                    .to_owned();
+                self.last_end_position = span.end;
+                let kind = if pattern.is_empty() {
+                    NodeKind::Diamond
+                } else if is_angle_filehandle(&pattern) {
+                    NodeKind::Readline { filehandle: Some(pattern) }
                 } else {
-                    // Try to parse content until >
-                    let mut pattern = String::new();
-                    let mut has_glob_chars = false;
-
-                    while self.peek_kind() != Some(TokenKind::Greater) && !self.tokens.is_eof() {
-                        let token = self.consume_token()?;
-
-                        // Check if this looks like a glob pattern
-                        if token.text.contains('*')
-                            || token.text.contains('?')
-                            || token.text.contains('[')
-                            || token.text.contains('.')
-                        {
-                            has_glob_chars = true;
-                        }
-
-                        pattern.push_str(&token.text);
-                    }
-
-                    if self.peek_kind() == Some(TokenKind::Greater) {
-                        self.consume_token()?; // consume >
-                        let end = self.previous_position();
-
-                        if pattern.is_empty() {
-                            // Empty <> is diamond operator
-                            self.charge_node(NodeKind::Diamond, SourceLocation { start, end })
-                        } else if has_glob_chars || pattern.contains('/') {
-                            // Looks like a glob pattern
-                            self.charge_node(NodeKind::Glob { pattern }, SourceLocation { start, end })
-                        } else if pattern.chars().all(|c| c.is_uppercase() || c == '_') {
-                            // Bareword filehandle e.g. <STDIN>, <FH>
-                            self.charge_node(
-                                NodeKind::Readline { filehandle: Some(pattern) },
-                                SourceLocation { start, end },
-                            )
-                        } else if is_simple_scalar_variable(&pattern) {
-                            // Simple scalar variable e.g. <$fh>, <$FH>, <$Foo::bar>.
-                            // Per perlop: the scalar holds the filehandle reference,
-                            // so this is an indirect readline, not a glob.
-                            self.charge_node(
-                                NodeKind::Readline { filehandle: Some(pattern) },
-                                SourceLocation { start, end },
-                            )
-                        } else {
-                            // Default to glob
-                            self.charge_node(NodeKind::Glob { pattern }, SourceLocation { start, end })
-                        }
-                    } else {
-                        Err(ParseError::syntax(
-                            "Expected '>' to close angle bracket construct",
-                            self.current_position(),
-                        ))
-                    }
-                }
+                    NodeKind::Glob { pattern }
+                };
+                self.charge_node(kind, SourceLocation { start, end: span.end })
             }
 
             TokenKind::Identifier => {
@@ -1395,49 +1371,48 @@ impl<'a> Parser<'a> {
     }
 }
 
-/// Returns `true` if `pattern` is a *simple scalar variable* of the form
-/// `$identifier` or `$Package::identifier`, with no glob metacharacters,
-/// path separators, hash/array subscripts, or whitespace.
-///
-/// Per perlop, `<$fh>` where `$fh` is a plain scalar variable performs an
-/// indirect filehandle read (Readline), not a filename glob.
-///
-/// Examples that return `true`:  `$fh`, `$FH`, `$pattern`, `$Foo::bar`
-/// Examples that return `false`: `$dir/*` (glob meta), `$h{key}` (subscript),
-///                                `$x.txt` (dot), plain `fh` (no sigil)
-fn is_simple_scalar_variable(pattern: &str) -> bool {
-    let name = match pattern.strip_prefix('$') {
-        Some(n) => n,
-        None => return false,
-    };
-
+/// Classify the non-feature-sensitive filehandle spelling inside an angle term.
+/// Perl 5.44 `S_scan_inputsymbol` permits an optional scalar sigil and calls
+/// `parse_ident_no_copy` with ALLOW_PACKAGE but without IDFIRST_ONLY. Its
+/// Unicode identifier predicates intersect XID with Unicode Word, as defined by
+/// Perl lib/unicore/mktables. That run precedes the ASCII fallback, which
+/// permits initial digits. Package separators must be paired colons.
+/// Raw spelling remains in the AST. Apostrophe feature admission and source
+/// decoding policy require effective pragma authority, not a local heuristic.
+fn is_angle_filehandle(pattern: &str) -> bool {
+    let name = pattern.strip_prefix('$').unwrap_or(pattern);
     if name.is_empty() {
         return false;
     }
-
-    let mut chars = name.chars();
-    let first = match chars.next() {
-        Some(c) => c,
-        None => return false,
-    };
-
-    // First char of the identifier must be alphabetic or underscore.
-    if !first.is_alphabetic() && first != '_' {
-        return false;
-    }
-
-    // Remaining chars: alphanumeric, underscore, or colon (for :: package separators).
-    // Any glob metacharacter, brace, bracket, dot, slash, or whitespace disqualifies.
-    for c in chars {
-        if c.is_alphanumeric() || c == '_' || c == ':' {
-            continue;
+    let mut chars = name.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '_' || (unicode_ident::is_xid_start(ch) && !matches!(ch, '\u{2118}' | '\u{212e}'))
+        {
+            while chars.peek().is_some_and(|next| {
+                unicode_ident::is_xid_continue(*next) && !angle_xid_non_word(*next)
+            }) {
+                chars.next();
+            }
+        } else if ch.is_ascii_alphanumeric() {
+            while chars.peek().is_some_and(|next| next.is_ascii_alphanumeric() || *next == '_') {
+                chars.next();
+            }
+        } else if ch != ':' || chars.next() != Some(':') {
+            return false;
         }
-        return false;
     }
-
     true
 }
-
+// Unicode 17 XID_Continue minus Perl Word. Reproduce from the complete UCD
+// properties as documented in ANGLE_TERM_SCANNING.md; the version test prevents
+// silently reusing this finite difference after a unicode-ident table upgrade.
+fn angle_xid_non_word(ch: char) -> bool {
+    matches!(
+        ch,
+        '\u{b7}' | '\u{387}' | '\u{1369}'
+            ..='\u{1371}' | '\u{19da}' | '\u{2118}' | '\u{212e}' | '\u{30fb}' | '\u{ff65}'
+    )
+}
 // ============================================================================
 // balanced_segment_conformance — inline tests for consume_balanced_in_interpolated_string
 //

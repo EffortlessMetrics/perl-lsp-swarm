@@ -202,6 +202,8 @@ pub fn perl_lexer::PerlLexer<'_>::restore(&mut self, checkpoint: &perl_lexer::Le
 pub fn perl_lexer::PerlLexer<'_>::validate_restore(&self, checkpoint: &perl_lexer::LexerCheckpoint) -> core::result::Result<(), perl_lexer::CheckpointRestoreError>
 pub mod perl_lexer::config
 pub struct perl_lexer::config::LexerConfig
+pub perl_lexer::config::LexerConfig::max_angle_scan_bytes: usize
+pub perl_lexer::config::LexerConfig::max_angle_scan_steps: usize
 pub perl_lexer::config::LexerConfig::max_lookahead: usize
 pub perl_lexer::config::LexerConfig::parse_interpolation: bool
 pub perl_lexer::config::LexerConfig::symbol_table: core::option::Option<perl_lexer::symbol_table::LocalSymbolTable>
@@ -216,7 +218,18 @@ pub fn perl_lexer::config::LexerConfig::clone(&self) -> perl_lexer::config::Lexe
 pub fn perl_lexer::config::LexerConfig::default() -> Self
 pub fn perl_lexer::config::LexerConfig::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub mod perl_lexer::error
+pub enum perl_lexer::error::AngleScanDimension
+pub perl_lexer::error::AngleScanDimension::Bytes
+pub perl_lexer::error::AngleScanDimension::Steps
+pub fn perl_lexer::error::AngleScanDimension::clone(&self) -> perl_lexer::error::AngleScanDimension
+pub fn perl_lexer::error::AngleScanDimension::eq(&self, other: &perl_lexer::error::AngleScanDimension) -> bool
+pub fn perl_lexer::error::AngleScanDimension::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub enum perl_lexer::error::LexerError
+pub perl_lexer::error::LexerError::AngleBudgetExhausted
+pub perl_lexer::error::LexerError::AngleBudgetExhausted::dimension: perl_lexer::error::AngleScanDimension
+pub perl_lexer::error::LexerError::AngleBudgetExhausted::limit: usize
+pub perl_lexer::error::LexerError::AngleBudgetExhausted::position: usize
+pub perl_lexer::error::LexerError::AngleBudgetExhausted::usage: usize
 pub perl_lexer::error::LexerError::HeredocError
 pub perl_lexer::error::LexerError::HeredocError::position: usize
 pub perl_lexer::error::LexerError::HeredocError::reason: alloc::string::String
@@ -232,12 +245,16 @@ pub perl_lexer::error::LexerError::Other(alloc::string::String)
 pub perl_lexer::error::LexerError::UnexpectedChar
 pub perl_lexer::error::LexerError::UnexpectedChar::char: char
 pub perl_lexer::error::LexerError::UnexpectedChar::position: usize
+pub perl_lexer::error::LexerError::UnterminatedAngle
+pub perl_lexer::error::LexerError::UnterminatedAngle::position: usize
+pub perl_lexer::error::LexerError::UnterminatedAngle::recovery: usize
 pub perl_lexer::error::LexerError::UnterminatedRegex
 pub perl_lexer::error::LexerError::UnterminatedRegex::position: usize
 pub perl_lexer::error::LexerError::UnterminatedString
 pub perl_lexer::error::LexerError::UnterminatedString::position: usize
 pub fn perl_lexer::error::LexerError::position(&self) -> core::option::Option<usize>
 pub fn perl_lexer::error::LexerError::clone(&self) -> perl_lexer::error::LexerError
+pub fn perl_lexer::error::LexerError::eq(&self, other: &perl_lexer::error::LexerError) -> bool
 pub fn perl_lexer::error::LexerError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_lexer::error::LexerError::fmt(&self, __formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub type perl_lexer::error::Result<T> = core::result::Result<T, perl_lexer::error::LexerError>
@@ -395,6 +412,12 @@ pub fn perl_lexer::tokenizer::token_wrapper::TokenWithPosition::range(&self) -> 
 pub fn perl_lexer::tokenizer::token_wrapper::TokenWithPosition::text(&self) -> &str
 pub fn perl_lexer::tokenizer::token_wrapper::TokenWithPosition::clone(&self) -> perl_lexer::tokenizer::token_wrapper::TokenWithPosition
 pub fn perl_lexer::tokenizer::token_wrapper::TokenWithPosition::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum perl_lexer::AngleScanDimension
+pub perl_lexer::AngleScanDimension::Bytes
+pub perl_lexer::AngleScanDimension::Steps
+pub fn perl_lexer::error::AngleScanDimension::clone(&self) -> perl_lexer::error::AngleScanDimension
+pub fn perl_lexer::error::AngleScanDimension::eq(&self, other: &perl_lexer::error::AngleScanDimension) -> bool
+pub fn perl_lexer::error::AngleScanDimension::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 #[non_exhaustive] pub enum perl_lexer::CheckpointNewlinePolicy
 pub perl_lexer::CheckpointNewlinePolicy::SourceExact
 pub fn perl_lexer::CheckpointNewlinePolicy::clone(&self) -> perl_lexer::CheckpointNewlinePolicy
@@ -415,6 +438,11 @@ pub fn perl_lexer::CheckpointRestoreError::eq(&self, other: &perl_lexer::Checkpo
 pub fn perl_lexer::CheckpointRestoreError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_lexer::CheckpointRestoreError::fmt(&self, __formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub enum perl_lexer::LexerError
+pub perl_lexer::LexerError::AngleBudgetExhausted
+pub perl_lexer::LexerError::AngleBudgetExhausted::dimension: perl_lexer::error::AngleScanDimension
+pub perl_lexer::LexerError::AngleBudgetExhausted::limit: usize
+pub perl_lexer::LexerError::AngleBudgetExhausted::position: usize
+pub perl_lexer::LexerError::AngleBudgetExhausted::usage: usize
 pub perl_lexer::LexerError::HeredocError
 pub perl_lexer::LexerError::HeredocError::position: usize
 pub perl_lexer::LexerError::HeredocError::reason: alloc::string::String
@@ -430,12 +458,16 @@ pub perl_lexer::LexerError::Other(alloc::string::String)
 pub perl_lexer::LexerError::UnexpectedChar
 pub perl_lexer::LexerError::UnexpectedChar::char: char
 pub perl_lexer::LexerError::UnexpectedChar::position: usize
+pub perl_lexer::LexerError::UnterminatedAngle
+pub perl_lexer::LexerError::UnterminatedAngle::position: usize
+pub perl_lexer::LexerError::UnterminatedAngle::recovery: usize
 pub perl_lexer::LexerError::UnterminatedRegex
 pub perl_lexer::LexerError::UnterminatedRegex::position: usize
 pub perl_lexer::LexerError::UnterminatedString
 pub perl_lexer::LexerError::UnterminatedString::position: usize
 pub fn perl_lexer::error::LexerError::position(&self) -> core::option::Option<usize>
 pub fn perl_lexer::error::LexerError::clone(&self) -> perl_lexer::error::LexerError
+pub fn perl_lexer::error::LexerError::eq(&self, other: &perl_lexer::error::LexerError) -> bool
 pub fn perl_lexer::error::LexerError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_lexer::error::LexerError::fmt(&self, __formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub enum perl_lexer::LexerMode
@@ -506,6 +538,13 @@ pub fn perl_lexer::token::TokenType::is_trivia(&self) -> bool
 pub fn perl_lexer::token::TokenType::clone(&self) -> perl_lexer::token::TokenType
 pub fn perl_lexer::token::TokenType::eq(&self, other: &perl_lexer::token::TokenType) -> bool
 pub fn perl_lexer::token::TokenType::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_lexer::AngleSpan
+pub perl_lexer::AngleSpan::body_end: usize
+pub perl_lexer::AngleSpan::body_start: usize
+pub perl_lexer::AngleSpan::end: usize
+pub fn perl_lexer::AngleSpan::clone(&self) -> perl_lexer::AngleSpan
+pub fn perl_lexer::AngleSpan::eq(&self, other: &perl_lexer::AngleSpan) -> bool
+pub fn perl_lexer::AngleSpan::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_lexer::BuiltinSignature
 pub perl_lexer::BuiltinSignature::documentation: &'static str
 pub perl_lexer::BuiltinSignature::signatures: alloc::vec::Vec<&'static str>
@@ -569,6 +608,8 @@ pub fn perl_lexer::LexerCheckpointIdentity::clone(&self) -> perl_lexer::LexerChe
 pub fn perl_lexer::LexerCheckpointIdentity::eq(&self, other: &perl_lexer::LexerCheckpointIdentity) -> bool
 pub fn perl_lexer::LexerCheckpointIdentity::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_lexer::LexerConfig
+pub perl_lexer::LexerConfig::max_angle_scan_bytes: usize
+pub perl_lexer::LexerConfig::max_angle_scan_steps: usize
 pub perl_lexer::LexerConfig::max_lookahead: usize
 pub perl_lexer::LexerConfig::parse_interpolation: bool
 pub perl_lexer::LexerConfig::symbol_table: core::option::Option<perl_lexer::symbol_table::LocalSymbolTable>
@@ -600,6 +641,8 @@ pub fn perl_lexer::symbol_table::LocalSymbolTable::clone(&self) -> perl_lexer::s
 pub fn perl_lexer::symbol_table::LocalSymbolTable::default() -> perl_lexer::symbol_table::LocalSymbolTable
 pub fn perl_lexer::symbol_table::LocalSymbolTable::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_lexer::PerlLexer<'a>
+pub fn perl_lexer::PerlLexer<'_>::angle_scan_usage(&self) -> (usize, usize)
+pub fn perl_lexer::PerlLexer<'_>::scan_angle_body(&mut self) -> core::result::Result<perl_lexer::AngleSpan, perl_lexer::error::LexerError>
 pub fn perl_lexer::PerlLexer<'_>::bind_generation(&mut self, generation: perl_source_identity::generation::SourceGeneration)
 pub fn perl_lexer::PerlLexer<'_>::bind_logical_source(&mut self, logical_source: perl_source_identity::ids::LogicalSourceId)
 pub fn perl_lexer::PerlLexer<'a>::collect_tokens(&mut self) -> alloc::vec::Vec<perl_lexer::token::Token>

@@ -2062,6 +2062,28 @@ fn build_deref_body(
 
 fn offset_parse_error(error: ParseError, offset: usize) -> ParseError {
     match error {
+        ParseError::AngleContextFallback { reason, location } => {
+            ParseError::AngleContextFallback { reason, location: location.saturating_add(offset) }
+        }
+        ParseError::AngleScan {
+            error: perl_lexer::LexerError::UnterminatedAngle { position, recovery },
+        } => ParseError::AngleScan {
+            error: perl_lexer::LexerError::UnterminatedAngle {
+                position: position.saturating_add(offset),
+                recovery: recovery.saturating_add(offset),
+            },
+        },
+        ParseError::AngleScan {
+            error:
+                perl_lexer::LexerError::AngleBudgetExhausted { dimension, limit, usage, position },
+        } => ParseError::AngleScan {
+            error: perl_lexer::LexerError::AngleBudgetExhausted {
+                dimension,
+                limit,
+                usage,
+                position: position.saturating_add(offset),
+            },
+        },
         ParseError::UnexpectedToken { expected, found, location } => ParseError::UnexpectedToken {
             expected,
             found,

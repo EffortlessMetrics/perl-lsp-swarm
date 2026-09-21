@@ -669,6 +669,20 @@ impl ParseDiagnosticSeverity {
 /// memory-efficient error propagation and logging.
 #[non_exhaustive]
 pub enum ParseError {
+    /// Angle parsing requires a live-source rebuild, not a source correction.
+    #[error("Angle parsing requires live contextual authority at {location}: {reason:?}")]
+    AngleContextFallback {
+        /// Existing contextual-operation refusal authority.
+        reason: crate::tokens::token_stream::ContextualFallbackReason,
+        /// Opening delimiter byte offset.
+        location: usize,
+    },
+    /// Typed source-aware angle failure, preserving geometry and resource work.
+    #[error("{error}")]
+    AngleScan {
+        /// Lexer-owned malformed or resource cause.
+        error: perl_lexer::LexerError,
+    },
     /// Parser encountered unexpected end of input during Perl code analysis
     ///
     /// This occurs when processing truncated Perl scripts or incomplete Perl source during
@@ -888,6 +902,11 @@ impl ErrorClass for ParseError {
         // choose its routing category before the crate can compile.
         match self {
             Self::Advisory { .. } => ErrorCategory::Advisory,
+            Self::AngleContextFallback { .. } => ErrorCategory::Transient,
+            Self::AngleScan { error: perl_lexer::LexerError::AngleBudgetExhausted { .. } } => {
+                ErrorCategory::ResourceLimit
+            }
+            Self::AngleScan { .. } => ErrorCategory::UserError,
             Self::Cancelled => ErrorCategory::Transient,
             Self::RecursionLimit
             | Self::RecursionDepthExhausted { .. }
@@ -946,6 +965,11 @@ use perl_ast::Node;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ParseStopCause {
+    /// The angle term requires rebuilding through a live lexer with boundary authority.
+    AngleContextFallback {
+        /// Why the contextual operation could not be applied.
+        reason: crate::tokens::token_stream::ContextualFallbackReason,
+    },
     /// Cooperative cancellation was triggered via an external cancellation token
     /// before parsing could complete.
     ///
@@ -1059,6 +1083,12 @@ impl ParseStopCause {
     pub fn from_parse_error(error: &ParseError) -> Self {
         match error {
             ParseError::Cancelled => Self::Cancelled,
+            ParseError::AngleContextFallback { reason, .. } => {
+                Self::AngleContextFallback { reason: *reason }
+            }
+            ParseError::AngleScan {
+                error: perl_lexer::LexerError::AngleBudgetExhausted { .. },
+            } => Self::LexerBudgetExhausted,
             ParseError::RecursionLimit => {
                 Self::RecursionBudgetExhausted { limit: None, usage: None }
             }
@@ -1104,6 +1134,7 @@ impl ParseStopCause {
     #[must_use]
     pub fn as_str(&self) -> &'static str {
         match self {
+            Self::AngleContextFallback { .. } => "angle_context_fallback",
             Self::Cancelled => "cancelled",
             Self::RecursionBudgetExhausted { .. } => "recursion_budget_exhausted",
             Self::NestingOrDepthBudgetExhausted { .. } => "nesting_or_depth_budget_exhausted",
@@ -1624,6 +1655,8 @@ impl ParseError {
     /// Get the byte location of the error if available
     pub fn location(&self) -> Option<usize> {
         match self {
+            ParseError::AngleContextFallback { location, .. } => Some(*location),
+            ParseError::AngleScan { error } => error.position(),
             ParseError::UnexpectedToken { location, .. } => Some(*location),
             ParseError::SyntaxError { location, .. } => Some(*location),
             ParseError::InvalidSignatureParameter { range, .. }
@@ -1724,6 +1757,10 @@ impl ParseError {
             | Self::Advisory { location, .. }
             | Self::HeredocBudgetExhausted { location, .. }
             | Self::Recovered { location, .. } => ParseDiagnosticAnchor::Exact(*location),
+            Self::AngleContextFallback { location, .. } => ParseDiagnosticAnchor::Exact(*location),
+            Self::AngleScan { error } => error
+                .position()
+                .map_or(ParseDiagnosticAnchor::NoSource, ParseDiagnosticAnchor::Exact),
             Self::LexerError { .. }
             | Self::RecursionLimit
             | Self::RecursionDepthExhausted { .. }

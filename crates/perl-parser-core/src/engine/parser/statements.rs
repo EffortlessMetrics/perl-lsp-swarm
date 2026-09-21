@@ -36,6 +36,10 @@ impl<'a> Parser<'a> {
                         ParseError::RecursionLimit
                             | ParseError::RecursionDepthExhausted { .. }
                             | ParseError::CoreBudgetExhausted { .. }
+                            | ParseError::AngleContextFallback { .. }
+                            | ParseError::AngleScan {
+                                error: perl_lexer::LexerError::AngleBudgetExhausted { .. }
+                            }
                             | ParseError::NestingTooDeep { .. }
                             | ParseError::Cancelled
                             | ParseError::DoWhileTrailingBlock { .. }
@@ -1906,12 +1910,18 @@ impl<'a> Parser<'a> {
                         // after a do-while condition has no recovery that stays
                         // honest about source that real `perl` refuses to
                         // compile (#15649).
+                        //
+                        // `AngleContextFallback` is terminal as well: a nested
+                        // buffered angle must surface the typed rebuild request
+                        // instead of recovering into an ordinary error block
+                        // (FC-ANGLE-FALLBACK-ORDINARY-BLOCK, #16224).
                         if matches!(
                             e,
                             ParseError::RecursionLimit
                                 | ParseError::RecursionDepthExhausted { .. }
                                 | ParseError::NestingTooDeep { .. }
                                 | ParseError::Cancelled
+                                | ParseError::AngleContextFallback { .. }
                                 | ParseError::DoWhileTrailingBlock { .. }
                         ) {
                             return Err(e);
