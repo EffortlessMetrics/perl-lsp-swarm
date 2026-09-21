@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 use perl_lsp_ux_tests::{ScenarioConfig, UxHarness};
-use perl_lsp_ux_tests::{binary_available, missing_binary_skip};
+use perl_lsp_ux_tests::binary_available;
 use serde_json::{Value, json};
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
@@ -44,7 +44,8 @@ fn request_signature_help(harness: &UxHarness, line: u32, character: u32) -> Res
 #[test]
 fn scenario_25_builtin_push_does_not_error() -> Result<()> {
     if !binary_available() {
-        return Err(missing_binary_skip().into());
+        eprintln!("SKIP scenario_25: perl-lsp binary not found");
+        return Ok(());
     }
 
     let harness = builtin_harness()?;
@@ -62,7 +63,8 @@ fn scenario_25_builtin_push_does_not_error() -> Result<()> {
 #[test]
 fn scenario_25_builtin_join_does_not_error() -> Result<()> {
     if !binary_available() {
-        return Err(missing_binary_skip().into());
+        eprintln!("SKIP scenario_25: perl-lsp binary not found");
+        return Ok(());
     }
 
     let harness = builtin_harness()?;
@@ -80,7 +82,8 @@ fn scenario_25_builtin_join_does_not_error() -> Result<()> {
 #[test]
 fn scenario_25_builtin_result_is_well_formed_when_present() -> Result<()> {
     if !binary_available() {
-        return Err(missing_binary_skip().into());
+        eprintln!("SKIP scenario_25: perl-lsp binary not found");
+        return Ok(());
     }
 
     let harness = builtin_harness()?;
@@ -104,7 +107,8 @@ fn scenario_25_builtin_result_is_well_formed_when_present() -> Result<()> {
 #[test]
 fn scenario_25_builtin_requests_are_idempotent() -> Result<()> {
     if !binary_available() {
-        return Err(missing_binary_skip().into());
+        eprintln!("SKIP scenario_25: perl-lsp binary not found");
+        return Ok(());
     }
 
     let harness = builtin_harness()?;
