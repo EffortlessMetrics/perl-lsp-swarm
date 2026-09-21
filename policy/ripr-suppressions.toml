@@ -3569,6 +3569,50 @@ expires = "2026-09-23"
 removal_criteria = "Remove when the registry gains a production consumer (re-scope suppression to that consumer's seams) or when ripr#1429 resolves declaration-line probes for data rows; narrow immediately if any executable (non-declaration) code lands in this file."
 
 # -----------------------------------------------------------------------------
+# #7286 generation-owned diagnostic analysis: the three new owners carry
+# declaration-line no_static_path probes only. The same receipt traces every
+# executable line in those owners to hundreds or thousands of tests, so this is
+# the ripr#1429 declaration-anchor limitation rather than unproven behavior —
+# and unlike a missing test it cannot be closed by adding one, because a struct
+# field declaration and a `thread_local!` static have no call target a test can
+# reach.
+#
+# Tracked by #15487, which measured the same structural condition independently
+# on a different crate and PR: a test-only commit moved the excluded
+# `weakly_exposed` class by 26 probes and the blocking `no_static_path` class by
+# exactly 0, family for family and file for file. This entry retires when that
+# issue's Direction 1 lands (exclude declaration-anchored `no_static_path` from
+# the blocking subtotal, as #3363 did for `weakly_exposed`), not on a separate
+# rediscovery.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-7286-document-analysis-declaration-seams"
+kind = "declaration_line_no_static_path"
+paths = [
+  "crates/perl-lsp-rs-core/src/providers/diagnostics/document_analysis.rs",
+  "crates/perl-lsp-rs-core/src/tooling/perl_critic/native/native_registry.rs",
+  "crates/perl-lsp-rs/src/state/document.rs",
+]
+classification = ["no_static_path"]
+gap_ids = [
+  "probe:crates_perl-lsp-rs-core_src_providers_diagnostics_document_analysis.rs:field_construction:1011d01f",
+  "probe:crates_perl-lsp-rs-core_src_providers_diagnostics_document_analysis.rs:field_construction:8fdee036",
+  "probe:crates_perl-lsp-rs-core_src_providers_diagnostics_document_analysis.rs:field_construction:f0d896c2",
+  "probe:crates_perl-lsp-rs-core_src_providers_diagnostics_document_analysis.rs:call_deletion:99699ff9",
+  "probe:crates_perl-lsp-rs-core_src_providers_diagnostics_document_analysis.rs:field_construction:391b64f7",
+  "probe:crates_perl-lsp-rs-core_src_providers_diagnostics_document_analysis.rs:field_construction:0447f81d",
+  "probe:crates_perl-lsp-rs_src_state_document.rs:field_construction:b547cf9d",
+  "probe:crates_perl-lsp-rs-core_src_tooling_perl_critic_native_native_registry.rs:call_deletion:b0823c77",
+  "probe:crates_perl-lsp-rs-core_src_tooling_perl_critic_native_native_registry.rs:call_deletion:2d111686",
+]
+owner = "proof-lane"
+issue = "#15487"
+reason = "PR #14272 (#7286) reports exactly 9 no_static_path findings, every one anchored on a declaration line with related_tests_total = 0: the five DocumentDiagnosticAnalysis field declarations (document_analysis.rs:57 `ast: Arc<Node>`, :63 `source: Arc<str>`, :64 `pragma_map: OnceLock<..>` as both field_construction and call_deletion, :65 `scope_issues: OnceLock<..>`, :66 `symbol_table: OnceLock<..>`), the ParsedSnapshot cell field declaration (state/document.rs:201 `diagnostic_analysis:`), and the two gated thread_local counters (native_registry.rs:59 SCOPE_REBUILD_COUNT, :78 SCOPE_REUSE_COUNT). Every one carries stop_reasons = [\"no_changed_rust_line\"], which is the analyzer saying it found no executable line to anchor, not that behavior is unobserved. The same receipt classifies the executable lines in the same owners as `exposed` with strong related-test counts: document_analysis.rs:91 `ast: Arc::clone(ast)` inside build() at 755 related tests, state/document.rs:242 reading the cell at 947, and native_registry.rs:95 the counter accessor body at 1485. reachable_unrevealed is 0 for this candidate. Adding a test cannot clear these: a field declaration and a thread_local static are not call targets, so the only change that would remove the finding is removing the declaration, i.e. the type this claim exists to add. The behavior those declarations serve is proven by the candidate's own oracles — construction-count, per-fact cell, native-critic rebuild and reuse counters, the 12-fixture provider equivalence target, and mutation evidence recorded on PR #14272. SELECTOR NOTE: the selector is the nine gap_ids from that receipt, not the path; paths and classification are additional filters, so a future *executable* no_static_path seam in these files with a different probe id stays visible. The state/document.rs declaration probe moved from :201 to :221 under the main merge; probe identity is content-derived and stable across that drift. kind is descriptive metadata, not a declaration selector. Tracked by #15487 (upstream analyzer issue EffortlessMetrics/ripr#1429), which reached the same conclusion from an independent measurement on a different crate; this candidate adds a same-file control for it, since the executable and declaration lines compared above sit in the same three files rather than on two commits. Remove when #15487's Direction 1 lands, when ripr#1429 traces declaration owners through same-file constructor-call paths, or when a finer line/function selector or targeted mutation replaces this advisory path."
+created = "2026-09-13"
+review_after = "2026-09-20"
+expires = "2026-09-27"
+removal_criteria = "Remove when #15487 excludes declaration-anchored no_static_path from the blocking subtotal (its Direction 1, mirroring #3363 for weakly_exposed), when ripr#1429 resolves declaration-line probes via same-file constructor-call paths, or when a line/function selector lands. Narrow immediately if a future receipt reports an executable (non-declaration) no_static_path seam in any listed file, or any classification other than no_static_path."
+
 # PR #13565 (#13360) adds the stack-increment admission/result trust-boundary
 # module. Hosted RIPR 0.10.0 (run 34736098538, head ebf57ab5e, evaluated merge
 # tree 00111226) reports 165 no_static_path probes — field_construction on
@@ -3955,6 +3999,64 @@ expires = "2026-12-15"
 removal_criteria = "ripr#1429 traces declaration-line field_construction and error_path ? owners in xtask/src/activation to the existing unit and integration tests; then delete this entry and expect those tests to clear the seams without it. Narrow immediately if a receipt reports an executable seam in these files that cargo test -p xtask --test activation does not name. Do not keep the entry if a later PR adds an activation check/report consumer (#9205) without re-scoping."
 
 # -----------------------------------------------------------------------------
+# PR #14815 bare-name availability admission. Four independently scoped
+# exclusions, one class and one path each. Hosted RIPR run 34803517518 on
+# head b0973a8d (evaluated merge 35349162) is the observation basis: 11
+# reachable_unrevealed in availability.rs and 2 no_static_path on the
+# path_selection generic match. #15133/#15215 have already landed; they
+# do not make Result-based `require()` oracles visible to ripr 0.10.0.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-availability-test-plumbing"
+kind = "test_receipt_surface"
+paths = ["crates/perl-subprocess-runtime/src/availability/tests.rs"]
+classification = ["no_static_path"]
+owner = "proof-lane"
+issue = "EffortlessMetrics/ripr#1428"
+reason = "PR #14815: 2 no_static_path probes on the availability test module's own type alias and TempTree fixture field — test-harness plumbing with no executable behavior (ripr#1428 class), exercised by the 15 availability policy tests in the same file. Scoped independently to the test file only; no production path is covered."
+created = "2026-09-09"
+review_after = "2026-10-15"
+expires = "2026-12-31"
+removal_criteria = "Remove when ripr#1428 distinguishes test plumbing from production seams."
+
+[[suppress]]
+id = "ripr-suppress-os-runtime-reexport-declarations"
+kind = "declaration_line_no_static_path"
+paths = ["crates/perl-subprocess-runtime/src/os_runtime/mod.rs"]
+classification = ["no_static_path"]
+owner = "proof-lane"
+issue = "EffortlessMetrics/ripr#1429"
+reason = "PR #14815: 2 no_static_path probes on pub(crate) use re-export declaration lines in os_runtime/mod.rs — no executable behavior, reach:no on a declaration (declaration_line_no_static_path ripr#1429 class). Scoped independently to the re-export module only."
+created = "2026-09-09"
+review_after = "2026-10-15"
+expires = "2026-12-31"
+removal_criteria = "Remove when ripr#1429 resolves declaration-line probes via constructor-call paths."
+
+[[suppress]]
+id = "ripr-suppress-availability-require-oracle-unrevealed"
+kind = "predicate_infection_untraceable"
+paths = ["crates/perl-subprocess-runtime/src/availability.rs"]
+classification = ["reachable_unrevealed"]
+owner = "proof-lane"
+issue = "EffortlessMetrics/ripr#1429"
+reason = "PR #14815: 11 reachable_unrevealed probes in availability.rs on hosted RIPR run 34803517518 (head b0973a8d, evaluated merge 35349162). RIPR reports reach=yes, infect=yes, propagate=yes, observe=no, discriminate=no, oracle_kind=unknown/none. The 15 same-file policy tests (empty/dot/relative PATH refusal, absolute-PATH admission, CWD exclusion, non-executable/directory/absent/path-bearing/empty-command rows, plus the non-UTF-8 native-path row) drive command_exists_in through Result-based require() converted from assert! under review 5135993918; ripr 0.10.0 does not treat that helper as an oracle. Reintroducing panic-shaped asserts would fight that review; adding more require() rows cannot clear observe=no (same #1914 empirical bound). Windows .components() is cfg(windows) and is covered by availability_rejects_absolute_and_separator_bearing_inputs in tests.rs, which is also Result-shaped. EXECUTED NEGATIVE CONTROLS (2026-09-18, Windows host, PR head b07c34386, cargo --locked): per the #14813 negative-control list, (1) mutating command_exists_in to admit every PATH component instead of absolute-only is killed by relative_path_component_is_never_admitted (policy suite 12 passed/2 failed pristine, 11 passed/3 failed mutated; the two pristine reds are the Unix exec-bit and '/'-separator rows that cannot run on the Windows host and are excluded from the delta); (2) mutating the shared selector to drop the CWD-exclusion layer is killed by three native Windows rows test_select_path_candidate_cwd_only_returns_none, test_select_path_candidate_cwd_parent_candidate_rejected, test_select_path_candidate_extensioned_bare_cwd_only_returns_none (83 passed/3 failed); (3) mutating the probe to report an absent tool present (constant true) is killed by availability_rejects_absolute_and_separator_bearing_inputs (85 passed/1 failed); (4) mutating the probe to report an installed tool absent (constant false) is killed at the live consumers: perl-lsp-rs --test command_exists_contract fails all three expected-true rows public_command_exists_continues_to_later_valid_path_candidate, public_command_exists_handles_path_entries_with_spaces, public_command_exists_honors_windows_pathext (4 passed/3 failed), so both real consumers discriminate through the single authority. These executed controls reconcile the earlier fixed disposition on PRRT_kwDOSid81M6gkOUg, which deliberately retained these 11 findings as NOT_PROVEN: the replacement proof that disposition required now exists, making this a governed exception with recorded receipts rather than a silent gate filter. HONEST SCOPE NOTE: path-scoped to this production file and reachable_unrevealed only; weakly_exposed/no_static_path in this file are not masked. Remove when ripr#1429 recognizes Result-returning test helpers as oracles, or when targeted mutation is scheduled per #1289."
+created = "2026-09-15"
+review_after = "2026-10-15"
+expires = "2026-12-31"
+removal_criteria = "Remove when ripr#1429 treats Result-based test helpers as oracles. The four mutations in the reason above were executed on 2026-09-18 against head b07c34386 and were each killed; rerun them on any material availability.rs or selector change per #1289 and remove this entry immediately if a mutation survives. Narrow immediately if a future receipt reports an executable reachable_unrevealed seam in this file that the 15 policy tests plus the executed controls do not already discriminate."
+
+[[suppress]]
+id = "ripr-suppress-path-selection-generic-match-no-static-path"
+kind = "predicate_infection_untraceable"
+paths = ["crates/perl-subprocess-runtime/src/os_runtime/path_selection.rs"]
+classification = ["no_static_path"]
+owner = "proof-lane"
+issue = "EffortlessMetrics/ripr#1429"
+reason = "PR #14815: 2 no_static_path probes on the candidate_priority match after the selector became generic over AsRef<Path> so Unix availability can reuse it without to_str. Hosted RIPR run 34803517518 reports the probes at path_selection.rs:10 (call_deletion and match_arm on the pre-image `match Path::new(candidate)`). Main's ripr-suppress-path-selection-match-arm-guards-2764 covers only weakly_exposed and is left untouched. Executed control (2026-09-18, head b07c34386): mutating the selector to drop CWD exclusion is killed by the three native Windows rows test_select_path_candidate_cwd_only_returns_none, test_select_path_candidate_cwd_parent_candidate_rejected, test_select_path_candidate_extensioned_bare_cwd_only_returns_none (83 passed/3 failed). The generic function is exercised by test_candidate_priority_ordering_all_tiers, test_candidate_priority_case_insensitive, and the select_path_candidate absolute/CWD/empty-list rows in tests.rs. HONEST SCOPE NOTE: independently scoped to no_static_path on this file; weakly_exposed remains under the pre-existing #2764 entry. Remove when ripr#1429 traces generic AsRef monomorphization to the &str test call sites."
+created = "2026-09-15"
+review_after = "2026-10-15"
+expires = "2026-12-31"
+removal_criteria = "Remove when ripr#1429 traces generic AsRef<Path> match arms through the existing &str test call sites, or narrow immediately if a future receipt reports an executable no_static_path seam in this file beyond the generic match."
 # Signature-help prototype parameter numbering: side-effect push observation is
 # statically untraceable from loop-emitted struct literals (ripr#1429 class).
 #
@@ -4150,7 +4252,6 @@ created = "2026-09-15"
 review_after = "2026-10-15"
 expires = "2026-12-31"
 removal_criteria = "Remove when ripr#1429-class tracing covers fn-pointer call sites on the deletion side of a diff, or when this PR's deletion probes age out of the diff scope. Narrow immediately if any seam unrelated to ParseFailure classification lands in this file."
-
 # -----------------------------------------------------------------------------
 # issue_controllers train validator (PR #15416, T02 of #11765): new-module
 # declarations with no static test path (ripr#1429 class).
@@ -4569,6 +4670,35 @@ created = "2026-09-16"
 review_after = "2026-10-16"
 expires = "2026-10-31"
 removal_criteria = "Remove when EffortlessMetrics/ripr#1429 traces declaration-line probes to the tests that construct or exercise their owners, or at expiry. Narrow immediately if a receipt reports a no_static_path seam in this file outside the two listed probe identities."
+
+# -----------------------------------------------------------------------------
+# PR #15442 (#1774) type-hierarchy cancellation: two no_static_path probes on
+# the new `static WORD_CHAR_RE` LazyLock declaration (mod.rs:38). ripr#1429
+# declaration-line class: a static declaration has no static test path. The
+# seam is directly pinned by the PR's own test, which asserts
+# WORD_CHAR_RE.is_some() and is_word_character() across ASCII, '_', 'é', and
+# connector punctuation.
+#
+# Identity key: `gap_ids` lists the two probe identities from run
+# 35172279578's diff receipt. Path + classification are additional filters,
+# not the selector.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-15442-word-char-regex-static-declaration"
+kind = "declaration_line_no_static_path"
+paths = ["crates/perl-lsp-rs-core/src/providers/type_hierarchy/mod.rs"]
+classification = ["no_static_path"]
+gap_ids = [
+  "probe:crates_perl-lsp-rs-core_src_providers_type_hierarchy_mod.rs:call_deletion:30d8d1ea",
+  "probe:crates_perl-lsp-rs-core_src_providers_type_hierarchy_mod.rs:predicate:509dc6c8",
+]
+owner = "proof-lane"
+issue = "EffortlessMetrics/ripr#1429"
+reason = "PR #15442 (#1774): two no_static_path probes on run 35172279578, both on the new static WORD_CHAR_RE LazyLock declaration (type_hierarchy/mod.rs:38) added for qw-delimiter word-class checks in parent-arg normalization. Declaration-line ripr#1429 class: the LazyLock initializer call and its is_some predicate are probed as call_deletion/predicate seams on the declaration line, which diff-scoped RIPR cannot trace to a test owner. Direct coverage exists: the PR's word-class test asserts WORD_CHAR_RE.is_some() and is_word_character() for 'x', '_', 'é', and '‿', and cancellation tests pin TypeHierarchyCancelled through the normalize path. Selector is the two gap_ids, not the path; classification-qualified to no_static_path. A future executable no_static_path seam in this file with a different probe id stays visible."
+created = "2026-09-19"
+review_after = "2026-10-19"
+expires = "2026-12-19"
+removal_criteria = "Remove when EffortlessMetrics/ripr#1429 traces declaration-line probes to the tests that exercise them, or at expiry. Narrow immediately if a receipt reports an executable no_static_path seam in type_hierarchy/mod.rs outside the two identities listed in gap_ids."
 # emacs_train_packet.rs E06 actor-packet adapter declaration lines: consts,
 # struct/clap-arg field declarations, and the reviewer-question table -
 # activation untraceable by ripr (ripr#1429 declaration-line class).

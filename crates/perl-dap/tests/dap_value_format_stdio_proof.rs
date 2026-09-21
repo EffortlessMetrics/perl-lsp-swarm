@@ -325,6 +325,12 @@ impl StdioSession {
             .arg("--stdio")
             .arg("--log-level")
             .arg("error")
+            // Value-format proof exercises evaluate output, not the
+            // launch-authority contract (#8656): without an explicit
+            // acknowledgement every `launch` is refused.
+            .arg("--allow-unbounded")
+            .arg("--unbounded-note")
+            .arg("test: value format stdio proof")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
