@@ -52,5 +52,8 @@ jobs:
         uses: taiki-e/install-action@5bf6ce016fd2e72eefc647cbca1e4213f65955b8  # v2.87.5
         with:
           tool: just
+      - name: Install pinned release schema dependencies
+        run: python3 -m pip install -r scripts/requirements-release.txt
+
       - name: Run release-history provenance checks
         run: just ci-release-history
